@@ -1,6 +1,7 @@
 // Commentary's visual research: batched YouTube discovery, captions without
 // video downloads, bounded excerpts through the shared cloud media registry.
 // Keep the beat and source clock together so subsequent edits can reuse them.
+import { mapAllowed } from "./hq_reference.ts";
 import * as fs from "node:fs";
 import type { App } from "./app.ts";
 import { writeAtomic } from "./files.ts";
@@ -25,6 +26,8 @@ type Args = Record<string, unknown>;
 
 registerTool("capture_evidence", async ({ app, args, projectId }) => {
   if (typeof args.url !== "string") throw new Error("url is required");
+  // Bodycam HQ's maps are edit-map's 3D city, not a map site's picture (hq_reference.ts).
+  mapAllowed(app, projectId, args.url, args.asked);
   const dir = join(app.store.home, "research", projectId, "captures"); fs.mkdirSync(dir, { recursive: true });
   const path = join(dir, `source-${Date.now()}.png`);
   const page = typeof args.page === "number" && Number.isInteger(args.page) ? args.page : null;

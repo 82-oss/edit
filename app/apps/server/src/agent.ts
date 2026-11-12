@@ -11,6 +11,7 @@
 // `ask` is the one-off question other packages use (speakers.ts names voices
 // with it): no chat, no tools.
 
+import { referenceCheck } from "./hq_reference.ts";
 import * as localPreviews from "./local_previews.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -1717,6 +1718,18 @@ export class Agents implements seams.AgentPanel {
     // A whole edit or its final pass, in this message's turns (the user's last
     // message and Edit's follow-ups after it).
     const asked = lastAsked(chat.entries);
+    // Bodycam HQ copying a reference: sent back for what it changed and didn't compare beside it, or the gaps it listed (hq_reference.ts).
+    if (this.isHq(project) && asked >= 0) {
+      const live = this.store.get(projectOf(project))?.project;
+      const left = live === undefined ? null : referenceCheck(chat.entries.slice(asked), live);
+      if (left !== null) {
+        if (mine !== null && (mine.sent >= MAX_FOLLOW_UPS || left.count > mine.count * 0.8)) return;
+        this.followedUp.set(project, { generation, sent: (mine?.sent ?? 0) + 1, count: left.count });
+        diag.info("agent", `${project}: the turn copied a reference and left ${left.count} unmatched; sending it back (${(mine?.sent ?? 0) + 1} of ${MAX_FOLLOW_UPS})`);
+        this.followLater(project, left.note, generation);
+        return;
+      }
+    }
     const whole = ranWholeEdit(chat.entries.slice(asked + 1));
     if (!whole) return void this.notesLeft(project, generation, chat, asked, mine);
     let left: { note: string; count: number } | null;

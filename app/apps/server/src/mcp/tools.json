@@ -2832,6 +2832,10 @@
         "url": {
           "description": "The link as the person gave it.",
           "type": "string"
+        },
+        "asked": {
+          "description": "Only for a picture from a map site in a Bodycam HQ project (refused there otherwise: its maps are edit-map's 3D city): the person's own words asking for that kind of map, quoted from their message.",
+          "type": "string"
         }
       },
       "required": [
@@ -2945,6 +2949,10 @@
         "page": {
           "description": "A PDF's page (1 = the first) to capture or to find the phrase on.",
           "type": "integer"
+        },
+        "asked": {
+          "description": "Only for a picture from a map site in a Bodycam HQ project (refused there otherwise: its maps are edit-map's 3D city): the person's own words asking for that kind of map, quoted from their message.",
+          "type": "string"
         }
       },
       "required": [

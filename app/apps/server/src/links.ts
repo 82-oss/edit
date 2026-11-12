@@ -11,6 +11,7 @@
 // piece the person asked for, not hours to cut down, so no free first hearing
 // (first_hearing.ts) comes before. Script mode's is writer/links.ts.
 
+import { mapAllowed } from "./hq_reference.ts";
 import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
@@ -156,6 +157,8 @@ async function hear(app: App, id: string, part: string, path: string, name: stri
 
 registerTool("import_link", async ({ app, args, projectId }) => {
   if (typeof args.url !== "string" || args.url.trim() === "") throw new Error("url is required");
+  // Bodycam HQ's maps are edit-map's 3D city, not a map site's picture (hq_reference.ts).
+  mapAllowed(app, projectId, args.url, args.asked);
   const part = `link:${Bun.hash(args.url.trim()).toString(16)}`;
   return text(stableStringify(await bringIn(app, projectId, args.url, part), 2));
 });
