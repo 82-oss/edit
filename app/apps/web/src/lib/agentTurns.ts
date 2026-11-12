@@ -228,6 +228,8 @@ const HQ_STAGES: Record<string, string> = {
   add_clip: "Placing it",
   apply_edit_plan: "Placing it",
   batch: "Working",
+  // The graphics checker, a sub-agent it starts to judge a graphic against the reference (hq_reference.ts).
+  Agent: "Checking it against the reference",
 };
 
 /** The stage an HQ turn is at, from its chat: the tool running, else writing its reply, else thinking. */

@@ -1,68 +1,14 @@
-// Bodycam HQ copying a reference, held to it by Edit (hq_reference.ts): Nov 13,
-// the agent built four graphics from a reference, never compared one beside it,
-// and ended listing where they differed; its maps were satellite pictures laid
-// flat, though edit-map's 3D city was in its notes.
+// Bodycam HQ's maps and its graphics checker (hq_reference.ts): Nov 13, its
+// maps were satellite pictures laid flat, though edit-map's 3D city was in its
+// notes, and it passed its own graphics that plainly differed from the reference.
 
 import { expect, test } from "bun:test";
 
 import type { Entry } from "../src/agent.ts";
-import { DIFFERS, mapImagery, personSaid, referenceCheck } from "../src/hq_reference.ts";
-import type { Project } from "../src/model.ts";
-
-const project = {
-  settings: { width: 1920, height: 1080, fps: 30 },
-  media: [{ id: "m1", kind: "video" }, { id: "ref", kind: "video" }, { id: "fx", kind: "video", effect: "map-intro", duration: 10 }],
-  clips: [{ id: "c1", type: "video", media: "m1", start: 0 }, { id: "c2", type: "video", media: "fx", start: 300 }],
-} as unknown as Project;
+import { GRAPHICS_CHECKER, mapImagery, personSaid } from "../src/hq_reference.ts";
 
 let n = 0;
-const tool = (name: string, input: Record<string, unknown>, status = "done"): Entry => ({ id: `e${n++}`, kind: "tool", tool: name, text: "", detail: JSON.stringify(input), status, at: 0, updated: 0 });
 const said = (kind: string, text: string): Entry => ({ id: `e${n++}`, kind, text, at: 0, updated: 0 });
-const asked = said("user", "Recreate this intro frame by frame: https://youtu.be/x");
-const studied = tool("look_at_media", { media_id: "ref", start: 84, end: 98, count: 24 });
-const wrote = tool("Write", { file_path: "/home/x/.edit/media/p1/effects/map-intro/scene.html", content: "…" });
-
-test("the turn that built from a reference and compared nothing beside it is sent back, naming each graphic", () => {
-  const left = referenceCheck([asked, studied, wrote, tool("look_at_effect", { name: "map-intro", times: [1, 4, 8] }), said("assistant", "Done.")], project);
-  expect(left).not.toBeNull();
-  expect(left!.note).toContain("map-intro (10 s): never compared beside the reference since its last change");
-  expect(left!.note).toContain("look_at_effect beside");
-  expect(left!.count).toBe(1);
-});
-
-test("compared beside it all along its length after its last change, it's done; a change after the comparing opens it again", () => {
-  const compared = [
-    tool("look_at_effect", { name: "map-intro", beside: { media_id: "ref", start: 84 }, times: [0, 2, 4, 6, 8, 9.5] }),
-    tool("look_at_effect", { name: "map-intro", beside: { media_id: "ref", start: 84 }, every_frame: true, start: 3, end: 3.8 }),
-  ];
-  // Placing it changes no frame of it.
-  expect(referenceCheck([asked, studied, wrote, ...compared, tool("add_effect", { name: "map-intro" }), said("assistant", "Matched.")], project)).toBeNull();
-  const changedAfter = referenceCheck([asked, studied, wrote, ...compared, tool("Edit", { file_path: "map-intro/scene.html", old_string: "a", new_string: "b" }), said("assistant", "Done.")], project);
-  expect(changedAfter?.note).toContain("never compared beside the reference since its last change");
-});
-
-test("a part left uncompared is named by its seconds", () => {
-  const half = tool("look_at_effect", { name: "map-intro", beside: { media_id: "ref", start: 84 }, times: [0, 2, 4] });
-  expect(referenceCheck([asked, studied, wrote, half, said("assistant", "Done.")], project)?.note).toContain("not compared beside the reference at 5 s–10 s");
-});
-
-test("a closing list of where it differs from the reference is sent back too", () => {
-  const full = tool("look_at_effect", { name: "map-intro", beside: { media_id: "ref", start: 84 }, times: [0, 2, 4, 6, 8, 9.5] });
-  const left = referenceCheck([asked, studied, wrote, full, said("assistant", "It follows the reference's look rather than matching it frame for frame. Where it differs from the reference: the aerials lie flat.")], project);
-  expect(left?.note).toContain("Close each of those gaps now");
-  expect(DIFFERS.test("All done: the board, the map and the call are in.")).toBe(false);
-});
-
-test("a page tried and never placed in the edit isn't held to the reference", () => {
-  const tried = tool("Write", { file_path: "/home/x/.edit/media/p1/effects/map-test/scene.html", content: "…" });
-  expect(referenceCheck([asked, studied, tried, said("assistant", "Done.")], project)).toBeNull();
-});
-
-test("no reference studied (footage of the edit only), or no graphic changed: nothing to hold it to", () => {
-  const ownFootage = tool("look_at_media", { media_id: "m1", times: [3] });
-  expect(referenceCheck([asked, ownFootage, wrote, said("assistant", "Done.")], project)).toBeNull();
-  expect(referenceCheck([asked, studied, said("assistant", "The reference opens on a map at night.")], project)).toBeNull();
-});
 
 test("a map site's picture of a place is told apart from other pages", () => {
   for (const url of [
@@ -83,4 +29,9 @@ test("another kind of map is let through only on the person's own words", () => 
   expect(personSaid([entries[1]!], "use a flat satellite photo")).toBe(false);
   expect(personSaid(entries, "satellite")).toBe(false);
   expect(personSaid(entries, "the person wants a satellite map")).toBe(false);
+});
+
+test("the graphics checker only looks: it reads the brief and sees frames, and changes nothing", () => {
+  expect(GRAPHICS_CHECKER.tools).toEqual(["Read", "Glob", "Grep", "mcp__edit__look_at_effect", "mcp__edit__look_at_media"]);
+  expect(GRAPHICS_CHECKER.prompt).toContain("MATCHES");
 });

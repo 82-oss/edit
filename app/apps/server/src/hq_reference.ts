@@ -1,21 +1,23 @@
-// Bodycam HQ copying a reference, held to it by Edit (Sphe, Nov 13: "I thought
-// the point of this was that the agent would accurately replicate the
-// original reference frame by frame"). The notes ask the agent to compare its
-// frames beside the reference's before it calls a graphic done; on the first
-// real test it studied the reference closely, built four graphics, never once
-// compared one beside it (look_at_effect `beside`), and ended its turn with a
-// list of where they differed. The same agent is made to do it ("can't we just
-// enforce this one agent to do that on its own"): when its turn ends, Edit
-// checks what it compared and sends it back for what it didn't.
+// Bodycam HQ copying a reference (Sphe, Nov 13: "the team is able to give a
+// reference video to the agents, and the effect can be recreated almost
+// perfectly"). On the first real test it built four graphics and compared none
+// beside the reference; made to compare, it compared ten times and still
+// passed frames that were plainly different: the builder grading its own work
+// is the weak point. So it writes the reference down before building
+// (agent/hq/notes.md) and has its work judged by a checker it starts itself,
+// a sub-agent with fresh eyes and no stake in the build (`GRAPHICS_CHECKER`).
+// Edit sends nothing itself: prompts are the team's alone (Sphe: "I really do
+// just want prompts to be from our users, unless it's a server restart").
 //
 // And the map (Sphe: "the 3D map should be the only route unless the user
 // states otherwise"): pictures of a map or satellite view fetched from a map
 // site are refused in a Bodycam HQ project, pointing at edit-map, unless the
 // agent quotes where the person asked for another kind.
 
+import type { AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
+
 import type { Entry } from "./agent.ts";
 import type { App } from "./app.ts";
-import type { Project } from "./model.ts";
 import { agentPanel } from "./seams.ts";
 
 /** Map sites, by host, and the paths of theirs that are pictures of a place (null: all of it). */
@@ -72,119 +74,24 @@ export function mapAllowed(app: App, projectId: string, url: string, asked: unkn
   throw new Error(typeof asked === "string" ? `${MAP_REFUSED} ("${asked}" isn't in the person's messages, word for word.)` : MAP_REFUSED);
 }
 
-/** What changes an effect's frames: its code or files written, or a tool that puts a file in its folder (placing it, add_effect, doesn't). */
-const CHANGES = new Set(["effect_picture", "effect_footage", "effect_track", "effect_beneath", "use_from_library", "restore_effect"]);
-
-const argsOf = (entry: Entry): Record<string, unknown> => {
-  try {
-    const parsed = JSON.parse(entry.detail ?? "{}") as unknown;
-    return typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
-  }
-};
-
-/** The effect a call is about: a tool's `name`, or the folder of a file the agent read, wrote or edited. */
-function effectOf(entry: Entry): string | null {
-  const a = argsOf(entry);
-  if (entry.tool === "Write" || entry.tool === "Edit") {
-    const path = typeof a.file_path === "string" ? a.file_path : "";
-    return /(?:^|\/)effects\/([^/]+)\//.exec(path)?.[1] ?? /^([a-z0-9][a-z0-9-]*)\/[^/]+$/.exec(path)?.[1] ?? null;
-  }
-  return typeof a.name === "string" ? a.name : null;
-}
-
-/** Seconds of an effect a look beside the reference covers: each moment and the half second round it, or the stretch it went through frame by frame. */
-function covered(a: Record<string, unknown>, fps: number): [number, number][] {
-  if (a.every_frame === true) {
-    const start = typeof a.start === "number" ? a.start : 0;
-    const end = typeof a.end === "number" ? a.end : start + 1;
-    // A look shows at most 24 frames beside the reference.
-    return [[start, Math.min(end, start + 24 / fps)]];
-  }
-  const times = Array.isArray(a.times) ? a.times.filter((one): one is number => typeof one === "number") : [];
-  return times.map((one) => [one - 1, one + 1]);
-}
-
-/** The stretches of `[0, length)` none of `spans` reach, joined, each at least a second. */
-function gaps(spans: [number, number][], length: number): [number, number][] {
-  const sorted = [...spans].sort((a, b) => a[0] - b[0]);
-  const out: [number, number][] = [];
-  let at = 0;
-  for (const [from, to] of sorted) {
-    if (from > at + 0.01) out.push([at, Math.min(from, length)]);
-    at = Math.max(at, to);
-    if (at >= length) break;
-  }
-  if (at < length - 0.01) out.push([at, length]);
-  return out.filter(([from, to]) => to - from >= 1 && from < length);
-}
-
-/** A turn's closing words that list where its work differs from the reference rather than closing the gaps. */
-export const DIFFERS = /\b(differs?|different|doesn'?t match|don'?t match|not (?:an? )?(?:exact|frame[- ]for[- ]frame|frame[- ]by[- ]frame) match|rather than matching|unlike the reference|where (?:it|ours|they) (?:differ|depart)|gaps?\b[^.\n]{0,40}reference)/i;
-
-const seconds = (value: number) => `${Math.round(value * 10) / 10} s`;
-
 /**
- * What an HQ turn that copied a reference left unchecked, as Edit's note back
- * to the agent (null when it compared everything it changed, or copied
- * nothing). `entries` are the turn's: the person's message and every entry
- * after it (Edit's own follow-ups included). A reference is footage or a
- * picture the agent studied (look_at_media) that isn't in the edit.
+ * The sub-agent Bodycam HQ's agent starts (the Agent tool) to judge a graphic
+ * against the reference it copies: it sees only frames and the brief the
+ * builder wrote down (`<effect>/reference.md`), changes nothing, and answers
+ * with every difference or "MATCHES".
  */
-export function referenceCheck(entries: readonly Entry[], project: Project): { note: string; count: number } | null {
-  const inEdit = new Set(project.clips.map((clip) => ("media" in clip ? clip.media : null)).filter((id): id is string => id !== null));
-  const references = new Map<string, number>();
-  for (const entry of entries) {
-    if (entry.kind !== "tool" || entry.tool !== "look_at_media" || entry.status === "failed") continue;
-    const id = argsOf(entry).media_id;
-    if (typeof id === "string" && !inEdit.has(id)) references.set(id, (references.get(id) ?? 0) + 1);
-  }
-  if (references.size === 0) return null;
-  const reference = [...references.entries()].sort((a, b) => b[1] - a[1])[0]![0];
-  const fps = project.settings.fps;
-  // Each effect the turn changed, and what was compared beside the reference since its last change.
-  const changed = new Map<string, number>();
-  entries.forEach((entry, index) => {
-    if (entry.kind !== "tool" || entry.status === "failed") return;
-    const name = effectOf(entry);
-    if (name === null) return;
-    if (entry.tool === "Write" || entry.tool === "Edit" || CHANGES.has(entry.tool ?? "")) changed.set(name, index);
-  });
-  if (changed.size === 0) return null;
-  const open: string[] = [];
-  for (const [name, last] of changed) {
-    // Only what's in the edit: a page the agent tried something on and never placed (a "map-test") is no graphic of the video.
-    const media = project.media.find((one) => one.effect === name);
-    if (media === undefined || !inEdit.has(media.id)) continue;
-    const length = media.duration ?? null;
-    const spans: [number, number][] = [];
-    entries.slice(last + 1).forEach((entry) => {
-      if (entry.kind !== "tool" || entry.tool !== "look_at_effect" || entry.status === "failed") return;
-      const a = argsOf(entry);
-      if (a.name !== name || typeof a.beside !== "object" || a.beside === null) return;
-      spans.push(...covered(a, fps));
-    });
-    if (length === null) {
-      if (spans.length === 0) open.push(`- ${name}: never compared beside the reference since its last change`);
-      continue;
-    }
-    const missing = gaps(spans, length);
-    if (missing.length === 0) continue;
-    const whole = spans.length === 0;
-    open.push(`- ${name} (${seconds(length)}): ${whole ? "never compared beside the reference since its last change" : `not compared beside the reference at ${missing.map(([from, to]) => `${seconds(from)}–${seconds(to)}`).join(", ")}`}`);
-  }
-  const last = [...entries].reverse().find((entry) => entry.kind === "assistant");
-  const listed = last !== undefined && DIFFERS.test(last.text);
-  if (open.length === 0 && !listed) return null;
-  const lines: string[] = ["(Edit, automatically) This turn copies a reference, and the person wants it matched frame by frame (Sphe: \"I thought the point of this was that the agent would accurately replicate the original reference frame by frame\")."];
-  if (open.length > 0) {
-    lines.push(
-      `What you changed hasn't been compared beside the reference (${reference}) where it moves:\n${open.join("\n")}`,
-      "Go through each of those now with look_at_effect beside {media_id, start} (the reference's second that matches), every_frame through what moves (a transition, a camera move, words arriving, a glow), stills at the moments that hold. Look at each pair as a stranger would: perspective and camera, the transition's every frame, type (face, weight, size, spacing, case), glows, shadows and colours, timing. Fix what's off, then compare again.",
-    );
-  }
-  if (listed) lines.push("Your last message listed where your work differs from the reference. Close each of those gaps now rather than reporting them; leave one only when it truly can't be done in this video (no such photo exists, the person must choose), and say in a line what stops it.");
-  lines.push("Don't end the turn until every graphic you changed matches the reference beside it, frame for frame.");
-  return { note: lines.join("\n\n"), count: open.length + (listed ? 1 : 0) };
-}
+export const GRAPHICS_CHECKER: AgentDefinition = {
+  description:
+    "Judges one graphic (an effect) against the reference it copies, frame by frame, with fresh eyes: give it the effect's name, the reference's media id and the reference's second that lines up with the effect's start. It changes nothing; it answers with every difference it finds, or MATCHES.",
+  prompt: [
+    "You check one coded graphic (an effect) against the reference it copies, for a YouTube video team that wants it matched frame by frame. You didn't make it and have no stake in it: your job is to find every way it differs, not to approve it. A difference you miss reaches the team.",
+    "1. Read <effect>/reference.md, the builder's list of what the reference shows. Don't trust it: it may have missed things.",
+    "2. Study the reference yourself (look_at_media on its media id, every_frame through what moves, zoom on small things: lettering, edges, glows, ghosts and trails, grain). Note every element and every motion you see.",
+    "3. Compare the graphic beside it (look_at_effect with beside {media_id, start}): every_frame through every stretch that moves (a transition, a camera move, words arriving and leaving, a waveform), stills where it holds, and zoom on every small element. Go through its whole length.",
+    "4. For each element and motion, say whether ours matches, and if not exactly what differs: the second or frame, what the reference shows, what ours shows (shape, size, position, typeface, weight, case, spacing, colour, glow, blur, opacity, timing, easing, perspective, camera). Be concrete and visual; never suggest code.",
+    "Differences of content the story needs (another place, other people's names and photos, other words said) are not differences. Everything about how it looks and moves is.",
+    "End with a list of every difference, most visible first, or with the single word MATCHES if, frame by frame and zoomed in, you can find none.",
+  ].join("\n"),
+  tools: ["Read", "Glob", "Grep", "mcp__edit__look_at_effect", "mcp__edit__look_at_media"],
+  model: "inherit",
+};
