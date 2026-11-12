@@ -4,6 +4,7 @@
 import type { ThumbRun } from "@edit/types/thumbnails";
 
 import type { AgentEntry } from "./agent";
+import { rate, type Project } from "./types";
 import { argsOf, joinPhrases, kindPhrase, stepKind, stepTitle, type StepKind } from "./steps";
 
 export type TurnPart =
@@ -238,6 +239,80 @@ export function hqActivity(entries: readonly AgentEntry[], now = Date.now()): st
   const asked = [...entries].reverse().find((entry) => entry.kind === "user");
   const since = asked?.at ?? now;
   return thinkingWord(since, now - since);
+}
+
+/**
+ * Where on the edit Bodycam HQ's agent is working now, and what it's doing
+ * there, for its dot on the progress bar (Sphe, Nov 13: "it would be cool to
+ * know where the agent is editing"): the newest call of the turn under way
+ * that names a place in the edit, by a time or frame, a clip, or an effect
+ * (its tools' name, or the file of its code being read or written). Null
+ * when no turn runs or nothing of it has named a place yet.
+ */
+export function agentSpot(entries: readonly AgentEntry[], project: Project | null, running: boolean): { frame: number; what: string } | null {
+  if (!running || project === null) return null;
+  const fps = rate(project.settings);
+  const asked = entries.findLastIndex((entry) => entry.kind === "user");
+  const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const clipStart = (id: unknown) => project.clips.find((clip) => clip.id === id)?.start ?? null;
+  const effectStart = (name: unknown) => {
+    if (typeof name !== "string") return null;
+    const media = project.media.find((one) => one.effect === name);
+    return media === undefined ? null : (project.clips.find((clip) => "media" in clip && clip.media === media.id)?.start ?? null);
+  };
+  for (let index = entries.length - 1; index > asked; index--) {
+    const entry = entries[index]!;
+    if (entry.kind !== "tool" || entry.tool === undefined) continue;
+    const a = args(entry);
+    let frame: number | null = null;
+    let name: string | null = null;
+    switch (entry.tool) {
+      case "render_frame":
+        frame = num(a.frame) ?? (num(a.time) === null ? null : num(a.time)! * fps);
+        break;
+      case "contact_sheet":
+        frame = num(a.start) === null ? null : num(a.start)! * fps;
+        break;
+      case "track_region":
+        frame = num(a.time) === null ? null : num(a.time)! * fps;
+        break;
+      case "add_clip":
+        frame = num((a.clip as { start?: unknown } | undefined)?.start);
+        break;
+      case "update_clip":
+        frame = num((a.patch as { start?: unknown } | undefined)?.start) ?? clipStart(a.clip_id);
+        break;
+      case "apply_edit_plan": {
+        const first = Array.isArray(a.operations) ? (a.operations as Record<string, unknown>[]).find((op) => num(op.start) !== null || num(op.at) !== null) : undefined;
+        frame = first === undefined ? null : (num(first.start) ?? num(first.at));
+        break;
+      }
+      case "look_at_effect":
+      case "add_effect":
+      case "effect_track":
+      case "effect_beneath":
+      case "effect_picture":
+      case "effect_footage":
+      case "make_sound":
+        name = typeof a.name === "string" ? a.name : null;
+        frame = effectStart(name);
+        if (frame !== null && entry.tool === "look_at_effect") frame += (num(a.start) ?? num(Array.isArray(a.times) ? a.times[0] : null) ?? 0) * fps;
+        break;
+      case "Read":
+      case "Write":
+      case "Edit": {
+        const path = typeof a.file_path === "string" ? a.file_path : "";
+        name = /(?:^|\/)effects\/([^/]+)\//.exec(path)?.[1] ?? /^([a-z0-9][a-z0-9-]*)\/[^/]+$/.exec(path)?.[1] ?? null;
+        frame = effectStart(name);
+        break;
+      }
+    }
+    if (frame === null) continue;
+    // What it's doing now (thinking, writing to you, another call), at the last place it named.
+    const stage = hqActivity(entries);
+    return { frame: Math.max(0, frame), what: name === null ? stage : `${stage} · ${name}` };
+  }
+  return null;
 }
 
 /** A short, human title for one call. */

@@ -3,7 +3,8 @@
 import { expect, test } from "vitest";
 
 import type { AgentEntry } from "./agent";
-import { buildTurns, callTitle, editWorked, formatSpan, formatWorking, groupSummary, hqActivity, isWorking, shortSpan, shownText, thinkingWord } from "./agentTurns";
+import type { Project } from "./types";
+import { agentSpot, buildTurns, callTitle, editWorked, formatSpan, formatWorking, groupSummary, hqActivity, isWorking, shortSpan, shownText, thinkingWord } from "./agentTurns";
 
 test("a turn is working once it calls a tool or a few seconds in", () => {
   expect(isWorking(1200, false)).toBe(false);
@@ -121,4 +122,26 @@ test("Bodycam HQ's stage words follow what its agent is doing", () => {
   expect(hqActivity([user, tool("something_new", "running")], 2_000)).toBe("Working");
   // Between steps it's thinking: one of the thinking words, as the chat says it.
   expect(hqActivity([user, tool("Write", "done")], 2_000)).toBe(thinkingWord(1_000, 1_000));
+});
+
+test("Bodycam HQ's agent is placed on the bar where its newest call of the turn names a place", () => {
+  // Sphe, Nov 13: a dot where the agent is editing, in place of the pill over the picture.
+  const project = {
+    settings: { width: 1920, height: 1080, fps: 30 },
+    media: [{ id: "m1", effect: "map-route-9" }],
+    clips: [{ id: "c1", type: "video", media: "m1", start: 900 }, { id: "c2", type: "video", media: "m2", start: 3000 }],
+  } as unknown as Project;
+  const tool = (id: string, name: string, input: Record<string, unknown>, status: AgentEntry["status"] = "done"): AgentEntry => ({ id, kind: "tool", tool: name, text: "", detail: JSON.stringify(input), status });
+  const user: AgentEntry = { id: "u", kind: "user", text: "make the map", at: 1 };
+  // No turn running, or none of it named a place: no dot.
+  expect(agentSpot([user, tool("a", "render_frame", { time: 10 })], project, false)).toBeNull();
+  expect(agentSpot([user, tool("a", "get_edit_context", {})], project, true)).toBeNull();
+  // A time, a clip, an effect by name, an effect's code by its file.
+  expect(agentSpot([user, tool("a", "render_frame", { time: 10 })], project, true)?.frame).toBe(300);
+  expect(agentSpot([user, tool("a", "update_clip", { clip_id: "c2", patch: { speed: 2 } })], project, true)?.frame).toBe(3000);
+  expect(agentSpot([user, tool("a", "look_at_effect", { name: "map-route-9", start: 2 })], project, true)?.frame).toBe(960);
+  const writing = agentSpot([user, tool("a", "render_frame", { time: 10 }), tool("b", "Write", { file_path: "/home/x/.edit/media/p1/effects/map-route-9/scene.html" }, "running")], project, true);
+  expect(writing).toEqual({ frame: 900, what: "Writing the graphic · map-route-9" });
+  // An earlier turn's calls don't count.
+  expect(agentSpot([tool("a", "render_frame", { time: 10 }), user], project, true)).toBeNull();
 });

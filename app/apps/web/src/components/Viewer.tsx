@@ -20,9 +20,8 @@ import { numbers, openComment, openComments, setScrubbing, toggleNote, useNotes 
 import { useEditor } from "../lib/store";
 import { timecode } from "../lib/time";
 import { AnimatePresence, motion } from "motion/react";
-import { hqActivity } from "../lib/agentTurns";
+import { agentSpot } from "../lib/agentTurns";
 import { useEffects } from "../lib/effects";
-import { useNow } from "../lib/now";
 import { useSeekFlash } from "../lib/seekFlash";
 import { cutsAfter, mapFrame, pinFor, useWatching, type Pinned } from "../lib/watching";
 import { EffectLayer } from "./EffectLayer";
@@ -394,8 +393,6 @@ export function Viewer() {
             <Transport fullscreen={fullscreen} />
           </div>
         )}
-        {/* On the viewer's own frame, over everything in it: its corners and edge are the ring's. */}
-        {hq && !fullscreen && <HqWorking />}
       </section>
     </div>
   );
@@ -557,41 +554,6 @@ function Transport({ fullscreen }: { fullscreen: boolean }) {
 }
 
 /**
- * While Bodycam HQ's agent works, the viewer says so as the thumbnail page
- * does (Sphe, Nov 11: "something like the thumbnail page… where we see a cool
- * animation and the stage it's at"): a light travelling round the viewer's
- * rounded edge, a sheen across it, and the stage on a dark pill with the
- * thumbnail page's turning orb.
- */
-function HqWorking() {
-  const running = useAgent((state) => state.running);
-  const entries = useAgent((state) => state.entries);
-  const now = useNow(running);
-  const doing = hqActivity(entries, now);
-  const fade = { initial: { opacity: 0 }, animate: { opacity: 1 }, exit: { opacity: 0 }, transition: { duration: 0.5, ease: [0.2, 0, 0, 1] } } as const;
-  return (
-    <AnimatePresence>
-      {running && (
-        // No light sweeping across the picture while it works: the team keeps watching (Sphe, Nov 12: "the flash that
-        // goes from one end of the screen to the other… that's going to be annoying while we work").
-        <motion.div key="working" {...fade} className="pointer-events-none absolute inset-0 rounded-xl">
-          <div className="absolute inset-x-0 top-3 flex justify-center">
-            <motion.div layout transition={{ type: "spring", stiffness: 420, damping: 34 }} className="flex h-7 items-center gap-2 rounded-full bg-[#0b0b0b] pr-3.5 pl-2 shadow-[0_0_0_1px_rgb(255_255_255/0.1),0_8px_24px_#000c]">
-              <span className="working-orb" />
-              <AnimatePresence mode="popLayout" initial={false}>
-                <motion.span key={doing} initial={{ opacity: 0, y: 6, filter: "blur(3px)" }} animate={{ opacity: 1, y: 0, filter: "blur(0px)" }} exit={{ opacity: 0, y: -6, filter: "blur(3px)" }} transition={{ duration: 0.26, ease: [0.2, 0, 0, 1] }} className="text-[12.5px] font-medium whitespace-nowrap text-white">
-                  {doing}
-                </motion.span>
-              </AnimatePresence>
-            </motion.div>
-          </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
-  );
-}
-
-/**
  * The thumbnail page's working light, round the viewer as it is round the
  * thumbnail: a breathing aura and a soft glow behind it, and the ring of light
  * turning on its edge, two pixels outside it (Sphe, Nov 11: "i love the
@@ -652,17 +614,32 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
   // Where the open comments are, on the progress bar (Sphe, Nov 11).
   const numbered = numbers(notes);
   const marks = openComments(notes).map((note) => ({ id: note.id, n: numbered.get(note.id) ?? 0, frame: note.now, text: note.text }));
+  // Where the agent is working, a dot on the bar while its turn runs (Sphe, Nov 13: in place of the pill over the picture).
+  const running = useAgent((state) => state.running);
+  const entries = useAgent((state) => state.entries);
+  const live = useEditor((state) => state.project);
+  const agent = agentSpot(entries, live, running);
+  // The part playing and the marked stretch it's in, named after the time, so the bar carries no words (Sphe, Nov 13).
+  const part = useChapters(duration).findLast((chapter) => chapter.start <= frame) ?? null;
+  const stretch = (viewed?.ranges ?? []).find((one) => frame >= one.start && frame < one.end) ?? null;
   return (
     <div className="flex flex-col px-3 pb-1">
-      <ScrubBar frame={frame} duration={duration} thin marks={fullscreen ? [] : marks} />
+      <ScrubBar frame={frame} duration={duration} thin marks={fullscreen ? [] : marks} agent={agent} />
       <div className="flex h-10 items-center gap-1">
         <IconButton label={playing ? "Pause (Space)" : "Play (Space)"} onClick={() => preview.toggle()} className={cx("size-8", light)}>
           {playing ? <Pause size={18} fill="currentColor" strokeWidth={0} /> : <Play size={18} fill="currentColor" strokeWidth={0} className="translate-x-px" />}
         </IconButton>
-        <span className="ml-1.5 text-[13px] text-white/90 tabular">
+        <span className="ml-1.5 text-[13px] whitespace-nowrap text-white/90 tabular">
           {clock(frame, fps)}
           <span className="text-white/50"> / {clock(duration, fps)}</span>
         </span>
+        {part !== null && <span className="flex min-w-0 items-center gap-1.5 truncate text-[13px] text-white/90 before:size-[3px] before:shrink-0 before:rounded-full before:bg-white/50 before:content-['']">{part.label}</span>}
+        {stretch !== null && (
+          <span className="flex min-w-0 items-center gap-1.5 truncate text-[13px] text-amber-300 before:size-[3px] before:shrink-0 before:rounded-full before:bg-white/50 before:content-['']">
+            {stretch.name}
+            <span className="text-amber-300/70 tabular">{clock(frame - stretch.start, fps)} / {clock(stretch.end - stretch.start, fps)}</span>
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-1">
           {!fullscreen && (
             <IconButton label={noting ? "Stop commenting (Esc)" : "Comment on the picture (Q)"} active={noting} aria-pressed={noting} onClick={toggleNote} className={noting ? undefined : light}>
@@ -691,8 +668,9 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
  * tall hit area over a playhead-pink track; click or drag to move through
  * the edit while watching.
  */
-function ScrubBar({ frame, duration, thin = false, marks = [] }: { frame: number; duration: number; thin?: boolean; marks?: { id: string; n: number; frame: number; text: string }[] }) {
+function ScrubBar({ frame, duration, thin = false, marks = [], agent = null }: { frame: number; duration: number; thin?: boolean; marks?: { id: string; n: number; frame: number; text: string }[]; agent?: { frame: number; what: string } | null }) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const fps = useEditor(selectFps);
   const fraction = duration > 0 ? Math.min(1, Math.max(0, frame / duration)) : 0;
   const loaded = useBuffered();
   const chapters = useChapters(duration);
@@ -762,22 +740,36 @@ function ScrubBar({ frame, duration, thin = false, marks = [] }: { frame: number
           )}
           <div className="absolute inset-y-0 left-0 bg-playhead" style={{ width: `${fraction * 100}%` }} />
         </div>
+        {/* The stretches marked to export (set_ranges), each framed on the bar from its in to its out (Sphe, Nov 13: "J1"); hovered, its name, times and length. */}
         {duration > 0 &&
           marked.map((one) => (
             <div
               key={one.start}
-              title={one.name}
-              className="pointer-events-none absolute bottom-full mb-[3px] h-[2px] rounded-full bg-amber-300/90"
-              style={{ left: `${Math.min(1, one.start / duration) * 100}%`, width: `max(2px, ${Math.max(0, Math.min(1, one.end / duration) - Math.min(1, one.start / duration)) * 100}%)` }}
-            />
+              className="group/stretch absolute top-1/2 z-[1] h-[13px] -translate-y-1/2 rounded-[4px] border-2 border-amber-300 bg-amber-300/15"
+              style={{ left: `${Math.min(1, one.start / duration) * 100}%`, width: `max(6px, ${Math.max(0, Math.min(1, one.end / duration) - Math.min(1, one.start / duration)) * 100}%)` }}
+              onPointerMove={(event) => { event.stopPropagation(); setHover(null); }}
+            >
+              <span className="pointer-events-none absolute bottom-full left-1/2 mb-2 w-max -translate-x-1/2 rounded-full bg-amber-300 px-2 py-0.5 text-[11px] font-semibold text-[#1c1400] tabular opacity-0 transition-opacity duration-150 group-hover/stretch:opacity-100">
+                {one.name} · {clock(one.start, fps)}–{clock(one.end, fps)} · {clock(one.end - one.start, fps)}
+              </span>
+            </div>
           ))}
+        {/* Where the agent is working: a small dot, pinging; hovered, what it's doing there. */}
+        {agent !== null && duration > 0 && (
+          <div className="group/agent absolute top-1/2 z-[2] -translate-x-1/2 -translate-y-1/2 p-2 transition-[left] duration-500 ease-out" style={{ left: `${Math.min(1, Math.max(0, agent.frame / duration)) * 100}%` }} onPointerMove={(event) => { event.stopPropagation(); setHover(null); }}>
+            <span className="relative block size-[7px] rounded-full bg-agent after:absolute after:-inset-1 after:animate-[agent-ping_1.8s_ease-out_infinite] after:rounded-full after:border-[1.5px] after:border-agent after:content-['']" />
+            <span className="pointer-events-none absolute bottom-full left-1/2 mb-0.5 w-max -translate-x-1/2 rounded-full bg-agent px-2 py-0.5 text-[11px] font-semibold text-[#1a1033] opacity-0 transition-opacity duration-150 group-hover/agent:opacity-100">
+              Agent · {agent.what}
+            </span>
+          </div>
+        )}
         {/* The range's ends, standing out of the bar as in and out marks. */}
         {range !== null &&
           duration > 0 &&
           [range.start, range.end].map((at) => (
             <div key={at} className="pointer-events-none absolute -top-1 -bottom-1 w-[2px] -translate-x-1/2 rounded-full bg-white" style={{ left: `${(at / duration) * 100}%` }} />
           ))}
-        <div className={cx("absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-playhead opacity-0 transition-opacity group-hover:opacity-100", thin ? "size-3" : "size-3.5")} style={{ left: `${fraction * 100}%` }} />
+        <div className={cx("absolute top-1/2 z-[3] -translate-x-1/2 -translate-y-1/2 rounded-full bg-playhead opacity-0 transition-opacity group-hover:opacity-100", thin ? "size-3" : "size-3.5")} style={{ left: `${fraction * 100}%` }} />
         {hover !== null && <ScrubPreview at={hover} duration={duration} chapter={chapters.findLast((chapter) => chapter.start <= hover.frame)?.label ?? null} />}
         {/* The open comments: a dot each over the bar; hovered, its words; clicked, its moment and its card. */}
         {duration > 0 &&
@@ -790,7 +782,7 @@ function ScrubBar({ frame, duration, thin = false, marks = [] }: { frame: number
                 event.stopPropagation();
                 openComment(mark.id);
               }}
-              className="group/mark absolute bottom-full mb-1.5 -translate-x-1/2"
+              className="group/mark absolute bottom-full z-[3] mb-1.5 -translate-x-1/2"
               style={{ left: `${Math.min(1, Math.max(0, mark.frame / duration)) * 100}%` }}
             >
               <span className="block size-[9px] rounded-full rounded-bl-none bg-white shadow-[0_1px_4px_#000a] ring-1 ring-black/40 transition-transform duration-150 group-hover/mark:scale-125" />
@@ -880,7 +872,7 @@ function ScrubPreview({ at, duration, chapter }: { at: { x: number; width: numbe
   const height = Math.round((width * project.settings.height) / project.settings.width);
   const left = Math.min(at.width - width / 2, Math.max(width / 2, at.x));
   return (
-    <div className="pointer-events-none absolute bottom-full mb-3 -translate-x-1/2" style={{ left }}>
+    <div className="pointer-events-none absolute bottom-full z-[4] mb-3 -translate-x-1/2" style={{ left }}>
       <div className="overflow-hidden rounded-lg bg-black shadow-[0_8px_28px_#000c] ring-1 ring-white/25" style={{ width, height }}>
         {typeof shown === "string" && <img src={shown} alt="" className="size-full object-cover" draggable={false} />}
         {shown !== null && typeof shown === "object" && (
