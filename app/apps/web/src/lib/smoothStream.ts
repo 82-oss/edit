@@ -47,6 +47,19 @@ export function soundSync(drift: number): { seek: boolean; rate: number } {
   return { seek: false, rate: drift < 0 ? 1.06 : 0.94 };
 }
 
+/** What a sound element needs to start at `time` (s) with the picture: moved there, waited for (still loading), or nothing. */
+export function soundAt(sound: Pick<HTMLMediaElement, "seeking" | "readyState" | "currentTime" | "buffered" | "duration">, time: number): "ready" | "move" | "wait" {
+  if (sound.seeking) return "wait";
+  if (Math.abs(sound.currentTime - time) > DRIFT / 2) return "move";
+  // HAVE_FUTURE_DATA: enough to play on from here.
+  if (sound.readyState < 3) return "wait";
+  const until = Math.min(time + 0.5, sound.duration - 0.01);
+  for (let index = 0; index < sound.buffered.length; index++) {
+    if (sound.buffered.start(index) <= time + 0.01 && sound.buffered.end(index) >= until) return "ready";
+  }
+  return "wait";
+}
+
 /**
  * How far into a chunk's own time its first picture sits (s), from where an
  * append at `at` landed in `ranges`. An encoder that reorders frames (a Mac's:
@@ -159,6 +172,24 @@ export class SmoothStream {
     }
     if (playing && this.sound.paused) void this.sound.play().catch(() => {});
     if (!playing && !this.sound.paused) this.sound.pause();
+  }
+
+  /**
+   * Whether the sound is ready to start with the picture at `time` (s): its
+   * element there exactly and enough of it in to play. Moves it there when it
+   * isn't. A render with no sound (or one still mixing) has none to wait for.
+   * Nov 13 (Sphe): after a jump far along a loaded render, Play started the
+   * picture at once while the sound was still fetching its new place; it came
+   * in late, a second behind, was moved again, and the words there were
+   * never heard (the gray bar is the picture's alone).
+   */
+  soundReady(time: number): boolean {
+    const url = this.info?.soundUrl ?? null;
+    if (url === null) return true;
+    if (url !== this.soundSource) this.follow(time, false);
+    const said = soundAt(this.sound, time);
+    if (said === "move") this.sound.currentTime = time;
+    return said === "ready";
   }
 
   /** The playhead moved: what's near it is fetched first. */

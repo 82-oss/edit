@@ -93,6 +93,8 @@ const SETTLE_MS = 300;
  * smooth"); a made chunk lands in a fraction of a second.
  */
 const SMOOTH_WAIT_MS = 6000;
+/** How long Play waits for the render's sound at the playhead once its picture is in (ms). */
+const SOUND_WAIT_MS = 3000;
 /** Seeks closer together than this are one drag. */
 const DRAG_GAP_MS = 150;
 /** Source seconds a decoded picture may be from the wanted one and still stand in mid-drag. */
@@ -1302,6 +1304,11 @@ class Preview {
     const rendered = this.smooth !== null && this.video !== null && (this.smoothAt(playhead.frame, second) || coming);
     if (this.error !== null && !(rendered && this.decodingError())) return;
     if (this.smooth && this.video && this.smoothAt(playhead.frame, second)) {
+      // The picture's in, its sound not yet at this place (a jump): both start together once it is.
+      if (this.stream !== null && !this.stream.soundReady(playhead.frame / rate(this.project.settings))) {
+        this.awaitSmooth(this.video);
+        return;
+      }
       recordTiming("preview: play (smooth)", 0);
       this.playSmooth(this.video);
       return;
@@ -1331,7 +1338,9 @@ class Preview {
     const wait = () => {
       this.loop = 0;
       if (!playhead.playing) return;
-      if (this.smooth !== null && this.smoothAt(playhead.frame, second)) {
+      // Its sound waited for too, but not for long: past `SOUND_WAIT_MS` the picture plays and the sound joins it.
+      const heard = this.stream === null || this.stream.soundReady(playhead.frame / rate(this.project!.settings)) || performance.now() - began > SOUND_WAIT_MS;
+      if (this.smooth !== null && this.smoothAt(playhead.frame, second) && heard) {
         recordTiming("preview: waited for the render", performance.now() - began);
         playhead.playing = false;
         this.setBuffering(false);
