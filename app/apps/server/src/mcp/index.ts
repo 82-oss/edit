@@ -9,6 +9,8 @@ import { agentCalls } from "../store.ts";
 import * as reviewGuard from "../review_guard.ts";
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
+import { CHAT_PICTURES, extensionOf, keepPicture } from "../chat_pictures.ts";
+import { join } from "../paths.ts";
 import { isBug, crashed } from "../guard.ts";
 import { empty, json, text as plain } from "../http/errors.ts";
 import { readJson, type RouteContext } from "../http/router.ts";
@@ -138,13 +140,30 @@ export async function call(
   const asAgent = async (): Promise<Content[]> => {
     const state = { active: true, tool: name };
     try {
-      return await agentCalls.run(state, () => registered.handler({ app, args, projectId, scope }));
+      return withPictureFiles(join(app.store.uploadsDir(projectId), CHAT_PICTURES), await agentCalls.run(state, () => registered.handler({ app, args, projectId, scope })));
     } finally {
       state.active = false;
     }
   };
   if (!LONG.has(name)) return asAgent();
   return once(`${projectId}|${name}|${stableStringify({ ...args, project_id: null })}`, name, asAgent);
+}
+
+/**
+ * Each picture a tool shows the agent, kept as a file and named under it, so
+ * the agent can show it to the person in its answer (chat_pictures.ts).
+ */
+function withPictureFiles(folder: string, content: Content[]): Content[] {
+  if (!content.some((one) => one.type === "image")) return content;
+  return content.flatMap((one): Content[] => {
+    if (one.type !== "image") return [one];
+    try {
+      return [one, { type: "text", text: `(file: ${keepPicture(folder, Buffer.from(one.data, "base64"), extensionOf(one.mimeType))})` }];
+    } catch (error) {
+      diag.warn("agent", `a picture for the chat: ${diag.messageOf(error)}`);
+      return [one];
+    }
+  });
 }
 
 /**

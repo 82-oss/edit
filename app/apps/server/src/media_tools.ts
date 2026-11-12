@@ -7,8 +7,10 @@
 import type { App } from "./app.ts";
 import * as broll from "./broll.ts";
 import { readAttached, type Attached } from "./chat_attachments.ts";
+import { CHAT_PICTURES, keptPicture } from "./chat_pictures.ts";
 import { subKey } from "./agent.ts";
 import * as diag from "./diag.ts";
+import { join } from "./paths.ts";
 import * as drive from "./drive.ts";
 import * as editNotes from "./edit_notes.ts";
 import { cachedTranscripts } from "./edit_tools.ts";
@@ -610,6 +612,14 @@ async function mapFrameRoute(context: RouteContext<App>): Promise<Response> {
   return new Response(null, { status: broll.mapFrame(context.params.token ?? "", index, bytes) });
 }
 
+/** A picture in Edit's chat (chat_pictures.ts): kept by content, so it never changes. */
+function chatPictureRoute({ app, params }: RouteContext<App>): Response {
+  const id = params.id ?? "";
+  const file = /^[\w-]+$/.test(id) ? keptPicture(join(app.store.uploadsDir(id), CHAT_PICTURES), params.name ?? "") : null;
+  if (file === null) throw notFound("No such picture.");
+  return new Response(Bun.file(file), { headers: { "cache-control": "private, max-age=31536000, immutable" } });
+}
+
 /** The media package's routes. */
 export function routes(router: Router<App>): void {
   router.get("/api/library", libraryRoute);
@@ -624,6 +634,7 @@ export function routes(router: Router<App>): void {
   router.put("/api/models", modelChoiceRoute);
   router.get("/api/projects/{id}/agent", agentChatRoute);
   router.post("/api/projects/{id}/agent", agentSendRoute);
+  router.get("/api/projects/{id}/chat-pictures/{name}", chatPictureRoute);
   router.post("/api/projects/{id}/agent/retry-claude", agentRetryClaudeRoute);
   router.post("/api/projects/{id}/agent/stop", agentStopRoute);
   router.post("/api/projects/{id}/agent/queue/{qid}/cancel", agentQueueCancelRoute);

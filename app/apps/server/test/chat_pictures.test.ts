@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
-import { inlinePictures, pictureFile } from "../src/chat_pictures.ts";
+import { chatPictureAddress, inlinePictures, keepPicture, keptPicture, pictureFile } from "../src/chat_pictures.ts";
 
 test("an answer's pictures get addresses the page can load; one that can't be placed is named, not broken", async () => {
   const text = "Here it is:\n\n![the hallway](/tmp/run/abc123.png)\n\nand ![again](/tmp/run/abc123.png \"title\") and ![the porch](xyz) and ![gone](/nowhere/x.png)";
@@ -25,5 +25,25 @@ test("a picture file is only one inside the agent's own folders, and a picture",
   expect(pictureFile(`${root}/look.png`, ["/somewhere/else"])).toBeNull();
   expect(pictureFile(`${root}/../${root.split("/").pop()}/look.png`, ["/somewhere/else"])).toBeNull();
   expect(pictureFile("look.png", [root])).toBeNull();
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("Edit's chat keeps a picture by its content, and shows only those, from the agent's own folders", () => {
+  const root = fs.mkdtempSync(`${os.tmpdir()}/chat-pictures-`);
+  const folder = `${root}/p1/chat-pictures`;
+  const kept = keepPicture(folder, new Uint8Array([1, 2, 3]), "png");
+  expect(kept).toMatch(/\/chat-pictures\/[0-9a-f]{16}\.png$/);
+  expect(keepPicture(folder, new Uint8Array([1, 2, 3]), "png")).toBe(kept);
+  const name = kept.split("/").pop()!;
+  expect(keptPicture(folder, name)).toBe(kept);
+  expect(keptPicture(folder, "../x.png")).toBeNull();
+  // A tool's picture is shown as it is; an exported still is kept first; one elsewhere isn't shown.
+  expect(chatPictureAddress("p1", folder, kept, [])).toBe(`/api/projects/p1/chat-pictures/${name}`);
+  fs.mkdirSync(`${root}/exports`);
+  fs.writeFileSync(`${root}/exports/Frame at 1m32.png`, "still");
+  const still = chatPictureAddress("p1", folder, `${root}/exports/Frame at 1m32.png`, [`${root}/exports`])!;
+  expect(still).toMatch(/^\/api\/projects\/p1\/chat-pictures\/[0-9a-f]{16}\.png$/);
+  expect(keptPicture(folder, still.split("/").pop()!)).not.toBeNull();
+  expect(chatPictureAddress("p1", folder, `${root}/exports/Frame at 1m32.png`, [])).toBeNull();
   fs.rmSync(root, { recursive: true, force: true });
 });

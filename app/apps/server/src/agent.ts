@@ -13,9 +13,12 @@
 
 import * as localPreviews from "./local_previews.ts";
 import * as fs from "node:fs";
+import * as os from "node:os";
 
 import { attachedText, pictures as attachedPictures, savedAttached, type Attached, type Picture } from "./chat_attachments.ts";
+import { CHAT_PICTURES, chatPictureAddress, inlinePictures } from "./chat_pictures.ts";
 import * as claude from "./claude.ts";
+import { readExportFolder } from "./export_folder.ts";
 import { ClaudeSupport, type SupportAction, type SupportStatus } from "./claude_support.ts";
 import * as diag from "./diag.ts";
 import * as jobs from "./jobs.ts";
@@ -748,6 +751,27 @@ export class Agents implements seams.AgentPanel {
     this.emit(project, { event: "entry", entry: entryJson(saved) });
   }
 
+  /**
+   * The pictures in a finished answer made addresses the page loads
+   * (chat_pictures.ts): a file a tool showed, an exported still, one the
+   * agent made; one it can't place is shown named.
+   */
+  private async showPictures(project: string, id: string): Promise<void> {
+    const found = this.withChat(project).entries.find((item) => item.id === id);
+    if (found === undefined) return;
+    const folder = join(this.store.uploadsDir(project), CHAT_PICTURES);
+    const roots = [this.store.uploadsDir(project), this.store.cacheDir(), readExportFolder(this.store.home).path, os.tmpdir()];
+    try {
+      const text = await inlinePictures(found.text, async (source) => chatPictureAddress(project, folder, source, roots));
+      const now = this.withChat(project).entries.find((item) => item.id === id);
+      if (now === undefined || text === now.text) return;
+      this.upsert(project, { ...now, text });
+      this.save(project);
+    } catch (error) {
+      diag.warn("agent", `${project}: the pictures in an answer: ${diag.messageOf(error)}`);
+    }
+  }
+
   /** Sends a message, starting or resuming the project's conversation. */
   /** `context`: what the agent reads after the message but the chat doesn't show (where the playhead is and what's under it). */
   /** `attached`: files the person attached, already in the project (chat_attachments.ts). */
@@ -1272,6 +1296,7 @@ export class Agents implements seams.AgentPanel {
               const found = chat.entries.find((item) => item.id === block.id);
               if (found !== undefined) this.upsert(project, { ...found });
               this.save(project);
+              if (found?.text.includes("![") === true) void this.showPictures(project, found.id);
             }
             break;
           }
@@ -1883,6 +1908,9 @@ class ClaudeTurn {
 }
 
 /** The developer instructions every turn carries: who the agent is, how to work fast, the house style, every tool on one line. */
+/** The chat shows pictures (chat_pictures.ts). */
+const PICTURES = "Your reply is Markdown and shows pictures: ![what it is](its file), such as a picture a tool showed you (its file is named under it) or an exported still.";
+
 export function agentInstructions(project: Pick<Project, "name" | "style" | "settings" | "hq">): string {
   if (project.hq === true) return hqInstructions(project);
   const { settings } = project;
@@ -1897,7 +1925,7 @@ export function agentInstructions(project: Pick<Project, "name" | "style" | "set
     "Independent tool calls (lookups, renders) can go in one step, side by side. " +
     waiting +
     "When the user asks you to start the edit or the editing workflow (in whatever words), load the edit-workflow skill and do the whole edit in that one turn, stage after stage, without stopping to ask; anything else in their message steers it. When asked to resume, recover or finish a partially edited/imported project, load resume-edit first and preserve completed work. For other requests, load the skill for the part you're working on (see SKILLS). " +
-    `Keep replies short: say what you changed and where (timecodes).\n\n${INSTRUCTIONS}\n\n${seams.styles.instructions(project.style)}\n\n${tools}:\n${toolReference(toolsFor(false))}`
+    `Keep replies short: say what you changed and where (timecodes). ${PICTURES}\n\n${INSTRUCTIONS}\n\n${seams.styles.instructions(project.style)}\n\n${tools}:\n${toolReference(toolsFor(false))}`
 
   );
 }
@@ -1920,7 +1948,7 @@ function hqInstructions(project: Pick<Project, "name" | "settings">): string {
   return (
     `You are the agent built into Edit, a video editor, making "${project.name}" (${settings.width}x${settings.height} at ${rateText(settings)} fps) with the person watching: what you change appears in their viewer at once. ` +
     "You work through the `edit` tools and write code with your file tools (Read, Write, Edit, Glob, Grep), which work only in your working directory, the project's effects folder; you have no shell. " +
-    "Each tool call is a wait for them: do independent calls side by side. Reply in a line or two: what you made or changed, and where.\n\n" +
+    `Each tool call is a wait for them: do independent calls side by side. Reply in a line or two: what you made or changed, and where. ${PICTURES}\n\n` +
     `${HQ_NOTES}${memory}${skills}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
   );
 }
