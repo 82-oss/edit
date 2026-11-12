@@ -102,6 +102,7 @@ export function failure(code: string, answer: Uint8Array | string, feature: stri
  * token lasts.
  */
 export async function forwardTiles(request: Request, from: URL): Promise<Response> {
+  if (from.pathname === ROOT) return sharedRoot(request, from);
   let answer: Response;
   try {
     answer = await fetch(`${url()}${from.pathname}${from.search}`, {
@@ -119,7 +120,59 @@ export async function forwardTiles(request: Request, from: URL): Promise<Respons
   // The map page asks from its own address (checked by `mapSibling`).
   const origin = request.headers.get("origin");
   if (origin !== null) headers.set("access-control-allow-origin", origin);
+  // Refused under the shared session (Google ended it early): the next map opens a new one.
+  if (shared !== null && (answer.status === 400 || answer.status === 401 || answer.status === 403 || answer.status === 410) && from.searchParams.get("session") === shared.session) shared = null;
   return new Response(answer.body, { status: answer.status, headers });
+}
+
+/**
+ * One map session shared by every map this Edit opens (Sphe, Nov 12). Google
+ * bills a root tileset request, which starts a session good for three hours
+ * of tile requests at no further cost (Map Tiles API, usage and billing); each
+ * map page asking for its own root (each look, each render Chrome, each time
+ * the viewer loads a page, V1's renders and their restarts) was a paid session
+ * every time. The root's answer is held in memory, never on disk, and handed
+ * to every map for two hours, so any map opened on it still has an hour of
+ * its session left; then the next map starts a new one. No tile is kept: each
+ * still comes from Google.
+ */
+const ROOT = "/v1/3dtiles/root.json";
+export const SHARED_SESSION_MS = 2 * 60 * 60_000;
+let shared: { body: Uint8Array; type: string; session: string | null; at: number } | null = null;
+let asking: Promise<{ status: number; type: string; body: Uint8Array }> | null = null;
+
+async function sharedRoot(request: Request, from: URL): Promise<Response> {
+  const answer = (status: number, type: string, body: Uint8Array) => {
+    const headers = new Headers({ "content-type": type, "cache-control": "no-store" });
+    const origin = request.headers.get("origin");
+    if (origin !== null) headers.set("access-control-allow-origin", origin);
+    return new Response(body, { status, headers });
+  };
+  if (shared !== null && Date.now() - shared.at < SHARED_SESSION_MS) return answer(200, shared.type, shared.body);
+  // Maps opening at once wait on the one ask.
+  asking ??= (async () => {
+    let got: Response;
+    try {
+      got = await fetch(`${url()}${from.pathname}${from.search}`, { headers: { ...authHeaders(), accept: "application/json" }, signal: AbortSignal.timeout(60_000) });
+    } catch (error) {
+      return { status: 502, type: "application/json", body: new TextEncoder().encode(JSON.stringify({ error: `${UNREACHABLE}: ${messageOf(error)}` })) };
+    }
+    const body = new Uint8Array(await got.arrayBuffer());
+    const type = got.headers.get("content-type") ?? "application/json";
+    // A refusal (today's maps used up, signed out) is passed on as it is, and asked again next time.
+    if (got.status === 200) {
+      const session = /[?&]session=([^&"\\]+)/.exec(new TextDecoder().decode(body))?.[1] ?? null;
+      shared = { body, type, session, at: Date.now() };
+    }
+    return { status: got.status, type, body };
+  })().finally(() => (asking = null));
+  const got = await asking;
+  return answer(got.status, got.type, got.body);
+}
+
+/** Forgets the shared map session (tests). */
+export function forgetMapSession(): void {
+  shared = null;
 }
 
 /**

@@ -26,6 +26,8 @@ function relayBack(): void {
   else process.env.EDIT_RELAY_URL = RELAY_BEFORE;
 }
 
+let roots = 0;
+let rootRefused = false;
 const dir = fs.mkdtempSync(join(os.tmpdir(), "edit-accounts-"));
 // The store's events as the server's: what the pages are told (an `account` event when a sign-in lands).
 const listeners = new Set<(event: Record<string, unknown>) => void>();
@@ -79,7 +81,12 @@ beforeAll(() => {
       }
       // Standing in for the relay too: the token a call carried.
       if (url.pathname === "/v1/test/bearer") return Response.json({ bearer: request.headers.get("authorization") });
-      // Standing in for the relay too: what a tile request carried.
+      // Standing in for the relay too: a map session's root (each a new session, as Google bills them), and what a tile request carried.
+      if (url.pathname === "/v1/3dtiles/root.json") {
+        roots += 1;
+        if (rootRefused) return Response.json({ error: "Today's maps are used up." }, { status: 429 });
+        return Response.json({ root: { children: [{ content: { uri: `/v1/3dtiles/datasets/x/files/y.glb?session=s${roots}` } }] } });
+      }
       if (url.pathname.startsWith("/v1/3dtiles/")) return Response.json({ bearer: request.headers.get("authorization"), query: url.search }, { headers: { "cache-control": "max-age=60" } });
       if (url.pathname !== "/app/token") return new Response("not found", { status: 404 });
       if (body.client_id !== "edit") return Response.json({ error: "invalid_client" }, { status: 400 });
@@ -230,6 +237,48 @@ test("the map page's tiles go through Edit's server to the relay with the person
     expect(answer.headers.get("cache-control")).toBe("max-age=60");
     expect(await answer.json()).toEqual({ bearer: `Bearer ${accounts.accessToken()}`, query: "?session=s1" });
   } finally {
+    relayBack();
+  }
+});
+
+test("every map shares one session for two hours: one root asked of the relay (one paid session), however many maps open", async () => {
+  // Sphe, Nov 12: a root starts a session good for three hours of tiles; each map page asking its own was a paid one each time.
+  fs.writeFileSync(join(dir, "keychain.json"), JSON.stringify({}));
+  const authorize = new URL(accounts.begin(app));
+  challenges.set("code-5", authorize.searchParams.get("code_challenge")!);
+  await accounts.finish(app, new URLSearchParams({ code: "code-5", state: authorize.searchParams.get("state")! }));
+  process.env.EDIT_RELAY_URL = process.env.EDIT_ACCOUNTS_URL;
+  relay.forgetMapSession();
+  const real = Date.now;
+  let now = real();
+  Date.now = () => now;
+  try {
+    const root = new URL("http://127.0.0.1:7799/v1/3dtiles/root.json?key=relay");
+    const ask = () => relay.forwardTiles(new Request(root.toString(), { headers: { origin: "null" } }), root);
+    roots = 0;
+    // A refusal is passed on and not kept.
+    rootRefused = true;
+    const refused = await ask();
+    expect(refused.status).toBe(429);
+    expect(roots).toBe(1);
+    rootRefused = false;
+    // Five maps at once, then more within the two hours: one root, the same session for each.
+    const first = await Promise.all([1, 2, 3, 4, 5].map(() => ask()));
+    expect(roots).toBe(2);
+    const said = await Promise.all(first.map((answer) => answer.text()));
+    expect(new Set(said).size).toBe(1);
+    expect(said[0]).toContain("session=s2");
+    expect(first[0]!.headers.get("access-control-allow-origin")).toBe("null");
+    now += relay.SHARED_SESSION_MS - 60_000;
+    expect(await (await ask()).text()).toContain("session=s2");
+    expect(roots).toBe(2);
+    // Past two hours, the next map opens a new one (an hour of it left at least for any map opened on the old).
+    now += 120_000;
+    expect(await (await ask()).text()).toContain("session=s3");
+    expect(roots).toBe(3);
+  } finally {
+    Date.now = real;
+    relay.forgetMapSession();
     relayBack();
   }
 });

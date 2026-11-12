@@ -82,7 +82,7 @@ export const timing = {
   /**
    * A map page with nothing new for this long has stalled and is stopped (its
    * frames are kept). Slow isn't stalled: each restart costs a minute of
-   * loading and a paid map session from the day's allowance.
+   * loading (its map session is the shared one: relay.ts `sharedRoot`).
    */
   mapStallMs: 150_000,
   /** How often a map render is looked at for progress. */
