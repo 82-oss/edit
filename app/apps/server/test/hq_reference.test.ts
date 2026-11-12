@@ -53,6 +53,11 @@ test("a closing list of where it differs from the reference is sent back too", (
   expect(DIFFERS.test("All done: the board, the map and the call are in.")).toBe(false);
 });
 
+test("a page tried and never placed in the edit isn't held to the reference", () => {
+  const tried = tool("Write", { file_path: "/home/x/.edit/media/p1/effects/map-test/scene.html", content: "…" });
+  expect(referenceCheck([asked, studied, tried, said("assistant", "Done.")], project)).toBeNull();
+});
+
 test("no reference studied (footage of the edit only), or no graphic changed: nothing to hold it to", () => {
   const ownFootage = tool("look_at_media", { media_id: "m1", times: [3] });
   expect(referenceCheck([asked, ownFootage, wrote, said("assistant", "Done.")], project)).toBeNull();

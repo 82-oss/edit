@@ -154,7 +154,10 @@ export function referenceCheck(entries: readonly Entry[], project: Project): { n
   if (changed.size === 0) return null;
   const open: string[] = [];
   for (const [name, last] of changed) {
-    const length = project.media.find((one) => one.effect === name)?.duration ?? null;
+    // Only what's in the edit: a page the agent tried something on and never placed (a "map-test") is no graphic of the video.
+    const media = project.media.find((one) => one.effect === name);
+    if (media === undefined || !inEdit.has(media.id)) continue;
+    const length = media.duration ?? null;
     const spans: [number, number][] = [];
     entries.slice(last + 1).forEach((entry) => {
       if (entry.kind !== "tool" || entry.tool !== "look_at_effect" || entry.status === "failed") return;
