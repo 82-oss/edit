@@ -121,10 +121,8 @@ test("a Bodycam HQ project's turn runs in its effects folder with the file tools
     const { options } = asked[0]!;
     const folder = fs.realpathSync(join(home.home, "media", project, "effects"));
     expect(options.cwd).toBe(folder);
-    // And sub-agents: the graphics checker it starts to judge its work against a reference (Sphe, Nov 13).
-    expect(options.tools).toEqual(["Read", "Write", "Edit", "Glob", "Grep", "Agent"]);
-    expect(options.allowedTools).toEqual(["mcp__edit", "Agent", `Read(/${folder}/**)`, `Edit(/${folder}/**)`, `Write(/${folder}/**)`]);
-    expect(Object.keys(options.agents ?? {})).toEqual(["graphics-checker"]);
+    expect(options.tools).toEqual(["Read", "Write", "Edit", "Glob", "Grep"]);
+    expect(options.allowedTools).toEqual(["mcp__edit", `Read(/${folder}/**)`, `Edit(/${folder}/**)`, `Write(/${folder}/**)`]);
     // Still nothing asked and nothing run: a tool that isn't allowed is refused.
     expect(options.permissionMode).toBe("dontAsk");
     // It compacts near the model's whole window, not the other chats' 180k (Sphe, Nov 12).

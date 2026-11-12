@@ -11,7 +11,6 @@
 // `ask` is the one-off question other packages use (speakers.ts names voices
 // with it): no chat, no tools.
 
-import { GRAPHICS_CHECKER } from "./hq_reference.ts";
 import * as localPreviews from "./local_previews.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -1060,10 +1059,8 @@ export class Agents implements seams.AgentPanel {
       ...claude.baseOptions(binary, code ?? workspace),
       model: chat.model ?? this.turnModel(project, text),
       // No built-in tools; Edit's own run without asking, anything else is refused.
-      // Bodycam HQ's agent also starts sub-agents (Agent): the graphics checker, which judges its work against a reference.
-      tools: code === null ? [] : [...effects.FILE_TOOLS, "Agent"],
-      allowedTools: code === null ? ["mcp__edit"] : ["mcp__edit", "Agent", ...effects.fileRules(code)],
-      ...(code === null ? {} : { agents: { "graphics-checker": GRAPHICS_CHECKER } }),
+      tools: code === null ? [] : [...effects.FILE_TOOLS],
+      allowedTools: code === null ? ["mcp__edit"] : ["mcp__edit", ...effects.fileRules(code)],
       permissionMode: "dontAsk",
       mcpServers: { edit: { type: "http", url: `http://127.0.0.1:${this.port}/mcp?project=${projectOf(project)}` } },
       systemPrompt: agentInstructions(live.project),
@@ -1213,7 +1210,7 @@ export class Agents implements seams.AgentPanel {
     const chat = this.withChat(project);
     if (chat.generation !== generation) return;
     chat.heard = timing.now();
-    // A subagent's messages (Bodycam HQ's graphics checker) stay out of the chat: its card is the Agent call, its answer the call's result.
+    // A subagent's messages (none are offered, but just in case) stay out of the chat.
     if (typeof message.parent_tool_use_id === "string") return;
     switch (message.type) {
       case "system": {
@@ -1714,7 +1711,7 @@ export class Agents implements seams.AgentPanel {
   private followUp(project: string, generation: number): void {
     if (project.includes(SUB)) return;
     // Bodycam HQ is prompted by the team alone (Sphe, Nov 13: "I really do just want prompts to be from our users, unless it's
-    // a server restart"): no follow-up, no fresh-eyes pass. Its agent checks its own graphics with a sub-agent it starts.
+    // a server restart"): no follow-up, no fresh-eyes pass. Its own thoroughness is its notes' and V2's global skill's to ask for.
     if (this.isHq(project)) return;
     const before = this.followedUp.get(project);
     const mine = before !== undefined && before.generation === generation ? before : null;

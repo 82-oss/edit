@@ -1,11 +1,10 @@
-// Bodycam HQ's maps and its graphics checker (hq_reference.ts): Nov 13, its
-// maps were satellite pictures laid flat, though edit-map's 3D city was in its
-// notes, and it passed its own graphics that plainly differed from the reference.
+// Bodycam HQ's maps (hq_reference.ts): Nov 13, its maps were satellite
+// pictures laid flat, though edit-map's 3D city was in its notes.
 
 import { expect, test } from "bun:test";
 
 import type { Entry } from "../src/agent.ts";
-import { GRAPHICS_CHECKER, mapImagery, personSaid } from "../src/hq_reference.ts";
+import { mapImagery, personSaid } from "../src/hq_reference.ts";
 
 let n = 0;
 const said = (kind: string, text: string): Entry => ({ id: `e${n++}`, kind, text, at: 0, updated: 0 });
@@ -31,7 +30,3 @@ test("another kind of map is let through only on the person's own words", () => 
   expect(personSaid(entries, "the person wants a satellite map")).toBe(false);
 });
 
-test("the graphics checker only looks: it reads the brief and sees frames, and changes nothing", () => {
-  expect(GRAPHICS_CHECKER.tools).toEqual(["Read", "Glob", "Grep", "mcp__edit__look_at_effect", "mcp__edit__look_at_media"]);
-  expect(GRAPHICS_CHECKER.prompt).toContain("MATCHES");
-});

@@ -1,20 +1,11 @@
-// Bodycam HQ copying a reference (Sphe, Nov 13: "the team is able to give a
-// reference video to the agents, and the effect can be recreated almost
-// perfectly"). On the first real test it built four graphics and compared none
-// beside the reference; made to compare, it compared ten times and still
-// passed frames that were plainly different: the builder grading its own work
-// is the weak point. So it writes the reference down before building
-// (agent/hq/notes.md) and has its work judged by a checker it starts itself,
-// a sub-agent with fresh eyes and no stake in the build (`GRAPHICS_CHECKER`).
-// Edit sends nothing itself: prompts are the team's alone (Sphe: "I really do
-// just want prompts to be from our users, unless it's a server restart").
+// Bodycam HQ's maps (Sphe, Nov 13: "the 3D map should be the only route
+// unless the user states otherwise"): on the first real test of copying a
+// reference, its maps were satellite pictures laid flat and tilted, though
+// edit-map's 3D city was in its notes.
 //
-// And the map (Sphe: "the 3D map should be the only route unless the user
-// states otherwise"): pictures of a map or satellite view fetched from a map
+// Pictures of a map or satellite view fetched from a map
 // site are refused in a Bodycam HQ project, pointing at edit-map, unless the
 // agent quotes where the person asked for another kind.
-
-import type { AgentDefinition } from "@anthropic-ai/claude-agent-sdk";
 
 import type { Entry } from "./agent.ts";
 import type { App } from "./app.ts";
@@ -74,24 +65,3 @@ export function mapAllowed(app: App, projectId: string, url: string, asked: unkn
   throw new Error(typeof asked === "string" ? `${MAP_REFUSED} ("${asked}" isn't in the person's messages, word for word.)` : MAP_REFUSED);
 }
 
-/**
- * The sub-agent Bodycam HQ's agent starts (the Agent tool) to judge a graphic
- * against the reference it copies: it sees only frames and the brief the
- * builder wrote down (`<effect>/reference.md`), changes nothing, and answers
- * with every difference or "MATCHES".
- */
-export const GRAPHICS_CHECKER: AgentDefinition = {
-  description:
-    "Judges one graphic (an effect) against the reference it copies, frame by frame, with fresh eyes: give it the effect's name, the reference's media id and the reference's second that lines up with the effect's start. It changes nothing; it answers with every difference it finds, or MATCHES.",
-  prompt: [
-    "You check one coded graphic (an effect) against the reference it copies, for a YouTube video team that wants it matched frame by frame. You didn't make it and have no stake in it: your job is to find every way it differs, not to approve it. A difference you miss reaches the team.",
-    "1. Read <effect>/reference.md, the builder's list of what the reference shows. Don't trust it: it may have missed things.",
-    "2. Study the reference yourself (look_at_media on its media id, every_frame through what moves, zoom on small things: lettering, edges, glows, ghosts and trails, grain). Note every element and every motion you see.",
-    "3. Compare the graphic beside it (look_at_effect with beside {media_id, start}): every_frame through every stretch that moves (a transition, a camera move, words arriving and leaving, a waveform), stills where it holds, and zoom on every small element. Go through its whole length.",
-    "4. For each element and motion, say whether ours matches, and if not exactly what differs: the second or frame, what the reference shows, what ours shows (shape, size, position, typeface, weight, case, spacing, colour, glow, blur, opacity, timing, easing, perspective, camera). Be concrete and visual; never suggest code.",
-    "Differences of content the story needs (another place, other people's names and photos, other words said) are not differences. Everything about how it looks and moves is.",
-    "End with a list of every difference, most visible first, or with the single word MATCHES if, frame by frame and zoomed in, you can find none.",
-  ].join("\n"),
-  tools: ["Read", "Glob", "Grep", "mcp__edit__look_at_effect", "mcp__edit__look_at_media"],
-  model: "inherit",
-};
