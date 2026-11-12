@@ -854,6 +854,18 @@ async function buildingOutline(lat: number, lon: number): Promise<[number, numbe
 }
 
 /**
+ * A place for a coded effect's map (effect_map.ts): where it is, its address
+ * and its building's outline (null when Google has none), each asked of Google
+ * once and kept (`lookedUp`). "lat, lon" is taken as it is.
+ */
+export async function findPlace(app: App, place: string): Promise<{ lat: number; lon: number; address: string; outline: [number, number][] | null }> {
+  const given = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(place);
+  const [lat, lon, address] = given !== null ? [Number(given[1]), Number(given[2]), place.trim()] : (await lookedUp(app, `geocode ${place}`, () => geocode(place)))!;
+  const outline = await lookedUp(app, `outline ${display(lat)},${display(lon)}`, () => buildingOutline(lat, lon));
+  return { lat, lon, address, outline };
+}
+
+/**
  * The first building's outer ring in a destinations answer: the place
  * itself if it is a building, else the building that holds it.
  */

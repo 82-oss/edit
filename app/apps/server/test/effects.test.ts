@@ -74,9 +74,10 @@ test("an effect's page is served shut in: no origin, no network, only its own fo
     const policy = page.headers.get("content-security-policy")!;
     expect(policy).toContain("sandbox allow-scripts;");
     expect(policy).not.toContain("allow-same-origin");
-    expect(policy).toContain("connect-src 'none'");
+    // Its own folder only, on a loopback name with its siblings (a map spreads its tiles over t0…t7.localhost).
+    expect(policy).toContain(`connect-src http://127.0.0.1:7700${base} https://127.0.0.1:7700${base} http://*.localhost:7700${base};`);
     // With its scheme, both of them: WebKit matches a source without one to nothing for a page with no origin (Nov 11, Edit.app's window).
-    expect(policy).toContain(`img-src http://127.0.0.1:7700${base} https://127.0.0.1:7700${base} data: blob:`);
+    expect(policy).toContain(`img-src http://127.0.0.1:7700${base} https://127.0.0.1:7700${base} http://*.localhost:7700${base} data: blob:`);
     expect(page.headers.get("cache-control")).toBe("no-store");
     const text = await page.text();
     expect(text.startsWith('<!doctype html>\n<style>\n@font-face { font-family: "Geist"; font-weight: 400; src: url(edit-fonts/Geist-Regular.ttf); }')).toBe(true);
@@ -119,6 +120,35 @@ test("an effect's page is served shut in: no origin, no network, only its own fo
     expect((await get(app, `${base}link.txt`)).status).toBe(404);
     expect((await get(app, base.replace("/bar/", "/Bad Name/") + "scene.html")).status).toBe(404);
     expect((await get(app, base.replace(id, "nope") + "scene.html")).status).toBe(404);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a map is there in every effect as if in its folder: the helper, a place, and nothing deeper but the map's", async () => {
+  const { app, cleanup, id } = hq("effects-map");
+  try {
+    write(app, id, "aerial", { "scene.html": GOOD, "edit-map/own.txt": "the effect's own" });
+    const listed = (await (await get(app, `/api/projects/${id}/effects`)).json()) as { effects: effects.Effect[] };
+    const base = listed.effects[0]!.page.slice(0, -"scene.html".length);
+    const policy = (await get(app, `${base}scene.html`)).headers.get("content-security-policy")!;
+    const helper = await get(app, `${base}edit-map/map.js`);
+    expect(helper.status).toBe(200);
+    expect(helper.headers.get("content-type")).toContain("text/javascript");
+    expect(helper.headers.get("content-security-policy")).toBe(policy);
+    expect(helper.headers.get("access-control-allow-origin")).toBe("null");
+    const code = await helper.text();
+    expect(code).toContain("window.EditMap");
+    expect(code).not.toContain("<script>");
+    // A file of the effect's own by the name is never shadowed.
+    expect(await (await get(app, `${base}edit-map/own.txt`)).text()).toBe("the effect's own");
+    // A place needs saying.
+    const unsaid = await get(app, `${base}edit-map/place`);
+    expect(unsaid.status).toBe(400);
+    expect(((await unsaid.json()) as { error: string }).error).toContain("which place");
+    // Deeper than an effect's own three parts is the map's alone, and Cesium's files stay in its own folder.
+    expect((await get(app, `${base}img/a/b/c.png`)).status).toBe(404);
+    expect((await get(app, `${base}edit-map/cesium/..%2F..%2Fsecret`)).status).toBe(404);
   } finally {
     cleanup();
   }

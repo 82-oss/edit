@@ -59,6 +59,7 @@ import { join, sep } from "node:path";
 import type { App } from "./app.ts";
 import * as devtools from "./chrome_devtools.ts";
 import * as diag from "./diag.ts";
+import * as effectMap from "./effect_map.ts";
 import runtimeText from "./effect_runtime.html" with { type: "text" };
 import { writeAtomic } from "./files.ts";
 import { ApiError, json, notFound } from "./http/errors.ts";
@@ -299,7 +300,9 @@ function policy(own: string): string {
     `img-src ${own} data: blob:`,
     `font-src ${own} data:`,
     `media-src ${own} data: blob:`,
-    "connect-src 'none'",
+    // Its own folder only: a map's tiles and library come through Edit under it (effect_map.ts), its workers start from blobs.
+    `connect-src ${own}`,
+    `worker-src ${own} blob:`,
     "frame-src 'none'",
     "form-action 'none'",
     "base-uri 'none'",
@@ -323,7 +326,12 @@ function ownSource(request: Request, project: string, name: string): string {
   // A policy can't name an IPv6 address: the whole of Edit's own address then, which works in Chrome only (WebKit has no origin to match 'self' against).
   if (!/^[A-Za-z0-9.-]+(:\d+)?$/.test(host)) return "'self'";
   const path = `${host}${addressOf(project, name)}`;
-  return `http://${path} https://${path}`;
+  // On a loopback name, its siblings too (t0…t7.localhost on the same port): a map's hundreds of tiles come six at a
+  // time a host over HTTP/1.1, so the map helper spreads them (V1's map page does the same, http/host.ts loopbackSibling).
+  const port = /:(\d+)$/.exec(host)?.[1];
+  const loopback = /^(127\.0\.0\.1|localhost|[a-z0-9-]+\.localhost)(:\d+)?$/i.test(host) && port !== undefined;
+  const siblings = loopback ? ` http://*.localhost:${port}${addressOf(project, name)}` : "";
+  return `http://${path} https://${path}${siblings}`;
 }
 
 /** The page with Edit's runtime and faces ahead of its own code. */
@@ -333,7 +341,7 @@ function withRuntime(page: string, more = ""): string {
   return doctype === null ? `${ahead}${page}` : `${doctype[0]}\n${ahead}${page.slice(doctype[0].length)}`;
 }
 
-function file(context: RouteContext<App>): Response {
+async function file(context: RouteContext<App>): Promise<Response> {
   const { app, params, request } = context;
   const project = params.id!;
   if (params.key !== KEY) throw notFound("no such effect");
@@ -346,9 +354,17 @@ function file(context: RouteContext<App>): Response {
   } catch {
     throw notFound("no such effect");
   }
-  const parts = [params.a, params.b, params.c].filter((part): part is string => part !== undefined);
+  const parts = PARTS.map((part) => params[part]).filter((part): part is string => part !== undefined);
   if (parts.some((part) => part === "" || part === "." || part === ".." || /[/\\\0]/.test(part))) throw notFound("no such file");
   const headers = { "content-security-policy": policy(ownSource(request, project, params.name!)), "cache-control": "no-store" };
+  // The map (effect_map.ts), as if it were in the folder (a file of the effect's own by that name is never shadowed).
+  const map = parts[0] === "edit-map" && !fs.existsSync(join(dir, ...parts)) ? await effectMap.serve(app, request, parts) : null;
+  if (map !== null) {
+    for (const [name, value] of Object.entries(headers)) if (name !== "cache-control" || !map.headers.has(name)) map.headers.set(name, value);
+    map.headers.set("access-control-allow-origin", "null");
+    return map;
+  }
+  if (parts.length > 3 && parts[0] !== "edit-map") throw notFound("no such file");
   // One of Edit's faces, as if it were in the folder (a file of the effect's own by that name is never shadowed: its folder wins).
   const face = parts.length === 2 && parts[0] === "edit-fonts" && !fs.existsSync(join(dir, ...parts)) ? FONTS.find((font) => font.file === parts[1]) : undefined;
   if (face !== undefined) {
@@ -392,6 +408,9 @@ function file(context: RouteContext<App>): Response {
   return response;
 }
 
+/** A file's path parts as route params: three for an effect's own files, up to eight under the map's `edit-map/`. */
+const PARTS = ["a", "b", "c", "d", "e", "f", "g", "h"] as const;
+
 export function routes(router: Router<App>): void {
   router
     .get("/api/projects/{id}/effects", ({ app, params }: RouteContext<App>) => {
@@ -407,6 +426,8 @@ export function routes(router: Router<App>): void {
     .get("/api/effects/{key}/{id}/{name}/{a}", file)
     .get("/api/effects/{key}/{id}/{name}/{a}/{b}", file)
     .get("/api/effects/{key}/{id}/{name}/{a}/{b}/{c}", file);
+  // Deeper paths are the map's alone (its library's folders and the tiles': effect_map.ts).
+  for (let depth = 4; depth <= PARTS.length; depth++) router.get(`/api/effects/{key}/{id}/{name}/${PARTS.slice(0, depth).map((part) => `{${part}}`).join("/")}`, file);
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,6 +1075,9 @@ async function draw(app: App, render: Render): Promise<void> {
       // Nothing behind the page: what it leaves unpainted is see-through.
       await Promise.all(opened.map((page) => page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } })));
       const loaded = await Promise.all(opened.map((page, at) => load(page, `${url}${key}-${at}`, `${key}-${at}`, name)));
+      // A page whose window.ready failed (a map whose place wasn't found) says so, not what breaks after it.
+      const rejected = (await Promise.all(opened.map((page) => page.evaluate<string | null>("window.__edit.errors.find((error) => error.startsWith('window.ready was rejected')) ?? null")))).find((error) => error !== null);
+      if (rejected !== undefined && rejected !== null) throw new Error(`its ${rejected}`);
       const duration = loaded[0]!.duration;
       if (!(duration > 0)) throw new Error("its page has no window.duration");
       if (!loaded[0]!.seek) throw new Error("its page has no window.seek(t)");
@@ -1070,7 +1094,8 @@ async function draw(app: App, render: Render): Promise<void> {
             // The code changed while it rendered: these frames are an older version's.
             if (index % 60 === 0 && sourceKey(filesIn(folder(app.store, project, name)), frame, fontsUsed(app.store, project, folder(app.store, project, name))) !== key) throw new Outdated();
             const time = index / frame.fps;
-            const drawn = await page.evaluate<{ error?: string }>(`window.__edit.seek(${time})`, 15_000);
+            // A map's frame waits for its tiles while they keep coming (effect_map.html), the first ones longest.
+            const drawn = await page.evaluate<{ error?: string }>(`window.__edit.seek(${time})`, 60_000);
             if (drawn.error !== undefined) throw new Error(`its page threw at ${time.toFixed(2)} s: ${drawn.error.split("\n")[0]}`);
             const shot = await page.call("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, clip: { x: 0, y: 0, width: frame.width, height: frame.height, scale: 1 } }, 60_000);
             if (typeof shot.data !== "string") throw new Error(`Chrome drew nothing at ${time.toFixed(2)} s`);

@@ -933,6 +933,8 @@ export interface BrollSeam {
   /** The server's own address as a page in that Chrome reaches it ("127.0.0.1:7700"). */
   pageHost(app: App): string;
   isMapStandIn(path: string): boolean;
+  /** A place for a coded effect's map: where it is, its address and its building's outline. */
+  findPlace(app: App, place: string): Promise<{ lat: number; lon: number; address: string; outline: [number, number][] | null }>;
   mapView(app: App, projectId: string, args: Json): Promise<Json>;
   mediaTranscript(app: App, media: Media, from: number, to: number, words: boolean): Promise<string>;
   smoothInBackground(app: App, projectId: string, clipIds: string[]): string[];

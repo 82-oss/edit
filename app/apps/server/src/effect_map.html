@@ -1,0 +1,292 @@
+<script>
+// Edit's map for a coded effect, served as `edit-map/map.js` in the effect's
+// own folder (effect_map.ts). Google's Photorealistic 3D Tiles in CesiumJS,
+// the camera the effect's to aim in seek(t):
+//
+//   const map = await EditMap.open({ tone: "dark" });          // fills the page, under everything else on it
+//   const place = await map.find("Tarrytown Police Department");  // { lat, lon, address, ground, roof, outline }
+//   window.seek = (t) => {
+//     map.look(place, { heading: 20 - t * 3, tilt: 40, range: 350 - t * 10 });   // or map.fly({ lon, lat, height, heading, tilt, roll })
+//     const at = map.screen(place.lon, place.lat, place.roof);   // where a point is on the page, to pin anything to it
+//     …
+//     return map.draw();
+//   };
+//
+// In the viewer the map plays live and sharpens as its tiles come in; in
+// Edit's own Chrome (the agent's stills, the render) draw() waits for every
+// tile the frame needs, as V1's map render did.
+(() => {
+  const here = new URL(location.href);
+  const base = new URL("edit-map/", here);
+  // Edit's own Chrome opens the page by itself; the viewer frames it.
+  const driven = window.parent === window;
+  const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+  // The tiles' links are paths on the relay (/v1/3dtiles/…): brought under the
+  // folder, where Edit passes them on with its sign-in. On a loopback name in
+  // Chrome they're spread over t0…t7.localhost, the same tile always from the
+  // same one: six at a time a host, a map's hundreds took minutes (V1, Oct 28).
+  const spread = /Chrome\//.test(navigator.userAgent) && /^(127\.0\.0\.1|localhost|[a-z0-9-]+\.localhost)$/i.test(here.hostname) && here.port !== "";
+  const TILES = `${base.pathname}v1/3dtiles/`;
+  const tile = (href) => {
+    let url;
+    try {
+      url = new URL(String(href), here);
+    } catch {
+      return href;
+    }
+    if (url.port !== here.port) return href;
+    let path = url.pathname;
+    if (path.startsWith("/v1/3dtiles/")) path = TILES + path.slice("/v1/3dtiles/".length);
+    else if (!path.startsWith(TILES)) return href;
+    if (!spread) return `${here.protocol}//${here.host}${path}${url.search}`;
+    let hash = 0;
+    for (let i = 0; i < path.length; i++) hash = (hash * 31 + path.charCodeAt(i)) | 0;
+    return `http://t${Math.abs(hash) % 8}.localhost:${here.port}${path}${url.search}`;
+  };
+  const open = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    return open.call(this, method, tile(url), ...rest);
+  };
+  const fetched = window.fetch.bind(window);
+  window.fetch = (input, init) => (typeof input === "string" || input instanceof URL ? fetched(tile(input), init) : fetched(input, init));
+
+  // The page has no origin, so every picture is another's to it: one Cesium loads as a plain <img> (its sky's, its
+  // sun's) taints WebGL and stops the drawing. Asked for openly instead (Edit says a page of no origin may read them).
+  const Picture = window.Image;
+  window.Image = function Image(width, height) {
+    const image = new Picture(width, height);
+    image.crossOrigin = "anonymous";
+    return image;
+  };
+  window.Image.prototype = Picture.prototype;
+
+  window.CESIUM_BASE_URL = new URL("cesium/", base).href;
+  let loading = null;
+  const library = () =>
+    (loading ??= new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = new URL("cesium/Cesium.js", base).href;
+      script.onload = () => resolve(window.Cesium);
+      script.onerror = () => reject(new Error("the map library didn't load (Edit fetches it once from jsDelivr)"));
+      document.head.appendChild(script);
+    }));
+
+  // V1's map grades (map_page.html), on the GPU as the scene's last stage:
+  // natural is a stop down, dark greyer and darker, night dark blue; none is Google's picture as it is.
+  const TONES = { none: null, natural: [0, [1, 1, 1], 1], dark: [0.65, [0.85, 0.92, 1.0], 0.72], night: [0.75, [0.55, 0.78, 1.0], 0.55] };
+  const grade = (Cesium, scene, tone) => {
+    const look = TONES[tone];
+    if (look === undefined) throw new Error(`tone is ${Object.keys(TONES).join(", ")}`);
+    if (look === null) return;
+    const [grey, tint, dim] = look;
+    const f = (x) => x.toFixed(4);
+    scene.postProcessStages.add(
+      new Cesium.PostProcessStage({
+        fragmentShader: `
+          uniform sampler2D colorTexture;
+          in vec2 v_textureCoordinates;
+          vec3 toLinear(vec3 s) { return mix(s / 12.92, pow((s + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), s)); }
+          vec3 toSrgb(vec3 l) { return mix(l * 12.92, 1.055 * pow(l, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), l)); }
+          void main() {
+            vec4 c = texture(colorTexture, v_textureCoordinates);
+            vec3 v = toSrgb(toLinear(clamp(c.rgb, 0.0, 1.0)) * 0.5);
+            float luma = dot(v, vec3(0.2126, 0.7152, 0.0722));
+            v = (v + (luma - v) * ${f(grey)}) * vec3(${tint.map(f).join(", ")}) * ${f(dim)};
+            out_FragColor = vec4(v, c.a);
+          }`,
+      }),
+    );
+  };
+
+  async function openMap(options = {}) {
+    const Cesium = await library();
+    const holder =
+      options.container ??
+      (() => {
+        const div = document.createElement("div");
+        div.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;overflow:hidden";
+        document.body.prepend(div);
+        return div;
+      })();
+    // Cesium's own sizing (its widgets.css): the canvas fills the map's box.
+    const style = document.createElement("style");
+    style.textContent = ".cesium-widget, .cesium-widget canvas { width: 100%; height: 100%; display: block; }";
+    document.head.appendChild(style);
+    const credits = document.createElement("div");
+    credits.style.display = "none";
+    document.body.appendChild(credits);
+    Cesium.GoogleMaps.mapTilesApiEndpoint = new Cesium.Resource({ url: base.href });
+    Cesium.GoogleMaps.defaultApiKey = "relay";
+    // Its credit's logo is on Cesium's site, which the page can't reach: the words instead.
+    Cesium.GoogleMaps.getDefaultCredit = () => new Cesium.Credit("Google", true);
+    Cesium.RequestScheduler.maximumRequests = 64;
+    Cesium.RequestScheduler.maximumRequestsPerServer = 48;
+    const widget = new Cesium.CesiumWidget(holder, {
+      globe: false,
+      baseLayer: false,
+      useDefaultRenderLoop: false,
+      creditContainer: credits,
+      // What breaks a frame goes to the effect's runtime (it reports it), not into a panel over the picture.
+      showRenderLoopErrors: false,
+      contextOptions: { webgl: { preserveDrawingBuffer: true } },
+    });
+    const scene = widget.scene;
+    const camera = scene.camera;
+    scene.backgroundColor = Cesium.Color.BLACK;
+    scene.rethrowRenderErrors = true;
+    scene.postProcessStages.fxaa.enabled = true;
+    scene.screenSpaceCameraController.enableInputs = false;
+    scene.screenSpaceCameraController.enableCollisionDetection = false;
+    // Live it's drawn smaller than the frame (the viewer shows it smaller still); Edit's Chrome draws it whole.
+    const preview = 0.75;
+    widget.resolutionScale = driven ? 1 : preview;
+    grade(Cesium, scene, options.tone ?? "natural");
+    const tileset = await Cesium.createGooglePhotorealistic3DTileset(
+      { onlyUsingWithGoogleGeocoder: true },
+      { maximumScreenSpaceError: driven ? 4 : 8, enableCollision: false, showCreditsOnScreen: true },
+    );
+    // The camera moves every frame: every tile a view needs is asked for at once.
+    tileset.foveatedScreenSpaceError = false;
+    tileset.cullRequestsWhileMoving = false;
+    scene.primitives.add(tileset);
+
+    // One moment of the day, so nothing in the picture follows the clock.
+    const NOON = Cesium.JulianDate.fromIso8601("2026-06-21T12:00:00Z");
+    const render = () => {
+      widget.resize();
+      scene.initializeFrame();
+      scene.render(NOON);
+    };
+
+    // Draws Google's work out while a promise of its is pending (a height asked of the tiles needs the scene drawing).
+    const pump = async (promise, ms) => {
+      let settled = false;
+      promise.then(() => (settled = true), () => (settled = true));
+      const end = Date.now() + ms;
+      while (!settled && Date.now() < end) {
+        render();
+        await sleep(30);
+      }
+      if (!settled) throw new Error("the map's tiles didn't come in time");
+      return promise;
+    };
+    const heights = async (points) => {
+      const found = await pump(scene.sampleHeightMostDetailed(points.map(([lon, lat]) => Cesium.Cartographic.fromDegrees(lon, lat))), 15000);
+      return found.map((c) => (c && Number.isFinite(c.height) ? c.height : null));
+    };
+
+    const places = new Map();
+    /** A place by address, name or "lat, lon": where it is, the ground there, its building's outline and roof (null without one). */
+    const find = (place) => {
+      if (!places.has(place)) places.set(place, (async () => {
+        if (typeof place !== "string" || place.trim() === "") throw new Error("find(place) takes an address, a name or \"lat, lon\"");
+        const answer = await fetched(new URL(`place?q=${encodeURIComponent(place)}`, base).href);
+        const found = await answer.json();
+        if (!answer.ok) throw new Error(found.error || `couldn't find ${place}`);
+        let { lat, lon } = found;
+        let outline = Array.isArray(found.outline) && found.outline.length > 2 ? found.outline : null;
+        if (outline) {
+          // The building's middle, not the address's point (on a big lot they're far apart).
+          const first = outline[0], last = outline[outline.length - 1];
+          const ring = first[0] === last[0] && first[1] === last[1] ? outline.slice(0, -1) : outline;
+          lon = ring.reduce((sum, p) => sum + p[0], 0) / ring.length;
+          lat = ring.reduce((sum, p) => sum + p[1], 0) / ring.length;
+          outline = ring;
+        }
+        const metres = (dx, dy) => [lon + dx / (111320 * Math.cos((lat * Math.PI) / 180)), lat + dy / 110540];
+        // The ground: the lowest of a few points around it (the place itself may be a roof or a tree).
+        const around = [[lon, lat]];
+        for (let i = 0; i < 8; i++) around.push(metres(45 * Math.cos((i / 8) * Math.PI * 2), 45 * Math.sin((i / 8) * Math.PI * 2)));
+        // Looking up at the sky while the heights are found: only the tiles under the points load, not a whole
+        // view's (four render Chromes loading both at once ran past the page's 20 s to be ready).
+        camera.setView({ destination: Cesium.Cartesian3.fromDegrees(lon, lat, 900), orientation: { heading: 0, pitch: Cesium.Math.toRadians(89), roll: 0 } });
+        const ground = Math.min(...(await heights(around)).filter((h) => h !== null).concat([Infinity]));
+        let roof = null;
+        if (outline) {
+          const inside = outline.map((p) => [lon + (p[0] - lon) * 0.6, lat + (p[1] - lat) * 0.6]).concat([[lon, lat]]);
+          const tops = (await heights(inside)).filter((h) => h !== null).sort((a, b) => a - b);
+          roof = tops.length ? Math.max(ground + 3, tops[Math.floor(tops.length / 2)]) : null;
+        }
+        if (!Number.isFinite(ground)) throw new Error(`couldn't find the ground at ${place}`);
+        return { name: place, address: found.address, lat, lon, ground, roof, outline };
+      })());
+      // A failure is asked again next time.
+      places.get(place).catch(() => places.delete(place));
+      return places.get(place);
+    };
+
+    const toRadians = Cesium.Math.toRadians;
+    /** Wide views are drawn at 1.5x in Edit's Chrome: a city from far off is thousands of small roofs, which shimmer at 1x (V1, Oct 21). */
+    let ground = 0;
+    /** The camera circling a point: heading (degrees clockwise from north), tilt (0 straight down, 90 level), range (metres from it). */
+    const look = (target, view = {}) => {
+      const height = target.height ?? target.ground ?? 0;
+      ground = target.ground ?? height;
+      const tilt = Math.min(Math.max(view.tilt ?? 45, 0.01), 90);
+      camera.lookAt(Cesium.Cartesian3.fromDegrees(target.lon, target.lat, height), new Cesium.HeadingPitchRange(toRadians(view.heading ?? 0), toRadians(tilt - 90), view.range ?? 300));
+      camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+      if (view.roll) camera.twistRight(toRadians(view.roll));
+    };
+    /** The camera itself at a point (height in metres on the map's scale: a place's ground plus how high above it), turned: heading, tilt (0 straight down, 90 level) and roll. */
+    const fly = (view) => {
+      camera.setView({
+        destination: Cesium.Cartesian3.fromDegrees(view.lon, view.lat, view.height),
+        orientation: { heading: toRadians(view.heading ?? 0), pitch: toRadians((view.tilt ?? 0) - 90), roll: toRadians(view.roll ?? 0) },
+      });
+      if (view.ground !== undefined) ground = view.ground;
+    };
+    /** Where a point (degrees, and metres on the map's scale, as a place's ground and roof) is on the page, in its pixels; null behind the camera. */
+    const screen = (lon, lat, height = 0) => {
+      const point = Cesium.Cartesian3.fromDegrees(lon, lat, height);
+      const toward = Cesium.Cartesian3.subtract(point, camera.positionWC, new Cesium.Cartesian3());
+      if (Cesium.Cartesian3.dot(toward, camera.directionWC) <= 0) return null;
+      const at = scene.cartesianToCanvasCoordinates(point);
+      if (!at) return null;
+      const box = holder.getBoundingClientRect();
+      return { x: box.left + at.x, y: box.top + at.y };
+    };
+
+    // When a tile last came in: a frame waits while they keep coming, never for being slow (V1: "a render is stopped
+    // only when it stalls"; capped at 6 s a frame, the first frames of a render came out a blur, Nov 12).
+    let came = 0;
+    tileset.tileLoad.addEventListener(() => (came = Date.now()));
+    let drawing = 0;
+    /** Draws the camera's view: live, at once and again as tiles come in; in Edit's Chrome, a Promise done once they're all in. */
+    const draw = () => {
+      if (driven) {
+        const above = camera.positionCartographic.height - ground;
+        const scale = above >= 450 ? 1.5 : 1;
+        if (widget.resolutionScale !== scale) widget.resolutionScale = scale;
+      }
+      render();
+      const mine = ++drawing;
+      if (!driven) {
+        const refine = () => {
+          if (mine !== drawing) return;
+          render();
+          if (!tileset.tilesLoaded) setTimeout(refine, 50);
+        };
+        setTimeout(refine, 50);
+        return undefined;
+      }
+      const started = Date.now();
+      return (async () => {
+        await sleep(0);
+        render();
+        while (!tileset.tilesLoaded && mine === drawing) {
+          const now = Date.now();
+          if (now - Math.max(came, started) > 8000 || now - started > 45000) break;
+          await sleep(25);
+          render();
+        }
+        if (mine === drawing) render();
+      })();
+    };
+
+    return { Cesium, widget, scene, camera, tileset, find, look, fly, screen, draw, render };
+  }
+
+  window.EditMap = { open: openMap };
+})();
+</script>
