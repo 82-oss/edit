@@ -15,6 +15,7 @@ import { SmoothStream } from "./smoothStream";
 import { savedFrame, saveFrame } from "./storage";
 import type { Clip, Media, Project, Sections, Track } from "./types";
 import { rate } from "./types";
+import { gainOf, useVolume } from "./volume";
 
 type Listener = () => void;
 class Playhead {
@@ -342,6 +343,29 @@ class Preview {
   };
 
   /** The viewer's video element, which shows smooth playback over the canvas. */
+  /** The live mix's way out: the player's volume (lib/volume.ts), then the speakers. */
+  private master: GainNode | null = null;
+  private output(audio: AudioContext): AudioNode {
+    if (this.master === null || this.master.context !== audio) {
+      this.master = audio.createGain();
+      this.master.gain.value = gainOf(useVolume.getState());
+      this.master.connect(audio.destination);
+    }
+    return this.master;
+  }
+
+  /** The player's volume on every way it sounds: the live mix, the render and a stream's sound. */
+  private applyVolume = () => {
+    const gain = gainOf(useVolume.getState());
+    if (this.master !== null) this.master.gain.setTargetAtTime(gain, this.master.context.currentTime, 0.015);
+    if (this.video !== null) this.video.volume = Math.min(1, gain);
+    if (this.streamSound !== null) this.streamSound.volume = Math.min(1, gain);
+    // Edit.app's window plays it itself (its own volume, kept until changed).
+    if (this.native) void nativePreview.volume(gain).catch(() => {});
+  };
+  /** Its unhooking (the preview lives as long as the page). */
+  readonly unhookVolume = useVolume.subscribe(() => this.applyVolume());
+
   attachVideo(video: HTMLVideoElement | null) {
     this.video?.removeEventListener("waiting", this.onVideoWaiting);
     this.video?.removeEventListener("playing", this.onVideoPlaying);
@@ -349,6 +373,7 @@ class Preview {
     this.video?.removeEventListener("loadeddata", this.onVideoPlaying);
     this.video = video;
     if (video) video.playbackRate = this.speed;
+    this.applyVolume();
     video?.addEventListener("waiting", this.onVideoWaiting);
     video?.addEventListener("playing", this.onVideoPlaying);
     video?.addEventListener("seeked", this.onVideoPlaying);
@@ -388,6 +413,7 @@ class Preview {
     const streamed = /^stream:([^:]+):(\d+)$/.exec(url);
     if (streamed !== null && this.stream === null) {
       this.streamSound ??= new Audio();
+      this.applyVolume();
       this.stream = new SmoothStream(streamed[1]!, Number(streamed[2]), rate(this.project.settings), this.duration, () => playhead.frame, this.streamSound, () => {
         // Its chunk at the resting playhead just came: shown there now.
         if (!playhead.playing && !this.smoothShown && this.smooth === url) this.showSmooth(playhead.frame);
@@ -556,6 +582,7 @@ class Preview {
         return;
       }
       this.native = true;
+      this.applyVolume();
       this.nativeSpeed = null;
       this.nativeStale = true;
       this.nativeHas = null;
@@ -1810,8 +1837,8 @@ class Preview {
             if (index === 0) mute!.gain.setValueAtTime(value, at);
             else mute!.gain.linearRampToValueAtTime(value, contextAt(time));
           });
-          source.connect(gain).connect(mute).connect(audio.destination);
-        } else source.connect(gain).connect(audio.destination);
+          source.connect(gain).connect(mute).connect(this.output(audio));
+        } else source.connect(gain).connect(this.output(audio));
         source.start(at, Math.max(0, offset / stretch + late), length);
         const scheduled = { source, gain, mute, clip: clip.id, url };
         source.onended = () => {

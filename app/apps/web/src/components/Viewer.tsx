@@ -1,4 +1,4 @@
-import { Maximize, MessageSquarePlus, Minimize, Pause, Play, SkipBack, SkipForward, StepBack, StepForward } from "lucide-react";
+import { Maximize, MessageSquarePlus, Minimize, Pause, Play, SkipBack, SkipForward, StepBack, StepForward, Volume1, Volume2, VolumeX } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { useAgent } from "../lib/agent";
@@ -18,6 +18,7 @@ import { openMenu } from "./ContextMenu";
 import { importProgress } from "../lib/import_progress";
 import { numbers, openComment, openComments, setScrubbing, toggleNote, useNotes } from "../lib/notes";
 import { useEditor } from "../lib/store";
+import { setLevel, toggleMute, useVolume } from "../lib/volume";
 import { timecode } from "../lib/time";
 import { AnimatePresence, motion } from "motion/react";
 import { agentSpot } from "../lib/agentTurns";
@@ -629,6 +630,7 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
         <IconButton label={playing ? "Pause (Space)" : "Play (Space)"} onClick={() => preview.toggle()} className={cx("size-8", light)}>
           {playing ? <Pause size={18} fill="currentColor" strokeWidth={0} /> : <Play size={18} fill="currentColor" strokeWidth={0} className="translate-x-px" />}
         </IconButton>
+        <VolumeControl light={light} />
         <span className="ml-1.5 text-[13px] whitespace-nowrap text-white/90 tabular">
           {clock(frame, fps)}
           <span className="text-white/50"> / {clock(duration, fps)}</span>
@@ -657,6 +659,60 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
           <IconButton label={fullscreen ? "Exit full screen (F)" : "Full screen (F)"} onClick={toggleFullscreen} className={light}>
             {fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
           </IconButton>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The player's volume (Sphe, Nov 13: "a button where we can mute but when you
+ * hover over it you can lower the volume… clean and minimal"): the speaker
+ * mutes; hovered (or held while dragging), a thin slider opens beside it.
+ * What's heard here only (lib/volume.ts), never the edit's mix.
+ */
+function VolumeControl({ light }: { light: string }) {
+  const { level, muted } = useVolume();
+  const [dragging, setDragging] = useState(false);
+  const track = useRef<HTMLDivElement>(null);
+  const shown = muted ? 0 : level;
+  const Icon = shown === 0 ? VolumeX : shown < 0.5 ? Volume1 : Volume2;
+  const levelAt = (clientX: number) => {
+    const rect = track.current?.getBoundingClientRect();
+    if (!rect || rect.width === 0) return;
+    setLevel((clientX - rect.left) / rect.width);
+  };
+  return (
+    <div className="group/volume flex items-center" data-open={dragging || undefined}>
+      <IconButton label={shown === 0 ? "Unmute" : "Mute"} onClick={toggleMute} className={cx("size-8", light)}>
+        <Icon size={17} />
+      </IconButton>
+      <div
+        role="slider"
+        aria-label="Volume"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(shown * 100)}
+        tabIndex={0}
+        onKeyDown={(event) => {
+          if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+          event.preventDefault();
+          event.stopPropagation();
+          setLevel(shown + (event.key === "ArrowRight" ? 0.1 : -0.1));
+        }}
+        onPointerDown={(event) => {
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setDragging(true);
+          levelAt(event.clientX);
+        }}
+        onPointerMove={(event) => dragging && levelAt(event.clientX)}
+        onPointerUp={() => setDragging(false)}
+        onPointerCancel={() => setDragging(false)}
+        className="relative flex h-8 w-0 cursor-pointer items-center overflow-hidden opacity-0 outline-none transition-[width,opacity,margin] duration-150 ease-out group-hover/volume:mr-1 group-hover/volume:w-16 group-hover/volume:opacity-100 group-data-[open]/volume:mr-1 group-data-[open]/volume:w-16 group-data-[open]/volume:opacity-100 focus-visible:mr-1 focus-visible:w-16 focus-visible:opacity-100"
+      >
+        <div ref={track} className="relative mx-1.5 h-[3px] w-full rounded-full bg-white/25">
+          <div className="absolute inset-y-0 left-0 rounded-full bg-white" style={{ width: `${shown * 100}%` }} />
+          <div className="absolute top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow" style={{ left: `${shown * 100}%` }} />
         </div>
       </div>
     </div>
