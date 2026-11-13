@@ -1,5 +1,5 @@
-import { Archive, Check, ChevronDown, ChevronRight, ListFilter, CloudAlert, CloudDownload, CloudOff, CloudUpload, Copy, ExternalLink, FileText, Film, FileVideo, Lock, MessageSquare, Pencil, PenLine, Plus, Replace, RotateCw, Search, Share2, SkipForward, Tag, Trash2, TriangleAlert, X } from "lucide-react";
-import { motion } from "motion/react";
+import { Archive, BookOpen, Check, ChevronDown, ChevronRight, ListFilter, CloudAlert, CloudDownload, CloudOff, CloudUpload, Copy, ExternalLink, FileText, Film, FileVideo, Lock, MessageSquare, Pencil, PenLine, Plus, Replace, RotateCw, Search, Share2, SkipForward, Tag, Trash2, TriangleAlert, X } from "lucide-react";
+import { AnimatePresence, motion } from "motion/react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { editStyles, makesVideos, useAccount, writesScripts } from "../lib/account";
@@ -7,6 +7,7 @@ import { api, type ProjectStatus, type WriterScriptRow } from "../lib/api";
 import { shareChip } from "../lib/export-face";
 import { hasImportLinks, importPaste } from "../lib/import-input";
 import { loadBeta, useBeta } from "../lib/beta";
+import { loadNiches, useNiches, v2Choices } from "../lib/niches";
 import { cloudApi, type CloudList, type CloudProject, type CloudStatus } from "../lib/cloud";
 import { copyDriveLink, openDrive, useDriveLink } from "../lib/drive";
 import { asleep, laterKey, useLater, type LaterKey } from "../lib/later";
@@ -25,6 +26,7 @@ import { useKept } from "../lib/kept";
 import { creditCopies } from "../lib/copies";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
+import { NewNiche, NichePageDialog } from "./Niches";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { AsideStatus, BackMark, BY, Category, CATEGORY, CHIP, COLUMNS, contextMenu, CreatorCell, KindMark, LaterContext, LENGTH, LengthCell, layoutFor, NAME, NoteMark, PILL, ROW, RowButtons, StatusCell, TableShape, Updated, useAside, useNote, withAside } from "./HomeTable";
 import { HomeSidebar, nameOf, OpenSidebar, placeOf, placeOfSection, PLACES, useSidebarOpen, type Place as Spot, type Section, type Where } from "./HomeSidebar";
@@ -845,9 +847,6 @@ const STYLE_NOTES: Record<Style, string> = {
   horror: "16:9 · a narrated internet-mystery documentary in an analog horror look",
   shorts: "9:16 · a video’s highlights in 45–60 s, reframed on the subject, our subtitles, music",
 };
-
-/** Bodycam HQ (Edit V2, Settings → Beta): a bodycam project whose graphics the agent writes as code. */
-const HQ_NOTE = "16:9 · a bodycam case with graphics the agent writes as code (beta)";
 
 export interface NoticeProps {
   tone: "warn" | "bad" | "info";
@@ -1994,9 +1993,14 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
   const [text, setText] = useState("");
   const [style, setStyle] = useState<Style>("bodycam");
   const [picked, setPicked] = useState(false);
-  /** Bodycam HQ picked (its pill shows only with Edit V2 on, after Bodycam, for an edit). */
-  const [hq, setHq] = useState(false);
+  /** A V2 niche picked, by its pill's key (its pills show only with Edit V2 on, for an edit). */
+  const [niche, setNiche] = useState<string | null>(null);
   const v2 = useBeta((beta) => beta.v2);
+  const niches = useNiches((state) => state.niches);
+  const teacher = useNiches((state) => state.teacher);
+  const [making, setMaking] = useState(false);
+  /** The niche whose page is open, kept while it closes. */
+  const [page, setPage] = useState<{ key: string; open: boolean }>({ key: "", open: false });
   const [prompt, setPrompt] = useState("");
   const [sources, setSources] = useState<Source[] | null>(null);
   /** Several videos: one case or a compilation, as the person said (null: not yet). */
@@ -2023,8 +2027,9 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
   const styles = STYLES.filter((option) => (writing ? writable(option.value) : allowed === null || allowed.has(option.value)));
   const kind = styles.some((option) => option.value === style) ? style : (styles[0]?.value ?? "bodycam");
   const commentary = writing && kind === "commentary";
-  const offersHq = v2 && !writing && styles.some((option) => option.value === "bodycam");
-  const asHq = offersHq && hq && kind === "bodycam";
+  // Edit V2's niches, apart from today's kinds until they take their place (Bodycam HQ alone when there are none to be had).
+  const v2Pills = v2 && !writing ? v2Choices(niches, styles.map((option) => option.value)) : [];
+  const chosen = v2Pills.find((one) => one.key === niche && one.kind === kind);
 
   // A fresh dialog each time.
   useEffect(() => {
@@ -2039,13 +2044,18 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
     setPreview(null);
     setError(null);
     setPicked(start !== null);
-    setHq(false);
+    setNiche(null);
     setMode(writes ? "write" : "edit");
     // A switch made in Settings on this computer is seen as the dialog opens.
     void loadBeta().catch(() => {});
     if (start !== null) setStyle(start.style);
     else if (only !== null) setStyle(only);
   }, [open]);
+
+  // V2's niches asked again as the dialog opens (one may have been made elsewhere).
+  useEffect(() => {
+    if (open && v2) void loadNiches();
+  }, [open, v2]);
 
   // Writing: the paste read into its sources (a Trello card into its videos), each checked, reuses ticked.
   useEffect(() => {
@@ -2179,7 +2189,7 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
         return;
       }
       if (input !== "" && allowed !== null && !allowed.has(kind)) throw new Error("Your account can’t make full edits: an admin can give you an Edit style at accounts.spheceo.com.");
-      const { project } = await api.createProject({ name: title.trim(), style: kind, ...(asHq ? { hq: true } : {}), ...(kind === "shorts" ? SHORTS_FORMAT : FORMAT) });
+      const { project } = await api.createProject({ name: title.trim(), style: kind, ...(chosen ? { hq: true, ...(chosen.niche ? { niche: chosen.niche } : {}) } : {}), ...(kind === "shorts" ? SHORTS_FORMAT : FORMAT) });
       if (input === "") {
         // A blank project: the first message, if there is one, goes to its agent at once (Bodycam HQ's footage comes in the chat).
         if (extra !== "") await api.firstPrompt(project.id, extra);
@@ -2253,7 +2263,7 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
                 ? commentary
                   ? "Paste the sources: videos, articles, posts. The first is the brief."
                   : "Paste the footage: YouTube or Drive videos, or a Trello card. A case the channel already covered goes in as a reuse."
-                : asHq
+                : chosen
                   ? "Paste the script’s Google Doc, or leave this empty to start blank and send the footage in the chat."
                   : NARRATION[kind] === "recording"
                   ? "Paste the script’s Google Doc, or all its text (copied from the Doc, links and all), and “Voice-over:” with the recording’s Drive link."
@@ -2353,27 +2363,90 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
         <div>
           <span className={label}>Kind</span>
           <div className="flex flex-wrap gap-1.5">
-            {styles
-              .flatMap((option) => (offersHq && option.value === "bodycam" ? [{ ...option, hq: false }, { ...option, label: "Bodycam HQ", hq: true }] : [{ ...option, hq: false }]))
-              .map((option) => (
+            {styles.map((option) => (
+              <button
+                type="button"
+                key={option.value}
+                title={STYLE_NOTES[option.value]}
+                onClick={() => {
+                  setStyle(option.value);
+                  setNiche(null);
+                  setPicked(true);
+                }}
+                className={cx(
+                  "flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition-colors",
+                  kind === option.value && !chosen ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {v2Pills.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <span className="mr-0.5 text-[11px] font-semibold tracking-[0.2px] text-faint">V2</span>
+              {v2Pills.map((option) => {
+                const on = chosen?.key === option.key;
+                const known = option.niche;
+                return (
+                  <div
+                    key={option.key}
+                    onContextMenu={(event) => {
+                      if (known === null) return;
+                      event.preventDefault();
+                      setPage({ key: known, open: true });
+                    }}
+                    className={cx(
+                      "flex h-7 items-center rounded-full border text-[12px] font-medium transition-colors",
+                      on ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
+                    )}
+                  >
+                    <button
+                      type="button"
+                      title={option.description}
+                      onClick={() => {
+                        setStyle(option.kind);
+                        setNiche(option.key);
+                        setPicked(true);
+                      }}
+                      className="h-full rounded-full px-3"
+                    >
+                      {option.name}
+                    </button>
+                    {/* The picked niche's page: what its agent knows. */}
+                    <AnimatePresence initial={false}>
+                      {on && known !== null && (
+                        <motion.button
+                          type="button"
+                          title="What its agent knows"
+                          aria-label={`What ${option.name}’s agent knows`}
+                          onClick={() => setPage({ key: known, open: true })}
+                          initial={{ width: 0, opacity: 0 }}
+                          animate={{ width: 22, opacity: 1 }}
+                          exit={{ width: 0, opacity: 0 }}
+                          transition={spring}
+                          className="-ml-1.5 flex h-full items-center justify-start overflow-hidden text-faint hover:text-fg"
+                        >
+                          <BookOpen size={13} className="shrink-0" />
+                        </motion.button>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                );
+              })}
+              {teacher && (
                 <button
                   type="button"
-                  key={option.hq ? "bodycam-hq" : option.value}
-                  title={option.hq ? HQ_NOTE : STYLE_NOTES[option.value]}
-                  onClick={() => {
-                    setStyle(option.value);
-                    setHq(option.hq);
-                    setPicked(true);
-                  }}
-                  className={cx(
-                    "flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition-colors",
-                    kind === option.value && asHq === option.hq ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
-                  )}
+                  title="New niche"
+                  aria-label="New niche"
+                  onClick={() => setMaking(true)}
+                  className="flex size-7 items-center justify-center rounded-full border border-dashed border-line text-faint transition-colors hover:border-line-strong hover:text-fg"
                 >
-                  {option.label}
+                  <Plus size={13} />
                 </button>
-              ))}
-          </div>
+              )}
+            </div>
+          )}
         </div>
 
         <label>
@@ -2397,6 +2470,16 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
           </Button>
         </div>
       </form>
+      <NewNiche
+        open={making}
+        onClose={() => setMaking(false)}
+        onMade={(made) => {
+          setStyle(made.kind);
+          setNiche(made.key);
+          setPicked(true);
+        }}
+      />
+      <NichePageDialog open={page.open} nicheKey={page.key} onClose={() => setPage((now) => ({ ...now, open: false }))} />
     </Modal>
   );
 }
