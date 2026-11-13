@@ -67,19 +67,58 @@ export function labelFont(cacheDir: string): string {
 
 const drawn = (text: string) => text.replace(/[\\':]/gu, (one) => `\\${one}`);
 
+/** The grid's columns, lettered A on; its rows, numbered from 1, are as many as keep its cells near square. */
+export const GRID_COLUMNS = 12;
+
+/** The grid's cell a point of a `width`×`height` frame is in ("C4"), for its tests and its description. */
+export function gridCell(x: number, y: number, width: number, height: number): string {
+  const rows = Math.max(1, Math.round((GRID_COLUMNS * height) / width));
+  const column = Math.min(GRID_COLUMNS - 1, Math.floor((x / width) * GRID_COLUMNS));
+  const row = Math.min(rows - 1, Math.floor((y / height) * rows));
+  return `${String.fromCharCode(65 + column)}${row + 1}`;
+}
+
+/**
+ * A see-through PNG of a lettered grid over a `width`×`height` frame (Sphe,
+ * Nov 13, of matching a 3D map's angle to a reference: "imagine how, for us,
+ * it would be to temporarily throw a grid on screen"): laid over both sides
+ * of a comparison, a roof corner in C4 beside one in D5 says how far the
+ * camera is off, and which way, where the pictures alone only look a bit off.
+ * Each cell is labelled in its corner, so a zoomed look still says where it is.
+ */
+export async function gridImage(width: number, height: number, dir: string, font: string): Promise<string> {
+  const rows = Math.max(1, Math.round((GRID_COLUMNS * height) / width));
+  const line = Math.max(2, Math.round(width / 640));
+  const size = Math.max(12, Math.round((height / rows) * 0.18));
+  // drawbox paints colour but leaves a see-through frame see-through: the lines are a mask of yellow, the labels drawn after.
+  const mask: string[] = [];
+  for (let column = 1; column < GRID_COLUMNS; column++) mask.push(`drawbox=x=${Math.round((column * width) / GRID_COLUMNS) - (line >> 1)}:y=0:w=${line}:h=${height}:color=white@0.8:t=fill`);
+  for (let row = 1; row < rows; row++) mask.push(`drawbox=x=0:y=${Math.round((row * height) / rows) - (line >> 1)}:w=${width}:h=${line}:color=white@0.8:t=fill`);
+  const labels: string[] = [];
+  for (let column = 0; column < GRID_COLUMNS; column++)
+    for (let row = 0; row < rows; row++)
+      labels.push(`drawtext=${font}:text='${String.fromCharCode(65 + column)}${row + 1}':x=${Math.round((column * width) / GRID_COLUMNS) + line + 3}:y=${Math.round((row * height) / rows) + line + 3}:fontsize=${size}:fontcolor=yellow:box=1:boxcolor=black@0.55:boxborderw=2`);
+  const file = join(dir, "grid.png");
+  const graph = `[1]${mask.join(",")},format=gray[m];[0][m]alphamerge,${labels.join(",")}`;
+  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `color=c=yellow:s=${width}x${height},format=rgba`, "-f", "lavfi", "-i", `color=c=black:s=${width}x${height}`, "-filter_complex", graph, "-frames:v", "1", file]);
+  return file;
+}
+
 /**
  * Sheets of `cells`, `across` to a row and `rows` to a sheet, each picture
  * cropped to `zoom` (the whole frame without) and `size` px wide, labelled in
- * its corner in `font` (`labelFont`). Answers each sheet's JPEG bytes.
+ * its corner in `font` (`labelFont`), with `grid` (`gridImage`) laid over
+ * each picture first when given. Answers each sheet's JPEG bytes.
  */
-export async function sheets(cells: Cell[], zoom: Region | null, size: number, across: number, rows: number, dir: string, font: string): Promise<Uint8Array[]> {
+export async function sheets(cells: Cell[], zoom: Region | null, size: number, across: number, rows: number, dir: string, font: string, grid: string | null = null): Promise<Uint8Array[]> {
   const out: Uint8Array[] = [];
   const pieces: string[] = [];
   for (const [index, cell] of cells.entries()) {
     const piece = join(dir, `cell${String(index).padStart(3, "0")}.jpg`);
-    const inputs = cell.files.flatMap((file) => ["-i", file]);
-    const each = cell.files.map((_, n) => `[${n}]${zoom === null ? "" : `crop=${zoom.width}:${zoom.height}:${zoom.x}:${zoom.y},`}scale=${size}:-2,drawtext=${font}:text='${drawn(cell.labels[n] ?? "")}':x=6:y=6:fontsize=${Math.max(14, Math.round(size / 24))}:fontcolor=yellow:box=1:boxcolor=black@0.75[p${n}]`);
-    const joined = cell.files.length > 1 ? `${each.join(";")};${cell.files.map((_, n) => `[p${n}]`).join("")}hstack=inputs=${cell.files.length}:shortest=1,pad=iw+6:ih:0:0:black` : each[0]!.replace(/\[p0\]$/u, "");
+    const inputs = [...cell.files, ...(grid === null ? [] : [grid])].flatMap((file) => ["-i", file]);
+    const lines = grid === null ? "" : `[${cell.files.length}]split=${cell.files.length}${cell.files.map((_, n) => `[g${n}]`).join("")};`;
+    const each = cell.files.map((_, n) => `${grid === null ? `[${n}]` : `[${n}][g${n}]overlay=0:0,`}${zoom === null ? "" : `crop=${zoom.width}:${zoom.height}:${zoom.x}:${zoom.y},`}scale=${size}:-2,drawtext=${font}:text='${drawn(cell.labels[n] ?? "")}':x=6:y=${grid === null ? "6" : "h-th-6"}:fontsize=${Math.max(14, Math.round(size / 24))}:fontcolor=yellow:box=1:boxcolor=black@0.75[p${n}]`);
+    const joined = lines + (cell.files.length > 1 ? `${each.join(";")};${cell.files.map((_, n) => `[p${n}]`).join("")}hstack=inputs=${cell.files.length}:shortest=1,pad=iw+6:ih:0:0:black` : each[0]!.replace(/\[p0\]$/u, ""));
     await tools.run([tools.ffmpeg(), "-v", "error", "-y", ...inputs, "-filter_complex", joined, "-frames:v", "1", "-q:v", "3", piece]);
     pieces.push(piece);
   }

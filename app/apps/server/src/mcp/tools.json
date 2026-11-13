@@ -3653,7 +3653,7 @@
     "name": "add_cut_in"
   },
   {
-    "description": "Look at a coded effect (a Bodycam HQ project): stills of it at the seconds you give, drawn by the same page the viewer plays, with its length, what a frame costs to play from each of them on this computer (so you know it plays live), and everything its page gets wrong (an error it threw, a rule of the effect contract it breaks). Look after every change, at the moments the change touches: you can't see the effect any other way. The pictures come in the order of `times`. every_frame: each frame of a stretch (start–end, at most 48), for what moves between frames (a shimmer, a jitter, an ease); beside {media_id, start}: each frame next to the reference's at the same moment (at most 24); zoom: a region at full size; detail \"full\": stills at the frame's size.",
+    "description": "Look at a coded effect (a Bodycam HQ project): stills of it at the seconds you give, drawn by the same page the viewer plays, with its length, what a frame costs to play from each of them on this computer (so you know it plays live), and everything its page gets wrong (an error it threw, a rule of the effect contract it breaks). Look after every change, at the moments the change touches: you can't see the effect any other way. The pictures come in the order of `times`. every_frame: each frame of a stretch (start–end, at most 48), for what moves between frames (a shimmer, a jitter, an ease); beside {media_id, start}: each frame next to the reference's at the same moment (at most 24); grid: a lettered grid over both, to say where things sit; zoom: a region at full size; detail \"full\": stills at the frame's size.",
     "inputSchema": {
       "properties": {
         "name": {
@@ -3690,6 +3690,10 @@
             "full"
           ],
           "type": "string"
+        },
+        "grid": {
+          "description": "A lettered grid over the frames (columns A to L, rows from 1, each cell labelled), the same over yours and the reference's: where a roof corner, the horizon or a word sits (C4 beside D5), to line a 3D map's camera or anything's position up with the reference's.",
+          "type": "boolean"
         },
         "beside": {
           "description": "The reference to compare with: {media_id, start}, start the reference's second that matches your first frame.",

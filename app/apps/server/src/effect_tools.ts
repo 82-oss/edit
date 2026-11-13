@@ -144,8 +144,10 @@ async function lookCompared(app: ToolCall["app"], projectId: string, name: strin
     const few = cells.length <= 2;
     const size = few ? 960 : 480;
     const across = reference ? (few ? 1 : 2) : few ? 2 : 4;
-    const pictures = await frameCompare.sheets(cells, zoom, size, across, 4, dir, frameCompare.labelFont(app.store.cacheDir()));
-    const what = `${reference ? `beside ${reference.id} (reference left, yours right)` : "each frame"}${zoom === null ? "" : `, zoomed to ${zoom.width}×${zoom.height} at ${zoom.x},${zoom.y}`}`;
+    const font = frameCompare.labelFont(app.store.cacheDir());
+    const grid = args.grid === true ? await frameCompare.gridImage(width, height, dir, font) : null;
+    const pictures = await frameCompare.sheets(cells, zoom, size, across, 4, dir, font, grid);
+    const what = `${reference ? `beside ${reference.id} (reference left, yours right)` : "each frame"}${zoom === null ? "" : `, zoomed to ${zoom.width}×${zoom.height} at ${zoom.x},${zoom.y}`}${grid === null ? "" : ", the same lettered grid over both"}`;
     const out: Content[] = [];
     pictures.forEach((picture, index) => out.push(...image(picture, `${name} ${what}: sheet ${index + 1} of ${pictures.length}, left-to-right then down`, "image/jpeg")));
     const lines: string[] = rest === "" ? [] : [rest];
@@ -160,7 +162,7 @@ async function lookCompared(app: ToolCall["app"], projectId: string, name: strin
 
 async function lookAtEffect({ app, args, projectId }: ToolCall): Promise<Content[]> {
   const name = named(app, projectId, args);
-  if ((args.beside !== undefined && args.beside !== null) || (args.zoom !== undefined && args.zoom !== null)) return await lookCompared(app, projectId, name, args);
+  if ((args.beside !== undefined && args.beside !== null) || (args.zoom !== undefined && args.zoom !== null) || args.grid === true) return await lookCompared(app, projectId, name, args);
   if (args.every_frame === true) return await lookAtStretch(app, projectId, name, args);
   let times: number[] | null = null;
   if (args.times !== undefined && args.times !== null) {
