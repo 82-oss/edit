@@ -4,11 +4,11 @@
 // the camera the effect's to aim in seek(t):
 //
 //   const map = await EditMap.open({ tone: "dark" });          // fills the page, under everything else on it
-//   const place = await map.find("Tarrytown Police Department");  // { lat, lon, address, ground, roof, outline }
+//   const place = await map.find("Tarrytown Police Department");  // { lat, lon, address, ground, roof, outline, ridge }
 //   window.seek = (t) => {
 //     map.look(place, { heading: 20 - t * 3, tilt: 40, range: 350 - t * 10 });   // or map.fly({ lon, lat, height, heading, tilt, roll })
 //     const at = map.screen(place.lon, place.lat, place.roof);   // where a point is on the page, to pin anything to it
-//     map.stand(words, { ...place, height: place.roof + 4, width: 60, facing: 200 });   // an element standing in the world, upright like a sign
+//     map.stand(words, { ...place, height: place.roof + 4, width: 60, facing: "building" });   // an element standing in the world, upright like a sign, along the building
 //     …
 //     return map.draw();
 //   };
@@ -196,6 +196,22 @@
     };
 
     const places = new Map();
+    /**
+     * The way its building's long side runs (a house's roof ridge, a block's front), degrees clockwise from north
+     * between 0 and 180; null without an outline (Sphe, Nov 13, of a sign stood square to the camera over a street of
+     * houses: "look at the line of the roof of the house: the elements on top aren't in line with that").
+     */
+    const ridgeOf = (outline, lat) => {
+      if (!outline) return null;
+      const across = Math.cos(toRadians(lat));
+      let best = null, most = 0;
+      for (let at = 0; at < outline.length; at++) {
+        const [a, b] = [outline[at], outline[(at + 1) % outline.length]];
+        const east = (b[0] - a[0]) * across, north = b[1] - a[1], long = Math.hypot(east, north);
+        if (long > most) { most = long; best = (Cesium.Math.toDegrees(Math.atan2(east, north)) + 360) % 180; }
+      }
+      return best;
+    };
     /** A place by address, name or "lat, lon": where it is, the ground there, its building's outline and roof (null without one). */
     const find = (place) => {
       if (!places.has(place)) places.set(place, (async () => {
@@ -228,7 +244,7 @@
           roof = tops.length ? Math.max(ground + 3, tops[Math.floor(tops.length / 2)]) : null;
         }
         if (!Number.isFinite(ground)) throw new Error(`couldn't find the ground at ${place}`);
-        return { name: place, address: found.address, lat, lon, ground, roof, outline };
+        return { name: place, address: found.address, lat, lon, ground, roof, outline, ridge: ridgeOf(outline, lat) };
       })());
       // A failure is asked again next time.
       places.get(place).catch(() => places.delete(place));
@@ -278,7 +294,8 @@
      * on the map's scale; a place's ground by default), `width` metres wide and
      * as tall as the element's shape makes it, its face turned to `facing`
      * (degrees clockwise from north; the camera's side by default: a fixed one
-     * keeps it standing still while the camera circles it). `lean` tips it
+     * keeps it standing still while the camera circles it; "building": along
+     * the place's building, its roof line, face on the camera's side). `lean` tips it
      * back on its bottom edge by that many degrees (0 upright, 90 lying on its
      * back), `roll` turns it clockwise as seen from its front, on the middle of
      * its bottom edge. `flat`: lying on the ground, centred on the point, its
@@ -291,7 +308,16 @@
       const width = at.width ?? 50, tall = (width * h) / w;
       const origin = Cesium.Cartesian3.fromDegrees(at.lon, at.lat, at.height ?? at.ground ?? 0);
       const frame = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
-      const facing = toRadians(at.facing ?? Cesium.Math.toDegrees(camera.heading) + 180);
+      const toward = Cesium.Math.toDegrees(camera.heading) + 180;
+      // "building": along its long side (the place's ridge), its face on the side the camera's on.
+      let facing = at.facing ?? toward;
+      if (facing === "building") {
+        if (typeof at.ridge !== "number") throw new Error("facing \"building\" needs a place with a building (its ridge, from find()); this one has none: give facing in degrees");
+        const sides = [at.ridge + 90, at.ridge + 270];
+        const off = (heading) => Math.abs(((heading - toward) % 360 + 540) % 360 - 180);
+        facing = off(sides[0]) <= off(sides[1]) ? sides[0] : sides[1];
+      }
+      facing = toRadians(facing);
       // Seen from its front, its right runs a quarter turn anticlockwise of where it faces, its top straight up;
       // leant back, its top tips away from the front (flat at 90); rolled, both turn clockwise as seen from the front.
       const level = [Math.sin(facing - Math.PI / 2), Math.cos(facing - Math.PI / 2), 0];
