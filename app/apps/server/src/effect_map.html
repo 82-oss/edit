@@ -8,6 +8,7 @@
 //   window.seek = (t) => {
 //     map.look(place, { heading: 20 - t * 3, tilt: 40, range: 350 - t * 10 });   // or map.fly({ lon, lat, height, heading, tilt, roll })
 //     const at = map.screen(place.lon, place.lat, place.roof);   // where a point is on the page, to pin anything to it
+//     map.stand(words, { ...place, height: place.roof + 4, width: 60, facing: 200 });   // an element standing in the world, upright like a sign
 //     …
 //     return map.draw();
 //   };
@@ -237,14 +238,61 @@
       if (view.ground !== undefined) ground = view.ground;
     };
     /** Where a point (degrees, and metres on the map's scale, as a place's ground and roof) is on the page, in its pixels; null behind the camera. */
-    const screen = (lon, lat, height = 0) => {
-      const point = Cesium.Cartesian3.fromDegrees(lon, lat, height);
+    const screen = (lon, lat, height = 0) => onPage(Cesium.Cartesian3.fromDegrees(lon, lat, height));
+
+    /** Where a point of the world is on the page, in its pixels; null behind the camera. */
+    const onPage = (point) => {
       const toward = Cesium.Cartesian3.subtract(point, camera.positionWC, new Cesium.Cartesian3());
       if (Cesium.Cartesian3.dot(toward, camera.directionWC) <= 0) return null;
       const at = scene.cartesianToCanvasCoordinates(point);
       if (!at) return null;
       const box = holder.getBoundingClientRect();
       return { x: box.left + at.x, y: box.top + at.y };
+    };
+    /**
+     * Anything on the page (text, a canvas, a card) set into the world, seen
+     * through the map's camera wherever it moves (Sphe, Nov 13: the text and
+     * waveform over a 3D aerial "doesn't seem to be standing up straight with
+     * respect to that angle… I think the agent should know the angle"; the
+     * agent had worked the geometry out by hand and stood them square to the
+     * camera, leaning back with its tilt, not upright on the ground). Upright
+     * like a sign planted at { lon, lat }, its bottom edge at `height` (metres
+     * on the map's scale; a place's ground by default), `width` metres wide and
+     * as tall as the element's shape makes it, its face turned to `facing`
+     * (degrees clockwise from north; the camera's side by default: a fixed one
+     * keeps it standing still while the camera circles it). `flat`: lying on
+     * the ground instead, centred on the point, its top edge away from
+     * `facing`'s side. Call it in seek(t) after aiming the camera; answers its
+     * corners on the page (top-left, top-right, bottom-right, bottom-left), or
+     * null when it's behind the camera (then hidden).
+     */
+    const stand = (element, at) => {
+      const w = element.offsetWidth || element.width, h = element.offsetHeight || element.height;
+      const width = at.width ?? 50, tall = (width * h) / w;
+      const origin = Cesium.Cartesian3.fromDegrees(at.lon, at.lat, at.height ?? at.ground ?? 0);
+      const frame = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
+      const facing = toRadians(at.facing ?? Cesium.Math.toDegrees(camera.heading) + 180);
+      // Seen from its front, its right runs a quarter turn anticlockwise of where it faces; flat, its top runs away from that side.
+      const right = [Math.sin(facing - Math.PI / 2), Math.cos(facing - Math.PI / 2), 0];
+      const rise = at.flat ? [-Math.sin(facing), -Math.cos(facing), 0] : [0, 0, 1];
+      const base = at.flat ? -tall / 2 : 0;
+      const corner = (across, up) => onPage(Cesium.Matrix4.multiplyByPoint(frame, new Cesium.Cartesian3(right[0] * across + rise[0] * up, right[1] * across + rise[1] * up, right[2] * across + rise[2] * up), new Cesium.Cartesian3()));
+      const quad = [corner(-width / 2, base + tall), corner(width / 2, base + tall), corner(width / 2, base), corner(-width / 2, base)];
+      Object.assign(element.style, { position: "absolute", left: "0px", top: "0px", margin: "0px", transformOrigin: "0 0" });
+      if (quad.some((one) => one === null)) {
+        element.style.visibility = "hidden";
+        return null;
+      }
+      // The element's box onto those four corners: a projective map from its own pixels (Heckbert's square to quad).
+      const [p0, p1, p2, p3] = quad;
+      const sx = p0.x - p1.x + p2.x - p3.x, sy = p0.y - p1.y + p2.y - p3.y;
+      const dx1 = p1.x - p2.x, dx2 = p3.x - p2.x, dy1 = p1.y - p2.y, dy2 = p3.y - p2.y;
+      const den = dx1 * dy2 - dx2 * dy1;
+      const g = (sx * dy2 - dx2 * sy) / den, k = (dx1 * sy - sx * dy1) / den;
+      const a = p1.x - p0.x + g * p1.x, b = p3.x - p0.x + k * p3.x, d = p1.y - p0.y + g * p1.y, e = p3.y - p0.y + k * p3.y;
+      element.style.transform = `matrix3d(${a / w},${d / w},0,${g / w},${b / h},${e / h},0,${k / h},0,0,1,0,${p0.x},${p0.y},0,1)`;
+      element.style.visibility = "visible";
+      return quad;
     };
 
     // When a tile last came in: a frame waits while they keep coming, never for being slow (V1: "a render is stopped
@@ -284,7 +332,7 @@
       })();
     };
 
-    return { Cesium, widget, scene, camera, tileset, find, look, fly, screen, draw, render };
+    return { Cesium, widget, scene, camera, tileset, find, look, fly, screen, stand, draw, render };
   }
 
   window.EditMap = { open: openMap };
