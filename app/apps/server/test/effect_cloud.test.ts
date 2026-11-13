@@ -6,6 +6,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 
+import { previewable } from "../src/cloud_playback.ts";
 import * as effectCloud from "../src/effect_cloud.ts";
 
 function home(): string {
@@ -27,6 +28,10 @@ test("a render's key is its project's own, which only that project's renders mat
   expect(effectCloud.isRender("p1-2", "edit/exports/p1-2/final.mp4")).toBe(false);
   expect(effectCloud.isRender("p1-2", "edit/exports/p1-2/effect-x/y.mp4")).toBe(false);
   expect(effectCloud.effectOf(key)).toBe("call-map-a");
+  // The viewer streams it as it does footage; never another export of the project, nor playback's or results'.
+  expect(previewable(key)).toBe(true);
+  expect(previewable("edit/exports/p1-2/final.mp4")).toBe(false);
+  expect(previewable("edit/exports/playback/effect-x.mp4")).toBe(false);
 });
 
 test("an effect keeps the render in use and the one before it; older ones go from the cloud and the cache", async () => {

@@ -74,8 +74,8 @@ const FREE_FLOOR = FREE_FLOOR_BYTES;
 const SESSION = 12 * 3600 * 1000;
 /** With the disk nearly full, only a project open this lately keeps its. */
 const OPEN_NOW = 10 * 60 * 1000;
-/** Cloud-cache subtrees holding rebuildable copies of R2 objects (LRU-evicted past the budget); `blocks` are previews read for playback (cloud_blocks.ts). */
-const CLOUD_EVICTABLE = ["proxies", "sound", "originals", "excerpts", "blocks", "scrub", "pieces"];
+/** Cloud-cache subtrees holding rebuildable copies of R2 objects (LRU-evicted past the budget); `blocks` are previews read for playback (cloud_blocks.ts), `exports` effects' renders (effect_cloud.ts). */
+const CLOUD_EVICTABLE = ["proxies", "sound", "originals", "excerpts", "blocks", "scrub", "pieces", "exports"];
 /** A preview file of a media folder (the picture, its light copy, the sound, the done mark). */
 const PREVIEW = /^preview/;
 
@@ -356,10 +356,13 @@ interface Used {
 /** Folders under `edit/` whose keys name a source's place next (`edit/<folder>/<place>…`); a sound copy's is its original's key again. */
 const KEYED = ["originals/", "excerpts/", "proxies/", "sound/", "analysis/", "scrub/", "pieces/"];
 
-/** The footage `key` (an R2 key, `edit/…`) is of, as `<kind>/<id>` (`drive/1AbC…`), or the project's for a playback render (`playback:<project>`); null for anything else. */
+/** The footage `key` (an R2 key, `edit/…`) is of, as `<kind>/<id>` (`drive/1AbC…`), or the project's for a playback render or an effect's (`playback:<project>`); null for anything else. */
 export function ownerToken(key: string): string | null {
   let rest = key.startsWith("edit/") ? key.slice("edit/".length) : key;
   if (rest.startsWith("exports/playback/")) rest = rest.slice("exports/".length);
+  // An effect's render (effect_cloud.ts) is its project's, as a playback render is.
+  const render = /^exports\/([^/]+)\/effect-[^/]+$/.exec(rest);
+  if (render !== null) return `playback:${render[1]}`;
   if (rest.startsWith("playback/")) {
     const project = rest.slice("playback/".length).split("/")[0];
     return project ? `playback:${project}` : null;

@@ -18,10 +18,15 @@ export function playbackKey(path: string): string | null {
 }
 
 /**
- * Whether the preview path may stream `key`: proxies, originals, excerpts,
+ * Whether the preview path may stream `key`: proxies, originals, excerpts, effects' renders,
  * and a pieced proxy's address (proxy_pieces.ts: `edit/pieces/…/proxy.mp4`,
  * answered from its pieces; none of the pieces' own files).
  */
 export function previewable(key: string): boolean {
-  return /^edit\/(proxies|originals|excerpts)\//.test(key) || /^edit\/pieces\/(v\d+\/)?[^/]+\/[^/]+\/proxy\.mp4$/.test(key);
+  return (
+    /^edit\/(proxies|originals|excerpts)\//.test(key) ||
+    /^edit\/pieces\/(v\d+\/)?[^/]+\/[^/]+\/proxy\.mp4$/.test(key) ||
+    // An effect's render, its project's own (effect_cloud.ts).
+    /^edit\/exports\/(?!playback\/|results\/)[^/]+\/effect-[^/]+\.mp4$/.test(key)
+  );
 }
