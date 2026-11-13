@@ -653,3 +653,9 @@ test.skipIf(chrome === null)("an effect with see-through parts renders with its 
     cleanup();
   }
 }, 240_000);
+
+test("a render's error says where it was thrown when its first line is only its kind", async () => {
+  const { firstLines } = await import("../src/effects.ts");
+  expect(firstLines("Error\n    at render (map.js:12:3)\n    at x")).toBe("Error at render (map.js:12:3)");
+  expect(firstLines("TypeError: x is undefined\n    at y")).toBe("TypeError: x is undefined");
+});

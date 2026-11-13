@@ -1335,13 +1335,24 @@ class Preview {
     playhead.emit();
     const began = performance.now();
     cancelAnimationFrame(this.loop);
+    // Left for another tab, the wait is let go: it can't go on there (frames aren't drawn in a hidden tab), and picked up
+    // on coming back, or when the render lands, it started playing what the person had long moved on from (Sphe, Nov 13:
+    // "sometimes the part that the agent is working on will just start playing… it shouldn't interrupt my work").
+    const away = () => {
+      if (!document.hidden) return;
+      done();
+      if (playhead.playing) this.pause();
+    };
+    const done = () => document.removeEventListener("visibilitychange", away);
+    document.addEventListener("visibilitychange", away);
     const wait = () => {
       this.loop = 0;
-      if (!playhead.playing) return;
+      if (!playhead.playing) { done(); return; }
       // Its sound waited for too, but not for long: past `SOUND_WAIT_MS` the picture plays and the sound joins it.
       const heard = this.stream === null || this.stream.soundReady(playhead.frame / rate(this.project!.settings)) || performance.now() - began > SOUND_WAIT_MS;
       if (this.smooth !== null && this.smoothAt(playhead.frame, second) && heard) {
         recordTiming("preview: waited for the render", performance.now() - began);
+        done();
         playhead.playing = false;
         this.setBuffering(false);
         this.playSmooth(video);
@@ -1352,6 +1363,7 @@ class Preview {
       const gone = this.smooth === null || (this.stream !== null && this.stream.described && !this.stream.made(playhead.frame, second));
       if (gone || performance.now() - began > SMOOTH_WAIT_MS) {
         recordTiming(gone ? "preview: render gone, live" : "preview: render didn't come, live", performance.now() - began);
+        done();
         playhead.playing = false;
         this.setBuffering(false);
         if (this.native) this.playNative();

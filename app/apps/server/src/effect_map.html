@@ -134,6 +134,18 @@
     });
     const scene = widget.scene;
     const camera = scene.camera;
+    // A map that loses its drawing (the graphics card out of memory, a tab in the background, a page holding too many
+    // maps: Chrome drops the oldest past 16) stays black for good: Cesium can't take it back (Sphe, Nov 13: "sometimes I
+    // will tab away and come back, and the screen is just blank"). The viewer's page loads itself again, and the moment
+    // it's on comes back with its ready; in Edit's Chrome the frame fails saying why (it said only "Error").
+    let lost = false;
+    widget.canvas.addEventListener("webglcontextlost", () => {
+      lost = true;
+      if (!driven) setTimeout(() => location.reload(), 500);
+    });
+    // Gone (the agent saved it again, the playhead moved on): its drawing given back now, not when Chrome gets to it,
+    // so the maps the viewer loads one after another don't add up to the 16.
+    addEventListener("pagehide", () => scene.context?._gl?.getExtension("WEBGL_lose_context")?.loseContext());
     scene.backgroundColor = Cesium.Color.BLACK;
     scene.rethrowRenderErrors = true;
     scene.postProcessStages.fxaa.enabled = true;
@@ -154,10 +166,16 @@
 
     // One moment of the day, so nothing in the picture follows the clock.
     const NOON = Cesium.JulianDate.fromIso8601("2026-06-21T12:00:00Z");
+    const LOST = "the map lost its drawing (WebGL context lost: the graphics card ran out of memory, or too many maps were open at once)";
     const render = () => {
-      widget.resize();
-      scene.initializeFrame();
-      scene.render(NOON);
+      if (lost) throw new Error(LOST);
+      try {
+        widget.resize();
+        scene.initializeFrame();
+        scene.render(NOON);
+      } catch (error) {
+        throw lost ? new Error(LOST) : error;
+      }
     };
 
     // Draws Google's work out while a promise of its is pending (a height asked of the tiles needs the scene drawing).

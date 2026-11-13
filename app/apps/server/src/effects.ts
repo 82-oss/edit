@@ -965,7 +965,16 @@ export function onTimeline(project: Project): string[] {
 const SETTLE_MS = 6_000;
 /** Chromes drawing one render side by side: as the map shots, by the computer's memory. */
 const CHROMES = os.totalmem() >= 16 * 2 ** 30 ? 4 : 2;
+/** Chromes drawing a map's render (one that loads edit-map): each holds a 3D city on the graphics card. */
+const MAP_CHROMES = Math.min(2, CHROMES);
 const RENDER_PROFILE = "edit-effect-render-";
+
+/** An error's first line, and where it was thrown when that line says nothing more than its kind ("Error"). */
+export function firstLines(error: string): string {
+  const lines = error.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+  const first = lines[0] ?? "";
+  return /^[A-Za-z]*Error:?$/.test(first) && lines[1] !== undefined ? `${first} ${lines[1]}` : first;
+}
 
 /** Where a project's renders and their frames are kept. */
 function rendersDir(store: Store, project: string): string {
@@ -1046,7 +1055,8 @@ export function renderNow(app: App, project: string, name: string): Promise<void
       // restarted every 60 frames for as long as the agent kept saving, and left 4.6 GB of frames behind).
       if (error instanceof Outdated) return settled(app, project, name).then(() => renderNow(app, project, name));
       const said = diag.messageOf(error);
-      failed.set(id(project, name, key), said);
+      // A map that lost its drawing is the card's state then, not the code's: tried again when it's asked for next.
+      if (!said.includes("lost its drawing")) failed.set(id(project, name, key), said);
       diag.warn("effects", `${project}: ${name} didn't render: ${said}`);
       throw new Error(`${name} didn't render: ${said}`);
     })
@@ -1071,7 +1081,11 @@ async function draw(app: App, render: Render): Promise<void> {
     const url = `http://${seams.broll.pageHost(app)}${addressOf(project, name)}${ENTRY}?render=`;
     const opened: devtools.Page[] = [];
     try {
-      for (let at = 0; at < CHROMES; at++) opened.push(await devtools.open({ profile: RENDER_PROFILE, width: frame.width, height: frame.height, gpu: true, what: "Rendering an effect" }));
+      // A map's page is far heavier on the graphics card (Google's 3D city, drawn half as big again from high up): four of
+      // them at once with the viewer's and the agent's looks beside them ran an 8 GB card out, and their maps went black
+      // (Nov 13: call-map-a failed at the same second every try, where its camera rose).
+      const map = fs.readFileSync(join(folder(app.store, project, name), ENTRY), "utf8").includes("edit-map/map.js");
+      for (let at = 0; at < (map ? MAP_CHROMES : CHROMES); at++) opened.push(await devtools.open({ profile: RENDER_PROFILE, width: frame.width, height: frame.height, gpu: true, what: "Rendering an effect" }));
       // Nothing behind the page: what it leaves unpainted is see-through.
       await Promise.all(opened.map((page) => page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } })));
       const loaded = await Promise.all(opened.map((page, at) => load(page, `${url}${key}-${at}`, `${key}-${at}`, name)));
@@ -1096,7 +1110,7 @@ async function draw(app: App, render: Render): Promise<void> {
             const time = index / frame.fps;
             // A map's frame waits for its tiles while they keep coming (effect_map.html), the first ones longest.
             const drawn = await page.evaluate<{ error?: string }>(`window.__edit.seek(${time})`, 60_000);
-            if (drawn.error !== undefined) throw new Error(`its page threw at ${time.toFixed(2)} s: ${drawn.error.split("\n")[0]}`);
+            if (drawn.error !== undefined) throw new Error(`its page threw at ${time.toFixed(2)} s: ${firstLines(drawn.error)}`);
             const shot = await page.call("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, clip: { x: 0, y: 0, width: frame.width, height: frame.height, scale: 1 } }, 60_000);
             if (typeof shot.data !== "string") throw new Error(`Chrome drew nothing at ${time.toFixed(2)} s`);
             // Whole frames only: one cut short by a quit is drawn again.
