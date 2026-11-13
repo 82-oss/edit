@@ -10,6 +10,10 @@ describe("times in the agent's messages", () => {
     expect(timesIn("listen at 0:17 and 4:25").map((one) => [one.start, one.end])).toEqual([[17, null], [265, null]]);
     expect(timesIn("on cut-in 36, from about 19:40 to 20:10, so").map((one) => [one.start, one.end])).toEqual([[1180, 1210]]);
     expect(timesIn("Cut-in 58 (about 29:20–29:53)")[0]).toMatchObject({ start: 1760, end: 1793, length: "29:20–29:53".length });
+    // A clock's time isn't one in the edit; a time at a sentence's end is; a third decimal is kept.
+    expect(timesIn("at 10:30am, or 10:30 pm, or 9:15 p.m.")).toEqual([]);
+    expect(timesIn("it lands at 22:00.").map((one) => one.start)).toEqual([1320]);
+    expect(timesIn("the flash at 1:20.125 here").map((one) => [one.start, one.length])).toEqual([[80.125, 8]]);
     expect(timesIn("1:44:00 - 1:45:30")[0]).toMatchObject({ start: 6240, end: 6330 });
   });
 

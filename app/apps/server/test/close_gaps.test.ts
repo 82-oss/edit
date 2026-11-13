@@ -16,11 +16,25 @@ test("a timeline's gaps are where nothing on any track plays, and closing one sl
     clip({ id: "two", track: v, start: 150, duration: 50, type: "solid" }),
   );
   p.mark_out = 190;
+  // Stretches marked to export stay on their footage: one after moves back, one across shortens, one inside goes.
+  p.ranges = [
+    { start: 10, end: 60, name: "Before" },
+    { start: 100, end: 180, name: "Across" },
+    { start: 125, end: 140, name: "Inside" },
+    { start: 160, end: 200, name: "After" },
+  ];
+  p.markers = [{ frame: 170, name: "slam" }] as typeof p.markers;
   expect(gapsOf(p)).toEqual([[120, 150]]);
   const closed = closeGaps(p, gapsOf(p).map(([start, end]) => ({ start, duration: end - start }) as Clip));
   expect(closed).toBe(30);
   expect(p.clips.find((one) => one.id === "two")!.start).toBe(120);
   expect(p.mark_out).toBe(160);
+  expect(p.ranges).toEqual([
+    { start: 10, end: 60, name: "Before" },
+    { start: 100, end: 150, name: "Across" },
+    { start: 130, end: 170, name: "After" },
+  ]);
+  expect(p.markers?.[0]?.frame).toBe(140);
   expect(gapsOf(p)).toEqual([]);
 });
 

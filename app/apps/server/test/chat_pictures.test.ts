@@ -47,3 +47,29 @@ test("Edit's chat keeps a picture by its content, and shows only those, from the
   expect(chatPictureAddress("p1", folder, `${root}/exports/Frame at 1m32.png`, [])).toBeNull();
   fs.rmSync(root, { recursive: true, force: true });
 });
+
+test("the tools' pictures wait in the cache a while, oldest gone first, every project's", async () => {
+  const { pruneToolPictures, resetPruning } = await import("../src/chat_pictures.ts");
+  const root = fs.mkdtempSync(`${os.tmpdir()}/tool-pictures-`);
+  try {
+    fs.mkdirSync(`${root}/p1`);
+    fs.mkdirSync(`${root}/p2`);
+    fs.writeFileSync(`${root}/p1/new.png`, "new");
+    fs.writeFileSync(`${root}/p2/old.png`, "old");
+    const now = Date.now();
+    // Three days old: past the two it waits.
+    fs.utimesSync(`${root}/p2/old.png`, new Date(now - 3 * 86_400_000), new Date(now - 3 * 86_400_000));
+    resetPruning();
+    pruneToolPictures(root, now);
+    expect(fs.existsSync(`${root}/p1/new.png`)).toBe(true);
+    expect(fs.existsSync(`${root}/p2/old.png`)).toBe(false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a picture's Markdown in code is left as written", async () => {
+  const text = "Write it as `![x](/tmp/a.png)`:\n\n```\n![y](/tmp/b.png)\n```\n\n![z](/tmp/c.png)";
+  const out = await inlinePictures(text, async () => "/api/x");
+  expect(out).toBe("Write it as `![x](/tmp/a.png)`:\n\n```\n![y](/tmp/b.png)\n```\n\n![z](/api/x)");
+});

@@ -14,8 +14,9 @@ export interface Found {
   end: number | null;
 }
 
-const TIME = String.raw`(?:\d{1,2}:)?\d{1,2}:[0-5]\d(?:\.\d{1,2})?`;
-const PATTERN = new RegExp(String.raw`(?<![\d:.])(${TIME})(?:\s*(?:–|—|-|to)\s*(${TIME}))?(?![\d:])`, "gu");
+const TIME = String.raw`(?:\d{1,2}:)?\d{1,2}:[0-5]\d(?:\.\d{1,3})?`;
+// A clock's time ("10:30am", "9:15 p.m.") isn't one in the edit.
+const PATTERN = new RegExp(String.raw`(?<![\d:.])(${TIME})(?:\s*(?:–|—|-|to)\s*(${TIME}))?(?![\d:]|\.\d)(?!\s*[ap]\.?m\b\.?)`, "giu");
 
 /** "1:44:00", "22:00", "0:17.5" → seconds. */
 export function seconds(time: string): number {

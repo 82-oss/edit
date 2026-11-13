@@ -20,10 +20,11 @@ const SHORTEST_RECORDING_S = 5;
 /** Whether a source is speech to hear in both ears: footage's sound, or a recording that isn't the library's music or effects. */
 export function speech(media: Media): boolean {
   if (media.kind === "video") return media.has_audio === true;
-  return media.kind === "audio" && (media as Media & { library?: unknown }).library == null && media.duration >= SHORTEST_RECORDING_S;
+  // The agent's own sounds (make_sound, effects.ts) are effects however long: a riser or a sweep keeps its sides.
+  return media.kind === "audio" && (media as Media & { library?: unknown }).library == null && !media.path.includes("effect-sounds") && media.duration >= SHORTEST_RECORDING_S;
 }
 
-/** The audio clips with no side set, by source: the stretches they play ([from, seconds] of the source). */
+/** The audio clips with no side set, by source: the stretches they play ([from, seconds] of the source). One said "stereo" (both_ears, its own sides put back) is set, and stays as said. */
 export function unsided(clips: readonly Clip[], fps: number): Map<string, [number, number][]> {
   const out = new Map<string, [number, number][]>();
   for (const clip of clips) {

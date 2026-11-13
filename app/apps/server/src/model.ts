@@ -51,6 +51,7 @@ export type {
   ShakeMotion,
   ShakePreset,
   Shape,
+  SoundChannel,
   Style,
   TextAnimation,
   TextBox,

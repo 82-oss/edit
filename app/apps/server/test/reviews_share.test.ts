@@ -85,7 +85,8 @@ function cutShort(home: string, id: string, step: string, args: Record<string, u
 /** Carries the listed share on, as serve.ts's resumer does after a restart, and waits for it to end. */
 async function carryOn(app: Parameters<typeof reviews.resumeShareJob>[0], home: string, id: string): Promise<void> {
   await jobs.resume(home, { share: (job) => reviews.resumeShareJob(app, job) }, ["share"]);
-  for (let tries = 0; tries < 400 && jobs.live(jobs.get(home, `share:${id}`)!); tries++) await Bun.sleep(10);
+  // Up to 20 s: the whole suite at once on every core took the share past 4 s (Nov 13), never a real hang.
+  for (let tries = 0; tries < 2000 && jobs.live(jobs.get(home, `share:${id}`)!); tries++) await Bun.sleep(10);
 }
 
 test("a share runs its steps in order, says each where the dialog reads it, and is up on the link only once published", async () => {

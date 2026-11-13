@@ -383,6 +383,8 @@ impl Source for OneSide {
                 SoundChannel::Right => right,
                 // Equal power: a voice on one side loses 3 dB, one on both gains 3, never twice as loud.
                 SoundChannel::Both => (left + right) * std::f32::consts::FRAC_1_SQRT_2,
+                // Never made for it (`Sources::open`): its own sides as they are.
+                SoundChannel::Stereo => return Ok(frames),
             };
             *frame = [kept, kept];
         }
@@ -413,8 +415,8 @@ impl Sources {
     fn open(&mut self, part: &Part) -> Result<Box<dyn Source>, String> {
         let inner = self.decoder(part)?;
         Ok(match part.segment.channel {
+            None | Some(SoundChannel::Stereo) => inner,
             Some(side) => Box::new(OneSide { inner, side }),
-            None => inner,
         })
     }
 
@@ -1611,6 +1613,16 @@ mod tests {
             let out = mixed_with(native, &[part(&path, right_only)], RATE);
             assert!((out[at] - 0.25).abs() < 1e-4, "{native}: {}", out[at]);
             assert!((out[at + 1] - 0.25).abs() < 1e-4, "{native}");
+            // Stereo, chosen: each ear its own side, as with no channel.
+            let mut stereo = segment(0.0, 1.0, 5.0);
+            stereo.channel = Some(SoundChannel::Stereo);
+            let out = mixed_with(native, &[part(&path, stereo)], RATE);
+            assert!((out[at] - 0.55).abs() < 2e-4, "{native}: {}", out[at]);
+            assert!(
+                (out[at + 1] - 0.25).abs() < 1e-4,
+                "{native}: {}",
+                out[at + 1]
+            );
         }
         std::fs::remove_dir_all(dir).ok();
     }

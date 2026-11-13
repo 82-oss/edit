@@ -48,7 +48,11 @@ export function soundSync(drift: number): { seek: boolean; rate: number } {
 }
 
 /** What a sound element needs to start at `time` (s) with the picture: moved there, waited for (still loading), or nothing. */
-export function soundAt(sound: Pick<HTMLMediaElement, "seeking" | "readyState" | "currentTime" | "buffered" | "duration">, time: number): "ready" | "move" | "wait" {
+export function soundAt(sound: Pick<HTMLMediaElement, "seeking" | "readyState" | "currentTime" | "buffered" | "duration"> & { error?: MediaError | null }, time: number): "ready" | "move" | "wait" {
+  // A sound that couldn't load (gone with a render replaced, undecodable) never will: the picture isn't held for it.
+  if (sound.error != null) return "ready";
+  // Past a sound a little shorter than its picture: there's nothing there to wait for or move to.
+  if (Number.isFinite(sound.duration) && time >= sound.duration - DRIFT) return "ready";
   if (sound.seeking) return "wait";
   if (Math.abs(sound.currentTime - time) > DRIFT / 2) return "move";
   // HAVE_FUTURE_DATA: enough to play on from here.

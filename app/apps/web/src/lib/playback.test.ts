@@ -35,21 +35,22 @@ class AudioClock {
   currentTime = 0;
   state = "running";
   destination = {};
-  nodes: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }[] = [];
+  nodes: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn>; to?: AudioClock["gains"][number] }[] = [];
   gains: { gain: { setValueAtTime: ReturnType<typeof vi.fn>; linearRampToValueAtTime: ReturnType<typeof vi.fn> } }[] = [];
   resume() { return Promise.resolve(); }
   createBuffer(channels: number, length: number, sampleRate: number) {
     return { numberOfChannels: channels, length, sampleRate, copyToChannel: vi.fn() };
   }
   createGain() {
-    const node = { gain: { setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
+    const node = { context: this, gain: { setValueAtTime: vi.fn(), linearRampToValueAtTime: vi.fn() },
       connect: () => ({ connect: vi.fn() }), disconnect: vi.fn() };
     this.gains.push(node);
     return node;
   }
   createBufferSource() {
-    const node = { buffer: null, playbackRate: { value: 1 }, start: vi.fn(), stop: vi.fn(),
-      connect: () => ({ connect: vi.fn() }), disconnect: vi.fn(), onended: null };
+    // Its gain is what it connects to (the player's volume, playback.ts's master, is a gain too).
+    const node: AudioClock["nodes"][number] & Record<string, unknown> = { buffer: null, playbackRate: { value: 1 }, start: vi.fn(), stop: vi.fn(),
+      connect: (to: AudioClock["gains"][number]) => { node.to = to; return { connect: vi.fn() }; }, disconnect: vi.fn(), onended: null };
     this.nodes.push(node);
     return node;
   }
@@ -289,6 +290,21 @@ describe("preview seeks and lifetime", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("stops at the out point it's given while a pinned version shows, not that version's own", () => {
+    // Bodycam HQ while the agent works: the pinned copy's mark_out is from when the turn began (lib/watching.ts).
+    const p = { ...fixture(), mark_out: 60 }; p.media[0].has_audio = true;
+    p.tracks.push({ id: "a1", kind: "audio", hidden: false, muted: false, locked: false });
+    p.clips.push({ id: "a", type: "audio", track: "a1", media: "m1", start: 0, duration: 90,
+      source_in: 2, speed: 1, volume_db: 0, fade_in: 0, fade_out: 0, color: "blue" });
+    for (let chunk = 0; chunk < 20; chunk++) decoding.sound.set(chunk,
+      { start: chunk * 0.5, sampleRate: 48000, channels: [new Float32Array(24000)] });
+    engine.sources.mockReturnValue("[]");
+    preview.setProject(p, {}); preview.setOutPoint(20); draw(); preview.play(); draw();
+    clock.currentTime = 1; draw();
+    expect(playhead.frame).toBe(20);
+    expect(playhead.playing).toBe(false);
+  });
+
   it("freezes both clocks when decoded audio is missing", () => {
     const p = fixture(); p.media[0].has_audio = true;
     p.tracks.push({ id: "a1", kind: "audio", hidden: false, muted: false, locked: false });
@@ -411,7 +427,7 @@ describe("preview seeks and lifetime", () => {
     const at = (f: number) => starts[0][0] + (f - 81) / 30;
     const early = starts.findIndex((call) => Math.abs(call[0] - at(86)) < 1e-6);
     expect(early).toBeGreaterThanOrEqual(0);
-    const rising = clock.gains[early].gain;
+    const rising = clock.nodes[early].to!.gain;
     expect(rising.setValueAtTime.mock.calls[0][0]).toBeCloseTo(0);
     // On the equal-power curve over the 8 frames, not the clip's 6-frame linear fade (2 frames in: 0.38, not 0.33).
     const twoIn = rising.linearRampToValueAtTime.mock.calls.find((call) => Math.abs(call[1] - at(88)) < 1e-6);

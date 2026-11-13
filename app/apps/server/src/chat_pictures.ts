@@ -14,6 +14,9 @@ import { join } from "node:path";
 /** A picture written as Markdown: its words and where it is. */
 const PICTURE = /!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"\n]*")?\s*\)/g;
 
+/** Code in Markdown, fenced or inline (captured, so splitting on it keeps it, at the odd places). */
+const CODE = /(```[\s\S]*?```|`[^`\n]+`)/;
+
 /** The image files an agent may hand on: what a browser draws. */
 export const PICTURE_FILE = /\.(png|jpe?g|webp|gif)$/i;
 
@@ -23,7 +26,10 @@ export const PICTURE_FILE = /\.(png|jpe?g|webp|gif)$/i;
  * distinct source is placed once.
  */
 export async function inlinePictures(text: string, place: (source: string) => Promise<string | null>): Promise<string> {
-  const sources = new Set([...text.matchAll(PICTURE)].map((match) => match[2]!));
+  // Code (fenced or inline) is shown as written: a picture's Markdown in it is an example, not a picture.
+  const parts = text.split(CODE);
+  const prose = parts.filter((_part, index) => index % 2 === 0).join("\n");
+  const sources = new Set([...prose.matchAll(PICTURE)].map((match) => match[2]!));
   if (sources.size === 0) return text;
   const placed = new Map<string, string | null>();
   for (const source of sources) {
@@ -35,10 +41,16 @@ export async function inlinePictures(text: string, place: (source: string) => Pr
     }
     placed.set(source, await place(path).catch(() => null));
   }
-  return text.replace(PICTURE, (_whole, words: string, source: string) => {
-    const address = placed.get(source);
-    return address ? `![${words}](${address})` : `![${words}](unavailable:${encodeURIComponent(source.split("/").pop() ?? "picture")})`;
-  });
+  return parts
+    .map((part, index) =>
+      index % 2 === 1
+        ? part
+        : part.replace(PICTURE, (_whole, words: string, source: string) => {
+            const address = placed.get(source);
+            return address ? `![${words}](${address})` : `![${words}](unavailable:${encodeURIComponent(source.split("/").pop() ?? "picture")})`;
+          }),
+    )
+    .join("");
 }
 
 /** A file the agent named that this Mac has and a browser can show, inside one of `roots`. */
@@ -80,6 +92,60 @@ export function keepPicture(folder: string, bytes: Uint8Array, extension: string
   fs.writeFileSync(partial, bytes);
   fs.renameSync(partial, out);
   return out;
+}
+
+/**
+ * Where the pictures tools show an agent wait, in case its answer shows one:
+ * the cache's, not the project's (every frame of a frame-by-frame look kept
+ * in the project came to 440 MB in a day, Nov 13). An answer that shows one
+ * keeps it in the project's `chat-pictures` (chatPictureAddress); the rest go
+ * after `TOOL_PICTURES_KEPT_MS`, or sooner once there are more than
+ * `TOOL_PICTURES_MAX_BYTES` of them (oldest first).
+ */
+export const TOOL_PICTURES = "tool-pictures";
+const TOOL_PICTURES_KEPT_MS = 2 * 24 * 60 * 60_000;
+const TOOL_PICTURES_MAX_BYTES = 2 * 1024 ** 3;
+const PRUNE_EVERY_MS = 10 * 60_000;
+let prunedAt = 0;
+
+/** Clears out the tool pictures under `root` (every project's) that have waited long enough, at most every ten minutes. */
+export function pruneToolPictures(root: string, now = Date.now()): void {
+  if (now - prunedAt < PRUNE_EVERY_MS) return;
+  prunedAt = now;
+  const files: { path: string; at: number; bytes: number }[] = [];
+  let projects: string[] = [];
+  try {
+    projects = fs.readdirSync(root);
+  } catch {
+    return;
+  }
+  for (const project of projects) {
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(join(root, project));
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      try {
+        const stat = fs.statSync(join(root, project, name));
+        if (stat.isFile()) files.push({ path: join(root, project, name), at: stat.mtimeMs, bytes: stat.size });
+      } catch {
+        // Gone already.
+      }
+    }
+  }
+  files.sort((a, b) => b.at - a.at);
+  let total = 0;
+  for (const file of files) {
+    total += file.bytes;
+    if (now - file.at > TOOL_PICTURES_KEPT_MS || total > TOOL_PICTURES_MAX_BYTES) fs.rmSync(file.path, { force: true });
+  }
+}
+
+/** Lets the next prune run at once (tests). */
+export function resetPruning(): void {
+  prunedAt = 0;
 }
 
 /** A kept picture's file in `folder`, by name: null for any other name. */

@@ -4,6 +4,9 @@
  * Which of a stereo source's sides an audio clip plays in both ears (its
  * `channel`): one side (the other silent), or both mixed (a call recorded
  * with a voice on each side: Sphe, Nov 13, "part of the audio appears in
- * one ear and part of the audio appears in the other ear").
+ * one ear and part of the audio appears in the other ear"). `Stereo` plays
+ * the source's own sides, as no channel does, but said on purpose: Bodycam
+ * HQ sets a side by itself only on clips that say none, and a stereo put
+ * back by hand was set to one side again at the turn's end.
  */
-export type SoundChannel = "left" | "right" | "both";
+export type SoundChannel = "left" | "right" | "both" | "stereo";

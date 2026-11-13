@@ -16,6 +16,7 @@ import { addComment, boxFrom, editComment, numbers, openComments, pictureRect, r
 import { playhead } from "../lib/playback";
 import { useEditor } from "../lib/store";
 import { rate } from "../lib/types";
+import { liveFrame, onViewed, pinFor, useWatching } from "../lib/watching";
 import { Draft, Pin, PIN_CURSOR, type PinComment } from "./CommentPins";
 import { cx } from "./ui";
 
@@ -33,6 +34,9 @@ function pinOf(box: NoteBox, width: number, height: number): { x: number; y: num
 
 export function VideoComments({ wrap }: { wrap: HTMLDivElement | null }) {
   const settings = useEditor((state) => state.project?.settings);
+  const live = useEditor((state) => state.project);
+  // A note's moment is the edit's as it is now: on a version pinned while the agent works, where it is in that one.
+  const viewed = pinFor(useWatching((state) => state.pinned), live?.id ?? null)?.project ?? live;
   const notes = useNotes((state) => state.notes);
   const commenting = useNotes((state) => state.commenting);
   const opened = useNotes((state) => state.opened);
@@ -92,7 +96,7 @@ export function VideoComments({ wrap }: { wrap: HTMLDivElement | null }) {
   const near = NEAR_S * rate(settings);
   const numbered = numbers(notes);
   // The open ones at this moment, while paused (the one opened from the progress bar whatever the moment).
-  const shown = paused ? openComments(notes).filter((note) => note.box !== null && (Math.abs(note.now - frame) <= near || note.id === opened)) : [];
+  const shown = paused ? openComments(notes).filter((note) => note.box !== null && (Math.abs((live === null || viewed === null ? note.now : onViewed(live, viewed, note.now)) - frame) <= near || note.id === opened)) : [];
   const outlined = shown.find((note) => (note.id === opened || note.id === hovered) && note.box !== null && !(note.box.w < SPOT && note.box.h < SPOT));
   const dragged = drag === null ? null : boxFrom(drag.a, drag.b, rect);
   const local = (event: React.PointerEvent) => {
@@ -129,7 +133,8 @@ export function VideoComments({ wrap }: { wrap: HTMLDivElement | null }) {
         const area = boxFrom(drag.a, drag.b, rect);
         const spot: NoteBox = { x: Math.min(1 - SPOT / 2, Math.max(0, drag.a.x / rect.width - SPOT / 4)), y: Math.min(1 - SPOT / 2, Math.max(0, drag.a.y / rect.height - SPOT / 4)), w: SPOT / 2, h: SPOT / 2 };
         const box = area ?? spot;
-        setDraft({ at: pinOf(box, settings.width, settings.height), box, frame });
+        // Left on the edit as it is now, also while a version's pinned for watching (lib/watching.ts).
+        setDraft({ at: pinOf(box, settings.width, settings.height), box, frame: liveFrame(frame) });
         setDrag(null);
       }}
     >

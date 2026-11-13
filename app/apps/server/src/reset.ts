@@ -76,6 +76,7 @@ export function cleared(project: Project): void {
   delete project.mark_out;
   delete project.markers;
   delete project.segments;
+  delete project.ranges;
   delete project.people;
   for (const block of project.script.blocks) {
     delete block.clip;

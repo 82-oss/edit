@@ -759,10 +759,12 @@ export class Agents implements seams.AgentPanel {
   private async showPictures(project: string, id: string): Promise<void> {
     const found = this.withChat(project).entries.find((item) => item.id === id);
     if (found === undefined) return;
-    const folder = join(this.store.uploadsDir(project), CHAT_PICTURES);
-    const roots = [this.store.uploadsDir(project), this.store.cacheDir(), readExportFolder(this.store.home).path, os.tmpdir()];
+    // A sub-agent's chat (`<id>~review`) shows its project's pictures, at its project's address.
+    const owner = projectOf(project);
+    const folder = join(this.store.uploadsDir(owner), CHAT_PICTURES);
+    const roots = [this.store.uploadsDir(owner), this.store.cacheDir(), readExportFolder(this.store.home).path, os.tmpdir()];
     try {
-      const text = await inlinePictures(found.text, async (source) => chatPictureAddress(project, folder, source, roots));
+      const text = await inlinePictures(found.text, async (source) => chatPictureAddress(owner, folder, source, roots));
       const now = this.withChat(project).entries.find((item) => item.id === id);
       if (now === undefined || text === now.text) return;
       this.upsert(project, { ...now, text });

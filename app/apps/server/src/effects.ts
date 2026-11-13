@@ -394,7 +394,9 @@ async function file(context: RouteContext<App>): Promise<Response> {
     } catch {
       throw notFound("no such file");
     }
-    // Fonts beyond Edit's own: the project's (fetch_font) and V2's cloud's, read again when it's been a while.
+    // Fonts beyond Edit's own: the project's (fetch_font) and V2's cloud's (read once before the first page, so it's
+    // drawn in them), read again when it's been a while.
+    await cloudFontsRead(app);
     void fonts.refreshCloud(app.store);
     return new Response(withRuntime(page, fonts.facesOf(fonts.fontsFor(app.store, project))), { headers: { ...headers, "content-type": "text/html; charset=utf-8" } });
   }
@@ -1046,8 +1048,23 @@ interface Render {
 }
 
 const renders = new Map<string, Render>();
-/** Renders that failed, by project, effect and code version: not tried again until the code changes. */
-const failed = new Map<string, string>();
+/**
+ * Renders that failed, by project, effect and code version: not tried again
+ * until the code changes, or for `FAILED_RETRY_MS` (a map's page reaches the
+ * network: tiles or a place that timed out once may load the next time, and an
+ * export shouldn't stop on that failure until Edit restarts).
+ */
+const failed = new Map<string, { said: string; at: number }>();
+const FAILED_RETRY_MS = 5 * 60_000;
+
+/** Why a render failed, while that still stands. */
+function failureOf(render: string): string | undefined {
+  const found = failed.get(render);
+  if (found === undefined) return undefined;
+  if (Date.now() - found.at < FAILED_RETRY_MS) return found.said;
+  failed.delete(render);
+  return undefined;
+}
 const settling = new Map<string, ReturnType<typeof setTimeout>>();
 const renderSlot = new Semaphore(1);
 const id = (project: string, name: string, key: string) => `${project}/${name}/${key}`;
@@ -1081,7 +1098,7 @@ export function renderNow(app: App, project: string, name: string): Promise<void
   const key = sourceKey(filesIn(dir), frameOf(live.project), fontsUsed(app.store, project, dir));
   const running = renders.get(id(project, name, key));
   if (running !== undefined) return running.done;
-  const failure = failed.get(id(project, name, key));
+  const failure = failureOf(id(project, name, key));
   if (failure !== undefined) return Promise.reject(new Error(failure));
   const render: Render = { project, name, key, drawn: 0, frames: 0, done: Promise.resolve() };
   render.done = renderSlot
@@ -1092,7 +1109,7 @@ export function renderNow(app: App, project: string, name: string): Promise<void
       if (error instanceof Outdated) return settled(app, project, name).then(() => renderNow(app, project, name));
       const said = diag.messageOf(error);
       // A map that lost its drawing is the card's state then, not the code's: tried again when it's asked for next.
-      if (!said.includes("lost its drawing")) failed.set(id(project, name, key), said);
+      if (!said.includes("lost its drawing")) failed.set(id(project, name, key), { said, at: Date.now() });
       diag.warn("effects", `${project}: ${name} didn't render: ${said}`);
       throw new Error(`${name} didn't render: ${said}`);
     })
@@ -1327,14 +1344,37 @@ function rateArg(project: Project): string {
  */
 export const beforeRenders = new Map<string, (app: App, project: string) => Promise<void>>();
 
+/**
+ * V2's cloud's fonts read once since Edit started (after its sign-in is back):
+ * a render's key has the fonts its page uses, and with none read yet an effect
+ * drawn in a library font looked changed at every start, its render replaced
+ * by the clear still and its cloud copy dropped, then made again (Nov 13 audit).
+ */
+let fontsRead: Promise<void> | null = null;
+function cloudFontsRead(app: App): Promise<void> {
+  fontsRead ??= accounts
+    .tokenWhenReady()
+    .catch(() => null)
+    .then(() => fonts.refreshCloud(app.store, true))
+    .then(
+      () => {},
+      () => {},
+    );
+  return fontsRead;
+}
+
 async function readyToRender(app: App, project: string): Promise<void> {
+  await cloudFontsRead(app);
   for (const [what, before] of beforeRenders) {
     await before(app, project).catch((error: unknown) => diag.warn("effects", `${project}: before its renders (${what}): ${diag.messageOf(error)}`));
   }
 }
 
 export function renderSoon(app: App, project: string): void {
-  standIn(app, project).catch((error: unknown) => diag.warn("effects", `${project}: its effects' clear pictures: ${diag.messageOf(error)}`));
+  // Judged stale only once the fonts its key has are known (cloudFontsRead).
+  cloudFontsRead(app)
+    .then(() => standIn(app, project))
+    .catch((error: unknown) => diag.warn("effects", `${project}: its effects' clear pictures: ${diag.messageOf(error)}`));
   const waiting = settling.get(project);
   if (waiting !== undefined) clearTimeout(waiting);
   const timer = setTimeout(() => {
@@ -1363,7 +1403,7 @@ export function renderLine(app: App, project: string, name: string): string | nu
 export function renderState(project: string, name: string, key: string): string | null {
   const running = renders.get(id(project, name, key));
   if (running !== undefined) return running.frames > 0 ? `rendering, ${running.drawn} of ${running.frames} frames` : "rendering";
-  const failure = failed.get(id(project, name, key));
+  const failure = failureOf(id(project, name, key));
   return failure === undefined ? null : `its render failed: ${failure}`;
 }
 

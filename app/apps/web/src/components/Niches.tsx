@@ -188,7 +188,8 @@ export function NichePageDialog({ open, nicheKey, onClose }: { open: boolean; ni
     if (niche.name.trim() === "") return;
     setPage({ ...page, niche });
     try {
-      await nicheApi.save({ key: niche.key, name: niche.name, description: niche.description, like: niche.like ?? "", kind: niche.kind });
+      // Only what changed besides the name (required): another Mac's change to the rest since this page opened stays.
+      await nicheApi.save({ key: niche.key, name: niche.name, ...("description" in to ? { description: niche.description } : {}), ...("like" in to ? { like: niche.like ?? "" } : {}) });
       void loadNiches();
       if ("like" in to) await reload();
     } catch (cause) {
@@ -215,6 +216,8 @@ export function NichePageDialog({ open, nicheKey, onClose }: { open: boolean; ni
       await nicheApi.archive(item.key, true);
       setPage((now) => (now ? { ...now, items: now.items.filter((one) => one.key !== item.key) } : now));
       if (reading === item.key) setReading(null);
+      // What it covered (the house's, or a niche it's like, of the same name) is what the agent has now: shown.
+      void reload();
       toast(`“${item.name}” put away`, "info", {
         label: "Undo",
         run: () =>

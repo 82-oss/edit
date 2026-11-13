@@ -1,6 +1,7 @@
 // Pure timeline operations on an (immer) draft project. They keep the same
 // invariants edit-core validates: clips on a track never overlap.
 
+import { closeMarks } from "@edit/types/marks";
 import { current, isDraft } from "immer";
 
 import { isSubtitled } from "./drive";
@@ -756,9 +757,10 @@ export function gapAt(project: Project, track: string, frame: number): [number, 
  * Takes [start, end) out of the whole timeline (a ripple delete of a gap):
  * what plays across its edges on other tracks (a music bed, a subtitle) is
  * cut there, what's inside goes, and everything after slides back by its
- * length, all tracks together; in/out points move too. Marc, Nov 8: "Being
- * able to select silence and delete it so all the elements afterwards move up
- * would be really helpful." The server's remove_time does the same.
+ * length, all tracks together; in/out points, marked stretches and markers
+ * move too (closeMarks). Marc, Nov 8: "Being able to select silence and
+ * delete it so all the elements afterwards move up would be really helpful."
+ * The server's remove_time does the same.
  */
 export function closeGap(project: Project, [start, end]: [number, number]) {
   if (end <= start) return;
@@ -767,12 +769,7 @@ export function closeGap(project: Project, [start, end]: [number, number]) {
   project.clips = project.clips.filter((clip) => trackOf(project, clip.track)?.locked || !(clip.start >= start && clipEnd(clip) <= end));
   const length = end - start;
   for (const clip of project.clips) if (clip.start >= end) clip.start -= length;
-  for (const key of ["mark_in", "mark_out"] as const) {
-    const mark = project[key];
-    if (mark === undefined || mark === null) continue;
-    if (mark >= end) project[key] = mark - length;
-    else if (mark > start) project[key] = start;
-  }
+  closeMarks(project, start, end);
 }
 
 /** Deletes clips and closes the gap on their tracks (later clips slide left). */

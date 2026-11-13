@@ -11,7 +11,7 @@
 
 import { create } from "zustand";
 
-import type { PlaybackStatus } from "./store";
+import { useEditor, type PlaybackStatus } from "./store";
 import { rate, type Clip, type Project } from "./types";
 
 export interface Pinned {
@@ -59,6 +59,29 @@ export function mapFrame(from: Project, to: Project, frame: number): number {
     if (at >= now.start && at < end(now)) return Math.round(at);
   }
   return Math.min(Math.round(frame), last);
+}
+
+/** `frame` of the edit as it is now, on the version on screen (`viewed`): the same frame when that's the edit itself. */
+export function onViewed(live: Project, viewed: Project, frame: number): number {
+  return viewed === live ? frame : mapFrame(live, viewed, frame);
+}
+
+/**
+ * The playhead's `frame` on the edit as it is now: what's marked or left at
+ * it (I and O, a note, a comment) is the edit's, so while a version is pinned
+ * it's moved off that version onto the same moment of the same shot now.
+ */
+export function liveFrame(frame: number): number {
+  const live = useEditor.getState().project;
+  const pinned = pinFor(useWatching.getState().pinned, live?.id ?? null);
+  return live === null || pinned === null ? frame : mapFrame(pinned.project, live, frame);
+}
+
+/** The edit's `frame` as it is now, where it is on the version on screen (a comment's moment, gone to from the progress bar). */
+export function viewedFrame(frame: number): number {
+  const live = useEditor.getState().project;
+  const pinned = pinFor(useWatching.getState().pinned, live?.id ?? null);
+  return live === null || pinned === null ? frame : mapFrame(live, pinned.project, frame);
 }
 
 /** The frames a pinned version cuts at after `frame`: where swapping to the new one shows least. */

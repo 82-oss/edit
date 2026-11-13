@@ -114,6 +114,23 @@ let running: Running | null = null;
 const asked = new Map<string, number>();
 /** Where the viewer's playhead was when it asked: that chunk is rendered first. */
 const focus = new Map<string, number>();
+/** When each revision's render was last looked at by a viewer (its stream, every few seconds while one plays it): per project, rev → ms. */
+const watched = new Map<string, Map<number, number>>();
+/** A render looked at this recently is still on someone's screen (a hidden tab's timers run as seldom as once a minute). */
+const WATCHED_MS = 3 * 60_000;
+
+/**
+ * Whether the render a new one replaces (`replaced`) takes the kept one's
+ * place (`kept`, keepPrevious): not while a viewer is still on the kept one
+ * and none has moved to the replaced one. Back-to-back turns: a Bodycam HQ
+ * viewer pinned through both is still on the render from before the first,
+ * and keeping the one between (which no one watched) deleted it under them.
+ */
+export function replacesKept(replaced: number, kept: number | undefined, seen: ReadonlyMap<number, number> | undefined, now = Date.now()): boolean {
+  const keptAt = kept === undefined ? undefined : seen?.get(kept);
+  if (keptAt === undefined || now - keptAt > WATCHED_MS) return true;
+  return (seen?.get(replaced) ?? Number.NEGATIVE_INFINITY) >= keptAt;
+}
 
 /** What's seen and heard: the project but its script (notes and words that change nothing on screen). */
 export function pictureHash(project: Project): string {
@@ -367,9 +384,12 @@ async function next(app: App): Promise<void> {
       const release = await turn(app, current);
       if (release !== null) {
         try {
-          // The render this one replaces stays playable for a viewer still on it (a turn's changes swap in when they're ready).
+          // The render this one replaces stays playable for a viewer still on it (a turn's changes swap in when they're ready),
+          // unless the one kept from before is the one still watched.
           const before = record(app, id);
-          if (before !== undefined && before.key === undefined && before.rev !== current.rev && playbackStream.keepPrevious(app, id, file(app, id), previousFile(app, id))) {
+          const kept = isFile(previousFile(app, id)) ? previousRecord(app, id)?.rev : undefined;
+          if (before !== undefined && before.key === undefined && before.rev !== current.rev && replacesKept(before.rev, kept, watched.get(id))
+            && playbackStream.keepPrevious(app, id, file(app, id), previousFile(app, id))) {
             writeAtomic(previousFile(app, id).replace(/\.mp4$/u, ".json"), JSON.stringify(before));
           }
           await render(app, project, current);
@@ -559,8 +579,19 @@ export function start(app: App): void {
   });
 }
 
-/** What playback_stream.ts serves for revision `rev` of `id`: the render under way, or the one made, when it's that revision's and made here. */
+/** What playback_stream.ts serves for revision `rev` of `id`: the render under way, or the one made, when it's that revision's and made here; noted as watched. */
 const lookup: playbackStream.Lookup = (app, id, rev) => {
+  const found = served(app, id, rev);
+  if (found !== null) {
+    const now = Date.now();
+    const seen = watched.get(id) ?? new Map<number, number>();
+    for (const [one, at] of seen) if (now - at > WATCHED_MS) seen.delete(one);
+    watched.set(id, seen.set(rev, now));
+  }
+  return found;
+};
+
+function served(app: App, id: string, rev: number): ReturnType<playbackStream.Lookup> {
   const fps = app.store.get(id)?.project.settings.fps ?? 30;
   if (running?.project === id && running.waiting === undefined && running.rev === rev) return { output: file(app, id), heard: running.heard ?? true, fps, since: running.started };
   const done = record(app, id);
@@ -574,7 +605,7 @@ const lookup: playbackStream.Lookup = (app, id, rev) => {
   const previous = previousRecord(app, id);
   if (previous !== undefined && previous.rev === rev && isFile(previousFile(app, id))) return { output: previousFile(app, id), heard: previous.heard ?? true, fps, since: null, previous: true };
   return null;
-};
+}
 
 export function routes(router: Router<App>): void {
   playbackStream.routes(router, lookup, (app, id) => app.store.get(id)?.project.settings.fps ?? 30, (app, id) => file(app, id));

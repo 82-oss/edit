@@ -74,7 +74,8 @@ async function call(app: App, name: string, args: Record<string, unknown>): Prom
   const reply = (await dispatch(app, { id: 1, method: "tools/call", params: { name, arguments: args } }, null)) as {
     result: { content: { type: string; text?: string }[]; isError: boolean };
   };
-  const text = reply.result.content.find((part) => part.type === "text")?.text ?? "";
+  // The tool's own words, not the note naming a picture's file (mcp/index.ts withPictureFiles).
+  const text = reply.result.content.find((part) => part.type === "text" && !part.text?.startsWith("(file: "))?.text ?? "";
   return { text, isError: reply.result.isError };
 }
 

@@ -248,10 +248,15 @@ export function exportRanges(app: App, project: Project, options: ExportOptions,
     try {
       fs.mkdirSync(dir, { recursive: true });
       if (mode === "joined") fs.mkdirSync(parts, { recursive: true });
+      // Each its own file: two stretches whose names come out the same (two "Call"s, "Part 1/2" and "Part 1:2") numbered.
+      const names = new Map<string, number>();
       for (const [index, range] of ranges.entries()) {
         if (batch.cancelled) return;
         batch.current = range.name;
-        const output = mode === "each" ? join(dir, `${safe(project.name)} - ${safe(range.name)}.mp4`) : join(parts, `part-${String(index).padStart(3, "0")}.mp4`);
+        const stem = `${safe(project.name)} - ${safe(range.name)}`;
+        const seen = (names.get(stem) ?? 0) + 1;
+        names.set(stem, seen);
+        const output = mode === "each" ? join(dir, `${seen === 1 ? stem : `${stem} (${seen})`}.mp4`) : join(parts, `part-${String(index).padStart(3, "0")}.mp4`);
         // Its file as it was (the export writes `output` with its format's extension).
         const before = timeOf(native().withExtension(output, options.format));
         const path = await app.exports.start(app.store, app.library, project, { ...options, range: [range.start, range.end], chapters: [] }, output, {

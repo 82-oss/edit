@@ -15,6 +15,7 @@
     "./thumbnail_render": "./src/thumbnail_render.ts",
     "./script_cut": "./src/script_cut.ts",
     "./crossfades": "./src/crossfades.ts",
+    "./marks": "./src/marks.ts",
     "./models": "./src/models.ts"
   },
   "scripts": {

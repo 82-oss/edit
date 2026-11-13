@@ -571,7 +571,9 @@ async function saveLesson(context: Context): Promise<Response> {
   if (text.trim() === "") throw bad("text is required");
   const found = await v2cloud.version(key);
   if (found === null) throw new ApiError(404, `no ${key}`);
-  const target = niche !== null && v2cloud.ownNicheOf(key) !== niche ? v2cloud.ownKey("skill", niche, found.item.name) : key;
+  // Kept for this niche alone (one moved into it) is its own already: changed where it is, as the agent's remember does.
+  const keptHere = found.item.niches?.length === 1 && found.item.niches[0] === niche;
+  const target = niche !== null && v2cloud.ownNicheOf(key) !== niche && !keptHere ? v2cloud.ownKey("skill", niche, found.item.name) : key;
   await v2cloud.saveSkill(found.item.name, text.trim(), "changed on its niche's page", found.item.note ?? undefined, { key: target });
   v2cloud.forgetSkills();
   return json({ key: target });
@@ -589,6 +591,7 @@ async function copyToNiche(context: Context): Promise<Response> {
   const found = await v2cloud.version(key);
   if (found === null) throw new ApiError(404, `no ${key}`);
   const target = v2cloud.ownKey(kind, to, found.item.name);
+  if ((await v2cloud.version(target)) !== null) throw new ApiError(409, `${to} has its own ${found.item.name} already: change that one on its page.`);
   await v2cloud.copyItem(found.item, target, `copied from ${key} on a niche's page`);
   v2cloud.forgetSkills();
   return json({ key: target });

@@ -21,6 +21,7 @@ import { join } from "./paths.ts";
 import { debugStrings, f32Saved, isAlphanumeric, isWhitespace, jsonForSerde, round, splitWhitespace, toI64, trim } from "./rust.ts";
 import * as seams from "./seams.ts";
 import { caseNarration } from "./case_insertion.ts";
+import { moveMarks } from "@edit/types/marks";
 import type { Word } from "./transcribe.ts";
 
 /** Lead-in kept before the first word and tail after the last (seconds). */
@@ -177,13 +178,12 @@ export async function place(app: App, id: string, given: string[] | null, only?:
       const delta = spans - card.duration;
       const oldEnd = clipEnd(card);
       if (only) {
-        for (const marker of project.markers ?? []) if (marker.frame >= oldEnd) marker.frame += delta;
         for (const segment of project.segments ?? []) {
           if (segment.start >= oldEnd) segment.start += delta;
           if (segment.end >= oldEnd) segment.end += delta;
         }
-        if (project.mark_in != null && project.mark_in >= oldEnd) project.mark_in += delta;
-        if (project.mark_out != null && project.mark_out >= oldEnd) project.mark_out += delta;
+        // The in and out points, markers and stretches marked to export (one ending on the cut-in takes its new length).
+        moveMarks(project, oldEnd, delta);
       }
       for (const other of project.clips) {
         const partner = other.id === card.id || (card.link !== undefined && card.link !== null && other.link === card.link);

@@ -710,7 +710,10 @@ pub struct SoundRoom {
 /// Which of a stereo source's sides an audio clip plays in both ears (its
 /// `channel`): one side (the other silent), or both mixed (a call recorded
 /// with a voice on each side: Sphe, Nov 13, "part of the audio appears in
-/// one ear and part of the audio appears in the other ear").
+/// one ear and part of the audio appears in the other ear"). `Stereo` plays
+/// the source's own sides, as no channel does, but said on purpose: Bodycam
+/// HQ sets a side by itself only on clips that say none, and a stereo put
+/// back by hand was set to one side again at the turn's end.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
@@ -718,6 +721,7 @@ pub enum SoundChannel {
     Left,
     Right,
     Both,
+    Stereo,
 }
 
 /// How long a mute takes to fade out and back in, outside its stretch
@@ -808,7 +812,7 @@ pub enum ClipContent {
         mutes: Vec<Mute>,
         /// Plays only this side of the source, in both ears: footage whose
         /// sound is in one ear (JJ, Nov 6: "we only have audio in the left ear").
-        /// None: the source's own stereo.
+        /// None (or `Stereo`, chosen): the source's own stereo.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts", ts(optional))]
         channel: Option<SoundChannel>,
@@ -3068,6 +3072,15 @@ mod validation_tests {
             left,
             ClipContent::Audio {
                 channel: Some(SoundChannel::Left),
+                ..
+            }
+        ));
+        let stereo: ClipContent =
+            serde_json::from_str(r#"{"type":"audio","media":"m","channel":"stereo"}"#).unwrap();
+        assert!(matches!(
+            stereo,
+            ClipContent::Audio {
+                channel: Some(SoundChannel::Stereo),
                 ..
             }
         ));

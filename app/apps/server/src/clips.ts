@@ -236,7 +236,7 @@ const VARIANTS: Record<(typeof CLIP_TYPES)[number], Struct> = {
     field("speed", "f64", 1),
     field("volume_db", "f32", 0),
     field("mutes", { vec: { struct: MUTE } }, [], isEmpty),
-    optional("channel", enumOf("SoundChannel", ["left", "right", "both"])),
+    optional("channel", enumOf("SoundChannel", ["left", "right", "both", "stereo"])),
     field("crossfade", "i64", 0, (v) => v === 0),
     optional("room", { struct: SOUND_ROOM }),
   ]),

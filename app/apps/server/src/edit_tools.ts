@@ -32,7 +32,7 @@ import * as watermarks from "./watermarks.ts";
 import { ioMessage } from "./files.ts";
 import { isBug } from "./guard.ts";
 import type { Entry } from "./agent.ts";
-import { personSaid } from "./hq_reference.ts";
+import { personSaid, squash } from "./hq_reference.ts";
 import { houseMedia, houseMediaSaved, importPaths } from "./import.ts";
 import * as ears from "./ears.ts";
 import * as horrorLook from "./horror_look.ts";
@@ -41,6 +41,7 @@ import { call, ORIGIN } from "./mcp/index.ts";
 import { handlerFor, image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
 import type { Clip, ExportOptions, Marker, Media, Project } from "./model.ts";
 import { isEssay } from "./model.ts";
+import { closeMarks } from "@edit/types/marks";
 import * as localPreviews from "./local_previews.ts";
 import { native, withProject, withProjectAsync, type EncodedImage, type ProjectInput, type SheetSpec } from "./native/index.ts";
 import { dirname, resolve as resolvePath } from "node:path";
@@ -942,6 +943,8 @@ const BIG_CUT_ASK_MS = 60 * 60_000;
  * of theirs sent after the first refusal.
  */
 function bigCut(app: ToolCall["app"], projectId: string, project: Project, frames: number, asked: unknown): void {
+  // A Short starts as its whole source and is cut down to a minute: its workflow takes out most of it at once.
+  if (project.style === "shorts") return;
   const length = durationOf(project);
   if (length <= 0 || frames * 2 <= length) return;
   const fps = fpsOf(project);
@@ -950,7 +953,10 @@ function bigCut(app: ToolCall["app"], projectId: string, project: Project, frame
   const from = since !== undefined && now - since < BIG_CUT_ASK_MS ? since : now;
   bigCutAsked.set(projectId, from);
   const entries = (seams.agentPanel(app).turn?.(projectId).entries ?? []) as readonly Entry[];
-  if (typeof asked === "string" && personSaid(entries.filter((entry) => entry.at >= from), asked)) return;
+  const theirs = entries.filter((entry) => entry.at >= from);
+  // Their answer may be a word ("yes", "do it"): as a whole message of theirs, it counts.
+  const whole = (entry: Entry) => entry.kind === "user" && typeof asked === "string" && squash(entry.text) !== "" && squash(entry.text) === squash(asked);
+  if (typeof asked === "string" && (personSaid(theirs, asked) || theirs.some(whole))) return;
   throw new Error(
     `This takes out ${fixed(frames / fps / 60, 1)} of the edit's ${fixed(length / fps / 60, 1)} minutes. Ask the person first, in plain words, what would go (and what the request might mean instead), and end your turn; ` +
       `once they've answered, call again with asked: their answer, quoted from their message.` +
@@ -3078,12 +3084,8 @@ export function closeGaps(project: Project, gone: Clip[]): number {
     if (project.clips.some((clip) => clip.start < end && clipEnd(clip) > start)) continue;
     const length = end - start;
     for (const clip of project.clips) if (clip.start >= end) clip.start -= length;
-    for (const key of ["mark_in", "mark_out"] as const) {
-      const mark = project[key];
-      if (mark === undefined || mark === null) continue;
-      if (mark >= end) project[key] = mark - length;
-      else if (mark > start) project[key] = start;
-    }
+    // The in and out points, the stretches marked to export and the markers with them.
+    closeMarks(project, start, end);
     closed += length;
   }
   return closed;

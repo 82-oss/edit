@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 
 import { agentInstructions } from "../src/agent.ts";
 import * as effects from "../src/effects.ts";
@@ -666,7 +667,7 @@ test("a sound's wave for a page: thinned to WAVE_RATE, its loudest at ±127, as 
   const samples = new Float32Array(rate).map((_, i) => 0.5 * Math.sin((2 * Math.PI * 200 * i) / rate));
   const script = waveScript("call", samples, rate);
   const window: Record<string, any> = {};
-  new Function("window", "atob", script)(window, (text: string) => Buffer.from(text, "base64").toString("binary"));
+  runInNewContext(script, { window, atob: (text: string) => Buffer.from(text, "base64").toString("binary") });
   const wave = window.waves.call;
   expect(wave.rate).toBe(WAVE_RATE);
   expect(wave.samples.length).toBe(WAVE_RATE);

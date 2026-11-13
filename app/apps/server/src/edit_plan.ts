@@ -20,7 +20,7 @@ import * as intro from "./intro_graphics.ts";
 import * as markBlurs from "./mark_blurs.ts";
 import * as typing from "./typing_sounds.ts";
 import * as markers from "./markers.ts";
-import type { Clip, Keyframe, Media, Project } from "./model.ts";
+import type { Clip, Keyframe, Media, Project, SoundChannel } from "./model.ts";
 import { isEssay } from "./model.ts";
 import { native } from "./native/index.ts";
 import {
@@ -615,8 +615,9 @@ function earsClips(project: Project, select: unknown): Clip[] {
  * the side of its source that carries it in both ears, the side measured
  * (ears.ts) unless `side` says it ("left", "right"; "both" mixes both sides
  * into both ears, for a source split between them, a voice on each; "stereo"
- * puts the source's own stereo back). A source already heard on both sides is
- * left as it is.
+ * puts the source's own stereo back, kept as said: Bodycam HQ's ears set a
+ * side only where none is). A source already heard on both sides is left as
+ * it is.
  */
 function bothEars(project: Project, args: Args, sides: Record<string, "left" | "right" | "both" | null>): Json {
   const given = str(args.side);
@@ -628,8 +629,8 @@ function bothEars(project: Project, args: Args, sides: Record<string, "left" | "
   const found: Record<string, string> = {};
   for (const clip of clips) {
     if (clip.type !== "audio") continue;
-    let side: "left" | "right" | "both" | null;
-    if (given !== null) side = given === "stereo" ? null : (given as "left" | "right" | "both");
+    let side: SoundChannel | null;
+    if (given !== null) side = given as SoundChannel;
     else {
       if (!(clip.media in sides)) throw new Error(`the sides of ${clip.media} weren't measured (run both_ears through apply_edit_plan)`);
       side = sides[clip.media]!;
@@ -639,7 +640,7 @@ function bothEars(project: Project, args: Args, sides: Record<string, "left" | "
         continue;
       }
     }
-    const own = clip as Clip & { channel?: "left" | "right" | "both" };
+    const own = clip as Clip & { channel?: SoundChannel };
     if ((own.channel ?? null) === side) continue;
     if (side === null) delete own.channel;
     else own.channel = side;

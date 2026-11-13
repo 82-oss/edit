@@ -27,3 +27,10 @@ test("only speech is put in both ears: footage and recordings, never the library
   expect(speech(media({ kind: "audio", library: "sfx" }))).toBe(false);
   expect(speech(media({ kind: "audio", duration: 0.95 }))).toBe(false);
 });
+
+test("a clip whose stereo was put back on purpose is never given a side again", async () => {
+  // Review, Nov 13: both_ears side "stereo" left no channel, and the turn's end measured it and set one.
+  const { unsided } = await import("../src/hq_ears.ts");
+  const sound = (id: string, channel?: string) => ({ id, type: "audio", track: "a1", start: 0, duration: 60, media: id, source_in: 2, speed: 1, ...(channel === undefined ? {} : { channel }) }) as never;
+  expect([...unsided([sound("none"), sound("stereo", "stereo"), sound("left", "left")], 30)]).toEqual([["none", [[2, 2]]]]);
+});

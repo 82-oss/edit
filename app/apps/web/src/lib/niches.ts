@@ -64,7 +64,7 @@ export async function loadNiches(): Promise<Niche[]> {
 export const nicheApi = {
   page: (key: string) => request<NichePage>("GET", `/api/v2/niches/${encodeURIComponent(key)}`),
   /** Without `key`, a new niche; with it, that niche changed. `like: ""` is like none. */
-  save: (body: { key?: string; name: string; description: string; like: string; kind: Style }) => request<{ niche: Niche }>("POST", "/api/v2/niches", body),
+  save: (body: { key?: string; name: string; description?: string; like?: string; kind?: Style }) => request<{ niche: Niche }>("POST", "/api/v2/niches", body),
   cutLoose: (key: string) => request<{ kept: number }>("POST", `/api/v2/niches/${encodeURIComponent(key)}/cut-loose`),
   lesson: (key: string) => request<{ key: string; text: string | null; note: string | null }>("GET", `/api/v2/lessons?key=${encodeURIComponent(key)}`),
   saveLesson: (key: string, text: string, niche: string) => request<{ key: string }>("POST", "/api/v2/lessons", { key, text, niche }),
@@ -87,14 +87,15 @@ export interface V2Choice {
 const BODYCAM_HQ_CHOICE: V2Choice = { key: BODYCAM_HQ, name: "Bodycam HQ", description: "16:9 · a bodycam case with graphics the agent writes as code", kind: "bodycam", niche: null };
 
 /**
- * New project's V2 pills: the niches of a kind this person edits, or, when
- * there are none to be had (signed out, not asked yet, refused), Bodycam HQ as
- * it was, so nothing that worked goes.
+ * New project's V2 pills: the niches of a kind this person edits, and Bodycam
+ * HQ as it was before niches whenever no niche is it (signed out, not asked
+ * yet, refused, or a cloud without it), so nothing that worked goes.
  */
 export function v2Choices(niches: Niche[] | null, styles: readonly Style[]): V2Choice[] {
-  const mine = (niches ?? []).filter((one) => styles.includes(one.kind));
-  if (mine.length > 0) return mine.map((one) => ({ key: one.key, name: one.name, description: one.description, kind: one.kind, niche: one.key }));
-  return styles.includes("bodycam") ? [BODYCAM_HQ_CHOICE] : [];
+  const mine = (niches ?? []).filter((one) => styles.includes(one.kind)).map((one): V2Choice => ({ key: one.key, name: one.name, description: one.description, kind: one.kind, niche: one.key }));
+  // Bodycam HQ stays until a niche of its own stands for it: a cloud whose first niche is another (prod has no
+  // bodycam-hq seeded) would otherwise take it off New project.
+  return styles.includes("bodycam") && !mine.some((one) => one.key === BODYCAM_HQ) ? [BODYCAM_HQ_CHOICE, ...mine] : mine;
 }
 
 /** The niches `key` is like, nearest first, itself first (a loop stops where it would come back). */

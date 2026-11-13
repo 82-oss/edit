@@ -302,8 +302,10 @@ it("a track's gap, deleted, comes out of the whole timeline: a music bed across 
       { id: "bed", track: "m", start: 0, duration: 300, type: "audio", media: "z", source_in: 0, speed: 1, fade_in: 0, fade_out: 0 },
     ],
     media: [],
-    markers: [],
+    markers: [{ frame: 160, name: "slam" }],
     mark_out: 190,
+    // Marked to export: the footage after the gap, and a stretch wholly in it (gone with it).
+    ranges: [{ start: 150, end: 200, name: "After" }, { start: 110, end: 140, name: "Gap" }],
   } as unknown as Parameters<typeof closeGap>[0];
   expect(gapAt(project, "v1", 50)).toBeNull();
   expect(gapAt(project, "v1", 130)).toEqual([100, 150]);
@@ -317,5 +319,7 @@ it("a track's gap, deleted, comes out of the whole timeline: a music bed across 
   const rest = project.clips.find((one) => one.track === "m" && one.id !== "bed")!;
   expect([rest.start, rest.duration]).toEqual([100, 150]);
   expect(project.mark_out).toBe(140);
+  expect(project.ranges).toEqual([{ start: 100, end: 150, name: "After" }]);
+  expect(project.markers?.[0]?.frame).toBe(110);
   expect(gapAt(project, "v1", 120)).toBeNull();
 });

@@ -223,6 +223,13 @@ class Preview {
    * seek away from it, and it's gone.
    */
   range: { start: number; end: number } | null = null;
+  /**
+   * The out point to stop at on a version pinned while the agent works
+   * (lib/watching.ts): the edit's as it is now, moved onto that version, since
+   * the pinned copy's own is the one from when the turn began. Undefined: the
+   * project's own.
+   */
+  private outPoint: number | null | undefined = undefined;
   private audio: AudioContext | null = null;
   private peaks = new Map<string, Uint8Array | Promise<void>>();
   private scheduled = new Map<string, ScheduledSound>();
@@ -348,20 +355,34 @@ class Preview {
   private output(audio: AudioContext): AudioNode {
     if (this.master === null || this.master.context !== audio) {
       this.master = audio.createGain();
-      this.master.gain.value = gainOf(useVolume.getState());
+      this.master.gain.value = this.heard();
       this.master.connect(audio.destination);
     }
     return this.master;
   }
 
+  /**
+   * The volume heard: the player's in Bodycam HQ, whose player has it; full
+   * elsewhere, whose player has no way to change it (a mute set in HQ would
+   * otherwise silence a V1 edit with nothing on screen to undo it).
+   */
+  private heard(): number {
+    return this.project?.hq === true ? gainOf(useVolume.getState()) : 1;
+  }
+  /** The volume last put on Edit.app's own player, so a project's change sends it once. */
+  private nativeVolume: number | null = null;
+
   /** The player's volume on every way it sounds: the live mix, the render and a stream's sound. */
   private applyVolume = () => {
-    const gain = gainOf(useVolume.getState());
+    const gain = this.heard();
     if (this.master !== null) this.master.gain.setTargetAtTime(gain, this.master.context.currentTime, 0.015);
     if (this.video !== null) this.video.volume = Math.min(1, gain);
     if (this.streamSound !== null) this.streamSound.volume = Math.min(1, gain);
     // Edit.app's window plays it itself (its own volume, kept until changed).
-    if (this.native) void nativePreview.volume(gain).catch(() => {});
+    if (this.native && this.nativeVolume !== gain) {
+      this.nativeVolume = gain;
+      void nativePreview.volume(gain).catch(() => {});
+    }
   };
   /** Its unhooking (the preview lives as long as the page). */
   readonly unhookVolume = useVolume.subscribe(() => this.applyVolume());
@@ -582,6 +603,7 @@ class Preview {
         return;
       }
       this.native = true;
+      this.nativeVolume = null;
       this.applyVolume();
       this.nativeSpeed = null;
       this.nativeStale = true;
@@ -1134,6 +1156,8 @@ class Preview {
     for (const id of changed) this.copied.delete(id);
     if (previous?.id !== project.id) this.framed = false;
     this.project = project;
+    // Into Bodycam HQ or out of it: the player's volume is heard there alone.
+    if ((previous?.hq === true) !== (project.hq === true)) this.applyVolume();
     this.error = null;
     this.refused = false;
     this.renderedFrame = null;
@@ -1312,9 +1336,14 @@ class Preview {
     return this.error?.startsWith("Preview decoding failed") === true;
   }
 
-  /** Where playing stops: the range's end, else the project's out point. */
+  /** Where playing stops: the range's end, else the out point (`setOutPoint`, else the project's). */
   private stopFrame(): number | null {
-    return this.range?.end ?? this.project?.mark_out ?? null;
+    return this.range?.end ?? (this.outPoint === undefined ? this.project?.mark_out : this.outPoint) ?? null;
+  }
+
+  /** The out point while the project shown isn't the edit as it is now (a version pinned); undefined goes back to the project's own. */
+  setOutPoint(frame: number | null | undefined) {
+    this.outPoint = frame;
   }
   toggle() { if (playhead.playing) this.pause(); else this.play(); }
 

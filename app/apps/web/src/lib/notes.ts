@@ -10,6 +10,7 @@ import { create } from "zustand";
 import { api, type AppNote, type NoteBox } from "./api";
 import { playhead, preview } from "./playback";
 import { useEditor } from "./store";
+import { liveFrame, viewedFrame } from "./watching";
 
 /** How often the list is looked at anyway (notes left on another Mac). */
 const REFRESH_MS = 30_000;
@@ -68,7 +69,8 @@ export function followNotes(project: string | null): void {
 export function startNote(): void {
   if (useEditor.getState().project === null) return;
   preview.pause();
-  useNotes.setState({ draft: { frame: Math.floor(playhead.frame), box: null, drawing: false } });
+  // The edit's frame, also while a version's pinned for watching (lib/watching.ts).
+  useNotes.setState({ draft: { frame: liveFrame(Math.floor(playhead.frame)), box: null, drawing: false } });
 }
 
 export function cancelNote(): void {
@@ -149,7 +151,7 @@ export function openComment(id: string): void {
   const note = useNotes.getState().notes.find((one) => one.id === id);
   if (note === undefined) return;
   preview.pause();
-  preview.seek(note.now);
+  preview.seek(viewedFrame(note.now));
   useNotes.setState({ opened: id });
 }
 

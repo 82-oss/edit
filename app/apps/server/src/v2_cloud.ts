@@ -414,7 +414,8 @@ export async function refreshSkills(): Promise<void> {
   try {
     const items = await list("skill");
     // Each skill's text at once, and the niches: a turn waits on this.
-    const [read] = await Promise.all([Promise.all(items.map(async (item) => ({ item, text: (await version(item.key))?.version.text }))), listNiches()]);
+    // The niches as last read when they can't be: a turn's lessons don't wait on them.
+    const [read] = await Promise.all([Promise.all(items.map(async (item) => ({ item, text: (await version(item.key))?.version.text }))), listNiches().catch(() => knownNiches())]);
     const next: Skill[] = [];
     for (const { item, text } of read) {
       if (typeof text === "string" && text.trim() !== "") next.push({ name: item.name, text: text.trim(), ...(item.note ? { note: item.note } : {}), key: item.key, niches: item.niches ?? null });

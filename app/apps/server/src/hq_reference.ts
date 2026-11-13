@@ -39,7 +39,7 @@ export function mapImagery(url: string): boolean {
   return MAP_SITES.some(([site, path]) => site.test(host) && (path === null || path.test(parsed.pathname.toLowerCase())));
 }
 
-const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+export const squash = (text: string): string => text.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
 /** Whether `words` (the agent's quote of the person) are in one of the person's own messages. */
 export function personSaid(entries: readonly Entry[], words: string): boolean {

@@ -78,7 +78,7 @@ mutes?: Array<Mute>,
 /**
  * Plays only this side of the source, in both ears: footage whose
  * sound is in one ear (JJ, Nov 6: "we only have audio in the left ear").
- * None: the source's own stereo.
+ * None (or `Stereo`, chosen): the source's own stereo.
  */
 channel?: SoundChannel, 
 /**

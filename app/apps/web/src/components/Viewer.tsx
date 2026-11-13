@@ -24,7 +24,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { agentSpot } from "../lib/agentTurns";
 import { useEffects } from "../lib/effects";
 import { useSeekFlash } from "../lib/seekFlash";
-import { cutsAfter, mapFrame, pinFor, useWatching, type Pinned } from "../lib/watching";
+import { cutsAfter, mapFrame, onViewed, pinFor, useWatching, type Pinned } from "../lib/watching";
 import { EffectLayer } from "./EffectLayer";
 import { NoteBoxLayer, NoteDraft } from "./NoteDraft";
 import { VideoComments } from "./VideoComments";
@@ -218,6 +218,12 @@ export function Viewer() {
       off();
     };
   }, [newIn, pinned, project]);
+
+  // Playing stops at the out point as the edit has it now, on the pinned version where that is (as useMarked draws it).
+  const liveOut = project?.mark_out ?? null;
+  useEffect(() => {
+    preview.setOutPoint(pinned === null || project === null ? undefined : liveOut === null ? null : mapFrame(project, pinned.project, liveOut));
+  }, [pinned, project, liveOut]);
 
   useEffect(() => {
     const viewed = pinned?.project ?? project;
@@ -632,14 +638,21 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
   const notes = useNotes((state) => state.notes);
   const speed = useSpeed();
   const light = "text-white/90 hover:bg-white/10 hover:text-white";
+  // Comments and the agent's place are the edit's as it is now: on a version pinned while the agent works, moved onto it.
+  // Worked out as those change, not each frame the controls draw.
+  const live = useEditor((state) => state.project);
   // Where the open comments are, on the progress bar (Sphe, Nov 11).
-  const numbered = numbers(notes);
-  const marks = openComments(notes).map((note) => ({ id: note.id, n: numbered.get(note.id) ?? 0, frame: note.now, text: note.text }));
+  const marks = useMemo(() => {
+    const numbered = numbers(notes);
+    return openComments(notes).map((note) => ({ id: note.id, n: numbered.get(note.id) ?? 0, frame: live === null || viewed === null ? note.now : onViewed(live, viewed, note.now), text: note.text }));
+  }, [notes, live, viewed]);
   // Where the agent is working, a dot on the bar while its turn runs (Sphe, Nov 13: in place of the pill over the picture).
   const running = useAgent((state) => state.running);
   const entries = useAgent((state) => state.entries);
-  const live = useEditor((state) => state.project);
-  const agent = agentSpot(entries, live, running);
+  const agent = useMemo(() => {
+    const spot = agentSpot(entries, live, running);
+    return spot === null || live === null || viewed === null ? spot : { ...spot, frame: onViewed(live, viewed, spot.frame) };
+  }, [entries, live, viewed, running]);
   // The part playing and the marked stretch it's in, named after the time, so the bar carries no words (Sphe, Nov 13).
   const part = useChapters(duration).findLast((chapter) => chapter.start <= frame) ?? null;
   const stretch = useMarked(viewed).find((one) => frame >= one.start && frame < one.end) ?? null;
@@ -726,7 +739,11 @@ function VolumeControl({ light }: { light: string }) {
           levelAt(event.clientX);
         }}
         onPointerMove={(event) => dragging && levelAt(event.clientX)}
-        onPointerUp={() => setDragging(false)}
+        // Let go of by a pointer: the arrows are the player's again (←/→ jump), not a hidden slider's.
+        onPointerUp={(event) => {
+          setDragging(false);
+          event.currentTarget.blur();
+        }}
         onPointerCancel={() => setDragging(false)}
         className="relative flex h-8 w-0 cursor-pointer items-center overflow-hidden opacity-0 outline-none transition-[width,opacity,margin] duration-150 ease-out group-hover/volume:mr-1 group-hover/volume:w-16 group-hover/volume:opacity-100 group-data-[open]/volume:mr-1 group-data-[open]/volume:w-16 group-data-[open]/volume:opacity-100 focus-visible:mr-1 focus-visible:w-16 focus-visible:opacity-100"
       >
@@ -746,7 +763,6 @@ function VolumeControl({ light }: { light: string }) {
  */
 function ScrubBar({ frame, duration, thin = false, marks = [], agent = null }: { frame: number; duration: number; thin?: boolean; marks?: { id: string; n: number; frame: number; text: string }[]; agent?: { frame: number; what: string } | null }) {
   const trackRef = useRef<HTMLDivElement>(null);
-  const fps = useEditor(selectFps);
   const fraction = duration > 0 ? Math.min(1, Math.max(0, frame / duration)) : 0;
   const loaded = useBuffered();
   const chapters = useChapters(duration);
@@ -816,19 +832,14 @@ function ScrubBar({ frame, duration, thin = false, marks = [], agent = null }: {
           )}
           <div className="absolute inset-y-0 left-0 bg-playhead" style={{ width: `${fraction * 100}%` }} />
         </div>
-        {/* The stretches marked to export (set_ranges), each framed on the bar from its in to its out (Sphe, Nov 13: "J1"); hovered, its name, times and length. */}
+        {/* The stretches marked to export (set_ranges), each framed on the bar from its in to its out (Sphe, Nov 13: "J1"); hovered, its name, times and length under the frame there (ScrubPreview). */}
         {duration > 0 &&
           stretches.map((one) => (
             <div
               key={one.start}
-              className="group/stretch absolute top-1/2 z-[1] h-[13px] -translate-y-1/2 rounded-[4px] border-2 border-amber-300 bg-amber-300/15"
+              className="pointer-events-none absolute top-1/2 z-[1] h-[13px] -translate-y-1/2 rounded-[4px] border-2 border-amber-300 bg-amber-300/15"
               style={{ left: `${Math.min(1, one.start / duration) * 100}%`, width: `max(6px, ${Math.max(0, Math.min(1, one.end / duration) - Math.min(1, one.start / duration)) * 100}%)` }}
-              onPointerMove={(event) => { event.stopPropagation(); setHover(null); }}
-            >
-              <span className="pointer-events-none absolute bottom-full left-1/2 mb-2 w-max -translate-x-1/2 rounded-full bg-amber-300 px-2 py-0.5 text-[11px] font-semibold text-[#1c1400] tabular opacity-0 transition-opacity duration-150 group-hover/stretch:opacity-100">
-                {one.name} · {clock(one.start, fps)}–{clock(one.end, fps)} · {clock(one.end - one.start, fps)}
-              </span>
-            </div>
+            />
           ))}
         {/* Where the agent is working: a small dot, pinging; hovered, what it's doing there. */}
         {agent !== null && duration > 0 && (
@@ -846,7 +857,14 @@ function ScrubBar({ frame, duration, thin = false, marks = [], agent = null }: {
             <div key={at} className="pointer-events-none absolute -top-1 -bottom-1 w-[2px] -translate-x-1/2 rounded-full bg-white" style={{ left: `${(at / duration) * 100}%` }} />
           ))}
         <div className={cx("absolute top-1/2 z-[3] -translate-x-1/2 -translate-y-1/2 rounded-full bg-playhead opacity-0 transition-opacity group-hover:opacity-100", thin ? "size-3" : "size-3.5")} style={{ left: `${fraction * 100}%` }} />
-        {hover !== null && <ScrubPreview at={hover} duration={duration} chapter={chapters.findLast((chapter) => chapter.start <= hover.frame)?.label ?? null} />}
+        {hover !== null && (
+          <ScrubPreview
+            at={hover}
+            duration={duration}
+            chapter={chapters.findLast((chapter) => chapter.start <= hover.frame)?.label ?? null}
+            stretch={stretches.find((one) => hover.frame >= one.start && hover.frame < one.end) ?? null}
+          />
+        )}
         {/* The open comments: a dot each over the bar; hovered, its words; clicked, its moment and its card. */}
         {duration > 0 &&
           marks.map((mark) => (
@@ -913,7 +931,7 @@ function useBuffered(): [number, number][] {
 }
 
 /** The frame under the pointer over the progress bar: the nearest of the board at once, the exact one when the pointer rests. */
-function ScrubPreview({ at, duration, chapter }: { at: { x: number; width: number; frame: number }; duration: number; chapter: string | null }) {
+function ScrubPreview({ at, duration, chapter, stretch }: { at: { x: number; width: number; frame: number }; duration: number; chapter: string | null; stretch: { start: number; end: number; name: string } | null }) {
   const project = useViewedProject();
   const liveId = useEditor((state) => state.project?.id ?? null);
   const pinned = pinFor(useWatching((state) => state.pinned), liveId);
@@ -964,6 +982,11 @@ function ScrubPreview({ at, duration, chapter }: { at: { x: number; width: numbe
       </div>
       {chapter !== null && <div className="mt-1.5 text-center text-[12px] font-semibold text-white [text-shadow:0_1px_3px_#000]">{chapter}</div>}
       <div className={cx("text-center text-[12px] font-medium text-white tabular [text-shadow:0_1px_3px_#000]", chapter === null ? "mt-1.5" : "text-white/75")}>{clock(at.frame, fps)}</div>
+      {stretch !== null && (
+        <div className="mx-auto mt-1 w-max rounded-full bg-amber-300 px-2 py-0.5 text-[11px] font-semibold text-[#1c1400] tabular">
+          {stretch.name} · {clock(stretch.start, fps)}–{clock(stretch.end, fps)} · {clock(stretch.end - stretch.start, fps)}
+        </div>
+      )}
     </div>
   );
 }

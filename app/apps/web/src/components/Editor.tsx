@@ -27,6 +27,7 @@ import { cx } from "./ui";
 import { Loader } from "./Logo";
 import { toggleFullscreen, Viewer } from "./Viewer";
 import { rate } from "../lib/types";
+import { liveFrame } from "../lib/watching";
 
 /** How often an open editor says so (the server keeps its lock while it does: sync_core.ts TIMING.HEARTBEAT, which a test checks this against). */
 const HEARTBEAT_MS = 30_000;
@@ -400,10 +401,11 @@ function useShortcuts({ onImport, onExport }: { onImport: () => void; onExport: 
         else clearInOut();
       } else if (key === "i") {
         handled();
-        markIn(playhead.frame);
+        // On the edit as it is now, also while a version's pinned for watching (lib/watching.ts).
+        markIn(liveFrame(Math.round(playhead.frame)));
       } else if (key === "o") {
         handled();
-        markOut(playhead.frame);
+        markOut(liveFrame(Math.round(playhead.frame)));
       } else if (key === "q") {
         // A note for the agent, at the playhead (lib/notes.ts).
         handled();

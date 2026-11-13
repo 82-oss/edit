@@ -43,6 +43,9 @@ describe("the render's sound ready to start with its picture (Nov 13: after a ju
     expect(soundAt(sound({ buffered: ranges([0, 40]) }), 600)).toBe("wait");
     expect(soundAt(sound({ buffered: ranges([0, 40], [600, 600.2]) }), 600)).toBe("wait");
     expect(soundAt(sound({}), 600)).toBe("ready");
+    // One that couldn't load, or ends before the picture does, holds nothing up.
+    expect(soundAt({ ...sound({ readyState: 0 }), error: { code: 4 } as MediaError }, 600)).toBe("ready");
+    expect(soundAt(sound({ currentTime: 0, duration: 1800 }), 1799.99)).toBe("ready");
     // Its very end: what's left of it is enough.
     expect(soundAt(sound({ currentTime: 1799.8, buffered: ranges([1790, 1800]) }), 1799.8)).toBe("ready");
   });
