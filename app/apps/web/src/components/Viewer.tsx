@@ -433,6 +433,26 @@ function useViewedProject() {
   return pinned?.project ?? live;
 }
 
+/**
+ * What's marked to export (the stretches and the in and out points), as the
+ * edit has them now, on the edit on screen: marks aren't picture, so a
+ * version pinned while the agent works shows the ones it sets at once (Sphe,
+ * Nov 13: "when an agent sends the in and out points… I have to refresh in
+ * order to see the changes"), each moved onto the pinned version's same
+ * moment of the same shot (lib/watching.ts `mapFrame`).
+ */
+function useMarked(viewed: Project | null): { start: number; end: number; name: string }[] {
+  const live = useEditor((state) => state.project);
+  return useMemo(() => {
+    if (live === null || viewed === null) return [];
+    const marks = marked(live);
+    if (viewed === live) return marks;
+    return marks
+      .map((one) => ({ ...one, start: mapFrame(live, viewed, one.start), end: mapFrame(live, viewed, Math.max(one.start, one.end - 1)) + 1 }))
+      .filter((one) => one.end > one.start);
+  }, [live, viewed]);
+}
+
 /** The viewer's waiting ring, a video player's. */
 function Spinner() {
   return <span className="size-9 animate-spin rounded-full border-[3px] border-white/20 border-t-white/90 shadow-[0_0_24px_#0008]" />;
@@ -622,7 +642,7 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
   const agent = agentSpot(entries, live, running);
   // The part playing and the marked stretch it's in, named after the time, so the bar carries no words (Sphe, Nov 13).
   const part = useChapters(duration).findLast((chapter) => chapter.start <= frame) ?? null;
-  const stretch = (viewed ? marked(viewed) : []).find((one) => frame >= one.start && frame < one.end) ?? null;
+  const stretch = useMarked(viewed).find((one) => frame >= one.start && frame < one.end) ?? null;
   return (
     <div className="flex flex-col px-3 pb-1">
       <ScrubBar frame={frame} duration={duration} thin marks={fullscreen ? [] : marks} agent={agent} />
@@ -733,8 +753,7 @@ function ScrubBar({ frame, duration, thin = false, marks = [], agent = null }: {
   // A range clicked in the chat: where playing stops (playback.ts `playRange`).
   const range = useSyncExternalStore(preview.onStatus, () => preview.range);
   // Everything marked to export (set_ranges, and the in and out points as one more), a line over the bar each.
-  const viewedNow = useViewedProject();
-  const stretches = useMemo(() => (viewedNow ? marked(viewedNow) : []), [viewedNow]);
+  const stretches = useMarked(useViewedProject());
   // A slit at each chapter's start, as a video site's progress bar has.
   const slits = chapters.slice(1).map((chapter) => (chapter.start / duration) * 100);
   const mask = slits.length === 0 ? undefined : `linear-gradient(to right, ${slits.map((at) => `#000 calc(${at}% - 1px), transparent calc(${at}% - 1px), transparent calc(${at}% + 1px), #000 calc(${at}% + 1px)`).join(", ")})`;
