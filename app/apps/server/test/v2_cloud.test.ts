@@ -223,6 +223,14 @@ test("V2's niches: a niche like another has its lessons until it's taught otherw
     v2cloud.forgetSkills();
     await v2cloud.refreshSkills();
     expect([v2cloud.skill("glow", "interrogation-hq")?.text, v2cloud.skill("glow", "bodycam-hq")?.text]).toEqual(["A soft amber glow.", "A soft red glow."]);
+    // Its page: what its agents get, each with where it comes from.
+    const known = await v2cloud.knowledgeOf("interrogation-hq");
+    expect(known.filter((one) => one.kind === "skill").map((one) => [one.name, one.origin])).toEqual(
+      expect.arrayContaining([
+        ["pins", "this niche's own"],
+        ["glow", "this niche's own"],
+      ]),
+    );
     // The niche tool: what it is; changed or cut loose only when asked.
     expect((await call(app, other, "niche", {})).content[0]!.text).toContain("Like: Bodycam HQ");
     expect((await call(app, other, "niche", { cut_loose: true })).content[0]!.text).toContain("only when the person asks");

@@ -1948,7 +1948,7 @@ function hqInstructions(project: Pick<Project, "name" | "settings" | "niche">): 
   const niche = v2cloud.knownNiches().find((one) => one.key === nicheKey) ?? { key: nicheKey, name: nicheKey === v2cloud.BODYCAM_HQ ? "Bodycam HQ" : nicheKey, description: "", like: null, kind: "bodycam" };
   const like = v2cloud.chainOf(nicheKey).slice(1).map((key) => v2cloud.knownNiches().find((one) => one.key === key)?.name ?? key);
   const nicheText =
-    `THIS PROJECT'S NICHE: ${niche.name} (${niche.key})${niche.description === "" ? "" : `: ${niche.description}`}.` +
+    `THIS PROJECT'S NICHE: ${niche.name} (${niche.key})${niche.description === "" ? "" : `: ${niche.description.replace(/\.$/u, "")}`}.` +
     (like.length === 0 ? "" : ` It's like ${like.join(", then ")}: what they were taught comes through, and what this niche is taught wins where they differ.`) +
     " What you remember and save is this niche's own; for other niches too, or every niche, only when the person asks for it (remember and save_to_library's niches, with asked: their words).\n\n";
   const known = v2cloud.memories(nicheKey);

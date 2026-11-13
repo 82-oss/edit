@@ -509,18 +509,7 @@ async function nicheTool({ app, args, projectId }: ToolCall): Promise<Content[]>
   }
   if (args.cut_loose === true) {
     if (current.like === null) throw new Error(`${current.name} isn't like another niche: nothing to cut loose from`);
-    // What came through from the niches it's like (not the house's) kept as its own, then the link gone.
-    let copied = 0;
-    for (const kind of ["skill", "template", "sound"] as const) {
-      const items = v2cloud.forNiche(await v2cloud.list(kind), here.chain);
-      for (const item of items) {
-        const own = v2cloud.ownNicheOf(item.key);
-        const inherited = own !== null ? own !== here.niche : item.niches != null && item.niches.length > 0 && !item.niches.includes(here.niche);
-        if (!inherited) continue;
-        if (await v2cloud.copyItem(item, v2cloud.ownKey(kind, here.niche, item.name), `kept when ${current.name} was cut loose from ${current.like}`)) copied++;
-      }
-    }
-    await v2cloud.saveNiche({ ...current, like: null }, reason);
+    const copied = await v2cloud.cutLoose(here.niche, reason);
     return text(`${current.name} is cut loose from ${current.like}: ${copied} lesson(s), effect(s) and sound(s) it had from it are its own now, and what ${current.like} is taught from here doesn't come through.`);
   }
   if (changing) {
@@ -530,7 +519,7 @@ async function nicheTool({ app, args, projectId }: ToolCall): Promise<Content[]>
   }
   const own = (await Promise.all((["skill", "template", "sound"] as const).map((kind) => v2cloud.list(kind)))).flat().filter((item) => v2cloud.ownNicheOf(item.key) === here.niche || item.niches?.includes(here.niche));
   return text(
-    `This project's niche: ${current.name} (${current.key})${current.description ? `: ${current.description}` : ""}.\n` +
+    `This project's niche: ${current.name} (${current.key})${current.description ? `: ${current.description.replace(/\.$/u, "")}` : ""}.\n` +
       `Like: ${here.chain.slice(1).map(here.name).join(" → ") || "no other niche"}.\n` +
       `Its own lessons, effects and sounds: ${own.length}. The niches: ${known.map((one) => `${one.name} (${one.key}${one.like ? `, like ${one.like}` : ""})`).join("; ") || "none yet"}.`,
   );

@@ -212,6 +212,43 @@ export async function copyItem(from: Item, toKey: string, reason: string): Promi
   return true;
 }
 
+/**
+ * A niche cut loose from the one it's like: what came through from the
+ * niches it's like (not the house's) kept as its own, then the link gone.
+ * Answers how many were kept.
+ */
+export async function cutLoose(key: string, reason: string): Promise<number> {
+  const all = await listNiches();
+  const niche = all.find((one) => one.key === key);
+  if (niche === undefined) throw new Error(`no niche ${key}`);
+  if (niche.like === null) throw new Error(`${niche.name} isn't like another niche: nothing to cut loose from`);
+  const chain = chainOf(key, all);
+  let copied = 0;
+  for (const kind of ["skill", "template", "sound"] as const) {
+    for (const item of forNiche(await list(kind), chain)) {
+      const own = ownNicheOf(item.key);
+      const inherited = own !== null ? own !== key : item.niches != null && item.niches.length > 0 && !item.niches.includes(key);
+      if (inherited && (await copyItem(item, ownKey(kind, key, item.name), `kept when ${niche.name} was cut loose from ${niche.like}`))) copied++;
+    }
+  }
+  await saveNiche({ ...niche, like: null }, reason);
+  return copied;
+}
+
+/** What a niche knows, as its agents get it (`forNiche`), each with where it comes from: its lessons, effects, sounds and fonts. */
+export async function knowledgeOf(key: string): Promise<{ kind: Kind; key: string; name: string; note: string | null; category: string | null; origin: string; own: boolean }[]> {
+  const all = await listNiches();
+  const chain = chainOf(key, all);
+  const out: { kind: Kind; key: string; name: string; note: string | null; category: string | null; origin: string; own: boolean }[] = [];
+  for (const kind of ["skill", "template", "sound", "font"] as const) {
+    const items = await list(kind);
+    for (const item of kind === "font" ? items : forNiche(items, chain)) {
+      out.push({ kind, key: item.key, name: item.name, note: item.note, category: item.category, origin: kind === "font" ? "V2's house, every niche's" : originOf(item, chain), own: ownNicheOf(item.key) === key });
+    }
+  }
+  return out;
+}
+
 /** An item's version `n` (else the one in use) put in `dir`; null when the item has none. */
 export async function fetchInto(key: string, n: number | null, dir: string): Promise<Version | null> {
   const found = await version(key, n);
