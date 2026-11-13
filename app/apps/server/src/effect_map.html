@@ -260,9 +260,11 @@
      * on the map's scale; a place's ground by default), `width` metres wide and
      * as tall as the element's shape makes it, its face turned to `facing`
      * (degrees clockwise from north; the camera's side by default: a fixed one
-     * keeps it standing still while the camera circles it). `flat`: lying on
-     * the ground instead, centred on the point, its top edge away from
-     * `facing`'s side. Call it in seek(t) after aiming the camera; answers its
+     * keeps it standing still while the camera circles it). `lean` tips it
+     * back on its bottom edge by that many degrees (0 upright, 90 lying on its
+     * back), `roll` turns it clockwise as seen from its front, on the middle of
+     * its bottom edge. `flat`: lying on the ground, centred on the point, its
+     * top edge away from `facing`'s side. Call it in seek(t) after aiming the camera; answers its
      * corners on the page (top-left, top-right, bottom-right, bottom-left), or
      * null when it's behind the camera (then hidden).
      */
@@ -272,9 +274,14 @@
       const origin = Cesium.Cartesian3.fromDegrees(at.lon, at.lat, at.height ?? at.ground ?? 0);
       const frame = Cesium.Transforms.eastNorthUpToFixedFrame(origin);
       const facing = toRadians(at.facing ?? Cesium.Math.toDegrees(camera.heading) + 180);
-      // Seen from its front, its right runs a quarter turn anticlockwise of where it faces; flat, its top runs away from that side.
-      const right = [Math.sin(facing - Math.PI / 2), Math.cos(facing - Math.PI / 2), 0];
-      const rise = at.flat ? [-Math.sin(facing), -Math.cos(facing), 0] : [0, 0, 1];
+      // Seen from its front, its right runs a quarter turn anticlockwise of where it faces, its top straight up;
+      // leant back, its top tips away from the front (flat at 90); rolled, both turn clockwise as seen from the front.
+      const level = [Math.sin(facing - Math.PI / 2), Math.cos(facing - Math.PI / 2), 0];
+      const front = [Math.sin(facing), Math.cos(facing), 0];
+      const lean = toRadians(at.flat ? 90 : at.lean ?? 0), roll = toRadians(at.roll ?? 0);
+      const tipped = [-Math.sin(lean) * front[0], -Math.sin(lean) * front[1], Math.cos(lean)];
+      const right = level.map((one, axis) => Math.cos(roll) * one - Math.sin(roll) * tipped[axis]);
+      const rise = level.map((one, axis) => Math.sin(roll) * one + Math.cos(roll) * tipped[axis]);
       const base = at.flat ? -tall / 2 : 0;
       const corner = (across, up) => onPage(Cesium.Matrix4.multiplyByPoint(frame, new Cesium.Cartesian3(right[0] * across + rise[0] * up, right[1] * across + rise[1] * up, right[2] * across + rise[2] * up), new Cesium.Cartesian3()));
       const quad = [corner(-width / 2, base + tall), corner(width / 2, base + tall), corner(width / 2, base), corner(-width / 2, base)];
