@@ -843,11 +843,18 @@ async function geocode(place: string): Promise<[number, number, string]> {
   return [lat, lng, typeof first?.formatted_address === "string" ? first.formatted_address : place];
 }
 
-/** The outline (lon, lat ring) of the building at a point, from Google. */
-async function buildingOutline(lat: number, lon: number): Promise<[number, number][] | null> {
+/**
+ * The outline (lon, lat ring) of the building at a point, from Google, asked
+ * once and kept: "no building here" kept too (a street, a field: a coded
+ * effect's map asked again on every page and paid each time, Nov 13 audit);
+ * a failure to ask isn't, so it's asked again next time.
+ */
+async function buildingOutline(app: App, lat: number, lon: number): Promise<[number, number][] | null> {
   try {
-    const url = `${relay.url()}/v1/outline?lat=${display(lat)}&lon=${display(lon)}`;
-    return outlineIn(serdeParse(await fetchText(url)));
+    const found = await lookedUp(app, `outline-v2 ${display(lat)},${display(lon)}`, async () => ({
+      ring: outlineIn(serdeParse(await fetchText(`${relay.url()}/v1/outline?lat=${display(lat)}&lon=${display(lon)}`))),
+    }));
+    return found?.ring ?? null;
   } catch {
     return null;
   }
@@ -861,7 +868,7 @@ async function buildingOutline(lat: number, lon: number): Promise<[number, numbe
 export async function findPlace(app: App, place: string): Promise<{ lat: number; lon: number; address: string; outline: [number, number][] | null }> {
   const given = /^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/.exec(place);
   const [lat, lon, address] = given !== null ? [Number(given[1]), Number(given[2]), place.trim()] : (await lookedUp(app, `geocode ${place}`, () => geocode(place)))!;
-  const outline = await lookedUp(app, `outline ${display(lat)},${display(lon)}`, () => buildingOutline(lat, lon));
+  const outline = await buildingOutline(app, lat, lon);
   return { lat, lon, address, outline };
 }
 
@@ -1388,7 +1395,7 @@ export async function mapView(app: App, projectId: string, given: Json): Promise
   } else {
     throw new Error("give a place (an address or name) or lat and lon");
   }
-  const ring = mark ? await lookedUp(app, `outline ${display(lat)},${display(lon)}`, () => buildingOutline(lat, lon)) : null;
+  const ring = mark ? await buildingOutline(app, lat, lon) : null;
   const config: Record<string, unknown> = {
     lat: new F64(lat),
     lon: new F64(lon),
