@@ -564,13 +564,17 @@ async function saveLesson(context: Context): Promise<Response> {
   const given = await body(context);
   const key = field<string>(given, "key", "string", true)!;
   const text = field<string>(given, "text", "string", true)!;
+  // The niche whose page it was changed on: a lesson it has from elsewhere (a niche it's like, or the house's) is
+  // taught otherwise for it alone, as its own, as the agent's are; none, the lesson itself.
+  const niche = field<string>(given, "niche", "string");
   if (!key.startsWith("skill:") || key === v2cloud.skillKey(v2cloud.GLOBAL)) throw bad("key is a lesson's (skill:…), never the global one");
   if (text.trim() === "") throw bad("text is required");
   const found = await v2cloud.version(key);
   if (found === null) throw new ApiError(404, `no ${key}`);
-  await v2cloud.saveSkill(found.item.name, text.trim(), "changed on its niche's page", found.item.note ?? undefined, { key });
+  const target = niche !== null && v2cloud.ownNicheOf(key) !== niche ? v2cloud.ownKey("skill", niche, found.item.name) : key;
+  await v2cloud.saveSkill(found.item.name, text.trim(), "changed on its niche's page", found.item.note ?? undefined, { key: target });
   v2cloud.forgetSkills();
-  return json({ key });
+  return json({ key: target });
 }
 
 /** A lesson, effect or sound copied to another niche as that niche's own (its page's "Copy to…"). */
@@ -616,8 +620,9 @@ async function saveNiche(context: Context): Promise<Response> {
   const key = field<string>(given, "key", "string") ?? v2cloud.nicheKeyOf(name);
   const before = all.find((one) => one.key === key);
   if (field<string>(given, "key", "string") === null && before !== undefined) throw bad(`There's a niche called ${before.name} already.`);
-  const like = field<string>(given, "like", "string");
-  const kind = field<string>(given, "kind", "string") ?? all.find((one) => one.key === like)?.kind ?? before?.kind ?? "bodycam";
+  // Left out, what it's like stays as it was; "" or null, like none.
+  const like = "like" in (given as object) ? field<string>(given, "like", "string") : (before?.like ?? null);
+  const kind = field<string>(given, "kind", "string") ?? before?.kind ?? all.find((one) => one.key === like)?.kind ?? "bodycam";
   if (!STYLES.includes(kind as Style)) throw bad(`kind is one of ${STYLES.join(", ")}`);
   try {
     const niche = await v2cloud.saveNiche({ key, name, description: field<string>(given, "description", "string") ?? before?.description ?? "", like: like === "" ? null : like, kind }, before === undefined ? "made on Home" : "changed on Home");

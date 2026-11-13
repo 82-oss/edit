@@ -292,6 +292,8 @@ function placeOf(app: App, projectId: string, args: Record<string, unknown>, kin
   const ownedBy = existing === undefined ? null : v2cloud.ownNicheOf(existing.key);
   const listed = existing?.niches ?? null;
   if (existing === undefined || ownedBy !== null || (listed !== null && listed.length > 0 && !listed.includes(here.niche))) return own;
+  // Kept for this niche alone (one moved into it): its own, changed where it is.
+  if (listed !== null && listed.length === 1 && listed[0] === here.niche) return { key: existing.key, where: own.where };
   const sharedWith = existing.niches == null || existing.niches.length === 0 ? "every niche (it's V2's house)" : existing.niches.map(here.name).join(", ");
   if (args.for === "this niche") return own;
   if (args.for === "all") {

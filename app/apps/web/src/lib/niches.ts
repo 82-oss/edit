@@ -67,7 +67,7 @@ export const nicheApi = {
   save: (body: { key?: string; name: string; description: string; like: string; kind: Style }) => request<{ niche: Niche }>("POST", "/api/v2/niches", body),
   cutLoose: (key: string) => request<{ kept: number }>("POST", `/api/v2/niches/${encodeURIComponent(key)}/cut-loose`),
   lesson: (key: string) => request<{ key: string; text: string | null; note: string | null }>("GET", `/api/v2/lessons?key=${encodeURIComponent(key)}`),
-  saveLesson: (key: string, text: string) => request<{ key: string }>("POST", "/api/v2/lessons", { key, text }),
+  saveLesson: (key: string, text: string, niche: string) => request<{ key: string }>("POST", "/api/v2/lessons", { key, text, niche }),
   copy: (key: string, to: string) => request<{ key: string }>("POST", "/api/v2/library/copy", { key, to }),
   archive: (key: string, archived: boolean) => request<{ key: string }>("POST", "/api/v2/library/archive", { key, archived }),
 };

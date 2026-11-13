@@ -231,6 +231,11 @@ test("V2's niches: a niche like another has its lessons until it's taught otherw
         ["glow", "this niche's own"],
       ]),
     );
+    // A lesson kept for one niche alone (moved into it) is that niche's own: changed in place, no question.
+    mock.cloud.convex.library.set("skill:subtitles-hq", { key: "skill:subtitles-hq", kind: "skill", name: "subtitles-hq", current: 1, latest: 1, niches: ["bodycam-hq"], at: Date.now(), by: { name: "Edit" } });
+    mock.cloud.convex.libraryVersions.set("skill:subtitles-hq", [{ key: "skill:subtitles-hq", n: 1, text: "Bottom middle.", at: Date.now(), by: { name: "Edit" } }]);
+    v2cloud.forgetSkills();
+    expect((await call(app, id, "remember", { skill: "subtitles-hq", text: "Bottom middle, two lines.", reason: "JJ" })).content[0]!.text).toContain("version 2) for Bodycam HQ's own");
     // The niche tool: what it is; changed or cut loose only when asked.
     expect((await call(app, other, "niche", {})).content[0]!.text).toContain("Like: Bodycam HQ");
     expect((await call(app, other, "niche", { cut_loose: true })).content[0]!.text).toContain("only when the person asks");

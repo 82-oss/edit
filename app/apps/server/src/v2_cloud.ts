@@ -243,7 +243,7 @@ export async function knowledgeOf(key: string): Promise<{ kind: Kind; key: strin
   for (const kind of ["skill", "template", "sound", "font"] as const) {
     const items = await list(kind);
     for (const item of kind === "font" ? items : forNiche(items, chain)) {
-      out.push({ kind, key: item.key, name: item.name, note: item.note, category: item.category, origin: kind === "font" ? "V2's house, every niche's" : originOf(item, chain), own: ownNicheOf(item.key) === key });
+      out.push({ kind, key: item.key, name: item.name, note: item.note, category: item.category, origin: kind === "font" ? "V2's house, every niche's" : originOf(item, chain), own: ownNicheOf(item.key) === key || (item.niches?.length === 1 && item.niches[0] === key) });
     }
   }
   return out;
@@ -372,6 +372,7 @@ export function originOf(item: { key: string; niches?: string[] | null }, chain:
   const name = (key: string) => niches.find((one) => one.key === key)?.name ?? key;
   if (own !== null) return own === chain[0] ? "this niche's own" : `from ${name(own)} (this niche is like it)`;
   if (item.niches == null || item.niches.length === 0) return "V2's house, every niche's";
+  if (item.niches.length === 1 && item.niches[0] === chain[0]) return "this niche's own";
   return `kept for ${item.niches.map(name).join(", ")}`;
 }
 

@@ -316,7 +316,7 @@ export function NichePageDialog({ open, nicheKey, onClose }: { open: boolean; ni
                           onToggle={item.kind === "skill" ? () => setReading(reading === item.key ? null : item.key) : undefined}
                           menu={teacher ? menu(item) : []}
                         >
-                          {reading === item.key && <Lesson item={item} editable={teacher && item.key !== GLOBAL_LESSON} onDone={() => setReading(null)} />}
+                          {reading === item.key && <Lesson item={item} nicheKey={nicheKey} editable={teacher && item.key !== GLOBAL_LESSON} onDone={() => { setReading(null); void reload(); }} />}
                         </Row>
                       ))}
                     </div>
@@ -370,7 +370,7 @@ function Row({ item, open, onToggle, menu, children }: { item: Knowledge; open: 
 }
 
 /** A lesson's text as its agents read it; a teacher changes it and saves its next version. */
-function Lesson({ item, editable, onDone }: { item: Knowledge; editable: boolean; onDone: () => void }) {
+function Lesson({ item, nicheKey, editable, onDone }: { item: Knowledge; nicheKey: string; editable: boolean; onDone: () => void }) {
   const [text, setText] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<unknown>(null);
@@ -396,7 +396,8 @@ function Lesson({ item, editable, onDone }: { item: Knowledge; editable: boolean
     if (draft.trim() === "" || busy) return;
     setBusy(true);
     try {
-      await nicheApi.saveLesson(item.key, draft);
+      // One it has from elsewhere is taught otherwise for this niche alone, as its own (the server keeps it so).
+      await nicheApi.saveLesson(item.key, draft, nicheKey);
       setText(draft.trim());
       toast(`“${item.name}” saved`, "info");
       onDone();
@@ -420,7 +421,7 @@ function Lesson({ item, editable, onDone }: { item: Knowledge; editable: boolean
       />
       {editable && changed && (
         <div className="mt-2 flex items-center justify-end gap-2">
-          {!item.own && <span className="mr-auto text-[11px] text-faint">Changes it for every niche that has it</span>}
+          {!item.own && <span className="mr-auto text-[11px] text-faint">Saved as this niche’s own</span>}
           <Button size="sm" variant="ghost" onClick={() => setDraft(text)}>
             Undo changes
           </Button>
