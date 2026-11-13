@@ -15,6 +15,9 @@ import { handlerFor, image, registerTool, text, type Content, type ToolCall } fr
 import { fixed } from "./rust.ts";
 import * as tools from "./tools.ts";
 import * as v2cloud from "./v2_cloud.ts";
+import type { Entry } from "./agent.ts";
+import { personSaid } from "./hq_reference.ts";
+import { agentPanel } from "./seams.ts";
 
 /** An effect's name from a call, in a project made the new way. */
 function named(app: App, projectId: string, args: Record<string, unknown>): string {
@@ -244,6 +247,60 @@ function teacherOnly(what: string): void {
 
 const when = (at: number) => new Date(at).toISOString().replace("T", " ").slice(0, 16);
 
+// ---------------------------------------------------------------- niches (Sphe, Nov 13)
+
+/** The project's V2 niche and the ones it's like, nearest first (the niches read fresh enough). */
+async function nicheHere(app: App, projectId: string): Promise<{ niche: string; chain: string[]; name: (key: string) => string }> {
+  await v2cloud.refreshSkills();
+  const niche = v2cloud.nicheOfProject(app.store.get(projectId)?.project ?? {});
+  const name = (key: string) => v2cloud.knownNiches().find((one) => one.key === key)?.name ?? key;
+  return { niche, chain: v2cloud.chainOf(niche), name };
+}
+
+/** Whether `asked` quotes one of the person's own messages in this chat (a widening of what's kept is theirs to ask for). */
+function quoted(app: App, projectId: string, asked: unknown): boolean {
+  const entries = (agentPanel(app).turn?.(projectId).entries ?? []) as readonly Entry[];
+  return typeof asked === "string" && personSaid(entries, asked);
+}
+
+/**
+ * Where a lesson or an effect of this niche's is kept (Sphe, Nov 13: "tell
+ * the agent, hey, this should apply to bodycam and interrogation… only when
+ * the user specifically asks for it"; "if some effect is linked between
+ * multiple niches, it can then ask… just this one or the rest"):
+ * - by default this niche's own (`<kind>:@<niche>/<name>`), which wins over
+ *   the house's or another niche's of its name here and touches no other;
+ * - `niches` (niche keys, or "all" for every niche) only quoting the person;
+ * - changing one this niche shares with others (the house's, or kept for
+ *   several): refused until the person has said which, `for` "this niche"
+ *   (made this niche's own) or "all" (quoting them).
+ */
+function placeOf(app: App, projectId: string, args: Record<string, unknown>, kind: "template" | "sound" | "skill", name: string, here: { niche: string; chain: string[]; name: (key: string) => string }, existing: { key: string; niches?: string[] | null } | undefined): { key: string; niches?: string[]; where: string } {
+  const plain = kind === "template" ? v2cloud.templateKey(name) : kind === "sound" ? v2cloud.soundKey(name) : v2cloud.skillKey(name);
+  const own = { key: v2cloud.ownKey(kind, here.niche, name), where: `${here.name(here.niche)}'s own` };
+  if (Array.isArray(args.niches)) {
+    const given = (args.niches as unknown[]).filter((one): one is string => typeof one === "string");
+    if (!quoted(app, projectId, args.asked)) throw new Error(`Keeping it for ${given.join(", ")} is the person's to ask for: call again with asked, their words quoted from their message (otherwise leave niches out: it's this niche's own).`);
+    if (given.includes("all")) return { key: plain, niches: [], where: "every niche (V2's house)" };
+    const known = new Set(v2cloud.knownNiches().map((one) => one.key));
+    const unknown = given.filter((one) => !known.has(one) && one !== here.niche);
+    if (unknown.length > 0) throw new Error(`no niche ${unknown.join(", ")}: the niches are ${[...known].join(", ") || "none yet"}`);
+    const niches = [...new Set([here.niche, ...given])].sort();
+    return { key: plain, niches, where: niches.map(here.name).join(", ") };
+  }
+  // Its own already, or one that came through from a niche it's like (that niche's, not this one's): taught otherwise here, it's this niche's own.
+  const ownedBy = existing === undefined ? null : v2cloud.ownNicheOf(existing.key);
+  const listed = existing?.niches ?? null;
+  if (existing === undefined || ownedBy !== null || (listed !== null && listed.length > 0 && !listed.includes(here.niche))) return own;
+  const sharedWith = existing.niches == null || existing.niches.length === 0 ? "every niche (it's V2's house)" : existing.niches.map(here.name).join(", ");
+  if (args.for === "this niche") return own;
+  if (args.for === "all") {
+    if (!quoted(app, projectId, args.asked)) throw new Error("Changing it for every niche it's in is the person's to ask for: call again with asked, their words quoted from their message.");
+    return { key: existing.key, where: sharedWith };
+  }
+  throw new Error(`${name} is shared: ${sharedWith} use${existing.niches?.length === 1 ? "s" : ""} it. Ask the person whether this change is for ${here.name(here.niche)} alone or for all of them, and end your turn; then call again with for: "this niche" (made this niche's own, the others keep theirs) or for: "all" with asked, their answer quoted.`);
+}
+
 async function effectVersions({ app, args, projectId }: ToolCall): Promise<Content[]> {
   const name = named(app, projectId, args);
   cloudOn();
@@ -286,7 +343,10 @@ async function library({ app, args, projectId }: ToolCall): Promise<Content[]> {
   cloudOn();
   const kind = kindArg(args.kind);
   const words = typeof args.query === "string" ? args.query.toLowerCase().split(/\s+/).filter(Boolean) : [];
-  const listed = (await v2cloud.list(kind, args.archived === true)).filter((one) => {
+  // What this niche can use: its own, the niches it's like, then the house's; one of each name (fonts are every niche's).
+  const here = await nicheHere(app, projectId);
+  const all = await v2cloud.list(kind, args.archived === true);
+  const listed = (kind === "font" ? all : v2cloud.forNiche(all, here.chain)).filter((one) => {
     const said = `${one.name} ${one.category ?? ""} ${one.note ?? ""}`.toLowerCase();
     return words.every((word) => said.includes(word));
   });
@@ -300,7 +360,7 @@ async function library({ app, args, projectId }: ToolCall): Promise<Content[]> {
     }).join("\n") + "\nEach is there in every effect by its family name, as Edit's own faces are.");
   }
   if (listed.length === 0) return text(words.length === 0 ? `No ${what} in V2's cloud yet: write one, and it's kept when the person says to.` : `No ${what} match "${String(args.query)}".`);
-  return text(listed.map((one) => `- ${one.name}${one.archived ? " (put away)" : ""} [${one.category ?? "no category"}]: ${one.note ?? ""}${one.brief ? ` To change it: ${one.brief}` : ""}`).join("\n"));
+  return text(listed.map((one) => `- ${one.name}${one.archived ? " (put away)" : ""} [${one.category ?? "no category"}; ${v2cloud.originOf(one, here.chain)}]: ${one.note ?? ""}${one.brief ? ` To change it: ${one.brief}` : ""}`).join("\n"));
 }
 
 async function useFromLibrary({ app, args, projectId }: ToolCall): Promise<Content[]> {
@@ -313,7 +373,10 @@ async function useFromLibrary({ app, args, projectId }: ToolCall): Promise<Conte
   const into = effects.folder(app.store, projectId, as);
   if (fs.existsSync(into)) throw new Error(`there's a folder called ${as} already: give another with as`);
   const n = typeof args.version === "number" && Number.isInteger(args.version) ? args.version : null;
-  const from = await v2cloud.fetchInto(keyOf(kind, name), n, into);
+  // The one of that name this niche uses (its own, a niche it's like, the house's).
+  const here = await nicheHere(app, projectId);
+  const found = v2cloud.forNiche(await v2cloud.list(kind), here.chain).find((one) => one.name === name);
+  const from = await v2cloud.fetchInto(found?.key ?? keyOf(kind, name), n, into);
   if (from === null) throw new Error(`no ${kind === "template" ? "effect" : "sound"} ${name}${n === null ? "" : ` version ${n}`} in the library`);
   return text(`effects/${as}/ is ${name} (version ${from.n}, ${from.files?.length ?? 0} files): yours to change.${kind === "sound" ? " make_sound renders it." : " Look at it, then add_effect."}`);
 }
@@ -337,14 +400,17 @@ async function saveToLibrary({ app, args, projectId }: ToolCall): Promise<Conten
     if (font === undefined) throw new Error(`no font ${name} in this project: fetch_font it first (the project's are ${fonts.projectFonts(app.store, projectId).map((one) => one.slug).join(", ") || "none"})`);
     const kept = await v2cloud.save(keyOf(kind, as), as, font.dir, { category: line("category", 40), note: line("note", 160), ...(typeof args.reason === "string" && args.reason !== "" ? { reason: args.reason } : {}) });
     await fonts.refreshCloud(app.store, true);
-    return text(kept.made ? `${as} ("${font.family}") is version ${kept.n} in the library: every Bodycam HQ agent's effects have it by that name now. If the person said when to use it ("on evidence boards from now on"), remember that too.` : `${as} is already exactly this (version ${kept.n}).`);
+    return text(kept.made ? `${as} ("${font.family}") is version ${kept.n} in the library: every V2 agent's effects, in every niche, have it by that name now. If the person said when to use it ("on evidence boards from now on"), remember that too.` : `${as} is already exactly this (version ${kept.n}).`);
   }
   const dir = effects.folder(app.store, projectId, name);
   if (!fs.existsSync(join(dir, kind === "template" ? effects.ENTRY : effects.SOUND_ENTRY))) throw new Error(`effects/${name}/ has no ${kind === "template" ? effects.ENTRY : effects.SOUND_ENTRY}`);
   // Optional in the schema only because a font has none.
   if (typeof args.brief !== "string" || args.brief.trim() === "") throw new Error(`brief is required for ${kind === "sound" ? "a sound" : "an effect"}: how to change it without making it again, in a line or two`);
-  const kept = await v2cloud.save(keyOf(kind, as), as, dir, { category: line("category", 40), note: line("note", 160), brief: line("brief", 240), ...(typeof args.reason === "string" && args.reason !== "" ? { reason: args.reason } : {}) });
-  return text(kept.made ? `${as} is version ${kept.n} in the library: what every project starts from.` : `${as} is already exactly this (version ${kept.n}).`);
+  const here = await nicheHere(app, projectId);
+  const existing = v2cloud.forNiche(await v2cloud.list(kind), here.chain).find((one) => one.name === as);
+  const place = placeOf(app, projectId, args, kind, as, here, existing);
+  const kept = await v2cloud.save(place.key, as, dir, { category: line("category", 40), note: line("note", 160), brief: line("brief", 240), ...(place.niches !== undefined ? { niches: place.niches } : {}), ...(typeof args.reason === "string" && args.reason !== "" ? { reason: args.reason } : {}) });
+  return text(kept.made ? `${as} is version ${kept.n} in the library, for ${place.where}: what their projects start from.` : `${as} is already exactly this (version ${kept.n}).`);
 }
 
 async function archiveInLibrary({ app, args, projectId }: ToolCall): Promise<Content[]> {
@@ -353,7 +419,14 @@ async function archiveInLibrary({ app, args, projectId }: ToolCall): Promise<Con
   teacherOnly("Putting it away");
   const name = libraryName(args.name, "name");
   if (args.kind === "skill" && name === v2cloud.GLOBAL) throw new Error("the global skill stays: it's Edit's own");
-  const key = args.kind === "skill" ? v2cloud.skillKey(name) : keyOf(kindArg(args.kind), name);
+  // The one this niche uses; one it shares with others is put away for all of them only when the person asked.
+  const here = await nicheHere(app, projectId);
+  const kind = args.kind === "skill" ? "skill" : kindArg(args.kind);
+  const seen = kind === "skill" ? v2cloud.skill(name, here.niche) : kind === "font" ? undefined : v2cloud.forNiche(await v2cloud.list(kind, true), here.chain).find((one) => one.name === name);
+  const key = seen?.key ?? (kind === "skill" ? v2cloud.skillKey(name) : keyOf(kind, name));
+  if (kind !== "font" && v2cloud.ownNicheOf(key) !== here.niche && !quoted(app, projectId, args.asked)) {
+    throw new Error(`${name} isn't ${here.name(here.niche)}'s alone (${v2cloud.originOf({ key, niches: seen?.niches ?? null }, here.chain)}): putting it away takes it from every niche that has it. Ask the person, then call again with asked, their words quoted.`);
+  }
   const archived = args.archived !== false;
   await v2cloud.archive(key, archived);
   if (args.kind === "skill") v2cloud.forgetSkills();
@@ -368,31 +441,99 @@ const SKILL_MOST = 2_400;
 async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> {
   named(app, projectId, { name: "-" });
   cloudOn();
-  teacherOnly("Remembering it for every Bodycam HQ agent");
+  teacherOnly("Remembering it for the niche's agents");
   const skill = libraryName(args.skill, "skill");
   if (skill === v2cloud.GLOBAL) throw new Error("the global skill is Edit's own: give your own a name");
   if (typeof args.text !== "string" || args.text.trim() === "") throw new Error("text is required");
   if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");
   const note = typeof args.note === "string" && args.note.trim() !== "" ? args.note.trim() : undefined;
   if (note !== undefined && note.length > 160) throw new Error("note is at most 160 characters: when to read it");
-  await v2cloud.refreshSkills();
+  const here = await nicheHere(app, projectId);
   // A part's skill, or one already longer than a memory (the house rules, always in mind): saved whole again with the change.
-  const before = v2cloud.skill(skill);
+  const before = v2cloud.skill(skill, here.niche);
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
   const most = part ? SKILL_MOST : MEMORY_MOST;
   if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part's skill short: its rules, not their history" : "a line or two, in the person's words"}`);
-  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note);
+  const place = placeOf(app, projectId, args, "skill", skill, here, before?.key === undefined ? undefined : { key: before.key, niches: before.niches ?? null });
+  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note, { key: place.key, ...(place.niches !== undefined ? { niches: place.niches } : {}) });
   v2cloud.forgetSkills();
-  return text(`Remembered as ${skill} (version ${saved.n}): every Bodycam HQ agent has it from its next turn.`);
+  return text(`Remembered as ${skill} (version ${saved.n}) for ${place.where}: their agents have it from their next turn.`);
 }
 
 async function readSkill({ app, args, projectId }: ToolCall): Promise<Content[]> {
   named(app, projectId, { name: "-" });
   const name = libraryName(args.name, "name");
-  await v2cloud.refreshSkills();
-  const found = v2cloud.skill(name);
+  const here = await nicheHere(app, projectId);
+  const found = v2cloud.skill(name, here.niche);
   if (found === undefined) throw new Error(`no skill ${name}: the ones there are listed in your instructions`);
   return text(found.text);
+}
+
+/**
+ * The project's V2 niche (Sphe, Nov 13): what it is and what it's like; and,
+ * a teacher's when the person asks (asked: their words), its name and
+ * description changed, what it's like set ("this niche works very similarly
+ * to the bodycam niche") or cut loose (what came through kept as its own), or
+ * a new niche made.
+ */
+async function nicheTool({ app, args, projectId }: ToolCall): Promise<Content[]> {
+  named(app, projectId, { name: "-" });
+  cloudOn();
+  const here = await nicheHere(app, projectId);
+  const known = v2cloud.knownNiches();
+  const project = app.store.get(projectId)!.project;
+  const current = known.find((one) => one.key === here.niche) ?? { key: here.niche, name: here.niche === v2cloud.BODYCAM_HQ ? "Bodycam HQ" : here.niche, description: "", like: null, kind: project.style };
+  const changing = ["name", "description", "like", "cut_loose", "create"].some((field) => args[field] !== undefined);
+  if (changing) {
+    teacherOnly("Changing a niche");
+    if (!quoted(app, projectId, args.asked)) throw new Error("A niche is the team's: change it only when the person asks, with asked, their words quoted from their message.");
+  }
+  const reason = typeof args.asked === "string" ? args.asked : "asked in the chat";
+  const keyOfNiche = (given: unknown): string | null => {
+    if (given === null || given === "") return null;
+    if (typeof given !== "string") throw new Error("a niche is given by its key or its name");
+    const found = known.find((one) => one.key === given || one.name.toLowerCase() === given.toLowerCase());
+    if (found === undefined) throw new Error(`no niche ${given}: the niches are ${known.map((one) => `${one.name} (${one.key})`).join(", ") || "none yet"}`);
+    return found.key;
+  };
+  if (args.create !== undefined) {
+    const made = (typeof args.create === "object" && args.create !== null ? args.create : {}) as Record<string, unknown>;
+    if (typeof made.name !== "string" || made.name.trim() === "") throw new Error("create is {name, description, like?}");
+    const key = v2cloud.nicheKeyOf(made.name);
+    if (known.some((one) => one.key === key)) throw new Error(`there's a niche ${key} already`);
+    const like = keyOfNiche(made.like ?? null);
+    // Its kind of video: as given, else the one it's like's, else this project's.
+    const kind = typeof made.kind === "string" && made.kind !== "" ? made.kind : (known.find((one) => one.key === like)?.kind ?? project.style);
+    const niche = await v2cloud.saveNiche({ key, name: made.name.trim(), description: typeof made.description === "string" ? made.description : "", like, kind }, reason);
+    return text(`Made the niche ${niche.name} (${niche.key})${niche.like ? `, like ${niche.like}` : ""}: new V2 projects can be made in it from Home. This project stays in ${current.name}.`);
+  }
+  if (args.cut_loose === true) {
+    if (current.like === null) throw new Error(`${current.name} isn't like another niche: nothing to cut loose from`);
+    // What came through from the niches it's like (not the house's) kept as its own, then the link gone.
+    let copied = 0;
+    for (const kind of ["skill", "template", "sound"] as const) {
+      const items = v2cloud.forNiche(await v2cloud.list(kind), here.chain);
+      for (const item of items) {
+        const own = v2cloud.ownNicheOf(item.key);
+        const inherited = own !== null ? own !== here.niche : item.niches != null && item.niches.length > 0 && !item.niches.includes(here.niche);
+        if (!inherited) continue;
+        if (await v2cloud.copyItem(item, v2cloud.ownKey(kind, here.niche, item.name), `kept when ${current.name} was cut loose from ${current.like}`)) copied++;
+      }
+    }
+    await v2cloud.saveNiche({ ...current, like: null }, reason);
+    return text(`${current.name} is cut loose from ${current.like}: ${copied} lesson(s), effect(s) and sound(s) it had from it are its own now, and what ${current.like} is taught from here doesn't come through.`);
+  }
+  if (changing) {
+    const next = { ...current, ...(typeof args.name === "string" && args.name.trim() !== "" ? { name: args.name.trim() } : {}), ...(typeof args.description === "string" ? { description: args.description } : {}), ...(args.like !== undefined ? { like: keyOfNiche(args.like) } : {}) };
+    await v2cloud.saveNiche(next, reason);
+    return text(`${next.name} (${next.key}): ${next.description || "no description"}${next.like ? `; like ${next.like}, whose teaching comes through where ${next.name} isn't taught otherwise` : "; like no other niche"}. Its agents have it from their next turn.`);
+  }
+  const own = (await Promise.all((["skill", "template", "sound"] as const).map((kind) => v2cloud.list(kind)))).flat().filter((item) => v2cloud.ownNicheOf(item.key) === here.niche || item.niches?.includes(here.niche));
+  return text(
+    `This project's niche: ${current.name} (${current.key})${current.description ? `: ${current.description}` : ""}.\n` +
+      `Like: ${here.chain.slice(1).map(here.name).join(" → ") || "no other niche"}.\n` +
+      `Its own lessons, effects and sounds: ${own.length}. The niches: ${known.map((one) => `${one.name} (${one.key}${one.like ? `, like ${one.like}` : ""})`).join("; ") || "none yet"}.`,
+  );
 }
 
 async function makeSound({ app, args, projectId }: ToolCall): Promise<Content[]> {
@@ -447,6 +588,7 @@ const TOOLS: [string, (call: ToolCall) => Promise<Content[]>][] = [
   ["archive_in_library", archiveInLibrary],
   ["remember", remember],
   ["read_skill", readSkill],
+  ["niche", nicheTool],
   ["make_sound", makeSound],
   ["effect_footage", effectFootage],
   ["look_at_effect", lookAtEffect],

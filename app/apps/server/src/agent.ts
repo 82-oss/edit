@@ -1914,7 +1914,7 @@ class ClaudeTurn {
 /** The chat shows pictures (chat_pictures.ts). */
 const PICTURES = "Your reply is Markdown and shows pictures: ![what it is](its file), such as a picture a tool showed you (its file is named under it) or an exported still.";
 
-export function agentInstructions(project: Pick<Project, "name" | "style" | "settings" | "hq">): string {
+export function agentInstructions(project: Pick<Project, "name" | "style" | "settings" | "hq" | "niche">): string {
   if (project.hq === true) return hqInstructions(project);
   const { settings } = project;
   // A video made the new way (effects.ts): its agent also writes code, in the project's effects folder and nowhere else.
@@ -1941,18 +1941,26 @@ export function agentInstructions(project: Pick<Project, "name" | "style" | "set
  * of the edit (the house's, cut down, and what the team taught since) by name
  * and when each fits, read with read_skill when it gets there.
  */
-function hqInstructions(project: Pick<Project, "name" | "settings">): string {
+function hqInstructions(project: Pick<Project, "name" | "settings" | "niche">): string {
   const { settings } = project;
-  const known = v2cloud.memories();
+  // Its niche (Sphe, Nov 13): what it's taught is the niche's own, then what the niches it's like were taught, then V2's house.
+  const nicheKey = v2cloud.nicheOfProject(project);
+  const niche = v2cloud.knownNiches().find((one) => one.key === nicheKey) ?? { key: nicheKey, name: nicheKey === v2cloud.BODYCAM_HQ ? "Bodycam HQ" : nicheKey, description: "", like: null, kind: "bodycam" };
+  const like = v2cloud.chainOf(nicheKey).slice(1).map((key) => v2cloud.knownNiches().find((one) => one.key === key)?.name ?? key);
+  const nicheText =
+    `THIS PROJECT'S NICHE: ${niche.name} (${niche.key})${niche.description === "" ? "" : `: ${niche.description}`}.` +
+    (like.length === 0 ? "" : ` It's like ${like.join(", then ")}: what they were taught comes through, and what this niche is taught wins where they differ.`) +
+    " What you remember and save is this niche's own; for other niches too, or every niche, only when the person asks for it (remember and save_to_library's niches, with asked: their words).\n\n";
+  const known = v2cloud.memories(nicheKey);
   const remembered = known.filter((one) => one.note === undefined);
   const parts = known.filter((one) => one.note !== undefined);
   const memory = remembered.length === 0 ? "" : `\n\nWHAT YOU REMEMBER (V2's cloud; keep it short, as it says):\n${remembered.map((one) => (one.name === v2cloud.GLOBAL ? one.text : `[${one.name}] ${one.text}`)).join("\n")}`;
-  const skills = parts.length === 0 ? "" : `\n\nYOUR SKILLS (V2's cloud): how the team does each part of a bodycam edit. read_skill one before you work on that part (or answer about it), once per conversation; what you're taught goes into them.\n${parts.map((one) => `- ${one.name}: ${one.note}`).join("\n")}`;
+  const skills = parts.length === 0 ? "" : `\n\nYOUR SKILLS (V2's cloud): how the team does each part of a ${niche.name} edit. read_skill one before you work on that part (or answer about it), once per conversation; what you're taught goes into them.\n${parts.map((one) => `- ${one.name}: ${one.note}`).join("\n")}`;
   return (
     `You are the agent built into Edit, a video editor, making "${project.name}" (${settings.width}x${settings.height} at ${rateText(settings)} fps) with the person watching: what you change appears in their viewer at once. ` +
     "You work through the `edit` tools and write code with your file tools (Read, Write, Edit, Glob, Grep), which work only in your working directory, the project's effects folder; you have no shell. " +
     `Each tool call is a wait for them: do independent calls side by side. Reply in a line or two: what you made or changed, and where. ${PICTURES}\n\n` +
-    `${HQ_NOTES}${memory}${skills}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
+    `${nicheText}${HQ_NOTES}${memory}${skills}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
   );
 }
 

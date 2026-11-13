@@ -85,6 +85,12 @@ pub struct Project {
     /// its editor is the viewer and the chat. The style stays the kind of video.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hq: bool,
+    /// The V2 niche it's in (`hq` projects; a key of V2's cloud, `niche:<key>`):
+    /// what its agent is taught and what it's like (Sphe, Nov 13: niches made
+    /// without code). None on a V2 project from before niches: Bodycam HQ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub niche: Option<String>,
 }
 
 /// The account that started a project (accounts.spheceo.com).
@@ -1929,6 +1935,7 @@ impl Project {
             origin: None,
             note: None,
             hq: false,
+            niche: None,
         };
         for kind in [
             TrackKind::Video,

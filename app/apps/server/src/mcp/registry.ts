@@ -50,6 +50,7 @@ export const HQ_TOOLS: readonly string[] = [
   "archive_in_library",
   "remember",
   "read_skill",
+  "niche",
   "make_sound",
   "feedback_reopen",
   "edit_history",

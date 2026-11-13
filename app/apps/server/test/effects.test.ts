@@ -201,7 +201,7 @@ test("the agent's file tools are allowed in the effects folder and nowhere else,
     for (const tool of HQ_TOOLS) expect(plain).not.toContain(`- ${tool}(`);
     const made = agentInstructions({ ...project, hq: true });
     expect(made).toContain("the project's effects folder; you have no shell");
-    expect(made).toContain("THIS IS A BODYCAM HQ VIDEO");
+    expect(made).toContain("THIS IS AN EDIT V2 VIDEO");
     for (const tool of HQ_TOOLS) expect(made).toContain(`- ${tool}(`);
     expect(toolsFor(false).length).toBe(TOOLS.length - HQ_TOOLS.length);
     // Every tool but the house's skills, sound effects and looks (it has its own) and other niches'.

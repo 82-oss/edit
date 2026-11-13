@@ -4001,7 +4001,7 @@
     "name": "restore_effect"
   },
   {
-    "description": "Search V2's cloud for an effect or a sound to start from (Bodycam HQ). Each comes with its category, when to use it and a brief on how to change it; only what's in use, unless you ask for what was put away. Look here before writing one from nothing. kind font lists the team's fonts, each there in every effect by its family name.",
+    "description": "Search V2's cloud for an effect or a sound to start from (Bodycam HQ). Each comes with its category, when to use it and a brief on how to change it; only what's in use, unless you ask for what was put away. Look here before writing one from nothing. kind font lists the team's fonts, each there in every effect by its family name. Lists what this project's niche can use (its own, the niches it's like, V2's house), each with where it comes from.",
     "inputSchema": {
       "properties": {
         "archived": {
@@ -4072,7 +4072,7 @@
     "name": "use_from_library"
   },
   {
-    "description": "Keep an effect or a sound of this project's in V2's cloud for every project, or as its next version (a teacher's; Bodycam HQ). Only when the person says to keep it or use it from now on. A font (kind font, name: its folder from fetch_font) is kept the same way, with a note on when it's the one to use; every agent's effects then have it by its family name.",
+    "description": "Keep an effect or a sound of this project's in V2's cloud for every project, or as its next version (a teacher's; Bodycam HQ). Only when the person says to keep it or use it from now on. A font (kind font, name: its folder from fetch_font) is kept the same way, with a note on when it's the one to use; every agent's effects then have it by its family name. Kept for this project's niche unless the person asks for more (niches, asked); one shared with other niches asks first (for).",
     "inputSchema": {
       "properties": {
         "as": {
@@ -4111,6 +4111,25 @@
         "reason": {
           "description": "What the person said, in their words.",
           "type": "string"
+        },
+        "niches": {
+          "description": "Other niches to keep it for too (niche keys), or [\"all\"] for every niche: only when the person asked, with asked. Left out, it's this niche's own.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "for": {
+          "description": "Changing one this niche shares with others (the error says when): \"this niche\" (a copy made this niche's own; the others keep theirs) or \"all\" (with asked), as the person answered.",
+          "type": "string",
+          "enum": [
+            "this niche",
+            "all"
+          ]
+        },
+        "asked": {
+          "description": "The person's words, quoted from their message, when they asked to keep it for more niches, change a shared one for all, or put a shared one away.",
+          "type": "string"
         }
       },
       "required": [
@@ -4147,6 +4166,10 @@
         "project_id": {
           "description": "Defaults to the project open in the UI.",
           "type": "string"
+        },
+        "asked": {
+          "description": "The person's words, quoted from their message, when they asked to keep it for more niches, change a shared one for all, or put a shared one away.",
+          "type": "string"
         }
       },
       "required": [
@@ -4158,7 +4181,7 @@
     "name": "archive_in_library"
   },
   {
-    "description": "Keep something you've been told to remember, or judge worth remembering, as one of your skills in V2's cloud (a teacher's; Bodycam HQ). A memory is a line or two, in the person's words (at most 400 characters). A part of the edit's skill (one with a note, read with read_skill) is changed by saving the whole of it again with the change (at most 2,400 characters). The same name replaces it, so a line is forgotten by saving the skill again without it (a whole memory: archive_in_library).",
+    "description": "Keep something you've been told to remember, or judge worth remembering, as one of your skills in V2's cloud (a teacher's; Bodycam HQ). A memory is a line or two, in the person's words (at most 400 characters). A part of the edit's skill (one with a note, read with read_skill) is changed by saving the whole of it again with the change (at most 2,400 characters). The same name replaces it, so a line is forgotten by saving the skill again without it (a whole memory: archive_in_library). It's kept for this project's niche (and the niches like it) unless the person asks for more (niches, asked).",
     "inputSchema": {
       "properties": {
         "project_id": {
@@ -4179,6 +4202,25 @@
         },
         "note": {
           "description": "Only for a part of the edit's skill: when to read it (at most 160 characters). Kept from before when left out.",
+          "type": "string"
+        },
+        "niches": {
+          "description": "Other niches to keep it for too (niche keys), or [\"all\"] for every niche: only when the person asked, with asked. Left out, it's this niche's own.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "for": {
+          "description": "Changing one this niche shares with others (the error says when): \"this niche\" (a copy made this niche's own; the others keep theirs) or \"all\" (with asked), as the person answered.",
+          "type": "string",
+          "enum": [
+            "this niche",
+            "all"
+          ]
+        },
+        "asked": {
+          "description": "The person's words, quoted from their message, when they asked to keep it for more niches, change a shared one for all, or put a shared one away.",
           "type": "string"
         }
       },
@@ -4271,6 +4313,56 @@
         }
       },
       "required": []
+    }
+  },
+  {
+    "name": "niche",
+    "description": "This project's V2 niche: what it is, what it's like and the niches there are (no arguments). Only when the person asks (asked: their words, quoted), a teacher's: its name or description changed, like: another niche whose teaching comes through (\"this niche works very similarly to bodycam\"; null for none), cut_loose: true (what came through kept as its own, the link gone), or create: {name, description, like?} a new niche (projects are made in it from Home).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "like": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A niche's key or name, or null."
+        },
+        "cut_loose": {
+          "type": "boolean"
+        },
+        "create": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "description": {
+              "type": "string"
+            },
+            "like": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ]
+        },
+        "asked": {
+          "description": "The person's words, quoted from their message, when they asked to keep it for more niches, change a shared one for all, or put a shared one away.",
+          "type": "string"
+        },
+        "project_id": {
+          "type": "string",
+          "description": "Defaults to the project open in the UI."
+        }
+      }
     }
   }
 ]

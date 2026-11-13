@@ -43,6 +43,7 @@ import * as archive from "./archive.ts";
 import * as avatars from "./avatars.ts";
 import * as covers from "./covers.ts";
 import * as kinds from "./kinds.ts";
+import * as v2cloud from "./v2_cloud.ts";
 import * as reset from "./reset.ts";
 import * as firstPrompt from "./first_prompt.ts";
 import * as uploads from "./uploads.ts";
@@ -133,6 +134,8 @@ export function buildRouter(): Router<App> {
     .put("/api/update/channel", updateChannel)
     .get("/api/projects", listProjects)
     .post("/api/projects", createProject)
+    .get("/api/v2/niches", listNiches)
+    .post("/api/v2/niches", saveNiche)
     .get("/api/projects/{id}", getProject)
     .put("/api/projects/{id}", putProject)
     .delete("/api/projects/{id}", deleteProject)
@@ -504,6 +507,38 @@ function listProjects({ app }: Context): Response {
 
 const STYLES: Style[] = ["bodycam", "interrogation", "courtroom", "commentary", "horror", "shorts"];
 
+/** V2's niches for Home (v2_cloud.ts), and whether this computer's person may make one. Signed out, none. */
+async function listNiches(): Promise<Response> {
+  if (!v2cloud.enabled()) return json({ niches: [], teacher: false });
+  return json({ niches: await v2cloud.listNiches(), teacher: v2cloud.teacher() });
+}
+
+/**
+ * A V2 niche made, or changed, from Home (Sphe, Nov 13: "make it easy for us
+ * to create a new niche without… code"): a teacher's. Its key from its name
+ * when new; `like` another niche whose teaching comes through.
+ */
+async function saveNiche(context: Context): Promise<Response> {
+  const given = await body(context);
+  if (!v2cloud.enabled()) throw bad("V2's niches need this computer signed in to Edit.");
+  if (!v2cloud.teacher()) throw new ApiError(403, "Making a niche is a teacher's: an admin can make you one at accounts.spheceo.com.");
+  const name = field<string>(given, "name", "string", true)!.trim();
+  if (name === "") throw bad("name is required");
+  const all = await v2cloud.listNiches();
+  const key = field<string>(given, "key", "string") ?? v2cloud.nicheKeyOf(name);
+  const before = all.find((one) => one.key === key);
+  if (field<string>(given, "key", "string") === null && before !== undefined) throw bad(`There's a niche called ${before.name} already.`);
+  const like = field<string>(given, "like", "string");
+  const kind = field<string>(given, "kind", "string") ?? all.find((one) => one.key === like)?.kind ?? before?.kind ?? "bodycam";
+  if (!STYLES.includes(kind as Style)) throw bad(`kind is one of ${STYLES.join(", ")}`);
+  try {
+    const niche = await v2cloud.saveNiche({ key, name, description: field<string>(given, "description", "string") ?? before?.description ?? "", like: like === "" ? null : like, kind }, before === undefined ? "made on Home" : "changed on Home");
+    return json({ niche });
+  } catch (error) {
+    throw bad(diag.messageOf(error));
+  }
+}
+
 async function createProject(context: Context): Promise<Response> {
   const given = await body(context);
   const name = field<string>(given, "name", "string", true);
@@ -518,14 +553,17 @@ async function createProject(context: Context): Promise<Response> {
     return value;
   };
   const settings = { width: size("width"), height: size("height"), fps: size("fps") };
-  // Bodycam HQ (Edit V2): a bodycam project whose graphics the agent writes as code, only with the beta on.
+  // Edit V2: a project whose graphics the agent writes as code, only with the beta on, in one of V2's niches (none: Bodycam HQ).
   const hq = field<boolean>(given, "hq", "boolean") === true;
+  const niche = field<string>(given, "niche", "string");
   if (hq && !beta.read(context.app.store.home).v2) throw bad("Edit V2 is off: turn it on in Settings → Beta.");
-  if (hq && style !== "bodycam") throw bad("Only a bodycam project can be Bodycam HQ.");
+  if (niche !== null && !hq) throw bad("A niche is a V2 project's: give hq too.");
+  if (niche !== null && !/^[a-z0-9][a-z0-9-]{0,39}$/.test(niche)) throw bad("niche is a niche's key.");
+  if (hq && niche === null && style !== "bodycam") throw bad("Only a bodycam project can be Bodycam HQ.");
   if (!kinds.mayStart(style as Style)) throw new ApiError(403, kinds.cantMake(`edit.${style}`));
   let live;
   try {
-    live = context.app.store.createAs(name, style as Style, settings, hq);
+    live = context.app.store.createAs(name, style as Style, settings, hq, niche);
   } catch (error) {
     throw bad(diag.messageOf(error));
   }

@@ -431,13 +431,15 @@ export class Store {
     return this.createAs(name, "bodycam", settings);
   }
 
-  /** A new project of a given style (the kind of video); `hq`, a Bodycam HQ project (Edit V2, beta.ts). */
-  createAs(name: string, style: Style, settings: Settings, hq = false): Live {
+  /** A new project of a given style (the kind of video); `hq`, an Edit V2 project (beta.ts), in `niche` (V2's cloud). */
+  createAs(name: string, style: Style, settings: Settings, hq = false, niche: string | null = null): Live {
     const id = `p${nowMs()}-${nextFileId()}`;
     const trimmed = name.trim() === "" ? "Untitled" : name.trim();
     const project = newProject(id, trimmed, settings, style);
     // Only when on: an ordinary project's file stays as it was, with no `hq` key.
     if (hq) project.hq = true;
+    // A V2 project's niche (v2_cloud.ts): none is Bodycam HQ's.
+    if (hq && niche !== null) project.niche = niche;
     const by = creator();
     if (by !== null) project.created_by = by;
     if (this.marksDev) project.origin = "dev";

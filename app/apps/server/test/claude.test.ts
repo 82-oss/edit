@@ -127,7 +127,7 @@ test("a Bodycam HQ project's turn runs in its effects folder with the file tools
     expect(options.permissionMode).toBe("dontAsk");
     // It compacts near the model's whole window, not the other chats' 180k (Sphe, Nov 12).
     expect(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("1000000");
-    expect(String(options.systemPrompt)).toContain("THIS IS A BODYCAM HQ VIDEO");
+    expect(String(options.systemPrompt)).toContain("THIS IS AN EDIT V2 VIDEO");
     // Fable 5.2 thinking high until the person picks, whatever the menu says elsewhere (Sphe, Nov 11).
     expect(options.model).toBe("claude-fable-5-2");
     expect(options.effort).toBe("high");
