@@ -730,7 +730,9 @@ export interface Given {
   video: string | null;
   /** Its sound's levels beside scene.html, a script that puts them at `window.levels[key]`, when it has sound. */
   levels: string | null;
-  /** Their key in `window.levels`. */
+  /** Its sound itself beside scene.html, a script that puts it at `window.waves[key]`, when it has sound. */
+  wave: string | null;
+  /** Their key in `window.levels` and `window.waves`. */
   key: string;
   width: number;
   height: number;
@@ -771,14 +773,48 @@ export async function giveFootage(app: App, projectId: string, name: string, med
     fs.renameSync(partial, join(dir, video));
   }
   let levels: string | null = null;
+  let wave: string | null = null;
   if (media.kind === "audio" || media.has_audio) {
     // A script, not JSON: the page has no network, so it can't fetch data; a script from its own folder it can load.
     levels = `${stem}.levels.js`;
     const pcm = await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", ...range, "-vn", "-ac", "1", "-ar", "24000", "-f", "f32le", "-"]);
     const data = JSON.stringify(levelsOf(new Float32Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 4)), 24000, fps));
     writeAtomic(join(dir, levels), `(window.levels = window.levels || {})[${JSON.stringify(stem)}] = ${data};\n`);
+    wave = `${stem}.wave.js`;
+    writeAtomic(join(dir, wave), waveScript(stem, new Float32Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 4)), 24000));
   }
-  return { video, levels, key: stem, width: media.width, height: media.height, start, duration: end - start };
+  return { video, levels, wave, key: stem, width: media.width, height: media.height, start, duration: end - start };
+}
+
+/** How many samples a second of a sound's wave a page is given: enough for a voice's shape, under 1 MB for three minutes. */
+export const WAVE_RATE = 4000;
+
+/**
+ * A sound itself for a page to draw (Sphe, Nov 13: a reference's call
+ * waveform is the sound's own shape, dense rippling strands where a voice
+ * is, which loudness levels a frame at a time can't give; the agent had to
+ * make its bursts up): its samples at `WAVE_RATE`, scaled so the loudest is
+ * ±127, as a script putting `{ rate, peak, samples: Int8Array }` at
+ * `window.waves[key]` (the page has no network: a script from its own
+ * folder it can load). `peak` is the loudest sample before scaling, 0 to 1.
+ */
+export function waveScript(key: string, samples: Float32Array, rate: number): string {
+  const step = rate / WAVE_RATE;
+  const count = Math.floor(samples.length / step);
+  // Each output sample the mean of the input's it stands for: a plain average keeps a voice's shape and drops the hiss above it.
+  const thinned = new Float32Array(count);
+  let peak = 0;
+  for (let index = 0; index < count; index++) {
+    const from = Math.floor(index * step), to = Math.max(from + 1, Math.floor((index + 1) * step));
+    let sum = 0;
+    for (let at = from; at < to; at++) sum += samples[at] ?? 0;
+    thinned[index] = sum / (to - from);
+    peak = Math.max(peak, Math.abs(thinned[index]!));
+  }
+  const bytes = new Int8Array(count);
+  for (let index = 0; index < count; index++) bytes[index] = peak > 0 ? Math.round((thinned[index]! / peak) * 127) : 0;
+  const text = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+  return `(window.waves = window.waves || {})[${JSON.stringify(key)}] = { rate: ${WAVE_RATE}, peak: ${Math.round(peak * 1000) / 1000}, samples: new Int8Array(Uint8Array.from(atob("${text}"), (c) => c.charCodeAt(0)).buffer) };\n`;
 }
 
 /**

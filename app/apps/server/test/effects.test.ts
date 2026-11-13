@@ -659,3 +659,17 @@ test("a render's error says where it was thrown when its first line is only its 
   expect(firstLines("Error\n    at render (map.js:12:3)\n    at x")).toBe("Error at render (map.js:12:3)");
   expect(firstLines("TypeError: x is undefined\n    at y")).toBe("TypeError: x is undefined");
 });
+
+test("a sound's wave for a page: thinned to WAVE_RATE, its loudest at ±127, as a script", async () => {
+  const { waveScript, WAVE_RATE } = await import("../src/effects.ts");
+  const rate = 24000;
+  const samples = new Float32Array(rate).map((_, i) => 0.5 * Math.sin((2 * Math.PI * 200 * i) / rate));
+  const script = waveScript("call", samples, rate);
+  const window: Record<string, any> = {};
+  new Function("window", "atob", script)(window, (text: string) => Buffer.from(text, "base64").toString("binary"));
+  const wave = window.waves.call;
+  expect(wave.rate).toBe(WAVE_RATE);
+  expect(wave.samples.length).toBe(WAVE_RATE);
+  expect(Math.max(...wave.samples)).toBe(127);
+  expect(wave.peak).toBeGreaterThan(0.45);
+});

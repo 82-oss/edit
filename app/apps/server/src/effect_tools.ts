@@ -227,6 +227,7 @@ async function effectFootage({ app, args, projectId }: ToolCall): Promise<Conten
   const lines = [`${fixed(given.duration, 2)} s of ${args.media_id} from ${fixed(given.start, 2)} s, in effects/${name}/:`];
   if (given.video !== null) lines.push(`- "${given.video}": its picture (${given.width}x${given.height}, no sound). Play it in the page and seek it to the moment in seek(t), returning a Promise that resolves on its "seeked" (its time 0 is ${fixed(given.start, 2)} s of the media); wait for its "loadeddata" in window.ready.`);
   if (given.levels !== null) lines.push(`- "${given.levels}": its sound's levels. Load it with <script src="${given.levels}"></script> before your own script, and they're window.levels[${JSON.stringify(given.key)}]: { fps, frames, rms: [per frame], bands: [per frame][16, low to high] }, each 0 (silent) to 1; frame i is i / fps seconds in.`);
+  if (given.wave !== null) lines.push(`- "${given.wave}": the sound itself, its wave. Load it the same way, and it's window.waves[${JSON.stringify(given.key)}]: { rate: ${effects.WAVE_RATE}, peak, samples: Int8Array }, sample i at i / rate seconds, -127 to 127 (the loudest of it at ±127). Draw it for a waveform: a stretch of it is the sound's own shape, where the levels are only how loud.`);
   if (given.video === null && given.levels === null) lines.push("- nothing: it has neither picture nor sound");
   return text(lines.join("\n"));
 }
