@@ -19,6 +19,7 @@ Sphe pastes it to the team (JJ, Marc, Marius) as it is. They use Edit all day an
 - **Certain or not, said in the verb.** Tested or measured: "X is Y." Fairly confident but not proven on everyone's Mac: "X should be Y." Nothing weaker goes in.
 - **Real numbers, only ones we verified**, and only ones that mean something to them: minutes waited, hours paid for, times it failed. "17 minutes on one video, almost 3 hours on another" is good; frame counts, milliseconds, gigabytes and percentiles confuse and come out.
 - **Sphe's voice**: "In my test", never "in our test" or "we".
+- **No "you" where it isn't needed** (Sphe, Nov 13): "ready for testing" or "ready to test", never "ready for you to test"; "a video can be shared", not "you can share a video".
 - Count things as they are: one agent is "agent", not "agents".
 
 ## The shape
@@ -41,10 +42,10 @@ Nightly 69
 
 Nightly 70
 
-- You can share a video the moment its export finishes. Before, Share stayed locked while the export uploaded in the background: 17 minutes on one video, almost 3 hours on another.
-- Playback in Edit.app is smooth, and jumping around the timeline is near-instant once a project's footage is on your Mac.
+- A video can be shared the moment its export finishes. Before, Share stayed locked while the export uploaded in the background: 17 minutes on one video, almost 3 hours on another.
+- Playback in Edit.app is smooth, and jumping around the timeline is near-instant once a project's footage is on the Mac.
 - The agent wastes less time. It was rejecting its own changes (14 times in one edit) and fixing overlapping subtitles one pair at a time (10 failed tries in 75 seconds). Both are fixed.
-- Script imports should cost far less in transcription. Your Mac now listens to the recordings itself first, using Apple's free built-in speech recognition, and only the moments chosen for the script are sent for paid transcription. In my test on a case with five and a half hours of recordings, that took paid transcription from about 12 hours to under 1.
+- Script imports should cost far less in transcription. The Mac now listens to the recordings itself first, using Apple's free built-in speech recognition, and only the moments chosen for the script are sent for paid transcription. In my test on a case with five and a half hours of recordings, that took paid transcription from about 12 hours to under 1.
 - And other bug fixes and performance improvements.
 
 Plans For Tomorrow
