@@ -212,7 +212,7 @@ test("adding, changing and removing clips answer", async () => {
   expect(await refused(app, "set_keyframes", { clip_id: text.id, param: "opacity" })).toBe(
     "keyframes: invalid type: null, expected a sequence",
   );
-  expect(await said(app, "set_in_out", { in: 1, out: 2 })).toBe("in/out: 1.00s to 2.03s (31 frames)");
+  expect(await said(app, "set_in_out", { in: 1, out: 2 })).toBe(`in/out: 1.00s to 2.03s (31 frames), marked to export as "In–out"`);
   expect(await refused(app, "set_in_out", { in: 3 })).toBe("mark_in must not come after mark_out");
   expect(await said(app, "set_in_out", { in: null, out: null })).toBe("in and out points cleared");
   expect(await said(app, "delete_clips", { clip_ids: [text.id] })).toBe("deleted 1 clip(s)");

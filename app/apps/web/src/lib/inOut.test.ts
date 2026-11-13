@@ -76,4 +76,12 @@ describe("changes the server makes for us", () => {
     useEditor.getState().undo();
     expect(useEditor.getState().project?.media.length).toBe(0);
   });
+  it("are one of the stretches marked to export", async () => {
+    // Sphe, Nov 13: "I thought the in and out points are the export ranges".
+    const { marked, IN_OUT } = await import("./inOut");
+    const solid = { id: "s", track: "v1", start: 0, duration: 900, color: "blue", fade_in: 0, fade_out: 0, type: "solid", fill: [0, 0, 0, 1] } as never;
+    const edit = { ...project, clips: [solid], ranges: [{ start: 600, end: 700, name: "Board" }], mark_in: 60, mark_out: 119 } as Project;
+    expect(marked(edit)).toEqual([{ start: 60, end: 120, name: IN_OUT }, { start: 600, end: 700, name: "Board" }]);
+    expect(marked({ ...edit, mark_in: undefined, mark_out: undefined } as Project)).toEqual([{ start: 600, end: 700, name: "Board" }]);
+  });
 });

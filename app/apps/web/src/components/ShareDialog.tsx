@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { api, type RangesBatch, type RangesMode, type Review } from "../lib/api";
 import { projectDuration } from "../lib/edit";
+import { marked as markedStretches } from "../lib/inOut";
 import { shareStatus, shownPath } from "../lib/export-face";
 import { chaptersInSpan, DEFAULTS, scriptChapters, type ExportOptions } from "../lib/exporting";
 import { onThisMac, showInFinder } from "../lib/files";
@@ -191,7 +192,8 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   const link = review?.review ?? null;
   // One at a time: either way makes the same file.
   const unable = busy || exporting || retrying || batchRunning || projectDuration(project) <= 0;
-  const ranges = project.ranges ?? [];
+  // Everything marked to export, the in and out points among them (lib/inOut.ts).
+  const ranges = markedStretches(project);
   // Stretches are saved here, not sent for feedback (the link is the edit's versions).
   const choosing = where === "here" && ranges.length > 0;
   // One stretch has nothing to join to: it's that stretch's video.

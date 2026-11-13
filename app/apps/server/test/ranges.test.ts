@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 
 import { dispatch } from "../src/mcp/index.ts";
+import { registerEditingTools } from "../src/edit_tools.ts";
 import { saveExportFolder } from "../src/export_folder.ts";
 import type { App } from "../src/app.ts";
 import { chunkFolder, listExports, listMade } from "../src/exports.ts";
@@ -160,4 +161,41 @@ test("a project's exports of parts are listed apart from its whole exports", () 
   // Newest first, still: the oldest whole export alone went.
   expect(listed[0]!.path).toBe("/c39.mp4");
   expect(listed.at(-1)!.path).toBe("/w1.mp4");
+});
+
+test("the in and out points are one of the marked stretches, and set_ranges replaces them with the rest", async () => {
+  // Sphe, Nov 13: "I thought the in and out points are the export ranges".
+  const { marked, IN_OUT } = await import("../src/ranges.ts");
+  fixture = fixtureHome("ranges-in-out");
+  const { app, store } = fixture;
+  const id = store.create("r", { width: 1920, height: 1080, fps: 30 }).project.id;
+  await store.update(id, "test", (project) => {
+    project.clips.push({ id: "s", track: project.tracks[0]!.id, start: 0, duration: 900, color: "blue", fade_in: 0, fade_out: 0, type: "solid", fill: [0, 0, 0, 1] } as never);
+    project.ranges = [{ start: 600, end: 700, name: "Board" }];
+    project.mark_in = 60;
+    project.mark_out = 119;
+  });
+  expect(marked(store.get(id)!.project)).toEqual([{ start: 60, end: 120, name: IN_OUT }, { start: 600, end: 700, name: "Board" }]);
+  await dispatch(app, { id: 1, method: "tools/call", params: { name: "set_ranges", arguments: { project_id: id, ranges: [] } } }, null);
+  const after = store.get(id)!.project;
+  expect([after.ranges, after.mark_in, after.mark_out]).toEqual([undefined, undefined, undefined]);
+});
+
+test("taking out most of the edit is refused until the person, asked, says so", async () => {
+  // Sphe, Nov 13: "remove the rest on this timeline" meant the other marked stretches; 34 of 34.5 minutes went.
+  registerEditingTools();
+  fixture = fixtureHome("big-cut");
+  const { app, store } = fixture;
+  const id = store.create("r", { width: 1920, height: 1080, fps: 30 }).project.id;
+  await store.update(id, "test", (project) => {
+    project.clips.push({ id: "s", track: project.tracks[0]!.id, start: 0, duration: 9000, color: "blue", fade_in: 0, fade_out: 0, type: "solid", fill: [0, 0, 0, 1] } as never);
+  });
+  const call = async (args: Record<string, unknown>) => ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "remove_time", arguments: { project_id: id, ...args } } }, null)) as { result: { content: { text?: string }[]; isError: boolean } }).result;
+  const refused = await call({ start: 30, end: 300 });
+  expect(refused.isError).toBe(true);
+  expect(refused.content[0]?.text).toContain("Ask the person first");
+  // A quote that isn't the person's answer since (here, no messages at all) is refused too.
+  const quoted = await call({ start: 30, end: 300, asked: "remove the rest on this timeline" });
+  expect(quoted.isError).toBe(true);
+  expect(store.get(id)!.project.clips[0]!.duration).toBe(9000);
 });

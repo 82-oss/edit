@@ -39,6 +39,23 @@ export function tidy(ranges: Range[], length: number): Range[] {
   return out;
 }
 
+/** What the in and out points are called as a marked stretch. */
+export const IN_OUT = "In–out";
+
+/**
+ * Everything marked to export: the stretches, and the in and out points as
+ * one more (Sphe, Nov 13: "I thought the in and out points are the export
+ * ranges"; he set them on the first call, and Export would have made the five
+ * stretches marked before and not it). One idea, marked by hand (I / O,
+ * set_in_out) or by the agent (set_ranges), made valid (`tidy`).
+ */
+export function marked(project: Project): Range[] {
+  const length = durationOf(project);
+  const all = [...(project.ranges ?? [])];
+  if (project.mark_in != null || project.mark_out != null) all.push({ start: project.mark_in ?? 0, end: project.mark_out == null ? length : project.mark_out + 1, name: IN_OUT });
+  return tidy(all, length);
+}
+
 /**
  * The cut-ins, each named as its clips are ("Cut-in 36"): from the first of
  * its clips to the end of the last. An edit with no clip so named has its
@@ -87,6 +104,9 @@ registerTool("set_ranges", async ({ app, args, projectId }) => {
   await app.store.update(projectId, "agent", (project) => {
     if (ranges.length === 0) delete project.ranges;
     else project.ranges = ranges;
+    // They're one of the marked stretches: replaced with the rest.
+    delete project.mark_in;
+    delete project.mark_out;
   });
   if (ranges.length === 0) return text("marked stretches cleared");
   const listed = ranges.map((one) => `${one.name} ${fixed(one.start / fps, 2)}–${fixed(one.end / fps, 2)}s`).join("; ");
@@ -204,8 +224,8 @@ export function exportRanges(app: App, project: Project, options: ExportOptions,
   const running = batches.get(project.id);
   if (running !== undefined && !running.finished) throw new Error("its marked stretches are already being exported");
   // What's left of them in the edit as it is now: one past an end shortened since it was marked was refused, and stopped the batch.
-  const ranges = tidy(project.ranges ?? [], durationOf(project));
-  if (ranges.length === 0) throw new Error("no stretches are marked: ask the agent to mark them (set_ranges)");
+  const ranges = marked(project);
+  if (ranges.length === 0) throw new Error("no stretches are marked: set in and out points (I / O), or ask the agent to mark them");
   if ((app.exports.runningFor?.(project.id) ?? null) !== null) throw new Error("an export of this edit is running: wait for it, or cancel it");
   const batch: Batch = { mode, total: ranges.length, done: 0, current: null, outputs: [], error: null, cancelled: false, finished: false, finished_ms: null };
   batches.set(project.id, batch);

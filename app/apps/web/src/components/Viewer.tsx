@@ -1,12 +1,12 @@
 import { Maximize, MessageSquarePlus, Minimize, Pause, Play, SkipBack, SkipForward, StepBack, StepForward } from "lucide-react";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { useAgent } from "../lib/agent";
 import * as storyboard from "../lib/storyboard";
 import { api, mediaHost } from "../lib/api";
 import { openReport } from "../lib/diagnostics";
 import { paramAt, projectDuration, setParam } from "../lib/edit";
-import { clearInOut, inOutSpan, useInOut } from "../lib/inOut";
+import { clearInOut, inOutSpan, marked, useInOut } from "../lib/inOut";
 import { viewerMenu } from "../lib/menus";
 import { playhead, preview } from "../lib/playback";
 import { nativePreview } from "../lib/nativePreview";
@@ -523,7 +523,7 @@ function Transport({ fullscreen }: { fullscreen: boolean }) {
         {span ? (
           <button
             onClick={clearInOut}
-            title="In to out: what play stops at and export renders. Click (or ⌥X) to clear."
+            title="In to out: marked to export (with any other marked stretch); play stops at the out point. Click (or ⌥X) to clear."
             className="group flex items-center gap-1.5 font-mono text-[13px] text-fg tabular"
           >
             <span className="rounded bg-white/10 px-1 font-sans text-[10px] font-medium tracking-wide text-muted uppercase group-hover:bg-white/15 group-hover:text-fg">
@@ -621,7 +621,7 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
   const agent = agentSpot(entries, live, running);
   // The part playing and the marked stretch it's in, named after the time, so the bar carries no words (Sphe, Nov 13).
   const part = useChapters(duration).findLast((chapter) => chapter.start <= frame) ?? null;
-  const stretch = (viewed?.ranges ?? []).find((one) => frame >= one.start && frame < one.end) ?? null;
+  const stretch = (viewed ? marked(viewed) : []).find((one) => frame >= one.start && frame < one.end) ?? null;
   return (
     <div className="flex flex-col px-3 pb-1">
       <ScrubBar frame={frame} duration={duration} thin marks={fullscreen ? [] : marks} agent={agent} />
@@ -676,8 +676,9 @@ function ScrubBar({ frame, duration, thin = false, marks = [], agent = null }: {
   const chapters = useChapters(duration);
   // A range clicked in the chat: where playing stops (playback.ts `playRange`).
   const range = useSyncExternalStore(preview.onStatus, () => preview.range);
-  // The stretches the agent marked to export (set_ranges), a line over the bar each.
-  const marked = useViewedProject()?.ranges ?? [];
+  // Everything marked to export (set_ranges, and the in and out points as one more), a line over the bar each.
+  const viewedNow = useViewedProject();
+  const stretches = useMemo(() => (viewedNow ? marked(viewedNow) : []), [viewedNow]);
   // A slit at each chapter's start, as a video site's progress bar has.
   const slits = chapters.slice(1).map((chapter) => (chapter.start / duration) * 100);
   const mask = slits.length === 0 ? undefined : `linear-gradient(to right, ${slits.map((at) => `#000 calc(${at}% - 1px), transparent calc(${at}% - 1px), transparent calc(${at}% + 1px), #000 calc(${at}% + 1px)`).join(", ")})`;
@@ -742,7 +743,7 @@ function ScrubBar({ frame, duration, thin = false, marks = [], agent = null }: {
         </div>
         {/* The stretches marked to export (set_ranges), each framed on the bar from its in to its out (Sphe, Nov 13: "J1"); hovered, its name, times and length. */}
         {duration > 0 &&
-          marked.map((one) => (
+          stretches.map((one) => (
             <div
               key={one.start}
               className="group/stretch absolute top-1/2 z-[1] h-[13px] -translate-y-1/2 rounded-[4px] border-2 border-amber-300 bg-amber-300/15"

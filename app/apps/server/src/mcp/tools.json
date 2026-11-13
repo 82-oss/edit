@@ -534,7 +534,7 @@
     "name": "batch"
   },
   {
-    "description": "Set the in and out points (seconds on the timeline; the out point's frame is the last one in). Null clears one; omit to leave it. Export without a range renders just that span, and playback stops at the out point.",
+    "description": "Mark a stretch to export by hand: the in and out points (I / O; seconds on the timeline; the out point's frame is the last one in). It's one of the marked stretches (set_ranges), exported and shown on the progress bar with them, named \"In–out\"; playback also stops at the out point. Null clears one; omit to leave it.",
     "inputSchema": {
       "properties": {
         "in": {
@@ -561,7 +561,7 @@
   },
   {
     "name": "set_ranges",
-    "description": "Mark stretches to export. Each becomes a video, or they are joined: the person picks in Export. cut_ins true: every cut-in, named as its clips (\"Cut-in 36\"); or ranges [{start, end, name}] in seconds. Replaces what's marked; [] clears.",
+    "description": "Mark stretches to export. Each becomes a video, or they are joined: the person picks in Export. cut_ins true: every cut-in, named as its clips (\"Cut-in 36\"); or ranges [{start, end, name}] in seconds. Replaces everything marked, the in and out points too (one marked stretch, set_in_out); [] clears them all. \"Keep only this one\" means clearing the others, never removing the rest of the edit.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1954,7 +1954,7 @@
     "name": "place_voiceovers"
   },
   {
-    "description": "Takes a stretch of time out of the whole timeline (a ripple delete across every track): clips wholly inside it are deleted; footage, B-roll and sound crossing it are cut so what's before and after it stays and joins up (the later piece plays on from where it would have); text, solids and adjustments crossing it are shortened; everything after moves left by its length. Keyframes stay with the picture they describe, fades at the cut are dropped, the in/out points, segments and script links follow. Returns what it cut, deleted and moved.",
+    "description": "Takes a stretch of time out of the whole timeline (a ripple delete across every track): clips wholly inside it are deleted; footage, B-roll and sound crossing it are cut so what's before and after it stays and joins up (the later piece plays on from where it would have); text, solids and adjustments crossing it are shortened; everything after moves left by its length. Keyframes stay with the picture they describe, fades at the cut are dropped, the in/out points, segments and script links follow. Returns what it cut, deleted and moved. Taking out more than half the edit at once is refused until the person, asked first, says so: then `asked` is their answer, quoted.",
     "inputSchema": {
       "properties": {
         "end": {
@@ -1968,6 +1968,10 @@
         "start": {
           "description": "Seconds on the timeline.",
           "type": "number"
+        },
+        "asked": {
+          "description": "Only after a refusal for taking out most of the edit: the person's answer to your question, quoted from their message.",
+          "type": "string"
         }
       },
       "required": [

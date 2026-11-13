@@ -31,6 +31,8 @@ import * as typing from "./typing_sounds.ts";
 import * as watermarks from "./watermarks.ts";
 import { ioMessage } from "./files.ts";
 import { isBug } from "./guard.ts";
+import type { Entry } from "./agent.ts";
+import { personSaid } from "./hq_reference.ts";
 import { houseMedia, houseMediaSaved, importPaths } from "./import.ts";
 import * as ears from "./ears.ts";
 import * as horrorLook from "./horror_look.ts";
@@ -807,7 +809,8 @@ async function setInOut({ app, args, projectId }: ToolCall): Promise<Content[]> 
   });
   if (span === null) return text("in and out points cleared");
   const [from, to] = span;
-  return text(`in/out: ${fixed(from / fps, 2)}s to ${fixed(to / fps, 2)}s (${to - from} frames)`);
+  const others = (live(app, projectId).project.ranges ?? []).length;
+  return text(`in/out: ${fixed(from / fps, 2)}s to ${fixed(to / fps, 2)}s (${to - from} frames), marked to export as "In–out"${others > 0 ? `, with ${others} other marked stretch${others === 1 ? "" : "es"} (set_ranges [] clears those and this; set_ranges with only the ones to keep)` : ""}`);
 }
 
 async function deleteClips({ app, args, projectId }: ToolCall): Promise<Content[]> {
@@ -921,6 +924,40 @@ async function addSoundEffect({ app, args, projectId }: ToolCall): Promise<Conte
   return text(placed);
 }
 
+/**
+ * When a project was first refused a cut of most of its edit (bigCut), and
+ * so from when the person's answer counts: their words from before it are
+ * the ones it was refused on.
+ */
+const bigCutAsked = new Map<string, number>();
+/** How long a refusal stands: an answer an hour on is to something else. */
+const BIG_CUT_ASK_MS = 60 * 60_000;
+
+/**
+ * Refuses taking out more than half the edit in one go until the person has
+ * said so after being asked (Sphe, Nov 13: "Just have those in and out
+ * points that I said, and then remove the rest on this timeline" meant the
+ * other marked stretches; the agent deleted 34 of the edit's 34.5 minutes
+ * without asking). `asked`, the person's answer quoted, must be in a message
+ * of theirs sent after the first refusal.
+ */
+function bigCut(app: ToolCall["app"], projectId: string, project: Project, frames: number, asked: unknown): void {
+  const length = durationOf(project);
+  if (length <= 0 || frames * 2 <= length) return;
+  const fps = fpsOf(project);
+  const now = Date.now();
+  const since = bigCutAsked.get(projectId);
+  const from = since !== undefined && now - since < BIG_CUT_ASK_MS ? since : now;
+  bigCutAsked.set(projectId, from);
+  const entries = (seams.agentPanel(app).turn?.(projectId).entries ?? []) as readonly Entry[];
+  if (typeof asked === "string" && personSaid(entries.filter((entry) => entry.at >= from), asked)) return;
+  throw new Error(
+    `This takes out ${fixed(frames / fps / 60, 1)} of the edit's ${fixed(length / fps / 60, 1)} minutes. Ask the person first, in plain words, what would go (and what the request might mean instead), and end your turn; ` +
+      `once they've answered, call again with asked: their answer, quoted from their message.` +
+      (typeof asked === "string" ? ` ("${asked}" isn't in a message of theirs since you were first refused.)` : ""),
+  );
+}
+
 async function removeTime({ app, args, projectId }: ToolCall): Promise<Content[]> {
   const fps = fpsOf(live(app, projectId).project);
   const frame = (key: string) => {
@@ -930,6 +967,10 @@ async function removeTime({ app, args, projectId }: ToolCall): Promise<Content[]
   };
   const [start, end] = [frame("start"), frame("end")];
   if (end <= start) throw new Error("end must come after start");
+  {
+    const project = live(app, projectId).project;
+    bigCut(app, projectId, project, Math.min(end, durationOf(project)) - start, args.asked);
+  }
   const [, done] = await app.store.update(projectId, ORIGIN, (project) => cutTime(project, start, end));
   return text(
     `removed ${fixed(done.frames / fps, 2)}s at ${fixed(start / fps, 2)}s: ${done.cut} clip(s) cut, ${done.deleted} deleted, ${done.moved} moved`,
