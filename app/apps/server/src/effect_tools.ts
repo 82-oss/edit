@@ -347,6 +347,28 @@ async function library({ app, args, projectId }: ToolCall): Promise<Content[]> {
   const words = typeof args.query === "string" ? args.query.toLowerCase().split(/\s+/).filter(Boolean) : [];
   // What this niche can use: its own, the niches it's like, then the house's; one of each name (fonts are every niche's).
   const here = await nicheHere(app, projectId);
+  // One read for how it's made, not brought in (Sphe, Nov 13: a new effect starts from "some inspiration here as to how
+  // things are done"): its note and brief, then its page's code, from a copy outside the project that's gone after.
+  if (typeof args.name === "string" && kind !== "font") {
+    const name = libraryName(args.name, "name");
+    const found = v2cloud.forNiche(await v2cloud.list(kind), here.chain).find((one) => one.name === name);
+    if (found === undefined) throw new Error(`no ${kind === "template" ? "effect" : "sound"} ${name} in the library this niche can use (library lists them)`);
+    const dir = fs.mkdtempSync(join(app.store.cacheDir(), "library-read-"));
+    try {
+      const version = await v2cloud.fetchInto(found.key, null, join(dir, "item"));
+      const entry = join(dir, "item", kind === "template" ? effects.ENTRY : effects.SOUND_ENTRY);
+      const code = version !== null && fs.existsSync(entry) ? fs.readFileSync(entry, "utf8") : "";
+      const files = (version?.files ?? []).map((file) => file.path).filter((path) => path !== effects.ENTRY && path !== effects.SOUND_ENTRY);
+      const most = 60_000;
+      return text(
+        `${found.name} (version ${version?.n ?? "?"}; ${v2cloud.originOf(found, here.chain)}) [${found.category ?? "no category"}]: ${found.note ?? ""}${found.brief ? `\nTo change it: ${found.brief}` : ""}` +
+          (files.length > 0 ? `\nBeside its page: ${files.slice(0, 40).join(", ")}${files.length > 40 ? ", …" : ""}` : "") +
+          `\n\n${code.length > most ? `${code.slice(0, most)}\n… (${code.length - most} more characters: use_from_library brings it in whole)` : code}`,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
   const all = await v2cloud.list(kind, args.archived === true);
   const listed = (kind === "font" ? all : v2cloud.forNiche(all, here.chain)).filter((one) => {
     const said = `${one.name} ${one.category ?? ""} ${one.note ?? ""}`.toLowerCase();

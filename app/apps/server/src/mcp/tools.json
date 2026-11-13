@@ -4001,7 +4001,7 @@
     "name": "restore_effect"
   },
   {
-    "description": "Search V2's cloud for an effect or a sound to start from (Bodycam HQ). Each comes with its category, when to use it and a brief on how to change it; only what's in use, unless you ask for what was put away. Look here before writing one from nothing. kind font lists the team's fonts, each there in every effect by its family name. Lists what this project's niche can use (its own, the niches it's like, V2's house), each with where it comes from.",
+    "description": "Search V2's cloud for an effect or a sound to start from (Bodycam HQ). Each comes with its category, when to use it and a brief on how to change it; only what's in use, unless you ask for what was put away. Look here before writing one from nothing. kind font lists the team's fonts, each there in every effect by its family name. Lists what this project's niche can use (its own, the niches it's like, V2's house), each with where it comes from. With name: that one's note, brief and code, to see how the team builds such a thing.",
     "inputSchema": {
       "properties": {
         "archived": {
@@ -4023,6 +4023,10 @@
         },
         "query": {
           "description": "Words to find (name, category, note); none lists them all.",
+          "type": "string"
+        },
+        "name": {
+          "description": "One effect or sound to read: its note, brief and its page's code, for how it's made (not brought into the project).",
           "type": "string"
         }
       },

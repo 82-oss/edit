@@ -119,6 +119,11 @@ test("the library: effects and sounds kept with a category, a note and a brief, 
     expect(found.content[0]!.text).toBe("- evidence-board [evidence board; this niche's own]: A paper board the camera glides across. To change it: PHOTOS, CAM keys and TEXTS at the top.");
     expect((await call(app, id, "library", { kind: "effect", query: "whoosh" })).content[0]!.text).toContain('No effects match "whoosh"');
     expect((await call(app, id, "library", { kind: "sound" })).content[0]!.text).toContain("No sounds");
+    // Read for how it's made (Sphe, Nov 13: "some inspiration here as to how things are done"): its code, nothing brought in.
+    const read = (await call(app, id, "library", { kind: "effect", name: "evidence-board" })).content[0]!.text!;
+    expect(read).toContain("To change it: PHOTOS, CAM keys and TEXTS at the top.");
+    expect(read).toContain("<p>board</p>");
+    expect(fs.existsSync(effects.folder(app.store, id, "evidence-board"))).toBe(false);
     // Brought into a project as its own folder.
     expect((await call(app, id, "use_from_library", { kind: "effect", name: "evidence-board", as: "intro-board" })).isError).toBe(false);
     expect(fs.readFileSync(join(effects.folder(app.store, id, "intro-board"), "scene.html"), "utf8")).toBe("<p>board</p>");
