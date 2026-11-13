@@ -57,9 +57,12 @@ test("both_ears_sets_the_measured_side_on_a_sources_sound", () => {
   expect((p.clips.find((one) => one.id === "c3") as AudioClip).channel).toBeUndefined();
   expect(result.results[0]).toMatchObject({ clips: ["c2"], sound_on: { m1: "left" } });
   expect(native().projectValidate(JSON.stringify(p))).toBeNull();
-  // A source heard on both sides is left alone; "both" puts the stereo back.
+  // A source heard on both sides is left alone; "stereo" puts the stereo back.
   applyWith(p, [{ op: "both_ears", select: { media: "m2" } }], { shutter: null, sides: { m2: null } });
   expect((p.clips.find((one) => one.id === "c3") as AudioClip).channel).toBeUndefined();
-  applyWith(p, [{ op: "both_ears", select: { ids: ["c2"] }, side: "both" }], { shutter: null });
+  applyWith(p, [{ op: "both_ears", select: { ids: ["c2"] }, side: "stereo" }], { shutter: null });
   expect((p.clips.find((one) => one.id === "c2") as AudioClip).channel).toBeUndefined();
+  // One split between the sides (a voice on each, Sphe, Nov 13) has both mixed into both ears.
+  applyWith(p, [{ op: "both_ears", select: { media: "m2" } }], { shutter: null, sides: { m2: "both" } });
+  expect((p.clips.find((one) => one.id === "c3") as AudioClip).channel).toBe("both");
 });

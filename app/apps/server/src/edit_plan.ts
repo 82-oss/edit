@@ -87,8 +87,8 @@ export interface Assets {
   mapMeasured?: (mediaId: string) => graphics.Measured | null;
   /** Horror: each screenshot's retro copy, by the original's media id (horror_look.ts). */
   retro?: Record<string, string>;
-  /** both_ears: the side each source's sound is on (null: both already), by media id (ears.ts). */
-  sides?: Record<string, "left" | "right" | null>;
+  /** both_ears: the side each source's sound is on ("both": split between them; null: both carry it already), by media id (ears.ts). */
+  sides?: Record<string, "left" | "right" | "both" | null>;
 }
 
 export interface Shutter {
@@ -613,12 +613,14 @@ function earsClips(project: Project, select: unknown): Clip[] {
  * Footage heard in one ear played in both (JJ, Nov 6: "we only have audio in
  * the left ear"): each selected sound (or a selected picture's sound) plays
  * the side of its source that carries it in both ears, the side measured
- * (ears.ts) unless `side` says it ("left", "right"; "both" puts the source's
- * own stereo back). A source already heard on both sides is left as it is.
+ * (ears.ts) unless `side` says it ("left", "right"; "both" mixes both sides
+ * into both ears, for a source split between them, a voice on each; "stereo"
+ * puts the source's own stereo back). A source already heard on both sides is
+ * left as it is.
  */
-function bothEars(project: Project, args: Args, sides: Record<string, "left" | "right" | null>): Json {
+function bothEars(project: Project, args: Args, sides: Record<string, "left" | "right" | "both" | null>): Json {
   const given = str(args.side);
-  if (given !== null && !["left", "right", "both"].includes(given)) throw new Error('side is "left", "right" or "both" (or leave it out: the side with the sound is found)');
+  if (given !== null && !["left", "right", "both", "stereo"].includes(given)) throw new Error('side is "left", "right", "both" (both mixed) or "stereo" (its own back) (or leave it out: it\'s measured)');
   const clips = earsClips(project, args.select);
   if (clips.length === 0) throw new Error("no sound among the selected clips (pick audio clips, or pictures with their sound linked)");
   const changed: string[] = [];
@@ -626,18 +628,18 @@ function bothEars(project: Project, args: Args, sides: Record<string, "left" | "
   const found: Record<string, string> = {};
   for (const clip of clips) {
     if (clip.type !== "audio") continue;
-    let side: "left" | "right" | null;
-    if (given !== null) side = given === "both" ? null : (given as "left" | "right");
+    let side: "left" | "right" | "both" | null;
+    if (given !== null) side = given === "stereo" ? null : (given as "left" | "right" | "both");
     else {
       if (!(clip.media in sides)) throw new Error(`the sides of ${clip.media} weren't measured (run both_ears through apply_edit_plan)`);
       side = sides[clip.media]!;
-      found[clip.media] = side ?? "both sides already";
+      found[clip.media] = side === null ? "both sides already" : side === "both" ? "split between the sides: both mixed" : side;
       if (side === null) {
         already.push(clip.id);
         continue;
       }
     }
-    const own = clip as Clip & { channel?: "left" | "right" };
+    const own = clip as Clip & { channel?: "left" | "right" | "both" };
     if ((own.channel ?? null) === side) continue;
     if (side === null) delete own.channel;
     else own.channel = side;

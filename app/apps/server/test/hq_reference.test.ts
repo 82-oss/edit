@@ -29,4 +29,3 @@ test("another kind of map is let through only on the person's own words", () => 
   expect(personSaid(entries, "satellite")).toBe(false);
   expect(personSaid(entries, "the person wants a satellite map")).toBe(false);
 });
-

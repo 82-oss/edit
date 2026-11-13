@@ -701,13 +701,17 @@ pub struct SoundRoom {
     pub words_to: f64,
 }
 
-/// One side of a stereo source (an audio clip's `channel`).
+/// Which of a stereo source's sides an audio clip plays in both ears (its
+/// `channel`): one side (the other silent), or both mixed (a call recorded
+/// with a voice on each side: Sphe, Nov 13, "part of the audio appears in
+/// one ear and part of the audio appears in the other ear").
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum SoundChannel {
     Left,
     Right,
+    Both,
 }
 
 /// How long a mute takes to fade out and back in, outside its stretch

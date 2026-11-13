@@ -1764,8 +1764,14 @@ class Preview {
         const length = (end - start) / pace - late;
         if (length <= 0) continue;
         const buffer = audio.createBuffer(pcm.channels.length, pcm.channels[0].length, pcm.sampleRate);
-        // One side in both ears when the clip says so, as the export's mix (mix.rs OneSide).
-        const side = clip.channel === "left" ? pcm.channels[0] : clip.channel === "right" ? (pcm.channels[1] ?? pcm.channels[0]) : null;
+        // One side, or both mixed, in both ears when the clip says so, as the export's mix (mix.rs OneSide; equal power).
+        const both = (): Float32Array<ArrayBuffer> => {
+          const [left, right = left] = pcm.channels as [Float32Array, Float32Array?];
+          const mixed = new Float32Array(left.length);
+          for (let index = 0; index < left.length; index++) mixed[index] = (left[index]! + right[index]!) * Math.SQRT1_2;
+          return mixed;
+        };
+        const side = clip.channel === "left" ? pcm.channels[0] : clip.channel === "right" ? (pcm.channels[1] ?? pcm.channels[0]) : clip.channel === "both" ? both() : null;
         pcm.channels.forEach((channel, index) => buffer.copyToChannel(side ?? channel, index));
         const source = audio.createBufferSource();
         source.buffer = buffer;

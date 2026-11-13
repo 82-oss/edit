@@ -367,7 +367,7 @@ impl<'a> Volume<'a> {
     }
 }
 
-/// A source with one of its sides in both ears (an audio clip's `channel`).
+/// A source with one of its sides, or both mixed, in both ears (an audio clip's `channel`).
 struct OneSide {
     inner: Box<dyn Source>,
     side: SoundChannel,
@@ -378,10 +378,11 @@ impl Source for OneSide {
         let frames = self.inner.read(out)?;
         for frame in out.as_chunks_mut::<2>().0.iter_mut().take(frames) {
             let [left, right] = *frame;
-            let kept = if self.side == SoundChannel::Right {
-                right
-            } else {
-                left
+            let kept = match self.side {
+                SoundChannel::Left => left,
+                SoundChannel::Right => right,
+                // Equal power: a voice on one side loses 3 dB, one on both gains 3, never twice as loud.
+                SoundChannel::Both => (left + right) * std::f32::consts::FRAC_1_SQRT_2,
             };
             *frame = [kept, kept];
         }
