@@ -70,6 +70,7 @@ import * as devProjects from "./dev_projects.ts";
 import * as channelMarks from "./channel_marks.ts";
 import * as beta from "./beta.ts";
 import * as effects from "./effects.ts";
+import * as effectCloud from "./effect_cloud.ts";
 import { BUILD, VERSION } from "./version.ts";
 import { jsonForSerde } from "./rust.ts";
 import * as remoteSupport from "./remote_support.ts";
@@ -792,6 +793,9 @@ async function deleteProject({ app, params }: Context): Promise<Response> {
       throw new ApiError(409, diag.messageOf(error));
     }
   }
+  // Its effects' renders in the cloud (effect_cloud.ts) go with it: made again from their code if it's ever brought back.
+  const renders = app.store.get(id)?.project.media.map((media) => media.cloud?.original) ?? [];
+  void effectCloud.forgetProject(app, id, renders).catch((error: unknown) => diag.warn("effects", `${id}: its renders in the cloud: ${diag.messageOf(error)}`));
   if (!local && inCloud) return json({ ok: true });
   if (app.store.delete(id)) return json({ ok: true });
   throw notFound("no such project");

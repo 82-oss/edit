@@ -59,6 +59,7 @@ import { join, sep } from "node:path";
 import type { App } from "./app.ts";
 import * as devtools from "./chrome_devtools.ts";
 import * as diag from "./diag.ts";
+import * as effectCloud from "./effect_cloud.ts";
 import * as effectMap from "./effect_map.ts";
 import runtimeText from "./effect_runtime.html" with { type: "text" };
 import { writeAtomic } from "./files.ts";
@@ -505,7 +506,7 @@ export interface Still {
  * checkerboard as a JPEG, and whether any of it was see-through, so the agent
  * sees which parts will show what's beneath.
  */
-const OVER_CHECKS = `async (png) => {
+const OVER_CHECKS = `async (png, quality) => {
   const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
   const shot = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
   const plain = new OffscreenCanvas(shot.width, shot.height).getContext("2d");
@@ -521,7 +522,7 @@ const OVER_CHECKS = `async (png) => {
     ctx.fillRect(x, y, cell, cell);
   }
   ctx.drawImage(shot, 0, 0);
-  const jpeg = new Uint8Array(await (await canvas.convertToBlob({ type: "image/jpeg", quality: 0.82 })).arrayBuffer());
+  const jpeg = new Uint8Array(await (await canvas.convertToBlob({ type: "image/jpeg", quality })).arrayBuffer());
   let text = "";
   for (let at = 0; at < jpeg.length; at += 0x8000) text += String.fromCharCode(...jpeg.subarray(at, at + 0x8000));
   return { jpeg: btoa(text), clear };
@@ -599,11 +600,9 @@ export async function look(app: App, projectId: string, name: string, times: num
           const scale = side > 0 ? Math.min(1, side / Math.max(width, height)) : 1;
           const shot = await page.call("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, clip: { x: 0, y: 0, width, height, scale } }, 90_000);
           if (typeof shot.data !== "string") throw new Error("Chrome drew nothing");
-          if (side === 0) {
-            stills.push({ time, picture: new Uint8Array(Buffer.from(shot.data, "base64")), mime: "image/png", cost, seeThrough: false });
-            continue;
-          }
-          const shown = await page.evaluate<{ jpeg: string; clear: boolean }>(`(${OVER_CHECKS})(${JSON.stringify(shot.data)})`, 60_000);
+          // At full size too a JPEG (fine enough for small text at this quality): a full-size PNG was 1.4–4 MB, kept again
+          // in the agent's session with every look (Nov 13: 290 MB of one project's).
+          const shown = await page.evaluate<{ jpeg: string; clear: boolean }>(`(${OVER_CHECKS})(${JSON.stringify(shot.data)}, ${side === 0 ? 0.92 : 0.82})`, 60_000);
           stills.push({ time, picture: new Uint8Array(Buffer.from(shown.jpeg, "base64")), mime: "image/jpeg", cost, seeThrough: shown.clear });
         }
       }
@@ -676,11 +675,14 @@ async function standIn(app: App, project: string): Promise<void> {
   const stale = needed(app.store, project).filter((effect) => effect.current !== null && !effect.fresh && typeof effect.media.effect_key === "string");
   if (stale.length === 0) return;
   const paths = new Map(stale.map((effect) => [effect.name, clearStill(app.store, project, effect.name)]));
+  const gone: [string, string][] = [];
   await app.store.update(project, "effects", (edited) => {
     let changed = false;
     for (const media of edited.media) {
       const path = media.effect === undefined || media.effect === null ? undefined : paths.get(media.effect);
       if (path === undefined || typeof media.effect_key !== "string") continue;
+      // The render it stands in for, when it went up as the project's own: kept as the one before the next (effect_cloud.ts).
+      if (effectCloud.isRender(project, media.cloud?.original)) gone.push([media.effect!, media.cloud!.original]);
       media.path = path;
       media.kind = "image";
       media.width = edited.settings.width;
@@ -692,6 +694,7 @@ async function standIn(app: App, project: string): Promise<void> {
     }
     return changed;
   });
+  for (const [name, key] of gone) effectCloud.replaced(app.store.home, project, name, key);
 }
 
 /**
@@ -1129,6 +1132,8 @@ async function draw(app: App, render: Render): Promise<void> {
   const out = join(dir, `${name}-${key}.mp4`);
   const frames = join(dir, `${name}-${key}.frames`);
   const started = Date.now();
+  // Drawn before and kept in the cache since it went up (effect_cloud.ts): that file again, not drawn again.
+  if (!fs.existsSync(out) && effectCloud.bringBack(app.store.cacheDir(), project, `${name}-${key}.mp4`, out)) diag.info("effects", `${project}: ${name}'s render of this code was here already`);
   if (!fs.existsSync(out)) {
     fs.mkdirSync(frames, { recursive: true });
     const url = `http://${seams.broll.pageHost(app)}${addressOf(project, name)}${ENTRY}?render=`;
@@ -1191,11 +1196,12 @@ async function draw(app: App, render: Render): Promise<void> {
       const hardware = tools.hardwareH264();
       const input = ["-framerate", rateArg(live.project), "-i", join(frames, "frame-%05d.png")];
       const stacked = await seeThrough(input);
-      // Stacked, it's twice the pixels (the alpha half costs little) and it plays as it is, with no preview copy to seek in:
-      // a keyframe every half second and no B-frames. Kept within H.264's 4096 lines: a 4K project's stack is half size.
+      // Stacked, it's twice the pixels (the alpha half costs little). Every render plays as it is, with no preview copy to
+      // seek in (a preview made of each, ~1 MB a second, was thrown away once it went up): a keyframe every half second
+      // and no B-frames. Kept within H.264's 4096 lines: a 4K project's stack is half size.
       const rate = stacked ? Math.round(cap * 1.5) : cap;
       const shrink = Math.min(1, 4096 / (frame.height * 2));
-      const gop = stacked ? ["-g", String(Math.max(1, Math.round(frame.fps / 2))), "-bf", "0"] : [];
+      const gop = ["-g", String(Math.max(1, Math.round(frame.fps / 2))), "-bf", "0"];
       const encode = hardware === null ? ["-c:v", "libx264", "-preset", "medium", "-crf", "17", "-maxrate", String(rate), "-bufsize", String(rate * 2)] : [...hardware, "-b:v", String(rate), "-maxrate", String(rate), "-bufsize", String(rate * 2)];
       const picture = stacked
         ? ["-filter_complex", `[0:v]format=rgba,split[c][m];[c]premultiply=inplace=1,format=rgb24[p];[m]alphaextract,format=rgb24[a];[p][a]vstack=inputs=2${shrink < 1 ? `,scale=${even(frame.width * shrink)}:${even(frame.height * 2 * shrink)}` : ""},${TO_VIDEO}`]
@@ -1215,9 +1221,12 @@ async function draw(app: App, render: Render): Promise<void> {
   // Code changed while the video was made: the next render takes over.
   if (sourceKey(filesIn(folder(app.store, project, name)), frame, fontsUsed(app.store, project, folder(app.store, project, name))) !== key) throw new Outdated();
   let placed = false;
+  // The render this one replaces, when it went up as the project's own (effect_cloud.ts keeps it, the one before it goes).
+  let before = null as string | null;
   await app.store.update(project, "effects", (edited) => {
     for (const media of edited.media) {
       if (media.effect !== name) continue;
+      if (effectCloud.isRender(project, media.cloud?.original)) before = media.cloud!.original;
       media.path = out;
       media.kind = probe.kind;
       media.duration = probe.duration;
@@ -1234,8 +1243,10 @@ async function draw(app: App, render: Render): Promise<void> {
     return placed;
   });
   if (!placed) return;
+  if (before !== null) effectCloud.replaced(app.store.home, project, name, before);
   prune(app.store, project, name, out);
-  app.media.ensure(out, probe, stacked);
+  // Its own preview: no copy of it made to seek in (see the encode above).
+  app.media.ensure(out, probe, true);
   try {
     if (relay.cloudEnabled()) seams.cloudMedia.backfillSoon(app, project);
   } catch (error) {

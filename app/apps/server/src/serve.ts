@@ -39,6 +39,8 @@ import * as firstPrompt from "./first_prompt.ts";
 import * as researchCloud from "./research_cloud.ts";
 import * as playbackRender from "./playback_render.ts";
 import * as hqEars from "./hq_ears.ts";
+import * as agentSessions from "./agent_sessions.ts";
+import * as effectCloud from "./effect_cloud.ts";
 import * as exportAhead from "./export_ahead.ts";
 import * as remoteAsk from "./remote_ask.ts";
 import * as reviews from "./reviews.ts";
@@ -339,6 +341,10 @@ export function start(home: string, host: string | null, port: number): { app: A
   // Smooth playback: the open edit rendered small in the background, out of the way of exports.
   optional("playback", () => playbackRender.start(app));
   optional("hq ears", () => hqEars.start(app));
+  // The agent's old Claude Code sessions (a chat's left ones, one-off questions) removed from this computer.
+  if (!trials) optional("agent sessions", () => void agentSessions.start(app));
+  // Effect render files nothing plays from any more (replaced by one in the cloud, or of an effect gone).
+  optional("effect renders", () => void effectCloud.start(app));
   // Exports made ahead: once a project's edits rest, its next share's export is made in the background, so the share reuses it.
   if (!trials) optional("export ahead", () => exportAhead.start(app));
   // Projects archived on Repack: their big files freed here, and restores asked for done.

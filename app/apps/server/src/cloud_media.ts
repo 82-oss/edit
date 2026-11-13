@@ -63,6 +63,7 @@ import * as player from "./player.ts";
 import { prepLine } from "./export_prep.ts";
 import * as pieces from "./proxy_pieces.ts";
 import * as cloud from "./cloud.ts";
+import * as effectCloud from "./effect_cloud.ts";
 import { PLAYBACK_ROUTE, playbackKey, playbackPath } from "./cloud_playback.ts";
 import * as diag from "./diag.ts";
 import * as log from "./hearing_log.ts";
@@ -2081,6 +2082,11 @@ export async function forExport(
     }
     const own = where.proxy === where.original;
     if (own && isFile(media.path)) continue;
+    // Its own preview, whole on this computer already (an effect's render, a map, one the window fetched): read from there.
+    if (own && isFile(localPath(cache, where.original))) {
+      onDisk.set(mediaId, localPath(cache, where.original));
+      continue;
+    }
     const here = localOriginal(cache, where.original, true);
     if (here !== null) {
       onDisk.set(mediaId, here);
@@ -2410,6 +2416,24 @@ export function uploadMade(cache: string, path: string, probe: Probe, name: stri
   return putLocal(cache, path, probe, name, own);
 }
 
+/**
+ * Puts project `project`'s effect render at `path` in the cloud as the
+ * project's own file (effect_cloud.ts: never footage, deleted when it's
+ * replaced twice over): its own preview whatever its size, and this
+ * computer's copy of it is the render itself, linked into the cache.
+ */
+export async function uploadRender(cache: string, project: string, path: string, probe: Probe, name: string): Promise<Made> {
+  const key = effectCloud.keyOf(project, path.slice(path.lastIndexOf("/") + 1));
+  const size = sizeOf(path);
+  const hex = await sha256File(path);
+  if (!(await cloud.has(key))) await cloud.uploadFile(path, key);
+  effectCloud.linkInto(path, cache, key);
+  const made = previewPath(cache, key);
+  // Its thumbnails and levels, made from the file, read under its new address.
+  carryAnalysis(cache, path, made);
+  return { path: made, name, probe, cloud: { source: `sha256:${hex}`, original: key, proxy: key, size } };
+}
+
 function probeOf(media: Media): Probe {
   return {
     kind: media.kind,
@@ -2530,7 +2554,7 @@ async function backfillNow(app: App, id: string, retryFailed: boolean): Promise<
   for (const [path, when] of backfills.failed) {
     if (Math.max(at - when, 0) >= RETRY_AFTER) backfills.failed.delete(path);
   }
-  const todo: [string, string, Probe, string][] = [];
+  const todo: [string, string, Probe, string, string | null][] = [];
   for (const media of live.project.media) {
     if ((media.cloud !== undefined && media.cloud !== null) || !isFile(media.path)) continue;
     if (isMapStandIn(media.path)) {
@@ -2538,7 +2562,9 @@ async function backfillNow(app: App, id: string, retryFailed: boolean): Promise<
       continue;
     }
     if (!retryFailed && backfills.failed.has(media.path)) continue;
-    todo.push([media.id, media.path, probeOf(media), media.name]);
+    // An effect's render (effects.ts), not its clear stand-in: the project's own file, not footage.
+    const render = typeof media.effect === "string" && media.kind === "video" ? media.effect : null;
+    todo.push([media.id, media.path, probeOf(media), media.name, render]);
   }
   const missing = stranded(live.project);
   // Someone else editing it: refused (their machine has their files).
@@ -2546,10 +2572,10 @@ async function backfillNow(app: App, id: string, retryFailed: boolean): Promise<
   const cache = app.store.cacheDir();
   const uploaded: Record<string, unknown>[] = [];
   const failed: Record<string, unknown>[] = [];
-  for (const [mediaId, path, probe, name] of todo) {
+  for (const [mediaId, path, probe, name, render] of todo) {
     let made: Made;
     try {
-      made = await diag.timeOnAsync("cloud", "cloud: backfill", path, () => uploadMade(cache, path, probe, name));
+      made = await diag.timeOnAsync("cloud", "cloud: backfill", path, () => (render !== null ? uploadRender(cache, id, path, probe, name) : uploadMade(cache, path, probe, name)));
     } catch (error) {
       backfills.failed.set(path, at);
       failed.push({ error: scrub(failure(error)), media: mediaId, name });
@@ -2582,7 +2608,12 @@ async function backfillNow(app: App, id: string, retryFailed: boolean): Promise<
       break;
     }
     if (saved === true) {
-      if (made.path !== path) app.media.ensure(made.path, probe);
+      if (made.path !== path) app.media.ensure(made.path, probe, render !== null);
+      // The render's own file goes once the cache has it (linked): one copy, the cache's to keep within its budget.
+      if (render !== null && made.cloud !== null) {
+        if (isFile(effectCloud.cachePath(cache, made.cloud.original))) fs.rmSync(path, { force: true });
+        await effectCloud.inUse(app, id, render, made.cloud.original).catch((error: unknown) => diag.warn("cloud", `${id}: ${render}'s old renders: ${diag.messageOf(error)}`));
+      }
       uploaded.push({ media: mediaId, name });
     } else {
       skipped.push(`${name} (changed meanwhile)`);

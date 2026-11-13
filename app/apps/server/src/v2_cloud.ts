@@ -122,13 +122,22 @@ export async function setCurrent(key: string, n: number): Promise<void> {
   await cloud.mutation("edit:setLibraryCurrent", { key, n });
 }
 
-/** Every file in a folder, however deep, by its path inside it. */
+/**
+ * An effect's files Edit makes again from the timeline, never kept in the
+ * cloud: what's beneath it (effect_inputs.ts, made again before its next
+ * render wherever its `.beneath.json` is but the video isn't). They were
+ * 80% of the library's bytes (392 of 489 MB on Nov 13), a fresh copy of the
+ * footage at every version, and a template carried its project's footage.
+ */
+const REMADE = new Set(["beneath.mp4"]);
+
+/** Every file in a folder, however deep, by its path inside it (what's made again from the timeline left out). */
 function walk(dir: string, under = ""): string[] {
   const found: string[] = [];
   for (const entry of fs.readdirSync(join(dir, under), { withFileTypes: true })) {
     const inside = under === "" ? entry.name : `${under}/${entry.name}`;
     if (entry.isDirectory()) found.push(...walk(dir, inside));
-    else if (entry.isFile() && !entry.name.endsWith(".partial.mp4")) found.push(inside);
+    else if (entry.isFile() && !entry.name.endsWith(".partial.mp4") && !REMADE.has(inside)) found.push(inside);
   }
   return found.sort();
 }
@@ -161,6 +170,12 @@ async function getFiles(files: File[], dir: string): Promise<void> {
     const here = join(dir, file.path);
     if (fs.existsSync(here) && (await sha256File(here)) === file.sha256) fs.copyFileSync(here, target);
     else await cloud.download(fileKey(file.sha256), target);
+  }
+  // What's made again from the timeline stays as it was here (a version that has none of its own); its key says whether it's still of what's there.
+  for (const path of REMADE) {
+    if (files.some((file) => file.path === path) || !fs.existsSync(join(dir, path))) continue;
+    fs.mkdirSync(fresh, { recursive: true });
+    fs.linkSync(join(dir, path), join(fresh, path));
   }
   const old = `${dir}.outgoing-${process.pid}`;
   fs.rmSync(old, { recursive: true, force: true });

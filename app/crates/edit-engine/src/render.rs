@@ -1812,7 +1812,7 @@ pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// A picture for a model: JPEG (quality 80) where ImageIO is, else PNG; with its MIME type.
+/// A picture for a model: JPEG (quality 80), PNG only when that fails; with its MIME type.
 pub fn encode_for_agent(image: &RgbaImage) -> Result<(Vec<u8>, &'static str), String> {
     #[cfg(target_os = "macos")]
     if let Ok(jpeg) = crate::mac_media::encode_image(
@@ -1823,6 +1823,18 @@ pub fn encode_for_agent(image: &RgbaImage) -> Result<(Vec<u8>, &'static str), St
         Some(0.8),
     ) {
         return Ok((jpeg, "image/jpeg"));
+    }
+    // Elsewhere (Linux, Windows) the same quality as ImageIO's 0.8, its alpha dropped as ImageIO's JPEG drops it: a PNG
+    // frame was 1.4–4 MB, sent with every look and kept again in the agent's session (Nov 13: 1.2 GB of one project's).
+    #[cfg(not(target_os = "macos"))]
+    if let (Ok(width), Ok(height)) = (u16::try_from(image.width), u16::try_from(image.height)) {
+        let mut jpeg = Vec::new();
+        if jpeg_encoder::Encoder::new(&mut jpeg, 80)
+            .encode(&image.pixels, width, height, jpeg_encoder::ColorType::Rgba)
+            .is_ok()
+        {
+            return Ok((jpeg, "image/jpeg"));
+        }
     }
     Ok((encode_png(image)?, "image/png"))
 }
@@ -3481,6 +3493,19 @@ mod tests {
     thread_local! {
         /// Readers opened on this thread (`VideoReader::open`).
         pub(super) static OPENED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    /// The agent's pictures are JPEG on every system (a PNG frame was 1.4–4 MB, kept again in its session).
+    #[test]
+    fn agent_pictures_are_jpeg() {
+        let image = RgbaImage {
+            width: 64,
+            height: 36,
+            pixels: (0..64 * 36 * 4).map(|i| (i % 251) as u8).collect(),
+        };
+        let (bytes, mime) = encode_for_agent(&image).unwrap();
+        assert_eq!(mime, "image/jpeg");
+        assert_eq!(&bytes[..2], &[0xFF, 0xD8]);
     }
 
     /// Two layers of one file at two sizes, played on: each keeps its pooled

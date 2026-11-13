@@ -14,3 +14,22 @@ busyTiming.waitMs = 0;
 import { standIn } from "../src/ai_claude.ts";
 import { post as standInPost } from "./mocks/model.ts";
 standIn.post = standInPost;
+// Every temporary folder a run makes is inside one of its own, removed when the run ends (Nov 13: runs had
+// left 7,600 folders, 4.3 GB, in a /tmp that's memory on the Linux machine). One a killed run left goes the
+// next time, once a day old.
+import fs from "node:fs";
+import os from "node:os";
+import { join } from "node:path";
+const RUNS = "edit-test-run-";
+const shared = os.tmpdir();
+for (const name of fs.readdirSync(shared)) {
+  if (!name.startsWith(RUNS)) continue;
+  try {
+    if (Date.now() - fs.statSync(join(shared, name)).mtimeMs > 24 * 3600_000) fs.rmSync(join(shared, name), { recursive: true, force: true });
+  } catch {
+    // Another run's, going now.
+  }
+}
+const own = fs.mkdtempSync(join(shared, RUNS));
+process.env.TMPDIR = own;
+process.on("exit", () => fs.rmSync(own, { recursive: true, force: true }));

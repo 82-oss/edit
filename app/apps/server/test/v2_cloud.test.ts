@@ -99,6 +99,29 @@ test("an effect's code kept version by version, the same files never twice, and 
   }
 });
 
+test("what's beneath an effect is made again from the timeline, never kept in the library: a version leaves it out, and a restore leaves it as it is here", async () => {
+  // Nov 13: beneath.mp4 was 392 of the library's 489 MB, a copy of the footage at every version, in templates too.
+  const { app, cleanup, id } = hq("v2-beneath");
+  try {
+    const dir = effects.folder(app.store, id, "glass");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(join(dir, "scene.html"), "<p>one</p>");
+    fs.writeFileSync(join(dir, ".beneath.json"), JSON.stringify({ key: "k" }));
+    fs.writeFileSync(join(dir, "beneath.mp4"), "the footage beneath");
+    const key = v2cloud.effectKey(id, "glass");
+    await v2cloud.save(key, "glass", dir, { source: "k1" });
+    fs.writeFileSync(join(dir, "scene.html"), "<p>two</p>");
+    await v2cloud.save(key, "glass", dir, { source: "k2" });
+    const kept = (await v2cloud.version(key))!.version.files!.map((file) => file.path);
+    expect(kept).toEqual([".beneath.json", "scene.html"]);
+    await v2cloud.fetchInto(key, 1, dir);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe("<p>one</p>");
+    expect(fs.readFileSync(join(dir, "beneath.mp4"), "utf8")).toBe("the footage beneath");
+  } finally {
+    cleanup();
+  }
+});
+
 test("the library: effects and sounds kept with a category, a note and a brief, searched, put away and back, brought into a project", async () => {
   const { app, cleanup, id } = hq("v2-library");
   try {

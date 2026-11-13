@@ -345,7 +345,7 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     expect(long.content.filter((part) => part.type === "image").length).toBe(3);
     expect(long.content.at(-1)!.text).toContain("Frames 48–59 are left: look again with start 1.600");
     const full = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "counter", times: [1], detail: "full" } } }, id)) as { result: { content: { type: string; text?: string; mimeType?: string }[] } }).result;
-    expect(full.content.find((part) => part.type === "image")!.mimeType).toBe("image/png");
+    expect(full.content.find((part) => part.type === "image")!.mimeType).toBe("image/jpeg");
     expect(full.content.find((part) => part.text?.includes("at full size"))).toBeDefined();
     // Beside a reference, zoomed: each of its frames paired with the reference's at the same moment, cropped to one region (Sphe, Nov 12).
     const reference = join(app.store.cacheDir(), "reference.mp4");

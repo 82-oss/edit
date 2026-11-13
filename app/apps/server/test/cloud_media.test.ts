@@ -2,10 +2,12 @@ import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 
 import * as fs from "node:fs";
 import * as os from "node:os";
+import { join } from "node:path";
 
 import * as cloud from "../src/cloud.ts";
 import * as cloudBlocks from "../src/cloud_blocks.ts";
 import * as cloudMedia from "../src/cloud_media.ts";
+import * as effectCloud from "../src/effect_cloud.ts";
 import * as hearingLog from "../src/hearing_log.ts";
 import * as steps from "../src/import_steps.ts";
 import { playbackKey, playbackPath } from "../src/cloud_playback.ts";
@@ -561,6 +563,49 @@ test("the backfill puts what Edit made in the cloud, says what it did, and waits
     // Nothing left to do.
     expect((await cloudMedia.backfill(app, id)).uploaded).toEqual([]);
     await expect(cloudMedia.backfill(app, "p0-0")).rejects.toThrow("no such project");
+  } finally {
+    cleanup();
+  }
+});
+
+test("an effect's render goes up as the project's own file, its cache copy is the render itself, and an effect keeps two in the cloud", async () => {
+  // Nov 13: each render went up as footage for good, then came back down beside the file it was made from.
+  const fixture = home("cloud-renders");
+  const { store, app, cleanup } = fixture;
+  try {
+    const id = store.create("Case", SETTINGS).project.id;
+    testCloud(fixture.home, [[id, null]]).attach(store);
+    const renders = join(store.uploadsDir(id), "effect-renders");
+    fs.mkdirSync(renders, { recursive: true });
+    const keys: string[] = [];
+    for (const n of [1, 2, 3]) {
+      const file = join(renders, `board-00000000000${n}.mp4`);
+      fs.writeFileSync(file, `render ${n}`);
+      await store.update(id, "test", (project) => {
+        const before = project.media.find((one) => one.id === "m1");
+        if (before !== undefined && before.cloud != null) effectCloud.replaced(store.home, id, "board", before.cloud.original);
+        project.media = [media("m1", file, { name: "board", effect: "board", effect_key: `k${n}` })];
+      });
+      expect((await cloudMedia.backfill(app, id)).uploaded).toEqual([{ media: "m1", name: "board" }]);
+      const saved = store.get(id)!.project.media[0]!;
+      keys.push(saved.cloud!.original);
+      expect(saved.cloud!.original).toBe(`edit/exports/${id}/effect-board-00000000000${n}.mp4`);
+      expect(saved.cloud!.proxy).toBe(saved.cloud!.original);
+      expect(mock.cloud.text(saved.cloud!.original)).toBe(`render ${n}`);
+      // Here once: the cache's copy, the render's own file gone.
+      expect(fs.readFileSync(cloudMedia.localPath(store.cacheDir(), saved.cloud!.original), "utf8")).toBe(`render ${n}`);
+      expect(fs.existsSync(file)).toBe(false);
+    }
+    // The first went from the cloud and the cache once the third was in use.
+    expect(mock.cloud.objects.has(keys[0]!)).toBe(false);
+    expect(fs.existsSync(cloudMedia.localPath(store.cacheDir(), keys[0]!))).toBe(false);
+    expect(mock.cloud.objects.has(keys[1]!)).toBe(true);
+    expect(mock.cloud.objects.has(keys[2]!)).toBe(true);
+    // An export reads the copy here rather than fetching it.
+    const project = structuredClone(store.get(id)!.project);
+    project.clips.push({ id: "c1", track: "v1", start: 0, duration: 30, type: "video", media: "m1", source_in: 0, speed: 1 } as Project["clips"][number]);
+    const [out] = await cloudMedia.forExport(project, 0, 30, store.cacheDir());
+    expect(out.media[0]!.path).toBe(cloudMedia.localPath(store.cacheDir(), keys[2]!));
   } finally {
     cleanup();
   }

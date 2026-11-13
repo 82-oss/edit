@@ -37,3 +37,5 @@ workspace = true
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 tract-onnx = "0.23.10"
+# The agent's pictures as JPEG where ImageIO isn't (encode_for_agent): a PNG frame was 1.4–4 MB, sent and kept in its session.
+jpeg-encoder = "0.7"
