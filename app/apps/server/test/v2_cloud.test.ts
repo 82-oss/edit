@@ -16,6 +16,7 @@ import { registerEffectTools } from "../src/effect_tools.ts";
 import { registerEditingTools } from "../src/edit_tools.ts";
 import * as effects from "../src/effects.ts";
 import { dispatch } from "../src/mcp/index.ts";
+import { HOUSE_VOICE } from "../src/voice.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
 import { fixtureHome } from "./helpers/home.ts";
 import { MockServer } from "./mocks/server.ts";
@@ -322,6 +323,13 @@ test("a channel's edit lane is its own: it starts empty, none of V2's house come
   expect(v2cloud.forNiche(items, v2cloud.chainOf(lane)).map((one) => one.key)).toEqual(["skill:global", "skill:@drinsanity--edit/intro"]);
   // A niche keeps the house's as before.
   expect(v2cloud.forNiche(items, ["bodycam-hq"]).map((one) => one.key)).toEqual(["skill:global", "skill:pins", "template:board"]);
+});
+
+test("who narrates for whom already, for the voice picker: each niche with its own narrator (bodycam's the house voice), then each channel with a voice, never one recorded", () => {
+  const used = channels.usedVoices([CHANNEL, OTHER]);
+  expect(used.find((one) => one.label === "Bodycam")?.voice).toBe(HOUSE_VOICE);
+  expect(used.filter((one) => one.channel !== undefined)).toEqual([{ voice: "v123", label: "Dr Insanity", channel: "drinsanity" }]);
+  expect(used.some((one) => one.label === "Interrogation")).toBe(false);
 });
 
 test("a channel's agent is told its channel, its edit style and how its videos are made, and that it isn't taught yet", () => {

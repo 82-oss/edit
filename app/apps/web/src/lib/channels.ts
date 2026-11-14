@@ -58,7 +58,16 @@ export interface Taught {
 export interface Voice {
   voice_id: string;
   name: string;
+  description?: string;
+  labels?: Record<string, string>;
   preview_url?: string;
+}
+
+/** A voice narrating for a niche or a channel already. */
+export interface Used {
+  voice: string;
+  label: string;
+  channel?: string;
 }
 
 /** The channels, as last asked (null: not yet), and whether this person adds and teaches them. */
@@ -92,7 +101,8 @@ export const channelApi = {
     await request("DELETE", `/api/channels/${key}`);
     useChannels.setState((now) => ({ channels: (now.channels ?? []).filter((one) => one.key !== key) }));
   },
-  voices: () => request<{ voices: Voice[] }>("GET", "/api/voice/voices").then((answer) => answer.voices),
+  /** Who could narrate, and who narrates for which niche or channel already. */
+  voices: () => request<{ voices: Voice[]; used: Used[] }>("GET", "/api/channels/voices"),
 };
 
 /** 1,200,000 → "1.2M". */

@@ -263,6 +263,18 @@ function onEscape(event: KeyboardEvent) {
   top.close();
 }
 
+/** Joins the dialogs Escape closes, on top (a picker over a dialog closes before it); returns its leaving. */
+export function escapeCloses(close: () => void): () => void {
+  const entry = { close };
+  openModals.push(entry);
+  if (openModals.length === 1) window.addEventListener("keydown", onEscape, true);
+  return () => {
+    const at = openModals.indexOf(entry);
+    if (at !== -1) openModals.splice(at, 1);
+    if (openModals.length === 0) window.removeEventListener("keydown", onEscape, true);
+  };
+}
+
 export function Modal({
   open,
   onClose,
@@ -278,14 +290,7 @@ export function Modal({
   onCloseRef.current = onClose;
   useEffect(() => {
     if (!open) return;
-    const entry = { close: () => onCloseRef.current() };
-    openModals.push(entry);
-    if (openModals.length === 1) window.addEventListener("keydown", onEscape, true);
-    return () => {
-      const at = openModals.indexOf(entry);
-      if (at !== -1) openModals.splice(at, 1);
-      if (openModals.length === 0) window.removeEventListener("keydown", onEscape, true);
-    };
+    return escapeCloses(() => onCloseRef.current());
   }, [open]);
   // On the page's body, so nothing it's written inside (a hidden, inert sidebar; a clipped row) can hide it or stop its clicks.
   return createPortal(

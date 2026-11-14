@@ -14,10 +14,14 @@
 //   GET    /api/channels/{key}          {channel, taught: {<lane>: [what its agent knows]}, teacher}
 //   PUT    /api/channels/{key}          {narration?, compilation?, lanes?} → {channel}
 //   DELETE /api/channels/{key}          put away (its teaching kept)
+//   GET    /api/channels/voices         {voices, used}: who could narrate, and who narrates for whom already
 
 import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
+import { STYLES } from "./model.ts";
+import { voiceFor } from "./styles.ts";
+import { HOUSE_VOICE } from "./voice.ts";
 import { ApiError, bad, json } from "./http/errors.ts";
 import { readJson, type RouteContext, type Router } from "./http/router.ts";
 import * as relay from "./relay.ts";
@@ -166,8 +170,33 @@ function narrationOf(given: unknown): Narration | undefined {
   throw bad('narration is {kind: "voice", id, name} or {kind: "recorded"}');
 }
 
+/** A voice that narrates for a niche or a channel already: the picker shows these first. */
+export interface Used {
+  voice: string;
+  /** The niche's name or the channel's title. */
+  label: string;
+  /** The channel's key, when it's a channel's. */
+  channel?: string;
+}
+
+/** Who narrates for whom: each niche with a narrator of its own (bodycam's is the house voice), then each channel's voice. */
+export function usedVoices(given: Channel[]): Used[] {
+  const used: Used[] = [];
+  for (const style of STYLES) {
+    const voice = voiceFor(style.value) ?? (style.value === "bodycam" ? HOUSE_VOICE : null);
+    if (voice !== null) used.push({ voice, label: style.label });
+  }
+  for (const channel of given) if (channel.narration?.kind === "voice") used.push({ voice: channel.narration.id, label: channel.title, channel: channel.key });
+  return used;
+}
+
 export function routes(router: Router<App>): void {
   router
+    .get("/api/channels/voices", async ({ app }: RouteContext<App>) => {
+      const listing = (await asked(() => app.voices.voices(false))) as { voices?: unknown[] };
+      const given = v2cloud.enabled() ? await list().catch(() => knownChannels()) : [];
+      return json({ voices: listing.voices ?? [], used: usedVoices(given) });
+    })
     .get("/api/channels", async () => {
       if (!v2cloud.enabled()) return json({ channels: [], teacher: false });
       return json({ channels: await asked(() => list()), teacher: v2cloud.teacher() });

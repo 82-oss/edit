@@ -8,15 +8,14 @@ import { ArrowLeft, ExternalLink, Mic, Plus } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 
-import { channelApi, compact, LANES, loadChannels, narrationLabel, useChannels, type Channel, type Found, type Lane, type Narration, type Taught, type Voice } from "../lib/channels";
+import { channelApi, compact, LANES, loadChannels, narrationLabel, useChannels, type Channel, type Found, type Lane, type Narration, type Taught, type Used, type Voice } from "../lib/channels";
 import { useEditor } from "../lib/store";
 import { InPlace } from "./Niches";
-import { Button, DialogActions, DialogTitle, Modal, Select, spring, Switch } from "./ui";
+import { Button, DialogActions, DialogTitle, Modal, spring, Switch } from "./ui";
+import { VoicePicker } from "./VoicePicker";
 
 const FIELD = "h-9 w-full rounded-lg border border-line bg-black px-3 text-[13px] outline-none placeholder:text-faint focus:border-muted";
 const LABEL = "mb-1.5 block text-[12px] font-medium text-muted";
-const PICKER = "flex h-9 w-full items-center justify-between gap-2 rounded-lg border border-line bg-black px-3 text-[13px] hover:border-line-strong";
-const RECORDED = "recorded";
 
 /** Its picture, round; its first letter while there's none. */
 export function ChannelAvatar({ channel, size = 32 }: { channel: { title: string; avatar?: string | null }; size?: number }) {
@@ -74,32 +73,14 @@ export function ChannelsView({ adding, onAdding }: { adding: boolean; onAdding: 
   );
 }
 
-/** Who narrates: the voices, then the editor's own recording. */
-function NarrationPicker({ value, voices, onChange }: { value: Narration | null; voices: Voice[] | null; onChange: (narration: Narration) => void }) {
-  const options = [
-    ...(voices ?? []).map((voice) => ({ value: voice.voice_id, label: voice.name })),
-    { value: RECORDED, label: "Recorded by the editor" },
-    ...(value?.kind === "voice" && !(voices ?? []).some((voice) => voice.voice_id === value.id) ? [{ value: value.id, label: value.name }] : []),
-  ];
-  const current = value === null ? "" : value.kind === "recorded" ? RECORDED : value.id;
-  return (
-    <Select
-      value={current}
-      onChange={(picked) => onChange(picked === RECORDED ? { kind: "recorded" } : { kind: "voice", id: picked, name: voices?.find((voice) => voice.voice_id === picked)?.name ?? picked })}
-      className={PICKER}
-      menuWidth={260}
-      options={current === "" ? [{ value: "", label: voices === null ? "Loading voices…" : "Pick who narrates", disabled: true }, ...options] : options}
-    />
-  );
-}
-
-function useVoices(on: boolean): Voice[] | null {
-  const [voices, setVoices] = useState<Voice[] | null>(null);
+/** The voices, and who narrates for which niche or channel already (asked once it's needed). */
+function useVoices(on: boolean): { voices: Voice[] | null; used: Used[] } {
+  const [found, setFound] = useState<{ voices: Voice[] | null; used: Used[] }>({ voices: null, used: [] });
   useEffect(() => {
-    if (!on || voices !== null) return;
-    void channelApi.voices().then(setVoices, () => setVoices([]));
-  }, [on, voices]);
-  return voices;
+    if (!on || found.voices !== null) return;
+    void channelApi.voices().then(setFound, () => setFound({ voices: [], used: [] }));
+  }, [on, found.voices]);
+  return found;
 }
 
 /**
@@ -216,7 +197,7 @@ function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => 
             </div>
             <div>
               <span className={LABEL}>Who narrates</span>
-              <NarrationPicker value={narration} voices={voices} onChange={setNarration} />
+              <VoicePicker value={narration} voices={voices.voices} used={voices.used} channel={added.key} onChange={setNarration} />
             </div>
             <label className="flex items-center justify-between gap-3">
               <span>
@@ -294,7 +275,7 @@ function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void
             <Mic size={12} className="mr-1 inline -translate-y-px" />
             Who narrates
           </span>
-          {teacher ? <NarrationPicker value={channel.narration} voices={voices} onChange={(narration) => change("narration", { narration })} /> : <p className="text-[13px]">{narrationLabel(channel.narration) ?? "Not set up"}</p>}
+          {teacher ? <VoicePicker value={channel.narration} voices={voices.voices} used={voices.used} channel={channel.key} onChange={(narration) => change("narration", { narration })} /> : <p className="text-[13px]">{narrationLabel(channel.narration) ?? "Not set up"}</p>}
         </div>
         <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-black/30 p-3">
           <span>
