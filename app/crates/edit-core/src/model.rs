@@ -68,13 +68,18 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub created_by: Option<Creator>,
-    /// Where it was made: "dev" for a project started on a dev build (`just
-    /// dev`, the dev server, the trial server), so Home can tell the many
-    /// test projects from real ones; None for real projects (and ones from
-    /// before). Promoting a dev project clears it.
+    /// "dev" for a test project: one a coding agent, a script or a trial made
+    /// (any project not started from Home's New project by a person), hidden
+    /// on Home everywhere; None for real projects (and ones from before).
+    /// Promoting it clears it. The server keeps it: a save never changes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub origin: Option<String>,
+    /// A test project brought forth on Home when asked for (Sphe, Nov 14:
+    /// "I can ask you in the backend to just bring that project forth"):
+    /// shown, still marked Test. False for every other one, hidden.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shown: bool,
     /// A note someone left on it from Home's ⋯ ("goes on Sam's channel"):
     /// the team's, shown beside its name on Home. None when there's none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1937,6 +1942,7 @@ impl Project {
             people: Vec::new(),
             created_by: None,
             origin: None,
+            shown: false,
             note: None,
             hq: false,
             niche: None,

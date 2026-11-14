@@ -37,7 +37,7 @@ import { StartedBy } from "./StartedBy";
 import { MemoryChip } from "./MemoryChip";
 import { UpdateButton } from "./UpdateButton";
 import { Button, ConfirmDialog, cx, Modal, Pulse, spring } from "./ui";
-import { DevBadge, DevControl, promoteItem, useDevTools, useShowDev } from "./DevProjects";
+import { isListed, promoteItem, TestBadge } from "./TestProjects";
 import { ANOTHER_MACHINE, THEIR_MACHINE, THIS_MACHINE } from "../lib/platform";
 
 // Every project is 1080p at 30 fps.
@@ -154,8 +154,6 @@ export function Home() {
   const [kind, setKind] = useState<Style | null>(() => (STYLES.some((one) => one.value === localStorage.getItem(KIND)) ? (localStorage.getItem(KIND) as Style) : null));
   const later = useLater();
   const [allDone, setAllDone] = useState(false);
-  // Projects made on a dev build: shown or hidden (DevProjects.tsx).
-  const [showDev, setShowDev] = useShowDev();
   const [sidebarOpen, setSidebarOpen] = useSidebarOpen();
   // An approved idea's "Write the script": New project opened with its title and links.
   const [start, setStart] = useState<NewProjectStart | null>(null);
@@ -202,11 +200,7 @@ export function Home() {
       .catch(() => {});
     return api
       .projects()
-      .then(({ projects, dev_build }) => {
-        // Test projects and their controls are a dev build's only (DevProjects.tsx).
-        useDevTools.setState({ on: dev_build === true });
-        setProjects(projects);
-      })
+      .then(({ projects }) => setProjects(projects))
       .catch((error) => useEditor.getState().toastError(error, "reach Edit"));
   };
 
@@ -336,7 +330,8 @@ export function Home() {
       continue;
     }
     const stage = stageOf(row, statuses[id!]);
-    if (!showDev && row.local?.dev === true) continue;
+    // Test projects aren't listed unless brought forth (TestProjects.tsx); this machine's copy says, else the cloud's.
+    if (!isListed(row.local ?? row.cloud?.summary)) continue;
     items.push({
       id: id!,
       key: laterKey("edit", id!),
@@ -546,7 +541,6 @@ export function Home() {
                 onWho={(value) => chooseMine(value === "mine")}
                 onKind={chooseKind}
               />
-              <DevControl count={all.filter((project) => project.dev === true).length} show={showDev} onShow={setShowDev} onChanged={refresh} />
             </div>
             {steps.length > 0 && (
               <StageSteps place={shownPlace!} steps={steps} stage={placeOf(shownWhere).stage} onChoose={choose} />
@@ -1554,7 +1548,7 @@ function TableRow({ subtitled, script = null, ...props }: CardProps & { subtitle
               {project.name}
             </span>
           )}
-          {project.dev === true && <DevBadge />}
+          {project.dev === true && <TestBadge />}
           {card.nameInput === null && note.mark}
         </div>
         <Category style={project.style} hq={project.hq} compilation={script?.compilation} />
@@ -1865,6 +1859,7 @@ function CloudTableRow({ project, script = null, onChanged }: { project: CloudPr
           <span className={NAME} title={project.name}>
             {project.name}
           </span>
+          {summary.dev === true && <TestBadge />}
           <NoteMark note={summary.note} />
         </div>
         <Category style={summary.style} compilation={script?.compilation} />

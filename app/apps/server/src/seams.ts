@@ -225,6 +225,8 @@ export interface CloudMediaSeam {
 export interface CloudProjectsSeam {
   /** Whether there was a project to delete in the cloud (its lock goes either way). */
   delete(app: App, id: string): Promise<boolean>;
+  /** A project only the cloud has, brought here as opening it does (none when the cloud is off or hasn't it). */
+  fetch(app: App, id: string): Promise<void>;
   /** The cloud routes (`/api/projects/{id}/cloud/*`, `/api/cloud`), registered on the router. */
   routes(router: import("./http/router.ts").Router<App>): void;
   /** On the way out: pushes what's left and lets every lock go. */
@@ -260,6 +262,7 @@ export interface ChannelMarksSeam {
 export const channelMarks: ChannelMarksSeam = channelMarksModule;
 export const cloudProjects: CloudProjectsSeam = {
   delete: (app, id) => cloudProjectsModule.remove(app, id),
+  fetch: (app, id) => cloudProjectsModule.fetchHere(app, id),
   routes: (router) => cloudProjectsModule.routes(router),
   shutdown: () => cloudProjectsModule.shutdown(),
   start: (app) => {

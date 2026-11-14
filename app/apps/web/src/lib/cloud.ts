@@ -53,8 +53,10 @@ export interface CloudProject {
     width?: number;
     height?: number;
     subtitles?: boolean;
-    /** A test project (made on a dev build, or marked by hand). */
+    /** A test project (dev_projects.ts): hidden on Home unless `shown`. */
     dev?: boolean;
+    /** A test project brought forth: on Home, marked Test. */
+    shown?: boolean;
     /** Its note, left from Home's ⋯. */
     note?: string;
   } | null;

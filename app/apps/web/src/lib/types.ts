@@ -237,8 +237,10 @@ export interface ProjectSummary {
   cover_frame?: number | null;
   /** Who started it (`Project::created_by`); absent for projects from before. */
   created_by?: Creator;
-  /** Made on a dev build (`Project::origin` "dev"): marked Dev on Home, hidden or cleared there. */
+  /** A test project (`Project::origin` "dev", dev_projects.ts): hidden on Home unless `shown`. */
   dev?: boolean;
+  /** A test project brought forth (`Project::shown`): on Home, marked Test. */
+  shown?: boolean;
   /** Its note (`Project::note`), left from Home's ⋯. */
   note?: string;
   /** A Bodycam HQ project (`Project::hq`, Edit V2): its graphics are code the agent writes. */

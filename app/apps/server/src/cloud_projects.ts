@@ -880,7 +880,7 @@ export function summary(project: Project): Record<string, unknown> {
     footageOnly: shapeOf(project).footageOnly,
     width: project.settings.width,
     // A test project (dev_projects.ts): hidden on Home with the rest, on Macs that only have it in the cloud too.
-    ...(project.origin === "dev" ? { dev: true } : {}),
+    ...(project.origin === "dev" ? { dev: true, ...(project.shown === true ? { shown: true } : {}) } : {}),
     // Its note, shown on Home on Macs that only have it in the cloud too.
     ...(typeof project.note === "string" && project.note !== "" ? { note: project.note } : {}),
   };
@@ -1617,6 +1617,13 @@ export async function open(app: App, id: string, client: string): Promise<Record
 }
 
 /** A project only in the cloud, brought to this machine. */
+/** A project only the cloud has, brought here as opening it does, without opening it (dev_projects.ts marks it then). */
+export async function fetchHere(app: App, id: string): Promise<void> {
+  const cloudProjects = cloudOf(app);
+  if (cloudProjects === null || !cloudProjects.on() || app.store.get(id) !== null) return;
+  await download(app, cloudProjects, id);
+}
+
 async function download(app: App, cloudProjects: Cloud, id: string): Promise<void> {
   if (!validId(id)) throw new Error("no such project");
   if (!cloudProjects.projects.has(id)) cloudProjects.projects.set(id, new Entry({ rev: 0, dirty: false }));

@@ -508,8 +508,7 @@ export async function installUpdate(app: App, remote = false) {
 // Projects
 
 function listProjects({ app }: Context): Response {
-  // A dev build (`Store.marksDev`): Home shows test projects and their controls only then; a released build never does.
-  return json({ projects: app.store.visible(), dev_build: app.store.marksDev });
+  return json({ projects: app.store.visible() });
 }
 
 const STYLES: Style[] = ["bodycam", "interrogation", "courtroom", "commentary", "horror", "shorts"];
@@ -660,7 +659,11 @@ async function createProject(context: Context): Promise<Response> {
   if (!kinds.mayStart(style as Style)) throw new ApiError(403, kinds.cantMake(`edit.${style}`));
   let live;
   try {
-    live = context.app.store.createAs(name, style as Style, settings, hq, niche);
+    // A test project unless a person started it from Home (`person`): what a coding agent, a script or a trial makes
+    // is hidden on Home (Sphe, Nov 14: "projects created by me should by default just be at the forefront, but all
+    // projects created by you should be test projects").
+    const person = field<boolean>(given, "person", "boolean") === true;
+    live = context.app.store.createAs(name, style as Style, settings, hq, niche, !person);
   } catch (error) {
     throw bad(diag.messageOf(error));
   }

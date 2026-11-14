@@ -29,7 +29,6 @@ import { canonical, extension, fileStem, join } from "./paths.ts";
 import { clipEnd, duration, mediaOf, newProject } from "./project.ts";
 import { asSerdeRead, jsonForSerde } from "./rust.ts";
 import * as patches from "./patch.ts";
-import { RELEASE } from "./version.ts";
 
 export { nextFileId, nowMs, writeAtomic } from "./files.ts";
 
@@ -172,14 +171,6 @@ export class Store {
    * refused (13 on Marc's Mac in a day).
    */
   readonly firstRev = 1;
-
-  /**
-   * Whether new projects are marked dev projects (`Project::origin` "dev"):
-   * on any build that isn't a release (`just dev`, the dev server, the trial
-   * server), so Home can hide and clear the test projects (Sphe, Oct 31: "the
-   * project list gets huge"). Off in tests.
-   */
-  marksDev = devBuild();
 
   private constructor(home: string) {
     this.home = home;
@@ -431,8 +422,11 @@ export class Store {
     return this.createAs(name, "bodycam", settings);
   }
 
-  /** A new project of a given style (the kind of video); `hq`, an Edit V2 project (beta.ts), in `niche` (V2's cloud). */
-  createAs(name: string, style: Style, settings: Settings, hq = false, niche: string | null = null): Live {
+  /**
+   * A new project of a given style (the kind of video); `hq`, an Edit V2 project (beta.ts), in `niche` (V2's cloud);
+   * `test`, a test project (`Project::origin` "dev", dev_projects.ts): one a person didn't start.
+   */
+  createAs(name: string, style: Style, settings: Settings, hq = false, niche: string | null = null, test = false): Live {
     const id = `p${nowMs()}-${nextFileId()}`;
     const trimmed = name.trim() === "" ? "Untitled" : name.trim();
     const project = newProject(id, trimmed, settings, style);
@@ -442,7 +436,7 @@ export class Store {
     if (hq && niche !== null) project.niche = niche;
     const by = creator();
     if (by !== null) project.created_by = by;
-    if (this.marksDev) project.origin = "dev";
+    if (test) project.origin = "dev";
     const live = this.write(id, this.firstRev, project);
     this.projects.set(id, live);
     this.cloudHook?.created(id);
@@ -545,6 +539,9 @@ export class Store {
     }
     const next = Object.isFrozen(project) ? (structuredClone(project) as Project) : project;
     next.id = id;
+    // Whether it's a test project, and shown, is the server's (dev_projects.ts): a save of a whole project can't
+    // change it (a trial's copy of a real base saved over its new project lost its mark, Nov 1–7).
+    keepTestMark(current.project, next);
     return this.commit(id, current.rev, next, origin);
   }
 
@@ -791,9 +788,12 @@ function fileHash(text: string): string {
   return Bun.hash(text).toString(36);
 }
 
-/** A dev build, as `Store.marksDev` says. */
-function devBuild(): boolean {
-  return process.env.NODE_ENV !== "test" && !RELEASE;
+/** `next` marked a test project (and shown) as `current` is. */
+function keepTestMark(current: Project, next: Project): void {
+  if (current.origin === undefined || current.origin === null) delete next.origin;
+  else next.origin = current.origin;
+  if (current.shown === true) next.shown = true;
+  else delete next.shown;
 }
 
 function summaryOf(project: Project, modifiedMs: number): ProjectSummary {
@@ -813,6 +813,7 @@ function summaryOf(project: Project, modifiedMs: number): ProjectSummary {
   if (project.drive !== undefined && project.drive !== null) summary.drive = project.drive as DriveFile;
   if (project.created_by !== undefined && project.created_by !== null) summary.created_by = project.created_by;
   if (project.origin === "dev") summary.dev = true;
+  if (project.origin === "dev" && project.shown === true) summary.shown = true;
   if (typeof project.note === "string" && project.note !== "") summary.note = project.note;
   if (project.hq === true) summary.hq = true;
   if (project.hq === true && typeof project.niche === "string" && project.niche !== "") summary.niche = project.niche;
