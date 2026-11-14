@@ -338,7 +338,7 @@ function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void
                   <ul className="flex flex-col gap-1">
                     {taught[lane.key].map((one) => (
                       <li key={one.key} className="flex min-w-0 items-baseline gap-2 text-[12.5px]">
-                        <span className="shrink-0 text-faint">{TAUGHT_WORD[one.kind]}</span>
+                        <span className="shrink-0 text-faint">{one.kind === "template" && lane.key === "thumbnails" ? "Graphic" : TAUGHT_WORD[one.kind]}</span>
                         <span className="shrink-0 font-medium">{one.name}</span>
                         {one.note && <span className="min-w-0 truncate text-muted">{one.note}</span>}
                       </li>
