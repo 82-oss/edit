@@ -1,4 +1,4 @@
-// Bodycam HQ's sound in both ears, by itself (Sphe, Nov 13, the team on a
+// Edit V2's sound in both ears, by itself (Sphe, Nov 13, the team on a
 // 911 call: "part of the audio appears in one ear and part of the audio
 // appears in the other ear… I don't know if there's a way for us to detect
 // that this is the case and then fix it, but we need to fix it"). When an HQ

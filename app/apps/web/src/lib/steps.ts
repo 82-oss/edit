@@ -1,7 +1,7 @@
 // What a step of an agent's work is, to say it and show it (Sphe, Nov 12: a
 // group of steps should say what they did, "Ran 1 command and changed 1 file",
 // with an icon to match, and each step a line of its own that opens to its
-// details). Bodycam HQ's agent and Claude Code's own tools mostly; the house
+// details). Edit V2's agent and Claude Code's own tools mostly; the house
 // agents' tools keep their titles (agentTurns.ts).
 
 import type { AgentEntry } from "./agent";

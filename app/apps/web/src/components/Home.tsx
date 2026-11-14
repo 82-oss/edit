@@ -1028,7 +1028,7 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
     // Made from a script: that script, its other mode.
     ...(script !== null ? [{ label: "Open its script", icon: <FileText size={14} />, onSelect: () => navigate(`/scripts/${script}`) }] : []),
     { label: "Rename", icon: <Pencil size={14} />, onSelect: () => setRenaming(true) },
-    // Not for Bodycam HQ (Edit V2): its graphics are code its agent wrote for the new way, which no other kind has.
+    // Not for Edit V2: its graphics are code its agent wrote for the new way, which no other kind has.
     ...(project.style !== "shorts" && project.hq !== true && !project.problem && styles.length > 1
       ? [{ label: "Category", icon: <Tag size={14} />, submenu: styles.map((one) => ({ label: one.label, checked: one.value === project.style, onSelect: () => void recategorize(one.value) })) }]
       : []),

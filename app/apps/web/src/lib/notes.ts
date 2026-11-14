@@ -28,9 +28,9 @@ interface NotesState {
   notes: AppNote[];
   /** The note being written on the player, or null. */
   draft: Draft | null;
-  /** Bodycam HQ: the comment tool is up (the cursor pins a comment where it's clicked, while paused). */
+  /** Edit V2: the comment tool is up (the cursor pins a comment where it's clicked, while paused). */
   commenting: boolean;
-  /** Bodycam HQ: the comment open on the picture (its card showing), or null. */
+  /** Edit V2: the comment open on the picture (its card showing), or null. */
   opened: string | null;
   /** The playhead is being dragged along the progress bar: no comment is left meanwhile. */
   scrubbing: boolean;
@@ -77,14 +77,14 @@ export function cancelNote(): void {
   useNotes.setState({ draft: null });
 }
 
-/** The note button: opens a note, or closes the one open (Sphe, Nov 3: no reaching for Escape). In Bodycam HQ, the comment tool. */
+/** The note button: opens a note, or closes the one open (Sphe, Nov 3: no reaching for Escape). In Edit V2, the comment tool. */
 export function toggleNote(): void {
   if (useEditor.getState().project?.hq === true) setCommenting(!useNotes.getState().commenting);
   else if (useNotes.getState().draft === null) startNote();
   else cancelNote();
 }
 
-// ---------------------------------------------------------------- Bodycam HQ's comments
+// ---------------------------------------------------------------- Edit V2's comments
 //
 // The team's notes as the thumbnail page's comments, on the player (Sphe,
 // Nov 11): pinned where they click on the picture (a spot, or an area

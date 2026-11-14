@@ -1,4 +1,4 @@
-// Bodycam HQ's sound in both ears (hq_ears.ts, ears.ts): Nov 13, a 911 call
+// Edit V2's sound in both ears (hq_ears.ts, ears.ts): Nov 13, a 911 call
 // with the dispatcher in one ear and the caller in the other.
 
 import { expect, test } from "bun:test";

@@ -367,7 +367,7 @@ html.native-preview .editor-root {
   animation: appear-late 200ms ease-out 350ms both;
 }
 
-/* Bodycam HQ's agent on the progress bar (Viewer.tsx ScrubBar): its dot's soft ping. */
+/* Edit V2's agent on the progress bar (Viewer.tsx ScrubBar): its dot's soft ping. */
 @keyframes agent-ping {
   from { transform: scale(0.5); opacity: 0.9; }
   to { transform: scale(1.6); opacity: 0; }

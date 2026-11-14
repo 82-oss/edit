@@ -457,7 +457,7 @@ async function claudeSetupRoute(context: RouteContext<App>): Promise<Response> {
   return sortedJson(panel.claudeSetup(action));
 }
 
-/** The person's pick in the chats' model menu: GET reads it, PUT saves `{revision, effort}` and Bodycam HQ's `{hq_model, hq_effort}` (model_choice.ts). */
+/** The person's pick in the chats' model menu: GET reads it, PUT saves `{revision, effort}` and Edit V2's `{hq_model, hq_effort}` (model_choice.ts). */
 async function modelChoiceRoute(context: RouteContext<App>): Promise<Response> {
   modelChoice.use(context.app.store.home);
   if (context.request.method === "GET") return sortedJson(modelChoice.current());
@@ -527,7 +527,7 @@ async function agentSendRoute(context: RouteContext<App>): Promise<Response> {
   // Sent from the editor: where its playhead is, read to the agent with the message.
   const frame = given.playhead === null ? Number.NaN : Number(given.playhead);
   const playhead = Number.isFinite(frame) ? frame : null;
-  // With the team's queued notes, but not while the turn still runs: send refuses, or (Bodycam HQ) the message queues and takes them as it goes.
+  // With the team's queued notes, but not while the turn still runs: send refuses, or (Edit V2) the message queues and takes them as it goes.
   const running = (seams.agentPanel(app).chat(id) as { running?: boolean }).running === true;
   const read = await messageContext(app, id, playhead, !running);
   const panel = seams.agentPanel(app);
@@ -547,7 +547,7 @@ async function agentSendRoute(context: RouteContext<App>): Promise<Response> {
  * editor's playhead (`playhead` its frame, null when not sent from the editor)
  * and, with `notes`, the team's queued notes, which ride the next message
  * whatever it says (Sphe, Nov 3: "implement the feedback" isn't needed to send
- * them); the ones the turn doesn't answer go back in the queue. A Bodycam HQ
+ * them); the ones the turn doesn't answer go back in the queue. An Edit V2
  * chat's queued message reads it as it goes (agent.ts `agentHooks.messageContext`).
  */
 export async function messageContext(app: App, id: string, playhead: number | null, notes: boolean): Promise<string> {
@@ -562,7 +562,7 @@ export async function messageContext(app: App, id: string, playhead: number | nu
       });
   if (taken.length === 0) return where;
   void editNotes.requeueAfterTurn(app, id, taken.map((note) => note.id)).catch((error: unknown) => diag.warn("notes", `${id}: putting unanswered notes back: ${diag.messageOf(error)}`));
-  // Bodycam HQ's are comments on the picture, numbered as the team sees them, and asks: done whatever the message says.
+  // Edit V2's are comments on the picture, numbered as the team sees them, and asks: done whatever the message says.
   const told =
     live.project.hq === true
       ? editNotes.hqContext(live.project, taken, editNotes.numbered(await editNotes.list(app, id).catch(() => taken)))
@@ -570,7 +570,7 @@ export async function messageContext(app: App, id: string, playhead: number | nu
   return `${where}${where === "" ? "" : "\n\n"}${told}`;
 }
 
-/** Takes a queued message out of a Bodycam HQ chat (its Cancel). */
+/** Takes a queued message out of an Edit V2 chat (its Cancel). */
 function agentQueueCancelRoute(context: RouteContext<App>): Response {
   const panel = seams.agentPanel(context.app);
   if (context.app.store.get(context.params.id ?? "") === null) throw notFound("no such project");

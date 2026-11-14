@@ -57,7 +57,7 @@ test("both_ears_sets_the_measured_side_on_a_sources_sound", () => {
   expect((p.clips.find((one) => one.id === "c3") as AudioClip).channel).toBeUndefined();
   expect(result.results[0]).toMatchObject({ clips: ["c2"], sound_on: { m1: "left" } });
   expect(native().projectValidate(JSON.stringify(p))).toBeNull();
-  // A source heard on both sides is left alone; "stereo" puts the stereo back, said, so Bodycam HQ's ears leave it.
+  // A source heard on both sides is left alone; "stereo" puts the stereo back, said, so Edit V2's ears leave it.
   applyWith(p, [{ op: "both_ears", select: { media: "m2" } }], { shutter: null, sides: { m2: null } });
   expect((p.clips.find((one) => one.id === "c3") as AudioClip).channel).toBeUndefined();
   applyWith(p, [{ op: "both_ears", select: { ids: ["c2"] }, side: "stereo" }], { shutter: null });

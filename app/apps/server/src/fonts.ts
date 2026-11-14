@@ -7,7 +7,7 @@
 //   is open-licensed for video) into `<project>/fonts/<slug>/`, for any of the
 //   project's effects to use by name at once;
 // - V2's cloud: a teacher keeps one there (save_to_library kind font), and
-//   every Bodycam HQ agent's effects have it by name from then on, a copy
+//   every Edit V2 agent's effects have it by name from then on, a copy
 //   kept here (`<cache>/v2-fonts/<name>-v<n>/`).
 //
 // Each is a folder of its font files and `font.json` (its family and faces).

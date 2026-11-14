@@ -27,11 +27,11 @@ test("a_scoped_chat_reads_another_project_but_never_edits_it_or_answers_for_it",
 });
 
 test("tool_reference_is_one_short_line_per_tool", () => {
-  // What every chat is shown; a Bodycam HQ project's (Edit V2) has the effects' three tools as well.
+  // What every chat is shown; an Edit V2 project's has the effects' three tools as well.
   const reference = toolReference(toolsFor(false));
   expect(reference.trimEnd().split("\n").length).toBe(TOOLS.length - HQ_TOOLS.length);
   expect(toolReference(toolsFor(true)).trimEnd().split("\n").length).toBe(TOOLS.length - NOT_IN_HQ.length);
-  // Bodycam HQ's own twelve (effects, sounds, V2's cloud), in its chat alone, whose prompt has none of the house's instructions.
+  // Edit V2's own twelve (effects, sounds, V2's cloud), in its chat alone, whose prompt has none of the house's instructions.
   expect(toolReference(toolsFor(true)).length).toBeLessThan(reference.length + 2_100);
   expect(reference).toContain("- apply_edit_plan(base_rev: integer, operations: array, ");
   // Commentary's posts, video references and shot checks, Edit Script and the team's effects, came in Oct 26;

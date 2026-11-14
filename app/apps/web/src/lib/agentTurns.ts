@@ -220,7 +220,7 @@ export function thumbActivity(run: ThumbRun | null, now = Date.now()): string {
   return thinkingWord(run.startedAt, now - run.startedAt);
 }
 
-/** What Bodycam HQ's agent (Edit V2) is doing, in the stage words its viewer shows while it works. */
+/** What Edit V2's agent is doing, in the stage words its viewer shows while it works. */
 const HQ_STAGES: Record<string, string> = {
   import_link: "Bringing the video in",
   wait: "Bringing the video in",
@@ -255,7 +255,7 @@ export function hqActivity(entries: readonly AgentEntry[], now = Date.now()): st
 }
 
 /**
- * Where on the edit Bodycam HQ's agent is working now, and what it's doing
+ * Where on the edit Edit V2's agent is working now, and what it's doing
  * there, for its dot on the progress bar (Sphe, Nov 13: "it would be cool to
  * know where the agent is editing"): the newest call of the turn under way
  * that names a place in the edit, by a time or frame, a clip, or an effect
@@ -331,7 +331,7 @@ export function agentSpot(entries: readonly AgentEntry[], project: Project | nul
 /** A short, human title for one call. */
 export function callTitle(entry: AgentEntry): string {
   if (entry.tool !== undefined && SCRIPT_TOOLS.has(entry.tool) && entry.text) return entry.text;
-  // Claude Code's Read is a picture to the thumbnail agent; a file of code to Bodycam HQ's.
+  // Claude Code's Read is a picture to the thumbnail agent; a file of code to Edit V2's.
   const thumb = entry.tool !== undefined && !(entry.tool === "Read" && readsCode(entry)) ? THUMB_TOOLS[entry.tool] : undefined;
   if (thumb !== undefined) return entry.status === "running" ? thumb[0] : thumb[1];
   const a = args(entry);

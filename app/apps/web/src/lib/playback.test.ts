@@ -291,7 +291,7 @@ describe("preview seeks and lifetime", () => {
   });
 
   it("stops at the out point it's given while a pinned version shows, not that version's own", () => {
-    // Bodycam HQ while the agent works: the pinned copy's mark_out is from when the turn began (lib/watching.ts).
+    // Edit V2 while the agent works: the pinned copy's mark_out is from when the turn began (lib/watching.ts).
     const p = { ...fixture(), mark_out: 60 }; p.media[0].has_audio = true;
     p.tracks.push({ id: "a1", kind: "audio", hidden: false, muted: false, locked: false });
     p.clips.push({ id: "a", type: "audio", track: "a1", media: "m1", start: 0, duration: 90,
@@ -812,7 +812,7 @@ describe("preview seeks and lifetime", () => {
     expect(playhead.playing).toBe(true);
   });
 
-  it("holds a jump to the edit where there's no timeline (Bodycam HQ)", () => {
+  it("holds a jump to the edit where there's no timeline (Edit V2)", () => {
     preview.setProject({ ...fixture(), hq: true }, {}); draw();
     preview.seek(500);
     expect(playhead.frame).toBe(90);

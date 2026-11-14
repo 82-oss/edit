@@ -157,7 +157,7 @@ async function hear(app: App, id: string, part: string, path: string, name: stri
 
 registerTool("import_link", async ({ app, args, projectId }) => {
   if (typeof args.url !== "string" || args.url.trim() === "") throw new Error("url is required");
-  // Bodycam HQ's maps are edit-map's 3D city, not a map site's picture (hq_reference.ts).
+  // Edit V2's maps are edit-map's 3D city, not a map site's picture (hq_reference.ts).
   mapAllowed(app, projectId, args.url, args.asked);
   const part = `link:${Bun.hash(args.url.trim()).toString(16)}`;
   return text(stableStringify(await bringIn(app, projectId, args.url, part), 2));

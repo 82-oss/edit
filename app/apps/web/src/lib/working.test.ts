@@ -41,7 +41,7 @@ test("a live thumbnail turn shows reasoning between the words and the tool still
   ])).toBe("Looked at 3 pictures and made a picture");
 });
 
-test("Bodycam HQ's steps say what they did, a group by its kinds", () => {
+test("Edit V2's steps say what they did, a group by its kinds", () => {
   // Sphe, Nov 12: "Ran 1 command and changed 1 file", not "Ran 7 steps" and look_at_media seven times.
   const step = (tool: string, args: object) => ({ id: tool, kind: "tool", tool, text: "", status: "done", detail: JSON.stringify(args) }) as const;
   expect(callTitle(step("look_at_media", { media_id: "m1892", start: 18, end: 38, count: 24 }))).toBe("Studied the reference 18–38s");
@@ -111,7 +111,7 @@ test("between its steps Claude's word moves on every few seconds, not the same T
   expect(shortSpan(72_000)).toBe("1m 12s");
 });
 
-test("Bodycam HQ's stage words follow what its agent is doing", () => {
+test("Edit V2's stage words follow what its agent is doing", () => {
   const user = { id: "u", kind: "user" as const, text: "make a board", at: 1_000 };
   const tool = (name: string, status: "running" | "done") => ({ id: name, kind: "tool" as const, text: "", tool: name, status });
   expect(hqActivity([user, tool("import_link", "running")], 2_000)).toBe("Bringing the video in");
@@ -124,7 +124,7 @@ test("Bodycam HQ's stage words follow what its agent is doing", () => {
   expect(hqActivity([user, tool("Write", "done")], 2_000)).toBe(thinkingWord(1_000, 1_000));
 });
 
-test("Bodycam HQ's agent is placed on the bar where its newest call of the turn names a place", () => {
+test("Edit V2's agent is placed on the bar where its newest call of the turn names a place", () => {
   // Sphe, Nov 13: a dot where the agent is editing, in place of the pill over the picture.
   const project = {
     settings: { width: 1920, height: 1080, fps: 30 },

@@ -2,7 +2,7 @@
 // great if we put together a pretty good system here where we're still able
 // to watch videos quite normally while the agent builds its thing out until
 // it's done… it just gets added to wherever we are in the video and doesn't
-// interrupt us"). A Bodycam HQ viewer pins the version it was playing when a
+// interrupt us"). An Edit V2 viewer pins the version it was playing when a
 // turn began (its smooth render, the edit as it was), and the agent's saves
 // build up out of view; once the turn is over and the new version's render is
 // in, the viewer moves to it where the picture cuts anyway (or at once if it's

@@ -118,7 +118,7 @@ describe("the chat's live events", () => {
   });
 });
 
-describe("a Bodycam HQ chat's queue, kept on the server", () => {
+describe("an Edit V2 chat's queue, kept on the server", () => {
   const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
   const waiting = { id: "queued-1", text: "make it red", at: 1, playhead: 120 };
 

@@ -241,12 +241,12 @@ test("a V2 project without a channel is taught the global skill alone and keeps 
     v2cloud.useSkillsForTests([
       { name: "global", text: "Edit's own rules.", key: "skill:global" },
       { name: "pins", text: "The house's pins.", key: "skill:pins" },
-      { name: "intro", text: "Bodycam HQ's intro.", key: "skill:@bodycam-hq/intro" },
+      { name: "intro", text: "Edit V2's intro.", key: "skill:@bodycam-hq/intro" },
     ]);
     const prompt = agentInstructions(app.store.get(id)!.project);
     expect(prompt).toContain("Edit's own rules.");
     expect(prompt).not.toContain("The house's pins.");
-    expect(prompt).not.toContain("Bodycam HQ's intro.");
+    expect(prompt).not.toContain("Edit V2's intro.");
     expect(prompt).toContain("This project isn't a channel's, so nothing is kept");
     expect((await call(app, id, "remember", { skill: "pins", text: "Pins are red.", reason: "Sphe" })).content[0]!.text).toContain("This project isn't a channel's");
     const dir = effects.folder(app.store, id, "board");

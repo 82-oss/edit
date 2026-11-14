@@ -109,7 +109,7 @@ function agentsWith(home: ReturnType<typeof fixtureHome>, hangs = false) {
 
 const stream = (event: Record<string, unknown>) => ({ type: "stream_event", event, parent_tool_use_id: null });
 
-test("a Bodycam HQ project's turn runs in its effects folder with the file tools, allowed there and nowhere else", async () => {
+test("an Edit V2 project's turn runs in its effects folder with the file tools, allowed there and nowhere else", async () => {
   const home = fixtureHome("claude-hq");
   try {
     const project = home.store.create("HQ test", { width: 1920, height: 1080, fps: 30 }).project.id;
@@ -164,7 +164,7 @@ test("a Bodycam HQ project's turn runs in its effects folder with the file tools
   }
 });
 
-/** A Bodycam HQ project with the agent on Claude Code, for one test. */
+/** An Edit V2 project with the agent on Claude Code, for one test. */
 async function hqProject(name: string) {
   const made = claudeProject(name);
   await made.home.store.update(made.project, "test", (draft) => {
@@ -179,7 +179,7 @@ function ends(query: ReturnType<typeof fakeQuery>): void {
   query.end();
 }
 
-test("a message sent while a Bodycam HQ turn runs waits on the server, kept with the chat, and goes as the next turn when it ends; cancel takes one out", async () => {
+test("a message sent while an Edit V2 turn runs waits on the server, kept with the chat, and goes as the next turn when it ends; cancel takes one out", async () => {
   const { home, project, agents, asked, queries } = await hqProject("claude-hq-queue");
   const read = agentHooks.messageContext;
   // What's at its playhead is read as it goes.

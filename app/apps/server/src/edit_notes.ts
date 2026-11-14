@@ -237,7 +237,7 @@ export function context(project: Project, notes: AppNote[]): string {
 }
 
 /**
- * Bodycam HQ's comments, pinned on the picture (Sphe, Nov 11: the thumbnail
+ * Edit V2's comments, pinned on the picture (Sphe, Nov 11: the thumbnail
  * comments system on the player; the agent pulls the unsettled ones when its
  * turn starts): asks, done on this turn, each settled once done.
  */

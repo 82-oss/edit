@@ -9,7 +9,7 @@
 // trial's folder held 2.2 GB, 1.65 GB of it two sessions it had left.
 //
 // So, a few minutes after the start and then hourly: in the agent's own
-// folders (its workspace, and each Bodycam HQ project's effects folder,
+// folders (its workspace, and each Edit V2 project's effects folder,
 // which only Edit's agent works in), every session no chat goes on with that
 // nothing has written to for two hours goes, and a deleted project's folder
 // with it. Nothing outside those folders is touched: the person's own Claude
@@ -143,7 +143,7 @@ export function sweepFolders(folders: string[], keep: Set<string>, now = Date.no
   return out;
 }
 
-/** The sessions folders of Edit's agent here: its workspace's, and every Bodycam HQ project's effects folder's (a deleted one's too). */
+/** The sessions folders of Edit's agent here: its workspace's, and every Edit V2 project's effects folder's (a deleted one's too). */
 export function agentFolders(app: App, root = sessionsRoot()): { live: string[]; gone: string[] } {
   const home = app.store.home;
   const live = [join(root, folderName(join(home, "agent", "workspace")))];

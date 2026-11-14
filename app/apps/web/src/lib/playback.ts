@@ -362,7 +362,7 @@ class Preview {
   }
 
   /**
-   * The volume heard: the player's in Bodycam HQ, whose player has it; full
+   * The volume heard: the player's in Edit V2, whose player has it; full
    * elsewhere, whose player has no way to change it (a mute set in HQ would
    * otherwise silence a V1 edit with nothing on screen to undo it).
    */
@@ -1156,7 +1156,7 @@ class Preview {
     for (const id of changed) this.copied.delete(id);
     if (previous?.id !== project.id) this.framed = false;
     this.project = project;
-    // Into Bodycam HQ or out of it: the player's volume is heard there alone.
+    // Into Edit V2 or out of it: the player's volume is heard there alone.
     if ((previous?.hq === true) !== (project.hq === true)) this.applyVolume();
     this.error = null;
     this.refused = false;
@@ -1296,7 +1296,7 @@ class Preview {
     if (resume) this.pause();
     this.direction = frame < playhead.frame ? -1 : 1;
     this.seekSerial++;
-    // Held to the edit only where there's no timeline (Bodycam HQ): on one, a click past the last clip puts the playhead there.
+    // Held to the edit only where there's no timeline (Edit V2): on one, a click past the last clip puts the playhead there.
     playhead.frame = seekTarget(frame, this.project?.hq === true ? this.duration : 0);
     if (this.range !== null && (playhead.frame < this.range.start || playhead.frame > this.range.end)) this.clearRange();
     clearTimeout(this.persistTimer);

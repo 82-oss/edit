@@ -17,7 +17,7 @@ test("the render a new one replaces is kept for viewers, unless the one kept bef
   // Nothing kept, or what's kept not looked at for minutes: the one replaced is kept.
   expect(replacesKept(5, undefined, undefined, now)).toBe(true);
   expect(replacesKept(5, 3, new Map([[3, now - 10 * 60_000]]), now)).toBe(true);
-  // Back-to-back turns, a Bodycam HQ viewer pinned through both: still on 3, never on 5, so 3 stays.
+  // Back-to-back turns, an Edit V2 viewer pinned through both: still on 3, never on 5, so 3 stays.
   expect(replacesKept(5, 3, new Map([[3, now - 6_000]]), now)).toBe(false);
   // It moved on to 5 since: 5 is kept.
   expect(replacesKept(5, 3, new Map([[3, now - 60_000], [5, now - 6_000]]), now)).toBe(true);

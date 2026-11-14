@@ -530,7 +530,7 @@ const KIND_ICONS: Record<StepKind, LucideIcon> = {
 
 const toolIcon = (tool?: string) => TOOL_ICONS[tool ?? ""] ?? KIND_ICONS[stepKind(tool)];
 
-/** A call's icon: Read is a picture looked at to the thumbnail agent, a file read to Bodycam HQ's. */
+/** A call's icon: Read is a picture looked at to the thumbnail agent, a file read to Edit V2's. */
 const callIcon = (call: AgentEntry) => {
   const path = argsOf(call).file_path;
   return call.tool === "Read" && typeof path === "string" && !/\.(png|jpe?g|webp|gif|avif)$/iu.test(path) ? FileText : toolIcon(call.tool);
@@ -1056,7 +1056,7 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
   const running = useAgent((state) => state.running);
   const modelName = useAgent((state) => state.chatModel ?? state.modelName);
   const revising = useAgent((state) => state.revising);
-  // Bodycam HQ (Edit V2): its own model menu, every model at any time, and messages sent while it works queue on the server.
+  // Edit V2: its own model menu, every model at any time, and messages sent while it works queue on the server.
   const hq = useEditor((state) => state.project?.hq === true);
   const waiting = useAgent((state) => state.queue);
   const toastError = useEditor((state) => state.toastError);
@@ -1077,7 +1077,7 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
         onSteer={(id) => void steerQueued(String(id)).catch((error: unknown) => toastError(error, "steer the agent"))}
       />
     ),
-    // Bodycam HQ's are pinned on the picture and the progress bar instead.
+    // Edit V2's are pinned on the picture and the progress bar instead.
     notes > 0 && !hq && <NoteQueue key="notes" />,
   ].filter(Boolean);
   return (

@@ -88,7 +88,7 @@ export function Viewer() {
   // didn't start is said only while there's no picture at all; what stops it for good (no WebGPU, the engine gone) is said.
   const retrying = error?.startsWith("Preview decoding failed") === true;
   const shownError = retrying || (framed && error?.startsWith("Preview failed to start") === true) ? null : error;
-  // Bodycam HQ (Edit V2) watches like a video: its controls float over the picture, as a video site's do.
+  // Edit V2 watches like a video: its controls float over the picture, as a video site's do.
   const hq = useEditor((state) => state.project?.hq === true);
   const playing = usePlaying();
   const overlay = fullscreen || hq;
@@ -118,7 +118,7 @@ export function Viewer() {
   // Smooth playback: the rendered edit plays when it shows what's on screen (its
   // revision, nothing waiting to save); else the canvas draws live.
   const projectId = project?.id ?? null;
-  // Bodycam HQ while the agent works: the version on screen as the turn began, its render played, the agent's saves
+  // Edit V2 while the agent works: the version on screen as the turn began, its render played, the agent's saves
   // out of view until the turn's over and the new version's render is in (lib/watching.ts).
   const agentBusy = useAgent((state) => state.project === projectId && state.running);
   const held = useWatching((state) => state.pinned);
@@ -298,7 +298,7 @@ export function Viewer() {
   // Full screen's controls go when the mouse rests; HQ's only while it plays, and when the mouse leaves the picture.
   const hidden = fullscreen ? idle : hq && idle && playing;
   return (
-    // A frame round the viewer, for Bodycam HQ's working light: the thumbnail page's own glow and ring, round its edge and outside it, where nothing clips them.
+    // A frame round the viewer, for Edit V2's working light: the thumbnail page's own glow and ring, round its edge and outside it, where nothing clips them.
     <div className="relative isolate flex min-h-0 min-w-0 flex-1 rounded-xl">
       {hq && !fullscreen && <WorkingFrame native={native} />}
       <section
@@ -323,7 +323,7 @@ export function Viewer() {
           {pinned === null && <EffectLayer wrap={wrap} />}
           <SeekFlash />
           {/* A note being left here: its box over the picture, and the bubble it's written in at the bottom left. */}
-          {/* Bodycam HQ: the team's comments pinned on the picture (the thumbnail page's), left while paused. */}
+          {/* Edit V2: the team's comments pinned on the picture (the thumbnail page's), left while paused. */}
           {!fullscreen && hq && <VideoComments wrap={wrap} />}
           {!fullscreen && !hq && <NoteBoxLayer wrap={wrap} />}
           {!fullscreen && !hq && <NoteDraft />}
@@ -338,7 +338,7 @@ export function Viewer() {
               <Spinner />
             </div>
           )}
-          {/* Bodycam HQ: a spinner in the middle of the picture, as a video player's, the way to report it under it only once it's stuck (Sphe, Nov 11: the corner pill sat behind the controls). */}
+          {/* Edit V2: a spinner in the middle of the picture, as a video player's, the way to report it under it only once it's stuck (Sphe, Nov 11: the corner pill sat behind the controls). */}
           {hq && !shownError && framed && (buffering || retrying) && (
             <div role="status" aria-label="Loading the frame" className="appear-late pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3">
               <Spinner />
@@ -622,7 +622,7 @@ function clock(frame: number, fps: number): string {
 }
 
 /**
- * Bodycam HQ's controls (Edit V2; Sphe, Nov 11: "much cleaner, without the
+ * Edit V2's controls (Sphe, Nov 11: "much cleaner, without the
  * clumsy background almost like a youtube video controls"): a thin line to
  * scrub along, then play and the time on the left, a note, the speed and full
  * screen on the right, over a shade that fades up from the picture's foot.

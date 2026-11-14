@@ -12,7 +12,7 @@ import { cx, spring } from "./ui";
  * it for the screen's own width again. Always open (Sphe, Nov 12: closing it
  * by a click on its edge "I don't think we'll ever need"). No button: a line.
  * One width for every screen's chat once dragged, remembered on this browser;
- * until then each screen's own (`defaultWidth`: Bodycam HQ's is wider).
+ * until then each screen's own (`defaultWidth`: Edit V2's is wider).
  *
  * The screen leaves no padding on its right: the edge sits there.
  */

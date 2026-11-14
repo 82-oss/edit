@@ -894,9 +894,9 @@ export interface AgentPanel extends Agents {
   turn?(project: string): { running: boolean; entries: readonly { kind?: string; tool?: string; text?: string }[] };
   /** Sends the user's (or Edit's: the script's research) message to a project's chat, starting its turn. */
   send(project: string, text: string, model: string | null, effort: string | null, context?: string, attached?: Attached[]): Promise<void>;
-  /** The person's message from the chat: sent as `send` sends it, or queued (returned) in a Bodycam HQ chat whose turn is running (agent.ts `message`). */
+  /** The person's message from the chat: sent as `send` sends it, or queued (returned) in an Edit V2 chat whose turn is running (agent.ts `message`). */
   message?(project: string, text: string, model: string | null, effort: string | null, context: string, attached: Attached[], playhead: number | null): Promise<import("./agent.ts").Queued | null>;
-  /** Takes a queued message out of a Bodycam HQ chat: whether it was there. */
+  /** Takes a queued message out of an Edit V2 chat: whether it was there. */
   cancelQueued?(project: string, id: string): boolean;
   /** Stops the running turn and sends the queued message in its place, in the same conversation. */
   steer?(project: string, id: string): Promise<void>;

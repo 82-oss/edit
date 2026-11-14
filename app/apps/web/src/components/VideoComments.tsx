@@ -1,4 +1,4 @@
-// Bodycam HQ's comments on the player (Sphe, Nov 11: "we borrow the
+// Edit V2's comments on the player (Sphe, Nov 11: "we borrow the
 // thumbnail comments system"; "we can only set comments when we are paused";
 // "areas with comments show up in the playprogress bar"): the team's notes as
 // the thumbnail page's pins, over the picture at the paused frame they were

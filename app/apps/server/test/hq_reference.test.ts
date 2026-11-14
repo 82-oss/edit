@@ -1,4 +1,4 @@
-// Bodycam HQ's maps (hq_reference.ts): Nov 13, its maps were satellite
+// Edit V2's maps (hq_reference.ts): Nov 13, its maps were satellite
 // pictures laid flat, though edit-map's 3D city was in its notes.
 
 import { expect, test } from "bun:test";

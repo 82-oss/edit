@@ -615,7 +615,7 @@ function earsClips(project: Project, select: unknown): Clip[] {
  * the side of its source that carries it in both ears, the side measured
  * (ears.ts) unless `side` says it ("left", "right"; "both" mixes both sides
  * into both ears, for a source split between them, a voice on each; "stereo"
- * puts the source's own stereo back, kept as said: Bodycam HQ's ears set a
+ * puts the source's own stereo back, kept as said: Edit V2's ears set a
  * side only where none is). A source already heard on both sides is left as
  * it is.
  */

@@ -1,5 +1,5 @@
 // A comment pinned on a picture, as the thumbnail page made them (Sphe, Nov 4-5)
-// and Bodycam HQ's player uses them too (Nov 11: "we borrow the thumbnail
+// and Edit V2's player uses them too (Nov 11: "we borrow the thumbnail
 // comments system"): the numbered bubble, its point at the bottom left on the
 // spot; hovered, its words; clicked, the comment with Claude's answers, its
 // words edited in place; dragged (where it can move), set elsewhere. And the

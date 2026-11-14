@@ -317,7 +317,7 @@ export function start(home: string, host: string | null, port: number): { app: A
   agentHooks.unfinished = (project) => unfinishedNote(app, project);
   // The script's comments, written on any Mac, reach the edit before each agent turn.
   agentHooks.beforeTurn = (project) => scriptSync.catchUpComments(app, project);
-  // A Bodycam HQ chat's queued message reads what's at its playhead, and takes the team's notes, as it goes.
+  // An Edit V2 chat's queued message reads what's at its playhead, and takes the team's notes, as it goes.
   agentHooks.messageContext = (project, playhead) => messageContext(app, project, playhead, true);
   seams.speakers.watch(app);
   // Cloud projects (on with the built-in token): sync, locks, and letting them go on the way out.

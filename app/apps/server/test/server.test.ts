@@ -96,7 +96,7 @@ test("projects: create, read, replace with a stale rev, delete; refusals worded"
   }
 });
 
-test("projects: Bodycam HQ is made only with Edit V2 on and only for bodycam; an ordinary project's file is unchanged", async () => {
+test("projects: an Edit V2 project is made only with the beta on and only for bodycam; an ordinary project's file is unchanged", async () => {
   const { app, home, cleanup } = fixtureHome("server-hq");
   try {
     const { send, jsonBody } = client(app);

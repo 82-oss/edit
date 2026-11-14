@@ -59,7 +59,7 @@ export function marked(project: Project): Range[] {
 /**
  * The cut-ins, each named as its clips are ("Cut-in 36"): from the first of
  * its clips to the end of the last. An edit with no clip so named has its
- * B-roll sections instead (a Bodycam HQ edit's sections are slivers between
+ * B-roll sections instead (an Edit V2 edit's sections are slivers between
  * its voice clips, Nov 12: 16 found where it has 30).
  */
 export function cutIns(project: Project): Range[] {

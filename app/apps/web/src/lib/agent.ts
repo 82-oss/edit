@@ -26,7 +26,7 @@ export interface AgentEntry {
   attachments?: { name: string; kind: FileKind; media?: string; file?: string; url?: string | null }[];
 }
 
-/** A message sent while a Bodycam HQ turn runs, waiting on the server for it to end (the server's agent.ts `Queued`): Steer or Cancel. */
+/** A message sent while an Edit V2 turn runs, waiting on the server for it to end (the server's agent.ts `Queued`): Steer or Cancel. */
 export interface QueuedMessage {
   id: string;
   text: string;
@@ -134,7 +134,7 @@ interface AgentState {
   revising: boolean;
   /** A sub-agent's chat being viewed in place of the main one (the fresh-eyes pass): Back returns. */
   sub: SubChat | null;
-  /** Bodycam HQ: the messages waiting on the server for the running turn to end, in order (empty elsewhere). */
+  /** Edit V2: the messages waiting on the server for the running turn to end, in order (empty elsewhere). */
   queue: QueuedMessage[];
 }
 
@@ -262,7 +262,7 @@ export async function openAgent(project: string) {
 /**
  * `playhead`: the editor's frame when the message was written, so the agent
  * starts there. `files`: what's attached, already in the project (the chat's
- * uploader); pictures reach the model as pictures. `queues`: a Bodycam HQ chat,
+ * uploader); pictures reach the model as pictures. `queues`: an Edit V2 chat,
  * where a message sent while the turn runs waits in the server's queue (shown
  * above the composer, not in the conversation) until it ends.
  */

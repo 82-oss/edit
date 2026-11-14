@@ -11,7 +11,7 @@
 //     agent/writer/<name>.md                   Script mode's guides (Repack's, word for word)
 //     agent/ideas/<name>.md                    the ideas' craft (Sphe Research's, word for word)
 //     agent/thumbnails/<name>.md               the thumbnails' craft (Claude making one with the team)
-//     agent/hq/notes.md                        a Bodycam HQ video's rules (Edit V2: graphics written as code, effects.ts)
+//     agent/hq/notes.md                        an Edit V2 video's rules (graphics written as code, effects.ts)
 //
 // A file may open with frontmatter (`---` lines of `key: value`); a house
 // skill's `description` is its line in the instructions' SKILLS list, which

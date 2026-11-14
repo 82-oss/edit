@@ -208,7 +208,7 @@ test("queued notes ride the next message, whatever it says (Sphe, Nov 3); the on
   }
 });
 
-test("Bodycam HQ's comments: numbered as the team sees them, a spot or an area, asks the agent does, and a settled one brought back by its number", async () => {
+test("Edit V2's comments: numbered as the team sees them, a spot or an area, asks the agent does, and a settled one brought back by its number", async () => {
   const { app, cleanup } = fixtureHome("notes-hq");
   let running = false;
   const sent: { text: string; context: string }[] = [];

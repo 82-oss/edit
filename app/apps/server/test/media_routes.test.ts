@@ -95,12 +95,12 @@ test("the model menu's pick: Opus at medium until picked, kept in the home, anyt
     expect((await ask("PUT", "/api/models", { effort: "max" })).json()).toEqual({ effort: "max", revision: "claude-sonnet-5-5", ...hq });
     expect((await ask("PUT", "/api/models", { effort: "xhigh" })).json()).toEqual({ effort: "xhigh", revision: "claude-sonnet-5-5", ...hq });
     expect(JSON.parse(fs.readFileSync(`${home}/models.json`, "utf8"))).toEqual({ revision: "claude-sonnet-5-5", effort: "xhigh", ...hq });
-    // Bodycam HQ's pick (Edit V2): every model, kept apart from the other chats' (neither changes the other).
+    // Edit V2's pick: every model, kept apart from the other chats' (neither changes the other).
     expect((await ask("PUT", "/api/models", { hq_model: "claude-opus-5-5", hq_effort: "low" })).json()).toEqual({ effort: "xhigh", revision: "claude-sonnet-5-5", hq_effort: "low", hq_model: "claude-opus-5-5" });
     expect((await ask("PUT", "/api/models", { effort: "medium" })).json()).toEqual({ effort: "medium", revision: "claude-sonnet-5-5", hq_effort: "low", hq_model: "claude-opus-5-5" });
     expect((await ask("PUT", "/api/models", { hq_model: "claude-sonnet-5-5" })).json()).toMatchObject({ hq_model: "claude-sonnet-5-5", revision: "claude-sonnet-5-5", effort: "medium" });
     expect(JSON.parse(fs.readFileSync(`${home}/models.json`, "utf8"))).toEqual({ revision: "claude-sonnet-5-5", effort: "medium", hq_model: "claude-sonnet-5-5", hq_effort: "low" });
-    // A saved file from before Bodycam HQ's pick reads it as Fable 5.2 at high.
+    // A saved file from before Edit V2's pick reads it as Fable 5.2 at high.
     fs.writeFileSync(`${home}/models.json`, JSON.stringify({ revision: "claude-sonnet-5-5", effort: "low" }));
     modelChoice.use(`${home}/elsewhere`);
     modelChoice.use(home);

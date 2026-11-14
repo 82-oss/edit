@@ -72,7 +72,7 @@ export interface Entry {
 }
 
 /**
- * A message the person sent while a Bodycam HQ chat's turn ran (Sphe, Nov 11:
+ * A message the person sent while an Edit V2 chat's turn ran (Sphe, Nov 11:
  * "if the agent is still running… it gets queued up and you can cancel it or
  * then be able to click steer"): kept with the chat on the server, so leaving
  * the page or closing the editor changes nothing, and sent by the server as the
@@ -149,7 +149,7 @@ export interface Chat {
   tools: toolChanges.ToolSchema | null;
   /** When the whole edit was done (its follow-ups too): from then on its turns are revisions (`turnModel`). Kept through a new chat; synced with it. */
   built: number | null;
-  /** Bodycam HQ: the person's messages waiting for the running turn to end, in order (`Queued`). Always empty elsewhere. */
+  /** Edit V2: the person's messages waiting for the running turn to end, in order (`Queued`). Always empty elsewhere. */
   queue: Queued[];
 }
 
@@ -785,7 +785,7 @@ export class Agents implements seams.AgentPanel {
 
   /**
    * The person's message from the chat (`POST /api/projects/{id}/agent`): sent
-   * as `send` sends it, or, in a Bodycam HQ chat whose turn is running, queued
+   * as `send` sends it, or, in an Edit V2 chat whose turn is running, queued
    * (and returned) to go when it ends. `playhead`: the editor's frame, for when
    * a queued one goes (`context` is what's read with it if it goes now).
    */
@@ -923,7 +923,7 @@ export class Agents implements seams.AgentPanel {
     replay = false,
     context = "",
     attached: Attached[] = [],
-    /** A Bodycam HQ chat's message: queued (at the end, or first for one taken out of the queue) when a turn is running. */
+    /** An Edit V2 chat's message: queued (at the end, or first for one taken out of the queue) when a turn is running. */
     queue: { front: boolean; item: Queued } | null = null,
   ): Promise<Queued | null> {
     const live = this.store.get(projectOf(project));
@@ -1073,11 +1073,11 @@ export class Agents implements seams.AgentPanel {
       // driven by review notes, which nobody's watching, gets a tighter one (the audit, Oct 23).
       ...(reviewGuard.inReviewTurn(project) ? { maxTurns: REVIEW_MAX_TURNS, maxBudgetUsd: REVIEW_MAX_USD } : { maxTurns: MAX_TURNS }),
     };
-    // Bodycam HQ compacts near the model's whole window (1M), not near 180k (Sphe, Nov 12: picture-heavy work, "it compares a
+    // Edit V2 compacts near the model's whole window (1M), not near 180k (Sphe, Nov 12: picture-heavy work, "it compares a
     // bunch of things at the same time", and compaction drops what it just studied; on trial: the turn log says its time and tokens).
     // Claude Code clamps it to the model's own window.
     if (code !== null) options.env = { ...options.env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(claude.HQ_COMPACT_WINDOW) };
-    // Bodycam HQ thinks at its own pick (Fable 5.2's high until picked), the other chats at theirs; a caller naming a level gets it.
+    // Edit V2 thinks at its own pick (Fable 5.2's high until picked), the other chats at theirs; a caller naming a level gets it.
     const level = live.project.hq === true ? (chat.effort ?? modelChoice.current().hq_effort) : (chat.effort ?? claude.effort() ?? "medium");
     if (claude.EFFORTS.includes(level)) options.effort = level as claude.Options["effort"];
     if (chat.thread !== null) options.resume = chat.thread;
@@ -1714,7 +1714,7 @@ export class Agents implements seams.AgentPanel {
    */
   private followUp(project: string, generation: number): void {
     if (project.includes(SUB)) return;
-    // Bodycam HQ is prompted by the team alone (Sphe, Nov 13: "I really do just want prompts to be from our users, unless it's
+    // Edit V2 is prompted by the team alone (Sphe, Nov 13: "I really do just want prompts to be from our users, unless it's
     // a server restart"): no follow-up, no fresh-eyes pass. Its own thoroughness is its notes' and V2's global skill's to ask for.
     if (this.isHq(project)) return;
     const before = this.followedUp.get(project);
@@ -1801,14 +1801,14 @@ export class Agents implements seams.AgentPanel {
     return this.revising(project, text) ? claude.revisionModel() : claude.DEFAULT_MODEL;
   }
 
-  /** A Bodycam HQ project (Edit V2): every turn, build or revision, on its own pick in the menu (Fable 5.2 at high until picked), and messages sent while it works queue on the server. */
+  /** An Edit V2 project: every turn, build or revision, on its own pick in the menu (Fable 5.2 at high until picked), and messages sent while it works queue on the server. */
   isHq(project: string): boolean {
     return this.store.get(projectOf(project))?.project.hq === true;
   }
 
   /** Whether the next turn is a revision, on the person's pick (else a build, on Opus): the model menu offers the pick only then. */
   revising(project: string, text = ""): boolean {
-    // Bodycam HQ's menu always offers its models, on its own pick: not a build or a revision.
+    // Edit V2's menu always offers its models, on its own pick: not a build or a revision.
     if (this.isHq(project)) return false;
     if (project.endsWith(`${SUB}review`) || reviewGuard.inReviewTurn(project)) return true;
     if (REBUILD.test(text)) return false;

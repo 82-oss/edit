@@ -7,7 +7,7 @@
 // notes, the agent asking to reset) sits in an island on its top edge, inset
 // from its sides and the same black (after Phi's composer and queue).
 // A message sent while Claude works waits in the queue and goes when it's done
-// (a Bodycam HQ chat's waits on the server, which sends it: `hq`).
+// (an Edit V2 chat's waits on the server, which sends it: `hq`).
 // Words quoted into the chat (chatQuotes.ts) sit in the island until sent.
 
 import { AnimatePresence, motion } from "motion/react";
@@ -161,7 +161,7 @@ export function ChatComposer({
   /** A quiet word at the footer's right, before Send. */
   hint?: string;
   /**
-   * A Bodycam HQ chat (Edit V2): its own model menu, every model at any time,
+   * An Edit V2 chat: its own model menu, every model at any time,
    * and a message sent while it works goes to `onSend` at once, for the server
    * to queue (shown in `tray`), rather than waiting here.
    */
@@ -514,7 +514,7 @@ export interface QueueRow {
 
 /**
  * Messages waiting for the turn to end: each its words, × to take it back,
- * and, where the chat can (`onSteer`: Bodycam HQ's, queued on the server),
+ * and, where the chat can (`onSteer`: Edit V2's, queued on the server),
  * Steer, which stops the turn and sends it now.
  */
 export function QueueIsland({ rows, onRemove, onSteer }: { rows: QueueRow[]; onRemove: (id: QueueRow["id"]) => void; onSteer?: (id: QueueRow["id"]) => void }) {
@@ -689,13 +689,13 @@ function ModelPill({ name }: { name: string }) {
  * B in a box, Sphe, Nov 7): the revisions' model with Claude's mark, then the
  * thinking levels, Medium marked as the default. While the chat is being built
  * the models aren't offered (a build is always Opus's). One pick for every
- * chat on this computer (lib/models.ts). A Bodycam HQ chat's (`hq`) offers
+ * chat on this computer (lib/models.ts). An Edit V2 chat's (`hq`) offers
  * every model at any time, on its own pick (Fable 5.2 at High until picked).
  */
 function ModelMenu({ name: given, revising, hq = false }: { name?: string; revising: boolean; hq?: boolean }) {
   const [open, setOpen] = useState(false);
   const choice = useModelChoice();
-  // Bodycam HQ's own pick (Edit V2): every model, at any time, apart from the other chats'.
+  // Edit V2's own pick: every model, at any time, apart from the other chats'.
   const models = hq ? HQ_MODELS : revising ? REVISION_MODELS : [];
   const model = hq ? choice.hq_model : choice.revision;
   const effort = hq ? choice.hq_effort : choice.effort;

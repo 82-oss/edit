@@ -142,7 +142,7 @@ export function Editor({ id }: { id: string }) {
             </>
           )}
         </div>
-        {/* Bodycam HQ's chat is wider until it's dragged (Sphe, Nov 12): its graphics talk takes room. */}
+        {/* Edit V2's chat is wider until it's dragged (Sphe, Nov 12): its graphics talk takes room. */}
         <ChatDock working={agentWorking} defaultWidth={project?.hq === true ? 440 : 340}>
           <AgentPanel />
         </ChatDock>
@@ -247,7 +247,7 @@ window.addEventListener("keyup", (event) => { if (event.key === stepping?.key) s
 window.addEventListener("blur", stopStepping);
 
 /**
- * Bodycam HQ's keys, a video player's (Sphe, Nov 12): Space or K plays and
+ * Edit V2's keys, a video player's (Sphe, Nov 12): Space or K plays and
  * pauses, ← → jump 5 s, J L 10 s (a video site's), , . a frame (held, frame after frame), and
  * Shift+. / Shift+, (> <) play at 2× and back to 1×. True when it was one.
  */

@@ -1,10 +1,10 @@
-// Bodycam HQ's maps (Sphe, Nov 13: "the 3D map should be the only route
+// Edit V2's maps (Sphe, Nov 13: "the 3D map should be the only route
 // unless the user states otherwise"): on the first real test of copying a
 // reference, its maps were satellite pictures laid flat and tilted, though
 // edit-map's 3D city was in its notes.
 //
 // Pictures of a map or satellite view fetched from a map
-// site are refused in a Bodycam HQ project, pointing at edit-map, unless the
+// site are refused in an Edit V2 project, pointing at edit-map, unless the
 // agent quotes where the person asked for another kind.
 
 import type { Entry } from "./agent.ts";
@@ -48,14 +48,14 @@ export function personSaid(entries: readonly Entry[], words: string): boolean {
   return entries.some((entry) => entry.kind === "user" && !entry.text.startsWith("(Edit, automatically)") && squash(entry.text).includes(quote));
 }
 
-/** The refusal of a map site's picture in a Bodycam HQ project. */
+/** The refusal of a map site's picture in an Edit V2 project. */
 export const MAP_REFUSED =
   "In Edit V2 every map is edit-map's 3D city (Google's photorealistic 3D tiles: a real place from any angle, buildings standing), never a picture from a map site laid flat or tilted (Sphe, Nov 13: \"the 3D map should be the only route unless the user states otherwise\"). " +
   "Load edit-map/map.js in the effect and aim its camera in seek(t): find() the place, look() or fly() the camera, screen() to pin anything to it. " +
   "Only if the person asked for another kind of map (a flat 2D map, a satellite photo), call again with `asked`: their words, quoted from their message.";
 
 /**
- * Refuses a map site's picture in a Bodycam HQ project (capture_evidence,
+ * Refuses a map site's picture in an Edit V2 project (capture_evidence,
  * import_link) unless `asked` quotes where the person asked for that kind.
  */
 export function mapAllowed(app: App, projectId: string, url: string, asked: unknown): void {

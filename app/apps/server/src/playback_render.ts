@@ -122,7 +122,7 @@ const WATCHED_MS = 3 * 60_000;
 /**
  * Whether the render a new one replaces (`replaced`) takes the kept one's
  * place (`kept`, keepPrevious): not while a viewer is still on the kept one
- * and none has moved to the replaced one. Back-to-back turns: a Bodycam HQ
+ * and none has moved to the replaced one. Back-to-back turns: an Edit V2
  * viewer pinned through both is still on the render from before the first,
  * and keeping the one between (which no one watched) deleted it under them.
  */
