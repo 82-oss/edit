@@ -814,7 +814,7 @@ export class Agents implements seams.AgentPanel {
    * With nothing running it's sent now.
    */
   async steer(project: string, id: string): Promise<void> {
-    if (!this.isHq(project)) throw new Error("only a Bodycam HQ chat queues messages");
+    if (!this.isHq(project)) throw new Error("only an Edit V2 chat queues messages");
     if (this.steering.has(project)) throw new Error("already steering; a moment");
     if (!this.withChat(project).queue.some((one) => one.id === id)) throw new Error("that message isn't queued any more");
     this.steering.add(project);
@@ -1918,7 +1918,7 @@ class ClaudeTurn {
 /** The chat shows pictures (chat_pictures.ts). */
 const PICTURES = "Your reply is Markdown and shows pictures: ![what it is](its file), such as a picture a tool showed you (its file is named under it) or an exported still.";
 
-export function agentInstructions(project: Pick<Project, "name" | "style" | "settings" | "hq" | "niche" | "channel" | "compilation">): string {
+export function agentInstructions(project: Pick<Project, "name" | "style" | "settings" | "hq" | "channel" | "compilation">): string {
   if (project.hq === true) return hqInstructions(project);
   const { settings } = project;
   // A video made the new way (effects.ts): its agent also writes code, in the project's effects folder and nowhere else.
@@ -1938,36 +1938,35 @@ export function agentInstructions(project: Pick<Project, "name" | "style" | "set
 }
 
 /**
- * Bodycam HQ's (Edit V2): short, so its context stays clear (Sphe, Nov 11:
+ * Edit V2's: short, so its context stays clear (Sphe, Nov 11:
  * "we do not want to cloud the context of the agents"). Who it is and what
  * it works with, how an effect and a sound work (agent/hq/notes.md), and its
  * skills from V2's cloud: the global one and its memories in full, the parts
  * of the edit (the house's, cut down, and what the team taught since) by name
- * and when each fits, read with read_skill when it gets there.
+ * and when each fits, read with read_skill when it gets there. A channel's
+ * project is taught its channel's edit style; one made without a channel,
+ * the global skill alone, and nothing is kept from it.
  */
-function hqInstructions(project: Pick<Project, "name" | "settings" | "niche" | "channel" | "compilation">): string {
+function hqInstructions(project: Pick<Project, "name" | "settings" | "channel" | "compilation">): string {
   const { settings } = project;
-  // Its niche (Sphe, Nov 13): what it's taught is the niche's own, then what the niches it's like were taught, then V2's house.
-  const nicheKey = v2cloud.nicheOfProject(project);
-  const niche = v2cloud.knownNiches().find((one) => one.key === nicheKey) ?? { key: nicheKey, name: nicheKey === v2cloud.BODYCAM_HQ ? "Bodycam HQ" : nicheKey, description: "", like: null, kind: "bodycam" };
-  const like = v2cloud.chainOf(nicheKey).slice(1).map((key) => v2cloud.knownNiches().find((one) => one.key === key)?.name ?? key);
-  const nicheText =
-    `THIS PROJECT'S NICHE: ${niche.name} (${niche.key})${niche.description === "" ? "" : `: ${niche.description.replace(/\.$/u, "")}`}.` +
-    (like.length === 0 ? "" : ` It's like ${like.join(", then ")}: what they were taught comes through, and what this niche is taught wins where they differ.`) +
-    " What you remember and save is this niche's own; for other niches too, or every niche, only when the person asks for it (remember and save_to_library's niches, with asked: their words).\n\n";
-  // When it keeps what it's taught (teaching.ts): said outright, at once; maybe, asked at the end; a teacher's alone.
-  const keeping = v2cloud.teacher() ? keepRule("video", "keep it with remember") : "This person isn't a teacher, so nothing is kept from their feedback: don't offer to keep it.";
   const channel = typeof project.channel === "string" && project.channel !== "" ? channelText(project) : null;
-  const known = v2cloud.memories(nicheKey);
+  // When it keeps what it's taught (teaching.ts): said outright, at once; maybe, asked at the end; a teacher's alone, and a channel's.
+  const keeping =
+    channel === null
+      ? "This project isn't a channel's, so nothing is kept from the person's feedback: don't offer to keep it."
+      : v2cloud.teacher()
+        ? keepRule("video", "keep it with remember")
+        : "This person isn't a teacher, so nothing is kept from their feedback: don't offer to keep it.";
+  const known = v2cloud.memories(v2cloud.placeOfProject(project));
   const remembered = known.filter((one) => one.note === undefined);
   const parts = known.filter((one) => one.note !== undefined);
   const memory = remembered.length === 0 ? "" : `\n\nWHAT YOU REMEMBER (V2's cloud; keep it short, as it says):\n${remembered.map((one) => (one.name === v2cloud.GLOBAL ? one.text : `[${one.name}] ${one.text}`)).join("\n")}`;
-  const skills = parts.length === 0 ? "" : `\n\nYOUR SKILLS (V2's cloud): how the team does each part of ${channel !== null ? "this channel's" : `a ${niche.name}`} edit. read_skill one before you work on that part (or answer about it), once per conversation; what you're taught goes into them.\n${parts.map((one) => `- ${one.name}: ${one.note}`).join("\n")}`;
+  const skills = parts.length === 0 ? "" : `\n\nYOUR SKILLS (V2's cloud): how the team does each part of this channel's edit. read_skill one before you work on that part (or answer about it), once per conversation; what you're taught goes into them.\n${parts.map((one) => `- ${one.name}: ${one.note}`).join("\n")}`;
   return (
     `You are the agent built into Edit, a video editor, making "${project.name}" (${settings.width}x${settings.height} at ${rateText(settings)} fps) with the person watching: what you change appears in their viewer at once. ` +
     "You work through the `edit` tools and write code with your file tools (Read, Write, Edit, Glob, Grep), which work only in your working directory, the project's effects folder; you have no shell. " +
     `Each tool call is a wait for them: do independent calls side by side. Reply in a line or two: what you made or changed, and where. ${PICTURES}\n\n` +
-    `${channel ?? nicheText}${keeping}\n\n${HQ_NOTES}${memory}${skills}${channel !== null && known.length <= 1 ? `\n\n${UNTAUGHT}` : ""}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
+    `${channel ?? ""}${keeping}\n\n${HQ_NOTES}${memory}${skills}${channel !== null && known.length <= 1 ? `\n\n${UNTAUGHT}` : ""}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
   );
 }
 

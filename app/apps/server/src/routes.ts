@@ -43,7 +43,6 @@ import * as archive from "./archive.ts";
 import * as avatars from "./avatars.ts";
 import * as covers from "./covers.ts";
 import * as kinds from "./kinds.ts";
-import * as v2cloud from "./v2_cloud.ts";
 import * as reset from "./reset.ts";
 import * as firstPrompt from "./first_prompt.ts";
 import * as uploads from "./uploads.ts";
@@ -137,14 +136,6 @@ export function buildRouter(): Router<App> {
     .put("/api/update/channel", updateChannel)
     .get("/api/projects", listProjects)
     .post("/api/projects", createProject)
-    .get("/api/v2/niches", listNiches)
-    .post("/api/v2/niches", saveNiche)
-    .get("/api/v2/niches/{key}", nichePage)
-    .post("/api/v2/niches/{key}/cut-loose", cutNicheLoose)
-    .get("/api/v2/lessons", lessonText)
-    .post("/api/v2/lessons", saveLesson)
-    .post("/api/v2/library/copy", copyToNiche)
-    .post("/api/v2/library/archive", archiveItem)
     .get("/api/projects/{id}", getProject)
     .put("/api/projects/{id}", putProject)
     .delete("/api/projects/{id}", deleteProject)
@@ -515,128 +506,6 @@ function listProjects({ app }: Context): Response {
 
 const STYLES: Style[] = ["bodycam", "interrogation", "courtroom", "commentary", "horror", "shorts"];
 
-/** V2's niches for Home (v2_cloud.ts), and whether this computer's person may make one. Signed out, none. */
-async function listNiches(): Promise<Response> {
-  if (!v2cloud.enabled()) return json({ niches: [], teacher: false });
-  return json({ niches: await v2cloud.listNiches(), teacher: v2cloud.teacher() });
-}
-
-/** A teacher's: refused in words otherwise; nothing signed out. */
-function teaching(): void {
-  if (!v2cloud.enabled()) throw bad("V2's niches need this computer signed in to Edit.");
-  if (!v2cloud.teacher()) throw new ApiError(403, "That's a teacher's to do: an admin can make you one at accounts.spheceo.com.");
-}
-
-/**
- * A niche's page (Sphe, Nov 13: the team sees what a niche's agent knows):
- * the niche, the niches it's like, and every lesson, effect, sound and font
- * its agents get, each with where it comes from.
- */
-async function nichePage({ params }: Context): Promise<Response> {
-  if (!v2cloud.enabled()) throw bad("V2's niches need this computer signed in to Edit.");
-  const key = params.key!;
-  const all = await v2cloud.listNiches();
-  const niche = all.find((one) => one.key === key);
-  if (niche === undefined) throw new ApiError(404, `no niche ${key}`);
-  const chain = v2cloud.chainOf(key, all).map((one) => ({ key: one, name: all.find((other) => other.key === one)?.name ?? one }));
-  return json({ niche, chain, items: await v2cloud.knowledgeOf(key), niches: all, teacher: v2cloud.teacher() });
-}
-
-async function cutNicheLoose({ params }: Context): Promise<Response> {
-  teaching();
-  try {
-    return json({ kept: await v2cloud.cutLoose(params.key!, "cut loose on its page") });
-  } catch (error) {
-    throw bad(diag.messageOf(error));
-  }
-}
-
-/** A lesson's text (`?key=`), as its agents read it. */
-async function lessonText({ url }: Context): Promise<Response> {
-  if (!v2cloud.enabled()) throw bad("V2's niches need this computer signed in to Edit.");
-  const key = url.searchParams.get("key") ?? "";
-  if (!key.startsWith("skill:")) throw bad("key is a lesson's (skill:…)");
-  const found = await v2cloud.version(key);
-  return json({ key, text: found?.version.text ?? null, note: found?.item.note ?? null });
-}
-
-/** A lesson's text changed by hand on a niche's page (a teacher's): its next version, the rest of it as it was. */
-async function saveLesson(context: Context): Promise<Response> {
-  teaching();
-  const given = await body(context);
-  const key = field<string>(given, "key", "string", true)!;
-  const text = field<string>(given, "text", "string", true)!;
-  // The niche whose page it was changed on: a lesson it has from elsewhere (a niche it's like, or the house's) is
-  // taught otherwise for it alone, as its own, as the agent's are; none, the lesson itself.
-  const niche = field<string>(given, "niche", "string");
-  if (!key.startsWith("skill:") || key === v2cloud.skillKey(v2cloud.GLOBAL)) throw bad("key is a lesson's (skill:…), never the global one");
-  if (text.trim() === "") throw bad("text is required");
-  const found = await v2cloud.version(key);
-  if (found === null) throw new ApiError(404, `no ${key}`);
-  // Kept for this niche alone (one moved into it) is its own already: changed where it is, as the agent's remember does.
-  const keptHere = found.item.niches?.length === 1 && found.item.niches[0] === niche;
-  const target = niche !== null && v2cloud.ownNicheOf(key) !== niche && !keptHere ? v2cloud.ownKey("skill", niche, found.item.name) : key;
-  await v2cloud.saveSkill(found.item.name, text.trim(), "changed on its niche's page", found.item.note ?? undefined, { key: target });
-  v2cloud.forgetSkills();
-  return json({ key: target });
-}
-
-/** A lesson, effect or sound copied to another niche as that niche's own (its page's "Copy to…"). */
-async function copyToNiche(context: Context): Promise<Response> {
-  teaching();
-  const given = await body(context);
-  const key = field<string>(given, "key", "string", true)!;
-  const to = field<string>(given, "to", "string", true)!;
-  const kind = key.slice(0, key.indexOf(":"));
-  if (kind !== "skill" && kind !== "template" && kind !== "sound") throw bad("a lesson, an effect or a sound is copied to a niche");
-  if (!(await v2cloud.listNiches()).some((one) => one.key === to)) throw bad(`no niche ${to}`);
-  const found = await v2cloud.version(key);
-  if (found === null) throw new ApiError(404, `no ${key}`);
-  const target = v2cloud.ownKey(kind, to, found.item.name);
-  if ((await v2cloud.version(target)) !== null) throw new ApiError(409, `${to} has its own ${found.item.name} already: change that one on its page.`);
-  await v2cloud.copyItem(found.item, target, `copied from ${key} on a niche's page`);
-  v2cloud.forgetSkills();
-  return json({ key: target });
-}
-
-/** An item put away (out of every list, its versions kept), or back. */
-async function archiveItem(context: Context): Promise<Response> {
-  teaching();
-  const given = await body(context);
-  const key = field<string>(given, "key", "string", true)!;
-  if (key === v2cloud.skillKey(v2cloud.GLOBAL)) throw bad("the global lesson stays");
-  await v2cloud.archive(key, field<boolean>(given, "archived", "boolean") !== false);
-  v2cloud.forgetSkills();
-  return json({ key });
-}
-
-/**
- * A V2 niche made, or changed, from Home (Sphe, Nov 13: "make it easy for us
- * to create a new niche without… code"): a teacher's. Its key from its name
- * when new; `like` another niche whose teaching comes through.
- */
-async function saveNiche(context: Context): Promise<Response> {
-  const given = await body(context);
-  if (!v2cloud.enabled()) throw bad("V2's niches need this computer signed in to Edit.");
-  if (!v2cloud.teacher()) throw new ApiError(403, "Making a niche is a teacher's: an admin can make you one at accounts.spheceo.com.");
-  const name = field<string>(given, "name", "string", true)!.trim();
-  if (name === "") throw bad("name is required");
-  const all = await v2cloud.listNiches();
-  const key = field<string>(given, "key", "string") ?? v2cloud.nicheKeyOf(name);
-  const before = all.find((one) => one.key === key);
-  if (field<string>(given, "key", "string") === null && before !== undefined) throw bad(`There's a niche called ${before.name} already.`);
-  // Left out, what it's like stays as it was; "" or null, like none.
-  const like = "like" in (given as object) ? field<string>(given, "like", "string") : (before?.like ?? null);
-  const kind = field<string>(given, "kind", "string") ?? before?.kind ?? all.find((one) => one.key === like)?.kind ?? "bodycam";
-  if (!STYLES.includes(kind as Style)) throw bad(`kind is one of ${STYLES.join(", ")}`);
-  try {
-    const niche = await v2cloud.saveNiche({ key, name, description: field<string>(given, "description", "string") ?? before?.description ?? "", like: like === "" ? null : like, kind }, before === undefined ? "made on Home" : "changed on Home");
-    return json({ niche });
-  } catch (error) {
-    throw bad(diag.messageOf(error));
-  }
-}
-
 async function createChannelProject(context: Context, given: Record<string, unknown>, name: string, key: string, settings: { width: number; height: number; fps: number }): Promise<Response> {
   const channel = (await channels.channelFor(key, context.app.store.home))!;
   const style = channels.styleOf(channel);
@@ -645,7 +514,7 @@ async function createChannelProject(context: Context, given: Record<string, unkn
   const person = field<boolean>(given, "person", "boolean") === true;
   let live;
   try {
-    live = context.app.store.createAs(name, style, settings, true, null, !person);
+    live = context.app.store.createAs(name, style, settings, true, !person);
   } catch (error) {
     throw bad(diag.messageOf(error));
   }
@@ -677,13 +546,11 @@ async function createProject(context: Context): Promise<Response> {
   // videos, and whether it's a compilation only when it isn't what the channel's usually are.
   const channelKey = field<string>(given, "channel", "string");
   if (channelKey !== null) return createChannelProject(context, given, name!, channelKey, settings);
-  // Edit V2: a project whose graphics the agent writes as code, only with the beta on, in one of V2's niches (none: Bodycam HQ).
+  // Edit V2 without a channel (scripts and tests; Home makes V2 edits for a channel): only with the beta on, bodycam
+  // alone, taught nothing but the global skill.
   const hq = field<boolean>(given, "hq", "boolean") === true;
-  const niche = field<string>(given, "niche", "string");
   if (hq && !beta.read(context.app.store.home).v2) throw bad("Edit V2 is off: turn it on in Settings → Beta.");
-  if (niche !== null && !hq) throw bad("A niche is a V2 project's: give hq too.");
-  if (niche !== null && !/^[a-z0-9][a-z0-9-]{0,39}$/.test(niche)) throw bad("niche is a niche's key.");
-  if (hq && niche === null && style !== "bodycam") throw bad("Only a bodycam project can be Bodycam HQ.");
+  if (hq && style !== "bodycam") throw bad("Only a bodycam project can be Edit V2 without a channel.");
   if (!kinds.mayStart(style as Style)) throw new ApiError(403, kinds.cantMake(`edit.${style}`));
   let live;
   try {
@@ -691,7 +558,7 @@ async function createProject(context: Context): Promise<Response> {
     // is hidden on Home (Sphe, Nov 14: "projects created by me should by default just be at the forefront, but all
     // projects created by you should be test projects").
     const person = field<boolean>(given, "person", "boolean") === true;
-    live = context.app.store.createAs(name, style as Style, settings, hq, niche, !person);
+    live = context.app.store.createAs(name, style as Style, settings, hq, !person);
   } catch (error) {
     throw bad(diag.messageOf(error));
   }

@@ -1,6 +1,6 @@
 // Edit V2's cloud (v2_cloud.ts): an effect's code kept version by version and
 // brought back, an effect made elsewhere brought down, templates, and the
-// agent's skills a teacher saves, read over the release's in Bodycam HQ;
+// agent's skills a teacher saves, read over the release's in Edit V2;
 // through the relay to the cloud mock's library (mamagi's editLibrary).
 
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
@@ -132,6 +132,7 @@ test("the library: effects and sounds kept with a category, a note and a brief, 
   try {
     await app.store.update(id, "test", (project) => {
       project.hq = true;
+      project.channel = "lib-ch";
     });
     const dir = effects.folder(app.store, id, "board");
     fs.mkdirSync(dir, { recursive: true });
@@ -143,8 +144,9 @@ test("the library: effects and sounds kept with a category, a note and a brief, 
     accounts.signedInForTests(["edit.bodycam", "agent.teach"]);
     expect((await call(app, id, "save_to_library", { ...keep, brief: "x".repeat(300) })).content[0]!.text).toContain("brief is at most 240 characters");
     expect((await call(app, id, "save_to_library", keep)).content[0]!.text).toContain("evidence-board is version 1");
+    expect(mock.cloud.convex.library.has("template:@lib-ch--edit/evidence-board")).toBe(true);
     const found = await call(app, id, "library", { kind: "effect", query: "board" });
-    expect(found.content[0]!.text).toBe("- evidence-board [evidence board; this niche's own]: A paper board the camera glides across. To change it: PHOTOS, CAM keys and TEXTS at the top.");
+    expect(found.content[0]!.text).toBe("- evidence-board [evidence board; this channel's own]: A paper board the camera glides across. To change it: PHOTOS, CAM keys and TEXTS at the top.");
     expect((await call(app, id, "library", { kind: "effect", query: "whoosh" })).content[0]!.text).toContain('No effects match "whoosh"');
     expect((await call(app, id, "library", { kind: "sound" })).content[0]!.text).toContain("No sounds");
     // Read for how it's made (Sphe, Nov 13: "some inspiration here as to how things are done"): its code, nothing brought in.
@@ -167,11 +169,13 @@ test("the library: effects and sounds kept with a category, a note and a brief, 
   }
 });
 
-test("what the agent remembers: a line or two each, the global skill first and never put away, in Bodycam HQ's instructions alone", async () => {
+test("what the agent remembers: a line or two each, the global skill first and never put away, in a V2 channel project's instructions alone", async () => {
   const { app, cleanup, id } = hq("v2-memory");
+  const place = "mem-ch--edit";
   try {
     await app.store.update(id, "test", (project) => {
       project.hq = true;
+      project.channel = "mem-ch";
     });
     accounts.signedInForTests(["edit.bodycam"]);
     expect((await call(app, id, "remember", { skill: "pins", text: "Pins are red.", reason: "Sphe" })).content[0]!.text).toContain("a teacher's to do");
@@ -184,7 +188,7 @@ test("what the agent remembers: a line or two each, the global skill first and n
     mock.cloud.convex.libraryVersions.set("skill:global", [{ key: "skill:global", n: 1, text: "- Keep what you remember short.", at: Date.now(), by: { name: "Edit" } }]);
     v2cloud.forgetSkills();
     await v2cloud.refreshSkills();
-    expect(v2cloud.memories().map((one) => one.name)).toEqual(["global", "pins"]);
+    expect(v2cloud.memories(place).map((one) => one.name)).toEqual(["global", "pins"]);
     const project = app.store.get(id)!.project;
     const prompt = agentInstructions(project);
     expect(prompt).toContain("WHAT YOU REMEMBER");
@@ -195,13 +199,13 @@ test("what the agent remembers: a line or two each, the global skill first and n
     expect((await call(app, id, "archive_in_library", { kind: "skill", name: "global" })).content[0]!.text).toContain("stays");
     await call(app, id, "archive_in_library", { kind: "skill", name: "pins" });
     await v2cloud.refreshSkills();
-    expect(v2cloud.memories().map((one) => one.name)).toEqual(["global"]);
+    expect(v2cloud.memories(place).map((one) => one.name)).toEqual(["global"]);
     // A part of the edit's skill: named with when it fits, read when needed, longer than a memory and still short.
     expect((await call(app, id, "remember", { skill: "subtitles", text: "y".repeat(500), reason: "the house's, cut down", note: "Subtitles after the intro." })).content[0]!.text).toContain("version 1");
     expect((await call(app, id, "remember", { skill: "subtitles", text: "y".repeat(2_401), reason: "too long" })).content[0]!.text).toContain("at most 2400 characters");
     await call(app, id, "remember", { skill: "subtitles", text: "- Locked bottom middle.", reason: "JJ" });
     await v2cloud.refreshSkills();
-    expect(v2cloud.skill("subtitles")).toMatchObject({ name: "subtitles", text: "- Locked bottom middle.", note: "Subtitles after the intro." });
+    expect(v2cloud.skill("subtitles", place)).toMatchObject({ name: "subtitles", text: "- Locked bottom middle.", note: "Subtitles after the intro." });
     const withParts = agentInstructions(project);
     expect(withParts).toContain("YOUR SKILLS");
     expect(withParts).toContain("- subtitles: Subtitles after the intro.");
@@ -217,87 +221,41 @@ test("what the agent remembers: a line or two each, the global skill first and n
   }
 });
 
-test("V2's niches: a niche like another has its lessons until it's taught otherwise, kept for more niches only when the person asks, a shared one changed only once they've said which, cut loose keeping what came through", async () => {
-  // Sphe, Nov 13: "this niche works very similarly to the body cam niche"; "this should apply to body cam and interrogation… only when the user specifically asks for it"; an effect "linked between multiple niches… ask… just this one or the rest".
-  const { app, cleanup, id } = hq("v2-niches");
-  const said: string[] = [];
-  (app.agents as unknown as { turn: () => unknown }).turn = () => ({ running: false, entries: said.map((text, at) => ({ id: `u${at}`, kind: "user", text, at: 0, updated: 0 })) });
+test("a V2 project without a channel is taught the global skill alone and keeps nothing; a place uses its own and the global skill, never the house's or another place's", async () => {
+  const items = [
+    { key: "skill:global", name: "global" },
+    { key: "skill:pins", name: "pins" },
+    { key: "skill:@a--edit/pins", name: "pins" },
+    { key: "skill:@b--edit/glow", name: "glow" },
+    { key: "skill:@bodycam-hq/intro", name: "intro" },
+  ];
+  expect(v2cloud.forPlace(items, "a--edit").map((one) => one.key)).toEqual(["skill:global", "skill:@a--edit/pins"]);
+  expect(v2cloud.forPlace(items, null).map((one) => one.key)).toEqual(["skill:global"]);
+  expect(v2cloud.placeOfProject({})).toBeNull();
+  const { app, cleanup, id } = hq("v2-no-channel");
   try {
     await app.store.update(id, "test", (project) => {
       project.hq = true;
     });
-    accounts.signedInForTests(["edit.bodycam", "edit.interrogation", "agent.teach"]);
-    // Bodycam HQ (a project from before niches) and a niche like it.
-    await v2cloud.saveNiche({ key: "bodycam-hq", name: "Bodycam HQ", description: "bodycam videos", like: null, kind: "bodycam" }, "test");
-    await v2cloud.saveNiche({ key: "interrogation-hq", name: "Interrogation HQ", description: "interrogation videos", like: "bodycam-hq", kind: "interrogation" }, "test");
-    await expect(v2cloud.saveNiche({ key: "bodycam-hq", name: "Bodycam HQ", description: "", like: "interrogation-hq", kind: "bodycam" }, "test")).rejects.toThrow(/can't be like itself/);
-    const other = app.store.createAs("Interview", "interrogation", { width: 1920, height: 1080, fps: 30 }, true, "interrogation-hq").project.id;
-    expect((await call(app, id, "remember", { skill: "pins", text: "Board pins are red.", reason: "Sphe" })).content[0]!.text).toContain("for Bodycam HQ's own");
-    v2cloud.forgetSkills();
-    await v2cloud.refreshSkills();
-    // Like Bodycam HQ: its lesson comes through, and the prompt says what it's like.
-    expect(v2cloud.skill("pins", "interrogation-hq")?.text).toBe("Board pins are red.");
-    const prompt = agentInstructions(app.store.get(other)!.project);
-    expect(prompt).toContain("THIS PROJECT'S NICHE: Interrogation HQ (interrogation-hq): interrogation videos. It's like Bodycam HQ");
-    expect(prompt).toContain("[pins] Board pins are red.");
-    // Taught otherwise there, it's that niche's own; Bodycam HQ keeps its.
-    expect((await call(app, other, "remember", { skill: "pins", text: "Pins are blue here.", reason: "JJ" })).content[0]!.text).toContain("for Interrogation HQ's own");
-    v2cloud.forgetSkills();
-    await v2cloud.refreshSkills();
-    expect([v2cloud.skill("pins", "interrogation-hq")?.text, v2cloud.skill("pins", "bodycam-hq")?.text]).toEqual(["Pins are blue here.", "Board pins are red."]);
-    // For more niches: only quoting the person.
-    expect((await call(app, id, "remember", { skill: "glow", text: "A soft red glow.", reason: "Sphe", niches: ["interrogation-hq"] })).content[0]!.text).toContain("the person's to ask for");
-    said.push("Remember the red glow for bodycam and interrogation too");
-    expect((await call(app, id, "remember", { skill: "glow", text: "A soft red glow.", reason: "Sphe", niches: ["interrogation-hq"], asked: "for bodycam and interrogation too" })).content[0]!.text).toContain("for Bodycam HQ, Interrogation HQ");
-    // A shared lesson changed from one niche: asked which first; "this niche" makes it that niche's own.
-    const shared = await call(app, other, "remember", { skill: "glow", text: "A soft amber glow.", reason: "JJ" });
-    expect(shared.content[0]!.text).toContain("glow is shared: Bodycam HQ, Interrogation HQ use it");
-    expect((await call(app, other, "remember", { skill: "glow", text: "A soft amber glow.", reason: "JJ", for: "this niche" })).content[0]!.text).toContain("Interrogation HQ's own");
-    v2cloud.forgetSkills();
-    await v2cloud.refreshSkills();
-    expect([v2cloud.skill("glow", "interrogation-hq")?.text, v2cloud.skill("glow", "bodycam-hq")?.text]).toEqual(["A soft amber glow.", "A soft red glow."]);
-    // Its page: what its agents get, each with where it comes from.
-    const known = await v2cloud.knowledgeOf("interrogation-hq");
-    expect(known.filter((one) => one.kind === "skill").map((one) => [one.name, one.origin])).toEqual(
-      expect.arrayContaining([
-        ["pins", "this niche's own"],
-        ["glow", "this niche's own"],
-      ]),
-    );
-    // A lesson kept for one niche alone (moved into it) is that niche's own: changed in place, no question.
-    mock.cloud.convex.library.set("skill:subtitles-hq", { key: "skill:subtitles-hq", kind: "skill", name: "subtitles-hq", current: 1, latest: 1, niches: ["bodycam-hq"], at: Date.now(), by: { name: "Edit" } });
-    mock.cloud.convex.libraryVersions.set("skill:subtitles-hq", [{ key: "skill:subtitles-hq", n: 1, text: "Bottom middle.", at: Date.now(), by: { name: "Edit" } }]);
-    v2cloud.forgetSkills();
-    expect((await call(app, id, "remember", { skill: "subtitles-hq", text: "Bottom middle, two lines.", reason: "JJ" })).content[0]!.text).toContain("version 2) for Bodycam HQ's own");
-    // The niche tool: what it is; changed or cut loose only when asked.
-    expect((await call(app, other, "niche", {})).content[0]!.text).toContain("Like: Bodycam HQ");
-    expect((await call(app, other, "niche", { cut_loose: true })).content[0]!.text).toContain("only when the person asks");
-    said.push("Cut interrogation loose from bodycam now");
-    expect((await call(app, other, "niche", { cut_loose: true, asked: "cut interrogation loose from bodycam" })).content[0]!.text).toContain("cut loose from bodycam-hq");
-    // Bodycam HQ's lessons taught later no longer come through; what came through before is its own.
-    await call(app, id, "remember", { skill: "later", text: "Taught after the cut.", reason: "Sphe" });
-    v2cloud.forgetSkills();
-    await v2cloud.refreshSkills();
-    expect(v2cloud.skill("later", "interrogation-hq")).toBeUndefined();
-    expect(v2cloud.skill("pins", "interrogation-hq")?.text).toBe("Pins are blue here.");
-    expect(v2cloud.chainOf("interrogation-hq")).toEqual(["interrogation-hq"]);
+    accounts.signedInForTests(["edit.bodycam", "agent.teach"]);
+    v2cloud.useSkillsForTests([
+      { name: "global", text: "Edit's own rules.", key: "skill:global" },
+      { name: "pins", text: "The house's pins.", key: "skill:pins" },
+      { name: "intro", text: "Bodycam HQ's intro.", key: "skill:@bodycam-hq/intro" },
+    ]);
+    const prompt = agentInstructions(app.store.get(id)!.project);
+    expect(prompt).toContain("Edit's own rules.");
+    expect(prompt).not.toContain("The house's pins.");
+    expect(prompt).not.toContain("Bodycam HQ's intro.");
+    expect(prompt).toContain("This project isn't a channel's, so nothing is kept");
+    expect((await call(app, id, "remember", { skill: "pins", text: "Pins are red.", reason: "Sphe" })).content[0]!.text).toContain("This project isn't a channel's");
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(join(dir, "scene.html"), "<p>board</p>");
+    expect((await call(app, id, "save_to_library", { kind: "effect", name: "board", category: "board", note: "A board.", brief: "Its texts." })).content[0]!.text).toContain("This project isn't a channel's");
   } finally {
     cleanup();
   }
-});
-
-test("a niche's lessons are found nearest first: its own, the niche it's like, those kept for several, the house's", () => {
-  const chain = ["b", "a"];
-  const items = [
-    { key: "skill:pins", name: "pins", niches: null },
-    { key: "skill:@a/pins", name: "pins", niches: ["a"] },
-    { key: "skill:glow", name: "glow", niches: ["a", "c"] },
-    { key: "skill:@b/glow", name: "glow", niches: ["b"] },
-    { key: "skill:only-c", name: "only-c", niches: ["c"] },
-    { key: "skill:@c/x", name: "x", niches: ["c"] },
-  ];
-  expect(v2cloud.forNiche(items, chain).map((one) => one.key)).toEqual(["skill:@a/pins", "skill:@b/glow"]);
-  expect(v2cloud.forNiche(items, ["c"]).map((one) => one.key)).toEqual(["skill:pins", "skill:glow", "skill:only-c", "skill:@c/x"]);
 });
 
 // ---------------------------------------------------------------- channels (Nov 14)
@@ -309,31 +267,29 @@ const CHANNEL = {
 const OTHER = { ...CHANNEL, key: "jcs", youtubeId: "UC" + "b".repeat(22), handle: "jcs", title: "JCS", narration: { kind: "recorded" as const }, compilation: false, lanes: { ...CHANNEL.lanes, edit: "slow and moody" } };
 
 test("a channel's edit lane is its own: it starts empty, none of V2's house comes through but the global skill, and another channel's is never in it", () => {
-  const lane = v2cloud.nicheOfProject({ channel: "drinsanity", niche: "bodycam-hq" });
+  const lane = v2cloud.placeOfProject({ channel: "drinsanity" })!;
   expect(lane).toBe("drinsanity--edit");
   expect(v2cloud.laneOf(lane)).toEqual({ channel: "drinsanity", lane: "edit" });
-  expect(v2cloud.laneOf("bodycam-hq")).toBeNull();
+  expect(v2cloud.laneOf("drinsanity")).toBeNull();
   const items = [
     { key: "skill:global", name: "global", niches: null },
     { key: "skill:pins", name: "pins", niches: null },
     { key: "template:board", name: "board", niches: null },
-    { key: "skill:@drinsanity--edit/intro", name: "intro", niches: ["drinsanity--edit"] },
-    { key: "skill:@jcs--edit/outro", name: "outro", niches: ["jcs--edit"] },
-    { key: "skill:@drinsanity--ideas/hooks", name: "hooks", niches: ["drinsanity--ideas"] },
+    { key: "skill:@drinsanity--edit/intro", name: "intro" },
+    { key: "skill:@jcs--edit/outro", name: "outro" },
+    { key: "skill:@drinsanity--ideas/hooks", name: "hooks" },
   ];
-  expect(v2cloud.forNiche(items, v2cloud.chainOf(lane)).map((one) => one.key)).toEqual(["skill:global", "skill:@drinsanity--edit/intro"]);
-  // A niche keeps the house's as before.
-  expect(v2cloud.forNiche(items, ["bodycam-hq"]).map((one) => one.key)).toEqual(["skill:global", "skill:pins", "template:board"]);
+  expect(v2cloud.forPlace(items, lane).map((one) => one.key)).toEqual(["skill:global", "skill:@drinsanity--edit/intro"]);
 });
 
 test("a script's, an idea's or a thumbnail's agent is told its channel's lane alone: its style, its own lessons (never the edit's global skill or another lane's), and how it keeps what it's taught", () => {
   channels.useChannelsForTests([{ ...CHANNEL, lanes: { ...CHANNEL.lanes, ideas: "short, punchy titles" } }, OTHER]);
   v2cloud.useSkillsForTests([
     { name: "global", text: "Edit's own rules.", key: "skill:global" },
-    { name: "numbers", text: "Every title has a number in it.", key: "skill:@drinsanity--ideas/numbers", niches: ["drinsanity--ideas"] },
-    { name: "hooks", text: "The hook pattern, long.", note: "When the person asks for hooks", key: "skill:@drinsanity--ideas/hooks", niches: ["drinsanity--ideas"] },
-    { name: "intro", text: "The edit's intro.", key: "skill:@drinsanity--edit/intro", niches: ["drinsanity--edit"] },
-    { name: "jcs-titles", text: "JCS's way.", key: "skill:@jcs--ideas/jcs-titles", niches: ["jcs--ideas"] },
+    { name: "numbers", text: "Every title has a number in it.", key: "skill:@drinsanity--ideas/numbers" },
+    { name: "hooks", text: "The hook pattern, long.", note: "When the person asks for hooks", key: "skill:@drinsanity--ideas/hooks" },
+    { name: "intro", text: "The edit's intro.", key: "skill:@drinsanity--edit/intro" },
+    { name: "jcs-titles", text: "JCS's way.", key: "skill:@jcs--ideas/jcs-titles" },
   ]);
   const text = lanes.section("drinsanity", "ideas");
   expect(text).toContain("THIS CHANNEL: Dr Insanity (@drinsanity)");
@@ -375,42 +331,10 @@ test("a channel's agent is told its channel, its edit style and how its videos a
     expect(prompt).toContain("Its videos are compilations: several cases each.");
     expect(prompt).toContain("THIS CHANNEL ISN'T TAUGHT YET");
     expect(prompt).toContain("other_channels");
-    expect(prompt).not.toContain("THIS PROJECT'S NICHE");
     // One case, though the channel's are compilations.
     expect(agentInstructions({ ...project, compilation: false })).toContain("This video is one case, unlike the channel's usual videos.");
   } finally {
     channels.useChannelsForTests([]);
-    cleanup();
-  }
-});
-
-test("a niche's teaching thrown over as a channel's edit base: everything its agent knows (the house's too, not the global skill), copied with no link, never over what the channel has", async () => {
-  const { cleanup } = hq("v2-channel-base");
-  try {
-    accounts.signedInForTests(["edit.bodycam", "agent.teach"]);
-    // What earlier tests kept isn't Bodycam HQ's here.
-    mock.cloud.convex.library.clear();
-    mock.cloud.convex.libraryVersions.clear();
-    const seed = (key: string, kind: "skill" | "template", name: string, niches: string[] | null) => {
-      mock.cloud.convex.library.set(key, { key, kind, name, current: 1, latest: 1, note: `${name}'s note`, ...(niches === null ? {} : { niches }), at: Date.now(), by: { name: "Sphe" } });
-      mock.cloud.convex.libraryVersions.set(key, [{ key, n: 1, text: `${name}'s text`, at: Date.now(), by: { name: "Sphe" } }]);
-    };
-    seed("skill:global", "skill", "global", null);
-    seed("skill:@bodycam-hq/intro", "skill", "intro", ["bodycam-hq"]);
-    seed("skill:@bodycam-hq/cut-ins", "skill", "cut-ins", ["bodycam-hq"]);
-    seed("skill:house-rules", "skill", "house-rules", null);
-    seed("template:evidence-board", "template", "evidence-board", null);
-    seed("skill:@other-niche/pacing", "skill", "pacing", ["other-niche"]);
-    seed("skill:@inspectorted1--edit/intro", "skill", "intro", ["inspectorted1--edit"]);
-    const done = await channels.baseFromNiche("inspectorted1", "bodycam-hq");
-    expect(done.brought.sort()).toEqual(["skill cut-ins", "skill house-rules", "template evidence-board"]);
-    expect(done.kept).toEqual(["skill intro"]);
-    expect(mock.cloud.convex.libraryVersions.get("skill:@inspectorted1--edit/cut-ins")?.[0]).toMatchObject({ text: "cut-ins's text", from: { key: "skill:@bodycam-hq/cut-ins", n: 1 } });
-    expect(mock.cloud.convex.library.has("skill:@inspectorted1--edit/global")).toBe(false);
-    expect(mock.cloud.convex.library.has("skill:@inspectorted1--edit/pacing")).toBe(false);
-    // The channel's own intro stays its own.
-    expect(mock.cloud.convex.libraryVersions.get("skill:@inspectorted1--edit/intro")).toHaveLength(1);
-  } finally {
     cleanup();
   }
 });

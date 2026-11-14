@@ -70,7 +70,7 @@
     "name": "get_edit_context"
   },
   {
-    "description": "Apply a complete section or a revision in ONE atomic save. Requires base_rev from get_edit_context; a stale revision or invalid operation saves NOTHING. Operations run in memory; intermediate overlaps are allowed if the final project validates. ALL times in a plan are FRAMES (the model's own units; get_edit_context's cut-in words are seconds: multiply by fps). op add takes clip with start and duration (required; omit id and track to choose them; track \"new\" makes one, in update too). A clip's parent (a clip id: footage, a card, a text) makes it move with that clip, as parenting in After Effects: place it as it sits over the parent at rest (the parent's own transform) and the parent's keyframes and shake carry it, its blur's box and leader too. A box blur over a picture that moves (a card sliding in, a push-in) gets that picture as its parent by itself and stops at its edges; a label or arrow riding a moving card takes parent; update/delete/keyframes use select {ids?,track?,label?,media?,type?,name_prefix?,start?,end?} (all filters intersect); update takes patch, and moving or trimming one half of a linked pair moves the other with it, as delete removes both (unlinked: true to touch only the selected); keyframes takes param,keyframes; cover_cut_in takes the same cut_in/shots/look/into/push as cover_cut_in (a shot can be a desktop); transition builds a house transition at a cut in one line: kind drop (the vertical slam, 6 frames straddling at), flash (white, 6 frames, fading; with a shutter), dip (to black and back, frames 12 centred on at), open (the reverse dip that opens the video; no at), light_leak (warm orange light sweeping across and burning to white on the cut, 16 frames straddling at: the courtroom's flash) or burn (the picture burning out warm to near white and back, 12 frames straddling at, named \"Bridge flash\": the interrogation's); its sound goes in the batch; evidence_board builds a whole evidence board from start and end (frames: where the board begins and the next shot starts) and items [{media (an image's id), label (a short handwritten note, e.g. \"zip ties\"), at (the timeline frame of the first word that names it, the start of its phrase: that photo is centred and its shutter clicks then)}] (1–8, at increasing; illustrative: true adds a small \"Illustrative images\" in the corner; title: a handwritten heading over the first photo (\"Nevaeh's account\", \"Prior reports\"), written on as the board comes in; older plans' frames/pan per item still work): framed photos on paper and ONE continuous camera glide down them, easing a little as it passes each photo (to ~70% of its average speed) and picking up between (never a hold or a stop), picking up from a slow drift before the first and settling into one after the last, each note writing itself on as its photo arrives; returns end, centred and shutters: each photo's moment gets a \"board photo\" timeline marker and a quiet camera shutter whose click lands on it (shutters: false for none; a shutter already within 8 frames, such as the cut's, stands in) (EVIDENCE BOARD in the cut-ins skill); desktop builds the Windows screen (cut-ins skill), for what footage can't show: start, end (frames, at least 3 s), windows [{app photo_viewer|notepad|video_player|browser|dialog|email|messenger|forum, media (a picture for a photo_viewer, footage for a video_player, a page capture for a browser: Internet Explorer on the page, url its address bar, scroll: true to scroll slowly down a capture_evidence full_page one), lines (a notepad's 1–6 short notes as the narration says them; horror's XP windows type theirs on too: a dialog's message, 1–2 lines; an email's 1–8, \"From: Jonathan\", \"Subject: …\" (bold) then the message; a messenger's 1–8, \"Name: message\" each; a forum's 1–8 posts, \"Name: post\" each), at (the frame it opens) or said (the words naming it), x?, y? (centre, a share of the desktop), width?, z?, label? (\"illustrative image\"; never \"actual image\" in a window)}], open? (default true: the camera starts zoomed into a Video Player playing on from the footage before start, zooms out slowly, glides to each window as it opens, and at the end comes back to that same player, whose footage has changed to what plays after end, and zooms into it: the zoom out and in are the transitions), exit? (false: don't zoom back in): windows never overlap and a picture or footage is never in two windows; returns the windows and lines_at, marked \"desktop window opens\"/\"desktop line\" for clicks and typing; file_viewer {media, start, end, x?, y? (centre, px from the frame's centre; leave them out and every viewer opens in the same house place, right of centre: the team wants them \"in roughly the same position\"), width (share of the frame, 0.28), name? (white monospace on its bottom edge: \"LARRY SCOTT\"), source_in? for footage} floats a photo or footage in a thin dark \"File Viewer\" frame over a map or a scene (the team's map references), easing in and drifting slowly; film_look {start, end, tag? (\"actual photo\", \"reenactment\", \"illustrative\": shown as \"[ACTUAL PHOTO]\" bottom left), soft_edges? (tilt-shift blur top and bottom), strength? \"light\"} lays the team's overlay over what plays beneath (a photo full frame, a B-roll shot): grain, faint scan lines, a faded print, a heavy vignette, less colour; fill_frame {clips?, start?, end?} scales every picture with black round it (the audit's letterboxed: a 3:2 tape, a portrait photo, a punch-in moved off its picture) up to fill the frame, each push and punch-in kept, x/y kept inside the picture; ease_vignettes {start?, end?} fades every vignette that snaps on or off (the audit's vignette_snaps) over 12 frames where no other vignette carries on; red_quote {text (their exact words) or lines (2–3), start, end, face? [x, y] (a point on the speaker's head, px from the centre; left out, the face found in the footage under it, answered as face_found), at? [x, y], line_at?} the team's quote: red glowing words in curly quotes beside the speaker with a short red line to them, over the footage darkened and greyed with the light kept on them; annotate {start, end, notes [{text, at, point [x, y], from? [x, y]}] (1–5), tag?, look? (default true)} red handwritten notes with a line each to what they name in the picture beneath, written on one by one; call {start, end, color blue|red} a 911 call or voicemail: the picture darkened, a glowing waveform across it, the subtitles in the span turned into the caller's words under it (add subtitles first); markers takes add/remove as the markers tool; date_title builds the date cut-in's date from text (\"July 22, 2023\"), start and end: white Geist 600 ~120 centred with only the house drop shadow (no box, no glow), rising letter by letter and fading out, over an adjustment darkening the picture (darken: false leaves that out; the audit flags a boxed or glowing date as date_style); place_label builds the map's place label from text (the street or place only), start (the marker's reveal), end, map (the map's clip id; the building's track comes from the map itself, so building_track or building is only needed for a map rendered on another Mac): the house label (white Geist 600, opaque black box, red border, soft shadow) just above the building, pinned to it, fading in and out; title_collage builds a compilation's title card (a courtroom compilation, its title starting \"When…\") from title (the video's title; shown in capitals), photos (2–6 pictures' media ids, one per case: the person each is about; a still_frame of a hearing works), start, end, and optionally backdrop (a courtroom shot: footage, from backdrop_at seconds, or a picture): the photos cropped to one size and framed in white, half in a row above and the rest below, popping in one after another, the title between the rows in big white Geist 900 capitals with a soft glow, over the backdrop darkened and pushing in slowly (a dark wood-brown without one); the interrogation intro's graphics (Red Thread's look; INTERROGATION in your instructions): intro_captions {start, end, emphasis: [subtitle clip ids]} restyles the subtitles starting in the span as the teasers' captions: lines coming up word by word as they're said, flush left, in bodycam's caption look (glowing, on a see-through box with a soft drop shadow) in each speaker's colour, the emphasis lines (the lines that matter) in red words; countdown {start, end (the frame the interrogation tape rolls), label} \"INTERROGATION STARTS IN 01:18\" top left, ticking each second; fast_forward {start, end} over footage you play sped up there: black and white, the picture tearing in bursts, \"FF >>\" top right; pause {start, end, text, from?, side?} the room held still on the frame before (or `from`) with a slow push, greyed, the words typed small lower left (side \"right\" for lower right): a date, the story's turn or a line said over the interrogation, instead of words in the middle of the screen (add a shutter at start); disclaimer {start, end, text} \"DISCLAIMER\" in red over a short house text on black, ending where the tape rolls (only when the user asks for one); text_slam {text, start, end, color, darken} big red capitals coming up word by word as the narration says them over the picture darkened and grey; timeline_bar {from, to, start, end} two years in big red with a line drawing between them; date_title takes position \"bottom\" and place (the city, shown above the date) for the lower-third date over a top-down map; transition kind red_flash floods the picture red for 10 frames straddling at; blur_marks {clips?, leave? [the mark's text: one that isn't another outlet's, such as the court's own room tag or a camera label, left alone for good]} blurs every mark of another outlet still on screen (a channel's logo, a station's bug: the audit's watermarked_footage / watermarked_picture) with a blur stuck to its own shot, as a tracked mask: it starts and ends with the shot, follows its push-in, fades with its dissolve and is gone under a picture that covers it, and the still rectangles laid by hand over the same marks go (never lay a logo blur yourself; the audit flags a still one that outlives its shot as blur_off_shot); both_ears {select, side?} plays footage heard in one ear only (left or right), or split between them (a voice in each, as a call recorded on two sides), in both ears: the selected sound clips (or the sound linked to selected pictures; select.media takes a whole source) play the side of their source that carries the sound, or both mixed when it's split, found by measuring it, in both ears, in the preview and the export (side \"left\"/\"right\"/\"both\" to say it, \"stereo\" to put the source's own stereo back, kept as said; Bodycam HQ does this by itself after each turn, for sound that says no side); tidy_tracks needs no arguments. An operation's `as` names its result; later arguments use {\"$ref\":\"name\"} (added clip id) or {\"$ref\":\"name/shots/0/clip\"} (cover result). Examples: add as hero, then update select.ids [{\"$ref\":\"hero\"}]. dry_run validates without saving. Optional review_frames renders one contact sheet AFTER the commit; rendering failure is reported separately and never retries the edits. Returns revision, operation results, and mechanical issues. Prefer this over many batch/update calls. Commentary operations (all times frames): commentary_card {media,start,end,source_in?,background? (brand image media),label?,x?,y?,width?,height?,backdrop?} builds a sharp rounded glowing white-framed evidence image/video sliding up with a strong ease-out over a blurred dark copy or brand wallpaper, drifting gently; no source audio. commentary_text {text,start,end,motion? soft|slide|pop|typewriter,blur? (true),size? (76 at 1080),x?,y?,box?,align? left} makes selective house emphasis, fixed phrase geometry for soft character-opacity sweep, whole-block ease-out slide or pop. commentary_chapter {text,number,start,end} makes an episode-neutral chapter slate. commentary_look {start,end} puts subtle grain and vignette over narration visuals only. All remain editable layers; no mandatory Windows desktop for commentary. commentary_profile {media,name?,background?,start,end,lines:[{text,at}],size?} builds a portrait left and 1–5 short fact bullets right; at is each line’s absolute timeline frame. The complete final list is laid out left aligned from the first frame, so its word-timed reveals never recenter. More commentary operations: commentary_youtube {media (the video's frame or youtube_reference's thumbnail),source_in?,title,channel,meta? (\"1.8M views • 6 days ago\"),duration? (\"9:53\"),avatar?,verified?,start,end} shows a referenced YouTube video as the channel page shows it, over the dark channel background; commentary_label {text,start,end,corner? top_left|top_right,size?} a white-on-black corner label stating the obvious (\"*COMPLETE CRASHOUT*\"); commentary_bumper {avatar,subscribe?,line?,subline?,start,end} the Internet Janitor channel bumper (avatar, name, tagline, Subscribe) with the intro's line under it (brand media from search_broll {queries:[]}); commentary_punch {clip,at:[frames],scales?,x?,y?} hard punch-ins on a video clip at the words that earn them, held, no animated zoom (replaces its scale move); commentary_leak {at,media} the channel's real stock light leak on a cut (media: brand_light_leak; add a whoosh or shutter at the cut). commentary_youtube_list {items:[{media,source_in?,title,meta?,duration?}] (2–4),start,end} rebuilds a channel's list of videos (a screenshot of several uploads) in the channel style, rows arriving one after another. commentary_punch now needs x and y (the person being talked about, project px from centre) or focus \"centre\"; a person in one corner of a split screen needs scales like [1.6, 2.0]. transition kind dissolve {at, frames? (12)} is a clean cross-dissolve: the shot starting at at fades in over the outgoing one from its own lead-in (it needs footage before its in-point); use it, or a plain cut, rather than light leaks for most changes. From the commentary guide: commentary_text red:[words] colours critical words red; commentary_label near:[x,y] (beside the person it's about) and typewriter:true (Animations 8, 8.1); commentary_location {text,start,end} bottom left (Animation 6); commentary_icon {media,name?,role?,start,end,blur?} a flat icon popping up over the blurred picture with a name and role under it (Animation 9); commentary_slide {at,frames?} the picture starting at at slides down from the top (Animation 7; add_sound_effect whoosh-3 at that moment); commentary_card push (up to 1.4) zooms into the picture while it's highlighted. commentary_player {clip, at, end?, frames? (36), back? (22, or false), title, channel, subscribers?, meta?, avatar?, subscribe?}: the full-screen video pulls back, still playing, into the YouTube watch page around it (title, channel, subscribe), every layer moving as one camera, eased in and out, drifting while it holds and zooming smoothly back to full screen over its last `back` frames (back: false holds the page to the cut). commentary_counter {start, end, from, to, frames? (40), x, y, size?, font?, color?, background?, box?, prefix?, suffix?}: a number counting up fast, easing out (a live viewer count climbing), placed over the number in a screenshot. Horror projects (style horror) use the same commentary operations, with Edit's horror look: commentary_look {start,end} lays the analog look (grain, vignette, chromatic aberration, sharpened faces, saturated colour) over EVERY frame of the span, footage and source clips alike, replacing any look it meets so it stays on top (run it over the whole video once the pictures are placed, and again after adding more); commentary_card shows a screenshot as its retro copy (softened, faint grid, roughened edges, drop shadow; made for you, same pixel size so highlight_evidence rects still match) or, with photo:true, a picture of a person or place in a white outline with a glow; it slides up slowly with a blur that clears as it lands, and darkens (not replaces) the footage running behind it, so keep footage playing under every card. A page (an article, thread or channel at least 900 px wide) instead fills the frame close, slowly pushing in, focus:[x,y] (image px) the words read at the middle, or scroll:true gliding from its top to its bottom (a profile scrolled through); full:false keeps it a card (a post over footage). In horror: commentary_text {text,start,end, look: bold|sans|serif|caption|quote|vhs, motion: rise|type|words (each word at the frame the voice says it; words_at only for words it doesn't say: one frame per word), at: center|top|bottom|lower_left, background_blur?, sub?, color: yellow} is a title rising out of a blur (white; words on the voice come a short phrase at a time); commentary_chapter {text, sub} a chapter title over the picture blurred behind it; commentary_location a serif place name; commentary_label a VHS name tag on black, lower left; commentary_profile {media, side: left|right, quote | lines} a picture beside typed words; commentary_icon {icon: person|phone|folder|document|camera|building|sword|image|ticket|plane|envelope|door|glass, color, label (the word under it), sub? (a smaller line under that), count? (that many in a row, appearing one by one), exit? left|right|up (off screen over its last frames), x?, y?} an icon Edit draws over its word; commentary_lens {start,end,strength 0.1-1} After Effects' CC Lens; a desktop is an XP one (Internet Explorer on an old YouTube player for a video_player window); a region blur becomes a mosaic.",
+    "description": "Apply a complete section or a revision in ONE atomic save. Requires base_rev from get_edit_context; a stale revision or invalid operation saves NOTHING. Operations run in memory; intermediate overlaps are allowed if the final project validates. ALL times in a plan are FRAMES (the model's own units; get_edit_context's cut-in words are seconds: multiply by fps). op add takes clip with start and duration (required; omit id and track to choose them; track \"new\" makes one, in update too). A clip's parent (a clip id: footage, a card, a text) makes it move with that clip, as parenting in After Effects: place it as it sits over the parent at rest (the parent's own transform) and the parent's keyframes and shake carry it, its blur's box and leader too. A box blur over a picture that moves (a card sliding in, a push-in) gets that picture as its parent by itself and stops at its edges; a label or arrow riding a moving card takes parent; update/delete/keyframes use select {ids?,track?,label?,media?,type?,name_prefix?,start?,end?} (all filters intersect); update takes patch, and moving or trimming one half of a linked pair moves the other with it, as delete removes both (unlinked: true to touch only the selected); keyframes takes param,keyframes; cover_cut_in takes the same cut_in/shots/look/into/push as cover_cut_in (a shot can be a desktop); transition builds a house transition at a cut in one line: kind drop (the vertical slam, 6 frames straddling at), flash (white, 6 frames, fading; with a shutter), dip (to black and back, frames 12 centred on at), open (the reverse dip that opens the video; no at), light_leak (warm orange light sweeping across and burning to white on the cut, 16 frames straddling at: the courtroom's flash) or burn (the picture burning out warm to near white and back, 12 frames straddling at, named \"Bridge flash\": the interrogation's); its sound goes in the batch; evidence_board builds a whole evidence board from start and end (frames: where the board begins and the next shot starts) and items [{media (an image's id), label (a short handwritten note, e.g. \"zip ties\"), at (the timeline frame of the first word that names it, the start of its phrase: that photo is centred and its shutter clicks then)}] (1–8, at increasing; illustrative: true adds a small \"Illustrative images\" in the corner; title: a handwritten heading over the first photo (\"Nevaeh's account\", \"Prior reports\"), written on as the board comes in; older plans' frames/pan per item still work): framed photos on paper and ONE continuous camera glide down them, easing a little as it passes each photo (to ~70% of its average speed) and picking up between (never a hold or a stop), picking up from a slow drift before the first and settling into one after the last, each note writing itself on as its photo arrives; returns end, centred and shutters: each photo's moment gets a \"board photo\" timeline marker and a quiet camera shutter whose click lands on it (shutters: false for none; a shutter already within 8 frames, such as the cut's, stands in) (EVIDENCE BOARD in the cut-ins skill); desktop builds the Windows screen (cut-ins skill), for what footage can't show: start, end (frames, at least 3 s), windows [{app photo_viewer|notepad|video_player|browser|dialog|email|messenger|forum, media (a picture for a photo_viewer, footage for a video_player, a page capture for a browser: Internet Explorer on the page, url its address bar, scroll: true to scroll slowly down a capture_evidence full_page one), lines (a notepad's 1–6 short notes as the narration says them; horror's XP windows type theirs on too: a dialog's message, 1–2 lines; an email's 1–8, \"From: Jonathan\", \"Subject: …\" (bold) then the message; a messenger's 1–8, \"Name: message\" each; a forum's 1–8 posts, \"Name: post\" each), at (the frame it opens) or said (the words naming it), x?, y? (centre, a share of the desktop), width?, z?, label? (\"illustrative image\"; never \"actual image\" in a window)}], open? (default true: the camera starts zoomed into a Video Player playing on from the footage before start, zooms out slowly, glides to each window as it opens, and at the end comes back to that same player, whose footage has changed to what plays after end, and zooms into it: the zoom out and in are the transitions), exit? (false: don't zoom back in): windows never overlap and a picture or footage is never in two windows; returns the windows and lines_at, marked \"desktop window opens\"/\"desktop line\" for clicks and typing; file_viewer {media, start, end, x?, y? (centre, px from the frame's centre; leave them out and every viewer opens in the same house place, right of centre: the team wants them \"in roughly the same position\"), width (share of the frame, 0.28), name? (white monospace on its bottom edge: \"LARRY SCOTT\"), source_in? for footage} floats a photo or footage in a thin dark \"File Viewer\" frame over a map or a scene (the team's map references), easing in and drifting slowly; film_look {start, end, tag? (\"actual photo\", \"reenactment\", \"illustrative\": shown as \"[ACTUAL PHOTO]\" bottom left), soft_edges? (tilt-shift blur top and bottom), strength? \"light\"} lays the team's overlay over what plays beneath (a photo full frame, a B-roll shot): grain, faint scan lines, a faded print, a heavy vignette, less colour; fill_frame {clips?, start?, end?} scales every picture with black round it (the audit's letterboxed: a 3:2 tape, a portrait photo, a punch-in moved off its picture) up to fill the frame, each push and punch-in kept, x/y kept inside the picture; ease_vignettes {start?, end?} fades every vignette that snaps on or off (the audit's vignette_snaps) over 12 frames where no other vignette carries on; red_quote {text (their exact words) or lines (2–3), start, end, face? [x, y] (a point on the speaker's head, px from the centre; left out, the face found in the footage under it, answered as face_found), at? [x, y], line_at?} the team's quote: red glowing words in curly quotes beside the speaker with a short red line to them, over the footage darkened and greyed with the light kept on them; annotate {start, end, notes [{text, at, point [x, y], from? [x, y]}] (1–5), tag?, look? (default true)} red handwritten notes with a line each to what they name in the picture beneath, written on one by one; call {start, end, color blue|red} a 911 call or voicemail: the picture darkened, a glowing waveform across it, the subtitles in the span turned into the caller's words under it (add subtitles first); markers takes add/remove as the markers tool; date_title builds the date cut-in's date from text (\"July 22, 2023\"), start and end: white Geist 600 ~120 centred with only the house drop shadow (no box, no glow), rising letter by letter and fading out, over an adjustment darkening the picture (darken: false leaves that out; the audit flags a boxed or glowing date as date_style); place_label builds the map's place label from text (the street or place only), start (the marker's reveal), end, map (the map's clip id; the building's track comes from the map itself, so building_track or building is only needed for a map rendered on another Mac): the house label (white Geist 600, opaque black box, red border, soft shadow) just above the building, pinned to it, fading in and out; title_collage builds a compilation's title card (a courtroom compilation, its title starting \"When…\") from title (the video's title; shown in capitals), photos (2–6 pictures' media ids, one per case: the person each is about; a still_frame of a hearing works), start, end, and optionally backdrop (a courtroom shot: footage, from backdrop_at seconds, or a picture): the photos cropped to one size and framed in white, half in a row above and the rest below, popping in one after another, the title between the rows in big white Geist 900 capitals with a soft glow, over the backdrop darkened and pushing in slowly (a dark wood-brown without one); the interrogation intro's graphics (Red Thread's look; INTERROGATION in your instructions): intro_captions {start, end, emphasis: [subtitle clip ids]} restyles the subtitles starting in the span as the teasers' captions: lines coming up word by word as they're said, flush left, in bodycam's caption look (glowing, on a see-through box with a soft drop shadow) in each speaker's colour, the emphasis lines (the lines that matter) in red words; countdown {start, end (the frame the interrogation tape rolls), label} \"INTERROGATION STARTS IN 01:18\" top left, ticking each second; fast_forward {start, end} over footage you play sped up there: black and white, the picture tearing in bursts, \"FF >>\" top right; pause {start, end, text, from?, side?} the room held still on the frame before (or `from`) with a slow push, greyed, the words typed small lower left (side \"right\" for lower right): a date, the story's turn or a line said over the interrogation, instead of words in the middle of the screen (add a shutter at start); disclaimer {start, end, text} \"DISCLAIMER\" in red over a short house text on black, ending where the tape rolls (only when the user asks for one); text_slam {text, start, end, color, darken} big red capitals coming up word by word as the narration says them over the picture darkened and grey; timeline_bar {from, to, start, end} two years in big red with a line drawing between them; date_title takes position \"bottom\" and place (the city, shown above the date) for the lower-third date over a top-down map; transition kind red_flash floods the picture red for 10 frames straddling at; blur_marks {clips?, leave? [the mark's text: one that isn't another outlet's, such as the court's own room tag or a camera label, left alone for good]} blurs every mark of another outlet still on screen (a channel's logo, a station's bug: the audit's watermarked_footage / watermarked_picture) with a blur stuck to its own shot, as a tracked mask: it starts and ends with the shot, follows its push-in, fades with its dissolve and is gone under a picture that covers it, and the still rectangles laid by hand over the same marks go (never lay a logo blur yourself; the audit flags a still one that outlives its shot as blur_off_shot); both_ears {select, side?} plays footage heard in one ear only (left or right), or split between them (a voice in each, as a call recorded on two sides), in both ears: the selected sound clips (or the sound linked to selected pictures; select.media takes a whole source) play the side of their source that carries the sound, or both mixed when it's split, found by measuring it, in both ears, in the preview and the export (side \"left\"/\"right\"/\"both\" to say it, \"stereo\" to put the source's own stereo back, kept as said; Edit V2 does this by itself after each turn, for sound that says no side); tidy_tracks needs no arguments. An operation's `as` names its result; later arguments use {\"$ref\":\"name\"} (added clip id) or {\"$ref\":\"name/shots/0/clip\"} (cover result). Examples: add as hero, then update select.ids [{\"$ref\":\"hero\"}]. dry_run validates without saving. Optional review_frames renders one contact sheet AFTER the commit; rendering failure is reported separately and never retries the edits. Returns revision, operation results, and mechanical issues. Prefer this over many batch/update calls. Commentary operations (all times frames): commentary_card {media,start,end,source_in?,background? (brand image media),label?,x?,y?,width?,height?,backdrop?} builds a sharp rounded glowing white-framed evidence image/video sliding up with a strong ease-out over a blurred dark copy or brand wallpaper, drifting gently; no source audio. commentary_text {text,start,end,motion? soft|slide|pop|typewriter,blur? (true),size? (76 at 1080),x?,y?,box?,align? left} makes selective house emphasis, fixed phrase geometry for soft character-opacity sweep, whole-block ease-out slide or pop. commentary_chapter {text,number,start,end} makes an episode-neutral chapter slate. commentary_look {start,end} puts subtle grain and vignette over narration visuals only. All remain editable layers; no mandatory Windows desktop for commentary. commentary_profile {media,name?,background?,start,end,lines:[{text,at}],size?} builds a portrait left and 1–5 short fact bullets right; at is each line’s absolute timeline frame. The complete final list is laid out left aligned from the first frame, so its word-timed reveals never recenter. More commentary operations: commentary_youtube {media (the video's frame or youtube_reference's thumbnail),source_in?,title,channel,meta? (\"1.8M views • 6 days ago\"),duration? (\"9:53\"),avatar?,verified?,start,end} shows a referenced YouTube video as the channel page shows it, over the dark channel background; commentary_label {text,start,end,corner? top_left|top_right,size?} a white-on-black corner label stating the obvious (\"*COMPLETE CRASHOUT*\"); commentary_bumper {avatar,subscribe?,line?,subline?,start,end} the Internet Janitor channel bumper (avatar, name, tagline, Subscribe) with the intro's line under it (brand media from search_broll {queries:[]}); commentary_punch {clip,at:[frames],scales?,x?,y?} hard punch-ins on a video clip at the words that earn them, held, no animated zoom (replaces its scale move); commentary_leak {at,media} the channel's real stock light leak on a cut (media: brand_light_leak; add a whoosh or shutter at the cut). commentary_youtube_list {items:[{media,source_in?,title,meta?,duration?}] (2–4),start,end} rebuilds a channel's list of videos (a screenshot of several uploads) in the channel style, rows arriving one after another. commentary_punch now needs x and y (the person being talked about, project px from centre) or focus \"centre\"; a person in one corner of a split screen needs scales like [1.6, 2.0]. transition kind dissolve {at, frames? (12)} is a clean cross-dissolve: the shot starting at at fades in over the outgoing one from its own lead-in (it needs footage before its in-point); use it, or a plain cut, rather than light leaks for most changes. From the commentary guide: commentary_text red:[words] colours critical words red; commentary_label near:[x,y] (beside the person it's about) and typewriter:true (Animations 8, 8.1); commentary_location {text,start,end} bottom left (Animation 6); commentary_icon {media,name?,role?,start,end,blur?} a flat icon popping up over the blurred picture with a name and role under it (Animation 9); commentary_slide {at,frames?} the picture starting at at slides down from the top (Animation 7; add_sound_effect whoosh-3 at that moment); commentary_card push (up to 1.4) zooms into the picture while it's highlighted. commentary_player {clip, at, end?, frames? (36), back? (22, or false), title, channel, subscribers?, meta?, avatar?, subscribe?}: the full-screen video pulls back, still playing, into the YouTube watch page around it (title, channel, subscribe), every layer moving as one camera, eased in and out, drifting while it holds and zooming smoothly back to full screen over its last `back` frames (back: false holds the page to the cut). commentary_counter {start, end, from, to, frames? (40), x, y, size?, font?, color?, background?, box?, prefix?, suffix?}: a number counting up fast, easing out (a live viewer count climbing), placed over the number in a screenshot. Horror projects (style horror) use the same commentary operations, with Edit's horror look: commentary_look {start,end} lays the analog look (grain, vignette, chromatic aberration, sharpened faces, saturated colour) over EVERY frame of the span, footage and source clips alike, replacing any look it meets so it stays on top (run it over the whole video once the pictures are placed, and again after adding more); commentary_card shows a screenshot as its retro copy (softened, faint grid, roughened edges, drop shadow; made for you, same pixel size so highlight_evidence rects still match) or, with photo:true, a picture of a person or place in a white outline with a glow; it slides up slowly with a blur that clears as it lands, and darkens (not replaces) the footage running behind it, so keep footage playing under every card. A page (an article, thread or channel at least 900 px wide) instead fills the frame close, slowly pushing in, focus:[x,y] (image px) the words read at the middle, or scroll:true gliding from its top to its bottom (a profile scrolled through); full:false keeps it a card (a post over footage). In horror: commentary_text {text,start,end, look: bold|sans|serif|caption|quote|vhs, motion: rise|type|words (each word at the frame the voice says it; words_at only for words it doesn't say: one frame per word), at: center|top|bottom|lower_left, background_blur?, sub?, color: yellow} is a title rising out of a blur (white; words on the voice come a short phrase at a time); commentary_chapter {text, sub} a chapter title over the picture blurred behind it; commentary_location a serif place name; commentary_label a VHS name tag on black, lower left; commentary_profile {media, side: left|right, quote | lines} a picture beside typed words; commentary_icon {icon: person|phone|folder|document|camera|building|sword|image|ticket|plane|envelope|door|glass, color, label (the word under it), sub? (a smaller line under that), count? (that many in a row, appearing one by one), exit? left|right|up (off screen over its last frames), x?, y?} an icon Edit draws over its word; commentary_lens {start,end,strength 0.1-1} After Effects' CC Lens; a desktop is an XP one (Internet Explorer on an old YouTube player for a video_player window); a region blur becomes a mosaic.",
     "inputSchema": {
       "properties": {
         "base_rev": {
@@ -2838,7 +2838,7 @@
           "type": "string"
         },
         "asked": {
-          "description": "Only for a picture from a map site in a Bodycam HQ project (refused there otherwise: its maps are edit-map's 3D city): the person's own words asking for that kind of map, quoted from their message.",
+          "description": "Only for a picture from a map site in an Edit V2 project (refused there otherwise: its maps are edit-map's 3D city): the person's own words asking for that kind of map, quoted from their message.",
           "type": "string"
         }
       },
@@ -2955,7 +2955,7 @@
           "type": "integer"
         },
         "asked": {
-          "description": "Only for a picture from a map site in a Bodycam HQ project (refused there otherwise: its maps are edit-map's 3D city): the person's own words asking for that kind of map, quoted from their message.",
+          "description": "Only for a picture from a map site in an Edit V2 project (refused there otherwise: its maps are edit-map's 3D city): the person's own words asking for that kind of map, quoted from their message.",
           "type": "string"
         }
       },
@@ -3657,7 +3657,7 @@
     "name": "add_cut_in"
   },
   {
-    "description": "Look at a coded effect (a Bodycam HQ project): stills of it at the seconds you give, drawn by the same page the viewer plays, with its length, what a frame costs to play from each of them on this computer (so you know it plays live), and everything its page gets wrong (an error it threw, a rule of the effect contract it breaks). Look after every change, at the moments the change touches: you can't see the effect any other way. The pictures come in the order of `times`. every_frame: each frame of a stretch (start–end, at most 48), for what moves between frames (a shimmer, a jitter, an ease); beside {media_id, start}: each frame next to the reference's at the same moment (at most 24); grid: a lettered grid over both, to say where things sit; zoom: a region at full size; detail \"full\": stills at the frame's size.",
+    "description": "Look at a coded effect (an Edit V2 project): stills of it at the seconds you give, drawn by the same page the viewer plays, with its length, what a frame costs to play from each of them on this computer (so you know it plays live), and everything its page gets wrong (an error it threw, a rule of the effect contract it breaks). Look after every change, at the moments the change touches: you can't see the effect any other way. The pictures come in the order of `times`. every_frame: each frame of a stretch (start–end, at most 48), for what moves between frames (a shimmer, a jitter, an ease); beside {media_id, start}: each frame next to the reference's at the same moment (at most 24); grid: a lettered grid over both, to say where things sit; zoom: a region at full size; detail \"full\": stills at the frame's size.",
     "inputSchema": {
       "properties": {
         "name": {
@@ -3739,7 +3739,7 @@
   },
   {
     "name": "fetch_font",
-    "description": "Bring a Google Fonts family into this project (Bodycam HQ), for its effects by name at once: when a reference's lettering is closer to a font Edit lacks. Fetch two or three candidates (search_web), set each beside the reference (look_at_effect beside, zoomed) before settling. All are open-licensed for video. save_to_library kind font keeps one for every agent.",
+    "description": "Bring a Google Fonts family into this project (Edit V2), for its effects by name at once: when a reference's lettering is closer to a font Edit lacks. Fetch two or three candidates (search_web), set each beside the reference (look_at_effect beside, zoomed) before settling. All are open-licensed for video. save_to_library kind font keeps one for every agent.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3765,7 +3765,7 @@
     }
   },
   {
-    "description": "Put a coded effect among the project's media (a Bodycam HQ project), so it's placed, moved and cut like footage: answers its media id and length. Place it with add_clip or apply_edit_plan as any video; the viewer plays its page live wherever its clip is. Call it again after changing the effect's length. Refused while the page has an error or breaks the effect contract (look_at_effect says which).",
+    "description": "Put a coded effect among the project's media (an Edit V2 project), so it's placed, moved and cut like footage: answers its media id and length. Place it with add_clip or apply_edit_plan as any video; the viewer plays its page live wherever its clip is. Call it again after changing the effect's length. Refused while the page has an error or breaks the effect contract (look_at_effect says which).",
     "inputSchema": {
       "properties": {
         "name": {
@@ -3785,7 +3785,7 @@
     "name": "add_effect"
   },
   {
-    "description": "Give a coded effect one of the project's pictures (a Bodycam HQ project): a photo as it is, or a video's frame at `time`, copied into the effect's folder, the only place its page can load from. Answers the file's name to use in the page (beside scene.html) and its size in pixels.",
+    "description": "Give a coded effect one of the project's pictures (an Edit V2 project): a photo as it is, or a video's frame at `time`, copied into the effect's folder, the only place its page can load from. Answers the file's name to use in the page (beside scene.html) and its size in pixels.",
     "inputSchema": {
       "properties": {
         "as": {
@@ -3817,7 +3817,7 @@
     "name": "effect_picture"
   },
   {
-    "description": "Give a coded effect moving footage or a sound's levels (Bodycam HQ). A stretch of one of the project's videos is copied into the effect's folder as a video its page plays and seeks itself (seek(t) may return a Promise that resolves once the frame is shown), and its sound's levels as data, frame by frame (rms and 16 bands from low to high, each 0 to 1), for anything that moves with the sound, and the sound itself, its wave, to draw a waveform from. A sound gives only its levels and its wave. The sound itself goes on the timeline as an audio clip under the effect. Answers the files' names to load in the page and the footage's size.",
+    "description": "Give a coded effect moving footage or a sound's levels (Edit V2). A stretch of one of the project's videos is copied into the effect's folder as a video its page plays and seeks itself (seek(t) may return a Promise that resolves once the frame is shown), and its sound's levels as data, frame by frame (rms and 16 bands from low to high, each 0 to 1), for anything that moves with the sound, and the sound itself, its wave, to draw a waveform from. A sound gives only its levels and its wave. The sound itself goes on the timeline as an audio clip under the effect. Answers the files' names to load in the page and the footage's size.",
     "inputSchema": {
       "properties": {
         "as": {
@@ -3854,7 +3854,7 @@
   },
   {
     "name": "effect_track",
-    "description": "Track points in the footage under an effect and give the effect their path as data (Bodycam HQ): Edit's tracker follows each box through the footage at the timeline (carried by the camera's own move, found again after it's lost or a cut), and writes <as>.track.js into the effect's folder, one entry a frame: each point's centre and size in frame pixels. The effect's code reads window.tracks.<as>.at(name, t) and draws there, so anything you make sticks to what's in the footage, never keyed by hand. One point follows something; two give its scale and turn; four at a surface's corners let you warp onto it (a screen, a wall, a car door). It answers where it lost a point: look there and track again with boxes.",
+    "description": "Track points in the footage under an effect and give the effect their path as data (Edit V2): Edit's tracker follows each box through the footage at the timeline (carried by the camera's own move, found again after it's lost or a cut), and writes <as>.track.js into the effect's folder, one entry a frame: each point's centre and size in frame pixels. The effect's code reads window.tracks.<as>.at(name, t) and draws there, so anything you make sticks to what's in the footage, never keyed by hand. One point follows something; two give its scale and turn; four at a surface's corners let you warp onto it (a screen, a wall, a car door). It answers where it lost a point: look there and track again with boxes.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3937,7 +3937,7 @@
   },
   {
     "name": "effect_beneath",
-    "description": "Give an effect the picture beneath it (Bodycam HQ): what the tracks below its clip show over its span, rendered into its folder as beneath.mp4 (no sound; second t of it is second t of the effect), so its code can draw the footage itself, blurred, bent, refracted, magnified, shattered: a glass panel, a lens, a heat haze. Place the effect first. Edit keeps it in step by itself: when what's beneath changes or the clip moves, it's made again and the effect rendered again.",
+    "description": "Give an effect the picture beneath it (Edit V2): what the tracks below its clip show over its span, rendered into its folder as beneath.mp4 (no sound; second t of it is second t of the effect), so its code can draw the footage itself, blurred, bent, refracted, magnified, shattered: a glass panel, a lens, a heat haze. Place the effect first. Edit keeps it in step by itself: when what's beneath changes or the clip moves, it's made again and the effect rendered again.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3956,7 +3956,7 @@
     }
   },
   {
-    "description": "An effect's versions in V2's cloud (Bodycam HQ). Every settled version of its code is kept there by itself once it renders, numbered, with when, who and why, and which one is in use: for going back (restore_effect) or seeing what changed.",
+    "description": "An effect's versions in V2's cloud (Edit V2). Every settled version of its code is kept there by itself once it renders, numbered, with when, who and why, and which one is in use: for going back (restore_effect) or seeing what changed.",
     "inputSchema": {
       "properties": {
         "name": {
@@ -3976,7 +3976,7 @@
     "name": "effect_versions"
   },
   {
-    "description": "Put an effect's code back to one of its versions: this is how you undo a change to an effect (Bodycam HQ). Its folder becomes that version's files, it plays and renders as it was, and the newer versions stay kept to come back to.",
+    "description": "Put an effect's code back to one of its versions: this is how you undo a change to an effect (Edit V2). Its folder becomes that version's files, it plays and renders as it was, and the newer versions stay kept to come back to.",
     "inputSchema": {
       "properties": {
         "name": {
@@ -4001,7 +4001,7 @@
     "name": "restore_effect"
   },
   {
-    "description": "Search V2's cloud for an effect or a sound to start from (Bodycam HQ). Each comes with its category, when to use it and a brief on how to change it; only what's in use, unless you ask for what was put away. Look here before writing one from nothing. kind font lists the team's fonts, each there in every effect by its family name. Lists what this project's niche can use (its own, the niches it's like, V2's house), each with where it comes from. With name: that one's note, brief and code, to see how the team builds such a thing.",
+    "description": "Search V2's cloud for an effect or a sound to start from (Edit V2). Each comes with its category, when to use it and a brief on how to change it; only what's in use, unless you ask for what was put away. Look here before writing one from nothing. kind font lists the team's fonts, each there in every effect by its family name. Lists what this channel's edit style has of its own. With name: that one's note, brief and code, to see how the team builds such a thing.",
     "inputSchema": {
       "properties": {
         "archived": {
@@ -4038,7 +4038,7 @@
     "name": "library"
   },
   {
-    "description": "Bring an effect or a sound from V2's cloud into this project (Bodycam HQ). Its files become a folder of yours (effects/<as>/) to place or change; a sound then needs make_sound.",
+    "description": "Bring an effect or a sound from V2's cloud into this project (Edit V2). Its files become a folder of yours (effects/<as>/) to place or change; a sound then needs make_sound.",
     "inputSchema": {
       "properties": {
         "as": {
@@ -4076,7 +4076,7 @@
     "name": "use_from_library"
   },
   {
-    "description": "Keep an effect or a sound of this project's in V2's cloud for every project, or as its next version (a teacher's; Bodycam HQ). Only when the person says to keep it or use it from now on. A font (kind font, name: its folder from fetch_font) is kept the same way, with a note on when it's the one to use; every agent's effects then have it by its family name. Kept for this project's niche unless the person asks for more (niches, asked); one shared with other niches asks first (for).",
+    "description": "Keep an effect or a sound of this project's in V2's cloud for this channel's projects, or as its next version (a teacher's; Edit V2). Only when the person says to keep it or use it from now on. A font (kind font, name: its folder from fetch_font) is kept the same way, with a note on when it's the one to use; every agent's effects then have it by its family name. An effect or a sound is kept in this channel's edit style, its own (a channel's project only).",
     "inputSchema": {
       "properties": {
         "as": {
@@ -4115,25 +4115,6 @@
         "reason": {
           "description": "What the person said, in their words.",
           "type": "string"
-        },
-        "niches": {
-          "description": "Other niches to keep it for too (niche keys), or [\"all\"] for every niche: only when the person asked, with asked. Left out, it's this niche's own.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "for": {
-          "description": "Changing one this niche shares with others (the error says when): \"this niche\" (a copy made this niche's own; the others keep theirs) or \"all\" (with asked), as the person answered.",
-          "type": "string",
-          "enum": [
-            "this niche",
-            "all"
-          ]
-        },
-        "asked": {
-          "description": "The person's words, quoted from their message, when they asked to keep it for more niches, change a shared one for all, or put a shared one away.",
-          "type": "string"
         }
       },
       "required": [
@@ -4147,7 +4128,7 @@
     "name": "save_to_library"
   },
   {
-    "description": "Put an effect, a sound or a skill away in V2's cloud, or back (a teacher's; Bodycam HQ). What the person means by deleting one, or by telling you to forget something you were told to remember (a memory is a skill): it leaves every list and every agent's mind, its versions kept. To forget one line of a longer skill, remember the skill again without it.",
+    "description": "Put an effect, a sound or a skill away in V2's cloud, or back (a teacher's; Edit V2). What the person means by deleting one, or by telling you to forget something you were told to remember (a memory is a skill): it leaves every list and every agent's mind, its versions kept. To forget one line of a longer skill, remember the skill again without it.",
     "inputSchema": {
       "properties": {
         "archived": {
@@ -4170,10 +4151,6 @@
         "project_id": {
           "description": "Defaults to the project open in the UI.",
           "type": "string"
-        },
-        "asked": {
-          "description": "The person's words, quoted from their message, when they asked to keep it for more niches, change a shared one for all, or put a shared one away.",
-          "type": "string"
         }
       },
       "required": [
@@ -4185,7 +4162,7 @@
     "name": "archive_in_library"
   },
   {
-    "description": "Keep what the person said holds beyond this video, or said yes to keeping when you asked (never what they let pass unanswered), as one of your skills in V2's cloud (a teacher's; Bodycam HQ). A memory is a line or two, in the person's words (at most 400 characters). A part of the edit's skill (one with a note, read with read_skill) is changed by saving the whole of it again with the change (at most 2,400 characters). The same name replaces it, so a line is forgotten by saving the skill again without it (a whole memory: archive_in_library). It's kept for this project's niche (and the niches like it) unless the person asks for more (niches, asked).",
+    "description": "Keep what the person said holds beyond this video, or said yes to keeping when you asked (never what they let pass unanswered), as one of your skills in V2's cloud (a teacher's; Edit V2). A memory is a line or two, in the person's words (at most 400 characters). A part of the edit's skill (one with a note, read with read_skill) is changed by saving the whole of it again with the change (at most 2,400 characters). The same name replaces it, so a line is forgotten by saving the skill again without it (a whole memory: archive_in_library). It's kept in this channel's edit style, its own (a channel's project only).",
     "inputSchema": {
       "properties": {
         "project_id": {
@@ -4207,25 +4184,6 @@
         "note": {
           "description": "Only for a part of the edit's skill: when to read it (at most 160 characters). Kept from before when left out.",
           "type": "string"
-        },
-        "niches": {
-          "description": "Other niches to keep it for too (niche keys), or [\"all\"] for every niche: only when the person asked, with asked. Left out, it's this niche's own.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "for": {
-          "description": "Changing one this niche shares with others (the error says when): \"this niche\" (a copy made this niche's own; the others keep theirs) or \"all\" (with asked), as the person answered.",
-          "type": "string",
-          "enum": [
-            "this niche",
-            "all"
-          ]
-        },
-        "asked": {
-          "description": "The person's words, quoted from their message, when they asked to keep it for more niches, change a shared one for all, or put a shared one away.",
-          "type": "string"
         }
       },
       "required": [
@@ -4238,7 +4196,7 @@
     "name": "remember"
   },
   {
-    "description": "Read one of your skills in V2's cloud: the part of the edit it covers, as the team does it (Bodycam HQ). Read it before working on that part, once per conversation; your instructions list them with when each fits.",
+    "description": "Read one of your skills in V2's cloud: the part of the edit it covers, as the team does it (Edit V2). Read it before working on that part, once per conversation; your instructions list them with when each fits.",
     "inputSchema": {
       "properties": {
         "name": {
@@ -4257,7 +4215,7 @@
     "name": "read_skill"
   },
   {
-    "description": "Make a sound effect from its code (Bodycam HQ): the folder's sound.html is rendered to a WAV and put among the project's media, or replaces the one made before. Answers its media id and length to place as an audio clip.",
+    "description": "Make a sound effect from its code (Edit V2): the folder's sound.html is rendered to a WAV and put among the project's media, or replaces the one made before. Answers its media id and length to place as an audio clip.",
     "inputSchema": {
       "properties": {
         "name": {
@@ -4278,7 +4236,7 @@
   },
   {
     "name": "edit_history",
-    "description": "The project's newest changes, newest first (Bodycam HQ): each revision with when, who made it (you and which tool, the person, or Edit by itself) and what it changed. For undo_changes.",
+    "description": "The project's newest changes, newest first (Edit V2): each revision with when, who made it (you and which tool, the person, or Edit by itself) and what it changed. For undo_changes.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4296,7 +4254,7 @@
   },
   {
     "name": "undo_changes",
-    "description": "Take changes to the project back (Bodycam HQ): revs, those changes alone (refused where a later change touched the same thing, so nothing done since is lost: it says which), or back_to, everything after that revision. Yours, the person's or Edit's, from edit_history. It's one new change, itself undone the same way. An effect's code has its own versions (restore_effect).",
+    "description": "Take changes to the project back (Edit V2): revs, those changes alone (refused where a later change touched the same thing, so nothing done since is lost: it says which), or back_to, everything after that revision. Yours, the person's or Edit's, from edit_history. It's one new change, itself undone the same way. An effect's code has its own versions (restore_effect).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4317,56 +4275,6 @@
         }
       },
       "required": []
-    }
-  },
-  {
-    "name": "niche",
-    "description": "This project's V2 niche: what it is, what it's like and the niches there are (no arguments). Only when the person asks (asked: their words, quoted), a teacher's: its name or description changed, like: another niche whose teaching comes through (\"this niche works very similarly to bodycam\"; null for none), cut_loose: true (what came through kept as its own, the link gone), or create: {name, description, like?} a new niche (projects are made in it from Home).",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "name": {
-          "type": "string"
-        },
-        "description": {
-          "type": "string"
-        },
-        "like": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "description": "A niche's key or name, or null."
-        },
-        "cut_loose": {
-          "type": "boolean"
-        },
-        "create": {
-          "type": "object",
-          "properties": {
-            "name": {
-              "type": "string"
-            },
-            "description": {
-              "type": "string"
-            },
-            "like": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "name"
-          ]
-        },
-        "asked": {
-          "description": "The person's words, quoted from their message, when they asked to keep it for more niches, change a shared one for all, or put a shared one away.",
-          "type": "string"
-        },
-        "project_id": {
-          "type": "string",
-          "description": "Defaults to the project open in the UI."
-        }
-      }
     }
   },
   {

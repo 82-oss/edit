@@ -1,5 +1,5 @@
-import { Archive, BookOpen, Check, ChevronDown, ChevronRight, ListFilter, CloudAlert, CloudDownload, CloudOff, CloudUpload, Copy, ExternalLink, FileText, Film, FileVideo, Lock, MessageSquare, Pencil, PenLine, Plus, Replace, RotateCw, Search, Share2, SkipForward, Tag, Trash2, TriangleAlert, X } from "lucide-react";
-import { AnimatePresence, motion } from "motion/react";
+import { Archive, Check, ChevronDown, ChevronRight, ListFilter, CloudAlert, CloudDownload, CloudOff, CloudUpload, Copy, ExternalLink, FileText, Film, FileVideo, Lock, MessageSquare, Pencil, PenLine, Plus, Replace, RotateCw, Search, Share2, SkipForward, Tag, Trash2, TriangleAlert, X } from "lucide-react";
+import { motion } from "motion/react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 import { editStyles, makesVideos, useAccount, writesScripts } from "../lib/account";
@@ -7,7 +7,6 @@ import { api, type ProjectStatus, type WriterScriptRow } from "../lib/api";
 import { shareChip } from "../lib/export-face";
 import { hasImportLinks, importPaste } from "../lib/import-input";
 import { loadBeta, useBeta } from "../lib/beta";
-import { loadNiches, useNiches, v2Choices } from "../lib/niches";
 import { cloudApi, type CloudList, type CloudProject, type CloudStatus } from "../lib/cloud";
 import { copyDriveLink, openDrive, useDriveLink } from "../lib/drive";
 import { asleep, laterKey, useLater, type LaterKey } from "../lib/later";
@@ -26,7 +25,6 @@ import { useKept } from "../lib/kept";
 import { creditCopies } from "../lib/copies";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
-import { NewNiche, NichePageDialog } from "./Niches";
 import { AddChannelButton, ChannelAvatar, ChannelsView } from "./Channels";
 import { AREA, Aside, ChannelField, FIELD, Field, More, NewShell } from "./NewWork";
 import { loadChannels, useChannels } from "../lib/channels";
@@ -177,7 +175,7 @@ export function Home() {
   const [channelPick, setChannelPick] = useState<string | null>(() => localStorage.getItem(CHANNEL));
   const channelFilter = v2 && channelList?.some((one) => one.key === channelPick) ? channelPick : null;
   useEffect(() => {
-    if (v2) void Promise.all([loadChannels(), loadNiches()]);
+    if (v2) void loadChannels();
   }, [v2]);
   const [allDone, setAllDone] = useState(false);
   // How far back (Sphe, Nov 14: "the default view be this week's content"): this week unless widened, kept while the
@@ -1645,7 +1643,7 @@ function TableRow({ subtitled, script = null, ...props }: CardProps & { subtitle
           {project.dev === true && <TestBadge />}
           {card.nameInput === null && note.mark}
         </div>
-        <Category style={project.style} hq={project.hq} compilation={script?.compilation} channel={project.channel} niche={project.niche} />
+        <Category style={project.style} compilation={script?.compilation} channel={project.channel} />
         <StatusCell>
           {aside.entry ? (
             <AsideStatus entry={aside.entry} />
@@ -2081,17 +2079,10 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   const [text, setText] = useState("");
   const [style, setStyle] = useState<Style>("bodycam");
   const [picked, setPicked] = useState(false);
-  /** A V2 niche picked, by its pill's key (its pills show only with Edit V2 on, for an edit). */
-  const [niche, setNiche] = useState<string | null>(null);
   const v2 = useBeta((beta) => beta.v2);
-  const niches = useNiches((state) => state.niches);
-  const teacher = useNiches((state) => state.teacher);
-  const [making, setMaking] = useState(false);
-  /** The niche whose page is open, kept while it closes. */
-  const [page, setPage] = useState<{ key: string; open: boolean }>({ key: "", open: false });
   const [prompt, setPrompt] = useState("");
   // A channel (Nov 14; Sphe: "the main thing that shows up is Pick a channel"): with V2 on, an edit is made for one,
-  // today's kinds and niches under Other kinds. Whether it's a compilation: the channel's unless changed here.
+  // today's kinds under Other kinds. Whether it's a compilation: the channel's unless changed here.
   const channels = useChannels((state) => state.channels);
   const [channelKey, setChannelKey] = useState<string | null>(null);
   const [compilation, setCompilation] = useState<boolean | null>(null);
@@ -2130,9 +2121,6 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   };
   const styles = STYLES.filter((option) => (writing ? writable(option.value) : allowed === null || allowed.has(option.value)));
   const kind = styles.some((option) => option.value === style) ? style : (styles[0]?.value ?? "bodycam");
-  // Edit V2's niches, apart from today's kinds until they take their place (Bodycam HQ alone when there are none to be had).
-  const v2Pills = v2 && !writing ? v2Choices(niches, styles.map((option) => option.value)) : [];
-  const chosen = v2Pills.find((one) => one.key === niche && one.kind === kind);
   // Scripts too (Sphe, Nov 14): an edit's, a script's, an idea's and a thumbnail's agent is taught its channel's lane.
   const showChannels = v2 && (channels?.length ?? 0) > 0;
   const channel = showChannels ? (channels?.find((one) => one.key === channelKey) ?? null) : null;
@@ -2152,7 +2140,6 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     setPreview(null);
     setError(null);
     setPicked(start !== null);
-    setNiche(null);
     setChannelKey(null);
     setCompilation(null);
     setOtherKinds(false);
@@ -2178,9 +2165,9 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     };
   }, [open, writing]);
 
-  // V2's niches asked again as the dialog opens (one may have been made elsewhere).
+  // The channels asked again as the dialog opens (one may have been added elsewhere).
   useEffect(() => {
-    if (open && v2) void Promise.all([loadNiches(), loadChannels()]);
+    if (open && v2) void loadChannels();
   }, [open, v2]);
 
   // Writing: the paste read into its sources (a Trello card into its videos), each checked, reuses ticked.
@@ -2349,11 +2336,11 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
       const { project } = await api.createProject({
         name: title.trim(),
         style: kind,
-        ...(channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}) } : chosen ? { hq: true, ...(chosen.niche ? { niche: chosen.niche } : {}) } : {}),
+        ...(channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}) } : {}),
         ...(kind === "shorts" && channel === null ? SHORTS_FORMAT : FORMAT),
       });
       if (input === "") {
-        // A blank project: the first message, if there is one, goes to its agent at once (Bodycam HQ's footage comes in the chat).
+        // A blank project: the first message, if there is one, goes to its agent at once (a V2 edit's footage comes in the chat).
         if (extra !== "") await api.firstPrompt(project.id, extra);
         onClose();
         navigate(`/p/${project.id}`);
@@ -2378,7 +2365,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   };
 
   const label = "mb-1.5 block text-[12px] font-medium text-muted";
-  // Today's kinds and V2's niches: New project's own pick without channels, Other kinds' with them.
+  // Today's kinds: New project's own pick without channels, Other kinds' with them.
   const kindBlock = (labelled: boolean) => (
         <div>
           {labelled && <span className={label}>Kind</span>}
@@ -2390,90 +2377,23 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
                 title={STYLE_NOTES[option.value]}
                 onClick={() => {
                   setStyle(option.value);
-                  setNiche(null);
                   setPicked(true);
                 }}
                 className={cx(
                   "flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition-colors",
-                  kind === option.value && !chosen ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
+                  kind === option.value ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
                 )}
               >
                 {option.label}
               </button>
             ))}
           </div>
-          {v2Pills.length > 0 && (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <span className="mr-0.5 text-[11px] font-semibold tracking-[0.2px] text-faint">V2</span>
-              {v2Pills.map((option) => {
-                const on = chosen?.key === option.key;
-                const known = option.niche;
-                return (
-                  <div
-                    key={option.key}
-                    onContextMenu={(event) => {
-                      if (known === null) return;
-                      event.preventDefault();
-                      setPage({ key: known, open: true });
-                    }}
-                    className={cx(
-                      "flex h-7 items-center rounded-full border text-[12px] font-medium transition-colors",
-                      on ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
-                    )}
-                  >
-                    <button
-                      type="button"
-                      title={option.description}
-                      onClick={() => {
-                        setStyle(option.kind);
-                        setNiche(option.key);
-                        setPicked(true);
-                      }}
-                      className="h-full rounded-full px-3"
-                    >
-                      {option.name}
-                    </button>
-                    {/* The picked niche's page: what its agent knows. */}
-                    <AnimatePresence initial={false}>
-                      {on && known !== null && (
-                        <motion.button
-                          type="button"
-                          title="What its agent knows"
-                          aria-label={`What ${option.name}’s agent knows`}
-                          onClick={() => setPage({ key: known, open: true })}
-                          initial={{ width: 0, opacity: 0 }}
-                          animate={{ width: 22, opacity: 1 }}
-                          exit={{ width: 0, opacity: 0 }}
-                          transition={spring}
-                          className="-ml-1.5 flex h-full items-center justify-start overflow-hidden text-faint hover:text-fg"
-                        >
-                          <BookOpen size={13} className="shrink-0" />
-                        </motion.button>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                );
-              })}
-              {teacher && (
-                <button
-                  type="button"
-                  title="New niche"
-                  aria-label="New niche"
-                  onClick={() => setMaking(true)}
-                  className="flex size-7 items-center justify-center rounded-full border border-dashed border-line text-faint transition-colors hover:border-line-strong hover:text-fg"
-                >
-                  <Plus size={13} />
-                </button>
-              )}
-            </div>
-          )}
         </div>
   );
 
   const pickChannel = (key: string | null) => {
     setChannelKey(key);
     setCompilation(null);
-    setNiche(null);
     setOtherKinds(false);
     // A script of another channel is no longer one of the list's.
     const chosenNow = (channels ?? []).find((one) => one.key === key) ?? null;
@@ -2531,7 +2451,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
           ? commentary
             ? "Paste the sources: videos, articles, posts. The first is the brief."
             : "Paste the footage: YouTube or Drive videos, or a Trello card. A case the channel already covered goes in as a reuse."
-          : chosen || channel !== null
+          : channel !== null
             ? "Paste the script’s Google Doc, or leave this empty to start blank and send the footage in the chat."
             : NARRATION[kind] === "recording"
               ? "Paste the script’s Google Doc, or all its text (copied from the Doc, links and all), and “Voice-over:” with the recording’s Drive link."
@@ -2586,20 +2506,6 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         ) : (
           <Aside onClick={() => setFrom("list")}>Pick a script instead</Aside>
         )
-      }
-      after={
-        <>
-          <NewNiche
-            open={making}
-            onClose={() => setMaking(false)}
-            onMade={(made) => {
-              setStyle(made.kind);
-              setNiche(made.key);
-              setPicked(true);
-            }}
-          />
-          <NichePageDialog open={page.open} nicheKey={page.key} onClose={() => setPage((now) => ({ ...now, open: false }))} />
-        </>
       }
     >
       <ChannelField

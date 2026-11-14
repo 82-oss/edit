@@ -7,7 +7,7 @@ import { create } from "zustand";
 import { request } from "./api";
 
 export interface Beta {
-  /** Edit V2: Bodycam HQ in New project, its graphics written as code by the agent (Home.tsx). */
+  /** Edit V2: channels, and a channel's edits, their graphics written as code by the agent (Home.tsx). */
   v2: boolean;
 }
 

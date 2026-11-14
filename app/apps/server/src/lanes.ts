@@ -27,7 +27,7 @@ export interface Place {
 
 /** What a lane's agent knows, as last read: its own lessons (none of the edit's house, not even the global skill: that's the edit's). */
 export function lessonsOf(place: Place): v2cloud.Skill[] {
-  return v2cloud.memories(v2cloud.laneKey(place.channel, place.lane)).filter((one) => v2cloud.ownNicheOf(one.key ?? "") === v2cloud.laneKey(place.channel, place.lane));
+  return v2cloud.memories(v2cloud.laneKey(place.channel, place.lane)).filter((one) => v2cloud.ownPlaceOf(one.key ?? "") === v2cloud.laneKey(place.channel, place.lane));
 }
 
 /** Read fresh at a turn's start (at most every 30 s each). */
@@ -36,7 +36,7 @@ export async function refresh(): Promise<void> {
   await Promise.all([v2cloud.refreshSkills(), channels.refresh()]);
 }
 
-/** Whether there's a channel: a script, an idea or a thumbnail may have none (made before channels, or of a niche). */
+/** Whether there's a channel: a script, an idea or a thumbnail may have none (made before channels, or of a kind of video without one). */
 export function placeOf(channel: string | null | undefined, lane: WorkLane): Place | null {
   return typeof channel === "string" && channel !== "" ? { channel, lane } : null;
 }
@@ -216,7 +216,7 @@ const KIND_WORD: Record<(typeof STYLE_KINDS)[number], string> = { skill: "lesson
 async function styleOf(channel: string, lane: v2cloud.Lane): Promise<v2cloud.Item[]> {
   const place = v2cloud.laneKey(channel, lane);
   const all = (await Promise.all(STYLE_KINDS.map((kind) => v2cloud.list(kind)))).flat();
-  return all.filter((item) => v2cloud.ownNicheOf(item.key) === place);
+  return all.filter((item) => v2cloud.ownPlaceOf(item.key) === place);
 }
 
 /** The channel the words name: its key, its @handle or its title. */

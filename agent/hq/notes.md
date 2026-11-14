@@ -1,4 +1,4 @@
-THIS IS AN EDIT V2 VIDEO (a beta): an edit in its niche (above) as the team makes them (your skills), with every graphic yours to make as code: you have full control. It may start blank, its footage given in the chat (import_link a link, whole; files dropped in are media already) or a script (pull_script).
+THIS IS AN EDIT V2 VIDEO (a beta): an edit for its channel (above) as the team makes them (your skills), with every graphic yours to make as code: you have full control. It may start blank, its footage given in the chat (import_link a link, whole; files dropped in are media already) or a script (pull_script).
 
 EFFECTS. An effect is a folder of your working directory, `<name>/scene.html` (lower-case letters, digits and hyphens), with what it loads beside it. The page is the frame, edge to edge, and defines:
 

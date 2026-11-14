@@ -10,7 +10,6 @@ import { useEffect, useState } from "react";
 
 import { channelApi, compact, LANES, loadChannels, narrationLabel, useChannels, type Channel, type Found, type Lane, type Narration, type Taught, type Used, type Voice } from "../lib/channels";
 import { useEditor } from "../lib/store";
-import { InPlace } from "./Niches";
 import { useBeta } from "../lib/beta";
 import { Button, cx, DialogActions, DialogTitle, Modal, spring, Switch } from "./ui";
 import { VoicePicker } from "./VoicePicker";
@@ -369,5 +368,34 @@ export function AddChannelButton({ onClick }: { onClick: () => void }) {
     <Button variant="light" onClick={onClick}>
       <Plus size={15} strokeWidth={2.2} /> Add channel
     </Button>
+  );
+}
+
+/** Text a teacher changes where it stands (a lane's style): saved on Enter or leaving it, put back on Escape. */
+function InPlace({ value, onSave, editable, placeholder, className }: { value: string; onSave: (text: string) => void; editable: boolean; placeholder: string; className: string }) {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  const shape = "-mx-1.5 block w-[calc(100%+12px)] rounded-md border border-transparent px-1.5";
+  if (!editable) return <div className={cx(className, shape)}>{value || <span className="text-faint">{placeholder}</span>}</div>;
+  const done = () => {
+    const given = text.trim();
+    if (given === value.trim()) return;
+    onSave(given);
+  };
+  return (
+    // A line that wraps to show all of itself; Enter ends it.
+    <textarea
+      rows={1}
+      value={text}
+      placeholder={placeholder}
+      onChange={(event) => setText(event.target.value.replace(/\n/g, " "))}
+      onBlur={done}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        event.currentTarget.blur();
+      }}
+      className={cx(className, shape, "resize-none bg-transparent outline-none [field-sizing:content] placeholder:text-faint hover:border-line focus:border-line-strong")}
+    />
   );
 }

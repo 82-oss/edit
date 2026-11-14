@@ -85,7 +85,7 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub note: Option<String>,
-    /// Made the new way (Edit V2, a beta; "Bodycam HQ"): its graphics are code
+    /// Made the new way (Edit V2, a beta): its graphics are code
     /// the agent writes (`Media::effect`), played live from the playhead, and
     /// its editor is the viewer and the chat. The style stays the kind of video.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -102,12 +102,6 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub compilation: Option<bool>,
-    /// The V2 niche it's in (`hq` projects; a key of V2's cloud, `niche:<key>`):
-    /// what its agent is taught and what it's like (Sphe, Nov 13: niches made
-    /// without code). None on a V2 project from before niches: Bodycam HQ.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "ts", ts(optional))]
-    pub niche: Option<String>,
 }
 
 /// The account that started a project (accounts.spheceo.com).
@@ -1959,7 +1953,6 @@ impl Project {
             hq: false,
             channel: None,
             compilation: None,
-            niche: None,
         };
         for kind in [
             TrackKind::Video,
@@ -3164,5 +3157,17 @@ mod validation_tests {
         assert!(p.validate().is_err());
         p.drive = None;
         assert!(!serde_json::to_string(&p).unwrap().contains("\"drive\""));
+    }
+    #[test]
+    fn a_v2_project_from_before_still_loads_its_niche_dropped() {
+        // V2's niches went on Nov 14 (Sphe: "remove Bodycam HQ… we're moving towards the channels system"): a file
+        // that still names one loads, and is saved without it.
+        let mut p = project();
+        p.hq = true;
+        let mut value = serde_json::to_value(&p).unwrap();
+        value["niche"] = serde_json::json!("bodycam-hq");
+        let loaded: Project = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded, p);
+        assert!(!serde_json::to_string(&loaded).unwrap().contains("niche"));
     }
 }

@@ -45,7 +45,7 @@ export function NewShell({ kind, open, onClose, onSubmit, ready, busy, action, e
   aside?: ReactNode;
   width?: number;
   children: ReactNode;
-  /** Dialogs of its own, opened from inside (a niche's page). */
+  /** Dialogs of its own, opened from inside. */
   after?: ReactNode;
 }) {
   const { title, icon: Icon } = KINDS[kind];
@@ -97,7 +97,7 @@ export function Field({ label, hint, children, className }: { label: string; hin
 /**
  * The channel it's for, first (Sphe, Nov 14: "the main thing that shows up
  * is Pick a channel"); picked, it's white. `other`: what's there besides the
- * channels (today's kinds, V2's niches), under Other kinds, opened when no
+ * channels (today's kinds), under Other kinds, opened when no
  * channel can be.
  */
 export function ChannelField({ kind, channels, value, onChange, other, otherOpen, onOther }: {

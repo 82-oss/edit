@@ -423,17 +423,15 @@ export class Store {
   }
 
   /**
-   * A new project of a given style (the kind of video); `hq`, an Edit V2 project (beta.ts), in `niche` (V2's cloud);
+   * A new project of a given style (the kind of video); `hq`, an Edit V2 project (beta.ts);
    * `test`, a test project (`Project::origin` "dev", dev_projects.ts): one a person didn't start.
    */
-  createAs(name: string, style: Style, settings: Settings, hq = false, niche: string | null = null, test = false): Live {
+  createAs(name: string, style: Style, settings: Settings, hq = false, test = false): Live {
     const id = `p${nowMs()}-${nextFileId()}`;
     const trimmed = name.trim() === "" ? "Untitled" : name.trim();
     const project = newProject(id, trimmed, settings, style);
     // Only when on: an ordinary project's file stays as it was, with no `hq` key.
     if (hq) project.hq = true;
-    // A V2 project's niche (v2_cloud.ts): none is Bodycam HQ's.
-    if (hq && niche !== null) project.niche = niche;
     const by = creator();
     if (by !== null) project.created_by = by;
     if (test) project.origin = "dev";
@@ -817,7 +815,6 @@ function summaryOf(project: Project, modifiedMs: number): ProjectSummary {
   if (typeof project.note === "string" && project.note !== "") summary.note = project.note;
   if (project.hq === true) summary.hq = true;
   if (typeof project.channel === "string" && project.channel !== "") summary.channel = project.channel;
-  if (project.hq === true && typeof project.niche === "string" && project.niche !== "") summary.niche = project.niche;
   const missing = missingMedia(project);
   const used = usedMedia(project).length;
   if (used > 0) summary.media_used = used;

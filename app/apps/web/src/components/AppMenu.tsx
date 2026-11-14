@@ -478,7 +478,7 @@ function BetaGroup() {
   };
   return (
     <Group title="Beta">
-      <Row name="Edit V2" detail="Beta. Adds Bodycam HQ to New project: the agent writes each graphic as code, and it plays as soon as it’s written. For this computer." bad={error ?? undefined}>
+      <Row name="Edit V2" detail="Beta. Makes channel edits, where the agent writes each graphic as code and it plays as soon as it’s written. For this computer." bad={error ?? undefined}>
         <Switch checked={v2} onChange={turn} />
       </Row>
     </Group>

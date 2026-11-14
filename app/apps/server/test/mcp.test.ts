@@ -47,7 +47,7 @@ test("tool_reference_is_one_short_line_per_tool", () => {
 
 test("every tool takes project_id; the instructions list the skills", () => {
   // other_channels (Nov 14): a channel's agent reaching into another channel.
-  expect(TOOLS.length).toBe(124);
+  expect(TOOLS.length).toBe(123);
   for (const tool of TOOLS) {
     expect(tool.inputSchema.type).toBe("object");
     expect(tool.inputSchema.properties.project_id).toEqual({

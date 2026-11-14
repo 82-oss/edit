@@ -16,7 +16,6 @@ import { asideChoices, asleep, backLabel, type Later, type LaterEntry, type Late
 export { layoutFor } from "../lib/home-layout";
 import { ago } from "../lib/time";
 import { useChannels } from "../lib/channels";
-import { useNiches } from "../lib/niches";
 import { STYLES, type Creator, type Style } from "../lib/types";
 import { ChannelAvatar } from "./Channels";
 import { openMenu, toggleMenu, type MenuItem } from "./ContextMenu";
@@ -94,13 +93,12 @@ export function KindMark({ kind }: { kind: "edit" | "subtitles" | "script" | "id
 
 /**
  * A row's channel (Sphe, Nov 14: "should be called Channel instead of
- * category"): its picture and name. Without one, for now, its niche: a V2
- * niche's name (Bodycam HQ), else its kind of video with "Compilation" after
- * it when it's over several ("Bodycam Compilation"); an idea's given words.
+ * category"): its picture and name. Without one, for now, its kind of video
+ * with "Compilation" after it when it's over several ("Bodycam
+ * Compilation"); an idea's given words.
  */
-export function Category({ style, hq = false, compilation = false, text: given, channel, niche }: { style?: Style | null; hq?: boolean; compilation?: boolean; text?: string; channel?: string | null; niche?: string | null }) {
+export function Category({ style, compilation = false, text: given, channel }: { style?: Style | null; compilation?: boolean; text?: string; channel?: string | null }) {
   const channels = useChannels((state) => state.channels);
-  const niches = useNiches((state) => state.niches);
   const owner = channel ? channels?.find((one) => one.key === channel) : undefined;
   if (owner !== undefined) {
     return (
@@ -110,10 +108,9 @@ export function Category({ style, hq = false, compilation = false, text: given, 
       </span>
     );
   }
-  // Bodycam HQ (Edit V2) is a bodycam project with `hq` set, not a style of its own; another V2 niche by its name.
-  const named = hq && niche ? (niches?.find((one) => one.key === niche)?.name ?? niche) : null;
-  const label = named ?? (hq && style === "bodycam" ? "Bodycam HQ" : (STYLES.find((option) => option.value === style)?.label ?? ""));
-  const text = given ?? (compilation && named === null ? `${label} Compilation`.trim() : label);
+  // An Edit V2 project without a channel says its kind of video, as every other project does.
+  const label = STYLES.find((option) => option.value === style)?.label ?? "";
+  const text = given ?? (compilation ? `${label} Compilation`.trim() : label);
   return (
     <span role="cell" className={cx("truncate text-[13px] text-secondary", CATEGORY)} title={text || undefined}>
       {text}

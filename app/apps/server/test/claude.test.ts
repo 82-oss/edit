@@ -315,7 +315,7 @@ test("any other project still refuses a message while its turn runs, exactly as 
     await settle();
     expect(asked.length).toBe(1);
     expect(agents.withChat(project).queue).toEqual([]);
-    await expect(agents.steer(project, "queued-1")).rejects.toThrow("only a Bodycam HQ chat queues messages");
+    await expect(agents.steer(project, "queued-1")).rejects.toThrow("only an Edit V2 chat queues messages");
     // Nothing queued in its file.
     expect(JSON.parse(fs.readFileSync(home.store.chatPath(project), "utf8")).queue).toBeUndefined();
   } finally {

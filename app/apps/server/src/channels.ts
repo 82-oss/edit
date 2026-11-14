@@ -16,7 +16,6 @@
 //   DELETE /api/channels/{key}          put away (its teaching kept)
 //   GET    /api/channels/voices         {voices, used}: who could narrate, and who narrates for whom already
 //   GET    /api/channels/{key}/videos?order=top|recent   {channel, videos}: its most viewed or newest, with their numbers
-//   POST   /api/channels/{key}/base     {niche} → {brought, kept}: a V2 niche's teaching copied in as the Edit lane's base
 //   POST   /api/channels/{key}/projects/{id}   an edit project moved onto the channel (its Edit lane from its next turn)
 
 import type { App } from "./app.ts";
@@ -202,41 +201,11 @@ export async function taughtOf(channel: string): Promise<Record<Lane, Taught[]>>
   const all = (await Promise.all(kinds.map((kind) => v2cloud.list(kind)))).flat();
   const out = Object.fromEntries(LANES.map((lane) => [lane, [] as Taught[]])) as Record<Lane, Taught[]>;
   for (const item of all) {
-    const place = v2cloud.laneOf(v2cloud.ownNicheOf(item.key) ?? "");
+    const place = v2cloud.laneOf(v2cloud.ownPlaceOf(item.key) ?? "");
     if (place === null || place.channel !== channel) continue;
     out[place.lane].push({ kind: item.kind as Taught["kind"], key: item.key, name: item.name, note: item.note, category: item.category });
   }
   return out;
-}
-
-/**
- * A V2 niche's teaching as a channel's Edit lane's base (Sphe, Nov 14: "have
- * all of the bodycam HQ teachings and all the effects and stuff just thrown
- * over to that channel… I'm not saying to link the two niches… that is going
- * to be our base"): everything the niche's agent knows (its own, what it has
- * from the niches it's like, and the house's lessons, effects and sounds; not
- * the global skill, which every lane has) copied as the channel's own, with
- * no link back. What the channel has of a name already stays as it is.
- */
-export async function baseFromNiche(channel: string, niche: string): Promise<{ brought: string[]; kept: string[] }> {
-  const place = laneKey(channel, "edit");
-  const chain = v2cloud.chainOf(niche, await v2cloud.listNiches());
-  const brought: string[] = [];
-  const kept: string[] = [];
-  for (const kind of ["skill", "template", "sound"] as const) {
-    const all = await v2cloud.list(kind);
-    const mine = new Set(all.filter((item) => v2cloud.ownNicheOf(item.key) === place).map((item) => item.name));
-    for (const item of v2cloud.forNiche(all, chain)) {
-      if (kind === "skill" && item.name === v2cloud.GLOBAL) continue;
-      if (mine.has(item.name)) {
-        kept.push(`${kind} ${item.name}`);
-        continue;
-      }
-      if (await v2cloud.copyItem(item, v2cloud.ownKey(kind, place, item.name), `the base from ${niche}`)) brought.push(`${kind} ${item.name}`);
-    }
-  }
-  v2cloud.forgetSkills();
-  return { brought, kept };
 }
 
 /** Thrown by the relay or mamagi, said as a 400 in their words (a 403 stays one). */
@@ -309,18 +278,6 @@ export function routes(router: Router<App>): void {
       if (channel === null) throw new ApiError(404, `no channel ${params.key}`);
       return json(await asked(() => videosOf(channel.youtubeId, url.searchParams.get("order") === "recent" ? "recent" : "top")));
     })
-    .post("/api/channels/{key}/base", async (context: RouteContext<App>) => {
-      needTeacher();
-      const given = await readJson<{ niche?: unknown }>(context);
-      if (typeof given.niche !== "string" || given.niche === "") throw bad("niche: the V2 niche's key (bodycam-hq)");
-      const channel = await asked(() => get(context.params.key!));
-      if (channel === null) throw new ApiError(404, `no channel ${context.params.key}`);
-      const niche = given.niche;
-      if (niche !== v2cloud.BODYCAM_HQ && !(await asked(() => v2cloud.listNiches())).some((one) => one.key === niche)) throw bad(`no niche ${niche}`);
-      const done = await asked(() => baseFromNiche(channel.key, niche));
-      diag.info("channels", `${channel.title}: ${done.brought.length} brought from ${niche} as its edit base (${done.kept.length} it had kept)`);
-      return json(done);
-    })
     .post("/api/channels/{key}/projects/{id}", async ({ app, params }: RouteContext<App>) => {
       needTeacher();
       const channel = await asked(() => get(params.key!));
@@ -332,7 +289,6 @@ export function routes(router: Router<App>): void {
       if (agentPanel(app).turn?.(live.project.id).running) throw new ApiError(409, "Its agent is working: move it once the turn is done.");
       const [moved] = await app.store.update(live.project.id, "channel", (project) => {
         project.channel = channel.key;
-        delete project.niche;
       });
       forget();
       diag.info("channels", `${moved.project.name} moved onto ${channel.title}`);

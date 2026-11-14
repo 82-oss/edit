@@ -220,7 +220,7 @@ test("an effect's tools are refused outside an HQ project, and an export waits f
       ((await dispatch(app, { id: 1, method: "tools/call", params: { name, arguments: args } }, id)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
     const refused = await call("look_at_effect", { name: "bar" });
     expect(refused.isError).toBe(true);
-    expect(refused.content[0]!.text).toContain("Bodycam HQ");
+    expect(refused.content[0]!.text).toContain("Edit V2");
     const listed = (await dispatch(app, { id: 1, method: "tools/list" }, id)) as { result: { tools: { name: string }[] } };
     expect(listed.result.tools.some((tool) => tool.name === "look_at_effect")).toBe(false);
     await app.store.update(id, "test", (project) => {

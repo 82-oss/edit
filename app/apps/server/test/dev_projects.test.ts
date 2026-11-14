@@ -43,7 +43,7 @@ test("a save of a whole project keeps whether it's a test project", async () => 
   const { app, store, cleanup } = fixtureHome("dev-keep");
   try {
     const real = store.createAs("Base: Welfare Check", "bodycam", settings);
-    const trial = store.createAs("R1: Welfare Check", "bodycam", settings, false, null, true);
+    const trial = store.createAs("R1: Welfare Check", "bodycam", settings, false, true);
     // The teaching loop's copy: the real base's body saved over the trial's new project.
     const copied = { ...structuredClone(real.project), id: trial.project.id };
     expect((await ask(app, `/api/projects/${trial.project.id}`, { base_rev: trial.rev, project: copied, origin: "copy" }, "PUT")).status).toBe(200);
@@ -62,7 +62,7 @@ test("a test project is brought forth when asked for, and hidden again; a real o
   const { app, store, cleanup } = fixtureHome("dev-show");
   try {
     const real = store.createAs("Real", "bodycam", settings);
-    const trial = store.createAs("Skills check", "bodycam", settings, false, null, true);
+    const trial = store.createAs("Skills check", "bodycam", settings, false, true);
     expect((await ask(app, `/api/projects/${trial.project.id}/show`, {})).status).toBe(200);
     expect(store.list().find((summary) => summary.id === trial.project.id)).toMatchObject({ dev: true, shown: true });
     expect((await ask(app, `/api/projects/${trial.project.id}/hide`, {})).status).toBe(200);
@@ -77,7 +77,7 @@ test("a test project is brought forth when asked for, and hidden again; a real o
 test("a test project promoted is an ordinary project", async () => {
   const { app, store, cleanup } = fixtureHome("dev-promote");
   try {
-    const dev = store.createAs("Became real", "bodycam", settings, false, null, true);
+    const dev = store.createAs("Became real", "bodycam", settings, false, true);
     await ask(app, `/api/projects/${dev.project.id}/show`, {});
     expect((await ask(app, `/api/projects/${dev.project.id}/promote`, {})).status).toBe(200);
     expect(store.get(dev.project.id)?.project.origin).toBeUndefined();
@@ -109,9 +109,9 @@ test("delete all test projects deletes only those, and only when the count is wh
   const { app, store, home, cleanup } = fixtureHome("dev-delete");
   try {
     const real = store.createAs("Real", "bodycam", settings);
-    const first = store.createAs("Trial 1", "bodycam", settings, false, null, true);
-    const second = store.createAs("Trial 2", "interrogation", settings, false, null, true);
-    const promoted = store.createAs("Trial 3", "bodycam", settings, false, null, true);
+    const first = store.createAs("Trial 1", "bodycam", settings, false, true);
+    const second = store.createAs("Trial 2", "interrogation", settings, false, true);
+    const promoted = store.createAs("Trial 3", "bodycam", settings, false, true);
     await ask(app, `/api/projects/${promoted.project.id}/promote`, {});
 
     expect((await ask(app, "/api/dev-projects/delete", {})).status).toBe(400);

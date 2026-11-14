@@ -171,7 +171,7 @@ export async function call(turn: Turn, thumb: Thumbnail, name: string, args: Arg
     case "graphics": {
       const place = placeOf(turn.place);
       const words = typeof args.query === "string" ? args.query.toLowerCase().split(/\s+/).filter(Boolean) : [];
-      const all = (await v2cloud.list("template")).filter((one) => v2cloud.ownNicheOf(one.key) === place);
+      const all = (await v2cloud.list("template")).filter((one) => v2cloud.ownPlaceOf(one.key) === place);
       const found = all.filter((one) => words.every((word) => `${one.name} ${one.note ?? ""} ${one.category ?? ""}`.toLowerCase().includes(word)));
       if (all.length === 0) return turn.place === null ? "No graphics are taught yet." : "This channel's thumbnails have no graphics taught yet (another channel's, only with other_channels when the person points you at one).";
       if (found.length === 0) return `None match: the graphics are ${all.map((one) => one.name).join(", ")}.`;

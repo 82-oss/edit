@@ -232,7 +232,7 @@ export const byPerson = (): { person?: true } => (navigator.webdriver ? {} : { p
 export const api = {
   projects: () => request<{ projects: ProjectSummary[] }>("GET", "/api/projects"),
   /** Home's New project: a person's (`byPerson`). */
-  createProject: (body: { name: string; style: Style; hq?: boolean; niche?: string; channel?: string; compilation?: boolean; width: number; height: number; fps: number }) =>
+  createProject: (body: { name: string; style: Style; hq?: boolean; channel?: string; compilation?: boolean; width: number; height: number; fps: number }) =>
     request<Live>("POST", "/api/projects", { ...body, ...byPerson() }),
   project: (id: string) => request<Live>("GET", `/api/projects/${id}`),
   saveProject: (id: string, baseRev: number, project: Project, origin: string) =>

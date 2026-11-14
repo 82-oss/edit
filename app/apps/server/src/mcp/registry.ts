@@ -50,7 +50,6 @@ export const HQ_TOOLS: readonly string[] = [
   "archive_in_library",
   "remember",
   "read_skill",
-  "niche",
   "other_channels",
   "make_sound",
   "feedback_reopen",
@@ -59,9 +58,9 @@ export const HQ_TOOLS: readonly string[] = [
 ];
 
 /**
- * What a Bodycam HQ chat isn't offered: the house's skills (its own are in
+ * What an Edit V2 chat isn't offered: the house's skills (its own are in
  * V2's cloud), the house's looks (it makes them as code), and what belongs to
- * other niches (commentary, Shorts). The base edit's tools stay, the house's
+ * other kinds of video (commentary, Shorts). The base edit's tools stay, the house's
  * music and sound effects included (Sphe, Nov 11: "it should also use the
  * same sfxs and music as it does now"; its own coded sounds come as it's taught).
  */

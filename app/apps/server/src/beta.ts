@@ -1,7 +1,7 @@
 // Beta: what's being tried before everyone has it, switched on per computer
 // in Settings → Beta and kept in `<home>/beta.json`, as the update channel is
-// in update.json. The one now is Edit V2 (Sphe, Nov 10): with it on, New
-// project offers Bodycam HQ, whose graphics the agent writes as code.
+// in update.json. The one now is Edit V2 (Sphe, Nov 10): with it on, Home
+// has the channels, and a channel's edits have graphics the agent writes as code.
 //
 //   GET /api/beta        {v2}: whether each beta is on (off unless set)
 //   PUT /api/beta {v2}   switched on or off; answers as GET
@@ -15,7 +15,7 @@ import { bad, json } from "./http/errors.ts";
 import { readJson, type RouteContext, type Router } from "./http/router.ts";
 
 export interface Beta {
-  /** Edit V2: Bodycam HQ in New project, its graphics written as code by the agent. */
+  /** Edit V2: channels, and a channel's edits, their graphics written as code by the agent. */
   v2: boolean;
 }
 

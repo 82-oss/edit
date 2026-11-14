@@ -50,7 +50,7 @@ export function personSaid(entries: readonly Entry[], words: string): boolean {
 
 /** The refusal of a map site's picture in a Bodycam HQ project. */
 export const MAP_REFUSED =
-  "In Bodycam HQ every map is edit-map's 3D city (Google's photorealistic 3D tiles: a real place from any angle, buildings standing), never a picture from a map site laid flat or tilted (Sphe, Nov 13: \"the 3D map should be the only route unless the user states otherwise\"). " +
+  "In Edit V2 every map is edit-map's 3D city (Google's photorealistic 3D tiles: a real place from any angle, buildings standing), never a picture from a map site laid flat or tilted (Sphe, Nov 13: \"the 3D map should be the only route unless the user states otherwise\"). " +
   "Load edit-map/map.js in the effect and aim its camera in seek(t): find() the place, look() or fly() the camera, screen() to pin anything to it. " +
   "Only if the person asked for another kind of map (a flat 2D map, a satellite photo), call again with `asked`: their words, quoted from their message.";
 

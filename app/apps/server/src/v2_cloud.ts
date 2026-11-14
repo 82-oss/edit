@@ -1,5 +1,5 @@
 // Edit V2's cloud (v2_cloud.ts), the library (Nov 11, Sphe: "v2's cloud where its code and
-// skills should live"): what Bodycam HQ's agent makes and is taught, kept by
+// skills should live"): what Edit V2's agent makes and is taught, kept by
 // the team rather than by one computer or by Edit's release, every save a
 // numbered version beside the others with one in use. Three kinds of item:
 //
@@ -14,6 +14,10 @@
 // ("delete" it), an item leaves every list unless asked for, its versions
 // kept: what the agent sees stays short (Sphe, Nov 11: with many projects
 // over time the agents "are going to get quite clouded").
+//
+// What an agent is taught is a place's: a channel's lane (`laneKey`), whose
+// own items are `<kind>:@<place>/<name>`. A V2 project made without a channel
+// has no place and is taught nothing but the global skill.
 //
 // The versions and pointers are mamagi's (edit:listLibrary, libraryVersions,
 // libraryVersion, saveLibraryVersion, setLibraryCurrent; accounts'
@@ -32,7 +36,7 @@ import * as diag from "./diag.ts";
 import { granted } from "./kinds.ts";
 import * as relay from "./relay.ts";
 
-export type Kind = "effect" | "template" | "sound" | "skill" | "font" | "niche";
+export type Kind = "effect" | "template" | "sound" | "skill" | "font";
 
 export interface File {
   /** Inside the effect's folder ("scene.html", "img/top.jpg"). */
@@ -52,7 +56,7 @@ export interface Item {
   brief: string | null;
   category: string | null;
   archived: boolean;
-  /** The V2 niches it's for; null: V2's house, every niche's (a niche's own key, `<kind>:@<niche>/<name>`, is that one's). */
+  /** The places it's for, as mamagi keeps them (a place's own item: that place); null or []: V2's house. */
   niches?: string[] | null;
   at: number;
   by: { name: string } | null;
@@ -82,10 +86,10 @@ export function teacher(): boolean {
 }
 
 export const effectKey = (project: string, name: string) => `effect:${project}/${name}`;
-/** A niche's own item of a kind: `<kind>:@<niche>/<name>`, which wins over the house's of its name in that niche. */
-export const ownKey = (kind: "template" | "sound" | "skill" | "font", niche: string, name: string) => `${kind}:@${niche}/${name}`;
-/** The niche an item's key makes it its own, or null. */
-export const ownNicheOf = (key: string): string | null => /^[a-z]+:@([a-z0-9][a-z0-9-]{0,39})\//.exec(key)?.[1] ?? null;
+/** A place's own item of a kind (a channel lane's, `laneKey`): `<kind>:@<place>/<name>`. */
+export const ownKey = (kind: "template" | "sound" | "skill" | "font", place: string, name: string) => `${kind}:@${place}/${name}`;
+/** The place an item's key makes it its own, or null (V2's house). */
+export const ownPlaceOf = (key: string): string | null => /^[a-z]+:@([a-z0-9][a-z0-9-]{0,39})\//.exec(key)?.[1] ?? null;
 export const templateKey = (name: string) => `template:${name}`;
 export const soundKey = (name: string) => `sound:${name}`;
 export const skillKey = (name: string) => `skill:${name}`;
@@ -97,7 +101,7 @@ const fileKey = (sha256: string) => `edit/library/sha256/${sha256}`;
 
 /** One kind's items; those put away only with `archived`. */
 export async function list(kind: Exclude<Kind, "effect">, archived = false): Promise<Item[]> {
-  // owned: the niches' and the channel lanes' own items too (mamagi hands Edit from before niches the house's alone).
+  // owned: the channel lanes' own items too (mamagi hands older Edits the house's alone).
   return (await cloud.query("edit:listLibrary", { kind, owned: true, ...(archived ? { archived: true } : {}) })) as Item[];
 }
 
@@ -190,7 +194,7 @@ async function getFiles(files: File[], dir: string): Promise<void> {
  * up first, those already there not again. `source` names the code's version
  * (an effect's key): the same as the newest makes no new version.
  */
-export async function save(key: string, name: string, dir: string, options: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string; niches?: string[] } = {}): Promise<{ n: number; made: boolean }> {
+export async function save(key: string, name: string, dir: string, options: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string } = {}): Promise<{ n: number; made: boolean }> {
   const files = await putFiles(dir);
   // The same files as the version in use (a version just brought back, saved again as it renders): not a new one.
   const now = await version(key).catch(() => null);
@@ -202,14 +206,13 @@ export async function save(key: string, name: string, dir: string, options: { re
 /**
  * A skill's next version (in use at once): a teacher's. A note (when to read
  * it) makes it one read when needed rather than always in mind. `key` is
- * where it's kept (a niche's own, by default `skill:<name>`), `niches` which
- * niches a shared one is for ([]: the house).
+ * where it's kept (a place's own, `ownKey`; by default `skill:<name>`).
  */
-export async function saveSkill(name: string, text: string, reason: string, note?: string, place: { key?: string; niches?: string[] } = {}): Promise<{ n: number }> {
-  return (await cloud.mutation("edit:saveLibraryVersion", { key: place.key ?? skillKey(name), name, text, reason, ...(note !== undefined ? { note } : {}), ...(place.niches !== undefined ? { niches: place.niches } : {}) })) as { n: number };
+export async function saveSkill(name: string, text: string, reason: string, note?: string, place: { key?: string } = {}): Promise<{ n: number }> {
+  return (await cloud.mutation("edit:saveLibraryVersion", { key: place.key ?? skillKey(name), name, text, reason, ...(note !== undefined ? { note } : {}) })) as { n: number };
 }
 
-/** An item's version in use kept again under another key (a niche cut loose keeps what it had), its note, brief and category with it. */
+/** An item's version in use kept again under another key (one channel's brought into another's), its note, brief and category with it. */
 export async function copyItem(from: Item, toKey: string, reason: string): Promise<boolean> {
   const found = await version(from.key);
   if (found === null) return false;
@@ -228,43 +231,6 @@ export async function copyItem(from: Item, toKey: string, reason: string): Promi
   return true;
 }
 
-/**
- * A niche cut loose from the one it's like: what came through from the
- * niches it's like (not the house's) kept as its own, then the link gone.
- * Answers how many were kept.
- */
-export async function cutLoose(key: string, reason: string): Promise<number> {
-  const all = await listNiches();
-  const niche = all.find((one) => one.key === key);
-  if (niche === undefined) throw new Error(`no niche ${key}`);
-  if (niche.like === null) throw new Error(`${niche.name} isn't like another niche: nothing to cut loose from`);
-  const chain = chainOf(key, all);
-  let copied = 0;
-  for (const kind of ["skill", "template", "sound"] as const) {
-    for (const item of forNiche(await list(kind), chain)) {
-      const own = ownNicheOf(item.key);
-      const inherited = own !== null ? own !== key : item.niches != null && item.niches.length > 0 && !item.niches.includes(key);
-      if (inherited && (await copyItem(item, ownKey(kind, key, item.name), `kept when ${niche.name} was cut loose from ${niche.like}`))) copied++;
-    }
-  }
-  await saveNiche({ ...niche, like: null }, reason);
-  return copied;
-}
-
-/** What a niche knows, as its agents get it (`forNiche`), each with where it comes from: its lessons, effects, sounds and fonts. */
-export async function knowledgeOf(key: string): Promise<{ kind: Kind; key: string; name: string; note: string | null; category: string | null; origin: string; own: boolean }[]> {
-  const all = await listNiches();
-  const chain = chainOf(key, all);
-  const out: { kind: Kind; key: string; name: string; note: string | null; category: string | null; origin: string; own: boolean }[] = [];
-  for (const kind of ["skill", "template", "sound", "font"] as const) {
-    const items = await list(kind);
-    for (const item of kind === "font" ? items : forNiche(items, chain)) {
-      out.push({ kind, key: item.key, name: item.name, note: item.note, category: item.category, origin: kind === "font" ? "V2's house, every niche's" : originOf(item, chain), own: ownNicheOf(item.key) === key || (item.niches?.length === 1 && item.niches[0] === key) });
-    }
-  }
-  return out;
-}
-
 /** An item's version `n` (else the one in use) put in `dir`; null when the item has none. */
 export async function fetchInto(key: string, n: number | null, dir: string): Promise<Version | null> {
   const found = await version(key, n);
@@ -273,91 +239,16 @@ export async function fetchInto(key: string, n: number | null, dir: string): Pro
   return found.version;
 }
 
-// ---------------------------------------------------------------- V2's niches
-
-/**
- * A V2 niche (Sphe, Nov 13: made "without us, creative manager and code",
- * taught from scratch, or "like" another, "this niche works very similarly to
- * the bodycam niche"): a key, its name, what kind of video it is, and the
- * niche it's like, whose teaching it has until it's taught otherwise (or cut
- * loose). Kept in V2's cloud as `niche:<key>`, its text this as JSON.
- */
-export interface Niche {
-  key: string;
-  name: string;
-  description: string;
-  /** The niche it's like (its lessons and effects come through), or null. */
-  like: string | null;
-  /** The kind of video it is to Edit's own tools (a style: bodycam, interrogation…). */
-  kind: string;
-}
-
-/** The niche a V2 project from before niches is in. */
-export const BODYCAM_HQ = "bodycam-hq";
-const NICHE_KEY = /^[a-z0-9][a-z0-9-]{0,39}$/;
-
-/** A niche's key from its name ("Interrogation HQ" → interrogation-hq). */
-export function nicheKeyOf(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "niche";
-}
-
-let niches: Niche[] = [];
-
-/** The niches as last read (refreshSkills reads them with the skills). */
-export function knownNiches(): Niche[] {
-  return niches;
-}
-
-/** Reads the niches now. */
-export async function listNiches(): Promise<Niche[]> {
-  const items = await list("niche");
-  const read = await Promise.all(items.map(async (item) => ({ item, text: (await version(item.key))?.version.text })));
-  const out: Niche[] = [];
-  for (const { item, text } of read) {
-    try {
-      const given = JSON.parse(text ?? "{}") as Partial<Niche>;
-      out.push({ key: item.name, name: typeof given.name === "string" && given.name.trim() !== "" ? given.name : item.name, description: typeof given.description === "string" ? given.description : "", like: typeof given.like === "string" && given.like !== "" ? given.like : null, kind: typeof given.kind === "string" && given.kind !== "" ? given.kind : "bodycam" });
-    } catch {
-      // A niche's text that isn't JSON is left out, not the rest.
-    }
-  }
-  niches = out.sort((a, b) => a.name.localeCompare(b.name));
-  return niches;
-}
-
-/** A niche made or changed (a teacher's): what it's like refused when that would make a loop. */
-export async function saveNiche(niche: Niche, reason: string): Promise<Niche> {
-  if (!NICHE_KEY.test(niche.key)) throw new Error(`a niche's key is lower-case letters, digits and hyphens: "${niche.key}" isn't`);
-  if (niche.like !== null) {
-    const all = await listNiches();
-    if (!all.some((one) => one.key === niche.like)) throw new Error(`there's no niche ${niche.like} to be like`);
-    const others = all.filter((one) => one.key !== niche.key).concat(niche);
-    if (chainOf(niche.key, others).length !== new Set(chainOf(niche.key, others)).size || chainOf(niche.like, others).includes(niche.key)) throw new Error(`${niche.like} is already like ${niche.key}: a niche can't be like itself`);
-  }
-  const text = JSON.stringify({ name: niche.name.trim(), description: niche.description.trim(), like: niche.like, kind: niche.kind });
-  await cloud.mutation("edit:saveLibraryVersion", { key: `niche:${niche.key}`, name: niche.key, text, reason });
-  await listNiches();
-  forgetSkills();
-  return niche;
-}
-
-/** A niche and the ones it's like, nearest first (a loop stops where it comes round). */
-export function chainOf(key: string, among: Niche[] = niches): string[] {
-  const out: string[] = [];
-  for (let at: string | null = key; at !== null && !out.includes(at); at = among.find((one) => one.key === at)?.like ?? null) out.push(at);
-  return out;
-}
-
 // ---------------------------------------------------------------- channels' lanes (Nov 14, channels.ts)
 
 /** A channel's lanes: one per part of the work, each its own style; one lane's agent never sees another's. */
 export const LANES = ["ideas", "thumbnails", "script", "edit"] as const;
 export type Lane = (typeof LANES)[number];
 
-/** A lane's place in the library, kept like a niche: its own lessons and effects are `<kind>:@<laneKey>/<name>`. */
+/** A lane's place in the library: its own lessons and effects are `<kind>:@<laneKey>/<name>`. */
 export const laneKey = (channel: string, lane: Lane) => `${channel}--${lane}`;
 
-/** The channel and lane a place in the library is, or null when it's a niche (a channel key has no "--"). */
+/** The channel and lane a place in the library is, or null when it isn't a lane's (a channel key has no "--"). */
 export function laneOf(place: string): { channel: string; lane: Lane } | null {
   const at = place.lastIndexOf("--");
   if (at <= 0) return null;
@@ -365,36 +256,28 @@ export function laneOf(place: string): { channel: string; lane: Lane } | null {
   return (LANES as readonly string[]).includes(lane) ? { channel: place.slice(0, at), lane: lane as Lane } : null;
 }
 
-/** The niche a project is in: its channel's edit lane, else its own niche, else Bodycam HQ's (a V2 project from before niches). */
-export function nicheOfProject(project: { niche?: string | null; channel?: string | null }): string {
-  if (typeof project.channel === "string" && project.channel !== "") return laneKey(project.channel, "edit");
-  return typeof project.niche === "string" && project.niche !== "" ? project.niche : BODYCAM_HQ;
+/** The place a V2 project is taught from: its channel's edit lane; null for one made without a channel (the global skill alone). */
+export function placeOfProject(project: { channel?: string | null }): string | null {
+  return typeof project.channel === "string" && project.channel !== "" ? laneKey(project.channel, "edit") : null;
 }
 
 /**
- * How near an item is to a niche: its own key in the niche or one it's like
- * (nearest first), then one kept for some of them, then the house's; null
- * when it's for other niches only. Of the items of a name, the nearest is
- * the one that niche uses.
+ * How near an item is to a place: its own first, then the global skill;
+ * null for anything else (Sphe, Nov 14: a channel's lane starts "blank", none
+ * of V2's house coming through but the global skill, which is Edit's own
+ * workings). Of the items of a name, the nearest is the one that place uses.
  */
-export function nearness(item: { key: string; niches?: string[] | null }, chain: string[]): number | null {
-  const own = ownNicheOf(item.key);
-  if (own !== null) {
-    const at = chain.indexOf(own);
-    return at < 0 ? null : at * 2;
-  }
-  // A channel's lane starts empty (Sphe, Nov 14: "the teaching, music, skills, and all that stuff, I think, should be
-  // blank"): none of V2's house comes through, only the global skill, which is Edit's own workings.
-  if (item.niches == null || item.niches.length === 0) return laneOf(chain[0] ?? "") !== null && item.key !== skillKey(GLOBAL) ? null : chain.length * 2;
-  const at = Math.min(...item.niches.map((niche) => chain.indexOf(niche)).filter((index) => index >= 0));
-  return Number.isFinite(at) ? at * 2 + 1 : null;
+export function nearness(item: { key: string }, place: string | null): number | null {
+  const own = ownPlaceOf(item.key);
+  if (own !== null) return place !== null && own === place ? 0 : null;
+  return item.key === skillKey(GLOBAL) ? 1 : null;
 }
 
-/** Of `items`, the one of each name a niche uses (`nearness`), in their order. */
-export function forNiche<T extends { key: string; name: string; niches?: string[] | null }>(items: T[], chain: string[]): T[] {
+/** Of `items`, the one of each name a place uses (`nearness`), in their order. */
+export function forPlace<T extends { key: string; name: string }>(items: T[], place: string | null): T[] {
   const best = new Map<string, { item: T; near: number }>();
   for (const item of items) {
-    const near = nearness(item, chain);
+    const near = nearness(item, place);
     if (near === null) continue;
     const before = best.get(item.name);
     if (before === undefined || near < before.near) best.set(item.name, { item, near });
@@ -402,15 +285,13 @@ export function forNiche<T extends { key: string; name: string; niches?: string[
   return items.filter((item) => best.get(item.name)?.item === item);
 }
 
-/** Where an item comes from, for a niche, in a few words ("this niche's own", "from Bodycam HQ", "V2's house"). */
-export function originOf(item: { key: string; niches?: string[] | null }, chain: string[]): string {
-  const own = ownNicheOf(item.key);
-  const name = (key: string) => niches.find((one) => one.key === key)?.name ?? key;
-  if (own !== null && laneOf(own) !== null) return own === chain[0] ? "this channel's own" : `from ${laneOf(own)!.channel}'s ${laneOf(own)!.lane} style`;
-  if (own !== null) return own === chain[0] ? "this niche's own" : `from ${name(own)} (this niche is like it)`;
-  if (item.niches == null || item.niches.length === 0) return "V2's house, every niche's";
-  if (item.niches.length === 1 && item.niches[0] === chain[0]) return "this niche's own";
-  return `kept for ${item.niches.map(name).join(", ")}`;
+/** Where an item comes from, for a place, in a few words ("this channel's own", "V2's house"). */
+export function originOf(item: { key: string }, place: string | null): string {
+  const own = ownPlaceOf(item.key);
+  const lane = own === null ? null : laneOf(own);
+  if (own !== null && own === place) return "this channel's own";
+  if (lane !== null) return `from ${lane.channel}'s ${lane.lane} style`;
+  return "V2's house";
 }
 
 // ---------------------------------------------------------------- the agent's skills: what it's been told to remember
@@ -424,9 +305,8 @@ export interface Skill {
   name: string;
   text: string;
   note?: string;
-  /** Its item's key and niches (which niches have it: `forNiche`). */
+  /** Its item's key (whose it is: `forPlace`). */
   key?: string;
-  niches?: string[] | null;
 }
 
 /** The skills in V2's cloud (the global one first), as last read. */
@@ -434,14 +314,14 @@ let skills: Skill[] = [];
 let readAt = 0;
 const SKILLS_FRESH_MS = 30_000;
 
-/** What a niche's agent knows (`niche`'s and the ones it's like, then the house's): the global skill, then the rest by name. */
-export function memories(niche: string = BODYCAM_HQ): Skill[] {
-  return forNiche(skills.map((one) => ({ ...one, key: one.key ?? skillKey(one.name) })), chainOf(niche));
+/** What a place's agent knows (null: a V2 project without a channel): the global skill, then the place's own by name. */
+export function memories(place: string | null): Skill[] {
+  return forPlace(skills.map((one) => ({ ...one, key: one.key ?? skillKey(one.name) })), place);
 }
 
-/** One skill a niche knows, as last read. */
-export function skill(name: string, niche: string = BODYCAM_HQ): Skill | undefined {
-  return memories(niche).find((one) => one.name === name);
+/** One skill a place knows, as last read. */
+export function skill(name: string, place: string | null): Skill | undefined {
+  return memories(place).find((one) => one.name === name);
 }
 
 /** Reads the skills, at most every 30 s (a turn's start asks): a failure keeps what was read before. */
@@ -450,12 +330,11 @@ export async function refreshSkills(): Promise<void> {
   readAt = Date.now();
   try {
     const items = await list("skill");
-    // Each skill's text at once, and the niches: a turn waits on this.
-    // The niches as last read when they can't be: a turn's lessons don't wait on them.
-    const [read] = await Promise.all([Promise.all(items.map(async (item) => ({ item, text: (await version(item.key))?.version.text }))), listNiches().catch(() => knownNiches())]);
+    // Each skill's text at once: a turn waits on this.
+    const read = await Promise.all(items.map(async (item) => ({ item, text: (await version(item.key))?.version.text })));
     const next: Skill[] = [];
     for (const { item, text } of read) {
-      if (typeof text === "string" && text.trim() !== "") next.push({ name: item.name, text: text.trim(), ...(item.note ? { note: item.note } : {}), key: item.key, niches: item.niches ?? null });
+      if (typeof text === "string" && text.trim() !== "") next.push({ name: item.name, text: text.trim(), ...(item.note ? { note: item.note } : {}), key: item.key });
     }
     skills = next.sort((a, b) => Number(b.name === GLOBAL) - Number(a.name === GLOBAL) || a.name.localeCompare(b.name));
   } catch (error) {

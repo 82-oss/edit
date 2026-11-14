@@ -180,12 +180,10 @@ export interface ProjectSummary {
   shown?: boolean;
   /** Its note (`Project::note`), left from Home's ⋯. */
   note?: string;
-  /** A Bodycam HQ project (`Project::hq`, Edit V2): its graphics are code the agent writes. */
+  /** An Edit V2 project (`Project::hq`): its graphics are code the agent writes. */
   hq?: boolean;
   /** The channel it's for (`Project::channel`, channels.ts): Home's filter. */
   channel?: string;
-  /** Its V2 niche (`Project::niche`); absent on a V2 project from before niches (Bodycam HQ). */
-  niche?: string;
 }
 
 export type Stage = "pending" | "working" | "ready" | "failed" | "skipped";
