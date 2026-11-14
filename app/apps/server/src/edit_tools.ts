@@ -1727,6 +1727,32 @@ export function soundEffectsLateHit(project: Project): Json[] {
 /** Seconds of a sharp sound's file before its hit that may play first. */
 const LATE_HIT = 0.2;
 
+/**
+ * A sound effect from a file of several hits playing more than one of them
+ * (`sfx_several_hits`): the library's "Click… Variations" is three clicks, so
+ * one picture got three (JJ, four videos, Oct 31–Nov 6: "we have this click
+ * effect three times. This is a recurring issue that we need to fix
+ * everywhere"). The file's hits are its markers (library.hitsOf).
+ */
+export function soundEffectsSeveralHits(project: Project): Json[] {
+  const fps = project.settings.fps;
+  const out: Json[] = [];
+  for (const clip of project.clips) {
+    if (clip.type !== "audio" || clip.volume_db <= -40 || trackOf(project, clip.track)?.muted === true) continue;
+    const media = project.media.find((one) => one.id === clip.media);
+    const hits = (media?.markers ?? []).filter((one) => one.name === sfx.HIT || one.name === sfx.OTHER_HIT).map((one) => one.time).sort((a, b) => a - b);
+    if (hits.length < 2) continue;
+    const end = clip.source_in + (clip.duration / fps) * clip.speed;
+    // A burst starting right at source_in is the one it's set to play.
+    const heard = hits.filter((at) => at >= clip.source_in - 0.03 && at < end - 0.02);
+    if (heard.length < 2) continue;
+    const next = heard[1]!;
+    out.push({ kind: "sfx_several_hits", clip: clip.id, start: clip.start, hits: heard.length,
+      fix: `its file holds several hits and this clip plays ${heard.length}: shorten it to end before the next one (duration ${Math.max(1, Math.floor(((next - clip.source_in - 0.01) / clip.speed) * fps))} frames from its source_in), or place it again with add_from_library, which plays one hit by itself` });
+  }
+  return out;
+}
+
 /** The transitions a riser builds into: their middle is the cut. */
 const TRANSITIONS = new Set(["Drop", "Flash", "Dip", "Light leak", "Bridge flash"]);
 
@@ -1852,6 +1878,7 @@ export function audited(app: App, project: Project, rev: number | null): Args {
     ...hooks.narrationCutOff(project, heard),
     ...soundEffectsLong(project),
     ...soundEffectsLateHit(project),
+    ...soundEffectsSeveralHits(project),
     ...(markBlurs.offShot(project) as Json[]),
   ] : [
     ...hooks.calloutTiming(project, heard),
@@ -1876,6 +1903,7 @@ export function audited(app: App, project: Project, rev: number | null): Args {
     ...(markBlurs.offShot(project) as Json[]),
     ...soundEffectsLong(project),
     ...soundEffectsLateHit(project),
+    ...soundEffectsSeveralHits(project),
     ...risersOffCut(project),
     ...(typing.typingSoundsOff(project) as Json[]),
     ...(pointerIssues(project) as Json[]),
@@ -1919,7 +1947,7 @@ const FIXABLE = [
   "subtitle_unheard", "subtitle_late", "music_loud", "music_bed_long", "music_repeated", "music_change_mid_narration", "music_stops_mid_narration",
   "off_script", "script_order", "voiceover_in_footage", "footage_ahead", "room_wide", "hook_unmarked", "tape_start_unmarked", "prologue_without_map", "text_on_face", "text_under_blur",
   "vignette_snaps", "line_under_black", "punch_in_off_face", "callout_off_speech", "profile_line_off_speech", "subtitle_coloured", "actual_label_in_window", "intro_long", "intro_no_arrest", "windows_underused", "desktop_sparse",
-  "blur_off_shot", "sfx_long", "sfx_late_hit", "riser_off_cut", "sfx_loud", "typing_sound_off", "subtitle_two_lines", "pointer_off_target", "graphic_short", "text_short", "viewer_over_cut",
+  "blur_off_shot", "sfx_long", "sfx_late_hit", "sfx_several_hits", "riser_off_cut", "sfx_loud", "typing_sound_off", "subtitle_two_lines", "pointer_off_target", "graphic_short", "text_short", "viewer_over_cut",
   "intro_uncaptioned", "short_length", "short_unfilled", "short_subject_off", "short_unsubtitled", "short_no_music", "short_music_stops",
   "face_overused", "countdown_late", "end_new_picture", "stacked_copies", "pause_jump",
 ];

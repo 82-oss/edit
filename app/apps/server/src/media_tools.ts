@@ -70,6 +70,23 @@ async function listLibrary({ app, args }: ToolCall): Promise<Content[]> {
   return text(out);
 }
 
+/**
+ * The stretch of a file of several hits that is its hit at `hit` alone: from
+ * just before that burst to a moment after it, never into the next; null when
+ * that burst is longer than a hit plays (a long whoosh: LONG_MOMENT's way).
+ */
+async function oneHit(path: string, duration: number, hit: number): Promise<{ lead: number; seconds: number } | null> {
+  const bursts = await library.hitsOf(path, duration).catch(() => []);
+  if (bursts.length < 2) return null;
+  const own = bursts.findIndex(([from, to]) => hit >= from - 0.02 && hit <= to + 0.02);
+  const burst = bursts[own];
+  if (burst === undefined || burst[1] - burst[0] > seams.sfx.HIT_PLAY) return null;
+  const from = Math.max(burst[0] - 0.01, 0);
+  const next = bursts[own + 1]?.[0] ?? duration;
+  const to = Math.min(burst[1] + 0.15, next - 0.01, duration);
+  return { lead: Math.max(hit - from, 0), seconds: to - from };
+}
+
 /** Sounds whose moment is one sharp hit: nothing before it should play. */
 const SHARP = /shutter|camera|click|impact|\bhit\b|boom|thud|slam|stinger/iu;
 
@@ -87,7 +104,13 @@ async function addFromLibrary({ app, args, projectId }: ToolCall): Promise<Conte
     // A file of several whooshes or hits plays one: its loudest.
     const media = mediaOf(live(app, projectId).project, mediaId);
     const hit = (media?.markers ?? []).find((marker) => marker.name === seams.sfx.HIT)?.time;
-    if (seconds === null && sound.kind === "sfx" && media !== undefined && hit !== undefined && media.duration > seams.sfx.LONG_MOMENT && seams.sfx.MOMENT.test(sound.name)) {
+    // Several short hits in one file (three clicks in a second): that hit alone, up to the next.
+    const one = seconds === null && media !== undefined && hit !== undefined && (media.markers ?? []).some((marker) => marker.name === seams.sfx.OTHER_HIT) ? await oneHit(media.path, media.duration, hit) : null;
+    if (one !== null) {
+      lead ??= one.lead;
+      seconds = one.seconds;
+      if (fadeOut === 0.0) fadeOut = Math.min(0.05, one.seconds / 3);
+    } else if (seconds === null && sound.kind === "sfx" && media !== undefined && hit !== undefined && media.duration > seams.sfx.LONG_MOMENT && seams.sfx.MOMENT.test(sound.name)) {
       seconds = seams.sfx.HIT_PLAY;
       lead ??= Math.min(hit, (seams.sfx.HIT_PLAY * 2) / 3);
       if (fadeOut === 0.0) fadeOut = 0.25;

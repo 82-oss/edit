@@ -382,14 +382,12 @@ export async function importSound(app: App, project: string, soundId: string, or
   if (mediaId === undefined) throw new Error(`couldn't import ${sound.name}: ${debugStrings(errors)}`);
   const live = app.store.get(project);
   const media = live === null ? undefined : mediaOf(live.project, mediaId);
-  const hit =
-    media !== undefined &&
-    (media.markers ?? []).length === 0 &&
-    sound.kind === "sfx" &&
-    (media.duration <= HIT_SECONDS || seams.sfx.MOMENT.test(sound.name))
-      ? await loudest(path)
-      : null;
-  if (media !== undefined && (media.library !== sound.kind || hit !== null)) {
+  const oneMoment = media !== undefined && sound.kind === "sfx" && (media.duration <= HIT_SECONDS || seams.sfx.MOMENT.test(sound.name));
+  const hit = oneMoment && (media.markers ?? []).length === 0 ? await loudest(path) : null;
+  // A file of several hits (three clicks): each other one marked, so the audit sees a clip that plays more than one.
+  const marked = (media?.markers ?? []).some((marker) => marker.name === seams.sfx.OTHER_HIT);
+  const others = oneMoment && !marked ? await hitsOf(path, media.duration).catch(() => []) : [];
+  if (media !== undefined && (media.library !== sound.kind || hit !== null || others.length > 1)) {
     await app.store.update(project, origin, (edited) => {
       const target = edited.media.find((item) => item.id === mediaId);
       if (target === undefined) return;
@@ -397,6 +395,11 @@ export async function importSound(app: App, project: string, soundId: string, or
       target.library = sound.kind;
       if (hit !== null && (target.markers ?? []).length === 0) {
         target.markers = [{ time: hit, name: seams.sfx.HIT, note: "" }];
+      }
+      const at = (target.markers ?? []).find((marker) => marker.name === seams.sfx.HIT)?.time;
+      if (others.length > 1 && at !== undefined && !(target.markers ?? []).some((marker) => marker.name === seams.sfx.OTHER_HIT)) {
+        const own = others.findIndex(([from, to]) => at >= from - HIT_STEP && at <= to + HIT_STEP);
+        target.markers = [...(target.markers ?? []), ...others.filter((_, index) => index !== own).map(([from]) => ({ time: from, name: seams.sfx.OTHER_HIT, note: "" }))];
       }
     });
   }
@@ -536,6 +539,38 @@ export async function footageLoudness(project: Project): Promise<number> {
 /** Forgets the remembered footage loudness (tests). */
 export function forgetAnswers(): void {
   answers.clear();
+}
+
+/** A sound effect's hits are looked for in its first this many seconds (a one-moment sound's are near its start). */
+const HITS_WITHIN = 12;
+const HIT_STEP = 0.02;
+
+/**
+ * A sound effect's separate hits, each [start, end] in seconds: bursts within
+ * 30 dB of its loudest with quiet between (a file of three clicks has three).
+ * Read off the file's loudness analysis, as `levels` is.
+ */
+export async function hitsOf(path: string, duration: number): Promise<[number, number][]> {
+  const steps = Math.ceil(Math.min(duration, HITS_WITHIN) / HIT_STEP);
+  if (steps <= 1) return [];
+  const spans = await native().loudnessSpans(path, Array.from({ length: steps }, (_, at) => ({ from: at * HIT_STEP, seconds: HIT_STEP })));
+  return burstsOf(spans.map((span) => span.peak), HIT_STEP);
+}
+
+/** The bursts in a run of peaks (dBFS, one a `step`): loud is within 30 dB of the loudest and above -50; a gap under 80 ms joins two. */
+export function burstsOf(peaks: number[], step: number): [number, number][] {
+  const top = Math.max(...peaks.filter((peak) => Number.isFinite(peak)), -Infinity);
+  if (!Number.isFinite(top)) return [];
+  const loud = Math.max(top - 30, -50);
+  const out: [number, number][] = [];
+  peaks.forEach((peak, at) => {
+    if (!(peak > loud)) return;
+    const [from, to] = [at * step, (at + 1) * step];
+    const last = out[out.length - 1];
+    if (last !== undefined && from - last[1] < 0.08) last[1] = to;
+    else out.push([from, to]);
+  });
+  return out;
 }
 
 /** Seconds into the sound of its loudest 10 ms. */

@@ -794,6 +794,8 @@ export interface StylesSeam {
 export interface SfxSeam {
   /** The marker a placed sound lines up on the cut. */
   readonly HIT: string;
+  /** The marker on each other hit in a file of several (three clicks). */
+  readonly OTHER_HIT: string;
   /** A sound effect's name saying it's one moment (a whoosh, a hit), not a bed. */
   readonly MOMENT: RegExp;
   /** A one-moment effect longer than this (seconds) plays only its hit. */

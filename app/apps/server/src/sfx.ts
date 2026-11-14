@@ -14,6 +14,15 @@ import { join } from "./paths.ts";
 /** The marker a placed sound lines up on the cut. */
 export const HIT = "hit";
 
+/**
+ * A marker on each other hit in a file of several (library.hitsOf): the
+ * library's "Click… Variations" is three clicks in 1.2 s and "Clicks,
+ * Multiple" four in 3.1 s, under LONG_MOMENT, so they played whole: three
+ * clicks for one picture, on four videos (JJ, Oct 31–Nov 6: "the MP3 file
+ * with the click sound effect… actually has three different clicks inside").
+ */
+export const OTHER_HIT = "another hit";
+
 /** A sound effect's name saying it's one moment (a whoosh, a hit), not a bed. */
 export const MOMENT = /whoosh|swoosh|swish|impact|\bhit\b|boom|click|riser|stinger|slam|thud|transition|shutter/iu;
 
