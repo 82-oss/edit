@@ -27,12 +27,14 @@ import { creditCopies } from "../lib/copies";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
 import { NewNiche, NichePageDialog } from "./Niches";
-import { AddChannelButton, ChannelPills, ChannelsView } from "./Channels";
+import { AddChannelButton, ChannelAvatar, ChannelsView } from "./Channels";
+import { AREA, Aside, ChannelField, FIELD, Field, More, NewShell } from "./NewWork";
 import { loadChannels, useChannels } from "../lib/channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { AsideStatus, BackMark, BY, Category, CATEGORY, CHIP, COLUMNS, contextMenu, CreatorCell, KindMark, LaterContext, LENGTH, LengthCell, layoutFor, NAME, NoteMark, PILL, ROW, RowButtons, StatusCell, TableShape, Updated, useAside, useNote, withAside } from "./HomeTable";
 import { HomeSidebar, nameOf, OpenSidebar, placeOf, placeOfSection, PLACES, useSidebarOpen, type Place as Spot, type Section, type Where } from "./HomeSidebar";
-import { ThumbnailGrid, useMakeThumbnail } from "../thumbnails/list";
+import { ThumbnailGrid } from "../thumbnails/list";
+import { NewThumbnail } from "../thumbnails/new";
 import { Loader, Tile } from "./Logo";
 import { SetupCard } from "./SetupCard";
 import { StartedBy } from "./StartedBy";
@@ -95,6 +97,12 @@ export function Home() {
   const [cloud, setCloud] = useKept<CloudList | null>("home.cloud", null);
   const [statuses, setStatuses] = useKept<Record<string, ProjectStatus>>("home.statuses", {});
   const [creating, setCreating] = useState(false);
+  /** Which New it is: kept while the dialog closes, so it doesn't turn into the other on its way out. */
+  const [work, setWork] = useState<"edit" | "script">("edit");
+  const startNew = (kind: "edit" | "script") => {
+    setWork(kind);
+    setCreating(true);
+  };
   // Channels are V2's (the beta): Home's Channels, and Add channel over it.
   const v2 = useBeta((beta) => beta.v2);
   const [addingChannel, setAddingChannel] = useState(false);
@@ -151,13 +159,13 @@ export function Home() {
   const hasEdits = (projects?.length ?? 0) > 0 || (cloud?.projects?.length ?? 0) > 0;
   const edits = makes || hasEdits || (!ideasAllowed && !writesScripts(account) && scripts.length === 0);
   const places: Spot[] = [...(ideasAllowed ? (["ideas"] as const) : []), ...(writesScripts(account) || scripts.length > 0 ? (["scripts"] as const) : []), ...(edits ? (["edits"] as const) : [])];
-  // New project: only for someone who writes scripts or makes videos.
-  const mayCreate = makes || writesScripts(account);
   // One place at a time, remembered on this browser; /ideas is Home on its Ideas (the idea page's way back).
   // /thumbnails is Home on its Thumbnails (a thumbnail's way back), as /ideas is on its Ideas.
   const [where, setWhere] = useState<Where>(() => (window.location.pathname === "/ideas" ? "ideas" : window.location.pathname === "/thumbnails" ? "thumbnails" : window.location.pathname === "/channels" ? "channels" : savedWhere()));
   const shownWhere: Where = (placeOf(where).place !== null && !places.includes(placeOf(where).place!)) || (where === "thumbnails" && !ideasAllowed) || (where === "channels" && !v2) ? (places[0] ?? "edits") : where;
-  const thumbnail = useMakeThumbnail();
+  // Each section's New is its own kind (Sphe, Nov 14: no switching between them); elsewhere, an edit for someone who makes them.
+  const newWork: "edit" | "script" | null = placeOf(shownWhere).place === "scripts" ? (writesScripts(account) ? "script" : null) : makes ? "edit" : writesScripts(account) ? "script" : null;
+  const [thumbOpen, setThumbOpen] = useState(false);
   // Yours, or everyone's (remembered on this browser); nobody signed in has nothing of their own.
   const [mineOnly, setMineOnly] = useState(() => localStorage.getItem(MINE) !== "0");
   const mine = mineOnly && account?.person != null;
@@ -184,7 +192,7 @@ export function Home() {
     sessionStorage.removeItem("edit.newProject");
     try {
       setStart(JSON.parse(given) as NewProjectStart);
-      setCreating(true);
+      startNew("script");
     } catch {
       // Not ours.
     }
@@ -543,12 +551,12 @@ export function Home() {
               ) : inChannels ? (
                 <AddChannelButton onClick={() => setAddingChannel(true)} />
               ) : inThumbnails ? (
-                <Button variant="light" busy={thumbnail.making} onClick={(event) => thumbnail.make(event.currentTarget)}>
+                <Button variant="light" onClick={() => setThumbOpen(true)}>
                   <Plus size={15} strokeWidth={2.2} /> New thumbnail
                 </Button>
-              ) : mayCreate ? (
-                <Button variant="light" onClick={() => setCreating(true)}>
-                  <Plus size={15} strokeWidth={2.2} /> New project
+              ) : newWork !== null ? (
+                <Button variant="light" onClick={() => startNew(newWork)}>
+                  <Plus size={15} strokeWidth={2.2} /> {newWork === "script" ? "New script" : "New edit"}
                 </Button>
               ) : null}
             </div>
@@ -560,7 +568,7 @@ export function Home() {
               <ChannelsView adding={addingChannel} onAdding={setAddingChannel} />
             ) : inThumbnails ? (
               <div className="-mx-4 -mt-3">
-                <ThumbnailGrid making={thumbnail.making} onMake={thumbnail.make} />
+                <ThumbnailGrid onMake={() => setThumbOpen(true)} />
               </div>
             ) : (
             <>
@@ -613,7 +621,7 @@ export function Home() {
                 <Loader size={32} />
               </div>
             ) : nothingAtAll ? (
-              <FirstEdit cloudOn={Boolean(cloud?.on)} onNew={mayCreate ? () => setCreating(true) : null} />
+              <FirstEdit cloudOn={Boolean(cloud?.on)} onNew={newWork !== null ? () => startNew(newWork) : null} />
             ) : listed > 0 ? (
               <>
                 <HomeList groups={groups} solo={solo} cross={cross} lengthLabel={inIdeas ? "Views" : "Length"} />
@@ -637,7 +645,8 @@ export function Home() {
         </main>
       </div>
       <ImportDialog id={watching} writing={writing} issues={issues} onClose={() => setWatching(null)} />
-      <NewProject open={creating} onClose={() => { setCreating(false); setStart(null); }} only={null} start={start} />
+      <NewProject work={work} open={creating} onClose={() => { setCreating(false); setStart(null); }} start={start} />
+      {ideasAllowed && <NewThumbnail open={thumbOpen} onClose={() => setThumbOpen(false)} />}
       {ideasAllowed && <NewIdea open={ideaOpen} onClose={() => setIdeaOpen(false)} onMade={refreshIdeas} />}
     </LaterContext.Provider>
   );
@@ -2056,22 +2065,20 @@ const WRITER_KIND: Partial<Record<Style, "foia" | "interrogation" | "courtroom">
 type Source = { url: string; title: string; durationMs: number | null; reuse: boolean; earlier?: string; problem: string | null; warning?: string | null; again?: boolean };
 
 /**
- * New project: a title, then what it's made from, then the kind and a first
- * word to its agent. Writing a script takes the footage (a Trello card opens
- * into its videos) and any reused cases, ticked when they're recognised; an
- * edit takes its script's Doc, and videos only as reuses (footage to cut goes
- * through a script). The import runs on Home, then the script workflow or the
- * edit workflow starts by itself (the user, Oct 30).
+ * New edit and New script (Nov 14, the one New dialog's frame: NewWork.tsx),
+ * each opened from its own section and staying that kind. A script takes the
+ * footage (a Trello card opens into its videos, a reused case is ticked when
+ * it's recognised), its title from the card or the video. An edit starts from
+ * a script written in Edit, searched (Sphe, Nov 14: "we should probably favor
+ * picking from in-app scripts"; prod since Nov 4: 26 of the 30 newest edits
+ * were), or from a pasted Doc, or blank for the agent's chat. The import runs
+ * on Home, then the script or edit workflow starts by itself (the user, Oct 30).
  */
-export function NewProject({ open, onClose, only = null, start = null }: { open: boolean; onClose: () => void; only?: Style | null; start?: NewProjectStart | null }) {
+export function NewProject({ work, open, onClose, start = null }: { work: "edit" | "script"; open: boolean; onClose: () => void; start?: NewProjectStart | null }) {
   const account = useAccount((state) => state.account);
   const allowed = editStyles(account);
-  const writes = writesScripts(account);
-  // Edit from a script: only for someone who makes full edits (a style of theirs).
-  const edits = allowed === null || allowed.size > 0;
   const grants = useGrants();
   const [title, setTitle] = useState("");
-  const [mode, setMode] = useState<"write" | "edit">(writes ? "write" : "edit");
   const [text, setText] = useState("");
   const [style, setStyle] = useState<Style>("bodycam");
   const [picked, setPicked] = useState(false);
@@ -2105,7 +2112,17 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
 
   const input = text.trim();
   const links = input.match(LINK) ?? [];
-  const writing = mode === "write";
+  const writing = work === "script";
+  // An edit: from a script written in Edit (searched), or a pasted Doc.
+  const [from, setFrom] = useState<"list" | "paste">("list");
+  const [scripts, setScripts] = useState<WriterScriptRow[] | null>(null);
+  const [query, setQuery] = useState("");
+  const [scriptId, setScriptId] = useState<string | null>(null);
+  /** The title typed by hand: then it's never filled in from the footage. */
+  const typedTitle = useRef(false);
+  // With none ready to edit (the team's scripts read, none built), a pasted Doc is the way in.
+  const anyScripts = scripts === null || scripts.some((one) => one.built && isListed(one));
+  const listed = !writing && from === "list" && anyScripts;
   // Only the kinds this person may write or edit, as the server allows them.
   const writable = (style: Style): boolean => {
     if (style === "commentary") return grants.has(CAN.commentary);
@@ -2140,12 +2157,27 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
     setChannelKey(null);
     setCompilation(null);
     setOtherKinds(false);
-    setMode(writes ? "write" : "edit");
+    setFrom("list");
+    setQuery("");
+    setScriptId(null);
+    typedTitle.current = start !== null;
     // A switch made in Settings on this computer is seen as the dialog opens.
     void loadBeta().catch(() => {});
     if (start !== null) setStyle(start.style);
-    else if (only !== null) setStyle(only);
   }, [open]);
+
+  // An edit's scripts: the team's, read as the dialog opens.
+  useEffect(() => {
+    if (!open || writing) return;
+    let alive = true;
+    api.writerScripts().then(
+      (answer) => alive && setScripts(answer.scripts),
+      () => alive && setScripts([]),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [open, writing]);
 
   // V2's niches asked again as the dialog opens (one may have been made elsewhere).
   useEffect(() => {
@@ -2167,7 +2199,7 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
         for (const line of input.split(/\n+/).map((one) => one.trim()).filter(Boolean)) {
           if (TRELLO.test(line)) {
             const card = await writer.trelloCard(line.match(LINK)?.[0] ?? line);
-            if (alive && title.trim() === "" && card.name) setTitle(card.name);
+            if (alive && !typedTitle.current && card.name) setTitle(card.name);
             lines.push(...card.lines);
           } else lines.push(line);
         }
@@ -2192,7 +2224,13 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
             // Marius: four of six links showed only their URL).
             if (checked.some((one) => one.title === "" && one.problem === null && one.warning !== null && /youtu/.test(one.url))) checked = await writer.checkVideos([line]).catch(() => checked);
             known.set(line, checked.map((one) => ({ url: one.url, title: one.title, durationMs: one.durationMs, reuse: one.reuse, ...(one.earlier ? { earlier: one.earlier } : {}), problem: one.problem, warning: one.warning })));
-            if (alive) setSources(shown());
+            if (alive) {
+              const now = shown();
+              setSources(now);
+              // No title given or carded: the first video's own, to change (Sphe, Nov 14: the title comes from what's pasted).
+              const first = now.find((one) => !one.reuse && one.title !== "");
+              if (first !== undefined) setTitle((was) => (typedTitle.current || was.trim() !== "" ? was : first.title));
+            }
           }
         };
         await Promise.all(Array.from({ length: Math.min(4, fresh.length) }, lane));
@@ -2251,8 +2289,15 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
     may: { single: writerKind !== undefined && grants.singleKinds.includes(writerKind), compilation: writerKind !== undefined && grants.compilationKinds.includes(writerKind) },
   });
   const editDoc = !writing && links.some((link) => DOC.test(link));
-  const ready =
-    title.trim() !== "" &&
+  // The scripts an edit can start from: built, a person's, of the channel picked (or of none), the words searched.
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const choosable = (scripts ?? [])
+    .filter((one) => one.built && isListed(one) && (channel === null || !one.channel || one.channel === channel.key))
+    .filter((one) => words.every((word) => one.title.toLowerCase().includes(word)))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 60);
+  const pickedScript = (scripts ?? []).find((one) => one.id === scriptId) ?? null;
+  const ready = listed ? pickedScript !== null : title.trim() !== "" &&
     // With channels to pick from, one is picked, or another kind under Other kinds.
     (!showChannels || channel !== null || otherKinds) &&
     (writing
@@ -2267,6 +2312,21 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
     setError(null);
     const extra = prompt.trim();
     try {
+      if (listed && pickedScript !== null) {
+        // Already edited: its edit, rather than a second one.
+        if (pickedScript.project !== null) {
+          onClose();
+          navigate(`/p/${pickedScript.project}`);
+          return;
+        }
+        const { project } = await api.importWriter(pickedScript.id, channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}) } : {});
+        // The edit workflow starts once its footage is in, as a pasted Doc's does.
+        await api.firstPrompt(project, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`);
+        onClose();
+        useEditor.getState().setMediaTab("downloads");
+        navigate(`/p/${project}`);
+        return;
+      }
       if (writing) {
         const writer = await import("../writer/api");
         // The script workflow starts once the footage is in: the first message is its note.
@@ -2318,7 +2378,6 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
     }
   };
 
-  const field = "h-9 w-full rounded-lg border border-line bg-black px-3 text-[13px] outline-none placeholder:text-faint focus:border-muted";
   const label = "mb-1.5 block text-[12px] font-medium text-muted";
   // Today's kinds and V2's niches: New project's own pick without channels, Other kinds' with them.
   const kindBlock = (labelled: boolean) => (
@@ -2412,218 +2471,274 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
         </div>
   );
 
-  return (
-    <Modal open={open} onClose={onClose} width={580}>
-      <form
-        className="flex flex-col gap-5 p-6"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void create();
+  const pickChannel = (key: string | null) => {
+    setChannelKey(key);
+    setCompilation(null);
+    setNiche(null);
+    setOtherKinds(false);
+    // A script of another channel is no longer one of the list's.
+    const chosenNow = (channels ?? []).find((one) => one.key === key) ?? null;
+    if (chosenNow !== null && pickedScript?.channel && pickedScript.channel !== chosenNow.key) setScriptId(null);
+  };
+  // The script picked: its channel picked with it, when it has one and none is yet.
+  const pickScript = (row: WriterScriptRow) => {
+    setScriptId(row.id === scriptId ? null : row.id);
+    if (row.id !== scriptId && channelKey === null && row.channel && (channels ?? []).some((one) => one.key === row.channel)) setChannelKey(row.channel);
+  };
+  // Compilation is a channel's edit's, set as the channel has it unless changed here.
+  const compiles = !writing && channel !== null;
+  const action = busy ? "Starting…" : writing ? "Write the script" : listed ? (pickedScript?.project ? "Open its edit" : "Start the edit") : input === "" ? "Create" : "Start the edit";
+
+  const footageList = writing && !commentary && (reading || sources !== null) && (
+    <div className="mt-2 max-h-[220px] divide-y divide-line overflow-y-auto rounded-lg border border-line">
+      {reading && (sources === null || sources.length === 0) ? (
+        <div className="shimmer px-3 py-2 text-[12px] text-muted">Reading the footage…</div>
+      ) : (
+        (sources ?? []).map((one, index) => (
+          <div key={`${one.url}-${index}`} className="flex items-center gap-3 px-3 py-2 text-[12px]">
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-fg" title={one.url}>
+                {one.title || one.url}
+              </span>
+              {(reading || one.again) && one.title === "" && one.problem === null && <span className="shimmer block text-faint">Checking…</span>}
+              {one.problem !== null && <span className="block truncate text-danger">{one.problem}</span>}
+              {one.problem === null && !one.again && one.warning && <span className="block truncate text-faint" title={one.warning}>{one.warning}</span>}
+            </span>
+            {one.durationMs !== null && <span className="shrink-0 text-faint tabular">{shortDuration(one.durationMs / 1000)}</span>}
+            <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-muted" title="A case the channel already covered: put in as it was, not written again">
+              <input
+                type="checkbox"
+                checked={one.reuse}
+                onChange={(event) => {
+                  ticked.current.set(one.url, event.target.checked);
+                  setSources((all) => (all ?? []).map((other, at) => (at === index ? { ...other, reuse: event.target.checked } : other)));
+                }}
+              />
+              Reuse
+            </label>
+          </div>
+        ))
+      )}
+    </div>
+  );
+
+  const pasteBox = (
+    <textarea
+      rows={3}
+      autoFocus={writing}
+      value={text}
+      placeholder={
+        writing
+          ? commentary
+            ? "Paste the sources: videos, articles, posts. The first is the brief."
+            : "Paste the footage: YouTube or Drive videos, or a Trello card. A case the channel already covered goes in as a reuse."
+          : chosen || channel !== null
+            ? "Paste the script’s Google Doc, or leave this empty to start blank and send the footage in the chat."
+            : NARRATION[kind] === "recording"
+              ? "Paste the script’s Google Doc, or all its text (copied from the Doc, links and all), and “Voice-over:” with the recording’s Drive link."
+              : "Paste the script’s Google Doc, or all its text (copied from the Doc, links and all). A finished video added under it goes in whole, as a reuse."
+      }
+      onChange={(event) => setText(event.target.value)}
+      onPaste={(event) => {
+        const plain = event.clipboardData.getData("text/plain");
+        const pasted = importPaste(event.clipboardData.getData("text/html"), plain);
+        if (pasted === plain) return;
+        event.preventDefault();
+        const node = event.currentTarget;
+        setText(text.slice(0, node.selectionStart) + pasted + text.slice(node.selectionEnd));
+      }}
+      className={AREA}
+    />
+  );
+
+  const titleField = (
+    <Field label="Title" hint={writing && !typedTitle.current && title !== "" ? "from the footage" : undefined}>
+      <input
+        autoFocus={!writing}
+        value={title}
+        onChange={(event) => {
+          typedTitle.current = true;
+          setTitle(event.target.value);
         }}
-      >
-        <h2 className="text-[17px] font-semibold tracking-[-0.2px]">New project</h2>
+        placeholder="What the video is called"
+        className={FIELD}
+      />
+    </Field>
+  );
 
-        <label>
-          <span className={label}>Title</span>
-          <input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="What the video is called" className={field} />
-        </label>
-
-        {writes && edits && (
-          <div className="flex h-[30px] w-fit gap-0.5 rounded-lg border border-line bg-black p-0.5">
-            {(
-              [
-                ["write", "Write a script"],
-                ["edit", "Edit from a script"],
-              ] as const
-            ).map(([value, name]) => (
-              <button
-                type="button"
-                key={value}
-                onClick={() => setMode(value)}
-                className={cx("rounded-md px-3 text-[12px] font-medium transition-colors", mode === value ? "bg-active text-fg" : "text-muted hover:text-fg")}
-              >
-                {name}
-              </button>
-            ))}
-          </div>
-        )}
-
-        <div>
-          <span className={label}>{writing ? (commentary ? "Sources" : "Footage") : "Script"}</span>
-          <textarea
-            rows={3}
-            value={text}
-            placeholder={
-              writing
-                ? commentary
-                  ? "Paste the sources: videos, articles, posts. The first is the brief."
-                  : "Paste the footage: YouTube or Drive videos, or a Trello card. A case the channel already covered goes in as a reuse."
-                : chosen || channel !== null
-                  ? "Paste the script’s Google Doc, or leave this empty to start blank and send the footage in the chat."
-                  : NARRATION[kind] === "recording"
-                  ? "Paste the script’s Google Doc, or all its text (copied from the Doc, links and all), and “Voice-over:” with the recording’s Drive link."
-                  : "Paste the script’s Google Doc, or all its text (copied from the Doc, links and all). A finished video added under it goes in whole, as a reuse."
-            }
-            onChange={(event) => setText(event.target.value)}
-            onPaste={(event) => {
-              const plain = event.clipboardData.getData("text/plain");
-              const pasted = importPaste(event.clipboardData.getData("text/html"), plain);
-              if (pasted === plain) return;
-              event.preventDefault();
-              const node = event.currentTarget;
-              setText(text.slice(0, node.selectionStart) + pasted + text.slice(node.selectionEnd));
-            }}
-            className="w-full resize-none rounded-lg border border-line bg-black px-3 py-2.5 text-[13px] outline-none placeholder:text-faint focus:border-muted"
-          />
-          {writing && !commentary && (reading || sources !== null) && (
-            <div className="mt-2 max-h-[220px] divide-y divide-line overflow-y-auto rounded-lg border border-line">
-              {reading && (sources === null || sources.length === 0) ? (
-                <div className="shimmer px-3 py-2 text-[12px] text-muted">Reading the footage…</div>
-              ) : (
-                (sources ?? []).map((one, index) => (
-                  <div key={`${one.url}-${index}`} className="flex items-center gap-3 px-3 py-2 text-[12px]">
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate text-fg" title={one.url}>
-                        {one.title || one.url}
-                      </span>
-                      {(reading || one.again) && one.title === "" && one.problem === null && <span className="shimmer block text-faint">Checking…</span>}
-                      {one.problem !== null && <span className="block truncate text-danger">{one.problem}</span>}
-                      {one.problem === null && !one.again && one.warning && <span className="block truncate text-faint" title={one.warning}>{one.warning}</span>}
-                    </span>
-                    {one.durationMs !== null && <span className="shrink-0 text-faint tabular">{shortDuration(one.durationMs / 1000)}</span>}
-                    <label className="flex shrink-0 cursor-pointer items-center gap-1.5 text-muted" title="A case the channel already covered: put in as it was, not written again">
-                      <input
-                        type="checkbox"
-                        checked={one.reuse}
-                        onChange={(event) => {
-                          ticked.current.set(one.url, event.target.checked);
-                          setSources((all) => (all ?? []).map((other, at) => (at === index ? { ...other, reuse: event.target.checked } : other)));
-                        }}
-                      />
-                      Reuse
-                    </label>
-                  </div>
-                ))
-              )}
-            </div>
-          )}
-          {several && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {SHAPES.map(([value, name, makes]) => (
-                <button
-                  type="button"
-                  key={value}
-                  disabled={videos.fixed !== null && videos.shape !== value}
-                  title={videos.fixed !== null && videos.shape !== value ? videos.fixed : makes}
-                  onClick={() => setShape(value)}
-                  className={cx(
-                    "flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition-colors",
-                    videos.shape === value ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
-                    "disabled:cursor-default disabled:opacity-40 disabled:hover:text-muted",
-                  )}
-                >
-                  {name}
-                </button>
-              ))}
-            </div>
-          )}
-          {!writing && preview && (
-            <div className="mt-1.5 text-[12px] text-muted">
-              {preview.error ? (
-                <ProblemView error={preview.error} doing="read the script" className="whitespace-normal" />
-              ) : preview.result ? (
-                <>
-                  <span className="tabular">
-                    {preview.result.title || "Untitled script"} · {preview.result.files} {preview.result.files === 1 ? "source" : "sources"} · {preview.result.narration} cut-ins
-                    {preview.result.whole ? "" : ` · ${shortDuration(preview.result.seconds)}`}
-                  </span>
-                  {preview.result.finished?.map((one) => (
-                    <span key={one} className="block truncate text-faint">
-                      Reuse, whole: {one}
-                    </span>
-                  ))}
-                  {preview.result.reused?.map((one) => (
-                    <span key={one.doc} className="block truncate text-faint">
-                      Reuse, as written: {one.title || "a linked script"}
-                    </span>
-                  ))}
-                </>
-              ) : (
-                <span className="shimmer">Reading the script…</span>
-              )}
-            </div>
-          )}
-        </div>
-
-        {showChannels ? (
-          <div>
-            <span className={label}>Channel</span>
-            <ChannelPills
-              channels={channels ?? []}
-              value={channelKey}
-              lane={writing ? "script" : "edit"}
-              onChange={(key) => {
-                setChannelKey(key);
-                setCompilation(null);
-                setNiche(null);
-                setOtherKinds(false);
-              }}
-            />
-            <AnimatePresence initial={false}>
-              {channel !== null && !writing && (
-                <motion.label initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={spring} className="flex items-center gap-2.5 overflow-hidden pt-2.5 text-[12.5px] text-muted">
-                  <Switch checked={compilation ?? channel.compilation} onChange={setCompilation} />
-                  Compilation
-                </motion.label>
-              )}
-            </AnimatePresence>
-            <button type="button" onClick={() => { setOtherKinds(!otherKinds); setChannelKey(null); }} className="mt-2.5 flex items-center gap-1 text-[12px] text-faint transition-colors hover:text-muted">
-              Other kinds
-              <ChevronDown size={12} className={cx("transition-transform", otherKinds && "rotate-180")} />
-            </button>
-            <AnimatePresence initial={false}>
-              {otherKinds && (
-                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={spring} className="overflow-hidden pt-2">
-                  {kindBlock(false)}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
+  return (
+    <NewShell
+      kind={work}
+      open={open}
+      onClose={onClose}
+      onSubmit={() => void create()}
+      ready={ready && !busy}
+      busy={busy}
+      action={action}
+      error={
+        <>
+          {error && <p className="pt-3 text-[12px] text-danger">{error}</p>}
+          {!error && blocked && !reading && <p className="pt-3 text-[12px] text-muted">Take out the video that can’t be imported, or tick it as a reuse.</p>}
+        </>
+      }
+      aside={
+        writing || scripts === null || !anyScripts ? undefined : listed ? (
+          <Aside onClick={() => setFrom("paste")}>Paste a Doc instead</Aside>
         ) : (
-          kindBlock(true)
-        )}
+          <Aside onClick={() => setFrom("list")}>Pick a script instead</Aside>
+        )
+      }
+      after={
+        <>
+          <NewNiche
+            open={making}
+            onClose={() => setMaking(false)}
+            onMade={(made) => {
+              setStyle(made.kind);
+              setNiche(made.key);
+              setPicked(true);
+            }}
+          />
+          <NichePageDialog open={page.open} nicheKey={page.key} onClose={() => setPage((now) => ({ ...now, open: false }))} />
+        </>
+      }
+    >
+      <ChannelField
+        kind={work}
+        channels={showChannels ? (channels ?? []) : []}
+        value={channelKey}
+        onChange={pickChannel}
+        // An edit from a script is the script's kind: today's kinds are a pasted Doc's or a script's to write.
+        other={listed ? undefined : kindBlock(false)}
+        otherOpen={otherKinds}
+        onOther={(next) => {
+          setOtherKinds(next);
+          if (next) setChannelKey(null);
+        }}
+      />
 
-        <label>
-          <span className={label}>First message (optional)</span>
+      {listed ? (
+        <Field label="Script" hint={channel !== null ? `${channel.title}’s, newest first` : "ready to edit, newest first"}>
+          <label className="flex h-9 items-center gap-2 rounded-lg border border-line bg-black px-3 text-muted transition-colors focus-within:border-muted">
+            <Search size={13} className="shrink-0" />
+            <input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search the scripts" className="min-w-0 flex-1 bg-transparent text-[13px] text-fg outline-none placeholder:text-faint" />
+          </label>
+          <div className="mt-1.5 max-h-[248px] overflow-y-auto rounded-lg border border-line">
+            {scripts === null ? (
+              <div className="shimmer px-3 py-2.5 text-[12px] text-muted">Reading the scripts…</div>
+            ) : choosable.length === 0 ? (
+              <div className="px-3 py-3 text-[12px] text-faint">{words.length > 0 ? "No script by that name." : `None of ${channel?.title ?? "the team"}’s scripts are ready to edit yet.`}</div>
+            ) : (
+              choosable.map((one) => {
+                const on = one.id === scriptId;
+                const owner = one.channel ? (channels ?? []).find((each) => each.key === one.channel) : undefined;
+                return (
+                  <button
+                    type="button"
+                    key={one.id}
+                    onClick={() => pickScript(one)}
+                    aria-pressed={on}
+                    className={cx("flex w-full items-center gap-3 border-b border-line px-3 py-2 text-left transition-colors last:border-b-0", on ? "bg-active" : "hover:bg-hover")}
+                  >
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-[13px] font-medium text-fg">{one.title}</span>
+                      <span className="block truncate text-[11.5px] text-faint">
+                        {[one.style ? (STYLES.find((each) => each.value === one.style)?.label ?? one.style) : null, one.compilation ? "compilation" : null, one.durationMs > 0 ? shortDuration(one.durationMs / 1000) : null, ago(one.updatedAt), one.createdBy?.name?.split(" ")[0] ?? null].filter(Boolean).join(" · ")}
+                      </span>
+                    </span>
+                    {one.project !== null && <span className="shrink-0 rounded-md bg-active px-1.5 py-0.5 text-[11px] text-muted">Has an edit</span>}
+                    {owner !== undefined && channel === null && <ChannelAvatar channel={owner} size={18} />}
+                    <span className={cx("flex size-4 shrink-0 items-center justify-center rounded-full transition-colors", on ? "bg-fg text-bg" : "text-transparent")}>
+                      <Check size={11} strokeWidth={3} />
+                    </span>
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </Field>
+      ) : writing ? (
+        <>
+          <Field label={commentary ? "Sources" : "Footage"} hint={commentary ? "the first is the brief" : "YouTube, Drive or a Trello card"}>
+            {pasteBox}
+            {footageList}
+            {several && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {SHAPES.map(([value, name, makes]) => (
+                  <button
+                    type="button"
+                    key={value}
+                    disabled={videos.fixed !== null && videos.shape !== value}
+                    title={videos.fixed !== null && videos.shape !== value ? videos.fixed : makes}
+                    onClick={() => setShape(value)}
+                    className={cx(
+                      "flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition-colors",
+                      videos.shape === value ? "border-fg bg-fg text-bg" : "border-line text-muted hover:text-fg",
+                      "disabled:cursor-default disabled:opacity-40 disabled:hover:text-muted",
+                    )}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            )}
+          </Field>
+          {titleField}
+        </>
+      ) : (
+        <>
+          {titleField}
+          <Field label="Script" hint="a Google Doc, or empty to start blank">
+            {pasteBox}
+            {preview && (
+              <div className="mt-1.5 text-[12px] text-muted">
+                {preview.error ? (
+                  <ProblemView error={preview.error} doing="read the script" className="whitespace-normal" />
+                ) : preview.result ? (
+                  <>
+                    <span className="tabular">
+                      {preview.result.title || "Untitled script"} · {preview.result.files} {preview.result.files === 1 ? "source" : "sources"} · {preview.result.narration} cut-ins
+                      {preview.result.whole ? "" : ` · ${shortDuration(preview.result.seconds)}`}
+                    </span>
+                    {preview.result.finished?.map((one) => (
+                      <span key={one} className="block truncate text-faint">
+                        Reuse, whole: {one}
+                      </span>
+                    ))}
+                    {preview.result.reused?.map((one) => (
+                      <span key={one.doc} className="block truncate text-faint">
+                        Reuse, as written: {one.title || "a linked script"}
+                      </span>
+                    ))}
+                  </>
+                ) : (
+                  <span className="shimmer">Reading the script…</span>
+                )}
+              </div>
+            )}
+          </Field>
+        </>
+      )}
+
+      <More names={compiles ? "compilation, first message" : "first message"} set={prompt !== "" || compilation !== null}>
+        {compiles && channel !== null && (
+          <label className="flex items-center justify-between gap-3">
+            <span>
+              <span className="block text-[13px]">Compilation</span>
+              <span className="block text-[12px] text-faint">{channel.title} {channel.compilation ? "makes compilations" : "makes one case a video"}; this one can differ</span>
+            </span>
+            <Switch checked={compilation ?? channel.compilation} onChange={setCompilation} />
+          </label>
+        )}
+        <Field label="First message" hint="optional">
           <input
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
-            placeholder={writing ? "Added to “Start the script workflow” once the footage is in" : input === "" ? "Sent to the agent as the project opens: the footage’s links, and what you want" : "Added to “Start the editing workflow” once the footage is in"}
-            className={field}
+            placeholder={writing ? "Added to “Start the script workflow” once the footage is in" : listed || input !== "" ? "Added to “Start the editing workflow” once the footage is in" : "Sent to the agent as the project opens: the footage’s links, and what you want"}
+            className={FIELD}
           />
-        </label>
-
-        {error && <p className="text-[12px] text-danger">{error}</p>}
-        {!error && blocked && !reading && <p className="text-[12px] text-muted">Take out the video that can’t be imported, or tick it as a reuse.</p>}
-        <div className="flex justify-end gap-2">
-          <Button type="button" variant="subtle" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button type="submit" variant="primary" disabled={busy || !ready}>
-            {busy ? "Starting…" : writing ? "Write the script" : input === "" ? "Create" : "Start the edit"}
-          </Button>
-        </div>
-      </form>
-      <NewNiche
-        open={making}
-        onClose={() => setMaking(false)}
-        onMade={(made) => {
-          setStyle(made.kind);
-          setNiche(made.key);
-          setPicked(true);
-        }}
-      />
-      <NichePageDialog open={page.open} nicheKey={page.key} onClose={() => setPage((now) => ({ ...now, open: false }))} />
-    </Modal>
+        </Field>
+      </More>
+    </NewShell>
   );
 }

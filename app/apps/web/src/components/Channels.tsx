@@ -51,7 +51,12 @@ export function ChannelPills({ channels, value, lane, onChange }: { channels: Ch
           key={one.key}
           title={one.lanes[lane] || one.title}
           onClick={() => onChange(value === one.key ? null : one.key)}
-          className={cx("flex h-8 items-center gap-2 rounded-full border pr-3 pl-1 text-[12.5px] font-medium transition-colors", value === one.key ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg")}
+          aria-pressed={value === one.key}
+          // Picked, it's white (Sphe, Nov 14: "way more clear, maybe with a white background"), as the switches and Home's main button are.
+          className={cx(
+            "flex h-8 items-center gap-2 rounded-full border pr-3 pl-1 text-[12.5px] font-medium transition-[background-color,border-color,color] duration-150",
+            value === one.key ? "border-fg bg-fg text-bg" : "border-line text-muted hover:border-line-strong hover:text-fg",
+          )}
         >
           <ChannelAvatar channel={one} size={22} />
           {one.title}

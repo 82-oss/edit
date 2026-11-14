@@ -18,6 +18,8 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
+import * as beta from "./beta.ts";
+import * as channels from "./channels.ts";
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
 import { ApiError } from "./http/errors.ts";
@@ -65,6 +67,8 @@ export interface WriterScript {
   sourceKind?: string;
   sourceUrl?: string;
   kind?: string;
+  /** The channel it was written for (Script's channel). */
+  channel?: string;
   clips?: { id: string; startMs: number; endMs: number; kind?: string; narration?: string; reuse?: string; notes?: WriterNote[] }[];
   parts?: { title: string; startMs: number; durationMs: number; url?: string; reuse?: string; mediaSource?: string; originalKey?: string }[];
   reuses?: { url: string; after: number; title?: string; script?: string; scriptTitle?: string; scriptText?: string; scriptBlocks?: ScriptBlock[] }[];
@@ -386,7 +390,22 @@ export function carryResearch(app: App, scriptId: string, projectId: string): vo
 }
 
 /** Makes an Edit project from a Writer script and starts its import (footage, transcripts, voice-over, layout). */
-export async function importScript(app: App, id: string): Promise<{ project: string }> {
+/**
+ * What an edit made from a script is for: `channel`, the channel picked in New
+ * edit (its project is that channel's, V2's: channels.channelFor); none
+ * picked, the script's own channel when it has one and V2 is on here, else
+ * today's kind of edit. `compilation`: the channel's unless this one differs.
+ */
+export type ImportFor = { channel?: unknown; compilation?: unknown };
+
+/** The channel an edit of `given` is made for: the one asked for, else the script's own while V2 is on and it's still there. */
+async function channelOfImport(app: App, given: { channel?: string }, asked: ImportFor): Promise<channels.Channel | null> {
+  if (asked.channel !== undefined && asked.channel !== null && asked.channel !== "") return channels.channelFor(asked.channel, app.store.home);
+  if (!given.channel || !beta.read(app.store.home).v2) return null;
+  return channels.channelFor(given.channel, app.store.home).catch(() => null);
+}
+
+export async function importScript(app: App, id: string, asked: ImportFor = {}): Promise<{ project: string }> {
   const data = writerStore.dataDir(app.store.home);
   // Footage a revision brought in and still being heard exactly (writer/exact_after.ts): the edit is made from its exact times, not the captions'.
   if (writerStore.idOk(id)) {
@@ -406,10 +425,18 @@ export async function importScript(app: App, id: string): Promise<{ project: str
     await writerShare.shareNow(data, id);
     given = await fetchScript(id, app.store.home);
   }
-  const style = scriptStyle(given);
-  if (!kinds.mayEdit(style)) throw new Error(kinds.cantMake(`edit.${style}`));
+  const channel = await channelOfImport(app, given, asked);
+  // A channel's edit runs the way its videos are narrated (channels.styleOf), as New edit's channel projects do.
+  const style = channel !== null ? channels.styleOf(channel) : scriptStyle(given);
+  if (channel !== null ? !kinds.mayStart(style) : !kinds.mayEdit(style)) throw new Error(kinds.cantMake(`edit.${style}`));
   const parsed = toParsed(await resolveWriterCases(given));
-  const live = app.store.createAs(given.title, style, { width: 1920, height: 1080, fps: 30 });
+  const live = app.store.createAs(given.title, style, { width: 1920, height: 1080, fps: 30 }, channel !== null);
+  if (channel !== null) {
+    await app.store.update(live.project.id, "channel", (project) => {
+      project.channel = channel.key;
+      if (typeof asked.compilation === "boolean" && asked.compilation !== channel.compilation) project.compilation = asked.compilation;
+    });
+  }
   await app.store.update(live.project.id, "script", (project) => script.attach(project, `writer:${id}`, parsed));
   if (style === "commentary") {
     const dir = join(app.store.home, "research", live.project.id);
@@ -446,9 +473,11 @@ export function routes(router: Router<App>): void {
       throw new ApiError(400, diag.messageOf(error));
     }
   });
-  router.post("/api/writer/handoff/{id}/import", async ({ app, params }) => {
+  router.post("/api/writer/handoff/{id}/import", async (context) => {
+    const { app, params } = context;
     try {
-      return sorted(await importScript(app, params.id ?? ""));
+      const asked = (await context.request.json().catch(() => ({}))) as ImportFor | null;
+      return sorted(await importScript(app, params.id ?? "", asked ?? {}));
     } catch (error) {
       throw new ApiError(400, diag.messageOf(error));
     }

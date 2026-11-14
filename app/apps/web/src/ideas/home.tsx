@@ -2,11 +2,12 @@
 // its Ideas section (Drafts, On the board); the idea page a click away (the
 // user: "one tab, one mode, one page … i think thats better").
 
-import { ChannelPills, useChannelChoice } from "../components/Channels";
+import { useChannelChoice } from "../components/Channels";
+import { AREA, ChannelField, FIELD, Field, More, NewShell } from "../components/NewWork";
 import { ArrowUpRight, CircleAlert, ExternalLink, Eye, Lightbulb, MessageSquare, Send, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-import { Button, cx, DialogActions, DialogTitle, Field, Modal, Pulse, Switch, Tabs, TextArea, TextField } from "../components/ui";
+import { Button, cx, Pulse, Switch, Tabs } from "../components/ui";
 import { AsideStatus, BackMark, Category, CHIP, COLUMNS, contextMenu, CreatorCell, KindMark, LengthCell, NAME, ROW, RowButtons, StatusCell, Updated, useAside, withAside } from "../components/HomeTable";
 import { WORKSPACE_NAMES, type Workspace } from "@edit/types/ideas";
 import { ideasApi, NICHE, viewsLabel, type ChangeCard, type IdeaRow, type IdeasHome } from "../lib/ideas";
@@ -194,7 +195,11 @@ const KIND: Record<Workspace, { what: string; angle: string }> = {
   bodycam: { what: "YouTube bodycam videos or articles", angle: "e.g. what officers find inside, the moment she plays the victim" },
 };
 
-/** New idea: links (one idea each), interrogation or bodycam, the angle, a summary or not, the footage. */
+/**
+ * New idea, in New's frame (components/NewWork.tsx): the channel, the cases
+ * (links, one idea each), interrogation or bodycam where both are theirs and
+ * no channel says which; the angle, the footage and a summary under More.
+ */
 export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () => void; onMade: () => void }) {
   const [links, setLinks] = useState("");
   // The kinds this person works on (both: they choose; the last choice is remembered on this Mac).
@@ -260,66 +265,52 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
       .finally(() => setBusy(false));
   };
   return (
-    <Modal open={open} onClose={close} width={520}>
-      <div className="p-6">
-        <DialogTitle title="New idea" detail={`${KIND[workspace].what}, one a line. Each becomes an idea Claude repackages: 3–5 titles and a thumbnail guide.`} />
-        <div className="mt-4 flex flex-col gap-3">
-          <TextArea autoFocus value={links} onChange={(event) => setLinks(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" rows={4} aria-label="Links" />
-          {channels.length > 0 && (
-            <Field stacked label="Channel">
-              <ChannelPills channels={channels} value={channel} lane="ideas" onChange={pick} />
-            </Field>
-          )}
-          {workspaces.length > 1 && (
-            <div className="flex items-center justify-between text-[13px]">
-              <span>Kind</span>
-              <Tabs framed id="new-idea-kind" label="Kind of idea" value={workspace} onChange={choose} tabs={workspaces.map((value) => ({ value, label: WORKSPACE_NAMES[value] }))} />
-            </div>
-          )}
-          <Field
-            stacked
-            label={
-              <span>
-                Angle <span className="text-faint">(optional)</span>
-              </span>
-            }
-          >
-            <TextField value={steer} onChange={(event) => setSteer(event.target.value)} placeholder={KIND[workspace].angle} />
-          </Field>
-          {count <= 1 && (
-            <Field
-              stacked
-              label={
-                <span>
-                  Footage <span className="text-faint">(optional: YouTube or Drive links; the idea's page adds more and marks reuses)</span>
-                </span>
-              }
-            >
-              <TextField value={footage} onChange={(event) => setFootage(event.target.value)} placeholder="https://drive.google.com/drive/folders/…  https://youtu.be/…" />
-            </Field>
-          )}
-          <label className="flex items-center justify-between text-[13px]">
-            <span>
-              Write a summary <span className="text-[12px] text-faint">one paragraph, 35–55 words</span>
-            </span>
-            <Switch checked={summary} onChange={setSummary} />
-          </label>
+    <NewShell
+      kind="idea"
+      open={open}
+      onClose={close}
+      onSubmit={make}
+      ready={count > 0 && !busy}
+      busy={busy}
+      action={busy ? "Starting…" : count > 1 ? `Repackage ${count}` : "Repackage"}
+      error={
+        <>
+          {problem !== null && <p className="pt-3 text-[12px] whitespace-pre-line text-danger">{problem}</p>}
+          {known.map((one) => (
+            <button key={one.id} type="button" onClick={() => navigate(`/ideas/${one.id}`)} className="mt-2 block text-left text-[12px] text-warning hover:underline hover:underline-offset-[3px]">
+              {one.why} Open it ›
+            </button>
+          ))}
+        </>
+      }
+    >
+      <ChannelField kind="idea" channels={channels} value={channel} onChange={pick} />
+      <Field label="Cases" hint={`${KIND[workspace].what}, one a line`}>
+        <textarea autoFocus value={links} onChange={(event) => setLinks(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" rows={4} aria-label="Links" className={AREA} />
+      </Field>
+      {workspaces.length > 1 && channel === null && (
+        <div className="flex items-center justify-between text-[12px] font-medium text-muted">
+          <span>Kind</span>
+          <Tabs framed id="new-idea-kind" label="Kind of idea" value={workspace} onChange={choose} tabs={workspaces.map((value) => ({ value, label: WORKSPACE_NAMES[value] }))} />
         </div>
-        {problem !== null && <p className="mt-3 text-[12px] whitespace-pre-line text-danger">{problem}</p>}
-        {known.map((one) => (
-          <button key={one.id} type="button" onClick={() => navigate(`/ideas/${one.id}`)} className="mt-2 block text-left text-[12px] text-warning hover:underline hover:underline-offset-[3px]">
-            {one.why} Open it ›
-          </button>
-        ))}
-        <DialogActions>
-          <Button variant="subtle" onClick={close} disabled={busy}>
-            Cancel
-          </Button>
-          <Button variant="primary" onClick={make} busy={busy} disabled={count === 0}>
-            {count > 1 ? `Repackage ${count}` : "Repackage"}
-          </Button>
-        </DialogActions>
-      </div>
-    </Modal>
+      )}
+      <More names={count <= 1 ? "angle, footage, summary" : "angle, summary"} set={steer !== "" || footage !== "" || summary}>
+        <Field label="Angle" hint="optional">
+          <input value={steer} onChange={(event) => setSteer(event.target.value)} placeholder={KIND[workspace].angle} className={FIELD} />
+        </Field>
+        {count <= 1 && (
+          <Field label="Footage" hint="YouTube or Drive links; the idea's page adds more">
+            <input value={footage} onChange={(event) => setFootage(event.target.value)} placeholder="https://drive.google.com/drive/folders/…  https://youtu.be/…" className={FIELD} />
+          </Field>
+        )}
+        <label className="flex items-center justify-between gap-3">
+          <span>
+            <span className="block text-[13px]">Write a summary</span>
+            <span className="block text-[12px] text-faint">One paragraph, 35–55 words</span>
+          </span>
+          <Switch checked={summary} onChange={setSummary} />
+        </label>
+      </More>
+    </NewShell>
   );
 }

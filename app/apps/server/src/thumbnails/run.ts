@@ -788,7 +788,7 @@ async function prompt(session: Session, thumb: Thumbnail, asked: string, given: 
   }).catch(diag.warned("thumbnails", `${thumb.id}: its current drawing for the prompt`, null)) : null;
   const recent = thumb.chat.slice(-SENT_TURNS - 1, -1).map((turn) => `${turn.role === "you" ? (turn.by ?? "Producer") : "You (Claude)"}: ${turn.text}`);
   return [
-    `# The thumbnail: “${thumb.title || "New thumbnail"}”${thumb.brief ? `\nFor: ${thumb.brief}` : ""}`,
+    `# The thumbnail: “${thumb.title || "New thumbnail"}”${thumb.brief ? `\nIts thumbnail guide (the team's, what it's for and what goes in it): ${thumb.brief}` : ""}`,
     `Canvas ${WIDTH}×${HEIGHT}.`,
     images.length > 0 ? `# Its images (Read the ones you use)\n${images.join("\n")}` : "# Its images\nNone yet.",
     "# The chat\nThe person reads your words as Markdown, and it shows pictures: ![what it is](a picture's file path or image id).",

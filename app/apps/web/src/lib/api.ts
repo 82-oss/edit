@@ -400,8 +400,8 @@ export const api = {
   restoreProject: (id: string) => request<{ started: boolean }>("POST", `/api/projects/${id}/restore`),
   /** Writer's scripts in the cloud, newest first, each with the project made from it here. */
   writerScripts: () => request<{ scripts: WriterScriptRow[] }>("GET", "/api/writer/handoff"),
-  /** Makes an Edit project from a Writer script and starts its import. */
-  importWriter: (id: string) => request<{ project: string }>("POST", `/api/writer/handoff/${id}/import`),
+  /** Makes an Edit project from a Writer script and starts its import: the channel's (V2) when one is given, else the script's own channel's while V2 is on. */
+  importWriter: (id: string, made: { channel?: string; compilation?: boolean } = {}) => request<{ project: string }>("POST", `/api/writer/handoff/${id}/import`, made),
 };
 
 export interface WriterScriptRow {

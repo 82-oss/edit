@@ -65,6 +65,9 @@ const newId = (prefix: string) => `${prefix}${Date.now().toString(36)}-${Math.ra
 const shortId = () => Math.random().toString(36).slice(2, 10);
 const cleanName = (name: string, fallback: string) => name.replace(/\.[a-z0-9]{2,5}$/i, "").replace(/[^\p{L}\p{N} _-]+/gu, " ").trim().slice(0, 80) || fallback;
 
+
+/** A thumbnail's brief: what it's for, or its whole thumbnail guide (an idea's is a paragraph). */
+const GUIDE_MOST = 2000;
 function picture(bytes: Uint8Array, type: string, cache = "private, max-age=86400"): Response {
   return new Response(bytes, { headers: { "content-type": type, "cache-control": cache } });
 }
@@ -93,7 +96,7 @@ export function routes(router: Router<App>): void {
         while (taken.has(`Thumbnail ${next}`)) next++;
         title = `Thumbnail ${next}`;
       }
-      const thumb = run.fresh(newId("t"), who, title, typeof body.brief === "string" ? body.brief.trim().slice(0, 600) : "");
+      const thumb = run.fresh(newId("t"), who, title, typeof body.brief === "string" ? body.brief.trim().slice(0, GUIDE_MOST) : "");
       // Its workspace, chosen for them: the one they work on, or Interrogation's (Ideas' own default) for someone on both.
       thumb.workspace = workspacesOf()[0] ?? "interrogation";
       if (channel !== null) thumb.channel = channel.key;
@@ -157,7 +160,7 @@ export function routes(router: Router<App>): void {
       try {
         const { thumb, rev } = await cloud.change(context.params.id!, by(), (thumb) => {
           if (typeof body.title === "string") thumb.title = body.title.trim().slice(0, 120);
-          if (typeof body.brief === "string") thumb.brief = body.brief.trim().slice(0, 600);
+          if (typeof body.brief === "string") thumb.brief = body.brief.trim().slice(0, GUIDE_MOST);
         });
         return json({ thumb, rev });
       } catch (error) {

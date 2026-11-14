@@ -7,7 +7,6 @@
 import { Image as ImageIcon, MoreHorizontal, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-import { ChannelAvatar, useChannelChoice } from "../components/Channels";
 import { StartedBy } from "../components/StartedBy";
 import { openMenu, toggleMenu, type MenuItem } from "../components/ContextMenu";
 import { Button, ConfirmDialog, Pulse } from "../components/ui";
@@ -16,32 +15,8 @@ import { useEditor } from "../lib/store";
 import { renderUrl, thumbnailsApi, type ThumbRow } from "../lib/thumbnails";
 import { Loader } from "../components/Logo";
 
-/**
- * New thumbnail: makes one and opens it. With channels (V2's), the button
- * asks which one it's for first, in a menu beside it (its agent is taught
- * that channel's Thumbnails lane), or none.
- */
-export function useMakeThumbnail(): { making: boolean; make: (from: Element) => void } {
-  const [making, setMaking] = useState(false);
-  const toastError = useEditor((state) => state.toastError);
-  const channels = useChannelChoice(true);
-  const start = (channel: string | null) => {
-    setMaking(true);
-    void thumbnailsApi
-      .create("", "", channel)
-      .then(({ id }) => navigate(`/thumbnails/${id}`))
-      .catch((error: unknown) => toastError(error, "start a thumbnail"))
-      .finally(() => setMaking(false));
-  };
-  const make = (from: Element) => {
-    if (channels.length === 0) return start(null);
-    toggleMenu(from, [...channels.map((one): MenuItem => ({ label: one.title, icon: <ChannelAvatar channel={one} size={16} />, onSelect: () => start(one.key) })), { separator: true }, { label: "No channel", onSelect: () => start(null) }], { width: 220 });
-  };
-  return { making, make };
-}
-
 /** The thumbnails' grid (or the way to the first), looked at again every 10 s. */
-export function ThumbnailGrid({ making, onMake }: { making: boolean; onMake: (from: Element) => void }) {
+export function ThumbnailGrid({ onMake }: { onMake: () => void }) {
   const [rows, setRows] = useState<ThumbRow[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const load = useCallback(
@@ -72,7 +47,7 @@ export function ThumbnailGrid({ making, onMake }: { making: boolean; onMake: (fr
         <ImageIcon size={36} className="text-faint" />
         <h2 className="mt-5 text-[20px] font-semibold tracking-[-0.02em]">Make a thumbnail with Claude</h2>
         <p className="mt-2 max-w-[400px] text-muted">Give it a frame or a thumbnail to start from, or describe one. It makes pictures on the team's OpenArt account, cleans the base of overlays, and lays out the REC overlay and captions as the team does.</p>
-        <Button variant="light" className="mt-6" disabled={making} onClick={(event) => onMake(event.currentTarget)}>
+        <Button variant="light" className="mt-6" onClick={onMake}>
           <Plus size={15} strokeWidth={2.2} /> New thumbnail
         </Button>
       </div>
