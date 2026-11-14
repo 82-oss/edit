@@ -1,7 +1,8 @@
-// Test projects on Home (dev_projects.ts): a project a coding agent, a script
-// or a trial made is hidden, on every build, with no switch to show them
-// (Sphe, Nov 14: "I shouldn't see them"). One brought forth when asked for
-// (`shown`) is listed, marked Test, and can be promoted from its ⋯.
+// Test projects and scripts on Home (dev_projects.ts, writer/store.ts
+// TEST_FILE): one a coding agent, a script or a trial made is hidden, on every
+// build, with no switch to show them (Sphe, Nov 14: "I shouldn't see them").
+// One brought forth when asked for (`shown`) is listed, marked Test; a
+// project can be promoted from its ⋯.
 
 import { BadgeCheck } from "lucide-react";
 
@@ -9,9 +10,9 @@ import { useEditor } from "../lib/store";
 import type { ProjectSummary } from "../lib/types";
 import type { MenuItem } from "./ContextMenu";
 
-/** Whether Home lists it: every project but a test one not brought forth. */
-export function isListed(summary: { dev?: boolean; shown?: boolean } | null | undefined): boolean {
-  return summary?.dev !== true || summary.shown === true;
+/** Whether Home lists it: every project or script but a test one not brought forth (`dev` a project's mark, `test` a script's). */
+export function isListed(summary: { dev?: boolean; test?: boolean; shown?: boolean } | null | undefined): boolean {
+  return (summary?.dev !== true && summary?.test !== true) || summary.shown === true;
 }
 
 /** The small mark beside a test project's name. */

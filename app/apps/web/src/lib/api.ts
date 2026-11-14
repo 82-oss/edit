@@ -222,14 +222,18 @@ export interface ExportActivity {
   saved?: string;
 }
 
+/**
+ * What the app's own pages start (a project, a script) is a person's, so it isn't a test one (dev_projects.ts,
+ * writer/store.ts TEST_FILE): anything else that asks the server is. A browser an agent drives says it's automated
+ * (`navigator.webdriver`): what it makes is a test one, as an API call's is.
+ */
+export const byPerson = (): { person?: true } => (navigator.webdriver ? {} : { person: true });
+
 export const api = {
   projects: () => request<{ projects: ProjectSummary[] }>("GET", "/api/projects"),
-  /**
-   * Home's New project: a person's (`person`), so it isn't a test project (dev_projects.ts). A browser an agent drives
-   * says it's automated (`navigator.webdriver`): what it makes is a test project, as an API call's is.
-   */
+  /** Home's New project: a person's (`byPerson`). */
   createProject: (body: { name: string; style: Style; hq?: boolean; niche?: string; width: number; height: number; fps: number }) =>
-    request<Live>("POST", "/api/projects", { ...body, ...(navigator.webdriver ? {} : { person: true }) }),
+    request<Live>("POST", "/api/projects", { ...body, ...byPerson() }),
   project: (id: string) => request<Live>("GET", `/api/projects/${id}`),
   saveProject: (id: string, baseRev: number, project: Project, origin: string) =>
     request<{ rev: number }>("PUT", `/api/projects/${id}`, { base_rev: baseRev, project, origin }),
@@ -423,6 +427,9 @@ export interface WriterScriptRow {
   runFailed?: { at: number; error: string } | null;
   /** Its note, left from Home's ⋯. */
   note?: string;
+  /** A test script (writer/store.ts TEST_FILE): hidden on Home unless `shown`. */
+  test?: boolean;
+  shown?: boolean;
 }
 
 export interface ProjectStatus {

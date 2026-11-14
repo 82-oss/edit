@@ -112,7 +112,8 @@ export function Home() {
       out.scripts = true;
       void fetch("/api/writer/scripts")
         .then((answer) => (answer.ok ? answer.json() : []))
-        .then((rows: unknown) => setLocalScripts(Array.isArray(rows) ? (rows as ScriptIssueRow[]) : []), () => {})
+        // Test scripts aren't listed unless brought forth (TestProjects.tsx).
+        .then((rows: unknown) => setLocalScripts(Array.isArray(rows) ? (rows as ScriptIssueRow[]).filter(isListed) : []), () => {})
         .finally(() => (out.scripts = false));
     };
     look();
@@ -154,6 +155,9 @@ export function Home() {
   const [kind, setKind] = useState<Style | null>(() => (STYLES.some((one) => one.value === localStorage.getItem(KIND)) ? (localStorage.getItem(KIND) as Style) : null));
   const later = useLater();
   const [allDone, setAllDone] = useState(false);
+  // How far back (Sphe, Nov 14: "the default view be this week's content"): this week unless widened, kept while the
+  // window is open (sessionStorage), so opening a project and coming back doesn't narrow it again.
+  const [period, setPeriod] = useState<Period>(() => PERIODS.find((one) => one.value === sessionStorage.getItem(PERIOD))?.value ?? "week");
   const [sidebarOpen, setSidebarOpen] = useSidebarOpen();
   // An approved idea's "Write the script": New project opened with its title and links.
   const [start, setStart] = useState<NewProjectStart | null>(null);
@@ -188,7 +192,7 @@ export function Home() {
     if (writesScripts(useAccount.getState().account)) {
       void api
         .writerScripts()
-        .then(({ scripts }) => setScripts(scripts))
+        .then(({ scripts }) => setScripts(scripts.filter(isListed)))
         // Noted by api.ts; the last list stays until the next refresh.
         .catch(() => {});
     }
@@ -382,7 +386,10 @@ export function Home() {
     const { place: at, stage } = placeOf(place);
     return at !== null && placeOfSection(item.section) === at && (stage === null ? item.stage !== "done" : item.stage === stage);
   };
-  const ours = items.filter((item) => (!mine || item.mine) && (kind === null || item.kind === kind));
+  // In the period: changed since its start. What's set aside, or back from Later, is in it whenever it changed.
+  const since = periodStart(period);
+  const recent = (item: Item) => item.at >= since || aside(item) || backAt(item) !== null;
+  const ours = items.filter((item) => (!mine || item.mine) && (kind === null || item.kind === kind) && recent(item));
   const countOf = (place: Where) => ours.filter((item) => isIn(item, place)).length;
   // The foot's Later: how many are set aside, and the next to come back.
   const setAside = ours.filter((item) => isIn(item, "later"));
@@ -451,16 +458,22 @@ export function Home() {
     localStorage.setItem(MINE, value ? "1" : "0");
     setMineOnly(value);
   };
+  const choosePeriod = (value: Period) => {
+    sessionStorage.setItem(PERIOD, value);
+    setPeriod(value);
+  };
   const chooseKind = (value: Style | null) => {
     if (value === null) localStorage.removeItem(KIND);
     else localStorage.setItem(KIND, value);
     setKind(value);
   };
   // The kinds in the list on screen (in Mine, yours), with how many of each: the filter's menu.
-  const kinds = STYLES.map((one) => ({ ...one, count: items.filter((item) => item.kind === one.value && (!mine || item.mine) && isIn(item, shownWhere)).length })).filter((one) => one.count > 0 || one.value === kind);
+  const kinds = STYLES.map((one) => ({ ...one, count: items.filter((item) => item.kind === one.value && (!mine || item.mine) && recent(item) && isIn(item, shownWhere)).length })).filter((one) => one.count > 0 || one.value === kind);
   // Nothing in this list: why, and where to look.
-  const others = items.filter((item) => !item.mine && (kind === null || item.kind === kind) && isIn(item, shownWhere)).length;
-  const otherKinds = kind === null ? 0 : items.filter((item) => item.kind !== kind && (!mine || item.mine) && isIn(item, shownWhere)).length;
+  const others = items.filter((item) => !item.mine && (kind === null || item.kind === kind) && recent(item) && isIn(item, shownWhere)).length;
+  const otherKinds = kind === null ? 0 : items.filter((item) => item.kind !== kind && (!mine || item.mine) && recent(item) && isIn(item, shownWhere)).length;
+  const older = period === "all" ? 0 : items.filter((item) => !recent(item) && (!mine || item.mine) && (kind === null || item.kind === kind) && isIn(item, shownWhere)).length;
+  const periodName = PERIODS.find((one) => one.value === period)!.label.toLowerCase();
   const empty = searching
     ? { title: "Nothing matches", text: `Nothing anywhere is called “${query.trim()}”.` }
     : shownWhere === "later"
@@ -469,6 +482,8 @@ export function Home() {
           ? { title: `No ${STYLES.find((one) => one.value === kind)!.label.toLowerCase()} here`, text: `${otherKinds} of other kinds: the filter shows them all again.` }
           : mine && others > 0
           ? { title: "Nothing of yours here", text: `Everyone shows the team’s ${others}.` }
+          : older > 0
+          ? { title: `Nothing ${periodName}`, text: `${older} from before: the filter goes further back.` }
           : { title: "Nothing here", text: shownWhere === "done" ? "Approved edits and ideas move here by themselves, and anything marked done from its ⋯ menu." : "Nothing is at this stage now." };
 
   return (
@@ -537,6 +552,8 @@ export function Home() {
                 who={account?.person != null ? (mineOnly ? "mine" : "everyone") : null}
                 kind={kind}
                 kinds={kinds}
+                period={period}
+                onPeriod={choosePeriod}
                 disabled={searching}
                 onWho={(value) => chooseMine(value === "mine")}
                 onKind={chooseKind}
@@ -596,10 +613,10 @@ export function Home() {
  * shown ("Mine", "Everyone · Bodycam"), its menu Mine or Everyone, then every
  * kind there is with how many. A search looks through everything, as before.
  */
-function FilterButton({ who, kind, kinds, disabled, onWho, onKind }: { who: "mine" | "everyone" | null; kind: Style | null; kinds: { value: Style; label: string; count: number }[]; disabled: boolean; onWho: (value: "mine" | "everyone") => void; onKind: (value: Style | null) => void }) {
+function FilterButton({ who, kind, kinds, period, disabled, onWho, onKind, onPeriod }: { who: "mine" | "everyone" | null; kind: Style | null; kinds: { value: Style; label: string; count: number }[]; period: Period; disabled: boolean; onWho: (value: "mine" | "everyone") => void; onKind: (value: Style | null) => void; onPeriod: (value: Period) => void }) {
   const kindLabel = kinds.find((one) => one.value === kind)?.label ?? STYLES.find((one) => one.value === kind)?.label ?? null;
-  const label = [who === "mine" ? "Mine" : who === "everyone" ? "Everyone" : null, kindLabel].filter(Boolean).join(" · ") || "All";
-  const filtered = kind !== null;
+  const label = [who === "mine" ? "Mine" : who === "everyone" ? "Everyone" : null, kindLabel, PERIODS.find((one) => one.value === period)!.label].filter(Boolean).join(" · ");
+  const filtered = kind !== null || period !== "week";
   const open = (event: React.MouseEvent<HTMLButtonElement>) =>
     toggleMenu(
       event.currentTarget,
@@ -611,6 +628,8 @@ function FilterButton({ who, kind, kinds, disabled, onWho, onKind }: { who: "min
               { separator: true },
             ] satisfies MenuItem[])
           : []),
+        ...PERIODS.map((one): MenuItem => ({ label: one.label, checked: period === one.value, onSelect: () => onPeriod(one.value) })),
+        { separator: true },
         { label: "Every kind", checked: kind === null, onSelect: () => onKind(null) },
         ...kinds.map((one): MenuItem => ({ label: one.label, detail: String(one.count), checked: kind === one.value, onSelect: () => onKind(one.value) })),
       ],
@@ -621,7 +640,7 @@ function FilterButton({ who, kind, kinds, disabled, onWho, onKind }: { who: "min
       type="button"
       onClick={open}
       disabled={disabled}
-      title={disabled ? "A search looks through everything" : "Whose and which kind"}
+      title={disabled ? "A search looks through everything" : "Whose, how far back, and which kind"}
       className={cx(
         "flex h-[34px] shrink-0 items-center gap-1.5 rounded-[9px] bg-black px-2.5 text-[13px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-45",
         filtered ? "text-fg" : "text-secondary hover:text-fg",
@@ -831,6 +850,23 @@ function withNote(items: MenuItem[], note: MenuItem[]): MenuItem[] {
 
 /** Mine or Everyone (remembered on this browser). */
 const MINE = "edit.home.mine";
+
+/** How far back Home's lists look: what changed in the last 7, 30 or 365 days, or everything (`Home`'s period). */
+const PERIODS = [
+  { value: "week", label: "This week", days: 7 },
+  { value: "month", label: "This month", days: 30 },
+  { value: "year", label: "This year", days: 365 },
+  { value: "all", label: "All time", days: null },
+] as const;
+type Period = (typeof PERIODS)[number]["value"];
+/** The period, while this window is open. */
+const PERIOD = "edit.home.period";
+
+/** When `period` starts: anything changed since is in it. */
+function periodStart(period: Period): number {
+  const days = PERIODS.find((one) => one.value === period)!.days;
+  return days === null ? -Infinity : Date.now() - days * 24 * 3600_000;
+}
 
 /** What each kind of video makes: the New project pills' tooltips. */
 const STYLE_NOTES: Record<Style, string> = {
@@ -1162,6 +1198,9 @@ export type ScriptIssueRow = {
   dismissedAt?: number;
   /** Its first prompt still to start. */
   firstBuild?: boolean;
+  /** A test script (TestProjects.tsx): not listed unless `shown`. */
+  test?: boolean;
+  shown?: boolean;
   /** Written over several videos. */
   compilation?: boolean;
   /** Its last Claude run ended without finishing: when, and what it said. */
@@ -1716,6 +1755,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
         <span className={NAME} title={script.title}>
           {script.title || "Untitled script"}
         </span>
+        {script.test === true && <TestBadge />}
         {note.mark}
       </div>
       <Category style={script.style} compilation={script.compilation} />

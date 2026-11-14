@@ -235,7 +235,7 @@ function newScript(title: string, sourceKind: string, sourceUrl: string, origina
   };
 }
 
-export async function fromFile(app: App, data: string, source: string, link: string | null, title: string | null, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished"): Promise<Script> {
+export async function fromFile(app: App, data: string, source: string, link: string | null, title: string | null, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished", test = false): Promise<Script> {
   let path: string;
   try {
     path = fs.realpathSync(source);
@@ -244,20 +244,20 @@ export async function fromFile(app: App, data: string, source: string, link: str
   }
   if (!isFile(path)) throw new Error("That file can't be opened.");
   const name = givenTitle(title) ?? [...(path.split("/").pop() ?? "Untitled").replace(/\.[^.]+$/, "")].slice(0, 180).join("");
-  return start(app, data, newScript(name, "file", path, path), await article(link), kind, then, answer);
+  return start(app, data, newScript(name, "file", path, path), await article(link), kind, then, answer, test);
 }
 
 /** A title given is kept in place of the video's own, which is looked up otherwise. */
-export async function fromYoutube(app: App, data: string, url: string, link: string | null, title: string | null, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished"): Promise<Script> {
+export async function fromYoutube(app: App, data: string, url: string, link: string | null, title: string | null, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished", test = false): Promise<Script> {
   url = youtube.secure(url.trim());
   youtube.checkUrl(url);
-  return start(app, data, newScript(givenTitle(title) ?? "YouTube video", "youtube", url, ""), await article(link), kind, then, answer);
+  return start(app, data, newScript(givenTitle(title) ?? "YouTube video", "youtube", url, ""), await article(link), kind, then, answer, test);
 }
 
 /** A Drive file, or a folder of recordings joined in name order, as Repack takes them; a title given is kept in place of the folder's name. */
-export async function fromDrive(app: App, data: string, url: string, link: string | null, title: string | null, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished"): Promise<Script> {
+export async function fromDrive(app: App, data: string, url: string, link: string | null, title: string | null, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished", test = false): Promise<Script> {
   drive.parse(url);
-  return start(app, data, newScript(givenTitle(title) ?? "Google Drive footage", "drive", url.trim(), ""), await article(link), kind, then, answer);
+  return start(app, data, newScript(givenTitle(title) ?? "Google Drive footage", "drive", url.trim(), ""), await article(link), kind, then, answer, test);
 }
 
 /** A compilation's lines: each a video link, or "REUSE" and a link for a case the channel already covered, as Repack takes them. */
@@ -346,8 +346,8 @@ export async function checkVideos(app: App, given: string[]): Promise<VideoCheck
 }
 
 /** Several videos joined in order: a compilation, one case each, or (`oneCase`) one Courtroom case whose hearing runs across them. A link's `t` is a hint to where the case starts in that video. */
-export function fromCompilation(app: App, data: string, title: string, urls: string[], oneCase: boolean, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished"): Promise<Script> {
-  return compilationWith(app, data, title, urls, oneCase, kind, null, [], then, answer);
+export function fromCompilation(app: App, data: string, title: string, urls: string[], oneCase: boolean, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished", test = false): Promise<Script> {
+  return compilationWith(app, data, title, urls, oneCase, kind, null, [], then, answer, test);
 }
 
 /**
@@ -356,7 +356,7 @@ export function fromCompilation(app: App, data: string, title: string, urls: str
  * search runs), its web pages read as articles, and its videos one case: a
  * single video imported as itself, several joined as one Courtroom case.
  */
-export async function fromBrief(app: App, data: string, text: string, kind: Kind | null, answer: Answer = "finished"): Promise<Script> {
+export async function fromBrief(app: App, data: string, text: string, kind: Kind | null, answer: Answer = "finished", test = false): Promise<Script> {
   const parsed = brief.parse(text);
   if (parsed.title === "") throw new Error("Put the script's title on the brief's first line.");
   const videos = brief.videosOf(parsed);
@@ -376,14 +376,14 @@ export async function fromBrief(app: App, data: string, text: string, kind: Kind
   if (videos.length === 1 && only !== undefined) {
     const script = only.url.includes("drive.google.com") ? (drive.parse(only.url), newScript(parsed.title, "drive", only.url, "")) : (youtube.checkUrl(only.url), newScript(parsed.title, "youtube", only.url, ""));
     script.title = [...parsed.title].slice(0, 180).join("");
-    return start(app, data, script, found, kind, null, answer);
+    return start(app, data, script, found, kind, null, answer, test);
   }
   if (kind !== null && kind !== "courtroom") throw new Error("A brief with several videos is one Courtroom case. For a compilation, use Compilation.");
   const labels: Label[] = videos.map((link) => ({ label: link.label, role: link.role, ...(link.part !== undefined ? { part: link.part } : {}) }));
-  return compilationWith(app, data, parsed.title, videos.map((link) => link.url), true, "courtroom", found, labels, null, answer);
+  return compilationWith(app, data, parsed.title, videos.map((link) => link.url), true, "courtroom", found, labels, null, answer, test);
 }
 
-async function compilationWith(app: App, data: string, title: string, given: string[], oneCase: boolean, kind: Kind | null, found: Research | null, labels: Label[], then: Script["firstBuild"] | null = null, answer: Answer = "finished"): Promise<Script> {
+async function compilationWith(app: App, data: string, title: string, given: string[], oneCase: boolean, kind: Kind | null, found: Research | null, labels: Label[], then: Script["firstBuild"] | null = null, answer: Answer = "finished", test = false): Promise<Script> {
   const name = title.trim();
   if (name === "" || [...name].length > 180) throw new Error("Give it a title (up to 180 characters).");
   const [urls, reuses] = linesFor(given, oneCase);
@@ -392,10 +392,10 @@ async function compilationWith(app: App, data: string, title: string, given: str
   if (oneCase) script.kind = "courtroom";
   script.reuses = reuses;
   script.labels = labels;
-  return start(app, data, script, found, kind, then, answer);
+  return start(app, data, script, found, kind, then, answer, test);
 }
 
-async function start(app: App, data: string, script: Script, found: Research | null, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished"): Promise<Script> {
+async function start(app: App, data: string, script: Script, found: Research | null, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished", test = false): Promise<Script> {
   if (then !== null) script.firstBuild = then;
   // Only kinds of script this person may write, starting as the first format they may.
   if (script.sourceKind === "compilation" && !script.compilation) {
@@ -409,6 +409,8 @@ async function start(app: App, data: string, script: Script, found: Research | n
     const dir = store.scriptDir(data, script.id);
     fs.mkdirSync(dir, { recursive: true });
     store.write(dir, script);
+    // Not a person's (`test`, routes.ts): hidden on Home from the start, before the import runs.
+    if (test) store.writeTest(dir, true);
     store.libraryChanged();
     // The producer's article is the case's research: no search runs.
     if (found !== null) research.keep(dir, found);

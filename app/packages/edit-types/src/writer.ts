@@ -173,6 +173,10 @@ export type Summary = {
   createdBy?: Creator;
   /** A note someone left on it from Home's ⋯ ("goes on Sam's channel"): the team's, shown beside its name. */
   note?: string;
+  /** A test script (a coding agent, a script or a trial started it, not a person): hidden on Home unless `shown` (store.ts TEST_FILE). */
+  test?: boolean;
+  /** A test script brought forth: on Home, marked Test. */
+  shown?: boolean;
   /** Footage a commentary was written from: that commentary's title. The list keeps it inside it. */
   inCommentary?: string;
   /** The cloud refused its last save: what it said. Shown as "Not in the cloud". */

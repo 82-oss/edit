@@ -142,7 +142,37 @@ export function summary(script: Script, dir?: string): Summary {
       const note = dir === undefined ? "" : readNote(dir);
       return note === "" ? {} : { note };
     })(),
+    ...(() => {
+      const mark = dir === undefined ? NOT_TEST : readTest(dir);
+      return mark.test ? { test: true, ...(mark.shown ? { shown: true } : {}) } : {};
+    })(),
   };
+}
+
+/**
+ * Whether it's a test script (Sphe, Nov 14: "there are a lot of dev scripts that also need to go through the hiding"):
+ * one a person didn't start (a coding agent, a script, the teaching loop's L7 rounds), hidden on Home as test
+ * projects are (dev_projects.ts), and `shown` when brought forth. A file of its own, as the note is: an import or a
+ * build writes back the script it holds whole. It syncs with the script's other files.
+ */
+export const TEST_FILE = "test.json";
+const NOT_TEST = { test: false, shown: false };
+
+export function readTest(dir: string): { test: boolean; shown: boolean } {
+  try {
+    const kept = JSON.parse(fs.readFileSync(join(dir, TEST_FILE), "utf8")) as { test?: unknown; shown?: unknown };
+    return { test: kept.test === true, shown: kept.test === true && kept.shown === true };
+  } catch {
+    return NOT_TEST;
+  }
+}
+
+/** Marks it (or, `test` false, clears the mark: kept as a file saying so, so the clearing syncs too). */
+export function writeTest(dir: string, test: boolean, shown = false): void {
+  if (!fs.existsSync(join(dir, "script.json"))) throw new Error("That script isn't on this computer.");
+  if (!test && !fs.existsSync(join(dir, TEST_FILE))) return;
+  writeAtomic(join(dir, TEST_FILE), JSON.stringify({ test, shown: test && shown, at: Date.now() }));
+  libraryChanged();
 }
 
 /**
@@ -194,7 +224,7 @@ function stampOf(path: string): string {
 }
 
 function listedIn(dir: string): { row: Summary; title: string; sources: string[] } | null {
-  const stamp = `${stampOf(join(dir, "script.json"))}|${stampOf(join(dir, "chat.json"))}|${stampOf(join(dir, NOTE_FILE))}`;
+  const stamp = `${stampOf(join(dir, "script.json"))}|${stampOf(join(dir, "chat.json"))}|${stampOf(join(dir, NOTE_FILE))}|${stampOf(join(dir, TEST_FILE))}`;
   const had = listedCache.get(dir);
   if (had !== undefined && had.stamp === stamp) return had;
   let script: Script;

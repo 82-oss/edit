@@ -60,7 +60,7 @@ const commentaryOf = (script: Script): Commentary => {
 const titleOk = (title: string) => title !== "" && [...title].length <= 180 && !/\p{Cc}/u.test(title);
 
 /** A new commentary project, with any links read in as its sources: the first becomes the brief; the rest are evidence until the producer says. */
-export async function create(data: string, title: string, links: string[], createdBy: Script["createdBy"]): Promise<Script> {
+export async function create(data: string, title: string, links: string[], createdBy: Script["createdBy"], test = false): Promise<Script> {
   const given = title.trim();
   if (!titleOk(given)) throw new Error("Give it a title of up to 180 characters.");
   const wanted = links.map((link) => link.trim()).filter((link) => link !== "");
@@ -101,6 +101,8 @@ export async function create(data: string, title: string, links: string[], creat
   };
   fetched.forEach(([link, name, text], index) => put(dir, script, name, index === 0 ? "brief" : "evidence", link, text, false));
   store.write(dir, script);
+  // Not a person's (routes.ts): hidden on Home as a test script.
+  if (test) store.writeTest(dir, true);
   store.libraryChanged();
   return script;
 }

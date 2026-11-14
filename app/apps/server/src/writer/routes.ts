@@ -167,6 +167,12 @@ export function routes(router: Router<App>): void {
         return detail(data, edits.rename(data, id(context), String(title ?? "")));
       });
     })
+    // A test script (store.ts TEST_FILE): marked, brought forth on Home, hidden again, or promoted to a real one when
+    // asked; saved even while it imports or Claude writes it, being a file of its own.
+    .post("/api/writer/scripts/{id}/test", (context) => mark(context, "test"))
+    .post("/api/writer/scripts/{id}/show", (context) => mark(context, "show"))
+    .post("/api/writer/scripts/{id}/hide", (context) => mark(context, "hide"))
+    .post("/api/writer/scripts/{id}/promote", (context) => mark(context, "promote"))
     // Its note (Home's ⋯ Add note): saved even while it imports or Claude writes it, being a file of its own.
     .put("/api/writer/scripts/{id}/note", async (context) => {
       const { note } = await body<{ note?: unknown }>(context);
@@ -286,24 +292,24 @@ export function routes(router: Router<App>): void {
     )
     // Imports: each request holds until its import finishes or pauses for a choice; the page follows it in /api/writer/progress meanwhile.
     .post("/api/writer/scripts/file", async (context) => {
-      const given = await body<{ path?: string; article?: string; title?: string; kind?: Kind }>(context);
-      return answer(async () => detail(dataOf(context.app), await imports.fromFile(context.app, dataOf(context.app), String(given.path ?? ""), given.article ?? null, given.title ?? null, given.kind ?? null, null, "started")));
+      const given = await body<{ path?: string; article?: string; title?: string; kind?: Kind; person?: boolean }>(context);
+      return answer(async () => detail(dataOf(context.app), await imports.fromFile(context.app, dataOf(context.app), String(given.path ?? ""), given.article ?? null, given.title ?? null, given.kind ?? null, null, "started", testOf(given))));
     })
     .post("/api/writer/scripts/youtube", async (context) => {
-      const given = await body<{ url?: string; article?: string; title?: string; kind?: Kind; build?: string }>(context);
-      return answer(async () => detail(dataOf(context.app), await imports.fromYoutube(context.app, dataOf(context.app), String(given.url ?? ""), given.article ?? null, given.title ?? null, given.kind ?? null, firstBuild(given.build), "started")));
+      const given = await body<{ url?: string; article?: string; title?: string; kind?: Kind; build?: string; person?: boolean }>(context);
+      return answer(async () => detail(dataOf(context.app), await imports.fromYoutube(context.app, dataOf(context.app), String(given.url ?? ""), given.article ?? null, given.title ?? null, given.kind ?? null, firstBuild(given.build), "started", testOf(given))));
     })
     .post("/api/writer/scripts/drive", async (context) => {
-      const given = await body<{ url?: string; article?: string; title?: string; kind?: Kind; build?: string }>(context);
-      return answer(async () => detail(dataOf(context.app), await imports.fromDrive(context.app, dataOf(context.app), String(given.url ?? ""), given.article ?? null, given.title ?? null, given.kind ?? null, firstBuild(given.build), "started")));
+      const given = await body<{ url?: string; article?: string; title?: string; kind?: Kind; build?: string; person?: boolean }>(context);
+      return answer(async () => detail(dataOf(context.app), await imports.fromDrive(context.app, dataOf(context.app), String(given.url ?? ""), given.article ?? null, given.title ?? null, given.kind ?? null, firstBuild(given.build), "started", testOf(given))));
     })
     .post("/api/writer/scripts/compilation", async (context) => {
-      const given = await body<{ title?: string; urls?: string[]; case?: boolean; kind?: Kind; build?: string }>(context);
-      return answer(async () => detail(dataOf(context.app), await imports.fromCompilation(context.app, dataOf(context.app), String(given.title ?? ""), Array.isArray(given.urls) ? given.urls.map(String) : [], given.case === true, given.kind ?? null, firstBuild(given.build), "started")));
+      const given = await body<{ title?: string; urls?: string[]; case?: boolean; kind?: Kind; build?: string; person?: boolean }>(context);
+      return answer(async () => detail(dataOf(context.app), await imports.fromCompilation(context.app, dataOf(context.app), String(given.title ?? ""), Array.isArray(given.urls) ? given.urls.map(String) : [], given.case === true, given.kind ?? null, firstBuild(given.build), "started", testOf(given))));
     })
     .post("/api/writer/scripts/brief", async (context) => {
-      const given = await body<{ text?: string; kind?: Kind }>(context);
-      return answer(async () => detail(dataOf(context.app), await imports.fromBrief(context.app, dataOf(context.app), String(given.text ?? ""), given.kind ?? null, "started")));
+      const given = await body<{ text?: string; kind?: Kind; person?: boolean }>(context);
+      return answer(async () => detail(dataOf(context.app), await imports.fromBrief(context.app, dataOf(context.app), String(given.text ?? ""), given.kind ?? null, "started", testOf(given))));
     })
     .post("/api/writer/scripts/{id}/resume", async (context) => {
       const choice = await body<Choice>(context);
@@ -659,11 +665,11 @@ export function routes(router: Router<App>): void {
     )
     // Commentary projects: the sources a script is written from, its pacing and its written draft.
     .post("/api/writer/scripts/commentary", async (context) => {
-      const given = await body<{ title?: string; links?: string[] }>(context);
+      const given = await body<{ title?: string; links?: string[]; person?: boolean }>(context);
       return answer(async () => {
         can.require(can.COMMENTARY);
         const data = dataOf(context.app);
-        return detail(data, await commentary.create(data, String(given.title ?? ""), Array.isArray(given.links) ? given.links.map(String) : [], creator() ?? undefined));
+        return detail(data, await commentary.create(data, String(given.title ?? ""), Array.isArray(given.links) ? given.links.map(String) : [], creator() ?? undefined, testOf(given)));
       });
     })
     .post("/api/writer/scripts/{id}/sources", async (context) => {
@@ -766,6 +772,21 @@ function reviewState(data: string, scriptId: string): { notes: reviews.Note[]; b
 
 /** Starts the work's job on a script the person may see; its first status. */
 /** An import's first build (New project's first message): `build` given, even empty, builds when the import is ready. */
+/** Not a person's: a create route asked without `person` (Home's and Writer's pages send it), as dev_projects.ts says for projects. */
+const testOf = (given: { person?: unknown }): boolean => given.person !== true;
+
+/** A script marked a test one, brought forth, hidden again, or promoted (store.ts TEST_FILE). */
+function mark(context: RouteContext<App>, how: "test" | "show" | "hide" | "promote"): Promise<Response> {
+  return answer(() => {
+    const data = dataOf(context.app);
+    readFor(data, id(context));
+    const dir = store.scriptDir(data, id(context));
+    if ((how === "show" || how === "hide") && !store.readTest(dir).test) throw new Error("Not a test script: it's on Home already.");
+    store.writeTest(dir, how !== "promote", how === "show");
+    return { ok: true };
+  });
+}
+
 const firstBuild = (build: unknown): { note: string } | null => (typeof build === "string" ? { note: build.trim().slice(0, 4_000) } : null);
 
 // A script made with a first build is built once its import is ready, as the Build button would.

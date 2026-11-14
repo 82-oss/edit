@@ -1,5 +1,6 @@
 import type { Adding, Brief, BuildStatus, ChatTurn, DocComment, DocFile, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Snapshot, Summary, TrelloCards, TrelloList, Version, VideoCheck, Footage, TrelloCard } from "./types";
 import type { CutSource } from "@edit/types/script_cut";
+import { byPerson } from "../lib/api";
 
 /** Writer's own replies are JSON. Anything else came from in between (Vite
  * while the app restarts, a dropped tailnet hop), and says so plainly. A
@@ -47,16 +48,16 @@ export const getScript = (id: string) =>
 /** The footage, and an optional article about the case, read in place of research, as Repack takes it. */
 /** A title given is kept in place of the file's name. */
 export const importFile = (path: string, article?: string, title?: string, kind?: Kind) =>
-  http<Script>("/api/writer/scripts/file", json({ path, article, title, kind }));
+  http<Script>("/api/writer/scripts/file", json({ path, article, title, kind, ...byPerson() }));
 
 /** A title given is kept in place of the video's own. */
 /** `build`: built as soon as the import is ready, with that note ("" for none). */
 export const importYoutube = (url: string, article?: string, title?: string, kind?: Kind, build?: string) =>
-  http<Script>("/api/writer/scripts/youtube", json({ url, article, title, kind, build }));
+  http<Script>("/api/writer/scripts/youtube", json({ url, article, title, kind, build, ...byPerson() }));
 
 /** A title given (typed, or a Trello card's) is kept in place of the folder's name. */
 export const importDrive = (url: string, article?: string, title?: string, kind?: Kind, build?: string) =>
-  http<Script>("/api/writer/scripts/drive", json({ url, article, title, kind, build }));
+  http<Script>("/api/writer/scripts/drive", json({ url, article, title, kind, build, ...byPerson() }));
 
 /** The cards waiting on one of Repack's Trello lists, read through Writer's service. */
 /** The card a pasted Trello link names, read for its videos (any board Repack's Trello reads). */
@@ -223,14 +224,14 @@ export const researchAgain = (id: string) =>
 
 /** Videos joined in order: a compilation, one case each, or (`kase`) one Courtroom case across them. */
 export const importCompilation = (title: string, urls: string[], kase = false, kind?: Kind, build?: string) =>
-  http<Script>("/api/writer/scripts/compilation", json({ title, urls, case: kase, kind, build }));
+  http<Script>("/api/writer/scripts/compilation", json({ title, urls, case: kase, kind, build, ...byPerson() }));
 
 /** A pasted brief read into its title, notes and labelled links, before anything imports. */
 export const readBrief = (text: string) => (http<Brief>("/api/writer/briefs/read", json({ text })));
 
 /** A brief imported as one case: one video as itself, several as one Courtroom case, each keeping its label. */
 export const importBrief = (text: string, kind?: Kind) =>
-  http<Script>("/api/writer/scripts/brief", json({ text, kind }));
+  http<Script>("/api/writer/scripts/brief", json({ text, kind, ...byPerson() }));
 
 /** A compilation's lines checked before anything downloads, as Repack checks its videos. */
 export const checkVideos = (lines: string[]) =>
@@ -241,7 +242,7 @@ export const buildStatus = (id: string) =>
 
 /** A commentary project, its links read in as sources (the first is the brief). */
 export const createCommentary = (title: string, links: string[]) =>
-  http<Script>("/api/writer/scripts/commentary", json({ title, links }));
+  http<Script>("/api/writer/scripts/commentary", json({ title, links, ...byPerson() }));
 
 export const addSource = (id: string, adding: Adding, role: Role) =>
   http<Script>(`/api/writer/scripts/${id}/sources`, json({ adding, role }));
