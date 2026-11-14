@@ -10,12 +10,15 @@ import { compareStrings, fixed, round, trim } from "./rust.ts";
 
 /** The marker a placed sound lines up on the cut. */
 export const HIT = "hit";
+/** The marker on each other hit in a file of several (sfx.ts's). */
+const OTHER_HIT = "another hit";
 
 type Args = Record<string, unknown>;
 
 /** A sound effect's own markers ("hit") are part of the file, not plans. */
 function isSoundHit(media: Media, marker: Marker): boolean {
-  return media.kind === "audio" && marker.name === HIT;
+  // A file of several hits' other ones (library.hitsOf) are Edit's too: the audit's, never the agent's to list or move.
+  return media.kind === "audio" && (marker.name === HIT || marker.name === OTHER_HIT);
 }
 
 /** Names match whatever their case and surrounding space (Rust's eq_ignore_ascii_case on trimmed). */

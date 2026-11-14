@@ -51,7 +51,8 @@ export async function keep(script: Script, lesson: Record<string, unknown> | nul
       return `\n\nThat sounds like a lesson for this channel's scripts, but it wasn't kept: ${diag.messageOf(error)}`;
     }
   }
-  const given = noteFrom({ ...lesson, part: "script" });
+  // Scope "channel" on a script that has none: one person's or channel's taste, as the inbox has it.
+  const given = noteFrom({ ...lesson, ...(lesson.scope === "channel" ? { scope: "person" } : {}), part: "script" });
   if (typeof given === "string") {
     diag.warn("lessons", `${script.title}: a lesson came back unusable (${given})`);
     return "";

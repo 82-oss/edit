@@ -259,7 +259,7 @@ export function contextMenu(items: MenuItem[], width = 200) {
  */
 export function RowButtons({ aside, items, width = 200 }: { aside: ReactNode; items: MenuItem[]; width?: number }) {
   return (
-    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center justify-end gap-0.5 bg-gradient-to-l from-hover from-75% to-transparent pr-3 pl-12 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-data-[menu-open]:pointer-events-auto group-data-[menu-open]:opacity-100 group-has-[[data-menu-open]]:pointer-events-auto group-has-[[data-menu-open]]:opacity-100">
+    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center justify-end gap-0.5 bg-gradient-to-l from-hover from-75% to-transparent pr-3 pl-12 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100 group-data-[menu-open]:pointer-events-auto group-data-[menu-open]:opacity-100 group-has-[[data-menu-open]]:pointer-events-auto group-has-[[data-menu-open]]:opacity-100">
       {aside}
       <button
         title="More"

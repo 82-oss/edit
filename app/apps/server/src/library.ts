@@ -399,7 +399,12 @@ export async function importSound(app: App, project: string, soundId: string, or
       const at = (target.markers ?? []).find((marker) => marker.name === seams.sfx.HIT)?.time;
       if (others.length > 1 && at !== undefined && !(target.markers ?? []).some((marker) => marker.name === seams.sfx.OTHER_HIT)) {
         const own = others.findIndex(([from, to]) => at >= from - HIT_STEP && at <= to + HIT_STEP);
-        target.markers = [...(target.markers ?? []), ...others.filter((_, index) => index !== own).map(([from]) => ({ time: from, name: seams.sfx.OTHER_HIT, note: "" }))];
+        // Only where its hit is one short burst among others (three clicks): a boom's rumbling tail, or a
+        // long file whose hit is past HITS_WITHIN, is one sound, LONG_MOMENT's to trim.
+        const burst = others[own];
+        if (burst !== undefined && burst[1] - burst[0] <= seams.sfx.HIT_PLAY) {
+          target.markers = [...(target.markers ?? []), ...others.filter((_, index) => index !== own).map(([from]) => ({ time: from, name: seams.sfx.OTHER_HIT, note: "" }))];
+        }
       }
     });
   }
