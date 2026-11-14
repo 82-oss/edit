@@ -245,8 +245,10 @@ export interface ProjectSummary {
   note?: string;
   /** A Bodycam HQ project (`Project::hq`, Edit V2): its graphics are code the agent writes. */
   hq?: boolean;
-  /** The channel it's for (`Project::channel`): Home's filter. */
+  /** The channel it's for (`Project::channel`): Home's filter, its Channel column. */
   channel?: string;
+  /** Its V2 niche (`Project::niche`), when it's one other than Bodycam HQ. */
+  niche?: string;
 }
 
 export type Stage = "pending" | "working" | "ready" | "failed" | "skipped";

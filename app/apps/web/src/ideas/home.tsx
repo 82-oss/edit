@@ -109,7 +109,7 @@ export function IdeaTableRow({ row }: { row: IdeaRow }) {
         <span className={NAME}>{summary.title}</span>
       </div>
       {/* Its kind (Interrogation or Bodycam); a niche an older run gave beside it. */}
-      <Category text={[WORKSPACE_NAMES[row.workspace ?? "interrogation"], summary.niche ? NICHE[summary.niche].label : ""].filter(Boolean).join(" · ")} />
+      <Category channel={summary.channel} text={[WORKSPACE_NAMES[row.workspace ?? "interrogation"], summary.niche ? NICHE[summary.niche].label : ""].filter(Boolean).join(" · ")} />
       <StatusCell>{aside.entry ? <AsideStatus entry={aside.entry} /> : <Status row={row} />}</StatusCell>
       <CreatorCell by={row.createdBy === null ? null : { sub: row.createdBy.sub, name: row.createdBy.name, ...(row.createdBy.picture !== null ? { picture: row.createdBy.picture } : {}) }} />
       <LengthCell title={summary.views !== null ? `${summary.views.toLocaleString()} views` : undefined}>

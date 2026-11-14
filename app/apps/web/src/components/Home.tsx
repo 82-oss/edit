@@ -177,7 +177,7 @@ export function Home() {
   const [channelPick, setChannelPick] = useState<string | null>(() => localStorage.getItem(CHANNEL));
   const channelFilter = v2 && channelList?.some((one) => one.key === channelPick) ? channelPick : null;
   useEffect(() => {
-    if (v2) void loadChannels();
+    if (v2) void Promise.all([loadChannels(), loadNiches()]);
   }, [v2]);
   const [allDone, setAllDone] = useState(false);
   // How far back (Sphe, Nov 14: "the default view be this week's content"): this week unless widened, kept while the
@@ -831,7 +831,7 @@ function HomeList({ groups, solo, cross, lengthLabel }: { groups: { key: string;
         <div role="row" className={cx(COLUMNS, "px-3 pb-2 text-[12px] font-medium text-muted")}>
           <span role="columnheader">Name</span>
           <span role="columnheader" className={CATEGORY}>
-            Category
+            Channel
           </span>
           <span role="columnheader">Status</span>
           <span role="columnheader" className={BY}>
@@ -1646,7 +1646,7 @@ function TableRow({ subtitled, script = null, ...props }: CardProps & { subtitle
           {project.dev === true && <TestBadge />}
           {card.nameInput === null && note.mark}
         </div>
-        <Category style={project.style} hq={project.hq} compilation={script?.compilation} />
+        <Category style={project.style} hq={project.hq} compilation={script?.compilation} channel={project.channel} niche={project.niche} />
         <StatusCell>
           {aside.entry ? (
             <AsideStatus entry={aside.entry} />
@@ -1814,7 +1814,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
         {script.test === true && <TestBadge />}
         {note.mark}
       </div>
-      <Category style={script.style} compilation={script.compilation} />
+      <Category style={script.style} compilation={script.compilation} channel={script.channel} />
       <StatusCell>
         {aside.entry ? (
           <AsideStatus entry={aside.entry} />
@@ -1958,7 +1958,7 @@ function CloudTableRow({ project, script = null, onChanged }: { project: CloudPr
           {summary.dev === true && <TestBadge />}
           <NoteMark note={summary.note} />
         </div>
-        <Category style={summary.style} compilation={script?.compilation} />
+        <Category style={summary.style} compilation={script?.compilation} channel={summary.channel} />
         <StatusCell>
           {aside.entry ? (
             <AsideStatus entry={aside.entry} />
