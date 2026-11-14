@@ -24,6 +24,7 @@ import { join } from "../paths.ts";
 import * as claude from "../writer/claude.ts";
 import * as live from "../writer/live.ts";
 import * as assets from "./assets.ts";
+import * as graphics from "./graphics.ts";
 import * as cloud from "./cloud.ts";
 import { canonical, checkStacked, commentOf, describe, describeComments, designOf, layerOf, makeVersion, openComments, record, removeVersion, step, switchVersion, takeFinal } from "./design.ts";
 import * as openart from "./openart.ts";
@@ -311,17 +312,6 @@ export const TOOLS = [
     },
   },
   {
-    name: "save_overlay",
-    description:
-      "Add a picture to the team's overlay library, for every thumbnail from now on, when the person asks (\"save this as an overlay\", \"add this to our overlays\"): the image id of a picture they gave, a short name, a note you will read later on what it is and where it goes (\"a red arrow: beside the evidence it points at\"), and covers: true when it goes over the whole canvas (a viewfinder, a frame), false for a sticker placed somewhere. It needs transparency where the picture should show through: Read it first, and say so if it has none.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: { image: { type: "string" }, name: { type: "string" }, note: { type: "string" }, covers: { type: "boolean" } },
-      required: ["image", "name", "note", "covers"],
-    },
-  },
-  {
     name: "rename",
     description: "Name the thumbnail (the video or idea it's for), as the list shows it.",
     inputSchema: { type: "object", additionalProperties: false, properties: { title: { type: "string" } }, required: ["title"] },
@@ -335,6 +325,11 @@ export async function call(token: string, name: string, args: Args): Promise<[st
   if (session === undefined) return ["This turn has ended.", true];
   try {
     if (session.place !== null && (lanes.TOOL_NAMES as readonly string[]).includes(name)) return [await lanes.call(name, args, session.place), false];
+    if (graphics.NAMES.includes(name)) {
+      const found = await cloud.get(session.id);
+      if (found === null) throw new cloud.Missing("This thumbnail was deleted.");
+      return [await graphics.call({ id: session.id, by: session.by, origin: session.context.origin, folder: session.folder, place: session.place }, found.thumb, name, args), false];
+    }
     return [await runTool(session, name, args), false];
   } catch (error) {
     return [diag.messageOf(error), true];
@@ -701,18 +696,6 @@ async function runTool(session: Session, name: string, args: Args): Promise<stri
       });
       return `Flattened ${layers.map((one) => one.id).join(", ")} into ${image.id} (${WIDTH}×${HEIGHT}). Read it: ${await fileOf(session, image)}`;
     }
-    case "save_overlay": {
-      const found = await cloud.get(session.id);
-      if (found === null) throw new cloud.Missing("This thumbnail was deleted.");
-      const image = found.thumb.images.find((one) => one.id === args.image);
-      if (image === undefined) throw new Error(`There's no image ${String(args.image)}: give one of the thumbnail's image ids.`);
-      const name = typeof args.name === "string" ? args.name.trim().slice(0, 80) : "";
-      if (name === "") throw new Error("name is a few words.");
-      const type = assets.typeOf(image.key);
-      const extension = type === "image/png" ? "png" : type === "image/webp" ? "webp" : "jpg";
-      const asset = await assets.add({ bytes: await assets.cached(session.context.cacheDir, image.key), type, extension, width: image.width, height: image.height }, name, typeof args.note === "string" ? args.note : "", args.covers === false ? "sticker" : "overlay", session.by);
-      return `Saved to the team's library as asset:${asset.id} “${asset.name}”.`;
-    }
     case "rename": {
       const title = typeof args.title === "string" ? args.title.trim().slice(0, 120) : "";
       if (title === "") throw new Error("title is words.");
@@ -1075,7 +1058,7 @@ export async function answerTo(token: string, message: unknown): Promise<unknown
     case "ping":
       return reply({});
     case "tools/list":
-      return sessions.has(token) ? reply({ tools: sessions.get(token)!.place === null ? TOOLS : [...TOOLS, ...lanes.toolsFor("thumbnails")] }) : failure(-32001, "This turn has ended.");
+      return sessions.has(token) ? reply({ tools: [...TOOLS, ...graphics.TOOLS, ...(sessions.get(token)!.place === null ? [] : lanes.toolsFor("thumbnails"))] }) : failure(-32001, "This turn has ended.");
     case "tools/call": {
       if (!sessions.has(token)) return id === undefined ? null : failure(-32001, "This turn has ended.");
       const name = typeof params?.name === "string" ? params.name : "";

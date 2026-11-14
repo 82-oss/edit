@@ -110,7 +110,8 @@ export function routes(router: Router<App>): void {
       const file = assets.FONT_FILES[params.name ?? ""];
       if (file === undefined) throw notFound("No such font.");
       const type = (params.name ?? "").endsWith(".otf") ? "font/otf" : "font/ttf";
-      return picture(new Uint8Array(await Bun.file(file).arrayBuffer()), type, "public, max-age=604800");
+      // Read by a graphic's sandboxed frame too (render.ts graphic): its origin is no one's, so the font says anyone may.
+      return new Response(new Uint8Array(await Bun.file(file).arrayBuffer()), { headers: { "content-type": type, "cache-control": "public, max-age=604800", "access-control-allow-origin": "*" } });
     })
     // The team's OpenArt accounts with their credits, the one in use on this Mac, and what a picture costs on it.
     .get("/api/thumbnails/openart", () => {

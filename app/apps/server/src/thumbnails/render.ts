@@ -23,12 +23,15 @@ function rendererScript(): string {
   return transpiled;
 }
 
+/** The house's fonts, from this server: the page's own, and a graphic's (its frame names this server, so they load there too). */
+const fontFaces = (origin: string) => `
+@font-face { font-family: "Montserrat"; src: url("${origin}/api/thumbnails/fonts/Montserrat.ttf") format("truetype"); font-weight: 100 900; font-style: normal; }
+@font-face { font-family: "Arabic-font-2013"; src: url("${origin}/api/thumbnails/fonts/Arabic-font-2013.ttf") format("truetype"); font-weight: 100 900; font-style: normal; }
+@font-face { font-family: "ITC Avant Garde Gothic"; src: url("${origin}/api/thumbnails/fonts/ITCAvantGardeGothic-Bold.otf") format("opentype"); font-weight: 100 900; font-style: normal; }`;
+
 /** The page Chrome draws on: the drawing, the fonts, and `render(design, id, grid)` answering a data URL. */
 export function page(): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><style>
-@font-face { font-family: "Montserrat"; src: url("/api/thumbnails/fonts/Montserrat.ttf") format("truetype"); font-weight: 100 900; font-style: normal; }
-@font-face { font-family: "Arabic-font-2013"; src: url("/api/thumbnails/fonts/Arabic-font-2013.ttf") format("truetype"); font-weight: 100 900; font-style: normal; }
-@font-face { font-family: "ITC Avant Garde Gothic"; src: url("/api/thumbnails/fonts/ITCAvantGardeGothic-Bold.otf") format("opentype"); font-weight: 100 900; font-style: normal; }
+  return `<!doctype html><html><head><meta charset="utf-8"><style>${fontFaces("")}
 html, body { margin: 0; background: #000; }
 </style></head><body><script type="module">
 ${rendererScript()}
@@ -104,6 +107,34 @@ window.render = async (design, id, grid, type, marks, area) => {
     out.getContext("2d").drawImage(canvas, area.x, area.y, area.width, area.height, 0, 0, ${WIDTH}, ${HEIGHT});
   }
   return { data: out.toDataURL(type, 0.9), missing };
+};
+// A graphic (graphic() below): its code in a frame of its own at the top left, sandboxed (it can't reach this
+// server's API), on a see-through page; drawn once its fonts are in (the frame says "drawn") and, when its
+// code says so itself, once it's "ready".
+window.graphicStart = (html, width, height, waits) => new Promise((resolve) => {
+  document.documentElement.style.background = "transparent";
+  document.body.style.background = "transparent";
+  const frame = document.createElement("iframe");
+  frame.id = "graphic";
+  frame.setAttribute("sandbox", "allow-scripts");
+  frame.style.cssText = "position:fixed;left:0;top:0;border:0;background:transparent;z-index:10;width:" + width + "px;height:" + height + "px";
+  let done = false;
+  const finish = () => { if (!done) { done = true; window.removeEventListener("message", told); resolve({ data: "drawn" }); } };
+  const heard = new Set();
+  const told = (event) => {
+    if (event.source !== frame.contentWindow || (event.data !== "drawn" && event.data !== "ready")) return;
+    heard.add(event.data);
+    if (heard.has("drawn") && (!waits || heard.has("ready"))) finish();
+  };
+  window.addEventListener("message", told);
+  setTimeout(finish, 8000);
+  frame.srcdoc = html;
+  document.body.appendChild(frame);
+});
+window.graphicEnd = () => {
+  document.getElementById("graphic")?.remove();
+  document.documentElement.style.background = "";
+  document.body.style.background = "";
 };
 window.ready = true;
 </script></body></html>`;
@@ -267,6 +298,54 @@ export function compare(origin: string, id: string, panels: { design: Design; la
 
 /** One drawing on the page in the Chrome kept open (started again once if it went away): its PNG and the pictures it lacked. */
 function inChrome(origin: string, expression: string): Promise<{ bytes: Uint8Array; missing: string[] }> {
+  return onPage(origin, async (open) => {
+    const answer = await open.call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+    const value = (answer.result as { value?: { data?: string; missing?: string[] } } | undefined)?.value;
+    if (typeof value?.data !== "string") throw new Error(String((answer.exceptionDetails as { exception?: { description?: string } } | undefined)?.exception?.description ?? "Chrome drew nothing"));
+    return { bytes: new Uint8Array(Buffer.from(value.data.slice(value.data.indexOf(",") + 1), "base64")), missing: value.missing ?? [] };
+  });
+}
+
+/** Graphics are at most the canvas's size, and at least a few pixels. */
+export const GRAPHIC_MOST = { width: WIDTH, height: HEIGHT };
+
+/** A graphic's code as its frame's page: the house's fonts, nothing behind it, its size. */
+export function graphicPage(origin: string, code: string, width: number, height: number): string {
+  const style = `<style>${fontFaces(origin)}\nhtml, body { margin: 0; background: transparent; width: ${width}px; height: ${height}px; overflow: hidden; }</style>`;
+  // Once it's loaded and its fonts are in, two frames on: "drawn".
+  const drawn = `<script>addEventListener("load", () => document.fonts.ready.then(() => requestAnimationFrame(() => requestAnimationFrame(() => parent.postMessage("drawn", "*")))));</script>`;
+  if (/<head[^>]*>/i.test(code)) return code.replace(/<head[^>]*>/i, (head) => `${head}<meta charset="utf-8">${style}${drawn}`);
+  return `<!doctype html><html><head><meta charset="utf-8">${style}${drawn}</head><body>${code}</body></html>`;
+}
+
+/**
+ * A graphic drawn from its code (Sphe, Nov 14: "the graphics should be
+ * written in code"): HTML and CSS (and script, sandboxed) at its size, on
+ * nothing, as a PNG that keeps what's see-through. It's drawn once it has
+ * loaded and its fonts are in; code that draws later (a picture it loads)
+ * says when with parent.postMessage("ready", "*"). Eight seconds at most.
+ */
+export function graphic(origin: string, code: string, width: number, height: number): Promise<Uint8Array> {
+  const w = Math.round(width);
+  const h = Math.round(height);
+  if (!(w >= 4 && h >= 4 && w <= GRAPHIC_MOST.width && h <= GRAPHIC_MOST.height)) throw new Error(`A graphic is 4×4 to ${GRAPHIC_MOST.width}×${GRAPHIC_MOST.height} px.`);
+  return onPage(origin, async (open) => {
+    const page = graphicPage(origin, code, w, h);
+    try {
+      await open.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
+      await open.call("Runtime.evaluate", { expression: `window.graphicStart(${JSON.stringify(page)}, ${w}, ${h}, ${/postMessage\(\s*["']ready["']/.test(code)})`, awaitPromise: true, returnByValue: true });
+      const shot = await open.call("Page.captureScreenshot", { format: "png", clip: { x: 0, y: 0, width: w, height: h, scale: 1 } });
+      if (typeof shot.data !== "string") throw new Error("Chrome drew nothing");
+      return new Uint8Array(Buffer.from(shot.data, "base64"));
+    } finally {
+      await open.call("Runtime.evaluate", { expression: "window.graphicEnd()" }).catch(() => {});
+      await open.call("Emulation.setDefaultBackgroundColorOverride", {}).catch(() => {});
+    }
+  });
+}
+
+/** Work on the page in the Chrome kept open, one at a time (started again once if it went away). */
+function onPage<T>(origin: string, use: (open: Browser) => Promise<T>): Promise<T> {
   const work = queue.then(async () => {
     if (idle !== null) clearTimeout(idle);
     for (let attempt = 0; ; attempt++) {
@@ -279,11 +358,9 @@ function inChrome(origin: string, expression: string): Promise<{ bytes: Uint8Arr
       try {
         const open = await browser!;
         const started = Date.now();
-        const answer = await open.call("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
-        const value = (answer.result as { value?: { data?: string; missing?: string[] } } | undefined)?.value;
-        if (typeof value?.data !== "string") throw new Error(String((answer.exceptionDetails as { exception?: { description?: string } } | undefined)?.exception?.description ?? "Chrome drew nothing"));
+        const answer = await use(open);
         diag.record("thumbnails", "draw", Date.now() - started);
-        return { bytes: new Uint8Array(Buffer.from(value.data.slice(value.data.indexOf(",") + 1), "base64")), missing: value.missing ?? [] };
+        return answer;
       } catch (error) {
         close();
         if (attempt >= 1) throw error;

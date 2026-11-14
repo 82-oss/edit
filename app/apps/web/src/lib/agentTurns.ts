@@ -123,6 +123,11 @@ const IDEA_TOOLS: Record<string, string> = {
   set_main_title: "Chose the main title",
   save_thumbnail_guide: "Wrote the thumbnail guide",
   save_summary: "Wrote the summary",
+  // A channel's lane (the server's lanes.ts).
+  remember: "Kept a lesson for this channel",
+  read_skill: "Read a lesson",
+  other_channels: "Looked at another channel",
+  channel_videos: "Looked at the channel's videos",
 };
 
 /** A script's tools carry their own human label in the entry's text (writer/chat/turn.ts). */
@@ -152,7 +157,15 @@ const THUMB_TOOLS: Record<string, [string, string]> = {
   redo: ["Redoing a change", "Redid a change"],
   look: ["Looking at the thumbnail", "Looked at the thumbnail"],
   rename: ["Renaming the thumbnail", "Renamed the thumbnail"],
-  save_overlay: ["Saving the overlay", "Saved the overlay to the library"],
+  make_graphic: ["Drawing a graphic", "Drew a graphic"],
+  graphic_code: ["Reading a graphic's code", "Read a graphic's code"],
+  graphics: ["Looking at the taught graphics", "Looked at the taught graphics"],
+  use_graphic: ["Bringing in a graphic", "Brought in a graphic"],
+  save_graphic: ["Teaching the graphic", "Taught the graphic"],
+  remember: ["Keeping a lesson for this channel", "Kept a lesson for this channel"],
+  read_skill: ["Reading a lesson", "Read a lesson"],
+  other_channels: ["Looking at another channel", "Looked at another channel"],
+  channel_videos: ["Looking at the channel's videos", "Looked at the channel's videos"],
   Read: ["Looking closely at a picture", "Looked at a picture"],
 };
 

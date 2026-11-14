@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 
+import { placeOf as graphicsPlace, repoint } from "../src/thumbnails/graphics.ts";
+import { graphicPage } from "../src/thumbnails/render.ts";
 import { addComment, canonical, commentOf, editComment, describeComments, designOf, labelOf, layerOf, makeVersion, openComments, record, removeVersion, step, switchVersion, takeFinal } from "../src/thumbnails/design.ts";
 import { baseBrief, changed, fresh, pickModel } from "../src/thumbnails/run.ts";
 import type { Model } from "../src/thumbnails/openart.ts";
@@ -381,4 +383,26 @@ test("an update stops a thumbnail's turn without an ending, and the next start c
     mock.stop();
     cleanup();
   }
+});
+
+test("a graphic is code drawn on nothing: its page has the house's fonts and says when it's drawn, and a new version of it moves every layer on it", () => {
+  const fragment = graphicPage("http://127.0.0.1:7700", "<b>GUILTY</b>", 420, 160);
+  expect(fragment).toContain('src: url("http://127.0.0.1:7700/api/thumbnails/fonts/ITCAvantGardeGothic-Bold.otf")');
+  expect(fragment).toContain("width: 420px; height: 160px");
+  expect(fragment).toContain('parent.postMessage("drawn", "*")');
+  expect(fragment).toContain("<body><b>GUILTY</b></body>");
+  // A whole page keeps its own, the house's put in its head.
+  const page = graphicPage("http://127.0.0.1:7700", "<!doctype html><html><head><title>x</title></head><body>hi</body></html>", 100, 100);
+  expect(page.indexOf("@font-face")).toBeGreaterThan(page.indexOf("<head>"));
+  expect(page.indexOf("@font-face")).toBeLessThan(page.indexOf("<title>"));
+  const thumb = fresh("t-graphic", "Sphe", "Stamp", "");
+  const layer = (id: string, source: string) => ({ kind: "image" as const, id, name: id, source, x: 0, y: 0, width: 420, height: 160, fit: "stretch" as const }) as unknown as Thumbnail["design"]["layers"][number];
+  thumb.design = { layers: [layer("a", "old"), layer("b", "base")] };
+  thumb.versions = [{ id: "v1", name: "V1", design: { layers: [layer("c", "old")] }, at: 0, by: "Sphe" }];
+  expect(repoint(thumb, "old", "new")).toBe(2);
+  expect(thumb.design.layers.map((one) => (one as { source: string }).source)).toEqual(["new", "base"]);
+  expect((thumb.versions[0]!.design.layers[0] as { source: string }).source).toBe("new");
+  // Kept with the channel's Thumbnails lane, or the house's for none.
+  expect(graphicsPlace({ channel: "drinsanity", lane: "thumbnails" })).toBe("drinsanity--thumbnails");
+  expect(graphicsPlace(null)).toBe("thumbnails");
 });
