@@ -5,7 +5,7 @@
 // way more organised"), after the team's "having to scroll through a long,
 // tedious" list of ideas, scripts and edits together.
 
-import { Check, Clock, FileText, Film, Image as ImageIcon, Lightbulb, type LucideIcon } from "lucide-react";
+import { Check, Clock, FileText, Film, Image as ImageIcon, Lightbulb, Tv, type LucideIcon } from "lucide-react";
 import { motion } from "motion/react";
 import { useEffect, useState } from "react";
 
@@ -56,7 +56,7 @@ export type Section = "ideas" | "scripts" | "edits";
 export type Place = Section;
 
 /** Where Home is: a place or one of its stages, the thumbnails, Later or Done. */
-export type Where = "later" | "done" | "thumbnails" | Place | `${Place}:${string}`;
+export type Where = "later" | "done" | "thumbnails" | "channels" | Place | `${Place}:${string}`;
 
 export const PLACES: { key: Place; label: string; icon: LucideIcon; stages: { key: string; label: string }[] }[] = [
   { key: "ideas", label: "Ideas", icon: Lightbulb, stages: [{ key: "drafts", label: "Drafts" }, { key: "board", label: "On the board" }] },
@@ -87,7 +87,7 @@ export function placeOf(where: Where): { place: Place | null; stage: string | nu
 /** What `where` is called: "Edits", "Edits / In review", "Later". */
 export function nameOf(where: Where): { parent: string | null; name: string } {
   const { place, stage } = placeOf(where);
-  if (place === null) return { parent: null, name: where === "thumbnails" ? "Thumbnails" : where === "later" ? "Later" : "Done" };
+  if (place === null) return { parent: null, name: where === "thumbnails" ? "Thumbnails" : where === "channels" ? "Channels" : where === "later" ? "Later" : "Done" };
   const found = PLACES.find((one) => one.key === place)!;
   return stage === null ? { parent: null, name: found.label } : { parent: found.label, name: found.stages.find((one) => one.key === stage)?.label ?? stage };
 }
@@ -98,7 +98,7 @@ export interface LaterSummary {
   next: { title: string; until: number } | null;
 }
 
-export function HomeSidebar({ places, thumbnails, later, done, where, onChoose, open, onClose }: { places: Place[]; thumbnails: boolean; later: LaterSummary; done: number; where: Where; onChoose: (where: Where) => void; open: boolean; onClose: () => void }) {
+export function HomeSidebar({ places, thumbnails, channels, later, done, where, onChoose, open, onClose }: { places: Place[]; thumbnails: boolean; channels: boolean; later: LaterSummary; done: number; where: Where; onChoose: (where: Where) => void; open: boolean; onClose: () => void }) {
   // No spring on the first frame: a sidebar remembered closed doesn't open and close as Home appears.
   const [moving, setMoving] = useState(false);
   useEffect(() => {
@@ -151,6 +151,8 @@ export function HomeSidebar({ places, thumbnails, later, done, where, onChoose, 
             {thumbnails && item("thumbnails", "Thumbnails", ImageIcon)}
             {PLACES.filter((place) => place.key !== "ideas" && places.includes(place.key)).map((place) => item(place.key, place.label, place.icon))}
           </div>
+          {/* The team's channels (V2's): what every place's work is for, below the places. */}
+          {channels && <div className="mt-3 flex flex-col gap-0.5">{item("channels", "Channels", Tv)}</div>}
         </nav>
         {/*
           The export queue, then what's set aside and finished (Sphe, Nov 2, option 2 of four: "they're important but let's

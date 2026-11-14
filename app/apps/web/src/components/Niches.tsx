@@ -118,7 +118,7 @@ export function NewNiche({ open, onClose, onMade }: { open: boolean; onClose: ()
 }
 
 /** Text a teacher changes where it stands (a niche's name, its line): saved on Enter or leaving it, put back on Escape. */
-function InPlace({ value, onSave, editable, placeholder, className }: { value: string; onSave: (text: string) => void; editable: boolean; placeholder: string; className: string }) {
+export function InPlace({ value, onSave, editable, placeholder, className }: { value: string; onSave: (text: string) => void; editable: boolean; placeholder: string; className: string }) {
   const [text, setText] = useState(value);
   useEffect(() => setText(value), [value]);
   const shape = "-mx-1.5 block w-[calc(100%+12px)] rounded-md border border-transparent px-1.5";

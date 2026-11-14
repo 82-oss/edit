@@ -27,6 +27,7 @@ import { creditCopies } from "../lib/copies";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
 import { NewNiche, NichePageDialog } from "./Niches";
+import { AddChannelButton, ChannelsView } from "./Channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { AsideStatus, BackMark, BY, Category, CATEGORY, CHIP, COLUMNS, contextMenu, CreatorCell, KindMark, LaterContext, LENGTH, LengthCell, layoutFor, NAME, NoteMark, PILL, ROW, RowButtons, StatusCell, TableShape, Updated, useAside, useNote, withAside } from "./HomeTable";
 import { HomeSidebar, nameOf, OpenSidebar, placeOf, placeOfSection, PLACES, useSidebarOpen, type Place as Spot, type Section, type Where } from "./HomeSidebar";
@@ -91,6 +92,12 @@ export function Home() {
   const [cloud, setCloud] = useKept<CloudList | null>("home.cloud", null);
   const [statuses, setStatuses] = useKept<Record<string, ProjectStatus>>("home.statuses", {});
   const [creating, setCreating] = useState(false);
+  // Channels are V2's (the beta): Home's Channels, and Add channel over it.
+  const v2 = useBeta((beta) => beta.v2);
+  const [addingChannel, setAddingChannel] = useState(false);
+  useEffect(() => {
+    void loadBeta().catch(() => {});
+  }, []);
   // Script mode's scripts: one list with the edits (the user, Oct 30: "merge the two applications as much as possible").
   const [scripts, setScripts] = useKept<WriterScriptRow[]>("home.scripts", []);
   // Scripts being written from videos, as Script mode's imports say.
@@ -145,8 +152,8 @@ export function Home() {
   const mayCreate = makes || writesScripts(account);
   // One place at a time, remembered on this browser; /ideas is Home on its Ideas (the idea page's way back).
   // /thumbnails is Home on its Thumbnails (a thumbnail's way back), as /ideas is on its Ideas.
-  const [where, setWhere] = useState<Where>(() => (window.location.pathname === "/ideas" ? "ideas" : window.location.pathname === "/thumbnails" ? "thumbnails" : savedWhere()));
-  const shownWhere: Where = (placeOf(where).place !== null && !places.includes(placeOf(where).place!)) || (where === "thumbnails" && !ideasAllowed) ? (places[0] ?? "edits") : where;
+  const [where, setWhere] = useState<Where>(() => (window.location.pathname === "/ideas" ? "ideas" : window.location.pathname === "/thumbnails" ? "thumbnails" : window.location.pathname === "/channels" ? "channels" : savedWhere()));
+  const shownWhere: Where = (placeOf(where).place !== null && !places.includes(placeOf(where).place!)) || (where === "thumbnails" && !ideasAllowed) || (where === "channels" && !v2) ? (places[0] ?? "edits") : where;
   const thumbnail = useMakeThumbnail();
   // Yours, or everyone's (remembered on this browser); nobody signed in has nothing of their own.
   const [mineOnly, setMineOnly] = useState(() => localStorage.getItem(MINE) !== "0");
@@ -440,6 +447,7 @@ export function Home() {
   const title = searching ? { parent: null, name: "Search" } : nameOf(shownWhere);
   const inIdeas = !searching && placeOf(shownWhere).place === "ideas";
   const inThumbnails = !searching && shownWhere === "thumbnails";
+  const inChannels = !searching && shownWhere === "channels";
   // The open place's stages, steps over its list (empty ones greyed, so the order still reads).
   const shownPlace = searching ? null : placeOf(shownWhere).place;
   const steps = shownPlace === null ? [] : PLACES.find((one) => one.key === shownPlace)!.stages.map((one) => ({ ...one, count: countOf(`${shownPlace}:${one.key}`) }));
@@ -452,7 +460,8 @@ export function Home() {
     setAllDone(false);
     if (placeOf(place).place === "ideas") navigate("/ideas", true);
     else if (place === "thumbnails") navigate("/thumbnails", true);
-    else if (window.location.pathname === "/ideas" || window.location.pathname === "/thumbnails") navigate("/", true);
+    else if (place === "channels") navigate("/channels", true);
+    else if (window.location.pathname === "/ideas" || window.location.pathname === "/thumbnails" || window.location.pathname === "/channels") navigate("/", true);
   };
   const chooseMine = (value: boolean) => {
     localStorage.setItem(MINE, value ? "1" : "0");
@@ -489,7 +498,7 @@ export function Home() {
   return (
     <LaterContext.Provider value={later}>
       <div className="flex h-full bg-black p-2">
-        <HomeSidebar places={places} thumbnails={ideasAllowed} later={laterSummary} done={countOf("done")} where={searching ? ("" as Where) : shownWhere} onChoose={choose} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+        <HomeSidebar places={places} thumbnails={ideasAllowed} channels={v2} later={laterSummary} done={countOf("done")} where={searching ? ("" as Where) : shownWhere} onChoose={choose} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-panel">
           <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-line px-5">
             {!sidebarOpen && <OpenSidebar onOpen={() => setSidebarOpen(true)} />}
@@ -501,7 +510,7 @@ export function Home() {
                 </>
               )}
               <span className="truncate">{title.name}</span>
-              {!loading && !inThumbnails && <span className="ml-1 text-[13px] font-normal text-faint tabular">{total}</span>}
+              {!loading && !inThumbnails && !inChannels && <span className="ml-1 text-[13px] font-normal text-faint tabular">{total}</span>}
             </h1>
             <div className="ml-auto flex items-center gap-1.5">
               <MemoryChip />
@@ -511,6 +520,8 @@ export function Home() {
                 <Button variant="light" onClick={() => setIdeaOpen(true)}>
                   <Plus size={15} strokeWidth={2.2} /> New idea
                 </Button>
+              ) : inChannels ? (
+                <AddChannelButton onClick={() => setAddingChannel(true)} />
               ) : inThumbnails ? (
                 <Button variant="light" busy={thumbnail.making} onClick={thumbnail.make}>
                   <Plus size={15} strokeWidth={2.2} /> New thumbnail
@@ -525,7 +536,9 @@ export function Home() {
           <div className={cx("flex min-h-0 flex-1 flex-col overflow-y-auto px-4 pt-3 pb-6")}>
             <SetupCard />
             {/* Thumbnails in the panel (Sphe, Nov 2: they "should sort of happen on that right hand side"), not a page of their own. */}
-            {inThumbnails ? (
+            {inChannels ? (
+              <ChannelsView adding={addingChannel} onAdding={setAddingChannel} />
+            ) : inThumbnails ? (
               <div className="-mx-4 -mt-3">
                 <ThumbnailGrid making={thumbnail.making} onMake={thumbnail.make} />
               </div>
@@ -694,7 +707,7 @@ function savedWhere(): Where {
   const saved = localStorage.getItem(VIEW) ?? "";
   if (saved === "subtitled") return "edits:subtitled";
   // Needs you went on Nov 2 ("let's remove needs you"): Home opens on Edits.
-  if (saved === "later" || saved === "done" || saved === "thumbnails") return saved;
+  if (saved === "later" || saved === "done" || saved === "thumbnails" || saved === "channels") return saved;
   // Videos (Scripts and Edits together) for an evening on Nov 2: its stage says which it was.
   const [first, stage] = saved.split(":") as [string, string | undefined];
   const fromVideos: Spot = stage !== undefined && PLACES.find((one) => one.key === "scripts")!.stages.some((one) => one.key === stage) ? "scripts" : "edits";
