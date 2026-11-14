@@ -344,10 +344,13 @@ test("a script's, an idea's or a thumbnail's agent is told its channel's lane al
   expect(text).not.toContain("The edit's intro");
   expect(text).not.toContain("JCS's way");
   expect(text).toContain("keep it with remember");
+  // Said outright, kept; maybe, asked once at the end and kept only on a yes (teaching.ts; Sphe, Nov 14).
+  expect(text).toContain("whether to do it on every idea from now on");
+  expect(text).toContain("If they go on without answering, it stays this idea's");
   expect(text).toContain("channel_videos");
   // A thumbnail's lane has nothing taught yet; a script's revision keeps lessons in its answer; a build only reads.
   expect(lanes.section("drinsanity", "thumbnails")).toContain("ISN'T TAUGHT YET");
-  expect(lanes.section("drinsanity", "script", "lesson")).toContain('send lesson with scope "channel"');
+  expect(lanes.section("drinsanity", "script", "lesson")).toContain('goes with scope "channel"');
   expect(lanes.section("drinsanity", "script", "none")).not.toMatch(/remember|send lesson/);
   expect(lanes.section(undefined, "ideas")).toBe("");
   expect(lanes.toolsFor("script").map((one) => one.name)).toEqual(["remember", "read_skill", "other_channels"]);
@@ -389,7 +392,7 @@ test("a niche's teaching thrown over as a channel's edit base: everything its ag
     mock.cloud.convex.library.clear();
     mock.cloud.convex.libraryVersions.clear();
     const seed = (key: string, kind: "skill" | "template", name: string, niches: string[] | null) => {
-      mock.cloud.convex.library.set(key, { key, kind, name, current: 1, latest: 1, note: `${name}'s note`, niches, at: Date.now(), by: { name: "Sphe" } });
+      mock.cloud.convex.library.set(key, { key, kind, name, current: 1, latest: 1, note: `${name}'s note`, ...(niches === null ? {} : { niches }), at: Date.now(), by: { name: "Sphe" } });
       mock.cloud.convex.libraryVersions.set(key, [{ key, n: 1, text: `${name}'s text`, at: Date.now(), by: { name: "Sphe" } }]);
     };
     seed("skill:global", "skill", "global", null);

@@ -45,6 +45,7 @@ import { stableStringify } from "./stable.ts";
 import type { Project } from "./model.ts";
 import type { Store } from "./store.ts";
 import * as toolChanges from "./tool_changes.ts";
+import { keepRule } from "./teaching.ts";
 
 type Json = unknown;
 
@@ -1954,6 +1955,8 @@ function hqInstructions(project: Pick<Project, "name" | "settings" | "niche" | "
     `THIS PROJECT'S NICHE: ${niche.name} (${niche.key})${niche.description === "" ? "" : `: ${niche.description.replace(/\.$/u, "")}`}.` +
     (like.length === 0 ? "" : ` It's like ${like.join(", then ")}: what they were taught comes through, and what this niche is taught wins where they differ.`) +
     " What you remember and save is this niche's own; for other niches too, or every niche, only when the person asks for it (remember and save_to_library's niches, with asked: their words).\n\n";
+  // When it keeps what it's taught (teaching.ts): said outright, at once; maybe, asked at the end; a teacher's alone.
+  const keeping = v2cloud.teacher() ? keepRule("video", "keep it with remember") : "This person isn't a teacher, so nothing is kept from their feedback: don't offer to keep it.";
   const channel = typeof project.channel === "string" && project.channel !== "" ? channelText(project) : null;
   const known = v2cloud.memories(nicheKey);
   const remembered = known.filter((one) => one.note === undefined);
@@ -1964,7 +1967,7 @@ function hqInstructions(project: Pick<Project, "name" | "settings" | "niche" | "
     `You are the agent built into Edit, a video editor, making "${project.name}" (${settings.width}x${settings.height} at ${rateText(settings)} fps) with the person watching: what you change appears in their viewer at once. ` +
     "You work through the `edit` tools and write code with your file tools (Read, Write, Edit, Glob, Grep), which work only in your working directory, the project's effects folder; you have no shell. " +
     `Each tool call is a wait for them: do independent calls side by side. Reply in a line or two: what you made or changed, and where. ${PICTURES}\n\n` +
-    `${channel ?? nicheText}${HQ_NOTES}${memory}${skills}${channel !== null && known.length <= 1 ? `\n\n${UNTAUGHT}` : ""}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
+    `${channel ?? nicheText}${keeping}\n\n${HQ_NOTES}${memory}${skills}${channel !== null && known.length <= 1 ? `\n\n${UNTAUGHT}` : ""}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
   );
 }
 
@@ -1995,7 +1998,7 @@ function channelText(project: Pick<Project, "channel" | "compilation">): string 
 
 /** Said to a channel's agent while its edit style is still empty. */
 const UNTAUGHT =
-  "THIS CHANNEL ISN'T TAUGHT YET: no lessons, effects or sounds of its own. Put the footage in as asked, one after the other, and nothing else of your own (no music, sound effects, graphics or captions until the person asks), then build the channel's style with the person as they say what it should be: what they teach you, keep (remember, save_to_library), so the next project of this channel has it.";
+  "THIS CHANNEL ISN'T TAUGHT YET: no lessons, effects or sounds of its own. Put the footage in as asked, one after the other, and nothing else of your own (no music, sound effects, graphics or captions until the person asks), then build the channel's style with the person as they say what it should be, keeping it (remember, save_to_library) as KEEPING WHAT YOU'RE TAUGHT says, so the next project of this channel has it.";
 
 /** A saved chat, read as serde reads `Chat` (every field defaults; a wrong type refuses the whole file). */
 export function readChat(text: string): Chat {

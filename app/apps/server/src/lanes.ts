@@ -11,6 +11,7 @@
 // reach into another channel from here.
 
 import * as channels from "./channels.ts";
+import { keepRule } from "./teaching.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
 /** The lanes this module serves; the edit's is effect_tools'. */
@@ -54,9 +55,14 @@ function nameOf(key: string): string {
 /** How the agent keeps what it's taught: its tools, a lesson in its answer (Script mode's revisions), or not at all (a build only reads). */
 export type Teach = "tools" | "lesson" | "none";
 
+/** Said instead of the rule when this computer's account can't teach. */
+const NOT_TEACHER = "This person isn't a teacher, so nothing is kept from their feedback: don't offer to keep it.";
+
 export function laneText(place: Place, teach: Teach = "tools"): string {
   const channel = channels.knownChannels().find((one) => one.key === place.channel) ?? null;
   const word = WORD[place.lane];
+  // One of them, for the rule's "this idea", "every idea".
+  const single = place.lane === "ideas" ? "idea" : word;
   const style = channel?.lanes[place.lane]?.trim() ?? "";
   const lessons = lessonsOf(place);
   const always = lessons.filter((one) => one.note === undefined);
@@ -71,12 +77,13 @@ export function laneText(place: Place, teach: Teach = "tools"): string {
   if (teach === "lesson") {
     // Script mode's revisions answer once with no tools: a lesson comes back in the answer (writer/lesson_note.ts) and is kept here.
     lines.push(
-      `When the person corrects you or says how this channel does its ${word}s ("we never…", "always…"), send lesson with scope "channel" and a name (lower-case words joined by hyphens; one of the names above changes that lesson): it's kept in this channel's ${word} style at once, so its next ${word} has it. Never for a one-off change to this one.`,
+      // When to is LESSONS' (lesson_note.ts, beside this in the prompt); only where it goes is the lane's.
+      v2cloud.teacher() ? `A lesson of how this channel does its ${word}s goes with scope "channel" and a name (lower-case words joined by hyphens; one of the names above changes that lesson): it's kept in this channel's ${word} style at once, so its next ${word} has it.` : NOT_TEACHER,
     );
     return lines.join("\n\n");
   }
   lines.push(
-    `When the person corrects you or says how this channel does its ${word}s ("our titles never…", "always…"), keep it with remember, in their words, so the next ${word} of this channel has it; never for a one-off change to this one. ` +
+    `${v2cloud.teacher() ? keepRule(single, "keep it with remember, so the next of this channel's has it") : NOT_TEACHER} ` +
       `When they point you at another channel's way, or ask to start from another channel's style, find it with other_channels and bring it in as this channel's own, to change here.` +
       (place.lane === "script" ? "" : " channel_videos shows what this channel's videos (or any channel's, by its link) get on YouTube: their titles, views, length and thumbnails."),
   );
@@ -108,7 +115,7 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
   const tools: { name: string; description: string; inputSchema: Record<string, unknown> }[] = [
     {
       name: "remember",
-      description: `Keep a lesson for this channel's ${word}s: what the person taught you of how this channel does them, in their words. A lesson is a line or two, always in your instructions from the next turn; a longer part (at most 2,400 characters) with a note (when to read it) is read with read_skill when it fits. The same name changes the lesson. A teacher's to do.`,
+      description: `Keep a lesson for this channel's ${word}s: what the person said holds beyond this one, or said yes to keeping when you asked (never what they let pass unanswered), in their words. A lesson is a line or two, always in your instructions from the next turn; a longer part (at most 2,400 characters) with a note (when to read it) is read with read_skill when it fits. The same name changes the lesson. A teacher's to do.`,
       inputSchema: {
         type: "object",
         properties: {
