@@ -5,6 +5,7 @@ import { manifest } from "./manifest";
 import { cloud, emptyCleanups, r2Config, type CloudEnv } from "./cloud";
 import { media, type EdgeCache } from "./media";
 import { ideasRoute, mayIdeas, NO_IDEAS } from "./ideas";
+import { channelsRoute } from "./channels";
 import { fromOtherRelay, openartReady, openartRoute, openartToken, type OpenArtEnv } from "./openart";
 import { MAX_JOB_BYTES, transcribeJobs, type JobsEnv } from "./transcribe_jobs";
 import { diarizeJobs, diarizeOn, voicesOf, type DiarizeEnv } from "./diarize_jobs";
@@ -34,6 +35,7 @@ declare const FixedLengthStream:{ new(size: number): { readable: ReadableStream<
  *                          with the cloud token only (see cloud.ts)
  *   GET|POST|PATCH /v1/google/www.googleapis.com/…  the Drive calls Edit makes, with the team's
  *                          sign-in kept here (google.ts)
+ *   GET /v1/channels/resolve  a link read into its YouTube channel (channels.ts), signed in
  *   GET|POST /v1/ideas/…   ideas: their Convex rows, YouTube's details, the Interrogation
  *                          board's Trello (ideas.ts), with an `ideas.*` capability
  *   POST /v1/openart/mcp   the team's OpenArt account's MCP server, for thumbnails (openart.ts),
@@ -133,6 +135,14 @@ export default {
         return json(403, { error: "Your account can't import from Trello: an admin can give you an editing or scripts permission at accounts.spheceo.com." });
       }
       return url.pathname === "/v1/trello/card" ? trelloCard(url.searchParams.get("card") ?? "", env) : trelloCards(url.searchParams.get("list") ?? "", env);
+    }
+    // Channels (channels.ts): a link read into its YouTube channel, for anyone signed in to Edit (adding one is a
+    // teacher's, which mamagi checks when it's saved).
+    if (url.pathname.startsWith("/v1/channels/")) {
+      const found = await allow(request, env, "use", "channels");
+      if (found instanceof Response) return found;
+      if (env.CLOUD_BURST !== undefined && !(await env.CLOUD_BURST.limit({ key: `channels:${burstKey(request, found)}` })).success) return json(429, { error: "Too many requests at once; try again in a minute." });
+      return channelsRoute(request, url, env);
     }
     // Ideas (ideas.ts): someone with an `ideas.*` capability, or an admin.
     if (url.pathname.startsWith("/v1/ideas/")) {

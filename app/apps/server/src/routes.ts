@@ -66,6 +66,7 @@ import * as memory from "./memory.ts";
 // The agent's report_problem tool (registered as it loads).
 import "./agent_reports.ts";
 import * as presence from "./presence.ts";
+import * as channels from "./channels.ts";
 import * as devProjects from "./dev_projects.ts";
 import * as channelMarks from "./channel_marks.ts";
 import * as beta from "./beta.ts";
@@ -120,6 +121,7 @@ export function buildRouter(): Router<App> {
   presence.routes(router);
   memory.routes(router);
   devProjects.routes(router);
+  channels.routes(router);
   channelMarks.routes(router);
   beta.routes(router);
   effects.routes(router);
