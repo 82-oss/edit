@@ -816,6 +816,7 @@ function summaryOf(project: Project, modifiedMs: number): ProjectSummary {
   if (project.origin === "dev" && project.shown === true) summary.shown = true;
   if (typeof project.note === "string" && project.note !== "") summary.note = project.note;
   if (project.hq === true) summary.hq = true;
+  if (typeof project.channel === "string" && project.channel !== "") summary.channel = project.channel;
   if (project.hq === true && typeof project.niche === "string" && project.niche !== "") summary.niche = project.niche;
   const missing = missingMedia(project);
   const used = usedMedia(project).length;

@@ -187,10 +187,10 @@ export class CloudMock {
     relay("convex", (body) => {
       const kind = body.kind;
       if (kind !== "query" && kind !== "mutation" && kind !== "action") return bad("kind must be query, mutation or action.");
-      if (typeof body.path !== "string" || !/^edit:[A-Za-z_][A-Za-z0-9_]*$/.test(body.path)) {
+      if (typeof body.path !== "string" || !/^(edit|channels):[A-Za-z_][A-Za-z0-9_]*$/.test(body.path)) {
         return json(403, { error: "Only edit: functions can be called." });
       }
-      const name = body.path.slice("edit:".length);
+      const name = body.path.slice(body.path.indexOf(":") + 1);
       const answer = this.convex.call(name, (body.args ?? {}) as Record<string, unknown>, mock.url);
       // Done, but its answer lost on the way back (Edit quitting, a dropped connection).
       if (this.convex.lose.delete(name)) return json(504, { error: "The connection was closed before the answer came back." });
@@ -319,6 +319,8 @@ export class ConvexMock {
   /** Home's Later (mamagi's editLater), by key. */
   readonly later = new Map<string, { key: string; until?: number; done?: boolean; at: number; by: { sub: string; name: string; picture?: string } }>();
   /** Edit V2's cloud (mamagi's editLibrary and editLibraryVersions), as accounts' convex/edit.ts keeps them. */
+  /** mamagi's channels (channels.ts), as listChannels shows them. */
+  channels: Record<string, unknown>[] = [];
   readonly library = new Map<string, { key: string; kind: string; projectId?: string; name: string; current: number; latest: number; note?: string; brief?: string; category?: string; archived?: boolean; niches?: string[]; at: number; by: { name: string } }>();
   readonly libraryVersions = new Map<string, { key: string; n: number; files?: unknown[]; text?: string; reason?: string; from?: unknown; source?: string; at: number; by: { name: string } }[]>();
   /** The lessons inbox (mamagi's editLessons), by id, in the order noted. */
@@ -416,6 +418,10 @@ export class ConvexMock {
   private run(name: string, args: Record<string, unknown>, base: string): unknown {
     const projectId = String(args.projectId ?? "");
     switch (name) {
+      case "listChannels":
+        return this.channels;
+      case "getChannel":
+        return this.channels.find((one) => one.key === args.key) ?? null;
       case "listProjects":
         return [...this.projects.values()].sort((a, b) => b.updatedAt - a.updatedAt).map((row) => this.card(row));
       case "listLibrary": {

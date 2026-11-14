@@ -27,7 +27,8 @@ import { creditCopies } from "../lib/copies";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
 import { NewNiche, NichePageDialog } from "./Niches";
-import { AddChannelButton, ChannelsView } from "./Channels";
+import { AddChannelButton, ChannelAvatar, ChannelsView } from "./Channels";
+import { loadChannels, useChannels } from "../lib/channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { AsideStatus, BackMark, BY, Category, CATEGORY, CHIP, COLUMNS, contextMenu, CreatorCell, KindMark, LaterContext, LENGTH, LengthCell, layoutFor, NAME, NoteMark, PILL, ROW, RowButtons, StatusCell, TableShape, Updated, useAside, useNote, withAside } from "./HomeTable";
 import { HomeSidebar, nameOf, OpenSidebar, placeOf, placeOfSection, PLACES, useSidebarOpen, type Place as Spot, type Section, type Where } from "./HomeSidebar";
@@ -37,7 +38,7 @@ import { SetupCard } from "./SetupCard";
 import { StartedBy } from "./StartedBy";
 import { MemoryChip } from "./MemoryChip";
 import { UpdateButton } from "./UpdateButton";
-import { Button, ConfirmDialog, cx, Modal, Pulse, spring } from "./ui";
+import { Button, ConfirmDialog, cx, Modal, Pulse, spring, Switch } from "./ui";
 import { isListed, promoteItem, TestBadge } from "./TestProjects";
 import { ANOTHER_MACHINE, THEIR_MACHINE, THIS_MACHINE } from "../lib/platform";
 
@@ -71,6 +72,8 @@ interface Item {
   fresh?: boolean;
   /** Its kind of video (an idea's workspace), for the filter; none for a board card or a stopped import. */
   kind?: Style | null;
+  /** The channel it's for (an edit's), for the filter; none: made without one. */
+  channel?: string | null;
   row: () => ReactNode;
 }
 
@@ -161,6 +164,13 @@ export function Home() {
   // One kind of video only (Sphe, Nov 2: Mine/Everyone "turned into like a dropdown with filters like category"), remembered on this browser.
   const [kind, setKind] = useState<Style | null>(() => (STYLES.some((one) => one.value === localStorage.getItem(KIND)) ? (localStorage.getItem(KIND) as Style) : null));
   const later = useLater();
+  // One channel only (Sphe, Nov 14: the kind filter as a channel filter), remembered on this browser; V2's.
+  const channelList = useChannels((state) => state.channels);
+  const [channelPick, setChannelPick] = useState<string | null>(() => localStorage.getItem(CHANNEL));
+  const channelFilter = v2 && channelList?.some((one) => one.key === channelPick) ? channelPick : null;
+  useEffect(() => {
+    if (v2) void loadChannels();
+  }, [v2]);
   const [allDone, setAllDone] = useState(false);
   // How far back (Sphe, Nov 14: "the default view be this week's content"): this week unless widened, kept while the
   // window is open (sessionStorage), so opening a project and coming back doesn't narrow it again.
@@ -353,6 +363,7 @@ export function Home() {
       mine: isMe(starter(row)),
       fresh: fresh(row),
       kind: row.local?.style ?? row.cloud?.summary?.style ?? row.script?.style ?? null,
+      channel: row.local?.channel ?? row.cloud?.summary?.channel ?? null,
       row: () => (row.local !== null ? <TableRow {...cardProps(row.local)} subtitled={subtitled} script={row.script} /> : <CloudTableRow project={row.cloud!} script={row.script} onChanged={refresh} />),
     });
   }
@@ -396,7 +407,8 @@ export function Home() {
   // In the period: changed since its start. What's set aside, or back from Later, is in it whenever it changed.
   const since = periodStart(period);
   const recent = (item: Item) => item.at >= since || aside(item) || backAt(item) !== null;
-  const ours = items.filter((item) => (!mine || item.mine) && (kind === null || item.kind === kind) && recent(item));
+  const ofChannel = (item: Item) => channelFilter === null || item.channel === channelFilter;
+  const ours = items.filter((item) => (!mine || item.mine) && (kind === null || item.kind === kind) && ofChannel(item) && recent(item));
   const countOf = (place: Where) => ours.filter((item) => isIn(item, place)).length;
   // The foot's Later: how many are set aside, and the next to come back.
   const setAside = ours.filter((item) => isIn(item, "later"));
@@ -471,13 +483,20 @@ export function Home() {
     sessionStorage.setItem(PERIOD, value);
     setPeriod(value);
   };
+  const chooseChannel = (value: string | null) => {
+    if (value === null) localStorage.removeItem(CHANNEL);
+    else localStorage.setItem(CHANNEL, value);
+    setChannelPick(value);
+  };
   const chooseKind = (value: Style | null) => {
     if (value === null) localStorage.removeItem(KIND);
     else localStorage.setItem(KIND, value);
     setKind(value);
   };
   // The kinds in the list on screen (in Mine, yours), with how many of each: the filter's menu.
-  const kinds = STYLES.map((one) => ({ ...one, count: items.filter((item) => item.kind === one.value && (!mine || item.mine) && recent(item) && isIn(item, shownWhere)).length })).filter((one) => one.count > 0 || one.value === kind);
+  const kinds = STYLES.map((one) => ({ ...one, count: items.filter((item) => item.kind === one.value && (!mine || item.mine) && ofChannel(item) && recent(item) && isIn(item, shownWhere)).length })).filter((one) => one.count > 0 || one.value === kind);
+  // The channels, with how many of each are in the list on screen.
+  const channelCounts = v2 ? (channelList ?? []).map((one) => ({ value: one.key, label: one.title, count: items.filter((item) => item.channel === one.key && (!mine || item.mine) && (kind === null || item.kind === kind) && recent(item) && isIn(item, shownWhere)).length })) : [];
   // Nothing in this list: why, and where to look.
   const others = items.filter((item) => !item.mine && (kind === null || item.kind === kind) && recent(item) && isIn(item, shownWhere)).length;
   const otherKinds = kind === null ? 0 : items.filter((item) => item.kind !== kind && (!mine || item.mine) && recent(item) && isIn(item, shownWhere)).length;
@@ -567,6 +586,9 @@ export function Home() {
                 kinds={kinds}
                 period={period}
                 onPeriod={choosePeriod}
+                channel={channelFilter}
+                channels={channelCounts}
+                onChannel={chooseChannel}
                 disabled={searching}
                 onWho={(value) => chooseMine(value === "mine")}
                 onKind={chooseKind}
@@ -626,10 +648,11 @@ export function Home() {
  * shown ("Mine", "Everyone · Bodycam"), its menu Mine or Everyone, then every
  * kind there is with how many. A search looks through everything, as before.
  */
-function FilterButton({ who, kind, kinds, period, disabled, onWho, onKind, onPeriod }: { who: "mine" | "everyone" | null; kind: Style | null; kinds: { value: Style; label: string; count: number }[]; period: Period; disabled: boolean; onWho: (value: "mine" | "everyone") => void; onKind: (value: Style | null) => void; onPeriod: (value: Period) => void }) {
+function FilterButton({ who, kind, kinds, period, channel, channels, disabled, onWho, onKind, onPeriod, onChannel }: { who: "mine" | "everyone" | null; kind: Style | null; kinds: { value: Style; label: string; count: number }[]; period: Period; channel: string | null; channels: { value: string; label: string; count: number }[]; disabled: boolean; onWho: (value: "mine" | "everyone") => void; onKind: (value: Style | null) => void; onPeriod: (value: Period) => void; onChannel: (value: string | null) => void }) {
   const kindLabel = kinds.find((one) => one.value === kind)?.label ?? STYLES.find((one) => one.value === kind)?.label ?? null;
-  const label = [who === "mine" ? "Mine" : who === "everyone" ? "Everyone" : null, kindLabel, PERIODS.find((one) => one.value === period)!.label].filter(Boolean).join(" · ");
-  const filtered = kind !== null || period !== "week";
+  const channelLabel = channels.find((one) => one.value === channel)?.label ?? null;
+  const label = [who === "mine" ? "Mine" : who === "everyone" ? "Everyone" : null, channelLabel, kindLabel, PERIODS.find((one) => one.value === period)!.label].filter(Boolean).join(" · ");
+  const filtered = kind !== null || channel !== null || period !== "week";
   const open = (event: React.MouseEvent<HTMLButtonElement>) =>
     toggleMenu(
       event.currentTarget,
@@ -643,6 +666,14 @@ function FilterButton({ who, kind, kinds, period, disabled, onWho, onKind, onPer
           : []),
         ...PERIODS.map((one): MenuItem => ({ label: one.label, checked: period === one.value, onSelect: () => onPeriod(one.value) })),
         { separator: true },
+        // The channels first (V2's), then today's kinds.
+        ...(channels.length > 0
+          ? ([
+              { label: "Every channel", checked: channel === null, onSelect: () => onChannel(null) },
+              ...channels.map((one): MenuItem => ({ label: one.label, detail: String(one.count), checked: channel === one.value, onSelect: () => onChannel(one.value) })),
+              { separator: true },
+            ] satisfies MenuItem[])
+          : []),
         { label: "Every kind", checked: kind === null, onSelect: () => onKind(null) },
         ...kinds.map((one): MenuItem => ({ label: one.label, detail: String(one.count), checked: kind === one.value, onSelect: () => onKind(one.value) })),
       ],
@@ -863,6 +894,8 @@ function withNote(items: MenuItem[], note: MenuItem[]): MenuItem[] {
 
 /** Mine or Everyone (remembered on this browser). */
 const MINE = "edit.home.mine";
+/** The channel Home's lists are filtered to (remembered on this browser). */
+const CHANNEL = "edit.home.channel";
 
 /** How far back Home's lists look: what changed in the last 7, 30 or 365 days, or everything (`Home`'s period). */
 const PERIODS = [
@@ -2050,6 +2083,12 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
   /** The niche whose page is open, kept while it closes. */
   const [page, setPage] = useState<{ key: string; open: boolean }>({ key: "", open: false });
   const [prompt, setPrompt] = useState("");
+  // A channel (Nov 14; Sphe: "the main thing that shows up is Pick a channel"): with V2 on, an edit is made for one,
+  // today's kinds and niches under Other kinds. Whether it's a compilation: the channel's unless changed here.
+  const channels = useChannels((state) => state.channels);
+  const [channelKey, setChannelKey] = useState<string | null>(null);
+  const [compilation, setCompilation] = useState<boolean | null>(null);
+  const [otherKinds, setOtherKinds] = useState(false);
   const [sources, setSources] = useState<Source[] | null>(null);
   /** Several videos: one case or a compilation, as the person said (null: not yet). */
   const [shape, setShape] = useState<Shape | null>(null);
@@ -2078,6 +2117,8 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
   // Edit V2's niches, apart from today's kinds until they take their place (Bodycam HQ alone when there are none to be had).
   const v2Pills = v2 && !writing ? v2Choices(niches, styles.map((option) => option.value)) : [];
   const chosen = v2Pills.find((one) => one.key === niche && one.kind === kind);
+  const showChannels = v2 && !writing && (channels?.length ?? 0) > 0;
+  const channel = showChannels ? (channels?.find((one) => one.key === channelKey) ?? null) : null;
 
   // A fresh dialog each time.
   useEffect(() => {
@@ -2093,6 +2134,9 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
     setError(null);
     setPicked(start !== null);
     setNiche(null);
+    setChannelKey(null);
+    setCompilation(null);
+    setOtherKinds(false);
     setMode(writes ? "write" : "edit");
     // A switch made in Settings on this computer is seen as the dialog opens.
     void loadBeta().catch(() => {});
@@ -2102,7 +2146,7 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
 
   // V2's niches asked again as the dialog opens (one may have been made elsewhere).
   useEffect(() => {
-    if (open && v2) void loadNiches();
+    if (open && v2) void Promise.all([loadNiches(), loadChannels()]);
   }, [open, v2]);
 
   // Writing: the paste read into its sources (a Trello card into its videos), each checked, reuses ticked.
@@ -2205,6 +2249,8 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
   const editDoc = !writing && links.some((link) => DOC.test(link));
   const ready =
     title.trim() !== "" &&
+    // With channels to pick from, one is picked, or another kind under Other kinds.
+    (!showChannels || channel !== null || otherKinds) &&
     (writing
       ? commentary
         ? links.length > 0
@@ -2237,7 +2283,12 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
         return;
       }
       if (input !== "" && allowed !== null && !allowed.has(kind)) throw new Error("Your account can’t make full edits: an admin can give you an Edit style at accounts.spheceo.com.");
-      const { project } = await api.createProject({ name: title.trim(), style: kind, ...(chosen ? { hq: true, ...(chosen.niche ? { niche: chosen.niche } : {}) } : {}), ...(kind === "shorts" ? SHORTS_FORMAT : FORMAT) });
+      const { project } = await api.createProject({
+        name: title.trim(),
+        style: kind,
+        ...(channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}) } : chosen ? { hq: true, ...(chosen.niche ? { niche: chosen.niche } : {}) } : {}),
+        ...(kind === "shorts" && channel === null ? SHORTS_FORMAT : FORMAT),
+      });
       if (input === "") {
         // A blank project: the first message, if there is one, goes to its agent at once (Bodycam HQ's footage comes in the chat).
         if (extra !== "") await api.firstPrompt(project.id, extra);
@@ -2265,6 +2316,98 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
 
   const field = "h-9 w-full rounded-lg border border-line bg-black px-3 text-[13px] outline-none placeholder:text-faint focus:border-muted";
   const label = "mb-1.5 block text-[12px] font-medium text-muted";
+  // Today's kinds and V2's niches: New project's own pick without channels, Other kinds' with them.
+  const kindBlock = (labelled: boolean) => (
+        <div>
+          {labelled && <span className={label}>Kind</span>}
+          <div className="flex flex-wrap gap-1.5">
+            {styles.map((option) => (
+              <button
+                type="button"
+                key={option.value}
+                title={STYLE_NOTES[option.value]}
+                onClick={() => {
+                  setStyle(option.value);
+                  setNiche(null);
+                  setPicked(true);
+                }}
+                className={cx(
+                  "flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition-colors",
+                  kind === option.value && !chosen ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
+                )}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          {v2Pills.length > 0 && (
+            <div className="mt-2 flex flex-wrap items-center gap-1.5">
+              <span className="mr-0.5 text-[11px] font-semibold tracking-[0.2px] text-faint">V2</span>
+              {v2Pills.map((option) => {
+                const on = chosen?.key === option.key;
+                const known = option.niche;
+                return (
+                  <div
+                    key={option.key}
+                    onContextMenu={(event) => {
+                      if (known === null) return;
+                      event.preventDefault();
+                      setPage({ key: known, open: true });
+                    }}
+                    className={cx(
+                      "flex h-7 items-center rounded-full border text-[12px] font-medium transition-colors",
+                      on ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
+                    )}
+                  >
+                    <button
+                      type="button"
+                      title={option.description}
+                      onClick={() => {
+                        setStyle(option.kind);
+                        setNiche(option.key);
+                        setPicked(true);
+                      }}
+                      className="h-full rounded-full px-3"
+                    >
+                      {option.name}
+                    </button>
+                    {/* The picked niche's page: what its agent knows. */}
+                    <AnimatePresence initial={false}>
+                      {on && known !== null && (
+                        <motion.button
+                          type="button"
+                          title="What its agent knows"
+                          aria-label={`What ${option.name}’s agent knows`}
+                          onClick={() => setPage({ key: known, open: true })}
+                          initial={{ width: 0, opacity: 0 }}
+                          animate={{ width: 22, opacity: 1 }}
+                          exit={{ width: 0, opacity: 0 }}
+                          transition={spring}
+                          className="-ml-1.5 flex h-full items-center justify-start overflow-hidden text-faint hover:text-fg"
+                        >
+                          <BookOpen size={13} className="shrink-0" />
+                        </motion.button>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                );
+              })}
+              {teacher && (
+                <button
+                  type="button"
+                  title="New niche"
+                  aria-label="New niche"
+                  onClick={() => setMaking(true)}
+                  className="flex size-7 items-center justify-center rounded-full border border-dashed border-line text-faint transition-colors hover:border-line-strong hover:text-fg"
+                >
+                  <Plus size={13} />
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+  );
+
   return (
     <Modal open={open} onClose={onClose} width={580}>
       <form
@@ -2311,7 +2454,7 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
                 ? commentary
                   ? "Paste the sources: videos, articles, posts. The first is the brief."
                   : "Paste the footage: YouTube or Drive videos, or a Trello card. A case the channel already covered goes in as a reuse."
-                : chosen
+                : chosen || channel !== null
                   ? "Paste the script’s Google Doc, or leave this empty to start blank and send the footage in the chat."
                   : NARRATION[kind] === "recording"
                   ? "Paste the script’s Google Doc, or all its text (copied from the Doc, links and all), and “Voice-over:” with the recording’s Drive link."
@@ -2408,94 +2551,54 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
           )}
         </div>
 
-        <div>
-          <span className={label}>Kind</span>
-          <div className="flex flex-wrap gap-1.5">
-            {styles.map((option) => (
-              <button
-                type="button"
-                key={option.value}
-                title={STYLE_NOTES[option.value]}
-                onClick={() => {
-                  setStyle(option.value);
-                  setNiche(null);
-                  setPicked(true);
-                }}
-                className={cx(
-                  "flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition-colors",
-                  kind === option.value && !chosen ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
-                )}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-          {v2Pills.length > 0 && (
-            <div className="mt-2 flex flex-wrap items-center gap-1.5">
-              <span className="mr-0.5 text-[11px] font-semibold tracking-[0.2px] text-faint">V2</span>
-              {v2Pills.map((option) => {
-                const on = chosen?.key === option.key;
-                const known = option.niche;
-                return (
-                  <div
-                    key={option.key}
-                    onContextMenu={(event) => {
-                      if (known === null) return;
-                      event.preventDefault();
-                      setPage({ key: known, open: true });
-                    }}
-                    className={cx(
-                      "flex h-7 items-center rounded-full border text-[12px] font-medium transition-colors",
-                      on ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
-                    )}
-                  >
-                    <button
-                      type="button"
-                      title={option.description}
-                      onClick={() => {
-                        setStyle(option.kind);
-                        setNiche(option.key);
-                        setPicked(true);
-                      }}
-                      className="h-full rounded-full px-3"
-                    >
-                      {option.name}
-                    </button>
-                    {/* The picked niche's page: what its agent knows. */}
-                    <AnimatePresence initial={false}>
-                      {on && known !== null && (
-                        <motion.button
-                          type="button"
-                          title="What its agent knows"
-                          aria-label={`What ${option.name}’s agent knows`}
-                          onClick={() => setPage({ key: known, open: true })}
-                          initial={{ width: 0, opacity: 0 }}
-                          animate={{ width: 22, opacity: 1 }}
-                          exit={{ width: 0, opacity: 0 }}
-                          transition={spring}
-                          className="-ml-1.5 flex h-full items-center justify-start overflow-hidden text-faint hover:text-fg"
-                        >
-                          <BookOpen size={13} className="shrink-0" />
-                        </motion.button>
-                      )}
-                    </AnimatePresence>
-                  </div>
-                );
-              })}
-              {teacher && (
+        {showChannels ? (
+          <div>
+            <span className={label}>Channel</span>
+            <div className="flex flex-wrap gap-1.5">
+              {(channels ?? []).map((one) => (
                 <button
                   type="button"
-                  title="New niche"
-                  aria-label="New niche"
-                  onClick={() => setMaking(true)}
-                  className="flex size-7 items-center justify-center rounded-full border border-dashed border-line text-faint transition-colors hover:border-line-strong hover:text-fg"
+                  key={one.key}
+                  title={one.lanes.edit || one.title}
+                  onClick={() => {
+                    setChannelKey(one.key);
+                    setCompilation(null);
+                    setNiche(null);
+                    setOtherKinds(false);
+                  }}
+                  className={cx(
+                    "flex h-8 items-center gap-2 rounded-full border pr-3 pl-1 text-[12.5px] font-medium transition-colors",
+                    channelKey === one.key ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
+                  )}
                 >
-                  <Plus size={13} />
+                  <ChannelAvatar channel={one} size={22} />
+                  {one.title}
                 </button>
-              )}
+              ))}
             </div>
-          )}
-        </div>
+            <AnimatePresence initial={false}>
+              {channel !== null && (
+                <motion.label initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={spring} className="flex items-center gap-2.5 overflow-hidden pt-2.5 text-[12.5px] text-muted">
+                  <Switch checked={compilation ?? channel.compilation} onChange={setCompilation} />
+                  Compilation
+                </motion.label>
+              )}
+            </AnimatePresence>
+            <button type="button" onClick={() => { setOtherKinds(!otherKinds); setChannelKey(null); }} className="mt-2.5 flex items-center gap-1 text-[12px] text-faint transition-colors hover:text-muted">
+              Other kinds
+              <ChevronDown size={12} className={cx("transition-transform", otherKinds && "rotate-180")} />
+            </button>
+            <AnimatePresence initial={false}>
+              {otherKinds && (
+                <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={spring} className="overflow-hidden pt-2">
+                  {kindBlock(false)}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        ) : (
+          kindBlock(true)
+        )}
 
         <label>
           <span className={label}>First message (optional)</span>

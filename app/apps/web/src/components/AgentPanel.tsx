@@ -43,6 +43,7 @@ import { Button, cx, Modal } from "./ui";
 import { ClaudeSetupCard } from "./ClaudeSetupCard";
 import { ClaudeMark } from "./ClaudeMark";
 import { MOD, THIS_MACHINE } from "../lib/platform";
+import { channelApi } from "../lib/channels";
 
 export { ClaudeMark };
 
@@ -972,6 +973,39 @@ export function ResetAsk({
  * The agent asked to reset the edit (`reset_edit`, "reset the video"): the
  * user accepts or rejects here, and the agent, waiting on the answer, carries on.
  */
+/**
+ * A channel's project whose channel's edit style is still empty, once its
+ * footage is in (Sphe, Nov 14: "a note in the editor after importing all the
+ * footage saying that you can now build out the style you want"): asked again
+ * after each turn, and gone once something is taught.
+ */
+function useUntaughtChannel(): string | null {
+  const channel = useEditor((state) => state.project?.channel ?? null);
+  const footage = useEditor((state) => (state.project?.media.length ?? 0) > 0);
+  const running = useAgent((state) => state.running);
+  const [empty, setEmpty] = useState<string | null>(null);
+  useEffect(() => {
+    if (channel === null || running) return;
+    let alive = true;
+    void channelApi.page(channel).then(
+      (page) => alive && setEmpty(page.taught.edit.length === 0 ? page.channel.title : null),
+      () => alive && setEmpty(null),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [channel, running]);
+  return channel !== null && footage ? empty : null;
+}
+
+function UntaughtChannel({ title }: { title: string }) {
+  return (
+    <div className="rounded-xl border border-line bg-panel px-3 py-2.5 text-[12.5px] leading-relaxed">
+      <span className="font-medium text-fg">The footage is in.</span> <span className="text-muted">{title}’s edit style is empty: tell the agent how its videos should look, and what it learns stays with the channel.</span>
+    </div>
+  );
+}
+
 function ResetCard({ projectId }: { projectId: string }) {
   const [answering, setAnswering] = useState(false);
   const answer = (accept: boolean) => {
@@ -1031,8 +1065,10 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
   const upload = useMemo(() => (projectId === undefined ? undefined : { upload: projectUploader(projectId) }), [projectId]);
   const rows = useMemo(() => waiting.map((one) => ({ id: one.id, text: one.text, files: one.attachments?.length ?? 0, quotes: parseQuoted(one.text).quotes.length })), [waiting]);
   // On the composer's top edge: the agent asking to reset, the messages queued on the server, then the team's queued notes.
+  const untaught = useUntaughtChannel();
   const tray = [
     projectId !== undefined && resetAsked && <ResetCard key="reset" projectId={projectId} />,
+    untaught !== null && <UntaughtChannel key="untaught" title={untaught} />,
     hq && rows.length > 0 && (
       <QueueIsland
         key="queue"

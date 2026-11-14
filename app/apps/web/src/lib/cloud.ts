@@ -59,6 +59,8 @@ export interface CloudProject {
     shown?: boolean;
     /** Its note, left from Home's ⋯. */
     note?: string;
+    /** The channel it's for: Home's filter. */
+    channel?: string;
   } | null;
   /** Who started it (the relay records them from their sign-in); null for projects from before. */
   created_by?: Creator | null;

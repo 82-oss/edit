@@ -637,6 +637,36 @@ async function saveNiche(context: Context): Promise<Response> {
   }
 }
 
+async function createChannelProject(context: Context, given: Record<string, unknown>, name: string, key: string, settings: { width: number; height: number; fps: number }): Promise<Response> {
+  if (!beta.read(context.app.store.home).v2) throw bad("Channels are Edit V2's: turn it on in Settings → Beta.");
+  if (!v2cloud.enabled()) throw bad("Channels need this computer signed in to Edit.");
+  let channel: channels.Channel | null;
+  try {
+    channel = await channels.get(key);
+  } catch (error) {
+    throw bad(diag.messageOf(error));
+  }
+  if (channel === null) throw bad(`There's no channel ${key}.`);
+  const style = channels.styleOf(channel);
+  if (!kinds.mayStart(style)) throw new ApiError(403, kinds.cantMake(`edit.${style}`));
+  const compilation = field<boolean>(given, "compilation", "boolean");
+  const person = field<boolean>(given, "person", "boolean") === true;
+  let live;
+  try {
+    live = context.app.store.createAs(name, style, settings, true, null, !person);
+  } catch (error) {
+    throw bad(diag.messageOf(error));
+  }
+  live = (
+    await context.app.store.update(live.project.id, "channel", (project) => {
+      project.channel = channel.key;
+      if (compilation !== null && compilation !== channel.compilation) project.compilation = compilation;
+    })
+  )[0];
+  context.app.store.setActive(live.project.id);
+  return json({ rev: live.rev, project: live.project });
+}
+
 async function createProject(context: Context): Promise<Response> {
   const given = await body(context);
   const name = field<string>(given, "name", "string", true);
@@ -651,6 +681,10 @@ async function createProject(context: Context): Promise<Response> {
     return value;
   };
   const settings = { width: size("width"), height: size("height"), fps: size("fps") };
+  // A channel's (Nov 14, channels.ts): a V2 project of that channel, its kind of video from who narrates the channel's
+  // videos, and whether it's a compilation only when it isn't what the channel's usually are.
+  const channelKey = field<string>(given, "channel", "string");
+  if (channelKey !== null) return createChannelProject(context, given, name!, channelKey, settings);
   // Edit V2: a project whose graphics the agent writes as code, only with the beta on, in one of V2's niches (none: Bodycam HQ).
   const hq = field<boolean>(given, "hq", "boolean") === true;
   const niche = field<string>(given, "niche", "string");

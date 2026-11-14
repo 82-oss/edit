@@ -8,7 +8,7 @@ import { ArrowLeft, ExternalLink, Mic, Plus } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 
-import { channelApi, compact, LANES, loadChannels, narrationLabel, useChannels, type Channel, type Found, type Narration, type Voice } from "../lib/channels";
+import { channelApi, compact, LANES, loadChannels, narrationLabel, useChannels, type Channel, type Found, type Lane, type Narration, type Taught, type Voice } from "../lib/channels";
 import { useEditor } from "../lib/store";
 import { InPlace } from "./Niches";
 import { Button, DialogActions, DialogTitle, Modal, Select, spring, Switch } from "./ui";
@@ -255,6 +255,14 @@ function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => 
 function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void }) {
   const teacher = useChannels((state) => state.teacher);
   const voices = useVoices(teacher);
+  const [taught, setTaught] = useState<Record<Lane, Taught[]> | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void channelApi.page(channel.key).then((page) => alive && setTaught(page.taught), () => alive && setTaught(null));
+    return () => {
+      alive = false;
+    };
+  }, [channel.key]);
   const change = (what: string, given: Parameters<typeof channelApi.set>[1]) =>
     void channelApi.set(channel.key, given).catch((error: unknown) => useEditor.getState().toastError(error, `change ${channel.title}'s ${what}`));
   return (
@@ -307,12 +315,31 @@ function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void
               onSave={(text) => change(`${lane.label.toLowerCase()} style`, { lanes: { [lane.key]: text } })}
               className="text-[13px] leading-relaxed text-secondary"
             />
+            {taught !== null && (
+              <div className="mt-2.5 border-t border-line pt-2.5">
+                {taught[lane.key].length === 0 ? (
+                  <p className="text-[12px] text-faint">Nothing taught yet</p>
+                ) : (
+                  <ul className="flex flex-col gap-1">
+                    {taught[lane.key].map((one) => (
+                      <li key={one.key} className="flex min-w-0 items-baseline gap-2 text-[12.5px]">
+                        <span className="shrink-0 text-faint">{TAUGHT_WORD[one.kind]}</span>
+                        <span className="shrink-0 font-medium">{one.name}</span>
+                        {one.note && <span className="min-w-0 truncate text-muted">{one.note}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </div>
         ))}
       </div>
     </div>
   );
 }
+
+const TAUGHT_WORD: Record<Taught["kind"], string> = { skill: "Lesson", template: "Effect", sound: "Sound" };
 
 /** Home's header button on Channels: a teacher's. */
 export function AddChannelButton({ onClick }: { onClick: () => void }) {

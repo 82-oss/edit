@@ -46,6 +46,15 @@ export interface Found {
   videos?: number;
 }
 
+/** One thing a lane's agent has been taught: a lesson, an effect or a sound. */
+export interface Taught {
+  kind: "skill" | "template" | "sound";
+  key: string;
+  name: string;
+  note: string | null;
+  category: string | null;
+}
+
 export interface Voice {
   voice_id: string;
   name: string;
@@ -77,6 +86,8 @@ export const channelApi = {
   add: (url: string) => request<{ channel: Channel }>("POST", "/api/channels", { url }).then((answer) => keep(answer.channel)),
   set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>> }) =>
     request<{ channel: Channel }>("PUT", `/api/channels/${key}`, change).then((answer) => keep(answer.channel)),
+  /** A channel with what each lane has been taught. */
+  page: (key: string) => request<{ channel: Channel; taught: Record<Lane, Taught[]>; teacher: boolean }>("GET", `/api/channels/${key}`),
   remove: async (key: string) => {
     await request("DELETE", `/api/channels/${key}`);
     useChannels.setState((now) => ({ channels: (now.channels ?? []).filter((one) => one.key !== key) }));

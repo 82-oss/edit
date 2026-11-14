@@ -4368,5 +4368,26 @@
         }
       }
     }
+  },
+  {
+    "name": "other_channels",
+    "description": "The team's other channels and their edit styles (a channel's project only), for when the person points you at something another channel has or asks you to start from another channel's style: never otherwise. No arguments: the other channels, each with how much its edit style holds. channel: one channel's edit style, its lessons, effects and sounds. bring (with channel): one of them by name, or \"all\" for the whole style as this channel's base, copied into this channel's own edit style to change and rebrand here (what this channel has of its own already stays); an effect then comes in with use_from_library.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "channel": {
+          "type": "string",
+          "description": "Another channel: its name or @handle."
+        },
+        "bring": {
+          "type": "string",
+          "description": "A name from that channel's edit style, or \"all\"."
+        },
+        "project_id": {
+          "type": "string",
+          "description": "Defaults to the project open in the UI."
+        }
+      }
+    }
   }
 ]

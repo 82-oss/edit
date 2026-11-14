@@ -90,6 +90,18 @@ pub struct Project {
     /// its editor is the viewer and the chat. The style stays the kind of video.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hq: bool,
+    /// The channel it's for (Nov 14, a key of mamagi's channels): a V2 project's
+    /// agent is taught that channel's edit style alone (its lane in V2's
+    /// library, `<channel>--edit`), and how its videos are made comes from the
+    /// channel. None for a project made without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub channel: Option<String>,
+    /// Whether it's a compilation (several cases), when it isn't what its
+    /// channel's videos usually are; None: as its channel says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub compilation: Option<bool>,
     /// The V2 niche it's in (`hq` projects; a key of V2's cloud, `niche:<key>`):
     /// what its agent is taught and what it's like (Sphe, Nov 13: niches made
     /// without code). None on a V2 project from before niches: Bodycam HQ.
@@ -1945,6 +1957,8 @@ impl Project {
             shown: false,
             note: None,
             hq: false,
+            channel: None,
+            compilation: None,
             niche: None,
         };
         for kind in [

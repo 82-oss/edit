@@ -97,6 +97,18 @@ note?: string,
  */
 hq?: boolean, 
 /**
+ * The channel it's for (Nov 14, a key of mamagi's channels): a V2 project's
+ * agent is taught that channel's edit style alone (its lane in V2's
+ * library, `<channel>--edit`), and how its videos are made comes from the
+ * channel. None for a project made without one.
+ */
+channel?: string, 
+/**
+ * Whether it's a compilation (several cases), when it isn't what its
+ * channel's videos usually are; None: as its channel says.
+ */
+compilation?: boolean, 
+/**
  * The V2 niche it's in (`hq` projects; a key of V2's cloud, `niche:<key>`):
  * what its agent is taught and what it's like (Sphe, Nov 13: niches made
  * without code). None on a V2 project from before niches: Bodycam HQ.

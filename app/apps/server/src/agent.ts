@@ -27,6 +27,7 @@ import { nowMs, writeAtomic } from "./files.ts";
 import { crashed, isBug } from "./guard.ts";
 import { HQ_NOTES } from "./agent_text.ts";
 import * as v2cloud from "./v2_cloud.ts";
+import * as channels from "./channels.ts";
 import * as effects from "./effects.ts";
 import { INSTRUCTIONS, toolReference, toolsFor } from "./mcp/index.ts";
 import { join, withExtension } from "./paths.ts";
@@ -1056,7 +1057,7 @@ export class Agents implements seams.AgentPanel {
     // or a read outside the folder is refused, with nothing asked), and what it writes is on screen as it's saved.
     const code = live.project.hq === true ? effects.workshop(this.store, projectOf(project)) : null;
     // What a teacher has saved since, read before the turn's instructions are made.
-    if (code !== null) await v2cloud.refreshSkills();
+    if (code !== null) await Promise.all([v2cloud.refreshSkills(), channels.refresh()]);
     const options: claude.Options = {
       ...claude.baseOptions(binary, code ?? workspace),
       model: chat.model ?? this.turnModel(project, text),
@@ -1916,7 +1917,7 @@ class ClaudeTurn {
 /** The chat shows pictures (chat_pictures.ts). */
 const PICTURES = "Your reply is Markdown and shows pictures: ![what it is](its file), such as a picture a tool showed you (its file is named under it) or an exported still.";
 
-export function agentInstructions(project: Pick<Project, "name" | "style" | "settings" | "hq" | "niche">): string {
+export function agentInstructions(project: Pick<Project, "name" | "style" | "settings" | "hq" | "niche" | "channel" | "compilation">): string {
   if (project.hq === true) return hqInstructions(project);
   const { settings } = project;
   // A video made the new way (effects.ts): its agent also writes code, in the project's effects folder and nowhere else.
@@ -1943,7 +1944,7 @@ export function agentInstructions(project: Pick<Project, "name" | "style" | "set
  * of the edit (the house's, cut down, and what the team taught since) by name
  * and when each fits, read with read_skill when it gets there.
  */
-function hqInstructions(project: Pick<Project, "name" | "settings" | "niche">): string {
+function hqInstructions(project: Pick<Project, "name" | "settings" | "niche" | "channel" | "compilation">): string {
   const { settings } = project;
   // Its niche (Sphe, Nov 13): what it's taught is the niche's own, then what the niches it's like were taught, then V2's house.
   const nicheKey = v2cloud.nicheOfProject(project);
@@ -1953,18 +1954,48 @@ function hqInstructions(project: Pick<Project, "name" | "settings" | "niche">): 
     `THIS PROJECT'S NICHE: ${niche.name} (${niche.key})${niche.description === "" ? "" : `: ${niche.description.replace(/\.$/u, "")}`}.` +
     (like.length === 0 ? "" : ` It's like ${like.join(", then ")}: what they were taught comes through, and what this niche is taught wins where they differ.`) +
     " What you remember and save is this niche's own; for other niches too, or every niche, only when the person asks for it (remember and save_to_library's niches, with asked: their words).\n\n";
+  const channel = typeof project.channel === "string" && project.channel !== "" ? channelText(project) : null;
   const known = v2cloud.memories(nicheKey);
   const remembered = known.filter((one) => one.note === undefined);
   const parts = known.filter((one) => one.note !== undefined);
   const memory = remembered.length === 0 ? "" : `\n\nWHAT YOU REMEMBER (V2's cloud; keep it short, as it says):\n${remembered.map((one) => (one.name === v2cloud.GLOBAL ? one.text : `[${one.name}] ${one.text}`)).join("\n")}`;
-  const skills = parts.length === 0 ? "" : `\n\nYOUR SKILLS (V2's cloud): how the team does each part of a ${niche.name} edit. read_skill one before you work on that part (or answer about it), once per conversation; what you're taught goes into them.\n${parts.map((one) => `- ${one.name}: ${one.note}`).join("\n")}`;
+  const skills = parts.length === 0 ? "" : `\n\nYOUR SKILLS (V2's cloud): how the team does each part of ${channel !== null ? "this channel's" : `a ${niche.name}`} edit. read_skill one before you work on that part (or answer about it), once per conversation; what you're taught goes into them.\n${parts.map((one) => `- ${one.name}: ${one.note}`).join("\n")}`;
   return (
     `You are the agent built into Edit, a video editor, making "${project.name}" (${settings.width}x${settings.height} at ${rateText(settings)} fps) with the person watching: what you change appears in their viewer at once. ` +
     "You work through the `edit` tools and write code with your file tools (Read, Write, Edit, Glob, Grep), which work only in your working directory, the project's effects folder; you have no shell. " +
     `Each tool call is a wait for them: do independent calls side by side. Reply in a line or two: what you made or changed, and where. ${PICTURES}\n\n` +
-    `${nicheText}${HQ_NOTES}${memory}${skills}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
+    `${channel ?? nicheText}${HQ_NOTES}${memory}${skills}${channel !== null && known.length <= 1 ? `\n\n${UNTAUGHT}` : ""}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
   );
 }
+
+/**
+ * A channel's project (Nov 14; Sphe: "one channel, many lanes within that
+ * channel"): its agent is taught that channel's edit style alone, which
+ * starts empty; how its videos are made comes from the channel; another
+ * channel's style it finds and brings in only when it decides to (Sphe: "it
+ * has to make the decision to go out and find it").
+ */
+function channelText(project: Pick<Project, "channel" | "compilation">): string {
+  const found = channels.channelOf(project);
+  const name = found === null ? project.channel! : `${found.title}${found.handle ? ` (@${found.handle})` : ""}`;
+  const style = found?.lanes.edit.trim() ?? "";
+  const narration = found?.narration ?? null;
+  const reads = narration === null ? "" : narration.kind === "recorded" ? " Its scripts are narrated by the editor's own recording." : ` Its scripts are narrated by the voice ${narration.name} (voice id ${narration.id}).`;
+  const compilation = project.compilation ?? found?.compilation ?? false;
+  const shape = project.compilation !== undefined && project.compilation !== null && project.compilation !== found?.compilation
+    ? ` This video is ${compilation ? "a compilation (several cases)" : "one case"}, unlike the channel's usual videos.`
+    : ` Its videos are ${compilation ? "compilations: several cases each" : "one case each"}.`;
+  return (
+    `THIS PROJECT'S CHANNEL: ${name}, on YouTube.${style === "" ? "" : ` Its edit style, in the team's words: ${style.replace(/\.$/u, "")}.`}${reads}${shape} ` +
+    "What you remember and save is this channel's edit style, its own; you're never given another channel's, nor the ideas, thumbnails or script styles. " +
+    "The house's music and sound effects (list_library, add_sound_effect) are there when this channel's style or the person asks for them, never by default. " +
+    "When the person points you at something another channel has (a graphic, how it cuts), or asks you to start from another channel's style, find it with other_channels and bring it in as this channel's own copy, to change and rebrand here.\n\n"
+  );
+}
+
+/** Said to a channel's agent while its edit style is still empty. */
+const UNTAUGHT =
+  "THIS CHANNEL ISN'T TAUGHT YET: no lessons, effects or sounds of its own. Put the footage in as asked, one after the other, and nothing else of your own (no music, sound effects, graphics or captions until the person asks), then build the channel's style with the person as they say what it should be: what they teach you, keep (remember, save_to_library), so the next project of this channel has it.";
 
 /** A saved chat, read as serde reads `Chat` (every field defaults; a wrong type refuses the whole file). */
 export function readChat(text: string): Chat {

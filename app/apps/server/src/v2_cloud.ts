@@ -347,8 +347,26 @@ export function chainOf(key: string, among: Niche[] = niches): string[] {
   return out;
 }
 
-/** The niche a project is in: its own, else Bodycam HQ's (a V2 project from before niches). */
-export function nicheOfProject(project: { niche?: string | null }): string {
+// ---------------------------------------------------------------- channels' lanes (Nov 14, channels.ts)
+
+/** A channel's lanes: one per part of the work, each its own style; one lane's agent never sees another's. */
+export const LANES = ["ideas", "thumbnails", "script", "edit"] as const;
+export type Lane = (typeof LANES)[number];
+
+/** A lane's place in the library, kept like a niche: its own lessons and effects are `<kind>:@<laneKey>/<name>`. */
+export const laneKey = (channel: string, lane: Lane) => `${channel}--${lane}`;
+
+/** The channel and lane a place in the library is, or null when it's a niche (a channel key has no "--"). */
+export function laneOf(place: string): { channel: string; lane: Lane } | null {
+  const at = place.lastIndexOf("--");
+  if (at <= 0) return null;
+  const lane = place.slice(at + 2);
+  return (LANES as readonly string[]).includes(lane) ? { channel: place.slice(0, at), lane: lane as Lane } : null;
+}
+
+/** The niche a project is in: its channel's edit lane, else its own niche, else Bodycam HQ's (a V2 project from before niches). */
+export function nicheOfProject(project: { niche?: string | null; channel?: string | null }): string {
+  if (typeof project.channel === "string" && project.channel !== "") return laneKey(project.channel, "edit");
   return typeof project.niche === "string" && project.niche !== "" ? project.niche : BODYCAM_HQ;
 }
 
@@ -364,7 +382,9 @@ export function nearness(item: { key: string; niches?: string[] | null }, chain:
     const at = chain.indexOf(own);
     return at < 0 ? null : at * 2;
   }
-  if (item.niches == null || item.niches.length === 0) return chain.length * 2;
+  // A channel's lane starts empty (Sphe, Nov 14: "the teaching, music, skills, and all that stuff, I think, should be
+  // blank"): none of V2's house comes through, only the global skill, which is Edit's own workings.
+  if (item.niches == null || item.niches.length === 0) return laneOf(chain[0] ?? "") !== null && item.key !== skillKey(GLOBAL) ? null : chain.length * 2;
   const at = Math.min(...item.niches.map((niche) => chain.indexOf(niche)).filter((index) => index >= 0));
   return Number.isFinite(at) ? at * 2 + 1 : null;
 }
@@ -385,6 +405,7 @@ export function forNiche<T extends { key: string; name: string; niches?: string[
 export function originOf(item: { key: string; niches?: string[] | null }, chain: string[]): string {
   const own = ownNicheOf(item.key);
   const name = (key: string) => niches.find((one) => one.key === key)?.name ?? key;
+  if (own !== null && laneOf(own) !== null) return own === chain[0] ? "this channel's own" : `from ${laneOf(own)!.channel}'s ${laneOf(own)!.lane} style`;
   if (own !== null) return own === chain[0] ? "this niche's own" : `from ${name(own)} (this niche is like it)`;
   if (item.niches == null || item.niches.length === 0) return "V2's house, every niche's";
   if (item.niches.length === 1 && item.niches[0] === chain[0]) return "this niche's own";

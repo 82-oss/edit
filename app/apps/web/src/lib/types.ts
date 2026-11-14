@@ -245,6 +245,8 @@ export interface ProjectSummary {
   note?: string;
   /** A Bodycam HQ project (`Project::hq`, Edit V2): its graphics are code the agent writes. */
   hq?: boolean;
+  /** The channel it's for (`Project::channel`): Home's filter. */
+  channel?: string;
 }
 
 export type Stage = "pending" | "working" | "ready" | "failed" | "skipped";

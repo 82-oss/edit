@@ -51,6 +51,7 @@ export const HQ_TOOLS: readonly string[] = [
   "remember",
   "read_skill",
   "niche",
+  "other_channels",
   "make_sound",
   "feedback_reopen",
   "edit_history",

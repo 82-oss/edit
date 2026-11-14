@@ -9,6 +9,8 @@ import { join } from "node:path";
 
 import * as accounts from "../src/accounts.ts";
 import { agentInstructions } from "../src/agent.ts";
+import * as channels from "../src/channels.ts";
+import { registerChannelTools } from "../src/channel_tools.ts";
 import * as cloud from "../src/cloud.ts";
 import { registerEffectTools } from "../src/effect_tools.ts";
 import { registerEditingTools } from "../src/edit_tools.ts";
@@ -26,6 +28,7 @@ beforeAll(() => {
   restore = mock.useEnv({ EDIT_RELAY_TOKEN: "cloud-token" });
   cloud.timing.sleep = async () => {};
   registerEffectTools();
+  registerChannelTools();
   registerEditingTools();
 });
 
@@ -293,4 +296,82 @@ test("a niche's lessons are found nearest first: its own, the niche it's like, t
   ];
   expect(v2cloud.forNiche(items, chain).map((one) => one.key)).toEqual(["skill:@a/pins", "skill:@b/glow"]);
   expect(v2cloud.forNiche(items, ["c"]).map((one) => one.key)).toEqual(["skill:pins", "skill:glow", "skill:only-c", "skill:@c/x"]);
+});
+
+// ---------------------------------------------------------------- channels (Nov 14)
+
+const CHANNEL = {
+  key: "drinsanity", youtubeId: "UC" + "a".repeat(22), handle: "drinsanity", title: "Dr Insanity", description: "", avatar: null, banner: null, uploads: null, subscribers: 1, videos: 1, views: 1, country: null, publishedAt: null, fetchedAt: 0,
+  narration: { kind: "voice" as const, id: "v123", name: "House" }, compilation: true, lanes: { ideas: "", thumbnails: "", script: "", edit: "bodycam and interrogation mixed into one" }, archived: false, addedBy: null, at: 0,
+};
+const OTHER = { ...CHANNEL, key: "jcs", youtubeId: "UC" + "b".repeat(22), handle: "jcs", title: "JCS", narration: { kind: "recorded" as const }, compilation: false, lanes: { ...CHANNEL.lanes, edit: "slow and moody" } };
+
+test("a channel's edit lane is its own: it starts empty, none of V2's house comes through but the global skill, and another channel's is never in it", () => {
+  const lane = v2cloud.nicheOfProject({ channel: "drinsanity", niche: "bodycam-hq" });
+  expect(lane).toBe("drinsanity--edit");
+  expect(v2cloud.laneOf(lane)).toEqual({ channel: "drinsanity", lane: "edit" });
+  expect(v2cloud.laneOf("bodycam-hq")).toBeNull();
+  const items = [
+    { key: "skill:global", name: "global", niches: null },
+    { key: "skill:pins", name: "pins", niches: null },
+    { key: "template:board", name: "board", niches: null },
+    { key: "skill:@drinsanity--edit/intro", name: "intro", niches: ["drinsanity--edit"] },
+    { key: "skill:@jcs--edit/outro", name: "outro", niches: ["jcs--edit"] },
+    { key: "skill:@drinsanity--ideas/hooks", name: "hooks", niches: ["drinsanity--ideas"] },
+  ];
+  expect(v2cloud.forNiche(items, v2cloud.chainOf(lane)).map((one) => one.key)).toEqual(["skill:global", "skill:@drinsanity--edit/intro"]);
+  // A niche keeps the house's as before.
+  expect(v2cloud.forNiche(items, ["bodycam-hq"]).map((one) => one.key)).toEqual(["skill:global", "skill:pins", "template:board"]);
+});
+
+test("a channel's agent is told its channel, its edit style and how its videos are made, and that it isn't taught yet", () => {
+  const { app, cleanup } = fixtureHome("v2-channel-prompt");
+  try {
+    channels.useChannelsForTests([CHANNEL]);
+    const project = { ...app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project, hq: true, channel: "drinsanity" };
+    const prompt = agentInstructions(project);
+    expect(prompt).toContain("THIS PROJECT'S CHANNEL: Dr Insanity (@drinsanity), on YouTube. Its edit style, in the team's words: bodycam and interrogation mixed into one.");
+    expect(prompt).toContain("narrated by the voice House (voice id v123)");
+    expect(prompt).toContain("Its videos are compilations: several cases each.");
+    expect(prompt).toContain("THIS CHANNEL ISN'T TAUGHT YET");
+    expect(prompt).toContain("other_channels");
+    expect(prompt).not.toContain("THIS PROJECT'S NICHE");
+    // One case, though the channel's are compilations.
+    expect(agentInstructions({ ...project, compilation: false })).toContain("This video is one case, unlike the channel's usual videos.");
+  } finally {
+    channels.useChannelsForTests([]);
+    cleanup();
+  }
+});
+
+test("other_channels: the rest listed only when asked, one's edit style shown, and a piece of it (or all of it) brought in as this channel's own, never over what it has", async () => {
+  const { app, cleanup, id } = hq("v2-other-channels");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      project.channel = "drinsanity";
+    });
+    accounts.signedInForTests(["edit.bodycam", "agent.teach"]);
+    mock.cloud.convex.channels = [CHANNEL, OTHER];
+    const seed = (key: string, name: string, text: string, note: string) => {
+      mock.cloud.convex.library.set(key, { key, kind: "skill", name, current: 1, latest: 1, note, niches: [key.slice(key.indexOf("@") + 1, key.indexOf("/"))], at: Date.now(), by: { name: "Sphe" } });
+      mock.cloud.convex.libraryVersions.set(key, [{ key, n: 1, text, at: Date.now(), by: { name: "Sphe" } }]);
+    };
+    seed("skill:@jcs--edit/pacing", "pacing", "Hold on faces.", "How long a shot holds.");
+    seed("skill:@jcs--edit/intro", "intro", "Cold open.", "The first minute.");
+    seed("skill:@drinsanity--edit/intro", "intro", "Our own intro.", "The first minute.");
+    const listed = (await call(app, id, "other_channels", {})).content[0]!.text!;
+    expect(listed).toContain("- JCS (@jcs): 2 lessons, effects and sounds. Its edit style: slow and moody");
+    expect(listed).not.toContain("Dr Insanity");
+    expect((await call(app, id, "other_channels", { channel: "@jcs" })).content[0]!.text).toContain("- lesson pacing: How long a shot holds.");
+    const brought = (await call(app, id, "other_channels", { channel: "JCS", bring: "all" })).content[0]!.text!;
+    expect(brought).toContain("Brought into this channel's own edit style, to change here: lesson pacing.");
+    expect(brought).toContain("This channel has its own intro already");
+    expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/pacing")?.[0]).toMatchObject({ text: "Hold on faces.", from: { key: "skill:@jcs--edit/pacing", n: 1 } });
+    expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/intro")).toHaveLength(1);
+    expect((await call(app, id, "other_channels", { channel: "nobody" })).content[0]!.text).toContain('no channel "nobody"');
+  } finally {
+    mock.cloud.convex.channels = [];
+    cleanup();
+  }
 });

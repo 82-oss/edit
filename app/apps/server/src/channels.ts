@@ -11,7 +11,7 @@
 //   GET    /api/channels                {channels, teacher}
 //   GET    /api/channels/resolve?url=   {channel}: what YouTube says, not saved
 //   POST   /api/channels                {url} → {channel}: added (a teacher's)
-//   GET    /api/channels/{key}          {channel, teacher}
+//   GET    /api/channels/{key}          {channel, taught: {<lane>: [what its agent knows]}, teacher}
 //   PUT    /api/channels/{key}          {narration?, compilation?, lanes?} → {channel}
 //   DELETE /api/channels/{key}          put away (its teaching kept)
 
@@ -23,8 +23,10 @@ import { readJson, type RouteContext, type Router } from "./http/router.ts";
 import * as relay from "./relay.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
-export const LANES = ["ideas", "thumbnails", "script", "edit"] as const;
-export type Lane = (typeof LANES)[number];
+export const LANES = v2cloud.LANES;
+export type Lane = v2cloud.Lane;
+export const laneKey = v2cloud.laneKey;
+export const laneOf = v2cloud.laneOf;
 
 export type Narration = { kind: "voice"; id: string; name: string } | { kind: "recorded" };
 
@@ -52,17 +54,6 @@ export interface Channel {
   at: number;
 }
 
-/** A lane's place in V2's library: its own lessons and effects are `<kind>:@<laneKey>/<name>` (a channel key has no "--"). */
-export const laneKey = (channel: string, lane: Lane) => `${channel}--${lane}`;
-
-/** The channel and lane of a library place, or null when it's a niche's. */
-export function laneOf(place: string): { channel: string; lane: Lane } | null {
-  const at = place.lastIndexOf("--");
-  if (at <= 0) return null;
-  const lane = place.slice(at + 2);
-  return (LANES as readonly string[]).includes(lane) ? { channel: place.slice(0, at), lane: lane as Lane } : null;
-}
-
 /** Whether it's set up: its narration chosen (onboarding's step). */
 export const setUp = (channel: Channel) => channel.narration !== null;
 
@@ -77,8 +68,52 @@ function needTeacher(): void {
 
 /** The channels, newest change first (what's put away only with `archived`). */
 export async function list(archived = false): Promise<Channel[]> {
-  return (await cloud.query("channels:listChannels", archived ? { archived: true } : {})) as Channel[];
+  const found = (await cloud.query("channels:listChannels", archived ? { archived: true } : {})) as Channel[];
+  if (!archived) {
+    known = found;
+    readAt = Date.now();
+  }
+  return found;
 }
+
+/** The channels as last read: an agent's instructions are written from them without waiting (`refresh` at a turn's start). */
+let known: Channel[] = [];
+let readAt = 0;
+const FRESH_MS = 30_000;
+
+export function knownChannels(): Channel[] {
+  return known;
+}
+
+/** A project's channel, as last read (null: none, or not read yet). */
+export function channelOf(project: { channel?: string | null }): Channel | null {
+  return typeof project.channel === "string" && project.channel !== "" ? (known.find((one) => one.key === project.channel) ?? null) : null;
+}
+
+/** Reads the channels again, at most every 30 s (a turn's start asks): a failure keeps what was read before. */
+export async function refresh(): Promise<void> {
+  if (!v2cloud.enabled() || Date.now() - readAt < FRESH_MS) return;
+  readAt = Date.now();
+  try {
+    await list();
+  } catch (error) {
+    diag.warn("channels", `the channels from the cloud: ${diag.messageOf(error)}`);
+  }
+}
+
+/** Read again at the next ask (one was just added or changed here). */
+function forget(): void {
+  readAt = 0;
+}
+
+/** Tests: the channels as given. */
+export function useChannelsForTests(given: Channel[]): void {
+  known = given;
+  readAt = Date.now();
+}
+
+/** Who reads a channel's scripts, as Edit's tools take it: a voice (the house's voice-over pipeline, bodycam's) or the editor's recording (interrogation's). */
+export const styleOf = (channel: Channel): "bodycam" | "interrogation" => (channel.narration?.kind === "recorded" ? "interrogation" : "bodycam");
 
 export async function get(key: string): Promise<Channel | null> {
   return (await cloud.query("channels:getChannel", { key })) as Channel | null;
@@ -88,6 +123,28 @@ export async function get(key: string): Promise<Channel | null> {
 export async function resolve(url: string): Promise<Record<string, unknown>> {
   const found = await relay.json<{ channel: Record<string, unknown> }>("GET", `/v1/channels/resolve?url=${encodeURIComponent(url)}`, null, "YouTube's channels", 30);
   return found.channel;
+}
+
+/** What one taught thing is, on a channel's page. */
+export interface Taught {
+  kind: "skill" | "template" | "sound";
+  key: string;
+  name: string;
+  note: string | null;
+  category: string | null;
+}
+
+/** What each of a channel's lanes has been taught: its own lessons, effects and sounds, each kind read once. */
+export async function taughtOf(channel: string): Promise<Record<Lane, Taught[]>> {
+  const kinds = ["skill", "template", "sound"] as const;
+  const all = (await Promise.all(kinds.map((kind) => v2cloud.list(kind)))).flat();
+  const out = Object.fromEntries(LANES.map((lane) => [lane, [] as Taught[]])) as Record<Lane, Taught[]>;
+  for (const item of all) {
+    const place = v2cloud.laneOf(v2cloud.ownNicheOf(item.key) ?? "");
+    if (place === null || place.channel !== channel) continue;
+    out[place.lane].push({ kind: item.kind as Taught["kind"], key: item.key, name: item.name, note: item.note, category: item.category });
+  }
+  return out;
 }
 
 /** Thrown by the relay or mamagi, said as a 400 in their words (a 403 stays one). */
@@ -126,13 +183,16 @@ export function routes(router: Router<App>): void {
       const youtube = await asked(() => resolve(given.url as string));
       const channel = await asked(async () => (await cloud.mutation("channels:saveChannel", { youtube })) as Channel);
       diag.info("channels", `${channel.title} (${channel.key}) added`);
+      forget();
       return json({ channel });
     })
     .get("/api/channels/{key}", async ({ params }: RouteContext<App>) => {
       needCloud();
       const channel = await asked(() => get(params.key!));
       if (channel === null) throw new ApiError(404, `no channel ${params.key}`);
-      return json({ channel, teacher: v2cloud.teacher() });
+      // What each lane's agent has been taught: its own lessons, effects and sounds (the global skill is Edit's, not a style).
+      const taught = await asked(() => taughtOf(channel.key));
+      return json({ channel, taught, teacher: v2cloud.teacher() });
     })
     .put("/api/channels/{key}", async (context: RouteContext<App>) => {
       needTeacher();
@@ -150,11 +210,13 @@ export function routes(router: Router<App>): void {
         }
       }
       const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key: context.params.key!, ...(narration !== undefined ? { narration } : {}), ...(given.compilation !== undefined ? { compilation: given.compilation } : {}), ...(given.lanes !== undefined ? { lanes } : {}) })) as Channel);
+      forget();
       return json({ channel });
     })
     .delete("/api/channels/{key}", async ({ params }: RouteContext<App>) => {
       needTeacher();
       await asked(() => cloud.mutation("channels:archiveChannel", { key: params.key!, archived: true }));
+      forget();
       return json({ ok: true });
     });
 }
