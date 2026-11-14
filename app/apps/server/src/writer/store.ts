@@ -137,6 +137,7 @@ export function summary(script: Script, dir?: string): Summary {
     docBehind: script.docExport !== undefined && script.docExport.revision < script.revision,
     createdAt: script.createdAt,
     kind: script.kind ?? "interrogation",
+    ...(script.channel ? { channel: script.channel } : {}),
     ...(script.createdBy ? { createdBy: script.createdBy } : {}),
     ...(() => {
       const note = dir === undefined ? "" : readNote(dir);

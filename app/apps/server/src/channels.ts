@@ -15,8 +15,10 @@
 //   PUT    /api/channels/{key}          {narration?, compilation?, lanes?} → {channel}
 //   DELETE /api/channels/{key}          put away (its teaching kept)
 //   GET    /api/channels/voices         {voices, used}: who could narrate, and who narrates for whom already
+//   GET    /api/channels/{key}/videos?order=top|recent   {channel, videos}: its most viewed or newest, with their numbers
 
 import type { App } from "./app.ts";
+import * as beta from "./beta.ts";
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
 import { STYLES } from "./model.ts";
@@ -116,6 +118,21 @@ export function useChannelsForTests(given: Channel[]): void {
   readAt = Date.now();
 }
 
+/**
+ * The channel a new edit, script, idea or thumbnail is made for, as asked:
+ * null when none is; refused unless V2 is on here (channels are V2's), this
+ * computer is signed in, and the channel is there.
+ */
+export async function channelFor(given: unknown, home: string): Promise<Channel | null> {
+  if (given === undefined || given === null || given === "") return null;
+  if (typeof given !== "string") throw bad("channel is a channel's key");
+  if (!beta.read(home).v2) throw bad("Channels are Edit V2's: turn it on in Settings → Beta.");
+  needCloud();
+  const channel = await asked(() => get(given));
+  if (channel === null || channel.archived) throw bad(`There's no channel ${given}.`);
+  return channel;
+}
+
 /** Who reads a channel's scripts, as Edit's tools take it: a voice (the house's voice-over pipeline, bodycam's) or the editor's recording (interrogation's). */
 export const styleOf = (channel: Channel): "bodycam" | "interrogation" => (channel.narration?.kind === "recorded" ? "interrogation" : "bodycam");
 
@@ -127,6 +144,44 @@ export async function get(key: string): Promise<Channel | null> {
 export async function resolve(url: string): Promise<Record<string, unknown>> {
   const found = await relay.json<{ channel: Record<string, unknown> }>("GET", `/v1/channels/resolve?url=${encodeURIComponent(url)}`, null, "YouTube's channels", 30);
   return found.channel;
+}
+
+/** One of a channel's videos, as YouTube counts it. */
+export interface Video {
+  id: string;
+  title: string;
+  publishedAt?: string;
+  seconds?: number;
+  views?: number;
+  likes?: number;
+  comments?: number;
+  thumbnail?: string;
+}
+
+const VIDEOS_FRESH_MS = 6 * 3600_000;
+const videoCache = new Map<string, { at: number; found: { channel: { youtubeId: string; title: string }; videos: Video[] } }>();
+
+/**
+ * A channel's most viewed or newest videos (any link to it: one of ours, or
+ * another's), read at most every six hours: YouTube's quota is a day's, and
+ * the most viewed costs a hundred of it.
+ */
+export async function videosOf(link: string, order: "top" | "recent", count = 25): Promise<{ channel: { youtubeId: string; title: string }; videos: Video[] }> {
+  const key = `${order} ${count} ${link.trim()}`;
+  const kept = videoCache.get(key);
+  if (kept !== undefined && Date.now() - kept.at < VIDEOS_FRESH_MS) return kept.found;
+  const found = await relay.json<{ channel: { youtubeId: string; title: string }; videos: Video[] }>("GET", `/v1/channels/videos?${new URLSearchParams({ url: link.trim(), order, count: String(count) })}`, null, "YouTube's channels", 30);
+  videoCache.set(key, { at: Date.now(), found });
+  return found;
+}
+
+/** "1.2M views · 14:03 · 3 weeks ago": a video in a line, for an agent. */
+export function videoLine(video: Video, now = Date.now()): string {
+  const views = video.views === undefined ? null : `${new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(video.views)} views`;
+  const length = video.seconds === undefined ? null : video.seconds <= 180 ? `a short (${video.seconds} s)` : `${Math.floor(video.seconds / 60)}:${String(video.seconds % 60).padStart(2, "0")}`;
+  const days = video.publishedAt === undefined ? null : Math.max(0, Math.round((now - Date.parse(video.publishedAt)) / 86_400_000));
+  const age = days === null || Number.isNaN(days) ? null : days < 14 ? `${days} days ago` : days < 60 ? `${Math.round(days / 7)} weeks ago` : days < 730 ? `${Math.round(days / 30)} months ago` : `${Math.round(days / 365)} years ago`;
+  return `"${video.title}" (${[views, length, age].filter(Boolean).join(" · ")}) https://youtu.be/${video.id}`;
 }
 
 /** What one taught thing is, on a channel's page. */
@@ -214,6 +269,12 @@ export function routes(router: Router<App>): void {
       diag.info("channels", `${channel.title} (${channel.key}) added`);
       forget();
       return json({ channel });
+    })
+    .get("/api/channels/{key}/videos", async ({ params, url }: RouteContext<App>) => {
+      needCloud();
+      const channel = await asked(() => get(params.key!));
+      if (channel === null) throw new ApiError(404, `no channel ${params.key}`);
+      return json(await asked(() => videosOf(channel.youtubeId, url.searchParams.get("order") === "recent" ? "recent" : "top")));
     })
     .get("/api/channels/{key}", async ({ params }: RouteContext<App>) => {
       needCloud();

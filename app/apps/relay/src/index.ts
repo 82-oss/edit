@@ -36,6 +36,7 @@ declare const FixedLengthStream:{ new(size: number): { readable: ReadableStream<
  *   GET|POST|PATCH /v1/google/www.googleapis.com/…  the Drive calls Edit makes, with the team's
  *                          sign-in kept here (google.ts)
  *   GET /v1/channels/resolve  a link read into its YouTube channel (channels.ts), signed in
+ *   GET /v1/channels/videos   a channel's most viewed or newest videos with their numbers (channels.ts), signed in
  *   GET|POST /v1/ideas/…   ideas: their Convex rows, YouTube's details, the Interrogation
  *                          board's Trello (ideas.ts), with an `ideas.*` capability
  *   POST /v1/openart/mcp   the team's OpenArt account's MCP server, for thumbnails (openart.ts),

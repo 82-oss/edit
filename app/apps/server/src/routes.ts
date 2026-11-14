@@ -638,15 +638,7 @@ async function saveNiche(context: Context): Promise<Response> {
 }
 
 async function createChannelProject(context: Context, given: Record<string, unknown>, name: string, key: string, settings: { width: number; height: number; fps: number }): Promise<Response> {
-  if (!beta.read(context.app.store.home).v2) throw bad("Channels are Edit V2's: turn it on in Settings → Beta.");
-  if (!v2cloud.enabled()) throw bad("Channels need this computer signed in to Edit.");
-  let channel: channels.Channel | null;
-  try {
-    channel = await channels.get(key);
-  } catch (error) {
-    throw bad(diag.messageOf(error));
-  }
-  if (channel === null) throw bad(`There's no channel ${key}.`);
+  const channel = (await channels.channelFor(key, context.app.store.home))!;
   const style = channels.styleOf(channel);
   if (!kinds.mayStart(style)) throw new ApiError(403, kinds.cantMake(`edit.${style}`));
   const compilation = field<boolean>(given, "compilation", "boolean");

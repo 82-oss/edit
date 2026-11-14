@@ -17,6 +17,7 @@ import { ideasGuide } from "../agent_text.ts";
 import { inlinePictures, pictureFile } from "../chat_pictures.ts";
 import * as cloudStorage from "../cloud.ts";
 import * as diag from "../diag.ts";
+import * as lanes from "../lanes.ts";
 import * as jobs from "../jobs.ts";
 import * as runLease from "../run_lease.ts";
 import * as modelChoice from "../model_choice.ts";
@@ -134,6 +135,8 @@ type Session = {
   skipped: string | null;
   saved: { titles: boolean; guide: boolean; summary: boolean };
   calls: number;
+  /** Its channel's Ideas lane, when it's a channel's: its lessons and the lane tools. */
+  place: lanes.Place | null;
 };
 
 const sessions = new Map<string, Session>();
@@ -226,6 +229,7 @@ export async function call(token: string, name: string, args: Args): Promise<[st
   if (session === undefined) return ["This run has ended.", true];
   session.calls++;
   try {
+    if (session.place !== null && (lanes.TOOL_NAMES as readonly string[]).includes(name)) return [await lanes.call(name, args, session.place), false];
     return [await run(session, name, args), false];
   } catch (error) {
     return [diag.messageOf(error), true];
@@ -599,8 +603,12 @@ function ideaText(idea: Idea): string {
     .join("\n");
 }
 
-/** The workspace's craft (agent/ideas/<workspace>.md): Repack's Interrogation teachings, or bodycam's adaptation of them. */
-const system = (workspace: Workspace) => ideasGuide(workspace);
+/**
+ * The workspace's craft (agent/ideas/<workspace>.md): Repack's Interrogation
+ * teachings, or bodycam's adaptation of them; for a channel's idea, then its
+ * Ideas lane (lanes.ts), whose lessons win where they differ.
+ */
+const system = (workspace: Workspace, place: lanes.Place | null) => ideasGuide(workspace) + lanes.section(place?.channel, "ideas");
 
 // ---------------------------------------------------------------- runs
 
@@ -805,7 +813,9 @@ async function work(context: Context, id: string, what: IdeaRun["what"], options
         skipped: null,
         saved: { titles: false, guide: false, summary: false },
         calls: 0,
+        place: lanes.placeOf(idea.channel, "ideas"),
       };
+      if (session.place !== null) await lanes.refresh();
       const token = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex");
       sessions.set(token, session);
       const recent = idea.chat.slice(-SENT_TURNS - 1, -1).map((turn) => `${turn.role === "you" ? `${turn.by ?? "Producer"}` : "You (Claude)"}: ${turn.text}`);
@@ -828,7 +838,7 @@ async function work(context: Context, id: string, what: IdeaRun["what"], options
         .join("\n\n");
       try {
         const answer = await live.within(running.turn, () =>
-          asking.ask({ model: modelFor(ideaBuilt(idea), modelChoice.current()).id, system: system(idea.workspace), prompt: ask, tools: `http://127.0.0.1:${context.port}/mcp/ideas/${token}`, read: prepared.folder, maxTurns: 40, effort: modelChoice.current().effort, timeoutMs: 20 * 60_000, label: `Ideas ${id}`, signal }),
+          asking.ask({ model: modelFor(ideaBuilt(idea), modelChoice.current()).id, system: system(idea.workspace, session.place), prompt: ask, tools: `http://127.0.0.1:${context.port}/mcp/ideas/${token}`, read: prepared.folder, maxTurns: 40, effort: modelChoice.current().effort, timeoutMs: 20 * 60_000, label: `Ideas ${id}`, signal }),
         );
         const said = await inlinePictures((answer.text ?? running.turn.text).trim(), (source) => placePicture(id, source, [prepared.folder]));
         if (session.skipped !== null) return { state: "done" as const, text: session.skipped };
@@ -907,7 +917,7 @@ export async function answerTo(token: string, message: unknown): Promise<unknown
     case "ping":
       return reply({});
     case "tools/list":
-      return sessions.has(token) ? reply({ tools: TOOLS }) : failure(-32001, "This run has ended.");
+      return sessions.has(token) ? reply({ tools: sessions.get(token)!.place === null ? TOOLS : [...TOOLS, ...lanes.toolsFor("ideas")] }) : failure(-32001, "This run has ended.");
     case "tools/call": {
       if (!sessions.has(token)) return id === undefined ? null : failure(-32001, "This run has ended.");
       const name = typeof params?.name === "string" ? params.name : "";
@@ -921,12 +931,13 @@ export async function answerTo(token: string, message: unknown): Promise<unknown
 }
 
 /** A fresh idea for these sources. */
-export function fresh(id: string, by: string, given: Pick<Idea, "sources" | "steer" | "wantsSummary"> & Partial<Pick<Idea, "images" | "footage" | "workspace">>): Idea {
+export function fresh(id: string, by: string, given: Pick<Idea, "sources" | "steer" | "wantsSummary"> & Partial<Pick<Idea, "images" | "footage" | "workspace" | "channel">>): Idea {
   // No picture by itself: the case's thumbnail goes on only when the guide takes the subject from it (save_thumbnail_guide).
   const images: IdeaImage[] = given.images ?? [];
   return {
     id,
     workspace: given.workspace ?? "interrogation",
+    ...(given.channel ? { channel: given.channel } : {}),
     sources: given.sources,
     steer: given.steer,
     wantsSummary: given.wantsSummary,

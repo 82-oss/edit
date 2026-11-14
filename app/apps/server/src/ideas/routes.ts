@@ -4,6 +4,7 @@
 // board and making the changes reviewers ask for there. Claude's tools are
 // served at /mcp/ideas/<token> (run.ts), for the runs on this Mac only.
 
+import * as channels from "../channels.ts";
 import { footageIn, footageKind, footageLine, WORKSPACE_NAMES, WORKSPACES, type IdeaFootage, type Workspace } from "@edit/types/ideas";
 import type { ChangeCard, Idea, IdeaImage, IdeaPlace, IdeaRow, IdeaSource, IdeasHome, IdeaTitle } from "@edit/types/ideas";
 
@@ -403,8 +404,9 @@ export function routes(router: Router<App>): void {
     })
     .post("/api/ideas", async (context: Context) => {
       guard();
-      const body = await readJson<{ links?: unknown; steer?: unknown; summary?: unknown; footage?: unknown; workspace?: unknown }>(context);
+      const body = await readJson<{ links?: unknown; steer?: unknown; summary?: unknown; footage?: unknown; workspace?: unknown; channel?: unknown }>(context);
       const workspace = workspaceIn(body.workspace);
+      const channel = await channels.channelFor(body.channel, context.app.store.home);
       guardWorkspace(workspace);
       const links = linksIn(typeof body.links === "string" ? body.links : "");
       if (links.length === 0) throw bad("Paste a YouTube video or an article's link.");
@@ -430,7 +432,7 @@ export function routes(router: Router<App>): void {
               return;
             }
             const source = await sourceOf(link);
-            const idea = run.fresh(newId(), who, { workspace, sources: [source], steer, wantsSummary: body.summary === true, footage: links.length === 1 ? footage : [] });
+            const idea = run.fresh(newId(), who, { workspace, ...(channel !== null ? { channel: channel.key } : {}), sources: [source], steer, wantsSummary: body.summary === true, footage: links.length === 1 ? footage : [] });
             await cloud.commit(idea, 0, who);
             made.push({ id: idea.id, link });
           } catch (error) {

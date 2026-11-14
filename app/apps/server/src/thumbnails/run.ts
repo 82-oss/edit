@@ -15,6 +15,7 @@ import { assetRef, FONTS, HEIGHT, WIDTH, type Design, type Layer, type Thumbnail
 import { thumbnailsGuide } from "../agent_text.ts";
 import { inlinePictures, pictureFile } from "../chat_pictures.ts";
 import * as diag from "../diag.ts";
+import * as lanes from "../lanes.ts";
 import * as jobs from "../jobs.ts";
 import * as runLease from "../run_lease.ts";
 import * as notices from "../notices.ts";
@@ -121,7 +122,19 @@ const traceOf = (turn: live.Turn): ThumbTrace[] =>
 
 // ---------------------------------------------------------------- the tools
 
-type Session = { id: string; by: string; context: Context; folder: string; signal: AbortSignal; looked: boolean; changed: boolean; made: number; asked: string };
+type Session = {
+  id: string;
+  by: string;
+  context: Context;
+  folder: string;
+  signal: AbortSignal;
+  looked: boolean;
+  changed: boolean;
+  made: number;
+  asked: string;
+  /** Its channel's Thumbnails lane, when it's a channel's: its lessons and the lane tools. */
+  place: lanes.Place | null;
+};
 const sessions = new Map<string, Session>();
 
 /**
@@ -321,6 +334,7 @@ export async function call(token: string, name: string, args: Args): Promise<[st
   const session = sessions.get(token);
   if (session === undefined) return ["This turn has ended.", true];
   try {
+    if (session.place !== null && (lanes.TOOL_NAMES as readonly string[]).includes(name)) return [await lanes.call(name, args, session.place), false];
     return [await runTool(session, name, args), false];
   } catch (error) {
     return [diag.messageOf(error), true];
@@ -988,13 +1002,14 @@ async function work(context: Context, id: string, asked: string, given: string[]
         thumb.run = { ...thumb.run, state: "running", step: running.step };
       });
       fs.mkdirSync(folder, { recursive: true });
-      const session: Session = { id, by: context.by, context, folder, signal, looked: false, changed: false, made: 0, asked };
+      const session: Session = { id, by: context.by, context, folder, signal, looked: false, changed: false, made: 0, asked, place: lanes.placeOf(found.thumb.channel, "thumbnails") };
+      if (session.place !== null) await lanes.refresh();
       const token = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex");
       sessions.set(token, session);
       try {
         const ask = await prompt(session, found.thumb, asked, given, carried);
         const answer = await live.within(running.turn, () =>
-          hooks.ask({ model: claude.OPUS, system: thumbnailsGuide("guide"), prompt: ask, tools: `http://127.0.0.1:${context.port}/mcp/thumbnails/${token}`, read: folder, maxTurns: 60, effort: "medium", timeoutMs: 25 * 60_000, label: `Thumbnail ${id}`, signal }),
+          hooks.ask({ model: claude.OPUS, system: systemOf(session.place), prompt: ask, tools: `http://127.0.0.1:${context.port}/mcp/thumbnails/${token}`, read: folder, maxTurns: 60, effort: "medium", timeoutMs: 25 * 60_000, label: `Thumbnail ${id}`, signal }),
         );
         const said = await inlinePictures((answer.text ?? running.turn.text).trim(), (source) => placePicture(session, source));
         return { state: "done" as const, text: said || (session.changed ? "Done." : "Nothing changed."), changed: session.changed };
@@ -1060,7 +1075,7 @@ export async function answerTo(token: string, message: unknown): Promise<unknown
     case "ping":
       return reply({});
     case "tools/list":
-      return sessions.has(token) ? reply({ tools: TOOLS }) : failure(-32001, "This turn has ended.");
+      return sessions.has(token) ? reply({ tools: sessions.get(token)!.place === null ? TOOLS : [...TOOLS, ...lanes.toolsFor("thumbnails")] }) : failure(-32001, "This turn has ended.");
     case "tools/call": {
       if (!sessions.has(token)) return id === undefined ? null : failure(-32001, "This turn has ended.");
       const name = typeof params?.name === "string" ? params.name : "";
@@ -1072,6 +1087,9 @@ export async function answerTo(token: string, message: unknown): Promise<unknown
       return id === undefined ? null : failure(-32601, `Thumbnails has no method ${String(method)}.`);
   }
 }
+
+/** The house's guide; for a channel's thumbnail, then its Thumbnails lane (lanes.ts), whose lessons win where they differ. */
+const systemOf = (place: lanes.Place | null): string => thumbnailsGuide("guide") + lanes.section(place?.channel, "thumbnails");
 
 /** A fresh thumbnail. */
 export function fresh(id: string, by: string, title: string, brief: string): Thumbnail {

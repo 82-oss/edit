@@ -13,6 +13,7 @@
 // prompt, tools and evidence, so the sections and the finish read the
 // outline's from the prompt cache. Without an outline it builds in steps.
 
+import * as lanes from "../lanes.ts";
 import type { Clip, Research, Script } from "@edit/types/writer";
 
 import type { App } from "../app.ts";
@@ -528,6 +529,8 @@ async function settle(promise: Promise<claude.Answer>): Promise<[claude.Answer |
 
 /** Builds the script in steps. Nothing is saved to it unless a plan passes. */
 export async function buildInSteps(script: Script, note: string, research: Research | null, peaks: ArrayLike<number>, signal?: AbortSignal): Promise<Built> {
+  // A channel's script reads its Script lane (lanes.ts), fresh.
+  if (script.channel) await lanes.refresh();
   const prompt = `${evidence(script, research)}\n\n${request(script, note)}`;
   const steps = newDraft("steps", script, peaks);
   const token = open(steps);
@@ -608,6 +611,8 @@ Call review_plan and fix what it reports by ID. Read the cut-ins where the secti
  * is saved to the script unless a plan passes.
  */
 export async function buildFast(script: Script, note: string, research: Research | null, peaks: ArrayLike<number>, signal?: AbortSignal, stage: (text: string) => void = () => {}): Promise<Built> {
+  // A channel's script reads its Script lane (lanes.ts), fresh.
+  if (script.channel) await lanes.refresh();
   const ask_ = request(script, note);
   const format = formatOfScript(script);
   // The evidence and the ask close the system prompt, the same for every call of the build, with only the

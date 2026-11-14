@@ -7,6 +7,7 @@
 import type { Script } from "@edit/types/writer";
 
 import * as diag from "../diag.ts";
+import * as lanes from "../lanes.ts";
 import * as cloud from "../cloud.ts";
 import { note, noteFrom } from "../lesson_inbox.ts";
 
@@ -18,7 +19,8 @@ export const LESSON_SCHEMA = {
     lesson: { type: "string" },
     quote: { type: "string" },
     from: { type: "string" },
-    scope: { type: "string", enum: ["house", "style", "person"] },
+    scope: { type: "string", enum: ["house", "style", "person", "channel"] },
+    name: { type: "string" },
   },
   required: ["lesson", "quote", "scope"],
 };
@@ -36,6 +38,19 @@ export function lessonOf(plan: Record<string, unknown> | null): Record<string, u
 /** Notes `lesson` with the script it was said on; the line to add to the reply, or "" when there was none or it couldn't be noted (logged). */
 export async function keep(script: Script, lesson: Record<string, unknown> | null): Promise<string> {
   if (lesson === null) return "";
+  // A channel's script: a lesson of how that channel does its scripts is kept in its Script lane at once (lanes.ts), not sent to the inbox.
+  if (lesson.scope === "channel" && script.channel) {
+    const name = typeof lesson.name === "string" ? lesson.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) : "";
+    try {
+      if (typeof lesson.lesson !== "string" || lesson.lesson.trim() === "" || name === "") throw new Error("the lesson came back without its words or a name");
+      const kept = await lanes.keepLesson({ channel: script.channel, lane: "script" }, name, lesson.lesson.trim(), typeof lesson.quote === "string" && lesson.quote.trim() !== "" ? lesson.quote.trim() : "said in a revision");
+      diag.info("lessons", `${script.title}: ${kept}`);
+      return `\n\n${kept.replace(/: its agents have it.*$/u, ".")} This channel's next scripts have it.`;
+    } catch (error) {
+      diag.warn("lessons", `${script.title}: the channel's lesson wasn't kept: ${diag.messageOf(error)}`);
+      return `\n\nThat sounds like a lesson for this channel's scripts, but it wasn't kept: ${diag.messageOf(error)}`;
+    }
+  }
   const given = noteFrom({ ...lesson, part: "script" });
   if (typeof given === "string") {
     diag.warn("lessons", `${script.title}: a lesson came back unusable (${given})`);

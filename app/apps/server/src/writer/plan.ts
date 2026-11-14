@@ -6,6 +6,7 @@
 // checks a count can find, and the format's targets (a compilation's pages, a
 // FOIA cut's ten minutes).
 
+import * as lanes from "../lanes.ts";
 import type { Clip, Part, Research, Script, Word } from "@edit/types/writer";
 
 import { caseCount, isCutIn } from "./blocks.ts";
@@ -39,7 +40,7 @@ export function systemPrompt(script: Script, format: Format): string {
       : "A full script starts with footage, has footage before each cut-in, and ends with a written outro; include at least an intro and an outro.";
   let prompt = `${EDITOR_HEAD}\n${shape}\n${length}\n${sequence} ${EDITOR_WRITING.replace("{document}", formats.documentOf(format))}\n${EDITOR_FOOT.replace("{shape_rule}", shapeRule)}\nProject title: ${script.title}\nSource duration: ${script.durationMs}ms\n\nPRODUCER'S CUT-IN GUIDE\n${formats.plain(formats.CUT_IN_GUIDE)}\n\nPRODUCER'S JUDGMENT CALLS\n${formats.plain(formats.JUDGMENT_GUIDE)}`;
   for (const [label, guide] of formats.extraGuides(format)) prompt += `\n\n${label}\n${guide}`;
-  return prompt;
+  return prompt + lanes.section(script.channel, "script", "none");
 }
 
 /** The shape of a whole plan, as a one-answer build gives it. */

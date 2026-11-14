@@ -5,6 +5,7 @@
 // answer; every clip it cites names its source, and the app refuses a quote
 // the source doesn't hold or a link no source gives.
 
+import * as lanes from "../lanes.ts";
 import * as fs from "node:fs";
 
 import type { Adding, Cite, Commentary, Draft, NoteMark, Pacing, Paragraph, Piece, Role, Script, Section, Source, Word } from "@edit/types/writer";
@@ -60,7 +61,7 @@ const commentaryOf = (script: Script): Commentary => {
 const titleOk = (title: string) => title !== "" && [...title].length <= 180 && !/\p{Cc}/u.test(title);
 
 /** A new commentary project, with any links read in as its sources: the first becomes the brief; the rest are evidence until the producer says. */
-export async function create(data: string, title: string, links: string[], createdBy: Script["createdBy"], test = false): Promise<Script> {
+export async function create(data: string, title: string, links: string[], createdBy: Script["createdBy"], made: { test?: boolean; channel?: string } = {}): Promise<Script> {
   const given = title.trim();
   if (!titleOk(given)) throw new Error("Give it a title of up to 180 characters.");
   const wanted = links.map((link) => link.trim()).filter((link) => link !== "");
@@ -100,9 +101,10 @@ export async function create(data: string, title: string, links: string[], creat
     proxyPath: null,
   };
   fetched.forEach(([link, name, text], index) => put(dir, script, name, index === 0 ? "brief" : "evidence", link, text, false));
+  if (made.channel) script.channel = made.channel;
   store.write(dir, script);
   // Not a person's (routes.ts): hidden on Home as a test script.
-  if (test) store.writeTest(dir, true);
+  if (made.test) store.writeTest(dir, true);
   store.libraryChanged();
   return script;
 }
@@ -652,6 +654,10 @@ export async function write(dir: string, script: Script, writing: Writing, signa
   if (reviewers.length > 0) diag.info("writer", `${script.title}: writing with reviewer-supplied choices from ${reviewers.join(", ")} (production inputs, not lessons)`);
   if (writing.lessons.trim() !== "") system += `\n\nLESSONS FROM PAST REVIEWS (follow them as you follow the guide)\n${writing.lessons.trim()}`;
   if (writing.extra.trim() !== "") system += `\n\n${writing.extra.trim()}`;
+  if (script.channel) {
+    await lanes.refresh();
+    system += lanes.section(script.channel, "script", "none");
+  }
   const scriptPart = writing.base === null ? "" : `\n\nTHE SCRIPT, as a plan in the answer's shape\n${JSON.stringify(planOf(writing.base), null, 2)}`;
   const prompt = `SOURCES\n\n${evidence(sources)}${scriptPart}\n\n${writing.request}`;
   const corpus = new Corpus(sources);
@@ -775,6 +781,10 @@ export async function revise(dir: string, script: Script, request: string, lesso
   let system = systemPrompt(script.title, commentary.pacing ?? "channel");
   if (lessons.trim() !== "") system += `\n\nLESSONS FROM PAST REVIEWS (follow them as you follow the guide)\n${lessons.trim()}`;
   system += `\n\n${REVISE_NOTE}\n${LESSON_RULE}`;
+  if (script.channel) {
+    await lanes.refresh();
+    system += lanes.section(script.channel, "script", "lesson");
+  }
   // The sources close the system prompt, which Claude caches, so one revision after another reads them at a
   // tenth of the price; the script, which changes, stays in the message (as revise.ts, Nov 5).
   system += `\n\nSOURCES\n\n${evidence(sources)}`;

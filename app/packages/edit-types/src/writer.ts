@@ -112,6 +112,8 @@ export type Script = {
   notes?: string[];
   kind?: Kind;
   compilation?: boolean;
+  /** The YouTube channel it's for (Edit's channels.ts): its writer is taught that channel's Script lane. Absent: none. */
+  channel?: string;
   createdBy?: Creator;
   /** Who each voice is, "Name (Role)" or a role, by speaker ID. */
   speakers?: Record<string, string>;
@@ -183,6 +185,8 @@ export type Summary = {
   cloudRefused?: string;
   /** Interrogation, FOIA or Courtroom. */
   kind?: Kind;
+  /** Its channel's key. */
+  channel?: string;
   id: string;
   title: string;
   status: string;

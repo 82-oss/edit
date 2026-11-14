@@ -52,8 +52,11 @@ test("only a script this computer has is marked; a real one never gets a file", 
 
 test("a commentary is a test script unless a person started it", async () => {
   const data = fs.mkdtempSync(join(os.tmpdir(), "edit-test-mark-"));
-  const trial = await commentary.create(data, "Skills check", [], undefined, true);
+  const trial = await commentary.create(data, "Skills check", [], undefined, { test: true, channel: "drinsanity" });
   const real = await commentary.create(data, "Real Crimes Behind Adult Videos", [], undefined);
   expect(store.readTest(store.scriptDir(data, trial.id)).test).toBe(true);
+  // The channel it was made for goes with it.
+  expect(trial.channel).toBe("drinsanity");
+  expect(real.channel).toBeUndefined();
   expect(store.readTest(store.scriptDir(data, real.id)).test).toBe(false);
 });

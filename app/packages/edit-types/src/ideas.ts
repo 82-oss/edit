@@ -171,6 +171,8 @@ export type IdeaComment = { id: string; text: string; author: string; at: string
 export type Idea = {
   id: string;
   workspace: Workspace;
+  /** The YouTube channel it's for (Edit's channels.ts): its agent is taught that channel's Ideas lane. Absent: none. */
+  channel?: string;
   sources: IdeaSource[];
   /** The angle the person asked for, if any. */
   steer: string;
@@ -223,6 +225,8 @@ export type IdeaSummary = {
   niche?: Niche | null;
   /** The first source's own title. */
   source?: string;
+  /** Its channel's key. */
+  channel?: string;
 };
 
 /** An idea as Home lists it. */

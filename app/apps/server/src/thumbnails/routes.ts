@@ -4,6 +4,7 @@
 // fonts and the page headless Chrome draws on. Claude's tools are served at
 // /mcp/thumbnails/<token> (run.ts), for the turns on this Mac only.
 
+import * as channels from "../channels.ts";
 import type { OpenArtAccount, OpenArtState, ThumbImage } from "@edit/types/thumbnails";
 
 import { creator } from "../accounts.ts";
@@ -81,7 +82,8 @@ export function routes(router: Router<App>): void {
     })
     .post("/api/thumbnails", async (context: Context) => {
       guard();
-      const body = await readJson<{ title?: unknown; brief?: unknown }>(context).catch(() => ({}) as Record<string, unknown>);
+      const body = await readJson<{ title?: unknown; brief?: unknown; channel?: unknown }>(context).catch(() => ({}) as Record<string, unknown>);
+      const channel = await channels.channelFor(body.channel, context.app.store.home);
       const who = by();
       // A new one starts under a placeholder title ("Thumbnail 1", the next free number) until the person names it.
       let title = typeof body.title === "string" ? body.title.trim().slice(0, 120) : "";
@@ -94,6 +96,7 @@ export function routes(router: Router<App>): void {
       const thumb = run.fresh(newId("t"), who, title, typeof body.brief === "string" ? body.brief.trim().slice(0, 600) : "");
       // Its workspace, chosen for them: the one they work on, or Interrogation's (Ideas' own default) for someone on both.
       thumb.workspace = workspacesOf()[0] ?? "interrogation";
+      if (channel !== null) thumb.channel = channel.key;
       try {
         await cloud.commit(thumb, 0, who);
         return json({ id: thumb.id });

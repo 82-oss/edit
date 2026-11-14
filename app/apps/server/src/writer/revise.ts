@@ -6,6 +6,7 @@
 // narration the producer had saved becomes a proposal for them to accept or
 // decline, never a silent change.
 
+import * as lanes from "../lanes.ts";
 import type { Clip, Focus, Proposal, Research, Script, Word } from "@edit/types/writer";
 
 import { caseCount, isCutIn, noteAnchor } from "./blocks.ts";
@@ -42,7 +43,7 @@ function systemPrompt(script: Script, format: Format): string {
   const [shape, length, sequence] = formats.shapeLengthSequence(format, cases);
   let prompt = `${REVISE_HEAD}\n${shape}\n${length}\n${sequence} ${EDITOR_WRITING.replace("{document}", formats.documentOf(format))}\n${REVISE_EDGES}\n${REVISE_EDITS}\n${LESSON_RULE}\nProject title: ${script.title}\n\nPRODUCER'S CUT-IN GUIDE\n${formats.plain(formats.CUT_IN_GUIDE)}\n\nPRODUCER'S JUDGMENT CALLS\n${formats.plain(formats.JUDGMENT_GUIDE)}`;
   for (const [label, guide] of formats.extraGuides(format)) prompt += `\n\n${label}\n${guide}`;
-  return prompt;
+  return prompt + lanes.section(script.channel, "script", "lesson");
 }
 
 const SCHEMA = {
@@ -528,6 +529,7 @@ export async function revise(script: Script, request: string, focus: Focus, chat
   if (asked === "") throw new Error("Say what to change.");
   if ([...asked].length > 12_000) throw new Error("Keep the request under 12,000 characters.");
   const format = formatOfScript(script);
+  if (script.channel) await lanes.refresh();
   // The evidence closes the system prompt, which Claude caches: one revision after another (fresh eyes'
   // two passes, the producer's next request) reads it at a tenth of the price instead of paying for it
   // whole each time (Nov 5, JJ's Mac: $62 of a week's $430 on revisions). What changes, the script, stays in the message.

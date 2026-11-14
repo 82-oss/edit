@@ -106,6 +106,7 @@ export function summarize(idea: Idea): IdeaSummary {
     keys: idea.sources.map(keyOf),
     niche: idea.niche,
     source: first?.title ?? "",
+    ...(idea.channel ? { channel: idea.channel } : {}),
   };
 }
 

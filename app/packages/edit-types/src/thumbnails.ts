@@ -255,6 +255,8 @@ export type Thumbnail = {
   title: string;
   /** The ideas workspace it belongs to (Nov 4): only who works on that workspace's ideas sees it. None: Interrogation's, as before. */
   workspace?: "interrogation" | "bodycam";
+  /** The YouTube channel it's for (Edit's channels.ts): its agent is taught that channel's Thumbnails lane. Absent: none. */
+  channel?: string;
   /** What it's for, in a line (the video's title, the idea). */
   brief: string;
   images: ThumbImage[];
@@ -287,6 +289,8 @@ export type ThumbSummary = {
   /** How many layers it has: one with any is drawn for the list even when no drawing was kept. */
   layers?: number;
   images: number;
+  /** Its channel's key. */
+  channel?: string;
 };
 
 export type ThumbRow = {
@@ -328,6 +332,7 @@ export function summarize(thumb: Thumbnail): ThumbSummary {
     render: thumb.render?.key ?? null,
     layers: thumb.design.layers.length,
     images: thumb.images.length,
+    ...(thumb.channel ? { channel: thumb.channel } : {}),
   };
 }
 

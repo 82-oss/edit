@@ -5,6 +5,9 @@
 // whether it's the ID").
 //
 //   GET /v1/channels/resolve?url=<link>   {channel} | {error}
+//   GET /v1/channels/videos?url=<link>&order=top|recent&count=<1…50>
+//                                          {channel: {youtubeId, title}, videos} | {error}: its most viewed
+//                                          (search by views) or newest uploads, with their numbers
 //
 // A channel's id (UC…) or its /channel/ link, an @handle or its link (with
 // /videos, /shorts, /featured…), a /user/ link, a video's link (its channel),
@@ -110,10 +113,67 @@ export async function resolveChannel(given: string, env: ChannelsEnv) {
   return Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
 }
 
+/** "PT1H2M3S" → 3723. */
+export function secondsOf(duration: unknown): number | undefined {
+  const parts = typeof duration === "string" ? /^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(duration) : null;
+  if (parts === null) return undefined;
+  const [, d = "0", h = "0", m = "0", s = "0"] = parts;
+  return Number(d) * 86_400 + Number(h) * 3600 + Number(m) * 60 + Number(s);
+}
+
+/**
+ * A channel's videos with their numbers (Sphe, Nov 14: the ideas agent sees
+ * what works on its channel, and later a competitor's): its most viewed
+ * (YouTube's search by views, 100 of the day's quota) or its newest (its
+ * uploads playlist, 1), each video's views, likes, comments, length and
+ * thumbnail read in one more ask.
+ */
+export async function channelVideos(given: string, order: "top" | "recent", count: number, env: ChannelsEnv) {
+  const channel = await resolveChannel(given, env);
+  const max = String(Math.max(1, Math.min(50, Math.round(count) || 25)));
+  let ids: string[];
+  if (order === "top") {
+    const found = (await api("search", { part: "id", channelId: String(channel.youtubeId), order: "viewCount", type: "video", maxResults: max }, env)).items as { id?: { videoId?: string } }[] | undefined;
+    ids = (found ?? []).map((one) => one.id?.videoId).filter((one): one is string => typeof one === "string");
+  } else {
+    if (typeof channel.uploads !== "string") return { channel: { youtubeId: channel.youtubeId, title: channel.title }, videos: [] };
+    const found = (await api("playlistItems", { part: "contentDetails", playlistId: channel.uploads, maxResults: max }, env)).items as { contentDetails?: { videoId?: string } }[] | undefined;
+    ids = (found ?? []).map((one) => one.contentDetails?.videoId).filter((one): one is string => typeof one === "string");
+  }
+  if (ids.length === 0) return { channel: { youtubeId: channel.youtubeId, title: channel.title }, videos: [] };
+  const items = ((await api("videos", { part: "snippet,statistics,contentDetails", id: ids.join(",") }, env)).items ?? []) as Found[];
+  const byId = new Map(items.map((one) => [one.id, one]));
+  const videos = ids.flatMap((id) => {
+    const video = byId.get(id);
+    if (video === undefined) return [];
+    const snippet = video.snippet ?? {};
+    const stats = video.statistics ?? {};
+    const pictures = (snippet.thumbnails ?? {}) as Record<string, { url?: string } | undefined>;
+    const fields = {
+      id,
+      title: text(snippet.title) ?? "",
+      publishedAt: text(snippet.publishedAt),
+      seconds: secondsOf(video.contentDetails?.duration),
+      views: number(stats.viewCount),
+      likes: number(stats.likeCount),
+      comments: number(stats.commentCount),
+      thumbnail: ["maxres", "standard", "high", "medium", "default"].map((size) => pictures[size]?.url).find((one) => typeof one === "string"),
+    };
+    return [Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined))];
+  });
+  // YouTube's search by views is only roughly in order.
+  if (order === "top") videos.sort((a, b) => (Number(b.views) || 0) - (Number(a.views) || 0));
+  return { channel: { youtubeId: channel.youtubeId, title: channel.title }, videos };
+}
+
 export async function channelsRoute(request: Request, url: URL, env: ChannelsEnv): Promise<Response> {
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-  if (request.method !== "GET" || url.pathname !== "/v1/channels/resolve") return json(404, { error: "No such route." });
+  if (request.method !== "GET" || (url.pathname !== "/v1/channels/resolve" && url.pathname !== "/v1/channels/videos")) return json(404, { error: "No such route." });
   try {
+    if (url.pathname === "/v1/channels/videos") {
+      const order = url.searchParams.get("order") === "recent" ? "recent" : "top";
+      return json(200, await channelVideos(url.searchParams.get("url") ?? "", order, Number(url.searchParams.get("count") ?? 25), env));
+    }
     return json(200, { channel: await resolveChannel(url.searchParams.get("url") ?? "", env) });
   } catch (error) {
     if (error instanceof Refused) return json(error.status, { error: error.message });
