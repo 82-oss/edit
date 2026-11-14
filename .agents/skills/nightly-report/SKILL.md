@@ -18,7 +18,7 @@ Sphe pastes it to the team (JJ, Marc, Marius) as it is. They use Edit all day an
 - **As few bullets as possible.** One sentence each. A change that needs background (a new way something works) gets up to three sentences in its bullet: what happens now, why it matters, the number. Never a section of its own.
 - **Certain or not, said in the verb.** Tested or measured: "X is Y." Fairly confident but not proven on everyone's Mac: "X should be Y." Nothing weaker goes in.
 - **Real numbers, only ones we verified**, and only ones that mean something to them: minutes waited, hours paid for, times it failed. "17 minutes on one video, almost 3 hours on another" is good; frame counts, milliseconds, gigabytes and percentiles confuse and come out.
-- **Sphe's voice**: "In my test", never "in our test" or "we".
+- **Sphe's voice**: "In my test", never "in our test" or "we". The same goes for the work itself: "What I Worked On Today", never "What We Worked On" (Sphe, Nov 14).
 - **No "you" where it isn't needed** (Sphe, Nov 13): "ready for testing" or "ready to test", never "ready for you to test"; "a video can be shared", not "you can share a video".
 - Count things as they are: one agent is "agent", not "agents".
 
