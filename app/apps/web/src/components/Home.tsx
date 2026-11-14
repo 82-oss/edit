@@ -27,7 +27,7 @@ import { creditCopies } from "../lib/copies";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
 import { NewNiche, NichePageDialog } from "./Niches";
-import { AddChannelButton, ChannelAvatar, ChannelsView } from "./Channels";
+import { AddChannelButton, ChannelPills, ChannelsView } from "./Channels";
 import { loadChannels, useChannels } from "../lib/channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { AsideStatus, BackMark, BY, Category, CATEGORY, CHIP, COLUMNS, contextMenu, CreatorCell, KindMark, LaterContext, LENGTH, LengthCell, layoutFor, NAME, NoteMark, PILL, ROW, RowButtons, StatusCell, TableShape, Updated, useAside, useNote, withAside } from "./HomeTable";
@@ -346,6 +346,7 @@ export function Home() {
         mine: isMe(script.createdBy),
         fresh: fresh(row),
         kind: script.style,
+        channel: script.channel ?? null,
         row: () => <ScriptTableRow script={script} importing={row.importing} writing={row.writing === true} sharing={row.sharing === true} here={row.here === true} onChanged={refresh} onImport={row.importing ? () => setWatching(script.id) : undefined} />,
       });
       continue;
@@ -373,7 +374,7 @@ export function Home() {
   }
   if (ideasAllowed && ideasHome !== null) {
     for (const row of ideasHome.ideas) {
-      items.push({ id: `idea-${row.id}`, key: laterKey("idea", row.id), section: "ideas", stage: ideaStage(row), at: row.updatedAt, title: row.summary.title, mine: isMe(row.createdBy), kind: row.workspace ?? "interrogation", row: () => <IdeaTableRow row={row} /> });
+      items.push({ id: `idea-${row.id}`, key: laterKey("idea", row.id), section: "ideas", stage: ideaStage(row), at: row.updatedAt, title: row.summary.title, mine: isMe(row.createdBy), kind: row.workspace ?? "interrogation", channel: row.summary.channel ?? null, row: () => <IdeaTableRow row={row} /> });
     }
     // A card waiting on changes with no idea yet is the ideas team's, on the board.
     for (const card of ideasHome.changes) {
@@ -542,7 +543,7 @@ export function Home() {
               ) : inChannels ? (
                 <AddChannelButton onClick={() => setAddingChannel(true)} />
               ) : inThumbnails ? (
-                <Button variant="light" busy={thumbnail.making} onClick={thumbnail.make}>
+                <Button variant="light" busy={thumbnail.making} onClick={(event) => thumbnail.make(event.currentTarget)}>
                   <Plus size={15} strokeWidth={2.2} /> New thumbnail
                 </Button>
               ) : mayCreate ? (
@@ -2113,12 +2114,14 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
   };
   const styles = STYLES.filter((option) => (writing ? writable(option.value) : allowed === null || allowed.has(option.value)));
   const kind = styles.some((option) => option.value === style) ? style : (styles[0]?.value ?? "bodycam");
-  const commentary = writing && kind === "commentary";
   // Edit V2's niches, apart from today's kinds until they take their place (Bodycam HQ alone when there are none to be had).
   const v2Pills = v2 && !writing ? v2Choices(niches, styles.map((option) => option.value)) : [];
   const chosen = v2Pills.find((one) => one.key === niche && one.kind === kind);
-  const showChannels = v2 && !writing && (channels?.length ?? 0) > 0;
+  // Scripts too (Sphe, Nov 14): an edit's, a script's, an idea's and a thumbnail's agent is taught its channel's lane.
+  const showChannels = v2 && (channels?.length ?? 0) > 0;
   const channel = showChannels ? (channels?.find((one) => one.key === channelKey) ?? null) : null;
+  // A channel's script is its footage's (its kind from the channel); a commentary is one of Other kinds.
+  const commentary = writing && channel === null && kind === "commentary";
 
   // A fresh dialog each time.
   useEffect(() => {
@@ -2238,7 +2241,8 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
   const blocked = (sources ?? []).some((one) => one.problem !== null && !one.reuse);
   // Several videos make one case or a compilation (several.ts); one video alone is its case.
   const several = writing && !commentary && sources !== null && sources.length >= 2;
-  const writerKind = WRITER_KIND[kind];
+  // A channel's script is written the way its videos are narrated (the server's madeOf): the editor's recording, an interrogation's; a voice, FOIA's.
+  const writerKind = channel !== null ? (channel.narration?.kind === "recorded" ? "interrogation" : "foia") : WRITER_KIND[kind];
   const videos = shapeOf({
     kind: writerKind,
     reused: (sources ?? []).some((one) => one.reuse),
@@ -2270,9 +2274,9 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
           ? writer.createCommentary(title.trim(), links)
           : footage.length === 1 && footage.length === sources!.length
             ? DRIVE.test(footage[0]!.url)
-              ? writer.importDrive(footage[0]!.url, undefined, title.trim(), WRITER_KIND[kind], extra)
-              : writer.importYoutube(footage[0]!.url, undefined, title.trim(), WRITER_KIND[kind], extra)
-            : writer.importCompilation(title.trim(), sources!.map((one) => (one.reuse ? ["REUSE", one.url, one.earlier].filter(Boolean).join(" ") : one.url)), videos.shape === "case", WRITER_KIND[kind], extra);
+              ? writer.importDrive(footage[0]!.url, undefined, title.trim(), writerKind, extra, channel?.key)
+              : writer.importYoutube(footage[0]!.url, undefined, title.trim(), writerKind, extra, channel?.key)
+            : writer.importCompilation(title.trim(), sources!.map((one) => (one.reuse ? ["REUSE", one.url, one.earlier].filter(Boolean).join(" ") : one.url)), videos.shape === "case", writerKind, extra, channel?.key);
         // The server answers once the script exists, or refuses (a bad link, no access, three imports running);
         // the import then runs on Home. It used to answer only when the whole import ended, so this guessed with a
         // 1.5 s timer and a busy Mac's refusal after it was lost (JJ, Nov 1: a compilation started twice, no row and
@@ -2554,30 +2558,19 @@ export function NewProject({ open, onClose, only = null, start = null }: { open:
         {showChannels ? (
           <div>
             <span className={label}>Channel</span>
-            <div className="flex flex-wrap gap-1.5">
-              {(channels ?? []).map((one) => (
-                <button
-                  type="button"
-                  key={one.key}
-                  title={one.lanes.edit || one.title}
-                  onClick={() => {
-                    setChannelKey(one.key);
-                    setCompilation(null);
-                    setNiche(null);
-                    setOtherKinds(false);
-                  }}
-                  className={cx(
-                    "flex h-8 items-center gap-2 rounded-full border pr-3 pl-1 text-[12.5px] font-medium transition-colors",
-                    channelKey === one.key ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
-                  )}
-                >
-                  <ChannelAvatar channel={one} size={22} />
-                  {one.title}
-                </button>
-              ))}
-            </div>
+            <ChannelPills
+              channels={channels ?? []}
+              value={channelKey}
+              lane={writing ? "script" : "edit"}
+              onChange={(key) => {
+                setChannelKey(key);
+                setCompilation(null);
+                setNiche(null);
+                setOtherKinds(false);
+              }}
+            />
             <AnimatePresence initial={false}>
-              {channel !== null && (
+              {channel !== null && !writing && (
                 <motion.label initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={spring} className="flex items-center gap-2.5 overflow-hidden pt-2.5 text-[12.5px] text-muted">
                   <Switch checked={compilation ?? channel.compilation} onChange={setCompilation} />
                   Compilation

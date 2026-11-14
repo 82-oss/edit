@@ -2,6 +2,7 @@
 // its Ideas section (Drafts, On the board); the idea page a click away (the
 // user: "one tab, one mode, one page … i think thats better").
 
+import { ChannelPills, useChannelChoice } from "../components/Channels";
 import { ArrowUpRight, CircleAlert, ExternalLink, Eye, Lightbulb, MessageSquare, Send, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
@@ -210,6 +211,16 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
     setWorkspace(value);
     localStorage.setItem("ideas.workspace", value);
   };
+  // The channel it's for (V2's): its agent is taught that channel's Ideas lane; none is a choice too.
+  const channels = useChannelChoice(open);
+  const [channel, setChannel] = useState<string | null>(null);
+  const pick = (key: string | null) => {
+    setChannel(key);
+    // A channel narrated by the editor's recording makes interrogation ideas; a voice's, bodycam ones (where both are theirs).
+    const found = channels.find((one) => one.key === key);
+    const kind: Workspace | null = found?.narration ? (found.narration.kind === "recorded" ? "interrogation" : "bodycam") : null;
+    if (kind !== null && workspaces.includes(kind)) setWorkspace(kind);
+  };
   const [steer, setSteer] = useState("");
   const [summary, setSummary] = useState(false);
   const [footage, setFootage] = useState("");
@@ -228,7 +239,7 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
     setProblem(null);
     setKnown([]);
     ideasApi
-      .create(links, steer, summary, count === 1 ? footage : "", workspace)
+      .create(links, steer, summary, count === 1 ? footage : "", workspace, channel)
       .then(({ ideas, refused }) => {
         onMade();
         const others = refused.filter((one) => one.id === undefined);
@@ -254,6 +265,11 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
         <DialogTitle title="New idea" detail={`${KIND[workspace].what}, one a line. Each becomes an idea Claude repackages: 3–5 titles and a thumbnail guide.`} />
         <div className="mt-4 flex flex-col gap-3">
           <TextArea autoFocus value={links} onChange={(event) => setLinks(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" rows={4} aria-label="Links" />
+          {channels.length > 0 && (
+            <Field stacked label="Channel">
+              <ChannelPills channels={channels} value={channel} lane="ideas" onChange={pick} />
+            </Field>
+          )}
           {workspaces.length > 1 && (
             <div className="flex items-center justify-between text-[13px]">
               <span>Kind</span>

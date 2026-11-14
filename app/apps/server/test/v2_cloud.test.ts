@@ -10,6 +10,7 @@ import { join } from "node:path";
 import * as accounts from "../src/accounts.ts";
 import { agentInstructions } from "../src/agent.ts";
 import * as channels from "../src/channels.ts";
+import * as lanes from "../src/lanes.ts";
 import { registerChannelTools } from "../src/channel_tools.ts";
 import * as cloud from "../src/cloud.ts";
 import { registerEffectTools } from "../src/effect_tools.ts";
@@ -323,6 +324,34 @@ test("a channel's edit lane is its own: it starts empty, none of V2's house come
   expect(v2cloud.forNiche(items, v2cloud.chainOf(lane)).map((one) => one.key)).toEqual(["skill:global", "skill:@drinsanity--edit/intro"]);
   // A niche keeps the house's as before.
   expect(v2cloud.forNiche(items, ["bodycam-hq"]).map((one) => one.key)).toEqual(["skill:global", "skill:pins", "template:board"]);
+});
+
+test("a script's, an idea's or a thumbnail's agent is told its channel's lane alone: its style, its own lessons (never the edit's global skill or another lane's), and how it keeps what it's taught", () => {
+  channels.useChannelsForTests([{ ...CHANNEL, lanes: { ...CHANNEL.lanes, ideas: "short, punchy titles" } }, OTHER]);
+  v2cloud.useSkillsForTests([
+    { name: "global", text: "Edit's own rules.", key: "skill:global" },
+    { name: "numbers", text: "Every title has a number in it.", key: "skill:@drinsanity--ideas/numbers", niches: ["drinsanity--ideas"] },
+    { name: "hooks", text: "The hook pattern, long.", note: "When the person asks for hooks", key: "skill:@drinsanity--ideas/hooks", niches: ["drinsanity--ideas"] },
+    { name: "intro", text: "The edit's intro.", key: "skill:@drinsanity--edit/intro", niches: ["drinsanity--edit"] },
+    { name: "jcs-titles", text: "JCS's way.", key: "skill:@jcs--ideas/jcs-titles", niches: ["jcs--ideas"] },
+  ]);
+  const text = lanes.section("drinsanity", "ideas");
+  expect(text).toContain("THIS CHANNEL: Dr Insanity (@drinsanity)");
+  expect(text).toContain("short, punchy titles");
+  expect(text).toContain("- numbers: Every title has a number in it.");
+  expect(text).toContain("- hooks: When the person asks for hooks");
+  expect(text).not.toContain("Edit's own rules");
+  expect(text).not.toContain("The edit's intro");
+  expect(text).not.toContain("JCS's way");
+  expect(text).toContain("keep it with remember");
+  expect(text).toContain("channel_videos");
+  // A thumbnail's lane has nothing taught yet; a script's revision keeps lessons in its answer; a build only reads.
+  expect(lanes.section("drinsanity", "thumbnails")).toContain("ISN'T TAUGHT YET");
+  expect(lanes.section("drinsanity", "script", "lesson")).toContain('send lesson with scope "channel"');
+  expect(lanes.section("drinsanity", "script", "none")).not.toMatch(/remember|send lesson/);
+  expect(lanes.section(undefined, "ideas")).toBe("");
+  expect(lanes.toolsFor("script").map((one) => one.name)).toEqual(["remember", "read_skill", "other_channels"]);
+  expect(lanes.toolsFor("ideas").map((one) => one.name)).toContain("channel_videos");
 });
 
 test("who narrates for whom already, for the voice picker: each niche with its own narrator (bodycam's the house voice), then each channel with a voice, never one recorded", () => {

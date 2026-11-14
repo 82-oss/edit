@@ -421,6 +421,8 @@ export interface WriterScriptRow {
   built: boolean;
   /** Its kind of video, when Writer says. */
   style: Style | null;
+  /** The channel it's for. */
+  channel?: string;
   /** Written over several videos (from this Mac's copy until the server's list says). */
   compilation?: boolean;
   /** Its last Claude run ended without finishing (an API error, Edit closing, stopped): when, and what it said. */

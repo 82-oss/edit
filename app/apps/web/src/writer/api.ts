@@ -52,12 +52,13 @@ export const importFile = (path: string, article?: string, title?: string, kind?
 
 /** A title given is kept in place of the video's own. */
 /** `build`: built as soon as the import is ready, with that note ("" for none). */
-export const importYoutube = (url: string, article?: string, title?: string, kind?: Kind, build?: string) =>
-  http<Script>("/api/writer/scripts/youtube", json({ url, article, title, kind, build, ...byPerson() }));
+/** `channel`: the channel it's for (its writer is taught that channel's Script lane); the same on the calls below. */
+export const importYoutube = (url: string, article?: string, title?: string, kind?: Kind, build?: string, channel?: string) =>
+  http<Script>("/api/writer/scripts/youtube", json({ url, article, title, kind, build, ...(channel ? { channel } : {}), ...byPerson() }));
 
 /** A title given (typed, or a Trello card's) is kept in place of the folder's name. */
-export const importDrive = (url: string, article?: string, title?: string, kind?: Kind, build?: string) =>
-  http<Script>("/api/writer/scripts/drive", json({ url, article, title, kind, build, ...byPerson() }));
+export const importDrive = (url: string, article?: string, title?: string, kind?: Kind, build?: string, channel?: string) =>
+  http<Script>("/api/writer/scripts/drive", json({ url, article, title, kind, build, ...(channel ? { channel } : {}), ...byPerson() }));
 
 /** The cards waiting on one of Repack's Trello lists, read through Writer's service. */
 /** The card a pasted Trello link names, read for its videos (any board Repack's Trello reads). */
@@ -223,8 +224,8 @@ export const researchAgain = (id: string) =>
   http<Research>(`/api/writer/scripts/${id}/research`, { method: "POST" });
 
 /** Videos joined in order: a compilation, one case each, or (`kase`) one Courtroom case across them. */
-export const importCompilation = (title: string, urls: string[], kase = false, kind?: Kind, build?: string) =>
-  http<Script>("/api/writer/scripts/compilation", json({ title, urls, case: kase, kind, build, ...byPerson() }));
+export const importCompilation = (title: string, urls: string[], kase = false, kind?: Kind, build?: string, channel?: string) =>
+  http<Script>("/api/writer/scripts/compilation", json({ title, urls, case: kase, kind, build, ...(channel ? { channel } : {}), ...byPerson() }));
 
 /** A pasted brief read into its title, notes and labelled links, before anything imports. */
 export const readBrief = (text: string) => (http<Brief>("/api/writer/briefs/read", json({ text })));

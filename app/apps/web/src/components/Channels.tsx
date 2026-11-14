@@ -11,7 +11,8 @@ import { useEffect, useState } from "react";
 import { channelApi, compact, LANES, loadChannels, narrationLabel, useChannels, type Channel, type Found, type Lane, type Narration, type Taught, type Used, type Voice } from "../lib/channels";
 import { useEditor } from "../lib/store";
 import { InPlace } from "./Niches";
-import { Button, DialogActions, DialogTitle, Modal, spring, Switch } from "./ui";
+import { useBeta } from "../lib/beta";
+import { Button, cx, DialogActions, DialogTitle, Modal, spring, Switch } from "./ui";
 import { VoicePicker } from "./VoicePicker";
 
 const FIELD = "h-9 w-full rounded-lg border border-line bg-black px-3 text-[13px] outline-none placeholder:text-faint focus:border-muted";
@@ -24,6 +25,39 @@ export function ChannelAvatar({ channel, size = 32 }: { channel: { title: string
     <span className="flex shrink-0 items-center justify-center rounded-full bg-active font-semibold text-muted" style={{ width: size, height: size, fontSize: size * 0.42 }}>
       {channel.title.charAt(0).toUpperCase()}
     </span>
+  );
+}
+
+/**
+ * The channels to make something for, as pills (an idea's, a thumbnail's):
+ * picking the one picked again takes it off, so none stays a choice. Nothing
+ * shows without V2 or with no channels.
+ */
+export function useChannelChoice(open: boolean): Channel[] {
+  const v2 = useBeta((beta) => beta.v2);
+  const channels = useChannels((state) => state.channels);
+  useEffect(() => {
+    if (open && v2) void loadChannels();
+  }, [open, v2]);
+  return v2 ? (channels ?? []) : [];
+}
+
+export function ChannelPills({ channels, value, lane, onChange }: { channels: Channel[]; value: string | null; lane: Lane; onChange: (key: string | null) => void }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {channels.map((one) => (
+        <button
+          type="button"
+          key={one.key}
+          title={one.lanes[lane] || one.title}
+          onClick={() => onChange(value === one.key ? null : one.key)}
+          className={cx("flex h-8 items-center gap-2 rounded-full border pr-3 pl-1 text-[12.5px] font-medium transition-colors", value === one.key ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg")}
+        >
+          <ChannelAvatar channel={one} size={22} />
+          {one.title}
+        </button>
+      ))}
+    </div>
   );
 }
 

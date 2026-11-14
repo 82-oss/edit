@@ -63,7 +63,7 @@ export const ideasApi = {
   home: () => call<IdeasHome>("GET", "/api/ideas"),
   /** The kinds of idea this person works on. */
   workspaces: () => call<{ workspaces: Workspace[] }>("GET", "/api/ideas/workspaces"),
-  create: (links: string, steer: string, summary: boolean, footage: string, workspace: Workspace) => call<{ ideas: { id: string; link: string }[]; refused: { link: string; why: string; id?: string }[] }>("POST", "/api/ideas", { links, steer, summary, footage, workspace }),
+  create: (links: string, steer: string, summary: boolean, footage: string, workspace: Workspace, channel: string | null = null) => call<{ ideas: { id: string; link: string }[]; refused: { link: string; why: string; id?: string }[] }>("POST", "/api/ideas", { links, steer, summary, footage, workspace, ...(channel !== null ? { channel } : {}) }),
   fromCard: (card: string, workspace: Workspace) => call<{ id: string }>("POST", "/api/ideas/from-card", { card, workspace }),
   get: (id: string) => call<IdeaPage>("GET", `/api/ideas/${encodeURIComponent(id)}`),
   change: (id: string, change: IdeaChange) => call<{ idea: Idea; rev: number }>("PUT", `/api/ideas/${encodeURIComponent(id)}`, change),
