@@ -425,7 +425,7 @@ export class ConvexMock {
       case "listProjects":
         return [...this.projects.values()].sort((a, b) => b.updatedAt - a.updatedAt).map((row) => this.card(row));
       case "listLibrary": {
-        const rows = [...this.library.values()].filter((row) => (args.projectId !== undefined ? row.projectId === args.projectId : row.kind === args.kind) && (args.archived === true || row.archived !== true));
+        const rows = [...this.library.values()].filter((row) => (args.projectId !== undefined ? row.projectId === args.projectId : row.kind === args.kind) && (args.archived === true || row.archived !== true) && (args.projectId !== undefined || args.owned === true || !/^[a-z]+:@/.test(row.key)));
         return rows.map((row) => ({ ...row, projectId: row.projectId ?? null, note: row.note ?? null, brief: row.brief ?? null, category: row.category ?? null, archived: row.archived === true, niches: row.niches ?? null }));
       }
       case "libraryVersions":

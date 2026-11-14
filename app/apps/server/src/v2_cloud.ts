@@ -97,7 +97,8 @@ const fileKey = (sha256: string) => `edit/library/sha256/${sha256}`;
 
 /** One kind's items; those put away only with `archived`. */
 export async function list(kind: Exclude<Kind, "effect">, archived = false): Promise<Item[]> {
-  return (await cloud.query("edit:listLibrary", { kind, ...(archived ? { archived: true } : {}) })) as Item[];
+  // owned: the niches' and the channel lanes' own items too (mamagi hands Edit from before niches the house's alone).
+  return (await cloud.query("edit:listLibrary", { kind, owned: true, ...(archived ? { archived: true } : {}) })) as Item[];
 }
 
 /** Puts an item away (out of every list unless asked for, its versions kept), or back. */
