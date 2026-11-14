@@ -15,8 +15,16 @@ const NAME_ROOM = 260;
 const GAP = 16;
 /** A row's padding, which its first and last columns hold. */
 const PAD = 24;
+/** The channel's room: its picture and a name like "Inspector Ted". */
+const CHANNEL = 160;
 
-/** The most the table can show at `width` (px) and still leave a name its room: name, category, status, by, length, updated, the row's buttons. */
+/**
+ * The most the table can show at `width` (px) and still leave a name its room:
+ * name, channel, status, by, length, updated (the row's buttons sit over its
+ * right end on hover, no column of their own). Channel and Status are as wide
+ * as what's in them, up to their room (fit-content), so what they don't use
+ * goes to the name and the rest sits to the right (Sphe, Nov 14).
+ */
 export function layoutFor(width: number, solo: boolean): Layout {
   const steps = [
     // Status as wide as two pills side by side ("Footage missing" and "On Drive ↗"), then narrower, its pills wrapping.
@@ -27,10 +35,18 @@ export function layoutFor(width: number, solo: boolean): Layout {
     { compact: true, slim: true, faces: true, status: 180 },
     { compact: true, slim: true, faces: true, status: 148 },
   ];
-  const tracksOf = (step: (typeof steps)[number]) => [...(step.slim ? [] : [136]), step.status, ...(solo ? [] : [step.faces ? 36 : 120]), ...(step.compact ? [] : [64]), 76, 76];
+  // Each column's room, and whether it's as wide as what it holds (up to that) or fixed.
+  const tracksOf = (step: (typeof steps)[number]) => [
+    ...(step.slim ? [] : [{ px: CHANNEL, fit: true }]),
+    { px: step.status, fit: true },
+    ...(solo ? [] : [{ px: step.faces ? 36 : 120, fit: false }]),
+    ...(step.compact ? [] : [{ px: 64, fit: false }]),
+    { px: 76, fit: false },
+  ];
   const step = steps.find((one) => {
     const tracks = tracksOf(one);
-    return width - PAD - tracks.reduce((sum, track) => sum + track, 0) - tracks.length * GAP >= NAME_ROOM;
+    return width - PAD - tracks.reduce((sum, track) => sum + track.px, 0) - tracks.length * GAP >= NAME_ROOM;
   }) ?? steps.at(-1)!;
-  return { columns: ["minmax(0,1fr)", ...tracksOf(step).map((px) => `${px}px`)].join(" "), compact: step.compact, slim: step.slim, faces: step.faces };
+  const columns = tracksOf(step).map((track) => (track.fit ? `fit-content(${track.px}px)` : `${track.px}px`));
+  return { columns: ["minmax(0,1fr)", ...columns].join(" "), compact: step.compact, slim: step.slim, faces: step.faces };
 }

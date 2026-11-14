@@ -841,7 +841,6 @@ function HomeList({ groups, solo, cross, lengthLabel }: { groups: { key: string;
             {lengthLabel}
           </span>
           <span role="columnheader">Updated</span>
-          <span role="columnheader" aria-label="Actions" />
         </div>
         {groups.map((group) => (
           <Fragment key={group.key}>

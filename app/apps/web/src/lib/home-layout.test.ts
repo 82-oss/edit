@@ -8,7 +8,8 @@ import { asideChoices, backLabel } from "./later-days";
 // room, columns go in their order, and the columns are as many as a row draws.
 describe("Home's table at every width", () => {
   const nameOf = (columns: string, width: number) => {
-    const tracks = columns.split(" ").slice(1).map((one) => Number.parseFloat(one));
+    // Each column's room: "160px", or "fit-content(160px)" for one as wide as what it holds.
+    const tracks = columns.split(" ").slice(1).map((one) => Number.parseFloat(/(\d+(?:\.\d+)?)px/.exec(one)![1]!));
     return width - 24 - tracks.reduce((sum, px) => sum + px, 0) - tracks.length * 16;
   };
   for (const solo of [true, false]) {
@@ -16,17 +17,18 @@ describe("Home's table at every width", () => {
       for (let width = 700; width <= 2000; width += 10) {
         const layout = layoutFor(width, solo);
         expect(nameOf(layout.columns, width), `at ${width}`).toBeGreaterThanOrEqual(260);
-        // A row draws name, status, updated and its buttons always; category, by and length when shown.
-        const cells = 4 + (layout.slim ? 0 : 1) + (solo ? 0 : 1) + (layout.compact ? 0 : 1);
+        // A row draws name, status and updated always (its buttons over its end, no column); channel, by and length when shown.
+        const cells = 3 + (layout.slim ? 0 : 1) + (solo ? 0 : 1) + (layout.compact ? 0 : 1);
         expect(layout.columns.split(" ").length, `at ${width}`).toBe(cells);
       }
     });
   }
-  it("goes without Length first, then Category, then By's names", () => {
+  it("goes without Length first, then Channel, then By's names; Channel and Status as wide as what they hold", () => {
+    expect(layoutFor(1400, true).columns).toBe("minmax(0,1fr) fit-content(160px) fit-content(236px) 64px 76px");
     expect(layoutFor(1400, false)).toMatchObject({ compact: false, slim: false, faces: false });
-    expect(layoutFor(1040, false)).toMatchObject({ compact: true, slim: false, faces: false });
+    expect(layoutFor(1000, false)).toMatchObject({ compact: true, slim: false, faces: false });
     expect(layoutFor(900, false)).toMatchObject({ compact: true, slim: true, faces: false });
-    expect(layoutFor(780, false)).toMatchObject({ compact: true, slim: true, faces: true });
+    expect(layoutFor(750, false)).toMatchObject({ compact: true, slim: true, faces: true });
   });
 });
 

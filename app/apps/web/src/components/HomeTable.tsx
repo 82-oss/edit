@@ -28,7 +28,7 @@ import { Button, cx, Modal } from "./ui";
 export const COLUMNS = "col-span-full grid grid-cols-subgrid items-center";
 
 /** A row: the kit's list row (56 px, a hairline above it, the hover a grey step); lit too while its menu is open. */
-export const ROW = "group min-h-14 cursor-pointer border-t border-line px-3 py-2 transition-colors hover:bg-hover data-[menu-open]:bg-hover has-[[data-menu-open]]:bg-hover";
+export const ROW = "group relative min-h-14 cursor-pointer border-t border-line px-3 py-2 transition-colors hover:bg-hover data-[menu-open]:bg-hover has-[[data-menu-open]]:bg-hover";
 
 /** A row's hover button: shown on hover, and kept while its row's menu is open (the user, Oct 31: "when i click on thrree dots then a dropdown the three dots dissaper"). */
 const HOVER_BUTTON = "opacity-0 group-hover:opacity-100 group-data-[menu-open]:opacity-100 group-has-[[data-menu-open]]:opacity-100 data-[menu-open]:bg-active data-[menu-open]:text-fg";
@@ -52,7 +52,7 @@ export const LaterContext = createContext<Later | null>(null);
  * own switches, which its columns follow too, so a row never has a cell more
  * than the table has columns (one did, its buttons wrapping under its name):
  * By in Mine (data-solo: every row is yours); when the table is narrow,
- * Length (data-compact), then Category (data-slim), then By's names (only
+ * Length (data-compact), then Channel (data-slim), then By's names (only
  * the faces, data-faces), then a narrower Status, so a name always has room
  * (the user, Oct 31: "ensure on this new dashboard we have zero ui issues
  * like this"; Edit's window is 960 px wide at the least).
@@ -251,9 +251,15 @@ export function contextMenu(items: MenuItem[], width = 200) {
 }
 
 /** A row's buttons, shown on hover: Later's clock (or Bring back), then its ⋯. */
+/**
+ * A row's buttons (Later, ⋯), shown on hover only: over the row's right end
+ * rather than a column of their own, which stood empty the rest of the time
+ * (Sphe, Nov 14: "we have so much space that we're not using"); the row's
+ * hover grey behind them, so Updated goes under them.
+ */
 export function RowButtons({ aside, items, width = 200 }: { aside: ReactNode; items: MenuItem[]; width?: number }) {
   return (
-    <div role="cell" className="flex items-center justify-end gap-0.5">
+    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center justify-end gap-0.5 bg-gradient-to-l from-hover from-75% to-transparent pr-3 pl-12 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-data-[menu-open]:pointer-events-auto group-data-[menu-open]:opacity-100 group-has-[[data-menu-open]]:pointer-events-auto group-has-[[data-menu-open]]:opacity-100">
       {aside}
       <button
         title="More"
