@@ -381,6 +381,37 @@ test("a channel's agent is told its channel, its edit style and how its videos a
   }
 });
 
+test("a niche's teaching thrown over as a channel's edit base: everything its agent knows (the house's too, not the global skill), copied with no link, never over what the channel has", async () => {
+  const { cleanup } = hq("v2-channel-base");
+  try {
+    accounts.signedInForTests(["edit.bodycam", "agent.teach"]);
+    // What earlier tests kept isn't Bodycam HQ's here.
+    mock.cloud.convex.library.clear();
+    mock.cloud.convex.libraryVersions.clear();
+    const seed = (key: string, kind: "skill" | "template", name: string, niches: string[] | null) => {
+      mock.cloud.convex.library.set(key, { key, kind, name, current: 1, latest: 1, note: `${name}'s note`, niches, at: Date.now(), by: { name: "Sphe" } });
+      mock.cloud.convex.libraryVersions.set(key, [{ key, n: 1, text: `${name}'s text`, at: Date.now(), by: { name: "Sphe" } }]);
+    };
+    seed("skill:global", "skill", "global", null);
+    seed("skill:@bodycam-hq/intro", "skill", "intro", ["bodycam-hq"]);
+    seed("skill:@bodycam-hq/cut-ins", "skill", "cut-ins", ["bodycam-hq"]);
+    seed("skill:house-rules", "skill", "house-rules", null);
+    seed("template:evidence-board", "template", "evidence-board", null);
+    seed("skill:@other-niche/pacing", "skill", "pacing", ["other-niche"]);
+    seed("skill:@inspectorted1--edit/intro", "skill", "intro", ["inspectorted1--edit"]);
+    const done = await channels.baseFromNiche("inspectorted1", "bodycam-hq");
+    expect(done.brought.sort()).toEqual(["skill cut-ins", "skill house-rules", "template evidence-board"]);
+    expect(done.kept).toEqual(["skill intro"]);
+    expect(mock.cloud.convex.libraryVersions.get("skill:@inspectorted1--edit/cut-ins")?.[0]).toMatchObject({ text: "cut-ins's text", from: { key: "skill:@bodycam-hq/cut-ins", n: 1 } });
+    expect(mock.cloud.convex.library.has("skill:@inspectorted1--edit/global")).toBe(false);
+    expect(mock.cloud.convex.library.has("skill:@inspectorted1--edit/pacing")).toBe(false);
+    // The channel's own intro stays its own.
+    expect(mock.cloud.convex.libraryVersions.get("skill:@inspectorted1--edit/intro")).toHaveLength(1);
+  } finally {
+    cleanup();
+  }
+});
+
 test("other_channels: the rest listed only when asked, one's edit style shown, and a piece of it (or all of it) brought in as this channel's own, never over what it has", async () => {
   const { app, cleanup, id } = hq("v2-other-channels");
   try {
