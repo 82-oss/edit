@@ -5,19 +5,14 @@
 // stay: only the editing goes. The agent's `reset_edit` never does it on its
 // own say: the chat asks the user (Accept / Reject) and the tool waits.
 
-import * as fs from "node:fs";
-
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
-import { nowMs, writeAtomic } from "./files.ts";
 import { ApiError } from "./http/errors.ts";
 import { readJson, type Router } from "./http/router.ts";
 import { registerTool, text, type ToolCall } from "./mcp/registry.ts";
 import type { Project } from "./model.ts";
-import { join } from "./paths.ts";
 import * as notices from "./notices.ts";
 import { newProject } from "./project.ts";
-import { jsonForSerde } from "./rust.ts";
 import { layOut } from "./script.ts";
 import * as seams from "./seams.ts";
 
@@ -91,9 +86,7 @@ export async function reset(app: App, id: string): Promise<{ clips: number; voic
   // whatever the history's own pace: a reset is never the one save it skipped.
   const before = app.store.get(id);
   if (before === null) throw new Error("no such project");
-  const dir = join(app.store.home, "projects", "history", id);
-  fs.mkdirSync(dir, { recursive: true });
-  writeAtomic(join(dir, `${nowMs()}.json`), jsonForSerde(before.project));
+  app.store.keepNow(id, before.project);
   const [live] = await app.store.update(id, "agent", (project) => cleared(project));
   let voiceover = "on the cut-ins";
   try {

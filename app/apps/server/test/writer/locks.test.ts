@@ -140,7 +140,14 @@ async function syncAs(data: string, holder: string): Promise<void> {
   await cloud.syncOnceForTests(data);
 }
 
-const copies = (data: string): string[] => store.ids(data).map((id) => store.read(store.scriptDir(data, id)).title).filter((title) => title.endsWith("(conflicted copy)"));
+const copies = (data: string): string[] => store.ids(data).filter((id) => id !== X && id !== Y).map((id) => store.read(store.scriptDir(data, id)).title);
+
+/** The "Not synced" versions of script `id` here: each one's title, as kept. */
+const kept = (data: string, id: string): string[] => {
+  const dir = join(store.scriptDir(data, id), "versions");
+  const index = fs.existsSync(join(dir, "index.json")) ? (JSON.parse(fs.readFileSync(join(dir, "index.json"), "utf8")) as { id: string; author: string }[]) : [];
+  return index.filter((version) => version.author === "kept").map((version) => (JSON.parse(fs.readFileSync(join(dir, `${version.id}.json`), "utf8")) as Script).title);
+};
 
 test("two Macs changing different scripts keep no copies, and each gets the other's", { timeout: 20_000 }, async () => {
   const a = mac(script(X, "Predator Tutor"));
@@ -161,7 +168,7 @@ test("two Macs changing different scripts keep no copies, and each gets the othe
   expect(store.read(store.scriptDir(b, X)).title).toBe("Predator Tutor 2");
 });
 
-test("two Macs changing the same script with no lock to stop them keep one copy between them", { timeout: 20_000 }, async () => {
+test("two Macs changing the same script with no lock to stop them: the overtaken one is a version of it, on both Macs, never a copy", { timeout: 20_000 }, async () => {
   keepsLocks = false;
   const a = mac(script(X, "Predator Tutor"));
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa");
@@ -176,12 +183,15 @@ test("two Macs changing the same script with no lock to stop them keep one copy 
   await syncAs(b, "Marc's Mac #bbbbbbbbbbbb");
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa");
   await syncAs(b, "Marc's Mac #bbbbbbbbbbbb");
-  // One copy, pushed as a script of its own, so both Macs have it.
-  expect(copies(b)).toEqual(["Marc's version (conflicted copy)"]);
+  // Marc's, overtaken, is a "Not synced" version of the script: no script of its own.
+  expect(copies(b)).toEqual([]);
+  expect(kept(b, X)).toEqual(["Marc's version"]);
   await Bun.sleep(2_100);
   await syncAs(b, "Marc's Mac #bbbbbbbbbbbb");
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa");
-  expect(copies(a)).toEqual(["Marc's version (conflicted copy)"]);
+  // Pushed with the script's versions, so Sphe's Mac has it too.
+  expect(copies(a)).toEqual([]);
+  expect(kept(a, X)).toEqual(["Marc's version"]);
   expect(store.read(store.scriptDir(b, X)).title).toBe("Sphe's version");
 });
 

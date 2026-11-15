@@ -1,4 +1,4 @@
-import { Archive, Check, ChevronDown, ChevronRight, ListFilter, CloudAlert, CloudDownload, CloudOff, CloudUpload, Copy, ExternalLink, FileText, Film, FileVideo, Lock, MessageSquare, Pencil, PenLine, Plus, Replace, RotateCw, Search, Share2, SkipForward, Tag, Trash2, TriangleAlert, X } from "lucide-react";
+import { Archive, Check, ChevronDown, ChevronRight, ListFilter, CloudDownload, CloudOff, CloudUpload, Copy, ExternalLink, FileText, Film, FileVideo, Lock, MessageSquare, Pencil, PenLine, Plus, Replace, RotateCw, Search, Share2, SkipForward, Tag, Trash2, TriangleAlert, X } from "lucide-react";
 import { motion } from "motion/react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
@@ -22,7 +22,6 @@ import { CAN, useGrants } from "../writer/can";
 import { SHAPES, type Shape, shapeOf } from "../writer/several";
 import type { Kind } from "../writer/types";
 import { useKept } from "../lib/kept";
-import { creditCopies } from "../lib/copies";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
 import { ChannelAvatar } from "./Channels";
@@ -387,9 +386,6 @@ export function Home() {
       items.push({ id: `card-${card.id}`, key: laterKey("card", card.id), section: "ideas", stage: "board", at: Number.MAX_SAFE_INTEGER, title: card.name, mine: true, row: () => <CardTableRow card={card} onOpened={refreshIdeas} /> });
     }
   }
-
-  // A "(conflicted copy)" is whose its original is, not the Mac's that kept it (lib/copies.ts).
-  creditCopies(items);
 
   // Set aside still (in Later), or back on its day and not opened yet (marked Back, first in its list).
   const entryOf = (item: Item) => (item.key === null ? undefined : later.entries.get(item.key));
@@ -985,7 +981,7 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
   // Someone else’s live lock (this machine’s own isn’t news).
   const editor = remote?.holder && !remote.here ? remote.holder : null;
   // The cloud is only worth a word when something’s off.
-  const cloudNews = inCloud && (editor !== null || status?.sync === "conflict" || status?.dirty === true || status?.sync === "offline");
+  const cloudNews = inCloud && (editor !== null || status?.dirty === true || status?.sync === "offline");
 
   // Its category (the kind of video its agent edits it as), among the styles this person edits; a Short's format is its own, so it stays one.
   const account = useAccount((state) => state.account);
@@ -1998,9 +1994,9 @@ function CloudTableRow({ project, script = null, onChanged }: { project: CloudPr
   );
 }
 
-/** A project out of step with the cloud, said in its status: a conflict, or changes not synced yet; nothing when it's in sync (most projects, so no mark). */
+/** A project out of step with the cloud, said in its status: changes not synced yet; nothing when it's in sync (most projects, so no mark). */
 export function Place({ sync }: { sync?: CloudStatus }) {
-  const trouble = sync?.sync === "conflict" ? ([CloudAlert, "Conflict", sync.message ?? `A conflict: ${THIS_MACHINE}’s changes were kept as a copy.`] as const) : sync?.dirty || sync?.sync === "offline" ? ([CloudOff, "Not synced", `Changes saved on ${THIS_MACHINE} haven’t reached the cloud yet.`] as const) : null;
+  const trouble = sync?.dirty || sync?.sync === "offline" ? ([CloudOff, "Not synced", `Changes saved on ${THIS_MACHINE} haven’t reached the cloud yet.`] as const) : null;
   if (trouble === null) return null;
   const [Icon, text, title] = trouble;
   return (

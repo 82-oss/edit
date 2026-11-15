@@ -1139,6 +1139,7 @@
 .writer-root .version-who { font-weight: 600; font-size: 12px; }
 .writer-root .version-who.claude { color: #d97757; }
 .writer-root .version-who.before { color: var(--muted); }
+.writer-root .version-who.kept { color: var(--warning, #d9a441); }
 .writer-root .version-detail { display: flex; flex-direction: column; gap: 10px; max-height: 480px; overflow: auto; font-size: 13px; }
 .writer-root .version-diffs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
 .writer-root .version-diffs .proposal-text { margin: 4px 0 0; line-height: 1.55; white-space: pre-wrap; }

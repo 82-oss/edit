@@ -60,6 +60,7 @@ import * as writerImports from "./writer/imports.ts";
 import * as writerStore from "./writer/store.ts";
 import * as ideas from "./ideas/index.ts";
 import * as thumbnails from "./thumbnails/index.ts";
+import * as oldCopies from "./old_copies.ts";
 import { BUILD, NIGHTLY, RELEASE } from "./version.ts";
 import { transcriptWords } from "./sound_room.ts";
 
@@ -357,6 +358,8 @@ export function start(home: string, host: string | null, port: number): { app: A
   // Ideas: runs this Mac had going when it stopped, marked stopped in the cloud.
   if (!trials) optional("ideas", () => ideas.start(app));
   if (!trials) optional("thumbnails", () => thumbnails.start(app));
+  // The "(conflicted copy)" edits and scripts made before Nov 15, folded into their originals' history.
+  if (!trials) optional("old copies", () => oldCopies.start(app));
   // A new project's first message, sent to its agent once its import is done.
   // Kept on a trial server too: its prompts are its own projects' (first-prompts.json in its home).
   optional("first prompt", () => firstPrompt.start(app));

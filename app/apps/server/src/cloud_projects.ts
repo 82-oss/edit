@@ -29,11 +29,12 @@
 // pushed once the lock is ours), Held, Elsewhere (read-only). Losing the lock
 // with unpushed changes (renewing says someone took over, a commit is
 // refused) or a commit refused as a `conflict` keeps this machine's version
-// as "<name> (conflicted copy)", a cloud project of its own the whole team
-// sees (its summary names what it's a copy of), and takes the cloud's: nothing
-// is overwritten either way. A push is written down before it's sent
-// (`Saved.attempt`), so one whose answer was lost (a timeout, Edit quitting)
-// is known as this machine's own on the next look and never becomes a copy.
+// in the project's history (`projects/history/<id>/`) and takes the cloud's:
+// nothing is lost, and nothing new shows on Home (until Nov 15 it became a
+// "(conflicted copy)" project of its own, which nobody understood). A push is
+// written down before it's sent (`Saved.attempt`), so one whose answer was
+// lost (a timeout, Edit quitting) is known as this machine's own on the next
+// look and never counts as a conflict.
 //
 // Rust ran the network calls on blocking threads; here they're awaited. The
 // store's `mayWrite` is async, so the store re-checks the rev after it.
@@ -65,9 +66,9 @@ import { stableStringify } from "./stable.ts";
 import * as kinds from "./kinds.ts";
 import { isSubtitled, nowMs, shapeOf, validId, type CloudHook, type Store } from "./store.ts";
 import * as busy from "./busy.ts";
-import { afterLost, type Attempt, bodyHash, conflictedName, type CopyOf, displayName, holderFor, isOwnSave, keepsLock, TIMING } from "./sync_core.ts";
+import { afterLost, type Attempt, bodyHash, displayName, holderFor, isOwnSave, keepsLock, TIMING } from "./sync_core.ts";
 
-export { afterLost, conflictedName, isOwnSave } from "./sync_core.ts";
+export { afterLost, isOwnSave } from "./sync_core.ts";
 
 const { DEBOUNCE, RENEW_EVERY, VIEWER_TTL, LINGER, CHECK_EVERY } = TIMING;
 /** Retries after a failure wait 5 s, 10 s, 20 s… up to this. */
@@ -103,8 +104,6 @@ export interface Saved {
   token?: string;
   /** The push sent last and not yet answered, written down before it went (`ownSave`). */
   attempt?: Attempt;
-  /** A conflicted copy kept here: what it's a copy of, listed for the team. */
-  copyOf?: CopyOf;
 }
 
 /** Who may edit a cloud project, as far as this machine knows. */
@@ -145,7 +144,7 @@ export function heldBy(message: string): string | null {
 }
 
 /** Something to tell the user about a project. */
-export type Note = { kind: "conflict"; message: string } | { kind: "error"; message: string };
+export type Note = { kind: "error"; message: string };
 
 const since = (now: number, at: number) => Math.max(now - at, 0);
 
@@ -334,7 +333,7 @@ export class Entry {
     this.retryAt = now + wait;
   }
 
-  /** What the UI shows: `sync` is one of off, synced, pending, syncing, offline, conflict, readonly, error. */
+  /** What the UI shows: `sync` is one of off, synced, pending, syncing, offline, readonly, error. */
   status(on: boolean): Record<string, unknown> {
     const holder = this.lock.kind === "elsewhere" ? this.lock.holder : null;
     const pushing = this.busy === "Push" || this.busy === "Pull";
@@ -342,9 +341,7 @@ export class Entry {
       ? "off"
       : holder !== null
         ? "readonly"
-        : this.note?.kind === "conflict"
-          ? "conflict"
-          : pushing
+        : pushing
             ? "syncing"
             : this.offline
               ? "offline"
@@ -383,8 +380,6 @@ function readSaved(value: unknown): Saved | null {
   if (token !== null) saved.token = token;
   const attempt = fields.attempt as Partial<Attempt> | undefined;
   if (typeof attempt?.base === "number" && typeof attempt.hash === "string") saved.attempt = { base: attempt.base, hash: attempt.hash };
-  const copyOf = fields.copyOf as Partial<CopyOf> | undefined;
-  if (typeof copyOf?.id === "string" && typeof copyOf.by === "string" && typeof copyOf.at === "number") saved.copyOf = { id: copyOf.id, by: copyOf.by, at: copyOf.at };
   return saved;
 }
 
@@ -393,7 +388,6 @@ function writeSaved(saved: Saved): Saved {
   const out: Saved = { rev: saved.rev, dirty: saved.dirty };
   if (saved.token !== undefined) out.token = saved.token;
   if (saved.attempt !== undefined) out.attempt = saved.attempt;
-  if (saved.copyOf !== undefined) out.copyOf = saved.copyOf;
   return out;
 }
 
@@ -605,7 +599,7 @@ export class Cloud implements CloudHook {
       const dirty = this.dirty(id);
       this.with(id, (entry) => {
         entry.elsewhere(acquired.heldBy, at);
-        // Changes made here are kept as a copy by the loop.
+        // Changes made here are kept in its history by the loop.
         entry.wantPull = dirty || entry.wantPull;
       });
       throw new Error(message);
@@ -650,21 +644,6 @@ export class Cloud implements CloudHook {
       entry.saved.attempt = { base, hash: bodyHash(body) };
     });
     this.persist();
-  }
-
-  /** What a conflicted copy kept here is a copy of (null: it isn't one). */
-  copyOf(id: string): CopyOf | null {
-    return this.with(id, (entry) => entry.saved.copyOf) ?? null;
-  }
-
-  /** A conflicted copy was kept as project `id`: a cloud project like any other, pushed as new. */
-  keptCopy(id: string, of: CopyOf): void {
-    if (!this.on()) return;
-    const entry = Entry.fresh();
-    entry.saved.copyOf = of;
-    this.projects.set(id, entry);
-    this.persist();
-    this.wake();
   }
 
   /** A project was made here: with cloud on it's a cloud project. */
@@ -993,7 +972,7 @@ export const remote = {
   },
 
   /** Uploads `project` and commits it as the rev after `base`: the new rev. */
-  async push(project: Project, base: number, token: string | null, holder: string, copyOf: CopyOf | null = null, quick = QUICK, slow = SLOW): Promise<number> {
+  async push(project: Project, base: number, token: string | null, holder: string, quick = QUICK, slow = SLOW): Promise<number> {
     const body = JSON.stringify(project);
     const url = await cloud.convexCall("mutation", "edit:uploadUrl", {}, quick);
     if (typeof url !== "string") throw ConvexFailure.relay("uploadUrl gave no URL");
@@ -1012,7 +991,7 @@ export const remote = {
       name: project.name,
       projectId: project.id,
       storageId: storage,
-      summary: copyOf === null ? summary(project) : { ...summary(project), conflictedOf: copyOf },
+      summary: summary(project),
     };
     if (token !== null) args.lockToken = token;
     const committed = await cloud.convexCall("mutation", "edit:commitProject", args, quick);
@@ -1210,10 +1189,10 @@ export async function runStep(app: App, cloudProjects: Cloud, id: string, step: 
 // ── What a failed call leads to (docs/plans/2026-11-01-effect.md, round 3) ──
 //
 // Pure, so the promises are property-tested (test/cloud_merge.test.ts):
-// offline never copies or pulls; this machine's own lock is never "someone
-// else's"; a conflict over changes here keeps them as a copy unless the
+// offline never keeps or pulls; this machine's own lock is never "someone
+// else's"; a conflict over changes here keeps them in its history unless the
 // cloud's rev is exactly this machine's own save whose answer was lost
-// (8f67a6cf); losing the lock with changes here keeps them as a copy.
+// (8f67a6cf); losing the lock with changes here keeps them in its history.
 
 export type FailureDecision =
   | { readonly do: "offline" }
@@ -1331,7 +1310,7 @@ async function pull(app: App, cloudProjects: Cloud, id: string): Promise<void> {
   if (fetched === null) throw new Error("it isn't in the cloud any more");
   const [project, rev] = fetched;
   // Changes made here since are kept, never overwritten.
-  if (cloudProjects.dirty(id)) keepCopy(app, cloudProjects, id, null);
+  if (cloudProjects.dirty(id)) keepInHistory(app, cloudProjects, id, null);
   cloudProjects.take(id, project, rev);
   // Its footage is a step of its own, so renewing the lock never waits on a
   // long download.
@@ -1341,37 +1320,39 @@ async function pull(app: App, cloudProjects: Cloud, id: string): Promise<void> {
 }
 
 /**
- * Keeps this machine's version of `id` as "<name> (conflicted copy)": a cloud
- * project of its own, pushed like any other, so the whole team sees it on
- * Home (its summary says what it's a copy of, who kept it and when); it was
- * on the Mac that made it only until Nov 8.
+ * Keeps this machine's version of `id` in the project's history before the
+ * cloud's is taken (Sphe, Nov 15: "eradicate conflicted copies"): what didn't
+ * reach the cloud is never lost, and no "(conflicted copy)" project appears on
+ * everyone's Home. The person here is told once, in a line.
  */
-function keepCopy(app: App, cloudProjects: Cloud, id: string, tookOver: string | null): void {
+function keepInHistory(app: App, cloudProjects: Cloud, id: string, tookOver: string | null): void {
   const live = app.store.get(id);
   if (live === null) return;
-  const name = conflictedName(live.project.name);
-  const copy = app.store.createCopy(live.project, name);
-  cloudProjects.keptCopy(copy.project.id, { id, by: displayName(cloudProjects.holder()), at: nowMs() });
-  diag.warn(
-    "cloud",
-    `${id}: ${tookOver === null ? "a conflict" : `${displayName(tookOver)} took over`}; this machine's changes kept as ${copy.project.id} (${name})`,
-  );
+  let kept: string;
+  try {
+    kept = app.store.keepNow(id, live.project);
+  } catch (error) {
+    // Not kept: the cloud's isn't taken over it either (the sync tries again).
+    throw new Error(`keeping ${id}'s changes in its history: ${diag.messageOf(error)}`);
+  }
+  diag.warn("cloud", `${id}: ${tookOver === null ? "a conflict" : `${displayName(tookOver)} took over`}; this machine's changes kept in its history (${kept})`);
+  const name = live.project.name;
   const message =
     tookOver !== null
-      ? `${displayName(tookOver)} took over “${live.project.name}” before your last changes reached the cloud. They're kept as “${name}”, which the team sees too.`
-      : `“${live.project.name}” was changed on another computer meanwhile, so the cloud's version is open. Your changes are kept as “${name}”, which the team sees too.`;
+      ? `${displayName(tookOver)} took over “${name}” before your last changes reached the cloud. They're saved in its history.`
+      : `“${name}” was changed on another computer meanwhile, so that version is open. Your last changes are saved in its history.`;
   cloudProjects.with(id, (entry) => {
     entry.saved.dirty = false;
     delete entry.saved.attempt;
-    entry.note = { kind: "conflict", message };
+    entry.note = null;
   });
-  app.store.emit({ type: "cloud-conflict", id, message, copy: { id: copy.project.id, name } });
+  app.store.emit({ type: "cloud-conflict", id, message });
 }
 
-/** The cloud has moved on past this machine's base: keep ours as a copy, take theirs. */
+/** The cloud has moved on past this machine's base: keep ours in its history, take theirs. */
 async function conflict(app: App, cloudProjects: Cloud, id: string): Promise<void> {
   if (await ownSave(app, cloudProjects, id)) return;
-  if (cloudProjects.dirty(id)) keepCopy(app, cloudProjects, id, null);
+  if (cloudProjects.dirty(id)) keepInHistory(app, cloudProjects, id, null);
   return pull(app, cloudProjects, id);
 }
 
@@ -1428,11 +1409,11 @@ function tookOver(app: App, id: string, holder: string): void {
   }
 }
 
-/** Someone else has the lock: changes made here become a copy, the editor goes read-only and shows their version. */
+/** Someone else has the lock: changes made here go into the project's history, the editor goes read-only and shows their version. */
 async function lost(app: App, cloudProjects: Cloud, id: string, holder: string): Promise<void> {
   const hadChanges = cloudProjects.dirty(id);
   const held = cloudProjects.with(id, (entry) => entry.lock.kind === "held") === true;
-  if (hadChanges) keepCopy(app, cloudProjects, id, holder);
+  if (hadChanges) keepInHistory(app, cloudProjects, id, holder);
   cloudProjects.with(id, (entry) => entry.elsewhere(holder, now()));
   // Taken over while this machine had it: the editor and the agent panel hear it now, and a turn running here stops (it could save nothing more).
   if (held) tookOver(app, id, holder);
@@ -1460,7 +1441,7 @@ async function push(app: App, cloudProjects: Cloud, id: string): Promise<void> {
   // What's being sent, written down before it goes: an answer lost (a timeout, Edit quitting) is known as ours later (`ownSave`).
   cloudProjects.attempting(id, base, JSON.stringify(live.project));
   try {
-    rev = await remote.push(live.project, base, token, cloudProjects.holder(), cloudProjects.copyOf(id));
+    rev = await remote.push(live.project, base, token, cloudProjects.holder());
   } catch (error) {
     return failure(app, cloudProjects, id, error);
   }
@@ -1778,8 +1759,6 @@ export async function list(app: App): Promise<Record<string, unknown>> {
       rev: field(item, "rev"),
       summary: field(item, "summary"),
       updated_by: typeof field(item, "updatedBy") === "string" ? displayName(field(item, "updatedBy") as string) : field(item, "updatedBy"),
-      // A conflicted copy: what it's a copy of, who kept it and when (sync_core.CopyOf), for everyone's Home.
-      conflicted_of: field(field(item, "summary"), "conflictedOf"),
       updated_ms: field(item, "updatedAt"),
     };
   });
@@ -1792,7 +1771,7 @@ export async function list(app: App): Promise<Record<string, unknown>> {
  * TIMING.QUIT_BUDGET (serve.ts exits then). Each push is written down before
  * it goes and each call may take QUIT_CALL; a push that doesn't finish stays
  * waiting and the next start sends it, knowing it as its own if it did land
- * (`ownSave`), so a lost answer here never becomes a conflicted copy.
+ * (`ownSave`), so a lost answer here never counts as a conflict.
  */
 export async function shutdown(): Promise<void> {
   if (server === null) return;
@@ -1812,7 +1791,7 @@ export async function shutdown(): Promise<void> {
         const edits = cloudProjects.with(id, (entry) => entry.edits) ?? 0;
         cloudProjects.attempting(id, base, JSON.stringify(live.project));
         try {
-          const rev = await remote.push(live.project, base, token, holder, cloudProjects.copyOf(id), call, call);
+          const rev = await remote.push(live.project, base, token, holder, call, call);
           cloudProjects.with(id, (entry) => {
             entry.pushed(rev, edits);
             delete entry.saved.attempt;

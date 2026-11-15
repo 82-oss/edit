@@ -45,5 +45,5 @@ test("a conflict is taken as this machine's own save only when the cloud's next 
 test("losing the lock with changes here always keeps them as a copy, and pulls what the other machine has", () =>
   always("lost changes", Schema.Struct({ hadChanges: Schema.Boolean, newer: Schema.Boolean }), ({ hadChanges, newer }) => {
     const plan = afterLost(hadChanges, newer);
-    return plan.keepCopy === hadChanges && plan.pull === (hadChanges || newer);
+    return plan.keep === hadChanges && plan.pull === (hadChanges || newer);
   }));

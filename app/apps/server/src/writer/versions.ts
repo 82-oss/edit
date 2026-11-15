@@ -110,6 +110,53 @@ export function keepRestored(dir: string, before: Script, after: Script, restore
   }
 }
 
+/**
+ * Records `ours`, a Mac's version of the script the cloud overtook before it
+ * got there, as a version of its own beside the cloud's (Sphe, Nov 15: no more
+ * "(conflicted copy)" scripts): restorable from the list like any other.
+ * `line` says whose it was. Answers whether it was kept; a version that
+ * can't be written is skipped.
+ */
+export function keepOvertaken(dir: string, ours: Script, line: string): boolean {
+  try {
+    const root = folder(dir);
+    fs.mkdirSync(root, { recursive: true });
+    const versions = list(dir);
+    const id = crypto.randomUUID();
+    // The whole script, so nothing of it is lost; restoring it takes its cut (`read`).
+    writeAtomic(join(root, `${id}.json`), JSON.stringify(ours));
+    versions.push({ id, at: Date.now(), author: "kept", summary: line });
+    while (versions.length > KEPT) {
+      const gone = versions.shift()!;
+      fs.rmSync(join(root, `${gone.id}.json`), { force: true });
+    }
+    writeAtomic(join(root, "index.json"), JSON.stringify(versions));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Puts back the "Not synced" versions (`kept`, read before a pull) that the
+ * cloud's index it brought left out: one this Mac kept and hasn't pushed yet
+ * (another Mac holds the script's lock) would otherwise go at the next pull.
+ */
+export function carryKept(dir: string, kept: readonly Version[]): void {
+  if (kept.length === 0) return;
+  try {
+    const versions = list(dir);
+    const have = new Set(versions.map((version) => version.id));
+    const back = kept.filter((version) => !have.has(version.id) && fs.existsSync(join(folder(dir), `${version.id}.json`)));
+    if (back.length === 0) return;
+    versions.push(...back);
+    versions.sort((a, b) => a.at - b.at);
+    writeAtomic(join(folder(dir), "index.json"), JSON.stringify(versions));
+  } catch {
+    // As keep: never fails a pull.
+  }
+}
+
 function record(dir: string, author: Author, before: Snapshot, after: Snapshot, restored: number | null): void {
   const root = folder(dir);
   fs.mkdirSync(root, { recursive: true });

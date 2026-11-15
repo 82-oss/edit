@@ -9,14 +9,15 @@
 // began from) and pulls what other Macs pushed. A file the cloud already
 // holds and this Mac doesn't (the preview, once it was left to the cloud) is
 // named again: leaving it out of the commit deletes it for every Mac. A
-// commit another Mac overtook is refused; then this Mac's version is kept as
-// a "(conflicted copy)" and the cloud's taken, never an overwrite. Since Nov 8
+// commit another Mac overtook is refused; then the cloud's is taken and this
+// Mac's version kept in the script's versions ("Not synced"), never an
+// overwrite (a "(conflicted copy)" script of its own until Nov 15). Since Nov 8
 // a script has the same cloud lock as an edit (locks.ts, sync_core.ts): held
 // by presence, a save to one another computer holds refused, so two Macs no
 // longer both change one; a push goes only with the lock (or where the cloud
 // keeps none). A commit is written down before it goes (the ledger's
 // `attempts`), so one whose answer was lost is known as this Mac's own and
-// never kept as a copy. Scripts importing or being written wait until they're
+// never counted as overtaken. Scripts importing or being written wait until they're
 // done (and hold the lock meanwhile). Deleting a script deletes it
 // everywhere. Footage isn't downloaded: a script another Mac made plays its
 // preview from the cloud.
@@ -45,6 +46,7 @@ import { importing } from "./imports.ts";
 import * as jobs from "./jobs.ts";
 import { changeShelf, hooks as lessonHooks, merge, readShelf, type Shelf } from "./lessons.ts";
 import * as store from "./store.ts";
+import * as versions from "./versions.ts";
 import { ANOTHER_MACHINE, THIS_MACHINE } from "../machine.ts";
 
 const TICK_MS = 3_000;
@@ -169,7 +171,7 @@ interface Attempt {
 }
 
 /**
- * `copied`: the rev a script's conflicted copy was kept for, until that rev has come down, so a pull tried again doesn't keep another.
+ * `copied`: the rev a script's overtaken version was kept for (as a copy, before Nov 15), until that rev has come down. Read, no longer written.
  * `attempts`: commits sent whose answer hasn't come (`ownCommit`).
  */
 type Ledger = { scripts: Record<string, Known>; copied?: Record<string, number>; attempts?: Record<string, Attempt> };
@@ -718,21 +720,31 @@ const sameFiles = (known: Record<string, Kept>, here: Record<string, Kept>): boo
 /** Whether this Mac has changed a script since it last synced it. */
 const changedHere = (dir: string, known: Known | undefined): boolean => known === undefined || known.body !== hash(fs.readFileSync(join(dir, "script.json")));
 
-/** This Mac's version of a script the cloud overtook, kept beside it under a new id. */
-function keepCopy(data: string, dir: string, label: string): void {
-  // Read first, and the copy gone again if it can't be made whole: a copy that
-  // failed was left behind, one more at every pull (Nov 4, JJ's Mac).
-  const script = store.read(dir);
-  const id = crypto.randomUUID();
-  const copy = store.scriptDir(data, id);
+/**
+ * A script deleted on another Mac after it changed here: the delete stands
+ * (someone meant it), and this Mac's script and versions are kept in the data
+ * folder's `kept/`, out of every list (a "(restored copy)" until Nov 15).
+ */
+function keepDeleted(data: string, id: string, dir: string): void {
+  const kept = join(data, "kept", `${id}-${Date.now()}`);
   try {
-    fs.cpSync(dir, copy, { recursive: true });
-    store.write(copy, { ...script, id, title: `${script.title} (${label})`, updatedAt: Date.now() });
+    fs.mkdirSync(kept, { recursive: true });
+    for (const name of ["script.json", "versions"]) {
+      if (fs.existsSync(join(dir, name))) fs.cpSync(join(dir, name), join(kept, name), { recursive: true });
+    }
   } catch (error) {
-    fs.rmSync(copy, { recursive: true, force: true });
-    throw error;
+    diag.warn("writer", `keeping ${id} before its delete: ${diag.messageOf(error)}`);
   }
-  store.libraryChanged();
+}
+
+/** Parses a script body; null when it can't be read. */
+function parsed(body: Uint8Array | null): Script | null {
+  if (body === null) return null;
+  try {
+    return JSON.parse(new TextDecoder().decode(body)) as Script;
+  } catch {
+    return null;
+  }
 }
 
 /** One round: deletions, then what came from other Macs, then what changed here. Answers how many scripts still wait. */
@@ -913,9 +925,9 @@ export function withCreator(body: Uint8Array, createdBy: unknown): Uint8Array {
 // case nobody had thought of. They're one pure function now, `decidePull`,
 // so its promises are tested over every case at once (test/writer/merge.test.ts):
 // work changed here is never lost, a built script is never replaced by an
-// unbuilt one, at most one conflicted copy is kept per revision, an older or
-// equal revision is never taken, and a script deleted elsewhere after it
-// changed here is kept as a restored copy.
+// unbuilt one, this Mac's overtaken version is kept at most once per revision
+// (in the script's versions), an older or equal revision is never taken, and a
+// script deleted elsewhere after it changed here is kept in the data folder.
 
 /** What a pull knows before it acts: the cloud's row, this Mac's ledger and body, and (once fetched) the cloud's body. */
 export interface PullSeen {
@@ -929,30 +941,30 @@ export interface PullSeen {
   readonly here: { readonly same: boolean; readonly changed: boolean; readonly built: boolean; readonly unfinished: boolean } | null;
   /** The cloud's body: not fetched yet (undefined), missing from the cloud (null), or what it is. */
   readonly theirs: { readonly built: boolean } | null | undefined;
-  /** The rev a conflicted copy was already kept for. */
+  /** The rev this Mac's overtaken version was already kept for (an older Edit's ledger). */
   readonly copiedRev: number | null;
 }
 
 export type PullDecision =
-  | { readonly do: "delete"; readonly keepCopy: boolean }
+  | { readonly do: "delete"; readonly keepOurs: boolean }
   | { readonly do: "skip" }
   | { readonly do: "fetch" }
   | { readonly do: "keep-ours"; readonly why: "theirs-missing" | "ours-built" }
   | { readonly do: "fail"; readonly why: "theirs-missing" }
-  | { readonly do: "take"; readonly keepCopy: boolean; readonly why: "plain" | "ours-unfinished" | "copy-kept-already" | "conflict" };
+  | { readonly do: "take"; readonly keepOurs: boolean; readonly why: "plain" | "ours-unfinished" | "copy-kept-already" | "conflict" };
 
 /** What a pull does with what it knows. */
 export function decidePull(seen: PullSeen): PullDecision {
-  if (seen.deleted) return { do: "delete", keepCopy: seen.here !== null && seen.here.changed };
+  if (seen.deleted) return { do: "delete", keepOurs: seen.here !== null && seen.here.changed };
   if (seen.knownRev !== null && seen.knownRev >= seen.rev) return { do: "skip" };
   if (seen.theirs === undefined) return { do: "fetch" };
   if (seen.theirs === null) return seen.here !== null ? { do: "keep-ours", why: "theirs-missing" } : { do: "fail", why: "theirs-missing" };
   const here = seen.here;
-  if (here === null || here.same || !here.changed) return { do: "take", keepCopy: false, why: "plain" };
+  if (here === null || here.same || !here.changed) return { do: "take", keepOurs: false, why: "plain" };
   if (here.built && !seen.theirs.built) return { do: "keep-ours", why: "ours-built" };
-  if (here.unfinished) return { do: "take", keepCopy: false, why: "ours-unfinished" };
-  if (seen.copiedRev === seen.rev) return { do: "take", keepCopy: false, why: "copy-kept-already" };
-  return { do: "take", keepCopy: true, why: "conflict" };
+  if (here.unfinished) return { do: "take", keepOurs: false, why: "ours-unfinished" };
+  if (seen.copiedRev === seen.rev) return { do: "take", keepOurs: false, why: "copy-kept-already" };
+  return { do: "take", keepOurs: true, why: "conflict" };
 }
 
 /** How many times one round follows a script to a newer revision saved while it was coming down; after that the next round takes it. */
@@ -997,11 +1009,11 @@ async function pullOne(data: string, ledger: Ledger, row: Record<string, unknown
   });
   let decision = decidePull(seen(undefined));
   if (decision.do === "delete") {
-    // Deleted on another Mac: gone here too. Changed here since, it's kept as a copy under a new id.
+    // Deleted on another Mac: gone here too. Changed here since, this Mac's version is kept in the data folder first.
     if (fs.existsSync(dir)) {
-      if (decision.keepCopy) {
-        keepCopy(data, dir, "restored copy");
-        diag.info("writer", `${jobs.named(id, title)}: deleted on ${ANOTHER_MACHINE} after it changed here, so ${THIS_MACHINE}'s version is kept as a restored copy`);
+      if (decision.keepOurs) {
+        keepDeleted(data, id, dir);
+        diag.info("writer", `${jobs.named(id, title)}: deleted on ${ANOTHER_MACHINE} after it changed here, so here too; ${THIS_MACHINE}'s version is kept in kept/`);
       } else diag.info("writer", `${jobs.named(id, title)}: deleted on ${ANOTHER_MACHINE}, so here too`);
       fs.rmSync(dir, { recursive: true, force: true });
       store.libraryChanged();
@@ -1010,7 +1022,7 @@ async function pullOne(data: string, ledger: Ledger, row: Record<string, unknown
     return;
   }
   if (decision.do === "skip") return;
-  // This Mac's own commit, whose answer was lost: taken as pushed, never kept as a copy.
+  // This Mac's own commit, whose answer was lost: taken as pushed, never counted as overtaken.
   if (ownCommit(ledger, id, row)) return;
   const body = await fetchBytes(String(row.bodyKey ?? ""));
   // Saved again while this was at it: that revision is the one to take. Taking the missing body for a lost one saved
@@ -1051,15 +1063,14 @@ async function pullOne(data: string, ledger: Ledger, row: Record<string, unknown
   if (body === null || decision.do !== "take") return;
   const atStart = ours === null ? null : hash(ours);
   // An import that never finished here (or Writer's copy of one, brought in by Edit) has nothing to keep: theirs
-  // replaces it (Oct 31, M's Mac: four stale imports became conflicted copies that showed as stopped imports). A copy
-  // is kept once per rev: a pull that failed after keeping one and was tried again kept another every minute (Oct 31,
-  // Predator Tutor: 294 copies from Mathias's Mac, rev 7 naming a file no longer in the cloud).
+  // replaces it (Oct 31, M's Mac: four stale imports became conflicted copies that showed as stopped imports). This
+  // Mac's version is kept once, when the pull is through: a pull that failed after keeping a copy and was tried again
+  // kept another every minute (Oct 31, Predator Tutor: 294 copies from Mathias's Mac).
   if (decision.why === "ours-unfinished") diag.warn("writer", `${jobs.named(id, title)}: ${THIS_MACHINE}'s copy is an import that never finished, so rev ${rev} replaces it`);
-  if (decision.keepCopy) {
-    keepCopy(data, dir, "conflicted copy");
-    ledger.copied = { ...ledger.copied, [id]: rev };
-    writeJson(ledgerPath(data), ledger);
-  }
+  // This Mac's version, overtaken: kept in the script's versions once the cloud's is in (below), not as a script of its own.
+  let overtaken = decision.keepOurs ? parsed(ours) : null;
+  // This Mac's "Not synced" versions not pushed yet: the cloud's index coming down doesn't drop them.
+  const keptHere = versions.list(dir).filter((version) => version.author === "kept");
   fs.mkdirSync(dir, { recursive: true });
   const files: Record<string, Kept> = {};
   const left: string[] = [];
@@ -1085,11 +1096,9 @@ async function pullOne(data: string, ledger: Ledger, row: Record<string, unknown
       } catch (error) {
         if (!(error instanceof Gone)) throw error;
         // Saved again while its files came down (the newer save removed this one): the newer revision is taken
-        // instead, nothing of this one written down. A copy kept above was of this Mac's version as it still is,
-        // so the newer revision doesn't keep another.
+        // instead, nothing of this one written down. This Mac's version is still as it was, so that pull keeps it.
         const newer = await savedSince(id, row);
         if (newer !== null) {
-          if (ledger.copied?.[id] === rev) ledger.copied[id] = Number(newer.rev ?? 0);
           if (chased < CHASES) await pullOne(data, ledger, newer, chased + 1);
           return;
         }
@@ -1101,10 +1110,12 @@ async function pullOne(data: string, ledger: Ledger, row: Record<string, unknown
     files[name] = { key, size, mtime: mtime(path) };
   }
   leftInCloud(data, id, left);
-  // Saved here while the files came down: that version is kept as a copy, not lost.
-  if ((isFile(bodyPath) ? hash(fs.readFileSync(bodyPath)) : null) !== atStart) {
-    diag.warn("writer", `${jobs.named(id, title)}: changed here while rev ${rev} came down; ${THIS_MACHINE}'s version is kept as a copy`);
-    keepCopy(data, dir, "conflicted copy");
+  versions.carryKept(dir, keptHere);
+  // Saved here while the files came down: that version is the one kept, not lost.
+  const now = isFile(bodyPath) ? fs.readFileSync(bodyPath) : null;
+  if ((now === null ? null : hash(now)) !== atStart) {
+    diag.warn("writer", `${jobs.named(id, title)}: changed here while rev ${rev} came down; ${THIS_MACHINE}'s version is kept in its versions`);
+    overtaken = parsed(now) ?? overtaken;
   }
   // Who started it, as the cloud recorded it from their verified sign-in, wins over the body's.
   const given = withCreator(body, row.createdBy);
@@ -1116,6 +1127,11 @@ async function pullOne(data: string, ledger: Ledger, row: Record<string, unknown
   const summary = row.summary as { kind?: unknown } | undefined;
   ledger.scripts[id] = { rev, body: hash(given), files, summary: typeof summary?.kind === "string" ? SUMMARY_VERSION : 0 };
   if (ledger.copied !== undefined) delete ledger.copied[id];
+  // Recorded after the ledger, so the versions changed here go up with the next push (the script's lock allowing).
+  if (overtaken !== null) {
+    const kept = versions.keepOvertaken(dir, overtaken, `${machine.name()}'s changes, which didn't reach the cloud in time`);
+    diag.warn("writer", `${jobs.named(id, title)}: rev ${rev} from ${ANOTHER_MACHINE} overtook ${THIS_MACHINE}'s changes; ${kept ? "they're kept in its versions" : "keeping them in its versions failed"}`);
+  }
   store.libraryChanged();
 }
 
@@ -1270,7 +1286,7 @@ async function push(data: string, id: string, dir: string, script: Script, body:
   if (ledger?.attempts !== undefined) delete ledger.attempts[id];
   await remove([...uploaded, bodyKey]);
   if (answer.code === "conflict") {
-    diag.warn("writer", `${jobs.named(id, script.title)}: ${ANOTHER_MACHINE} saved it first (rev ${base} is behind); taking theirs and keeping ${THIS_MACHINE}'s as a copy`);
+    diag.warn("writer", `${jobs.named(id, script.title)}: ${ANOTHER_MACHINE} saved it first (rev ${base} is behind); taking theirs and keeping ${THIS_MACHINE}'s in its versions`);
     return "overtaken";
   }
   throw new Problem(`The cloud refused ${script.title}: ${String(answer.data.message ?? answer.code)}`);

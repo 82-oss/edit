@@ -442,17 +442,20 @@ export class Store {
   }
 
   /**
-   * A copy of `project` under a new id and `name`, kept on this machine only
-   * (a cloud conflict's "conflicted copy"): cloud projects aren't told.
+   * Keeps `project` in `id`'s history now (`projects/history/<id>/`, where
+   * every project's earlier saves are), whatever the history's own pace: the
+   * edit before a reset, or this machine's version the cloud overtook (Sphe,
+   * Nov 15: no more "(conflicted copy)" projects on Home). The file's path.
    */
-  createCopy(project: Project, name: string): Live {
-    const copy = structuredClone(project) as Project;
-    copy.id = `p${nowMs()}-${nextFileId()}`;
-    copy.name = name;
-    delete copy.drive;
-    const live = this.write(copy.id, this.firstRev, copy);
-    this.projects.set(copy.id, live);
-    return live;
+  keepNow(id: string, project: Project): string {
+    if (!validId(id)) throw new Error(`not a project id: ${JSON.stringify(id)}`);
+    const dir = join(this.home, "projects", "history", id);
+    fs.mkdirSync(dir, { recursive: true });
+    let at = nowMs();
+    while (fs.existsSync(join(dir, `${at}.json`))) at++;
+    const path = join(dir, `${at}.json`);
+    writeAtomic(path, jsonForSerde(project));
+    return path;
   }
 
   /**

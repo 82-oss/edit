@@ -31,7 +31,7 @@ test("work changed here is never lost: taking theirs over it keeps a copy, unles
   always("lost work", (seen) => {
     const decision = decidePull(seen);
     if (!conflict(seen) || decision.do !== "take") return true;
-    return decision.keepCopy || seen.here!.unfinished || seen.copiedRev === seen.rev;
+    return decision.keepOurs || seen.here!.unfinished || seen.copiedRev === seen.rev;
   }));
 
 test("a built script is never replaced by an unbuilt one", () =>
@@ -40,7 +40,7 @@ test("a built script is never replaced by an unbuilt one", () =>
 test("at most one conflicted copy is kept per revision", () =>
   always("second copy", (seen) => {
     const decision = decidePull(seen);
-    return !(decision.do === "take" && decision.keepCopy && seen.copiedRev === seen.rev);
+    return !(decision.do === "take" && decision.keepOurs && seen.copiedRev === seen.rev);
   }));
 
 test("an older or equal revision is never taken, and nothing is fetched for one", () =>
@@ -53,7 +53,7 @@ test("a script deleted elsewhere after it changed here is kept as a restored cop
   always("deleted work", (seen) => {
     if (!seen.deleted) return true;
     const decision = decidePull(seen);
-    return decision.do === "delete" && decision.keepCopy === (seen.here !== null && seen.here.changed);
+    return decision.do === "delete" && decision.keepOurs === (seen.here !== null && seen.here.changed);
   }));
 
 test("a body missing from the cloud never replaces this Mac's, and with none here it's said", () =>

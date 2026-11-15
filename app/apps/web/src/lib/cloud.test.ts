@@ -22,7 +22,7 @@ describe("cloud status", () => {
     expect(syncLabel(status({ sync: "synced" }))?.text).toBe("Saved to cloud");
     expect(syncLabel(status({ sync: "pending" }))?.tone).toBe("busy");
     expect(syncLabel(status({ sync: "offline" }))?.text).toBe("Offline · will sync");
-    expect(syncLabel(status({ sync: "conflict" }))?.tone).toBe("bad");
+    expect(syncLabel(status({ sync: "error" }))?.tone).toBe("bad");
     expect(syncLabel(status({ sync: "readonly" }))?.text).toBe("Read-only");
   });
 

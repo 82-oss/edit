@@ -4,7 +4,7 @@
 // import or Claude works on it here) and never by writes alone; one holder id
 // per data folder; a push's attempt written down before it's sent, so an
 // answer lost at quit or under load is recognised later and never becomes a
-// conflicted copy; and the timings that have to agree with each other, in one
+// conflict; and the timings that have to agree with each other, in one
 // place with the relations they keep (`timingProblems`, tested).
 
 import * as fs from "node:fs";
@@ -155,28 +155,10 @@ export function isOwnSave(attempt: Attempt | undefined | null, cloud: { readonly
   return attempt !== undefined && attempt !== null && cloud !== null && cloud.bodyHash !== null && cloud.rev === attempt.base + 1 && cloud.bodyHash === attempt.hash;
 }
 
-/** Someone else took the lock: what happens to this machine's copy (changes here are kept as a copy, theirs is taken). */
-export function afterLost(hadChanges: boolean, cloudNewer: boolean): { readonly keepCopy: boolean; readonly pull: boolean } {
-  return { keepCopy: hadChanges, pull: hadChanges || cloudNewer };
+/** Someone else took the lock: what happens to this machine's version (changes here are kept in its history, theirs is taken). */
+export function afterLost(hadChanges: boolean, cloudNewer: boolean): { readonly keep: boolean; readonly pull: boolean } {
+  return { keep: hadChanges, pull: hadChanges || cloudNewer };
 }
 
-const CONFLICTED = "(conflicted copy)";
-
-/** What a copy kept in a conflict is named. */
-export function conflictedName(name: string): string {
-  return `${name} ${CONFLICTED}`;
-}
-
-/** Whether a copy's name says it's one already. */
-export function isConflictedName(name: string): boolean {
-  return name.endsWith(CONFLICTED);
-}
-
-/** What a conflicted copy keeps about where it came from, listed for the team (`conflictedOf` in the cloud's summary). */
-export interface CopyOf {
-  /** The project or script it's a copy of. */
-  id: string;
-  /** Who kept it (their holder's name) and when (ms). */
-  by: string;
-  at: number;
-}
+/** "Name (conflicted copy)" or "(restored copy)", once or more: what Edit called a version the cloud overtook, before Nov 15. */
+export const OLD_COPY = /(\s*\((?:conflicted|restored) copy\))+$/u;

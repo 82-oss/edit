@@ -116,6 +116,13 @@ function here(body: Script, rev: number | null): string {
 
 const copies = (data: string): string[] => store.ids(data).filter((id) => id !== ID).map((id) => store.read(store.scriptDir(data, id)).title);
 
+/** The "Not synced" versions of script `id` here: each one's title, as kept. */
+const kept = (data: string, id: string): string[] => {
+  const dir = join(store.scriptDir(data, id), "versions");
+  const index = fs.existsSync(join(dir, "index.json")) ? (JSON.parse(fs.readFileSync(join(dir, "index.json"), "utf8")) as { id: string; author: string }[]) : [];
+  return index.filter((version) => version.author === "kept").map((version) => (JSON.parse(fs.readFileSync(join(dir, `${version.id}.json`), "utf8")) as Script).title);
+};
+
 /** This Mac's ledger for the script, at `rev`, naming `files` (the body hash is stale, so a sync pushes). */
 function ledger(data: string, rev: number, files: Record<string, { key: string; size: number; mtime: number }>): void {
   fs.writeFileSync(join(data, "cloud", "ledger.json"), JSON.stringify({ scripts: { [ID]: { rev, body: "what this Mac pushed last", files, summary: 2 } } }));
@@ -185,22 +192,25 @@ test("a rev naming a file that isn't in the cloud comes down without it, and thi
   await cloud.syncOnceForTests(data);
   await cloud.syncOnceForTests(data);
 
-  expect(copies(data)).toEqual(["Predator Tutor (conflicted copy)"]);
+  expect(copies(data)).toEqual([]);
+  expect(kept(data, ID)).toEqual(["Predator Tutor"]);
   expect(store.read(store.scriptDir(data, ID)).revision).toBe(7);
   expect(fs.readFileSync(join(store.scriptDir(data, ID), "chat.json"), "utf8")).toBe("[]");
   expect(cloud.revOf(data, ID)).toBeGreaterThanOrEqual(7);
 });
 
-test("a pull that fails after keeping this Mac's version and is tried again keeps no second copy", async () => {
+test("a pull that fails and is tried again keeps this Mac's version once, when it's through", async () => {
   inCloud(7, script({ clips: builtClips, revision: 7 }), [{ name: "chat.json", bytes: "[]" }]);
   failing.set(`writer/scripts/${ID}/files/r7/chat.json`, 1);
   const data = here(script({ clips: builtClips, revision: 6 }), 5);
 
   await cloud.syncOnceForTests(data).catch(() => undefined);
-  expect(copies(data)).toHaveLength(1);
+  expect(kept(data, ID)).toHaveLength(0);
+  expect(store.read(store.scriptDir(data, ID)).revision).toBe(6);
   await cloud.syncOnceForTests(data);
 
-  expect(copies(data)).toHaveLength(1);
+  expect(copies(data)).toEqual([]);
+  expect(kept(data, ID)).toHaveLength(1);
   expect(store.read(store.scriptDir(data, ID)).revision).toBe(7);
 });
 
@@ -224,6 +234,18 @@ test("an import that never finished here is replaced by the cloud's script, not 
 // down, its body never) was deleted on another Mac, and each pull, every 30 s
 // for days, copied the folder to keep "this Mac's version", found no script in
 // the copy and gave up, leaving it. A folder with no body has no version here.
+test("a script deleted elsewhere after it changed here is deleted here too, this Mac's version kept out of every list", async () => {
+  rows.set(ID, { scriptId: ID, title: "Predator Tutor", rev: 4, deletedAt: 1, files: [] });
+  const data = here(script({ title: "Predator Tutor, changed here", clips: builtClips }), 3);
+
+  await cloud.syncOnceForTests(data);
+
+  expect(store.ids(data)).toEqual([]);
+  const keptDir = fs.readdirSync(join(data, "kept"));
+  expect(keptDir).toHaveLength(1);
+  expect((JSON.parse(fs.readFileSync(join(data, "kept", keptDir[0]!, "script.json"), "utf8")) as Script).title).toBe("Predator Tutor, changed here");
+});
+
 test("a script deleted elsewhere whose folder here has no body is removed, never copied", async () => {
   for (const syncedAt of [null, 3]) {
     rows.clear();

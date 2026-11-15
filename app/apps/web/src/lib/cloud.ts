@@ -16,7 +16,7 @@ export interface CloudStatus {
   writable?: boolean;
   /** Who's editing it, when it's someone else. */
   holder?: string | null;
-  sync?: "off" | "synced" | "pending" | "syncing" | "offline" | "conflict" | "readonly" | "error";
+  sync?: "off" | "synced" | "pending" | "syncing" | "offline" | "readonly" | "error";
   rev?: number;
   dirty?: boolean;
   message?: string | null;
@@ -66,8 +66,6 @@ export interface CloudProject {
   created_by?: Creator | null;
   /** Who's editing it now (a live lock), if anyone. */
   holder: string | null;
-  /** A conflicted copy: what it's a copy of, who kept it and when (apps/server/src/sync_core.ts CopyOf). */
-  conflicted_of?: { id: string; by: string; at: number } | null;
   /** This machine holds its lock. */
   here: boolean;
   /** It's on this machine too. */
@@ -114,8 +112,6 @@ export function syncLabel(status: CloudStatus | null | undefined): { text: strin
       return { text: "Syncing…", tone: "busy" };
     case "offline":
       return { text: "Offline · will sync", tone: "warn" };
-    case "conflict":
-      return { text: "Conflict", tone: "bad" };
     case "readonly":
       return { text: "Read-only", tone: "warn" };
     case "error":

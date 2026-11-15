@@ -145,7 +145,7 @@ def main():
                   if row.get(name) is not None}
         dev.call("mutation", "edit:putMedia", source=row["source"], **fields)
     # Open in a dev Edit: copying again replaces the body under it and takes its lock, and its own changes come
-    # back as a "(conflicted copy)" (Killer Pastor, Nov 8). Close it there first, or --force.
+    # back as a conflict (Killer Pastor, Nov 8). Close it there first, or --force.
     held = (dev.call("query", "edit:getProject", projectId=project_id) or {}).get("lock")
     if held and held.get("holder") != HOLDER and "--force" not in sys.argv:
         sys.exit(f"{card['name']} is open in a dev Edit ({held.get('holder')}): close it there first, or pass --force to replace it anyway")

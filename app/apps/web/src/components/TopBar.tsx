@@ -81,7 +81,7 @@ export function TopBar({ onShare }: { onShare: () => void }) {
   );
 }
 
-/** A cloud project’s sync as an icon only (its words are its tooltip): saved, syncing, offline, conflict, read-only. */
+/** A cloud project’s sync as an icon only (its words are its tooltip): saved, syncing, offline, read-only, a problem. */
 function SyncState() {
   const cloud = useEditor((state) => state.cloud);
   const label = syncLabel(cloud);

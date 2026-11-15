@@ -10,7 +10,7 @@
 // looking. A save to a script another computer holds is refused (423, saying
 // who), and the page offers Take over. Where the cloud has no lock for scripts
 // (a Convex from before) or can't be reached, scripts sync as they did:
-// pushed, the overtaken one kept as a copy.
+// pushed, the overtaken one kept in its versions.
 
 import * as fs from "node:fs";
 
@@ -163,7 +163,7 @@ async function acquire(id: string, holder: string, force: boolean): Promise<void
   try {
     answer = await call("acquireLock", { projectId: keyOf(id), holder, force });
   } catch (error) {
-    // Offline or no locks for scripts: scripts sync as they did (pushed; the overtaken one kept as a copy).
+    // Offline or no locks for scripts: scripts sync as they did (pushed; the overtaken one kept in its versions).
     if (noLocks(error) && lock.state !== "none") diag.info("writer", `the cloud keeps no lock for scripts (${diag.messageOf(error)}); they sync without one`);
     if (lock.state !== "elsewhere") lock.state = "none";
     return;

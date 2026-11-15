@@ -6,7 +6,7 @@ import type { Script, Snapshot, Version } from "./types";
 import { Dialog } from "./ui";
 
 const when = (at: number) => new Date(at).toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
-const WHO: Record<Version["author"], string> = { you: "You", claude: "Claude", edit: "The edit", before: "Before" };
+const WHO: Record<Version["author"], string> = { you: "You", claude: "Claude", edit: "The edit", before: "Before", kept: "Not synced" };
 
 /**
  * The script's versions, as Repack lists them: newest first, who made each

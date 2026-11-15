@@ -510,7 +510,8 @@ export type ChatTurn = {
 export type Focus = { selected: string[]; picked: [number, number] | null; playheadMs: number | null };
 
 /** A saved version of a footage script: who made it and what changed. */
-export type Version = { id: string; at: number; author: "you" | "claude" | "edit" | "before"; summary: string; base?: string; restored?: number };
+/** `kept`: a Mac's version the cloud overtook before it got there (writer/cloud.ts), kept here rather than as a "(conflicted copy)". */
+export type Version = { id: string; at: number; author: "you" | "claude" | "edit" | "before" | "kept"; summary: string; base?: string; restored?: number };
 
 /** What a version holds. */
 export type Snapshot = { clips: Clip[]; corrections: Record<string, string>; heading: string | null };
