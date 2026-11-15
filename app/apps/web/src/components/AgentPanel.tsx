@@ -1,5 +1,5 @@
 import { explain } from "@edit/types/problems";
-import { ArrowLeft, AudioLines, Check, ChevronRight, CircleSlash, Eye, FileInput, Image, FileText, FolderOpen, LayoutGrid, ListChecks, MousePointerClick, Music, RotateCcw, ScrollText, Scissors, Share, SlidersHorizontal, Spline, Square, SquarePlus, Star, Trash2, Type, Wrench, ScanEye, Pencil, type LucideIcon, Copy, Quote, SquareTerminal, FilePen, Search, Globe, BookOpen, ImagePlus, Hourglass, Minimize2, ArrowRight, Clapperboard } from "lucide-react";
+import { ArrowLeft, AudioLines, Check, ChevronRight, CircleSlash, Eye, FileInput, Image, FileText, FolderOpen, LayoutGrid, ListChecks, MousePointerClick, Music, RotateCcw, ScrollText, Scissors, Share, SlidersHorizontal, Spline, Square, SquarePlus, Star, Trash2, Type, Wrench, ScanEye, Pencil, type LucideIcon, Copy, Quote, SquareTerminal, FilePen, Search, Globe, BookOpen, ImagePlus, Hourglass, Minimize2, ArrowRight, Clapperboard, GraduationCap } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -999,10 +999,17 @@ function useUntaughtChannel(): string | null {
   return channel !== null && footage ? empty : null;
 }
 
+/** A channel whose edit style is empty, once its footage is in: one slim line (Sphe, Nov 15: the card "looks off"), the why on hover. */
 function UntaughtChannel({ title }: { title: string }) {
   return (
-    <div className="rounded-xl border border-line bg-panel px-3 py-2.5 text-[12.5px] leading-relaxed">
-      <span className="font-medium text-fg">The footage is in.</span> <span className="text-muted">{title}’s edit style is empty: tell the agent how its videos should look, and what it learns stays with the channel.</span>
+    <div
+      title={`What you tell the agent about how ${title}’s videos should look stays with the channel.`}
+      className="flex h-8 items-center gap-2 self-start rounded-full border border-line bg-panel pr-3.5 pl-2.5 text-[12px] text-muted"
+    >
+      <GraduationCap size={13} className="shrink-0 text-faint" />
+      <span className="truncate">
+        <span className="text-fg">{title}</span> has no edit style yet: tell the agent how its videos should look
+      </span>
     </div>
   );
 }
