@@ -702,6 +702,19 @@ const sameStatus = (a: MediaStatus | undefined, b: MediaStatus) => a !== undefin
 export const flushMediaEvents = () => mediaEvents.flush();
 
 let dropped = false;
+/**
+ * When the events socket last heard anything, and whether this server sends
+ * its beat (`{type: "ping"}` every 20 s, http/server.ts). A socket gone quiet
+ * without closing (Nov 15: Vite's proxy dropped the server side at 14:45:59;
+ * the page missed the effect's new render and the player stayed on the old
+ * one until a refresh) is closed here, so it reconnects and catches up.
+ */
+let heardAt = 0;
+let beats = false;
+const SILENT_MS = 50_000;
+setInterval(() => {
+  if (beats && socket?.readyState === WebSocket.OPEN && Date.now() - heardAt > SILENT_MS) socket.close();
+}, 10_000);
 let downTimer: ReturnType<typeof setTimeout> | undefined;
 
 /**
@@ -745,6 +758,8 @@ function catchUp() {
     .catch(() => {});
   void openAgent(project.id);
   void syncScriptJob(project.id);
+  // A coded effect changed while the socket was down: its page and render are read again (lib/effects.ts).
+  void import("./effects").then((effects) => effects.loadEffects(project.id)).catch(() => {});
 }
 
 /** Sends a message on the events socket when it's open (lib/notices.ts: where this page is). */
@@ -757,6 +772,7 @@ export function connectEvents() {
   const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/ws?patches=1`;
   socket = new WebSocket(url);
   socket.onopen = () => {
+    heardAt = Date.now();
     clearTimeout(downTimer);
     useConnection.setState({ down: false });
     if (dropped) catchUp();
@@ -765,6 +781,7 @@ export function connectEvents() {
     window.dispatchEvent(new Event("edit:connected"));
   };
   socket.onmessage = (message) => {
+    heardAt = Date.now();
     // One malformed frame must not throw out of the handler and drop the rest.
     let event;
     try {
@@ -773,6 +790,10 @@ export function connectEvents() {
       return;
     }
     if (event === null || typeof event !== "object") return;
+    if (event.type === "ping") {
+      beats = true;
+      return;
+    }
     const state = useEditor.getState();
     const project = state.project;
     if (event.type === "project" && project && event.id === project.id) {

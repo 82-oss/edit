@@ -28,7 +28,11 @@ interface Socket {
   lagged: boolean;
   /** Where the page is and whether it has focus, for notices (notices.ts). */
   viewer: notices.Viewer | null;
+  /** Its beat: `{type: "ping"}` every 20 s, so a page whose socket went quiet without closing (a proxy dropping it) notices and reconnects (lib/store.ts). */
+  beat: ReturnType<typeof setInterval> | null;
 }
+
+const PING = JSON.stringify({ type: "ping" });
 
 /** The routes every server has; packages add theirs to the same router. */
 export function baseRouter(): Router<App> {
@@ -40,7 +44,7 @@ export function baseRouter(): Router<App> {
 }
 
 function websocket(context: RouteContext<App>): Response | undefined {
-  const socket: Socket = { unsubscribe: null, lagged: false, patches: context.query.get("patches") === "1", viewer: null };
+  const socket: Socket = { unsubscribe: null, lagged: false, patches: context.query.get("patches") === "1", viewer: null, beat: null };
   if (context.upgrade(socket)) return undefined;
   return text("Connection header did not include 'upgrade'", 400);
 }
@@ -240,6 +244,7 @@ export function listen(app: App, router: Router<App>, hostname: string, port: nu
           if (ws.send(sent) === 0) ws.data.lagged = true;
         });
         ws.data.viewer = notices.connect((text) => void ws.send(text));
+        ws.data.beat = setInterval(() => void ws.send(PING), 20_000);
       },
       drain(ws: ServerWebSocket<Socket>) {
         if (ws.data.lagged && ws.send(JSON.stringify({ type: "resync" })) > 0) ws.data.lagged = false;
@@ -249,6 +254,8 @@ export function listen(app: App, router: Router<App>, hostname: string, port: nu
         if (ws.data.viewer !== null) notices.heard(ws.data.viewer, typeof message === "string" ? message : message.toString());
       },
       close(ws: ServerWebSocket<Socket>) {
+        if (ws.data.beat !== null) clearInterval(ws.data.beat);
+        ws.data.beat = null;
         ws.data.unsubscribe?.();
         ws.data.unsubscribe = null;
         if (ws.data.viewer !== null) notices.disconnect(ws.data.viewer);
