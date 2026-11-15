@@ -465,6 +465,63 @@ test("a sound's levels: how loud each frame is, and in which band", () => {
   expect(Math.max(...levels.bands[45]!)).toBe(0);
 });
 
+test.skipIf(chrome === null)("a look again at an effect whose code hasn't changed draws on its page as loaded, and says what a fresh page would; looks at two effects go side by side", async () => {
+  const { app, cleanup, id } = hq("effects-kept");
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    // Its page says, as it loads, when it loaded (the same words twice: the same page); a CSS animation runs on its own
+    // clock (the runtime checks that at a page's first seek alone); a second past 1.5 throws.
+    const kept = (stamp: string) => `<!doctype html><body style="margin:0;background:#123">
+<div id="spin" style="animation: spin 1s infinite linear;width:40px;height:40px;background:#e0343c;opacity:0"></div>
+<style>@keyframes spin { to { transform: rotate(1turn); } }</style>
+<script>
+window.duration = 2;
+window.ready = Promise.resolve();
+window.seek = (t) => { if (t > 1.5) throw new Error("no second " + t); document.body.style.background = "rgb(" + Math.round(t * 100) + ",20,30)"; };
+</script>
+<script>throw new Error("${stamp} loaded at " + performance.timeOrigin);</script></body>`;
+    write(app, id, "kept", { "scene.html": kept("first") });
+    write(app, id, "bar", { "scene.html": GOOD });
+    const one = await effects.look(app, id, "kept", [1.8]);
+    expect(one.errors.join("\n")).toContain("first loaded at");
+    expect(one.errors.join("\n")).toContain("no second 1.8");
+    // Every seek threw, so the runtime hasn't looked for a running animation yet.
+    expect(one.problems).toEqual([]);
+    expect(effects.ANIMATION).toStartWith("A CSS animation");
+    const two = await effects.look(app, id, "kept", [0.5]);
+    // The same page (its load's words, word for word), saying its load's error and its animation again, and not the
+    // second the look before asked for.
+    expect(two.errors).toEqual(one.errors.filter((error) => !error.includes("no second")));
+    expect(two.problems).toEqual([effects.ANIMATION]);
+    expect(Buffer.from(two.stills[0]!.picture).equals(Buffer.from(one.stills[0]!.picture))).toBe(false);
+    // Its code changed: a fresh page.
+    write(app, id, "kept", { "scene.html": kept("second") });
+    const three = await effects.look(app, id, "kept", [0.5]);
+    expect(three.errors.join("\n")).toContain("second loaded at");
+    expect(three.errors.join("\n")).not.toContain("first loaded at");
+    // The same moment of the same code: the same picture, on a kept page or a fresh one.
+    expect(Buffer.from(three.stills[0]!.picture).equals(Buffer.from(two.stills[0]!.picture))).toBe(true);
+    // Two effects at once, each its own.
+    const [bar, again] = await Promise.all([effects.look(app, id, "bar", [1]), effects.look(app, id, "kept", [0.5])]);
+    expect(bar.duration).toBe(2);
+    expect(bar.errors).toEqual([]);
+    expect(again.errors).toEqual(three.errors);
+    // The runtime said the animation at that page's first seek alone: the kept page says it again.
+    expect(three.problems).toEqual([effects.ANIMATION]);
+    expect(again.problems).toEqual([effects.ANIMATION]);
+    expect(Buffer.from(again.stills[0]!.picture).equals(Buffer.from(three.stills[0]!.picture))).toBe(true);
+  } finally {
+    effects.closeChrome();
+    server.stop(true);
+    cleanup();
+  }
+});
+
 test.skipIf(chrome === null)("an effect plays footage it's given: seeked to each moment, drawn there, rendered frame by frame", async () => {
   const { app, cleanup, id, dir: scratchDir } = hq("effects-footage");
   const router = buildRouter();

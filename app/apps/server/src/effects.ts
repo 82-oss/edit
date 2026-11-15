@@ -126,6 +126,8 @@ const FACES = FONTS.map((font) => `@font-face { font-family: "${font.family}"; f
 
 /** Edit's side of every effect page (effect_runtime.html), put in ahead of the page's own code. */
 const RUNTIME = runtimeText as unknown as string;
+/** What the runtime says of a CSS animation running, which it checks at a page's first seek alone (a kept page says it again: `look`). */
+export const ANIMATION = /problem\("(A CSS animation[^"]*)"\)/.exec(RUNTIME)?.[1] ?? "";
 
 /** The page an effect's folder must have. */
 export const ENTRY = "scene.html";
@@ -446,56 +448,166 @@ export function routes(router: Router<App>): void {
 
 const PROFILE = "edit-effect-";
 
-let kept: { page: Promise<devtools.Page>; width: number; height: number; interval: number } | null = null;
-let idle: ReturnType<typeof setTimeout> | null = null;
-let line: Promise<unknown> = Promise.resolve();
+/**
+ * Chromes kept for looks, side by side: each holds one effect's page, loaded
+ * and ready, while that effect's code stays the same (`Warm`), so a look again
+ * is its seeks alone. A map's page took 7–11 s to be ready (CesiumJS, its
+ * places found, the first tiles) and its first seek 4–6 s more, every look
+ * (Nov 15, mandalorian); looks at two effects no longer wait on each other
+ * (the agent asks for several at once; four stretches of one map finished at
+ * 34, 66, 104 and 143 s, Nov 13). By the computer's memory, as the render's.
+ */
+const LOOK_PAGES = os.totalmem() >= 16 * 2 ** 30 ? 3 : 2;
+/** Maps among them at most: each holds a 3D city on the graphics card, beside the render's and the viewer's. */
+const LOOK_MAPS = LOOK_PAGES > 2 ? 2 : 1;
+/** A kept Chrome unused this long is closed. */
+const LOOK_IDLE_MS = 5 * 60_000;
 
-function close(): void {
-  const open = kept;
-  kept = null;
-  // A Chrome that never started: its error went to the look that waited on it.
-  void open?.page.then((page) => page.close()).catch(() => {});
+/** An effect's page loaded in a kept Chrome, ready, and what it said while it loaded. */
+interface Warm {
+  /** The version of the page it is (its code's, its address's): another is loaded afresh. */
+  version: string;
+  duration: number;
+  seek: boolean;
+  /** What the runtime and the page said up to `ready`, which every look on it says again. */
+  problems: string[];
+  errors: string[];
+  /** A CSS animation seen running at its first seek (the runtime checks once a page): said again by every look, as a fresh page would. */
+  animation: string | null;
 }
 
-/** One piece of work on the page of the Chrome kept open for effects (started again once if it went away), one at a time. */
-function inChrome<T>(width: number, height: number, work: (page: devtools.Page, interval: number) => Promise<T>): Promise<T> {
-  const turn = line.then(async () => {
-    if (idle !== null) clearTimeout(idle);
+interface Kept {
+  page: Promise<devtools.Page>;
+  width: number;
+  height: number;
+  /** The screen's interval in it (ms). */
+  interval: number;
+  /** The effect it's for (`project/name`), null for any work; and whether that's a map. */
+  owner: string | null;
+  map: boolean;
+  warm: Warm | null;
+  /** Looks waiting on it or under way. */
+  busy: number;
+  line: Promise<unknown>;
+  used: number;
+  idle: ReturnType<typeof setTimeout> | null;
+}
+
+const kept: Kept[] = [];
+/** Told when a kept Chrome comes free: a look waiting for one tries again. */
+let freed: (() => void)[] = [];
+
+function close(slot: Kept): void {
+  const at = kept.indexOf(slot);
+  if (at >= 0) kept.splice(at, 1);
+  if (slot.idle !== null) clearTimeout(slot.idle);
+  // A Chrome that never started: its error went to the look that waited on it.
+  void slot.page.then((page) => page.close()).catch(() => {});
+}
+
+/** Opens `slot`'s Chrome at this size, its page and the screen's interval there. */
+function open(slot: Kept, width: number, height: number): void {
+  slot.width = width;
+  slot.height = height;
+  slot.interval = 0;
+  slot.page = devtools.open({ profile: PROFILE, width, height, gpu: true, what: "Looking at an effect" }).then(async (page) => {
+    // The screen's own interval there, with nothing to draw: what a frame's cost is held against.
+    slot.interval = await page.evaluate<number>(
+      "new Promise((resolve) => { const gaps = []; let last = 0; const tick = (now) => { if (last) gaps.push(now - last); last = now; if (gaps.length === 12) resolve(gaps.sort((a, b) => a - b)[6]); else requestAnimationFrame(tick); }; requestAnimationFrame(tick); })",
+    );
+    return page;
+  });
+}
+
+/**
+ * The kept Chrome a piece of work goes to, or null to wait for one: the one
+ * that has its effect's page already (even busy: looks at one effect take
+ * turns on it), else a free one or a new one, the one used longest ago
+ * giving its page up when all are taken.
+ */
+function slotFor(owner: string | null, map: boolean): Kept | null {
+  if (owner !== null) {
+    const own = kept.find((slot) => slot.owner === owner);
+    if (own !== undefined) return own;
+  }
+  const maps = kept.filter((slot) => slot.map).length;
+  const free = kept.filter((slot) => slot.busy === 0).sort((a, b) => a.used - b.used);
+  // A map past the most: a free map's Chrome is the one it may take, its city given up.
+  if (map && maps >= LOOK_MAPS) return free.find((slot) => slot.map) ?? null;
+  if (kept.length < LOOK_PAGES) {
+    // Opened at its size by its first turn.
+    const none = Promise.reject(new Error("not opened"));
+    none.catch(() => {});
+    const slot: Kept = { page: none, width: 0, height: 0, interval: 0, owner, map, warm: null, busy: 0, line: Promise.resolve(), used: 0, idle: null };
+    kept.push(slot);
+    return slot;
+  }
+  return free[0] ?? null;
+}
+
+/**
+ * One piece of work on a page of the Chromes kept for effects (started again
+ * once if it went away): `owner`'s own page when there is one, looks at the
+ * same effect one at a time, looks at others beside them. The work is handed
+ * the page, the screen's interval and the slot's `warm` (null: the page is
+ * whatever was there, to load afresh); what it returns as `warm` stays loaded.
+ */
+async function inChrome<T>(width: number, height: number, want: { owner: string | null; map: boolean }, work: (page: devtools.Page, interval: number, warm: Warm | null) => Promise<{ value: T; warm: Warm | null }>): Promise<T> {
+  let slot = slotFor(want.owner, want.map);
+  while (slot === null) {
+    await new Promise<void>((resolve) => freed.push(resolve));
+    slot = slotFor(want.owner, want.map);
+  }
+  const mine = slot;
+  if (mine.owner !== want.owner) {
+    // Taken over from another effect (or for work of no effect's): what it had loaded is gone.
+    mine.owner = want.owner;
+    mine.warm = null;
+  }
+  mine.map = want.map;
+  mine.busy += 1;
+  if (mine.idle !== null) clearTimeout(mine.idle);
+  const turn = mine.line.then(async () => {
     for (let attempt = 0; ; attempt++) {
-      const warm = kept === null ? null : await kept.page.catch(() => null);
-      if (kept === null || warm === null || warm.closed || kept.width !== width || kept.height !== height) {
-        close();
-        const opened = { page: devtools.open({ profile: PROFILE, width, height, gpu: true, what: "Looking at an effect" }), width, height, interval: 0 };
-        kept = opened;
-        // The screen's own interval there, with nothing to draw: what a frame's cost is held against.
-        opened.interval = await (await opened.page).evaluate<number>(
-          "new Promise((resolve) => { const gaps = []; let last = 0; const tick = (now) => { if (last) gaps.push(now - last); last = now; if (gaps.length === 12) resolve(gaps.sort((a, b) => a - b)[6]); else requestAnimationFrame(tick); }; requestAnimationFrame(tick); })",
-        );
+      const page = await mine.page.catch(() => null);
+      if (page === null || page.closed || mine.width !== width || mine.height !== height) {
+        void mine.page.then((one) => one.close()).catch(() => {});
+        open(mine, width, height);
+        mine.warm = null;
       }
-      const open = kept;
       try {
-        return await work(await open.page, open.interval);
+        // Its owner may have changed while it waited its turn: a page that isn't the work's isn't warm for it.
+        const ready = await mine.page;
+        const done = await work(ready, mine.interval, mine.owner === want.owner ? mine.warm : null);
+        mine.warm = mine.owner === want.owner ? done.warm : null;
+        return done.value;
       } catch (error) {
-        const gone = (await open.page.catch(() => null))?.closed !== false;
+        mine.warm = null;
+        const gone = (await mine.page.catch(() => null))?.closed !== false;
         if (!gone || attempt >= 1) throw error;
-        close();
       }
     }
   });
-  // The line only orders the looks: each one's error goes to its own caller.
-  line = turn.catch(() => {});
-  void turn.finally(() => {
-    if (idle !== null) clearTimeout(idle);
-    idle = setTimeout(close, 5 * 60_000);
-    idle.unref?.();
-  });
-  return turn;
+  // The line only orders the work: each one's error goes to its own caller.
+  mine.line = turn.catch(() => {});
+  try {
+    return await turn;
+  } finally {
+    mine.busy -= 1;
+    mine.used = Date.now();
+    if (mine.busy === 0) {
+      mine.idle = setTimeout(() => close(mine), LOOK_IDLE_MS);
+      mine.idle.unref?.();
+    }
+    const waiting = freed;
+    freed = [];
+    for (const resolve of waiting) resolve();
+  }
 }
 
-/** Closes the Chrome kept for effects (tests, and Edit leaving). */
+/** Closes the Chromes kept for effects (tests, and Edit leaving). */
 export function closeChrome(): void {
-  if (idle !== null) clearTimeout(idle);
-  close();
+  for (const slot of [...kept]) close(slot);
 }
 
 export interface Still {
@@ -596,19 +708,34 @@ export async function look(app: App, projectId: string, name: string, times: num
     const others = list(app.store, projectId).map((effect) => effect.name);
     throw new Error(`no effect "${name}": it needs ${ENTRY} at effects/${name}/${ENTRY}${others.length > 0 ? `; there are ${others.join(", ")}` : ""}`);
   }
-  const { width, height, fps } = frameOf(live.project);
+  const frame = frameOf(live.project);
+  const { width, height, fps } = frame;
   const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const url = `http://${seams.broll.pageHost(app)}${addressOf(projectId, name)}${ENTRY}?look=${token}`;
+  const host = seams.broll.pageHost(app);
+  const url = `http://${host}${addressOf(projectId, name)}${ENTRY}?look=${token}`;
+  // The page as it is now: a kept one of another version is loaded afresh.
+  const version = `${host} ${sourceKey(filesIn(dir), frame, fontsUsed(app.store, projectId, dir))}`;
+  const map = fs.readFileSync(join(dir, ENTRY), "utf8").includes("edit-map/map.js");
   const started = Date.now();
   try {
-    return await inChrome(width, height, async (page, interval) => {
-      const loaded = await load(page, url, token, name);
-      const stills: Still[] = [];
-      if (loaded.seek) {
-        // Six of it, each from the middle of its sixth, when no moments are asked for.
-        const wanted = times ?? (loaded.duration > 0 ? [0, 1, 2, 3, 4, 5].map((part) => Math.round(((part + 0.5) * loaded.duration * 100) / 6) / 100) : [0]);
+    return await inChrome(width, height, { owner: `${projectId}/${name}`, map }, async (page, interval, held) => {
+      let warm = held !== null && held.version === version ? held : null;
+      if (warm === null) {
+        const loaded = await load(page, url, token, name);
         // As it renders: nothing behind the page, its unpainted parts see-through, shown over a checkerboard.
         await page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
+        const said = await page.evaluate<{ problems: string[]; errors: string[] }>("({ problems: [...window.__edit.problems], errors: [...window.__edit.errors] })");
+        warm = { version, ...loaded, problems: said.problems, errors: said.errors, animation: null };
+      } else {
+        // Kept from a look before: it says what it said as it loaded, and what this look's seeks say, as a fresh page would.
+        const before = [...warm.problems, ...(warm.animation === null ? [] : [warm.animation])];
+        await page.evaluate(`(() => { const edit = window.__edit; edit.problems.splice(0, edit.problems.length, ...${JSON.stringify(before)}); edit.errors.splice(0, edit.errors.length, ...${JSON.stringify(warm.errors)}); })()`);
+      }
+      const stills: Still[] = [];
+      if (warm.seek) {
+        // Six of it, each from the middle of its sixth, when no moments are asked for.
+        const duration = warm.duration;
+        const wanted = times ?? (duration > 0 ? [0, 1, 2, 3, 4, 5].map((part) => Math.round(((part + 0.5) * duration * 100) / 6) / 100) : [0]);
         for (const time of wanted) {
           // Unmeasured, the cost's same five seeks one after another, not a refresh apart (five refreshes a still, 4 s of a
           // stretch's 48 frames): what they throw is said as before, and the still is drawn after the same seeks.
@@ -633,7 +760,8 @@ export async function look(app: App, projectId: string, name: string, times: num
         }
       }
       const said = await page.evaluate<{ problems: string[]; errors: string[] }>("({ problems: window.__edit.problems, errors: window.__edit.errors })");
-      return { duration: loaded.duration, stills, interval, problems: said.problems, errors: said.errors };
+      if (warm.animation === null) warm.animation = said.problems.find((problem) => problem === ANIMATION) ?? null;
+      return { value: { duration: warm.duration, stills, interval, problems: said.problems, errors: said.errors }, warm };
     });
   } finally {
     diag.record("effects", "look", Date.now() - started);
@@ -942,9 +1070,9 @@ export async function makeSound(app: App, projectId: string, name: string): Prom
   if (!fs.existsSync(join(dir, SOUND_ENTRY))) throw new Error(`effects/${name}/ has no ${SOUND_ENTRY}: write it, with window.sound = { render(rate) } answering a Float32Array a channel (or an AudioBuffer)`);
   const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const url = `http://${seams.broll.pageHost(app)}${addressOf(projectId, name)}${SOUND_ENTRY}?sound=${token}`;
-  const made = await inChrome(640, 360, async (page) => {
+  const made = await inChrome(640, 360, { owner: null, map: false }, async (page) => {
     await load(page, url, token, name);
-    return page.evaluate<{ rate: number; channels: string[] } | { error: string }>(
+    const value = await page.evaluate<{ rate: number; channels: string[] } | { error: string }>(
       `(async () => {
         const sound = window.sound;
         if (!sound || typeof sound.render !== "function") return { error: "The page has no window.sound = { render(rate) }." };
@@ -959,6 +1087,7 @@ export async function makeSound(app: App, projectId: string, name: string): Prom
       })()`,
       90_000,
     );
+    return { value, warm: null };
   });
   if ("error" in made) throw new Error(`${name}: ${made.error}`);
   const channels = made.channels.map((one) => {
