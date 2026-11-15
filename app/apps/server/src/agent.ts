@@ -143,8 +143,6 @@ export interface Chat {
   heard: number;
   /** Edit ended the running turn itself (stopped, stalled, quitting): what it says after is ignored. */
   dropped: boolean;
-  /** A message already resumed or explicitly cancelled: never adopt it again from old history. */
-  authRecoveryUser: string | null;
   /** The tools the Claude session last saw (tool_changes.ts): a resumed one is told what changed since. */
   tools: toolChanges.ToolSchema | null;
   /** When the whole edit was done (its follow-ups too): from then on its turns are revisions (`turnModel`). Kept through a new chat; synced with it. */
@@ -176,7 +174,6 @@ function freshChat(): Chat {
     generation: 0,
     heard: 0,
     dropped: false,
-    authRecoveryUser: null,
     tools: null,
     built: null,
     queue: [],
@@ -499,43 +496,8 @@ export class Agents implements seams.AgentPanel {
   }
 
   private cancelClaudeRetries(): void {
-    for (const project of new Set([...this.chats.keys(), ...this.authPending.keys()])) {
-      const chat = this.withChat(project);
-      chat.authRecoveryUser = chat.entries.findLast((item) => item.kind === "user")?.id ?? null;
-      this.save(project);
-    }
     this.authPending.clear();
     this.saveAuthPending();
-  }
-
-  /** A pre-nightly-21 failure has no waiting-message receipt. Only the open
-   * conversation may adopt it, after verification newer than that failure. */
-  private legacyClaudeRetry(project: string): string | null {
-    const chat = this.withChat(project);
-    const verified = this.claudeSupport.status();
-    const last = chat.entries.at(-1);
-    const user = chat.entries.findLast((item) => item.kind === "user");
-    if (chat.provider !== "claude" || chat.running || chat.halted || this.authPending.has(project)) return null;
-    if (!last || !user || chat.authRecoveryUser === user.id || !authFailure(last) || last.status === "done") return null;
-    if (verified.phase !== "ready" || verified.checkedAt === null || last.updated > verified.checkedAt) return null;
-    return user.id;
-  }
-
-  /** POST from the open conversation only. The expected user id and saved
-   * receipt make concurrent refreshes and repeated requests harmless. */
-  async retryClaude(project: string, userId: string): Promise<boolean> {
-    if (this.store.get(projectOf(project)) === null) throw new Error("no such project");
-    await this.store.mayWrite(project);
-    if (this.legacyClaudeRetry(project) !== userId) return false;
-    const chat = this.withChat(project);
-    const user = chat.entries.find((item) => item.id === userId)!;
-    const after = chat.entries.slice(chat.entries.indexOf(user) + 1);
-    chat.authRecoveryUser = userId;
-    this.save(project);
-    this.authPending.set(project, { user: userId, text: user.text, model: chat.model, effort: chat.effort, continued: after.some((item) => item.kind === "tool"), retried: false });
-    this.saveAuthPending();
-    await this.resumeAfterClaudeLogin();
-    return true;
   }
 
   private waitForClaudeLogin(project: string, generation: number, text: string, continued: boolean): boolean {
@@ -569,7 +531,6 @@ export class Agents implements seams.AgentPanel {
         await this.store.mayWrite(project);
         if (this.withChat(project) !== chat || chat.halted || chat.running || chat.entries.findLast((item) => item.kind === "user")?.id !== pending.user) continue;
         this.authRetried.add(project);
-        chat.authRecoveryUser = pending.user;
         const userAt = chat.entries.findIndex((item) => item.id === pending.user);
         for (const item of chat.entries.slice(userAt + 1)) if (authFailure(item) && item.status !== "done") {
           this.upsert(project, { ...item, status: "done", detail: item.detail ?? item.text, text: "Claude sign-in restored. Continuing your message." });
@@ -684,7 +645,7 @@ export class Agents implements seams.AgentPanel {
 
   private save(project: string): void {
     const chat = this.withChat(project);
-    const snapshot = { provider: chat.provider, thread: chat.thread, model: chat.model, effort: chat.effort, authRecoveryUser: chat.authRecoveryUser, ...(chat.tools === null ? {} : { tools: chat.tools }), ...(chat.built === null ? {} : { built: chat.built }), ...(chat.queue.length === 0 ? {} : { queue: chat.queue.map(queuedJson) }), entries: chat.entries.map(entryJson), savedAt: Date.now() };
+    const snapshot = { provider: chat.provider, thread: chat.thread, model: chat.model, effort: chat.effort, ...(chat.tools === null ? {} : { tools: chat.tools }), ...(chat.built === null ? {} : { built: chat.built }), ...(chat.queue.length === 0 ? {} : { queue: chat.queue.map(queuedJson) }), entries: chat.entries.map(entryJson), savedAt: Date.now() };
     try {
       writeAtomic(this.store.chatPath(project), JSON.stringify(snapshot));
       this.onChatSaved?.(project);
@@ -707,7 +668,7 @@ export class Agents implements seams.AgentPanel {
 
   chat(project: string): Json {
     const chat = this.withChat(project);
-    return sorted({ entries: chat.entries.map(entryJson), running: chat.running, model: chat.model, effort: chat.effort, model_name: this.modelName(project), revising: this.revising(project), auth_retry: this.legacyClaudeRetry(project), queue: chat.queue.map(queuedJson) });
+    return sorted({ entries: chat.entries.map(entryJson), running: chat.running, model: chat.model, effort: chat.effort, model_name: this.modelName(project), revising: this.revising(project), queue: chat.queue.map(queuedJson) });
   }
 
   /** The agent's `new_chat` (the user asked for one): this chat goes when the turn now running ends. */
@@ -1412,7 +1373,6 @@ export class Agents implements seams.AgentPanel {
     this.authPending.delete(project);
     this.saveAuthPending();
     const chat = this.withChat(project);
-    chat.authRecoveryUser = chat.entries.findLast((item) => item.kind === "user")?.id ?? null;
     this.save(project);
     chat.halted = true;
     if (chat.running) {
@@ -2028,7 +1988,6 @@ export function readChat(text: string): Chat {
   chat.provider = option("provider") === "claude" ? "claude" : null;
   chat.model = option("model");
   chat.effort = option("effort");
-  chat.authRecoveryUser = option("authRecoveryUser");
   chat.tools = toolChanges.read(given.tools);
   chat.built = typeof given.built === "number" ? given.built : null;
   chat.queue = readQueue(given.queue);

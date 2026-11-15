@@ -132,8 +132,6 @@ interface State {
   shareOptions?: Record<string, Partial<ExportOptions>>;
   /** Each project's watermark from its last Share (a channel's picture id, channel_marks.ts), kept for the shares after it; absent, none. */
   shareWatermark?: Record<string, string>;
-  /** From before shares were jobs: projects whose fixes a share couldn't put up. Taken into jobs.json (failed `share` jobs) when read. */
-  unshared?: Record<string, true>;
 }
 
 function empty(): State {
@@ -158,24 +156,7 @@ function parse(home: string): State {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return empty();
   const given = raw as Partial<State>;
   const state: State = { ...empty(), ...given, shared: given.shared ?? {}, notes: given.notes ?? {} };
-  if (state.unshared !== undefined) takeInUnshared(home, state);
   return state;
-}
-
-/** `unshared` from before shares were jobs: each a failed share of its fixes in jobs.json (unless a share's listed since), and gone from the file. */
-function takeInUnshared(home: string, state: State): void {
-  for (const project of Object.keys(state.unshared ?? {})) {
-    if (jobs.get(home, shareKey(project)) !== undefined) continue;
-    const latest = state.shared[project]?.versions.reduce((most, one) => Math.max(most, one.n), 0) ?? 0;
-    const key = jobs.begin(home, "share", project, { id: "unshared", fixes: { reviewId: null, next: latest + 1 } }, "", "exporting");
-    jobs.settle(home, key, "failed", { error: "sharing the fixes failed on an earlier build" });
-  }
-  delete state.unshared;
-  try {
-    writeAtomic(join(home, FILE), JSON.stringify(state));
-  } catch (error) {
-    diag.warn("review", `taking the unshared fixes into jobs.json: ${diag.messageOf(error)}`);
-  }
 }
 
 /**
@@ -323,14 +304,12 @@ export function shareNow(home: string, projectId: string): { line: string | null
 
 /** Ready for changes made fixes here that the share after them couldn't put up: the next one shares them, changed or not. */
 export function unshared(home: string, projectId: string): boolean {
-  read(home); // reviews.json's old `unshared`, taken in first
   const job = shareJob(home, projectId);
   return job !== undefined && (job.state === "failed" || job.state === "given_up") && (job.args as Partial<ShareArgs>).fixes !== undefined;
 }
 
 /** Every project with fixes `unshared`. */
 export function unsharedProjects(home: string): string[] {
-  read(home);
   return jobs.list(home, "share").flatMap((job) => (unshared(home, job.project) ? [job.project] : []));
 }
 

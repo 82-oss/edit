@@ -881,7 +881,6 @@ export interface AgentPanel extends Agents {
   /** Local Claude maintenance, diagnosis and browser sign-in (no credential data). */
   claudeSetup?(action?: import("./claude_support.ts").SupportAction | "cancel"): import("./claude_support.ts").SupportStatus;
   /** Resumes an older authentication failure in the open conversation once verified. */
-  retryClaude?(project: string, userId: string): Promise<boolean>;
   claudeSupport?: { afterNightly(build: string): void; settled(): Promise<void> };
   /** The models the user's Claude Code offers (cached a day; `refresh` asks now). */
   models(refresh: boolean): Promise<Json>;

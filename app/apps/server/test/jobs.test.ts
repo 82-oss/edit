@@ -248,36 +248,6 @@ test("an export handed to its archive in one write: no crash falls between them"
   }
 });
 
-test("the old ledgers are taken in once, and removed: failed exports, running turns, fixes under way; the old retry queue goes", () => {
-  const dir = home();
-  try {
-    fs.mkdirSync(`${dir}/agent`);
-    fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify([{ key: "watch:p2", kind: "watch", project: "p2", args: {}, started_ms: 5, resumes: 1 }]));
-    fs.writeFileSync(`${dir}/export-failures.json`, JSON.stringify({ p1: { project: "p1", name: "Cops", options: { format: "h264" }, output: "/out/p1.mp4", error: "Native encoder stalled", at: 7, build: "nightly-47", share: true } }));
-    fs.writeFileSync(`${dir}/agent/running-turns.json`, JSON.stringify({ at: 9, projects: ["p3", "p3~fresh"] }));
-    fs.writeFileSync(`${dir}/review-fixes.json`, JSON.stringify({ p4: { reviewId: "r1", noteIds: ["n1"], before: "t0", at: 11 } }));
-    fs.writeFileSync(`${dir}/retry-after-update.json`, JSON.stringify({ build: "nightly-48", from: "nightly-47", items: [{ kind: "export", project: "p1", name: "Cops" }] }));
-    const listed = jobs.list(dir);
-    expect(listed.map((job) => [job.key, job.state, job.attempts])).toEqual([
-      ["watch:p2", "running", 1],
-      ["export:p1", "failed", 0],
-      ["turn:p3", "running", 0],
-      ["turn:p3:p3~fresh", "running", 0],
-      ["fix:p4", "running", 0],
-    ]);
-    expect(jobs.get(dir, "export:p1")).toMatchObject({ error: "Native encoder stalled", build: "nightly-47", updated_ms: 7, args: { name: "Cops", options: { format: "h264" }, output: "/out/p1.mp4", share: true } });
-    expect(jobs.get(dir, "turn:p3:p3~fresh")).toMatchObject({ args: { chat: "p3~fresh" }, updated_ms: 9 });
-    expect(jobs.get(dir, "fix:p4")).toMatchObject({ args: { reviewId: "r1", noteIds: ["n1"], before: "t0", at: 11 }, step: "fixing" });
-    for (const old of ["export-failures.json", "agent/running-turns.json", "review-fixes.json", "retry-after-update.json"]) expect(fs.existsSync(`${dir}/${old}`)).toBe(false);
-    // Read by hand: an array of plain objects, one a line or so.
-    expect(Array.isArray(JSON.parse(fs.readFileSync(`${dir}/jobs.json`, "utf8")))).toBe(true);
-    // Taken in once: reading again changes nothing.
-    expect(jobs.list(dir)).toEqual(listed);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
 test("a job that's still going (a turn's minute) has its time noted and its restarts forgiven", async () => {
   const dir = home();
   try {

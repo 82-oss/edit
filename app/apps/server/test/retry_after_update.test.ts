@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 
 import { readOnly } from "../src/cloud_projects.ts";
 import { chunkFolder, ExportRegistry, failedExports, type ExportFailure } from "../src/exports.ts";
+import * as jobs from "../src/jobs.ts";
 import * as reviews from "../src/reviews.ts";
 import * as retry from "../src/retry_after_update.ts";
 import { fixtureHome } from "./helpers/home.ts";
@@ -60,9 +61,13 @@ function setUp(name: string, old: string | null) {
   const mom = app.store.createAs("Mom Secretly", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
   const cops = app.store.createAs("Cops Surprise", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
   const version = { n: 1, timeline: "t", path: "/nowhere.mp4", fps: 30, durationMs: 10_000, clips: [] };
-  fs.writeFileSync(`${home}/reviews.json`, JSON.stringify({ cursor: 0, notes: {}, shared: { [mom]: { reviewId: "r1", url: "u", versions: [version] } }, unshared: { [mom]: true } }));
+  fs.writeFileSync(`${home}/reviews.json`, JSON.stringify({ cursor: 0, notes: {}, shared: { [mom]: { reviewId: "r1", url: "u", versions: [version] } } }));
+  const share = jobs.begin(home, "share", mom, { id: "unshared", fixes: { reviewId: null, next: 2 } }, "", "exporting");
+  jobs.settle(home, share, "failed", { error: "sharing the fixes failed on an earlier build" });
   // A share's own export failing too: that's the share's to try again, not the export's.
-  fs.writeFileSync(`${home}/export-failures.json`, JSON.stringify({ [cops]: failure(cops), [mom]: failure(mom, { share: true }) }));
+  for (const { project, error, at: _at, build, ...args } of [failure(cops), failure(mom, { share: true })]) {
+    jobs.settle(home, jobs.begin(home, "export", project, args), "failed", { error, build });
+  }
   if (old !== null) fs.writeFileSync(`${home}/last-build.json`, JSON.stringify({ build: old }));
   idle(app);
   return { ...fixture, mom, cops };

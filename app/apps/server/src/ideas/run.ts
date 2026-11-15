@@ -891,20 +891,6 @@ function tell(id: string, what: IdeaRun["what"], ending: Ending, named: { title:
   notices.notify({ key: `idea:${id}:${Date.now()}`, title, body: titles ? name : `${name}: ${notices.line(ending.text)}`, path: `/ideas/${id}` });
 }
 
-/** Runs this Mac had going when Edit stopped and has no job for (from before jobs.json listed them): stopped, to be started again by hand. */
-export async function markInterrupted(holder: string, home: string | null = null): Promise<void> {
-  const rows = await cloud.list();
-  for (const row of rows) {
-    if (row.summary.run !== "running" && row.summary.run !== "queued") continue;
-    await cloud
-      .change(row.id, holder, (idea) => {
-        if (idea.run === null || idea.run.holder !== holder || (idea.run.state !== "running" && idea.run.state !== "queued") || runs.has(idea.id) || jobs.get(home, jobOf(idea.id)) !== undefined) return false;
-        idea.run = { ...idea.run, state: "stopped", endedAt: Date.now(), error: "Edit restarted before Claude finished. Ask again." };
-      })
-      .catch((error: unknown) => diag.warn("ideas", `${row.id}: marking its run stopped: ${diag.messageOf(error)}`));
-  }
-}
-
 /** The MCP answer to one JSON-RPC message (Script mode's endpoint, build.ts, on Ideas' tools). */
 export async function answerTo(token: string, message: unknown): Promise<unknown> {
   if (typeof message !== "object" || message === null) return null;

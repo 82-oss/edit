@@ -7,7 +7,7 @@
 // in `<home>/last-build.json`, or none was kept), it queues, in jobs.json
 // (each failed job's `retry`, set to this build):
 //   - each share that failed after its fixes went in (a failed `share` job
-//     from Ready for changes, reviews' `unshared`): exported and shared as the
+//     from Ready for changes, reviews.ts `unshared`): exported and shared as the
 //     next version, as Share again does, which ends the failed request on the
 //     review page;
 //   - each export that failed and hasn't been exported since (a failed
@@ -90,7 +90,7 @@ export function noteBuild(app: App, build = BUILD): Item[] {
   if (last === build) return [];
   const from = typeof last === "string" ? last : null;
   const nameOf = (project: string, given?: string) => app.store.get(project)?.project.name ?? given ?? project;
-  // The fixes a share couldn't put up (reviews.json's old `unshared` taken into jobs.json as it's read), then the exports.
+  // The fixes a share couldn't put up (failed `share` jobs), then the exports.
   const shares = reviews.unsharedProjects(home);
   const failures = failedExports(home);
   const exports = Object.values(failures)

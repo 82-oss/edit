@@ -19,8 +19,7 @@
 // what brings the server down: it stays listed as given up, the diagnostics
 // say so, and unstick starts it again.
 //
-// The file stays an array of plain objects, readable by hand. The ledgers it
-// replaces are taken in, once, when it's first read (`migrate`).
+// The file stays an array of plain objects, readable by hand.
 
 import * as fs from "node:fs";
 
@@ -127,7 +126,6 @@ function load(home: string): Job[] {
 }
 
 function read(home: string): Job[] {
-  migrate(home);
   return load(home);
 }
 
@@ -574,72 +572,4 @@ export function startGivenUp(home: string | null): { keys: string[]; started: Pr
   if (revived.length === 0) return { keys: [], started: Promise.resolve() };
   const resumers = registered.get(home);
   return { keys: revived.map((job) => job.key), started: resumers === undefined ? Promise.resolve() : startAll(home, revived, resumers) };
-}
-
-// ---------------------------------------------------------------------------
-// The ledgers this table replaced, taken in once when they're found.
-
-const OLD = {
-  /** ExportRegistry's failed exports, by project. */
-  failures: "export-failures.json",
-  /** agent.ts's running turns: {at, projects}. */
-  turns: join("agent", "running-turns.json"),
-  /** retry_after_update.ts's queue; this build queues its failures afresh. */
-  retries: "retry-after-update.json",
-  /** reviews.ts's fixes under way, by project. */
-  fixes: "review-fixes.json",
-} as const;
-
-function oldJson(path: string): unknown {
-  try {
-    return JSON.parse(fs.readFileSync(path, "utf8")) as unknown;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The old ledgers, taken into the table and removed (each only once the
- * table holds it): a failed export becomes a failed `export` job, a noted
- * turn a `turn` job, a fix under way a `fix` job, and the old retry queue
- * goes (a new build queues every failure again). Reviews' `unshared` is taken in by reviews.ts.
- */
-export function migrate(home: string): void {
-  const found = Object.values(OLD).filter((name) => fs.existsSync(join(home, name)));
-  if (found.length === 0) return;
-  const jobs = load(home);
-  const has = (key: string) => jobs.some((job) => job.key === key);
-  const failures = oldJson(join(home, OLD.failures)) as Record<string, Record<string, unknown>> | null;
-  for (const [project, failure] of Object.entries(failures !== null && typeof failures === "object" ? failures : {})) {
-    const key = keyOf("export", project);
-    if (has(key) || typeof failure !== "object" || failure === null) continue;
-    const { project: _p, error, at, build, ...args } = failure as { project?: unknown; error?: unknown; at?: unknown; build?: unknown };
-    const when = typeof at === "number" ? at : nowMs();
-    jobs.push({ key, kind: "export", project, args, state: "failed", attempts: 0, started_ms: when, updated_ms: when, error: typeof error === "string" ? error : "failed", ...(typeof build === "string" ? { build } : {}) });
-  }
-  const turns = oldJson(join(home, OLD.turns)) as { at?: unknown; projects?: unknown } | null;
-  if (turns !== null && typeof turns.at === "number" && Array.isArray(turns.projects)) {
-    for (const chat of turns.projects) {
-      if (typeof chat !== "string") continue;
-      const project = chat.split("~")[0] ?? chat;
-      const key = keyOf("turn", project, chat === project ? "" : chat);
-      if (!has(key)) jobs.push({ key, kind: "turn", project, args: { chat }, state: "running", attempts: 0, started_ms: turns.at, updated_ms: turns.at });
-    }
-  }
-  const fixes = oldJson(join(home, OLD.fixes)) as Record<string, Record<string, unknown>> | null;
-  for (const [project, taken] of Object.entries(fixes !== null && typeof fixes === "object" ? fixes : {})) {
-    const key = keyOf("fix", project);
-    if (has(key) || typeof taken !== "object" || taken === null) continue;
-    const at = typeof taken.at === "number" ? taken.at : nowMs();
-    jobs.push({ key, kind: "fix", project, args: taken, state: "running", step: "fixing", attempts: 0, started_ms: at, updated_ms: at });
-  }
-  // The old retry queue isn't taken in: this is a new build, so retry_after_update queues every failure again.
-  try {
-    writeAtomic(file(home), JSON.stringify(jobs, null, 1));
-  } catch (error) {
-    diag.warn("jobs", `couldn't take in the old ledgers (${found.join(", ")}): ${diag.messageOf(error)}`);
-    return;
-  }
-  for (const name of found) fs.rmSync(join(home, name), { force: true });
-  diag.info("jobs", `took ${found.join(", ")} into jobs.json`);
 }

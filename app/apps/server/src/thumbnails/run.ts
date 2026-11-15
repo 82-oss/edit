@@ -1033,19 +1033,6 @@ async function work(context: Context, id: string, asked: string, given: string[]
   }
 }
 
-/** Turns this Mac had going when Edit stopped and has no job for (from before jobs.json listed them): marked stopped. */
-export async function markInterrupted(holder: string, home: string | null = null): Promise<void> {
-  for (const row of await cloud.list()) {
-    if (row.summary.run !== "running" && row.summary.run !== "queued") continue;
-    await cloud
-      .change(row.id, holder, (thumb) => {
-        if (thumb.run === null || thumb.run.holder !== holder || (thumb.run.state !== "running" && thumb.run.state !== "queued") || runs.has(thumb.id) || jobs.get(home, jobOf(thumb.id)) !== undefined) return false;
-        thumb.run = { ...thumb.run, state: "stopped", endedAt: Date.now(), error: "Edit restarted before Claude finished. Ask again." };
-      })
-      .catch((error: unknown) => diag.warn("thumbnails", `${row.id}: marking its turn stopped: ${diag.messageOf(error)}`));
-  }
-}
-
 /** The MCP answer to one JSON-RPC message, on the thumbnail tools. */
 export async function answerTo(token: string, message: unknown): Promise<unknown> {
   if (typeof message !== "object" || message === null) return null;

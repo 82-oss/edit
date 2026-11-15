@@ -389,18 +389,6 @@ test("a video already on the board is the person's decision, not a run; no capti
   expect(idea.skipped).not.toContain("no English captions");
 });
 
-test("a run cut off by a restart is marked stopped, only on the Mac that ran it", async () => {
-  const mine = videoIdea("i8-test");
-  mine.run = { what: "repackage", state: "running", holder: "test-mac", by: "Sphe", startedAt: Date.now() };
-  const theirs = videoIdea("i9-test");
-  theirs.run = { what: "repackage", state: "running", holder: "other-mac", by: "JJ", startedAt: Date.now() };
-  await cloud.commit(mine, 0, "Sphe");
-  await cloud.commit(theirs, 0, "JJ");
-  await run.markInterrupted("test-mac");
-  expect(rows.get("i8-test")!.body.run).toMatchObject({ state: "stopped", error: "Edit restarted before Claude finished. Ask again." });
-  expect(rows.get("i9-test")!.body.run!.state).toBe("running");
-});
-
 test("the video's times, storyboard and stream are read from yt-dlp's formats, and a sharp frame outscores a blur", () => {
   expect(frames.secondsOf("4:12")).toBe(252);
   expect(frames.secondsOf("[1:02:03]")).toBe(3723);
