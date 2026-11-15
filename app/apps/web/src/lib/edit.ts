@@ -68,7 +68,7 @@ const busy = (project: Project, track: string, start: number, end: number, excep
   project.clips.some((clip) => clip.track === track && !except?.has(clip.id) && clip.start < end && start < clipEnd(clip));
 
 /** The free track `freeTrack` would pick, without adding one (undefined = it would add a track). */
-export function peekFreeTrack(project: Project, kind: TrackKind, start: number, end: number, aboveFootage = false) {
+function peekFreeTrack(project: Project, kind: TrackKind, start: number, end: number, aboveFootage = false) {
   const tracks = project.tracks.filter((track) => track.kind === kind && !track.locked && !track.subtitles).slice(aboveFootage ? 1 : 0);
   return tracks.find((track) => !busy(project, track.id, start, end))?.id;
 }
@@ -246,7 +246,7 @@ export function placeMedia(project: Project, mediaId: string, frame: number, vid
 export type Element = "title" | "caption" | "subtitle" | "cutin" | "adjustment" | "shake" | "flash" | "black" | "waveform";
 
 /** Default length of each element, in seconds. */
-export const ELEMENT_SECONDS: Record<Element, number> = {
+const ELEMENT_SECONDS: Record<Element, number> = {
   title: 4,
   caption: 3,
   subtitle: 3,

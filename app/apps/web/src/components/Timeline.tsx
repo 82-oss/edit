@@ -6,7 +6,6 @@ import { DecodedCache } from "../lib/decoded-cache";
 import { CLIP_HEX } from "../lib/colors";
 import { drawFilmstrip } from "../lib/filmstrip";
 import {
-  addElement,
   addTrack,
   clearRange,
   clipEnd,
@@ -14,14 +13,10 @@ import {
   gapAt,
   maxDuration,
   mediaOf,
-  peekFreeTrack,
-  placeMedia,
   splitAt,
   trackLabel,
   trimStart,
   withLinked,
-  ELEMENT_SECONDS,
-  type Element,
 } from "../lib/edit";
 import { playhead, preview } from "../lib/playback";
 import { useEditor } from "../lib/store";
@@ -34,10 +29,6 @@ import { FeedbackBands } from "./FeedbackBands";
 import { GRAPH_HEADER, GraphEditor } from "./GraphEditor";
 import { cx, IconButton } from "./ui";
 import { rate } from "../lib/types";
-
-/** What a drag from the page carries: one of the project's media, or an element to add. */
-const MEDIA_MIME = "application/x-edit-media";
-const ELEMENT_MIME = "application/x-edit-element";
 
 const HEADER = 84;
 const VIDEO_ROW = 48;
@@ -157,8 +148,8 @@ export function Timeline() {
   const view = useView();
   const [size, setSize] = useState({ w: 0, h: 0 });
   const hover = useRef<{ x: number; y: number } | null>(null);
-  /** What a drag from the bin or desktop would place, mirrored from placeMedia/addElement. */
-  const drop = useRef<{ frame: number; track?: string; duration: number; kind: "video" | "audio" | "element"; withAudio: boolean } | null>(null);
+  /** Where files dragged in from the desktop would land (placed by uploadFiles once they're up). */
+  const drop = useRef<{ frame: number; track?: string; duration: number } | null>(null);
   const snapLine = useRef<number | null>(null);
   const drag = useRef<Drag | null>(null);
   /** Following the playhead while it plays; off once scrolled away from it (see nextFollow). */
@@ -616,36 +607,20 @@ export function Timeline() {
     }
   };
 
-  // --- drag and drop from the media panel ----------------------------------
+  // --- files dropped from the desktop ------------------------------------
 
   const dropInfo = (event: React.DragEvent) => {
     const { x, y } = local(event);
-    const project = useEditor.getState().project!;
     const row = rowAt(y);
-    const isElement = event.dataTransfer.types.includes(ELEMENT_MIME);
-    let duration = fps * 4;
-    let kind: "video" | "audio" | "element" = isElement ? "element" : "video";
-    // Files from the desktop are unknown until uploaded; most footage has sound.
-    let withAudio = !isElement;
-    const dragging = window as unknown as { __editDragMedia?: string; __editDragElement?: Element };
-    const mediaId = dragging.__editDragMedia;
-    if (isElement && dragging.__editDragElement) duration = Math.round(ELEMENT_SECONDS[dragging.__editDragElement] * fps);
-    if (!isElement && mediaId) {
-      const media = mediaOf(project, mediaId);
-      if (media) {
-        duration = Math.floor(media.duration * fps);
-        kind = media.kind === "audio" ? "audio" : "video";
-        withAudio = media.has_audio;
-      }
-    }
+    // A file's length is unknown until it's up: four seconds is shown.
+    const duration = fps * 4;
     let frame = Math.max(0, Math.round(xToFrame(x)));
     frame += snap([frame, frame + duration], new Set());
-    return { frame: Math.max(0, frame), track: row?.track.kind === "video" ? row.track.id : undefined, duration, kind, withAudio };
+    return { frame: Math.max(0, frame), track: row?.track.kind === "video" ? row.track.id : undefined, duration };
   };
 
   const onDragOver = (event: React.DragEvent) => {
-    const types = event.dataTransfer.types;
-    if ((!types.includes(MEDIA_MIME) && !types.includes(ELEMENT_MIME) && !types.includes("Files")) || noProject()) return;
+    if (!event.dataTransfer.types.includes("Files") || noProject()) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
     drop.current = dropInfo(event);
@@ -658,40 +633,21 @@ export function Timeline() {
     const info = dropInfo(event);
     drop.current = null;
     snapLine.current = null;
-    if (event.dataTransfer.files.length) {
-      // Files from the user’s own device: upload, then place where dropped.
-      event.stopPropagation();
-      uploadFiles([...event.dataTransfer.files], { frame: info.frame, track: info.track });
-      requestDraw();
-      return;
-    }
-    const mediaId = event.dataTransfer.getData(MEDIA_MIME);
-    const element = event.dataTransfer.getData(ELEMENT_MIME) as Element;
-    let ids: string[] = [];
-    edit((draft) => {
-      if (mediaId) ids = placeMedia(draft, mediaId, info.frame, info.track);
-      else if (element) ids = [addElement(draft, element, info.frame, info.track)];
-    });
-    useEditor.getState().select(ids);
+    if (!event.dataTransfer.files.length) return;
+    event.stopPropagation();
+    uploadFiles([...event.dataTransfer.files], { frame: info.frame, track: info.track });
     requestDraw();
   };
 
-  // Remember which media is being dragged (dataTransfer is unreadable during dragover).
+  // A drag that ends anywhere takes its ghost with it.
   useEffect(() => {
-    const onStart = (event: DragEvent) => {
-      const target = event.target as HTMLElement;
-      const id = target?.closest?.("[draggable]") ? event.dataTransfer?.getData(MEDIA_MIME) : undefined;
-      (window as unknown as { __editDragMedia?: string }).__editDragMedia = id || undefined;
-    };
     const onEnd = () => {
       drop.current = null;
       snapLine.current = null;
       requestDraw();
     };
-    window.addEventListener("dragstart", onStart);
     window.addEventListener("dragend", onEnd);
     return () => {
-      window.removeEventListener("dragstart", onStart);
       window.removeEventListener("dragend", onEnd);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -834,18 +790,11 @@ export function Timeline() {
       drawClip(ctx, project, clip, x0, x1, y, h, selected.has(clip.id), row.track, statuses, width, assetLoaded);
     }
 
-    // Drop ghost: picture where it will land and, for footage with sound, its audio too.
+    // Drop ghost: the picture where it will land and its sound below (most footage has sound).
     const ghost = drop.current;
     if (ghost) {
       const unlocked = (kind: "video" | "audio") => project.tracks.find((track) => track.kind === kind && !track.locked)?.id;
-      const targets: (string | undefined)[] = [];
-      if (ghost.kind === "audio") targets.push(unlocked("audio"));
-      else {
-        targets.push(ghost.track ?? (ghost.kind === "video" ? unlocked("video") : undefined));
-        if (ghost.kind === "video" && ghost.withAudio) targets.push(unlocked("audio"));
-      }
-      // Elements without a hovered video row go to the first free track above the footage.
-      if (ghost.kind === "element" && !ghost.track) targets[0] = peekFreeTrack(project, "video", ghost.frame, ghost.frame + ghost.duration, true);
+      const targets = [ghost.track ?? unlocked("video"), unlocked("audio")];
       const x0 = frameToX(ghost.frame);
       const w = ghost.duration * ppf;
       ctx.fillStyle = "rgba(255,255,255,0.12)";
