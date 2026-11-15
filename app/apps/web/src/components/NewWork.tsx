@@ -11,7 +11,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useState, type ReactNode } from "react";
 
 import type { Channel, Lane } from "../lib/channels";
-import { ChannelPills } from "./Channels";
+import { ChannelPicker } from "./Channels";
 import { Button, cx, Modal, spring } from "./ui";
 
 export type WorkKind = "edit" | "script" | "idea" | "thumbnail";
@@ -96,7 +96,8 @@ export function Field({ label, hint, children, className }: { label: string; hin
 
 /**
  * The channel it's for, first (Sphe, Nov 14: "the main thing that shows up
- * is Pick a channel"); picked, it's white. `other`: what's there besides the
+ * is Pick a channel"); a group first, then its channel (ChannelPicker);
+ * picked, it's white. `other`: what's there besides the
  * channels (today's kinds), under Other kinds, opened when no
  * channel can be.
  */
@@ -112,7 +113,7 @@ export function ChannelField({ kind, channels, value, onChange, other, otherOpen
   if (channels.length === 0) return other === undefined ? null : <Field label="Kind">{other}</Field>;
   return (
     <Field label="Channel">
-      <ChannelPills channels={channels} value={value} lane={KINDS[kind].lane} onChange={onChange} />
+      <ChannelPicker channels={channels} value={value} lane={KINDS[kind].lane} onChange={onChange} />
       {other !== undefined && onOther !== undefined && (
         <>
           <button type="button" onClick={() => onOther(!otherOpen)} className="mt-2.5 flex items-center gap-1 text-[12px] text-faint transition-colors hover:text-muted">

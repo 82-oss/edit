@@ -25,7 +25,8 @@ import { useKept } from "../lib/kept";
 import { creditCopies } from "../lib/copies";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
-import { AddChannelButton, ChannelAvatar, ChannelsView } from "./Channels";
+import { ChannelAvatar } from "./Channels";
+import { ChannelsActions, ChannelsTitle, ChannelsView, useChannelsNav, type ChannelWork } from "./ChannelsHome";
 import { AREA, Aside, ChannelField, FIELD, Field, More, NewShell } from "./NewWork";
 import { loadChannels, useChannels } from "../lib/channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
@@ -103,7 +104,6 @@ export function Home() {
   };
   // Channels are V2's (the beta): Home's Channels, and Add channel over it.
   const v2 = useBeta((beta) => beta.v2);
-  const [addingChannel, setAddingChannel] = useState(false);
   useEffect(() => {
     void loadBeta().catch(() => {});
   }, []);
@@ -417,6 +417,12 @@ export function Home() {
   const ofChannel = (item: Item) => channelFilter === null || item.channel === channelFilter;
   const ours = items.filter((item) => (!mine || item.mine) && (kind === null || item.kind === kind) && ofChannel(item) && recent(item));
   const countOf = (place: Where) => ours.filter((item) => isIn(item, place)).length;
+  // Channels' In progress: the team's work for a channel that isn't done (whoever's, whenever).
+  const channelWork: ChannelWork[] = items.flatMap((item) => {
+    if (!item.channel || item.stage === "done" || markedDone(item)) return [];
+    const [kind, open] = item.section === "ideas" ? (["idea", () => navigate(`/ideas/${item.id.slice(5)}`)] as const) : item.section === "scripts" ? (["script", () => navigate(`/scripts/${item.id.slice(7)}`)] as const) : (["edit", () => navigate(`/p/${item.id}`)] as const);
+    return [{ id: item.id, title: item.title, kind, channel: item.channel, open }];
+  });
   // The foot's Later: how many are set aside, and the next to come back.
   const setAside = ours.filter((item) => isIn(item, "later"));
   const nextBack = setAside
@@ -479,7 +485,10 @@ export function Home() {
     setAllDone(false);
     if (placeOf(place).place === "ideas") navigate("/ideas", true);
     else if (place === "thumbnails") navigate("/thumbnails", true);
-    else if (place === "channels") navigate("/channels", true);
+    else if (place === "channels") {
+      useChannelsNav.setState({ open: null, dialog: null });
+      navigate("/channels", true);
+    }
     else if (window.location.pathname === "/ideas" || window.location.pathname === "/thumbnails" || window.location.pathname === "/channels") navigate("/", true);
   };
   const chooseMine = (value: boolean) => {
@@ -528,6 +537,9 @@ export function Home() {
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-panel">
           <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-line px-5">
             {!sidebarOpen && <OpenSidebar onOpen={() => setSidebarOpen(true)} />}
+            {inChannels ? (
+              <ChannelsTitle />
+            ) : (
             <h1 className="flex min-w-0 items-center gap-1.5 text-[15px] font-semibold tracking-[-0.01em] whitespace-nowrap">
               {title.parent !== null && (
                 <>
@@ -536,8 +548,9 @@ export function Home() {
                 </>
               )}
               <span className="truncate">{title.name}</span>
-              {!loading && !inThumbnails && !inChannels && <span className="ml-1 text-[13px] font-normal text-faint tabular">{total}</span>}
+              {!loading && !inThumbnails && <span className="ml-1 text-[13px] font-normal text-faint tabular">{total}</span>}
             </h1>
+            )}
             <div className="ml-auto flex items-center gap-1.5">
               <MemoryChip />
               <UpdateButton />
@@ -547,7 +560,7 @@ export function Home() {
                   <Plus size={15} strokeWidth={2.2} /> New idea
                 </Button>
               ) : inChannels ? (
-                <AddChannelButton onClick={() => setAddingChannel(true)} />
+                <ChannelsActions />
               ) : inThumbnails ? (
                 <Button variant="light" onClick={() => setThumbOpen(true)}>
                   <Plus size={15} strokeWidth={2.2} /> New thumbnail
@@ -563,7 +576,7 @@ export function Home() {
             <SetupCard />
             {/* Thumbnails in the panel (Sphe, Nov 2: they "should sort of happen on that right hand side"), not a page of their own. */}
             {inChannels ? (
-              <ChannelsView adding={addingChannel} onAdding={setAddingChannel} />
+              <ChannelsView work={channelWork} />
             ) : inThumbnails ? (
               <div className="-mx-4 -mt-3">
                 <ThumbnailGrid onMake={() => setThumbOpen(true)} />

@@ -6,6 +6,7 @@
 // is channels sharing one style, taught once: shown as one row, its channels'
 // names together; work still belongs to one channel.
 
+import { useEffect } from "react";
 import { create } from "zustand";
 
 import { request } from "./api";
@@ -142,19 +143,26 @@ const reloaded = async <T>(work: Promise<T>): Promise<T> => {
   return answer;
 };
 
+/** A change that moves teaching between a group and its channels: what each was taught is read again. */
+const moved = async <T>(work: Promise<T>): Promise<T> => {
+  const answer = await reloaded(work);
+  forgetTaught();
+  return answer;
+};
+
 export const groupApi = {
   /** A group with what each of its lanes has been taught. */
   page: (key: string) => request<{ group: Group; taught: Record<Lane, Taught[]>; teacher: boolean }>("GET", `/api/groups/${key}`),
   /** Made of `channels`, its style started from `from`'s (whose teaching moves into it). */
-  make: (channels: string[], from: string) => reloaded(request<{ group: Group }>("POST", "/api/groups", { channels, from }).then((answer) => answer.group)),
+  make: (channels: string[], from: string) => moved(request<{ group: Group }>("POST", "/api/groups", { channels, from }).then((answer) => answer.group)),
   set: (key: string, lanes: Partial<Record<Lane, string>>) => reloaded(request<{ group: Group }>("PUT", `/api/groups/${key}`, { lanes })),
-  add: (key: string, channel: string) => reloaded(request("POST", `/api/groups/${key}/channels`, { channel })),
+  add: (key: string, channel: string) => moved(request("POST", `/api/groups/${key}/channels`, { channel })),
   /** Taken out with a copy of the group's teaching. */
-  takeOut: (key: string, channel: string) => reloaded(request("DELETE", `/api/groups/${key}/channels/${channel}`)),
+  takeOut: (key: string, channel: string) => moved(request("DELETE", `/api/groups/${key}/channels/${channel}`)),
   /** Every channel taken out so. */
-  ungroup: (key: string) => reloaded(request("DELETE", `/api/groups/${key}`)),
+  ungroup: (key: string) => moved(request("DELETE", `/api/groups/${key}`)),
   /** A channel's own item moved into the group. */
-  move: (key: string, item: string) => request("POST", `/api/groups/${key}/move`, { item }),
+  move: (key: string, item: string) => request("POST", `/api/groups/${key}/move`, { item }).then(forgetTaught),
 };
 
 /** 1,200,000 → "1.2M". */
@@ -165,3 +173,90 @@ export function compact(count: number | null | undefined): string | null {
 
 /** Who narrates, in a word or two. */
 export const narrationLabel = (narration: Narration | null) => (narration === null ? null : narration.kind === "recorded" ? "Recorded by the editor" : narration.name);
+
+/**
+ * What each place's lanes have been taught, as last read: `group:<key>` (a
+ * group's shared teaching) or `channel:<key>` (a channel's own). Read once a
+ * minute at most (Channels' table asks for every row), again at once on a
+ * page and after teaching moves.
+ */
+export const useTaught = create<{ places: Record<string, Record<Lane, Taught[]>>; round: number }>(() => ({ places: {}, round: 0 }));
+const readAt = new Map<string, number>();
+const asking = new Map<string, Promise<void>>();
+
+export function loadTaught(place: string, fresh = false): Promise<void> {
+  if (!fresh && Date.now() - (readAt.get(place) ?? 0) < 60_000) return Promise.resolve();
+  const going = asking.get(place);
+  if (going !== undefined) return going;
+  const [kind, key] = [place.slice(0, place.indexOf(":")), place.slice(place.indexOf(":") + 1)];
+  const keepAll = (found: Record<string, Record<Lane, Taught[]>>) => {
+    for (const one of Object.keys(found)) readAt.set(one, Date.now());
+    useTaught.setState((now) => ({ places: { ...now.places, ...found } }));
+  };
+  const work = (
+    kind === "group"
+      ? groupApi.page(key).then((page) => keepAll({ [place]: page.taught }))
+      : channelApi.page(key).then((page) => keepAll({ [place]: page.taught, ...(page.group ? { [`group:${page.group.key}`]: page.group.taught } : {}) }))
+  )
+    .catch(() => undefined)
+    .finally(() => asking.delete(place));
+  asking.set(place, work);
+  return work;
+}
+
+/** Everything read again where it's shown (teaching moved). */
+export function forgetTaught(): void {
+  readAt.clear();
+  useTaught.setState((now) => ({ round: now.round + 1 }));
+}
+
+/** A place's teaching (null until read), read as it's shown; `fresh`: read again now (a page opening). */
+export function useTaughtOf(place: string | null, fresh = false): Record<Lane, Taught[]> | null {
+  const round = useTaught((state) => state.round);
+  const taught = useTaught((state) => (place === null ? null : (state.places[place] ?? null)));
+  useEffect(() => {
+    if (place !== null) void loadTaught(place, fresh);
+  }, [place, round, fresh]);
+  return taught;
+}
+
+/** How many things a lane's agent was taught, per lane. */
+export const countsOf = (taught: Record<Lane, Taught[]> | null): Record<Lane, number> | null =>
+  taught === null ? null : (Object.fromEntries(LANES.map((lane) => [lane.key, taught[lane.key]?.length ?? 0])) as Record<Lane, number>);
+
+/** "Script 3 · Edit 17", or "Nothing yet". */
+export function taughtWords(counts: Record<Lane, number>): string {
+  const words = LANES.filter((lane) => counts[lane.key] > 0).map((lane) => `${lane.label} ${counts[lane.key]}`);
+  return words.length === 0 ? "Nothing yet" : words.join(" · ");
+}
+
+/** A voice's first name ("Andrew - Smooth audio books" → "Andrew"); the editor's recording, "Recorded". */
+export const narrationShort = (narration: Narration | null) => (narration === null ? null : narration.kind === "recorded" ? "Recorded" : narration.name.split(" - ")[0]!.trim());
+
+/** A group's channels, as shown: a group is one only while two or more of its channels are seen. */
+export function shownGroup(channel: Channel, groups: Group[], channels: Channel[]): { group: Group; members: Channel[] } | null {
+  const group = groups.find((one) => one.key === channel.group);
+  if (group === undefined) return null;
+  const members = channelsOf(group, channels);
+  return members.length >= 2 ? { group, members } : null;
+}
+
+/** The channels as one list: the groups first (each where its first channel stands), then every channel in none. */
+export type ChannelRow = { kind: "group"; key: string; group: Group; members: Channel[] } | { kind: "channel"; key: string; channel: Channel };
+
+export function rowsOf(channels: Channel[], groups: Group[]): ChannelRow[] {
+  const rows: ChannelRow[] = [];
+  const seen = new Set<string>();
+  for (const channel of channels) {
+    const shown = shownGroup(channel, groups, channels);
+    if (shown === null) rows.push({ kind: "channel", key: channel.key, channel });
+    else if (!seen.has(shown.group.key)) {
+      seen.add(shown.group.key);
+      rows.push({ kind: "group", key: shown.group.key, ...shown });
+    }
+  }
+  return [...rows.filter((row) => row.kind === "group"), ...rows.filter((row) => row.kind === "channel")];
+}
+
+/** A YouTube banner's desktop band (2048 × 339), from the picture YouTube gives. */
+export const bannerUrl = (banner: string | null | undefined): string | null => (banner ? (banner.includes("=") ? banner : `${banner}=w2120-fcrop64=1,00005a57ffffa5a8-k-c0xffffffff-no-nd-rj`) : null);
