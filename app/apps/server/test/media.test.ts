@@ -156,7 +156,7 @@ test("a failed step says why and the rest go on", async () => {
 }, 60_000);
 
 test.skipIf(ffmpeg === null)("a pieced proxy's thumbnails, waveform, censor check and loudness read its original, kept as the proxy's", async () => {
-  // Reading the pieced proxy itself would make every piece of it (off Modal, step 6).
+  // Reading the pieced proxy itself would make every piece of it (off Modal).
   const { dir, app, store, cleanup } = fixtureHome("media-analysis-input");
   const { mediaHooks } = await import("../src/media.ts");
   const { native } = await import("../src/native/index.ts");

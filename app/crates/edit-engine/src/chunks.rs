@@ -1,4 +1,4 @@
-//! Chunked exports (speed-plan 4.2): a re-export redoes only what changed.
+//! Chunked exports (Oct 18): a re-export redoes only what changed.
 //!
 //! Re-exports are common (15-Year-Old was exported six times, Mom & Teen
 //! three) and each redid the whole picture, 5 to 16 minutes. So the picture

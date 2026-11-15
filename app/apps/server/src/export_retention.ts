@@ -1,5 +1,5 @@
-// Older exports on the Mac go once they're no longer wanted (off Modal, step
-// 9; Sphe, Nov 2). Finished exports were most of the tens of gigabytes the
+// Older exports on the Mac go once they're no longer wanted (off Modal; Sphe,
+// Nov 2). Finished exports were most of the tens of gigabytes the
 // team's Macs filled: an 80-minute export at the High tier is ~5 GB, and
 // Kroger had v4, v5 and v6 in ~/Movies/Edit.
 //

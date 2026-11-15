@@ -225,8 +225,7 @@ export function beingRead(path: string): boolean {
 }
 
 /**
- * Holds `path` for the scope it's in (docs/plans/2026-11-01-effect.md, round
- * 3): let go however the work ends (done, failed, interrupted), so an archive
+ * Holds `path` for the scope it's in: let go however the work ends (done, failed, interrupted), so an archive
  * waits for the reading and never waits for ever.
  */
 export const holdingExport = (path: string) => Effect.acquireRelease(Effect.sync(() => holdExport(path)), (release) => Effect.sync(release));

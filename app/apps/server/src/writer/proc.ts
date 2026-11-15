@@ -1,7 +1,7 @@
 // Running a program for Script mode (ffmpeg, ffprobe, yt-dlp): its output a
 // line at a time or whole, stopped by a deadline or the job's stop.
 //
-// In Effect since Nov 1 (docs/plans/2026-11-01-effect.md, part 3): the
+// In Effect since Nov 1: the
 // program runs in its own process group, owned by the scope that started it.
 // A stop, a deadline or a failure of the work around it ends the whole
 // group (SIGTERM, then SIGKILL after 5 s): the old runner SIGKILLed only the

@@ -1,4 +1,4 @@
-// The cache kept to what's used (speed-plan 3.7): an 8 GB Mac's disk filled
+// The cache kept to what's used (Oct 18): an 8 GB Mac's disk filled
 // with previews of footage no project uses any more, and a half-written
 // 1.6 GB preview an interrupted run left behind.
 //

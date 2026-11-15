@@ -239,8 +239,7 @@ export const TOOL_MS = 4 * 3600_000;
 /**
  * Runs FFmpeg (or any tool) to the end within `timeoutMs`, stdin closed: its
  * stdout, or why it failed, the last line it wrote (as the engine's
- * media.rs `run` says it). In Effect since Nov 1 (docs/plans/2026-11-01-effect.md,
- * round 2, area 4): the tool's whole process group is the run's, ended when
+ * media.rs `run` says it). In Effect since Nov 1: the tool's whole process group is the run's, ended when
  * its time runs out or the work around it is interrupted, and its failures
  * are typed with kinds (`proc.failureKind`: a network read that dropped is
  * temporary, a damaged file permanent).

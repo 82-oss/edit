@@ -1,4 +1,4 @@
-// The scrub tier (off Modal, step 5; Sphe, Nov 2): beside each video's 1080p
+// The scrub tier (off Modal; Sphe, Nov 2): beside each video's 1080p
 // proxy, a 960×540 copy where every frame is a keyframe (all-intra H.264,
 // ~6 Mbit/s, VideoToolbox), so a drag shows the frame under the playhead
 // instead of the keyframe before it (a scrub showed about half the positions

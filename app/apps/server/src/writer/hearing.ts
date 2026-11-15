@@ -6,7 +6,7 @@
 // while the relay's flag is on, pyannote's voices are laid over Scribe's
 // (voices.ts; off from Nov 10).
 //
-// In Effect since Nov 1 (docs/plans/2026-11-01-effect.md, round 2, area 1):
+// In Effect since Nov 1:
 // the stretch is cut by an FFmpeg and into a file the hearing's scope owns,
 // so a stop, a failure or a deadline ends the FFmpeg and removes the file,
 // and the hearing's failures are transcribe.ts's typed ones, which the

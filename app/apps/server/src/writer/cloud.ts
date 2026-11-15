@@ -882,7 +882,7 @@ export function withCreator(body: Uint8Array, createdBy: unknown): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(value, null, 2));
 }
 
-// ── Which copy wins (docs/plans/2026-11-01-effect.md, round 3) ──
+// ── Which copy wins (in Effect since Nov 1) ──
 //
 // The rules a pull follows were fixed five times in three days (02c455de,
 // 352e9d0a, 83e97e64, 0385252c and the body that went missing), each one a

@@ -227,7 +227,7 @@ const FORMAT = "bv*[vcodec^=avc1][height<=1080][protocol=https]+ba[ext=m4a][prot
 /** Through the paid proxy ($1/GB): at most 720p, about half the bytes of 1080p (the audit, Oct 23). */
 const PROXY_FORMAT = "bv*[vcodec^=avc1][height<=720][protocol=https]+ba[ext=m4a][protocol=https]/b[vcodec^=avc1][ext=mp4][height<=720]/bv*[height<=720]+ba/b[height<=720][vcodec!=none]";
 
-// ── Why a try failed (in Effect since Nov 1: docs/plans/2026-11-01-effect.md, part 4) ──
+// ── Why a try failed (in Effect since Nov 1) ──
 //
 // The routes were fixed seven times in eight days (cac57fd0, 94e49c77,
 // db3f473d, 3b3cb78d, 88b0d2ce, 8c25e077, 597f55ae), each one for a way

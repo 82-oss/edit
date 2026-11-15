@@ -1,4 +1,4 @@
-// The one table of durable work (`<home>/jobs.json`; speed-plan 1.2, then the
+// The one table of durable work (`<home>/jobs.json`; Oct 18, then the
 // Nov 8 audit's item B): 95 restarts in three days of logs, each dropping the
 // export, smoothing or watch under way, which nobody started again; and four
 // ledgers beside this one (running agent turns, the retry after an update, the

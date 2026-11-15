@@ -46,8 +46,7 @@ browser, or five failed frames in a row: the page draws as below. Measured Nov
 8–9 on Cops Realize (M1, cloud footage) in docs/plans/2026-11-08-audit.md
 ("A's stage 2, measured after").
 
-**Script mode plays on the same player** (Nov 10,
-docs/plans/2026-11-10-script-player.md; Sphe: "When one is improved, the other
+**Script mode plays on the same player** (Nov 10; Sphe: "When one is improved, the other
 should be improved as well"). Until then the script page had a player of its
 own in the page (`writer/playback.ts`, WebCodecs on a canvas, the page's audio
 clock), and every improvement above passed it by. Now the script's cut is
@@ -107,7 +106,7 @@ it's changed or Edit is closed.
 **How the window plays at a speed** (Nov 10). The speed and the loudness are
 the page's to set (`preview_rate`, 0.25–4, and
 `preview_volume`, 0–1; both kept until changed, both 1 in a preview just opened):
-Script mode's 2× and volume buttons (docs/plans/2026-11-10-script-player.md, step 4).
+Script mode's 2× and volume buttons.
 The mixer still mixes the timeline as it is; each window is made shorter or longer
 with its pitch kept on its way to the speaker (`crates/edit-engine/src/tempo.rs`:
 WSOLA, 20 ms blocks laid half over each other, each taken where the sound best goes

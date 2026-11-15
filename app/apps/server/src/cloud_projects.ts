@@ -1103,7 +1103,7 @@ export async function runStep(app: App, cloudProjects: Cloud, id: string, step: 
   }
 }
 
-// ── What a failed call leads to (docs/plans/2026-11-01-effect.md, round 3) ──
+// ── What a failed call leads to (in Effect since Nov 1) ──
 //
 // Pure, so the promises are property-tested (test/cloud_merge.test.ts):
 // offline never keeps or pulls; this machine's own lock is never "someone

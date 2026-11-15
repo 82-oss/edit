@@ -196,7 +196,7 @@ export function call(method: string, route: string, body: unknown, out: string, 
   );
 }
 
-// ── The relay as an Effect (docs/plans/2026-11-01-effect.md, round 2) ──
+// ── The relay as an Effect (since Nov 1) ──
 //
 // One request (`ask`): timed, a dropped connection and a timeout both said
 // as "could not reach Edit's relay" (what the sync loops read as offline),

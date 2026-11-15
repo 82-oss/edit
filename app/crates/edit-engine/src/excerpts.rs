@@ -1,5 +1,5 @@
 //! Local excerpts of cloud originals, so an export decodes files on this Mac
-//! instead of footage over HTTPS (off Modal, step 2; Sphe, Nov 2).
+//! instead of footage over HTTPS (off Modal; Sphe, Nov 2).
 //!
 //! An export of a cloud edit read every original through a presigned URL, one
 //! FFmpeg process per clip, each restart paying R2's ~0.25–0.5 s from South

@@ -572,7 +572,7 @@ function replaceSource(dir: string, script: Script, id: string | null, url: stri
 /**
  * Whether `error` is one the same build meets again however often it's
  * asked: its kind is permanent (effect/service.ts `kindOf`, the table every
- * area gives its errors to; docs/plans/2026-11-01-effect.md). Nov 1, Mathias
+ * area gives its errors to). Nov 1, Mathias
  * resumed two imports 13 times, each ~41 minutes of footage before the same
  * 413. Try again isn't offered for one of these until Edit is updated
  * (`Script.stuckOn`): Replace, Dismiss and an admin's `edit remote resume`

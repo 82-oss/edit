@@ -18,8 +18,8 @@
 //   underrun, a scrub of 60 positions showing over half of them, full screen
 //   in and out with the picture still drawn after; then scripts/home-audit.ts
 //   at two widths against the same server. Between them it opens a script
-//   as well (docs/plans/2026-11-10-script-player.md, "Keep them together
-//   after"): one written as an import leaves it, its preview made the same
+//   as well (Script mode plays on the editor's player, docs/preview.md):
+//   one written as an import leaves it, its preview made the same
 //   way, and through window.__editScript (writer/player.ts) asserts the
 //   monitor's first picture, a 3 s play across a cut, a drag that settles
 //   where it stopped, a footage moment outside the cut shown as the source,

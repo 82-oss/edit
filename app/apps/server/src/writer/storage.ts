@@ -204,7 +204,7 @@ export async function bringBack(app: App, data: string, id: string, job?: jobs.J
   return missing;
 }
 
-// ── The rounds (in Effect since Nov 1: docs/plans/2026-11-01-effect.md, part 5) ──
+// ── The rounds (in Effect since Nov 1) ──
 //
 // Nov 1, Mathias's Mac: its problem report was 1,747 lines of one warning,
 // "27739305: its footage stays here: That script is missing.", and the same

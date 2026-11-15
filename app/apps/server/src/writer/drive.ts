@@ -61,7 +61,7 @@ export function isDrive(url: string): boolean {
   }
 }
 
-// ── Drive's answers (in Effect since Nov 1: docs/plans/2026-11-01-effect.md, round 2, area 2) ──
+// ── Drive's answers (in Effect since Nov 1) ──
 //
 // Every call is `service.request` with its time, its answer read through a
 // Schema, and its failures typed and given a kind: a dropped connection, a

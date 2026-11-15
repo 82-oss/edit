@@ -1,5 +1,6 @@
 // What Edit.app's window player reads a script's recordings from
-// (docs/plans/2026-11-10-script-player.md; the edit's is native_preview.ts).
+// (docs/preview.md, "Script mode plays on the same player"; the edit's is
+// native_preview.ts).
 // The script page plays its cut on the window's own player, the one the
 // editor uses, when every recording the cut plays is a file on this Mac: the
 // player reads files with the Mac's video decoder, and a stream only through

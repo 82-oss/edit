@@ -1,4 +1,4 @@
-//! Playing at a speed (docs/plans/2026-11-10-script-player.md, step 4): what
+//! Playing at a speed (Script mode's 2×, Nov 10): what
 //! Edit.app's player (`crate::player`) needs to play at 2× with the sound's
 //! pitch kept, apart from the Mac so every machine's tests run it.
 //!

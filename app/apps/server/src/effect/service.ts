@@ -1,6 +1,6 @@
 // What can go wrong with any outside call (Scribe, Drive, R2, the relay,
-// the accounts site), and the one rule for what each failure is
-// (docs/plans/2026-11-01-effect.md, round 2):
+// the accounts site), and the one rule for what each failure is (since
+// Nov 1):
 //
 // - temporary: a dropped connection, a timeout, 408, 425, 429, 5xx and
 //   Cloudflare's 52x. Edit asks again by itself, on a schedule

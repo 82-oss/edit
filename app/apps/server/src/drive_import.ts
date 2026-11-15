@@ -1,4 +1,4 @@
-// Footage from a Google Drive link (speed-plan 3.8): a subtitled video starts
+// Footage from a Google Drive link: a subtitled video starts
 // from the folder link the team shares ("the video and its Doc"), or a file's.
 // The folder's videos are downloaded to this Mac (resuming, past Drive's
 // virus-scan page: script.ts `download`) and imported as local files, so their

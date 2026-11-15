@@ -1144,7 +1144,7 @@ export function convex(kind: string, path: string, args: unknown): Promise<unkno
   return convexCall(kind, path, args, 120);
 }
 
-// ── Convex as an Effect (docs/plans/2026-11-01-effect.md, round 2, area 3) ──
+// ── Convex as an Effect (since Nov 1) ──
 //
 // A call's failures are `ConvexFailure`s, as before, now with kinds
 // (effect/service.ts): the relay unreachable or slow is temporary, a

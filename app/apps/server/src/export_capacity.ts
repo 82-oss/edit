@@ -2,7 +2,7 @@
 // where if theres enough capacity, we export on the mac many if not we que").
 // One at a time was the rule since Nov 2's stall: two whole renders started
 // side by side on JJ's M4 Pro, and its encoder stalled. Measured the same day
-// (off Modal, step 3): an Apple chip has one video encode engine (M1–M4 and
+// (off Modal): an Apple chip has one video encode engine (M1–M4 and
 // their Pros), two on a Max, four on an Ultra, and two exports on one engine
 // share it, each going half as fast: a slot for every 12 GB of memory, the
 // rule until then, counted the wrong thing. Now one export per encode engine (`encodeEngines`,

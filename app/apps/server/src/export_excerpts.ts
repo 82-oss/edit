@@ -1,5 +1,5 @@
 // Exports read cloud footage from excerpts on this Mac, never over HTTPS
-// (off Modal, step 2; Sphe, Nov 2: Edit moves off Modal onto the team's Macs).
+// (off Modal; Sphe, Nov 2: Edit moves off Modal onto the team's Macs).
 //
 // An export of a cloud edit read every original through a presigned URL, one
 // FFmpeg process per clip, each restart paying R2's ~0.25–0.5 s from South

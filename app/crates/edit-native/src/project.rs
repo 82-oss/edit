@@ -323,4 +323,3 @@ pub fn animatable_params() -> napi::Result<HashMap<String, Vec<String>>> {
         Ok(out)
     })
 }
-

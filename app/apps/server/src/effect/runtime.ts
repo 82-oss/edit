@@ -1,5 +1,5 @@
 // The server's Effect runtime: what every part written in Effect runs on
-// (docs/plans/2026-11-01-effect.md). Parts keep their Promise functions for
+// (since Nov 1). Parts keep their Promise functions for
 // the code that isn't Effect yet; those call `runPromise` here, which turns a
 // typed failure back into the `Error` its message has always been, so the
 // UI, the log and the problem reports read the same words.

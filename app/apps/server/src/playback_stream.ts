@@ -1,4 +1,4 @@
-// Smooth playback by chunk (off Modal, step 4f; Sphe, Nov 2): the viewer
+// Smooth playback by chunk (off Modal; Sphe, Nov 2): the viewer
 // plays the render a chunk at a time as each lands, instead of waiting for the
 // whole file, and an edit swaps only the chunks it changed.
 //

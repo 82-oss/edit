@@ -698,7 +698,7 @@ export class Store {
   }
 
   /**
-   * Writes a project file: compact JSON (speed-plan 6.1: 40% smaller than the
+   * Writes a project file: compact JSON (40% smaller than the
    * pretty-printed files were, on disk and in every history copy).
    */
   private writeFile(id: string, text: string, rev: number): void {

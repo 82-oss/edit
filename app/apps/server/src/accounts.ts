@@ -149,7 +149,7 @@ export function status(): Record<string, unknown> {
   };
 }
 
-// ── The accounts site's answers (in Effect: docs/plans/2026-11-01-effect.md, round 2, area 5) ──
+// ── The accounts site's answers (in Effect since Nov 1) ──
 
 const ACCOUNTS = "the accounts site";
 
@@ -258,7 +258,7 @@ function forget(problem: string | null): void {
   sessionChanged();
 }
 
-// ── Renewing (in Effect: docs/plans/2026-11-01-effect.md, part 2) ───────────
+// ── Renewing (in Effect since Nov 1) ───────────
 //
 // The policy was fixed three times on Oct 23 (81614d69, 8eda3b50, 8a793d7d)
 // and again on Oct 30 (4a10063f), each time in timers and a failure counter

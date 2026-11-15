@@ -1,4 +1,4 @@
-// Pieced proxies (off Modal, step 6): a long file's proxy made a minute at a
+// Pieced proxies (off Modal): a long file's proxy made a minute at a
 // time, when something reads that stretch, instead of whole before the
 // import answers (a ten-hour file's proxy took hours: every frame read and
 // encoded first).

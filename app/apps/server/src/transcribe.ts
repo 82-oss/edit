@@ -25,7 +25,7 @@
 // What's heard is kept as it comes in (`saved`), so a run cut short (the
 // day's allowance, a restart) never pays for it again.
 //
-// In Effect since Nov 1 (docs/plans/2026-11-01-effect.md, part 1). Every way
+// In Effect since Nov 1. Every way
 // the relay can answer is its own error, and whether it's asked again is the
 // retry policy's (`Retries`), not an `if` in a loop: the busy relay, the
 // gateway and a dropped connection are asked again; the day's allowance, a
