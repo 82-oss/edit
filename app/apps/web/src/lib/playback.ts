@@ -87,6 +87,16 @@ const START_LEAD = 0.05;
 /** After the playhead rests this long, its sound is decoded so Play starts at once. */
 const SETTLE_MS = 300;
 /**
+ * At rest the picture is drawn live, from the footage; the render (seeked
+ * beside it, hidden) stands in only where the live picture hasn't come in this
+ * long or failed. The render's video alone was slower to land a jump than
+ * footage that's here, and showed few of a scrub's positions: on mandalorian,
+ * V2 Cops Found 3 Bodies (Nov 15), a scrub showed 34 of 240 positions where
+ * it now shows 213, jumps 119 ms (median) now 104, none over 250. Play still
+ * plays the render, from where it was seeked at rest (start 207 ms, now 59).
+ */
+const REST_LIVE_MS = 200;
+/**
  * How long a play waits for the render's chunk where it's made (read from
  * disk or the server) before drawing live instead. Live after a far jump
  * reads and decodes the footage itself, seconds on a 34-minute edit, and
@@ -216,6 +226,11 @@ class Preview {
   private lastSeekAt = -Infinity;
   private settleTimer: ReturnType<typeof setTimeout> | undefined;
   private renderedScrub = -1;
+  /** The seek whose exact picture was drawn live last (`seekSerial`): at rest, the render isn't needed over it. */
+  private exactSerial = -1;
+  private restTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The playhead has rested `REST_LIVE_MS` since its last seek, its picture drawn live. */
+  private rested = false;
   private direction = 1;
   private playedFrom = 0;
   /**
@@ -288,6 +303,12 @@ class Preview {
     // Nor where the render has this stretch made and its chunk is on the way (a play waiting for it, awaitSmooth).
     if (this.smoothShown || (this.smooth !== null && this.stream?.made(playhead.frame) === true)) {
       note("warn", "preview", `${message} (behind the smooth render, which plays on)`);
+      return;
+    }
+    // At rest, drawn live: the render's picture there is shown instead.
+    if (this.smooth !== null && !playhead.playing && this.smoothAt(playhead.frame)) {
+      note("warn", "preview", `${message} (the smooth render shown instead)`);
+      this.showSmooth(playhead.frame);
       return;
     }
     this.error = message; note("error", "preview", this.error);
@@ -439,13 +460,57 @@ class Preview {
       this.applyVolume();
       this.stream = new SmoothStream(streamed[1]!, Number(streamed[2]), rate(this.project.settings), this.duration, () => playhead.frame, this.streamSound, () => {
         // Its chunk at the resting playhead just came: shown there now.
-        if (!playhead.playing && !this.smoothShown && this.smooth === url) this.showSmooth(playhead.frame);
+        if (playhead.playing || this.smoothShown || this.smooth !== url) return;
+        if (this.exactSerial !== this.seekSerial) this.showSmooth(playhead.frame);
+        else if (this.rested) this.primeSmooth();
       });
     }
     const src = this.stream?.url ?? url;
     if (video.getAttribute("src") !== src) video.src = src;
     if (playhead.playing && !this.smoothShown) return; // live playback carries on; the next play is smooth
+    // At rest the live picture stays where it's drawn (REST_LIVE_MS); the next play is smooth.
+    if (!playhead.playing && !this.smoothShown && this.exactSerial === this.seekSerial) return;
     this.showSmooth(playhead.frame);
+  }
+
+  /**
+   * A seek at rest: the live picture is drawn (the render hidden), and the
+   * render shows only if the live one hasn't come in `REST_LIVE_MS`.
+   */
+  private restLive() {
+    clearTimeout(this.restTimer);
+    this.rested = false;
+    if (playhead.playing) { this.showSmooth(playhead.frame); return; }
+    if (this.smoothShown) {
+      this.smoothShown = false;
+      this.stopSmooth();
+      this.renderedFrame = null;
+      this.notify();
+    }
+    // A jump (not a drag's step): the hidden render seeks there beside the live picture, so if it stands in, it's there.
+    if (!this.dragging) this.primeSmooth();
+    const serial = this.seekSerial;
+    this.restTimer = setTimeout(() => {
+      if (playhead.playing || this.smoothShown || serial !== this.seekSerial || this.smooth === null) return;
+      if (this.exactSerial !== serial) { this.showSmooth(playhead.frame); return; }
+      this.rested = true;
+      this.primeSmooth();
+    }, REST_LIVE_MS);
+  }
+
+  /**
+   * Drawn live at rest: the hidden render is moved to the playhead (and its
+   * sound with it), so Play plays it at once. Once the playhead has rested,
+   * not at each step of a drag, and again when its chunk there lands.
+   */
+  private primeSmooth() {
+    this.stream?.poke();
+    const video = this.video;
+    if (video === null || this.project === null || playhead.playing || this.smoothShown || !this.smoothAt(playhead.frame)) return;
+    const fps = rate(this.project.settings);
+    const time = (Math.floor(playhead.frame) + 0.25) / fps;
+    if (Math.abs(video.currentTime - time) > 0.5 / fps) video.currentTime = time;
+    this.stream?.follow(time, false);
   }
 
   /** Whether the render shows `frame` (and the next `ahead` frames) now: a streamed one only where its chunks are in. */
@@ -1142,6 +1207,7 @@ class Preview {
       this.pendingScenes.clear();
       this.seekSerial++;
       this.renderedScrub = -1;
+      this.exactSerial = -1;
       this.index(project);
       if ((clips?.put ?? []).some((put) => (put as Clip).type === "audio")) this.loadPeaks(project);
       if ([...this.scheduled.values()].some((sound) => this.outdated(sound, changed))) this.resetClock();
@@ -1184,6 +1250,7 @@ class Preview {
     this.pendingScenes.clear();
     this.seekSerial++;
     this.renderedScrub = -1;
+    this.exactSerial = -1;
     this.index(project);
     this.tracks = new Map(project.tracks.map((track) => [track.id, track]));
     this.media = new Map(project.media.map((media) => [media.id, media]));
@@ -1325,7 +1392,7 @@ class Preview {
     clearTimeout(this.settleTimer);
     this.settleTimer = setTimeout(() => { this.settled = true; this.invalidate(); }, SETTLE_MS);
     this.resetClock();
-    if (this.smooth) this.showSmooth(playhead.frame);
+    if (this.smooth) this.restLive();
     if (this.native && playhead.playing) { this.playNative(); return; }
     playhead.emit();
     // The window is asked for the frame now, not at the next animation frame: that wait was a quarter of a jump (Nov 15).
@@ -1980,7 +2047,7 @@ class Preview {
       engine.render(frame);
     });
     if (this.engine) this.renderedFrame = frame;
-    if (ready && !playhead.playing) this.renderedScrub = this.seekSerial;
+    if (ready && !playhead.playing) { this.renderedScrub = this.seekSerial; this.exactSerial = this.seekSerial; }
     const visible = new Set(selected.map((source) => source.clip ?? source.media));
     for (const key of this.copied.keys()) if (!visible.has(key)) this.copied.delete(key);
     if (ready) this.pendingScenes.clear();

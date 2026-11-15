@@ -454,12 +454,15 @@ describe("preview seeks and lifetime", () => {
     preview.setSmooth("/api/projects/p1/playback.mp4?v=a");
     expect(video.src).toBe("/api/projects/p1/playback.mp4?v=a");
     expect(preview.smoothShown).toBe(true);
-    // A seek moves the video, a hair into its frame, and nothing is decoded or drawn live.
+    // At rest a seek draws live, from the footage; the render stands in only where the live picture hasn't come in
+    // 200 ms (here it never does), moved a hair into its frame.
     decoding.requestVideo.mockClear();
     preview.seek(30); draw();
+    expect(preview.smoothShown).toBe(false);
+    expect(decoding.requestVideo).toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(preview.smoothShown).toBe(true);
     expect(video.currentTime).toBeCloseTo(30.25 / 30, 6);
-    expect(engine.render).not.toHaveBeenCalled();
-    expect(decoding.requestVideo).not.toHaveBeenCalled();
     // What's on screen is the video's frame: none while it seeks there, then the one asked for.
     Object.assign(video, { seeking: true, readyState: 1 });
     expect(preview.diagnostics.renderedFrame).toBeNull();
@@ -482,6 +485,35 @@ describe("preview seeks and lifetime", () => {
     expect(playhead.playing).toBe(false);
     expect(preview.smoothShown).toBe(false);
     expect(decoding.requestVideo).toHaveBeenCalled();
+  });
+
+  it("at rest draws a jump's picture live where it comes in time, and the render stays hidden; Play plays the render", async () => {
+    // Nov 15, mandalorian: with footage here, live lands a jump in 50 ms where the render's video took 120, and a scrub
+    // shows 222 of 240 positions where the render showed 34.
+    const video = {
+      src: "", currentTime: 0, paused: true, ended: false, muted: true,
+      getAttribute(name: string) { return name === "src" ? this.src || null : null; },
+      play: vi.fn(function (this: { paused: boolean }) { this.paused = false; return Promise.resolve(); }),
+      pause: vi.fn(function (this: { paused: boolean }) { this.paused = true; }),
+      addEventListener: () => {}, removeEventListener: () => {},
+    };
+    preview.attachVideo(video as unknown as HTMLVideoElement);
+    // Nothing on screen to read: every frame's picture is ready at once.
+    engine.sources.mockReturnValue("[]");
+    preview.setProject(fixture(), {}); draw();
+    preview.setSmooth("/api/projects/p1/playback.mp4?v=a");
+    preview.seek(30); draw();
+    expect(preview.smoothShown).toBe(false);
+    engine.render.mockClear();
+    preview.seek(45); draw();
+    expect(engine.render).toHaveBeenCalledWith(45);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(preview.smoothShown).toBe(false);
+    // Rested there, the hidden render is moved to it, so Play plays it at once.
+    expect(video.currentTime).toBeCloseTo(45.25 / 30, 6);
+    preview.play();
+    expect(preview.smoothShown).toBe(true);
+    expect(video.play).toHaveBeenCalled();
   });
 
   it("stops the rendered video and its sound when a scrub moves past its chunks, so they never play on under the live sound", async () => {
@@ -514,6 +546,7 @@ describe("preview seeks and lifetime", () => {
     stream.info = { segments: [{ start: 0, end: 90, key: "a", ready: true }], codec: null, sound: "ready", soundUrl: "/sound" };
     stream.appended.set(0, "a");
     preview.seek(30);
+    await new Promise((resolve) => setTimeout(resolve, 250));
     expect(preview.smoothShown).toBe(true);
     // Playing, picture and sound both live.
     video.paused = false;
