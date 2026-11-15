@@ -171,8 +171,6 @@ export interface ProjectSummary {
   missing?: number;
   /** Media in the cloud not fetched to this machine yet (they come when it opens). */
   remote?: number;
-  /** The frame its card shows: plain footage running (no cut-in, graphic or transition on screen) whose file is here; null when there's none. */
-  cover_frame?: number | null;
   /** Who started it (`Project::created_by`); absent for projects from before. */
   created_by?: Creator;
   /** A test project (`Project::origin` "dev", dev_projects.ts): hidden on Home unless `shown`. */

@@ -43,7 +43,6 @@ import { readLocalOriginals } from "./cloud_media.ts";
 import { missingMedia, UpdateError } from "./store.ts";
 import * as archive from "./archive.ts";
 import * as avatars from "./avatars.ts";
-import * as covers from "./covers.ts";
 import * as kinds from "./kinds.ts";
 import * as reset from "./reset.ts";
 import * as firstPrompt from "./first_prompt.ts";
@@ -128,7 +127,6 @@ export function buildRouter(): Router<App> {
   beta.routes(router);
   effects.routes(router);
   archive.routes(router);
-  covers.routes(router);
   avatars.routes(router);
   seams.voice.routes(router);
   router
@@ -180,7 +178,6 @@ export function buildRouter(): Router<App> {
     .get("/api/projects/{id}/media/{media}/{kind}", mediaFile)
     .get("/api/projects/{id}/native-sources", (context) => nativeSources(context.app, liveOr404(context.app, context.params.id!).project))
     .get("/api/projects/{id}/frame/{frame}", framePng)
-    .get("/api/projects/{id}/cover/{frame}", coverJpeg)
     .post("/api/projects/{id}/export", startExport)
     .post("/api/projects/{id}/export/cancel", cancelExport)
     .post("/api/projects/{id}/export/retry", retryExport)
@@ -1032,116 +1029,11 @@ async function framePng(context: Context): Promise<Response> {
   }
   const image = images[0];
   if (image === undefined) throw new ApiError(500, "the frame didn't render");
-  // `v` names the project's version (the home screen's covers pass its
-  // modified time): a picture of it can be kept, so a revisit renders nothing.
+  // `v` names the project's version (its modified time): a picture of it can
+  // be kept, so a revisit renders nothing.
   const headers: Record<string, string> = { "content-type": "image/png" };
   if (context.query.has("v")) headers["cache-control"] = "private, max-age=86400";
   return new Response(image.data, { headers });
-}
-
-/**
- * A home screen card's picture: frame `frame` with any black borders the
- * footage carries (a 4:3 interview inside 16:9, stacked court feeds) cut
- * off, scaled up to fill a 16:9 tile `max` wide, as a JPEG. Made once per
- * project version (`v`) and kept in the cache (older ones of the project
- * removed).
- */
-async function coverJpeg(context: Context): Promise<Response> {
-  const { app, params } = context;
-  const text = params.frame!.replace(/(\.jpg)+$/, "");
-  if (!/^\d+$/.test(text)) throw bad("frame must be a number");
-  const frame = Number(text);
-  const width = Math.min(Math.max(u32Query(context, "max") ?? 640, 64), 1920);
-  const height = Math.round((width * 9) / 16 / 2) * 2;
-  const version = (context.query.get("v") ?? "").replace(/[^0-9a-z]/gi, "").slice(0, 20);
-  const live = liveOr404(app, params.id!);
-  const dir = join(app.store.cacheDir(), "covers");
-  const out = join(dir, `${live.project.id}-${version}-${frame}-${width}.jpg`);
-  const headers = { "content-type": "image/jpeg", "cache-control": "private, max-age=86400" };
-  if (isFile(out)) {
-    covers.share(app, live.project.id, version, width, out);
-    return new Response(Bun.file(out), { headers });
-  }
-  let images;
-  try {
-    await seams.cloudMedia.restoreStills(app, live.project);
-    images = await withProjectAsync(
-      live.project.id,
-      live.rev,
-      () => jsonForSerde(live.project),
-      (project) =>
-        uiFrames.with(() => app.native.renderFrames({ project, frames: [frame], maxSide: Math.round(width * 1.5), priority: "ui", encode: "png" })),
-    );
-  } catch (error) {
-    throw new ApiError(500, diag.messageOf(error));
-  }
-  const image = images[0];
-  if (image === undefined) throw new ApiError(500, "the frame didn't render");
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    const still = `${out}.${process.pid}.png`;
-    fs.writeFileSync(still, image.data);
-    try {
-      const box = await pictureBox(still);
-      const crop = box === null ? "" : `crop=${box.join(":")},`;
-      const made = await ffmpegRun([
-        "-v",
-        "error",
-        "-y",
-        "-i",
-        still,
-        "-vf",
-        `${crop}scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height}`,
-        "-q:v",
-        "3",
-        `${out}.part.jpg`,
-      ]);
-      if (made.code !== 0) throw new Error(tools.lastLine(made.stderr));
-      fs.renameSync(`${out}.part.jpg`, out);
-    } finally {
-      fs.rmSync(still, { force: true });
-    }
-    // Only this version's covers of the project are kept.
-    for (const name of fs.readdirSync(dir)) {
-      if (name.startsWith(`${live.project.id}-`) && !name.startsWith(`${live.project.id}-${version}-`)) fs.rmSync(join(dir, name), { force: true });
-    }
-  } catch (error) {
-    diag.warn("http", `cover of ${live.project.id} at ${frame}: ${diag.messageOf(error)}; the frame as it is`);
-    return new Response(image.data, { headers: { "content-type": "image/png", "cache-control": "private, max-age=86400" } });
-  }
-  covers.share(app, live.project.id, version, width, out);
-  return new Response(Bun.file(out), { headers });
-}
-
-/**
- * Where the picture is in a still that has black borders round it (FFmpeg's
- * cropdetect), as [width, height, x, y]; null when it fills the frame (or
- * nearly), or it's all dark.
- */
-async function pictureBox(still: string): Promise<[number, number, number, number] | null> {
-  // A still looped for a few frames: cropdetect says nothing about the first ones.
-  const probe = await ffmpegRun(["-hide_banner", "-loop", "1", "-t", "0.2", "-i", still, "-vf", "cropdetect=limit=24:round=2:reset=0", "-f", "null", "-"]);
-  const found = [...probe.stderr.matchAll(/crop=(\d+):(\d+):(\d+):(\d+)/g)].pop();
-  const size = /, (\d+)x(\d+)[, ]/.exec(probe.stderr);
-  if (found === undefined || size === null) return null;
-  const [w, h, x, y] = found.slice(1, 5).map(Number) as [number, number, number, number];
-  const [fullW, fullH] = [Number(size[1]), Number(size[2])];
-  if (w <= 0 || h <= 0 || w * h < fullW * fullH * 0.15 || w * h > fullW * fullH * 0.97) return null;
-  return [w, h, x, y];
-}
-
-/** FFmpeg with `args` (stdin closed), without blocking the server: its exit code and what it said. */
-async function ffmpegRun(args: string[]): Promise<{ code: number; stderr: string }> {
-  const child = Bun.spawn([tools.ffmpeg(), ...args], { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
-  // A hung ffmpeg must not hang the handler forever.
-  const timer = setTimeout(() => child.kill("SIGKILL"), 120_000);
-  timer.unref?.();
-  try {
-    const [stderr, code] = await Promise.all([new Response(child.stderr).text(), child.exited]);
-    return { code, stderr };
-  } finally {
-    clearTimeout(timer);
-  }
 }
 
 async function startExport(context: Context): Promise<Response> {
