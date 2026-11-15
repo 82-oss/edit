@@ -1,7 +1,7 @@
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { readCutOffsWith, useKeys } from "../../../relay/src/auth";
-import { emptyCleanups, forgetProjects, presign, validKey, validPrefix, writerReadable } from "../../../relay/src/cloud";
+import { emptyCleanups, forgetProjects, presign, sweepFootage, validKey, validPrefix, writerReadable } from "../../../relay/src/cloud";
 import { forgetScripts } from "../../../relay/src/writer_cloud";
 import relay, { TranscriptionBudget, type Env } from "../../../relay/src/index";
 import { signed } from "../../../relay/src/transcribe_jobs";
@@ -656,6 +656,66 @@ describe("relay cloud: Edit's queued files", () => {
     expect(await emptyCleanups(env)).toEqual({ deleted: 1, failed: 2 });
     expect(deleted).toEqual(["edit/reviews/p1/v1/video.mp4"]);
     expect(settled.map((one) => [one.id, one.error === null])).toEqual([["c1", true], ["c2", false], ["c3", false]]);
+  });
+
+  it("empties a footage folder the footage sweep queued, and refuses any other folder (Nov 15)", async () => {
+    const settled: { id: string; error: string | null }[] = [];
+    const deleted: string[] = [];
+    const stored = ["edit/pieces/v3/drive/AAA/head.mp4", "edit/pieces/v3/drive/AAA/video/1.m4s", "edit/pieces/v3/drive/AAAB/head.mp4"];
+    let asked = 0;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("cloudflarestorage.com")) {
+        const at = new URL(String(url));
+        if (at.searchParams.get("list-type") === "2") {
+          const prefix = at.searchParams.get("prefix") ?? "";
+          const keys = stored.filter((key) => key.startsWith(prefix) && !deleted.includes(key));
+          return new Response(`<ListBucketResult><IsTruncated>false</IsTruncated>${keys.map((key) => `<Contents><Key>${key}</Key><Size>1</Size></Contents>`).join("")}</ListBucketResult>`);
+        }
+        deleted.push(decodeURIComponent(at.pathname.split("/").slice(2).join("/")));
+        return new Response(null, { status: 204 });
+      }
+      const sent = JSON.parse(String(init?.body)) as { path: string; args: Record<string, unknown> };
+      if (sent.path === "cleanup:due") {
+        asked += 1;
+        return Response.json({ status: "success", value: asked === 1 ? [{ id: "c1", target: "edit/pieces/v3/drive/AAA/" }, { id: "c2", target: "edit/reviews/" }, { id: "c3", target: "edit/pieces/" }] : [] });
+      }
+      if (sent.path === "cleanup:settle") settled.push({ id: String(sent.args.id), error: (sent.args.error as string | null) ?? null });
+      return Response.json({ status: "success", value: null });
+    }));
+    const env = { R2_ACCOUNT_ID: "account", R2_ACCESS_KEY_ID: "key", R2_SECRET_ACCESS_KEY: "secret", R2_BUCKET: "bucket", CONVEX_URL: "https://convex.test", CONVEX_SERVICE_TOKEN: "svc" } as unknown as Env;
+    expect(await emptyCleanups(env)).toEqual({ deleted: 2, failed: 2 });
+    // Only what's in that folder: not its neighbour with a longer name.
+    expect(deleted.sort()).toEqual(["edit/pieces/v3/drive/AAA/head.mp4", "edit/pieces/v3/drive/AAA/video/1.m4s"]);
+    expect(settled.map((one) => [one.id, one.error === null])).toEqual([["c1", true], ["c2", false], ["c3", false]]);
+  });
+
+  it("sends the footage sweep what Writer's live scripts keep in Edit's originals, and stops when one can't be read", async () => {
+    const sent: Record<string, unknown>[] = [];
+    let broken = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes("cloudflarestorage.com")) {
+        if (broken) return new Response("<Error><Code>InternalError</Code></Error>", { status: 500 });
+        return new Response(JSON.stringify([{ source: "drive:FILE", key: "edit/originals/drive/FILE/a.mp4", file: null }]));
+      }
+      const body = JSON.parse(String(init?.body)) as { path: string; args: Record<string, unknown> };
+      if (body.path === "writer:listScripts") {
+        return Response.json({ status: "success", value: [
+          { scriptId: "s1", deletedAt: null, files: [{ name: "edit-shared.json", key: "writer/scripts/s1/files/r1/edit-shared.json" }, { name: "chat.json", key: "writer/scripts/s1/files/r1/chat.json" }] },
+          { scriptId: "s2", deletedAt: 5, files: [{ name: "edit-shared.json", key: "writer/scripts/s2/files/r1/edit-shared.json" }] },
+        ] });
+      }
+      if (body.path === "footage:sweep") {
+        sent.push(body.args);
+        return Response.json({ status: "success", value: { dryRun: true, projects: 0 } });
+      }
+      return Response.json({ status: "success", value: null });
+    }));
+    const env = { R2_ACCOUNT_ID: "account", R2_ACCESS_KEY_ID: "key", R2_SECRET_ACCESS_KEY: "secret", R2_BUCKET: "bucket", CONVEX_URL: "https://convex.test", CONVEX_SERVICE_TOKEN: "svc" } as unknown as Env;
+    expect(await sweepFootage(env)).toEqual({ dryRun: true, projects: 0 });
+    expect(sent).toEqual([{ token: "svc", writerShared: [{ scriptId: "s1", text: JSON.stringify([{ source: "drive:FILE", key: "edit/originals/drive/FILE/a.mp4", file: null }]) }] }]);
+    broken = true;
+    await expect(sweepFootage(env)).rejects.toThrow(/R2 500/);
+    expect(sent).toHaveLength(1);
   });
 });
 

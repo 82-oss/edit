@@ -155,8 +155,9 @@ deleted_classes = ["ExportJobs"]
 # The live relay above is deployed only from a nightly's tag (release.yml).
 # Wrangler doesn't carry bindings into an environment: each is repeated here.
 # Every half hour: Edit's queued cloud files (a retired review version's) deleted (cloud.ts emptyCleanups).
+# 03:15 UTC: the footage sweep (cloud.ts sweepFootage, index.ts FOOTAGE_SWEEP).
 [triggers]
-crons = ["*/30 * * * *"]
+crons = ["*/30 * * * *", "15 3 * * *"]
 
 [env.dev]
 name = "edit-relay-dev"
@@ -165,7 +166,7 @@ preview_urls = false
 routes = [{ pattern = "media-dev.spheceo.com", custom_domain = true }]
 
 [env.dev.triggers]
-crons = ["*/30 * * * *"]
+crons = ["*/30 * * * *", "15 3 * * *"]
 
 [env.dev.vars]
 MEDIA_HOST = "media-dev.spheceo.com"

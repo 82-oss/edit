@@ -74,7 +74,7 @@ import { copyFile, ioMessage, nextFileId, nowMs, writeAtomic } from "./files.ts"
 import { isBug } from "./guard.ts";
 import * as jobs from "./jobs.ts";
 import * as steps from "./import_steps.ts";
-import { mediaHooks, mediaKey, Semaphore } from "./media.ts";
+import { forgetKeyVerdict, mediaHooks, mediaKey, Semaphore } from "./media.ts";
 import * as finished from "./finished.ts";
 import * as youtube from "./youtube.ts";
 import * as posts from "./posts.ts";
@@ -1521,10 +1521,43 @@ export async function restoreHere(app: App, id: string, progress: (bytes: number
   if (live === null) throw new Error("no such project");
   const home = app.store.home;
   const cache = app.store.cacheDir();
-  const scratch = scratchDir(cache);
   const lost: string[] = [];
+  const originals = fetchedOriginals(home, cache);
+  try {
+    for (const media of live.project.media) {
+      const source = media.cloud?.source;
+      if (source === undefined || isFile(media.path)) continue;
+      const found = /^(drive|youtube|post):([^#]+)(?:#(\d+)-(\d+))?$/u.exec(source);
+      if (found === null) {
+        lost.push(media.name);
+        continue;
+      }
+      await originals.remake(media, fileOfSource(source.split("#")[0]!)!, progress);
+    }
+  } finally {
+    await originals.done();
+  }
+  setNoFootage(home, id, false);
+  return lost;
+}
+
+/** What a source is fetched by (`script.footageFile`'s form): a Drive file's id, else the source itself; null for a disk's file. */
+export function fileOfSource(base: string): string | null {
+  if (base.startsWith("drive:")) return base.slice("drive:".length);
+  return youtube.idOf(base) !== null || posts.urlOf(base) !== null || finished.reviewOf(base) !== null ? base : null;
+}
+
+/**
+ * Each source's original fetched once (from Drive or a finished video to R2,
+ * or a YouTube video or post downloaded here first and put back) unless the
+ * registry has it, and media made from it again (`remake`) at their own
+ * bounds, so their keys and proxies are what they were. `done` removes the
+ * downloads kept here for cutting.
+ */
+function fetchedOriginals(home: string, cache: string) {
+  const scratch = scratchDir(cache);
   const originals = new Map<string, Promise<[Original, string | null]>>();
-  const originalOf = (file: string) => {
+  const originalOf = (file: string, progress: (bytes: number, total: number | null, name: string) => void) => {
     let found = originals.get(file);
     if (found === undefined) {
       found =
@@ -1539,35 +1572,134 @@ export async function restoreHere(app: App, id: string, progress: (bytes: number
     }
     return found;
   };
-  try {
-    for (const media of live.project.media) {
-      const source = media.cloud?.source;
-      if (source === undefined || isFile(media.path)) continue;
-      const found = /^(drive|youtube|post):([^#]+)(?:#(\d+)-(\d+))?$/u.exec(source);
-      if (found === null) {
-        lost.push(media.name);
-        continue;
-      }
-      const [, kind, fileId, from, to] = found;
-      const file = kind === "youtube" ? `youtube:${fileId}` : kind === "post" ? `post:${fileId}` : fileId!;
-      const [original, local] = await originalOf(file);
+  return {
+    /** `media` made again from `file` (its own source's, or a replacement for it): the whole file, or the excerpt its source's bounds name. */
+    async remake(media: Media, file: string, progress: (bytes: number, total: number | null, name: string) => void): Promise<Made> {
+      const [original, local] = await originalOf(file, progress);
       const url = local ?? (await getUrl(original.key, 6 * HOUR));
-      if (from === undefined || to === undefined) {
-        await wholeMedia(cache, original, url);
-      } else {
-        const ext = extension(media.cloud!.original) ?? "mp4";
-        await excerptMedia(cache, original, url, Number(from) / 1000, Number(to) / 1000, takeChars(fileStem(original.name) ?? "footage", 40), ext);
+      const bounds = /#(\d+)-(\d+)$/u.exec(media.cloud?.source ?? "");
+      if (bounds === null) return wholeMedia(cache, original, url);
+      const ext = extension(media.cloud!.original) ?? "mp4";
+      return excerptMedia(cache, original, url, Number(bounds[1]) / 1000, Number(bounds[2]) / 1000, takeChars(fileStem(original.name) ?? "footage", 40), ext);
+    },
+    async done(): Promise<void> {
+      // A YouTube download is on R2 again: its copy here goes.
+      for (const pending of originals.values()) {
+        const [, local] = await pending.catch((): [null, null] => [null, null]);
+        if (local !== null) fs.rmSync(parent(local) ?? local, { recursive: true, force: true });
+      }
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Footage the footage sweep cleared (mamagi's footage.ts): brought back from
+// its sources (archive.ts `bringBack`).
+
+/**
+ * A project's footage as the footage sweep counts it (mamagi footagePlan.ts
+ * `footageOf`, the same rule): each medium imported from a source with a
+ * proxy of its own, not a render, sound, picture, library sound or coded
+ * effect that went up as itself. By source (`drive:<id>`, an excerpt's `#…`
+ * left off), in the project's order.
+ */
+export function footageBySource(project: Project): Map<string, Media[]> {
+  const out = new Map<string, Media[]>();
+  for (const media of project.media) {
+    const cloudMedia = media.cloud;
+    if (cloudMedia == null || cloudMedia.proxy === undefined || cloudMedia.proxy === cloudMedia.original) continue;
+    if (media.library != null || media.effect != null || (media.kind !== "video" && media.kind !== "audio")) continue;
+    const base = cloudMedia.source.split("#")[0]!;
+    out.set(base, [...(out.get(base) ?? []), media]);
+  }
+  return out;
+}
+
+/** A source whose footage can't be fetched again as it was: by its name, and why. */
+export interface Unfetchable {
+  source: string;
+  name: string;
+  why: string;
+}
+
+/**
+ * The footage of `id` that isn't in the cloud and can't be fetched again
+ * from where it came from: a file from someone's disk, a Drive file deleted
+ * or no longer shared, a YouTube video taken down, a review link deleted.
+ * A source that can't be asked about now is taken as there (fetching it says
+ * if it isn't). YouTube is asked through the proxy first, sparingly.
+ */
+export async function unfetchable(app: App, id: string): Promise<Unfetchable[]> {
+  const live = app.store.get(id);
+  if (live === null) throw new Error("no such project");
+  const groups = footageBySource(live.project);
+  const records = new Map((await listRecords([...groups.values()].flat().map((media) => media.cloud!.source).concat([...groups.keys()]))).map((record) => [record.source, record]));
+  const scratch = scratchDir(app.store.cacheDir());
+  const out: Unfetchable[] = [];
+  for (const [base, media] of groups) {
+    // Still there (another project kept it): nothing to fetch.
+    if (media.every((one) => readyOriginal(records.get(one.cloud!.source) ?? null) !== null)) continue;
+    const name = records.get(base)?.name ?? media[0]!.name;
+    const file = fileOfSource(base);
+    if (file === null) {
+      out.push({ source: base, name, why: base.startsWith("sha256:") ? "It came from someone's disk, so it can't be downloaded again." : "Edit doesn't know where it came from." });
+      continue;
+    }
+    try {
+      if (base.startsWith("drive:")) await scriptParts.resolve(file, join(scratch, `.check-${file}`));
+      else if (youtube.idOf(base) !== null) await youtube.ask(app.store.home, youtube.idOf(base)!, ["--skip-download", "--no-warnings", "--print", "id"], ["proxy", "straight"], (asked) => asked.code === 0, { area: "footage", sparing: true, timeoutMs: 30_000 });
+      else if (finished.reviewOf(base) !== null) await finished.fullFile(base);
+    } catch (error) {
+      if (error instanceof steps.NeedsPerson) out.push({ source: base, name, why: diag.messageOf(error) });
+      else if (error instanceof youtube.Unanswered && error.gone) out.push({ source: base, name, why: "YouTube doesn't have this video any more." });
+      else if (finished.reviewOf(base) !== null) out.push({ source: base, name, why: "Its review link is gone." });
+    }
+  }
+  return out;
+}
+
+/** How one source is going as it's brought back. */
+export type BackStep = { state: "downloading"; bytes: number; total: number | null } | { state: "cutting"; done: number; total: number } | { state: "done" } | { state: "failed"; error: string };
+
+/**
+ * Fetches `id`'s footage again, each source in `files` from `file` (its own,
+ * or the replacement the person gave: a Drive or YouTube link to the same
+ * video), and puts each of its media back as it was made: a replacement's
+ * new keys saved in the project, the timeline untouched. `step(source, …)`
+ * as each goes; one that fails says so and the rest carry on.
+ */
+export async function fetchFootageAgain(app: App, id: string, files: { source: string; file: string }[], step: (source: string, now: BackStep) => void): Promise<void> {
+  const live = app.store.get(id);
+  if (live === null) throw new Error("no such project");
+  const groups = footageBySource(live.project);
+  const originals = fetchedOriginals(app.store.home, app.store.cacheDir());
+  try {
+    for (const { source, file } of files) {
+      const media = groups.get(source) ?? [];
+      try {
+        const made = new Map<string, Made>();
+        for (const one of media) {
+          made.set(one.id, await originals.remake(one, file, (bytes, total) => step(source, { state: "downloading", bytes, total })));
+          if (media.length > 1) step(source, { state: "cutting", done: made.size, total: media.length });
+        }
+        await app.store.update(id, "cloud", (project) => {
+          for (const one of project.media) {
+            const again = made.get(one.id);
+            if (again === undefined || again.cloud === null) continue;
+            one.cloud = again.cloud;
+            one.path = again.path;
+          }
+        });
+        for (const again of made.values()) for (const key of [again.cloud?.original, again.cloud?.proxy]) if (key !== undefined) forgetKeyVerdict(key);
+        step(source, { state: "done" });
+      } catch (error) {
+        if (isBug(error)) throw error;
+        step(source, { state: "failed", error: diag.messageOf(error) });
       }
     }
   } finally {
-    // A YouTube download is on R2 again: its copy here goes.
-    for (const pending of originals.values()) {
-      const [, local] = await pending.catch((): [null, null] => [null, null]);
-      if (local !== null) fs.rmSync(parent(local) ?? local, { recursive: true, force: true });
-    }
+    await originals.done();
   }
-  setNoFootage(home, id, false);
-  return lost;
 }
 
 // ---------------------------------------------------------------------------

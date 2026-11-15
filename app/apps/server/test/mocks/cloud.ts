@@ -281,6 +281,8 @@ interface ProjectRow {
   summary: unknown;
   /** Who started it (Repack's `createdBy`: the relay's `actor` on the first commit, never changed). */
   createdBy?: { sub: string; name: string; email?: string; picture?: string } | null;
+  /** The footage sweep cleared its footage (mamagi's footage.ts): {at, media}. */
+  footageCleared?: { at: number; media: unknown[] };
 }
 
 interface LockRow {
@@ -408,6 +410,7 @@ export class ConvexMock {
       // As Repack's card(): no email.
       createdBy: row.createdBy ? { sub: row.createdBy.sub, name: row.createdBy.name, ...(row.createdBy.picture ? { picture: row.createdBy.picture } : {}) } : null,
       lock: lock === undefined ? null : { holder: lock.holder, until: lock.until },
+      footageCleared: row.footageCleared ?? null,
     };
   }
 
@@ -576,6 +579,12 @@ export class ConvexMock {
         if (lock === undefined || lock.token !== args.lockToken) return { released: false };
         this.locks.delete(projectId);
         return { released: true };
+      }
+      case "clearRestore": {
+        const row = this.projects.get(projectId);
+        if (row === undefined) return { cleared: false };
+        delete row.footageCleared;
+        return { cleared: true };
       }
       case "getMedia": {
         const row = this.media.get(String(args.source));

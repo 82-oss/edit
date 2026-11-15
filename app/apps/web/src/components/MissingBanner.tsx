@@ -11,8 +11,9 @@ import { THIS_MACHINE } from "../lib/platform";
 
 export function MissingBanner() {
   const id = useEditor((state) => state.project?.id ?? "");
-  // Asked again when the media change (an import, a relink).
+  // Asked again when the media change (an import, a relink), and once cleared footage is back (FootageBack).
   const mediaCount = useEditor((state) => state.project?.media.length ?? 0);
+  const back = useEditor((state) => (state.scriptJob?.back === true ? state.scriptJob.state : null));
   const [found, setFound] = useState<{ used: number; missing: { id: string; name: string; path: string }[] } | null>(null);
   useEffect(() => {
     if (id === "") return;
@@ -24,7 +25,7 @@ export function MissingBanner() {
     return () => {
       live = false;
     };
-  }, [id, mediaCount]);
+  }, [id, mediaCount, back]);
   const missing = found?.missing ?? [];
   if (missing.length === 0) return null;
   const names = missing.map((media) => media.name);

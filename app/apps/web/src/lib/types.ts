@@ -198,7 +198,8 @@ export interface ScriptJob {
    */
   files: { file: string; name?: string; bytes: number; total?: number; state: "queued" | "downloading" | "cutting" | "done" | "failed" | "waiting"; error?: string; why?: ImportWhy; retry_at?: number; cut?: { done: number; total: number } }[];
   /** What follows the layout, each its own line: the voice-over, the team's recording placed, the research, the words. Never fails the import. */
-  after?: ImportAfter[];
+  after?: ImportAfter[];  /** Footage the footage sweep cleared, being brought back (archive.ts): shown over the picture as an import is. */
+  back?: boolean;
 }
 
 export type ImportWhy = "passing" | "person" | "quota" | "encoder";

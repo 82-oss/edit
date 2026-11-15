@@ -686,6 +686,11 @@ export function keyVerdict(key: string): boolean | null {
   return known.there;
 }
 
+/** Forgets what the cloud said about `key` (its footage was just brought back), so the next look asks again. */
+export function forgetKeyVerdict(key: string): void {
+  verdicts.delete(key);
+}
+
 /** Asks the cloud whether it has `key` (HEAD through the relay, one ask at a time per key); null when it couldn't say. */
 export function checkKey(key: string): Promise<boolean | null> {
   const known = keyVerdict(key);

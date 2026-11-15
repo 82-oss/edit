@@ -646,12 +646,19 @@ async function convexValueOf(env: CloudEnv, kind: string, path: string, args: Re
   }
 }
 
+/** Footage a whole folder of which may be queued (the footage sweep's: a pieced proxy, an export's cells). */
+const FOLDER_PREFIXES = ["edit/originals/", "edit/excerpts/", "edit/proxies/", "edit/pieces/"];
+/** Deletes a run makes at most, inside a Worker's subrequests with the queue's own calls beside them. */
+const RUN_DELETES = 500;
+
 /**
  * Empties Edit's own entries from mamagi's cleanup queue (Sphe, Nov 11: old
  * review versions are retired when a new one is shared, and their files were
  * queued for a cleanup only Repack's server ever ran): each due file under
  * `edit/` deleted from R2, then settled; a failure is settled with its error,
- * so the queue tries it again later. Runs on the relay's schedule.
+ * so the queue tries it again later. A target ending in `/` is a footage
+ * folder (the footage sweep's, mamagi footage.ts), emptied a listing at a
+ * time and settled once nothing's left. Runs on the relay's schedule.
  */
 export async function emptyCleanups(env: CloudEnv): Promise<{ deleted: number; failed: number }> {
   const r2 = r2Config(env);
@@ -659,15 +666,27 @@ export async function emptyCleanups(env: CloudEnv): Promise<{ deleted: number; f
   let deleted = 0;
   let failed = 0;
   // A few pages a run, so a long queue empties over a few runs and a run stays short.
-  for (let page = 0; page < 4; page++) {
+  for (let page = 0; page < 4 && deleted < RUN_DELETES; page++) {
     const due = await convexValueOf(env, "query", "cleanup:due", { limit: 50, prefix: "edit/" });
     if (!Array.isArray(due) || due.length === 0) break;
     for (const row of due as { id: string; target: string }[]) {
+      if (deleted >= RUN_DELETES) break;
       let error: string | null = null;
       try {
-        if (!validKey(row.target)) throw new Error("not a key under edit/");
-        await r2Fetch(r2, "DELETE", row.target, {}, { allow404: true });
-        deleted += 1;
+        if (row.target.endsWith("/")) {
+          if (!validPrefix(row.target) || row.target.split("/").length < 6 || !FOLDER_PREFIXES.some((prefix) => row.target.startsWith(prefix))) throw new Error("not a footage folder under edit/");
+          const listed = await (await r2Fetch(r2, "GET", "", { "list-type": "2", prefix: row.target, "max-keys": String(Math.min(1000, RUN_DELETES - deleted)) })).text();
+          const keys = [...listed.matchAll(/<Key>([\s\S]*?)<\/Key>/g)].map(([, key]) => unescapeXml(key!)).filter((key) => key.startsWith(row.target) && validKey(key));
+          await Promise.all(keys.map((key) => r2Fetch(r2, "DELETE", key, {}, { allow404: true })));
+          deleted += keys.length;
+          if (keys.length === 0 && /<Contents>/.test(listed)) throw new Error("what's under it isn't Edit's footage");
+          // More under it: left due, not settled, so the next listing carries on.
+          if (xmlValue(listed, "IsTruncated") === "true") continue;
+        } else {
+          if (!validKey(row.target)) throw new Error("not a key under edit/");
+          await r2Fetch(r2, "DELETE", row.target, {}, { allow404: true });
+          deleted += 1;
+        }
       } catch (thrown) {
         error = thrown instanceof Error ? thrown.message : String(thrown);
         failed += 1;
@@ -677,6 +696,31 @@ export async function emptyCleanups(env: CloudEnv): Promise<{ deleted: number; f
     if (due.length < 50) break;
   }
   return { deleted, failed };
+}
+
+/**
+ * The footage sweep, once a day (mamagi footage.ts, Sphe, Nov 15): what
+ * Writer's live scripts keep in Edit's originals is named in their
+ * `edit-shared.json` on R2, read here and sent along, since Convex can't read
+ * R2. One that can't be read stops the sweep: nothing is cleared on a guess.
+ * Off until mamagi's switch is on, it only says what it would clear.
+ */
+export async function sweepFootage(env: CloudEnv): Promise<unknown> {
+  const r2 = r2Config(env);
+  if (!r2 || !env.CONVEX_URL || !env.CONVEX_SERVICE_TOKEN) return null;
+  const scripts = await convexValueOf(env, "query", "writer:listScripts", {});
+  if (!Array.isArray(scripts)) throw new Error("Writer's scripts couldn't be listed");
+  const writerShared: { scriptId: string; text: string }[] = [];
+  for (const script of scripts as { scriptId?: unknown; deletedAt?: unknown; files?: unknown }[]) {
+    if (script.deletedAt !== null && script.deletedAt !== undefined) continue;
+    for (const file of Array.isArray(script.files) ? (script.files as { name?: unknown; key?: unknown }[]) : []) {
+      if (file.name !== "edit-shared.json" || typeof file.key !== "string" || !writerReadable(file.key)) continue;
+      writerShared.push({ scriptId: String(script.scriptId), text: (await (await r2Fetch(r2, "GET", file.key, {})).text()).slice(0, 200_000) });
+    }
+  }
+  const answer = await convexValueOf(env, "action", "footage:sweep", { writerShared });
+  if (answer === undefined) throw new Error("mamagi's footage:sweep didn't answer");
+  return answer;
 }
 
 /** A project's Convex card (`edit:getProject`, with its summary), or null when it isn't in the cloud. */

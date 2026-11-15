@@ -393,6 +393,12 @@ export const api = {
   deleteReview: (id: string) => request<{ removed: boolean; versions: number; notes: number; files: number }>("DELETE", `/api/projects/${id}/review`),
   /** Brings an archived project's footage back from Drive and YouTube. */
   restoreProject: (id: string) => request<{ started: boolean }>("POST", `/api/projects/${id}/restore`),
+  /** Whether the footage sweep cleared the project's footage (Done and untouched 30 days), and its bringing back if that's going here. */
+  footageCleared: (id: string) => request<{ cleared: { at: number; media: { id: string; name: string }[] } | null; job: ScriptJob | null }>("GET", `/api/projects/${id}/footage`),
+  /** The cleared footage that can't be fetched again as it was: by source, its name and why. */
+  unfetchableFootage: (id: string) => request<{ missing: { source: string; name: string; why: string }[] }>("POST", `/api/projects/${id}/footage/check`),
+  /** Brings the cleared footage back: a replacement link by source, and the sources to go on without. */
+  bringFootageBack: (id: string, replacements: Record<string, string>, leave: string[]) => request<{ started: boolean }>("POST", `/api/projects/${id}/footage/back`, { replacements, leave }),
   /** Writer's scripts in the cloud, newest first, each with the project made from it here. */
   writerScripts: () => request<{ scripts: WriterScriptRow[] }>("GET", "/api/writer/handoff"),
   /** Makes an Edit project from a Writer script and starts its import: the channel's (V2) when one is given, else the script's own channel's while V2 is on. */

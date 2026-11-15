@@ -9,6 +9,7 @@ import * as broll from "./broll.ts";
 import { readAttached, type Attached } from "./chat_attachments.ts";
 import { CHAT_PICTURES, keptPicture } from "./chat_pictures.ts";
 import { subKey } from "./agent.ts";
+import * as archive from "./archive.ts";
 import * as diag from "./diag.ts";
 import { join } from "./paths.ts";
 import * as drive from "./drive.ts";
@@ -553,7 +554,9 @@ async function agentSendRoute(context: RouteContext<App>): Promise<Response> {
 export async function messageContext(app: App, id: string, playhead: number | null, notes: boolean): Promise<string> {
   const live = app.store.get(id);
   if (live === null) return "";
-  const where = playhead === null ? "" : playheadContext(live.project, playhead, cachedTranscripts(app, live.project, false));
+  const at = playhead === null ? "" : playheadContext(live.project, playhead, cachedTranscripts(app, live.project, false));
+  // Its footage cleared by the footage sweep (archive.ts): said plainly, so the agent asks for it back instead of failing on missing files.
+  const where = archive.clearedOf(id) === null || archive.backRunning(id) ? at : `${CLEARED_NOTE}${at === "" ? "" : `\n\n${at}`}`;
   const taken = !notes
     ? []
     : await editNotes.take(app, id).catch((error: unknown) => {
@@ -569,6 +572,11 @@ export async function messageContext(app: App, id: string, playhead: number | nu
       : editNotes.context(live.project, taken);
   return `${where}${where === "" ? "" : "\n\n"}${told}`;
 }
+
+/** What the agent is told with each message while a project's footage is cleared. */
+export const CLEARED_NOTE =
+  "This project's footage was cleared to save space after it was done and untouched for 30 days: its clips have no picture or sound until it's brought back, so looking at frames, rendering and exporting won't work. " +
+  "Don't work around it or import anything again. Tell the person so in a line and ask them to bring the footage back: reopening the project shows Bring the footage back.";
 
 /** Takes a queued message out of an Edit V2 chat (its Cancel). */
 function agentQueueCancelRoute(context: RouteContext<App>): Response {

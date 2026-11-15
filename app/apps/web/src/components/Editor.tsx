@@ -20,6 +20,7 @@ import { AgentPanel } from "./AgentPanel";
 import { ChatDock } from "./ChatDock";
 import { CloudBanner } from "./CloudBanner";
 import { MissingBanner } from "./MissingBanner";
+import { FootageBack } from "./FootageBack";
 import { Timeline } from "./Timeline";
 import { TopBar } from "./TopBar";
 import { ProblemView } from "./ProblemView";
@@ -150,6 +151,7 @@ export function Editor({ id }: { id: string }) {
       <FileBrowser open={importing} onClose={() => setImporting(false)} />
       <Research open={researching} onClose={() => setResearching(false)} />
       <ShareDialog open={sharing} onClose={() => setSharing(false)} />
+      <FootageBack />
     </div>
   );
 }

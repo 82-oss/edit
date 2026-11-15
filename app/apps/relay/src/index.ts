@@ -2,7 +2,7 @@ import { allow, budgetKey, burstKey, caller, mayVoice, type AuthEnv, type Caller
 import { exportDoc, listDocs } from "./docs";
 import { trelloCard, trelloCards } from "./trello";
 import { manifest } from "./manifest";
-import { cloud, emptyCleanups, r2Config, type CloudEnv } from "./cloud";
+import { cloud, emptyCleanups, r2Config, sweepFootage, type CloudEnv } from "./cloud";
 import { media, type EdgeCache } from "./media";
 import { ideasRoute, mayIdeas, NO_IDEAS } from "./ideas";
 import { channelsRoute } from "./channels";
@@ -86,12 +86,27 @@ export interface Env extends CloudEnv, AuthEnv, JobsEnv, OpenArtEnv, DiarizeEnv 
   MAX_UPLOAD_BYTES: string;
 }
 
+/** The footage sweep's daily slot (wrangler.toml `crons`, both relays). */
+export const FOOTAGE_SWEEP = "15 3 * * *";
+
 const SCRIBE = "https://api.elevenlabs.io/v1/speech-to-text";
 const MODEL = "scribe_v3";
 
 export default {
-  /** Every half hour (wrangler.toml `crons`): Edit's queued cloud files deleted (cloud.ts `emptyCleanups`). */
-  async scheduled(_event: unknown, env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
+  /**
+   * Every half hour (wrangler.toml `crons`): Edit's queued cloud files deleted (cloud.ts `emptyCleanups`); and once
+   * a day (FOOTAGE_SWEEP), the footage sweep (`sweepFootage`: mamagi's footage.ts).
+   */
+  async scheduled(event: { cron?: string }, env: Env, ctx: { waitUntil(promise: Promise<unknown>): void }): Promise<void> {
+    if (event.cron === FOOTAGE_SWEEP) {
+      ctx.waitUntil(
+        sweepFootage(env).then(
+          (done) => console.log(`footage sweep: ${JSON.stringify(done)}`),
+          (error: unknown) => console.error(`footage sweep: ${error instanceof Error ? error.message : String(error)}`),
+        ),
+      );
+      return;
+    }
     ctx.waitUntil(
       emptyCleanups(env).then(
         (done) => {
