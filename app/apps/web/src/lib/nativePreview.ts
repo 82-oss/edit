@@ -85,6 +85,9 @@ export const nativePreview = {
    */
   project: async (json: string, revision: number, sources: Record<string, string>, sounds: Record<string, string>, excerpts: Record<string, NativeExcerpt[]>, cache: string): Promise<number> =>
     Number(await call("preview_project", { json, revision, sources, sounds, excerpts, cache })),
+  /** Where each media is read from now (a cloud preview's whole copy came down), without the edit; rejects in a window without it. */
+  sources: (sources: Record<string, string>, sounds: Record<string, string>, excerpts: Record<string, NativeExcerpt[]>, cache: string): Promise<unknown> =>
+    call("preview_sources", { sources, sounds, excerpts, cache }),
   /** What changed since `base` (lib/patch.ts), making `revision`; rejects when the window isn't at `base` or it doesn't fit. */
   patch: async (base: number, revision: number, patch: string): Promise<number> => Number(await call("preview_patch", { base, revision, patch })),
   /** Draws `frame`; settles once it's on screen, saying how. */

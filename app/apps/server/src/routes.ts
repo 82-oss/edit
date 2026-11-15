@@ -19,6 +19,7 @@ import * as remoteControl from "./remote_control.ts";
 import { cloudKeyFor, deleteExport, listExports } from "./exports.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
+import * as localPreviews from "./local_previews.ts";
 import { nativeSources } from "./native_preview.ts";
 import { PLAYBACK_ROUTE, playbackKey, previewable } from "./cloud_playback.ts";
 import { ioMessage } from "./files.ts";
@@ -167,6 +168,8 @@ export function buildRouter(): Router<App> {
     .get(PLAYBACK_ROUTE, async ({ request, query }) => {
       const key = query.get("key") ?? "";
       if (!cloud.validKey(key) || !previewable(key)) throw bad("invalid cloud preview key");
+      // Read now (a jump to footage not here yet): its whole copy comes down next. A background render's reads don't count.
+      if (query.get("behind") !== "1") localPreviews.hurry(key);
       const response = await cloudMedia.streamFromCloud(request, { proxy: key }, "proxy");
       if (response === null) throw new ApiError(503, "cloud previews need Edit's cloud connection");
       // FFmpeg seeks by reopening the loopback HTTP input. Closing each

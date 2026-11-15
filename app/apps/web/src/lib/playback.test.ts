@@ -777,6 +777,35 @@ describe("preview seeks and lifetime", () => {
     expect(decoding.requestVideo).toHaveBeenCalled();
   });
 
+  it("tells the window where its media are read from now without the edit (a whole copy came down), and the edit whole to a window without that", async () => {
+    let old = false;
+    const sent = await inWindow((command) => (old && command === "preview_sources" ? "Command preview_sources not found" : null));
+    preview.setProject(fixture(), {}); await settle(); draw(); await settle();
+    expect(sent("preview_project")).toHaveLength(1);
+    // The copy landed: the server names the file here now.
+    nativeApi.nativeSources.mockResolvedValueOnce({ cache: "/cache", sources: { m1: "/here/video.mp4" } });
+    window.dispatchEvent(new Event("edit:native-sources")); await settle(); draw(); await settle(); draw(); await settle();
+    expect(sent("preview_sources")).toHaveLength(1);
+    expect(sent("preview_sources")[0]!.sources).toEqual({ m1: "/here/video.mp4" });
+    expect(sent("preview_project")).toHaveLength(1);
+    // An older window refuses it: the edit goes whole, as before.
+    old = true;
+    nativeApi.nativeSources.mockResolvedValueOnce({ cache: "/cache", sources: { m1: "/there/video.mp4" } });
+    window.dispatchEvent(new Event("edit:native-sources")); await settle(); draw(); await settle(); draw(); await settle();
+    expect(sent("preview_project")).toHaveLength(2);
+    expect(sent("preview_project")[1]!.sources).toEqual({ m1: "/there/video.mp4" });
+    expect(preview.native).toBe(true);
+  });
+
+  it("asks the window for a jump's frame at once, not at the next animation frame", async () => {
+    const sent = await inWindow();
+    preview.setProject(fixture(), {}); await settle(); draw(); await settle();
+    const before = sent("preview_frame").length;
+    preview.seek(40);
+    expect(sent("preview_frame").length).toBe(before + 1);
+    expect(sent("preview_frame").at(-1)!.frame).toBe(40);
+  });
+
   it("asks where the window reads from again when the server's cleaner took a copy, or a frame failed", async () => {
     await inWindow();
     preview.setProject(fixture(), {}); await settle(); draw(); await settle();

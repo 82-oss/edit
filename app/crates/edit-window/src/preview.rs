@@ -4,7 +4,8 @@
 //!
 //! The page asks for it (`preview_open`), says where its viewer is
 //! (`preview_place`, in the page's points), sends the edit as its engine took
-//! it (`preview_project`, then only what changed: `preview_patch`), each
+//! it (`preview_project`, then only what changed: `preview_patch`; where its
+//! media are read from alone, `preview_sources`), each
 //! answered with the revision now drawn or why it was refused, and at rest
 //! asks for each frame (`preview_frame`, answered once it's on screen with how
 //! long it took and where the time went). Playing is the player's
@@ -66,6 +67,13 @@ enum Command {
         revision: u64,
         patch: String,
         reply: Accepted,
+    },
+    Sources {
+        sources: HashMap<String, String>,
+        sounds: HashMap<String, String>,
+        excerpts: HashMap<String, Vec<Excerpt>>,
+        cache: String,
+        reply: mpsc::Sender<Result<(), String>>,
     },
     Resize {
         width: u32,
@@ -174,6 +182,7 @@ pub struct Previews(Mutex<Option<Open>>);
 /// as they come due between commands; at rest, a playhead left alone for a
 /// moment is settled (its sound armed, the cuts ahead decoded).
 fn player_thread(layer: usize, commands: mpsc::Receiver<Command>) {
+    edit_engine::util::interactive_thread();
     // SAFETY: the layer is retained by its view until `preview_close` has
     // stopped this thread (its sender dropped, then the view removed).
     let mut player = match unsafe { Player::new(layer as *mut std::ffi::c_void, 1, 1) } {
@@ -188,7 +197,7 @@ fn player_thread(layer: usize, commands: mpsc::Receiver<Command>) {
                     Command::Project { reply, .. } | Command::Patch { reply, .. } => {
                         let _ = reply.send(Err(error.clone()));
                     }
-                    Command::Play { reply, .. } => {
+                    Command::Play { reply, .. } | Command::Sources { reply, .. } => {
                         let _ = reply.send(Err(error.clone()));
                     }
                     Command::Pause { reply } => {
@@ -273,6 +282,18 @@ fn player_thread(layer: usize, commands: mpsc::Receiver<Command>) {
                         )
                     });
                     let _ = reply.send(applied);
+                }
+                Command::Sources {
+                    sources,
+                    sounds,
+                    excerpts,
+                    cache,
+                    reply,
+                } => {
+                    let count = sources.len();
+                    player.set_sources(sources, sounds, excerpts, cache.into());
+                    trace(|| format!("sources: {count}"));
+                    let _ = reply.send(Ok(()));
                 }
                 Command::Resize { width, height } => player.resize(width, height),
                 Command::Rest => player.rest(),
@@ -581,6 +602,27 @@ pub async fn preview_patch(
         base,
         revision,
         patch,
+        reply,
+    })
+    .await
+}
+
+/// Where each media's picture and sound are read from now (a cloud preview's
+/// whole copy came down), without the edit: sent whole for that, 2.4 MB of
+/// Cops Realize was parsed again for each copy landing.
+#[tauri::command]
+pub async fn preview_sources(
+    previews: State<'_, Previews>,
+    sources: HashMap<String, String>,
+    sounds: Option<HashMap<String, String>>,
+    excerpts: Option<HashMap<String, Vec<Excerpt>>>,
+    cache: String,
+) -> Result<(), String> {
+    ask(&previews, |reply| Command::Sources {
+        sources,
+        sounds: sounds.unwrap_or_default(),
+        excerpts: excerpts.unwrap_or_default(),
+        cache,
         reply,
     })
     .await

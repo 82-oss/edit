@@ -46,6 +46,15 @@ export const MAP_PAGE = mapPageText as unknown as string;
 const USER_AGENT = "edit-video-editor/0.1 (+https://github.com/spheceo/edit)";
 
 /**
+ * x264's settings for footage Edit makes and then edits (maps, smoothed slow
+ * motion): a keyframe every half second and no B-frames, as the previews are.
+ * Its defaults put a keyframe every 250 frames, so a jump into a 12 s map
+ * decoded up to 90 frames first (436 ms in Edit.app's window, Nov 15, where a
+ * preview's jump takes 20–60 ms).
+ */
+export const seekable = (fps: number): string[] => ["-g", String(Math.max(1, Math.round(fps / 2))), "-bf", "0"];
+
+/**
  * The map drawing's version, kept with each map (`look` in its measured
  * JSON). Raise it when a fix makes earlier maps wrong: an export draws a map
  * of an older look again by itself and moves its place label with it, where
@@ -422,6 +431,7 @@ export async function smoothSlowMotion(app: App, projectId: string, clipId: stri
             "veryfast",
             "-crf",
             "15",
+            ...seekable(fps),
             "-threads",
             "2",
             "-movflags",
@@ -1891,6 +1901,7 @@ async function framesVideo(frames: string, fps: number, out: string): Promise<vo
     "medium",
     "-crf",
     "14",
+    ...seekable(fps),
     "-an",
     "-movflags",
     "+faststart",

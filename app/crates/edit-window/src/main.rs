@@ -97,6 +97,7 @@ fn run(url: &str, server: Option<(Server, u16)>, watch_stdin: bool) -> ! {
                 preview::preview_place,
                 preview::preview_project,
                 preview::preview_patch,
+                preview::preview_sources,
                 preview::preview_frame,
                 preview::preview_play,
                 preview::preview_pause,

@@ -5,6 +5,7 @@ fn main() {
         "preview_place",
         "preview_project",
         "preview_patch",
+        "preview_sources",
         "preview_frame",
         "preview_play",
         "preview_pause",

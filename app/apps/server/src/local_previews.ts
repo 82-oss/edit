@@ -22,8 +22,9 @@ import type { Media, Project } from "./model.ts";
 import { isFile } from "./paths.ts";
 import * as pieces from "./proxy_pieces.ts";
 
-/** Whole previews fetched at once. */
+/** Whole previews fetched at once, and how many more may start for ones read now (`hurry`). */
 const AT_ONCE = 4;
+const HURRIED_AT_ONCE = 2;
 const waiting: { key: string; local: string }[] = [];
 const fetching = new Set<string>();
 /** When a fetch last failed, so it isn't asked again on every frame (again after `RETRY_MS`). */
@@ -35,25 +36,40 @@ export const hooks = {
   fetch: (key: string, local: string): Promise<void> => cloudMedia.fetchKey(key, local),
 };
 
+/** Told each time a whole preview lands here (its key). */
+const landedListeners = new Set<(key: string) => void>();
+
+export function onLanded(listener: (key: string) => void): () => void {
+  landedListeners.add(listener);
+  return () => landedListeners.delete(listener);
+}
+
 function fetchNext(): void {
   while (fetching.size < AT_ONCE) {
     const next = waiting.shift();
     if (next === undefined) return;
-    if (fetching.has(next.local) || isFile(next.local)) continue;
-    fetching.add(next.local);
-    const started = performance.now();
-    void hooks
-      .fetch(next.key, next.local)
-      .then(() => diag.info("preview", `${next.key}: whole preview here in ${diag.human(performance.now() - started)}`))
-      .catch((error: unknown) => {
-        failed.set(next.local, Date.now());
-        diag.warn("preview", `${next.key}: whole preview not fetched: ${diag.messageOf(error)}`);
-      })
-      .finally(() => {
-        fetching.delete(next.local);
-        fetchNext();
-      });
+    start(next);
   }
+}
+
+function start(next: { key: string; local: string }): void {
+  if (fetching.has(next.local) || isFile(next.local)) return;
+  fetching.add(next.local);
+  const started = performance.now();
+  void hooks
+    .fetch(next.key, next.local)
+    .then(() => {
+      diag.info("preview", `${next.key}: whole preview here in ${diag.human(performance.now() - started)}`);
+      for (const listener of landedListeners) listener(next.key);
+    })
+    .catch((error: unknown) => {
+      failed.set(next.local, Date.now());
+      diag.warn("preview", `${next.key}: whole preview not fetched: ${diag.messageOf(error)}`);
+    })
+    .finally(() => {
+      fetching.delete(next.local);
+      fetchNext();
+    });
 }
 
 /** Queues `key`'s whole preview into `local`, once. */
@@ -63,14 +79,11 @@ export function fetchWhole(key: string, local: string): void {
   fetchNext();
 }
 
-/** A file the page's player is reading from R2 this moment (a jump past what's here) comes down whole next. */
+/** A file the page's player is reading from R2 this moment (a jump past what's here) comes down whole at once, as a jump in the window's does (`hurry`). */
 export function fetchNow(key: string, local: string): void {
   if (pieces.baseOf(key) !== null || isFile(local) || fetching.has(local) || Date.now() - (failed.get(local) ?? 0) < RETRY_MS) return;
-  const at = waiting.findIndex((one) => one.local === local);
-  if (at === 0) return;
-  if (at > 0) waiting.splice(at, 1);
-  waiting.unshift({ key, local });
-  fetchNext();
+  if (!waiting.some((one) => one.local === local)) waiting.push({ key, local });
+  hurry(key);
 }
 
 /**
@@ -110,6 +123,21 @@ export function fetchInPlayheadOrder(cache: string, project: Project, from: numb
   waiting.push(...wanted, ...rest);
   fetchNext();
   return wanted.length;
+}
+
+/**
+ * `key`'s preview is being read now through the stream (a jump in Edit.app's
+ * window to footage not here yet): its whole copy, if it's waiting, is fetched
+ * next, beside the ones under way. In playhead order a jump elsewhere waited
+ * behind the whole queue, each frame streamed meanwhile (0.7–7 s a jump for
+ * the first 50 s of a cold Cops Realize, Nov 15).
+ */
+export function hurry(key: string): void {
+  const at = waiting.findIndex((one) => one.key === key);
+  if (at < 0) return;
+  const [one] = waiting.splice(at, 1);
+  if (fetching.size < AT_ONCE + HURRIED_AT_ONCE) start(one!);
+  else waiting.unshift(one!);
 }
 
 /**

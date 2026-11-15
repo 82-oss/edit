@@ -18,9 +18,11 @@ animation frame (`preview_position`) and moves its playhead there. Short of
 sound the clock holds, so picture and sound never drift. The cuts within the
 next three seconds have readers opened and seeked on two other threads
 (`PreviewPictures::warm`), so a cut reads on instead of seeking on the drawing
-path; a hover over the timeline's ruler tells the window where a click would
-land (`preview_hint`), and a resting playhead has its sound armed and its cuts
-warmed after a quarter second. The page decodes nothing and asks for no
+path, a photo's too (decoded ahead like footage); a hover over the timeline's ruler tells the window where a click would
+land (`preview_hint`), a seek at rest asks for its frame at once (not at the
+page's next animation frame), and a resting playhead has its sound armed and its cuts
+warmed after a quarter second. The player's thread runs at user-interactive
+priority (at the default it sat idle up to 134 ms between draws on a busy Mac). The page decodes nothing and asks for no
 smooth-playback render, in full screen either (full screen plays on in the
 page, on its own clock). The edit goes to the window whole once, then as
 patches (`lib/patch.ts`, applied to the parsed clips: `edit_core::patch`), each
@@ -32,7 +34,9 @@ frame's answer and each position says its time and where it went
 `ui: preview: native …` timings). Each picture comes from its preview file,
 a cloud one's whole copy (a made proxy, or footage that's its own proxy), else
 its footage on the Mac, else the server's loopback stream while the whole file
-comes down; a pieced proxy's pieces on the Mac are read as files of their own;
+comes down (a stream read moves that file's copy to the front, `local_previews.hurry`,
+and each copy landing tells the page at once, `native-sources`, which sends the
+window the sources alone, `preview_sources`: readers of files still read stay); a pieced proxy's pieces on the Mac are read as files of their own;
 each sound from a made preview's `preview.m4a`, a cloud copy's own sound, else
 the footage or the stream (`apps/server/src/native_preview.ts`). A project the window
 draws is marked as its on the server (`apps/server/src/player.ts`): its whole
@@ -126,7 +130,8 @@ of voiced frames (FFmpeg's atempo 94.1%, the page's SoundTouch 89.2%). Nobody ha
 listened to it yet.
 
 To see it without screen access: `EDIT_PREVIEW_TRACE=1` says each placement and
-draw on stderr; `EDIT_PREVIEW_CHECK=<frame>` has the window seek there, scrub,
+draw on stderr, each line after its time in seconds (so the gaps between pictures
+on screen can be read, not only each draw's time); `EDIT_PREVIEW_CHECK=<frame>` has the window seek there, scrub,
 play and pause by itself, and `EDIT_PREVIEW_SHOT=<file.png>` then saves the
 window's own picture (an app may capture its own windows without permission);
 `EDIT_PREVIEW_JS=<file>` runs a file's steps in the page instead (a line

@@ -115,3 +115,37 @@ test("the page player's footage comes down whole in the timeline's order from th
     home.cleanup();
   }
 });
+
+test("a preview read now (a jump to it in the window) comes down next, beside the ones under way, and its landing is told", async () => {
+  const home = scratch("local-previews");
+  try {
+    const started: string[] = [];
+    const finish = new Map<string, () => void>();
+    localPreviews.hooks.fetch = (key, local) => {
+      started.push(key);
+      return new Promise<void>((resolve) => finish.set(key, () => {
+        fs.mkdirSync(path.dirname(local), { recursive: true });
+        fs.writeFileSync(local, "mp4");
+        resolve();
+      }));
+    };
+    const landed: string[] = [];
+    const stop = localPreviews.onLanded((key) => landed.push(key));
+    const keys = Array.from({ length: 8 }, (_, n) => `edit/proxies/youtube/k${n}/0-1000.mp4`);
+    for (const key of keys) localPreviews.fetchWhole(key, localPath(home.dir, key));
+    // Four at a time, in the order asked.
+    expect(started).toEqual(keys.slice(0, 4));
+    // The last one is read now: it starts at once, ahead of the four waiting.
+    localPreviews.hurry(keys[7]!);
+    expect(started).toEqual([...keys.slice(0, 4), keys[7]!]);
+    // One not waiting (here already, or never asked) changes nothing.
+    localPreviews.hurry("edit/proxies/youtube/nothing/0-1.mp4");
+    expect(started.length).toBe(5);
+    finish.get(keys[7]!)!();
+    await Bun.sleep(5);
+    expect(landed).toEqual([keys[7]!]);
+    stop();
+  } finally {
+    home.cleanup();
+  }
+});

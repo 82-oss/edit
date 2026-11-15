@@ -6,6 +6,7 @@ import * as fs from "node:fs";
 import { localPath } from "../src/cloud_media.ts";
 import { PLAYBACK_ROUTE } from "../src/cloud_playback.ts";
 import * as cloudMedia from "../src/cloud_media.ts";
+import * as localPreviews from "../src/local_previews.ts";
 import { hooks, nativeSources, reset } from "../src/native_preview.ts";
 import * as player from "../src/player.ts";
 import * as pieces from "../src/proxy_pieces.ts";
@@ -171,6 +172,41 @@ test.skipIf(Bun.which("ffmpeg") === null)("a piece is cut into a folder nothing 
     await expect(hooks.cut(`${dir}/missing.mp4`, 0, 1, `${dir}/pieces/youtube/abc/native/2.mp4`)).rejects.toThrow();
     expect(fs.readdirSync(`${dir}/pieces/youtube/abc/native`)).toEqual(["1.mp4"]);
   } finally {
+    cleanup();
+  }
+});
+
+test("as a streamed preview's whole copy lands, the window's pages hear it and ask again, at once", async () => {
+  const { app, store, cleanup } = fixtureHome("native-sources");
+  const realFetch = localPreviews.hooks.fetch;
+  try {
+    const id = store.create("p", { width: 1920, height: 1080, fps: 30 }).project.id;
+    await store.update(id, "test", (p) => {
+      p.media.push({ ...media({ id: "a", name: "a.mp4", path: "https://r2.example/a", kind: "video", duration: 1 }), cloud: { proxy: "edit/proxies/aa/a.mp4" } } as never);
+      p.media.push({ ...media({ id: "b", name: "b.mp4", path: "https://r2.example/b", kind: "video", duration: 1 }), cloud: { proxy: "edit/proxies/bb/b.mp4" } } as never);
+      p.clips.push(clip({ id: "c1", type: "video", track: "v1", media: "a", start: 0, duration: 30, source_in: 0 }));
+      p.clips.push(clip({ id: "c2", type: "video", track: "v1", media: "b", start: 30, duration: 30, source_in: 0 }));
+    });
+    const finish: (() => void)[] = [];
+    localPreviews.hooks.fetch = (_key, local) => new Promise<void>((resolve) => finish.push(() => {
+      fs.mkdirSync(local.slice(0, local.lastIndexOf("/")), { recursive: true });
+      fs.writeFileSync(local, "copy");
+      resolve();
+    }));
+    const heard: unknown[] = [];
+    const stop = store.subscribe((event) => heard.push(event));
+    await nativeSources(app, store.get(id)!.project);
+    expect(finish.length).toBe(2);
+    // Both land within a moment: told once, a moment after the first (not every 15 s, nor once each).
+    finish[0]!();
+    finish[1]!();
+    await Bun.sleep(450);
+    expect(heard.filter((event) => (event as { type: string }).type === "native-sources")).toEqual([{ type: "native-sources", id }]);
+    stop();
+  } finally {
+    localPreviews.hooks.fetch = realFetch;
+    localPreviews.reset();
+    reset();
     cleanup();
   }
 });
