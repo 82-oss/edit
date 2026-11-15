@@ -23,7 +23,6 @@ import { THIS_MACHINE } from "../machine.ts";
 /** The model every build and check that reads the whole script uses: Opus 5.5, pinned (revisions are `REVISION`). */
 export const OPUS = "claude-opus-5-5";
 export const SONNET = "claude-sonnet-5-5";
-export const HAIKU = "claude-haiku-5-5";
 /** How hard the script's chat thinks, its builds and revisions alike: the person's pick in the model menu (model_choice.ts). */
 export const effort = (): NonNullable<Question["effort"]> => modelChoice.current().effort;
 
@@ -126,14 +125,8 @@ export function explain(said: string, status: number | null = null): Trouble {
   return new Trouble(`Claude stopped: "${quoted}" Nothing was changed.`);
 }
 
-let workspaceDir: string | null = null;
-
 /** Where questions run: an empty folder, since Claude reads its own folder without asking. */
-export function useWorkspace(dir: string): void {
-  workspaceDir = dir;
-}
-
-const workspace = (): string => workspaceDir ?? join(process.env.HOME ?? "/tmp", ".edit", "writer", "claude");
+const workspace = (): string => join(process.env.HOME ?? "/tmp", ".edit", "writer", "claude");
 
 /** One question through the Agent SDK, once there's room for another Claude Code (memory.ts `claudeTurn`: three at once while the Mac is short of memory). */
 export async function ask(question: Question): Promise<Answer> {

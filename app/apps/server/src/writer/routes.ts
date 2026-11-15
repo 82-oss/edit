@@ -26,7 +26,6 @@ import * as docs from "./docs.ts";
 import * as edits from "./edits.ts";
 import * as feedback from "./feedback.ts";
 import { lessons } from "./lessons.ts";
-import * as handoff from "./handoff.ts";
 import { projectFor } from "../writer_handoff.ts";
 import * as footage from "./footage.ts";
 import * as imports from "./imports.ts";
@@ -383,13 +382,6 @@ export function routes(router: Router<App>): void {
         return detail(dataOf(context.app), await reviews.removeLink(dataOf(context.app), id(context)));
       }),
     )
-    .post("/api/writer/scripts/{id}/review/replace", (context) =>
-      answer(async () => {
-        readFor(dataOf(context.app), id(context));
-        notWhileWriting(id(context));
-        return detail(dataOf(context.app), await reviews.replaceLatest(context.app, dataOf(context.app), id(context)));
-      }),
-    )
     .get("/api/writer/reviews", ({ app }) => json(reviews.counts(dataOf(app))))
     .get("/api/writer/scripts/{id}/review", (context) => answer(() => reviewState(dataOf(context.app), id(context))))
     .put("/api/writer/scripts/{id}/review/approval", async (context) => {
@@ -591,8 +583,6 @@ export function routes(router: Router<App>): void {
       const all = [...now, ...carryingOn().filter((one) => !now.some((going) => going.id === one.id) && !imports.importing(one.id))];
       return json(all.filter((one) => seesScript(dataOf(app), one.id)));
     })
-    .get("/api/writer/cloud", () => json(cloud.statusNow()))
-    .get("/api/writer/activity", ({ app }) => json(activity.list().filter((one) => one.script === null || seesScript(dataOf(app), one.script))))
     // Brings an archived script's footage back; followed as a build.
     .post("/api/writer/scripts/{id}/restore", (context) =>
       answer(() => {
@@ -605,13 +595,6 @@ export function routes(router: Router<App>): void {
       answer(() => {
         readFor(dataOf(context.app), id(context));
         return { project: projectFor(context.app, id(context)) };
-      }),
-    )
-    // The script's footage and words put where Edit mode finds them.
-    .post("/api/writer/scripts/{id}/edit-share", (context) =>
-      answer(() => {
-        readFor(dataOf(context.app), id(context));
-        return handoff.share(dataOf(context.app), id(context));
       }),
     )
     .get("/api/writer/claude", () => answer(() => activity.claudeStatus()))
@@ -650,9 +633,6 @@ export function routes(router: Router<App>): void {
         return startJob(context.app, id(context), urls.length > 0 ? { kind: "link", urls, request, focus } : { kind: "revise", request, focus });
       });
     })
-    .post("/api/writer/scripts/{id}/exact", (context) =>
-      answer(() => startJob(context.app, id(context), { kind: "exact" })),
-    )
     .get("/api/writer/scripts/{id}/research", (context) =>
       answer(() => {
         const data = dataOf(context.app);
@@ -765,16 +745,6 @@ export function routes(router: Router<App>): void {
       const streamed = await cloud.stream(context.request, data, id(context), join(context.app.store.cacheDir(), "cloud", "blocks"));
       if (streamed === null) throw notFound("No preview here.");
       return streamed;
-    })
-    .get("/api/writer/scripts/{id}/files/{name}", (context) => {
-      // A file the page shows beside the script (a found clip's frames, a commentary's footage): only plain names in its folder.
-      const data = dataOf(context.app);
-      readFor(data, id(context));
-      const name = context.params.name ?? "";
-      if (!/^[\w .()-]+$/u.test(name) || name.startsWith(".")) throw bad("Unknown file.");
-      const path = join(store.scriptDir(data, id(context)), name);
-      if (!isFile(path)) throw notFound("No such file.");
-      return serveFile(context.request, path);
     });
   // Claude's tools while it builds a script in steps (build.ts), on this server.
   build.routes(router);

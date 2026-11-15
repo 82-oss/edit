@@ -339,27 +339,3 @@ export function update(dir: string, change: (script: Script) => void, keepRevisi
   return script;
 }
 
-/**
- * Brings this Mac's Writer scripts in the first time Script mode starts: its
- * folder is copied (APFS clones, so no space is taken until either copy
- * changes), never moved, so Writer still opens them while both are in use.
- */
-export function adoptWriterFolder(data: string, writerFolder: string): number {
-  const root = scriptsRoot(data);
-  const from = join(writerFolder, "scripts");
-  if (fs.existsSync(root) || !fs.existsSync(from)) return 0;
-  fs.mkdirSync(data, { recursive: true });
-  const staging = `${root}.adopting`;
-  fs.rmSync(staging, { recursive: true, force: true });
-  const copied = Bun.spawnSync(["cp", "-cR", from, staging], { stdout: "ignore", stderr: "pipe" });
-  if (copied.exitCode !== 0) {
-    fs.rmSync(staging, { recursive: true, force: true });
-    throw new Error(`couldn't copy Writer's scripts: ${copied.stderr.toString().trim()}`);
-  }
-  for (const file of ["lessons.json"]) {
-    const path = join(writerFolder, file);
-    if (fs.existsSync(path)) fs.copyFileSync(path, join(data, file));
-  }
-  fs.renameSync(staging, root);
-  return ids(data).length;
-}

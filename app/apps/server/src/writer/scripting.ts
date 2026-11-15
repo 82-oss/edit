@@ -137,7 +137,7 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   chat.asked(dir, note.trim() === "" ? "Build the script." : `Build the script. ${note.trim()}`, job.resumed);
   let built: build.Built;
   try {
-    built = await (build.fastChosen() ? build.buildFast : build.build)(script, note, found, peaks, job.signal, job.stage);
+    built = await build.buildFast(script, note, found, peaks, job.signal, job.stage);
   } catch (error) {
     failed(dir, job, error);
   }

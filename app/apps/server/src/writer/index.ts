@@ -1,11 +1,7 @@
 // Script mode (Writer, merged into Edit on Oct 29 2026): starting it with the
-// server. The first start copies this Mac's Writer scripts in (Writer's own
-// folder stays as it was, so Writer still opens them); every start carries on
-// the imports and Claude's jobs that died with the server (an update, a crash),
-// and before Edit restarts itself the jobs are stopped where they are, to
-// carry on after it.
-
-import * as fs from "node:fs";
+// server. Every start carries on the imports and Claude's jobs that died with
+// the server (an update, a crash), and before Edit restarts itself the jobs
+// are stopped where they are, to carry on after it.
 
 import type { ImportProgress } from "@edit/types/writer";
 
@@ -25,14 +21,10 @@ import { holderFor } from "../sync_core.ts";
 import * as reviews from "./reviews.ts";
 import * as drive from "./drive.ts";
 import * as handoff from "./handoff.ts";
-import { isFile, join, userHome } from "../paths.ts";
+import { join } from "../paths.ts";
 import * as jobs from "./jobs.ts";
 import * as storage from "./storage.ts";
 import * as store from "./store.ts";
-import { THIS_MACHINE } from "../machine.ts";
-
-/** Where Writer kept its scripts on this Mac. */
-export const WRITER_FOLDER = (): string => join(userHome(), "Library", "Application Support", "com.spheceo.writer");
 
 /** Background work Script mode's parts start with the server (the cloud, review polling…). */
 export const starters: ((app: App) => void)[] = [];
@@ -49,7 +41,7 @@ export function start(app: App, options: { trials?: boolean } = {}): void {
   jobs.useHome(app.store.home);
   holdBeforeRestart();
   // A trial server (EDIT_TRIALS=1) writes and builds scripts as any Edit does, but takes
-  // none of the team's work: no Writer folder adopted, no review notes fixed, no archives
+  // none of the team's work: no review notes fixed, no archives
   // acted on (Oct 31: with Script mode off there, a script's builds called the tools on :7700
   // and its Drive reads had no token).
   if (options.trials === true) {
@@ -59,16 +51,6 @@ export function start(app: App, options: { trials?: boolean } = {}): void {
     storage.start(data, join(app.store.home, "projects"), app.store.cacheDir());
     scriptSync.start(app);
     return;
-  }
-  // Writer's folder is another app's data: macOS warns the person each time
-  // Edit reads it ("Data Access Blocked", Oct 30), so it's read once per Mac.
-  const once = join(data, "writer-folder-read");
-  if (!fs.existsSync(once)) adoptWriter(data);
-  try {
-    fs.mkdirSync(data, { recursive: true });
-    fs.writeFileSync(once, new Date().toISOString());
-  } catch (error) {
-    diag.warn("writer", `noting Writer's folder as read: ${diag.messageOf(error)}`);
   }
   carryOn(app, data, store.markInterrupted(data));
   for (const id of store.ids(data)) jobs.markInterrupted(data, id);
@@ -176,25 +158,3 @@ async function carryOnImport(app: App, data: string, id: string, imports: typeof
   }
 }
 
-/** Writer's scripts, its cloud record and its review notes, taken into Script mode. */
-function adoptWriter(data: string): void {
-  try {
-    const adopted = store.adoptWriterFolder(data, WRITER_FOLDER());
-    if (adopted > 0) diag.info("writer", `brought ${adopted} scripts in from Writer's folder on ${THIS_MACHINE}`);
-  } catch (error) {
-    diag.warn("writer", `Writer's scripts weren't brought in: ${diag.messageOf(error)}`);
-  }
-  try {
-    cloud.adoptLedger(data, WRITER_FOLDER());
-    // What Writer knew of its review notes (where it had read them to, open counts, approvals), once.
-    const notes = join(WRITER_FOLDER(), "reviews", "notes.json");
-    const ours = join(data, "reviews", "notes.json");
-    const empty = !isFile(ours) || ((JSON.parse(fs.readFileSync(ours, "utf8")) as { cursor?: number }).cursor ?? 0) === 0;
-    if (isFile(notes) && empty) {
-      fs.mkdirSync(join(data, "reviews"), { recursive: true });
-      fs.copyFileSync(notes, ours);
-    }
-  } catch (error) {
-    diag.warn("writer", `Writer's cloud record wasn't taken: ${diag.messageOf(error)}`);
-  }
-}

@@ -534,27 +534,6 @@ export async function shareNext(app: App, data: string, id: string): Promise<Scr
   return now;
 }
 
-/** Replaces the latest shared version with the commentary as it is now, on the same link and number (`reviews:setMeta`). */
-export async function replaceLatest(app: App, data: string, id: string): Promise<Script> {
-  const dir = store.scriptDir(data, id);
-  const script = store.read(dir);
-  const link = script.review;
-  if (!link) throw new Error("Share the script first: there's no version to replace.");
-  if (!script.commentary) throw new Error("Only a commentary's version can be replaced in place.");
-  const found = shareable(dir, script);
-  await cloud.putBytes(`writer/reviews/${id}/v${link.version}/script.json`, JSON.stringify(script));
-  const meta = await metaOf(data, id, script, found);
-  await call("mutation", "reviews:setMeta", { sourceId: id, version: link.version, meta });
-  diag.info("writer", `${jobs.named(id, script.title)}: v${link.version} replaced in place (${found.length} blocks, revision ${script.revision}) at ${link.url}`);
-  const now = store.read(dir);
-  now.review = { ...link, revision: script.revision, sharedAt: Date.now() };
-  store.write(dir, now);
-  keepShared(dir, link.version, found);
-  footage.soon(app, data, id);
-  pollSoon();
-  return now;
-}
-
 /** Makes the script as it is now the review's only version, v1, on the same link (`reviews:compress`): later versions go, every note moves onto v1. */
 export async function compress(app: App, data: string, id: string): Promise<Script> {
   if (jobs.running(id)) throw new Error("Claude is still working on this script. Make it v1 when that's done.");

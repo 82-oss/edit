@@ -465,14 +465,6 @@ export function routes(router: Router<App>): void {
       throw new ApiError(400, diag.messageOf(error));
     }
   });
-  router.get("/api/writer/handoff/{id}", async ({ app, params }) => {
-    try {
-      const given = await fetchScript(params.id ?? "", app.store.home);
-      return sorted({ ...script.summary(toParsed(await resolveWriterCases(given))), title: given.title, style: scriptStyle(given) });
-    } catch (error) {
-      throw new ApiError(400, diag.messageOf(error));
-    }
-  });
   router.post("/api/writer/handoff/{id}/import", async (context) => {
     const { app, params } = context;
     try {

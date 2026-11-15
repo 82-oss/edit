@@ -621,14 +621,6 @@ export async function encodeProxy(source: string, dest: string, durationMs: numb
   );
 }
 
-/** A single video's preview from a picture already at 480p and the sound of `sound`, both copied (sound encoded only when it isn't AAC). */
-export async function copyPreview(picture: string, sound: string, durationMs: number, dest: string, signal?: AbortSignal): Promise<void> {
-  const codec = (await run(ffprobe(), ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", sound], { timeoutMs: 60_000 })).trim();
-  if (codec === "") throw new Error("the footage has no sound to copy");
-  const audio = codec === "aac" ? ["-c:a", "copy"] : ["-c:a", "aac", "-b:a", "96k"];
-  await encode(["-hide_banner", "-y", "-i", picture, "-i", sound, "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", ...audio, "-t", seconds(durationMs), "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", dest], dest, durationMs, () => {}, signal);
-}
-
 /** The loudest sample of each 20 ms, from 0 to 1: pauses are cut by it, and the overview drawn from it. */
 export async function peaks(source: string, signal?: AbortSignal): Promise<Float32Array> {
   const out: number[] = [];

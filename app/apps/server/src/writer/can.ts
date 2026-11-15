@@ -47,9 +47,6 @@ export function compilationKinds(given: Set<string> | null = granted()): Kind[] 
   return ([["interrogation", INTERROGATION_COMPILATION], ["foia", FOIA_COMPILATION], ["courtroom", COURTROOM_COMPILATION]] as const).filter(([, id]) => has(id, given)).map(([kind]) => kind);
 }
 
-/** Whether this person writes scripts at all (Script mode shows only then). */
-export const writesAny = (given: Set<string> | null = granted()): boolean => [INTERROGATION, INTERROGATION_COMPILATION, FOIA, FOIA_COMPILATION, COURTROOM, COURTROOM_COMPILATION, COMMENTARY].some((id) => has(id, given));
-
 const DOING: Record<string, string> = {
   [INTERROGATION]: "write interrogation scripts",
   [INTERROGATION_COMPILATION]: "write interrogation compilations",

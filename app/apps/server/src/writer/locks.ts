@@ -8,9 +8,9 @@
 // edit's: while the script page has it open here (its heartbeat), or an import
 // or Claude works on it here (busy.ts), or for LINGER after a push with nobody
 // looking. A save to a script another computer holds is refused (423, saying
-// who), and the page offers Take over. Where the cloud has no lock for scripts
-// (a Convex from before) or can't be reached, scripts sync as they did:
-// pushed, the overtaken one kept in its versions.
+// who), and the page offers Take over. Where the cloud refuses the lock call
+// or can't be reached, scripts sync as they did: pushed, the overtaken one
+// kept in its versions.
 
 import * as fs from "node:fs";
 
@@ -150,7 +150,7 @@ async function call(name: string, args: Record<string, unknown>): Promise<Record
   return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
 }
 
-/** Whether a failed lock call means the cloud keeps no lock for scripts (a Convex that refuses the key, or a relay from before) rather than a passing failure. */
+/** Whether a failed lock call means the cloud keeps no lock for scripts (it refused the call) rather than a passing failure (unreachable). */
 function noLocks(error: unknown): boolean {
   return error instanceof ConvexFailure && error.kind !== "unreachable";
 }

@@ -527,8 +527,8 @@ async function settle(promise: Promise<claude.Answer>): Promise<[claude.Answer |
   }
 }
 
-/** Builds the script in steps. Nothing is saved to it unless a plan passes. */
-export async function buildInSteps(script: Script, note: string, research: Research | null, peaks: ArrayLike<number>, signal?: AbortSignal): Promise<Built> {
+/** Builds the script in steps (a fast build whose outline didn't come back). Nothing is saved to it unless a plan passes. */
+async function buildInSteps(script: Script, note: string, research: Research | null, peaks: ArrayLike<number>, signal?: AbortSignal): Promise<Built> {
   // A channel's script reads its Script lane (lanes.ts), fresh.
   if (script.channel) await lanes.refresh();
   const prompt = `${evidence(script, research)}\n\n${request(script, note)}`;
@@ -555,9 +555,6 @@ function fastEffort(): NonNullable<claude.Question["effort"]> {
   const given = process.env.WRITER_FAST_EFFORT;
   return given === "low" || given === "medium" || given === "high" || given === "xhigh" || given === "max" ? given : claude.effort();
 }
-
-/** The fast build, everyone's; `WRITER_SCRIPT_BUILD=steps` asks for the build in steps instead (for comparisons). */
-export const fastChosen = (): boolean => process.env.WRITER_SCRIPT_BUILD !== "steps";
 
 function fastSystem(script: Script, format: Format): string {
   return `${stepsSystem(script, format).replace("the complete transcript is in the message", "the complete transcript is at the end of these instructions")}
@@ -706,11 +703,6 @@ export async function buildFast(script: Script, note: string, research: Research
     finishSeconds: (finishedAt - writtenAt) / 1000,
   };
   return built(draft, answer, failure, totals.cost, stats);
-}
-
-/** Builds a footage script the way everyone does now (fast; in steps when asked for). */
-export function build(script: Script, note: string, research: Research | null, peaks: ArrayLike<number>, signal?: AbortSignal, stage?: (text: string) => void): Promise<Built> {
-  return fastChosen() ? buildFast(script, note, research, peaks, signal, stage) : buildInSteps(script, note, research, peaks, signal);
 }
 
 /** The tools' MCP endpoint (JSON-RPC over HTTP, JSON answers), one draft per token. */

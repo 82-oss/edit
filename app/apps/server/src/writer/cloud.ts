@@ -251,49 +251,13 @@ export const revOf = (data: string, id: string): number | null => ledgerNow(data
 /** A script file's key and size in the cloud, as this Mac last synced it. */
 export const fileKey = (data: string, id: string, name: string): Kept | null => ledgerNow(data).scripts[id]?.files[name] ?? null;
 
-/**
- * Writer's own record of what each script is in the cloud, taken once when
- * its scripts were brought in, so nothing goes up again: the copies were made
- * now, so a file whose size the record agrees with takes its time from here.
- */
-export function adoptLedger(data: string, writerFolder: string): void {
-  // What Writer cleared from this Mac or left in the cloud (still those scripts' files there), and which archives it freed or restored here.
-  for (const name of ["storage.json", "archive-local.json"]) {
-    if (!isFile(join(data, "cloud", name)) && isFile(join(writerFolder, "cloud", name))) {
-      fs.mkdirSync(join(data, "cloud"), { recursive: true });
-      fs.copyFileSync(join(writerFolder, "cloud", name), join(data, "cloud", name));
-    }
-  }
-  if (isFile(ledgerPath(data))) return;
-  const theirs = readJson<Ledger | null>(join(writerFolder, "cloud", "ledger.json"), null);
-  if (theirs === null) return;
-  for (const [id, known] of Object.entries(theirs.scripts)) {
-    const dir = store.scriptDir(data, id);
-    for (const [name, kept] of Object.entries(known.files)) {
-      const path = inside(dir, name);
-      if (path !== null && isFile(path) && fs.statSync(path).size === kept.size) kept.mtime = mtime(path);
-    }
-  }
-  writeJson(ledgerPath(data), theirs);
-  diag.info("writer", `took Writer's cloud record of ${Object.keys(theirs.scripts).length} scripts`);
-}
-
 // ---- The relay ----
-
-/** Reads that Edit's relay answered before Script mode's own routes (Writer's script reads, for the handoff). */
-const READS = new Set(["writer:listScripts", "writer:getScript"]);
 
 async function call(route: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
   try {
     return await relay.json<Record<string, unknown>>("POST", `/v1/cloud/writer/${route}`, body, "Script mode's cloud", 120);
   } catch (error) {
     const message = diag.messageOf(error);
-    // A relay from before the merge: reads go the way Edit read Writer's scripts; saves wait for the new relay.
-    if (/needs deploying|\b404\b|not found/i.test(message)) {
-      const read = (route === "convex" && READS.has(String(body.path))) || (route === "r2/url" && body.method !== "PUT" && String(body.key).startsWith(`${PREFIX}/`));
-      if (read) return relay.json<Record<string, unknown>>("POST", `/v1/cloud/${route}`, body, "Script mode's cloud", 120);
-      throw new Problem("Edit's relay doesn't serve Script mode's cloud yet (it needs the update with Writer's cloud).");
-    }
     throw new Problem(readable(message), message.startsWith(relay.UNREACHABLE), service.isTemporary(error));
   }
 }

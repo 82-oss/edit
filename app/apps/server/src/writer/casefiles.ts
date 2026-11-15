@@ -53,9 +53,6 @@ function save(dir: string, documents: Documents): void {
   }
 }
 
-/** Whether an incident report among them gives the case's facts, as Repack's first incident report does in place of a search. */
-export const hasReport = (documents: Documents): boolean => documents.read.some((document) => document.incidentReport);
-
 /** The documents as research for the build, beside what the web gave. */
 export function asArticles(documents: Documents): Article[] {
   return documents.read.map((document) => ({
