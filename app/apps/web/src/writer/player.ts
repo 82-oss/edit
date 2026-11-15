@@ -1,5 +1,5 @@
 /**
- * The script's player, chosen where it runs (docs/plans/2026-11-10-script-player.md).
+ * The script's player, chosen where it runs.
  * In Edit.app it's the window's own player, the one the editor uses
  * (window-player.ts), whenever every recording the cut plays is a file on
  * this Mac (the server says: writer/window_sources.ts); in a browser, on

@@ -1,6 +1,5 @@
 /**
- * Script mode on Edit.app's own player (docs/plans/2026-11-10-script-player.md;
- * Sphe, Nov 10: "within the edits app, in the script writing section, we
+ * Script mode on Edit.app's own player (Sphe, Nov 10: "within the edits app, in the script writing section, we
  * should have the same improvements"). The script's cut is handed to the
  * window as a small edit (@edit/types/script_cut) and drawn by the engine in
  * a layer under the monitor, as the editor's viewer is (lib/nativePreview.ts):

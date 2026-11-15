@@ -1,5 +1,5 @@
 /**
- * Cloud jobs (speed-plan 7.1): work that finishes without the Mac. The first
+ * Cloud jobs (Oct 18): work that finishes without the Mac. The first
  * is a Drive file → R2 copy, which Edit did by streaming the whole file
  * through the Mac (download and upload both on its connection, and lost when
  * the Mac slept or Edit restarted).

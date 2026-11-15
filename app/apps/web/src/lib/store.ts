@@ -146,7 +146,7 @@ let editorSession = 0;
 /**
  * The open project as the server last had it (its revision and content):
  * changes come as patches against it and saves send patches from it
- * (speed-plan 5.1). Never what's on screen, which may have unsaved edits.
+ * (patch.ts). Never what's on screen, which may have unsaved edits.
  */
 let server: { rev: number; project: Project } | null = null;
 

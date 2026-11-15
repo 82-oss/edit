@@ -1,5 +1,5 @@
 // A script's cut as the small edit Edit.app's window player takes
-// (docs/plans/2026-11-10-script-player.md; Sphe, Nov 10: "When one is
+// (Sphe, Nov 10: "When one is
 // improved, the other should be improved as well"). Script mode had a player
 // of its own in the page, so every improvement to the editor's player (the
 // Mac's decoder, the speaker's clock, cuts decoded ahead) passed it by. Here
