@@ -83,8 +83,6 @@ export interface CloudList {
 
 export const cloudApi = {
   settings: (check = true) => request<CloudSettings>("GET", `/api/cloud${check ? "?check=true" : ""}`),
-  /** `token: null` forgets the saved token. */
-  setSettings: (body: { token?: string | null; holder?: string | null }) => request<CloudSettings>("POST", "/api/cloud", body),
   projects: () => request<CloudList>("GET", "/api/cloud/projects"),
   status: (id: string) => request<CloudStatus>("GET", `/api/projects/${id}/cloud`),
   /** The editor opened it: a cloud-only project is downloaded, the lock asked for. */
@@ -92,7 +90,6 @@ export const cloudApi = {
     request<CloudStatus>("POST", `/api/projects/${id}/cloud/open`, { client, heartbeat }),
   close: (id: string, client: string) => request<{ ok: boolean }>("POST", `/api/projects/${id}/cloud/close`, { client }),
   takeOver: (id: string) => request<CloudStatus>("POST", `/api/projects/${id}/cloud/takeover`),
-  moveToCloud: (id: string) => request<CloudStatus>("POST", `/api/projects/${id}/cloud/upload`),
 };
 
 /** Someone else is editing it: read-only here (the server's answer, `writable`; its lock for a server from before it said). */

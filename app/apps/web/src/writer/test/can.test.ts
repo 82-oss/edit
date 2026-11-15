@@ -1,14 +1,5 @@
 import { expect, test } from "vitest";
-import { CAN, grantsOf, workOf } from "../can";
-
-test("names each kind of script as the app does", () => {
-  expect(workOf({ sourceKind: "youtube", compilation: false, kind: "interrogation" })).toBe(CAN.interrogation);
-  expect(workOf({ sourceKind: "drive", compilation: false, kind: "foia" })).toBe(CAN.foia);
-  expect(workOf({ sourceKind: "compilation", compilation: false, kind: "courtroom" })).toBe(CAN.courtroom);
-  expect(workOf({ sourceKind: "compilation", compilation: true, kind: "foia" })).toBe(CAN.foiaCompilation);
-  expect(workOf({ sourceKind: "compilation", compilation: true, kind: "courtroom" })).toBe(CAN.courtroomCompilation);
-  expect(workOf({ sourceKind: "commentary", compilation: false, kind: undefined })).toBe(CAN.commentary);
-});
+import { CAN, grantsOf } from "../can";
 
 test("offers only what was granted; admins everything, bodycam compilations included", () => {
   const writer = grantsOf(["use", CAN.interrogationCompilation, "cloud"], false);

@@ -1,4 +1,4 @@
-import { Archive, Check, ChevronDown, ChevronRight, ListFilter, CloudDownload, CloudOff, CloudUpload, Copy, ExternalLink, FileText, Film, FileVideo, Lock, MessageSquare, Pencil, PenLine, Plus, Replace, RotateCw, Search, Share2, SkipForward, Tag, Trash2, TriangleAlert, X } from "lucide-react";
+import { Archive, Check, ChevronDown, ChevronRight, ListFilter, CloudDownload, CloudOff, Copy, ExternalLink, FileText, Film, FileVideo, Lock, MessageSquare, Pencil, PenLine, Plus, Replace, RotateCw, Search, Share2, SkipForward, Tag, Trash2, TriangleAlert, X } from "lucide-react";
 import { motion } from "motion/react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
@@ -40,7 +40,7 @@ import { MemoryChip } from "./MemoryChip";
 import { UpdateButton } from "./UpdateButton";
 import { Button, ConfirmDialog, cx, Modal, Pulse, spring, Switch } from "./ui";
 import { isListed, promoteItem, TestBadge } from "./TestProjects";
-import { ANOTHER_MACHINE, THEIR_MACHINE, THIS_MACHINE } from "../lib/platform";
+import { THIS_MACHINE } from "../lib/platform";
 
 // Every project is 1080p at 30 fps.
 const FORMAT = { width: 1920, height: 1080, fps: 30 };
@@ -967,7 +967,6 @@ export function Notice({ tone, text, title }: NoticeProps) {
 function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boolean, status?: CloudStatus, remote?: CloudProject, script: string | null = null) {
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  const [moving, setMoving] = useState(false);
   const toast = useEditor((state) => state.toast);
   const drive = useDriveLink(project.id, project.drive);
   const inCloud = cloudOn && Boolean(status?.cloud);
@@ -1049,9 +1048,6 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
           { label: "Open on Drive", icon: <ExternalLink size={14} />, onSelect: () => openDrive(drive.url) },
         ]
       : []),
-    ...(cloudOn && !status?.cloud && !project.problem
-      ? [{ label: "Move to cloud…", icon: <CloudUpload size={14} />, onSelect: () => setMoving(true) }]
-      : []),
     ...promoteItem(project, onChanged),
     { separator: true },
     { label: "Delete…", icon: <Trash2 size={14} />, danger: true, onSelect: () => setDeleting(true) },
@@ -1097,7 +1093,6 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
         confirm={inCloud ? "Delete everywhere" : "Delete project"}
         onConfirm={() => void remove()}
       />
-      <MoveToCloud project={project} open={moving} onClose={() => setMoving(false)} onMoved={onChanged} />
     </>
   );
   // What’s worth a word on the card, as a chip beside "On Drive".
@@ -2003,55 +1998,6 @@ export function Place({ sync }: { sync?: CloudStatus }) {
       <Icon size={12} />
       {text}
     </span>
-  );
-}
-
-/** "Move to cloud": a project from before cloud, uploaded so teammates can open it. Its footage isn’t moved. */
-export function MoveToCloud({ project, open, onClose, onMoved }: { project: ProjectSummary; open: boolean; onClose: () => void; onMoved: () => void }) {
-  const [localMedia, setLocalMedia] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
-  const toast = useEditor((state) => state.toast);
-  useEffect(() => {
-    if (!open) return;
-    setLocalMedia(null);
-    api
-      .project(project.id)
-      .then(({ project }) => setLocalMedia(project.media.filter((media) => !media.cloud).length))
-      .catch(() => setLocalMedia(null));
-  }, [open, project.id]);
-  const move = async () => {
-    setBusy(true);
-    try {
-      await cloudApi.moveToCloud(project.id);
-      toast(`“${project.name}” is going to the cloud.`);
-      onClose();
-      onMoved();
-    } catch (error) {
-      useEditor.getState().toastError(error, "move it to the cloud");
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <Modal open={open} onClose={onClose} width={400}>
-      <div className="p-6">
-        <h2 className="text-[18px] font-semibold tracking-[-0.3px]">Move “{project.name}” to the cloud?</h2>
-        <p className="mt-1 text-[13px] leading-relaxed text-muted">The edit is uploaded so a teammate can open it on {THEIR_MACHINE} and carry on. One machine edits it at a time.</p>
-        {localMedia !== null && localMedia > 0 && (
-          <p className="mt-2 text-[13px] leading-relaxed text-warning/90">
-            Its footage ({localMedia} {localMedia === 1 ? "file" : "files"}) stays on {THIS_MACHINE}: this doesn’t upload it, so on {ANOTHER_MACHINE} those clips show as missing.
-          </p>
-        )}
-        <div className="mt-[22px] flex justify-end gap-2">
-          <Button variant="subtle" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button variant="primary" disabled={busy} onClick={() => void move()}>
-            {busy ? "Moving…" : "Move to cloud"}
-          </Button>
-        </div>
-      </div>
-    </Modal>
   );
 }
 

@@ -1,7 +1,7 @@
-import { ChevronDown, Minus, Plus } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { createPortal } from "react-dom";
-import { useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
+import { useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
 
 import { toggleMenu } from "./ContextMenu";
 
@@ -460,10 +460,6 @@ export function TextField({ className, ...props }: InputHTMLAttributes<HTMLInput
   return <input {...props} className={cx("h-8", textBox, className)} />;
 }
 
-export function TextArea({ className, ...props }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return <textarea {...props} className={cx("resize-none py-1.5 leading-normal", textBox, className)} />;
-}
-
 /** A small word beside something: its state ("Final"), where it's from ("OpenArt"). `over` is for one sitting on a picture. */
 export function Badge({ tone = "neutral", children, title, className }: { tone?: "neutral" | "success" | "over"; children: ReactNode; title?: string; className?: string }) {
   return (
@@ -494,141 +490,6 @@ export function Chip({ active, className, ...props }: ButtonHTMLAttributes<HTMLB
         className,
       )}
     />
-  );
-}
-
-/**
- * A number on a bar that fills as it grows (Camera Raw's controls, the way the
- * team's other tools draw them; Sphe, Nov 3). A range through zero fills from
- * the middle. Drag along it to change it (Alt for fine steps), click to type,
- * double-click to put it back; `steppers` adds − and + at its sides.
- */
-export function Slider({
-  value,
-  onChange,
-  min,
-  max,
-  step = 1,
-  precision = 0,
-  suffix,
-  reset,
-  steppers,
-  label,
-}: {
-  value: number;
-  onChange: (value: number) => void;
-  min: number;
-  max: number;
-  step?: number;
-  precision?: number;
-  suffix?: string;
-  /** What a double-click puts back: zero for a range through it, else the least. */
-  reset?: number;
-  steppers?: boolean;
-  /** Read out for the bar and its buttons. */
-  label: string;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [text, setText] = useState("");
-  const drag = useRef<{ x: number; width: number; value: number; moved: boolean } | null>(null);
-  // A click types only once it's clear it isn't the first of a double-click (which resets).
-  const typeSoon = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => clearTimeout(typeSoon.current ?? undefined), []);
-  const origin = min < 0 && max > 0 ? 0 : min;
-  const settle = (next: number) => Math.min(max, Math.max(min, Number((Math.round(next / step) * step).toFixed(precision))));
-  const at = (v: number) => (max > min ? ((Math.min(max, Math.max(min, v)) - min) / (max - min)) * 100 : 0);
-  const shown = Number.isFinite(value) ? value.toFixed(precision) : "–";
-  const nudge = step < 1 ? step * 5 : step;
-  const from = Math.min(at(origin), at(value));
-  const to = Math.max(at(origin), at(value));
-
-  const bar = editing ? (
-    <input
-      autoFocus
-      value={text}
-      aria-label={label}
-      onChange={(event) => setText(event.target.value)}
-      onFocus={(event) => event.currentTarget.select()}
-      onBlur={() => {
-        const parsed = Number.parseFloat(text);
-        if (Number.isFinite(parsed)) onChange(settle(parsed));
-        setEditing(false);
-      }}
-      onKeyDown={(event) => {
-        event.stopPropagation();
-        if (event.key === "Enter") event.currentTarget.blur();
-        if (event.key === "Escape") setEditing(false);
-      }}
-      className="h-7 min-w-0 flex-1 rounded-md bg-active px-2 text-center font-mono text-[12px] text-fg tabular outline-none"
-    />
-  ) : (
-    <div
-      role="slider"
-      tabIndex={0}
-      aria-label={label}
-      aria-valuemin={min}
-      aria-valuemax={max}
-      aria-valuenow={value}
-      onPointerDown={(event) => {
-        event.currentTarget.setPointerCapture(event.pointerId);
-        drag.current = { x: event.clientX, width: event.currentTarget.clientWidth, value, moved: false };
-      }}
-      onPointerMove={(event) => {
-        const state = drag.current;
-        if (state === null) return;
-        const dx = event.clientX - state.x;
-        if (!state.moved && Math.abs(dx) < 3) return;
-        state.moved = true;
-        onChange(settle(state.value + (dx / state.width) * (max - min) * (event.altKey ? 0.1 : 1)));
-      }}
-      onPointerUp={() => {
-        const state = drag.current;
-        drag.current = null;
-        if (state === null || state.moved) return;
-        clearTimeout(typeSoon.current ?? undefined);
-        typeSoon.current = setTimeout(() => {
-          setText(shown);
-          setEditing(true);
-        }, 250);
-      }}
-      onPointerCancel={() => (drag.current = null)}
-      onDoubleClick={() => {
-        clearTimeout(typeSoon.current ?? undefined);
-        onChange(reset ?? origin);
-      }}
-      onKeyDown={(event) => {
-        if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-        event.preventDefault();
-        event.stopPropagation();
-        const up = event.key === "ArrowRight" || event.key === "ArrowUp";
-        onChange(settle(value + (up ? 1 : -1) * nudge * (event.shiftKey ? 10 : 1)));
-      }}
-      className="relative h-7 min-w-0 flex-1 cursor-ew-resize overflow-hidden rounded-md bg-white/[0.05] transition-colors outline-none hover:bg-white/[0.07] focus-visible:ring-1 focus-visible:ring-line-strong"
-    >
-      <span className="absolute inset-y-0 bg-white/[0.11]" style={{ left: `${from}%`, width: `${to - from}%` }} />
-      {origin !== min && (
-        <>
-          <span className="absolute top-0 h-1.5 w-px bg-white/25" style={{ left: `${at(origin)}%` }} />
-          <span className="absolute bottom-0 h-1.5 w-px bg-white/25" style={{ left: `${at(origin)}%` }} />
-        </>
-      )}
-      <span className="relative flex h-full items-center justify-center font-mono text-[12px] text-fg tabular">
-        {shown}
-        {suffix && <span className="ml-0.5 text-faint">{suffix}</span>}
-      </span>
-    </div>
-  );
-  if (!steppers) return bar;
-  return (
-    <div className="flex min-w-0 flex-1 items-center gap-0.5">
-      <IconButton label={`${label} down`} onClick={() => onChange(settle(value - nudge))} className="size-7 shrink-0">
-        <Minus size={12} />
-      </IconButton>
-      {bar}
-      <IconButton label={`${label} up`} onClick={() => onChange(settle(value + nudge))} className="size-7 shrink-0">
-        <Plus size={12} />
-      </IconButton>
-    </div>
   );
 }
 

@@ -26,16 +26,6 @@ export function QuoteChip({ from, text, onRemove }: { from: string; text: string
   );
 }
 
-/** Quoted words with what they're from, as a block (a quote shown on its own, not among words). */
-export function QuoteView({ from, text, className }: { from: string; text: string; className?: string }) {
-  return (
-    <blockquote className={`min-w-0 flex-1 border-l-2 border-line-strong pl-2 text-[12px] leading-relaxed ${className ?? ""}`}>
-      <span className="block text-[11px] text-faint">{quoteLabel(from)}</span>
-      <span className="block whitespace-pre-wrap text-muted">{text}</span>
-    </blockquote>
-  );
-}
-
 /**
  * What was sent: its words, each quote a chip where it was put. Quotes before
  * any words sit together in a row on top, the words under them: chips one

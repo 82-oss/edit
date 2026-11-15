@@ -198,8 +198,6 @@ async function loadModelName() {
 
 /** Chats already seen this session, so reopening the panel or a project is instant. */
 const chats = new Map<string, { entries: AgentEntry[]; running: boolean; chatModel?: string | null; revising?: boolean; queue?: QueuedMessage[] }>();
-/** A pre-update failed message is adopted once; the server also saves a receipt. */
-const retriedAuth = new Set<string>();
 let openedSerial = 0;
 
 const json = async <T>(response: Response): Promise<T> => {
@@ -220,7 +218,7 @@ export async function openAgent(project: string) {
   const [status, chat] = await Promise.all([
     fetchRetrying("/api/agent").then((response) => json<AgentStatus>(response)),
     fetchRetrying(`/api/projects/${project}/agent`).then((response) =>
-      json<{ entries: AgentEntry[]; running: boolean; model_name?: string; revising?: boolean; auth_retry?: string | null; queue?: QueuedMessage[] }>(response),
+      json<{ entries: AgentEntry[]; running: boolean; model_name?: string; revising?: boolean; queue?: QueuedMessage[] }>(response),
     ),
   ]).catch(() => [null, null] as const);
   if (useAgent.getState().project !== project || serial !== openedSerial) return;
@@ -240,23 +238,6 @@ export async function openAgent(project: string) {
     queue: chat.queue ?? [],
   });
   if (status.ready) loadModelName().catch(() => {});
-  if (status.ready && chat.auth_retry && !chat.running) {
-    const key = `${project}:${chat.auth_retry}`;
-    if (retriedAuth.has(key)) return;
-    retriedAuth.add(key);
-    try {
-      const retry = await json<{ resumed: boolean }>(await fetchRetrying(`/api/projects/${project}/agent/retry-claude`, {
-        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ user: chat.auth_retry }),
-      }));
-      if (!retry.resumed) { retriedAuth.delete(key); return; }
-      if (useAgent.getState().project === project) await openAgent(project);
-    } catch (error) {
-      if (useAgent.getState().project !== project) return;
-      useAgent.setState((current) => ({ entries: [...current.entries, {
-        id: `local-retry-${Date.now()}`, kind: "error", text: `Claude is ready, but the earlier message could not resume: ${error instanceof Error ? error.message : String(error)}. Send your message again to continue.`,
-      }] }));
-    }
-  }
 }
 
 /**

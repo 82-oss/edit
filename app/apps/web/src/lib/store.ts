@@ -831,9 +831,6 @@ export function connectEvents() {
     } else if (event.type === "notes" && project && event.id === project.id) {
       // The team's notes on this edit changed (left, sent, fixed): the row above the composer reloads (lib/notes.ts).
       window.dispatchEvent(new CustomEvent("edit:notes", { detail: event.id }));
-    } else if (event.type === "transcript") {
-      // A transcript changed on disk (its voices were just named): panels reload it.
-      window.dispatchEvent(new CustomEvent("edit:transcript", { detail: event.path }));
     } else if (event.type === "agent") {
       applyAgentEvent(event);
     } else if (event.type === "account") {

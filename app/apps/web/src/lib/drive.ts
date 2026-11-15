@@ -16,11 +16,6 @@ export function isSubtitled(project: Project) {
   return project.clips.some(subtitle) && project.clips.every((clip) => subtitle(clip) || footage(clip));
 }
 
-/** A subtitled video: only footage and subtitles, or Repack-style subtitles (no label) in it (as drive.ts subtitleVideo). */
-export function subtitleVideo(project: Project) {
-  return isSubtitled(project) || project.clips.some((clip) => clip.type === "text" && (clip.name ?? "").startsWith("Subtitle · ") && !clip.style.label);
-}
-
 /** Files asked about this session: the server checks Drive at most every few minutes anyway. */
 const asked = new Set<string>();
 

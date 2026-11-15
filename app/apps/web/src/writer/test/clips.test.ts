@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { breathe, insertAt, keptMs, lift, moveItems, recordingSpans, splitAt } from "../clips";
+import { breathe, insertAt, moveItems, recordingSpans } from "../clips";
 import type { Clip } from "../types";
 
 const whole: Clip[] = [{ id: "a", startMs: 0, endMs: 10_000 }];
@@ -15,32 +15,6 @@ test("recording boundaries follow trimmed and reordered footage without changing
   ]);
   expect(recordingSpans({ id: "later", startMs: 6_000, endMs: 10_000 }, parts).map((part) => part.index)).toEqual([1]);
   expect(recordingSpans({ ...whole[0], kind: "cut-in" }, parts)).toEqual([]);
-});
-
-test("split keeps both halves", () => {
-  const next = splitAt(whole, 4_000);
-  expect(next).toHaveLength(2);
-  expect(next[0].endMs).toBe(4_000);
-  expect(next[1].startMs).toBe(4_000);
-  expect(next[1].endMs).toBe(10_000);
-  expect(keptMs(next)).toBe(10_000);
-});
-
-test("split ignores an edge", () => {
-  expect(splitAt(whole, 50)).toEqual(whole);
-});
-
-test("lift removes the middle", () => {
-  const next = lift(whole, 2_000, 5_000);
-  expect(next.map((clip) => [clip.startMs, clip.endMs])).toEqual([
-    [0, 2_000],
-    [5_000, 10_000],
-  ]);
-  expect(keptMs(next)).toBe(7_000);
-});
-
-test("lift can drop a clip", () => {
-  expect(lift(whole, 0, 10_000)).toEqual([]);
 });
 
 test("moves items to an edit point, keeping their order", () => {

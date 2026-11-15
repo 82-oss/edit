@@ -108,14 +108,6 @@ export function attachFiles(key: string, files: File[], upload: Uploader, accept
   return refused;
 }
 
-/** Attaches something already uploaded (a thumbnail's image picked from its list). */
-export function attachLanded(key: string, file: { name: string; kind: FileKind; preview: string | null; landed: unknown }): void {
-  const list = useChatFiles.getState().chats[key] ?? [];
-  if (list.some((one) => one.landed === file.landed)) return;
-  const item: ChatFile = { id: ++next, size: 0, state: "done", loaded: 0, ...file };
-  useChatFiles.setState(({ chats }) => ({ chats: { ...chats, [key]: [...list, item] } }));
-}
-
 /** Takes one off the message: its upload stops (one already in stays where it went). */
 export function detachFile(key: string, id: number): void {
   running.get(id)?.abort();

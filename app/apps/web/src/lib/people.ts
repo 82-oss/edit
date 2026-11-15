@@ -1,19 +1,14 @@
 // One colour per person (a `Project.people` entry): their clips are all in
 // it, their label's colour when the clip has one, else their text's. The
 // server's `Project::validate` refuses a save where one of a person's clips
-// differs, so the UI recolours the person, never one of their clips.
+// differs.
 
-import type { Clip, Project, Rgba } from "./types";
+import type { Project, Rgba } from "./types";
 
 /** A colour as "#rrggbb" (alpha aside). */
 export function toHex(color: Rgba): string {
   const byte = (v: number) => Math.round(Math.min(Math.max(v, 0), 1) * 255);
   return `#${[color[0], color[1], color[2]].map((v) => byte(v).toString(16).padStart(2, "0")).join("")}`;
-}
-
-/** Whether `clip` names a person in `project`. */
-export function personOf(project: Project, clip: Clip) {
-  return clip.person === undefined ? undefined : project.people?.find((person) => person.id === clip.person);
 }
 
 /** "#rrggbb" as bytes, or null (edit-core's parse_hex). */

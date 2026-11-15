@@ -5,7 +5,7 @@
 
 import { create } from "zustand";
 
-import { modelFor, readChoice, type ClaudeModel, type ModelChoice } from "@edit/types/models";
+import { readChoice, type ModelChoice } from "@edit/types/models";
 
 import { request } from "./api";
 import { readSetting, writeSetting } from "./storage";
@@ -49,9 +49,4 @@ export async function pickModel(change: Partial<ModelChoice>): Promise<void> {
   } catch {
     keep(before);
   }
-}
-
-/** Who answers a chat next: Opus while it's being built, the pick once it's built. */
-export function useModelFor(built: boolean): ClaudeModel {
-  return modelFor(built, useModelChoice());
 }

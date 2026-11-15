@@ -36,18 +36,6 @@ export interface ExportOptions {
   preset?: "house" | "youtube";
 }
 
-const FORMATS: { value: Format; label: string; extension: string }[] = [
-  { value: "h264", label: "MP4 · H.264", extension: "mp4" },
-  { value: "hevc", label: "MP4 · HEVC (smaller)", extension: "mp4" },
-  { value: "prores", label: "MOV · ProRes 422 HQ", extension: "mov" },
-  { value: "gif", label: "GIF", extension: "gif" },
-  { value: "mp3", label: "MP3 (sound only)", extension: "mp3" },
-  { value: "wav", label: "WAV (sound only)", extension: "wav" },
-  { value: "png", label: "PNG (one frame)", extension: "png" },
-];
-
-export const extensionOf = (format: Format) => FORMATS.find((entry) => entry.value === format)!.extension;
-
 /** What an export is unless you change it: YouTube at 1080p. */
 export const DEFAULTS: Omit<ExportOptions, "range" | "chapters"> = {
   format: "h264",
@@ -61,17 +49,6 @@ export const DEFAULTS: Omit<ExportOptions, "range" | "chapters"> = {
   audio: true,
   loudness: -14,
 };
-
-/** Rounds down to even, at least 2 (as export.rs). */
-const even = (value: number) => Math.max(2, Math.round(value) & ~1);
-
-/** The output's size: the shape's aspect at the short side (mirrors export::output_size). */
-export function outputSize(options: Pick<ExportOptions, "shape" | "size" | "format">, width: number, height: number): [number, number] {
-  const [aw, ah] =
-    options.shape === "vertical" ? [9, 16] : options.shape === "square" ? [1, 1] : options.shape === "portrait" ? [4, 5] : [width, height];
-  const short = Math.max(2, options.size ?? (options.format === "gif" ? 480 : Math.min(width, height)));
-  return aw >= ah ? [even((short * aw) / ah), even(short)] : [even(short), even((short * ah) / aw)];
-}
 
 /** A cut-in's words cut down to a chapter title. */
 function chapterTitle(text: string) {

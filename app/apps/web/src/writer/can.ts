@@ -1,5 +1,5 @@
 import { useAccount } from "../lib/account";
-import type { Kind, Script, Summary } from "./types";
+import type { Kind } from "./types";
 
 /**
  * What the signed-in person may do in Script mode, from their grants at
@@ -55,12 +55,4 @@ export function useGrants(): Grants {
   const account = useAccount((state) => state.account);
   if (account === null || account.person === null) return { ...grantsOf([], false), shares: false };
   return grantsOf(account.perms, account.admin);
-}
-
-/** The kind of work a script is, as can.rs names it. */
-export function workOf(script: Pick<Summary | Script, "sourceKind" | "compilation" | "kind">): string {
-  if (script.sourceKind === "commentary") return CAN.commentary;
-  const kind = script.kind ?? "interrogation";
-  if (script.compilation) return kind === "courtroom" ? CAN.courtroomCompilation : kind === "foia" ? CAN.foiaCompilation : CAN.interrogationCompilation;
-  return kind === "foia" ? CAN.foia : kind === "courtroom" ? CAN.courtroom : CAN.interrogation;
 }

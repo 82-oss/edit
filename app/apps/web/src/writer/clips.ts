@@ -26,33 +26,6 @@ export function keptMs(clips: Clip[]) {
   return clips.reduce((sum, clip) => sum + (clip.endMs - clip.startMs), 0);
 }
 
-/** Split the footage clip under `at` (source milliseconds). Edges closer than 100 ms stay put. */
-export function splitAt(clips: Clip[], at: number): Clip[] {
-  const ms = Math.round(at);
-  return clips.flatMap((clip) => {
-    if (isCutIn(clip) || ms < clip.startMs + 100 || ms > clip.endMs - 100) return [clip];
-    return [
-      { ...clip, endMs: ms },
-      { id: crypto.randomUUID(), startMs: ms, endMs: clip.endMs },
-    ];
-  });
-}
-
-/** Remove a source range from every footage clip, keeping whatever sits outside it. */
-export function lift(clips: Clip[], startMs: number, endMs: number): Clip[] {
-  if (endMs <= startMs) return clips;
-  return clips.flatMap((clip) => {
-    if (isCutIn(clip) || clip.endMs <= startMs || clip.startMs >= endMs) return [clip];
-    const parts: Clip[] = [];
-    if (clip.startMs < startMs) parts.push({ ...clip, endMs: startMs });
-    if (clip.endMs > endMs) {
-      // A second piece is a new timestamp: the comments stay on the first.
-      parts.push(parts.length ? { ...clip, id: crypto.randomUUID(), startMs: endMs, notes: undefined } : { ...clip, startMs: endMs });
-    }
-    return parts;
-  });
-}
-
 export function covers(clips: Clip[], ms: number) {
   return clips.some((clip) => !isCutIn(clip) && ms >= clip.startMs && ms < clip.endMs);
 }

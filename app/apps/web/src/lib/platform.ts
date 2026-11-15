@@ -7,7 +7,6 @@ const MAC = typeof navigator === "undefined" || /Mac|iPhone|iPad/.test(navigator
 
 export const THIS_MACHINE = MAC ? "this Mac" : "this computer";
 export const THE_MACHINE = MAC ? "the Mac" : "the computer";
-export const ANOTHER_MACHINE = MAC ? "another Mac" : "another computer";
 export const THEIR_MACHINE = MAC ? "their Mac" : "their computer";
 export const FILE_MANAGER = MAC ? "Finder" : "Files";
 /** A shortcut's modifier as labels show it: "⌘Z" on a Mac, "Ctrl+Z" elsewhere. */

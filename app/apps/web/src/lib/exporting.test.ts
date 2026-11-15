@@ -1,18 +1,8 @@
 import { describe, expect, it } from "vitest";
 
-import { chaptersInSpan, outputSize } from "./exporting";
+import { chaptersInSpan } from "./exporting";
 
 describe("export", () => {
-  it("sizes each shape from the short side, as the server does", () => {
-    const at = (shape: "original" | "vertical" | "square" | "portrait", size: number | null, format: "h264" | "gif" = "h264") =>
-      outputSize({ shape, size, format }, 1920, 1080);
-    expect(at("original", null)).toEqual([1920, 1080]);
-    expect(at("original", 720)).toEqual([1280, 720]);
-    expect(at("vertical", 1080)).toEqual([1080, 1920]);
-    expect(at("portrait", 1080)).toEqual([1080, 1350]);
-    expect(at("original", null, "gif")).toEqual([852, 480]);
-  });
-
   it("keeps chapters YouTube accepts: from 0:00, at least 10 s apart, within the span", () => {
     const fps = 30;
     const chapters = [
