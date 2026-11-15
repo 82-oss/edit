@@ -406,6 +406,25 @@ impl Player {
         let value: Value = serde_json::from_str(json).map_err(|error| error.to_string())?;
         let project = Project::deserialize(&value).map_err(|error| error.to_string())?;
         project.validate()?;
+        self.set_sources(sources, sounds, excerpts, cache);
+        self.take(project, value, revision);
+        Ok(revision)
+    }
+
+    /// Where each media's picture and sound are read from now, without the
+    /// edit (a cloud preview's whole copy came down, so it's read from here
+    /// instead of the stream). Readers of files still read stay: dropping
+    /// them all reopened and seeked every picture on screen and ahead, once
+    /// for each copy landing (165 in the first minute of a cold Cops Realize).
+    /// A sound read elsewhere now is mixed from there at the next play: one
+    /// playing plays on as it was, rather than going silent while it starts again.
+    pub fn set_sources(
+        &mut self,
+        sources: HashMap<String, String>,
+        sounds: HashMap<String, String>,
+        excerpts: HashMap<String, Vec<crate::excerpts::Excerpt>>,
+        cache: PathBuf,
+    ) {
         let sources: HashMap<String, PathBuf> = sources
             .into_iter()
             .map(|(media, path)| (media, PathBuf::from(path)))
@@ -422,19 +441,20 @@ impl Player {
                 crate::excerpts::add(&object, list);
             }
         }
-        // A media decoded from another file now: its readers of the old one go.
         if sources != self.sources {
-            self.pictures.clear();
+            let read: std::collections::HashSet<&PathBuf> = sources.values().collect();
+            self.pictures.keep_only(&read);
+            // What's on screen may be from a file that's read from elsewhere now.
+            self.drawn = None;
+            self.warmed_from = None;
         }
-        if sounds != self.sounds {
+        if sounds != self.sounds && self.playing.is_none() {
             self.land(true);
             self.sound.disarm();
         }
         self.sources = sources;
         self.sounds = sounds;
         self.cache = cache;
-        self.take(project, value, revision);
-        Ok(revision)
     }
 
     /// What changed since `base` (the page's lib/patch.ts), making `revision`.

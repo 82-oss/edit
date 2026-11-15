@@ -153,6 +153,8 @@ class Preview {
   private nativeAccepted = 0;
   private nativeHas: { project: Project; sources: NativeSources; revision: number } | null = null;
   private nativeSending = false;
+  /** The window takes where media are read from without the edit (`preview_sources`); off once one refuses it. */
+  private nativeSourcesAlone = true;
   /** How the window's frames went (`diagnostics.nativeFrames`, and the once-a-minute `ui:` timings). */
   private nativeStats = { draws: [] as number[], decodes: [] as number[], drawn: 0, skipped: 0, passed: 0, failed: 0, opens: 0, seeks: 0, streamed: 0, behind: 0, patches: 0, wholes: 0, refused: 0, off: null as string | null,
     played: 0, playedSkipped: 0, playedSlow: 0, starved: 0 };
@@ -688,6 +690,24 @@ class Preview {
       patch = JSON.stringify(change);
       // A change touching most of the edit goes whole: parsing it is the same work, and it can't not fit.
       if (patch.length > PATCH_MOST) patch = null;
+    }
+    // Only where its media are read from changed (a cloud preview's whole copy came down): told without the edit,
+    // which went whole for it (2.4 MB parsed again, and every reader reopened, for each copy landing: Nov 15).
+    if (has !== null && has.sources !== sources && has.project.id === project.id && has.revision === this.nativeAccepted && this.nativeSourcesAlone) {
+      this.nativeSending = true;
+      nativePreview.sources(sources.sources, sources.sounds, sources.excerpts, sources.cache).then(() => {
+        this.nativeSending = false;
+        if (this.nativeHas === has) this.nativeHas = { ...has, sources };
+        this.nativeStale = true;
+        this.invalidate();
+      }, () => {
+        // A window from before it: the whole edit, as then.
+        this.nativeSending = false;
+        this.nativeSourcesAlone = false;
+        this.nativeStale = true;
+        this.invalidate();
+      });
+      return;
     }
     const revision = ++this.nativeRevision;
     this.nativeSending = true;

@@ -1364,6 +1364,14 @@ impl PreviewPictures {
         self.pool.lock().clear();
     }
 
+    /// Lets go of the readers of files not in `read` (a media read from another file now); the rest stay.
+    pub(crate) fn keep_only(&mut self, read: &HashSet<&PathBuf>) {
+        self.pool
+            .lock()
+            .readers
+            .retain(|(reader, _)| read.contains(&reader.source.key.path));
+    }
+
     /// Has a reader of `media` opened and seeked to `source_time` on another
     /// thread, unless one is there (or on its way), so a cut to it reads on
     /// instead of seeking on the drawing path.
