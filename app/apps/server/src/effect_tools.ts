@@ -10,6 +10,7 @@ import { join } from "node:path";
 import * as channels from "./channels.ts";
 import * as effectInputs from "./effect_inputs.ts";
 import * as effects from "./effects.ts";
+import * as looker from "./effect_looker.ts";
 import * as frameCompare from "./frame_compare.ts";
 import * as fonts from "./fonts.ts";
 import { handlerFor, image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
@@ -46,6 +47,8 @@ const SHEET_FRAME = 480;
  * shimmers as the board drifts under it, so a board read right in each still
  * jittered on screen. Each frame drawn by the page, tiled into numbered
  * sheets with FFmpeg, to set beside the reference's (look_at_media every_frame).
+ * A long stretch is read by the looker (effect_looker.ts): the agent gets its
+ * words and the frames it picks, every frame only with detail "full".
  */
 async function lookAtStretch(app: ToolCall["app"], projectId: string, name: string, args: Record<string, unknown>): Promise<Content[]> {
   const fps = app.store.get(projectId)!.project.settings.fps;
@@ -57,8 +60,10 @@ async function lookAtStretch(app: ToolCall["app"], projectId: string, name: stri
   const times = Array.from({ length: count }, (_, index) => (first + index) / fps);
   // A stretch says nothing of a frame's cost: not measured.
   const look = await effects.look(app, projectId, name, times, SHEET_FRAME, false);
-  const out: Content[] = [];
+  const sheets: { data: Uint8Array; caption: string }[] = [];
   const dir = fs.mkdtempSync(join(app.store.cacheDir(), "effect-frames-"));
+  let seen: looker.Seen | null = null;
+  let picked: Uint8Array | null = null;
   try {
     for (let at = 0; at < look.stills.length; at += PER_SHEET) {
       const part = look.stills.slice(at, at + PER_SHEET);
@@ -67,11 +72,30 @@ async function lookAtStretch(app: ToolCall["app"], projectId: string, name: stri
       const label = `drawtext=${frameCompare.labelFont(app.store.cacheDir())}:text='%{eif\\:n+${first + at}\\:d}':x=8:y=8:fontsize=22:fontcolor=yellow:box=1:boxcolor=black@0.7`;
       await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-framerate", "1", "-i", join(dir, "f%03d.jpg"), "-frames:v", "1", "-vf", `${label},tile=4x${Math.ceil(part.length / 4)}:padding=4`, "-q:v", "3", sheet]);
       const from = first + at;
-      out.push(...image(new Uint8Array(fs.readFileSync(sheet)), `${name}: every frame, ${from}–${from + part.length - 1} (${fixed(from / fps, 2)}–${fixed((from + part.length - 1) / fps, 2)} s), left-to-right then down, numbered by frame`, "image/jpeg"));
+      sheets.push({ data: new Uint8Array(fs.readFileSync(sheet)), caption: `${name}: every frame, ${from}–${from + part.length - 1} (${fixed(from / fps, 2)}–${fixed((from + part.length - 1) / fps, 2)} s), left-to-right then down, numbered by frame` });
       for (const file of fs.readdirSync(dir)) fs.rmSync(join(dir, file), { force: true });
+    }
+    // Read by the looker unless every frame is asked for (detail "full") or there are few.
+    if (looker.ON && args.detail !== "full" && look.stills.length >= looker.LOOKED_LEAST) {
+      seen = await looker.read(app, name, first, first + look.stills.length - 1, fps, sheets);
+      if (seen !== null) {
+        const cells = seen.frames.map((frame) => {
+          const file = join(dir, `picked-${frame}.jpg`);
+          fs.writeFileSync(file, look.stills[frame - first]!.picture);
+          return { files: [file], labels: [`${frame}`] };
+        });
+        picked = (await frameCompare.sheets(cells, null, SHEET_FRAME, 3, 2, dir, frameCompare.labelFont(app.store.cacheDir())))[0] ?? null;
+      }
     }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+  const out: Content[] = [];
+  if (seen === null) for (const sheet of sheets) out.push(...image(sheet.data, sheet.caption, "image/jpeg"));
+  else {
+    const to = first + look.stills.length - 1;
+    out.push(...text(`${name}, every frame ${first}–${to} (${fixed(first / fps, 2)}–${fixed(to / fps, 2)} s), looked at frame by frame for you:\n${seen.words}\n(detail "full" shows you every frame.)`));
+    if (picked !== null) out.push(...image(picked, `${name}: frames ${seen.frames.join(", ")}, left-to-right then down, numbered by frame`, "image/jpeg"));
   }
   const lines: string[] = [];
   if (first + count <= last) lines.push(`Frames ${first + count}–${last} are left: look again with start ${fixed((first + count) / fps, 3)}.`);

@@ -345,9 +345,29 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     expect(half.isError, half.content.map((part) => part.text).join(" ")).toBe(false);
     expect(half.content.filter((part) => part.type === "image").length).toBe(1);
     expect(half.content.find((part) => part.text?.includes("every frame"))!.text).toContain("every frame, 0–14");
+    // A long stretch is read by the looker (effect_looker.ts): the agent gets its words and the frames it picks.
+    const asked: { input: { type: string }[] }[] = [];
+    let answer: () => string = () => JSON.stringify({ motion: "The number counts up by one each frame.", problems: [{ frames: "30–31", what: "It skips back a frame." }], frames: [30, 31, 99] });
+    (app.agents as unknown as { ask: (...args: unknown[]) => Promise<string> }).ask = async (_model, _effort, _instructions, input) => {
+      asked.push({ input: input as { type: string }[] });
+      return answer();
+    };
     const long = await every({ start: 0, end: 2 });
-    expect(long.content.filter((part) => part.type === "image").length).toBe(3);
+    expect(asked.length).toBe(1);
+    expect(asked[0]!.input.filter((part) => part.type === "image").length).toBe(3);
+    expect(long.content.filter((part) => part.type === "image").length).toBe(1);
+    const said = long.content.map((part) => part.text ?? "").join("\n");
+    expect(said).toContain("every frame 0–47 (0.00–1.57 s), looked at frame by frame for you");
+    expect(said).toContain("- 30–31: It skips back a frame.");
+    expect(said).toContain("frames 30, 31,");
     expect(long.content.at(-1)!.text).toContain("Frames 48–59 are left: look again with start 1.600");
+    // Every frame when asked for, and when the looker can't answer.
+    expect((await every({ start: 0, end: 2, detail: "full" })).content.filter((part) => part.type === "image").length).toBe(3);
+    expect(asked.length).toBe(1);
+    answer = () => {
+      throw new Error("no Claude Code here");
+    };
+    expect((await every({ start: 0, end: 2 })).content.filter((part) => part.type === "image").length).toBe(3);
     const full = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "counter", times: [1], detail: "full" } } }, id)) as { result: { content: { type: string; text?: string; mimeType?: string }[] } }).result;
     expect(full.content.find((part) => part.type === "image")!.mimeType).toBe("image/jpeg");
     expect(full.content.find((part) => part.text?.includes("at full size"))).toBeDefined();

@@ -3657,7 +3657,7 @@
     "name": "add_cut_in"
   },
   {
-    "description": "Look at a coded effect (an Edit V2 project): stills of it at the seconds you give, drawn by the same page the viewer plays, with its length, what a frame costs to play from each of them on this computer (so you know it plays live), and everything its page gets wrong (an error it threw, a rule of the effect contract it breaks). Look after every change, at the moments the change touches: you can't see the effect any other way. The pictures come in the order of `times`. every_frame: each frame of a stretch (start–end, at most 48), for what moves between frames (a shimmer, a jitter, an ease); beside {media_id, start}: each frame next to the reference's at the same moment (at most 24); grid: a lettered grid over both, to say where things sit; zoom: a region at full size; detail \"full\": stills at the frame's size.",
+    "description": "Look at a coded effect (an Edit V2 project): stills of it at the seconds you give, drawn by the same page the viewer plays, with its length, what a frame costs to play from each of them on this computer (so you know it plays live), and everything its page gets wrong (an error it threw, a rule of the effect contract it breaks). Look after every change, at the moments the change touches: you can't see the effect any other way. The pictures come in the order of `times`. every_frame: each frame of a stretch (start–end, at most 48), for what moves between frames (a shimmer, a jitter, an ease): 24 frames or more are looked at frame by frame for you, and you get what moves and what moves wrongly in words with the frames that show it (detail \"full\": every frame yourself); beside {media_id, start}: each frame next to the reference's at the same moment (at most 24); grid: a lettered grid over both, to say where things sit; zoom: a region at full size; detail \"full\": stills at the frame's size.",
     "inputSchema": {
       "properties": {
         "name": {
@@ -3688,7 +3688,7 @@
           "type": "number"
         },
         "detail": {
-          "description": "\"full\": the stills at the frame's own size (for small text and fine edges). Default: 960 px wide.",
+          "description": "\"full\": the stills at the frame's own size (for small text and fine edges); with every_frame, every frame for you to look at yourself. Default: 960 px wide.",
           "enum": [
             "normal",
             "full"
