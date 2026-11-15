@@ -1,4 +1,4 @@
-// Project patches (Oct 18): every change sent the whole project (1–2
+// Project patches (speed-plan 5.1): every change sent the whole project (1–2
 // MB, ~100 KB compressed) to every browser, and every UI save sent it back.
 // A patch says only what changed: top-level fields set or removed, and for a
 // list of things with ids (clips, media, tracks, people, markers…) the ones
