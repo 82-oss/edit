@@ -26,6 +26,16 @@ export const trackOf = (project: Project, id: string) => project.tracks.find((tr
 
 export const mediaOf = (project: Project, id: string): Media | undefined => project.media.find((media) => media.id === id);
 
+/** What a clip is called (the timeline's label): its own name, its media's, its text's first line, or what it is. */
+export function clipTitle(project: Project, clip: Clip) {
+  if (clip.name) return clip.name;
+  if (clip.type === "video" || clip.type === "audio") return mediaOf(project, clip.media)?.name ?? "Missing media";
+  if (clip.type === "text") return clip.text.split("\n")[0] || "Text";
+  if (clip.type === "adjustment") return "Adjustment layer";
+  if (clip.type === "waveform") return "Waveform";
+  return clip.fill[0] + clip.fill[1] + clip.fill[2] > 1.5 ? "Flash" : "Solid";
+}
+
 export const projectDuration = (project: Project) => project.clips.reduce((end, clip) => Math.max(end, clipEnd(clip)), 0);
 
 export function trackLabel(project: Project, track: Track) {
@@ -669,40 +679,6 @@ export function setParam(clip: Clip, param: string, value: number, frame: number
   }
 }
 
-/** Toggles animation: on adds a keyframe at `frame`; off bakes the current value. */
-export function toggleAnimated(clip: Clip, param: string, frame: number) {
-  const current = paramAt(clip, param, frame);
-  clip.keyframes ??= {};
-  if (isAnimated(clip, param)) {
-    delete clip.keyframes[param];
-    params[param]?.[1](clip, current);
-  } else {
-    clip.keyframes[param] = [{ frame: Math.round(frame - clip.start), value: current, ease: "in_out" }];
-  }
-}
-
-export function keyframeAt(clip: Clip, param: string, frame: number) {
-  const local = Math.round(frame - clip.start);
-  return clip.keyframes?.[param]?.some((key) => Math.abs(key.frame - local) < 0.5) ?? false;
-}
-
-export function toggleKeyframe(clip: Clip, param: string, frame: number) {
-  const keys = clip.keyframes?.[param];
-  if (!keys) return;
-  const local = Math.round(frame - clip.start);
-  const index = keys.findIndex((key) => Math.abs(key.frame - local) < 0.5);
-  if (index >= 0) {
-    if (keys.length > 1) keys.splice(index, 1);
-  } else {
-    keys.push({
-      frame: local,
-      value: paramAt(clip, param, frame),
-      ease: "in_out",
-    });
-    keys.sort((a, b) => a.frame - b.frame);
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Context-menu operations.
 
@@ -813,17 +789,6 @@ function roomAfter(project: Project, clip: Clip) {
 
 /** Longest a clip can be right now: its source, and the next clip on its track. */
 export const longest = (project: Project, clip: Clip) => Math.max(1, Math.min(maxDuration(project, clip), roomAfter(project, clip)));
-
-/** Sets the length of clips (and their linked partners), never past a neighbour or the source. */
-export function setDuration(project: Project, ids: Iterable<string>, frames: number) {
-  for (const id of withLinked(project, ids)) {
-    const clip = project.clips.find((candidate) => candidate.id === id);
-    if (!clip) continue;
-    clip.duration = Math.max(1, Math.min(Math.round(frames), longest(project, clip)));
-    clip.fade_in = Math.min(clip.fade_in, clip.duration);
-    clip.fade_out = Math.min(clip.fade_out, clip.duration);
-  }
-}
 
 /**
  * Sets speed on video/audio clips (and partners), keeping the same source
@@ -1001,73 +966,3 @@ export function removeTrack(project: Project, id: string) {
   return true;
 }
 
-/** Removes media from the project along with every clip that uses it. */
-export function removeMedia(project: Project, id: string) {
-  project.clips = project.clips.filter((clip) => !((clip.type === "video" || clip.type === "audio") && clip.media === id));
-  project.media = project.media.filter((media) => media.id !== id);
-}
-
-/** How the edit uses a media file: clips that play it, and whether the script plays from it. */
-export interface MediaUse {
-  clips: number;
-  script: boolean;
-}
-
-export function mediaUses(project: Project): Map<string, MediaUse> {
-  const uses = new Map(project.media.map((media) => [media.id, { clips: 0, script: false }]));
-  for (const clip of project.clips) {
-    if (clip.type === "video" || clip.type === "audio") {
-      const use = uses.get(clip.media);
-      if (use) use.clips++;
-    }
-  }
-  for (const block of project.script?.blocks ?? []) {
-    const use = block.kind === "footage" && block.media ? uses.get(block.media) : undefined;
-    if (use) use.script = true;
-  }
-  return uses;
-}
-
-export const isUsed = (use: MediaUse | undefined) => Boolean(use && (use.clips || use.script));
-
-/** Removes media nothing plays (no clips, not linked from the script); returns how many. */
-export function removeUnusedMedia(project: Project) {
-  const uses = mediaUses(project);
-  const before = project.media.length;
-  project.media = project.media.filter((media) => isUsed(uses.get(media.id)));
-  return before - project.media.length;
-}
-
-/** The media bin's folders. Files sort into them by kind; nothing is moved on disk. */
-export const MEDIA_FOLDERS = [
-  { id: "footage", label: "Footage" },
-  { id: "audio", label: "Voice & audio" },
-  { id: "music", label: "Music" },
-  { id: "sfx", label: "Sound effects" },
-  { id: "images", label: "Images" },
-] as const;
-
-export type MediaFolder = (typeof MEDIA_FOLDERS)[number]["id"];
-
-export function folderOf(media: Media): MediaFolder {
-  if (media.kind === "image") return "images";
-  if (media.kind === "audio") {
-    const library = media.library ?? (/[\\/]library[\\/]music[\\/]/.test(media.path) ? "music" : undefined);
-    return library === "music" ? "music" : isSoundEffect(media) ? "sfx" : "audio";
-  }
-  return "footage";
-}
-
-/** Audio this short is a sound effect, not something said (seconds); as Media::is_sound_effect. */
-const SOUND_EFFECT_SECONDS = 3;
-
-/** A sound effect or music (a bundled sound, one from the team's library, or any very short audio): heard, never transcribed. */
-export function isSoundEffect(media: Media) {
-  // Bundled sounds live in <Edit's home>/sfx (apps/server/src/sfx.ts), the
-  // library's in <Edit's home>/library/<music|sfx>/<checksum>.
-  return (
-    media.kind === "audio" &&
-    (media.library !== undefined ||
-      media.duration <= SOUND_EFFECT_SECONDS || /[\\/]sfx[\\/][^\\/]+$/.test(media.path) || /[\\/]library[\\/][^\\/]+[\\/][^\\/]+[\\/][^\\/]+$/.test(media.path))
-  );
-}

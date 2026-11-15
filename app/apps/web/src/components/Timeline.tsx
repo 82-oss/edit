@@ -10,6 +10,7 @@ import {
   addTrack,
   clearRange,
   clipEnd,
+  clipTitle,
   gapAt,
   maxDuration,
   mediaOf,
@@ -31,10 +32,12 @@ import { clipMenu, timelineMenu, trackMenu } from "../lib/menus";
 import { openMenu } from "./ContextMenu";
 import { FeedbackBands } from "./FeedbackBands";
 import { GRAPH_HEADER, GraphEditor } from "./GraphEditor";
-import { clipTitle } from "./Inspector";
-import { ELEMENT_MIME, MEDIA_MIME } from "./MediaPanel";
 import { cx, IconButton } from "./ui";
 import { rate } from "../lib/types";
+
+/** What a drag from the page carries: one of the project's media, or an element to add. */
+const MEDIA_MIME = "application/x-edit-media";
+const ELEMENT_MIME = "application/x-edit-element";
 
 const HEADER = 84;
 const VIDEO_ROW = 48;

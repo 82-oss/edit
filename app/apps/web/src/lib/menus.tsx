@@ -33,7 +33,6 @@ import {
 import type { ReactNode } from "react";
 
 import type { MenuItem } from "../components/ContextMenu";
-import { api } from "./api";
 import { saveFile } from "./files";
 import {
   addElement,
@@ -45,11 +44,7 @@ import {
   deleteClips,
   duplicateClips,
   isLinked,
-  isSoundEffect,
   linkClips,
-  placeMedia,
-  projectDuration,
-  removeMedia,
   removeTrack,
   rippleDelete,
   setFades,
@@ -311,55 +306,6 @@ export function trackMenu(trackId: string): MenuItem[] {
       danger: true,
       disabled: !empty || lastOfKind,
       onSelect: () => editor.edit((draft) => void removeTrack(draft, trackId)),
-    },
-  ];
-}
-
-export function mediaMenu(mediaId: string): MenuItem[] {
-  const editor = state();
-  const project = editor.project!;
-  const uses = project.clips.filter((clip) => (clip.type === "video" || clip.type === "audio") && clip.media === mediaId).length;
-  const place = (frame: number) => {
-    let ids: string[] = [];
-    editor.edit((draft) => {
-      ids = placeMedia(draft, mediaId, frame);
-    });
-    editor.select(ids);
-  };
-  const media = project.media.find((candidate) => candidate.id === mediaId);
-  const transcript = editor.media[mediaId]?.transcript ?? "pending";
-  return [
-    {
-      label: "Add at playhead",
-      icon: <Plus size={14} />,
-      onSelect: () => place(Math.round(playhead.frame)),
-    },
-    {
-      label: "Add to end of timeline",
-      icon: <ArrowLeftToLine size={14} className="rotate-180" />,
-      onSelect: () => place(projectDuration(project)),
-    },
-    { separator: true },
-    {
-      label: transcript === "ready" ? "Transcribed" : transcript === "working" ? "Transcribing…" : "Transcribe",
-      icon: <Captions size={14} />,
-      disabled: !media?.has_audio || isSoundEffect(media) || transcript === "ready" || transcript === "working",
-      onSelect: () =>
-        void api
-          .transcribe(project.id, mediaId)
-          .then(({ status }) =>
-            useEditor.setState({
-              media: { ...useEditor.getState().media, [mediaId]: status },
-            }),
-          )
-          .catch((error) => editor.toastError(error, "start the transcript")),
-    },
-    { separator: true },
-    {
-      label: uses ? `Remove from project (and ${uses} clip${uses > 1 ? "s" : ""})` : "Remove from project",
-      icon: <Trash2 size={14} />,
-      danger: true,
-      onSelect: () => editor.edit((draft) => removeMedia(draft, mediaId)),
     },
   ];
 }

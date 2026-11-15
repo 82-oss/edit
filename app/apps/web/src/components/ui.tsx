@@ -3,8 +3,6 @@ import { AnimatePresence, motion } from "motion/react";
 import { createPortal } from "react-dom";
 import { useEffect, useRef, useState, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from "react";
 
-import { hexToRgba, rgbaToHex } from "../lib/colors";
-import type { Rgba } from "../lib/types";
 import { toggleMenu } from "./ContextMenu";
 
 const cx = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(" ");
@@ -176,23 +174,6 @@ export function Scrub({
       {shown}
       {suffix && <span className="ml-0.5 text-faint">{suffix}</span>}
     </div>
-  );
-}
-
-/** A colour swatch and its hex, opening the system picker. Takes an Rgba (the timeline's) or a "#rrggbb" string (a thumbnail's) and answers in the same shape. */
-export function ColorField<T extends Rgba | string>({ value, onChange, label }: { value: T; onChange: (value: T) => void; label?: string }) {
-  const hex = typeof value === "string" ? (/^#[0-9a-f]{6}$/i.test(value) ? value : "#000000") : rgbaToHex(value);
-  return (
-    <label className="relative flex h-6 w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-1.5 hover:bg-hover">
-      <span className="size-4 shrink-0 rounded-[5px] ring-1 ring-white/15" style={{ background: hex }} />
-      <span className="font-mono text-[12px] text-muted uppercase">{label ?? hex.slice(1)}</span>
-      <input
-        type="color"
-        className="absolute inset-0 opacity-0"
-        value={hex}
-        onChange={(event) => onChange((typeof value === "string" ? event.target.value : hexToRgba(event.target.value, value[3])) as T)}
-      />
-    </label>
   );
 }
 

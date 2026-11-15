@@ -139,34 +139,6 @@ export interface FsListing {
   places: { name: string; path: string }[];
 }
 
-/** An image found by research, waiting for review (or reviewed). */
-export interface FoundImage {
-  id: string;
-  file: string;
-  width: number;
-  height: number;
-  title: string;
-  /** The page it's on. */
-  page: string;
-  image: string;
-  query: string;
-  status: "new" | "kept" | "rejected";
-  /** The media it became once kept. */
-  media?: string;
-}
-
-/** A news article about the case, saved by research. */
-export interface FoundArticle {
-  id: string;
-  url: string;
-  title: string;
-  outlet: string;
-  published?: string;
-  /** What it adds to the case. */
-  summary: string;
-  text: string;
-}
-
 /** A finished export of a project (apps/server/src/exports.ts ExportRecord). */
 export interface ExportRecord {
   path: string;
@@ -247,16 +219,6 @@ export const api = {
   /** Footage from a Google Drive folder or file link: downloaded on the machine running Edit, then imported. */
   importDrive: (id: string, url: string, place: boolean, origin: string) =>
     request<{ rev: number; added: string[]; errors: string[]; project: Project }>("POST", `/api/projects/${id}/import-drive`, { url, place, origin }),
-  research: (id: string) =>
-    request<{ items: FoundImage[]; articles: FoundArticle[]; collecting: boolean }>("GET", `/api/projects/${id}/research`),
-  /** Deletes the found images with a status (unreviewed or rejected). */
-  clearResearch: (id: string, status: "new" | "rejected") =>
-    request<{ removed: number }>("POST", `/api/projects/${id}/research/clear?status=${status}`),
-  collectResearch: (id: string, queries: string[], perQuery: number) =>
-    request<{ started: boolean }>("POST", `/api/projects/${id}/research`, { queries, per_query: perQuery }),
-  /** Keeping adds the image to the media bin (once). */
-  reviewResearch: (id: string, item: string, status: FoundImage["status"], origin: string) =>
-    request<{ item: FoundImage; rev: number; project: Project }>("POST", `/api/projects/${id}/research/${item}`, { status, origin }),
   mediaStatus: (id: string) => request<{ media: Record<string, MediaStatus> }>("GET", `/api/projects/${id}/media-status`),
   /** What changed in the script Doc since the edit was made from it (read at most once a minute). */
   scriptChanges: (id: string) => request<ScriptChanges>("GET", `/api/projects/${id}/script/pull`),
@@ -300,8 +262,6 @@ export const api = {
   checkYoutubeSignIn: () => request<YoutubeSignIn>("POST", "/api/youtube/sign-in/check"),
   /** Deletes one of them (its file too); the list after. */
   deleteExport: (id: string, path: string) => request<ExportRecord[]>("POST", `/api/projects/${id}/exports/delete`, { path }),
-  transcribe: (id: string, media: string) => request<{ status: MediaStatus }>("POST", `/api/projects/${id}/media/${media}/transcribe`),
-  transcript: (id: string, media: string) => request<Transcript>("GET", `/api/projects/${id}/media/${media}/transcript`),
   cancelExport: (id: string) => request<{ cancelled: boolean }>("POST", `/api/projects/${id}/export/cancel`),
   /** Exports the edit's marked stretches (the agent's set_ranges) to this computer: a video each, or one of them joined (ranges.ts). */
   exportRanges: (id: string, mode: RangesMode, options: ExportOptions, watermark: string | null) =>
@@ -343,17 +303,6 @@ export const api = {
       /** A Trello card's own script, followed: its name and how many of the card's cases it covers. */
       cardScript?: { title: string; covered: number; cases: number };
     }>("POST", "/api/scripts/preview", { url }),
-  /** Uploads one file into a project's media (not placed); the media ids it added. */
-  uploadFile: async (id: string, file: File, origin: string) => {
-    const query = new URLSearchParams({ name: file.name, size: String(file.size), origin });
-    const response = await fetch(`/api/projects/${id}/upload?${query}`, { method: "POST", headers: { "content-type": "application/octet-stream" }, body: file });
-    const data = (await response.json().catch(() => ({}))) as { added?: string[]; error?: string; rev?: number; project?: Project };
-    if (!response.ok) throw new ApiError(data.error ?? `the upload failed (${response.status})`, response.status, data);
-    return data as { added: string[]; rev: number; project: Project };
-  },
-  /** Places the team's voice-over recording (default: audio not on the timeline) on the cut-ins it reads. */
-  placeVoiceover: (id: string, mediaIds: string[] | null) =>
-    request<{ report: unknown; project: Project; rev: number }>("POST", `/api/projects/${id}/voiceover/place`, mediaIds === null ? {} : { media_ids: mediaIds }),
   /** Attaches a Doc's script to a project and starts downloading its footage. */
   attachScript: (id: string, url: string) => request<{ rev: number; project: Project; job: ScriptJob | null }>("POST", `/api/projects/${id}/script`, { url }),
   scriptJob: (id: string) => request<{ job: ScriptJob | null; unfinished: boolean }>("GET", `/api/projects/${id}/script/job`),

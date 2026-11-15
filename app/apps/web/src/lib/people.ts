@@ -16,19 +16,6 @@ export function personOf(project: Project, clip: Clip) {
   return clip.person === undefined ? undefined : project.people?.find((person) => person.id === clip.person);
 }
 
-/** Recolours everyone's clips of `clip`'s person (and the person) in `draft`; false when it names nobody. */
-export function recolourPerson(draft: Project, clip: Clip, color: Rgba): boolean {
-  const person = personOf(draft, clip);
-  if (person === undefined) return false;
-  person.color = toHex(color);
-  for (const other of draft.clips) {
-    if (other.person !== person.id || other.type !== "text") continue;
-    const shown = other.style.label ?? other.style;
-    shown.color = [color[0], color[1], color[2], shown.color[3]];
-  }
-  return true;
-}
-
 /** "#rrggbb" as bytes, or null (edit-core's parse_hex). */
 function parseHex(color: string): [number, number, number] | null {
   const match = /^#([0-9a-fA-F]{2})([0-9a-fA-F]{2})([0-9a-fA-F]{2})$/.exec(color);

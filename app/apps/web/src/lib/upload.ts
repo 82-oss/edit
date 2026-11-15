@@ -1,7 +1,5 @@
 // Uploads footage from the device the browser runs on to the machine running
-// Edit, one file at a time, with byte-level progress (fetch can't report it).
-
-import { create } from "zustand";
+// Edit, one file at a time.
 
 import { postFile, type Uploader } from "./chatFiles";
 import { placeMedia } from "./edit";
@@ -11,15 +9,6 @@ import type { Project } from "./types";
 /** Folders and hidden files aren't uploads; anything else is (Oct 31: "all file types"): Edit converts what it can into media and keeps the rest as the project's files. */
 const UPLOADABLE = (file: File) => file.name !== "" && !file.name.startsWith(".") && (file.size > 0 || file.type !== "");
 
-export interface Upload {
-  id: number;
-  name: string;
-  size: number;
-  loaded: number;
-  state: "queued" | "uploading" | "processing" | "done" | "failed";
-  error?: string;
-}
-
 /** Where to put an upload on the timeline once it lands (drop onto the timeline). */
 interface Placement {
   frame: number;
@@ -27,36 +16,15 @@ interface Placement {
 }
 
 interface Job {
-  upload: Upload;
   file: File;
   projectId: string;
   placement?: Placement;
 }
 
-export const useUploads = create<{ uploads: Upload[] }>(() => ({ uploads: [] }));
-
-let nextId = 0;
 const queue: Job[] = [];
 let running = false;
 /** No bytes accepted for this long = the server isn't taking the upload. */
 const STALL_MS = 20_000;
-const active = new Map<number, XMLHttpRequest>();
-
-/** Cancels a queued or running upload. */
-export function cancelUpload(id: number) {
-  const index = queue.findIndex((job) => job.upload.id === id);
-  if (index >= 0) queue.splice(index, 1);
-  active.get(id)?.abort();
-  useUploads.setState(({ uploads }) => ({ uploads: uploads.filter((upload) => upload.id !== id) }));
-}
-
-function patch(id: number, change: Partial<Upload>) {
-  useUploads.setState(({ uploads }) => ({ uploads: uploads.map((upload) => (upload.id === id ? { ...upload, ...change } : upload)) }));
-}
-
-function forget(id: number, delay: number) {
-  setTimeout(() => useUploads.setState(({ uploads }) => ({ uploads: uploads.filter((upload) => upload.id !== id) })), delay);
-}
 
 /** Queues files for upload. With `placement`, each lands on the timeline after the previous one. */
 export function uploadFiles(files: File[], placement?: Placement) {
@@ -66,10 +34,8 @@ export function uploadFiles(files: File[], placement?: Placement) {
   const rejected = files.length - accepted.length;
   if (rejected) useEditor.getState().toast(`Skipped ${rejected} empty file${rejected > 1 ? "s" : ""} or folder${rejected > 1 ? "s" : ""}.`, "error");
   for (const [index, file] of accepted.entries()) {
-    const upload: Upload = { id: ++nextId, name: file.name, size: file.size, loaded: 0, state: "queued" };
-    useUploads.setState(({ uploads }) => ({ uploads: [...uploads, upload] }));
     // Only the first carries an explicit frame; the rest follow it.
-    queue.push({ upload, file, projectId: project.id, placement: placement && { ...placement, frame: index === 0 ? placement.frame : -1 } });
+    queue.push({ file, projectId: project.id, placement: placement && { ...placement, frame: index === 0 ? placement.frame : -1 } });
   }
   void pump();
 }
@@ -103,16 +69,10 @@ async function pump() {
   while (queue.length) {
     const job = queue.shift()!;
     try {
-      patch(job.upload.id, { state: "uploading" });
-      const result = await send(job);
-      patch(job.upload.id, { state: "done", loaded: job.upload.size });
-      forget(job.upload.id, 1500);
-      land(job, result);
+      land(job, await send(job));
     } catch (error) {
       if ((error as Error).name === "AbortError") continue;
-      patch(job.upload.id, { state: "failed", error: (error as Error).message });
-      useEditor.getState().toastError(error, `upload ${job.upload.name}`);
-      forget(job.upload.id, 8000);
+      useEditor.getState().toastError(error, `upload ${job.file.name}`);
     }
   }
   running = false;
@@ -125,9 +85,6 @@ interface Landed {
   project: Project | null;
   file?: string;
 }
-
-/** Bumped when a file (not media) lands, so the media panel's Files list is read again. */
-export const useUploadedFiles = create<{ version: number }>(() => ({ version: 0 }));
 
 function send(job: Job): Promise<Landed> {
   return new Promise((resolve, reject) => {
@@ -143,21 +100,11 @@ function send(job: Job): Promise<Landed> {
         xhr.abort();
       }, STALL_MS);
     };
-    const done = () => {
-      clearTimeout(stall);
-      active.delete(job.upload.id);
-    };
-    active.set(job.upload.id, xhr);
+    const done = () => clearTimeout(stall);
     watch();
-    xhr.upload.onprogress = (event) => {
-      watch();
-      patch(job.upload.id, { loaded: event.loaded });
-    };
+    xhr.upload.onprogress = watch;
     // Bytes are all sent; the server is now probing the file (no timeout).
-    xhr.upload.onload = () => {
-      clearTimeout(stall);
-      patch(job.upload.id, { state: "processing" });
-    };
+    xhr.upload.onload = done;
     xhr.onabort = () => {
       done();
       reject(Object.assign(new Error("cancelled"), { name: "AbortError" }));
@@ -184,7 +131,6 @@ function send(job: Job): Promise<Landed> {
 
 function land(job: Job, result: Landed) {
   if (result.file !== undefined) {
-    useUploadedFiles.setState(({ version }) => ({ version: version + 1 }));
     useEditor.getState().toast(`“${result.file}” is uploaded: the agent can read it.`, "info");
     return;
   }

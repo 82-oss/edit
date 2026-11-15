@@ -1789,7 +1789,6 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
     setStarting(true);
     try {
       const { project } = await api.importWriter(script.id);
-      useEditor.getState().setMediaTab("downloads");
       onChanged();
       navigate(`/p/${project}`);
     } catch (error) {
@@ -2318,7 +2317,6 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         // The edit workflow starts once its footage is in, as a pasted Doc's does.
         await api.firstPrompt(project, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`);
         onClose();
-        useEditor.getState().setMediaTab("downloads");
         navigate(`/p/${project}`);
         return;
       }

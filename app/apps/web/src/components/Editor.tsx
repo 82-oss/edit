@@ -15,7 +15,6 @@ import { attachFiles } from "../lib/chatFiles";
 import { projectUploader } from "../lib/upload";
 import { ShareDialog } from "./ShareDialog";
 import { FileBrowser } from "./FileBrowser";
-import { Research } from "./Research";
 import { AgentPanel } from "./AgentPanel";
 import { ChatDock } from "./ChatDock";
 import { CloudBanner } from "./CloudBanner";
@@ -39,7 +38,6 @@ export function Editor({ id }: { id: string }) {
   const [resizing, setResizing] = useState(false);
   const agentWorking = useAgent((state) => state.running);
   const [importing, setImporting] = useState(false);
-  const [researching, setResearching] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -125,7 +123,7 @@ export function Editor({ id }: { id: string }) {
       {/* No padding on the right: the chat's edge sits there, at the window's very edge while the chat is closed. */}
       <div className="flex min-h-0 flex-1 pb-2 pl-2">
         <div className="flex min-w-0 flex-1 flex-col">
-          {/* Experiment (Nov 3): no media/script panel and no Info/Presets/Transcript panel — the viewer takes the whole left side. Their components and state stay; only this layout stopped mounting them, so putting them back is this block again. */}
+          {/* The viewer takes the whole left side (Nov 3; Sphe kept it): no media, script, Info, Presets or Transcript panel. */}
           <div className="flex min-h-0 flex-1">
             <Viewer />
           </div>
@@ -149,7 +147,6 @@ export function Editor({ id }: { id: string }) {
         </ChatDock>
       </div>
       <FileBrowser open={importing} onClose={() => setImporting(false)} />
-      <Research open={researching} onClose={() => setResearching(false)} />
       <ShareDialog open={sharing} onClose={() => setSharing(false)} />
       <FootageBack />
     </div>

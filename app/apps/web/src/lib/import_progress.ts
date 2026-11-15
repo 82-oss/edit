@@ -36,18 +36,3 @@ export function importProgress(job: ScriptJob): { fraction: number; line: string
       : "Getting the footage ready";
   return { fraction: footage * 0.85, line: files.length > 1 ? `${line} · file ${Math.min(done + 1, files.length)} of ${files.length}` : line };
 }
-
-/** What follows the layout, a line each (the voice-over, the recording, the research, the words), for the Downloads tab. */
-export function afterLines(job: ScriptJob): { step: string; state: string; line: string }[] {
-  const names: Record<string, string> = { voiceover: "Voice-over", recording: "The team’s recording", research: "Research", words: "Words" };
-  return (job.after ?? []).map((one) => ({
-    step: one.step,
-    state: one.state,
-    line: one.note ?? `${names[one.step] ?? one.step}: ${one.state === "running" ? "working…" : one.state === "done" ? "done" : one.state === "waiting" ? "waiting" : "didn’t work"}`,
-  }));
-}
-
-/** Whether a finished import still has something to say (a follow-on that failed or waits), so its tab stays. */
-export function afterNeedsSaying(job: ScriptJob | null): boolean {
-  return job !== null && job.state === "done" && (job.after ?? []).some((one) => one.state === "failed" || one.state === "waiting");
-}

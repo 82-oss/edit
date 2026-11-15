@@ -28,7 +28,7 @@ import { EffectLayer } from "./EffectLayer";
 import { NoteBoxLayer, NoteDraft } from "./NoteDraft";
 import { VideoComments } from "./VideoComments";
 import { ProblemView } from "./ProblemView";
-import { WaitingFiles } from "./ScriptPanel";
+import { WaitingFiles } from "./WaitingFiles";
 import { cx, IconButton, Pulse } from "./ui";
 import { rate } from "../lib/types";
 
@@ -355,16 +355,13 @@ export function Viewer() {
           )}
           {/* An import's progress over an empty timeline; footage being brought back (FootageBack) over its clips, as black without it. */}
           {!error && (empty || job?.back === true) && importing !== null && job?.state !== "waiting" && (
-            <button
-              onClick={() => useEditor.getState().setMediaTab("downloads")}
-              className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-[13px]"
-            >
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-[13px]">
               <span className={cx("text-muted", job?.state !== "failed" && "shimmer")}>{importing.line}</span>
               <span className="h-1 w-56 overflow-hidden rounded-full bg-white/10">
                 <span className={cx("block h-full rounded-full transition-[width] duration-500", job?.state === "failed" ? "bg-danger" : "bg-white/70")} style={{ width: `${Math.max(2, Math.round(importing.fraction * 100))}%` }} />
               </span>
               <span className="text-[11px] text-faint tabular">{Math.round(importing.fraction * 100)}% · {job?.back === true ? "the edit plays as its footage comes back" : "the edit appears here as soon as it’s laid out"}</span>
-            </button>
+            </div>
           )}
           {!error && empty && importing === null && !(hq && benchShown) && (
             <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-[13px] text-faint">
