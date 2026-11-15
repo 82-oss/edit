@@ -271,11 +271,6 @@ export function sharingNow(id: string): boolean {
   return sharing.has(id);
 }
 
-/** The projects being shared here now (running, or about to carry on after a restart): what a restart or an update would cut off. */
-export function sharesGoing(home: string): string[] {
-  return [...new Set([...sharing.keys(), ...jobs.list(home, "share").filter(jobs.live).map((job) => job.project)])];
-}
-
 /**
  * Where a project's share is, the one answer the Share dialog, the Exports
  * panel and Home read: `line` while it runs (null otherwise), and `share`,
@@ -2185,11 +2180,6 @@ export function resumeFix(app: App, job: jobs.Job): void {
       noteFix(home, project, null);
       readying.delete(project);
     });
-}
-
-/** The fixes a restart cut short, followed again (tests; serve.ts resumes every kind at once). */
-export function resumeFixes(app: App): Promise<void> {
-  return jobs.resume(app.store.home, { fix: (job) => resumeFix(app, job) }, ["fix"]);
 }
 
 /**

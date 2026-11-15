@@ -606,11 +606,6 @@ export function devicePolling(): Promise<void> | null {
   return polling;
 }
 
-/** Stops waiting for a device sign-in (signing in another way, or giving up). */
-export function cancelDevice(): void {
-  state.device = null;
-}
-
 /** The browser back with a code (or a refusal): exchanged, and the person signed in. */
 export async function finish(app: App, query: URLSearchParams): Promise<{ ok: boolean; message: string }> {
   const pending = state.pending;

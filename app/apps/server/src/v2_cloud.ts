@@ -58,8 +58,6 @@ export interface Item {
   brief: string | null;
   category: string | null;
   archived: boolean;
-  /** The places it's for, as mamagi keeps them (a place's own item: that place); null or []: V2's house. */
-  niches?: string[] | null;
   at: number;
   by: { name: string } | null;
 }
@@ -110,10 +108,6 @@ export async function list(kind: Exclude<Kind, "effect">, archived = false): Pro
 /** Puts an item away (out of every list unless asked for, its versions kept), or back. */
 export async function archive(key: string, archived: boolean): Promise<void> {
   await cloud.mutation("edit:archiveLibrary", { key, archived });
-}
-
-export async function projectEffects(project: string): Promise<Item[]> {
-  return (await cloud.query("edit:listLibrary", { projectId: project })) as Item[];
 }
 
 export async function versions(key: string, text = false): Promise<Version[]> {

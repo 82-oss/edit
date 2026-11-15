@@ -19,12 +19,6 @@ export function startsWith(path: string, prefix: string): boolean {
   return b.length <= a.length && b.every((part, index) => a[index] === part);
 }
 
-/** `path` relative to `prefix` ("" when they're the same), or null when it isn't inside it. */
-export function stripPrefix(path: string, prefix: string): string | null {
-  if (!startsWith(path, prefix)) return null;
-  return components(path).slice(components(prefix).length).join("/");
-}
-
 /** `base` joined with `parts` as Rust joins: an absolute part replaces what came before. */
 export function join(base: string, ...parts: string[]): string {
   let out = base;

@@ -39,11 +39,6 @@ export function google(url: string): string {
   return url;
 }
 
-/** Whether `url` is Google's API as this run reaches it: where the sign-in may go. */
-export function isGoogleApi(url: string): boolean {
-  return url.startsWith(google(API));
-}
-
 export function googleThrough(stand: string | null, url: string): string {
   if (stand !== null && url.startsWith("https://")) return `${stand}/${url.slice("https://".length)}`;
   return url;

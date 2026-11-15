@@ -13,11 +13,6 @@ import * as thumbnailRuns from "./thumbnails/run.ts";
 import * as writerImports from "./writer/imports.ts";
 import * as writerJobs from "./writer/jobs.ts";
 
-/** Work that holds a lock: its project (an edit's id) or script (`script:<id>`). */
-export function scriptKey(id: string): string {
-  return `script:${id}`;
-}
-
 /**
  * What an update would lose now: only work that doesn't yet carry on by
  * itself after Edit restarts (everything else in `busyWith` is a job that

@@ -87,9 +87,6 @@ export function kindOf(error: unknown): Kind {
 
 export const isTemporary = (error: unknown): boolean => kindOf(error) === "temporary";
 
-/** Whether Try again is worth offering for `error`: anything but permanent. */
-export const tryAgainHelps = (error: unknown): boolean => kindOf(error) !== "permanent";
-
 /** A Retry-After a refusal carried, in ms. */
 function retryAfter(error: unknown): number | null {
   return Predicate.hasProperty(error, "retryAfterMs") && typeof error.retryAfterMs === "number" ? error.retryAfterMs : null;

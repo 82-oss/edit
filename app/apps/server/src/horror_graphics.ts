@@ -487,8 +487,3 @@ export function lens(p: Project, a: Args): Args {
   return { clip: id, clips: [id] };
 }
 
-/** Whether a clip is one of these graphics (the audit's "own graphic" test). */
-export function isHorrorGraphic(name: string | undefined): boolean {
-  return (name ?? "").startsWith("Horror · ");
-}
-

@@ -368,16 +368,6 @@ export interface CardTracks {
   label: string;
 }
 
-/** Four new tracks on top of everything (tidy_tracks packs them down). */
-export function cardTracksOnTop(project: Project): CardTracks {
-  return {
-    backdrop: addTrack(project, "video"),
-    blur: addTrack(project, "video"),
-    photo: addTrack(project, "video"),
-    label: addTrack(project, "video"),
-  };
-}
-
 /**
  * An evidence card (see the module notes) of image `mediaId` from `start` to
  * `end`, named "<prefix>…"; returns its clips (backdrop, blur, photo, label).

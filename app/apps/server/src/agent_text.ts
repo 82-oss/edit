@@ -134,10 +134,5 @@ export function thumbnailsGuide(name: string): string {
 /** What a video made the new way adds to the agent's instructions (agent/hq/notes.md): its graphics are effects it writes as code. */
 export const HQ_NOTES: string = parse(FILES["hq/notes.md"] ?? "").body;
 
-/** A file of agent/ as the release has it, whole (frontmatter and all), or null. */
-export function releaseText(path: string): string | null {
-  return FILES[path] ?? null;
-}
-
 /** Every file's path under agent/ (the test checks each one is used). */
 export const PATHS: readonly string[] = Object.keys(FILES);
