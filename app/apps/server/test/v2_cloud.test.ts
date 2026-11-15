@@ -139,9 +139,9 @@ test("the library: effects and sounds kept with a category, a note and a brief, 
     fs.writeFileSync(join(dir, "scene.html"), "<p>board</p>");
     const keep = { kind: "effect", name: "board", as: "evidence-board", category: "evidence board", note: "A paper board the camera glides across.", brief: "PHOTOS, CAM keys and TEXTS at the top." };
     // Not a teacher: refused, in words to pass on.
-    accounts.signedInForTests(["edit.bodycam"]);
+    accounts.signedInForTests(["edit.bodycam", "channel.lib-ch"]);
     expect((await call(app, id, "save_to_library", keep)).content[0]!.text).toContain("a teacher's to do");
-    accounts.signedInForTests(["edit.bodycam", "agent.teach"]);
+    accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.lib-ch"]);
     expect((await call(app, id, "save_to_library", { ...keep, brief: "x".repeat(300) })).content[0]!.text).toContain("brief is at most 240 characters");
     expect((await call(app, id, "save_to_library", keep)).content[0]!.text).toContain("evidence-board is version 1");
     expect(mock.cloud.convex.library.has("template:@lib-ch--edit/evidence-board")).toBe(true);
@@ -177,9 +177,9 @@ test("what the agent remembers: a line or two each, the global skill first and n
       project.hq = true;
       project.channel = "mem-ch";
     });
-    accounts.signedInForTests(["edit.bodycam"]);
+    accounts.signedInForTests(["edit.bodycam", "channel.mem-ch"]);
     expect((await call(app, id, "remember", { skill: "pins", text: "Pins are red.", reason: "Sphe" })).content[0]!.text).toContain("a teacher's to do");
-    accounts.signedInForTests(["edit.bodycam", "agent.teach"]);
+    accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.mem-ch"]);
     expect((await call(app, id, "remember", { skill: "pins", text: "x".repeat(401), reason: "Sphe" })).content[0]!.text).toContain("at most 400 characters");
     expect((await call(app, id, "remember", { skill: "global", text: "x", reason: "y" })).content[0]!.text).toContain("Edit's own");
     expect((await call(app, id, "remember", { skill: "pins", text: "Board pins are red.", reason: "Sphe: pins are red" })).content[0]!.text).toContain("Remembered as pins (version 1)");
@@ -353,6 +353,24 @@ test("a placeholder channel (Sphe, Nov 15): its agents know it isn't on YouTube 
   }
 });
 
+test("a channel seen by its label alone (Sphe, Nov 15): its agents have the label for its name and don't read its videos", async () => {
+  const { app, cleanup } = fixtureHome("v2-channel-masked");
+  try {
+    const MASKED = { ...CHANNEL, youtubeId: null, handle: null, title: "Bodycam Channel 1", label: "Bodycam Channel 1", masked: true, subscribers: null, videos: null, views: null };
+    channels.useChannelsForTests([MASKED]);
+    expect(channels.placeholder(MASKED)).toBe(false);
+    const project = { ...app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project, hq: true, channel: "drinsanity" };
+    const prompt = agentInstructions(project);
+    expect(prompt).toContain("THIS PROJECT'S CHANNEL: Bodycam Channel 1, on YouTube.");
+    expect(prompt).not.toContain("Dr Insanity");
+    expect(lanes.section("drinsanity", "ideas")).toContain("THIS CHANNEL: Bodycam Channel 1, on YouTube.");
+    expect(await lanes.call("channel_videos", {}, { channel: "drinsanity", lane: "ideas" })).toContain("aren't shown to this account");
+  } finally {
+    channels.useChannelsForTests([]);
+    cleanup();
+  }
+});
+
 test("other_channels: the rest listed only when asked, one's edit style shown, and a piece of it (or all of it) brought in as this channel's own, never over what it has", async () => {
   const { app, cleanup, id } = hq("v2-other-channels");
   try {
@@ -360,7 +378,7 @@ test("other_channels: the rest listed only when asked, one's edit style shown, a
       project.hq = true;
       project.channel = "drinsanity";
     });
-    accounts.signedInForTests(["edit.bodycam", "agent.teach"]);
+    accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.drinsanity"]);
     mock.cloud.convex.channels = [CHANNEL, OTHER];
     const seed = (key: string, name: string, text: string, note: string) => {
       mock.cloud.convex.library.set(key, { key, kind: "skill", name, current: 1, latest: 1, note, niches: [key.slice(key.indexOf("@") + 1, key.indexOf("/"))], at: Date.now(), by: { name: "Sphe" } });

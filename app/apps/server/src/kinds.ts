@@ -21,6 +21,8 @@ export interface Shape {
   subtitles: boolean;
   /** Nothing but footage (or nothing at all) yet. */
   footageOnly: boolean;
+  /** The channel it's for (Edit V2), when it is one's. */
+  channel?: string | null;
 }
 
 const LABELS: Record<string, [kind: string, grant: string]> = {
@@ -52,6 +54,8 @@ export function kindOf(shape: Shape): string {
 /** Whether the signed-in person may see and change a project of this shape. */
 export function mayWork(shape: Shape, given: Set<string> | null = granted()): boolean {
   if (given === null) return true;
+  // A channel's work is only for who may see that channel (Sphe, Nov 15), in full or by its label (channels.ts in mamagi).
+  if (typeof shape.channel === "string" && shape.channel !== "" && !given.has(`channel.${shape.channel}`) && !given.has(`channel.${shape.channel}.label`)) return false;
   if (!shape.subtitles && given.has(`edit.${shape.style}`)) return true;
   return given.has("video.subtitles") && (shape.subtitles || shape.footageOnly);
 }
@@ -73,6 +77,10 @@ export function editsAny(given: Set<string> | null = granted()): boolean {
 
 /** Why a project they can't work on isn't there for them. */
 export function unavailable(shape?: Shape): string {
+  // Its channel isn't theirs (never named: they may not know it).
+  const given = granted();
+  if (shape?.channel && given !== null && !given.has(`channel.${shape.channel}`) && !given.has(`channel.${shape.channel}.label`))
+    return "This project isn't available to your account: it's for a channel you haven't been given. An admin can give you it at accounts.spheceo.com.";
   const label = shape === undefined ? undefined : LABELS[kindOf(shape)];
   return label === undefined
     ? "This project isn't available to your account."

@@ -453,8 +453,8 @@ test("a project from the cloud says who started it: its own record, else Convex'
 test("someone who can't work on a cloud project's kind of video isn't shown it, and it isn't brought here", async () => {
   const { app, store, projects, cleanup } = setup("cloud-kinds");
   try {
-    expect(cloudShape({ style: "courtroom", subtitles: false, footageOnly: false })).toEqual({ style: "courtroom", subtitles: false, footageOnly: false });
-    expect(cloudShape(null)).toEqual({ style: "bodycam", subtitles: false, footageOnly: false });
+    expect(cloudShape({ style: "courtroom", subtitles: false, footageOnly: false })).toEqual({ style: "courtroom", subtitles: false, footageOnly: false, channel: null });
+    expect(cloudShape(null)).toEqual({ style: "bodycam", subtitles: false, footageOnly: false, channel: null });
     const theirs = { ...newProject("p1-77", "Courtroom edit", SETTINGS_1080, "courtroom") } as unknown as Record<string, unknown>;
     mock.cloud.convex.saveElsewhere(theirs, "kenobi");
     mock.cloud.convex.projects.get("p1-77")!.summary = { style: "courtroom", subtitles: false, footageOnly: false };

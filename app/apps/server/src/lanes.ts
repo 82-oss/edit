@@ -93,7 +93,7 @@ export function laneText(place: Place, teach: Teach = "tools"): string {
       `When they point you at another channel's way, or ask to start from another channel's style, find it with other_channels and bring it in as this channel's own, to change here.` +
       (place.lane === "script"
         ? ""
-        : channel !== null && channels.placeholder(channel)
+        : channel !== null && channel.youtubeId === null
           ? " channel_videos shows what any channel's videos (by its link) get on YouTube: their titles, views, length and thumbnails. This one has none yet."
           : " channel_videos shows what this channel's videos (or any channel's, by its link) get on YouTube: their titles, views, length and thumbnails."),
   );
@@ -290,12 +290,12 @@ async function channelVideos(args: Record<string, unknown>, place: Place): Promi
   if (typeof args.channel === "string" && args.channel.trim() !== "") {
     const words = args.channel.trim();
     const ours = channels.knownChannels().find((one) => [one.key, one.handle?.toLowerCase(), one.title.toLowerCase()].includes(words.replace(/^@/, "").toLowerCase()));
-    if (ours !== undefined && ours.youtubeId === null) return `${ours.title} isn't on YouTube yet: it has no videos to read.`;
+    if (ours !== undefined && ours.youtubeId === null) return ours.masked === true ? `${ours.title}'s videos aren't shown to this account.` : `${ours.title} isn't on YouTube yet: it has no videos to read.`;
     link = ours?.youtubeId ?? words;
   } else {
     const mine = channels.knownChannels().find((one) => one.key === place.channel);
     if (mine === undefined) throw new Error("this channel isn't read yet: try again in a moment");
-    if (mine.youtubeId === null) return `${mine.title} isn't on YouTube yet: it has no videos of its own. Read another channel's with channel.`;
+    if (mine.youtubeId === null) return mine.masked === true ? `${mine.title}'s own videos aren't shown to this account. Read another channel's with channel.` : `${mine.title} isn't on YouTube yet: it has no videos of its own. Read another channel's with channel.`;
     link = mine.youtubeId;
   }
   const found = await channels.videosOf(link, order, count);

@@ -895,6 +895,7 @@ export function cloudShape(given: unknown): kinds.Shape {
     style: STYLES.find((one) => one.value === style)?.value ?? "bodycam",
     subtitles: field(given, "subtitles") === true,
     footageOnly: field(given, "footageOnly") === true,
+    channel: typeof field(given, "channel") === "string" ? (field(given, "channel") as string) : null,
   };
 }
 

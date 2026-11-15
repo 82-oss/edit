@@ -25,6 +25,8 @@ export interface Shape {
   style: string;
   subtitles: boolean;
   footageOnly: boolean;
+  /** The channel it's for (Edit V2), when it is one's. */
+  channel?: string | null;
 }
 
 /** The capabilities a caller has; null for everything (an admin). A token with none has none: `use` alone opens nothing (Oct 29: the fallback for tokens from before the kinds went, so `use` can't give Script mode's work too). */
@@ -46,12 +48,15 @@ export function shapeOf(summary: unknown): Shape {
     style: typeof style === "string" && STYLES.has(style) ? style : "bodycam",
     subtitles: field("subtitles") === true,
     footageOnly: field("footageOnly") === true,
+    channel: typeof field("channel") === "string" ? (field("channel") as string) : null,
   };
 }
 
 /** Whether someone with `given` may see and change a project of this shape (kinds.ts `mayWork`). */
 export function mayWork(shape: Shape, given: Set<string> | null): boolean {
   if (given === null) return true;
+  // A channel's work is only for who may see that channel (Sphe, Nov 15), in full or by its label (channels.ts in mamagi).
+  if (typeof shape.channel === "string" && shape.channel !== "" && !given.has(`channel.${shape.channel}`) && !given.has(`channel.${shape.channel}.label`)) return false;
   if (!shape.subtitles && given.has(`edit.${shape.style}`)) return true;
   return given.has("video.subtitles") && (shape.subtitles || shape.footageOnly);
 }

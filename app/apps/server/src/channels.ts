@@ -9,13 +9,17 @@
 // compilation channel. Channels are V2's (the beta). A placeholder (Sphe,
 // Nov 15) is a channel by its name alone, before it's on YouTube: linked to
 // its YouTube channel once it's made, its key stays, so its teaching does.
+// Who sees which is mamagi's (Sphe, Nov 15): an admin every channel, anyone
+// else those given on accounts.spheceo.com, in full or by its label alone
+// ("Bodycam Channel 1": `masked`, nothing YouTube says, a placeholder's look),
+// so this server and its agents only ever have what its person may see.
 //
 //   GET    /api/channels                {channels, teacher}
 //   GET    /api/channels/resolve?url=   {channel}: what YouTube says, not saved
 //   POST   /api/channels                {url} or {title} → {channel}: added, or a placeholder by its name (a teacher's)
 //   POST   /api/channels/{key}/link     {url} → {channel}: a placeholder linked to its YouTube channel
 //   GET    /api/channels/{key}          {channel, taught: {<lane>: [what its agent knows]}, teacher}
-//   PUT    /api/channels/{key}          {narration?, compilation?, lanes?} → {channel}
+//   PUT    /api/channels/{key}          {narration?, compilation?, lanes?, label?} → {channel}
 //   DELETE /api/channels/{key}          put away (its teaching kept)
 //   GET    /api/channels/voices         {voices, used}: who could narrate, and who narrates for whom already
 //   GET    /api/channels/{key}/videos?order=top|recent   {channel, videos}: its most viewed or newest, with their numbers
@@ -47,6 +51,10 @@ export interface Channel {
   youtubeId: string | null;
   handle: string | null;
   title: string;
+  /** What someone allowed only its label sees for its name ("Channel 2" unless set; missing from a mamagi before labels). */
+  label?: string;
+  /** Seen by its label alone: `title` is the label, and nothing YouTube says of it is here. */
+  masked?: boolean;
   description: string;
   avatar: string | null;
   banner: string | null;
@@ -67,10 +75,11 @@ export interface Channel {
 }
 
 /** A placeholder: not on YouTube yet, so none of YouTube's numbers. */
-export const placeholder = (channel: Channel) => channel.youtubeId === null;
+export const placeholder = (channel: Channel) => channel.youtubeId === null && channel.masked !== true;
 
 /** What an agent calls it: "Dr Insanity (@drinsanity), on YouTube", or a placeholder's name. */
 export function channelName(channel: Channel): string {
+  if (channel.masked === true) return `${channel.title}, on YouTube`;
   return channel.youtubeId === null ? `${channel.title} (a new channel, not on YouTube yet)` : `${channel.title}${channel.handle ? ` (@${channel.handle})` : ""}, on YouTube`;
 }
 
@@ -305,7 +314,7 @@ export function routes(router: Router<App>): void {
       needCloud();
       const channel = await asked(() => get(params.key!));
       if (channel === null) throw new ApiError(404, `no channel ${params.key}`);
-      if (channel.youtubeId === null) throw bad(`${channel.title} isn't on YouTube yet.`);
+      if (channel.youtubeId === null) throw bad(channel.masked === true ? `${channel.title}'s videos aren't shown to your account.` : `${channel.title} isn't on YouTube yet.`);
       return json(await asked(() => videosOf(channel.youtubeId!, url.searchParams.get("order") === "recent" ? "recent" : "top")));
     })
     .post("/api/channels/{key}/projects/{id}", async ({ app, params }: RouteContext<App>) => {
@@ -334,7 +343,8 @@ export function routes(router: Router<App>): void {
     })
     .put("/api/channels/{key}", async (context: RouteContext<App>) => {
       needTeacher();
-      const given = await readJson<{ narration?: unknown; compilation?: unknown; lanes?: unknown }>(context);
+      const given = await readJson<{ narration?: unknown; compilation?: unknown; lanes?: unknown; label?: unknown }>(context);
+      if (given.label !== undefined && typeof given.label !== "string") throw bad("label is what someone allowed only its label sees");
       const narration = narrationOf(given.narration);
       if (given.compilation !== undefined && typeof given.compilation !== "boolean") throw bad("compilation is true or false");
       const lanes: Partial<Record<Lane, string>> = {};
@@ -347,7 +357,7 @@ export function routes(router: Router<App>): void {
           lanes[lane] = text;
         }
       }
-      const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key: context.params.key!, ...(narration !== undefined ? { narration } : {}), ...(given.compilation !== undefined ? { compilation: given.compilation } : {}), ...(given.lanes !== undefined ? { lanes } : {}) })) as Channel);
+      const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key: context.params.key!, ...(narration !== undefined ? { narration } : {}), ...(given.compilation !== undefined ? { compilation: given.compilation } : {}), ...(given.lanes !== undefined ? { lanes } : {}), ...(typeof given.label === "string" ? { label: given.label } : {}) })) as Channel);
       forget();
       return json({ channel });
     })

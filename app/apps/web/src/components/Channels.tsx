@@ -76,8 +76,9 @@ export function ChannelPills({ channels, value, lane, onChange }: { channels: Ch
   );
 }
 
-/** "@drinsanity · 1.2M subscribers"; a placeholder says it isn't on YouTube yet. */
-function facts(channel: { youtubeId?: string | null; handle?: string | null; subscribers?: number | null; videos?: number | null }): string {
+/** "@drinsanity · 1.2M subscribers"; a placeholder says it isn't on YouTube yet; one seen by its label alone says nothing. */
+function facts(channel: { youtubeId?: string | null; handle?: string | null; subscribers?: number | null; videos?: number | null; masked?: boolean }): string {
+  if (channel.masked === true) return "";
   if (channel.youtubeId === null) return "Placeholder · no YouTube channel yet";
   return [channel.handle ? `@${channel.handle}` : null, compact(channel.subscribers) ? `${compact(channel.subscribers)} subscribers` : null, compact(channel.videos) ? `${compact(channel.videos)} videos` : null].filter(Boolean).join(" · ");
 }
@@ -341,7 +342,7 @@ function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void
           <h2 className="truncate text-[20px] font-semibold tracking-[-0.3px]">{channel.title}</h2>
           <p className="truncate text-[13px] text-muted">{facts(channel)}</p>
         </div>
-        {channel.youtubeId === null ? (
+        {channel.masked === true ? null : channel.youtubeId === null ? (
           teacher &&
           !linking && (
             <Button variant="subtle" onClick={() => setLinking(true)}>
@@ -360,6 +361,14 @@ function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void
           </a>
         )}
       </div>
+      {/* What someone given only its label sees for its name (accounts.spheceo.com), set by a teacher. */}
+      {teacher && channel.masked !== true && (
+        <div className="-mt-3 flex items-baseline gap-1.5 text-[12.5px] text-faint">
+          <span className="shrink-0">Shown as</span>
+          <InPlace value={channel.label ?? ""} editable placeholder="Channel 1" onSave={(text) => change("label", { label: text })} className="min-w-0 flex-1 text-[12.5px] text-secondary" />
+          <span className="shrink-0">to people given only its label</span>
+        </div>
+      )}
       <AnimatePresence initial={false}>
         {linking && channel.youtubeId === null && (
           <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={spring} className="-mt-2 overflow-hidden">

@@ -5,7 +5,7 @@ import { exportJWK, generateKeyPair, SignJWT, createLocalJWKSet, type JWK } from
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { allow, budgetKey, caller, CHECK_MS, forgetKeys, readCutOffsWith, useKeys } from "../../../relay/src/auth";
 import { cloud } from "../../../relay/src/cloud";
-import { reportRefused, WRITABLE } from "../../../relay/src/authz";
+import { mayWork, reportRefused, shapeOf, WRITABLE } from "../../../relay/src/authz";
 import relay, { type Env } from "../../../relay/src/index";
 
 const ISSUER = "https://accounts.example.test";
@@ -45,6 +45,18 @@ async function token(claims: Record<string, unknown> = {}, options: { kid?: stri
 const env = (extra: Partial<Env> = {}) => ({ ACCOUNTS_ISSUER: ISSUER, CLOUD_TOKEN: "shared-cloud", ...extra }) as Env;
 const asked = (bearer: string | null, path = "https://relay/v1/transcribe", init: RequestInit = {}) =>
   new Request(path, { ...init, headers: { ...(bearer === null ? {} : { authorization: `Bearer ${bearer}` }), "cf-connecting-ip": "1.2.3.4", ...(init.headers ?? {}) } });
+
+describe("a channel's projects in the cloud (Sphe, Nov 15)", () => {
+  it("are only for who's been given the channel, in full or by its label", () => {
+    const shape = shapeOf({ style: "bodycam", channel: "inspectorted1" });
+    expect(shape.channel).toBe("inspectorted1");
+    expect(mayWork(shape, new Set(["use", "edit.bodycam"]))).toBe(false);
+    expect(mayWork(shape, new Set(["use", "edit.bodycam", "channel.inspectorted1.label"]))).toBe(true);
+    expect(mayWork(shape, new Set(["use", "edit.bodycam", "channel.inspectorted1"]))).toBe(true);
+    expect(mayWork(shapeOf({ style: "bodycam" }), new Set(["use", "edit.bodycam"]))).toBe(true);
+    expect(mayWork(shape, null)).toBe(true);
+  });
+});
 
 describe("relay sign-in gate", () => {
   it("lets a signed-in person with the route's permission in, and names them in the log", async () => {
@@ -251,6 +263,12 @@ describe("relay sign-in gate", () => {
     expect(reportRefused(person, key)).toBe("Only an admin reads problem reports.");
     expect(reportRefused(admin, key)).toBeNull();
     expect(reportRefused(person, "edit/covers/p1.jpg")).toBeNull();
+    // Each Mac's log and crashes, sent every five minutes (log_ship.ts): the same line.
+    for (const sent of ["edit/reports/logs/kenobi/2026-11-15/2026-11-15T10-05-00.123Z.log.gz", "edit/reports/crashes/kenobi/2026-11-15/2026-11-15T10-05-00.123Z-stopped.txt.gz"]) {
+      expect(WRITABLE.some((prefix) => sent.startsWith(prefix))).toBe(true);
+      expect(reportRefused(person, sent)).toBe("Only an admin reads problem reports.");
+      expect(reportRefused(admin, sent)).toBeNull();
+    }
   });
 
   it("gives voice generation (paid) to editing: any edit style or an admin; not subtitles alone, nor Edit with nothing ticked", async () => {

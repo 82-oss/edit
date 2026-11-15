@@ -20,8 +20,12 @@ export type Narration = { kind: "voice"; id: string; name: string } | { kind: "r
 
 export interface Channel {
   key: string;
-  /** null: a placeholder, not on YouTube yet. */
+  /** null: a placeholder, not on YouTube yet, or (masked) not shown to this account. */
   youtubeId: string | null;
+  /** What someone given only its label sees for its name ("Channel 2" unless a teacher set one). */
+  label?: string;
+  /** Seen by its label alone (accounts.spheceo.com): the label is its title, and nothing YouTube says of it is here. */
+  masked?: boolean;
   handle: string | null;
   title: string;
   description: string;
@@ -99,7 +103,7 @@ export const channelApi = {
   addPlaceholder: (title: string) => request<{ channel: Channel }>("POST", "/api/channels", { title }).then((answer) => keep(answer.channel)),
   /** A placeholder linked to its YouTube channel: its teaching stays. */
   link: (key: string, url: string) => request<{ channel: Channel }>("POST", `/api/channels/${key}/link`, { url }).then((answer) => keep(answer.channel)),
-  set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>> }) =>
+  set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>>; label?: string }) =>
     request<{ channel: Channel }>("PUT", `/api/channels/${key}`, change).then((answer) => keep(answer.channel)),
   /** A channel with what each lane has been taught. */
   page: (key: string) => request<{ channel: Channel; taught: Record<Lane, Taught[]>; teacher: boolean }>("GET", `/api/channels/${key}`),

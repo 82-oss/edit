@@ -960,12 +960,12 @@ function isFootageClip(project: Project, clip: Clip): boolean {
 /** What `kinds` needs to know of a project: its style, whether it's a subtitled video, or only footage yet. */
 export function shapeOf(project: Project): kinds.Shape {
   const subtitles = isSubtitled(project);
-  return { style: project.style, subtitles, footageOnly: !subtitles && project.clips.every((clip) => isFootageClip(project, clip)) };
+  return { style: project.style, subtitles, footageOnly: !subtitles && project.clips.every((clip) => isFootageClip(project, clip)), channel: project.channel ?? null };
 }
 
 /** A summary's shape (`footage_only` is set by `summaryOf`). */
 export function summaryShape(summary: ProjectSummary): kinds.Shape {
-  return { style: summary.style, subtitles: summary.subtitles === true, footageOnly: summary.footage_only === true };
+  return { style: summary.style, subtitles: summary.subtitles === true, footageOnly: summary.footage_only === true, channel: summary.channel ?? null };
 }
 
 /**

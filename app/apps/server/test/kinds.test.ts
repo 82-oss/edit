@@ -24,6 +24,20 @@ function fill(project: Project, add: { subtitles?: boolean; caption?: boolean })
   if (add.caption) project.clips.push(clip({ id: "c3", type: "text", track: v2!.id, name: "Caption · Officer", start: 30, duration: 30, text: "Officer" }));
 }
 
+test("a channel's work is only for who's been given that channel, in full or by its label (Sphe, Nov 15)", () => {
+  const onChannel = { style: "bodycam" as Style, subtitles: false, footageOnly: false, channel: "inspectorted1" };
+  expect(kinds.mayWork(onChannel, new Set(["use", "edit.bodycam"]))).toBe(false);
+  expect(kinds.mayWork(onChannel, new Set(["use", "edit.bodycam", "channel.inspectorted1"]))).toBe(true);
+  expect(kinds.mayWork(onChannel, new Set(["use", "edit.bodycam", "channel.inspectorted1.label"]))).toBe(true);
+  // The channel alone isn't the kind of video.
+  expect(kinds.mayWork(onChannel, new Set(["use", "edit.courtroom", "channel.inspectorted1"]))).toBe(false);
+  expect(kinds.mayWork({ ...onChannel, channel: null }, new Set(["use", "edit.bodycam"]))).toBe(true);
+  expect(kinds.mayWork(onChannel, null)).toBe(true);
+  accounts.signedInForTests(["use", "edit.bodycam"]);
+  expect(kinds.unavailable(onChannel)).toContain("a channel you haven't been given");
+  expect(kinds.unavailable(onChannel)).not.toContain("inspectorted1");
+});
+
 test("who may work on what: a style's edits, subtitled videos, and footage-only projects for subtitlers", () => {
   const shape = (style: Style, subtitles = false, footageOnly = false) => ({ style, subtitles, footageOnly });
   const subtitler = new Set(["use", "video.subtitles"]);
