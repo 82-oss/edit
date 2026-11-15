@@ -1955,13 +1955,16 @@ function hqInstructions(project: Pick<Project, "name" | "settings" | "channel" |
     channel === null
       ? "This project isn't a channel's, so nothing is kept from the person's feedback: don't offer to keep it."
       : v2cloud.teacher()
-        ? keepRule("video", "keep it with remember")
+        ? keepRule("video", "keep it with remember", true, channels.groupOf(project.channel!) !== null)
         : "This person isn't a teacher, so nothing is kept from their feedback: don't offer to keep it.";
-  const known = v2cloud.memories(v2cloud.placeOfProject(project));
+  const places = channels.placesOfProject(project);
+  const known = v2cloud.memories(places);
   const remembered = known.filter((one) => one.note === undefined);
   const parts = known.filter((one) => one.note !== undefined);
-  const memory = remembered.length === 0 ? "" : `\n\nWHAT YOU REMEMBER (V2's cloud; keep it short, as it says):\n${remembered.map((one) => (one.name === v2cloud.GLOBAL ? one.text : `[${one.name}] ${one.text}`)).join("\n")}`;
-  const skills = parts.length === 0 ? "" : `\n\nYOUR SKILLS (V2's cloud): how the team does each part of this channel's edit. read_skill one before you work on that part (or answer about it), once per conversation; what you're taught goes into them.\n${parts.map((one) => `- ${one.name}: ${one.note}`).join("\n")}`;
+  // A grouped channel's own are its exceptions to the group's, marked so.
+  const own = (one: v2cloud.Skill) => (places !== null && places.length > 1 && v2cloud.ownPlaceOf(one.key ?? "") === places[0] ? " (this channel only)" : "");
+  const memory = remembered.length === 0 ? "" : `\n\nWHAT YOU REMEMBER (V2's cloud; keep it short, as it says):\n${remembered.map((one) => (one.name === v2cloud.GLOBAL ? one.text : `[${one.name}${own(one)}] ${one.text}`)).join("\n")}`;
+  const skills = parts.length === 0 ? "" : `\n\nYOUR SKILLS (V2's cloud): how the team does each part of this channel's edit. read_skill one before you work on that part (or answer about it), once per conversation; what you're taught goes into them.\n${parts.map((one) => `- ${one.name}${own(one)}: ${one.note}`).join("\n")}`;
   return (
     `You are the agent built into Edit, a video editor, making "${project.name}" (${settings.width}x${settings.height} at ${rateText(settings)} fps) with the person watching: what you change appears in their viewer at once. ` +
     "You work through the `edit` tools and write code with your file tools (Read, Write, Edit, Glob, Grep), which work only in your working directory, the project's effects folder; you have no shell. " +
@@ -1981,15 +1984,24 @@ function channelText(project: Pick<Project, "channel" | "compilation">): string 
   const found = channels.channelOf(project);
   const name = found === null ? `${project.channel!}, on YouTube` : channels.channelName(found);
   const style = found?.lanes.edit.trim() ?? "";
+  const group = channels.groupOf(project.channel!);
+  const shared = group?.lanes.edit.trim() ?? "";
   const narration = found?.narration ?? null;
   const reads = narration === null ? "" : narration.kind === "recorded" ? " Its scripts are narrated by the editor's own recording." : ` Its scripts are narrated by the voice ${narration.name} (voice id ${narration.id}).`;
   const compilation = project.compilation ?? found?.compilation ?? false;
   const shape = project.compilation !== undefined && project.compilation !== null && project.compilation !== found?.compilation
     ? ` This video is ${compilation ? "a compilation (several cases)" : "one case"}, unlike the channel's usual videos.`
     : ` Its videos are ${compilation ? "compilations: several cases each" : "one case each"}.`;
+  const said = (text: string) => text.replace(/\.$/u, "");
+  const styleLine =
+    group === null
+      ? `${style === "" ? "" : ` Its edit style, in the team's words: ${said(style)}.`}`
+      : ` ${channels.groupText(project.channel!, "edit")}${shared === "" ? "" : ` The group's edit style, in the team's words: ${said(shared)}.`}${style === "" ? "" : ` For this channel alone: ${said(style)}.`}`;
   return (
-    `THIS PROJECT'S CHANNEL: ${name}.${style === "" ? "" : ` Its edit style, in the team's words: ${style.replace(/\.$/u, "")}.`}${reads}${shape} ` +
-    "What you remember and save is this channel's edit style, its own; you're never given another channel's, nor the ideas, thumbnails or script styles. " +
+    `THIS PROJECT'S CHANNEL: ${name}.${styleLine}${reads}${shape} ` +
+    (group === null
+      ? "What you remember and save is this channel's edit style, its own; you're never given another channel's, nor the ideas, thumbnails or script styles. "
+      : "What you remember and save is this channel's edit style: its group's, or its own exceptions; you're never given another channel's outside the group, nor the ideas, thumbnails or script styles. ") +
     "The house's music and sound effects (list_library, add_sound_effect) are there when this channel's style or the person asks for them, never by default. " +
     "When the person points you at something another channel has (a graphic, how it cuts), or asks you to start from another channel's style, find it with other_channels and bring it in as this channel's own copy, to change and rebrand here.\n\n"
   );

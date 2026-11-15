@@ -2,7 +2,9 @@
 // its lanes (ideas, thumbnails, script, edit), how its videos are made, and the
 // teaching each lane's agent is given. Home's Channels lists them; New project
 // picks one. A placeholder is a channel by its name alone, before it's on
-// YouTube, linked to its YouTube channel later with its teaching kept.
+// YouTube, linked to its YouTube channel later with its teaching kept. A group
+// is channels sharing one style, taught once: shown as one row, its channels'
+// names together; work still belongs to one channel.
 
 import { create } from "zustand";
 
@@ -38,7 +40,16 @@ export interface Channel {
   narration: Narration | null;
   compilation: boolean;
   lanes: Record<Lane, string>;
+  /** Its group's key, or null. */
+  group?: string | null;
   at: number;
+}
+
+/** Channels sharing one style: its lanes' descriptions, and the channels in it this person sees. */
+export interface Group {
+  key: string;
+  lanes: Record<Lane, string>;
+  channels: string[];
 }
 
 /** What YouTube says of a link's channel, before it's added. */
@@ -77,17 +88,26 @@ export interface Used {
 }
 
 /** The channels, as last asked (null: not yet), and whether this person adds and teaches them. */
-export const useChannels = create<{ channels: Channel[] | null; teacher: boolean }>(() => ({ channels: null, teacher: false }));
+export const useChannels = create<{ channels: Channel[] | null; groups: Group[]; teacher: boolean }>(() => ({ channels: null, groups: [], teacher: false }));
 
 export async function loadChannels(): Promise<Channel[]> {
   try {
-    const { channels, teacher } = await request<{ channels: Channel[]; teacher: boolean }>("GET", "/api/channels");
-    useChannels.setState({ channels, teacher });
+    const { channels, groups, teacher } = await request<{ channels: Channel[]; groups?: Group[]; teacher: boolean }>("GET", "/api/channels");
+    useChannels.setState({ channels, groups: groups ?? [], teacher });
     return channels;
   } catch {
     useChannels.setState((now) => ({ channels: now.channels ?? [], teacher: now.teacher }));
     return useChannels.getState().channels ?? [];
   }
+}
+
+/** A group's channels, as listed. */
+export const channelsOf = (group: Group, channels: Channel[]) => group.channels.map((key) => channels.find((one) => one.key === key)).filter((one): one is Channel => one !== undefined);
+
+/** "A & B", "A, B & C": a group by its channels' names. */
+export function groupTitle(group: Group, channels: Channel[]): string {
+  const names = channelsOf(group, channels).map((one) => one.title);
+  return names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} & ${names.at(-1)}`;
 }
 
 /** One channel changed: in the list at once. */
@@ -105,14 +125,36 @@ export const channelApi = {
   link: (key: string, url: string) => request<{ channel: Channel }>("POST", `/api/channels/${key}/link`, { url }).then((answer) => keep(answer.channel)),
   set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>>; label?: string }) =>
     request<{ channel: Channel }>("PUT", `/api/channels/${key}`, change).then((answer) => keep(answer.channel)),
-  /** A channel with what each lane has been taught. */
-  page: (key: string) => request<{ channel: Channel; taught: Record<Lane, Taught[]>; teacher: boolean }>("GET", `/api/channels/${key}`),
+  /** A channel with what each lane has been taught, and its group's. */
+  page: (key: string) => request<{ channel: Channel; taught: Record<Lane, Taught[]>; group: (Group & { taught: Record<Lane, Taught[]> }) | null; teacher: boolean }>("GET", `/api/channels/${key}`),
   remove: async (key: string) => {
     await request("DELETE", `/api/channels/${key}`);
     useChannels.setState((now) => ({ channels: (now.channels ?? []).filter((one) => one.key !== key) }));
   },
   /** Who could narrate, and who narrates for which niche or channel already. */
   voices: () => request<{ voices: Voice[]; used: Used[] }>("GET", "/api/channels/voices"),
+};
+
+/** Every change to a group reads the channels again: what moved where is the server's. */
+const reloaded = async <T>(work: Promise<T>): Promise<T> => {
+  const answer = await work;
+  await loadChannels();
+  return answer;
+};
+
+export const groupApi = {
+  /** A group with what each of its lanes has been taught. */
+  page: (key: string) => request<{ group: Group; taught: Record<Lane, Taught[]>; teacher: boolean }>("GET", `/api/groups/${key}`),
+  /** Made of `channels`, its style started from `from`'s (whose teaching moves into it). */
+  make: (channels: string[], from: string) => reloaded(request<{ group: Group }>("POST", "/api/groups", { channels, from }).then((answer) => answer.group)),
+  set: (key: string, lanes: Partial<Record<Lane, string>>) => reloaded(request<{ group: Group }>("PUT", `/api/groups/${key}`, { lanes })),
+  add: (key: string, channel: string) => reloaded(request("POST", `/api/groups/${key}/channels`, { channel })),
+  /** Taken out with a copy of the group's teaching. */
+  takeOut: (key: string, channel: string) => reloaded(request("DELETE", `/api/groups/${key}/channels/${channel}`)),
+  /** Every channel taken out so. */
+  ungroup: (key: string) => reloaded(request("DELETE", `/api/groups/${key}`)),
+  /** A channel's own item moved into the group. */
+  move: (key: string, item: string) => request("POST", `/api/groups/${key}/move`, { item }),
 };
 
 /** 1,200,000 → "1.2M". */

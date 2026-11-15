@@ -402,3 +402,98 @@ test("other_channels: the rest listed only when asked, one's edit style shown, a
     cleanup();
   }
 });
+
+// Channel groups (Nov 15; mamagi's groups.ts): channels sharing one style, taught once, each keeping its exceptions.
+const BODYCAM = { ...CHANNEL, key: "ch-sambodycam", handle: "samsbodycam", title: "Sam's Bodycam", compilation: false, group: "gr-0123456789", lanes: { ...CHANNEL.lanes, edit: "a red pin on every name" } };
+const COMPILATIONS = { ...CHANNEL, key: "ch-samcompila", youtubeId: "UC" + "c".repeat(22), handle: "samscompilations", title: "Sam's Compilations", compilation: true, group: "gr-0123456789", lanes: { ...CHANNEL.lanes, edit: "" } };
+const GROUP = { key: "gr-0123456789", lanes: { ideas: "", thumbnails: "", script: "", edit: "fast cuts, captions in yellow" }, channels: ["ch-sambodycam", "ch-samcompila"] };
+
+test("a grouped channel reads its group's teaching and its own, its own winning by name; an ungrouped one only its own", () => {
+  channels.useChannelsForTests([BODYCAM, COMPILATIONS, OTHER], [GROUP]);
+  try {
+    expect(channels.placesOf("ch-sambodycam", "edit")).toEqual(["ch-sambodycam--edit", "gr-0123456789--edit"]);
+    expect(channels.placesOf("jcs", "edit")).toEqual(["jcs--edit"]);
+    const items = [
+      { key: "skill:global", name: "global" },
+      { key: "skill:@gr-0123456789--edit/pins", name: "pins" },
+      { key: "skill:@gr-0123456789--edit/captions", name: "captions" },
+      { key: "skill:@ch-sambodycam--edit/pins", name: "pins" },
+      { key: "skill:@ch-samcompila--edit/cards", name: "cards" },
+      { key: "skill:@jcs--edit/outro", name: "outro" },
+    ];
+    expect(v2cloud.forPlace(items, channels.placesOf("ch-sambodycam", "edit")).map((one) => one.key)).toEqual(["skill:global", "skill:@gr-0123456789--edit/captions", "skill:@ch-sambodycam--edit/pins"]);
+    expect(v2cloud.forPlace(items, channels.placesOf("ch-samcompila", "edit")).map((one) => one.key)).toEqual(["skill:global", "skill:@gr-0123456789--edit/pins", "skill:@gr-0123456789--edit/captions", "skill:@ch-samcompila--edit/cards"]);
+    expect(v2cloud.originOf(items[1]!, channels.placesOf("ch-sambodycam", "edit"))).toBe("its group's");
+    expect(v2cloud.originOf(items[3]!, channels.placesOf("ch-sambodycam", "edit"))).toBe("this channel's own");
+  } finally {
+    channels.useChannelsForTests([]);
+  }
+});
+
+test("a grouped channel's agents are told the group, its other channels (which are compilations), the shared style and the channel's exceptions; labels when that's all they see", () => {
+  const { app, cleanup } = fixtureHome("v2-channel-group");
+  try {
+    channels.useChannelsForTests([BODYCAM, COMPILATIONS], [GROUP]);
+    v2cloud.useSkillsForTests([
+      { name: "global", text: "Edit's own rules.", key: "skill:global" },
+      { name: "numbers", text: "Every title has a number.", key: "skill:@gr-0123456789--ideas/numbers" },
+      { name: "single", text: "One case in each title.", key: "skill:@ch-sambodycam--ideas/single" },
+      { name: "pins", text: "Pins are red.", key: "skill:@gr-0123456789--edit/pins" },
+      { name: "cards", text: "A card between cases.", key: "skill:@ch-samcompila--edit/cards" },
+    ]);
+    accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.ch-sambodycam", "channel.ch-samcompila"]);
+    const project = { ...app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project, hq: true, channel: "ch-samcompila" };
+    const prompt = agentInstructions(project);
+    expect(prompt).toContain("It's in a group with Sam's Bodycam: they share one edit style, the group's, taught once for all of them; this channel's videos are compilations.");
+    expect(prompt).toContain("The group's edit style, in the team's words: fast cuts, captions in yellow.");
+    expect(prompt).toContain("[pins] Pins are red.");
+    expect(prompt).toContain("[cards (this channel only)] A card between cases.");
+    expect(prompt).toContain('"I\'ll remember this for the group: …", or "I\'ll remember this for this channel only: …"');
+    expect(prompt).toContain('a lesson is the group\'s by default (for: "group")');
+    expect(prompt).not.toContain("THIS CHANNEL ISN'T TAUGHT YET");
+    const ideas = lanes.section("ch-sambodycam", "ideas");
+    expect(ideas).toContain("It's in a group with Sam's Compilations (compilations): they share one ideas style");
+    expect(ideas).toContain("What the team has taught you for the group's ideas (always):\n- numbers: Every title has a number.");
+    expect(ideas).toContain("For Sam's Bodycam alone, its exceptions (always; they win over the group's):\n- single: One case in each title.");
+    expect(lanes.section("ch-sambodycam", "script", "lesson")).toContain('It\'s this channel\'s alone (for: "channel")');
+    // Someone given only labels: labels, never names.
+    channels.useChannelsForTests([{ ...BODYCAM, title: "Bodycam 1", masked: true, youtubeId: null, handle: null }, { ...COMPILATIONS, title: "Bodycam 2", masked: true, youtubeId: null, handle: null }], [GROUP]);
+    const masked = agentInstructions(project) + lanes.section("ch-sambodycam", "ideas");
+    expect(masked).toContain("It's in a group with Bodycam 1");
+    expect(masked).toContain("with Bodycam 2 (compilations)");
+    expect(masked).not.toMatch(/Sam's/);
+  } finally {
+    channels.useChannelsForTests([]);
+    cleanup();
+  }
+});
+
+test("in a grouped channel a lesson goes to the group by default and to the channel alone when told; an ungrouped channel's to its own", async () => {
+  const { app, cleanup, id } = hq("v2-group-remember");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      project.channel = "ch-sambodycam";
+    });
+    channels.useChannelsForTests([BODYCAM, COMPILATIONS, OTHER], [GROUP]);
+    accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.ch-sambodycam", "channel.ch-samcompila", "channel.jcs"]);
+    expect((await call(app, id, "remember", { skill: "pins", text: "Pins are red.", reason: "Sphe: always" })).content[0]!.text).toContain("in this channel's edit style for the group (Sam's Bodycam & Sam's Compilations)");
+    expect(mock.cloud.convex.libraryVersions.get("skill:@gr-0123456789--edit/pins")?.[0]).toMatchObject({ text: "Pins are red." });
+    expect((await call(app, id, "remember", { skill: "pins", text: "Pins are blue here.", reason: "Sphe: for this channel", for: "channel" })).content[0]!.text).toContain("for this channel only");
+    expect(mock.cloud.convex.libraryVersions.get("skill:@ch-sambodycam--edit/pins")?.[0]).toMatchObject({ text: "Pins are blue here." });
+    await v2cloud.refreshSkills();
+    // Kept for the group again while this channel has its own: said so.
+    expect((await call(app, id, "remember", { skill: "pins", text: "Pins are dark red.", reason: "Sphe" })).content[0]!.text).toContain("This channel's own pins still wins here");
+    expect((await call(app, id, "remember", { skill: "x", text: "y", reason: "z", for: "everyone" })).content[0]!.text).toContain('for is "group" or "channel"');
+    // A lane's agent the same way; Script mode's lesson too (lesson_note.ts passes its `for`).
+    expect(await lanes.call("remember", { skill: "numbers", text: "A number in each title.", reason: "Sphe" }, { channel: "ch-samcompila", lane: "ideas" })).toContain("for the group (Sam's Bodycam & Sam's Compilations)");
+    expect(mock.cloud.convex.library.has("skill:@gr-0123456789--ideas/numbers")).toBe(true);
+    expect(await lanes.keepLesson({ channel: "ch-samcompila", lane: "script" }, "cases", "A card between cases.", "said", "channel")).toContain("for this channel only");
+    expect(mock.cloud.convex.library.has("skill:@ch-samcompila--script/cases")).toBe(true);
+    // Ungrouped: its own, said as before.
+    expect(await lanes.call("remember", { skill: "slow", text: "Slow titles.", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).toBe("Kept as slow (version 1) in JCS (@jcs)'s ideas style: its agents have it from their next turn.");
+  } finally {
+    channels.useChannelsForTests([]);
+    cleanup();
+  }
+});

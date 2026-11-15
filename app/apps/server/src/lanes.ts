@@ -6,12 +6,13 @@
 // One module for the three agents: what their instructions say of the lane,
 // and the tools each serves in its own way (remember, read_skill,
 // other_channels, channel_videos). The lessons are V2's library's skills,
-// kept under the lane's place (`<channel>--<lane>`); the edit's lane has its
-// own tools (effect_tools.ts, channel_tools.ts), which share other_channels'
-// reach into another channel from here.
+// kept under the lane's place (`<channel>--<lane>`), and for a channel in a
+// group the group's lane's too, the group's by default (channels.ts `keptIn`);
+// the edit's lane has its own tools (effect_tools.ts, channel_tools.ts), which
+// share other_channels' reach into another channel from here.
 
 import * as channels from "./channels.ts";
-import { keepRule } from "./teaching.ts";
+import { groupRule, keepRule } from "./teaching.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
 /** The lanes this module serves; the edit's is effect_tools'. */
@@ -25,10 +26,18 @@ export interface Place {
   lane: WorkLane;
 }
 
-/** What a lane's agent knows, as last read: its own lessons (none of the edit's house, not even the global skill: that's the edit's). */
+/**
+ * What a lane's agent knows, as last read: its channel's own lessons and its
+ * group's, the channel's winning by name (none of the edit's house, not even
+ * the global skill: that's the edit's).
+ */
 export function lessonsOf(place: Place): v2cloud.Skill[] {
-  return v2cloud.memories(v2cloud.laneKey(place.channel, place.lane)).filter((one) => v2cloud.ownPlaceOf(one.key ?? "") === v2cloud.laneKey(place.channel, place.lane));
+  const places = channels.placesOf(place.channel, place.lane);
+  return v2cloud.memories(places).filter((one) => places.includes(v2cloud.ownPlaceOf(one.key ?? "") ?? ""));
 }
+
+/** Whether a lesson is the channel's own (not its group's). */
+const ownLesson = (one: v2cloud.Skill, place: Place) => v2cloud.ownPlaceOf(one.key ?? "") === v2cloud.laneKey(place.channel, place.lane);
 
 /** Read fresh at a turn's start (at most every 30 s each). */
 export async function refresh(): Promise<void> {
@@ -70,26 +79,41 @@ export function laneText(place: Place, teach: Teach = "tools"): string {
   // One of them, for the rule's "this idea", "every idea".
   const single = place.lane === "ideas" ? "idea" : word;
   const style = channel?.lanes[place.lane]?.trim() ?? "";
+  const group = channels.groupOf(place.channel);
+  const shared = group?.lanes[place.lane]?.trim() ?? "";
   const lessons = lessonsOf(place);
   const always = lessons.filter((one) => one.note === undefined);
   const parts = lessons.filter((one) => one.note !== undefined);
+  const said = (text: string) => text.replace(/\.$/u, "");
   const lines = [
-    `THIS CHANNEL: ${introOf(place.channel)}. You're working on its ${word} style, its own${style === "" ? "" : `, which the team puts as: ${style.replace(/\.$/u, "")}`}. You're never given another channel's styles, nor this channel's other lanes.`,
+    group === null
+      ? `THIS CHANNEL: ${introOf(place.channel)}. You're working on its ${word} style, its own${style === "" ? "" : `, which the team puts as: ${said(style)}`}. You're never given another channel's styles, nor this channel's other lanes.`
+      : `THIS CHANNEL: ${introOf(place.channel)}. ${channels.groupText(place.channel, word)} You're working on its ${word} style: the group's${shared === "" ? "" : `, which the team puts as: ${said(shared)}`}${style === "" ? "" : `; for this channel alone: ${said(style)}`}. You're never given another channel's styles outside the group, nor this channel's other lanes.`,
   ];
-  if (always.length > 0) lines.push(`What the team has taught you for ${channel?.title ?? place.channel}'s ${word}s (always):\n${always.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
-  if (parts.length > 0) lines.push(`Read one with read_skill when it fits, once per conversation:\n${parts.map((one) => `- ${one.name}: ${one.note}`).join("\n")}`);
+  const mineOnly = (one: v2cloud.Skill) => (group !== null && ownLesson(one, place) ? " (this channel only)" : "");
+  if (group === null) {
+    if (always.length > 0) lines.push(`What the team has taught you for ${channel?.title ?? place.channel}'s ${word}s (always):\n${always.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
+  } else {
+    const groupWide = always.filter((one) => !ownLesson(one, place));
+    const own = always.filter((one) => ownLesson(one, place));
+    if (groupWide.length > 0) lines.push(`What the team has taught you for the group's ${single}s (always):\n${groupWide.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
+    if (own.length > 0) lines.push(`For ${channel?.title ?? "this channel"} alone, its exceptions (always; they win over the group's):\n${own.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
+  }
+  if (parts.length > 0) lines.push(`Read one with read_skill when it fits, once per conversation:\n${parts.map((one) => `- ${one.name}${mineOnly(one)}: ${one.note}`).join("\n")}`);
   if (lessons.length === 0) lines.push(`THIS CHANNEL'S ${word.toUpperCase()} STYLE ISN'T TAUGHT YET: do what's asked plainly, and build the style with the person as they say what it should be.`);
   if (teach === "none") return lines.join("\n\n");
   if (teach === "lesson") {
     // Script mode's revisions answer once with no tools: a lesson comes back in the answer (writer/lesson_note.ts) and is kept here.
     lines.push(
       // When to is LESSONS' (lesson_note.ts, beside this in the prompt); only where it goes is the lane's.
-      v2cloud.teacher() ? `A lesson of how this channel does its ${word}s goes with scope "channel" and a name (lower-case words joined by hyphens; one of the names above changes that lesson): it's kept in this channel's ${word} style at once, so its next ${word} has it.` : NOT_TEACHER,
+      v2cloud.teacher()
+        ? `A lesson of how this channel does its ${word}s goes with scope "channel" and a name (lower-case words joined by hyphens; one of the names above changes that lesson): it's kept in this channel's ${word} style at once, so its next ${word} has it.${group === null ? "" : ` ${groupRule()}`}`
+        : NOT_TEACHER,
     );
     return lines.join("\n\n");
   }
   lines.push(
-    `${v2cloud.teacher() ? keepRule(single, "keep it with remember, so the next of this channel's has it") : NOT_TEACHER} ` +
+    `${v2cloud.teacher() ? keepRule(single, "keep it with remember, so the next of this channel's has it", true, group !== null) : NOT_TEACHER} ` +
       `When they point you at another channel's way, or ask to start from another channel's style, find it with other_channels and bring it in as this channel's own, to change here.` +
       (place.lane === "script"
         ? ""
@@ -110,12 +134,15 @@ export function section(channel: string | null | undefined, lane: WorkLane, teac
   return `\n\n# This channel's ${WORD[lane]}s\nWhat follows is this channel's own, taught by the team: where it differs from the guide above, it wins.\n\n${laneText(place, teach)}`;
 }
 
-/** A lesson kept in a lane's style: a teacher's (refused otherwise, in words for the person). */
-export async function keepLesson(place: Place, name: string, text: string, reason: string): Promise<string> {
+/** A lesson kept in a lane's style (its group's unless `given` "channel"): a teacher's (refused otherwise, in words for the person). */
+export async function keepLesson(place: Place, name: string, text: string, reason: string, given?: unknown): Promise<string> {
   needCloud();
   await refresh();
-  return remember({ skill: name, text, reason }, place);
+  return remember({ skill: name, text, reason, ...(given !== undefined ? { for: given } : {}) }, place);
 }
+
+/** The `for` a lane's keeping tools take. */
+export const FOR_ARG = { type: "string", enum: ["group", "channel"], description: 'In a grouped channel: "group" (the default) keeps it for every channel in the group; "channel" for this channel alone, when the person says it\'s for this one.' };
 
 // ---------------------------------------------------------------- the tools
 
@@ -133,6 +160,7 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
           text: { type: "string", description: "The lesson, whole: in the person's words, general (never about this one only)" },
           note: { type: "string", description: "Only for a longer part read when needed: when to read it (at most 160 characters)" },
           reason: { type: "string", description: "What the person said, quoted" },
+          for: FOR_ARG,
         },
         required: ["skill", "text", "reason"],
       },
@@ -144,8 +172,8 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
     },
     {
       name: "other_channels",
-      description: `Another channel's ${word} style, only when the person points you at it or asks to start from it. No arguments: the other channels. channel: one channel's ${word} lessons. bring (with channel): a lesson's name, or "all" for the whole style as this channel's base, copied into this channel's own to change here (what this channel has already stays).`,
-      inputSchema: { type: "object", properties: { channel: { type: "string", description: "Its title, @handle or key" }, bring: { type: "string" } } },
+      description: `Another channel's ${word} style, only when the person points you at it or asks to start from it. No arguments: the other channels. channel: one channel's ${word} lessons. bring (with channel): a lesson's name, or "all" for the whole style as this channel's base, copied into this channel's own to change here (its group's, when it's in one, unless for says this channel alone; what's there already stays).`,
+      inputSchema: { type: "object", properties: { channel: { type: "string", description: "Its title, @handle or key" }, bring: { type: "string" }, for: FOR_ARG } },
     },
   ];
   if (lane !== "script") {
@@ -207,14 +235,17 @@ async function remember(args: Record<string, unknown>, place: Place): Promise<st
   if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");
   const note = typeof args.note === "string" && args.note.trim() !== "" ? args.note.trim() : undefined;
   if (note !== undefined && note.length > 160) throw new Error("note is at most 160 characters: when to read it");
-  const before = lessonsOf(place).find((one) => one.name === skill);
+  const kept = channels.keptIn(place.channel, place.lane, args.for);
+  const key = v2cloud.ownKey("skill", kept.place, skill);
+  const before = lessonsOf(place).find((one) => one.name === skill && one.key === key) ?? lessonsOf(place).find((one) => one.name === skill);
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
   const most = part ? PART_MOST : MEMORY_MOST;
   if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part short: its rules, not their history" : "a line or two, in the person's words"}`);
-  const key = v2cloud.ownKey("skill", v2cloud.laneKey(place.channel, place.lane), skill);
   const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note ?? before?.note, { key });
+  // Kept for the group while this channel has its own of that name: the channel's still wins here.
+  const shadowed = kept.place !== v2cloud.laneKey(place.channel, place.lane) && lessonsOf(place).some((one) => one.name === skill && ownLesson(one, place));
   v2cloud.forgetSkills();
-  return `Kept as ${skill} (version ${saved.n}) in ${nameOf(place.channel)}'s ${WORD[place.lane]} style: its agents have it from their next turn.`;
+  return `Kept as ${skill} (version ${saved.n}) in ${nameOf(place.channel)}'s ${WORD[place.lane]} style${kept.words === "" ? "" : `, ${kept.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}`;
 }
 
 // ---------------------------------------------------------------- another channel's style
@@ -222,11 +253,11 @@ async function remember(args: Record<string, unknown>, place: Place): Promise<st
 const STYLE_KINDS = ["skill", "template", "sound"] as const;
 const KIND_WORD: Record<(typeof STYLE_KINDS)[number], string> = { skill: "lesson", template: "graphic", sound: "sound" };
 
-/** A channel's lane: its own lessons (and, for the edit and thumbnails, the effects and sounds it keeps) in V2's library. */
+/** A channel's lane: its own lessons and its group's (and, for the edit and thumbnails, the effects and sounds kept) in V2's library, its own winning by name. */
 async function styleOf(channel: string, lane: v2cloud.Lane): Promise<v2cloud.Item[]> {
-  const place = v2cloud.laneKey(channel, lane);
+  const places = channels.placesOf(channel, lane);
   const all = (await Promise.all(STYLE_KINDS.map((kind) => v2cloud.list(kind)))).flat();
-  return all.filter((item) => v2cloud.ownPlaceOf(item.key) === place);
+  return STYLE_KINDS.flatMap((kind) => v2cloud.forPlace(all.filter((item) => item.kind === kind && places.includes(v2cloud.ownPlaceOf(item.key) ?? "")), places));
 }
 
 /** The channel the words name: its key, its @handle or its title. */
@@ -262,7 +293,7 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
   const wanted = args.bring.trim() === "all" ? style : style.filter((one) => one.name === args.bring);
   if (wanted.length === 0) throw new Error(`${from.title}'s ${word} style has no ${args.bring}: other_channels with channel lists it`);
   teacherOnly(`Bringing another channel's ${word} style in`);
-  const place = v2cloud.laneKey(mine, lane);
+  const { place, words } = channels.keptIn(mine, lane, args.for);
   const mineNow = new Set((await styleOf(mine, lane)).map((one) => `${one.kind}:${one.name}`));
   const brought: string[] = [];
   const kept: string[] = [];
@@ -276,7 +307,7 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
   }
   v2cloud.forgetSkills();
   return (
-    (brought.length === 0 ? "Nothing new brought." : `Brought into this channel's own ${word} style, to change here: ${brought.join(", ")}.`) +
+    (brought.length === 0 ? "Nothing new brought." : `Brought into this channel's own ${word} style${words === "" ? "" : ` (${words})`}, to change here: ${brought.join(", ")}.`) +
     (kept.length > 0 ? ` This channel has its own ${kept.join(", ")} already, kept as they are.` : "")
   );
 }

@@ -16,6 +16,7 @@ import * as fs from "node:fs";
 
 import type { Thumbnail, ThumbImage } from "@edit/types/thumbnails";
 
+import * as channels from "../channels.ts";
 import * as lanes from "../lanes.ts";
 import { join } from "../paths.ts";
 import * as v2cloud from "../v2_cloud.ts";
@@ -37,8 +38,14 @@ export interface Turn {
 const CODE = "graphic.html";
 const SIZE = "graphic.json";
 
-/** Where a thumbnail's graphics are kept: its channel's Thumbnails lane, else the house's. */
-export const placeOf = (place: lanes.Place | null): string => (place === null ? "thumbnails" : v2cloud.laneKey(place.channel, "thumbnails"));
+/** Where a thumbnail's graphics are read from, nearest first: its channel's Thumbnails lane and its group's, else the house's. */
+export const placesOf = (place: lanes.Place | null): string[] => (place === null ? ["thumbnails"] : channels.placesOf(place.channel, "thumbnails"));
+
+/** The graphics a thumbnail may use: of each name, the nearest. */
+async function taughtGraphics(place: lanes.Place | null): Promise<v2cloud.Item[]> {
+  const places = placesOf(place);
+  return v2cloud.forPlace((await v2cloud.list("template")).filter((one) => places.includes(v2cloud.ownPlaceOf(one.key) ?? "")), places);
+}
 
 const NAME = /^[a-z0-9][a-z0-9-]{0,59}$/;
 const newId = () => Math.random().toString(36).slice(2, 10);
@@ -89,6 +96,7 @@ export const TOOLS = [
         note: { type: "string", description: "What it is and where it goes, a line." },
         category: { type: "string" },
         reason: { type: "string", description: "What the person said, quoted." },
+        for: lanes.FOR_ARG,
       },
       required: ["image", "name", "note"],
     },
@@ -169,9 +177,8 @@ export async function call(turn: Turn, thumb: Thumbnail, name: string, args: Arg
     case "graphic_code":
       return codeOf(image(args.image));
     case "graphics": {
-      const place = placeOf(turn.place);
       const words = typeof args.query === "string" ? args.query.toLowerCase().split(/\s+/).filter(Boolean) : [];
-      const all = (await v2cloud.list("template")).filter((one) => v2cloud.ownPlaceOf(one.key) === place);
+      const all = await taughtGraphics(turn.place);
       const found = all.filter((one) => words.every((word) => `${one.name} ${one.note ?? ""} ${one.category ?? ""}`.toLowerCase().includes(word)));
       if (all.length === 0) return turn.place === null ? "No graphics are taught yet." : "This channel's thumbnails have no graphics taught yet (another channel's, only with other_channels when the person points you at one).";
       if (found.length === 0) return `None match: the graphics are ${all.map((one) => one.name).join(", ")}.`;
@@ -179,8 +186,8 @@ export async function call(turn: Turn, thumb: Thumbnail, name: string, args: Arg
     }
     case "use_graphic": {
       const wanted = typeof args.name === "string" ? args.name.trim() : "";
-      const key = v2cloud.ownKey("template", placeOf(turn.place), wanted);
       if (!NAME.test(wanted)) throw new Error("name is one the graphics tool lists.");
+      const key = (await taughtGraphics(turn.place)).find((one) => one.name === wanted)?.key ?? v2cloud.ownKey("template", placesOf(turn.place)[0]!, wanted);
       const dir = join(turn.folder, `graphic-${wanted}`);
       fs.rmSync(dir, { recursive: true, force: true });
       const version = await v2cloud.fetchInto(key, null, dir);
@@ -202,11 +209,13 @@ export async function call(turn: Turn, thumb: Thumbnail, name: string, args: Arg
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(join(dir, CODE), await codeOf(found));
       fs.writeFileSync(join(dir, SIZE), `${JSON.stringify({ width: found.width, height: found.height })}\n`);
-      const key = v2cloud.ownKey("template", placeOf(turn.place), wanted);
+      // A channel's: its group's unless it's for this channel alone.
+      const where = turn.place === null ? { place: "thumbnails", words: "" } : channels.keptIn(turn.place.channel, "thumbnails", args.for);
+      const key = v2cloud.ownKey("template", where.place, wanted);
       const category = typeof args.category === "string" && args.category.trim() !== "" ? args.category.trim().slice(0, 40) : undefined;
       const kept = await v2cloud.save(key, wanted, dir, { note, ...(category ? { category } : {}), ...(typeof args.reason === "string" && args.reason.trim() !== "" ? { reason: args.reason.trim() } : {}) });
       const whose = turn.place === null ? "every thumbnail of no channel" : "this channel's thumbnails";
-      return kept.made ? `${wanted} is version ${kept.n} of ${whose}' graphics: use_graphic brings it into any of them.` : `${wanted} is already exactly this (version ${kept.n}).`;
+      return kept.made ? `${wanted} is version ${kept.n} of ${whose}' graphics${where.words === "" ? "" : `, ${where.words}`}: use_graphic brings it into any of them.` : `${wanted} is already exactly this (version ${kept.n}).`;
     }
     default:
       throw new Error(`There's no tool called ${name}.`);

@@ -187,7 +187,7 @@ export class CloudMock {
     relay("convex", (body) => {
       const kind = body.kind;
       if (kind !== "query" && kind !== "mutation" && kind !== "action") return bad("kind must be query, mutation or action.");
-      if (typeof body.path !== "string" || !/^(edit|channels):[A-Za-z_][A-Za-z0-9_]*$/.test(body.path)) {
+      if (typeof body.path !== "string" || !/^(edit|channels|groups):[A-Za-z_][A-Za-z0-9_]*$/.test(body.path)) {
         return json(403, { error: "Only edit: functions can be called." });
       }
       const name = body.path.slice(body.path.indexOf(":") + 1);
@@ -323,6 +323,8 @@ export class ConvexMock {
   /** Edit V2's cloud (mamagi's editLibrary and editLibraryVersions), as accounts' convex/edit.ts keeps them. */
   /** mamagi's channels (channels.ts), as listChannels shows them. */
   channels: Record<string, unknown>[] = [];
+  /** mamagi's channel groups (groups.ts), as listGroups shows them. */
+  groups: Record<string, unknown>[] = [];
   readonly library = new Map<string, { key: string; kind: string; projectId?: string; name: string; current: number; latest: number; note?: string; brief?: string; category?: string; archived?: boolean; niches?: string[]; at: number; by: { name: string } }>();
   readonly libraryVersions = new Map<string, { key: string; n: number; files?: unknown[]; text?: string; reason?: string; from?: unknown; source?: string; at: number; by: { name: string } }[]>();
   /** The lessons inbox (mamagi's editLessons), by id, in the order noted. */
@@ -425,6 +427,8 @@ export class ConvexMock {
         return this.channels;
       case "getChannel":
         return this.channels.find((one) => one.key === args.key) ?? null;
+      case "listGroups":
+        return this.groups;
       case "listProjects":
         return [...this.projects.values()].sort((a, b) => b.updatedAt - a.updatedAt).map((row) => this.card(row));
       case "listLibrary": {

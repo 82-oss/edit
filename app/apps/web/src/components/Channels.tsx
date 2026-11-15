@@ -6,15 +6,18 @@
 // A placeholder (Sphe, Nov 15) is a channel by its name before it's on
 // YouTube: a blank picture, a dashed border where it's picked, and Link on its
 // page once the real channel is made (its teaching kept).
+// A group (Sphe, Nov 15) is one row in place of its channels: their names
+// together, their pictures stacked. Its page holds the shared lanes and each
+// channel's own settings and "Only this channel" teaching.
 
-import { ArrowLeft, ExternalLink, Link2, Mic, Plus, User } from "lucide-react";
+import { ArrowLeft, ArrowUpToLine, ExternalLink, Layers, Link2, Mic, Plus, User } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 
-import { channelApi, compact, LANES, loadChannels, narrationLabel, useChannels, type Channel, type Found, type Lane, type Narration, type Taught, type Used, type Voice } from "../lib/channels";
+import { channelApi, channelsOf, compact, groupApi, groupTitle, LANES, loadChannels, narrationLabel, useChannels, type Channel, type Found, type Group, type Lane, type Narration, type Taught, type Used, type Voice } from "../lib/channels";
 import { useEditor } from "../lib/store";
 import { useBeta } from "../lib/beta";
-import { Button, cx, DialogActions, DialogTitle, Modal, spring, Switch } from "./ui";
+import { Button, ConfirmDialog, cx, DialogActions, DialogTitle, Modal, spring, Switch } from "./ui";
 import { VoicePicker } from "./VoicePicker";
 
 const FIELD = "h-9 w-full rounded-lg border border-line bg-black px-3 text-[13px] outline-none placeholder:text-faint focus:border-muted";
@@ -36,6 +39,26 @@ export function ChannelAvatar({ channel, size = 32 }: { channel: { title: string
   );
 }
 
+/** A group's picture: its first two channels' pictures overlapping, the first in front at the top left. */
+export function GroupAvatar({ channels, size = 32 }: { channels: Channel[]; size?: number }) {
+  const one = Math.round(size * 0.72);
+  const [front, back] = channels;
+  return (
+    <span className="relative shrink-0" style={{ width: size, height: size }}>
+      {back && (
+        <span className="absolute right-0 bottom-0 rounded-full">
+          <ChannelAvatar channel={back} size={one} />
+        </span>
+      )}
+      {front && (
+        <span className="absolute top-0 left-0 rounded-full bg-bg ring-2 ring-bg">
+          <ChannelAvatar channel={front} size={one} />
+        </span>
+      )}
+    </span>
+  );
+}
+
 /**
  * The channels to make something for, as pills (an idea's, a thumbnail's):
  * picking the one picked again takes it off, so none stays a choice. Nothing
@@ -51,13 +74,20 @@ export function useChannelChoice(open: boolean): Channel[] {
 }
 
 export function ChannelPills({ channels, value, lane, onChange }: { channels: Channel[]; value: string | null; lane: Lane; onChange: (key: string | null) => void }) {
+  const groups = useChannels((state) => state.groups);
+  // A grouped channel's hint, on hover: what it's grouped with.
+  const hint = (one: Channel) => {
+    const group = groups.find((each) => each.key === one.group);
+    const others = group === undefined ? [] : channelsOf(group, channels).filter((each) => each.key !== one.key);
+    return others.length === 0 ? "" : ` · with ${others.map((each) => each.title).join(", ")}`;
+  };
   return (
     <div className="flex flex-wrap gap-1.5">
       {channels.map((one) => (
         <button
           type="button"
           key={one.key}
-          title={one.lanes[lane] || one.title}
+          title={(one.lanes[lane] || one.title) + hint(one)}
           onClick={() => onChange(value === one.key ? null : one.key)}
           aria-pressed={value === one.key}
           // Picked, it's white (Sphe, Nov 14: "way more clear, maybe with a white background"), as the switches and Home's main button are.
@@ -83,20 +113,43 @@ function facts(channel: { youtubeId?: string | null; handle?: string | null; sub
   return [channel.handle ? `@${channel.handle}` : null, compact(channel.subscribers) ? `${compact(channel.subscribers)} subscribers` : null, compact(channel.videos) ? `${compact(channel.videos)} videos` : null].filter(Boolean).join(" · ");
 }
 
-/** Home's Channels: the list, or one channel's page. */
+/** The list's rows: a channel, or a group in place of its channels (where its first one stands). */
+type Row = { channel: Channel } | { group: Group; channels: Channel[] };
+
+function rowsOf(channels: Channel[], groups: Group[]): Row[] {
+  const rows: Row[] = [];
+  const seen = new Set<string>();
+  for (const channel of channels) {
+    const group = groups.find((one) => one.key === channel.group);
+    if (group === undefined) rows.push({ channel });
+    else if (!seen.has(group.key)) {
+      seen.add(group.key);
+      rows.push({ group, channels: channelsOf(group, channels) });
+    }
+  }
+  return rows;
+}
+
+/** Home's Channels: the list, a group's page, or one channel's page (back to its group when opened from it). */
 export function ChannelsView({ adding, onAdding }: { adding: boolean; onAdding: (open: boolean) => void }) {
   const channels = useChannels((state) => state.channels);
-  const [open, setOpen] = useState<string | null>(null);
+  const groups = useChannels((state) => state.groups);
+  const [open, setOpen] = useState<{ channel?: string; group?: string } | null>(null);
   useEffect(() => {
     void loadChannels();
   }, []);
-  const shown = channels?.find((one) => one.key === open) ?? null;
+  const shown = channels?.find((one) => one.key === open?.channel) ?? null;
+  const group = groups.find((one) => one.key === open?.group) ?? null;
   return (
     <>
       <AnimatePresence mode="wait" initial={false}>
         {shown !== null ? (
           <motion.div key={shown.key} initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 8 }} transition={spring}>
-            <ChannelPage channel={shown} onBack={() => setOpen(null)} />
+            <ChannelPage channel={shown} back={group !== null ? groupTitle(group, channels ?? []) : "Channels"} onBack={() => setOpen(group !== null ? { group: group.key } : null)} onGroup={(key) => setOpen({ group: key })} />
+          </motion.div>
+        ) : group !== null ? (
+          <motion.div key={group.key} initial={{ opacity: 0, x: 8 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: 8 }} transition={spring}>
+            <GroupPage group={group} onBack={() => setOpen(null)} onChannel={(key) => setOpen({ group: group.key, channel: key })} />
           </motion.div>
         ) : (
           <motion.div key="list" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }} className="flex flex-col gap-0.5">
@@ -106,20 +159,28 @@ export function ChannelsView({ adding, onAdding }: { adding: boolean; onAdding: 
                 <p className="mt-1 text-[13px] leading-relaxed text-muted">Paste a link to a YouTube channel, or name one that isn't on YouTube yet. Each channel keeps its own style for ideas, thumbnails, scripts and edits.</p>
               </div>
             )}
-            {(channels ?? []).map((channel) => (
-              <button key={channel.key} onClick={() => setOpen(channel.key)} className="flex h-14 w-full items-center gap-3 rounded-lg px-3 text-left transition-colors hover:bg-hover">
-                <ChannelAvatar channel={channel} size={34} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[13.5px] font-medium">{channel.title}</span>
-                  <span className="block truncate text-[12px] text-faint">{facts(channel)}</span>
-                </span>
-                {channel.narration === null && <span className="shrink-0 rounded-md bg-warning-soft px-1.5 py-0.5 text-[11px] font-semibold text-warning">Not set up</span>}
-              </button>
-            ))}
+            {rowsOf(channels ?? [], groups).map((row) =>
+              "group" in row ? (
+                <button key={row.group.key} onClick={() => setOpen({ group: row.group.key })} className="flex h-14 w-full items-center gap-3 rounded-lg px-3 text-left transition-colors hover:bg-hover">
+                  <GroupAvatar channels={row.channels} size={34} />
+                  <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium">{groupTitle(row.group, channels ?? [])}</span>
+                  {row.channels.some((one) => one.narration === null) && <span className="shrink-0 rounded-md bg-warning-soft px-1.5 py-0.5 text-[11px] font-semibold text-warning">Not set up</span>}
+                </button>
+              ) : (
+                <button key={row.channel.key} onClick={() => setOpen({ channel: row.channel.key })} className="flex h-14 w-full items-center gap-3 rounded-lg px-3 text-left transition-colors hover:bg-hover">
+                  <ChannelAvatar channel={row.channel} size={34} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[13.5px] font-medium">{row.channel.title}</span>
+                    <span className="block truncate text-[12px] text-faint">{facts(row.channel)}</span>
+                  </span>
+                  {row.channel.narration === null && <span className="shrink-0 rounded-md bg-warning-soft px-1.5 py-0.5 text-[11px] font-semibold text-warning">Not set up</span>}
+                </button>
+              ),
+            )}
           </motion.div>
         )}
       </AnimatePresence>
-      <AddChannel open={adding} onClose={() => onAdding(false)} onAdded={(channel) => setOpen(channel.key)} />
+      <AddChannel open={adding} onClose={() => onAdding(false)} onAdded={(channel) => setOpen({ channel: channel.key })} />
     </>
   );
 }
@@ -313,27 +374,33 @@ function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => 
 /**
  * A channel's page: who it is on YouTube, how its videos are made, and its
  * lanes, each with its own style (a teacher writes the description; what its
- * agent is taught builds up as the team works with it).
+ * agent is taught builds up as the team works with it). A grouped channel's
+ * lanes show the group's teaching, then what's its alone.
  */
-function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void }) {
+function ChannelPage({ channel, back, onBack, onGroup }: { channel: Channel; back: string; onBack: () => void; onGroup: (key: string) => void }) {
   const teacher = useChannels((state) => state.teacher);
-  const voices = useVoices(teacher);
+  const channels = useChannels((state) => state.channels) ?? [];
+  const groups = useChannels((state) => state.groups);
+  const group = groups.find((one) => one.key === channel.group) ?? null;
   const [linking, setLinking] = useState(false);
-  const [taught, setTaught] = useState<Record<Lane, Taught[]> | null>(null);
+  const [grouping, setGrouping] = useState(false);
+  const [page, setPage] = useState<Awaited<ReturnType<typeof channelApi.page>> | null>(null);
+  const [round, setRound] = useState(0);
   useEffect(() => {
     let alive = true;
-    void channelApi.page(channel.key).then((page) => alive && setTaught(page.taught), () => alive && setTaught(null));
+    void channelApi.page(channel.key).then((found) => alive && setPage(found), () => alive && setPage(null));
     return () => {
       alive = false;
     };
-  }, [channel.key]);
+  }, [channel.key, channel.group, round]);
   const change = (what: string, given: Parameters<typeof channelApi.set>[1]) =>
     void channelApi.set(channel.key, given).catch((error: unknown) => useEditor.getState().toastError(error, `change ${channel.title}'s ${what}`));
+  const others = group === null ? [] : channelsOf(group, channels).filter((one) => one.key !== channel.key);
   return (
     <div className="mx-auto flex max-w-[760px] flex-col gap-6 pb-10">
       <div className="flex items-center gap-1">
-        <button onClick={onBack} className="-ml-2 flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] text-muted transition-colors hover:bg-hover hover:text-fg">
-          <ArrowLeft size={14} /> Channels
+        <button onClick={onBack} className="-ml-2 flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2 text-[13px] text-muted transition-colors hover:bg-hover hover:text-fg">
+          <ArrowLeft size={14} className="shrink-0" /> <span className="truncate">{back}</span>
         </button>
       </div>
       <div className="flex items-center gap-4">
@@ -341,7 +408,17 @@ function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-[20px] font-semibold tracking-[-0.3px]">{channel.title}</h2>
           <p className="truncate text-[13px] text-muted">{facts(channel)}</p>
+          {group !== null && others.length > 0 && (
+            <button onClick={() => onGroup(group.key)} className="mt-0.5 flex max-w-full items-center gap-1 truncate text-[12px] text-faint transition-colors hover:text-fg">
+              <Layers size={12} className="shrink-0" /> <span className="truncate">With {others.map((one) => one.title).join(", ")}</span>
+            </button>
+          )}
         </div>
+        {teacher && group === null && channel.masked !== true && (
+          <Button variant="subtle" onClick={() => setGrouping(true)} title="Share one style with other channels">
+            <Layers size={14} /> Group
+          </Button>
+        )}
         {channel.masked === true ? null : channel.youtubeId === null ? (
           teacher &&
           !linking && (
@@ -372,54 +449,383 @@ function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void
           </motion.div>
         )}
       </AnimatePresence>
-      <div className="grid grid-cols-2 gap-3 max-[700px]:grid-cols-1">
-        <div className="rounded-xl border border-line bg-black/30 p-3">
-          <span className={LABEL}>
-            <Mic size={12} className="mr-1 inline -translate-y-px" />
-            Who narrates
-          </span>
-          {teacher ? <VoicePicker value={channel.narration} voices={voices.voices} used={voices.used} channel={channel.key} onChange={(narration) => change("narration", { narration })} /> : <p className="text-[13px]">{narrationLabel(channel.narration) ?? "Not set up"}</p>}
-        </div>
-        <div className="flex items-center justify-between gap-3 rounded-xl border border-line bg-black/30 p-3">
-          <span>
-            <span className="block text-[13px] font-medium">Compilation channel</span>
-            <span className="block text-[12px] text-faint">Several cases in each video</span>
-          </span>
-          {teacher ? <Switch checked={channel.compilation} onChange={(compilation) => change("compilation", { compilation })} /> : <span className="text-[13px] text-muted">{channel.compilation ? "Yes" : "No"}</span>}
-        </div>
+      <ChannelSettings channel={channel} />
+      <div className="flex flex-col gap-2">
+        {LANES.map((lane) => (
+          <div key={lane.key} className="rounded-xl border border-line p-4">
+            <div className="mb-1 text-[13px] font-semibold">{lane.label}</div>
+            {page?.group ? (
+              <>
+                {page.group.lanes[lane.key] && <p className="text-[13px] leading-relaxed text-secondary">{page.group.lanes[lane.key]}</p>}
+                <TaughtList items={page.group.taught[lane.key]} lane={lane.key} />
+                <OwnTeaching
+                  channel={channel}
+                  lane={lane.key}
+                  items={page.taught[lane.key]}
+                  group={page.group.key}
+                  onMoved={() => setRound((n) => n + 1)}
+                  onSave={(text) => change(`${lane.label.toLowerCase()} style`, { lanes: { [lane.key]: text } })}
+                />
+              </>
+            ) : (
+              <>
+                <InPlace
+                  value={channel.lanes[lane.key]}
+                  editable={teacher}
+                  placeholder={teacher ? "Its style, in a line or two" : "No style written yet"}
+                  onSave={(text) => change(`${lane.label.toLowerCase()} style`, { lanes: { [lane.key]: text } })}
+                  className="text-[13px] leading-relaxed text-secondary"
+                />
+                {page !== null && <TaughtList items={page.taught[lane.key]} lane={lane.key} />}
+              </>
+            )}
+          </div>
+        ))}
+      </div>
+      <MakeGroup open={grouping} channel={channel} onClose={() => setGrouping(false)} onMade={(key) => onGroup(key)} />
+    </div>
+  );
+}
+
+/** How a channel's videos are made: who narrates, and whether it's a compilation channel (a teacher's to change). */
+function ChannelSettings({ channel, compact: small = false }: { channel: Channel; compact?: boolean }) {
+  const teacher = useChannels((state) => state.teacher);
+  const voices = useVoices(teacher);
+  const change = (what: string, given: Parameters<typeof channelApi.set>[1]) =>
+    void channelApi.set(channel.key, given).catch((error: unknown) => useEditor.getState().toastError(error, `change ${channel.title}'s ${what}`));
+  return (
+    <div className="grid grid-cols-2 gap-3 max-[700px]:grid-cols-1">
+      <div className={cx("rounded-xl border border-line bg-black/30", small ? "p-2.5" : "p-3")}>
+        <span className={LABEL}>
+          <Mic size={12} className="mr-1 inline -translate-y-px" />
+          Who narrates
+        </span>
+        {teacher ? <VoicePicker value={channel.narration} voices={voices.voices} used={voices.used} channel={channel.key} onChange={(narration) => change("narration", { narration })} /> : <p className="text-[13px]">{narrationLabel(channel.narration) ?? "Not set up"}</p>}
+      </div>
+      <div className={cx("flex items-center justify-between gap-3 rounded-xl border border-line bg-black/30", small ? "p-2.5" : "p-3")}>
+        <span>
+          <span className="block text-[13px] font-medium">Compilation channel</span>
+          <span className="block text-[12px] text-faint">Several cases in each video</span>
+        </span>
+        {teacher ? <Switch checked={channel.compilation} onChange={(compilation) => change("compilation", { compilation })} /> : <span className="text-[13px] text-muted">{channel.compilation ? "Yes" : "No"}</span>}
+      </div>
+    </div>
+  );
+}
+
+/** What a lane has been taught, a line each; `action` beside each (a teacher's Move into the group). */
+function TaughtList({ items, lane, action }: { items: Taught[]; lane: Lane; action?: (item: Taught) => ReactNode }) {
+  return (
+    <div className="mt-2.5 border-t border-line pt-2.5">
+      {items.length === 0 ? (
+        <p className="text-[12px] text-faint">Nothing taught yet</p>
+      ) : (
+        <ul className="flex flex-col gap-1">
+          {items.map((one) => (
+            <li key={one.key} className="group/taught flex min-w-0 items-baseline gap-2 text-[12.5px]">
+              <span className="shrink-0 text-faint">{one.kind === "template" && lane === "thumbnails" ? "Graphic" : TAUGHT_WORD[one.kind]}</span>
+              <span className="shrink-0 font-medium">{one.name}</span>
+              {one.note && <span className="min-w-0 flex-1 truncate text-muted">{one.note}</span>}
+              {action?.(one)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A grouped channel's own in one lane, "Only this channel": its own
+ * description and what it was taught alone, each of which a teacher can
+ * move into the group (shared from then on).
+ */
+function OwnTeaching({ channel, lane, items, group, onMoved, onSave }: { channel: Channel; lane: Lane; items: Taught[]; group: string; onMoved: () => void; onSave?: (text: string) => void }) {
+  const teacher = useChannels((state) => state.teacher);
+  const [moving, setMoving] = useState<string | null>(null);
+  if (items.length === 0 && channel.lanes[lane] === "" && !(teacher && onSave)) return null;
+  const move = (item: Taught) => {
+    setMoving(item.key);
+    void groupApi
+      .move(group, item.key)
+      .then(onMoved, (error: unknown) => useEditor.getState().toastError(error, `move ${item.name} into the group`))
+      .finally(() => setMoving(null));
+  };
+  return (
+    <div className="mt-3">
+      <div className="text-[11.5px] font-medium text-faint">Only this channel</div>
+      {onSave ? (
+        <InPlace value={channel.lanes[lane]} editable={teacher} placeholder={teacher ? "Where it differs, in a line or two" : ""} onSave={onSave} className="mt-0.5 text-[13px] leading-relaxed text-secondary" />
+      ) : (
+        channel.lanes[lane] && <p className="mt-0.5 text-[13px] leading-relaxed text-secondary">{channel.lanes[lane]}</p>
+      )}
+      {items.length > 0 && (
+        <TaughtList
+          items={items}
+          lane={lane}
+          action={
+            teacher
+              ? (item) => (
+                  <button
+                    onClick={() => move(item)}
+                    disabled={moving !== null}
+                    title="Move into the group"
+                    className="flex size-5 shrink-0 items-center justify-center self-center rounded text-faint opacity-0 transition-opacity group-hover/taught:opacity-100 hover:text-fg focus-visible:opacity-100 disabled:opacity-40"
+                  >
+                    <ArrowUpToLine size={12} />
+                  </button>
+                )
+              : undefined
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * A group's page: its channels stacked and named together, the lanes they
+ * share (description and teaching), then each channel with its own settings
+ * and what it was taught alone. A teacher adds a channel, takes one out (it
+ * keeps a copy of the group's teaching) or ungroups them all.
+ */
+function GroupPage({ group, onBack, onChannel }: { group: Group; onBack: () => void; onChannel: (key: string) => void }) {
+  const teacher = useChannels((state) => state.teacher);
+  const channels = useChannels((state) => state.channels) ?? [];
+  const members = channelsOf(group, channels);
+  const [taught, setTaught] = useState<Record<Lane, Taught[]> | null>(null);
+  const [own, setOwn] = useState<Record<string, Record<Lane, Taught[]>>>({});
+  const [round, setRound] = useState(0);
+  const [adding, setAdding] = useState(false);
+  const [ungrouping, setUngrouping] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const keys = group.channels.join(" ");
+  useEffect(() => {
+    let alive = true;
+    void groupApi.page(group.key).then((page) => alive && setTaught(page.taught), () => alive && setTaught(null));
+    for (const key of keys.split(" ")) void channelApi.page(key).then((page) => alive && setOwn((now) => ({ ...now, [key]: page.taught })), () => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [group.key, keys, round]);
+  const failed = (what: string) => (error: unknown) => useEditor.getState().toastError(error, what);
+  const ungroup = () => {
+    setBusy(true);
+    void groupApi
+      .ungroup(group.key)
+      .then(onBack, failed("ungroup these channels"))
+      .finally(() => {
+        setBusy(false);
+        setUngrouping(false);
+      });
+  };
+  return (
+    <div className="mx-auto flex max-w-[760px] flex-col gap-6 pb-10">
+      <div className="flex items-center gap-1">
+        <button onClick={onBack} className="-ml-2 flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] text-muted transition-colors hover:bg-hover hover:text-fg">
+          <ArrowLeft size={14} /> Channels
+        </button>
+      </div>
+      <div className="flex items-center gap-4">
+        <GroupAvatar channels={members} size={64} />
+        <h2 className="min-w-0 flex-1 truncate text-[20px] font-semibold tracking-[-0.3px]">{groupTitle(group, channels)}</h2>
+        {teacher && (
+          <>
+            <Button variant="subtle" onClick={() => setAdding(true)}>
+              <Plus size={14} /> Add a channel
+            </Button>
+            <Button variant="subtle" onClick={() => setUngrouping(true)}>
+              Ungroup
+            </Button>
+          </>
+        )}
       </div>
       <div className="flex flex-col gap-2">
         {LANES.map((lane) => (
           <div key={lane.key} className="rounded-xl border border-line p-4">
             <div className="mb-1 text-[13px] font-semibold">{lane.label}</div>
             <InPlace
-              value={channel.lanes[lane.key]}
+              value={group.lanes[lane.key]}
               editable={teacher}
-              placeholder={teacher ? "Its style, in a line or two" : "No style written yet"}
-              onSave={(text) => change(`${lane.label.toLowerCase()} style`, { lanes: { [lane.key]: text } })}
+              placeholder={teacher ? "Their style, in a line or two" : "No style written yet"}
+              onSave={(text) => void groupApi.set(group.key, { [lane.key]: text }).catch(failed(`change the ${lane.label.toLowerCase()} style`))}
               className="text-[13px] leading-relaxed text-secondary"
             />
-            {taught !== null && (
-              <div className="mt-2.5 border-t border-line pt-2.5">
-                {taught[lane.key].length === 0 ? (
-                  <p className="text-[12px] text-faint">Nothing taught yet</p>
-                ) : (
-                  <ul className="flex flex-col gap-1">
-                    {taught[lane.key].map((one) => (
-                      <li key={one.key} className="flex min-w-0 items-baseline gap-2 text-[12.5px]">
-                        <span className="shrink-0 text-faint">{one.kind === "template" && lane.key === "thumbnails" ? "Graphic" : TAUGHT_WORD[one.kind]}</span>
-                        <span className="shrink-0 font-medium">{one.name}</span>
-                        {one.note && <span className="min-w-0 truncate text-muted">{one.note}</span>}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
+            {taught !== null && <TaughtList items={taught[lane.key]} lane={lane.key} />}
           </div>
         ))}
       </div>
+      <div className="flex flex-col gap-3">
+        {members.map((channel) => (
+          <div key={channel.key} className="flex flex-col gap-3 rounded-xl border border-line p-4">
+            <div className="flex items-center gap-3">
+              <button onClick={() => onChannel(channel.key)} className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                <ChannelAvatar channel={channel} size={34} />
+                <span className="min-w-0">
+                  <span className="block truncate text-[13.5px] font-medium hover:underline">{channel.title}</span>
+                  <span className="block truncate text-[12px] text-faint">{facts(channel)}</span>
+                </span>
+              </button>
+              {teacher && (
+                <Button variant="subtle" size="sm" onClick={() => void groupApi.takeOut(group.key, channel.key).then(() => (members.length <= 1 ? onBack() : setRound((n) => n + 1)), failed(`take ${channel.title} out`))}>
+                  Take out
+                </Button>
+              )}
+            </div>
+            <ChannelSettings channel={channel} compact />
+            {own[channel.key] !== undefined &&
+              LANES.filter((lane) => own[channel.key]![lane.key].length > 0 || channel.lanes[lane.key] !== "").map((lane) => (
+                <div key={lane.key}>
+                  <div className="text-[12px] font-semibold">{lane.label}</div>
+                  <OwnTeaching channel={channel} lane={lane.key} items={own[channel.key]![lane.key]} group={group.key} onMoved={() => setRound((n) => n + 1)} />
+                </div>
+              ))}
+          </div>
+        ))}
+      </div>
+      <AddToGroup open={adding} group={group} onClose={() => setAdding(false)} />
+      <ConfirmDialog
+        open={ungrouping}
+        onClose={() => setUngrouping(false)}
+        onConfirm={ungroup}
+        busy={busy}
+        tone="light"
+        title="Ungroup these channels?"
+        detail="Each keeps a copy of the shared style as its own."
+        confirm="Ungroup"
+      />
     </div>
+  );
+}
+
+/** Channels as pills to pick several of (`picked`), one tap each. */
+function PickPills({ channels, picked, onToggle }: { channels: Channel[]; picked: string[]; onToggle: (key: string) => void }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {channels.map((one) => (
+        <button
+          type="button"
+          key={one.key}
+          onClick={() => onToggle(one.key)}
+          aria-pressed={picked.includes(one.key)}
+          className={cx(
+            "flex h-8 items-center gap-2 rounded-full border pr-3 pl-1 text-[12.5px] font-medium transition-[background-color,border-color,color] duration-150",
+            picked.includes(one.key) ? "border-fg bg-fg text-bg" : "border-line text-muted hover:border-line-strong hover:text-fg",
+            one.youtubeId === null && (picked.includes(one.key) ? "border-dashed border-bg/40" : "border-dashed border-line-strong"),
+          )}
+        >
+          <ChannelAvatar channel={one} size={22} />
+          {one.title}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Channels in no group, but `but`. */
+function useUngrouped(but: string | null): Channel[] {
+  const channels = useChannels((state) => state.channels) ?? [];
+  return channels.filter((one) => !one.group && one.key !== but && one.masked !== true);
+}
+
+/**
+ * A group made from a channel's page: the channels to group it with, and
+ * whose style they start from (its teaching moves into the group; the
+ * others keep theirs as their own exceptions).
+ */
+function MakeGroup({ open, channel, onClose, onMade }: { open: boolean; channel: Channel; onClose: () => void; onMade: (key: string) => void }) {
+  const others = useUngrouped(channel.key);
+  const channels = useChannels((state) => state.channels) ?? [];
+  const [picked, setPicked] = useState<string[]>([]);
+  const [from, setFrom] = useState(channel.key);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    setPicked([]);
+    setFrom(channel.key);
+    setError(null);
+  }, [open, channel.key]);
+  const members = [channel.key, ...picked];
+  const make = async () => {
+    if (picked.length === 0 || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const group = await groupApi.make(members, members.includes(from) ? from : channel.key);
+      onClose();
+      onMade(group.key);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal open={open} onClose={onClose} width={460}>
+      <div className="flex flex-col gap-4 p-6">
+        <DialogTitle title={`Group ${channel.title} with`} />
+        {others.length === 0 ? <p className="text-[13px] text-muted">Every other channel is in a group already.</p> : <PickPills channels={others} picked={picked} onToggle={(key) => setPicked((now) => (now.includes(key) ? now.filter((one) => one !== key) : [...now, key]))} />}
+        {picked.length > 0 && (
+          <div>
+            <span className={LABEL}>Start from the style of</span>
+            <ChannelPills channels={channels.filter((one) => members.includes(one.key))} value={from} lane="edit" onChange={(key) => key !== null && setFrom(key)} />
+          </div>
+        )}
+        {error && <p className="text-[12px] text-danger">{error}</p>}
+        <DialogActions className="mt-1">
+          <Button variant="subtle" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" busy={busy} disabled={picked.length === 0} onClick={() => void make()}>
+            Group
+          </Button>
+        </DialogActions>
+      </div>
+    </Modal>
+  );
+}
+
+/** A channel added to a group: it shares the group's style, what it was taught kept as its own. */
+function AddToGroup({ open, group, onClose }: { open: boolean; group: Group; onClose: () => void }) {
+  const others = useUngrouped(null);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    setPicked(null);
+    setError(null);
+  }, [open]);
+  const add = async () => {
+    if (picked === null || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await groupApi.add(group.key, picked);
+      onClose();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal open={open} onClose={onClose} width={460}>
+      <div className="flex flex-col gap-4 p-6">
+        <DialogTitle title="Add a channel" />
+        {others.length === 0 ? <p className="text-[13px] text-muted">Every channel is in a group already.</p> : <ChannelPills channels={others} value={picked} lane="edit" onChange={setPicked} />}
+        {error && <p className="text-[12px] text-danger">{error}</p>}
+        <DialogActions className="mt-1">
+          <Button variant="subtle" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" busy={busy} disabled={picked === null} onClick={() => void add()}>
+            Add
+          </Button>
+        </DialogActions>
+      </div>
+    </Modal>
   );
 }
 

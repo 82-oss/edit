@@ -16,8 +16,10 @@
 // over time the agents "are going to get quite clouded").
 //
 // What an agent is taught is a place's: a channel's lane (`laneKey`), whose
-// own items are `<kind>:@<place>/<name>`. A V2 project made without a channel
-// has no place and is taught nothing but the global skill.
+// own items are `<kind>:@<place>/<name>`, and, for a channel in a group, its
+// group's lane after it (channels.ts `placesOf`; the channel's own winning by
+// name). A V2 project made without a channel has no place and is taught
+// nothing but the global skill.
 //
 // The versions and pointers are mamagi's (edit:listLibrary, libraryVersions,
 // libraryVersion, saveLibraryVersion, setLibraryCurrent; accounts'
@@ -261,20 +263,27 @@ export function placeOfProject(project: { channel?: string | null }): string | n
   return typeof project.channel === "string" && project.channel !== "" ? laneKey(project.channel, "edit") : null;
 }
 
+/** Where an agent is taught from, nearest first: a channel lane's place, then its group's (`channels.placesOf`); null: nowhere but the global skill. */
+export type Places = string | readonly string[] | null;
+
+const placeList = (places: Places): readonly string[] => (places === null ? [] : typeof places === "string" ? [places] : places);
+
 /**
- * How near an item is to a place: its own first, then the global skill;
- * null for anything else (Sphe, Nov 14: a channel's lane starts "blank", none
- * of V2's house coming through but the global skill, which is Edit's own
- * workings). Of the items of a name, the nearest is the one that place uses.
+ * How near an item is to a place: its own first, then its group's, then the
+ * global skill; null for anything else (Sphe, Nov 14: a channel's lane starts
+ * "blank", none of V2's house coming through but the global skill, which is
+ * Edit's own workings). Of the items of a name, the nearest is the one that
+ * place uses.
  */
-export function nearness(item: { key: string }, place: string | null): number | null {
+export function nearness(item: { key: string }, places: Places): number | null {
+  const list = placeList(places);
   const own = ownPlaceOf(item.key);
-  if (own !== null) return place !== null && own === place ? 0 : null;
-  return item.key === skillKey(GLOBAL) ? 1 : null;
+  if (own !== null) return list.includes(own) ? list.indexOf(own) : null;
+  return item.key === skillKey(GLOBAL) ? list.length : null;
 }
 
 /** Of `items`, the one of each name a place uses (`nearness`), in their order. */
-export function forPlace<T extends { key: string; name: string }>(items: T[], place: string | null): T[] {
+export function forPlace<T extends { key: string; name: string }>(items: T[], place: Places): T[] {
   const best = new Map<string, { item: T; near: number }>();
   for (const item of items) {
     const near = nearness(item, place);
@@ -285,11 +294,13 @@ export function forPlace<T extends { key: string; name: string }>(items: T[], pl
   return items.filter((item) => best.get(item.name)?.item === item);
 }
 
-/** Where an item comes from, for a place, in a few words ("this channel's own", "V2's house"). */
-export function originOf(item: { key: string }, place: string | null): string {
+/** Where an item comes from, for a place, in a few words ("this channel's own", "its group's", "V2's house"). */
+export function originOf(item: { key: string }, places: Places): string {
+  const list = placeList(places);
   const own = ownPlaceOf(item.key);
   const lane = own === null ? null : laneOf(own);
-  if (own !== null && own === place) return "this channel's own";
+  if (own !== null && own === list[0]) return "this channel's own";
+  if (own !== null && list.indexOf(own) > 0) return "its group's";
   if (lane !== null) return `from ${lane.channel}'s ${lane.lane} style`;
   return "V2's house";
 }
@@ -315,12 +326,12 @@ let readAt = 0;
 const SKILLS_FRESH_MS = 30_000;
 
 /** What a place's agent knows (null: a V2 project without a channel): the global skill, then the place's own by name. */
-export function memories(place: string | null): Skill[] {
+export function memories(place: Places): Skill[] {
   return forPlace(skills.map((one) => ({ ...one, key: one.key ?? skillKey(one.name) })), place);
 }
 
 /** One skill a place knows, as last read. */
-export function skill(name: string, place: string | null): Skill | undefined {
+export function skill(name: string, place: Places): Skill | undefined {
   return memories(place).find((one) => one.name === name);
 }
 

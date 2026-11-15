@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { placeOf as graphicsPlace, repoint } from "../src/thumbnails/graphics.ts";
+import { placesOf as graphicsPlaces, repoint } from "../src/thumbnails/graphics.ts";
 import { graphicPage } from "../src/thumbnails/render.ts";
 import { addComment, canonical, commentOf, editComment, describeComments, designOf, labelOf, layerOf, makeVersion, openComments, record, removeVersion, step, switchVersion, takeFinal } from "../src/thumbnails/design.ts";
 import { baseBrief, changed, fresh, pickModel } from "../src/thumbnails/run.ts";
@@ -403,6 +403,6 @@ test("a graphic is code drawn on nothing: its page has the house's fonts and say
   expect(thumb.design.layers.map((one) => (one as { source: string }).source)).toEqual(["new", "base"]);
   expect((thumb.versions[0]!.design.layers[0] as { source: string }).source).toBe("new");
   // Kept with the channel's Thumbnails lane, or the house's for none.
-  expect(graphicsPlace({ channel: "drinsanity", lane: "thumbnails" })).toBe("drinsanity--thumbnails");
-  expect(graphicsPlace(null)).toBe("thumbnails");
+  expect(graphicsPlaces({ channel: "drinsanity", lane: "thumbnails" })).toEqual(["drinsanity--thumbnails"]);
+  expect(graphicsPlaces(null)).toEqual(["thumbnails"]);
 });

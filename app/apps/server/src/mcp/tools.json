@@ -4076,7 +4076,7 @@
     "name": "use_from_library"
   },
   {
-    "description": "Keep an effect or a sound of this project's in V2's cloud for this channel's projects, or as its next version (a teacher's; Edit V2). Only when the person says to keep it or use it from now on. A font (kind font, name: its folder from fetch_font) is kept the same way, with a note on when it's the one to use; every agent's effects then have it by its family name. An effect or a sound is kept in this channel's edit style, its own (a channel's project only).",
+    "description": "Keep an effect or a sound of this project's in V2's cloud for this channel's projects, or as its next version (a teacher's; Edit V2). Only when the person says to keep it or use it from now on. A font (kind font, name: its folder from fetch_font) is kept the same way, with a note on when it's the one to use; every agent's effects then have it by its family name. An effect or a sound is kept in this channel's edit style (a channel's project only): its group's when it's in one, unless for says this channel alone.",
     "inputSchema": {
       "properties": {
         "as": {
@@ -4114,6 +4114,14 @@
         },
         "reason": {
           "description": "What the person said, in their words.",
+          "type": "string"
+        },
+        "for": {
+          "description": "In a grouped channel: \"group\" (the default) keeps it for every channel in the group; \"channel\" for this channel alone, when the person says it's for this one.",
+          "enum": [
+            "group",
+            "channel"
+          ],
           "type": "string"
         }
       },
@@ -4162,7 +4170,7 @@
     "name": "archive_in_library"
   },
   {
-    "description": "Keep what the person said holds beyond this video, or said yes to keeping when you asked (never what they let pass unanswered), as one of your skills in V2's cloud (a teacher's; Edit V2). A memory is a line or two, in the person's words (at most 400 characters). A part of the edit's skill (one with a note, read with read_skill) is changed by saving the whole of it again with the change (at most 2,400 characters). The same name replaces it, so a line is forgotten by saving the skill again without it (a whole memory: archive_in_library). It's kept in this channel's edit style, its own (a channel's project only).",
+    "description": "Keep what the person said holds beyond this video, or said yes to keeping when you asked (never what they let pass unanswered), as one of your skills in V2's cloud (a teacher's; Edit V2). A memory is a line or two, in the person's words (at most 400 characters). A part of the edit's skill (one with a note, read with read_skill) is changed by saving the whole of it again with the change (at most 2,400 characters). The same name replaces it, so a line is forgotten by saving the skill again without it (a whole memory: archive_in_library). It's kept in this channel's edit style (a channel's project only): its group's when it's in one, unless for says this channel alone.",
     "inputSchema": {
       "properties": {
         "project_id": {
@@ -4183,6 +4191,14 @@
         },
         "note": {
           "description": "Only for a part of the edit's skill: when to read it (at most 160 characters). Kept from before when left out.",
+          "type": "string"
+        },
+        "for": {
+          "description": "In a grouped channel: \"group\" (the default) keeps it for every channel in the group; \"channel\" for this channel alone, when the person says it's for this one.",
+          "enum": [
+            "group",
+            "channel"
+          ],
           "type": "string"
         }
       },
@@ -4294,6 +4310,14 @@
         "project_id": {
           "type": "string",
           "description": "Defaults to the project open in the UI."
+        },
+        "for": {
+          "description": "In a grouped channel, where what's brought goes: \"group\" (the default) or \"channel\" for this channel alone.",
+          "enum": [
+            "group",
+            "channel"
+          ],
+          "type": "string"
         }
       }
     }

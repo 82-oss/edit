@@ -7,6 +7,7 @@
 import type { App } from "./app.ts";
 import fs from "node:fs";
 import { join } from "node:path";
+import * as channels from "./channels.ts";
 import * as effectInputs from "./effect_inputs.ts";
 import * as effects from "./effects.ts";
 import * as frameCompare from "./frame_compare.ts";
@@ -246,20 +247,22 @@ const when = (at: number) => new Date(at).toISOString().replace("T", " ").slice(
 
 // ---------------------------------------------------------------- where it's taught (a channel's edit lane)
 
-/** The project's place in the library (its channel's edit lane; null without a channel), the skills read fresh enough. */
-async function placeHere(app: App, projectId: string): Promise<string | null> {
+/** The project's places in the library (its channel's edit lane, then its group's; null without a channel), the skills read fresh enough. */
+async function placeHere(app: App, projectId: string): Promise<string[] | null> {
   await v2cloud.refreshSkills();
-  return v2cloud.placeOfProject(app.store.get(projectId)?.project ?? {});
+  return channels.placesOfProject(app.store.get(projectId)?.project ?? {});
 }
 
 /**
- * Where what's taught here is kept: the channel's edit style, its own. A V2
- * project made without a channel keeps nothing (it's taught the global skill
- * alone), refused in words for the person.
+ * Where what's taught here is kept: the channel's edit style, its group's
+ * unless `given` says this channel alone (channels.ts `keptIn`). A V2 project
+ * made without a channel keeps nothing (it's taught the global skill alone),
+ * refused in words for the person.
  */
-function keptIn(place: string | null): string {
-  if (place === null) throw new Error("This project isn't a channel's, so nothing is kept from it: what's taught is a channel's edit style. Say so to the person: an edit made for a channel (New edit, Channel) keeps what it's taught.");
-  return place;
+function keptIn(app: App, projectId: string, given: unknown): { place: string; words: string } {
+  const channel = app.store.get(projectId)?.project.channel;
+  if (typeof channel !== "string" || channel === "") throw new Error("This project isn't a channel's, so nothing is kept from it: what's taught is a channel's edit style. Say so to the person: an edit made for a channel (New edit, Channel) keeps what it's taught.");
+  return channels.keptIn(channel, "edit", given);
 }
 
 async function effectVersions({ app, args, projectId }: ToolCall): Promise<Content[]> {
@@ -389,9 +392,10 @@ async function saveToLibrary({ app, args, projectId }: ToolCall): Promise<Conten
   if (!fs.existsSync(join(dir, kind === "template" ? effects.ENTRY : effects.SOUND_ENTRY))) throw new Error(`effects/${name}/ has no ${kind === "template" ? effects.ENTRY : effects.SOUND_ENTRY}`);
   // Optional in the schema only because a font has none.
   if (typeof args.brief !== "string" || args.brief.trim() === "") throw new Error(`brief is required for ${kind === "sound" ? "a sound" : "an effect"}: how to change it without making it again, in a line or two`);
-  const place = keptIn(await placeHere(app, projectId));
-  const kept = await v2cloud.save(v2cloud.ownKey(kind, place, as), as, dir, { category: line("category", 40), note: line("note", 160), brief: line("brief", 240), ...(typeof args.reason === "string" && args.reason !== "" ? { reason: args.reason } : {}) });
-  return text(kept.made ? `${as} is version ${kept.n} in the library, in this channel's edit style: what its projects start from.` : `${as} is already exactly this (version ${kept.n}).`);
+  await placeHere(app, projectId);
+  const where = keptIn(app, projectId, args.for);
+  const kept = await v2cloud.save(v2cloud.ownKey(kind, where.place, as), as, dir, { category: line("category", 40), note: line("note", 160), brief: line("brief", 240), ...(typeof args.reason === "string" && args.reason !== "" ? { reason: args.reason } : {}) });
+  return text(kept.made ? `${as} is version ${kept.n} in the library, in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}: what its projects start from.` : `${as} is already exactly this (version ${kept.n}).`);
 }
 
 async function archiveInLibrary({ app, args, projectId }: ToolCall): Promise<Content[]> {
@@ -404,9 +408,11 @@ async function archiveInLibrary({ app, args, projectId }: ToolCall): Promise<Con
   const kind = args.kind === "skill" ? "skill" : kindArg(args.kind);
   let key = keyOf("font", name);
   if (kind !== "font") {
-    const place = keptIn(await placeHere(app, projectId));
-    const seen = v2cloud.forPlace(await v2cloud.list(kind, true), place).find((one) => one.name === name);
-    if (seen === undefined || v2cloud.ownPlaceOf(seen.key) !== place) throw new Error(`no ${kind === "template" ? "effect" : kind} ${name} in this channel's edit style`);
+    keptIn(app, projectId, undefined);
+    // The one of that name this channel uses: its own, else its group's.
+    const places = (await placeHere(app, projectId)) ?? [];
+    const seen = v2cloud.forPlace(await v2cloud.list(kind, true), places).find((one) => one.name === name);
+    if (seen === undefined || !places.includes(v2cloud.ownPlaceOf(seen.key) ?? "")) throw new Error(`no ${kind === "template" ? "effect" : kind} ${name} in this channel's edit style`);
     key = seen.key;
   }
   const archived = args.archived !== false;
@@ -430,15 +436,18 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
   if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");
   const note = typeof args.note === "string" && args.note.trim() !== "" ? args.note.trim() : undefined;
   if (note !== undefined && note.length > 160) throw new Error("note is at most 160 characters: when to read it");
-  const place = keptIn(await placeHere(app, projectId));
+  const places = await placeHere(app, projectId);
+  const where = keptIn(app, projectId, args.for);
   // A part's skill, or one already longer than a memory (the house rules, always in mind): saved whole again with the change.
-  const before = v2cloud.skill(skill, place);
+  const before = v2cloud.skill(skill, places);
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
   const most = part ? SKILL_MOST : MEMORY_MOST;
   if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part's skill short: its rules, not their history" : "a line or two, in the person's words"}`);
-  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note, { key: v2cloud.ownKey("skill", place, skill) });
+  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note, { key: v2cloud.ownKey("skill", where.place, skill) });
+  // Kept for the group while this channel has its own of that name: the channel's still wins here.
+  const shadowed = places !== null && where.place !== places[0] && v2cloud.ownPlaceOf(before?.key ?? "") === places[0];
   v2cloud.forgetSkills();
-  return text(`Remembered as ${skill} (version ${saved.n}) in this channel's edit style: its agents have it from their next turn.`);
+  return text(`Remembered as ${skill} (version ${saved.n}) in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}`);
 }
 
 async function readSkill({ app, args, projectId }: ToolCall): Promise<Content[]> {

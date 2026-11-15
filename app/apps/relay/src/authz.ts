@@ -86,6 +86,9 @@ export const EDIT_CALLS = new Map<string, string>([
   ["channels:saveChannel", "mutation"], ["channels:setChannel", "mutation"], ["channels:archiveChannel", "mutation"],
   // A placeholder (a channel not on YouTube yet), and linking it to its YouTube channel once it's made.
   ["channels:addPlaceholder", "mutation"], ["channels:linkChannel", "mutation"],
+  // Channel groups (mamagi's groups.ts): channels sharing one style, taught once (a teacher's to change).
+  ["groups:listGroups", "query"], ["groups:makeGroup", "mutation"], ["groups:setGroup", "mutation"], ["groups:addChannel", "mutation"],
+  ["groups:removeChannel", "mutation"], ["groups:archiveGroup", "mutation"], ["groups:moveIntoGroup", "mutation"],
 ]);
 
 /** Calls that change a project, or read its notes (refused outside the caller's kinds). */

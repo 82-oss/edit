@@ -13,6 +13,13 @@
 // else those given on accounts.spheceo.com, in full or by its label alone
 // ("Bodycam Channel 1": `masked`, nothing YouTube says, a placeholder's look),
 // so this server and its agents only ever have what its person may see.
+// A group (Nov 15, mamagi's groups.ts; Sphe: "it should apply a shared system
+// instead of duplicating the learning across the channels") is channels that
+// share one style: each lane is taught once to the group (`laneKey(group,
+// lane)`), and a channel in it reads the group's and its own, its own winning
+// by name ("for this specific channel, we want things done like this"). Work
+// always belongs to one channel; the group only says what its agents read and
+// where a lesson is kept (`keptIn`).
 //
 //   GET    /api/channels                {channels, teacher}
 //   GET    /api/channels/resolve?url=   {channel}: what YouTube says, not saved
@@ -24,6 +31,13 @@
 //   GET    /api/channels/voices         {voices, used}: who could narrate, and who narrates for whom already
 //   GET    /api/channels/{key}/videos?order=top|recent   {channel, videos}: its most viewed or newest, with their numbers
 //   POST   /api/channels/{key}/projects/{id}   an edit project moved onto the channel (its Edit lane from its next turn)
+//   GET    /api/groups/{key}            {group, taught, teacher}
+//   POST   /api/groups                  {channels, from} → {group}: made, `from`'s teaching moved into it
+//   PUT    /api/groups/{key}            {lanes} → {group}
+//   DELETE /api/groups/{key}            put away: every channel taken out with a copy of its teaching
+//   POST   /api/groups/{key}/channels   {channel}: added, its own teaching kept as its exceptions
+//   DELETE /api/groups/{key}/channels/{channel}   taken out, with a copy of the group's teaching
+//   POST   /api/groups/{key}/move       {item}: a channel's own item moved into the group
 
 import type { App } from "./app.ts";
 import * as beta from "./beta.ts";
@@ -70,8 +84,17 @@ export interface Channel {
   compilation: boolean;
   lanes: Record<Lane, string>;
   archived: boolean;
+  /** Its group's key (missing from a mamagi before groups). */
+  group?: string | null;
   addedBy: { name: string } | null;
   at: number;
+}
+
+/** Channels sharing one style, as this person may see it: only the channels they see. It has no name: it's its channels together (`groupName`). */
+export interface Group {
+  key: string;
+  lanes: Record<Lane, string>;
+  channels: string[];
 }
 
 /** A placeholder: not on YouTube yet, so none of YouTube's numbers. */
@@ -97,21 +120,93 @@ function needTeacher(): void {
 
 /** The channels, newest change first (what's put away only with `archived`). */
 export async function list(archived = false): Promise<Channel[]> {
-  const found = (await cloud.query("channels:listChannels", archived ? { archived: true } : {})) as Channel[];
+  const [found, groups] = await Promise.all([cloud.query("channels:listChannels", archived ? { archived: true } : {}) as Promise<Channel[]>, archived ? null : listGroups()]);
   if (!archived) {
     known = found;
+    knownGroupList = groups ?? [];
     readAt = Date.now();
   }
   return found;
 }
 
+/** The groups this person sees ([] from a mamagi or a relay before groups: every channel then stands alone). */
+async function listGroups(): Promise<Group[]> {
+  try {
+    return (await cloud.query("groups:listGroups", {})) as Group[];
+  } catch (error) {
+    diag.warn("channels", `the channel groups from the cloud: ${diag.messageOf(error)}`);
+    return [];
+  }
+}
+
 /** The channels as last read: an agent's instructions are written from them without waiting (`refresh` at a turn's start). */
 let known: Channel[] = [];
+let knownGroupList: Group[] = [];
 let readAt = 0;
 const FRESH_MS = 30_000;
 
 export function knownChannels(): Channel[] {
   return known;
+}
+
+export function knownGroups(): Group[] {
+  return knownGroupList;
+}
+
+/** A channel's group, as last read; null when it's in none. */
+export function groupOf(channel: string): Group | null {
+  const key = known.find((one) => one.key === channel)?.group ?? knownGroupList.find((one) => one.channels.includes(channel))?.key ?? null;
+  if (key === null) return null;
+  return knownGroupList.find((one) => one.key === key) ?? { key, lanes: { ideas: "", thumbnails: "", script: "", edit: "" }, channels: [channel] };
+}
+
+/** "A & B", "A, B & C". */
+export const joined = (names: string[]) => (names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} & ${names.at(-1)}`);
+
+/** A group as it's called: its channels' names together (labels for one seen by its label alone), as last read. */
+export function groupName(group: Group): string {
+  return joined(group.channels.map((key) => known.find((one) => one.key === key)?.title).filter((one): one is string => one !== undefined));
+}
+
+/** Where a channel's lane is taught, nearest first: its own place, then its group's when it's in one. */
+export function placesOf(channel: string, lane: Lane): string[] {
+  const group = groupOf(channel);
+  return group === null ? [laneKey(channel, lane)] : [laneKey(channel, lane), laneKey(group.key, lane)];
+}
+
+/** A V2 project's places (its channel's edit lane, then its group's); null for one made without a channel. */
+export function placesOfProject(project: { channel?: string | null }): string[] | null {
+  return typeof project.channel === "string" && project.channel !== "" ? placesOf(project.channel, "edit") : null;
+}
+
+/**
+ * Where a lesson of a channel's lane is kept, and how it's said ("" in no group): its group's
+ * unless it's for this channel alone (`given` "channel"; the agent's tools
+ * take `for`), a channel in no group its own.
+ */
+export function keptIn(channel: string, lane: Lane, given: unknown): { place: string; words: string } {
+  if (given !== undefined && given !== null && given !== "group" && given !== "channel") throw new Error('for is "group" or "channel"');
+  const group = groupOf(channel);
+  // Said only for a grouped channel: an ungrouped one's words stay as they were.
+  if (group === null) return { place: laneKey(channel, lane), words: "" };
+  return given === "channel" ? { place: laneKey(channel, lane), words: "for this channel only" } : { place: laneKey(group.key, lane), words: `for the group (${groupName(group)})` };
+}
+
+/**
+ * What a grouped channel's agent is told of its group: the other channels in
+ * it it may see (by their labels when that's all it's given), which are
+ * compilations, and that they share one style. "" for a channel in none.
+ */
+export function groupText(channel: string, word: string): string {
+  const group = groupOf(channel);
+  if (group === null) return "";
+  const others = group.channels.filter((key) => key !== channel).map((key) => known.find((one) => one.key === key)).filter((one): one is Channel => one !== undefined);
+  const named = others.map((one) => `${one.title}${one.compilation ? " (compilations)" : ""}`);
+  const mine = known.find((one) => one.key === channel);
+  return (
+    `It's in a group${named.length === 0 ? "" : ` with ${joined(named)}`}: they share one ${word} style, the group's, taught once for all of them${mine?.compilation ? "; this channel's videos are compilations" : ""}. ` +
+    `What's taught for this channel alone is its exceptions, and wins over the group's where they differ.`
+  );
 }
 
 /** A project's channel, as last read (null: none, or not read yet). */
@@ -136,8 +231,9 @@ function forget(): void {
 }
 
 /** Tests: the channels as given. */
-export function useChannelsForTests(given: Channel[]): void {
+export function useChannelsForTests(given: Channel[], groups: Group[] = []): void {
   known = given;
+  knownGroupList = groups;
   readAt = Date.now();
 }
 
@@ -216,7 +312,7 @@ export interface Taught {
   category: string | null;
 }
 
-/** What each of a channel's lanes has been taught: its own lessons, effects and sounds, each kind read once. */
+/** What each of a channel's (or a group's) lanes has been taught: its own lessons, effects and sounds, each kind read once. */
 export async function taughtOf(channel: string): Promise<Record<Lane, Taught[]>> {
   const kinds = ["skill", "template", "sound"] as const;
   const all = (await Promise.all(kinds.map((kind) => v2cloud.list(kind)))).flat();
@@ -276,8 +372,8 @@ export function routes(router: Router<App>): void {
       return json({ voices: listing.voices ?? [], used: usedVoices(given) });
     })
     .get("/api/channels", async () => {
-      if (!v2cloud.enabled()) return json({ channels: [], teacher: false });
-      return json({ channels: await asked(() => list()), teacher: v2cloud.teacher() });
+      if (!v2cloud.enabled()) return json({ channels: [], groups: [], teacher: false });
+      return json({ channels: await asked(() => list()), groups: knownGroups(), teacher: v2cloud.teacher() });
     })
     .get("/api/channels/resolve", async ({ url }: RouteContext<App>) => {
       needCloud();
@@ -337,9 +433,10 @@ export function routes(router: Router<App>): void {
       needCloud();
       const channel = await asked(() => get(params.key!));
       if (channel === null) throw new ApiError(404, `no channel ${params.key}`);
-      // What each lane's agent has been taught: its own lessons, effects and sounds (the global skill is Edit's, not a style).
-      const taught = await asked(() => taughtOf(channel.key));
-      return json({ channel, taught, teacher: v2cloud.teacher() });
+      // What each lane's agent has been taught: its own lessons, effects and sounds (the global skill is Edit's, not a style), and its group's.
+      const group = typeof channel.group === "string" ? ((await listGroups()).find((one) => one.key === channel.group) ?? null) : null;
+      const [taught, shared] = await asked(() => Promise.all([taughtOf(channel.key), group === null ? null : taughtOf(group.key)]));
+      return json({ channel, taught, group: group === null ? null : { ...group, taught: shared }, teacher: v2cloud.teacher() });
     })
     .put("/api/channels/{key}", async (context: RouteContext<App>) => {
       needTeacher();
@@ -366,5 +463,62 @@ export function routes(router: Router<App>): void {
       await asked(() => cloud.mutation("channels:archiveChannel", { key: params.key!, archived: true }));
       forget();
       return json({ ok: true });
+    })
+    .get("/api/groups/{key}", async ({ params }: RouteContext<App>) => {
+      needCloud();
+      const group = (await asked(async () => (await cloud.query("groups:listGroups", {})) as Group[])).find((one) => one.key === params.key);
+      if (group === undefined) throw new ApiError(404, `no group ${params.key}`);
+      return json({ group, taught: await asked(() => taughtOf(group.key)), teacher: v2cloud.teacher() });
+    })
+    .post("/api/groups", async (context: RouteContext<App>) => {
+      needTeacher();
+      const given = await readJson<{ name?: unknown; channels?: unknown; from?: unknown }>(context);
+      if (!Array.isArray(given.channels) || !given.channels.every((one) => typeof one === "string") || typeof given.from !== "string") throw bad("{channels: [keys], from: the channel whose style it starts from}");
+      const group = await asked(async () => (await cloud.mutation("groups:makeGroup", { channels: given.channels, from: given.from })) as Group);
+      diag.info("channels", `group ${group.key} made of ${group.channels.join(", ")}, from ${String(given.from)}'s style`);
+      return json({ group: changed(group) });
+    })
+    .put("/api/groups/{key}", async (context: RouteContext<App>) => {
+      needTeacher();
+      const given = await readJson<{ lanes?: unknown }>(context);
+      if (given.lanes !== undefined && (typeof given.lanes !== "object" || given.lanes === null || !Object.values(given.lanes).every((one) => typeof one === "string"))) throw bad("lanes is {ideas?, thumbnails?, script?, edit?}");
+      const group = await asked(async () => (await cloud.mutation("groups:setGroup", { key: context.params.key!, ...(given.lanes !== undefined ? { lanes: given.lanes } : {}) })) as Group);
+      return json({ group: changed(group) });
+    })
+    .delete("/api/groups/{key}", async ({ params }: RouteContext<App>) => {
+      needTeacher();
+      await asked(() => cloud.mutation("groups:archiveGroup", { key: params.key! }));
+      diag.info("channels", `group ${params.key} put away, its channels each with a copy of its teaching`);
+      changed();
+      return json({ ok: true });
+    })
+    .post("/api/groups/{key}/channels", async (context: RouteContext<App>) => {
+      needTeacher();
+      const given = await readJson<{ channel?: unknown }>(context);
+      if (typeof given.channel !== "string") throw bad("channel is a channel's key");
+      const group = await asked(async () => (await cloud.mutation("groups:addChannel", { key: context.params.key!, channel: given.channel })) as Group);
+      return json({ group: changed(group) });
+    })
+    .delete("/api/groups/{key}/channels/{channel}", async ({ params }: RouteContext<App>) => {
+      needTeacher();
+      const left = await asked(() => cloud.mutation("groups:removeChannel", { key: params.key!, channel: params.channel! }));
+      diag.info("channels", `${params.channel} taken out of group ${params.key} with a copy of its teaching`);
+      changed();
+      return json(left);
+    })
+    .post("/api/groups/{key}/move", async (context: RouteContext<App>) => {
+      needTeacher();
+      const given = await readJson<{ item?: unknown }>(context);
+      if (typeof given.item !== "string") throw bad("item is a channel's own item's key");
+      const moved = await asked(() => cloud.mutation("groups:moveIntoGroup", { item: given.item }));
+      changed();
+      return json(moved);
     });
+}
+
+/** A group changed: the channels and what their agents know read again at the next ask. */
+function changed<T>(given?: T): T | undefined {
+  forget();
+  v2cloud.forgetSkills();
+  return given;
 }
