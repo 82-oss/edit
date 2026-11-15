@@ -144,3 +144,47 @@ test("a source that fails to come back keeps the cloud's mark, so opening the pr
     fixture.cleanup();
   }
 });
+
+test("a source another project already brought back is reused, not fetched twice", async () => {
+  const fixture = fixtureHome("footage-back-shared");
+  try {
+    const raw = createStub();
+    raw.init({ home: fixture.home, cacheDir: `${fixture.home}/cache`, ffmpeg: "ffmpeg", ffprobe: "ffprobe", log: () => {} });
+    raw.probe = async () => VIDEO;
+    let proxies = 0;
+    raw.makeCloudProxy = async (_source: string, _probe: Probe, out: string) => {
+      proxies++;
+      fs.writeFileSync(out, "proxy");
+    };
+    useNative(wrap(raw));
+    cloudMedia.configurePlayback(fixture.app);
+    drive({ SharedFile1234567890: { name: "Shared.mp4", bytes: new Uint8Array(4000) } });
+    const { store } = fixture;
+    const shared = footage("shared", "drive:SharedFile1234567890", "edit/originals/drive/SharedFile1234567890/Shared.mp4", "edit/proxies/drive/SharedFile1234567890.mp4");
+    const make = async (name: string) => {
+      const id = store.create(name, { width: 1920, height: 1080, fps: 30 }).project.id;
+      await store.update(id, "test", (project) => {
+        project.media.push(structuredClone(shared));
+      });
+      mock.cloud.convex.saveElsewhere({ id, name }, "JJ's Mac");
+      mock.cloud.convex.projects.get(id)!.footageCleared = { at: 1, media: [] };
+      await archive.lookUp(id);
+      return id;
+    };
+    // Cleared together with another finished project (mamagi's footage sweep).
+    const [first, second] = [await make("First"), await make("Second")];
+    mock.cloud.convex.media.set("drive:SharedFile1234567890", { source: "drive:SharedFile1234567890", name: "Shared.mp4", originalKey: shared.cloud!.original, originalReady: false, proxyReady: false, size: 4000, createdAt: 1, updatedAt: 1 });
+    await archive.bringBack(fixture.app, first, {}, new Set());
+    const downloads = mock.calls("/drive.usercontent.google.com/download").length;
+    expect([downloads > 0, proxies]).toEqual([true, 1]);
+    // The other one's mark stayed; opening it, nothing is missing and nothing is fetched again.
+    expect(mock.cloud.convex.projects.get(second)!.footageCleared).toBeDefined();
+    expect(await cloudMedia.unfetchable(fixture.app, second)).toEqual([]);
+    await archive.bringBack(fixture.app, second, {}, new Set());
+    expect([mock.calls("/drive.usercontent.google.com/download").length, proxies]).toEqual([downloads, 1]);
+    expect(store.get(second)!.project.media[0]!.cloud).toMatchObject({ original: shared.cloud!.original, proxy: shared.cloud!.proxy });
+    expect(mock.cloud.convex.projects.get(second)!.footageCleared).toBeUndefined();
+  } finally {
+    fixture.cleanup();
+  }
+});
