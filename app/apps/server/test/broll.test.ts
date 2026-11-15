@@ -485,17 +485,18 @@ test("a place label on a cloud project's map, or its slowed copy, is pinned from
   }
 });
 
-test.skipIf(ffmpeg === null)("an older smoother's renders are put back where they began in their source, its frames read once for all of them", async () => {
+test.skipIf(ffmpeg === null)("an older smoother's render made here is put back to its source and smoothed again; one made on another Mac is left as it is", async () => {
   const { app, cleanup, dir } = fixtureHome("smooth-stale");
   try {
     const source = join(dir, "src.mp4");
     expect(Bun.spawnSync(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=160x120:rate=30:duration=6", "-c:v", "libx264", source]).exitCode).toBe(0);
-    // Two renders kept no note of where they came from: each starts at a frame of the source.
     const renders = [["src-0.80x-aaaa11.mp4", 2], ["src-0.80x-bbbb22.mp4", 4]] as const;
     for (const [name, from] of renders) {
       expect(Bun.spawnSync(["ffmpeg", "-v", "error", "-y", "-ss", String(from), "-i", source, "-t", "1", "-c:v", "libx264", join(dir, name)]).exitCode).toBe(0);
     }
     (app.native as { smoothSupported: () => boolean }).smoothSupported = () => true;
+    // This machine made the first with an older smoother and noted it; the second it has no note of (another Mac's, Nov 15).
+    fs.writeFileSync(join(app.store.home, "smooth-renders.json"), JSON.stringify({ [renders[0][0]]: { smoother: "vt-frame-rate-conversion-v1", source: "m1", source_in: 2, speed: 0.8 } }));
     const live = app.store.create("p", { width: 160, height: 120, fps: 30 });
     const project = structuredClone(live.project) as Project;
     const video = (id: string, name: string) => ({ id, name, path: join(dir, name), kind: "video", duration: 1, width: 160, height: 120, fps: 30, has_audio: false }) as Project["media"][number];
@@ -504,16 +505,29 @@ test.skipIf(ffmpeg === null)("an older smoother's renders are put back where the
       id, track: project.tracks[0]!.id, start, duration: 15, color: "blue", fade_in: 0, fade_out: 0,
       type: "video", media, source_in: sourceIn, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1,
     }) as VideoClip;
-    project.clips = [clip("c1", "m2", 0, 0), clip("c2", "m3", 15, 0.5)];
+    project.clips = [clip("c1", "m2", 0, 0.5), clip("c2", "m3", 15, 0.5)];
     await app.store.replace(project.id, null, project, "test");
-    expect((await broll.smoothStaleAgain(app, project.id)).sort()).toEqual(["c1", "c2"]);
+    const rev = app.store.get(project.id)!.rev;
+    expect(await broll.smoothStaleAgain(app, project.id)).toEqual(["c1"]);
     expect(await broll.waitForSmoothing(project.id, 120_000)).toBe(true);
-    // Smoothed again from there: the new renders' notes say where (c2 at its own offset into its render, at the speed it was made).
-    const notes = Object.values(JSON.parse(fs.readFileSync(join(app.store.home, "smooth-renders.json"), "utf8")) as Record<string, { source: string; source_in: number; speed: number }>)
-      .sort((a, b) => a.source_in - b.source_in);
-    expect(notes.map((note) => [note.source, note.speed])).toEqual([["m1", 0.8], ["m1", 0.8]]);
-    expect(Math.abs(notes[0]!.source_in - 2)).toBeLessThan(0.04);
-    expect(Math.abs(notes[1]!.source_in - (4 + 0.5 * 0.8))).toBeLessThan(0.04);
+    // Smoothed again from where it began (its own offset into the render, at the speed it was made): a new note says so.
+    const notes = Object.values(JSON.parse(fs.readFileSync(join(app.store.home, "smooth-renders.json"), "utf8")) as Record<string, { smoother: string; source: string; source_in: number; speed: number }>);
+    const redone = notes.find((note) => note.smoother !== "vt-frame-rate-conversion-v1")!;
+    expect([redone.source, redone.speed]).toEqual(["m1", 0.8]);
+    expect(Math.abs(redone.source_in - (2 + 0.5 * 0.8))).toBeLessThan(0.04);
+    // The other Mac's render is as it was.
+    const after = app.store.get(project.id)!;
+    expect(after.rev).toBeGreaterThan(rev);
+    expect(after.project.clips.find((one) => one.id === "c2")).toMatchObject({ media: "m3", source_in: 0.5, speed: 1 });
+    // A project with only renders this machine has no note of isn't touched at all.
+    const other = app.store.create("q", { width: 160, height: 120, fps: 30 });
+    const second = structuredClone(other.project) as Project;
+    second.media = [{ ...video("m1", "src.mp4"), duration: 6 }, video("m3", renders[1][0])];
+    second.clips = [{ ...clip("c2", "m3", 0, 0.5), track: second.tracks[0]!.id }];
+    await app.store.replace(second.id, null, second, "test");
+    const secondRev = app.store.get(second.id)!.rev;
+    expect(await broll.smoothStaleAgain(app, second.id)).toEqual([]);
+    expect(app.store.get(second.id)!.rev).toBe(secondRev);
   } finally {
     cleanup();
   }

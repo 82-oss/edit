@@ -499,101 +499,31 @@ function noteRender(home: string, name: string, render: Render): void {
   }
 }
 
-/** A smoothed render's name: `<the source's stem>-<speed>x-<key>.mp4`. */
-const RENDER_NAME = /^(?<stem>.+)-(?<speed>\d+\.\d{2})x-[0-9a-f]+\.mp4$/u;
-
 /**
- * Each frame's small grey picture (32×18), for finding where a render began
- * in its source: decoded on the video hardware where it can be (a
- * 14-minute cloud source ran past two minutes in software, JJ's Mac, Nov 5–6).
+ * Clips showing a render an older smoother made on this machine, put back to
+ * the slowed footage it came from and smoothed again: VideoToolbox's renders
+ * before Nov 5 had every made frame far darker than the real ones, a flicker
+ * four frames in five. Where a render came from, and what made it, is in this
+ * machine's `smooth-renders.json`, so only renders made here are touched. A
+ * render with no note here was made on another Mac (or before an install):
+ * until Nov 15 it was traced by its name and first frame and smoothed again on
+ * every Mac that opened the project, each rewriting the edit and saving it to
+ * the cloud with no one editing (a cold Cops Realize on dev: ~20 revisions and
+ * a conflicted copy). Returns the clips smoothed again.
  */
-async function signatures(path: string, timeoutMs: number): Promise<Uint8Array[]> {
-  const remote = tools.isUrl(path) ? ["-protocol_whitelist", tools.protocols(path), ...tools.urlArgs(path)] : [];
-  const raw = await tools.run([tools.ffmpeg(), "-v", "error", ...remote, ...tools.hardwareDecode(), "-i", path, "-an", "-vf", "scale=32:18,format=gray", "-f", "rawvideo", "-"], { timeoutMs });
-  const frames: Uint8Array[] = [];
-  for (let at = 0; at + 576 <= raw.length; at += 576) frames.push(raw.subarray(at, at + 576));
-  return frames;
-}
-
-/** The index of the frame most like `first` (small grey pictures), unless none is close. */
-export function nearestFrame(first: Uint8Array, frames: Uint8Array[]): number | null {
-  let best = -1; let bestScore = Infinity;
-  frames.forEach((frame, index) => {
-    let score = 0;
-    for (let i = 0; i < first.length; i++) score += Math.abs((frame[i] ?? 0) - (first[i] ?? 0));
-    if (score < bestScore) { bestScore = score; best = index; }
-  });
-  return best >= 0 && bestScore / Math.max(first.length, 1) < 12 ? best : null;
-}
-
-/**
- * Clips showing a render an older smoother made, put back to the slowed
- * footage it came from and smoothed again: VideoToolbox's renders before
- * Nov 5 had every made frame far darker than the real ones, a flicker four
- * frames in five (both horror drafts, and every edit's smoothed slow
- * motion since the switch to VideoToolbox). Where a render came from is in
- * `smooth-renders.json`; one made before that kept no note is found from its
- * name (its source's stem and speed) and its first frame (the source's frame
- * nearest it). Returns the clips smoothed again.
- */
-/**
- * Renders whose source wasn't found, by name: not looked for again while Edit
- * runs. Every render of a long source decoded all of it again, two minutes
- * each until it was stopped, and each opening of the project began again
- * (JJ's Mac, Nov 5: one interrogation's footage, 34 times).
- */
-const unplaced = new Set<string>();
-
-/** How long a source's frames may take to read (a render's own are seconds). */
-const SOURCE_SIGNATURES_MS = 10 * 60_000;
-const RENDER_SIGNATURES_MS = 2 * 60_000;
-
 export async function smoothStaleAgain(app: App, projectId: string): Promise<string[]> {
   const live = app.store.get(projectId);
   if (live === null || !app.native.smoothSupported()) return [];
   const smoother = currentSmoother(app);
   const notes = renders(app.store.home);
   const project = live.project;
-  const fps = fpsOf(project);
   const back: { clip: string; media: string; source_in: number; speed: number }[] = [];
-  const found = new Map<string, { media: string; source_in: number; speed: number } | null>();
-  // A source's frames, read once for all its renders.
-  const sourceFrames = new Map<string, Promise<Uint8Array[]>>();
   for (const clip of project.clips) {
-    if (clip.type !== "video") continue;
-    const render = mediaOf(project, clip.media);
-    const name = render?.name ?? "";
-    const parts = RENDER_NAME.exec(name)?.groups;
-    if (render === undefined || parts === undefined || Math.abs(clip.speed - 1) > 1e-6) continue;
-    const note = notes[name];
-    if (note?.smoother === smoother || unplaced.has(name)) continue;
-    if (!found.has(name)) {
-      let origin: { media: string; source_in: number; speed: number } | null = null;
-      try {
-        if (note !== undefined && mediaOf(project, note.source) !== undefined) origin = { media: note.source, source_in: note.source_in, speed: note.speed };
-        else {
-          const source = project.media.find((m) => m.kind === "video" && m.id !== render.id && fileStem(m.name) === parts.stem && !RENDER_NAME.test(m.name));
-          if (source !== undefined) {
-            const [first] = await signatures(render.path, RENDER_SIGNATURES_MS);
-            let frames = sourceFrames.get(source.path);
-            if (frames === undefined) {
-              frames = signatures(source.path, SOURCE_SIGNATURES_MS);
-              sourceFrames.set(source.path, frames);
-            }
-            const at = first === undefined ? null : nearestFrame(first, await frames);
-            if (at !== null) origin = { media: source.id, source_in: at / Math.max(source.fps || fps, 1), speed: Number(parts.speed) };
-          }
-        }
-      } catch (error) {
-        diag.warn("broll", `finding where ${name} came from: ${diag.messageOf(error)}`);
-      }
-      found.set(name, origin);
-      if (origin === null) unplaced.add(name);
-    }
-    const origin = found.get(name);
-    if (origin === null || origin === undefined) continue;
+    if (clip.type !== "video" || Math.abs(clip.speed - 1) > 1e-6) continue;
+    const note = notes[mediaOf(project, clip.media)?.name ?? ""];
+    if (note === undefined || note.smoother === smoother || mediaOf(project, note.source) === undefined) continue;
     // Its stretch: the render's own offset into it, at the speed it was made.
-    back.push({ clip: clip.id, media: origin.media, source_in: origin.source_in + clip.source_in * origin.speed, speed: origin.speed });
+    back.push({ clip: clip.id, media: note.source, source_in: note.source_in + clip.source_in * note.speed, speed: note.speed });
   }
   if (back.length === 0) return [];
   await app.store.update(projectId, "agent", (draft) => {

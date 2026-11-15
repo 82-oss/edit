@@ -319,14 +319,6 @@ test("a horror card with nothing playing under it stands over a blurred copy of 
   expect(names.slice(0, 2)).toEqual(["Horror · card ground", "Horror · card ground blur"]);
 });
 
-test("an older smoothed render is traced to the source frame it began at; nothing close, nothing found", async () => {
-  const { nearestFrame } = await import("../src/broll.ts");
-  const frame = (v: number) => new Uint8Array(576).fill(v);
-  const frames = [frame(10), frame(60), frame(120), frame(180)];
-  expect(nearestFrame(frame(118), frames)).toBe(2);
-  expect(nearestFrame(frame(250), frames)).toBeNull();
-});
-
 test("the team's notes on v2: titles white, words above pictures, a tall video whole, Edit's own ink never a watermark", async () => {
   const { title } = await import("../src/horror_graphics.ts");
   const { textOnTop } = await import("../src/horror_look.ts");
