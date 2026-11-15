@@ -79,6 +79,8 @@ export const EDIT_CALLS = new Map<string, string>([
   // mamagi refuses a change to anyone but a teacher).
   ["channels:listChannels", "query"], ["channels:getChannel", "query"],
   ["channels:saveChannel", "mutation"], ["channels:setChannel", "mutation"], ["channels:archiveChannel", "mutation"],
+  // A placeholder (a channel not on YouTube yet), and linking it to its YouTube channel once it's made.
+  ["channels:addPlaceholder", "mutation"], ["channels:linkChannel", "mutation"],
 ]);
 
 /** Calls that change a project, or read its notes (refused outside the caller's kinds). */

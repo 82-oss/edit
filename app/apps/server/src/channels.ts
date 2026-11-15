@@ -6,11 +6,14 @@
 // a description, and what its agent has been taught, in V2's library under the
 // lane's key (`laneKey`). How its videos are made is set up once, after it's
 // added: who narrates (a voice, or the editor's recording) and whether it's a
-// compilation channel. Channels are V2's (the beta).
+// compilation channel. Channels are V2's (the beta). A placeholder (Sphe,
+// Nov 15) is a channel by its name alone, before it's on YouTube: linked to
+// its YouTube channel once it's made, its key stays, so its teaching does.
 //
 //   GET    /api/channels                {channels, teacher}
 //   GET    /api/channels/resolve?url=   {channel}: what YouTube says, not saved
-//   POST   /api/channels                {url} → {channel}: added (a teacher's)
+//   POST   /api/channels                {url} or {title} → {channel}: added, or a placeholder by its name (a teacher's)
+//   POST   /api/channels/{key}/link     {url} → {channel}: a placeholder linked to its YouTube channel
 //   GET    /api/channels/{key}          {channel, taught: {<lane>: [what its agent knows]}, teacher}
 //   PUT    /api/channels/{key}          {narration?, compilation?, lanes?} → {channel}
 //   DELETE /api/channels/{key}          put away (its teaching kept)
@@ -40,7 +43,8 @@ export type Narration = { kind: "voice"; id: string; name: string } | { kind: "r
 
 export interface Channel {
   key: string;
-  youtubeId: string;
+  /** null: a placeholder, not on YouTube yet. */
+  youtubeId: string | null;
   handle: string | null;
   title: string;
   description: string;
@@ -60,6 +64,14 @@ export interface Channel {
   archived: boolean;
   addedBy: { name: string } | null;
   at: number;
+}
+
+/** A placeholder: not on YouTube yet, so none of YouTube's numbers. */
+export const placeholder = (channel: Channel) => channel.youtubeId === null;
+
+/** What an agent calls it: "Dr Insanity (@drinsanity), on YouTube", or a placeholder's name. */
+export function channelName(channel: Channel): string {
+  return channel.youtubeId === null ? `${channel.title} (a new channel, not on YouTube yet)` : `${channel.title}${channel.handle ? ` (@${channel.handle})` : ""}, on YouTube`;
 }
 
 /** Whether it's set up: its narration chosen (onboarding's step). */
@@ -264,7 +276,14 @@ export function routes(router: Router<App>): void {
     })
     .post("/api/channels", async (context: RouteContext<App>) => {
       needTeacher();
-      const given = await readJson<{ url?: unknown }>(context);
+      const given = await readJson<{ url?: unknown; title?: unknown }>(context);
+      if (typeof given.title === "string" && given.url === undefined) {
+        if (given.title.trim() === "") throw bad("title: the placeholder's name.");
+        const channel = await asked(async () => (await cloud.mutation("channels:addPlaceholder", { title: given.title })) as Channel);
+        diag.info("channels", `${channel.title} (${channel.key}) added as a placeholder`);
+        forget();
+        return json({ channel });
+      }
       if (typeof given.url !== "string" || given.url.trim() === "") throw bad("url: a link to the channel.");
       const youtube = await asked(() => resolve(given.url as string));
       const channel = await asked(async () => (await cloud.mutation("channels:saveChannel", { youtube })) as Channel);
@@ -272,11 +291,22 @@ export function routes(router: Router<App>): void {
       forget();
       return json({ channel });
     })
+    .post("/api/channels/{key}/link", async (context: RouteContext<App>) => {
+      needTeacher();
+      const given = await readJson<{ url?: unknown }>(context);
+      if (typeof given.url !== "string" || given.url.trim() === "") throw bad("url: a link to the YouTube channel.");
+      const youtube = await asked(() => resolve(given.url as string));
+      const channel = await asked(async () => (await cloud.mutation("channels:linkChannel", { key: context.params.key!, youtube })) as Channel);
+      diag.info("channels", `${channel.key} linked to ${channel.title} on YouTube`);
+      forget();
+      return json({ channel });
+    })
     .get("/api/channels/{key}/videos", async ({ params, url }: RouteContext<App>) => {
       needCloud();
       const channel = await asked(() => get(params.key!));
       if (channel === null) throw new ApiError(404, `no channel ${params.key}`);
-      return json(await asked(() => videosOf(channel.youtubeId, url.searchParams.get("order") === "recent" ? "recent" : "top")));
+      if (channel.youtubeId === null) throw bad(`${channel.title} isn't on YouTube yet.`);
+      return json(await asked(() => videosOf(channel.youtubeId!, url.searchParams.get("order") === "recent" ? "recent" : "top")));
     })
     .post("/api/channels/{key}/projects/{id}", async ({ app, params }: RouteContext<App>) => {
       needTeacher();

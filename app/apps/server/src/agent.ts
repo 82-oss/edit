@@ -1979,7 +1979,7 @@ function hqInstructions(project: Pick<Project, "name" | "settings" | "channel" |
  */
 function channelText(project: Pick<Project, "channel" | "compilation">): string {
   const found = channels.channelOf(project);
-  const name = found === null ? project.channel! : `${found.title}${found.handle ? ` (@${found.handle})` : ""}`;
+  const name = found === null ? `${project.channel!}, on YouTube` : channels.channelName(found);
   const style = found?.lanes.edit.trim() ?? "";
   const narration = found?.narration ?? null;
   const reads = narration === null ? "" : narration.kind === "recorded" ? " Its scripts are narrated by the editor's own recording." : ` Its scripts are narrated by the voice ${narration.name} (voice id ${narration.id}).`;
@@ -1988,7 +1988,7 @@ function channelText(project: Pick<Project, "channel" | "compilation">): string 
     ? ` This video is ${compilation ? "a compilation (several cases)" : "one case"}, unlike the channel's usual videos.`
     : ` Its videos are ${compilation ? "compilations: several cases each" : "one case each"}.`;
   return (
-    `THIS PROJECT'S CHANNEL: ${name}, on YouTube.${style === "" ? "" : ` Its edit style, in the team's words: ${style.replace(/\.$/u, "")}.`}${reads}${shape} ` +
+    `THIS PROJECT'S CHANNEL: ${name}.${style === "" ? "" : ` Its edit style, in the team's words: ${style.replace(/\.$/u, "")}.`}${reads}${shape} ` +
     "What you remember and save is this channel's edit style, its own; you're never given another channel's, nor the ideas, thumbnails or script styles. " +
     "The house's music and sound effects (list_library, add_sound_effect) are there when this channel's style or the person asks for them, never by default. " +
     "When the person points you at something another channel has (a graphic, how it cuts), or asks you to start from another channel's style, find it with other_channels and bring it in as this channel's own copy, to change and rebrand here.\n\n"

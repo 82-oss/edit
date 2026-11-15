@@ -3,8 +3,11 @@
 // and then set up (who narrates, whether it's a compilation channel); a
 // channel's page shows its lanes (ideas, thumbnails, script, edit), each with
 // its own style. Adding and changing one is a teacher's; anyone reads them.
+// A placeholder (Sphe, Nov 15) is a channel by its name before it's on
+// YouTube: a blank picture, a dashed border where it's picked, and Link on its
+// page once the real channel is made (its teaching kept).
 
-import { ArrowLeft, ExternalLink, Mic, Plus } from "lucide-react";
+import { ArrowLeft, ExternalLink, Link2, Mic, Plus, User } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
 
@@ -17,8 +20,14 @@ import { VoicePicker } from "./VoicePicker";
 const FIELD = "h-9 w-full rounded-lg border border-line bg-black px-3 text-[13px] outline-none placeholder:text-faint focus:border-muted";
 const LABEL = "mb-1.5 block text-[12px] font-medium text-muted";
 
-/** Its picture, round; its first letter while there's none. */
-export function ChannelAvatar({ channel, size = 32 }: { channel: { title: string; avatar?: string | null }; size?: number }) {
+/** Its picture, round; its first letter while there's none; a placeholder's blank, in a dashed ring. */
+export function ChannelAvatar({ channel, size = 32 }: { channel: { title: string; avatar?: string | null; youtubeId?: string | null }; size?: number }) {
+  if (channel.youtubeId === null)
+    return (
+      <span className="flex shrink-0 items-center justify-center rounded-full border-[1.5px] border-dashed border-line-strong text-faint/70" style={{ width: size, height: size }}>
+        <User size={Math.round(size * 0.5)} strokeWidth={2} />
+      </span>
+    );
   if (channel.avatar) return <img src={channel.avatar} alt="" referrerPolicy="no-referrer" className="shrink-0 rounded-full bg-active object-cover" style={{ width: size, height: size }} />;
   return (
     <span className="flex shrink-0 items-center justify-center rounded-full bg-active font-semibold text-muted" style={{ width: size, height: size, fontSize: size * 0.42 }}>
@@ -55,6 +64,8 @@ export function ChannelPills({ channels, value, lane, onChange }: { channels: Ch
           className={cx(
             "flex h-8 items-center gap-2 rounded-full border pr-3 pl-1 text-[12.5px] font-medium transition-[background-color,border-color,color] duration-150",
             value === one.key ? "border-fg bg-fg text-bg" : "border-line text-muted hover:border-line-strong hover:text-fg",
+            // A placeholder's border is dashed (Sphe, Nov 15).
+            one.youtubeId === null && (value === one.key ? "border-dashed border-bg/40" : "border-dashed border-line-strong"),
           )}
         >
           <ChannelAvatar channel={one} size={22} />
@@ -65,8 +76,9 @@ export function ChannelPills({ channels, value, lane, onChange }: { channels: Ch
   );
 }
 
-/** "@drinsanity · 1.2M subscribers". */
-function facts(channel: { handle?: string | null; subscribers?: number | null; videos?: number | null }): string {
+/** "@drinsanity · 1.2M subscribers"; a placeholder says it isn't on YouTube yet. */
+function facts(channel: { youtubeId?: string | null; handle?: string | null; subscribers?: number | null; videos?: number | null }): string {
+  if (channel.youtubeId === null) return "Placeholder · no YouTube channel yet";
   return [channel.handle ? `@${channel.handle}` : null, compact(channel.subscribers) ? `${compact(channel.subscribers)} subscribers` : null, compact(channel.videos) ? `${compact(channel.videos)} videos` : null].filter(Boolean).join(" · ");
 }
 
@@ -90,7 +102,7 @@ export function ChannelsView({ adding, onAdding }: { adding: boolean; onAdding: 
             {channels !== null && channels.length === 0 && (
               <div className="mx-auto mt-16 max-w-[320px] text-center">
                 <h3 className="text-[15px] font-semibold">No channels yet</h3>
-                <p className="mt-1 text-[13px] leading-relaxed text-muted">Paste a link to a YouTube channel. Each channel keeps its own style for ideas, thumbnails, scripts and edits.</p>
+                <p className="mt-1 text-[13px] leading-relaxed text-muted">Paste a link to a YouTube channel, or name one that isn't on YouTube yet. Each channel keeps its own style for ideas, thumbnails, scripts and edits.</p>
               </div>
             )}
             {(channels ?? []).map((channel) => (
@@ -121,33 +133,10 @@ function useVoices(on: boolean): { voices: Voice[] | null; used: Used[] } {
   return found;
 }
 
-/**
- * A channel added: a link pasted (read as it's typed, so the right channel is
- * seen before it's added), then set up: who narrates its videos and whether
- * it's a compilation channel. Its styles start empty, taught as it's worked on.
- */
-function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => void; onAdded: (channel: Channel) => void }) {
-  const [link, setLink] = useState("");
+/** The YouTube channel a link is to, read as it's typed, a moment after the last key. */
+function useFound(link: string, setError: (error: string | null) => void): { found: Found | null; looking: boolean } {
   const [found, setFound] = useState<Found | null>(null);
   const [looking, setLooking] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [added, setAdded] = useState<Channel | null>(null);
-  const [narration, setNarration] = useState<Narration | null>(null);
-  const [compilation, setCompilation] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const voices = useVoices(open && added !== null);
-
-  useEffect(() => {
-    if (!open) return;
-    setLink("");
-    setFound(null);
-    setError(null);
-    setAdded(null);
-    setNarration(null);
-    setCompilation(false);
-  }, [open]);
-
-  // Read as it's typed, a moment after the last key.
   useEffect(() => {
     const given = link.trim();
     setFound(null);
@@ -166,14 +155,65 @@ function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => 
       stale = true;
       clearTimeout(timer);
     };
-  }, [link]);
+  }, [link, setError]);
+  return { found, looking };
+}
 
+/** What YouTube says of a pasted link's channel, before it's added or linked. */
+function FoundCard({ found, looking }: { found: Found | null; looking: boolean }) {
+  return (
+    <AnimatePresence initial={false} mode="wait">
+      {found !== null ? (
+        <motion.div key="found" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={spring} className="flex items-center gap-3 rounded-lg border border-line bg-black/40 p-3">
+          <ChannelAvatar channel={found} size={40} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[14px] font-medium">{found.title}</span>
+            <span className="block truncate text-[12px] text-faint">{facts(found)}</span>
+          </span>
+        </motion.div>
+      ) : looking ? (
+        <motion.p key="looking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-[12px] text-faint">
+          Looking it up…
+        </motion.p>
+      ) : null}
+    </AnimatePresence>
+  );
+}
+
+/**
+ * A channel added: a link pasted (read as it's typed, so the right channel is
+ * seen before it's added), or a placeholder's name when it isn't on YouTube
+ * yet; then set up: who narrates its videos and whether it's a compilation
+ * channel. Its styles start empty, taught as it's worked on.
+ */
+function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => void; onAdded: (channel: Channel) => void }) {
+  const [link, setLink] = useState("");
+  const [placeholder, setPlaceholder] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const { found, looking } = useFound(link, setError);
+  const [added, setAdded] = useState<Channel | null>(null);
+  const [narration, setNarration] = useState<Narration | null>(null);
+  const [compilation, setCompilation] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const voices = useVoices(open && added !== null);
+
+  useEffect(() => {
+    if (!open) return;
+    setLink("");
+    setPlaceholder(null);
+    setError(null);
+    setAdded(null);
+    setNarration(null);
+    setCompilation(false);
+  }, [open]);
+
+  const ready = placeholder !== null ? placeholder.trim() !== "" : found !== null;
   const add = async () => {
-    if (found === null || busy) return;
+    if (!ready || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const channel = await channelApi.add(link.trim());
+      const channel = placeholder !== null ? await channelApi.addPlaceholder(placeholder.trim()) : await channelApi.add(link.trim());
       setAdded(channel);
       setNarration(channel.narration);
       setCompilation(channel.compilation);
@@ -207,25 +247,28 @@ function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => 
           void (added === null ? add() : finish());
         }}
       >
-        {added === null ? (
+        {added === null && placeholder !== null ? (
+          <>
+            <div className="flex items-center gap-3">
+              <ChannelAvatar channel={{ title: placeholder, youtubeId: null }} size={40} />
+              <DialogTitle title="Add a placeholder" />
+            </div>
+            <input autoFocus value={placeholder} onChange={(event) => setPlaceholder(event.target.value)} placeholder="Its name, like GTA 6 channel" maxLength={200} className={FIELD} />
+            <p className="-mt-1 text-[12px] text-faint">Link it to the real channel once it's made. Everything it's been taught stays.</p>
+          </>
+        ) : added === null ? (
           <>
             <DialogTitle title="Add a channel" />
             <input autoFocus value={link} onChange={(event) => setLink(event.target.value)} placeholder="youtube.com/@channel, a video of theirs, or the channel ID" className={FIELD} />
-            <AnimatePresence initial={false} mode="wait">
-              {found !== null ? (
-                <motion.div key="found" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={spring} className="flex items-center gap-3 rounded-lg border border-line bg-black/40 p-3">
-                  <ChannelAvatar channel={found} size={40} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[14px] font-medium">{found.title}</span>
-                    <span className="block truncate text-[12px] text-faint">{facts(found)}</span>
-                  </span>
-                </motion.div>
-              ) : looking ? (
-                <motion.p key="looking" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="text-[12px] text-faint">
-                  Looking it up…
-                </motion.p>
-              ) : null}
-            </AnimatePresence>
+            <FoundCard found={found} looking={looking} />
+            {found === null && !looking && (
+              <button type="button" onClick={() => {
+                  setError(null);
+                  setPlaceholder("");
+                }} className="-mt-1 self-start text-[12px] text-faint transition-colors hover:text-fg">
+                No YouTube channel yet? Add a placeholder
+              </button>
+            )}
           </>
         ) : (
           <>
@@ -248,11 +291,11 @@ function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => 
         )}
         {error && <p className="text-[12px] text-danger">{error}</p>}
         <DialogActions className="mt-1">
-          <Button type="button" variant="subtle" onClick={onClose}>
-            {added === null ? "Cancel" : "Later"}
+          <Button type="button" variant="subtle" onClick={added === null && placeholder !== null ? () => setPlaceholder(null) : onClose}>
+            {added !== null ? "Later" : placeholder !== null ? "Back" : "Cancel"}
           </Button>
           {added === null ? (
-            <Button type="submit" variant="primary" busy={busy} disabled={found === null}>
+            <Button type="submit" variant="primary" busy={busy} disabled={!ready}>
               Add
             </Button>
           ) : (
@@ -274,6 +317,7 @@ function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => 
 function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void }) {
   const teacher = useChannels((state) => state.teacher);
   const voices = useVoices(teacher);
+  const [linking, setLinking] = useState(false);
   const [taught, setTaught] = useState<Record<Lane, Taught[]> | null>(null);
   useEffect(() => {
     let alive = true;
@@ -297,16 +341,32 @@ function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void
           <h2 className="truncate text-[20px] font-semibold tracking-[-0.3px]">{channel.title}</h2>
           <p className="truncate text-[13px] text-muted">{facts(channel)}</p>
         </div>
-        <a
-          href={`https://www.youtube.com/channel/${channel.youtubeId}`}
-          target="_blank"
-          rel="noreferrer"
-          title="Open on YouTube"
-          className="flex size-8 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg"
-        >
-          <ExternalLink size={15} />
-        </a>
+        {channel.youtubeId === null ? (
+          teacher &&
+          !linking && (
+            <Button variant="subtle" onClick={() => setLinking(true)}>
+              <Link2 size={14} /> Link a YouTube channel
+            </Button>
+          )
+        ) : (
+          <a
+            href={`https://www.youtube.com/channel/${channel.youtubeId}`}
+            target="_blank"
+            rel="noreferrer"
+            title="Open on YouTube"
+            className="flex size-8 items-center justify-center rounded-lg text-muted transition-colors hover:bg-hover hover:text-fg"
+          >
+            <ExternalLink size={15} />
+          </a>
+        )}
       </div>
+      <AnimatePresence initial={false}>
+        {linking && channel.youtubeId === null && (
+          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={spring} className="-mt-2 overflow-hidden">
+            <LinkChannel channel={channel} onDone={() => setLinking(false)} />
+          </motion.div>
+        )}
+      </AnimatePresence>
       <div className="grid grid-cols-2 gap-3 max-[700px]:grid-cols-1">
         <div className="rounded-xl border border-line bg-black/30 p-3">
           <span className={LABEL}>
@@ -355,6 +415,48 @@ function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void
         ))}
       </div>
     </div>
+  );
+}
+
+/** A placeholder linked to its YouTube channel, once it's made: a link pasted, the channel seen, then Link. Its key stays, so all it's been taught does. */
+function LinkChannel({ channel, onDone }: { channel: Channel; onDone: () => void }) {
+  const [link, setLink] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const { found, looking } = useFound(link, setError);
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (found === null || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await channelApi.link(channel.key, link.trim());
+      onDone();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <form
+      className="flex flex-col gap-3 pt-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void submit();
+      }}
+    >
+      <input autoFocus value={link} onChange={(event) => setLink(event.target.value)} onKeyDown={(event) => event.key === "Escape" && onDone()} placeholder="youtube.com/@channel, a video of theirs, or the channel ID" className={FIELD} />
+      <FoundCard found={found} looking={looking} />
+      {error && <p className="text-[12px] text-danger">{error}</p>}
+      <div className="flex justify-end gap-2">
+        <Button type="button" variant="subtle" onClick={onDone}>
+          Cancel
+        </Button>
+        <Button type="submit" variant="primary" busy={busy} disabled={found === null}>
+          Link
+        </Button>
+      </div>
+    </form>
   );
 }
 

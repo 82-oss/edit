@@ -339,6 +339,20 @@ test("a channel's agent is told its channel, its edit style and how its videos a
   }
 });
 
+test("a placeholder channel (Sphe, Nov 15): its agents know it isn't on YouTube yet, and its videos aren't asked of YouTube", () => {
+  const { app, cleanup } = fixtureHome("v2-channel-placeholder");
+  try {
+    const PLACEHOLDER = { ...OTHER, key: "gta-6-channel", youtubeId: null, handle: null, title: "GTA 6 channel", subscribers: null, videos: null, views: null };
+    channels.useChannelsForTests([PLACEHOLDER]);
+    const project = { ...app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project, hq: true, channel: "gta-6-channel" };
+    expect(agentInstructions(project)).toContain("THIS PROJECT'S CHANNEL: GTA 6 channel (a new channel, not on YouTube yet).");
+    expect(lanes.section("gta-6-channel", "ideas")).toContain("THIS CHANNEL: GTA 6 channel (a new channel, not on YouTube yet).");
+  } finally {
+    channels.useChannelsForTests([]);
+    cleanup();
+  }
+});
+
 test("other_channels: the rest listed only when asked, one's edit style shown, and a piece of it (or all of it) brought in as this channel's own, never over what it has", async () => {
   const { app, cleanup, id } = hq("v2-other-channels");
   try {

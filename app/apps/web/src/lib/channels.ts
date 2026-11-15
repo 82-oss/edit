@@ -1,7 +1,8 @@
 // Channels (the server's channels.ts): the team's YouTube channels, each with
 // its lanes (ideas, thumbnails, script, edit), how its videos are made, and the
 // teaching each lane's agent is given. Home's Channels lists them; New project
-// picks one.
+// picks one. A placeholder is a channel by its name alone, before it's on
+// YouTube, linked to its YouTube channel later with its teaching kept.
 
 import { create } from "zustand";
 
@@ -19,7 +20,8 @@ export type Narration = { kind: "voice"; id: string; name: string } | { kind: "r
 
 export interface Channel {
   key: string;
-  youtubeId: string;
+  /** null: a placeholder, not on YouTube yet. */
+  youtubeId: string | null;
   handle: string | null;
   title: string;
   description: string;
@@ -93,6 +95,10 @@ function keep(channel: Channel): Channel {
 export const channelApi = {
   resolve: (url: string) => request<{ channel: Found }>("GET", `/api/channels/resolve?url=${encodeURIComponent(url)}`).then((answer) => answer.channel),
   add: (url: string) => request<{ channel: Channel }>("POST", "/api/channels", { url }).then((answer) => keep(answer.channel)),
+  /** A placeholder: a channel by its name, not on YouTube yet. */
+  addPlaceholder: (title: string) => request<{ channel: Channel }>("POST", "/api/channels", { title }).then((answer) => keep(answer.channel)),
+  /** A placeholder linked to its YouTube channel: its teaching stays. */
+  link: (key: string, url: string) => request<{ channel: Channel }>("POST", `/api/channels/${key}/link`, { url }).then((answer) => keep(answer.channel)),
   set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>> }) =>
     request<{ channel: Channel }>("PUT", `/api/channels/${key}`, change).then((answer) => keep(answer.channel)),
   /** A channel with what each lane has been taught. */

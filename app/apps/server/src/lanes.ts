@@ -47,6 +47,12 @@ function nameOf(key: string): string {
   return found === undefined ? key : `${found.title}${found.handle ? ` (@${found.handle})` : ""}`;
 }
 
+/** As it's introduced: on YouTube, or a placeholder not on it yet. */
+function introOf(key: string): string {
+  const found = channels.knownChannels().find((one) => one.key === key);
+  return found === undefined ? `${key}, on YouTube` : channels.channelName(found);
+}
+
 /**
  * What the lane's agent is told: whose work it is, the lane's style in the
  * team's words, what it's been taught (a lesson always in mind, a part read
@@ -68,7 +74,7 @@ export function laneText(place: Place, teach: Teach = "tools"): string {
   const always = lessons.filter((one) => one.note === undefined);
   const parts = lessons.filter((one) => one.note !== undefined);
   const lines = [
-    `THIS CHANNEL: ${nameOf(place.channel)}, on YouTube. You're working on its ${word} style, its own${style === "" ? "" : `, which the team puts as: ${style.replace(/\.$/u, "")}`}. You're never given another channel's styles, nor this channel's other lanes.`,
+    `THIS CHANNEL: ${introOf(place.channel)}. You're working on its ${word} style, its own${style === "" ? "" : `, which the team puts as: ${style.replace(/\.$/u, "")}`}. You're never given another channel's styles, nor this channel's other lanes.`,
   ];
   if (always.length > 0) lines.push(`What the team has taught you for ${channel?.title ?? place.channel}'s ${word}s (always):\n${always.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
   if (parts.length > 0) lines.push(`Read one with read_skill when it fits, once per conversation:\n${parts.map((one) => `- ${one.name}: ${one.note}`).join("\n")}`);
@@ -85,7 +91,11 @@ export function laneText(place: Place, teach: Teach = "tools"): string {
   lines.push(
     `${v2cloud.teacher() ? keepRule(single, "keep it with remember, so the next of this channel's has it") : NOT_TEACHER} ` +
       `When they point you at another channel's way, or ask to start from another channel's style, find it with other_channels and bring it in as this channel's own, to change here.` +
-      (place.lane === "script" ? "" : " channel_videos shows what this channel's videos (or any channel's, by its link) get on YouTube: their titles, views, length and thumbnails."),
+      (place.lane === "script"
+        ? ""
+        : channel !== null && channels.placeholder(channel)
+          ? " channel_videos shows what any channel's videos (by its link) get on YouTube: their titles, views, length and thumbnails. This one has none yet."
+          : " channel_videos shows what this channel's videos (or any channel's, by its link) get on YouTube: their titles, views, length and thumbnails."),
   );
   return lines.join("\n\n");
 }
@@ -280,10 +290,12 @@ async function channelVideos(args: Record<string, unknown>, place: Place): Promi
   if (typeof args.channel === "string" && args.channel.trim() !== "") {
     const words = args.channel.trim();
     const ours = channels.knownChannels().find((one) => [one.key, one.handle?.toLowerCase(), one.title.toLowerCase()].includes(words.replace(/^@/, "").toLowerCase()));
+    if (ours !== undefined && ours.youtubeId === null) return `${ours.title} isn't on YouTube yet: it has no videos to read.`;
     link = ours?.youtubeId ?? words;
   } else {
     const mine = channels.knownChannels().find((one) => one.key === place.channel);
     if (mine === undefined) throw new Error("this channel isn't read yet: try again in a moment");
+    if (mine.youtubeId === null) return `${mine.title} isn't on YouTube yet: it has no videos of its own. Read another channel's with channel.`;
     link = mine.youtubeId;
   }
   const found = await channels.videosOf(link, order, count);
