@@ -6,7 +6,7 @@ import { useAccount, type Account } from "./account";
 import { applyAgentEvent, openAgent } from "./agent";
 import { api, ApiError, useConnection } from "./api";
 import { readOnly, type CloudStatus } from "./cloud";
-import { addContext, note } from "./diagnostics";
+import { note } from "./diagnostics";
 import { validateProject } from "./edit";
 import { perFrame } from "./frame";
 import * as patches from "./patch";
@@ -871,8 +871,3 @@ window.addEventListener("beforeunload", (event) => {
   if (useEditor.getState().dirty || useEditor.getState().saving) event.preventDefault();
 });
 
-addContext("Open project", () => {
-  const { project, rev } = useEditor.getState();
-  if (!project) return "none (home screen)";
-  return { id: project.id, name: project.name, rev, clips: project.clips.length, tracks: project.tracks.length, media: project.media.length, settings: project.settings };
-});

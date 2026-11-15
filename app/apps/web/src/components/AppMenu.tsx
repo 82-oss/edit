@@ -1,12 +1,12 @@
-// The account menu (your avatar at the top right, or across the top of Home's sidebar: you, Manage account, Settings, Logs, Report a problem, Sign out; a ⋯ when signed out) and the dialogs it opens. Settings: who's signed in, notifications, YouTube, updates and the betas.
+// The account menu (your avatar at the top right, or across the top of Home's sidebar: you, Manage account, Settings, Logs, Sign out; a ⋯ when signed out) and the dialogs it opens. Settings: who's signed in, notifications, YouTube, updates and the betas.
 
-import { Bug, ChevronDown, Ellipsis, LogIn, LogOut, ScrollText, Settings, UserRound } from "lucide-react";
+import { ChevronDown, Ellipsis, LogIn, LogOut, ScrollText, Settings, UserRound } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { loadAccount, signIn, signOut, useAccount } from "../lib/account";
 import { loadBeta, setBeta, useBeta } from "../lib/beta";
 import { closeDialog, openDialog, useDialogs } from "../lib/dialogs";
-import { buildReport, closeReport, copyText, openReport, useReport } from "../lib/diagnostics";
+import { copyText } from "../lib/diagnostics";
 import { chooseChannel, useUpdate, watchUpdates, type UpdateChannel } from "../lib/update";
 import { permission, sendTest, turnOn, type Permission, type TurnedOn } from "../lib/notices";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
@@ -36,7 +36,6 @@ export function AppMenu({ row = false }: { row?: boolean } = {}) {
       : []),
     { label: "Settings", icon: <Settings size={14} />, shortcut: `${MOD},`, onSelect: () => openDialog("settings") },
     { label: "Logs", icon: <ScrollText size={14} />, onSelect: () => openDialog("logs") },
-    { label: "Report a problem…", icon: <Bug size={14} />, onSelect: () => openReport() },
     { separator: true },
     person !== null
       ? { label: "Sign out", icon: <LogOut size={14} />, onSelect: () => void signOut() }
@@ -95,7 +94,6 @@ export function AppDialogs() {
         <DialogHeader title="Logs" />
         <LogsView />
       </Modal>
-      <ReportDialog />
       <ExportFolderPrompt />
     </>
   );
@@ -205,91 +203,6 @@ function LogsView() {
         </div>
       </div>
     </div>
-  );
-}
-
-/** "Report a problem": everything needed to work out what went wrong, ready to copy. */
-function ReportDialog() {
-  const { open, trigger } = useReport();
-  const [comment, setComment] = useState("");
-  const [report, setReport] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
-  const [failed, setFailed] = useState<unknown>(null);
-  useEffect(() => {
-    if (!open) return;
-    setCopied(false);
-    setSent(false);
-    setFailed(null);
-    setReport("");
-    let current = true;
-    void buildReport(trigger, comment).then((text) => current && setReport(text));
-    return () => {
-      current = false;
-    };
-    // The comment is added when copying; rebuilding on every keystroke would refetch the logs.
-  }, [open, trigger]);
-  const copy = async () => {
-    const text = comment.trim() ? await buildReport(trigger, comment) : report;
-    setReport(text);
-    setCopied(await copyText(text));
-  };
-  // To the team's cloud, where whoever looks after Edit reads it: nothing to copy or paste.
-  const send = async () => {
-    setSending(true);
-    setFailed(null);
-    try {
-      const text = comment.trim() ? await buildReport(trigger, comment) : report;
-      setReport(text);
-      await api.sendReport(text);
-      setSent(true);
-    } catch (error) {
-      setFailed(error);
-    } finally {
-      setSending(false);
-    }
-  };
-  return (
-    <Modal open={open} onClose={closeReport} width={640}>
-      <DialogHeader title="Report a problem" />
-      <div className="flex flex-col gap-3 px-6 pb-6">
-        <p className="text-[13px] leading-relaxed text-muted">
-          {trigger ? <span className="text-fg">{trigger}. </span> : null}
-          {sent
-            ? "Sent. Whoever looks after Edit can read it now: there’s nothing to copy or paste."
-            : "Send this report to the team: it has what went wrong, Edit’s recent log and how long things took. Add what you were doing if you can."}
-        </p>
-        <input
-          value={comment}
-          onChange={(event) => setComment(event.target.value)}
-          placeholder="What were you doing? (optional)"
-          className="h-8 rounded-lg border border-line bg-panel px-2.5 text-[13px] outline-none placeholder:text-faint focus:border-muted"
-        />
-        <textarea
-          readOnly
-          value={report || "Gathering the details…"}
-          onFocus={(event) => event.currentTarget.select()}
-          className="h-[300px] resize-none rounded-lg border border-line bg-black/40 p-2.5 font-mono text-[11px] leading-relaxed text-muted outline-none"
-        />
-        {failed !== null && <ProblemView error={failed} doing="send the report" />}
-        <div className="flex justify-end gap-2">
-          <button className="h-8 rounded-lg px-3 text-[13px] text-muted hover:text-fg" onClick={closeReport}>
-            Close
-          </button>
-          <button className="h-8 rounded-lg px-3 text-[13px] text-muted hover:text-fg disabled:opacity-40" disabled={!report} onClick={() => void copy()}>
-            {copied ? "Copied" : "Copy report"}
-          </button>
-          <button
-            disabled={!report || sending || sent}
-            className="h-8 rounded-lg bg-white px-3 text-[13px] font-medium text-black transition-opacity disabled:opacity-40"
-            onClick={() => void send()}
-          >
-            {sent ? "Sent" : sending ? "Sending…" : "Send to the team"}
-          </button>
-        </div>
-      </div>
-    </Modal>
   );
 }
 

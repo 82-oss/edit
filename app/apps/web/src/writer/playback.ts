@@ -122,7 +122,7 @@ const START_WAIT_MS = 1500;
 const STALL_MS = 300;
 /** A hold shorter than this isn't shown (most are a frame or two). */
 const SHOW_WAIT_MS = 300;
-/** A wait this long for the picture goes in the log (Report a problem shows it). */
+/** A wait this long for the picture goes in the log. */
 const SLOW_WAIT_MS = 3000;
 /** After a decoding failure, try again this soon. */
 const DECODE_RETRY_MS = 4_000;

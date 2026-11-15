@@ -31,7 +31,7 @@ import type { Script } from "@edit/types/writer";
 import * as diag from "../diag.ts";
 import { idle, inArea, runtime } from "../effect/runtime.ts";
 import * as service from "../effect/service.ts";
-import { ConvexAnswer } from "../cloud.ts";
+import { ConvexAnswer, readable } from "../cloud.ts";
 import * as cloudBlocks from "../cloud_blocks.ts";
 import * as archive from "./archive.ts";
 import * as storage from "./storage.ts";
@@ -292,7 +292,7 @@ async function call(route: string, body: Record<string, unknown>): Promise<Recor
       if (read) return relay.json<Record<string, unknown>>("POST", `/v1/cloud/${route}`, body, "Script mode's cloud", 120);
       throw new Problem("Edit's relay doesn't serve Script mode's cloud yet (it needs the update with Writer's cloud).");
     }
-    throw new Problem(message, message.startsWith(relay.UNREACHABLE), service.isTemporary(error));
+    throw new Problem(readable(message), message.startsWith(relay.UNREACHABLE), service.isTemporary(error));
   }
 }
 
@@ -305,7 +305,8 @@ export async function convex(kind: string, path: string, args: Record<string, un
   if (answer.status === "success") return { ok: true, value: answer.value ?? null };
   const data = (Predicate.isObject(answer.errorData) ? answer.errorData : {}) as Record<string, unknown>;
   const code = typeof data.code === "string" ? data.code : "";
-  if (code === "") throw new Problem(`The cloud refused ${path}: ${String(data.message ?? answer.errorMessage ?? "unknown error").split("Uncaught ConvexError: ").pop()!.trim()}`);
+  // The function's own words, as a person reads them (Sphe, Nov 15).
+  if (code === "") throw new Problem(readable(String(data.message ?? answer.errorMessage ?? "unknown error").split("Uncaught ConvexError: ").pop()!));
   return { ok: false, code, data };
 }
 

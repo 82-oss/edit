@@ -182,16 +182,7 @@ export function buildRouter(): Router<App> {
     .get("/api/projects/{id}/exports", projectExports)
     .get("/api/storage", async ({ app }) => json({ ...storageReport(app.store.home), exports: await verifyExports(app.store.home) }))
     .post("/api/storage/migrate-media", migrateMedia)
-    // Problem reports (problem_reports.ts): sent from Report a problem; pulled by an admin.
-    .post("/api/reports", async (context) => {
-      const given = await body(context);
-      const report = field<string>(given, "report", "string", true);
-      try {
-        return json(await problemReports.send(context.app.store.home, context.app.machine, report));
-      } catch (error) {
-        throw bad(diag.messageOf(error));
-      }
-    })
+    // Problem reports (problem_reports.ts): the Macs' own and the agent's, pulled by an admin.
     // Every Mac's latest report (problem_reports.latest), whether it's on or not.
     .get("/api/reports/latest", async ({ app }) => {
       try {

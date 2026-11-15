@@ -4,7 +4,6 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { useAgent } from "../lib/agent";
 import * as storyboard from "../lib/storyboard";
 import { api, mediaHost } from "../lib/api";
-import { openReport } from "../lib/diagnostics";
 import { paramAt, projectDuration, setParam } from "../lib/edit";
 import { clearInOut, inOutSpan, marked, useInOut } from "../lib/inOut";
 import { viewerMenu } from "../lib/menus";
@@ -78,7 +77,6 @@ export function Viewer() {
   const [smoothShown, setSmoothShown] = useState(preview.smoothShown);
   const [error, setError] = useState<string | null>(null);
   const [buffering, setBuffering] = useState(false);
-  const [stuck, setStuck] = useState(false);
   const [framed, setFramed] = useState(preview.framed);
   const [native, setNative] = useState(preview.native);
   const fullscreen = useFullscreen();
@@ -105,7 +103,7 @@ export function Viewer() {
 
   useEffect(() => {
     const canvas = canvasRef.current!;
-    const off = preview.onStatus(() => { setError(preview.error); setBuffering(preview.buffering); setStuck(preview.stuck); setFramed(preview.framed); setSmoothShown(preview.smoothShown); setNative(preview.native); });
+    const off = preview.onStatus(() => { setError(preview.error); setBuffering(preview.buffering); setFramed(preview.framed); setSmoothShown(preview.smoothShown); setNative(preview.native); });
     void preview.attach(canvas);
     preview.attachVideo(videoRef.current);
     return () => {
@@ -338,32 +336,16 @@ export function Viewer() {
               <Spinner />
             </div>
           )}
-          {/* Edit V2: a spinner in the middle of the picture, as a video player's, the way to report it under it only once it's stuck (Sphe, Nov 11: the corner pill sat behind the controls). */}
+          {/* Edit V2: a spinner in the middle of the picture, as a video player's (Sphe, Nov 11: the corner pill sat behind the controls). */}
           {hq && !shownError && framed && (buffering || retrying) && (
-            <div role="status" aria-label="Loading the frame" className="appear-late pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-3">
+            <div role="status" aria-label="Loading the frame" className="appear-late pointer-events-none absolute inset-0 flex items-center justify-center">
               <Spinner />
-              {stuck && (
-                <button
-                  className="pointer-events-auto rounded-md bg-black/60 px-2.5 py-1 text-[11px] text-white/70 transition-colors hover:text-white"
-                  onClick={() => openReport(`The preview has been stuck on "Loading frame…" at frame ${Math.floor(playhead.frame)}`)}
-                >
-                  Stuck? Report it
-                </button>
-              )}
             </div>
           )}
           {!hq && !shownError && framed && (buffering || retrying) && (
             <div role="status" className="pointer-events-none absolute bottom-3 right-3 flex items-center gap-2 rounded-md bg-black/70 px-2.5 py-1.5 text-[11px] text-muted">
               <Pulse size={12} /> Loading frame…
             </div>
-          )}
-          {!hq && !shownError && buffering && stuck && (
-            <button
-              className={cx("absolute rounded-md bg-black/70 px-2.5 py-1.5 text-[11px] text-muted underline underline-offset-2 hover:text-fg", framed ? "right-3 bottom-11" : "bottom-[calc(50%-64px)] left-1/2 -translate-x-1/2")}
-              onClick={() => openReport(`The preview has been stuck on "Loading frame…" at frame ${Math.floor(playhead.frame)}`)}
-            >
-              Stuck? Report it
-            </button>
           )}
           {!error && empty && importing !== null && job?.state === "waiting" && project && (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-[13px]">

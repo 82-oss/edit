@@ -30,7 +30,7 @@ const READ_TIMEOUT_MS = 20_000;
 
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
-/** How the media reads went in this worker (for problem reports: a slow connection shows here). */
+/** How the media reads went in this worker (a slow connection shows here). */
 export interface NetworkStats {
   requests: number;
   bytes: number;

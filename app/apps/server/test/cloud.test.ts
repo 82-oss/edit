@@ -56,7 +56,10 @@ test("convex_answers_become_results", () => {
     throw new Error("no failure");
   };
   const plain = failure({ status: "error", errorMessage: "Uncaught Error: no" });
-  expect(plain.message).toBe("Convex: Uncaught Error: no");
+  // Said as a person reads it (Sphe, Nov 15): no "Convex:", request id, "Uncaught Error:" or stack.
+  expect(plain.message).toBe("no");
+  expect(failure({ status: "error", errorMessage: "[Request ID: 3f2a] Server Error\nUncaught Error: That name is taken.\n    at handler (../convex/edit.ts:12:9)" }).message).toBe("That name is taken.");
+  expect(cloud.ConvexFailure.relay("Convex: no channel gta.").message).toBe("no channel gta.");
   expect(plain.code).toBeNull();
   // A ConvexError keeps its code and data (Edit's `conflict`, `locked`, …).
   const conflict = failure({
@@ -65,7 +68,7 @@ test("convex_answers_become_results", () => {
     errorData: { code: "conflict", message: "saved elsewhere", rev: 7 },
   });
   expect(conflict.code).toBe("conflict");
-  expect(conflict.message).toBe("Convex: saved elsewhere");
+  expect(conflict.message).toBe("saved elsewhere");
   expect(conflict.kind).toBe("function");
   expect((conflict.data as { rev: number }).rev).toBe(7);
   expect(failure({ what: 1 }).kind).toBe("relay");
@@ -446,7 +449,7 @@ test("convex calls keep their failure apart: offline, refused by the relay, thro
   const thrown = await cloud.convexCall("mutation", "edit:putMedia", { source: "sha256:x" }, 15).catch((error: unknown) => error as cloud.ConvexFailure);
   expect(thrown).toBeInstanceOf(cloud.ConvexFailure);
   expect((thrown as cloud.ConvexFailure).code).toBe("invalid");
-  expect((thrown as cloud.ConvexFailure).message).toBe("Convex: New footage needs a name, originalKey and size.");
+  expect((thrown as cloud.ConvexFailure).message).toBe("New footage needs a name, originalKey and size.");
   const refused = await cloud.convexCall("query", "repack:secrets", {}, 15).catch((error: unknown) => error as cloud.ConvexFailure);
   expect((refused as cloud.ConvexFailure).kind).toBe("relay");
   expect((refused as cloud.ConvexFailure).message).toBe("Only edit: functions can be called. (403)");

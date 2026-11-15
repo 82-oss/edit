@@ -27,7 +27,7 @@ export function Toasts() {
           >
             {toast.tone === "error" && <CircleAlert size={16} className="mt-px shrink-0 text-danger" />}
             {toast.tone === "agent" && <Bot size={15} className="mt-px shrink-0 text-agent" />}
-            {toast.problem ? <ToastProblem problem={toast.problem} onDismiss={() => dismiss(toast.id)} /> : <span className="text-left">{toast.text}</span>}
+            {toast.problem ? <ToastProblem problem={toast.problem} /> : <span className="text-left">{toast.text}</span>}
             {toast.action && (
               <button
                 onClick={(event) => {

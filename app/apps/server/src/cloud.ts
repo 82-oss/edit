@@ -1083,6 +1083,22 @@ async function fetchRest(key: string, object: Head, partial: string, progress: R
 export type ConvexKind = "unreachable" | "relay" | "function";
 
 /**
+ * A failure's words as a person reads them (Sphe, Nov 15: "remove the convex
+ * prefix"): without the relay's "Convex: ", Convex's request id, "Server
+ * Error", "Uncaught Error:" and the stack under it.
+ */
+export function readable(said: string): string {
+  const words = said
+    .replace(/^Convex:\s*/u, "")
+    .replace(/^\[Request ID: [^\]]*\]\s*/u, "")
+    .replace(/^Server Error\s*/u, "")
+    .replace(/^Uncaught (?:Convex)?Error:\s*/u, "")
+    .split(/\n\s+at /u)[0]!
+    .trim();
+  return words === "" ? said.trim() : words;
+}
+
+/**
  * Why a Convex call failed: the relay couldn't be reached (offline), the
  * relay refused it (a bad token, a bad request), or the function threw; then
  * `code` is its `errorData.code` (Edit's functions use `conflict`, `locked`,
@@ -1103,7 +1119,7 @@ export class ConvexFailure extends Error {
     /** The relay is pausing the database while it moves: offline for minutes, not asked again by the call. */
     readonly paused = false,
   ) {
-    super(kind === "function" ? `Convex: ${said}` : said);
+    super(readable(said));
   }
 
   static unreachable(message: string, paused = false): ConvexFailure {

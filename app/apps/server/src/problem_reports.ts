@@ -1,9 +1,7 @@
-// Problem reports sent from Report a problem: the person presses Send and
-// their report (what went wrong, Edit's recent log, how long things took)
-// goes to the team's cloud, so nobody copies and pastes an error into a chat
-// any more (the user, Oct 28: "if you click report a problem and it gets
-// stored, so on this very machine we can pull the problems people have, that
-// would be great"). Kept under `edit/reports/<day>/` on R2: anyone signed in
+// Problem reports: each Mac's own (its log, what needs attention, how long
+// things took) and the agent's when one of its tools fails, sent to the
+// team's cloud so an admin pulls them on their Mac (the user, Oct 28). There's
+// no Report button any more (Sphe, Nov 15): they go by themselves. Kept under `edit/reports/<day>/` on R2: anyone signed in
 // sends, only an admin reads or lists (the relay holds that line). A copy
 // stays on the sender's Mac too.
 

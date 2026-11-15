@@ -28,7 +28,7 @@ describe("explain", () => {
     expect(resetTime("America/Los_Angeles", now)).toBe(at(8.5));
   });
 
-  it("keeps the original words for Report, never as the title", () => {
+  it("keeps the original words for the log, never on screen", () => {
     const raw = "the cloud export stopped (exit 1): Traceback (most recent call last): File \"/app/export_v3.py\", line 88, in <module> RuntimeError: CUDA out of memory";
     const said = explain(raw, "export the video");
     expect(said.title).toBe("The cloud export didn't finish");
@@ -39,7 +39,7 @@ describe("explain", () => {
   it("falls back to what was being done for anything technical it doesn't know", () => {
     const said = explain("downloading edit/originals/drive/1abc/x.mp4 (000): undefined is not an object", "open the footage");
     expect(said.title).toBe("Couldn't open the footage");
-    expect(said.fix).toContain("Report");
+    expect(said.fix).toBe("Something unexpected got in the way. Try again in a moment.");
     expect(said.known).toBe(false);
   });
 

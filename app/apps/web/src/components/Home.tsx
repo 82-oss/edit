@@ -200,7 +200,7 @@ export function Home() {
   const busy = Object.values(statuses).some((one) => one.importing !== null || one.working || one.sharing !== null);
   useEffect(() => {
     if (!busy) return;
-    // A poll that fails is noted by api.ts (Report a problem shows it) and the next one asks again.
+    // A poll that fails is noted by api.ts (in the log) and the next one asks again.
     const timer = setInterval(() => void api.projectStatus().then(setStatuses).catch(() => {}), 3_000);
     return () => clearInterval(timer);
   }, [busy]);

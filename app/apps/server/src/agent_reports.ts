@@ -1,5 +1,5 @@
 // report_problem: the in-app agent files a bug the way a person does with
-// Report a problem: what failed (the tool, what it asked, the error), with
+// A problem report: what failed (the tool, what it asked, the error), with
 // this Mac's diagnostics (remote_actions.report: the log, what's running, the
 // setup checks), sent to the team's problem reports (problem_reports.ts) so
 // it's fixed in Edit rather than worked around in silence (THE WHOLE FLOW;

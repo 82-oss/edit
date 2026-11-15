@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 
-import { note, recordTiming, routeOf } from "./diagnostics";
+import { note, routeOf } from "./diagnostics";
 import type { ExportOptions } from "./exporting";
 import type { Patch } from "./patch";
 import type { PlaybackStatus } from "./store";
@@ -35,17 +35,14 @@ export async function fetchRetrying(url: string, init?: RequestInit, patienceMs 
   for (let attempt = 0; ; attempt++) {
     let response: Response | null = null;
     const route = routeOf(init?.method ?? "GET", url);
-    const sent = performance.now();
     try {
       response = await fetch(url, init);
-      recordTiming(route, performance.now() - sent, response.status >= 500);
       if (!retryable) return response;
       if (!(await restarting(response))) {
         if (useConnection.getState().down) useConnection.setState({ down: false });
         return response;
       }
     } catch (error) {
-      recordTiming(route, performance.now() - sent, true);
       note("warn", "http", `${route}: no response (${error})`);
       // A lost response does not mean the server didn't apply a mutation.
       // Retrying POST can duplicate paid work, projects or media imports.
@@ -346,8 +343,6 @@ export const api = {
       /** A Trello card's own script, followed: its name and how many of the card's cases it covers. */
       cardScript?: { title: string; covered: number; cases: number };
     }>("POST", "/api/scripts/preview", { url }),
-  /** Sends a problem report to the team's cloud (problem_reports.ts): an admin pulls them on their Mac. */
-  sendReport: (report: string) => request<{ key: string }>("POST", "/api/reports", { report }),
   /** Uploads one file into a project's media (not placed); the media ids it added. */
   uploadFile: async (id: string, file: File, origin: string) => {
     const query = new URLSearchParams({ name: file.name, size: String(file.size), origin });
@@ -520,7 +515,7 @@ export interface Review {
 /**
  * Media bytes are read from the other loopback name of Edit's server, so
  * they get their own six connections and slow media can never queue the
- * API (and Report a problem) behind them (nightly-50; the server allows
+ * API behind them (nightly-50; the server allows
  * these sibling reads, http/host.ts `mediaPath`). Pure, for tests: the
  * page's hostname and port in, the address to read from out. Off this Mac
  * (a Tailscale name: no second name answers there) and on the Vite dev UI

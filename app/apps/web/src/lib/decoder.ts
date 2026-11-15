@@ -47,7 +47,7 @@ export class Decoder {
   readonly pictures = new DecodedCache<VideoFrame>(128 * MiB, (frame) => frame.close());
   readonly sound = new DecodedCache<PcmChunk>(32 * MiB, () => {});
   readonly stats = { videoRequests: 0, audioRequests: 0, decodedFrames: 0, cacheHits: 0 };
-  /** Each worker's media reads so far (bytes, time waiting), for problem reports. */
+  /** Each worker's media reads so far (bytes, time waiting): preview.diagnostics. */
   readonly network: Partial<Record<"video" | "audio", NetworkStats>> = {};
 
   /** `key`: the file that failed, when it's one file's. */

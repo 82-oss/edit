@@ -3,8 +3,9 @@
 // again" for what Edit already tries again by itself, or what trying again
 // can't fix (the team: "not give users a lot of retry options"): Try again
 // is offered only after something the person does (shares the file, signs in
-// to YouTube, frees space). The original
-// words are kept for Report and the log, never shown first. The agent still
+// to YouTube, frees space). The original words go to the log, never on
+// screen: no Details or Report (Sphe, Nov 15: "when something goes wrong
+// display it cleanly and have a human readable error"). The agent still
 // gets the original words (it needs the detail to fix its own work); this is
 // for people (the team: "an error so long it goes out of the dialog box, and
 // my team member sends it to me asking what this is").
@@ -22,7 +23,7 @@ export interface Problem {
   /** What to do about it, in a sentence or two (empty when there's nothing to do). */
   fix: string;
   action?: ProblemAction;
-  /** The original words, for Report (never shown first). */
+  /** The original words, for the log (never shown). */
   details: string;
   /** Whether a known case was matched (false: the message as it was, or the fallback). */
   known: boolean;
@@ -195,7 +196,7 @@ const RULES: Rule[] = [
   // Footage files.
   [/No suitable graphics adapter|wgpu error|rendering a frame crashed/i, () => ({
     title: "Edit couldn't draw this frame",
-    fix: "Quit Edit and open it again. If it keeps happening, press Report.",
+    fix: "Quit Edit and open it again.",
   })],
   [/Preview (decoding )?failed|Preview failed to start|Still waiting for frame/i, () => ({
     title: "The preview couldn't show this frame",
@@ -236,7 +237,7 @@ const RULES: Rule[] = [
   })],
   [/cloud export (stopped|failed)|Cloud export \S+ is still queued|Invalid cloud export|export can't render in the cloud/i, () => ({
     title: "The cloud export didn't finish",
-    fix: "Press Report so we can see what went wrong.",
+    fix: "Export it again.",
   })],
   [/isn't in the cloud/i, () => ({
     title: "That file isn't in the cloud yet",
@@ -297,7 +298,7 @@ export function explain(error: unknown, doing = ""): Problem {
   }
   return {
     title,
-    fix: "Press Report so we can see what happened.",
+    fix: "Something unexpected got in the way. Try again in a moment.",
     details,
     known: false,
   };

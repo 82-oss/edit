@@ -3,7 +3,7 @@
 import init, { createEngine, type Engine } from "../engine/pkg/edit_wasm";
 import { api, fetchRetrying, mediaHost, mediaUrl } from "./api";
 import { Decoder, videoTime } from "./decoder";
-import { addContext, note, recordTiming, tell } from "./diagnostics";
+import { note, recordTiming, tell } from "./diagnostics";
 import { AUDIO_CHUNK_SECONDS } from "./decoder.protocol";
 import { crossfadeGain, crossfades, type SoundEdges } from "@edit/types/crossfades";
 import { clipEnd, paramAt, projectDuration, validateClips, validateProject } from "./edit";
@@ -68,7 +68,7 @@ interface PictureSource { clip: string; media: string; time: number }
 /** A stretch of a clip's sound queued on the audio clock, and what it was cut from. */
 interface ScheduledSound { source: AudioBufferSourceNode; gain: GainNode; mute?: GainNode; clip: string; url: string }
 const BUFFERING_BADGE_MS = 600;
-/** Waiting this long for a frame is noted for problem reports, and the viewer offers one. */
+/** Waiting this long for a frame is noted in the log. */
 const STUCK_MS = 10_000;
 /** After a decoding failure, the preview tries again this soon. */
 const DECODE_RETRY_MS = 4_000;
@@ -2013,15 +2013,6 @@ export function projectJson(project: Project) {
 export const preview = new Preview();
 // The server's cleaner took a copy the window reads (lib/store.ts hears it): asked again before the next jump fails on it.
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") window.addEventListener("edit:native-sources", () => preview.refreshNativeSources());
-addContext("Preview", () => ({
-  error: preview.error,
-  waiting: preview.buffering,
-  stuck: preview.stuck,
-  playhead: Math.floor(playhead.frame),
-  playing: playhead.playing,
-  native: preview.native,
-  ...preview.diagnostics,
-}));
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") preview.wake();
   else { preview.remember(); preview.pause(); }

@@ -807,7 +807,8 @@ function EntryView({ entry, muted, fresh }: { entry: AgentEntry; muted?: boolean
   if (entry.kind === "error") {
     const resolved = entry.status === "done";
     return (
-      <div className={cx("flex items-start gap-2 rounded-lg px-2.5 py-2 text-[12px]", resolved ? "bg-raised text-muted" : "bg-danger-soft text-danger")}>
+      // A line in the chat, as the agent's own words are, not a red card (Sphe, Nov 15).
+      <div className={cx("flex items-start gap-2 px-1.5 text-[12px]", resolved && "text-muted")}>
         {resolved ? (
           <>
             <Check size={13} className="mt-px shrink-0" />
