@@ -55,7 +55,8 @@ async function lookAtStretch(app: ToolCall["app"], projectId: string, name: stri
   const last = Math.max(first, Math.round(end * fps) - 1);
   const count = Math.min(last - first + 1, EFFECT_FRAMES_MOST);
   const times = Array.from({ length: count }, (_, index) => (first + index) / fps);
-  const look = await effects.look(app, projectId, name, times, SHEET_FRAME);
+  // A stretch says nothing of a frame's cost: not measured.
+  const look = await effects.look(app, projectId, name, times, SHEET_FRAME, false);
   const out: Content[] = [];
   const dir = fs.mkdtempSync(join(app.store.cacheDir(), "effect-frames-"));
   try {
@@ -113,7 +114,7 @@ async function lookCompared(app: ToolCall["app"], projectId: string, name: strin
     if (given.length > 8) throw new Error("times: at most 8 moments a look (every_frame for a stretch)");
     times = given;
   }
-  const look = await effects.look(app, projectId, name, times, 0);
+  const look = await effects.look(app, projectId, name, times, 0, false);
   const dir = fs.mkdtempSync(join(app.store.cacheDir(), "effect-compare-"));
   try {
     const ours = look.stills.map((still, index) => {

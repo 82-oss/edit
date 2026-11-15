@@ -271,6 +271,10 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     expect(Buffer.from(look.stills[0]!.picture).equals(Buffer.from(look.stills[1]!.picture))).toBe(false);
     const again = await effects.look(app, id, "bar", [1]);
     expect(Buffer.from(again.stills[0]!.picture).equals(Buffer.from(look.stills[1]!.picture))).toBe(true);
+    // Unmeasured (a stretch's frames): no cost, the same picture.
+    const unmeasured = await effects.look(app, id, "bar", [1], 960, false);
+    expect(unmeasured.stills[0]!.cost).toBe(0);
+    expect(Buffer.from(unmeasured.stills[0]!.picture).equals(Buffer.from(look.stills[1]!.picture))).toBe(true);
     expect(look.interval).toBeGreaterThan(1);
     expect(look.stills[0]!.cost).toBeGreaterThan(1);
     // With no moments asked for: six, spread over its length.

@@ -366,6 +366,14 @@ async function file(context: RouteContext<App>): Promise<Response> {
     return map;
   }
   if (parts.length > 3 && parts[0] !== "edit-map") throw notFound("no such file");
+  // A still Edit's Chrome just drew, handed back to the page that drew it (`look`), once.
+  if (parts.length === 2 && parts[0] === HANDED && !fs.existsSync(join(dir, ...parts))) {
+    const key = `${project}/${params.name}/${parts[1]}`;
+    const bytes = handed.get(key);
+    if (bytes === undefined) throw notFound("no such file");
+    handed.delete(key);
+    return new Response(bytes, { headers: { ...headers, "content-type": "image/png", "access-control-allow-origin": "null" } });
+  }
   // One of Edit's faces, as if it were in the folder (a file of the effect's own by that name is never shadowed: its folder wins).
   const face = parts.length === 2 && parts[0] === "edit-fonts" && !fs.existsSync(join(dir, ...parts)) ? FONTS.find((font) => font.file === parts[1]) : undefined;
   if (face !== undefined) {
@@ -495,20 +503,26 @@ export interface Still {
   time: number;
   picture: Uint8Array;
   mime: string;
-  /** What a frame takes while it plays from here, in milliseconds, on this computer. */
+  /** What a frame takes while it plays from here, in milliseconds, on this computer (0 when the look didn't measure it). */
   cost: number;
   /** Some of it is see-through (shown over a checkerboard): it plays over what's beneath it. */
   seeThrough: boolean;
 }
 
+/** Where a page fetches the still it just drew from (`edit-look/<token>` in its own folder): the screenshot's PNG. */
+const HANDED = "edit-look";
+const handed = new Map<string, Uint8Array>();
+
 /**
- * Run in the effect's page: a PNG screenshot (base64) drawn over a grey
- * checkerboard as a JPEG, and whether any of it was see-through, so the agent
- * sees which parts will show what's beneath.
+ * Run in the effect's page: its PNG screenshot, fetched from Edit as a file in
+ * its own folder (`HANDED`), drawn over a grey checkerboard as a JPEG, and
+ * whether any of it was see-through, so the agent sees which parts will show
+ * what's beneath. Fetched, not sent in as base64 in the call's source: that
+ * was 0.15 s of a 960 px still and 0.8 s of a full one, the same pictures
+ * (Nov 15, mandalorian).
  */
-const OVER_CHECKS = `async (png, quality) => {
-  const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
-  const shot = await createImageBitmap(new Blob([bytes], { type: "image/png" }));
+const OVER_CHECKS = `async (address, quality) => {
+  const shot = await createImageBitmap(await (await fetch(address)).blob());
   const plain = new OffscreenCanvas(shot.width, shot.height).getContext("2d");
   plain.drawImage(shot, 0, 0);
   const pixels = plain.getImageData(0, 0, shot.width, shot.height).data;
@@ -523,6 +537,7 @@ const OVER_CHECKS = `async (png, quality) => {
   }
   ctx.drawImage(shot, 0, 0);
   const jpeg = new Uint8Array(await (await canvas.convertToBlob({ type: "image/jpeg", quality })).arrayBuffer());
+  if (typeof jpeg.toBase64 === "function") return { jpeg: jpeg.toBase64(), clear };
   let text = "";
   for (let at = 0; at < jpeg.length; at += 0x8000) text += String.fromCharCode(...jpeg.subarray(at, at + 0x8000));
   return { jpeg: btoa(text), clear };
@@ -569,11 +584,11 @@ async function load(page: devtools.Page, url: string, token: string, name: strin
 /**
  * The effect as the Chrome Edit drives draws it: its length, a still at each
  * of `times` (null: six spread over its length; `side`: the longest side in
- * pixels, whole frames as PNG when 0),
- * what a frame costs to play from each, and everything wrong the page or the
+ * pixels, whole frames when 0), what a frame costs to play from each (when
+ * `measure`: five refreshes a still), and everything wrong the page or the
  * runtime noticed. A page that can't be loaded at all is the error.
  */
-export async function look(app: App, projectId: string, name: string, times: number[] | null, side = 960): Promise<Look> {
+export async function look(app: App, projectId: string, name: string, times: number[] | null, side = 960, measure = true): Promise<Look> {
   const live = app.store.get(projectId);
   if (live === null) throw new Error("no such project");
   const dir = folder(app.store, projectId, name);
@@ -595,14 +610,25 @@ export async function look(app: App, projectId: string, name: string, times: num
         // As it renders: nothing behind the page, its unpainted parts see-through, shown over a checkerboard.
         await page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
         for (const time of wanted) {
-          const cost = await page.evaluate<number>(`window.__edit.cost(${time}, ${1 / fps})`);
+          // Unmeasured, the cost's same five seeks one after another, not a refresh apart (five refreshes a still, 4 s of a
+          // stretch's 48 frames): what they throw is said as before, and the still is drawn after the same seeks.
+          const cost = measure
+            ? await page.evaluate<number>(`window.__edit.cost(${time}, ${1 / fps})`)
+            : (await page.evaluate(`(() => { for (let drawn = 0; drawn < 5; drawn++) window.__edit.seek(${time} + drawn * ${1 / fps}); })()`), 0);
           await page.evaluate(`window.__edit.seek(${time})`);
           const scale = side > 0 ? Math.min(1, side / Math.max(width, height)) : 1;
           const shot = await page.call("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, clip: { x: 0, y: 0, width, height, scale } }, 90_000);
           if (typeof shot.data !== "string") throw new Error("Chrome drew nothing");
           // At full size too a JPEG (fine enough for small text at this quality): a full-size PNG was 1.4–4 MB, kept again
           // in the agent's session with every look (Nov 13: 290 MB of one project's).
-          const shown = await page.evaluate<{ jpeg: string; clear: boolean }>(`(${OVER_CHECKS})(${JSON.stringify(shot.data)}, ${side === 0 ? 0.92 : 0.82})`, 60_000);
+          const handle = randomBytes(12).toString("hex");
+          handed.set(`${projectId}/${name}/${handle}`, new Uint8Array(Buffer.from(shot.data, "base64")));
+          let shown: { jpeg: string; clear: boolean };
+          try {
+            shown = await page.evaluate<{ jpeg: string; clear: boolean }>(`(${OVER_CHECKS})(${JSON.stringify(`${HANDED}/${handle}`)}, ${side === 0 ? 0.92 : 0.82})`, 60_000);
+          } finally {
+            handed.delete(`${projectId}/${name}/${handle}`);
+          }
           stills.push({ time, picture: new Uint8Array(Buffer.from(shown.jpeg, "base64")), mime: "image/jpeg", cost, seeThrough: shown.clear });
         }
       }
