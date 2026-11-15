@@ -891,6 +891,7 @@ impl ReaderPool {
     /// taken to seek somewhere else.
     fn take(&mut self, source: &Source, time: f64) -> VideoReader {
         let cost = |reader: &VideoReader, used: u64| match reader.position {
+            _ if reader.source.still && reader.has_frame => 0.0,
             Some(position) if position <= time + 1e-6 && time - position <= 2.0 => time - position,
             _ if reader
                 .ahead
@@ -927,9 +928,10 @@ impl ReaderPool {
         let mut found = false;
         for (reader, _) in &mut self.readers {
             if reader.source.key == source.key
-                && reader
-                    .position
-                    .is_some_and(|position| position <= time + 1e-6 && time - position <= FORWARD)
+                && ((reader.source.still && reader.has_frame)
+                    || reader.position.is_some_and(|position| {
+                        position <= time + 1e-6 && time - position <= FORWARD
+                    }))
             {
                 found = true;
                 if reader.ahead.is_some() {
@@ -1376,9 +1378,8 @@ impl PreviewPictures {
         let Some(found) = project.media(media) else {
             return;
         };
-        if found.kind == edit_core::MediaKind::Image {
-            return;
-        }
+        // A picture too: decoded at its cut it took 15–25 ms of the frame's time (ImageIO), a hold
+        // of two frames at every photo while playing (Cops Realize, Nov 15).
         let path = sources
             .get(media)
             .cloned()
