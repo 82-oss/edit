@@ -58,6 +58,7 @@ import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
 import * as cloudBlocks from "./cloud_blocks.ts";
+import * as localPreviews from "./local_previews.ts";
 import * as exportExcerpts from "./export_excerpts.ts";
 import * as player from "./player.ts";
 import { prepLine } from "./export_prep.ts";
@@ -1744,11 +1745,12 @@ function forgetStreams(key: string) {
  * go) or the whole preview fetched for the native player (local_previews.ts). The import answers once the proxy is made, so the
  * media's analysis started at once and read it through R2 before it was
  * there: the thumbnails, waveform and censor check of every such import
- * failed with a 404 (Nov 3, Robyn in custody on the old path). Null when
+ * failed with a 404 (Nov 3, Robyn in custody on the old path). Footage that's
+ * its own proxy (an `edit/originals/` key: maps, interview cuts, most sound)
+ * is served from its whole copy too, the same bytes as R2's. Null when
  * there's no whole copy here (it's read from R2).
  */
 export function fromLocalCopy(request: Request, cache: string, key: string): Response | null {
-  if (!key.startsWith("edit/proxies/")) return null;
   const local = localPath(cache, key);
   if (!isFile(local)) return null;
   const response = serveFile(request, local);
@@ -1789,6 +1791,8 @@ export async function streamFromCloud(request: Request, cloudMedia: { proxy?: st
   const range = request.headers.get("range");
   // The page's bounded reads come from big blocks read once and kept a while (cloud_blocks.ts); anything else straight from R2.
   if (playbackBlocks !== null) {
+    // The page's player reads it now: the whole file comes next, so the rest of it is read here.
+    if (/^\/api\/projects\/[^/]+\/media\//u.test(new URL(request.url).pathname)) localPreviews.fetchNow(key, localPath(parent(parent(playbackBlocks)!)!, key));
     const served = await cloudBlocks.serve(playbackBlocks, key, range, () => streamingUrl(key, true)).catch((error: unknown) => {
       diag.warn("cloud", `reading ${key} in blocks: ${diag.messageOf(error)}`);
       forgetStreams(key);
@@ -1813,16 +1817,6 @@ export async function streamFromCloud(request: Request, cloudMedia: { proxy?: st
     }
     return new Response(answer.body, { status: answer.status, headers });
   }
-}
-
-/** How much of the timeline a prefetch reads ahead (seconds of it), and at most how many bytes. */
-export const PREFETCH = { seconds: 600, bytes: 600_000_000 };
-/** The newest prefetch per project: an older one stops. */
-const prefetches = new Map<string, number>();
-
-/** Stops project `id`'s block prefetch (Edit.app's window took the project: whole copies come instead). */
-export function stopPrefetch(id: string): void {
-  prefetches.set(id, (prefetches.get(id) ?? 0) + 1);
 }
 
 /** The fill of pieces under way per project, and the frame it began from. */
@@ -1886,62 +1880,24 @@ export function fillPieces(app: App, id: string, from = 0): void {
 }
 
 /**
- * Reads the proxies' stretches project `id`'s timeline plays, in timeline
- * order from frame `from`, into the block cache before the viewer asks
- * (off Modal, step 5: a Mac with nothing cached waited on R2's ~0.25 s per
- * block as it played). Behind every read the viewer makes (cloud_blocks.ts
- * `prefetch`), `PREFETCH.seconds` of the timeline or `PREFETCH.bytes` at
- * most; the cache's budget evicts it like any block. A proxy's bytes are
- * taken as even through it (they're about: one rate, a keyframe each half
- * second), a block either side kept for the slack.
+ * The footage project `id`'s timeline plays, brought here for the page's
+ * player from frame `from` on: each file whole, in the timeline's order from
+ * there (local_previews.ts `fetchInPlayheadOrder`), and a long video's pieces
+ * (`fillPieces`). Until Nov 15 this read 2 MiB blocks of the next ten minutes
+ * of the timeline (and at most 600 MB) behind the viewer, and nothing further:
+ * a jump anywhere else waited on R2. How many files were queued.
  */
 export async function prefetchProject(app: App, id: string, from = 0): Promise<number> {
   if (playbackBlocks === null || !cloud.enabled()) return 0;
   // A long video's pieces are the one footage form both players read, so they come down for either.
   fillPieces(app, id, from);
-  // Drawn by Edit.app's window: its whole copies come down instead (native_preview.ts), never blocks.
+  // Drawn by Edit.app's window: its whole copies are queued with where it reads from (native_preview.ts).
   if (player.isNative(id)) return 0;
-  const root = playbackBlocks;
   const live = app.store.get(id);
   if (live === null) return 0;
-  const generation = (prefetches.get(id) ?? 0) + 1;
-  prefetches.set(id, generation);
-  const stop = () => prefetches.get(id) !== generation;
-  const project = live.project;
-  const fps = project.settings.fps > 0 ? project.settings.fps : 30;
-  const until = from + PREFETCH.seconds * fps;
-  const clips = project.clips
-    .filter((clip): clip is Extract<Clip, { type: "video" | "audio" }> => (clip.type === "video" || clip.type === "audio") && clip.start + clip.duration > from && clip.start < until)
-    .sort((a, b) => a.start - b.start);
-  const sizes = new Map<string, number | null>();
-  let bytes = 0;
-  for (const clip of clips) {
-    if (stop() || bytes >= PREFETCH.bytes) break;
-    const media = mediaOf(project, clip.media);
-    const key = media === undefined ? null : streamKey(media.cloud, "proxy");
-    if (media === undefined || key === null || !(media.duration > 0)) continue;
-    let size = sizes.get(key);
-    if (size === undefined) {
-      size = cloudBlocks.sizeOf(root, key) ?? (await cloud.head(key).catch((error: unknown) => {
-        diag.warn("cloud", `${id}: ${key} isn't read ahead: R2 didn't say its size (${diag.messageOf(error)})`);
-        return null;
-      }))?.size ?? null;
-      sizes.set(key, size);
-    }
-    if (size === null || size <= 0) continue;
-    const speed = clip.speed ?? 1;
-    const first = Math.max(clip.start, from);
-    const last = Math.min(clip.start + clip.duration, until);
-    const at = (frame: number) => (clip.source_in ?? 0) + ((frame - clip.start) / fps) * speed;
-    const [a, b] = [at(first), at(last)].sort((x, y) => x - y) as [number, number];
-    const block = cloudBlocks.BLOCK;
-    const firstBlock = Math.max(Math.floor((size * a) / media.duration / block) - 1, 0);
-    const lastBlock = Math.min(Math.ceil((size * b) / media.duration / block) + 1, Math.ceil(size / block) - 1);
-    const indexes = Array.from({ length: Math.max(lastBlock - firstBlock + 1, 0) }, (_, n) => firstBlock + n);
-    bytes += await cloudBlocks.prefetch(root, key, indexes, () => streamingUrl(key, true), stop);
-  }
-  if (bytes > 0) diag.info("cloud", `${id}: ${Math.round(bytes / 1e6)} MB of its proxies read ahead from frame ${from}`);
-  return bytes;
+  const queued = localPreviews.fetchInPlayheadOrder(app.store.cacheDir(), live.project, from);
+  if (queued > 0) diag.info("cloud", `${id}: ${queued} files of its footage coming down whole, from frame ${from}`);
+  return queued;
 }
 
 /**

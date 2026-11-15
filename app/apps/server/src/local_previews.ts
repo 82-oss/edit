@@ -63,6 +63,55 @@ export function fetchWhole(key: string, local: string): void {
   fetchNext();
 }
 
+/** A file the page's player is reading from R2 this moment (a jump past what's here) comes down whole next. */
+export function fetchNow(key: string, local: string): void {
+  if (pieces.baseOf(key) !== null || isFile(local) || fetching.has(local) || Date.now() - (failed.get(local) ?? 0) < RETRY_MS) return;
+  const at = waiting.findIndex((one) => one.local === local);
+  if (at === 0) return;
+  if (at > 0) waiting.splice(at, 1);
+  waiting.unshift({ key, local });
+  fetchNext();
+}
+
+/**
+ * Every picture and sound file `project`'s timeline plays, whole, onto this
+ * machine for the page's player, in the order the timeline plays them from
+ * frame `from` (what's after the playhead first, then what's before it),
+ * ahead of anything already waiting: the page player's one footage form, as
+ * Edit.app's window's (native_preview.ts). Until Nov 15 the page read ahead
+ * 2 MiB blocks of ten minutes of the timeline and nothing else, so every jump
+ * past them waited on R2 (two reads of 0.45–1.1 s from mandalorian, the
+ * file's index and the stretch asked) and none landed in a tenth of a second.
+ * A pieced proxy is no file (its pieces come instead: `fillPieces`). Asked
+ * again from another frame (a jump), the files from there move to the front.
+ */
+export function fetchInPlayheadOrder(cache: string, project: Project, from: number): number {
+  const after: string[] = [];
+  const before: string[] = [];
+  for (const clip of [...project.clips].sort((a, b) => a.start - b.start)) {
+    if (clip.type !== "video" && clip.type !== "audio") continue;
+    (clip.start + clip.duration > from ? after : before).push(clip.media);
+  }
+  const byId = new Map(project.media.map((media) => [media.id, media]));
+  const wanted: { key: string; local: string }[] = [];
+  const seen = new Set<string>();
+  for (const id of [...after, ...before]) {
+    const media = byId.get(id);
+    const key = media === undefined ? null : cloudMedia.streamKey(media.cloud, "proxy");
+    if (media === undefined || key === null || pieces.baseOf(key) !== null || isFile(media.path) || seen.has(key)) continue;
+    seen.add(key);
+    const local = cloudMedia.localPath(cache, key);
+    if (isFile(local) || fetching.has(local) || Date.now() - (failed.get(local) ?? 0) < RETRY_MS) continue;
+    wanted.push({ key, local });
+  }
+  const first = new Set(wanted.map((one) => one.local));
+  const rest = waiting.filter((one) => !first.has(one.local));
+  waiting.length = 0;
+  waiting.push(...wanted, ...rest);
+  fetchNext();
+  return wanted.length;
+}
+
 /**
  * A cloud media's preview key, when its whole file can be kept here: a made
  * proxy, or footage that's its own proxy (256 MB at most); not a pieced

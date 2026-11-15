@@ -990,8 +990,12 @@ test("a proxy made here and not uploaded yet is read from here: the import's ana
     fs.rmSync(local);
     const later = await cloudMedia.streamFromCloud(new Request("http://127.0.0.1/x", { headers: { range: "bytes=0-9" } }), { proxy: key }, "proxy");
     expect([...new Uint8Array(await later!.arrayBuffer())]).toEqual([...bytes.subarray(0, 10)]);
-    // Only a proxy's copy: never an original's or anything else under the cache.
+    // Footage that's its own proxy is served from its whole copy too (the same bytes as R2's); nothing that isn't here.
     expect(cloudMedia.fromLocalCopy(new Request("http://127.0.0.1/x"), cache, "edit/originals/sha256/x/y.mp4")).toBeNull();
+    const original = cloudMedia.localPath(cache, "edit/originals/sha256/x/y.mp4");
+    fs.mkdirSync(original.slice(0, original.lastIndexOf("/")), { recursive: true });
+    fs.writeFileSync(original, bytes);
+    expect(cloudMedia.fromLocalCopy(new Request("http://127.0.0.1/x", { headers: { range: "bytes=0-9" } }), cache, "edit/originals/sha256/x/y.mp4")!.status).toBe(206);
   } finally {
     fixture.cleanup();
   }

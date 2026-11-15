@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
-import { BLOCK, noteViewerMiss, prefetch, serve, sizeOf, viewerBusy, viewerHooks, waitForViewerRest } from "../src/cloud_blocks.ts";
+import { BLOCK, noteViewerMiss, serve, viewerBusy, viewerHooks, waitForViewerRest } from "../src/cloud_blocks.ts";
 
 // R2 stood in for: a 5½-block object, every range read counted.
 const size = BLOCK * 5 + BLOCK / 2;
@@ -72,7 +72,7 @@ test("an open-ended or odd ask isn't served from blocks; one past the end is ref
   expect((await serve(root, "edit/proxies/a.mp4", `bytes=${size + 10}-${size + 20}`, url))?.status).toBe(416);
 });
 
-test("a viewer read that misses on R2 marks the viewer busy; a cache hit does not, and prefetch waits for rest", async () => {
+test("a viewer read that misses on R2 marks the viewer busy; a cache hit does not, and a rest wait waits for rest", async () => {
   const key = "edit/proxies/viewer-busy.mp4";
   noteViewerMiss(0);
   expect(viewerBusy()).toBe(false);
@@ -85,12 +85,11 @@ test("a viewer read that misses on R2 marks the viewer busy; a cache hit does no
   expect(viewerBusy()).toBe(false);
   await serve(root, key, "bytes=0-1023", url);
   expect(viewerBusy()).toBe(false);
-  // Prefetch waits while the viewer is busy, then goes once it rests.
+  // Background work waits while the viewer is busy, then goes once it rests.
   viewerHooks.restMs = 200;
   noteViewerMiss();
   const began = Date.now();
-  const got = await prefetch(root, "edit/proxies/after-rest.mp4", [0], url);
-  expect(got).toBe(BLOCK);
+  expect(await waitForViewerRest()).toBe(true);
   expect(Date.now() - began).toBeGreaterThanOrEqual(150);
   viewerHooks.restMs = rest;
   noteViewerMiss(0);
@@ -107,18 +106,3 @@ test("a bounded rest wait proceeds anyway once it is up, however busy the viewer
   noteViewerMiss(0);
 });
 
-test("read ahead: blocks asked for in order come from R2 once, those here cost nothing, and a stop stops it", async () => {
-  const key = "edit/proxies/prefetched.mp4";
-  reads.length = 0;
-  const got = await prefetch(root, key, [3, 4, 5], url);
-  expect(got).toBe(BLOCK * 2 + BLOCK / 2);
-  expect(reads).toEqual([`${3 * BLOCK}-${4 * BLOCK - 1}`, `${4 * BLOCK}-${5 * BLOCK - 1}`, `${5 * BLOCK}-${6 * BLOCK - 1}`]);
-  expect(sizeOf(root, key)).toBe(size);
-  // Here already: nothing read; the page's read of them comes from disk.
-  reads.length = 0;
-  expect(await prefetch(root, key, [3, 4], url)).toBe(0);
-  expect(reads).toEqual([]);
-  // Stopped: nothing more.
-  expect(await prefetch(root, key, [0, 1], url, () => true)).toBe(0);
-  expect(reads).toEqual([]);
-});

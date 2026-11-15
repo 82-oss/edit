@@ -87,3 +87,31 @@ test("a preview that failed to come isn't asked again on every frame", async () 
     home.cleanup();
   }
 });
+
+test("the page player's footage comes down whole in the timeline's order from the playhead; a file read now comes next", async () => {
+  const home = scratch("local-previews");
+  try {
+    const cache = home.dir;
+    const started: string[] = [];
+    const finish: (() => void)[] = [];
+    localPreviews.hooks.fetch = (key) => new Promise<void>((resolve) => { started.push(key); finish.push(resolve); });
+    const keys = ["a", "b", "c", "d", "e", "f"].map((name) => `edit/originals/sha256/${name}/clip.mp4`);
+    const project = newProject();
+    keys.forEach((key, n) => project.media.push(media({ id: `m${n}`, name: `m${n}`, path: stream(key), kind: n === 5 ? "audio" : "video", duration: 60, cloud: { proxy: key } } as never)));
+    // On the timeline: m4 first, then m3, m2 (its sound on m5), m1; m0 isn't played.
+    const clip = (id: string, media: string, start: number, type = "video") => ({ type, id, track: type === "video" ? "v1" : "a1", media, start, duration: 100, source_in: 0, speed: 1 }) as never;
+    project.clips.push(clip("c1", "m4", 0), clip("c2", "m3", 100), clip("c3", "m2", 200), clip("c4", "m5", 200, "audio"), clip("c5", "m1", 300));
+    // From frame 150: what plays from there first (m3 still playing, m2, its sound, m1), then what's before (m4).
+    expect(localPreviews.fetchInPlayheadOrder(cache, project, 150)).toBe(5);
+    await Bun.sleep(5);
+    expect(started).toEqual([keys[3]!, keys[2]!, keys[5]!, keys[1]!]);
+    // The page reads m4 now (a jump back): it's next, ahead of what was waiting.
+    localPreviews.fetchNow(keys[4]!, localPath(cache, keys[4]!));
+    finish.shift()!();
+    await Bun.sleep(5);
+    expect(started.at(-1)).toBe(keys[4]);
+    expect(started).not.toContain(keys[0]);
+  } finally {
+    home.cleanup();
+  }
+});

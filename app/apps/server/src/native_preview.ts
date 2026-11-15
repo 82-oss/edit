@@ -162,7 +162,6 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
   const sounds: Record<string, string> = {};
   const excerpts: Record<string, NativeExcerpt[]> = {};
   player.markNative(project.id);
-  cloudMedia.stopPrefetch(project.id);
   // A pieced proxy's pieces the timeline plays come down behind the viewer, in its order (one fill a project).
   cloudMedia.fillPieces(app, project.id);
   // Only what the timeline shows comes down (Cops Realize lists 169 own-file videos, 1.5 GB; its clips show 66, 0.7 GB),
