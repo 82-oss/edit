@@ -37,13 +37,13 @@ import * as fs from "node:fs";
 import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudBlocks from "./cloud_blocks.ts";
-import { playbackSounds, prefetchProject, streamFromCloud } from "./cloud_media.ts";
+import { localPath, playbackSounds, prefetchProject, streamFromCloud } from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import { ApiError, json, notFound } from "./http/errors.ts";
 import { serveFile } from "./http/files.ts";
 import type { Router } from "./http/router.ts";
 import type { ExportOptions, Project } from "./model.ts";
-import { native, type ExportJob } from "./native/index.ts";
+import { native, type ExportExcerpt, type ExportJob } from "./native/index.ts";
 import { isFile, join } from "./paths.ts";
 import { duration, fps } from "./project.ts";
 import { readState, writeAtomic } from "./files.ts";
@@ -464,20 +464,28 @@ async function render(app: App, project: Project, current: Running): Promise<voi
   // again over this server's preview URL (Nov 3: the 16-Year-Old rendered at 48 fps).
   const urls = new Map<string, string>();
   const keys = new Map<string, string>();
+  // Footage whose whole copy is here already (the players' own, local_previews.ts) is read from it, all of it one
+  // excerpt, never cut again: V2 Cops Found 3 Bodies' render cut 2 GB of excerpts from copies already here (Nov 15).
+  const whole: ExportExcerpt[] = [];
   for (const media of project.media) {
     const key = playbackKey(media.path);
-    if (key !== null && media.kind === "video") {
-      urls.set(media.id, media.path);
-      keys.set(media.id, key);
+    if (key === null || media.kind !== "video") continue;
+    const here = localPath(app.store.cacheDir(), key);
+    if (isFile(here)) {
+      whole.push({ object: exportExcerpts.objectOf(media.path), from: 0, to: exportExcerpts.TO_THE_END, path: here });
+      continue;
     }
+    urls.set(media.id, media.path);
+    keys.set(media.id, key);
   }
   current.preparing = urls.size > 0;
   publish(app, project.id);
-  const excerpts = urls.size === 0 ? [] : await exportExcerpts.prepare(own, plan.start, plan.end, app.store.cacheDir(), urls, keys, () => current.cancelled, { atOnce: PLAYBACK_CELLS_AT_ONCE, behindViewer: true, restMaxMs: 60_000 }).catch((error: unknown) => {
+  const cut = urls.size === 0 ? [] : await exportExcerpts.prepare(own, plan.start, plan.end, app.store.cacheDir(), urls, keys, () => current.cancelled, { atOnce: PLAYBACK_CELLS_AT_ONCE, behindViewer: true, restMaxMs: 60_000 }).catch((error: unknown) => {
     // Stopped for a newer revision: nothing went wrong (JJ's Mac, Nov 5: 15 such warnings in a day).
     if (!current.cancelled) diag.warn("playback", `${project.name}: its proxies are read over the preview URL (${diag.messageOf(error)})`);
     return [];
   });
+  const excerpts = [...whole, ...cut];
   // Its sound from copies on this Mac, as an export's, never decoded over the network (playbackSounds).
   const sounds = plan.audio ? await playbackSounds(project, plan.start, plan.end, app.store.cacheDir(), () => current.cancelled) : {};
   current.preparing = false;
