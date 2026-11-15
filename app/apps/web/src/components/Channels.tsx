@@ -363,11 +363,7 @@ function ChannelPage({ channel, onBack }: { channel: Channel; onBack: () => void
       </div>
       {/* What someone given only its label sees for its name (accounts.spheceo.com), set by a teacher. */}
       {teacher && channel.masked !== true && (
-        <div className="-mt-3 flex items-baseline gap-1.5 text-[12.5px] text-faint">
-          <span className="shrink-0">Shown as</span>
-          <InPlace value={channel.label ?? ""} editable placeholder="Channel 1" onSave={(text) => change("label", { label: text })} className="min-w-0 flex-1 text-[12.5px] text-secondary" />
-          <span className="shrink-0">to people given only its label</span>
-        </div>
+        <LabelField value={channel.label ?? ""} onSave={(text) => change("label", { label: text })} />
       )}
       <AnimatePresence initial={false}>
         {linking && channel.youtubeId === null && (
@@ -466,6 +462,38 @@ function LinkChannel({ channel, onDone }: { channel: Channel; onDone: () => void
         </Button>
       </div>
     </form>
+  );
+}
+
+/**
+ * A channel's label (Sphe, Nov 15: the input was too big): a small field as wide as its words, beside a plain
+ * "Label", the why on hover. Saved on Enter or leaving it, put back on Escape.
+ */
+function LabelField({ value, onSave }: { value: string; onSave: (text: string) => void }) {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  const done = () => {
+    if (text.trim() !== value.trim()) onSave(text.trim());
+  };
+  return (
+    <label className="-mt-2 flex items-center gap-2 self-start" title="What someone given only the label sees instead of the channel">
+      <span className="text-[12px] font-medium text-muted">Label</span>
+      <input
+        value={text}
+        placeholder="Channel 1"
+        maxLength={60}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={done}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+          if (event.key === "Escape") {
+            setText(value);
+            event.currentTarget.blur();
+          }
+        }}
+        className="h-7 min-w-[9ch] max-w-[28ch] rounded-md border border-line bg-active px-2 text-[12.5px] font-medium text-fg outline-none transition-colors [field-sizing:content] placeholder:text-faint hover:border-line-strong focus:border-muted"
+      />
+    </label>
   );
 }
 
