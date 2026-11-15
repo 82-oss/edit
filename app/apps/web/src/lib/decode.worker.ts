@@ -153,16 +153,19 @@ async function owned(sample: VideoSample): Promise<VideoFrame> {
   if (!COPY_PICTURES) return frame;
   try {
     if (frame.format !== null) {
+      // The copy is the visible picture alone (copyTo's default), so it's the new frame's whole size. Given the
+      // decoder's coded size (1088 rows for 1080p H.264) with the copy's layout, every 1080p frame was refused
+      // ("Plane 1 overlaps with plane 0"): Linux's page player drew no 1080p footage at all (Nov 15).
+      const rect = frame.visibleRect ?? { width: frame.codedWidth, height: frame.codedHeight };
       const data = new Uint8Array(frame.allocationSize());
       const layout = await frame.copyTo(data);
       return new VideoFrame(data, {
         format: frame.format,
-        codedWidth: frame.codedWidth,
-        codedHeight: frame.codedHeight,
+        codedWidth: rect.width,
+        codedHeight: rect.height,
         timestamp: frame.timestamp,
         duration: frame.duration ?? undefined,
         layout,
-        visibleRect: frame.visibleRect ?? undefined,
         displayWidth: frame.displayWidth,
         displayHeight: frame.displayHeight,
         colorSpace: frame.colorSpace,
