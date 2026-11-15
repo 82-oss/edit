@@ -429,6 +429,18 @@ pub fn utility_thread() {
     }
 }
 
+/// Marks this thread as what's on screen now (macOS QoS user-interactive):
+/// the window's player, which draws each frame as it comes due. At the default
+/// class it sat idle up to 134 ms between two 1 ms draws while the server
+/// beside it was busy (Nov 15, 18 holds over 50 ms in 160 s of play). Elsewhere, nothing.
+pub fn interactive_thread() {
+    #[cfg(target_os = "macos")]
+    // SAFETY: a plain call on the calling thread, with a constant class and no relative priority.
+    unsafe {
+        libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_USER_INTERACTIVE, 0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -174,6 +174,7 @@ pub struct Previews(Mutex<Option<Open>>);
 /// as they come due between commands; at rest, a playhead left alone for a
 /// moment is settled (its sound armed, the cuts ahead decoded).
 fn player_thread(layer: usize, commands: mpsc::Receiver<Command>) {
+    edit_engine::util::interactive_thread();
     // SAFETY: the layer is retained by its view until `preview_close` has
     // stopped this thread (its sender dropped, then the view removed).
     let mut player = match unsafe { Player::new(layer as *mut std::ffi::c_void, 1, 1) } {
