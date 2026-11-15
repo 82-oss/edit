@@ -37,6 +37,7 @@ import { useNow as memoryUse } from "./memory.ts";
 import * as jobs from "./jobs.ts";
 import * as planUse from "./plan_use.ts";
 import * as editTime from "./edit_time.ts";
+import * as logShip from "./log_ship.ts";
 import { join } from "./paths.ts";
 import * as presence from "./presence.ts";
 import * as problemReports from "./problem_reports.ts";
@@ -50,8 +51,8 @@ import * as writerJobs from "./writer/jobs.ts";
 import * as writerStore from "./writer/store.ts";
 import { THIS_MACHINE } from "./machine.ts";
 
-/** The kinds this build carries out (Convex sends an older build only updates). */
-export const KINDS = ["update", "diagnostics", "resume"] as const;
+/** The kinds this build carries out (Convex sends an older build only updates); `run` is remote_control.ts's. */
+export const KINDS = ["update", "diagnostics", "resume", "run"] as const;
 export type Kind = (typeof KINDS)[number];
 
 /**
@@ -254,16 +255,21 @@ export async function diagnostics(app: App): Promise<string> {
   return key;
 }
 
-/** How often this Mac looks whether its latest report has changed, and the longest it goes without sending one. */
+/**
+ * How often this Mac looks whether its latest report has changed (and sends
+ * its log, log_ship.ts), and the longest it goes without sending one: every
+ * other look, so it's at most ten minutes old (Sphe, Nov 15; it was an hour).
+ */
 const LATEST_EVERY_MS = 5 * 60_000;
-const LATEST_AT_LEAST_MS = 60 * 60_000;
+const LATEST_AT_LEAST_MS = 9 * 60_000;
 const keeping = new WeakSet<App>();
 
 /**
  * Keeps this Mac's latest report in the cloud while Edit runs
  * (problem_reports.publishLatest): sent when what needs attention changes
- * (looked at every five minutes), else once an hour, so an admin sees what
- * failed on a Mac that has since been closed.
+ * (looked at every five minutes), else every ten minutes, so an admin sees what
+ * failed on a Mac that has since been closed. Its log goes up on the same
+ * beat (log_ship.ts), and at once what the last run left.
  */
 export function keepLatest(app: App): void {
   if (keeping.has(app)) return;
@@ -282,8 +288,12 @@ export function keepLatest(app: App): void {
       diag.warn("reports", `keeping ${THIS_MACHINE}'s latest report: ${diag.messageOf(error)}`);
     }
   };
+  logShip.start(app);
   setTimeout(() => void look(), 60_000).unref?.();
-  setInterval(() => void look(), LATEST_EVERY_MS).unref?.();
+  setInterval(() => {
+    void logShip.ship();
+    void look();
+  }, LATEST_EVERY_MS).unref?.();
 }
 
 /** This Mac's report: what needs attention, the machine, the work under way, the problems, projects, scripts, timings and log. */

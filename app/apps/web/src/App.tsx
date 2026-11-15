@@ -11,6 +11,7 @@ import { IdeaScreen } from "./ideas/page";
 import { ThumbnailScreen } from "./thumbnails/page";
 import { SignInGate } from "./components/SignInScreen";
 import { Toasts } from "./components/Toasts";
+import { RemoteHelp } from "./components/RemoteHelp";
 import { useConnection } from "./lib/api";
 import { watchPresence } from "./lib/presence";
 import { watchNotices } from "./lib/notices";
@@ -64,6 +65,7 @@ export function App() {
       </AnimatePresence>
       <ServerDown />
       <Toasts />
+      <RemoteHelp />
       <AppDialogs />
       <ContextMenuHost />
     </MotionConfig>

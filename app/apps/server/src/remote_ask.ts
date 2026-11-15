@@ -103,6 +103,11 @@ export async function answer(app: App, target: string): Promise<string> {
   } catch (error) {
     body = `It couldn't be answered: ${diag.messageOf(error)}`;
   }
+  return sendAnswer(app, question, body, began);
+}
+
+/** An answer for an admin, scrubbed and sent up beside the problem reports (`edit/reports/remote/…`); the outcome's words (where it went). */
+export async function sendAnswer(app: App, question: string, body: string, began: number): Promise<string> {
   const text = String(redactSupport(diag.scrub(body)));
   const cut = text.length > MAX_ANSWER ? `…(the first ${text.length - MAX_ANSWER} characters cut)\n${text.slice(-MAX_ANSWER)}` : text;
   const now = Date.now();

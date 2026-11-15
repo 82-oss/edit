@@ -19,6 +19,7 @@ import { setSmoothByDefault } from "./cutin.ts";
 import * as diag from "./diag.ts";
 import * as modelChoice from "./model_choice.ts";
 import * as lastRun from "./last_run.ts";
+import * as logShip from "./log_ship.ts";
 import { agentHooks } from "./agent.ts";
 import * as scriptSync from "./script_sync.ts";
 import { registerEditingTools, unfinishedNote } from "./edit_tools.ts";
@@ -378,8 +379,8 @@ export function start(home: string, host: string | null, port: number): { app: A
     }
     void (async () => {
       try {
-        // Edits' and scripts' locks let go together, inside the quit budget.
-        await Promise.all([seams.cloudProjects.shutdown(), writerLocks.releaseAll()]);
+        // Edits' and scripts' locks let go together, inside the quit budget; the log's last lines go up beside them (at most 3 s).
+        await Promise.all([seams.cloudProjects.shutdown(), writerLocks.releaseAll(), logShip.finish()]);
       } catch (error) {
         if (!seams.isUnavailable(error)) diag.warn("cloud", `on the way out: ${diag.messageOf(error)}`);
       }

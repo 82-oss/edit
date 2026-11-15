@@ -21,7 +21,8 @@ function day(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
-function slug(text: string): string {
+/** A Mac's name as its reports are kept under: `JJ's MacBook Pro` is `jj-s-macbook-pro`. */
+export function slug(text: string): string {
   return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "mac";
 }
 

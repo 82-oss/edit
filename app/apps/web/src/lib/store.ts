@@ -6,6 +6,7 @@ import { useAccount, type Account } from "./account";
 import { applyAgentEvent, openAgent } from "./agent";
 import { api, ApiError, useConnection } from "./api";
 import { readOnly, type CloudStatus } from "./cloud";
+import { type Help, useRemoteHelp } from "../components/RemoteHelp";
 import { note } from "./diagnostics";
 import { validateProject } from "./edit";
 import { perFrame } from "./frame";
@@ -843,6 +844,11 @@ export function connectEvents() {
       useAccount.setState({ account: event.account as Account });
     } else if (event.type === "reset" && project && event.id === project.id) {
       useEditor.setState({ resetAsked: event.state === "asking" });
+    } else if (event.type === "remote-help") {
+      // An admin working on this Edit from afar (components/RemoteHelp.tsx).
+      useRemoteHelp.setState({ help: (event.help ?? null) as Help | null });
+    } else if (event.type === "remote-say") {
+      state.toast(`${String(event.by ?? "An admin")}: ${String(event.text ?? "")}`, "info");
     } else if (event.type === "notice") {
       // Something the person left running is done (lib/notices.ts shows it).
       window.dispatchEvent(new CustomEvent("edit:notice", { detail: event }));

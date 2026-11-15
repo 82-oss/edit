@@ -29,7 +29,7 @@ const query = (name: string) => makeFunctionReference<"query">(`editSupport:${na
 const mutation = (name: string) => makeFunctionReference<"mutation">(`editSupport:${name}`);
 /** This Mac's device; `enabled` is false only before anyone signed in here (older builds also saved a disable, now turned back on). */
 type Settings = { device: string; enabled: boolean; owner?: string; pendingDisable?: boolean; enrolling?: boolean };
-type Pending = { commandId: string; deviceId: string; expiresAt: number; kind: actions.Kind; projectId?: string };
+type Pending = { commandId: string; deviceId: string; expiresAt: number; kind: actions.Kind; projectId?: string; payload?: string; operatorName?: string };
 type Outcome = { state: "complete" | "failed"; detail: string };
 type Intent = { commandId: string; device: string; expected: string; outcome?: Outcome };
 const clients = new WeakMap<App, ConvexClient>();
@@ -213,7 +213,7 @@ export async function recover(app: App, c: ConvexClient, currentBuild = BUILD) {
 }
 
 /**
- * A command that isn't an update (diagnostics, resume): claimed, carried out
+ * A command that isn't an update (diagnostics, resume, run): claimed, carried out
  * and reported at once. Nothing restarts, so no journal: the receipt keeps it
  * from running twice.
  */
@@ -227,6 +227,7 @@ async function executeAction(app: App, c: ConvexClient, item: Pending, ownsSessi
   try {
     if (!receipts.claim({ id: item.commandId, device: item.deviceId, kind: item.kind, expiresAt: item.expiresAt })) throw new Error("This command was already received or expired. Nothing was replayed.");
     if (item.kind === "diagnostics") detail = `Sent: ${await actions.diagnostics(app)}`;
+    else if (item.kind === "run") detail = await (await import("./remote_control.ts")).run(app, item.payload ?? "", item.operatorName ?? "");
     else if (item.kind === "resume") {
       if (!item.projectId) throw new Error("No project was named.");
       detail = await actions.resume(app, item.projectId);

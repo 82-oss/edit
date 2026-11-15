@@ -15,6 +15,7 @@ import * as busyNow from "./busy.ts";
 import * as remoteActions from "./remote_actions.ts";
 import * as youtubeSignIn from "./youtube_signin.ts";
 import * as problemReports from "./problem_reports.ts";
+import * as remoteControl from "./remote_control.ts";
 import { cloudKeyFor, deleteExport, listExports } from "./exports.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
@@ -109,6 +110,7 @@ export function buildRouter(): Router<App> {
   reset.routes(router);
   accounts.routes(router);
   remoteSupport.routes(router);
+  remoteControl.routes(router);
   windowFocus.routes(router);
   linuxDesktop.routes(router);
   writerHandoff.routes(router);

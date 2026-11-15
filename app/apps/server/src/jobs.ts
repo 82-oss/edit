@@ -352,10 +352,11 @@ export function takeOver(home: string, kinds?: readonly Kind[]): Job[] {
   const out: Job[] = [];
   // Edit restarted itself on purpose (an update): the jobs it cut aren't failing, and aren't counted.
   const planned = wasPlanned(home);
+  const kept = kinds === undefined ? held(home) : [];
   change(home, (jobs) => {
     let changed = false;
     for (const job of jobs) {
-      if (!live(job) || (kinds !== undefined && !kinds.includes(job.kind))) continue;
+      if (!live(job) || (kinds !== undefined && !kinds.includes(job.kind)) || kept.includes(job.kind)) continue;
       // Waiting on a time, the encoder or the person: not cut short by the restart; woken when it's due (`wake`).
       if (asleep(job)) continue;
       changed = true;
@@ -424,9 +425,10 @@ function due(job: Job, now: number): boolean {
 export function dueNow(home: string, kinds?: readonly Kind[]): Job[] {
   const out: Job[] = [];
   const now = nowMs();
+  const kept = held(home);
   change(home, (jobs) => {
     for (const job of jobs) {
-      if (!due(job, now) || (kinds !== undefined && !kinds.includes(job.kind))) continue;
+      if (!due(job, now) || (kinds !== undefined && !kinds.includes(job.kind)) || kept.includes(job.kind)) continue;
       job.state = "running";
       job.step = "trying again";
       delete job.retry_at;
@@ -458,6 +460,39 @@ function keepWaking(home: string): void {
   const timer = setInterval(() => void wake(home).catch((error: unknown) => diag.warn("jobs", `waking waiting jobs: ${diag.messageOf(error)}`)), WAKE_MS.value);
   timer.unref?.();
   waking.set(home, timer);
+}
+
+// ---------------------------------------------------------------- held
+
+/**
+ * Work an admin held back (remote_control.ts; Sphe, Nov 15: "because of this
+ * particular issue we don't want exports or agent threads or imports to
+ * continue"): its kinds aren't started again after a restart, nor woken,
+ * until `release`. Kept in `<home>/held-work.json` across restarts.
+ */
+export function held(home: string): Kind[] {
+  try {
+    const value = JSON.parse(fs.readFileSync(join(home, "held-work.json"), "utf8")) as { kinds?: unknown };
+    return Array.isArray(value.kinds) ? value.kinds.filter((kind): kind is Kind => typeof kind === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Holds `kinds` back from now (added to what's held), or nothing more. */
+export function hold(home: string, kinds: readonly Kind[]): Kind[] {
+  const next = [...new Set([...held(home), ...kinds])];
+  writeAtomic(join(home, "held-work.json"), JSON.stringify({ kinds: next, at: nowMs() }));
+  return next;
+}
+
+/** Lets what was held go: its jobs started now (this run's resumers), and nothing held any more. The kinds that were held. */
+export async function release(home: string): Promise<Kind[]> {
+  const kinds = held(home);
+  fs.rmSync(join(home, "held-work.json"), { force: true });
+  const resumers = registered.get(home);
+  if (kinds.length > 0 && resumers !== undefined) await startAll(home, takeOver(home, kinds), resumers);
+  return kinds;
 }
 
 /** The jobs not started again any more (cut short too often), for the diagnostics. */

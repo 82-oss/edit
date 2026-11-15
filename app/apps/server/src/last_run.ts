@@ -21,6 +21,53 @@ const MARK = "running.json";
 
 let marked: string | null = null;
 
+/** The run before this one, when it stopped without quitting: what log_ship.ts sends up as a crash note. */
+export interface Stopped {
+  build: string;
+  started: number;
+  /** macOS's crash report's words, when there's one. */
+  crash: string | null;
+  /** Its log's last lines (up to `TAIL`), oldest first. */
+  tail: string[];
+}
+
+/** How many of the stopped run's last log lines the crash note carries. */
+export const TAIL = 300;
+
+let stopped: Stopped | null = null;
+
+/** The run before this one, if it stopped without quitting (null when it quit, or this is the first). */
+export function lastStop(): Stopped | null {
+  return stopped;
+}
+
+/**
+ * The log's last `count` lines before this run's own: diag.open, called just
+ * before begin, has written this run's "started" line, which isn't the
+ * stopped run's. Only the file's end is read (the log is up to 8 MB).
+ */
+export function tailBefore(path: string, count: number): string[] {
+  let text: string;
+  try {
+    const fd = fs.openSync(path, "r");
+    try {
+      const size = fs.fstatSync(fd).size;
+      const want = Math.min(size, 512 * 1024);
+      const bytes = Buffer.alloc(want);
+      fs.readSync(fd, bytes, 0, want, size - want);
+      text = bytes.toString("utf8");
+      if (want < size) text = text.slice(text.indexOf("\n") + 1);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return [];
+  }
+  const lines = text.split("\n").filter((line) => line !== "");
+  if (/ INFO \[edit\] started /u.test(lines.at(-1) ?? "")) lines.pop();
+  return lines.slice(-count);
+}
+
 /** Notes this run as running, after saying in the log how the one before it ended, if it didn't quit. */
 export function begin(home: string, reports = join(os.homedir(), "Library", "Logs", "DiagnosticReports")): void {
   const path = join(home, "logs", MARK);
@@ -31,8 +78,10 @@ export function begin(home: string, reports = join(os.homedir(), "Library", "Log
   } catch {
     // None: the last run quit (or this is the first).
   }
+  stopped = null;
   if (last !== null && last.pid !== process.pid) {
     const crash = crashOf(reports, last.pid, last.started);
+    stopped = { build: last.build, started: last.started, crash, tail: tailBefore(join(home, "logs", "edit.log"), TAIL) };
     diag.error(
       "edit",
       `the last run (${last.build}, started ${diag.stamp(last.started)}) stopped without quitting: ${crash ?? `macOS kept no crash report for it (stopped from outside, or ${THE_MACHINE} restarted)`}`,
@@ -81,6 +130,15 @@ export function crashOf(reports: string, pid: number, since: number): string | n
     }
   }
   return null;
+}
+
+/** What a crash report's text (`.ips`: a header line, then the report) says stopped its process; null when it can't be read. */
+export function crashSummary(text: string): string | null {
+  try {
+    return crash(JSON.parse(text.slice(text.indexOf("\n") + 1)) as Report);
+  } catch {
+    return null;
+  }
 }
 
 type Frame = { imageIndex?: number; imageOffset?: number; symbol?: string };

@@ -6,7 +6,7 @@ export type RemoteCommand = {
   id: string;
   device: string;
   expiresAt: number;
-  kind: "update" | "diagnostics" | "resume";
+  kind: "update" | "diagnostics" | "resume" | "run";
 };
 
 export type Receipt = {
@@ -42,8 +42,8 @@ export class RemoteCommandReceipts {
   claim(command: RemoteCommand, now = Date.now()): boolean {
     const path = this.path(command.id);
     if (command.device !== this.device || !Number.isFinite(command.expiresAt) || command.expiresAt <= now) return false;
-    // Only these: remote agent work stays disabled until its spending limit is implemented.
-    if (!["update", "diagnostics", "resume"].includes(command.kind)) return false;
+    // Only these. A run is anything an admin asks (remote_control.ts), its agent messages included (Sphe, Nov 15: "FULL remote control").
+    if (!["update", "diagnostics", "resume", "run"].includes(command.kind)) return false;
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     try {
       fs.writeFileSync(path, JSON.stringify({ id: command.id, kind: command.kind, state: "claimed" } satisfies Receipt), { flag: "wx", mode: 0o600 });
