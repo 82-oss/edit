@@ -184,7 +184,6 @@ export async function main(args: string[]): Promise<void> {
         return;
       }
       try {
-        seams.cloudProjects.useSavedToken(home());
         await seams.cloud.runCli(args.slice(1));
       } catch (error) {
         fail(diag.messageOf(error));

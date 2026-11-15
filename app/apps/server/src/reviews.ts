@@ -1620,7 +1620,6 @@ export async function removeLink(app: App, projectId: string): Promise<{ removed
     fs.rmSync(join(home, "cache", "reviews", projectId), { recursive: true, force: true });
     const name = app.store.get(projectId)?.project.name ?? projectId;
     diag.info("review", `${name}: review link deleted (${shared.url}, ${answer.removed === true ? `${answer.versions ?? 0} versions, ${answer.notes ?? 0} notes and replies` : "already gone from Repack"}; ${files} files deleted)`);
-    app.store.emit({ type: "reviews", projects: [projectId] });
     return { removed: answer.removed === true, versions: answer.versions ?? 0, notes: answer.notes ?? 0, files };
   } finally {
     removing.delete(projectId);
@@ -1783,7 +1782,6 @@ export async function reconcile(app: App): Promise<string[]> {
     app.store.emit({ type: "review-missed", project: projectId, notes: missed.length, message });
     found.push(projectId);
   }
-  if (found.length > 0) app.store.emit({ type: "reviews", projects: found });
   return found;
 }
 
@@ -1792,18 +1790,16 @@ export async function poll(app: App): Promise<void> {
   const home = app.store.home;
   // Only those the signed-in person may work on (kinds.ts): the agent follows up on no other.
   const projects = new Set(app.store.visible().map((summary) => summary.id));
-  const fresh = new Set<string>();
   // Page by page from where the last look ended.
   for (let page = 0; page < 20; page++) {
     const cursor = read(home).cursor;
     const answer = (await cloud.query("reviews:changes", { cursor })) as { notes?: unknown[]; cursor?: number; more?: boolean };
     update(home, (state) => {
-      for (const project of heard(state, answer.notes ?? [], projects)) fresh.add(project);
+      heard(state, answer.notes ?? [], projects);
       if (typeof answer.cursor === "number") state.cursor = answer.cursor;
     });
     if (answer.more !== true) break;
   }
-  if (fresh.size > 0) app.store.emit({ type: "reviews", projects: [...fresh] });
   // Approvals (on Repack's page or another Mac): the other versions' exports here go too.
   const before = read(home).shared;
   const rows = (await cloud.query("reviews:open", {})) as { sourceId?: string; reviewId?: string; approved?: Shared["approved"] }[];
@@ -1812,14 +1808,11 @@ export async function poll(app: App): Promise<void> {
   // isn't on it yet), and only from a whole list (it's capped at 1000).
   if (Array.isArray(rows) && rows.length < 1000) {
     const alive = new Set(rows.flatMap((row) => (typeof row.reviewId === "string" ? [row.reviewId] : [])));
-    const gone: string[] = [];
     for (const [projectId, was] of Object.entries(before)) {
       if (alive.has(was.reviewId) || shareGoing(home, projectId) || readying.has(projectId) || read(home).shared[projectId]?.reviewId !== was.reviewId) continue;
       forget(home, projectId);
       diag.info("review", `${projectId}: its review link was deleted elsewhere (${was.url}); forgotten here`);
-      gone.push(projectId);
     }
-    if (gone.length > 0) app.store.emit({ type: "reviews", projects: gone });
   }
   for (const row of Array.isArray(rows) ? rows : []) {
     if (typeof row.sourceId !== "string") continue;

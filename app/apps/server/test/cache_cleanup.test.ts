@@ -353,35 +353,6 @@ test("a missing cloud proxy does not block orphan cleanup, but a missing local-o
   } finally { cleanup(); }
 });
 
-test("explicit legacy migration removes completed orphan previews, never paid data, referenced media or incomplete work", async () => {
-  const { app, store, cleanup } = fixtureHome("cache-legacy");
-  try {
-    const cache = store.cacheDir();
-    const orphan = `${cache}/0123456789abcdef`;
-    const working = `${cache}/fedcba9876543210`;
-    for (const dir of [orphan, working]) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(`${orphan}/preview.done`, "");
-    fs.writeFileSync(`${orphan}/preview.mp4`, "video");
-    fs.writeFileSync(`${orphan}/preview-light.mp4`, "light");
-    fs.writeFileSync(`${orphan}/preview.m4a`, "sound");
-    fs.writeFileSync(`${orphan}/transcript.json`, "paid");
-    fs.writeFileSync(`${working}/preview.mp4`, "incomplete");
-    const id = store.create("local", { width: 2, height: 2, fps: 30 }).project.id;
-    await store.update(id, "test", (project) => {
-      project.media.push({ id: "m1", name: "source", path: `${orphan}/preview.mp4`, kind: "video", duration: 1, fps: 30, width: 2, height: 2, has_audio: false });
-    });
-    const head = async () => { throw new Error("an orphan needs no cloud request"); };
-    expect((await cleanCloudPreviews(app, true, head)).files).toBe(0);
-    expect((await cleanCloudPreviews(app, true, head, true)).files).toBe(3);
-    expect(fs.existsSync(`${orphan}/preview-light.mp4`)).toBe(true);
-    await cleanCloudPreviews(app, false, head, true);
-    expect(fs.existsSync(`${orphan}/preview.mp4`)).toBe(true);
-    expect(fs.existsSync(`${orphan}/transcript.json`)).toBe(true);
-    expect(fs.existsSync(`${orphan}/preview-light.mp4`)).toBe(false);
-    expect(fs.existsSync(`${working}/preview.mp4`)).toBe(true);
-  } finally { cleanup(); }
-});
-
 test("smoothed shots, YouTube downloads and library sounds nobody uses go after two days; used ones, a script's original and new ones stay", async () => {
   const { app, store, cleanup } = fixtureHome("cache-generated");
   try {

@@ -9,7 +9,6 @@ import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
-import { cleanCache, cleanCloudPreviews } from "./cache_cleanup.ts";
 import { importDrive } from "./drive_import.ts";
 import * as busyNow from "./busy.ts";
 import * as remoteActions from "./remote_actions.ts";
@@ -38,8 +37,6 @@ import { DEFAULT_SETTINGS, SHORTS_SETTINGS } from "./project.ts";
 import * as seams from "./seams.ts";
 import { readExportFolder, saveExportFolder } from "./export_folder.ts";
 import { defaultExportPath } from "./server_seam.ts";
-import { listFiles, migrateMediaFiles, storageReport, verifyExports } from "./storage.ts";
-import { readLocalOriginals } from "./cloud_media.ts";
 import { missingMedia, UpdateError } from "./store.ts";
 import * as archive from "./archive.ts";
 import * as avatars from "./avatars.ts";
@@ -182,8 +179,6 @@ export function buildRouter(): Router<App> {
     .post("/api/projects/{id}/export/cancel", cancelExport)
     .post("/api/projects/{id}/export/retry", retryExport)
     .get("/api/projects/{id}/exports", projectExports)
-    .get("/api/storage", async ({ app }) => json({ ...storageReport(app.store.home), exports: await verifyExports(app.store.home) }))
-    .post("/api/storage/migrate-media", migrateMedia)
     // Problem reports (problem_reports.ts): the Macs' own and the agent's, pulled by an admin.
     // Every Mac's latest report (problem_reports.latest), whether it's on or not.
     .get("/api/reports/latest", async ({ app }) => {
@@ -204,7 +199,6 @@ export function buildRouter(): Router<App> {
     // The YouTube sign-in from Chrome (youtube_signin.ts): how it stands, and a check that brings up the Mac's Keychain dialog.
     .get("/api/youtube/sign-in", () => json(youtubeSignIn.status()))
     .post("/api/youtube/sign-in/check", async ({ app }) => json(await youtubeSignIn.check(app.store.home)))
-    .post("/api/cache/clean", cleanTheCache)
     .post("/api/projects/{id}/exports/delete", deleteProjectExport);
   router
     .get("/api/export/encoders", exportEncoders)
@@ -1127,35 +1121,6 @@ async function exportEncoders({ app }: Context): Promise<Response> {
   } catch {
     return json({ videotoolbox: false, nvenc: false, hevc: false, prores: false, mp3: false });
   }
-}
-
-/** Cleans the cache now (`dry_run`: only says what would go); cache_cleanup.ts. */
-/** Verified migration of `<home>/media`: delete only R2-verified copies (see storage.migrateMediaFiles). */
-async function migrateMedia(context: Context): Promise<Response> {
-  const given = (await optionalBody(context)) ?? {};
-  const dryRun = field<boolean>(given, "dry_run", "boolean") ?? false;
-  const home = context.app.store.home;
-  const keys = new Map<string, string>();
-  for (const [key, entry] of Object.entries(readLocalOriginals(context.app.store.cacheDir()))) keys.set(entry.path, key);
-  for (const summary of context.app.store.list()) {
-    const live = context.app.store.get(summary.id);
-    if (live === null) continue;
-    for (const media of live.project.media) {
-      if (media.cloud?.original !== undefined && !keys.has(media.path)) keys.set(media.path, media.cloud.original);
-    }
-  }
-  const result = await migrateMediaFiles(listFiles(join(home, "media")), (path) => keys.get(path) ?? null, undefined, dryRun);
-  return json({ ...result, kept: result.kept.slice(0, 100) });
-}
-
-async function cleanTheCache(context: Context): Promise<Response> {
-  const given = (await optionalBody(context)) ?? {};
-  const dryRun = field<boolean>(given, "dry_run", "boolean") ?? false;
-  const discardOrphans = field<boolean>(given, "discard_orphan_previews", "boolean") ?? false;
-  const previews = await cleanCloudPreviews(context.app, dryRun, undefined, discardOrphans);
-  const other = cleanCache(context.app, dryRun);
-  return json({ files: previews.files + other.files, folders: previews.folders + other.folders, bytes: previews.bytes + other.bytes,
-    removed: [...previews.removed, ...other.removed].slice(0, 50) });
 }
 
 /** The project's exports, newest first (this machine's: each downloads from Edit, on the Mac or over Tailscale). */

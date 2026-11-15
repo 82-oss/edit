@@ -80,7 +80,6 @@ export function archiveHere(app: App, id: string): number {
   change(home, (all) => {
     all[id] = { at: Date.now(), freed };
   });
-  app.store.emit({ type: "archive", id, archived: true });
   return freed;
 }
 
@@ -94,7 +93,6 @@ export async function restore(app: App, id: string): Promise<void> {
   change(home, (all) => {
     if (all[id] !== undefined) all[id] = { ...all[id]!, restoring: true, error: undefined };
   });
-  app.store.emit({ type: "archive", id, restoring: true });
   try {
     const lost = await diag.timeOnAsync("cloud", "cloud: restore", id, () => cloudMedia.restoreHere(app, id));
     await cloud.mutation("edit:clearRestore", { projectId: id }).catch((error: unknown) => diag.warn("cloud", `restore of ${id}: telling the cloud: ${diag.messageOf(error)}`));
@@ -103,13 +101,11 @@ export async function restore(app: App, id: string): Promise<void> {
     });
     void cloudMedia.ensureLocal(app, id).catch(() => {});
     diag.info("cloud", `${id}: restored${lost.length > 0 ? `; can't come back: ${lost.join(", ")}` : ""}`);
-    app.store.emit({ type: "archive", id, archived: false, lost });
   } catch (error) {
     change(home, (all) => {
       if (all[id] !== undefined) all[id] = { ...all[id]!, restoring: false, error: diag.messageOf(error) };
     });
     diag.warn("cloud", `restoring ${id}: ${diag.messageOf(error)}`);
-    app.store.emit({ type: "archive", id, restoring: false, error: diag.messageOf(error) });
   } finally {
     restoring.delete(id);
   }

@@ -239,11 +239,10 @@ test("a_token_from_before_a_restart_is_renewed_first", () => {
 test("settings_are_private_and_writes_follow_the_lock", () => {
   const { dir: home, cleanup } = scratch("cloud-settings");
   try {
-    // The setting holds the token: this user only.
-    const settings = { token: "secret-token", holder: "Sphe's Mac" };
-    writePrivate(`${home}/${SETTINGS}`, JSON.stringify(settings));
+    // Written for this user only; a token saved there before sign-in is ignored.
+    writePrivate(`${home}/${SETTINGS}`, JSON.stringify({ token: "secret-token", holder: "Sphe's Mac" }));
     expect(fs.statSync(`${home}/${SETTINGS}`).mode & 0o777).toBe(0o600);
-    expect(readSettings(home)).toEqual(settings);
+    expect(readSettings(home)).toEqual({ holder: "Sphe's Mac" });
 
     // Writes follow the lock: someone else's is refused, saying who.
     const entry = new Entry({ rev: 0, dirty: false });
@@ -260,7 +259,7 @@ test("settings_are_private_and_writes_follow_the_lock", () => {
 
     // What's kept per project survives a restart (no global settings
     // touched: `Cloud.open` isn't used here).
-    const kept = new Cloud(home, "kenobi", settings);
+    const kept = new Cloud(home, "kenobi", readSettings(home));
     kept.projects.set("p3-3", Entry.fresh());
     kept.wrote("p3-3");
     kept.projects.set("p4-4", new Entry({ rev: 9, dirty: false, token: "lock" }));
@@ -580,8 +579,8 @@ test("deleting is refused while someone else edits it or the cloud can't be reac
   }
 });
 
-test("the cloud routes: settings (private, checked), status, open and close, take over", async () => {
-  const { app, home, store, projects, cleanup } = setup("cloud-routes");
+test("the cloud routes: status, open and close, take over", async () => {
+  const { app, store, projects, cleanup } = setup("cloud-routes");
   const router = baseRouter();
   routes(router);
   const call = async (method: string, path: string, body?: unknown) => {
@@ -599,26 +598,10 @@ test("the cloud routes: settings (private, checked), status, open and close, tak
     return { status: response.status, body: (text.startsWith("{") ? JSON.parse(text) : { text }) as Record<string, unknown> };
   };
   try {
-    const settings = await call("GET", "/api/cloud?check=true");
-    expect(settings).toEqual({
-      status: 200,
-      body: { connected: true, holder: "this-mac", on: true, problem: null, relay: mock.url, token: "env" },
-    });
-    const refused = await call("POST", "/api/cloud", { token: "two words" });
-    expect(refused).toEqual({ status: 400, body: { error: "That doesn't look like a cloud token (one line, no spaces)." } });
-    const named = await call("POST", "/api/cloud", { holder: "  Sphe's Mac  " });
-    expect(named.body.holder).toBe("Sphe's Mac");
-    expect(fs.statSync(`${home}/cloud.json`).mode & 0o777).toBe(0o600);
-    expect(JSON.parse(fs.readFileSync(`${home}/cloud.json`, "utf8"))).toEqual({ holder: "Sphe's Mac" });
-    expect(await call("POST", "/api/cloud", { holder: 5 })).toEqual({
-      status: 422,
-      body: { text: "Failed to deserialize the JSON body into the target type: holder: invalid type: integer `5`, expected a string at line 1 column 11" },
-    });
-
     const id = store.create("Case", SETTINGS_1080).project.id;
     const opened = await call("POST", `/api/projects/${id}/cloud/open`, { client: "ui-1" });
     expect(opened.body).toMatchObject({ cloud: true, lock: "held" });
-    expect(mock.cloud.convex.locks.get(id)!.holder).toMatch(/^Sphe's Mac #[a-z0-9]{12}$/);
+    expect(mock.cloud.convex.locks.get(id)!.holder).toMatch(/^this-mac #[a-z0-9]{12}$/);
     const beat = await call("POST", `/api/projects/${id}/cloud/open`, { client: "ui-1", heartbeat: true });
     expect(beat.body.lock).toBe("held");
     expect((await call("GET", `/api/projects/${id}/cloud`)).body.cloud).toBe(true);
@@ -632,8 +615,7 @@ test("the cloud routes: settings (private, checked), status, open and close, tak
     // With no sign-in (and no EDIT_RELAY_TOKEN) the cloud is off.
     process.env.EDIT_RELAY_TOKEN = "";
     try {
-      const off = await call("GET", "/api/cloud");
-      expect([off.body.on, off.body.token]).toEqual([false, null]);
+      expect((await call("GET", "/api/projects/nope/cloud")).body).toEqual({ cloud: false, on: false });
     } finally {
       process.env.EDIT_RELAY_TOKEN = "cloud-token";
     }
@@ -642,14 +624,13 @@ test("the cloud routes: settings (private, checked), status, open and close, tak
   }
 });
 
-test("no cloud attached: the settings say so and statuses are local", async () => {
+test("no cloud attached: statuses are local", async () => {
   const fixture = fixtureHome("cloud-none");
   const router = baseRouter();
   routes(router);
   try {
-    const response = (await respond(fixture.app, router, new Request("http://localhost:7700/api/cloud", { headers: { host: "localhost:7700" } }), null))!;
-    expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({ error: "no cloud here" });
+    const response = (await respond(fixture.app, router, new Request("http://localhost:7700/api/projects/p1-1/cloud", { headers: { host: "localhost:7700" } }), null))!;
+    expect(await response.json()).toEqual({ cloud: false, on: false });
     expect(await open(fixture.app, "p1-1", "ui")).toEqual({ cloud: false, on: false });
     expect(await remove(fixture.app, "p1-1")).toBe(false);
   } finally {

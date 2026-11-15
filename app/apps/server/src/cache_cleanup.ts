@@ -15,8 +15,7 @@
 // under its budget, and the disk over FREE_FLOOR free: past either, the
 // previews of footage whose projects were saved longest ago go first (made
 // again when the project is opened), never those of a project saved in the
-// last two days. Runs a little after the server starts and then hourly;
-// `POST /api/cache/clean` runs it now (`dry_run`).
+// last two days. Runs a little after the server starts and then hourly.
 //
 // The budget is sized to the disk (storage.ts `localBudgetBytes`: a quarter
 // of the room, 400 MB to 50 GB; it was 400 MB until Nov 2, when Edit moved
@@ -110,13 +109,10 @@ export async function cleanCloudPreviews(
   app: App,
   dryRun: boolean,
   head: (key: string) => Promise<{ size: number } | null> = (key) => cloud.head(key),
-  discardOrphanPreviews = false,
 ): Promise<CleanReport> {
   const report: CleanReport = { folders: 0, files: 0, bytes: 0, removed: [] };
   const cache = app.store.cacheDir();
   const paths = new Set<string>();
-  const referenced = new Set<string>();
-  const usedKeys = new Set<string>();
   const sources = new Map<string, Set<string>>();
   const add = (key: string, alias: string) => {
     let aliases = sources.get(key);
@@ -132,8 +128,6 @@ export async function cleanCloudPreviews(
       };
       for (const media of project.media ?? []) {
         if (typeof media.path !== "string") return report;
-        referenced.add(media.path);
-        usedKeys.add(app.native.mediaKey(media.path));
         if (media.cloud?.proxy === undefined || !cloud.validKey(media.cloud.proxy)) {
           paths.add(media.path);
           continue;
@@ -190,33 +184,6 @@ export async function cleanCloudPreviews(
     }
   }
   report.folders = new Set([...removed].map((path) => path.slice(0, path.lastIndexOf("/")))).size;
-  if (discardOrphanPreviews) {
-    // Explicit migration of the pre-cloud cache: only completed generated
-    // playback files in media-key folders which no saved media resolves to.
-    // These aren't source media. A disconnected source can rebuild its
-    // derived previews when it returns; keep the paid analysis beside them.
-    for (const alias of safeList(cache)) {
-      if (!/^[0-9a-f]{16}$/.test(alias) || usedKeys.has(alias) || app.media.busyKey(alias)) continue;
-      const dir = join(cache, alias);
-      // Both artifacts identify the old media processor's completed output.
-      if (!fs.existsSync(join(dir, "preview.done"))) continue;
-      for (const name of safeList(dir)) {
-        if (!/^preview(?:-light)?\.(?:mp4|m4a|done)$/.test(name)) continue;
-        const path = join(dir, name);
-        if (removed.has(path) || referenced.has(path) || pending.has(path)) continue;
-        try {
-          const stat = fs.lstatSync(path);
-          if (!stat.isFile()) continue;
-          if (!dryRun) fs.rmSync(path);
-          removed.add(path);
-          report.files += 1;
-          report.bytes += stat.size;
-          if (report.removed.length < 50) report.removed.push(path);
-        } catch { /* already gone */ }
-      }
-    }
-    report.folders = new Set([...removed].map((path) => path.slice(0, path.lastIndexOf("/")))).size;
-  }
   return report;
 }
 

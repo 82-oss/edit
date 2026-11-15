@@ -15,7 +15,7 @@
 // within a renewal: its agent turn stops there and then.
 //
 // What this machine knows lives in the data folder: `cloud.json` (the
-// setting: token, holder label; mode 600, it holds the token) and
+// setting: the holder label) and
 // `cloud/projects.json` (per cloud project: the cloud rev its copy is based
 // on, whether it has changes not pushed yet, and its lock token). A
 // background loop (`start`) pushes changes ~2 s after the last one (the JSON
@@ -61,7 +61,7 @@ import { type Creator, type Project, STYLES } from "./model.ts";
 import { isFile, join } from "./paths.ts";
 import { duration } from "./project.ts";
 import * as relay from "./relay.ts";
-import { byteLength, isWhitespace, serdeParse, takeChars } from "./rust.ts";
+import { byteLength, serdeParse, takeChars } from "./rust.ts";
 import { stableStringify } from "./stable.ts";
 import * as kinds from "./kinds.ts";
 import { isSubtitled, nowMs, shapeOf, validId, type CloudHook, type Store } from "./store.ts";
@@ -86,10 +86,8 @@ export function now(): number {
   return performance.now();
 }
 
-/** This Mac's cloud setting, in `<home>/cloud.json`. */
+/** This Mac's cloud setting, in `<home>/cloud.json` (a token saved there before sign-in is ignored). */
 export interface Settings {
-  /** The relay's cloud token (used when `EDIT_RELAY_TOKEN` isn't set). */
-  token?: string;
   /** How teammates see this machine ("<holder> is editing"). */
   holder?: string;
 }
@@ -409,11 +407,9 @@ export class Cloud implements CloudHook {
     this.settings = settings;
   }
 
-  /** Reads the setting and per-project state, and applies the token. */
+  /** Reads the setting and per-project state. */
   static open(home: string, machine: string): Cloud {
-    const settings = readSettings(home);
-    apply(settings);
-    const cloud = new Cloud(home, machine, settings);
+    const cloud = new Cloud(home, machine, readSettings(home));
     for (const [id, saved] of readState(home)) cloud.projects.set(id, new Entry(saved));
     return cloud;
   }
@@ -714,89 +710,15 @@ export class Cloud implements CloudHook {
     this.projects.delete(id);
     this.persist();
   }
-
-  // -------------------------------------------------------------------------
-  // The cloud setting (`/api/cloud`, `edit cloud`).
-
-  /** The cloud setting: on, where the token comes from, the holder label. */
-  settingsStatus(): Record<string, unknown> {
-    // Where the cloud's sign-in comes from: the person signed in, or EDIT_RELAY_TOKEN (tests, a local relay).
-    const token = relay.envToken() !== null ? "env" : accounts.hasSession() ? "signed-in" : null;
-    return { holder: displayName(this.holder()), on: this.on(), relay: relay.url(), token };
-  }
-
-  /**
-   * Changes the setting: a field left undefined is unchanged, null forgets it
-   * (Rust's `Option<Option<String>>`).
-   */
-  setSettings(token: string | null | undefined, holder: string | null | undefined): void {
-    const next: Settings = { ...this.settings };
-    if (token !== undefined) {
-      const trimmed = token === null ? "" : token.trim();
-      if (trimmed !== "") {
-        if (byteLength(trimmed) > 512 || [...trimmed].some((char) => CONTROL.test(char) || isWhitespace(char))) {
-          throw new Error("That doesn't look like a cloud token (one line, no spaces).");
-        }
-        next.token = trimmed;
-      } else {
-        delete next.token;
-      }
-    }
-    if (holder !== undefined) {
-      const trimmed = holder === null ? "" : holder.trim();
-      if (trimmed !== "") {
-        if (byteLength(trimmed) > 100) throw new Error("Keep the name under 100 characters.");
-        next.holder = trimmed;
-      } else {
-        delete next.holder;
-      }
-    }
-    writePrivate(join(this.home, SETTINGS), JSON.stringify(writeSettings(next), null, 2));
-    apply(next);
-    this.settings = next;
-    this.wake();
-  }
-
-  /** Whether the relay takes the token: null when it does, else why not. */
-  async connectionProblem(): Promise<string | null> {
-    if (relay.token() === null) return "Sign in to Edit first.";
-    try {
-      await cloud.convexCall("query", "edit:getProject", { projectId: "edit-connection-check" }, QUICK);
-      return null;
-    } catch (error) {
-      if (error instanceof ConvexFailure && error.kind === "unreachable") return "Can't reach Edit's relay (offline?).";
-      return diag.messageOf(error);
-    }
-  }
-}
-
-const CONTROL = /^\p{Cc}$/u;
-
-/**
- * Uses the setting. A token saved here (from before signing in) is no longer
- * sent: the relay answers signed-in people only.
- */
-function apply(_settings: Settings): void {}
-
-function writeSettings(settings: Settings): Settings {
-  const out: Settings = {};
-  if (settings.token !== undefined) out.token = settings.token;
-  if (settings.holder !== undefined) out.holder = settings.holder;
-  return out;
 }
 
 export function readSettings(home: string): Settings {
   try {
     const value = JSON.parse(fs.readFileSync(join(home, SETTINGS), "utf8")) as unknown;
     if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
-    const fields = value as Record<string, unknown>;
-    const token = fields.token ?? null;
-    const holder = fields.holder ?? null;
-    if ((token !== null && typeof token !== "string") || (holder !== null && typeof holder !== "string")) return {};
-    const settings: Settings = {};
-    if (token !== null) settings.token = token as string;
-    if (holder !== null) settings.holder = holder as string;
-    return settings;
+    const holder = (value as Record<string, unknown>).holder ?? null;
+    if (holder !== null && typeof holder !== "string") return {};
+    return holder === null ? {} : { holder };
   } catch {
     return {};
   }
@@ -820,12 +742,7 @@ export function readState(home: string): Map<string, Saved> {
   return out;
 }
 
-/** The saved token for `edit cloud …` (no server running). */
-export function useSavedToken(home: string): void {
-  apply(readSettings(home));
-}
-
-/** Writes `text` atomically, readable by this user only (it may hold the token). */
+/** Writes `text` atomically, readable by this user only (it may hold lock tokens). */
 export function writePrivate(path: string, text: string): void {
   const tmp = `${path}.${process.pid}.tmp`;
   try {
@@ -1831,8 +1748,6 @@ function sorted(value: unknown, status = 200): Response {
 }
 
 export function routes(router: Router<App>): void {
-  router.get("/api/cloud", getSettings);
-  router.post("/api/cloud", postSettings);
   router.get("/api/cloud/projects", async ({ app }) => sorted(await list(app)));
   router.get("/api/projects/{id}/cloud", ({ app, params }) => {
     const cloudProjects = cloudOf(app);
@@ -1858,37 +1773,6 @@ async function refusing<T>(status: number, work: () => Promise<T>): Promise<T> {
   }
 }
 
-function needCloud(app: App): Cloud {
-  const cloudProjects = cloudOf(app);
-  if (cloudProjects === null) throw new ApiError(404, "no cloud here");
-  return cloudProjects;
-}
-
-/** The cloud setting, and (`?check=true`) whether the relay takes the token. */
-async function getSettings({ app, query }: RouteContext<App>): Promise<Response> {
-  const cloudProjects = needCloud(app);
-  const check = query.get("check");
-  if (check !== null && check !== "true" && check !== "false") {
-    throw new ApiError(400, "Failed to deserialize query string: check: provided string was not `true` or `false`", true);
-  }
-  return sorted(await settingsReply(cloudProjects, check === "true"));
-}
-
-async function settingsReply(cloudProjects: Cloud, check: boolean): Promise<Record<string, unknown>> {
-  const answer = cloudProjects.settingsStatus();
-  if (check && typeof answer.token === "string") {
-    let problem: string | null;
-    try {
-      problem = await cloudProjects.connectionProblem();
-    } catch (error) {
-      problem = diag.messageOf(error);
-    }
-    answer.connected = problem === null;
-    answer.problem = problem;
-  }
-  return answer;
-}
-
 /** serde's word for a JSON value of the wrong type. */
 function unexpected(value: unknown): string {
   if (typeof value === "boolean") return `boolean \`${value}\``;
@@ -1905,34 +1789,6 @@ async function body(context: RouteContext<App>, struct: string): Promise<Record<
     throw badShape(`invalid type: ${unexpected(given)}, expected struct ${struct}`);
   }
   return given as Record<string, unknown>;
-}
-
-/** A field that may be absent (unchanged), null (cleared) or a string. */
-function present(given: Record<string, unknown>, key: string): string | null | undefined {
-  if (!(key in given)) return undefined;
-  const value = given[key];
-  if (value === null || typeof value === "string") return value;
-  throw badShape(`${key}: invalid type: ${unexpected(value)}, expected a string`);
-}
-
-async function postSettings(context: RouteContext<App>): Promise<Response> {
-  const { app } = context;
-  const cloudProjects = needCloud(app);
-  const given = await body(context, "SettingsBody");
-  const token = present(given, "token");
-  const holder = present(given, "holder");
-  const wasOn = cloudProjects.on();
-  // Let go of this machine's locks while the old token still works.
-  if (wasOn && token === null) await releaseAll(app);
-  try {
-    cloudProjects.setSettings(token, holder);
-  } catch (error) {
-    if (isBug(error)) throw error;
-    throw new ApiError(400, diag.messageOf(error));
-  }
-  diag.info("cloud", cloudProjects.on() ? `cloud on as ${cloudProjects.holder()}` : "cloud off: no token");
-  app.store.emit({ type: "cloud-settings", on: cloudProjects.on() });
-  return sorted(await settingsReply(cloudProjects, true));
 }
 
 /** `{client, heartbeat}` (both defaulted, as serde reads `Client`). */

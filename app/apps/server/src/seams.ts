@@ -235,8 +235,6 @@ export interface CloudProjectsSeam {
    * The server's cloud projects: attaches the store's hook and starts the push loop.
    */
   start(app: App): void;
-  /** `edit cloud …` outside a server: the relay token saved on this Mac, else the built-in one, unless the env sets one. */
-  useSavedToken(home: string): void;
 }
 
 export interface CloudSeam {
@@ -268,7 +266,6 @@ export const cloudProjects: CloudProjectsSeam = {
   start: (app) => {
     cloudProjectsModule.start(app);
   },
-  useSavedToken: (home) => cloudProjectsModule.useSavedToken(home),
 };
 export const cloud: CloudSeam = {
   runCli: (args) => cloudModule.runCli(args),
