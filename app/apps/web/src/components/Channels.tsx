@@ -242,15 +242,41 @@ function FoundCard({ found, looking }: { found: Found | null; looking: boolean }
   );
 }
 
+/** A link, a handle or a channel id, rather than a name. */
+const LINK_LIKE = /youtu|https?:|^@|^UC[\w-]{22}$/i;
+
+/** One way to add what was typed: the YouTube channel found, or a placeholder of that name; picked, it's white. */
+function AddChoice({ picked, onPick, avatar, title, sub }: { picked: boolean; onPick: () => void; avatar: ReactNode; title: string; sub: string }) {
+  return (
+    <motion.button
+      type="button"
+      layout
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={spring}
+      onClick={onPick}
+      aria-pressed={picked}
+      className={cx("flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors", picked ? "border-fg bg-fg text-bg" : "border-line bg-black/40 hover:border-line-strong")}
+    >
+      {avatar}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-[14px] font-medium">{title}</span>
+        <span className={cx("block truncate text-[12px]", picked ? "text-bg/60" : "text-faint")}>{sub}</span>
+      </span>
+    </motion.button>
+  );
+}
+
 /**
- * A channel added: a link pasted (read as it's typed, so the right channel is
- * seen before it's added), or a placeholder's name when it isn't on YouTube
- * yet; then set up: who narrates its videos and whether it's a compilation
- * channel. Its styles start empty, taught as it's worked on.
+ * A channel added: a link pasted, or a name typed. A link finds its channel;
+ * a name offers both what YouTube finds by it and a placeholder of that name
+ * (a channel not on YouTube yet), one picked (Sphe, Nov 15: the placeholder
+ * hid behind a line of text). Then set up: who narrates and whether it's a
+ * compilation channel. Its styles start empty, taught as it's worked on.
  */
 function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => void; onAdded: (channel: Channel) => void }) {
   const [link, setLink] = useState("");
-  const [placeholder, setPlaceholder] = useState<string | null>(null);
+  const [choice, setChoice] = useState<"youtube" | "placeholder" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { found, looking } = useFound(link, setError);
   const [added, setAdded] = useState<Channel | null>(null);
@@ -262,20 +288,25 @@ function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => 
   useEffect(() => {
     if (!open) return;
     setLink("");
-    setPlaceholder(null);
+    setChoice(null);
     setError(null);
     setAdded(null);
     setNarration(null);
     setCompilation(false);
   }, [open]);
 
-  const ready = placeholder !== null ? placeholder.trim() !== "" : found !== null;
+  const typed = link.trim();
+  const linkLike = LINK_LIKE.test(typed);
+  // A name can be a placeholder; a link is a YouTube channel. Alone, the one way there is is picked.
+  const canPlaceholder = typed.length >= 2 && !linkLike;
+  const picked = linkLike ? (found !== null ? "youtube" : null) : choice ?? (canPlaceholder && found === null && !looking ? "placeholder" : null);
+  const ready = picked === "placeholder" ? canPlaceholder : picked === "youtube" && found !== null;
   const add = async () => {
     if (!ready || busy) return;
     setBusy(true);
     setError(null);
     try {
-      const channel = placeholder !== null ? await channelApi.addPlaceholder(placeholder.trim()) : await channelApi.add(link.trim());
+      const channel = picked === "placeholder" ? await channelApi.addPlaceholder(typed) : await channelApi.add(typed);
       setAdded(channel);
       setNarration(channel.narration);
       setCompilation(channel.compilation);
@@ -309,28 +340,37 @@ function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => 
           void (added === null ? add() : finish());
         }}
       >
-        {added === null && placeholder !== null ? (
-          <>
-            <div className="flex items-center gap-3">
-              <ChannelAvatar channel={{ title: placeholder, youtubeId: null }} size={40} />
-              <DialogTitle title="Add a placeholder" />
-            </div>
-            <input autoFocus value={placeholder} onChange={(event) => setPlaceholder(event.target.value)} placeholder="Its name, like GTA 6 channel" maxLength={200} className={FIELD} />
-            <p className="-mt-1 text-[12px] text-faint">Link it to the real channel once it's made. Everything it's been taught stays.</p>
-          </>
-        ) : added === null ? (
+        {added === null ? (
           <>
             <DialogTitle title="Add a channel" />
-            <input autoFocus value={link} onChange={(event) => setLink(event.target.value)} placeholder="youtube.com/@channel, a video of theirs, or the channel ID" className={FIELD} />
-            <FoundCard found={found} looking={looking} />
-            {found === null && !looking && (
-              <button type="button" onClick={() => {
-                  setError(null);
-                  setPlaceholder("");
-                }} className="-mt-1 self-start text-[12px] text-faint transition-colors hover:text-fg">
-                No YouTube channel yet? Add a placeholder
-              </button>
+            <input
+              autoFocus
+              value={link}
+              onChange={(event) => {
+                setLink(event.target.value);
+                setChoice(null);
+              }}
+              placeholder="Paste a YouTube link, or type a name"
+              maxLength={200}
+              className={FIELD}
+            />
+            {(found !== null || canPlaceholder) && (
+              <div className="flex flex-col gap-2">
+                {found !== null && (
+                  <AddChoice picked={picked === "youtube"} onPick={() => setChoice("youtube")} avatar={<ChannelAvatar channel={found} size={40} />} title={found.title} sub={facts(found)} />
+                )}
+                {canPlaceholder && (
+                  <AddChoice
+                    picked={picked === "placeholder"}
+                    onPick={() => setChoice("placeholder")}
+                    avatar={<ChannelAvatar channel={{ title: typed, youtubeId: null }} size={40} />}
+                    title={typed}
+                    sub="Placeholder: not on YouTube yet, linked once it is"
+                  />
+                )}
+              </div>
             )}
+            {looking && found === null && <p className="text-[12px] text-faint">Looking it up…</p>}
           </>
         ) : (
           <>
@@ -353,8 +393,8 @@ function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose: () => 
         )}
         {error && <p className="text-[12px] text-danger">{error}</p>}
         <DialogActions className="mt-1">
-          <Button type="button" variant="subtle" onClick={added === null && placeholder !== null ? () => setPlaceholder(null) : onClose}>
-            {added !== null ? "Later" : placeholder !== null ? "Back" : "Cancel"}
+          <Button type="button" variant="subtle" onClick={onClose}>
+            {added !== null ? "Later" : "Cancel"}
           </Button>
           {added === null ? (
             <Button type="submit" variant="primary" busy={busy} disabled={!ready}>
