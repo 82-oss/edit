@@ -88,9 +88,6 @@ test("projects: create, read, replace with a stale rev, delete; refusals worded"
     expect([empty.status, await empty.json()]).toEqual([400, { error: "no paths" }]);
     expect(await (await send(`/api/projects/${project.id}`, { method: "DELETE" })).json()).toEqual({ ok: true });
     expect((await send(`/api/projects/${project.id}`, { method: "DELETE" })).status).toBe(404);
-    // A package's routes are on the same server (the voice-overs').
-    const voice = await send("/api/voice");
-    expect([voice.status, await voice.json()]).toEqual([200, { projects: [] }]);
   } finally {
     cleanup();
   }

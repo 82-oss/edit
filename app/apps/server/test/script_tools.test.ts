@@ -8,7 +8,7 @@ import type { App } from "../src/app.ts";
 import { baseRouter, respond } from "../src/http/server.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import type { ScriptBlock, ScriptJob } from "../src/model.ts";
-import { researchRoutes, routes, start, timing as scriptTiming, voiceRoutes } from "../src/script_tools.ts";
+import { researchRoutes, routes, start, timing as scriptTiming } from "../src/script_tools.ts";
 import * as tools from "../src/tools.ts";
 import { timing as transcribeTiming } from "../src/transcribe.ts";
 import { timing as voiceoverTiming } from "../src/voiceover.ts";
@@ -73,7 +73,6 @@ const DOC = `<html><head><title>Kent crash</title></head><body>
 function serve(app: App) {
   const router = baseRouter();
   routes(router);
-  voiceRoutes(router);
   researchRoutes(router);
   return async (method: string, path: string, body?: unknown): Promise<[number, unknown]> => {
     const init: RequestInit = { method, headers: { host: "localhost:7700" } };
@@ -208,40 +207,6 @@ test.skipIf(ffmpeg === null || ffprobe === null)("mixed input lays out a whole n
     expect(pictures.map((clip) => clip.type === "video" ? clip.source_in : -1)).toEqual([0, 5, 300]);
   } finally { cleanup(); }
 }, 40_000);
-
-test("the voice-over routes answer", async () => {
-  const [{ app, cleanup }] = withAgents("voice-routes");
-  try {
-    const http = serve(app);
-    let [status, value] = await http("POST", "/api/voice", { name: "  " });
-    expect(status).toBe(200);
-    const project = (value as { project: { id: string; name: string; lines: { id: string }[]; voice: { speed: number } } }).project;
-    expect([project.name, project.lines.length, project.voice.speed]).toEqual(["Untitled voice-over", 1, 1.15]);
-    [status, value] = await http("GET", "/api/voice");
-    expect((value as { projects: { id: string }[] }).projects.map((own) => own.id)).toEqual([project.id]);
-    expect(await http("GET", "/api/voice/nope")).toEqual([404, { error: "no such voice-over" }]);
-    expect(await http("GET", "/api/voice/..%2Fx")).toEqual([404, { error: "no such voice-over" }]);
-    [status, value] = await http("PUT", `/api/voice/${project.id}`, {
-      name: "Narration",
-      voice: { voice_id: "abc", stability: 3 },
-      lines: [{ id: project.lines[0]!.id, text: "Hello there." }, { text: "Second." }],
-    });
-    expect(status).toBe(200);
-    expect((value as { project: { voice: { stability: number }; lines: unknown[] } }).project.voice.stability).toBe(1);
-    expect((await http("PUT", `/api/voice/${project.id}`, { name: "x" }))[0]).toBe(422);
-    const id = app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project.id;
-    expect(await http("POST", "/api/voice", { from_project: id })).toEqual([400, { error: "That project's script has no cut-ins to voice." }]);
-    expect(await http("POST", `/api/voice/${project.id}/send`, { project: id })).toEqual([400, { error: "No lines have a chosen take yet." }]);
-    expect(await http("POST", `/api/voice/${project.id}/send`, { project: "nope" })).toEqual([404, { error: "no such project" }]);
-    expect(await http("GET", `/api/voice/${project.id}/full.mp3`)).toEqual([400, { error: "No lines have been spoken yet." }]);
-    expect(await http("GET", `/api/voice/${project.id}/lines/l1/takes/t1`)).toEqual([404, { error: "no such take" }]);
-    expect(await http("POST", `/api/voice/${project.id}/lines/nope/generate`)).toEqual([400, { error: "no such line" }]);
-    expect(await http("DELETE", `/api/voice/${project.id}`)).toEqual([200, { ok: true }]);
-    expect((await http("GET", "/api/voice"))[1]).toEqual({ projects: [] });
-  } finally {
-    cleanup();
-  }
-});
 
 test("the research routes answer", async () => {
   const [{ app, cleanup }] = withAgents("research-routes");

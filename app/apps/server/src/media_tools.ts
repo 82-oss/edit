@@ -607,11 +607,6 @@ async function agentStopRoute(context: RouteContext<App>): Promise<Response> {
   return sortedJson({ ok: true });
 }
 
-function agentResetRoute(context: RouteContext<App>): Response {
-  seams.agentPanel(context.app).reset(context.params.id ?? "");
-  return sortedJson({ ok: true });
-}
-
 /** Map pages' bodies (a moving shot's frames, its picture) may be large. */
 const MAP_LIMIT = 64 << 20;
 
@@ -660,7 +655,6 @@ export function routes(router: Router<App>): void {
   router.post("/api/projects/{id}/agent/stop", agentStopRoute);
   router.post("/api/projects/{id}/agent/queue/{qid}/cancel", agentQueueCancelRoute);
   router.post("/api/projects/{id}/agent/queue/{qid}/steer", agentQueueSteerRoute);
-  router.post("/api/projects/{id}/agent/reset", agentResetRoute);
   router.get("/api/maps/{token}", mapPageRoute, { bodyLimit: MAP_LIMIT });
   router.post("/api/maps/{token}", mapShotRoute, { bodyLimit: MAP_LIMIT });
   router.post("/api/maps/{token}/frame/{index}", mapFrameRoute, { bodyLimit: MAP_LIMIT });

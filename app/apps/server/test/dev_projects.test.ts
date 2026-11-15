@@ -1,10 +1,9 @@
 // Test projects (dev_projects.ts): what a person didn't start from Home's New
 // project is marked "dev" when it's made, on every build; a save never changes
-// the mark; one is shown when asked for, promoted one at a time, and deleted
-// all at once only when the count matches; real projects are never touched.
+// the mark; one is shown when asked for and promoted one at a time; real
+// projects are never touched.
 
 import { expect, test } from "bun:test";
-import * as fs from "node:fs";
 
 import type { Project } from "../src/model.ts";
 import { respond } from "../src/http/server.ts";
@@ -89,7 +88,7 @@ test("a test project promoted is an ordinary project", async () => {
   }
 });
 
-test("an older throwaway marked a test project by hand is listed, and deleted, with the rest", async () => {
+test("an older throwaway marked a test project by hand is listed with the rest", async () => {
   const { app, store, cleanup } = fixtureHome("dev-test");
   try {
     const real = store.createAs("Real case", "bodycam", settings);
@@ -98,36 +97,6 @@ test("an older throwaway marked a test project by hand is listed, and deleted, w
     expect(store.list().find((summary) => summary.id === trial.project.id)?.dev).toBe(true);
     expect(store.list().find((summary) => summary.id === real.project.id)?.dev).toBeUndefined();
     expect((await ask(app, "/api/projects/p1-nope/test", {})).status).toBe(404);
-    expect((await ask(app, "/api/dev-projects/delete", { count: 1 })).body.deleted).toEqual([trial.project.id]);
-    expect(store.list().map((summary) => summary.id)).toEqual([real.project.id]);
-  } finally {
-    cleanup();
-  }
-});
-
-test("delete all test projects deletes only those, and only when the count is what the confirm showed", async () => {
-  const { app, store, home, cleanup } = fixtureHome("dev-delete");
-  try {
-    const real = store.createAs("Real", "bodycam", settings);
-    const first = store.createAs("Trial 1", "bodycam", settings, false, true);
-    const second = store.createAs("Trial 2", "interrogation", settings, false, true);
-    const promoted = store.createAs("Trial 3", "bodycam", settings, false, true);
-    await ask(app, `/api/projects/${promoted.project.id}/promote`, {});
-
-    expect((await ask(app, "/api/dev-projects/delete", {})).status).toBe(400);
-    const wrong = await ask(app, "/api/dev-projects/delete", { count: 3 });
-    expect(wrong.status).toBe(409);
-    expect(store.list()).toHaveLength(4);
-
-    const done = await ask(app, "/api/dev-projects/delete", { count: 2 });
-    expect(done.status).toBe(200);
-    expect((done.body.deleted as string[]).sort()).toEqual([first.project.id, second.project.id].sort());
-    expect(done.body.failed).toEqual([]);
-    expect(store.list().map((summary) => summary.id).sort()).toEqual([real.project.id, promoted.project.id].sort());
-    // Kept aside in projects/deleted, as Home's Delete does.
-    expect(fs.readdirSync(`${home}/projects/deleted`).filter((name) => name.startsWith(first.project.id))).toHaveLength(1);
-    // None left: nothing to delete.
-    expect((await ask(app, "/api/dev-projects/delete", { count: 1 })).status).toBe(409);
   } finally {
     cleanup();
   }

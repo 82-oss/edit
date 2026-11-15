@@ -1,8 +1,8 @@
 // The script, voice and research package's MCP tools (search_web,
 // read_page, add_article, case_articles, look_at_found, reject_found,
 // collect_images, use_found, read_review, realign_script, place_voiceovers,
-// tighten_voiceover, speed_voiceover, revoice_cut_in) and routes (`/api/voice/*`,
-// `/api/scripts/preview`, `/api/projects/{id}/script(/job)`,
+// tighten_voiceover, speed_voiceover, revoice_cut_in) and routes
+// (`/api/scripts/preview`, `/api/projects/{id}/script(/job)`,
 // `/api/projects/{id}/research/*`). Importing this module registers the tools
 // (seams.ts does); the server calls `routes` on its router. The script
 // module itself is re-exported, so this file is the script seam.
@@ -18,11 +18,9 @@ import { ApiError, bad, notFound } from "./http/errors.ts";
 import { badShape, readJson, type RouteContext, type Router } from "./http/router.ts";
 import { image, registerTool, text, type Content } from "./mcp/registry.ts";
 import * as kinds from "./kinds.ts";
-import { voiceFor } from "./styles.ts";
 import type { Project } from "./model.ts";
 import { native } from "./native/index.ts";
 import { duration as projectDuration, fps as fpsOf } from "./project.ts";
-import { isFile } from "./paths.ts";
 import * as research from "./research.ts";
 import * as researchCloud from "./research_cloud.ts";
 import * as review from "./review.ts";
@@ -34,7 +32,6 @@ import { reviewCode } from "./finished.ts";
 import { hasCase, pendingCase, queueCase } from "./case_insertion.ts";
 import { field, read, readStruct, required, SerdeError, type Struct } from "./serde.ts";
 import { stableStringify } from "./stable.ts";
-import { changesFrom, narrationLines } from "./voice.ts";
 import * as voiceover from "./voiceover.ts";
 import * as recovery from "./recovery.ts";
 
@@ -394,11 +391,6 @@ function badOf(error: unknown): unknown {
   return bad(diag.messageOf(error));
 }
 
-function notFoundOf(error: unknown): unknown {
-  if (error instanceof ApiError || isBug(error)) return error;
-  return notFound(diag.messageOf(error));
-}
-
 /** A file as tower's ServeFile answers it: its type by extension, byte ranges, 404 when it isn't there. */
 function serveFile(request: Request, path: string): Response {
   let size: number;
@@ -443,70 +435,6 @@ function projectOr404(app: App, id: string): { rev: number; project: Project } {
   const live = app.store.get(id);
   if (live === null) throw notFound("no such project");
   return live;
-}
-
-// Voice-overs: their own projects, for now.
-
-const VOICE_CREATE: Struct = {
-  name: "VoiceCreate",
-  fields: [field("name", "string", ""), field("from_project", { option: "string" }, null)],
-};
-
-async function voiceCreate(context: RouteContext<App>): Promise<Response> {
-  const { app } = context;
-  const given = await body(context, VOICE_CREATE);
-  const fromProject = given.from_project as string | null;
-  let name = given.name as string;
-  let lines: [string, string | null][] = [];
-  let voiceId: string | null = null;
-  if (fromProject !== null) {
-    const live = projectOr404(app, fromProject);
-    voiceId = voiceFor(live.project.style);
-    lines = narrationLines(live.project);
-    if (lines.length === 0) throw bad("That project's script has no cut-ins to voice.");
-    if (trim(name) === "") name = `${live.project.name} (voice-over)`;
-  }
-  try {
-    return sortedJson({ project: app.voices.create(name, fromProject, lines, voiceId) });
-  } catch (error) {
-    throw badOf(error);
-  }
-}
-
-async function voiceUpdate(context: RouteContext<App>): Promise<Response> {
-  const { app } = context;
-  const given = await readJson<unknown>(context);
-  let changes;
-  try {
-    changes = changesFrom(given);
-  } catch (error) {
-    if (error instanceof SerdeError) throw badShape(error.message);
-    throw error;
-  }
-  try {
-    return sortedJson({ project: app.voices.update(context.params.id ?? "", changes) });
-  } catch (error) {
-    throw badOf(error);
-  }
-}
-
-const VOICE_SEND: Struct = { name: "VoiceSend", fields: [required("project", "string")] };
-
-async function voiceSend(context: RouteContext<App>): Promise<Response> {
-  const { app } = context;
-  const id = context.params.id ?? "";
-  const given = await body(context, VOICE_SEND);
-  try {
-    app.voices.get(id);
-  } catch (error) {
-    throw notFoundOf(error);
-  }
-  projectOr404(app, given.project as string);
-  try {
-    return sortedJson(await voiceover.send(app, id, given.project as string));
-  } catch (error) {
-    throw badOf(error);
-  }
 }
 
 /** A `#[serde(default)] bool` query value: absent false, else "true" / "false". */
@@ -611,70 +539,6 @@ async function scriptResume(context: RouteContext<App>): Promise<Response> {
   if (!recut && script.laidOut(live.project) && !pendingCase(live.project) && !script.unvoiced(live.project)) throw new ApiError(409, "this script's import finished: Re-cut to lay it out again");
   void script.start(app, id, recut);
   return sortedJson({ job: app.scripts.get(id) });
-}
-
-/** The voice-over routes (`/api/voice/*`): `voice.routes`. */
-export function voiceRoutes(router: Router<App>): void {
-  router.get("/api/voice", ({ app }) => sortedJson({ projects: app.voices.list() }));
-  router.post("/api/voice", voiceCreate);
-  router.get("/api/voice/voices", async (context) => {
-    const refresh = queryFlag(context, "refresh");
-    try {
-      return sortedJson(await context.app.voices.voices(refresh));
-    } catch (error) {
-      throw badOf(error);
-    }
-  });
-  router.get("/api/voice/{id}", ({ app, params }) => {
-    try {
-      return sortedJson({ project: app.voices.get(params.id ?? "") });
-    } catch (error) {
-      throw notFoundOf(error);
-    }
-  });
-  router.put("/api/voice/{id}", voiceUpdate);
-  router.delete("/api/voice/{id}", ({ app, params }) => {
-    try {
-      app.voices.delete(params.id ?? "");
-    } catch (error) {
-      throw badOf(error);
-    }
-    return sortedJson({ ok: true });
-  });
-  router.get("/api/voice/{id}/full.mp3", async ({ app, params, request }) => {
-    let path: string;
-    try {
-      path = await app.voices.full(params.id ?? "");
-    } catch (error) {
-      throw badOf(error);
-    }
-    return serveFile(request, path);
-  });
-  router.post("/api/voice/{id}/send", voiceSend);
-  router.post("/api/voice/{id}/lines/{line}/generate", async ({ app, params }) => {
-    try {
-      return sortedJson({ project: await app.voices.generate(params.id ?? "", params.line ?? "") });
-    } catch (error) {
-      throw badOf(error);
-    }
-  });
-  router.get("/api/voice/{id}/lines/{line}/takes/{take}", ({ app, params, request }) => {
-    let path: string;
-    try {
-      path = app.voices.takePath(params.id ?? "", params.take ?? "");
-    } catch (error) {
-      throw notFoundOf(error);
-    }
-    if (!isFile(path)) throw notFound("no such take");
-    return serveFile(request, path);
-  });
-  router.delete("/api/voice/{id}/lines/{line}/takes/{take}", ({ app, params }) => {
-    try {
-      return sortedJson({ project: app.voices.deleteTake(params.id ?? "", params.line ?? "", params.take ?? "") });
-    } catch (error) {
-      throw badOf(error);
-    }
-  });
 }
 
 /** The research routes (`/api/projects/{id}/research/*`): `research.routes`. */

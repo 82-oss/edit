@@ -398,8 +398,6 @@ export type VoiceProject = import("./voice.ts").VoiceProject;
 export interface VoiceSeam {
   /** The lines of a video project's script narration (its cut-ins), in order, with their labels. */
   narrationLines(project: Project): [string, string | null][];
-  /** `/api/voice/*`. */
-  routes: Routes;
 }
 
 export interface VoiceoverSeam {

@@ -282,7 +282,6 @@ export function routes(router: Router<App>): void {
     void bringBack(app, id, replacements, leave).catch((error: unknown) => diag.warn("cloud", `${id}: bringing its footage back: ${diag.messageOf(error)}`));
     return new Response(stableStringify({ started: true }), { headers: { "content-type": "application/json" } });
   });
-  router.get("/api/archived", ({ app }) => new Response(stableStringify(archived(app.store.home)), { headers: { "content-type": "application/json" } }));
   router.post("/api/projects/{id}/restore", ({ app, params }) => {
     const id = params.id ?? "";
     if (archived(app.store.home)[id] === undefined) throw new ApiError(400, "this project isn't archived");

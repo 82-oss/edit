@@ -77,7 +77,6 @@ test("the agent panel's routes", async () => {
     const empty = await ask("POST", `/api/projects/${project}/agent`, { text: "  " });
     expect(empty.status).toBe(400);
     expect(empty.json()).toEqual({ error: "say something" });
-    expect((await ask("POST", `/api/projects/${project}/agent/reset`)).text).toBe('{"ok":true}');
     expect((await ask("POST", `/api/projects/${project}/agent/stop`)).text).toBe('{"ok":true}');
   } finally {
     cleanup();

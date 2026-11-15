@@ -606,6 +606,3 @@ export const timing = { sleep: (ms: number) => Bun.sleep(ms) };
 const SPEAK_RETRIES = 2;
 
 export { SerdeError };
-
-// Its routes live beside the package's other routes (script_tools.ts).
-export { voiceRoutes as routes } from "./script_tools.ts";

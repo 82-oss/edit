@@ -56,7 +56,7 @@ import { deepFreeze } from "./store.ts";
 import * as tools from "./tools.ts";
 import { putOff } from "./put_off.ts";
 import { BUILD } from "./version.ts";
-import { ANOTHER_MACHINE, THIS_MACHINE } from "./machine.ts";
+import { ANOTHER_MACHINE } from "./machine.ts";
 
 const FILE = "reviews.json";
 /** How often Repack is asked for new notes while Edit runs. */
@@ -216,8 +216,6 @@ interface ShareArgs {
   id: string;
   /** Over the latest version (same link, number and notes) rather than as the next. */
   replace?: boolean;
-  /** Every version so far becomes this one, v1 (Repack's reviews:compress). */
-  compress?: boolean;
   /** Said beside its export in the Exports panel ("Trying again after the update"). */
   note?: string;
   /** Ready for changes: the request it ends and the version it shares, said on the review page if it fails. */
@@ -516,14 +514,14 @@ function startShare(app: App, projectId: string, given: Omit<ShareArgs, "id">, f
  * (same keys, so its link, number and notes stay) instead of a new version:
  * a small fix after sharing (Judge EXPLODES' stingers turned down) stays V2.
  */
-export async function share(app: App, projectId: string, path: string | null, replace = false, compress = false): Promise<{ url: string; version: number }> {
+export async function share(app: App, projectId: string, path: string | null, replace = false): Promise<{ url: string; version: number }> {
   const home = app.store.home;
   if (!cloud.enabled()) throw new Error("sharing needs Edit's cloud (the relay token)");
   if (app.store.get(projectId) === null) throw new Error("no such project");
   if (shareable(listExports(home, projectId), path) === undefined) throw new Error(path === null ? "export the whole edit first: a review shares an export" : "that isn't one of this project's whole exports or an export of its opening");
   canShare(home, projectId);
   if (replace && newestVersion(home, projectId) === null) throw new Error("nothing shared yet to replace");
-  return startShare(app, projectId, { path, ...(replace ? { replace } : {}), ...(compress ? { compress } : {}) });
+  return startShare(app, projectId, { path, ...(replace ? { replace } : {}) });
 }
 
 function newestVersion(home: string, projectId: string): Version | null {
@@ -873,22 +871,6 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       return published(latest.n, shared.url);
     }
     const before = resumed ? await publishedBefore(projectId, args.id) : null;
-    if (args.compress === true) {
-      // Every revision so far becomes this one, v1, on the same link: the
-      // other versions go and their notes move onto v1 (Repack's reviews:compress).
-      sharing.set(projectId, "making it v1");
-      const answer =
-        before !== null && before.reviewId !== null && before.url !== null
-          ? { reviewId: before.reviewId, url: before.url, version: 1, removed: [] as number[] }
-          : ((await cloud.mutation("reviews:compress", {
-              sourceId: projectId, key: `${prefix}/video.mp4`, meta: { fps, durationMs, timeline, posterKey: `${prefix}/poster.jpg`, share: args.id, ...extra }, by: app.machine,
-            })) as { reviewId: string; url: string; version: number; removed: number[] });
-      update(home, (state) => {
-        state.shared[projectId] = { reviewId: answer.reviewId, url: answer.url, versions: [{ n: 1, timeline, path: chosen.path, fps, durationMs, clips }] };
-      });
-      diag.info("review", `${live.project.name}: compressed to v1 (removed v${answer.removed.join(", v")}) at ${answer.url}`);
-      return published(1, answer.url);
-    }
     sharing.set(projectId, "publishing");
     const answer =
       before !== null && before.reviewId !== null && before.url !== null
@@ -1463,40 +1445,6 @@ export async function done(app: App, projectId: string, given: string, summary: 
   return fix;
 }
 
-/** What a note Edit pins on a review is about (Repack's intents for a video). */
-export const NOTE_KINDS = ["cut", "blur", "mute", "subtitle", "speaker", "graphic", "audio", "music", "order", "other", "question", "fyi"] as const;
-
-/**
- * Pins a note from Edit on the project's latest shared version (`reviews:note`):
- * at a moment (ms on that version's export), over a stretch, or about the
- * version as a whole. Its author is "Edit"; Edit's own notes never come back
- * as things to fix (`heard` skips them). The note's id.
- */
-export async function pin(
-  app: App,
-  projectId: string,
-  note: { text: string; kind?: (typeof NOTE_KINDS)[number]; atMs?: number; range?: { startMs: number; endMs: number } },
-): Promise<{ noteId: string; version: number }> {
-  if (!cloud.enabled()) throw new Error("pinning a note needs Edit's cloud");
-  const shared = read(app.store.home).shared[projectId];
-  if (shared === undefined || shared.versions.length === 0) throw new Error("this project hasn't been shared for review");
-  const version = Math.max(...shared.versions.map((one) => one.n));
-  const text = note.text.trim();
-  if (text === "") throw new Error("a note needs words");
-  const args: Record<string, unknown> = { sourceId: projectId, version, text, kind: note.kind ?? "question" };
-  if (note.range !== undefined) args.range = { startMs: Math.round(note.range.startMs), endMs: Math.round(note.range.endMs) };
-  else if (note.atMs !== undefined) args.at = Math.round(note.atMs);
-  const answer = (await cloud.mutation("reviews:note", args)) as { noteId?: string };
-  if (typeof answer?.noteId !== "string") throw new Error("Repack gave no note id");
-  diag.info("review", `${projectId}: pinned a ${args.kind as string} note on v${version}`);
-  return { noteId: answer.noteId, version };
-}
-
-/** Takes one of Edit's own notes off the review (`reviews:deleteNote`; again is harmless). */
-export async function unpin(noteId: string): Promise<void> {
-  await cloud.mutation("reviews:deleteNote", { noteId });
-}
-
 /** A short reviewer-facing line. The full reason stays in the status details. */
 function reviewerReason(details: string): string {
   const sentence = details.match(/^.*?[.!?](?:\s|$)/u)?.[0]?.trim() ?? details.trim();
@@ -1620,29 +1568,6 @@ function forget(home: string, projectId: string): void {
 export function fullKeyOf(prefix: string, exportPath: string): string {
   const ext = /\.(mp4|mov|m4v)$/iu.exec(exportPath)?.[1]?.toLowerCase() ?? "mp4";
   return `${prefix}/full.${ext}`;
-}
-
-/**
- * Uploads version `n`'s export, as it is, as that version's full-quality file
- * (the reviews shared before the Download button), and names it in the version's
- * meta. Its key and size.
- */
-export async function uploadFull(app: App, projectId: string, n: number, progress: (done: number, total: number | null) => void = () => {}): Promise<{ key: string; bytes: number; meta: string }> {
-  const shared = read(app.store.home).shared[projectId];
-  const version = shared?.versions.find((one) => one.n === n);
-  if (version === undefined) throw new Error(`v${n} isn't shared from here`);
-  if (!fs.existsSync(version.path)) throw new Error(`v${n}'s export isn't on ${THIS_MACHINE} any more (${version.path}): export it again`);
-  const key = fullKeyOf(`edit/reviews/${projectId}/${version.timeline}`, version.path);
-  await cloud.uploadFile(version.path, key, progress, undefined, true);
-  const bytes = fs.statSync(version.path).size;
-  try {
-    await cloud.mutation("reviews:setMeta", { sourceId: projectId, version: n, meta: { fullKey: key } });
-  } catch (error) {
-    // Uploaded either way: named in the version once Repack can (its reviews:setMeta).
-    if (/Could not find public function|isn't a function|not found/iu.test(diag.messageOf(error))) return { key, bytes, meta: "pending: Repack has no reviews:setMeta yet" };
-    throw error;
-  }
-  return { key, bytes, meta: "set" };
 }
 
 export function clearOthers(app: App, projectId: string, kept: number): string[] {
@@ -2785,23 +2710,6 @@ export function routes(router: Router<App>): void {
     });
     return sorted(first === null ? { started: true } : first.done);
   });
-  // The person sharing (never the agent): the newest export of the opening or
-  // whole edit becomes the review's only version, v1, with every note kept.
-  router.post("/api/projects/{id}/review/compress", async (context) => {
-    const given = (await readJson<unknown>(context).catch(() => ({}))) as Record<string, unknown>;
-    const id = context.params.id ?? "";
-    const path = typeof given?.path === "string" ? given.path : null;
-    const started = share(context.app, id, path, false, true);
-    started.catch((error: unknown) => {
-      const message = diag.messageOf(error);
-      if (message === "the share was cancelled" || message === "the export was cancelled") return;
-      diag.warn("review", `compressing ${id}: ${message}`);
-    });
-    const first = await Promise.race([started.then((done) => ({ done })), new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500))]).catch((error: unknown) => {
-      throw new ApiError(400, diag.messageOf(error));
-    });
-    return sorted(first === null ? { started: true } : first.done);
-  });
   router.post("/api/projects/{id}/review/share", async (context) => {
     const given = (await readJson<unknown>(context).catch(() => ({}))) as Record<string, unknown>;
     const id = context.params.id ?? "";
@@ -2819,45 +2727,6 @@ export function routes(router: Router<App>): void {
       throw new ApiError(400, diag.messageOf(error));
     });
     return sorted(first === null ? { started: true } : first.done);
-  });
-  // A note from Edit on the latest version: {text, kind?, at_ms? | start_ms + end_ms?}.
-  router.post("/api/projects/{id}/review/note", async (context) => {
-    const given = (await readJson<unknown>(context).catch(() => ({}))) as Record<string, unknown>;
-    const kind = typeof given.kind === "string" ? given.kind : "question";
-    if (!(NOTE_KINDS as readonly string[]).includes(kind)) throw new ApiError(400, `kind is one of ${NOTE_KINDS.join(", ")}`);
-    const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
-    const start = number(given.start_ms);
-    const end = number(given.end_ms);
-    try {
-      return sorted(
-        await pin(context.app, context.params.id ?? "", {
-          text: typeof given.text === "string" ? given.text : "",
-          kind: kind as (typeof NOTE_KINDS)[number],
-          ...(start !== undefined && end !== undefined ? { range: { startMs: start, endMs: end } } : { atMs: number(given.at_ms) }),
-        }),
-      );
-    } catch (error) {
-      throw new ApiError(400, diag.messageOf(error));
-    }
-  });
-  router.delete("/api/projects/{id}/review/note/{note}", async ({ params }) => {
-    try {
-      await unpin(params.note ?? "");
-      return sorted({ ok: true });
-    } catch (error) {
-      throw new ApiError(400, diag.messageOf(error));
-    }
-  });
-  // A shared version's full-quality file, uploaded now (reviews shared before the Download button): {version}.
-  router.post("/api/projects/{id}/review/full", async (context) => {
-    const given = (await readJson<unknown>(context).catch(() => ({}))) as Record<string, unknown>;
-    const n = typeof given.version === "number" ? given.version : NaN;
-    if (!Number.isInteger(n)) throw new ApiError(400, "version (a number) is required");
-    try {
-      return sorted(await uploadFull(context.app, context.params.id ?? "", n, (done, total) => sharing.set(context.params.id ?? "", `uploading the full-quality file ${total ? Math.round((done / total) * 100) : 0}%`)).finally(() => sharing.delete(context.params.id ?? "")));
-    } catch (error) {
-      throw new ApiError(400, diag.messageOf(error));
-    }
   });
   // Deletes the review link for good: reviewers lose the page and their notes (asked first in the Share dialog).
   router.delete("/api/projects/{id}/review", async ({ app, params }) => {

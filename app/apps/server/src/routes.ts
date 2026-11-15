@@ -125,7 +125,6 @@ export function buildRouter(): Router<App> {
   effects.routes(router);
   archive.routes(router);
   avatars.routes(router);
-  seams.voice.routes(router);
   router
     .post("/api/diagnostics/client", clientLog)
     .post("/api/diagnostics/timings", clientTimings)
@@ -201,7 +200,6 @@ export function buildRouter(): Router<App> {
     .post("/api/youtube/sign-in/check", async ({ app }) => json(await youtubeSignIn.check(app.store.home)))
     .post("/api/projects/{id}/exports/delete", deleteProjectExport);
   router
-    .get("/api/export/encoders", exportEncoders)
     .get("/api/exports/activity", ({ app }) => {
       const visible = new Set(app.store.visible().map(project => project.id));
       // A share's export is the share's: while the share goes on past it (the review copy, the upload, the publish) it's
@@ -1111,15 +1109,6 @@ async function retryExport({ app, params }: Context): Promise<Response> {
     return json({ path: await app.exports.start(app.store, app.library, app.store.get(id)!.project, held!.options, held!.output, held!.extra) });
   } catch (error) {
     throw bad(diag.messageOf(error));
-  }
-}
-
-/** Which export formats and encoders this machine's FFmpeg offers. */
-async function exportEncoders({ app }: Context): Promise<Response> {
-  try {
-    return json(await app.native.encoders());
-  } catch {
-    return json({ videotoolbox: false, nvenc: false, hevc: false, prores: false, mp3: false });
   }
 }
 
