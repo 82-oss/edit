@@ -1,5 +1,5 @@
 import { explain } from "@edit/types/problems";
-import { ArrowLeft, AudioLines, Check, ChevronRight, CircleSlash, Eye, FileInput, Image, FileText, FolderOpen, LayoutGrid, ListChecks, MousePointerClick, Music, RotateCcw, ScrollText, Scissors, Share, SlidersHorizontal, Spline, Square, SquarePlus, Star, Trash2, Type, Wrench, ScanEye, Pencil, type LucideIcon, Copy, Quote, SquareTerminal, FilePen, Search, Globe, BookOpen, ImagePlus, Hourglass, Minimize2, ArrowRight, Clapperboard, GraduationCap } from "lucide-react";
+import { ArrowLeft, AudioLines, Check, ChevronRight, CircleSlash, Eye, FileInput, Image, FileText, FolderOpen, LayoutGrid, ListChecks, MousePointerClick, Music, RotateCcw, ScrollText, Scissors, Share, SlidersHorizontal, Spline, Square, SquarePlus, Star, Trash2, Type, Wrench, ScanEye, Pencil, type LucideIcon, Copy, Quote, SquareTerminal, FilePen, Search, Globe, BookOpen, ImagePlus, Hourglass, Minimize2, ArrowRight, Clapperboard } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -999,21 +999,6 @@ function useUntaughtChannel(): string | null {
   return channel !== null && footage ? empty : null;
 }
 
-/** A channel whose edit style is empty, once its footage is in: one slim line (Sphe, Nov 15: the card "looks off"), the why on hover. */
-function UntaughtChannel({ title }: { title: string }) {
-  return (
-    <div
-      title={`What you tell the agent about how ${title}’s videos should look stays with the channel.`}
-      className="flex h-8 items-center gap-2 self-start rounded-full border border-line bg-panel pr-3.5 pl-2.5 text-[12px] text-muted"
-    >
-      <GraduationCap size={13} className="shrink-0 text-faint" />
-      <span className="truncate">
-        <span className="text-fg">{title}</span> has no edit style yet: tell the agent how its videos should look
-      </span>
-    </div>
-  );
-}
-
 function ResetCard({ projectId }: { projectId: string }) {
   const [answering, setAnswering] = useState(false);
   const answer = (accept: boolean) => {
@@ -1076,7 +1061,6 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
   const untaught = useUntaughtChannel();
   const tray = [
     projectId !== undefined && resetAsked && <ResetCard key="reset" projectId={projectId} />,
-    untaught !== null && <UntaughtChannel key="untaught" title={untaught} />,
     hq && rows.length > 0 && (
       <QueueIsland
         key="queue"
@@ -1098,7 +1082,8 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
       modelName={modelName ?? undefined}
       revising={revising}
       hq={hq}
-      placeholder="Start the editing workflow, or ask for a change…"
+      // A channel with no edit style yet says so here, not in a notice of its own (Sphe, Nov 15: "this is horrible").
+      placeholder={untaught !== null ? `Tell the agent how ${untaught}’s videos should look, or start the editing workflow…` : "Start the editing workflow, or ask for a change…"}
       // Where the playhead is goes with it: the agent starts there (the server reads it what's under it).
       onSend={(message, files) => void sendToAgent(message, playhead.frame, files, hq)}
       onStop={stopAgent}
