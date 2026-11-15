@@ -6,7 +6,7 @@ import { ContextMenuHost } from "./components/ContextMenu";
 import { Editor } from "./components/Editor";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Home } from "./components/Home";
-import { ScriptMode } from "./writer/script-mode";
+import { ScriptMode, scriptOf } from "./writer/script-mode";
 import { IdeaScreen } from "./ideas/page";
 import { ThumbnailScreen } from "./thumbnails/page";
 import { SignInGate } from "./components/SignInScreen";
@@ -31,15 +31,15 @@ export function App() {
     return watchNotices();
   }, []);
   const projectId = path.match(/^\/p\/([\w-]+)/)?.[1];
-  // Script mode: /scripts (the library) and /scripts/<id> (a script), one screen that keeps its state across them.
-  const scripts = path === "/scripts" || path.startsWith("/scripts/");
+  // Script mode: /scripts/<id>, one screen that keeps its state across scripts. /scripts alone is Home (scripts are listed there).
+  const scripts = scriptOf(path) !== undefined;
   // An idea's page: /ideas/<id> (Home's Ideas section lists them).
   const ideaId = path.match(/^\/ideas\/([\w-]+)/)?.[1];
   // Thumbnails (Nov 2): /thumbnails (the list) and /thumbnails/<id> (one, with its conversation).
   const thumbId = path.match(/^\/thumbnails\/([\w-]+)/)?.[1];
   // /thumbnails (the list) is Home's Thumbnails, in its panel (Sphe, Nov 2), so it's Home's screen too.
-  // A page outside the account's work (its address typed, or kept from another account) is Home.
-  const outside = account !== null && ((scripts && !writesScripts(account)) || ((ideaId !== undefined || thumbId !== undefined || path === "/ideas" || path === "/thumbnails") && !makesIdeas(account)));
+  // A page outside the account's work (its address typed, or kept from another account) is Home, as is Script mode's old list.
+  const outside = (path.startsWith("/scripts") && !scripts) || (account !== null && ((scripts && !writesScripts(account)) || ((ideaId !== undefined || thumbId !== undefined || path === "/ideas" || path === "/thumbnails") && !makesIdeas(account))));
   useEffect(() => {
     if (outside) navigate("/", true);
   }, [outside]);

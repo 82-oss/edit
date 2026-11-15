@@ -1,10 +1,9 @@
 // Who's signed in, for Script mode's screens: Edit's own sign-in (lib/account.ts)
 // read in Writer's shape, so its grants (can.ts) and the starter's avatar read
-// as they did. Signing in, out and the account menu are Edit's.
+// as they did. Signing in, out and the account menu are Edit's (AppMenu).
 
 import { useEffect } from "react";
 
-import { AppMenu } from "../components/AppMenu";
 import { loadAccount, useAccount as useEditAccount } from "../lib/account";
 import type { AccountStatus } from "./api";
 
@@ -26,9 +25,4 @@ export function useAccount(): readonly [AccountStatus | null, (next: AccountStat
     error: account.problem,
   };
   return [status, () => void loadAccount()] as const;
-}
-
-/** The avatar menu at the right of Script mode's header: Edit's. */
-export function AccountMenu(_props: { onSettings?: () => void; onLogs?: () => void }) {
-  return <AppMenu />;
 }

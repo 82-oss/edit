@@ -75,32 +75,6 @@ export function toolLabel(tool: string, settled: boolean) {
   return (settled ? did : doing) ?? tool.replaceAll("_", " ");
 }
 
-/**
- * Calls of the same tool, one after another, as one row: reading the
- * transcript five times is one thing the agent did, not five. A call that
- * failed keeps a row of its own, so a retry that worked is not shown as failed.
- */
-export function toolRows(calls: ScriptToolCall[]) {
-  const rows: (ScriptToolCall & { count: number })[] = [];
-  for (const call of calls) {
-    const last = rows.at(-1);
-    if (
-      last &&
-      (last.tool ?? last.label) === (call.tool ?? call.label) &&
-      (last.state === "error") === (call.state === "error")
-    ) {
-      last.count++;
-      // Still at it while any of them is running.
-      if (call.state === "running") {
-        last.state = "running";
-        last.label = call.label;
-      }
-      if (call.detail) last.detail = call.detail;
-    } else rows.push({ ...call, count: 1 });
-  }
-  return rows;
-}
-
 /** Tools the agent ran back to back, and where in its answer they happened. */
 export type ScriptToolGroup = {
   /** Length of the answer written before these tools ran. */
@@ -110,26 +84,6 @@ export type ScriptToolGroup = {
 export type ScriptTurnPart =
   | { type: "text"; text: string }
   | { type: "tools"; calls: ScriptToolCall[] };
-
-/**
- * Records a tool starting or settling. Tools with no words between them share
- * a group, so a run of reads shows as one block rather than several.
- */
-export function traceTool(
-  trace: ScriptToolGroup[],
-  at: number,
-  call: ScriptToolCall,
-): ScriptToolGroup[] {
-  if (trace.some((group) => group.calls.some((c) => c.id === call.id)))
-    return trace.map((group) => ({
-      ...group,
-      calls: group.calls.map((c) => (c.id === call.id ? call : c)),
-    }));
-  const last = trace.at(-1);
-  return last && last.at >= at
-    ? [...trace.slice(0, -1), { ...last, calls: [...last.calls, call] }]
-    : [...trace, { at, calls: [call] }];
-}
 
 /** A turn as it happened: what the agent said and the tools it ran, in order. */
 export function turnParts(
@@ -148,12 +102,4 @@ export function turnParts(
   const rest = text.slice(from).trim();
   if (rest) parts.push({ type: "text", text: rest });
   return parts;
-}
-
-export function workedLabel(ms: number | undefined) {
-  if (!ms) return "Worked";
-  const seconds = Math.max(1, Math.round(ms / 1000));
-  return seconds < 60
-    ? `Worked for ${seconds}s`
-    : `Worked for ${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, "0")}s`;
 }

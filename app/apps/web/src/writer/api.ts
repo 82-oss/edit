@@ -1,4 +1,4 @@
-import type { Adding, Brief, BuildStatus, ChatTurn, DocComment, DocFile, Choice, ClaudeStatus, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Snapshot, Summary, TrelloCards, TrelloList, Version, VideoCheck, Footage, TrelloCard } from "./types";
+import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Choice, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Snapshot, Summary, Version, VideoCheck, Footage, TrelloCard } from "./types";
 import type { CutSource } from "@edit/types/script_cut";
 import { byPerson } from "../lib/api";
 
@@ -45,11 +45,6 @@ export const listScripts = () =>
 export const getScript = (id: string) =>
   http<Script>(`/api/writer/scripts/${id}`);
 
-/** The footage, and an optional article about the case, read in place of research, as Repack takes it. */
-/** A title given is kept in place of the file's name. */
-export const importFile = (path: string, article?: string, title?: string, kind?: Kind) =>
-  http<Script>("/api/writer/scripts/file", json({ path, article, title, kind, ...byPerson() }));
-
 /** A title given is kept in place of the video's own. */
 /** `build`: built as soon as the import is ready, with that note ("" for none). */
 /** `channel`: the channel it's for (its writer is taught that channel's Script lane); the same on the calls below. */
@@ -60,12 +55,9 @@ export const importYoutube = (url: string, article?: string, title?: string, kin
 export const importDrive = (url: string, article?: string, title?: string, kind?: Kind, build?: string, channel?: string) =>
   http<Script>("/api/writer/scripts/drive", json({ url, article, title, kind, build, ...(channel ? { channel } : {}), ...byPerson() }));
 
-/** The cards waiting on one of Repack's Trello lists, read through Writer's service. */
 /** The card a pasted Trello link names, read for its videos (any board Repack's Trello reads). */
 export const trelloCard = (link: string) =>
   http<TrelloCard>("/api/writer/trello/card", json({ link }));
-export const trelloCards = (list: TrelloList) =>
-  http<TrelloCards>(`/api/writer/trello/${list}`);
 
 export const renameScript = (id: string, title: string) =>
   http<Script>(`/api/writer/scripts/${id}/title`, { ...json({ title }), method: "PUT" });
@@ -89,9 +81,6 @@ export const saveClips = (id: string, revision: number, clips: Script["clips"]) 
 
 export const deleteScript = (id: string) =>
   http<void>(`/api/writer/scripts/${id}`, { method: "DELETE" });
-
-export const claudeStatus = () =>
-  http<ClaudeStatus>("/api/writer/claude");
 
 export const startBuild = (id: string, note: string, kind?: Kind) =>
   http<BuildStatus>(`/api/writer/scripts/${id}/build`, json({ note, kind }));
@@ -227,13 +216,6 @@ export const researchAgain = (id: string) =>
 export const importCompilation = (title: string, urls: string[], kase = false, kind?: Kind, build?: string, channel?: string) =>
   http<Script>("/api/writer/scripts/compilation", json({ title, urls, case: kase, kind, build, ...(channel ? { channel } : {}), ...byPerson() }));
 
-/** A pasted brief read into its title, notes and labelled links, before anything imports. */
-export const readBrief = (text: string) => (http<Brief>("/api/writer/briefs/read", json({ text })));
-
-/** A brief imported as one case: one video as itself, several as one Courtroom case, each keeping its label. */
-export const importBrief = (text: string, kind?: Kind) =>
-  http<Script>("/api/writer/scripts/brief", json({ text, kind, ...byPerson() }));
-
 /** A compilation's lines checked before anything downloads, as Repack checks its videos. */
 export const checkVideos = (lines: string[]) =>
   http<VideoCheck[]>("/api/writer/videos/check", json({ lines }));
@@ -285,19 +267,6 @@ export function message(error: unknown) {
   return "Something went wrong.";
 }
 
-export type CloudStatus = {
-  enabled: boolean;
-  state: "off" | "syncing" | "synced" | "offline" | "error" | "";
-  pending: number;
-  transfer: { script: string; name: string; up: boolean; done: number; total: number } | null;
-  lastSync: number | null;
-  error: string | null;
-  scripts: number;
-};
-
-/** Where syncing to the cloud has got to. */
-export const cloudStatus = () => (http<CloudStatus>("/api/writer/cloud"));
-
 /**
  * Where a script's preview plays from: the file on this Mac when it's here,
  * otherwise the cloud's copy a range at a time (stream.rs), as Repack plays
@@ -346,22 +315,6 @@ export const fixNotes = (id: string) =>
   http<BuildStatus>(`/api/writer/scripts/${id}/review/fix`, json({}));
 
 /** Calls `then` whenever review notes change (in the app; the dev page asks every half minute). */
-/** Scripts came, went or changed behind the page's back (the cloud, the local
- * API): Writer says so; a page in a browser asks every few seconds. */
-export function onLibrary(then: () => void): () => void {
-  let seen: number | null = null;
-  const timer = window.setInterval(() => {
-    if (document.hidden) return;
-    void http<{ version: number }>("/api/writer/library")
-      .then(({ version }) => {
-        if (seen !== null && version !== seen) then();
-        seen = version;
-      })
-      .catch(() => {});
-  }, 3_000);
-  return () => window.clearInterval(timer);
-}
-
 export function onReviews(then: () => void): () => void {
   const timer = window.setInterval(then, 30_000);
   return () => window.clearInterval(timer);
@@ -370,15 +323,6 @@ export function onReviews(then: () => void): () => void {
 /** Brings an archived script's footage back from its links (or Edit's originals); followed as a build. */
 export const restoreScript = (id: string) =>
   http<BuildStatus>(`/api/writer/scripts/${id}/restore`, json({}));
-
-/** A line of Writer's log. */
-export type LogLine = { at: number; time: string; level: "INFO" | "WARN" | "ERROR"; area: string; message: string };
-
-/** Something long under way: what, on what, the step and how far. */
-export type Activity = { key: string; script: string | null; what: string; title: string; step: string; done: number; total: number; unit: "count" | "bytes" | "percent"; started: number };
-
-/** Which Writer this is: "Writer nightly-1", "Writer v0.0.0", or a dev build. */
-export type About = { name: string; version: string; tag: string | null; release: boolean };
 
 /** Who's signed in (account.rs), at accounts.spheceo.com. */
 export type Person = { sub: string; email: string; name: string; image: string | null; perms: string[]; admin: boolean };
@@ -394,25 +338,6 @@ export type AccountStatus = {
 };
 /** A script starter's photo, kept on this Mac: a src for <img>, or null (show initials). */
 export const avatarSrc = async (_sub: string, picture: string): Promise<string | null> => `/api/avatar?url=${encodeURIComponent(picture)}`;
-export const signIn = () => (http<AccountStatus>("/api/account/sign-in", json({})));
-export const signInWithCode = () => (http<AccountStatus>("/api/account/sign-in-code", json({})));
-/** Opens one of Writer's own pages (accounts.spheceo.com, Writer's issues) in the browser. */
-export const openPage = (url: string) => (http<void>("/api/open", json({ url })));
-export const signOut = () => (http<AccountStatus>("/api/account/sign-out", json({})));
-
-/** Self-update (update.rs): this build, the channel, and the build on offer. */
-export type UpdateStatus = {
-  name: string;
-  channel: "nightly" | "stable";
-  enabled: boolean;
-  offer: { tag: string; size: number } | null;
-  phase: "idle" | "downloading" | "installing" | "restarting";
-  error: string | null;
-  checkedAt: number | null;
-  /** Why the last look for updates failed, until one works. */
-  checkError: string | null;
-};
-export const installUpdate = () => (http<void>("/api/update/install", json({})));
 
 /** A commentary's downloaded footage; asking starts what's missing (footage.rs). */
 export const getFootage = (id: string) => (http<Footage>(`/api/writer/scripts/${id}/footage`));

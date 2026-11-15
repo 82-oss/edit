@@ -3,7 +3,7 @@ import { askConfirm } from "./confirm";
 import { CommentsPanel, hoverNote } from "./comments";
 import { approveReview, cancelScriptShare, compressReview, deleteReviewLink, fixNotes, getScript, restoreScript, message, onReviews, reviewCounts, reviewNotes, scriptAudit, shareScript } from "./api";
 import { makeDoc } from "./docs-dialog";
-import type { BuildStatus, Cite, DocFile, Paragraph, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, Script } from "./types";
+import type { BuildStatus, Cite, DocFile, Paragraph, ReviewApproval, ReviewBlock, ReviewNote, Script } from "./types";
 import { useGrants } from "./can";
 import { Dialog, Icon } from "./ui";
 import { formatBytes } from "../lib/time";
@@ -17,24 +17,6 @@ import { THIS_MACHINE } from "../lib/platform";
 
 /** A note for the video editor: Edit's agent follows it in that section (a line starting "edit:"). */
 export const isEditNote = (text: string | undefined) => !!text && text.split("\n").some((line) => /^\s*edit:/i.test(line));
-
-/** Open notes per script, for the list's badges. */
-export function useReviewCounts() {
-  const [counts, setCounts] = useState<ReviewCounts | null>(null);
-  useEffect(() => {
-    let live = true;
-    const ask = () => void reviewCounts().then((next) => live && setCounts(next), () => {});
-    ask();
-    const stop = onReviews(ask);
-    const timer = window.setInterval(ask, 20_000);
-    return () => {
-      live = false;
-      stop();
-      window.clearInterval(timer);
-    };
-  }, []);
-  return counts;
-}
 
 /** A script's notes and its blocks as they now read; asked again when notes change or the script does. */
 export function useReview(id: string, revision: number) {

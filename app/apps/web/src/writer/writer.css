@@ -132,7 +132,6 @@
 .writer-root .row { display: flex; gap: 8px; align-items: center; }
 /* Pages sit full window: a list on the page palette, an editor on black */
 .writer-root .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.writer-root .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .writer-root .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
 .writer-root .dot.on { background: var(--ok); box-shadow: 0 0 8px #7fd18b80; }
 .writer-root .dot.live { background: var(--play); animation: writer-pulse 1.4s ease-in-out infinite; }
@@ -173,80 +172,12 @@
   background: #0b0b0b;
   font-size: 14px;
 }
-.writer-root .library-body { flex: 1; min-height: 0; overflow: auto; padding: 32px max(40px, calc((100% - 1200px) / 2)) 64px; }
 /* The kit's app header: mark and name, the page's controls, the avatar at the far right; room for the traffic lights. */
-.writer-root .app-header { display: flex; flex-shrink: 0; align-items: center; gap: 12px; height: 52px; padding: 0 14px 0 84px; border-bottom: 1px solid var(--line); }
-.writer-root .app-header .brand { display: flex; align-items: center; gap: 8px; margin-left: 10px; font-size: 15px; font-weight: 600; letter-spacing: -0.01em; white-space: nowrap; user-select: none; }
-.writer-root .app-header .brand img { display: block; flex-shrink: 0; }
-.writer-root .app-header .spacer { flex: 1; align-self: stretch; }
-.writer-root .heading-actions { display: flex; align-items: center; gap: 6px; }
-.writer-root .heading-actions .primary { margin-left: 6px; }
-.writer-root .claude-status { height: 30px; gap: 7px; padding: 0 10px; border-color: transparent; background: none; color: var(--muted); font-size: 12px; }
-.writer-root .claude-status:hover:not(:disabled) { background: var(--hover); border-color: transparent; color: var(--text); }
 .writer-root .library .notice { margin: 0 0 16px; }
 .writer-root .table { display: block; width: 100%; border: 1px solid var(--line); border-radius: var(--radius); border-spacing: 0; }
 .writer-root .table thead, .writer-root .table tbody { display: contents; }
-.writer-root .table-row {
-  display: grid;
-  grid-template-columns: minmax(0, 2.6fr) minmax(0, 1fr) minmax(0, 0.6fr) 30px;
-  align-items: center;
-  gap: 16px;
-  min-height: 56px;
-  padding: 10px 16px;
-  border-top: 1px solid var(--line);
-  transition: background 0.12s;
-  animation: writer-rise 0.32s cubic-bezier(0.2, 0.7, 0.2, 1) both;
-}
-.writer-root .table-head { min-height: 40px; padding-block: 6px; border-top: 0; border-radius: var(--radius) var(--radius) 0 0; background: var(--panel); animation: none; }
-.writer-root tbody > .table-row:last-child { border-radius: 0 0 var(--radius) var(--radius); }
-.writer-root .table-row:not(.table-head):hover { background: var(--panel); }
 .writer-root .cell { min-width: 0; padding: 0; font-size: 13px; font-weight: 400; text-align: left; color: var(--text-2); font-variant-numeric: tabular-nums; }
-.writer-root .cell-primary { font-size: 14px; color: var(--text); }
-.writer-root .table-head .cell { font-size: 12px; font-weight: 500; color: var(--muted); }
-.writer-root .cell-end { display: flex; justify-content: flex-end; }
-.writer-root .cell-end .icon-button { width: 30px; height: 30px; }
-.writer-root .script-group { display: block; padding: 14px 16px 6px; border-top: 1px solid var(--line); color: var(--faint); font-size: 11.5px; font-weight: 500; text-align: left; }
-.writer-root .script-group th { padding: 0; font: inherit; }
-.writer-root .script-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.writer-root .kind-mark { display: grid; place-items: center; flex-shrink: 0; width: 20px; height: 20px; border-radius: 50%; background: #2b2b2b; color: var(--text-2); }
-.writer-root .row-link {
-  all: unset;
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 500;
-  color: var(--text);
-  cursor: pointer;
-}
-.writer-root .row-link:hover { text-decoration: underline; text-underline-offset: 3px; }
-.writer-root .row-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
-:root[data-pointer] .writer-root .row-link:focus-visible { outline: none; }
-.writer-root .script-kind { flex-shrink: 0; display: inline-flex; align-items: center; height: 22px; padding: 0 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--text-2); font-size: 12px; font-weight: 500; }
 /* Green is handed over; blue a draft; amber changed since; a ring not begun. */
-.writer-root .script-status { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; height: 22px; padding: 0 8px; border-radius: 999px; background: var(--accent-soft); color: var(--text-2); font-size: 12px; font-weight: 500; }
-.writer-root .script-status i { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: #a9e091; }
-.writer-root .script-status.busy i { background: #b4bcf0; animation: writer-pulse 1.6s ease-in-out infinite; }
-.writer-root .script-status.idle { color: var(--muted); background: transparent; border: 1px solid var(--line); }
-.writer-root .script-status.idle i { background: transparent; box-shadow: inset 0 0 0 1px var(--faint); }
-.writer-root .script-status.draft i { background: #8fbaf0; }
-.writer-root .script-status.stale i { background: var(--warning); }
-.writer-root .script-status.error { color: var(--danger); background: var(--danger-soft); }
-.writer-root .script-status.error i { background: var(--danger); }
-.writer-root .welcome {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
-  padding: 12vh 24px;
-  text-align: center;
-  animation: writer-rise 0.4s cubic-bezier(0.2, 0.7, 0.2, 1) both;
-}
-.writer-root .welcome img { margin-bottom: 8px; }
-.writer-root .welcome h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
-.writer-root .welcome p { max-width: 340px; color: var(--muted); }
-.writer-root .welcome .primary { margin-top: 10px; }
 .writer-root .empty { padding: 40px 0; text-align: center; color: var(--faint); }
 @keyframes writer-rise { from { opacity: 0; transform: translateY(6px); } }
 /* Dialog */
@@ -715,9 +646,6 @@
 .writer-root .zoom-thumb { position: absolute; top: 3px; bottom: 3px; min-width: 16px; border-radius: 999px; background: rgb(255 255 255 / 0.13); cursor: grab; }
 .writer-root .zoom-thumb:hover { background: #3a3a3a; }
 /* Claude's composer extras */
-.writer-root .kind-select { height: 22px; padding: 0 4px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
-.writer-root .kind-select:hover { background: var(--hover); color: var(--text); }
-.writer-root .composer-hint { font-size: 11.5px; }
 .writer-root .turn.notes { color: var(--text-2); font-size: 12.5px; gap: 4px; }
 .writer-root .turn.notes ul { margin: 0; }
 /* The editing room: Repack's script page. A top bar, then docked panels */
@@ -769,15 +697,6 @@
 }
 .writer-root .tool:hover:not(:disabled) { background: transparent; border-color: var(--line-strong); color: var(--text); }
 .writer-root .tool svg { color: var(--muted); }
-.writer-root .studio-body {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(300px, 28%, 400px);
-  gap: 6px;
-  padding: 6px;
-}
-.writer-root .studio-body > section { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius); }
 /* The script as its Doc */
 .writer-root .doc-toolbar {
   display: flex;
@@ -834,13 +753,10 @@
 .writer-root .doc-rail .comment.writing textarea { width: 100%; min-height: 60px; resize: vertical; font: inherit; font-size: 12.5px; }
 .writer-root .doc-rail .card-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 6px; }
 .writer-root .doc-rail .card-remove { margin-left: auto; font-size: 14px; text-decoration: none; }
-.writer-root .doc-rail .card-where { display: block; margin-top: 4px; font-size: 11px; }
 .writer-root .page .proposal { margin: 6pt 0 0; padding: 8px 10px; border-left: 3px solid #1155cc; background: #f3f6fc; font-family: system-ui, sans-serif; font-size: 12px; color: #222; }
 .writer-root .page .proposal-text { margin: 0 0 6px; line-height: 1.5; white-space: pre-wrap; }
 .writer-root .page .proposal ins { background: #d6f0d8; text-decoration: none; }
 .writer-root .page .proposal del { background: #fadcdc; color: #8a2b2b; }
-.writer-root .page .proposal-actions { display: flex; align-items: center; gap: 8px; }
-.writer-root .page .proposal-actions .faint { flex: 1; color: #666; }
 .writer-root .page > .page-body > .ranges { margin: 0 0 12pt; }
 .writer-root .page .plus { margin: 0 0.05em; }
 .writer-root .range { position: relative; white-space: nowrap; }
@@ -866,7 +782,7 @@
 .writer-root .page .block > .ranges:last-of-type:last-child { margin-bottom: 0; }
 .writer-root .range { white-space: nowrap; border-radius: 2px; background: #fdf1c7; box-shadow: 0 0 0 2px #fdf1c7; transition: background 0.12s, box-shadow 0.12s; }
 .writer-root .range[data-state] { background: #f8d66d; box-shadow: 0 0 0 2px #f8d66d; }
-.writer-root .range a, .writer-root .range .unlinked { color: #1155cc; text-decoration: underline; }
+.writer-root .range a { color: #1155cc; text-decoration: underline; }
 .writer-root .page .narration {
   display: block;
   width: 100%;
@@ -899,7 +815,6 @@
 .writer-root .doc-rail > [data-card] { width: 300px; transform: scale(var(--inverse)); transform-origin: top left; }
 .writer-root .card-quote { margin: 5px 0 8px; padding-left: 8px; border-left: 2px solid var(--line-strong); color: var(--muted); font-size: 12px; }
 .writer-root .doc-rail .comment.human { background: var(--panel); border-color: var(--line-strong); }
-.writer-root .creation-format { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--text-2); font-size: 13px; }
 .writer-root .proposal-review { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; padding: 10px 12px; background: var(--surface); border-bottom: 1px solid var(--line-strong); font-size: 12px; }
 .writer-root .proposal-review > div:first-child { display: flex; flex-direction: column; gap: 3px; }
 .writer-root .proposal-review > div:first-child > span { color: var(--muted); }
@@ -912,13 +827,8 @@
 .writer-root .proposal-review ins { color: #a8dfb0; text-decoration: none; }
 .writer-root .script-selection { position: fixed; z-index: 85; display: flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--surface); box-shadow: 0 6px 24px #0006; }
 .writer-root .script-selection button { border: 0; background: none; font-size: 12px; height: 30px; }
-.writer-root .chat-scroll-area { position: relative; display: flex; flex: 1; min-height: 0; flex-direction: column; }
-.writer-root .chat-latest { position: absolute; bottom: 10px; align-self: center; height: 28px; border-radius: 20px; background: var(--surface); border: 1px solid var(--line-strong); font-size: 12px; box-shadow: 0 2px 12px #0008; }
 .writer-root .message-actions { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; opacity: 0; min-height: 22px; }
 .writer-root .turn:hover > .message-actions, .writer-root .turn:focus-within > .message-actions, .writer-root .user:hover > .message-actions, .writer-root .user:focus-within > .message-actions { opacity: 1; }
-.writer-root .composer-quote { display: flex; align-items: flex-start; gap: 6px; margin: 4px 6px 4px 12px; }
-.writer-root .composer-quote blockquote { flex: 1; margin: 0; padding-left: 8px; border-left: 2px solid var(--line-strong); color: var(--muted); font-size: 12px; max-height: 100px; overflow: auto; white-space: pre-wrap; }
-.writer-root .bubble-quote { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; padding-left: 8px; border-left: 2px solid var(--line-strong); color: var(--muted); font-size: 12px; }
 .writer-root .comment {
   position: absolute;
   left: 0;
@@ -967,26 +877,20 @@
 .writer-root .panel-tabs button:hover:not(:disabled) { background: none; border: 0; border-bottom: 1.5px solid transparent; color: var(--text-2); }
 .writer-root .panel-tabs button[aria-selected="true"], .writer-root .panel-tabs button[aria-selected="true"]:hover:not(:disabled) { border-bottom-color: var(--text); color: var(--text); }
 .writer-root .panel-tabs small { min-width: 18px; padding: 0 5px; border-radius: 999px; background: var(--hover); color: var(--muted); font-size: 10.5px; font-weight: 500; line-height: 16px; text-align: center; font-variant-numeric: tabular-nums; }
-.writer-root .chat-log { display: flex; flex-direction: column; gap: 14px; flex: 1; min-height: 0; overflow: auto; padding: 16px 14px; overscroll-behavior: contain; }
 .writer-root .turn { display: flex; flex-direction: column; gap: 10px; min-width: 0; font-size: 13.5px; line-height: 1.65; overflow-wrap: anywhere; }
 .writer-root .turn ul { margin: -4px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
 .writer-root .turn small { font-size: 12px; line-height: 1.5; }
 .writer-root .turn.working { gap: 4px; }
 .writer-root .turn.failed p { color: var(--danger); }
-.writer-root .proposals-note { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 12.5px; }
 .writer-root .agent-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
 .writer-root .thinking { display: flex; align-items: center; gap: 8px; color: var(--text); }
 .writer-root .user { display: flex; flex-direction: column; align-items: flex-end; }
 .writer-root .bubble { max-width: 88%; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px 12px 4px 12px; font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-.writer-root .agent-empty { margin: auto 0; display: flex; flex-direction: column; gap: 4px; }
-.writer-root .agent-empty h2 { font-size: 15px; font-weight: 600; }
-.writer-root .agent-empty p { color: var(--muted); font-size: 12.5px; }
 .writer-root .link-button { all: unset; color: var(--text); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
 .writer-root .composer { display: flex; flex-direction: column; flex-shrink: 0; margin: 0 10px 10px; padding: 6px 6px 6px 0; border: 1px solid var(--line); border-radius: 12px; transition: border-color 0.12s; }
 .writer-root .composer:focus-within { border-color: var(--line-strong); }
 .writer-root .composer textarea { flex: 1; max-height: 200px; min-height: 44px; padding: 6px 12px; border: 0; background: none; font-size: 13px; line-height: 1.5; resize: none; }
 .writer-root .composer textarea:focus { border: 0; }
-.writer-root .composer-footer { display: flex; align-items: center; gap: 8px; padding-left: 12px; font-size: 12px; }
 .writer-root .model { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
 .writer-root .send { flex-shrink: 0; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: var(--text); color: #000; }
 .writer-root .send:hover:not(:disabled) { background: #fff; border: 0; }
@@ -1041,30 +945,6 @@
 .writer-root .page .said .narration { margin: 0; }
 .writer-root .page .said::after { content: ""; position: absolute; left: 0; right: 0; bottom: -4px; height: 2px; border-radius: 1px; background: #e5484d; opacity: 0; transition: opacity 220ms ease; }
 .writer-root .page .said[data-now]::after { opacity: 1; }
-/* The list: any row opens its script; search narrows it */
-.writer-root .table-row.openable { cursor: pointer; }
-.writer-root .table-row.openable:hover .row-link { text-decoration: underline; text-underline-offset: 3px; }
-.writer-root .row-link .from { color: var(--faint); font-weight: 400; }
-.writer-root .empty-row { grid-template-columns: 1fr; color: var(--muted); }
-.writer-root .list-search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 240px;
-  height: 34px;
-  margin-right: 6px;
-  padding: 0 8px 0 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--faint);
-  transition: border-color 0.12s;
-}
-.writer-root .list-search:focus-within { border-color: var(--line-strong); color: var(--muted); }
-.writer-root .list-search input { height: 30px; padding: 0; border: 0; background: none; font-size: 13px; }
-.writer-root .list-search input:focus { border: 0; }
-.writer-root .list-search kbd { padding: 0 5px; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--faint); font-family: var(--font-mono); font-size: 11px; line-height: 16px; }
-.writer-root .list-search .clear { width: 20px; height: 20px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 15px; }
-.writer-root .list-search .clear:hover:not(:disabled) { background: var(--hover); border: 0; color: var(--text); }
 /* Narrow panels keep what matters: the transport drops its extras, the
    document toolbar its counts, before anything wraps or spills. */
 .writer-root .monitor { container-type: inline-size; }
@@ -1145,10 +1025,6 @@
 .writer-root .version-diffs .proposal-text { margin: 4px 0 0; line-height: 1.55; white-space: pre-wrap; }
 .writer-root .version-diffs ins { background: #1f3d24; color: #c9f2cf; text-decoration: none; }
 .writer-root .version-diffs del { background: #3d1f1f; color: #f2c9c9; }
-.writer-root .video-checks { max-height: 280px; overflow: auto; }
-.writer-root .video-check { display: grid; grid-template-columns: 22px 1fr auto auto; gap: 10px; align-items: center; padding: 6px 4px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
-.writer-root .video-check-what { display: flex; flex-direction: column; min-width: 0; }
-.writer-root .video-check.bad-row strong { color: var(--danger); }
 /* A compilation's reused cases: import their videos, then play or insert their picked moments. */
 .writer-root .reused-cases { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 12.5px; }
 .writer-root .reused-cases p { margin: 0; }
@@ -1198,12 +1074,6 @@
 .writer-root .pacing-pick .select:hover:not(:disabled), .writer-root .pacing-pick .select.on { border: 1px solid var(--line-strong); }
 /* Feedback: what a reviewer marked, the lesson drawn from it, and the rounds that test it. */
 .writer-root .fb-status { flex: none; }
-.writer-root .feedback-panel .fb-add { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; margin: 8px 0; }
-.writer-root .feedback-panel .fb-add textarea { width: 100%; min-height: 56px; resize: vertical; font-size: 13px; }
-.writer-root .feedback-panel .fb-notes { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; text-align: left; }
-.writer-root .feedback-panel .fb-notes li { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font-size: 12.5px; }
-.writer-root .feedback-panel .fb-notes blockquote { margin: 0 0 4px; padding-left: 8px; border-left: 2px solid var(--line-strong); color: var(--text-2); }
-.writer-root .feedback-panel .fb-notes p { margin: 0; }
 .writer-root .fb-problems { margin: 0; padding-left: 16px; font-size: 12px; }
 .writer-root .fb-section { display: flex; flex-direction: column; gap: 6px; }
 .writer-root .fb-section-head { display: flex; align-items: center; gap: 6px; padding: 0; background: none; border: 0; color: inherit; text-align: left; cursor: default; }
@@ -1249,13 +1119,6 @@
 .writer-root .feedback-panel pre { margin: 4px 0; white-space: pre-wrap; font: 12px/1.5 var(--mono, ui-monospace, monospace); color: var(--text-2); }
 .writer-root .fb-kept details { padding: 4px 0; border-top: 1px solid var(--line); }
 .writer-root .fb-kept summary { display: flex; justify-content: space-between; gap: 8px; }
-.writer-root .trello-bar { display: flex; align-items: center; gap: 8px; margin: 10px 0 2px; font-size: 12.5px; }
-.writer-root .trello-bar .link-button { display: inline-flex; align-items: center; gap: 5px; }
-.writer-root .trello-card { grid-template-columns: 1fr auto; }
-.writer-root .trello-card a { color: inherit; text-decoration: none; }
-.writer-root .trello-card a:hover { text-decoration: underline; }
-.writer-root .trello-empty { padding: 10px 12px; margin: 0; }
-.writer-root .trello-bar button.on { background: var(--hover); color: var(--text); }
 /* Review on a Repack link: the Share button, its dialog, and the bands a fix leaves on the page (review.tsx). */
 .writer-root .count-badge { flex: none; display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 7px; border-radius: 999px; background: var(--accent-soft); color: var(--text); font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .writer-root .review-button { gap: 6px; }
@@ -1283,18 +1146,6 @@
 .writer-root .share-row .share-copy a:hover { text-decoration: underline; }
 .writer-root .share-row button { flex: none; }
 .writer-root .review-auto { margin: 12px 0 4px; align-items: flex-start; line-height: 1.4; }
-.writer-root .review-notes { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 12px; max-height: 50vh; overflow: auto; }
-.writer-root .review-note { display: flex; flex-direction: column; gap: 4px; padding-left: 10px; border-left: 2px solid var(--accent); }
-.writer-root .review-note[data-status="done"] { border-left-color: var(--ok); }
-.writer-root .review-note p, .writer-root .review-note blockquote { margin: 0; }
-.writer-root .review-note blockquote { color: var(--text-2); font-style: italic; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
-.writer-root .review-note-head { display: flex; align-items: center; gap: 8px; }
-.writer-root .review-note-head .faint { flex: 1; font-size: 11.5px; }
-.writer-root .review-note .chip { flex: none; font-size: 11px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
-.writer-root .review-note .chip.open { border-color: var(--accent); color: var(--accent); }
-.writer-root .review-note .chip.done { border-color: var(--ok); color: var(--ok); }
-.writer-root .review-fix, .writer-root .review-reply { color: var(--text-2); font-size: 12.5px; }
-.writer-root .review-reply { padding-left: 10px; }
 /* Bands on the page: green where a fix changed the script, orange on an open note's words. */
 .writer-root .grow-banded { position: relative; }
 .writer-root .grow-banded > textarea { position: relative; background: transparent !important; }
@@ -1312,81 +1163,24 @@
 .writer-root .band-tip-head .faint { font-size: 11.5px; }
 .writer-root .band-tip q { color: var(--text); }
 .writer-root .band-tip-fix { color: var(--text-2); }
-/* A note for the video editor ("edit: …"): Edit's agent follows it in that section. */
 /* An approved review: done, the link closed to notes. */
-.writer-root .approved-mark { height: 22px; border-color: transparent; background: color-mix(in srgb, var(--ok) 10%, transparent); color: var(--ok); }
 .writer-root .review-approved { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 4px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); border-radius: 8px; color: var(--text); line-height: 1.45; }
 .writer-root .review-approved svg { flex: none; margin-top: 2px; color: var(--ok); }
 .writer-root .review-approved span { flex: 1; }
 /* An archived script: read-only until its footage is restored. */
 .writer-root .archived-notice { display: flex; align-items: center; gap: 12px; }
 .writer-root .archived-notice > span { flex: 1; }
-.writer-root .review-intent { align-self: flex-start; font-size: 11px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); }
-.writer-root .review-suggestion { color: var(--ok); }
-/* The Logs window: a live tail of Writer's log (logs.tsx). */
-.writer-root .logs-tools { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
-.writer-root .logs-tools input { flex: 1; min-width: 0; }
-.writer-root .logs-tools .select-md { height: 30px; min-width: 150px; }
-.writer-root .logs-tools .segmented { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; }
-.writer-root .logs-tools .segmented button { height: 28px; border: 0; border-radius: 0; background: none; color: var(--muted); padding: 0 10px; }
-.writer-root .logs-tools .segmented button.on { background: var(--hover); color: var(--text); }
-.writer-root .logs-lines { height: 58vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; background: var(--bg); font: 11.5px/1.55 var(--font-mono); }
-.writer-root .log-line { display: grid; grid-template-columns: 92px 44px 72px 1fr; gap: 8px; white-space: pre-wrap; word-break: break-word; }
-.writer-root .log-time { color: var(--faint); }
-.writer-root .log-area { color: var(--footage); }
-.writer-root .log-line[data-level="WARN"] .log-level, .writer-root .log-line[data-level="WARN"] .log-message { color: var(--accent); }
-.writer-root .log-line[data-level="ERROR"] .log-level, .writer-root .log-line[data-level="ERROR"] .log-message { color: var(--danger); }
-/* What's under way, on every screen. */
-/* The update pill: the newer Writer on this install's channel. */
-.writer-root .update-pill { position: fixed; right: 14px; top: 14px; z-index: 41; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 12px; }
-.writer-root .update-pill button { box-shadow: 0 6px 18px #0008; }
-.writer-root .update-channel { display: flex; align-items: center; gap: 10px; margin-top: 14px; font-size: 12.5px; }
 /* A person: their photo over their initials, the initials in one of eight
    hues by a hash of the name (the kit's .sp-avatar), the same in every app. */
 .writer-root .person { --hue: var(--avatar-1); position: relative; display: inline-grid; place-items: center; flex-shrink: 0; border-radius: 50%; background: linear-gradient(color-mix(in srgb, var(--hue) 15%, transparent), color-mix(in srgb, var(--hue) 15%, transparent)), var(--panel); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--hue) 25%, transparent); color: var(--hue); font-weight: 600; line-height: 1; user-select: none; }
 .writer-root .person img { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
-/* A select as the kit's field: inset on the page colour, a chevron, the border brightens on focus. */
-.writer-root .field-select {
-  appearance: none;
-  height: 34px;
-  padding: 0 30px 0 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%23969696' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") no-repeat right 9px center;
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-  outline: none;
-  transition: border-color 0.12s;
-}
-.writer-root .field-select:focus { border-color: var(--muted); }
-.writer-root .field-select:disabled { opacity: 0.45; cursor: default; }
-/* Signed out: the whole window is the sign-in (the kit's full-window sign-in). */
-.writer-root .signin { display: grid; place-items: center; min-height: 100%; padding: 48px 24px; background: var(--bg); }
-.writer-root .signin-card { width: 330px; }
-.writer-root .signin-mark { display: block; width: 56px; height: 56px; margin-bottom: 18px; }
-.writer-root .signin h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.03em; line-height: 1.2; }
-.writer-root .signin-card > p { margin: 8px 0 22px; color: var(--muted); font-size: 14px; }
 .writer-root button.block { width: 100%; }
-.writer-root button.google { background: var(--panel); border-color: var(--line-strong); color: var(--text); font-weight: 500; }
-.writer-root button.google:hover:not(:disabled) { background: var(--surface); }
-.writer-root .signin-card > p.signin-alt { margin: 14px 0 0; font-size: 13px; }
-.writer-root .signin-alt .link-button { color: var(--text-2); text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
-.writer-root .signin-alt .link-button:hover { color: var(--text); }
-.writer-root .signin-card > p.signin-problem { margin: 14px 0 0; font-size: 13px; color: var(--danger); }
-.writer-root .signin-card > p.signin-foot { margin: 24px 0 0; font-size: 12px; color: var(--faint); }
-.writer-root .signin-code { margin: 0 0 18px; padding: 14px 0; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel); text-align: center; font-size: 26px; letter-spacing: 0.12em; color: var(--text); }
 /* Your avatar, far right in the header, and the account menu it opens. */
 .writer-root .menu-trigger { width: auto; height: auto; padding: 0; border: 0; border-radius: 50%; background: none; }
 .writer-root .menu-trigger:hover:not(:disabled) { background: none; border: 0; }
 .writer-root .menu-trigger .person { box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--line-strong); }
-.writer-root .account-menu-list { min-width: 260px; }
 .writer-root .menu-head { padding: 0; }
-.writer-root .menu-who { display: flex; align-items: center; gap: 10px; padding: 8px 8px 10px; }
-.writer-root .menu-who b { display: block; font-weight: 500; line-height: 1.3; }
-.writer-root .menu-who small { display: block; color: var(--muted); font-size: 12px; line-height: 1.3; }
 .writer-root .menu-sep { height: 1px; margin: 5px -5px; border: 0; background: var(--line); }
-.writer-root .account-line { margin-top: 14px; font-size: 12.5px; }
 /* A commentary's clip, previewed where it's mentioned (hover-preview.tsx). */
 .writer-root .hover-preview { position: fixed; z-index: 900; padding: 8px; border: 1px solid var(--line-strong); border-radius: 12px; background: #111; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55); animation: writer-hover-in 180ms cubic-bezier(0.2, 0.7, 0.2, 1) both; transform-origin: top center; }
 .writer-root .hover-preview:not([data-below]) { transform-origin: bottom center; }
@@ -1405,48 +1199,7 @@
 .writer-root .hover-close { position: absolute; top: 12px; right: 12px; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.6); color: #fff; font-size: 16px; line-height: 24px; }
 /* Settings, laid out as Edit's: titled groups of rows in a card. */
 .writer-root .settings { display: flex; flex-direction: column; gap: 18px; }
-.writer-root .settings .account-line { margin: 0; }
-.writer-root .settings-group h3 { margin: 0 0 8px; color: var(--muted); font-size: 12px; font-weight: 500; }
-.writer-root .settings-card { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
-.writer-root .settings-row { display: flex; align-items: center; gap: 14px; min-height: 52px; padding: 10px 12px; }
-.writer-root .settings-row + .settings-row { border-top: 1px solid var(--line); }
-.writer-root .settings-what { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; font-size: 13px; }
-.writer-root .settings-what b { font-weight: 500; }
-.writer-root .settings-what span { font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
-.writer-root .settings-row > button, .writer-root .settings-row > .select { flex-shrink: 0; }
-.writer-root .settings-row .select-md { min-width: 128px; }
-/* The list's header and filters, as Edit's Home: a wide search, sections, style pills. */
-.writer-root .app-header .list-search { flex: 1; width: auto; max-width: 420px; margin: 0 0 0 16px; }
-.writer-root .update-inline { display: flex; align-items: center; gap: 8px; }
-.writer-root .update-inline .bad { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.writer-root .list-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 16px; }
-.writer-root .seg { display: flex; gap: 2px; height: 34px; padding: 2px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
-.writer-root .seg button { display: flex; align-items: center; gap: 6px; height: 100%; padding: 0 10px; border: 0; border-radius: 6px; background: none; color: var(--muted); font-size: 13px; font-weight: 500; }
-.writer-root .seg button span { color: var(--faint); font-weight: 400; font-variant-numeric: tabular-nums; }
-.writer-root .seg button:hover:not(:disabled) { background: none; border: 0; color: var(--text); }
-.writer-root .seg button.on, .writer-root .seg button.on:hover:not(:disabled) { background: var(--active); color: var(--text); }
-.writer-root .style-pill { display: flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 1px solid var(--line); border-radius: 99px; background: none; color: var(--text-2); font-size: 12px; font-weight: 400; }
-.writer-root .style-pill i { width: 6px; height: 6px; border-radius: 50%; }
-.writer-root .style-pill:hover:not(:disabled) { background: var(--hover); border-color: var(--line); }
-.writer-root .style-pill.on, .writer-root .style-pill.on:hover:not(:disabled) { background: var(--active); border-color: var(--line-strong); color: var(--text); }
-.writer-root .claude-status.bad { color: var(--danger); }
-.writer-root .composer-footer .icon-tool.sm { width: 24px; height: 24px; }
-.writer-root .composer-footer .tool-divider { margin: 0 2px 0 4px; }
-.writer-root .picked-file { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 8px; color: var(--text); font-size: 13px; }
-.writer-root .picked-file .link-button { margin-left: auto; flex-shrink: 0; }
-.writer-root .add-article { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; }
-/* The update button fills as Writer downloads the update. */
-.writer-root .update-button { position: relative; overflow: hidden; isolation: isolate; }
-.writer-root .update-button::before { content: ""; position: absolute; inset: 0 auto 0 0; z-index: -1; width: var(--filled, 0%); background: var(--active); transition: width 0.4s ease; }
-.writer-root .update-button[data-working]:disabled { opacity: 1; cursor: default; }
-/* Claude asking to reset the script, answered in the chat, as Edit asks. */
-.writer-root .reset-status { display: flex; align-items: center; gap: 8px; margin: 2px 0 10px; color: var(--muted); font-size: 13px; }
-.writer-root .reset-status svg { color: var(--muted); }
-.writer-root .reset-ask { display: flex; flex-direction: column; gap: 8px; margin: 0 0 14px; padding: 14px 16px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); font-size: 13.5px; }
-.writer-root .reset-ask b { display: flex; align-items: center; gap: 10px; font-weight: 500; font-size: 14.5px; color: var(--text); }
-.writer-root .reset-ask b svg { color: #f5b544; }
-.writer-root .reset-ask p { margin: 0; color: var(--muted); line-height: 1.55; }
-.writer-root .reset-actions { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-top: 6px; }
+/* Links in Claude's answers (agent.tsx Said). */
 .writer-root .turn a { color: var(--text); text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 2px; cursor: pointer; overflow-wrap: anywhere; }
 .writer-root .turn a:hover { text-decoration-color: var(--text); }
 /* The review's comments, as feedback.spheceo.com shows them (comments.tsx). */
@@ -1535,7 +1288,6 @@
 .writer-root .import-steps li[data-state="done"] .import-dot { border-color: var(--ok); background: var(--ok); }
 .writer-root .import-steps li[data-state="now"] .import-dot { border-color: var(--text); background: var(--text); animation: writer-pulse 1.4s ease-in-out infinite; }
 .writer-root .import-time { font-size: 12px; font-variant-numeric: tabular-nums; padding-top: 2px; }
-.writer-root .stop-square { display: block; width: 11px; height: 11px; border-radius: 2px; background: currentColor; }
 /* Source-timed subtitles use the player's frame clock, including in Split. */
 .writer-root .caption-frame { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: min(100cqw, calc(100cqh * var(--ratio))); aspect-ratio: var(--ratio); container-type: size; display: flex; align-items: flex-end; justify-content: center; pointer-events: none; }
 .writer-root .caption { max-width: 88cqw; margin: 0 0 6cqh; padding: .2em .55em; border-radius: 4px; color: white; background: #000; font-size: clamp(10px, 4cqmin, 28px); line-height: 1.3; text-align: center; text-wrap: balance; }
@@ -1543,9 +1295,6 @@
 .writer-root .zoom-end:first-child { left: 0; }
 .writer-root .zoom-end:last-child { right: 0; }
 .writer-root .zoom-end::after { content: ""; display: block; width: 2px; height: 8px; margin: auto; background: var(--text-muted); }
-/* Edit's logo leads Script mode's header: a way back to the edits. */
-.writer-root .app-header button.brand { border: 0; background: none; padding: 0; cursor: pointer; }
-.writer-root .app-header .seg { margin-left: 6px; }
 /* Text read as the page until it's clicked (paper.tsx Grow): laid out as its textarea, selectable with the whole script. */
 .writer-root .grow-read { white-space: pre-wrap; overflow-wrap: break-word; cursor: text; user-select: text; }
 .writer-root .grow-read:focus { outline: none; }

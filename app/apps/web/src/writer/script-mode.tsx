@@ -2,37 +2,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ConfirmHost } from "./confirm";
 
 import { Loader } from "../components/Logo";
-import { claudeStatus, closeScriptLock, getProgress, getScript, listScripts, message, onLibrary, openScriptLock, takeOverScript } from "./api";
+import { closeScriptLock, getProgress, getScript, message, openScriptLock, takeOverScript } from "./api";
 import { CommentaryEditor } from "./commentary-view";
 import { Editor } from "./editor";
-import { Library } from "./library";
 import { Icon, startToastTimer } from "./ui";
 import { LitStyle } from "./comments";
 import { ImportScreen } from "./import-screen";
-import { useAccount } from "./account";
-import { openDialog } from "../lib/dialogs";
-import { useKept } from "../lib/kept";
 import { lastOpened } from "./opened";
 import { navigate, usePath } from "../lib/route";
 import "./writer.css";
-import type { ClaudeStatus, ImportProgress, Script, Summary } from "./types";
+import type { ImportProgress, Script } from "./types";
 
 /** How often an open script says so (apps/server/src/sync_core.ts TIMING.HEARTBEAT), and who's saying it. */
 const HEARTBEAT_MS = 30_000;
 const LOCK_CLIENT = `script-${Math.random().toString(36).slice(2, 10)}`;
 
-type Route = { name: "library" } | { name: "script"; id: string };
-
-// The route lives in the URL (Edit's paths: /scripts, /scripts/<id>), so a
-// reload (a phone or laptop on the tailnet does that often) comes back to the
-// same script.
-function parse(path: string): Route {
-  const script = /^\/scripts\/([0-9a-f-]+)$/i.exec(path);
-  if (script) return { name: "script", id: script[1] };
-  return { name: "library" };
-}
-
-const pathOf = (route: Route) => (route.name === "script" ? `/scripts/${route.id}` : "/scripts");
+/** The script a path opens (/scripts/<id>; App.tsx mounts Script mode only there), so a reload comes back to it. */
+export const scriptOf = (path: string) => /^\/scripts\/([0-9a-f-]+)$/i.exec(path)?.[1];
 
 // A click never leaves a focus ring (the kit's rule): a pointer marks the page until Tab brings the rings back.
 let marking = false;
@@ -68,49 +54,46 @@ function ImportFinished({
   );
 }
 
-/** Script mode: Writer's library and its scripts, inside Edit. */
+/** Script mode: a script open in Edit (Home lists them, with the edits). */
 export function ScriptMode() {
   const path = usePath();
-  // One object a path, so the effects that follow it run when it changes, not every render.
-  const route = useMemo(() => parse(path), [path]);
+  // The script this screen opened. Leaving (Home, the edit) changes the path while the screen still
+  // fades out for the next one (App's AnimatePresence): it keeps showing the script until it's gone.
+  const [id, setId] = useState(() => scriptOf(path) ?? "");
+  const now = scriptOf(path);
+  if (now !== undefined && now !== id) setId(now);
+  // One object a script, so the effects that follow it run when it changes, not every render.
+  const route = useMemo(() => ({ id }), [id]);
   useEffect(() => {
     markPointer();
   }, []);
-  // The list as last seen shows at once; a script opened before opens at once (then catches up).
-  const [scripts, setScripts] = useKept<Summary[]>("scripts.list", []);
-  const [ready, setReady] = useState(() => scripts.length > 0);
-  const [claude, setClaude] = useState<ClaudeStatus | null>(null);
+  // A script opened before opens at once (then catches up).
+  const [ready, setReady] = useState(false);
   const [progress, setProgress] = useState<ImportProgress[]>([]);
-  const [open, setOpen] = useState<Script | null>(() => (route.name === "script" ? (lastOpened.get(route.id) ?? null) : null));
+  const [open, setOpen] = useState<Script | null>(() => lastOpened.get(route.id) ?? null);
   const [error, setError] = useState<string | null>(null);
   const [importNotice, setImportNotice] = useState<{ id: string; title: string } | null>(null);
-  const [account] = useAccount();
   const acceptScript = (fresh: Script) => setOpen((current) => {
     if (current?.id === fresh.id && (fresh.revision < current.revision || (fresh.revision === current.revision && fresh.updatedAt < current.updatedAt))) return current;
     lastOpened.set(fresh.id, fresh);
     return fresh;
   });
-  const setRoute = (next: Route) => navigate(pathOf(next));
+  const openScript = (next: string) => navigate(`/scripts/${next}`);
   /** The script this page last read whole, so the list arriving doesn't read it again. */
   const fetched = useRef<string | null>(null);
   // Another script, or this one opened again: read afresh.
   useEffect(() => () => { fetched.current = null; }, [route]);
 
-  const refresh = () => {
-    void listScripts().then(setScripts).catch((cause) => setError(message(cause)));
-  };
-
   useEffect(() => {
-    // `just dev` serves the page before the Rust API is listening. Keep
+    // `just dev` serves the page before the server is listening. Keep
     // asking until it answers rather than showing the refused request.
     let waiting: number | undefined;
     const connect = () => {
-      void listScripts()
-        .then((rows) => {
-          setScripts(rows);
+      void getProgress()
+        .then((list) => {
+          setProgress(Array.isArray(list) ? list : []);
           setError(null);
           setReady(true);
-          void claudeStatus().then(setClaude).catch(() => setClaude(null));
         })
         .catch(() => {
           setError("Starting Script mode…");
@@ -136,7 +119,6 @@ export function ScriptMode() {
   }, []);
 
   useEffect(() => {
-    if (route.name !== "script") return;
     // Opened before: it shows at once while the fresh copy comes.
     const kept = lastOpened.get(route.id);
     if (kept) setOpen((current) => (current?.id === kept.id ? current : kept));
@@ -146,15 +128,15 @@ export function ScriptMode() {
     // Asked once (a second ask while the first is out only queues behind it on a busy Mac).
     if (fetched.current === route.id) return;
     fetched.current = route.id;
-    const id = route.id;
-    void getScript(id)
+    const asked = route.id;
+    void getScript(asked)
       .then((fresh) => {
         // A slow answer for a script since left must not overwrite the one now open.
-        if (fetched.current !== id) return;
+        if (fetched.current !== asked) return;
         acceptScript(fresh);
       })
       .catch((cause) => {
-        if (fetched.current === id) fetched.current = null;
+        if (fetched.current === asked) fetched.current = null;
         if (ready) setError(message(cause));
       });
   }, [route, ready]);
@@ -162,9 +144,8 @@ export function ScriptMode() {
   // Open here: the script's cloud lock is kept while the page says so (apps/server/src/writer/locks.ts), and
   // another computer holding it makes it read-only here, with Take over.
   const [heldBy, setHeldBy] = useState<string | null>(null);
-  const scriptId = route.name === "script" ? route.id : null;
+  const scriptId = route.id;
   useEffect(() => {
-    if (scriptId === null) return;
     let alive = true;
     const say = () => {
       void openScriptLock(scriptId, LOCK_CLIENT).then((lock) => alive && setHeldBy(lock.holder)).catch(() => {});
@@ -181,11 +162,11 @@ export function ScriptMode() {
 
   // A script open here that another Mac changed comes down through the cloud
   // into its file; the open copy follows it.
-  const opened_ = route.name === "script" && open && open.id === route.id ? open : null;
-  const shown = useRef(opened_);
-  shown.current = opened_;
+  const opened = open && open.id === route.id ? open : null;
+  const shown = useRef(opened);
+  shown.current = opened;
   useEffect(() => {
-    if (route.name !== "script" || !ready) return;
+    if (!ready) return;
     let gone = false;
     const ask = () => {
       const now = shown.current;
@@ -224,56 +205,17 @@ export function ScriptMode() {
         if (fresh.status !== "ready") return;
         setImportNotice({ id: fresh.id, title: fresh.title });
         if (shown.current?.id === fresh.id) acceptScript(fresh);
-        refresh();
       }).catch(() => {});
     }
   }, [progress]);
 
-  // Scripts that come, go or change behind the list's back (the cloud, the
-  // local API) show up straight away, and the list catches up when the window comes back.
-  useEffect(() => {
-    const stop = onLibrary(refresh);
-    const back = () => !document.hidden && refresh();
-    document.addEventListener("visibilitychange", back);
-    return () => {
-      stop();
-      document.removeEventListener("visibilitychange", back);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // While something imports or Claude is writing, keep the list current. The
-  // request that started it may have been dropped on the way.
-  const working = progress.length > 0 || scripts.some((row) => row.status === "processing" || row.building);
-  useEffect(() => {
-    if (!working || route.name !== "library") return;
-    const timer = window.setInterval(() => !document.hidden && refresh(), 4000);
-    return () => window.clearInterval(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [working, route.name]);
-
   // Back from a script goes to Home, where scripts are listed with the edits (one app, Oct 30).
   const home = () => navigate("/");
-  // Script mode's own list is Home's now (scripts and edits in one list, by stage). Only its own
-  // address: this screen is still here for a moment while it fades out for the next one, and it took
-  // the edit's address (Start the edit, Open the edit) for its list and sent the person Home instead.
-  const listing = route.name === "library" && path.startsWith("/scripts");
-  useEffect(() => {
-    if (listing) navigate("/", true);
-  }, [listing]);
-  // Who's signed in decides which scripts they see (can.rs): list them again when that changes.
-  const grantsKey = account ? `${account.signedIn}|${account.person?.sub ?? ""}|${account.person?.admin ?? ""}|${(account.person?.perms ?? []).join(",")}` : "";
-  // (Not on the first look: the connect above lists them already.)
-  useEffect(() => {
-    if (grantsKey && ready) refresh();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [grantsKey]);
-  const opened = route.name === "script" && open && open.id === route.id ? open : null;
   // The open script still importing: its progress shows over the project, which loads when it's done.
-  const importing = route.name === "script" ? (progress.find((item) => item.id === route.id) ?? null) : null;
+  const importing = progress.find((item) => item.id === route.id) ?? null;
   const wasImporting = useRef<string | null>(null);
   useEffect(() => {
-    if (route.name !== "script" || !ready) return;
+    if (!ready) return;
     let gone = false;
     const load = () => void getScript(route.id).then((fresh) => { if (!gone) acceptScript(fresh); }).catch((cause) => { if (!gone) setError(message(cause)); });
     if (importing) {
@@ -294,7 +236,7 @@ export function ScriptMode() {
         <CommentaryEditor key={opened.id} script={opened} onChange={setOpen} onBack={home} />
       ) : opened ? (
         <Editor key={opened.id} script={opened} onChange={setOpen} onBack={home} />
-      ) : route.name === "script" ? (
+      ) : (
         <div className="studio">
           <header className="topbar" data-tauri-drag-region>
             <button type="button" className="icon-tool" aria-label="All scripts" title="All scripts" onClick={home}>
@@ -310,19 +252,8 @@ export function ScriptMode() {
             </div>
           )}
         </div>
-      ) : (
-        <Library
-          scripts={scripts}
-          claude={claude}
-          onSettings={() => openDialog("settings")}
-          onLogs={() => openDialog("logs")}
-          progress={progress}
-          loadError={error}
-          onOpen={(id) => setRoute({ name: "script", id })}
-          onChanged={refresh}
-        />
       )}
-      {heldBy !== null && scriptId !== null && (
+      {heldBy !== null && (
         <div className="notice" role="status" style={{ position: "fixed", left: "50%", bottom: 16, transform: "translateX(-50%)", zIndex: 40, display: "flex", alignItems: "center", gap: 12 }}>
           <span>{heldBy} is editing this script, so it's read-only here.</span>
           <button type="button" className="tool" onClick={() => void takeOverScript(scriptId).then((lock) => setHeldBy(lock.holder)).catch((cause) => setError(message(cause)))}>Take over</button>
@@ -333,7 +264,7 @@ export function ScriptMode() {
         <ImportFinished
           key={importNotice.id}
           notice={importNotice}
-          onOpen={() => setRoute({ name: "script", id: importNotice.id })}
+          onOpen={() => openScript(importNotice.id)}
           onDismiss={() => setImportNotice(null)}
         />
       )}
