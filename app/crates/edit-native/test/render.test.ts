@@ -66,7 +66,7 @@ describe("frame renders", () => {
     expect([w % 28, h % 28]).toEqual([0, 0]);
     expect((w / 28) * (h / 28)).toBeLessThanOrEqual(120);
     expect([w, h]).toEqual([336, 224]);
-    expect(images[0].mime).toBe(process.platform === "darwin" ? "image/jpeg" : "image/png");
+    expect(images[0].mime).toBe("image/jpeg");
   });
 
   test("a sheet of raw pictures", async () => {

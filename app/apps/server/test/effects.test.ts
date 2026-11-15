@@ -537,7 +537,7 @@ window.seek = (t) => { if (t > 1.5) throw new Error("no second " + t); document.
     expect(Buffer.from(again.stills[0]!.picture).equals(Buffer.from(three.stills[0]!.picture))).toBe(true);
   } finally {
     effects.closeChrome();
-    server.stop(true);
+    void server.stop(true);
     cleanup();
   }
 });
