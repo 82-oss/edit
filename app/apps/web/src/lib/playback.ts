@@ -1275,6 +1275,8 @@ class Preview {
     if (this.smooth) this.showSmooth(playhead.frame);
     if (this.native && playhead.playing) { this.playNative(); return; }
     playhead.emit();
+    // The window is asked for the frame now, not at the next animation frame: that wait was a quarter of a jump (Nov 15).
+    if (this.native && !playhead.playing) this.drawNative();
     this.invalidate();
     // Landed on the end (End, "Go to end"): it rests there, rather than a play starting the edit over.
     if (resume && !atEnd(playhead.frame, this.duration)) this.play();

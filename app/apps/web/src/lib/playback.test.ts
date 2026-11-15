@@ -781,6 +781,15 @@ describe("preview seeks and lifetime", () => {
     expect(preview.native).toBe(true);
   });
 
+  it("asks the window for a jump's frame at once, not at the next animation frame", async () => {
+    const sent = await inWindow();
+    preview.setProject(fixture(), {}); await settle(); draw(); await settle();
+    const before = sent("preview_frame").length;
+    preview.seek(40);
+    expect(sent("preview_frame").length).toBe(before + 1);
+    expect(sent("preview_frame").at(-1)!.frame).toBe(40);
+  });
+
   it("asks where the window reads from again when the server's cleaner took a copy, or a frame failed", async () => {
     await inWindow();
     preview.setProject(fixture(), {}); await settle(); draw(); await settle();
