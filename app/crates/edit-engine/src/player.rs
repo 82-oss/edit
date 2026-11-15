@@ -62,11 +62,18 @@ use crate::render::{
 };
 use crate::tempo::{self, Clock, Tempo};
 
-/// Each call and draw said on stderr (`EDIT_PREVIEW_TRACE=1`), to see what the preview does without looking.
+/// Each call and draw said on stderr (`EDIT_PREVIEW_TRACE=1`), to see what the preview does without looking;
+/// each line starts with its time (seconds since the first line), so the gaps between pictures can be read.
 pub fn trace(what: impl FnOnce() -> String) {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *ON.get_or_init(|| std::env::var_os("EDIT_PREVIEW_TRACE").is_some()) {
-        eprintln!("edit preview: {}", what());
+    static ON: std::sync::OnceLock<Option<Instant>> = std::sync::OnceLock::new();
+    if let Some(since) =
+        ON.get_or_init(|| std::env::var_os("EDIT_PREVIEW_TRACE").map(|_| Instant::now()))
+    {
+        eprintln!(
+            "edit preview: {:.3} {}",
+            since.elapsed().as_secs_f64(),
+            what()
+        );
     }
 }
 
