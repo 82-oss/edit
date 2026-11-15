@@ -29,8 +29,9 @@
 // sound file's own copy, fetched whole like a picture's), else the footage or
 // the loopback stream, which FFmpeg reads.
 //
-// Until then a picture is the server's loopback stream; the page asks again
-// every 15 s while any is. And when the cache's cleaner takes a copy handed
+// Until then a picture is the server's loopback stream: a jump to one moves
+// its whole copy to the front (`local_previews.hurry`), and as each lands the
+// page hears it and asks again (it also asks every 15 s while any is). And when the cache's cleaner takes a copy handed
 // out here (cache_cleanup.ts), the project's pages hear it (`native-sources`)
 // and ask again, rather than a jump failing on the missing file.
 
@@ -42,7 +43,7 @@ import { PLAYBACK_ROUTE } from "./cloud_playback.ts";
 import * as diag from "./diag.ts";
 import { cut, TO_THE_END } from "./export_excerpts.ts";
 import { json } from "./http/errors.ts";
-import { fetchWhole } from "./local_previews.ts";
+import { fetchWhole, onLanded } from "./local_previews.ts";
 import type { Project } from "./model.ts";
 import { isFile } from "./paths.ts";
 import * as player from "./player.ts";
@@ -57,6 +58,32 @@ export interface NativeExcerpt {
 
 /** The local files each project's window was last told to read (`evicted` looks here). */
 const handed = new Map<string, Set<string>>();
+
+/**
+ * The cloud previews each project's window was last told to stream, while
+ * their whole copies come down. As one lands its pages hear it
+ * (`native-sources`, at most once in `LANDED_GAP_MS`) and ask again, so the
+ * window reads it from here from then on: they asked every 15 s, and a cold
+ * Cops Realize streamed jumps to files already here for up to that long.
+ */
+const streaming = new Map<string, Set<string>>();
+const LANDED_GAP_MS = 300;
+const telling = new Map<string, ReturnType<typeof setTimeout>>();
+let landedApp: App | null = null;
+onLanded((key) => {
+  const app = landedApp;
+  if (app === null) return;
+  for (const [id, keys] of streaming) {
+    if (!keys.delete(key) || telling.has(id)) continue;
+    telling.set(
+      id,
+      setTimeout(() => {
+        telling.delete(id);
+        app.store.emit({ type: "native-sources", id });
+      }, LANDED_GAP_MS),
+    );
+  }
+});
 
 /** Piece cuts at once, and the ones waiting or failed lately (tried again after `RETRY_MS`). */
 const CUTS_AT_ONCE = 2;
@@ -169,6 +196,7 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
   // in playhead order: the media first played first.
   const shown = new Set(project.clips.flatMap((clip) => (clip.type === "video" ? [clip.media] : [])));
   const heard = new Set(project.clips.flatMap((clip) => (clip.type === "audio" ? [clip.media] : [])));
+  const streamed = new Set<string>();
   const firstUse = new Map<string, number>();
   // The stretches of each video the timeline shows (seconds of it), in the timeline's order.
   const fps = project.settings.fps > 0 ? project.settings.fps : 30;
@@ -197,7 +225,10 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
         const url = `http://127.0.0.1:${app.port}${PLAYBACK_ROUTE}?key=${encodeURIComponent(key)}`;
         source = url;
         if (shown.has(media.id) || heard.has(media.id)) {
-          if (base === null) fetchWhole(key, local);
+          if (base === null) {
+            fetchWhole(key, local);
+            streamed.add(key);
+          }
           else if (shown.has(media.id)) {
             const here = await pieceExcerpts(cache, base, url, played.get(media.id) ?? []);
             if (here.length > 0) excerpts[media.id] = here;
@@ -215,6 +246,9 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
   }
   const files = new Set<string>([...Object.values(sources), ...Object.values(sounds)].filter((source) => !source.startsWith("http")).concat(Object.values(excerpts).flatMap((list) => list.map((one) => one.path))));
   handed.set(project.id, files);
+  landedApp = app;
+  if (streamed.size > 0) streaming.set(project.id, streamed);
+  else streaming.delete(project.id);
   return json({ cache, sources, sounds, excerpts });
 }
 
@@ -236,6 +270,9 @@ export function evicted(app: App, path: string): void {
 export function reset(): void {
   player.reset();
   handed.clear();
+  streaming.clear();
+  for (const timer of telling.values()) clearTimeout(timer);
+  telling.clear();
   cutsWaiting.length = 0;
   cutting.clear();
   cutFailed.clear();
