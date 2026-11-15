@@ -7,8 +7,8 @@
 //!
 //! It knows nothing of the server: no store, no events, no HTTP. The host
 //! says where FFmpeg, the cache and the media folders are (`util`) and takes
-//! its log lines (`log`). The Rust server (`crates/edit`) and the native
-//! addon (`crates/edit-native`) are its two hosts.
+//! its log lines (`log`). Its host is the native addon (`crates/edit-native`)
+//! under the Bun server.
 
 pub mod censor;
 pub mod chunks;

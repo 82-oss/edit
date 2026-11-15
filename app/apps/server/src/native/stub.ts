@@ -6,7 +6,7 @@
 //   fill serde defaults or round f32 fields.
 // - mediaKey / keyOf are a stable hash of the same inputs, NOT edit-engine's
 //   SipHash: keys made here never match the real cache.
-// - probe and imageSize ask ffprobe (when there is one); preview making writes
+// - probe asks ffprobe (when there is one); preview making writes
 //   placeholder files; rendering, export, loudness and analysis say they
 //   aren't in the stub.
 // Never ship it: `isReal()` says which one is loaded.
@@ -16,7 +16,7 @@ import { playbackKey } from "../cloud_playback.ts";
 
 import { ANIMATABLE, type ClipType, type ExportOptions, type Format, type Probe, type Project } from "../model.ts";
 import { extension, join, withExtension as replaceExtension } from "../paths.ts";
-import { clipEnd, clipMedia, sample, trackLabel } from "../project.ts";
+import { clipEnd, clipMedia, trackLabel } from "../project.ts";
 import {
   STALE,
   type CachePaths,
@@ -292,9 +292,6 @@ export function createStub(): Stub {
       locks.add(path);
       return true;
     },
-    isLocked(path) {
-      return locks.has(path);
-    },
     reexec() {
       notInStub("reexec");
     },
@@ -405,15 +402,8 @@ export function createStub(): Stub {
     animatableParams() {
       return Object.fromEntries(Object.entries(ANIMATABLE).map(([type, params]) => [type as ClipType, [...params]]));
     },
-    sampleKeyframes(keys, frames) {
-      return frames.map((frame) => sample(keys, frame));
-    },
 
     probe,
-    async imageSize(path) {
-      const found = await probe(path);
-      return [found.width, found.height];
-    },
     async makePreview(job, onProgress) {
       onProgress(0.5);
       if (job.probe.kind === "video") placeholder(job.paths.proxy, "stub preview");

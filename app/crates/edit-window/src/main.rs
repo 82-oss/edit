@@ -1,6 +1,5 @@
 //! Edit's desktop window: a native webview (Tauri) onto the server `edit`
 //! runs, so the UI, REST, websocket and MCP all work exactly as in a browser.
-//! (crates/edit's app.rs::run, as its own program.)
 //!
 //! - `edit-window --url http://127.0.0.1:7700/`: what `edit app` starts (as
 //!   `<home>/bin/Edit`, the name the Dock shows). It quits when its stdin

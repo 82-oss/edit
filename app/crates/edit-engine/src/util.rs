@@ -1,7 +1,6 @@
 //! What the engine needs from its host: where FFmpeg is, where the media
-//! cache is, atomic writes, and containing panics. The Rust server
-//! re-exports these as its own (`tools`, `store::write_atomic`,
-//! `guard::catch`); the native addon sets them from `init`.
+//! cache is, atomic writes, and containing panics. The native addon sets
+//! them from `init`.
 
 use std::any::Any;
 use std::ffi::OsString;

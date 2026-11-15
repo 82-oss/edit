@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
-use edit_core::{ClipContent, Keyframe, Project};
+use edit_core::{ClipContent, Project};
 use napi_derive::napi;
 use parking_lot::Mutex;
 
@@ -324,22 +324,3 @@ pub fn animatable_params() -> napi::Result<HashMap<String, Vec<String>>> {
     })
 }
 
-/// A keyframe track's value at each of `frames` (`edit_core::sample`), for
-/// tests that the TS sampling matches it.
-#[napi(
-    ts_args_type = "keys: Keyframe[], frames: number[]",
-    ts_return_type = "(number | null)[]"
-)]
-pub fn sample_keyframes(
-    keys: serde_json::Value,
-    frames: Vec<f64>,
-) -> napi::Result<Vec<Option<f64>>> {
-    crate::sync("sampling keyframes", || {
-        let keys: Vec<Keyframe> =
-            serde_json::from_value(keys).map_err(|error| error.to_string())?;
-        Ok(frames
-            .into_iter()
-            .map(|frame| edit_core::sample(&keys, frame as f32).map(f64::from))
-            .collect())
-    })
-}

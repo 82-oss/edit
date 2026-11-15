@@ -79,16 +79,10 @@ describe("project JSON", () => {
     expect(JSON.parse(done.json).clips[0].duration).toBe(60);
   });
 
-  test("animatable params and keyframe sampling", () => {
+  test("animatable params", () => {
     const params = native.animatableParams();
     expect(Object.keys(params).sort()).toEqual(["adjustment", "audio", "solid", "text", "video", "waveform"]);
     expect(params.audio).toEqual(["volume_db"]);
     expect(params.video).toContain("scale");
-    const keys = [
-      { frame: 0, value: 0, ease: "linear" as const },
-      { frame: 10, value: 10, ease: "linear" as const },
-    ];
-    expect(native.sampleKeyframes(keys, [-5, 0, 5, 10, 20])).toEqual([0, 0, 5, 10, 10]);
-    expect(native.sampleKeyframes([], [0])).toEqual([null]);
   });
 });

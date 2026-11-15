@@ -17,7 +17,6 @@ import type {
   Encoders,
   ExportOptions,
   Format,
-  Keyframe,
   Media,
   Plan,
   Probe,
@@ -189,7 +188,6 @@ export interface Native {
   init(config: InitConfig): void; // S
   shutdown(): void; // S
   holdLock(path: string): boolean; // S: flock, held for the life of the process
-  isLocked(path: string): boolean; // S
   reexec(exe: string, args: string[]): never; // S
 
   // Cache keys
@@ -213,13 +211,11 @@ export interface Native {
   ): { json: string; rippled: Rippled }; // S
   sections(project: ProjectInput): Sections; // S
   animatableParams(): Record<string, string[]>; // S
-  sampleKeyframes(keys: Keyframe[], frames: number[]): (number | null)[]; // S
   /** The lines `text` takes in a text style (project pixels), as the renderer wraps it. */
   textLines(text: string, font: string, weight: number, size: number, tracking: number, maxWidth?: number | null): string[]; // S
 
   // Probing and preview making
   probe(path: string): Promise<Probe>; // A
-  imageSize(path: string): Promise<[number, number]>; // A
   makePreview(
     job: { source: string; probe: Probe; paths: CachePaths; fromCloudProxy: boolean },
     onProgress: (progress: number) => void,

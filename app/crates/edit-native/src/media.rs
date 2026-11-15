@@ -76,23 +76,6 @@ pub async fn probe(path: String) -> napi::Result<serde_json::Value> {
     .await
 }
 
-/// An image's pixel size (ImageIO; macOS only).
-#[napi(ts_return_type = "Promise<[number, number]>")]
-pub async fn image_size(path: String) -> napi::Result<Vec<u32>> {
-    crate::blocking("reading an image's size", move || {
-        #[cfg(target_os = "macos")]
-        {
-            let (width, height) = edit_engine::mac_media::image_size(Path::new(&path))?;
-            Ok(vec![width, height])
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            Err(format!("can't read {path}'s size here: images need macOS"))
-        }
-    })
-    .await
-}
-
 #[napi(object)]
 pub struct PreviewJob {
     pub source: String,

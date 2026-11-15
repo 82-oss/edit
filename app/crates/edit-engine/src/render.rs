@@ -18,10 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-use base64::Engine;
 use edit_core::{audio_segments, evaluate_seen, AudioSegment, Layer, Media, Project, Scene};
 use edit_render::{text::BUNDLED_FONTS, wgpu, Renderer};
-use serde_json::{json, Value};
 
 use crate::export::{ExportOptions, Format, Plan};
 #[cfg(target_os = "macos")]
@@ -1766,45 +1764,6 @@ pub fn downscale(image: &RgbaImage, max_side: u32) -> RgbaImage {
     }
 }
 
-/// Tiles images into a grid (for agent contact sheets).
-pub fn tile(images: &[RgbaImage], columns: u32) -> RgbaImage {
-    let columns = columns.max(1);
-    let cell_w = images.iter().map(|image| image.width).max().unwrap_or(1);
-    let cell_h = images.iter().map(|image| image.height).max().unwrap_or(1);
-    let rows = (images.len() as u32).div_ceil(columns).max(1);
-    let gap = 4;
-    let (w, h) = (
-        columns * cell_w + (columns - 1) * gap,
-        rows * cell_h + (rows - 1) * gap,
-    );
-    let mut pixels = vec![0_u8; (w * h * 4) as usize];
-    for chunk in pixels.as_chunks_mut::<4>().0 {
-        chunk[3] = 255;
-    }
-    for (index, image) in images.iter().enumerate() {
-        let (cx, cy) = (
-            (index as u32 % columns) * (cell_w + gap),
-            (index as u32 / columns) * (cell_h + gap),
-        );
-        for y in 0..image.height {
-            let src = (y * image.width * 4) as usize;
-            let dst = (((cy + y) * w + cx) * 4) as usize;
-            let row = (image.width * 4) as usize;
-            if let (Some(to), Some(from)) = (
-                pixels.get_mut(dst..dst + row),
-                image.pixels.get(src..src + row),
-            ) {
-                to.copy_from_slice(from);
-            }
-        }
-    }
-    RgbaImage {
-        width: w,
-        height: h,
-        pixels,
-    }
-}
-
 pub fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     {
@@ -1846,15 +1805,6 @@ pub fn encode_for_agent(image: &RgbaImage) -> Result<(Vec<u8>, &'static str), St
         }
     }
     Ok((encode_png(image)?, "image/png"))
-}
-
-/// MCP content for a picture and its caption (a tool result's `content`).
-pub fn image_content(image: &RgbaImage, caption: String) -> Result<Value, String> {
-    let (bytes, mime) = encode_for_agent(image)?;
-    Ok(json!([
-        { "type": "image", "data": base64::engine::general_purpose::STANDARD.encode(bytes), "mimeType": mime },
-        { "type": "text", "text": caption }
-    ]))
 }
 
 /// Contact-sheet cells' longest side: four across makes a ~1.5k px sheet, plenty for a model.
@@ -3498,6 +3448,7 @@ fn render_frames_watched(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     thread_local! {
         /// Readers opened on this thread (`VideoReader::open`).

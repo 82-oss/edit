@@ -28,19 +28,17 @@ describe("the data folder's lock", () => {
     const lock = join(home, "server.lock");
     expect(native.holdLock(lock)).toBe(true);
     expect(native.holdLock(lock)).toBe(true);
-    expect(native.isLocked(lock)).toBe(false);
     const other = Bun.spawn(
       [
         process.execPath,
         "-e",
         `const n = require(${JSON.stringify(join(import.meta.dir, "..", "edit-native.node"))});
-         console.log(JSON.stringify([n.isLocked(${JSON.stringify(lock)}), n.holdLock(${JSON.stringify(lock)})]));`,
+         console.log(JSON.stringify(n.holdLock(${JSON.stringify(lock)})));`,
       ],
       { stdout: "pipe" },
     );
     const answer = JSON.parse((await new Response(other.stdout).text()).trim());
-    expect(answer).toEqual([true, false]);
-    expect(native.isLocked(join(home, "nobody.lock"))).toBe(false);
+    expect(answer).toBe(false);
   });
 });
 

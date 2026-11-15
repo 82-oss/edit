@@ -112,15 +112,6 @@ pub const AUDIO_EXTENSIONS: &[&str] = &[
     "wav", "mp3", "m4a", "aac", "flac", "aif", "aiff", "ogg", "opus",
 ];
 
-pub fn is_media_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())
-        .is_some_and(|ext| {
-            VIDEO_EXTENSIONS.contains(&ext.as_str()) || AUDIO_EXTENSIONS.contains(&ext.as_str())
-        })
-}
-
 /// Still images (the server's `broll::is_image_path` is this one; a TS
 /// server keeps its own list and a test compares them).
 pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"];
@@ -762,10 +753,6 @@ pub fn make_proxy(
         }
     }
     std::fs::write(&paths.proxy_done, b"").map_err(|error| error.to_string())?;
-    // The all-intra proxy from before 2026-10-12 is no longer read.
-    if let Some(dir) = paths.proxy.parent() {
-        let _ = std::fs::remove_file(dir.join("proxy.mp4"));
-    }
     Ok(())
 }
 

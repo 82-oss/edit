@@ -285,11 +285,6 @@ pub enum SegmentKind {
 }
 
 impl SegmentKind {
-    /// Whether lines said in it get subtitles.
-    pub fn subtitled(self) -> bool {
-        self == SegmentKind::Footage
-    }
-
     pub fn label(self) -> &'static str {
         match self {
             SegmentKind::Footage => "Footage",
@@ -617,16 +612,6 @@ impl Clip {
 
     pub fn contains(&self, frame: i64) -> bool {
         frame >= self.start && frame < self.end()
-    }
-
-    /// An adjustment or solid that belongs to the cut at `frame` and moves with
-    /// it: one ending on it (a dip into it) or centred on it (a whip through it).
-    pub fn marks_cut(&self, frame: i64) -> bool {
-        matches!(
-            self.content,
-            ClipContent::Adjustment { .. } | ClipContent::Solid { .. }
-        ) && (self.end() == frame
-            || (self.start < frame && self.start + self.duration / 2 == frame))
     }
 
     /// Its own transform (as set, unanimated), for a clip that has one.
@@ -2008,31 +1993,6 @@ impl Project {
         id
     }
 
-    /// The subtitles' track, made (on top of every video track) if there isn't one.
-    pub fn subtitles_track(&mut self) -> String {
-        if let Some(track) = self.tracks.iter().find(|track| track.subtitles) {
-            return track.id.clone();
-        }
-        let id = self.fresh_id("v");
-        let after = self
-            .tracks
-            .iter()
-            .rposition(|track| track.kind == TrackKind::Video)
-            .map_or(0, |at| at + 1);
-        self.tracks.insert(
-            after,
-            Track {
-                id: id.clone(),
-                kind: TrackKind::Video,
-                hidden: false,
-                muted: false,
-                locked: false,
-                subtitles: true,
-            },
-        );
-        id
-    }
-
     pub fn track(&self, id: &str) -> Option<&Track> {
         self.tracks.iter().find(|track| track.id == id)
     }
@@ -2043,10 +2003,6 @@ impl Project {
 
     pub fn clip(&self, id: &str) -> Option<&Clip> {
         self.clips.iter().find(|clip| clip.id == id)
-    }
-
-    pub fn clip_mut(&mut self, id: &str) -> Option<&mut Clip> {
-        self.clips.iter_mut().find(|clip| clip.id == id)
     }
 
     /// Last frame covered by any clip.
@@ -2082,7 +2038,6 @@ impl Project {
         ))
     }
 
-    /// Checks references and ranges. Agents write projects, so this runs on every save.
     /// The span between the in and out points as frames `[start, end)`, or
     /// None when neither is set. A missing in is the start; a missing out, the end.
     pub fn in_out(&self) -> Option<(i64, i64)> {
@@ -2095,24 +2050,7 @@ impl Project {
         (end > start).then_some((start, end))
     }
 
-    /// Whether frames `[start, end)` hold anything to subtitle: all of it
-    /// without segments, else the frames inside footage segments.
-    pub fn subtitled_spans(&self, start: i64, end: i64) -> Vec<(i64, i64)> {
-        if self.segments.is_empty() {
-            return if end > start {
-                vec![(start, end)]
-            } else {
-                Vec::new()
-            };
-        }
-        self.segments
-            .iter()
-            .filter(|segment| segment.kind.subtitled())
-            .map(|segment| (segment.start.max(start), segment.end.min(end)))
-            .filter(|(from, to)| to > from)
-            .collect()
-    }
-
+    /// Checks references and ranges. Agents write projects, so this runs on every save.
     pub fn validate(&self) -> Result<(), String> {
         if self
             .segments

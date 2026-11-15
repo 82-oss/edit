@@ -187,9 +187,6 @@ export declare function facesDetect(source: string, size: [number, number], inde
  */
 export declare function holdLock(path: string): boolean
 
-/** An image's pixel size (ImageIO; macOS only). */
-export declare function imageSize(path: string): Promise<[number, number]>
-
 /**
  * Sets the engine up: FFmpeg, the cache, and where its log lines go. Call
  * once, before anything else.
@@ -205,12 +202,6 @@ export interface InitOptions {
   ffprobe: string
   log: (line: NativeLog) => void
 }
-
-/**
- * Whether another process holds `path`'s lock (a second Edit on the same
- * data folder).
- */
-export declare function isLocked(path: string): boolean
 
 /** A Keychain answer: `status` 0 with `value` (null when there's none), or the OSStatus. */
 export interface KeychainAnswer {
@@ -459,12 +450,6 @@ export interface RippleResult {
   json: string
   rippled: Rippled
 }
-
-/**
- * A keyframe track's value at each of `frames` (`edit_core::sample`), for
- * tests that the TS sampling matches it.
- */
-export declare function sampleKeyframes(keys: Keyframe[], frames: number[]): (number | null)[]
 
 /** Saves the frame of `media` at `time` (seconds) as a PNG at `out`. */
 export declare function saveStill(media: Media, time: number, out: string): Promise<void>

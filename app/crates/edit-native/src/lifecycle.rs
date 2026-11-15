@@ -143,25 +143,6 @@ pub fn hold_lock(path: String) -> bool {
     true
 }
 
-/// Whether another process holds `path`'s lock (a second Edit on the same
-/// data folder).
-#[napi]
-pub fn is_locked(path: String) -> bool {
-    let path = PathBuf::from(path);
-    if HELD
-        .lock()
-        .as_ref()
-        .is_some_and(|held| held.contains_key(&path))
-    {
-        return false;
-    }
-    let Ok(file) = lock_file(&path) else {
-        return false;
-    };
-    // Dropping the file lets go of the lock just taken.
-    file.try_lock().is_err()
-}
-
 /// Becomes `exe` with `args`, in place (same pid, terminal and flags), after
 /// marking every descriptor above stderr close-on-exec so no listener leaks
 /// into the new server. Returns only if the exec failed.
