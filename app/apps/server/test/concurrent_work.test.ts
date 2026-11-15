@@ -1,9 +1,8 @@
-// Disconnects, sleep and wake, and concurrent work, as the Nov 8 audit's
-// "Done means" asks (item I): a restart resumes each kind of work from its
+// Disconnects, sleep and wake, and concurrent work: a restart resumes each kind of work from its
 // step with no work done twice and no record lost; a Mac that slept past a
 // wait wakes the job once; two imports and an export at once share the
 // encoder and the one job table. Upload resume over a dropped connection is
-// in cloud.test.ts; what can't be scripted is in docs/plans/2026-11-08-audit.md.
+// in cloud.test.ts; what can't be scripted is app/AGENTS.md's "By hand on a Mac".
 
 import { afterEach, expect, setSystemTime, test } from "bun:test";
 import * as fs from "node:fs";

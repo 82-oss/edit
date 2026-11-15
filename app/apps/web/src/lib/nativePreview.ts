@@ -1,6 +1,5 @@
 /**
- * Edit.app's native preview (crates/edit-window/src/preview.rs,
- * docs/plans/2026-11-06-native-player.md): the engine draws the viewer's
+ * Edit.app's native preview (crates/edit-window/src/preview.rs): the engine draws the viewer's
  * picture in a layer under the page, from the Mac's video decoder, where the
  * page decoded and drew every frame in WebKit. Only in Edit.app's window (a
  * browser has no window to ask). At rest the page owns the playhead and asks

@@ -1,4 +1,4 @@
-//! The native preview's place in the window (docs/plans/2026-11-06-native-player.md):
+//! The native preview's place in the window:
 //! a Core Animation layer under the page, where the engine draws the edit
 //! (crates/edit-engine/src/player.rs) instead of the page drawing it in WebKit.
 //!

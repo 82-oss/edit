@@ -9,8 +9,8 @@ playhead restoration.
 Use an isolated data directory, with FFmpeg installed:
 
 ```sh
-just wasm
-cargo run -p edit -- serve --host 127.0.0.1 --port 7711 --home /tmp/edit-preview-test/home
+just wasm native
+bun apps/server/src/main.ts serve --host 127.0.0.1 --port 7711 --home /tmp/edit-preview-test/home
 ```
 
 In another terminal:

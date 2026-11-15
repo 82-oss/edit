@@ -169,7 +169,7 @@ registerTool("commentary_arrow", async ({ app, args, projectId }) => {
 
 // ---------------------------------------------------------------------------
 // The web, measured frame by frame off M's reference (Dr Insanity's, 25 fps,
-// 1:12–1:20; docs/feedback/2026-10-26-n3on-v1.md, "The web, frame by frame"):
+// 1:12–1:20):
 // one camera pulls back from the footage, which becomes the small middle
 // picture, and the whole board is revealed at once, the other pictures flying
 // in from the edges with the move. A beat after it settles, glowing red

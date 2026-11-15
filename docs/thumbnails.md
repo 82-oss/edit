@@ -13,8 +13,7 @@ Claude on the person's own subscription, and frames pulled on the Mac.
 ## Who
 
 The same people as ideas (an `ideas.*` capability, or an admin): Home's
-Thumbnails (a tab beside Ideas on the classic Home, an entry under Ideas in the
-sidebar), `/thumbnails` and `/thumbnails/<id>`.
+Thumbnails (in the sidebar after Ideas), `/thumbnails` and `/thumbnails/<id>`.
 
 ## Where things are
 
@@ -25,9 +24,9 @@ sidebar), `/thumbnails` and `/thumbnails/<id>`.
 | OpenArt | the team's accounts, listed in code (`ACCOUNTS` in `app/apps/server/src/thumbnails/openart.ts`: id, name, relay route; never the person's own), the one in use per Mac in `<home>/openart-account.json` (the page's account menu; the first until another is picked). Today one, `mamagi-openart-1`, only through the relay: `POST /v1/openart/mcp` forwards OpenArt's MCP server with the team's token (`apps/relay/src/openart.ts`); the sign-in is `OPENART_CLIENT_ID` / `OPENART_REFRESH_TOKEN` / `OPENART_ACCOUNT` in Infisical `/edit-relay` (put there by `apps/relay/scripts/openart-connect.ts`, then `push-secrets.ts --only …`), the live token pair in the BUDGET Durable Object's `openart` instance (OpenArt hands a new refresh token with each renewal and revokes the old; a new sign-in in Infisical starts it over). One sign-in for dev and prod (Sphe, Nov 2): only the live relay holds it; the dev relay forwards to it (`OPENART_UPSTREAM` in wrangler's `[env.dev.vars]`, `OPENART_RELAY_TOKEN` the same in both environments' Infisical) |
 | Server | `app/apps/server/src/thumbnails/` (`/api/thumbnails`, Claude's tools at `/mcp/thumbnails/<token>`) |
 | Drawing | `app/packages/edit-types/src/thumbnail_render.ts`: Canvas 2D, the one drawing for the page and for Claude (the server hands it, transpiled, to a headless Chrome kept open five minutes: `thumbnails/render.ts`) |
-| UI | `app/apps/web/src/thumbnails/` (`list.tsx`, `page.tsx`) |
+| UI | `app/apps/web/src/thumbnails/` (`list.tsx`, `new.tsx`, `page.tsx`) |
 | Craft | `agent/thumbnails/guide.md` |
-| Edit's own overlays and fonts | `app/assets/thumbnails/` (the REC overlay, `bodycam-rec`; Arabic-font-2013 for white and red, ITC Avant Garde Gothic Bold for a black box, Montserrat) |
+| Edit's own overlays and fonts | `app/assets/thumbnails/` (the REC overlay, `bodycam-rec`, `thumbnails/assets.ts`; Arabic-font-2013 for white and red, ITC Avant Garde Gothic Bold for a black box, Montserrat) |
 
 ## A thumbnail
 
@@ -47,8 +46,9 @@ person asks; Claude changes it through its tools:
 - `make_picture`: a picture on OpenArt from a prompt, or from pictures given
   (a base cleaned of its overlays: "sometimes our bases will have them so
   we'll need the openart agent to also remove all overlays (most of the
-  time)"); the model is Claude's to pick, else the first of
-  `run.PREFERRED_MODELS` the account has.
+  time)"); the model is Claude's to pick, else the house's (Nano Banana Pro
+  for a new picture, Nano Banana 2 for a touch-up of one given).
+  `picture_prompt` gives back the prompt and model a picture was made with.
 - `set_layers`, `change_layers`: the layout, drawn at once and named for Claude
   to look at; `look` (with a grid every 160×120 px for placing by eye).
 - `undo`, `redo`: back or forward on the layout's timeline (below).
@@ -71,8 +71,13 @@ person asks; Claude changes it through its tools:
   `cut_out`, the guide's way of putting a subject into another scene (Sphe's
   Photoshop way): a clean plate, only its oval over the original, the cut-out
   on top, a light pass over the flattened whole, what drifted taken back.
-- `save_overlay`: a picture the person gave, into the team's library with a
-  note on where it goes, when they ask to keep it.
+- `make_graphic`, `graphic_code`: a graphic drawn from HTML and CSS
+  (`thumbnails/graphics.ts`, in the same headless Chrome) as a see-through
+  picture, its code kept to change it; `save_graphic` teaches one to the
+  channel's Thumbnails lane (the house's, for no channel) when the person asks
+  to keep it, and `graphics` / `use_graphic` bring taught ones in. A picture
+  the person sends to keep as an overlay is recreated in code and taught, not
+  kept itself (the overlays already in the library still draw).
 - `openart_models`, `model_options`, `rename`.
 
 Undo is one timeline for both (Sphe, Nov 2: "we should have undo both for us
@@ -137,7 +142,5 @@ sign-in on the relay at its own route.
 
 ## Not built yet
 
-The channel's caption styles by niche ("the text stuff depends on the
-niche/channel whatever but we'll get to that later"); frames pulled from a
-YouTube video here (Ideas' `scan_video` / `grab_frames`); a thumbnail started
-from an idea's guide.
+Frames pulled from a YouTube video here (Ideas' `scan_video` /
+`grab_frames`).

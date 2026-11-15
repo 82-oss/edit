@@ -4,7 +4,8 @@ Repackaging in Edit (Oct 31 2026): a case (a YouTube video, an article)
 turned into 3–5 titles and a thumbnail guide, then sent to its board as a
 card. Two kinds (workspaces), chosen in New idea: **Interrogation** (the
 Interrogation board) and **Bodycam** (Nov 1: the Raw Channels board). It runs on
-each person's own Claude Code (Opus 5.5), so the team's subscriptions pay
+each person's own Claude Code (Opus 5.5 for the first package, then the
+chat's pick), so the team's subscriptions pay
 instead of the AI gateway.
 
 The craft is Repack's Interrogation teachings word for word (Nov 1, the
@@ -33,7 +34,7 @@ that board. An admin has it all.
 | Their pictures | R2 under `edit/ideas/<idea>/` (uploads); a video's thumbnail and the card's pictures by their URL |
 | Relay | `app/apps/relay/src/ideas.ts`: the Convex calls, YouTube's details, the board |
 | Server | `app/apps/server/src/ideas/` (`/api/ideas`, Claude's tools at `/mcp/ideas/<token>`) |
-| UI | Home's Ideas section (`/ideas`: Drafts and On the board in Home's sidebar, the rows `apps/web/src/ideas/home.tsx`; one waiting on someone is in Needs you too), the idea page (`/ideas/<id>`, `page.tsx`): Sphe Research's case on the left (its header and Titles / Thumbnail guide / Case form, word for word in look; no list of threads beside it), the editor's own chat on the right (`AgentPanel`'s `ChatTurns` and `ChatComposer`) |
+| UI | Home's Ideas section (`/ideas`: Drafts and On the board as steps over its list, the rows and New idea `apps/web/src/ideas/home.tsx`), the idea page (`/ideas/<id>`, `page.tsx`): Sphe Research's case on the left (its header and Titles / Thumbnail guide / Case form, word for word in look; no list of threads beside it), the editor's own chat on the right (`AgentPanel`'s `ChatTurns` and `ChatComposer`) |
 | Craft | `agent/ideas/interrogation.md` (Repack's), `agent/ideas/bodycam.md` (adapted); the style examples are the board's approved titles, read live |
 | Types | `@edit/types/ideas` |
 
@@ -107,13 +108,14 @@ pictures uploaded (the first is the cover) and written into the description.
 A send tried again finishes the card it began.
 
 **Changes**: a card in a lane labelled "Changes required" shows in Home's
-Needs you and On the board (its idea's, or the card alone; opening it makes an idea from it, its
+On the board (its idea's, or the card alone; opening it makes an idea from it, its
 titles, guide, links and pictures read from the description). The comments
 are the brief: **Make these changes**, then **Update the card**, which writes
 it back and adds "Changes Made" beside the card's labels.
 
-**Approved**: an idea's card in a list from Approved on shows as approved, and
-**Write the script** opens New project with its title and case links.
+**Approved**: an idea's card in a list from Approved on shows as approved
+(Done on Home). **Start the script** (in the header, once the idea has footage
+or a YouTube case) opens New project with its main title and footage.
 
 ## Tried
 
@@ -124,4 +126,4 @@ back with Changes Made, a hand-written Ready For Check card opened as an idea;
 the UI driven end to end in Chrome. The test card was deleted.
 
 Not built yet: research (no crawling: an idea starts from a link), pushing
-later at a set time, a second workspace.
+later at a set time.

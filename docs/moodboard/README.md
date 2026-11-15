@@ -1,6 +1,6 @@
 # Editing styles: mood board
 
-Distilled from the team's doc "How we want our edits to be" and the videos it links. One section per style; **bodycam (FOIA)** is the one we're building now, the others are next. Status markers:
+Distilled from the team's doc "How we want our edits to be" and the videos it links. One section per style. Status markers:
 
 - ✅ Edit does this today (or the agent is taught it)
 - 🆕 added from this doc (see "What changed in Edit")
@@ -12,7 +12,7 @@ The stills in `shots/` are frames from other channels' videos, kept on this mach
 
 ---
 
-## 1. Bodycam / FOIA (current focus)
+## 1. Bodycam / FOIA
 
 North star: **Code Blue Cam** (huge, branded, same kind of videos as ours). The doc says to study how they edit, but keep **our own subtitles, our own clean UI assets and our way of identifying people**. Second reference: **Unspoken Crime**.
 
@@ -59,8 +59,8 @@ References: three interrogation edits, plus the countdown example.
 
 | | |
 |---|---|
-| ![](shots/int-countdown-map-pulse.png) | **"INTERROGATION STARTS IN: 01:33"** top-left, counting down from the case's introduction to the interrogation (used when there's no bodycam). A black tab, white caps, bold timer. 🔜 needs a counting text element; easy to add next. |
-| ![](shots/int-countdown-file-viewers-map.png) | **File viewers on a map:** mugshot cards titled "File Viewer", name bold and age small, around a pulsing location marker (rings). 🔜 the clean macOS-style UI. |
+| ![](shots/int-countdown-map-pulse.png) | **"INTERROGATION STARTS IN: 01:33"** top-left, counting down from the case's introduction to the interrogation (used when there's no bodycam). A black tab, white caps, bold timer. ✅ op `countdown` (the interrogation style's intro). |
+| ![](shots/int-countdown-file-viewers-map.png) | **File viewers on a map:** mugshot cards titled "File Viewer", name bold and age small, around a pulsing location marker (rings). ✅ op `file_viewer` (`looks.ts`). |
 | ![](shots/int-file-viewer-cards.png) | **People introduced as cards** laid over the interrogation room (dimmed), unknown people as silhouettes, names in red. 🔜 |
 | ![](shots/int-countdown-disclaimer.png) | **Disclaimer** before the interrogation (the countdown still running). ✅ a text card the agent can make; ❓ the wording (see HQ). |
 | ![](shots/int-watermark-pip.png) | **Watermark** "LS", large and faint over the footage, and **picture-in-picture** of a second camera bottom-left. 🔜 picture-in-picture is a transform plus a border; doable now by hand. |
@@ -104,12 +104,10 @@ The same style as the interrogation, plus:
 
 ## What changed in Edit (from this doc)
 
-- 🆕 **One word at a time**, a caption animation (Inspector → Animate in): timed from the speech like word-by-word, but only the word being said shows, alone and centred. The agent uses it on a few shouted peaks.
+- 🆕 **One word at a time**, a caption animation (preset `word`): timed from the speech like word-by-word, but only the word being said shows, alone and centred. The agent uses it on a few shouted peaks.
 - ⏸ **Officer POV name**: rank and surname small in the top-left while that officer's camera is on screen. On hold until the team confirms.
 
 ## What we'd build next (in order)
 
 1. **Watermark** (once we have the logo): one setting per project, drawn on top of everything in preview and export.
-2. **Countdown timer** ("INTERROGATION STARTS IN 01:33"): a text element whose number counts down to a frame.
-3. **The clean UI kit:** a macOS-style window frame (title bar, "Image Viewer" / "File Viewer"), with a photo inside, a name and an age. It's the shared piece behind suspect cards, file viewers and paper viewers in every style.
-4. **Styles as separate house styles:** today the agent's house style is all bodycam. Splitting it into a shared core plus one section per style (bodycam, interrogation, compilation, HQ), chosen per project, is what lets the agent edit each style.
+2. **The clean UI kit** beyond the File Viewer: the same window frame for suspect cards and paper viewers in every style.

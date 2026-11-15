@@ -4,7 +4,8 @@
 // and no custom vocabulary, and 15-19% of its words differ from Scribe's
 // (fillers and short replies, mostly). So it's the rough first hearing of a
 // long recording: Scribe is paid only for the stretches a script uses and for
-// subtitles, and who speaks comes from pyannote (voices.ts).
+// subtitles, and who speaks comes from Scribe's own voices (pyannote,
+// voices.ts, only while the relay turns it back on).
 //
 // The transcript it writes is transcribe.ts's, `model: "apple-speech"`, no
 // `speaker` on any word. One hearing at a time: Apple's recogniser is one

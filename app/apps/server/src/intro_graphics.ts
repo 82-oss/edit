@@ -1,11 +1,10 @@
 // The interrogation intro's house graphics, each one plan operation, learnt
 // from Red Thread Interrogations ("Killer Wife Has No Idea Cops Already Know
 // Her Dirty Secret") and Red File ("'Friendly' Cop…"), the team's references
-// for how heavily an interrogation video's first two minutes use graphics
-// (docs/feedback/2026-10-19-interrogation-intro.md):
-// - `intro_captions`: the teasers' subtitles as Red Thread's: small boxed
-//   lines that come up word by word, white on black, the lines that matter in
-//   a red box; the same for everyone (no role colours in the intro).
+// for how heavily an interrogation video's first two minutes use graphics:
+// - `intro_captions`: the teasers' subtitles on the caption look, words coming
+//   up as they're said, flush left in the speaker's colour, the lines that
+//   matter in red words (`introCaptions` below).
 // - `countdown`: "INTERROGATION STARTS IN 01:18" in the top-left corner,
 //   ticking down through the prologue to the frame the tape rolls.
 // - `fast_forward`: the room skipping ahead: black and white, the picture

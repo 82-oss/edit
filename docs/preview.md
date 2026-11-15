@@ -2,9 +2,8 @@
 
 ## Edit.app draws the picture itself
 
-In Edit.app's window the viewer's picture is drawn by the engine, not the page
-(docs/plans/2026-11-06-native-player.md). `crates/edit-engine/src/player.rs`
-evaluates the frame as the page's engine did, decodes its pictures with the
+In Edit.app's window the viewer's picture is drawn by the engine, not the page.
+`crates/edit-engine/src/player.rs` evaluates the frame as the page's engine did, decodes its pictures with the
 export's readers (the Mac's video decoder; a reader just behind a frame decodes
 forward, anything else seeks) and presents onto a Core Animation layer under the
 page (`crates/edit-window/src/preview.rs`). The page turns see-through over the
@@ -43,8 +42,8 @@ draws is marked as its on the server (`apps/server/src/player.ts`): its whole
 copies come down in playhead order when it opens, and the page player's block
 prefetch, scrub pieces and after-turn smooth render stay off for it. Full screen, a
 browser, or five failed frames in a row: the page draws as below. Measured Nov
-8–9 on Cops Realize (M1, cloud footage) in docs/plans/2026-11-08-audit.md
-("A's stage 2, measured after").
+9 on Cops Realize (M1): 30 cuts played, 4,810 of 4,824 frames drawn, draw p99
+13 ms, 0 sound underruns.
 
 **Script mode plays on the same player** (Nov 10; Sphe: "When one is improved, the other
 should be improved as well"). Until then the script page had a player of its
@@ -71,8 +70,8 @@ Speed (1× and 2×, the sound's pitch kept) and volume are the window's
 page's `player`, its `playhead` and `drawnBy()` ("window", "page" or
 "choosing").
 
-Checked in the real window on a real script (Nov 10; the measurements are in the
-plan, "Measured"), and what that found is how it works now. A layer that changes
+Checked in the real window on a real script (Nov 10), and what that found is how
+it works now. A layer that changes
 size at rest (a view changed, the split dragged, the editor opened after a script)
 draws the playhead's frame again at once, and shows the old picture fitted, never
 stretched, until it has (`Player::resize`, the layer's `contentsGravity`); pictures

@@ -13,24 +13,23 @@ unreachable when prod had them all; ask a server on `~/.edit` instead). There is
 `edit remote enable` registers this Mac again now. No terminal setup is
 needed: install the nightly, open Edit and sign in. The app must stay running. An admin on
 another running, signed-in Edit can run `edit remote devices`, then
-`edit remote update <device-id>` (or `edit remote update-when-idle <device-id>`, which waits for 20 minutes without anyone at the window and nothing running), `edit remote probe <device-id> <project-or-script-id>` (one import's whole error, its files' streams and a decode of their sound, as a report) and `edit remote history <device-id>`. A request
+`edit remote update <device-id>` (or `edit remote update-when-idle <device-id>`, which waits for 20 minutes without anyone at the window and nothing running), `edit remote diagnostics|unstick|restart <device-id>`, `edit remote resume|probe <device-id> <project-or-script-id>` (probe: one import's whole error, its files' streams and a decode of their sound, as a report) and `edit remote history <device-id>` (`remote_support.ts`, `remote_actions.ts`). A request
 expires after an hour. Status records distinguish a claimed update from a new
 build that actually restarted. No command is replayed after an ambiguous crash.
 
 Registration itself never starts an update or agent turn. Updates remain
 explicit admin requests. The update uses the owner's configured release channel, verifies the existing
-release signature/checksum and refuses an active export, Drive upload or agent
-turn. If work starts during the download, the restart waits for it to finish.
+release signature/checksum and refuses while an agent turn is running (exports,
+imports and uploads carry on after the restart). If a turn starts during the
+download, the restart waits for it to finish.
 The operator endpoint accepts direct loopback CLI connections only; Tailscale,
 proxy and browser requests cannot borrow the host's signed-in admin account.
 Signing out closes the authenticated subscription. It cannot
-start a closed app. Remote agent turns are disabled until a
-spending limit is implemented and accepted. The Convex functions and the relay
-support-config route and the Accounts token claim must be deployed before this
-can work, and the owner needs to install the first build containing it by the
-usual update path. Deploy Accounts first and refresh Feedback sessions before
-deploying Convex: the shared deployment now checks the signed `app_id` for both
-Feedback and Edit. Deploy the relay and receiver build after those changes.
+start a closed app. An admin's `run` command (`bun apps/server/scripts/remote.ts`; `remote_control.ts`,
+mamagi's `editSupport:requestRun`) goes further: a read-only question, any of Edit's own
+routes, a message to a project's agent, a shell command, a help dialog or a line
+on their screen, a restart or update now, and work held back or let go; whatever
+changes something is said on their screen.
 
 `edit support` is a client for an Edit the owner has already shared over
 Tailscale. It creates no listener and does not pair devices, change a Mac's
@@ -86,22 +85,6 @@ loses its acknowledgement, inspect `chat` before deciding whether to send it
 again; the first action may have arrived. Output is JSON with credential fields,
 signed URLs, bearer tokens and common raw token formats redacted, including old
 log text from a remote build. The client stores no credentials or support bundle.
-
-## Writer and a future paired support surface
-
-Writer's current local API binds only `127.0.0.1:1421` and checks local Host and
-Origin. This client does not weaken those checks or claim to control Writer.
-Writer's development browser view can use its existing owner-configured
-Tailscale/Vite setup; the packaged app has no equivalent paired operator UI yet.
-
-A support surface independent of existing tailnet access needs an owner-enabled,
-expiring session, one selected project, visible operator identity, narrow
-diagnostic/agent-message/stop commands, revocation and an audit receipt. Its
-commands should reuse local grants and cloud locks; diagnostics never trigger
-repairs, reconnects never replay a turn, and updates/login remain deliberate local
-actions. That requires an app/relay rollout and is not silently enabled by this
-CLI. Until then the concrete remote path here is an owner-shared Edit endpoint;
-JJ's Writer remains a separate access blocker.
 
 ## Verification
 

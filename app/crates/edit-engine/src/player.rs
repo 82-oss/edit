@@ -1,4 +1,4 @@
-//! The native preview (docs/plans/2026-11-06-native-player.md): the edit drawn
+//! The native preview: the edit drawn
 //! in Edit.app's window by the engine itself, not in the page. The page's
 //! preview decoded every picture in WebCodecs workers and drew it with this
 //! same renderer compiled to WebAssembly (crates/edit-wasm); here the pictures

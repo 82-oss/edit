@@ -1,16 +1,14 @@
-// A nightly's notes for the team (Nov 8 audit, item I): two lines at the top
-// of its GitHub pre-release saying what changed since the build before, then
-// every change, grouped by the plan item its message names ("(Nov 8 audit,
-// item G)") where it names one, each by its first clause. `just nightly`
+// A nightly's notes for the team: two lines at the top of its GitHub
+// pre-release saying what changed since the build before, then every change,
+// grouped by the plan item its message ends by naming ("(Nov 8 audit, item G)")
+// where it names one, each by its first clause. `just nightly`
 // prints them before it tags; release.yml's prepare writes them as the body.
 //
 //   bun scripts/nightly-notes.ts <previous tag or ""> <ref> [why it was forced]
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = join(import.meta.dir, "../..");
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** A commit message's first clause: up to its first colon, semicolon, bracket or full stop, at most 140 characters. */
 export function firstClause(subject: string): string {
@@ -26,26 +24,12 @@ export function planItem(subject: string): { plan: string; item: string } | null
   return found === null ? null : { plan: found[1]!.trim(), item: found[2]! };
 }
 
-/** An item's name from its plan in docs/plans ("Nov 8 audit" → 2026-11-08-audit.md, "G. Page hygiene: …" → "Page hygiene"). */
-function itemName(plan: string, item: string): string | null {
-  const date = /^(\w{3}) (\d{1,2}) audit$/.exec(plan);
-  const month = date === null ? -1 : MONTHS.indexOf(date[1]!);
-  if (date === null || month < 0) return null;
-  const dir = join(ROOT, "docs/plans");
-  if (!existsSync(dir)) return null;
-  const suffix = `-${String(month + 1).padStart(2, "0")}-${date[2]!.padStart(2, "0")}-audit.md`;
-  const file = readdirSync(dir).find((name) => name.endsWith(suffix));
-  if (file === undefined) return null;
-  const line = readFileSync(join(dir, file), "utf8").split("\n").find((one) => one.startsWith(`${item}. `));
-  return line === undefined ? null : firstClause(line.slice(3).replace(/,.*$/, ""));
-}
-
 export interface Change {
   subject: string;
 }
 
 /** The notes: the two-line note, then the changes by group. */
-export function notes(previous: string, changes: Change[], forced: string, name = itemName): string {
+export function notes(previous: string, changes: Change[], forced: string): string {
   const groups = new Map<string, { title: string; clauses: string[] }>();
   const others: string[] = [];
   for (const { subject } of changes) {
@@ -55,8 +39,7 @@ export function notes(previous: string, changes: Change[], forced: string, name 
       continue;
     }
     const key = `${found.plan}, item ${found.item}`;
-    const named = name(found.plan, found.item);
-    const group = groups.get(key) ?? { title: named === null ? `item ${found.item}` : `${named} (item ${found.item})`, clauses: [] };
+    const group = groups.get(key) ?? { title: key, clauses: [] };
     group.clauses.push(firstClause(subject.replace(/\s*\([^()]*item [A-Z]\)\s*$/, "")));
     groups.set(key, group);
   }

@@ -1,6 +1,6 @@
 // What Edit.app's native preview decodes each picture from (its window draws
-// the viewer's picture with the engine: crates/edit-window/src/preview.rs,
-// docs/plans/2026-11-06-native-player.md). The engine reads files on this Mac
+// the viewer's picture with the engine: crates/edit-window/src/preview.rs).
+// The engine reads files on this Mac
 // with the video decoder and anything else with FFmpeg, which opens a stream
 // again on every jump: a cloud preview streamed took 3–8.6 s a frame to scrub
 // to (the 16-Year-Old, Nov 6), and 0.5–1.7 s on Cops Realize (Nov 8). So:
