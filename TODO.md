@@ -2,6 +2,15 @@
 
 Ideas and next steps that aren't started yet. Newest at the top.
 
+## A channel's watermark, set on its page (future)
+
+Sphe, Nov 16: on a channel's page, upload its watermark and play with how it looks: opacity, size and how it moves, seen on a sample of the channel's footage as you change them.
+- **Already built:** a channel holds the link to its watermark, by channel and not by name. The Export dialog offers it only on that channel's projects. An admin picks it from the Drive Watermarks folder.
+- **What this adds:**
+  - The picture is uploaded on the channel's page and kept with the channel, so the Drive folder stops being where watermarks live.
+  - The look becomes the channel's own: today it's one `LOOK` for everyone, 10% opacity, 14% of the frame's height and a DVD bounce (`app/apps/server/src/channel_marks.ts`). Exports and shares then use the channel's look.
+  - Older projects without a channel (V1's dropdown) move over once every channel's watermark is on its channel.
+
 ## Still open (from the plans and feedback logs cleared Nov 15)
 
 Paths are relative to `app/`.
