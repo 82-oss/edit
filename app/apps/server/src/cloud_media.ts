@@ -1925,6 +1925,16 @@ export function blocksRoot(): string | null {
   return playbackBlocks;
 }
 
+/**
+ * A cloud preview's whole copy for the players (local_previews.ts), through its 2 MiB blocks in the fill's lane
+ * (cloud_blocks.ts `fetchWhole`), so a copy coming down never takes the link from a read someone waits on; as one
+ * read where playback isn't configured.
+ */
+export function fetchWholeCopy(key: string, local: string): Promise<void> {
+  if (playbackBlocks === null) return fetchKey(key, local);
+  return cloudBlocks.fetchWhole(playbackBlocks, key, local, () => streamingUrl(key, true));
+}
+
 /** What `key`'s blocks are read from (the relay's edge, else R2), for a read ahead of the viewer (playback_ready.ts). */
 export function blockUrl(key: string): () => Promise<string> {
   return () => streamingUrl(key, true);

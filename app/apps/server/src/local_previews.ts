@@ -36,7 +36,8 @@ const RETRY_MS = 10 * 60_000;
 
 /** Seams for tests. */
 export const hooks = {
-  fetch: (key: string, local: string): Promise<void> => cloudMedia.fetchKey(key, local),
+  // In 2 MiB blocks behind every read a person waits on (cloud_blocks.ts `fetchWhole`).
+  fetch: (key: string, local: string): Promise<void> => cloudMedia.fetchWholeCopy(key, local),
   /** Bytes free on the disk holding `dir` (unknown: as good as endless). */
   free: (dir: string): number => {
     try {

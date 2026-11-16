@@ -71,22 +71,26 @@ export async function waitForViewerRest(stop: () => boolean = () => false, maxMs
 const reading = new Map<string, Promise<Uint8Array>>();
 let inFlight = 0;
 /**
- * Reads waiting for a slot: the ones someone waits on (a page's range, the window's FFmpeg) first, then read-ahead
- * and warming. One line for both, first come first served, put a jump's block behind the read-ahead of the stretch
- * it left and the warming of a whole project's starts (a cold open on the M4, Nov 16: a jump froze, then played).
+ * How soon a block read gets a slot: one someone waits on (a page's range, the window's FFmpeg), then read-ahead
+ * and warming (the next seconds from a jump), then a whole copy's fill (local_previews.ts). One line, first come
+ * first served, put a jump's block behind everything asked before it; and whole copies fetched as one long read
+ * each, four to six at once, filled the link, so every read a person waited on shared it with them (a cold open on
+ * the M4, Nov 16: a jump froze 10 s, then passed over 199 frames; on mandalorian a cold block took 3–11 s while a
+ * project's whole copies came down, against 0.5–1 s alone).
  */
-type Waiter = { go: () => void; urgent: boolean };
-const asked: Waiter[] = [];
-const behind: Waiter[] = [];
-/** The block reads still waiting for a slot, by id: one someone now waits on moves to the front. */
+export type Priority = "asked" | "ahead" | "fill";
+const ORDER: Priority[] = ["asked", "ahead", "fill"];
+type Waiter = { go: () => void; priority: Priority };
+const lanes: Record<Priority, Waiter[]> = { asked: [], ahead: [], fill: [] };
+/** The block reads still waiting for a slot, by id: one someone now waits on moves up. */
 const queued = new Map<string, Waiter>();
 
-async function slot<T>(id: string, urgent: boolean, work: () => Promise<T>): Promise<T> {
+async function slot<T>(id: string, priority: Priority, work: () => Promise<T>): Promise<T> {
   if (inFlight >= AT_ONCE) {
     await new Promise<void>((resolve) => {
-      const waiter: Waiter = { go: resolve, urgent };
+      const waiter: Waiter = { go: resolve, priority };
       queued.set(id, waiter);
-      (urgent ? asked : behind).push(waiter);
+      lanes[priority].push(waiter);
     });
     queued.delete(id);
   }
@@ -95,19 +99,25 @@ async function slot<T>(id: string, urgent: boolean, work: () => Promise<T>): Pro
     return await work();
   } finally {
     inFlight--;
-    (asked.shift() ?? behind.shift())?.go();
+    for (const lane of ORDER) {
+      const next = lanes[lane].shift();
+      if (next !== undefined) {
+        next.go();
+        break;
+      }
+    }
   }
 }
 
-/** A block read waiting behind read-ahead that someone now waits on: to the front. */
-function hurryBlock(id: string): void {
+/** A block read waiting in a lane below `priority` that's now wanted sooner: up to it. */
+function hurryBlock(id: string, priority: Priority): void {
   const waiter = queued.get(id);
-  if (waiter === undefined || waiter.urgent) return;
-  const at = behind.indexOf(waiter);
+  if (waiter === undefined || ORDER.indexOf(waiter.priority) <= ORDER.indexOf(priority)) return;
+  const at = lanes[waiter.priority].indexOf(waiter);
   if (at < 0) return;
-  behind.splice(at, 1);
-  waiter.urgent = true;
-  asked.push(waiter);
+  lanes[waiter.priority].splice(at, 1);
+  waiter.priority = priority;
+  lanes[priority].push(waiter);
 }
 
 const folderOf = (root: string, key: string) => join(root, createHash("sha1").update(key).digest("hex"));
@@ -121,10 +131,11 @@ function metaOf(folder: string): Meta | null {
 }
 
 /**
- * One block of the object, from disk or R2 (once, however many ask). `viewer`: someone waits on it (a page's
- * range, the window's FFmpeg): a miss marks the viewer busy and goes ahead of read-ahead; a hit never does.
+ * One block of the object, from disk or R2 (once, however many ask), read as soon as `priority` says (`slot`).
+ * One someone waits on ("asked": a page's range, the window's FFmpeg) that misses marks the viewer busy; a hit never does.
  */
-function block(root: string, key: string, index: number, url: () => Promise<string>, viewer = false): Promise<Uint8Array> {
+function block(root: string, key: string, index: number, url: () => Promise<string>, priority: Priority = "ahead"): Promise<Uint8Array> {
+  const viewer = priority === "asked";
   const folder = folderOf(root, key);
   const path = join(folder, `${index}`);
   try {
@@ -140,10 +151,10 @@ function block(root: string, key: string, index: number, url: () => Promise<stri
   const id = `${key}#${index}`;
   const known = reading.get(id);
   if (known !== undefined) {
-    if (viewer) hurryBlock(id);
+    hurryBlock(id, priority);
     return known;
   }
-  const read = slot(id, viewer, async () => {
+  const read = slot(id, priority, async () => {
     const start = index * BLOCK;
     const { answer, bytes } = await fetchBlock(url, start);
     const total = Number(/\/(\d+)$/.exec(answer.headers.get("content-range") ?? "")?.[1] ?? NaN);
@@ -237,10 +248,10 @@ export async function serve(root: string, key: string, range: string | null, url
   if (!(to >= from)) return null;
   const first = Math.floor(from / BLOCK);
   // The first block says how big the object is.
-  const opening = await block(root, key, first, url, true).catch(async (error: unknown) => {
+  const opening = await block(root, key, first, url, "asked").catch(async (error: unknown) => {
     // A start past the end of an object we haven't the size of yet: the first block says it.
     if (first === 0) throw error;
-    await block(root, key, 0, url, true);
+    await block(root, key, 0, url, "asked");
     return null;
   });
   const meta = metaOf(folderOf(root, key));
@@ -271,7 +282,7 @@ export async function serve(root: string, key: string, range: string | null, url
           controller.close();
           return;
         }
-        const bytes = index === first && opening !== null ? opening : await block(root, key, index, url, true);
+        const bytes = index === first && opening !== null ? opening : await block(root, key, index, url, "asked");
         const base = index * BLOCK;
         controller.enqueue(bytes.subarray(Math.max(from - base, 0), Math.min(end - base + 1, bytes.length)));
         ahead(index);
@@ -286,11 +297,62 @@ export async function serve(root: string, key: string, range: string | null, url
   return new Response(body, { status: asked === null ? 200 : 206, headers });
 }
 
+/** Whole copies' fills at once, each this many of its blocks in flight (the slots are shared: `slot`). */
+const FILL_EACH = 3;
+/** A whole copy's blocks are let go this long after it's made (a read under way from them finishes from them). */
+export const fillHooks = { dropAfterMs: 60_000 };
+
+/**
+ * `key` whole into `local`, through its blocks: each read in the fill's lane, behind every read a person waits on
+ * and every read ahead of the playhead, so a copy coming down never holds up the picture (see `Priority`), then
+ * joined into `local` (whole or not at all) and its blocks let go a minute later. Its stretches are ready to play
+ * as their blocks land (playback_ready.ts), not only once the whole copy is in.
+ */
+export async function fetchWhole(root: string, key: string, local: string, url: () => Promise<string>): Promise<void> {
+  await block(root, key, 0, url, "fill");
+  const folder = folderOf(root, key);
+  const meta = metaOf(folder);
+  if (meta === null) throw new Error(`${key}: no size known after its first block`);
+  const last = Math.floor((meta.size - 1) / BLOCK);
+  let next = 1;
+  const worker = async () => {
+    while (next <= last) {
+      const index = next++;
+      if (!fs.existsSync(join(folder, `${index}`))) await block(root, key, index, url, "fill");
+    }
+  };
+  await Promise.all(Array.from({ length: FILL_EACH }, worker));
+  const part = `${local}.${process.pid}.part`;
+  fs.mkdirSync(local.slice(0, local.lastIndexOf("/")), { recursive: true });
+  const fd = fs.openSync(part, "w");
+  let written = 0;
+  try {
+    for (let index = 0; index <= last; index++) {
+      // From disk (a block the cleaner took meanwhile is read again).
+      const bytes = await block(root, key, index, url, "fill");
+      fs.writeSync(fd, bytes);
+      written += bytes.length;
+    }
+  } catch (error) {
+    fs.closeSync(fd);
+    fs.rmSync(part, { force: true });
+    throw error;
+  }
+  fs.closeSync(fd);
+  if (written !== meta.size) {
+    fs.rmSync(part, { force: true });
+    throw new Error(`${key}: ${written} bytes joined of ${meta.size}`);
+  }
+  fs.renameSync(part, local);
+  setTimeout(() => {
+    if (fs.existsSync(local)) fs.rmSync(folder, { recursive: true, force: true });
+  }, fillHooks.dropAfterMs).unref?.();
+}
+
 /** For tests: nothing queued or in flight. */
 export function resetForTests(): void {
   reading.clear();
   queued.clear();
-  asked.length = 0;
-  behind.length = 0;
+  for (const lane of ORDER) lanes[lane].length = 0;
   inFlight = 0;
 }

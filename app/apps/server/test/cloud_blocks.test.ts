@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
-import { BLOCK, blocksHere, noteViewerMiss, retryHooks, serve, viewerBusy, viewerHooks, waitForViewerRest, warm } from "../src/cloud_blocks.ts";
+import { BLOCK, blocksHere, fetchWhole, fillHooks, noteViewerMiss, retryHooks, serve, viewerBusy, viewerHooks, waitForViewerRest, warm } from "../src/cloud_blocks.ts";
 
 // R2 stood in for: a 5½-block object, every range read counted.
 const size = BLOCK * 5 + BLOCK / 2;
@@ -109,7 +109,7 @@ test("a stretch is warmed into blocks (its index too), and what's here is said",
   expect(await warm(root, key, 0.4, 0.6, url)).toBe(0);
 });
 
-test("a read someone waits on goes ahead of read-ahead and warming waiting for R2 (Nov 16: a jump froze behind them)", async () => {
+test("a read someone waits on goes first, then the seconds ahead of a jump, then whole copies' fills (Nov 16: a jump froze behind them)", async () => {
   // An R2 that answers only when let go, in the order asked.
   const order: string[] = [];
   const gates: (() => void)[] = [];
@@ -123,27 +123,38 @@ test("a read someone waits on goes ahead of read-ahead and warming waiting for R
       return new Response(object.subarray(from, to + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${from}-${to}/${size}` } });
     },
   });
+  const drop = fillHooks.dropAfterMs;
+  fillHooks.dropAfterMs = 0;
   try {
     const slowRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-slow-"));
     const at = (name: string) => async () => `http://127.0.0.1:${slow.port}/${name}`;
-    // A big object's warming: its first block first, then eight more queued behind it (six reads at once).
-    const big = Array.from({ length: 4 }, (_, n) => warm(slowRoot, `edit/proxies/big${n}.mp4`, 0, 1, at(`big${n}`)));
+    // Four whole copies filling: their first blocks, then three each in flight (six reads at once, the rest waiting).
+    const fills = Array.from({ length: 4 }, (_, n) => fetchWhole(slowRoot, `edit/proxies/big${n}.mp4`, join(slowRoot, `big${n}.mp4`), at(`big${n}`)));
     for (let tries = 0; tries < 100 && order.length < 4; tries++) await Bun.sleep(5);
     gates.splice(0).forEach((go) => go());
     for (let tries = 0; tries < 100 && order.length < 10; tries++) await Bun.sleep(5);
     expect(order.length).toBe(10);
-    // Now the page asks for another file: queued behind the warming in one line, it goes next here.
+    // A jump: the seconds ahead warmed, and the page's read of the picture there.
+    const warming = warm(slowRoot, "edit/proxies/ahead.mp4", 0, 0.1, at("ahead"));
     const jump = serve(slowRoot, "edit/proxies/jump.mp4", "bytes=0-100", at("jump"));
     await Bun.sleep(20);
     gates.shift()!();
     for (let tries = 0; tries < 100 && order.length < 11; tries++) await Bun.sleep(5);
-    expect(order[10]).toBe("/jump 0");
-    // Everything let go, everything answers.
-    const drain = setInterval(() => gates.splice(0).forEach((go) => go()), 5);
+    gates.shift()!();
+    for (let tries = 0; tries < 100 && order.length < 12; tries++) await Bun.sleep(5);
+    expect(order.slice(10, 12)).toEqual(["/jump 0", "/ahead 0"]);
+    // Everything let go, everything answers, and each copy is the object whole.
+    const drain = setInterval(() => gates.splice(0).forEach((go) => go()), 2);
     expect((await jump)!.status).toBe(206);
-    await Promise.all(big);
+    await warming;
+    await Promise.all(fills);
     clearInterval(drain);
+    expect(new Uint8Array(fs.readFileSync(join(slowRoot, "big0.mp4")))).toEqual(object);
+    // Its blocks let go once it's made.
+    await Bun.sleep(20);
+    expect(blocksHere(slowRoot, "edit/proxies/big0.mp4")).toBeNull();
   } finally {
+    fillHooks.dropAfterMs = drop;
     void slow.stop(true);
   }
 });
