@@ -204,8 +204,17 @@ export async function save(key: string, name: string, dir: string, options: { re
  * it) makes it one read when needed rather than always in mind. `key` is
  * where it's kept (a place's own, `ownKey`; by default `skill:<name>`).
  */
-export async function saveSkill(name: string, text: string, reason: string, note?: string, place: { key?: string } = {}): Promise<{ n: number }> {
-  return (await cloud.mutation("edit:saveLibraryVersion", { key: place.key ?? skillKey(name), name, text, reason, ...(note !== undefined ? { note } : {}) })) as { n: number };
+export async function saveSkill(name: string, text: string, reason: string, note?: string, place: { key?: string; latest?: number } = {}): Promise<{ n: number }> {
+  const key = place.key ?? skillKey(name);
+  try {
+    return (await cloud.mutation("edit:saveLibraryVersion", { key, name, text, reason, ...(note !== undefined ? { note } : {}), ...(place.latest !== undefined ? { latest: place.latest } : {}) })) as { n: number };
+  } catch (error) {
+    // Changed by someone else since it was read (Nov 16 audit: the last save won, unseen): the agent is handed it as it is now, to put its change into.
+    if (!/has a newer version|conflict/iu.test(diag.messageOf(error))) throw error;
+    forgetSkills();
+    const now = await version(key).catch(() => null);
+    throw new Error(`Someone else changed ${name} since this conversation read it. As it is now:\n${now?.version.text?.trim() ?? "(couldn't be read: remember it again in a moment)"}\nPut your change into that, keeping theirs, and remember it again.`);
+  }
 }
 
 /** An item's version in use kept again under another key (one channel's brought into another's), its note, brief and category with it. */
@@ -312,6 +321,8 @@ export interface Skill {
   note?: string;
   /** Its item's key (whose it is: `forPlace`). */
   key?: string;
+  /** Its newest version when it was read: a save over a newer one (another teacher's) is refused, not lost. */
+  latest?: number;
 }
 
 /** The skills in V2's cloud (the global one first), as last read. */
@@ -365,7 +376,7 @@ export async function refreshSkills(): Promise<void> {
       const read = await Promise.all(items.map(async (item) => ({ item, text: (await version(item.key))?.version.text })));
       const next: Skill[] = [];
       for (const { item, text } of read) {
-        if (typeof text === "string" && text.trim() !== "") next.push({ name: item.name, text: text.trim(), ...(item.note ? { note: item.note } : {}), key: item.key });
+        if (typeof text === "string" && text.trim() !== "") next.push({ name: item.name, text: text.trim(), ...(item.note ? { note: item.note } : {}), key: item.key, latest: item.latest });
       }
       pieces = [...templates, ...sounds].map(({ key, name }) => ({ key, name }));
       skills = next.sort((a, b) => Number(b.name === GLOBAL) - Number(a.name === GLOBAL) || a.name.localeCompare(b.name));

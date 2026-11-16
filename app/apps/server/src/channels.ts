@@ -41,7 +41,9 @@
 
 import type { App } from "./app.ts";
 import * as beta from "./beta.ts";
+import * as accounts from "./accounts.ts";
 import * as cloud from "./cloud.ts";
+import * as kinds from "./kinds.ts";
 import * as diag from "./diag.ts";
 import { STYLES } from "./model.ts";
 import { voiceFor } from "./styles.ts";
@@ -261,7 +263,9 @@ export async function channelFor(given: unknown, home: string): Promise<Channel 
   if (!beta.read(home).v2) throw bad("Channels are Edit V2's: turn it on in Settings → Beta.");
   needCloud();
   const channel = await asked(() => get(given));
-  if (channel === null || channel.archived) throw bad(`There's no channel ${given}.`);
+  // Said in words, never by its key (a key means nothing to the person).
+  if (channel === null) throw bad("That channel isn't in Edit, or isn't shown to your account: pick another, or ask an admin to give it to you.");
+  if (channel.archived) throw bad(`${channel.title} was put away: an admin can bring it back (add it again), or pick another channel.`);
   return channel;
 }
 
@@ -338,13 +342,36 @@ export async function taughtOf(channel: string): Promise<Record<Lane, Taught[]>>
   return out;
 }
 
+/** When this Edit last asked for a fresh token because a channel it lists isn't in the one held. */
+let renewedAt = 0;
+
+/**
+ * Whether this person's token carries `keys` (a channel given since it was issued, or one they just added, is in
+ * mamagi's grants at once but in Edit's token only when it's renewed, up to an hour later: Nov 16 audit, it showed in
+ * New edit and was refused). Asks for a fresh token once a minute at most when one is missing, and waits for it.
+ */
+export async function tokenCarries(keys: string[], home: string): Promise<boolean> {
+  const missing = () => keys.filter((key) => !kinds.mayChannel(key));
+  if (missing().length === 0) return true;
+  if (Date.now() - renewedAt > 60_000) {
+    renewedAt = Date.now();
+    await accounts.renew(home).catch((error: unknown) => diag.warn("channels", `a fresh token for a channel given since: ${diag.messageOf(error)}`));
+  }
+  return missing().length === 0;
+}
+
 /** Thrown by the relay or mamagi, said as a 400 in their words (a 403 stays one). */
 async function asked<T>(work: () => Promise<T>): Promise<T> {
   try {
     return await work();
   } catch (error) {
     if (error instanceof ApiError) throw error;
-    const message = diag.messageOf(error);
+    const message = cloud.readable(diag.messageOf(error));
+    // Not reached at all (offline, the relay slow): said plainly, with what to do; the raw words are in the log.
+    if (/could not reach|didn't answer within|ETIMEDOUT|ECONNREFUSED|getaddrinfo|socket connection was closed|offline/iu.test(message)) {
+      diag.warn("channels", message);
+      throw new ApiError(503, "Couldn't reach Edit's cloud: check the connection, then try again in a moment.");
+    }
     throw /teacher|forbidden|403/i.test(message) ? new ApiError(403, message) : bad(message);
   }
 }
@@ -384,9 +411,12 @@ export function routes(router: Router<App>): void {
       const given = v2cloud.enabled() ? await list().catch(() => knownChannels()) : [];
       return json({ voices: listing.voices ?? [], used: usedVoices(given) });
     })
-    .get("/api/channels", async () => {
+    .get("/api/channels", async ({ app }: RouteContext<App>) => {
       if (!v2cloud.enabled()) return json({ channels: [], groups: [], teacher: false });
-      return json({ channels: await asked(() => list()), groups: knownGroups(), teacher: v2cloud.teacher() });
+      const listed = await asked(() => list());
+      // One given since this token was issued: a fresh token, so its work isn't refused meanwhile.
+      void tokenCarries(listed.map((one) => one.key), app.store.home);
+      return json({ channels: listed, groups: knownGroups(), teacher: v2cloud.teacher() });
     })
     .get("/api/channels/resolve", async ({ url }: RouteContext<App>) => {
       needCloud();
@@ -400,6 +430,7 @@ export function routes(router: Router<App>): void {
         const channel = await asked(async () => (await cloud.mutation("channels:addPlaceholder", { title: given.title })) as Channel);
         diag.info("channels", `${channel.title} (${channel.key}) added as a placeholder`);
         forget();
+        await tokenCarries([channel.key], context.app.store.home);
         return json({ channel });
       }
       if (typeof given.url !== "string" || given.url.trim() === "") throw bad("url: a link to the channel.");
@@ -407,6 +438,7 @@ export function routes(router: Router<App>): void {
       const channel = await asked(async () => (await cloud.mutation("channels:saveChannel", { youtube })) as Channel);
       diag.info("channels", `${channel.title} (${channel.key}) added`);
       forget();
+      await tokenCarries([channel.key], context.app.store.home);
       return json({ channel });
     })
     .post("/api/channels/{key}/link", async (context: RouteContext<App>) => {

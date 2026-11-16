@@ -367,6 +367,55 @@ test("teaching not read from the cloud yet is never taken for untaught: the agen
   }
 });
 
+test("a lesson another teacher changed since this conversation read it isn't saved over: the agent gets it as it is now, to put its change into", async () => {
+  // Nov 16 audit: remember wrote the lesson whole from text read at the turn's start, so another Mac's newer save was lost, unseen.
+  const { app, cleanup, id } = hq("v2-conflict");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      project.channel = "conf-ch";
+    });
+    accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.conf-ch"]);
+    expect((await call(app, id, "remember", { skill: "pins", text: "Board pins are red.", reason: "Sphe" })).content[0]!.text).toContain("version 1");
+    v2cloud.forgetSkills();
+    await v2cloud.refreshSkills();
+    // Another Mac's teacher, meanwhile.
+    const key = "skill:@conf-ch--edit/pins";
+    const item = mock.cloud.convex.library.get(key)!;
+    mock.cloud.convex.libraryVersions.get(key)!.push({ key, n: 2, text: "Board pins are red, with a soft shadow.", at: Date.now(), by: { name: "Marc" } });
+    item.latest = 2;
+    item.current = 2;
+    const said = (await call(app, id, "remember", { skill: "pins", text: "Board pins are blue.", reason: "Sphe" })).content[0]!.text;
+    expect(said).toContain("Someone else changed pins since this conversation read it");
+    expect(said).toContain("with a soft shadow");
+    expect(mock.cloud.convex.libraryVersions.get(key)!.length).toBe(2);
+    // Read again, it saves.
+    await v2cloud.refreshSkills();
+    expect((await call(app, id, "remember", { skill: "pins", text: "Board pins are blue, with a soft shadow.", reason: "Sphe" })).content[0]!.text).toContain("version 3");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a channel that's put away or not given is said in words, never by its key, and a script's edit is never quietly made without its channel", async () => {
+  // Nov 16 audit: channelFor said "There's no channel ch-…", and Start edit on a channel's script fell back to today's
+  // kind of edit (not V2, and not movable onto the channel afterwards) on any failure.
+  const { app, cleanup } = fixtureHome("v2-channel-words");
+  try {
+    fs.writeFileSync(join(app.store.home, "beta.json"), JSON.stringify({ v2: true }));
+    accounts.signedInForTests(["edit.bodycam", "channel.drinsanity"]);
+    mock.cloud.convex.channels = [{ ...CHANNEL, archived: true }];
+    await expect(channels.channelFor("drinsanity", app.store.home)).rejects.toThrow("Dr Insanity was put away: an admin can bring it back");
+    mock.cloud.convex.channels = [];
+    const missing = channels.channelFor("ch-0123456789", app.store.home);
+    await expect(missing).rejects.toThrow("isn't in Edit, or isn't shown to your account");
+    await expect(channels.channelFor("ch-0123456789", app.store.home)).rejects.not.toThrow("ch-0123456789");
+  } finally {
+    mock.cloud.convex.channels = [];
+    cleanup();
+  }
+});
+
 test("a placeholder channel (Sphe, Nov 15): its agents know it isn't on YouTube yet, and its videos aren't asked of YouTube", () => {
   const { app, cleanup } = fixtureHome("v2-channel-placeholder");
   try {

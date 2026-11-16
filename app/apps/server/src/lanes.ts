@@ -236,6 +236,8 @@ export async function call(name: string, args: Record<string, unknown>, place: P
 
 async function remember(args: Record<string, unknown>, place: Place): Promise<string> {
   teacherOnly(`Keeping a lesson for this channel's ${MANY[place.lane]}`);
+  // Its group as it is now, not as it was when the turn began (a group made since: kept for it).
+  await channels.refresh();
   const skill = nameArg(args.skill, "skill");
   if (typeof args.text !== "string" || args.text.trim() === "") throw new Error("text is required");
   if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");
@@ -247,7 +249,7 @@ async function remember(args: Record<string, unknown>, place: Place): Promise<st
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
   const most = part ? PART_MOST : MEMORY_MOST;
   if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part short: its rules, not their history" : "a line or two, in the person's words"}`);
-  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note ?? before?.note, { key });
+  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
   // Kept for the group while this channel has its own of that name: the channel's still wins here.
   const shadowed = kept.place !== v2cloud.laneKey(place.channel, place.lane) && lessonsOf(place).some((one) => one.name === skill && ownLesson(one, place));
   v2cloud.forgetSkills();
@@ -331,7 +333,7 @@ async function channelVideos(args: Record<string, unknown>, place: Place): Promi
     link = ours?.youtubeId ?? words;
   } else {
     const mine = channels.knownChannels().find((one) => one.key === place.channel);
-    if (mine === undefined) throw new Error("this channel isn't read yet: try again in a moment");
+    if (mine === undefined) throw new Error("This channel isn't among the ones this account sees now (put away, or no longer given), so its videos can't be read: say so to the person; read another channel's with channel.");
     if (mine.youtubeId === null) return mine.masked === true ? `${mine.title}'s own videos aren't shown to this account. Read another channel's with channel.` : `${mine.title} isn't on YouTube yet: it has no videos of its own. Read another channel's with channel.`;
     link = mine.youtubeId;
   }

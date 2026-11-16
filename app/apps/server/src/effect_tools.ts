@@ -276,7 +276,8 @@ const when = (at: number) => new Date(at).toISOString().replace("T", " ").slice(
 
 /** The project's places in the library (its channel's edit lane, then its group's; null without a channel), the skills read fresh enough. */
 async function placeHere(app: App, projectId: string): Promise<string[] | null> {
-  await v2cloud.refreshSkills();
+  // The channels too: a group made (or joined) since the turn began decides where a lesson is kept (Nov 16 audit).
+  await Promise.all([v2cloud.refreshSkills(), channels.refresh()]);
   return channels.placesOfProject(app.store.get(projectId)?.project ?? {});
 }
 
@@ -473,7 +474,8 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
   const most = part ? SKILL_MOST : MEMORY_MOST;
   if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part's skill short: its rules, not their history" : "a line or two, in the person's words"}`);
   // A part keeps its note when it's saved somewhere else (a channel's own changed for its group).
-  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note ?? before?.note, { key: v2cloud.ownKey("skill", where.place, skill) });
+  const key = v2cloud.ownKey("skill", where.place, skill);
+  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
   // Kept for the group while this channel has its own of that name: the channel's still wins here.
   const shadowed = places !== null && where.place !== places[0] && v2cloud.ownPlaceOf(before?.key ?? "") === places[0];
   v2cloud.forgetSkills();

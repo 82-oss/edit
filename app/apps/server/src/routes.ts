@@ -496,6 +496,8 @@ async function createChannelProject(context: Context, given: Record<string, unkn
   if (channel === null) throw bad("channel is a channel's key");
   const style = channels.styleOf(channel);
   if (!kinds.mayStart(style)) throw new ApiError(403, kinds.cantMake(`edit.${style}`));
+  // A channel given (or added) since this token was issued: a fresh one first, and a plain refusal before anything is made.
+  if (!(await channels.tokenCarries([channel.key], context.app.store.home))) throw new ApiError(403, `${channel.title} isn't given to your account yet: ask an admin to give it to you on accounts.spheceo.com.`);
   const compilation = field<boolean>(given, "compilation", "boolean");
   const person = field<boolean>(given, "person", "boolean") === true;
   let live;
@@ -504,12 +506,18 @@ async function createChannelProject(context: Context, given: Record<string, unkn
   } catch (error) {
     throw bad(diag.messageOf(error));
   }
-  live = (
-    await context.app.store.update(live.project.id, "channel", (project) => {
-      project.channel = channel.key;
-      if (compilation !== null && compilation !== channel.compilation) project.compilation = compilation;
-    })
-  )[0];
+  try {
+    live = (
+      await context.app.store.update(live.project.id, "channel", (project) => {
+        project.channel = channel.key;
+        if (compilation !== null && compilation !== channel.compilation) project.compilation = compilation;
+      })
+    )[0];
+  } catch (error) {
+    // Refused on its channel: no untitled project left behind with none.
+    context.app.store.delete(live.project.id);
+    throw error;
+  }
   context.app.store.setActive(live.project.id);
   return json({ rev: live.rev, project: live.project });
 }

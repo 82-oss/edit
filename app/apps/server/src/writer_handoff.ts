@@ -402,7 +402,9 @@ export type ImportFor = { channel?: unknown; compilation?: unknown };
 async function channelOfImport(app: App, given: { channel?: string }, asked: ImportFor): Promise<channels.Channel | null> {
   if (asked.channel !== undefined && asked.channel !== null && asked.channel !== "") return channels.channelFor(asked.channel, app.store.home);
   if (!given.channel || !beta.read(app.store.home).v2) return null;
-  return channels.channelFor(given.channel, app.store.home).catch(() => null);
+  // Never quietly today's kind of edit instead (Nov 16 audit): a V2 edit can't be made from one afterwards, so a blip,
+  // a channel put away or one not given to this person is said, and nothing is made.
+  return channels.channelFor(given.channel, app.store.home);
 }
 
 export async function importScript(app: App, id: string, asked: ImportFor = {}): Promise<{ project: string }> {
