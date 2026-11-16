@@ -5,7 +5,6 @@ import * as fs from "node:fs";
 
 import { localPath } from "../src/cloud_media.ts";
 import { PLAYBACK_ROUTE } from "../src/cloud_playback.ts";
-import * as cloudMedia from "../src/cloud_media.ts";
 import * as localPreviews from "../src/local_previews.ts";
 import { hooks, nativeSources, reset } from "../src/native_preview.ts";
 import * as player from "../src/player.ts";
@@ -44,7 +43,7 @@ test("the native preview reads a media's made preview, else its footage; a cloud
     fs.writeFileSync(here, "copy");
     // A streamed one's whole preview comes down behind it.
     const fetched: string[] = [];
-    const fetch = spyOn(cloudMedia, "fetchKey").mockImplementation(async (key) => { fetched.push(key); });
+    const fetch = spyOn(localPreviews.hooks, "fetch").mockImplementation(async (key) => { fetched.push(key); });
     fs.writeFileSync(made.audio, "sound");
     const answer = (await (await nativeSources(app, store.get(id)!.project)).json()) as { cache: string; sources: Record<string, string>; sounds: Record<string, string>; of: Record<string, string>; coming: boolean };
     fetch.mockRestore();
@@ -94,7 +93,7 @@ test("footage that's its own proxy (an original of 256 MB or less) comes down wh
       p.clips.push(clip({ id: "c1", type: "video", track: "v1", media: "map", start: 0, duration: 30, source_in: 0 }));
     });
     const fetched: string[] = [];
-    const fetch = spyOn(cloudMedia, "fetchKey").mockImplementation(async (key, local) => {
+    const fetch = spyOn(localPreviews.hooks, "fetch").mockImplementation(async (key, local) => {
       fetched.push(key);
       fs.mkdirSync(local.slice(0, local.lastIndexOf("/")), { recursive: true });
       fs.writeFileSync(local, "copy");

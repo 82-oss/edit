@@ -258,7 +258,7 @@ test("cloud-only cleanup verifies R2 and removes legacy previews and their alias
 test("a whole preview the native player reads stays through every clean under the budget; past it, the project opened longest ago gives its up first, and the player streams it and fetches it again", async () => {
   const { app, store, cleanup } = fixtureHome("cache-native-copies");
   const fetched: string[] = [];
-  const fetch = spyOn(cloudMedia, "fetchKey").mockImplementation(async (key) => { fetched.push(key); });
+  const fetch = spyOn(localPreviews.hooks, "fetch").mockImplementation(async (key) => { fetched.push(key); });
   try {
     const cache = store.cacheDir();
     const hour = 3600 * 1000;
