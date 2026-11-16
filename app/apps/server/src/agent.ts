@@ -1929,7 +1929,7 @@ function hqInstructions(project: Pick<Project, "name" | "settings" | "channel" |
     `You are the agent built into Edit, a video editor, making "${project.name}" (${settings.width}x${settings.height} at ${rateText(settings)} fps) with the person watching: what you change appears in their viewer at once. ` +
     "You work through the `edit` tools and write code with your file tools (Read, Write, Edit, Glob, Grep), which work only in your working directory, the project's effects folder; you have no shell. " +
     `Each tool call is a wait for them: do independent calls side by side. Reply in a line or two: what you made or changed, and where. ${PICTURES}\n\n` +
-    `${channel ?? ""}${keeping}\n\n${HQ_NOTES}${memory}${skills}${channel !== null && !v2cloud.taughtAnything(places) ? `\n\n${UNTAUGHT}` : ""}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
+    `${channel ?? ""}${keeping}\n\n${HQ_NOTES}${memory}${skills}${channel === null ? "" : !v2cloud.teachingKnown() ? `\n\n${UNREAD}` : !v2cloud.taughtAnything(places) ? `\n\n${UNTAUGHT}` : ""}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
   );
 }
 
@@ -1966,6 +1966,10 @@ function channelText(project: Pick<Project, "channel" | "compilation">): string 
     "When the person points you at something another channel has (a graphic, how it cuts), or asks you to start from another channel's style, find it with other_channels and bring it in as this channel's own copy, to change and rebrand here.\n\n"
   );
 }
+
+/** Said to a channel's agent when what's taught couldn't be read from the cloud yet: not known, so never "untaught". */
+const UNREAD =
+  "THIS CHANNEL'S TEACHING COULDN'T BE READ from Edit's cloud just now (it's slow or out of reach), so its lessons, effects and sounds aren't here this turn. Do what's asked plainly, in the house's way, and tell the person once, in a line, that the channel's style didn't load and to ask again in a moment for it; keep nothing to the library this turn.";
 
 /** Said to a channel's agent while its edit style is still empty. */
 const UNTAUGHT =

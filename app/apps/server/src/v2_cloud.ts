@@ -340,23 +340,48 @@ export function skill(name: string, place: Places): Skill | undefined {
   return memories(place).find((one) => one.name === name);
 }
 
-/** Reads the skills, at most every 30 s (a turn's start asks): a failure keeps what was read before. */
+/** Whether the skills have been read from the cloud since Edit started: until then "nothing taught" means "not known". */
+let skillsRead = false;
+/** The read under way, which every caller shares (Nov 16 audit: a second turn starting while the first read was still out got the empty list, and was told its channel was untaught). */
+let skillsReading: Promise<void> | null = null;
+/** A failed read is tried again this soon, not after the usual 30 s. */
+const SKILLS_RETRY_MS = 5_000;
+/** How long a turn's start waits on a read; it carries on in the background, and the turn goes with what was read before. */
+export const SKILLS_WAIT_MS = 20_000;
+
+/** Whether what's taught is known: read from the cloud at least once since Edit started. */
+export function teachingKnown(): boolean {
+  return skillsRead;
+}
+
+/** Reads the skills, at most every 30 s (a turn's start asks), waiting at most SKILLS_WAIT_MS: a failure keeps what was read before. */
 export async function refreshSkills(): Promise<void> {
-  if (!enabled() || Date.now() - readAt < SKILLS_FRESH_MS) return;
-  readAt = Date.now();
-  try {
-    const [items, templates, sounds] = await Promise.all([list("skill"), list("template"), list("sound")]);
-    pieces = [...templates, ...sounds].map(({ key, name }) => ({ key, name }));
-    // Each skill's text at once: a turn waits on this.
-    const read = await Promise.all(items.map(async (item) => ({ item, text: (await version(item.key))?.version.text })));
-    const next: Skill[] = [];
-    for (const { item, text } of read) {
-      if (typeof text === "string" && text.trim() !== "") next.push({ name: item.name, text: text.trim(), ...(item.note ? { note: item.note } : {}), key: item.key });
+  if (!enabled()) return;
+  if (skillsReading === null && Date.now() - readAt < SKILLS_FRESH_MS) return;
+  skillsReading ??= (async () => {
+    try {
+      const [items, templates, sounds] = await Promise.all([list("skill"), list("template"), list("sound")]);
+      // Each skill's text at once: a turn waits on this.
+      const read = await Promise.all(items.map(async (item) => ({ item, text: (await version(item.key))?.version.text })));
+      const next: Skill[] = [];
+      for (const { item, text } of read) {
+        if (typeof text === "string" && text.trim() !== "") next.push({ name: item.name, text: text.trim(), ...(item.note ? { note: item.note } : {}), key: item.key });
+      }
+      pieces = [...templates, ...sounds].map(({ key, name }) => ({ key, name }));
+      skills = next.sort((a, b) => Number(b.name === GLOBAL) - Number(a.name === GLOBAL) || a.name.localeCompare(b.name));
+      skillsRead = true;
+      readAt = Date.now();
+    } catch (error) {
+      readAt = Date.now() - SKILLS_FRESH_MS + SKILLS_RETRY_MS;
+      diag.warn("library", `the agent's skills from the cloud: ${diag.messageOf(error)}`);
+    } finally {
+      skillsReading = null;
     }
-    skills = next.sort((a, b) => Number(b.name === GLOBAL) - Number(a.name === GLOBAL) || a.name.localeCompare(b.name));
-  } catch (error) {
-    diag.warn("library", `the agent's skills from the cloud: ${diag.messageOf(error)}`);
-  }
+  })();
+  const reading = skillsReading;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([reading, new Promise<void>((resolve) => (timer = setTimeout(resolve, SKILLS_WAIT_MS)))]);
+  clearTimeout(timer);
 }
 
 /** The skills read again at the next ask (one was just saved or put away). */
@@ -365,10 +390,11 @@ export function forgetSkills(): void {
 }
 
 /** Tests: the skills as given, read now. */
-export function useSkillsForTests(given: Skill[], effectsAndSounds: { key: string; name: string }[] = []): void {
+export function useSkillsForTests(given: Skill[], effectsAndSounds: { key: string; name: string }[] = [], known = true): void {
   skills = given;
   pieces = effectsAndSounds;
   readAt = Date.now();
+  skillsRead = known;
 }
 
 /** Who saves, for the agent's words ("you" when it's this computer's person). */

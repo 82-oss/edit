@@ -103,7 +103,8 @@ export function laneText(place: Place, teach: Teach = "tools"): string {
     if (own.length > 0) lines.push(`For ${channel?.title ?? "this channel"} alone, its exceptions (always; they win over the group's):\n${own.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
   }
   if (parts.length > 0) lines.push(`Read one with read_skill when it fits, once per conversation:\n${parts.map((one) => `- ${one.name}${mineOnly(one)}: ${one.note}`).join("\n")}`);
-  if (!v2cloud.taughtAnything(channels.placesOf(place.channel, place.lane))) lines.push(`THIS CHANNEL'S ${word.toUpperCase()} STYLE ISN'T TAUGHT YET: do what's asked plainly, and build the style with the person as they say what it should be.`);
+  if (!v2cloud.teachingKnown()) lines.push(`THIS CHANNEL'S ${word.toUpperCase()} STYLE COULDN'T BE READ from Edit's cloud just now: do what's asked plainly, tell the person once that its style didn't load and to ask again in a moment, and keep nothing this time.`);
+  else if (!v2cloud.taughtAnything(channels.placesOf(place.channel, place.lane))) lines.push(`THIS CHANNEL'S ${word.toUpperCase()} STYLE ISN'T TAUGHT YET: do what's asked plainly, and build the style with the person as they say what it should be.`);
   if (teach === "none") return lines.join("\n\n");
   if (teach === "lesson") {
     // Script mode's revisions answer once with no tools: a lesson comes back in the answer (writer/lesson_note.ts) and is kept here.
@@ -208,6 +209,8 @@ function needCloud(): void {
 
 function teacherOnly(what: string): void {
   if (!v2cloud.teacher()) throw new Error(`${what} is a teacher's to do (agent.teach; admins have it): this computer's account isn't one. Say so to the person: an admin can make them a teacher at accounts.spheceo.com.`);
+  // Not read yet, a lesson kept now could replace one the team has, unseen (Nov 16 audit).
+  if (!v2cloud.teachingKnown()) throw new Error(`What's taught couldn't be read from Edit's cloud yet, so nothing is kept now. Say so to the person, and keep it in a moment, once it reads.`);
 }
 
 function nameArg(value: unknown, what: string): string {

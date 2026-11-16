@@ -266,6 +266,8 @@ function cloudOn(): void {
 /** A teacher's tool: refused, in words, to anyone else. */
 function teacherOnly(what: string): void {
   if (!v2cloud.teacher()) throw new Error(`${what} is a teacher's to do (agent.teach; admins have it): this computer's account isn't one. Say so to the person: an admin can make them a teacher at accounts.spheceo.com.`);
+  // Not read yet, a lesson kept now could replace one the team has, unseen (Nov 16 audit).
+  if (!v2cloud.teachingKnown()) throw new Error(`What's taught couldn't be read from Edit's cloud yet, so nothing is kept now. Say so to the person, and keep it in a moment, once it reads.`);
 }
 
 const when = (at: number) => new Date(at).toISOString().replace("T", " ").slice(0, 16);

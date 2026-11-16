@@ -339,6 +339,34 @@ test("a channel's agent is told its channel, its edit style and how its videos a
   }
 });
 
+test("teaching not read from the cloud yet is never taken for untaught: the agent's told it didn't load, and nothing is kept until it reads", async () => {
+  // Nov 16 audit: a turn starting while the first read was still out (or after it failed) was told its channel was
+  // untaught and to build its style from scratch, keeping lessons over the team's.
+  const { app, cleanup, id } = hq("v2-unread");
+  try {
+    channels.useChannelsForTests([CHANNEL]);
+    v2cloud.useSkillsForTests([], [], false);
+    const project = { ...app.store.get(id)!.project, hq: true, channel: "drinsanity" };
+    const prompt = agentInstructions(project);
+    expect(prompt).toContain("THIS CHANNEL'S TEACHING COULDN'T BE READ");
+    expect(prompt).not.toContain("THIS CHANNEL ISN'T TAUGHT YET");
+    expect(lanes.section("drinsanity", "ideas")).toContain("COULDN'T BE READ");
+    await app.store.update(id, "test", (one) => {
+      one.hq = true;
+      one.channel = "drinsanity";
+    });
+    accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.drinsanity"]);
+    expect((await call(app, id, "remember", { skill: "pins", text: "Pins are red.", reason: "Sphe" })).content[0]!.text).toContain("couldn't be read from Edit's cloud yet");
+    // Once it reads, it's as before.
+    v2cloud.useSkillsForTests([]);
+    expect(agentInstructions(project)).toContain("THIS CHANNEL ISN'T TAUGHT YET");
+  } finally {
+    v2cloud.useSkillsForTests([]);
+    channels.useChannelsForTests([]);
+    cleanup();
+  }
+});
+
 test("a placeholder channel (Sphe, Nov 15): its agents know it isn't on YouTube yet, and its videos aren't asked of YouTube", () => {
   const { app, cleanup } = fixtureHome("v2-channel-placeholder");
   try {

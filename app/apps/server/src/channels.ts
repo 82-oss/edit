@@ -214,15 +214,28 @@ export function channelOf(project: { channel?: string | null }): Channel | null 
   return typeof project.channel === "string" && project.channel !== "" ? (known.find((one) => one.key === project.channel) ?? null) : null;
 }
 
-/** Reads the channels again, at most every 30 s (a turn's start asks): a failure keeps what was read before. */
+/** The read under way, which every caller shares (a turn starting while another's read was out got no channels, so no group). */
+let reading: Promise<void> | null = null;
+
+/** Reads the channels again, at most every 30 s (a turn's start asks), waiting at most v2cloud.SKILLS_WAIT_MS: a failure keeps what was read before, and is tried again in 5 s. */
 export async function refresh(): Promise<void> {
-  if (!v2cloud.enabled() || Date.now() - readAt < FRESH_MS) return;
-  readAt = Date.now();
-  try {
-    await list();
-  } catch (error) {
-    diag.warn("channels", `the channels from the cloud: ${diag.messageOf(error)}`);
-  }
+  if (!v2cloud.enabled()) return;
+  if (reading === null && Date.now() - readAt < FRESH_MS) return;
+  reading ??= (async () => {
+    try {
+      await list();
+      readAt = Date.now();
+    } catch (error) {
+      readAt = Date.now() - FRESH_MS + 5_000;
+      diag.warn("channels", `the channels from the cloud: ${diag.messageOf(error)}`);
+    } finally {
+      reading = null;
+    }
+  })();
+  const now = reading;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([now, new Promise<void>((resolve) => (timer = setTimeout(resolve, v2cloud.SKILLS_WAIT_MS)))]);
+  clearTimeout(timer);
 }
 
 /** Read again at the next ask (one was just added or changed here). */
