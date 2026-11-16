@@ -349,7 +349,7 @@ export async function reviseWith(data: string, id: string, request: string, said
     failed(dir, job, error);
   }
   checkStopped(job);
-  const noted = await lessonNote.keep(script, done.lesson);
+  const noted = await lessonNote.keep(script, done.lesson, data);
   // Starting over waits for the producer to confirm it in the chat.
   if (done.startOver) {
     chat.askReset(dir, done.answer + noted, done.costUsd);
@@ -390,7 +390,7 @@ export async function reviseCommentary(data: string, dir: string, given: Script,
     failed(dir, job, error);
   }
   checkStopped(job);
-  const noted = await lessonNote.keep(script, done.lesson);
+  const noted = await lessonNote.keep(script, done.lesson, data);
   if (done.startOver) {
     chat.askReset(dir, done.answer + noted, done.costUsd);
     return [done.answer + noted, done.costUsd];

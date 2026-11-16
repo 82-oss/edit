@@ -4,6 +4,7 @@
 // through the relay to the cloud mock's library (mamagi's editLibrary).
 
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import type { Script } from "@edit/types/writer";
 import fs from "node:fs";
 import { join } from "node:path";
 
@@ -22,6 +23,8 @@ import { dispatch } from "../src/mcp/index.ts";
 import { buildRouter } from "../src/routes.ts";
 import { HOUSE_VOICE } from "../src/voice.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
+import * as lessonNote from "../src/writer/lesson_note.ts";
+import * as writerStore from "../src/writer/store.ts";
 import { fixtureHome } from "./helpers/home.ts";
 import { MockServer } from "./mocks/server.ts";
 
@@ -486,6 +489,25 @@ test("a channel that's put away or not given is said in words, never by its key,
     await expect(channels.channelFor("ch-0123456789", app.store.home)).rejects.not.toThrow("ch-0123456789");
   } finally {
     mock.cloud.convex.channels = [];
+    cleanup();
+  }
+});
+
+test("with Edit V2 on, a script revision's lesson goes to its channel's Script lane whatever its scope, never the team's inbox; a script without a channel keeps none", async () => {
+  // Sphe, Nov 16: "once you've enabled Edit V2, things don't go into a Teams lessons inbox".
+  const { app, cleanup } = fixtureHome("v2-script-lessons");
+  try {
+    fs.writeFileSync(join(app.store.home, "beta.json"), JSON.stringify({ v2: true }));
+    accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.lessons-ch"]);
+    const data = writerStore.dataDir(app.store.home);
+    const inbox = mock.cloud.convex.lessons.size;
+    const said = await lessonNote.keep({ id: "s1", title: "A case", kind: "interrogation", channel: "lessons-ch" } as Script, { lesson: "Cut-ins are short and blunt, no rhetorical questions.", quote: "remember this for the future", scope: "house" }, data);
+    expect(said).toContain("This channel's next scripts have it");
+    expect([...mock.cloud.convex.library.keys()].some((key) => key.startsWith("skill:@lessons-ch--script/"))).toBe(true);
+    const none = await lessonNote.keep({ id: "s2", title: "No channel", kind: "interrogation" } as Script, { lesson: "Always open cold.", quote: "always", scope: "house" }, data);
+    expect(none).toContain("isn't a channel's");
+    expect(mock.cloud.convex.lessons.size).toBe(inbox);
+  } finally {
     cleanup();
   }
 });

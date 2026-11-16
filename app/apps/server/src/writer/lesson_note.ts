@@ -6,7 +6,9 @@
 
 import type { Script } from "@edit/types/writer";
 
+import * as beta from "../beta.ts";
 import * as diag from "../diag.ts";
+import { parent } from "../paths.ts";
 import * as lanes from "../lanes.ts";
 import * as v2cloud from "../v2_cloud.ts";
 import * as cloud from "../cloud.ts";
@@ -38,12 +40,27 @@ export function lessonOf(plan: Record<string, unknown> | null): Record<string, u
   return typeof lesson === "object" && lesson !== null ? (lesson as Record<string, unknown>) : null;
 }
 
-/** Notes `lesson` with the script it was said on; the line to add to the reply, or "" when there was none or it couldn't be noted (logged). */
-export async function keep(script: Script, lesson: Record<string, unknown> | null): Promise<string> {
+/** A lesson's name as the library keeps it: lower-case words joined by hyphens. */
+const slug = (text: string): string => text.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/g, "");
+
+/**
+ * Notes `lesson` with the script it was said on; the line to add to the reply, or "" when there was none or it
+ * couldn't be noted (logged). `data` is Writer's data folder, in Edit's home: with Edit V2 on there (Sphe, Nov 16:
+ * "once you've enabled Edit V2, things don't go into a Teams lessons inbox"), every lesson of a channel's script is
+ * kept in that channel's Script lane, whatever its scope, and a script without a channel keeps none, as a V2 edit
+ * without one doesn't; the inbox is V1's.
+ */
+export async function keep(script: Script, lesson: Record<string, unknown> | null, data?: string): Promise<string> {
   if (lesson === null) return "";
+  const v2 = data !== undefined && beta.read(parent(data) ?? data).v2;
+  if (v2 && !script.channel) {
+    diag.info("lessons", `${script.title}: a lesson not kept: Edit V2 keeps a channel's lessons, and this script isn't a channel's`);
+    return "\n\nThis script isn't a channel's, so nothing is kept from it for later scripts.";
+  }
   // A channel's script: a lesson of how that channel does its scripts is kept in its Script lane at once (lanes.ts), not sent to the inbox.
-  if (lesson.scope === "channel" && script.channel) {
-    const name = typeof lesson.name === "string" ? lesson.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) : "";
+  if ((lesson.scope === "channel" || v2) && script.channel) {
+    const named = typeof lesson.name === "string" && lesson.name.trim() !== "" ? lesson.name : typeof lesson.lesson === "string" ? lesson.lesson.split(/\s+/u).slice(0, 5).join(" ") : "";
+    const name = slug(named);
     try {
       if (typeof lesson.lesson !== "string" || lesson.lesson.trim() === "" || name === "") throw new Error("the lesson came back without its words or a name");
       const kept = await lanes.keepLesson({ channel: script.channel, lane: "script" }, name, lesson.lesson.trim(), typeof lesson.quote === "string" && lesson.quote.trim() !== "" ? lesson.quote.trim() : "said in a revision", lesson.for === "channel" ? "channel" : undefined);
