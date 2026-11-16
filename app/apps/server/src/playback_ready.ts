@@ -156,7 +156,7 @@ export async function warm(app: App, id: string, frame: number): Promise<void> {
   const fps = projectFps(project);
   const media = new Map(project.media.map((one) => [one.id, one]));
   // The seconds a held play waits for (`FIRST_SECONDS`) of every file first, then the rest.
-  const pass = async (from: number, until: number) => {
+  const pass = async (from: number, until: number, priority: "asked" | "ahead") => {
     const reads: Promise<unknown>[] = [];
     const asked = new Set<string>();
     for (const clip of played(project)) {
@@ -171,15 +171,17 @@ export async function warm(app: App, id: string, frame: number): Promise<void> {
       if (asked.has(stretch)) continue;
       asked.add(stretch);
       reads.push(
-        cloudBlocks.warm(root, key, start / one.duration, end / one.duration, cloudMedia.blockUrl(key)).catch((error: unknown) => {
+        cloudBlocks.warm(root, key, start / one.duration, end / one.duration, cloudMedia.blockUrl(key), priority).catch((error: unknown) => {
           diag.warn("cloud", `${id}: reading ${key} ahead of the viewer: ${diag.messageOf(error)}`);
         }),
       );
     }
     await Promise.all(reads);
   };
-  await pass(at, at + FIRST_SECONDS * fps);
-  await pass(at + FIRST_SECONDS * fps, at + WARM_SECONDS * fps);
+  // A held play waits on the first seconds: read as a person's reads are (first, and from R2's own URL too where
+  // the edge is slow); the rest behind.
+  await pass(at, at + FIRST_SECONDS * fps, "asked");
+  await pass(at + FIRST_SECONDS * fps, at + WARM_SECONDS * fps, "ahead");
 }
 
 export function routes(router: Router<App>): void {

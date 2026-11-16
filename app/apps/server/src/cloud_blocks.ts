@@ -180,16 +180,16 @@ export const retryHooks = { waits: [500, 2_000] };
 
 /**
  * Where a block is read from: the relay's edge (cached there for every Mac), and optionally R2's own URL, which a
- * read someone waits on also tries when the edge is slow to answer (`HEDGE_MS`).
+ * read someone waits on also tries when the edge is slow to answer (`hedgeHooks`).
  */
 export type BlockSource = (() => Promise<string>) & { direct?: () => Promise<string> };
 
 /**
- * A read someone waits on goes to R2's own URL too when the edge hasn't answered in this long, and takes whichever
- * comes first. Measured on mandalorian (Nov 16): a block the edge hadn't seen took it 1.8–2.8 s, a cold open's
+ * A read someone waits on goes to R2's own URL too when the edge hasn't answered in this long (a block it has
+ * answers in 55–92 ms), and takes whichever comes first. Measured on mandalorian (Nov 16): a block the edge hadn't seen took it 1.8–2.8 s, a cold open's
  * first picture through it 1.5–3 s, where R2's own answered a whole open-and-seek in 0.7–1 s.
  */
-export const hedgeHooks = { ms: 400 };
+export const hedgeHooks = { ms: 150 };
 
 /** One read of a block's range; rejects with the answer's status when it isn't 206. */
 async function readOnce(url: string, start: number, signal: AbortSignal): Promise<{ answer: Response; bytes: Uint8Array }> {
@@ -256,11 +256,12 @@ export function blocksHere(root: string, key: string): { size: number; here: Set
 
 /**
  * Bytes `from..to` (a fraction of the object each, 0 to 1, as a time over its length maps onto a proxy whose
- * index is at its start) read into blocks behind what anyone waits on, the first block too (it holds the index).
+ * index is at its start) read into blocks, the first block too (it holds the index): behind what anyone waits on,
+ * or as one (`priority` "asked": the seconds a held play waits for).
  * Resolves once they're here; how many were read.
  */
-export async function warm(root: string, key: string, from: number, to: number, url: BlockSource): Promise<number> {
-  await block(root, key, 0, url);
+export async function warm(root: string, key: string, from: number, to: number, url: BlockSource, priority: "asked" | "ahead" = "ahead"): Promise<number> {
+  await block(root, key, 0, url, priority);
   const meta = metaOf(folderOf(root, key));
   if (meta === null) return 0;
   const last = Math.floor((meta.size - 1) / BLOCK);
@@ -271,7 +272,7 @@ export async function warm(root: string, key: string, from: number, to: number, 
   for (let index = first; index <= end; index++) {
     if (fs.existsSync(join(folderOf(root, key), `${index}`))) continue;
     read++;
-    reads.push(block(root, key, index, url));
+    reads.push(block(root, key, index, url, priority));
   }
   await Promise.all(reads);
   return read;

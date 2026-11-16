@@ -1938,8 +1938,8 @@ export function fetchWholeCopy(key: string, local: string): Promise<void> {
 }
 
 /** What `key`'s blocks are read from (the relay's edge, else R2), for a read ahead of the viewer (playback_ready.ts). */
-export function blockUrl(key: string): () => Promise<string> {
-  return () => streamingUrl(key, true);
+export function blockUrl(key: string): cloudBlocks.BlockSource {
+  return Object.assign(() => streamingUrl(key, true), { direct: () => streamingUrl(key) });
 }
 
 /**
