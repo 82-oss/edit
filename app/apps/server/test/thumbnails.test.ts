@@ -184,10 +184,92 @@ test("the default model: Nano Banana Pro for a new picture, Nano Banana 2 for a 
   // Without Pro, the complex pick falls to the latest Seedream Pro OpenArt lists; a touch-up falls to Pro.
   expect(pickModel(list.filter((one) => one.id !== "nano-banana-pro"), false)).toBe("seedream-5-pro");
   expect(pickModel(list.filter((one) => one.id !== "nano-banana-2"), true)).toBe("nano-banana-pro");
-  // A model the account can't afford, or one that can't edit, is never the touch-up pick.
-  expect(pickModel([model("nano-banana-2", "Nano Banana 2", { affordable: false }), model("nano-banana-pro", "Nano Banana Pro")], true)).toBe("nano-banana-pro");
+  // One that can't edit is never the touch-up pick.
   expect(pickModel([model("nano-banana-2", "Nano Banana 2", { edits: false }), model("nano-banana-pro", "Nano Banana Pro")], true)).toBe("nano-banana-pro");
+  // The pick the account can't afford is said plainly, never swapped for a weaker model in silence (Nov 16 audit).
+  expect(() => pickModel([model("nano-banana-2", "Nano Banana 2", { affordable: false }), model("nano-banana-pro", "Nano Banana Pro")], true)).toThrow("OpenArt is low on credit for Nano Banana 2: an admin needs to add OpenArt credit");
+  expect(() => pickModel([model("nano-banana-pro", "Nano Banana Pro", { affordable: false }), model("seedream-5-pro", "Seedream 5 Pro")], false)).toThrow("OpenArt is low on credit for Nano Banana Pro");
   expect(pickModel([], false)).toBeNull();
+});
+
+test("a picture OpenArt was paid for is never paid for twice: a wait past its time keeps the job, asked again picks it up", async () => {
+  const { spyOn } = await import("bun:test");
+  const openart = await import("../src/thumbnails/openart.ts");
+  const fs = await import("node:fs");
+  const home = fs.mkdtempSync(`${(await import("node:os")).tmpdir()}/openart-pending-`);
+  const post = openart.transport.post;
+  const timing = { ...openart.timing };
+  const png = new Uint8Array([137, 80, 78, 71]);
+  const fetched = spyOn(globalThis, "fetch").mockImplementation((async () => new Response(png, { headers: { "content-type": "image/png" } })) as unknown as typeof fetch);
+  const called: string[] = [];
+  let done = false;
+  openart.transport.post = async (body) => {
+    const message = body as { id?: number; method: string; params?: { name?: string } };
+    const name = message.params?.name ?? message.method;
+    called.push(name);
+    const answer = (value: unknown) => Response.json({ jsonrpc: "2.0", id: message.id, result: { structuredContent: value } }, { headers: { "mcp-session-id": "s1" } });
+    if (name === "openart_model_form_get") return answer({ jsonSchema: { properties: { prompt: { type: "string" } } } });
+    if (name === "openart_generate_image") return answer({ status: "running", historyId: "h1" });
+    if (name === "openart_creation_get") return answer(done ? { status: "completed", resources: [{ url: "https://cdn.openart.ai/h1.png", mediaType: "image" }] } : { status: "running", historyId: "h1" });
+    return answer({});
+  };
+  try {
+    openart.useHome(home);
+    openart.timing.wait = 30;
+    openart.timing.poll = 5;
+    const request = { prompt: "a house at night", model: "nano-banana-pro", aspect: "16:9", references: [] };
+    await expect(openart.make(request)).rejects.toThrow("Ask for it again: Edit picks up the same one, it isn't paid for twice.");
+    expect(called.filter((one) => one === "openart_generate_image").length).toBe(1);
+    // Kept across a restart.
+    openart.forgetPending();
+    done = true;
+    const made = await openart.make(request);
+    expect(made.bytes).toEqual(png);
+    expect(called.filter((one) => one === "openart_generate_image").length).toBe(1);
+    // Not delivered yet (its upload failed): asked again, the same picture, still not paid again.
+    await openart.make(request);
+    expect(called.filter((one) => one === "openart_generate_image").length).toBe(1);
+    // Delivered: the same ask again is a new picture.
+    openart.delivered(made.request);
+    done = false;
+    await expect(openart.make(request)).rejects.toThrow("Ask for it again");
+    expect(called.filter((one) => one === "openart_generate_image").length).toBe(2);
+  } finally {
+    openart.transport.post = post;
+    Object.assign(openart.timing, timing);
+    fetched.mockRestore();
+    openart.forgetPending();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("a paid picture goes up with retries, each try bounded", async () => {
+  const { spyOn } = await import("bun:test");
+  const storage = await import("../src/cloud.ts");
+  const presign = spyOn(storage, "presign").mockResolvedValue("https://r2.example/put");
+  let tries = 0;
+  const fetched = spyOn(globalThis, "fetch").mockImplementation((async (_url: unknown, init?: RequestInit) => {
+    tries++;
+    expect(init?.signal).toBeDefined();
+    if (tries === 1) throw new Error("socket hang up");
+    if (tries === 2) return new Response("busy", { status: 503 });
+    return new Response(null, { status: 200 });
+  }) as unknown as typeof fetch);
+  const waits = cloud.putting.waits;
+  cloud.putting.waits = [1, 1, 1];
+  try {
+    const bytes = new Uint8Array([1, 2, 3]);
+    expect(await cloud.put("t1", bytes, "image/png", "png")).toBe(cloud.keyOf("t1", bytes, "png"));
+    expect(tries).toBe(3);
+    // A refusal asking again can't change: said at once.
+    tries = 10;
+    fetched.mockImplementation((async () => new Response("no", { status: 403 })) as unknown as typeof fetch);
+    await expect(cloud.put("t1", bytes, "image/png", "png")).rejects.toThrow("the cloud refused the picture (403)");
+  } finally {
+    cloud.putting.waits = waits;
+    fetched.mockRestore();
+    presign.mockRestore();
+  }
 });
 
 test("undo and redo walk one timeline, the person's changes and Claude's alike", () => {

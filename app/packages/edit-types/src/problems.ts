@@ -75,6 +75,15 @@ const RULES: Rule[] = [
     fix: "Press Sign in to Claude and follow the steps in your browser. Then send your message again if the agent doesn't carry on by itself.",
     action: "claude-sign-in",
   })],
+  // The agent's own lines while the plan is used up or Claude is busy: their own titles, the rest the fix.
+  [/Your Claude plan is used up until ([^.]+?)\.\s*(.*)$/i, (match) => ({
+    title: "Your Claude plan is used up",
+    fix: `It's back at ${match[1]}.${match[2] ? ` ${sentence(match[2])}` : ""}`,
+  })],
+  [/Claude is busy\.?\s*Trying again in ([^(.]+?)\s*(?:\(\d+ of \d+\))?\.?$/i, (match) => ({
+    title: "Claude is busy",
+    fix: `Edit is trying again by itself in ${match[1]}.`,
+  })],
   [/(Claude|Codex|Anthropic|OpenAI)[^.]*(usage limit|rate.?limit|overloaded)|overloaded_error|usage limit reached|5-hour limit|weekly limit/i, () => ({
     title: "Claude is busy or at its usage limit",
     fix: "Wait a little, then send your message again. If it keeps happening, the account's limit is used up until it resets (Claude says when).",
@@ -93,6 +102,16 @@ const RULES: Rule[] = [
   [/positive credit balance is required/i, () => ({
     title: "The team's AI credit has run out",
     fix: "An admin needs to top up the AI Gateway credit. The edit carries on without the AI checks until then.",
+  })],
+  // A service outside Edit out of credit, in its own words as the relay passes them on
+  // ("ElevenLabs: This request exceeds your quota … (quota_exceeded) (401)"), or Edit's line while it waits.
+  [/OpenArt\b[^\n]*?\b(credits?|quota|balance)\b/i, () => ({
+    title: "OpenArt is out of credit",
+    fix: "An admin needs to add OpenArt credit. Then ask for the picture again.",
+  })],
+  [/ElevenLabs\b[^\n]*?\b(credits?|quota)\b|quota_exceeded|exceeds your quota|credits remaining|insufficient.credits|transcription plan is out of credit/i, () => ({
+    title: "ElevenLabs is out of credit",
+    fix: "An admin needs to add credit. Edit carries on by itself once it's back.",
   })],
   [/Cloud export daily compute reservation limit/i, () => ({
     title: "Today's cloud exports are used up",
@@ -136,7 +155,7 @@ const RULES: Rule[] = [
   })],
   [/Google Drive's download limit|Too many users/i, () => ({
     title: "Google Drive won't share that file again today",
-    fix: "Make a copy in Drive (right-click → Make a copy) and use the copy's link.",
+    fix: "Edit tries again by itself once Google allows it. To go on sooner, make a copy in Drive (right-click → Make a copy) and use the copy's link.",
   })],
   [/isn't shared|Share it so anyone with the link|anyone with the link can view/i, () => ({
     title: "That Google file isn't shared",

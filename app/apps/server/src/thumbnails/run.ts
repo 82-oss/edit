@@ -411,12 +411,16 @@ async function runTool(session: Session, name: string, args: Args): Promise<stri
         if (image === undefined) throw new Error(`There's no image ${ref}: give the thumbnail's image ids, or asset:<id>.`);
         references.push({ bytes: await assets.cached(session.context.cacheDir, image.key), type: assets.typeOf(image.key), name: image.name });
       }
-      const model = typeof args.model === "string" && args.model.trim() !== "" ? args.model.trim() : await defaultModel(references.length > 0, session.signal);
+      const model = typeof args.model === "string" && args.model.trim() !== "" ? await affordable(args.model.trim(), session.signal) : await defaultModel(references.length > 0, session.signal);
       const aspect = typeof args.aspect_ratio === "string" && args.aspect_ratio.trim() !== "" ? args.aspect_ratio.trim() : "16:9";
       const options = args.options !== null && typeof args.options === "object" && !Array.isArray(args.options) ? (args.options as Args) : {};
       const made = await hooks.make({ prompt, model, aspect, references, options }, session.signal);
       const extension = made.type === "image/jpeg" ? "jpg" : made.type === "image/webp" ? "webp" : "png";
-      const key = await cloud.put(session.id, made.bytes, made.type, extension);
+      // Paid for: on this Mac first (read from there as the cloud's copy is), then up with retries; delivered only once it's up.
+      const key = cloud.keyOf(session.id, made.bytes, extension);
+      assets.keep(session.context.cacheDir, key, made.bytes);
+      await cloud.put(session.id, made.bytes, made.type, extension);
+      openart.delivered(made.request);
       const size = sizeOf(made.bytes) ?? { width: WIDTH, height: HEIGHT };
       const image: ThumbImage = {
         id: newId(),
@@ -756,14 +760,33 @@ export function baseBrief(thumb: Thumbnail): string {
   ].join("\n\n");
 }
 
-/** The house's pick from OpenArt's models: a touch-up (a picture given) takes Nano Banana 2 first, a new or complex picture Nano Banana Pro. */
+/**
+ * The house's pick from OpenArt's models: a touch-up (a picture given) takes
+ * Nano Banana 2 first, a new or complex picture Nano Banana Pro. The pick the
+ * account can't afford is said plainly, never swapped for a weaker model in
+ * silence (Nov 16 audit: a low balance made every picture on the fallback).
+ */
 export function pickModel(list: openart.Model[], edits: boolean): string | null {
-  const usable = list.filter((one) => one.affordable && (!edits || one.edits));
+  const able = list.filter((one) => !edits || one.edits);
   for (const pattern of edits ? TOUCH_UP_MODELS : COMPLEX_MODELS) {
-    const found = usable.find((one) => pattern.test(one.id) || pattern.test(one.name));
-    if (found !== undefined) return found.id;
+    const found = able.find((one) => pattern.test(one.id) || pattern.test(one.name));
+    if (found === undefined) continue;
+    if (!found.affordable) throw new Error(lowOnCredit(found.name));
+    return found.id;
   }
+  const usable = able.filter((one) => one.affordable);
+  if (usable.length === 0 && able.length > 0) throw new Error(lowOnCredit(able[0]!.name));
   return usable[0]?.id ?? null;
+}
+
+/** OpenArt's balance too low for the model asked for: which service, who adds credit, what then. */
+export const lowOnCredit = (model: string): string => `OpenArt is low on credit for ${model}: an admin needs to add OpenArt credit, then ask for the picture again.`;
+
+/** A model Claude named: refused plainly when OpenArt lists it as more than the account can afford. */
+async function affordable(model: string, signal: AbortSignal): Promise<string> {
+  const listed = (await openart.imageModels(signal).catch(() => [] as openart.Model[])).find((one) => one.id === model);
+  if (listed !== undefined && !listed.affordable) throw new Error(lowOnCredit(listed.name));
+  return model;
 }
 
 async function defaultModel(edits: boolean, signal: AbortSignal): Promise<string> {
@@ -979,11 +1002,13 @@ async function work(context: Context, id: string, asked: string, given: string[]
   try {
     ending = await slot(async () => {
       if (signal.aborted) return { state: "stopped" as const, text: "Stopped." };
-      running.step = "Claude is working";
-      const found = await cloud.change(id, context.by, (thumb) => {
-        if (thumb.run === null || thumb.run.holder !== context.holder) return false;
-        thumb.run = { ...thumb.run, state: "running", step: running.step };
-      });
+      const step = (text: string) =>
+        cloud.change(id, context.by, (thumb) => {
+          running.step = text;
+          if (thumb.run === null || thumb.run.holder !== context.holder) return false;
+          thumb.run = { ...thumb.run, state: "running", step: text };
+        });
+      const found = await step("Claude is working");
       fs.mkdirSync(folder, { recursive: true });
       const session: Session = { id, by: context.by, context, folder, signal, looked: false, changed: false, made: 0, asked, place: lanes.placeOf(found.thumb.channel, "thumbnails") };
       if (session.place !== null) await lanes.refresh();
@@ -992,7 +1017,7 @@ async function work(context: Context, id: string, asked: string, given: string[]
       try {
         const ask = await prompt(session, found.thumb, asked, given, carried);
         const answer = await live.within(running.turn, () =>
-          hooks.ask({ model: claude.OPUS, system: systemOf(session.place), prompt: ask, tools: `http://127.0.0.1:${context.port}/mcp/thumbnails/${token}`, read: folder, maxTurns: 60, effort: "medium", timeoutMs: 25 * 60_000, label: `Thumbnail ${id}`, signal }),
+          hooks.ask({ model: claude.OPUS, system: systemOf(session.place), prompt: ask, tools: `http://127.0.0.1:${context.port}/mcp/thumbnails/${token}`, read: folder, maxTurns: 60, effort: "medium", timeoutMs: 25 * 60_000, label: `Thumbnail ${id}`, signal, waiting: async (line) => void (await step(line ?? "Claude is working")) }),
         );
         const said = await inlinePictures((answer.text ?? running.turn.text).trim(), (source) => placePicture(session, source));
         return { state: "done" as const, text: said || (session.changed ? "Done." : "Nothing changed."), changed: session.changed };

@@ -398,12 +398,20 @@ const askOnce = Effect.fn("transcribe.askOnce")(function* (audio: string, names:
   return yield* refusalOf(status, body, Bun.file(audio).size, names.length > 0);
 });
 
+/**
+ * The relay's daily refusals (apps/relay/src/index.ts, its budget): this
+ * connection's allowance, the team's shared budget, the share for hearing
+ * footage again. Each is used up until midnight UTC, so it's told at once and
+ * waits for the reset, never asked again ~7 times over 5 minutes as "busy".
+ */
+const DAILY_REFUSAL = /allowance|budget[^.]*used up|for today is used up|share for hearing[^.]*used up/i;
+
 /** What a status that isn't an answer means, as a typed failure. */
 function refusalOf(status: number, body: string, bytes: number, withNames: boolean): Effect.Effect<never, AskError> {
   const message = `transcription failed (${status}): ${said(body)}`;
   if ((status === 400 || status === 422) && withNames) return Effect.fail(new NamesRefused({ status, message: `${status}: ${body.trim().slice(0, 200)}` }));
   if (GATEWAY.has(status)) return Effect.fail(new GatewayDown({ status, message }));
-  if (status === 429) return Effect.fail(/allowance/i.test(body) ? new AllowanceUsedUp({ message }) : new RelayBusy({ message }));
+  if (status === 429) return Effect.fail(DAILY_REFUSAL.test(body) ? new AllowanceUsedUp({ message }) : new RelayBusy({ message }));
   if (status === 413) return Effect.fail(new TooLongForOneRequest({ bytes, message }));
   return Effect.fail(new TranscriptionRefused({ status, message }));
 }

@@ -32,6 +32,7 @@ import type { DriveHead, Excerpt, Parsed } from "./seams.ts";
 import * as tools from "./tools.ts";
 import * as proc from "./effect/proc.ts";
 import { runPromise } from "./effect/runtime.ts";
+import { retryAfterOf } from "./effect/service.ts";
 import { hearsAll, type Transcript, type Word } from "./transcribe.ts";
 import * as youtube from "./youtube.ts";
 import * as posts from "./posts.ts";
@@ -1334,6 +1335,9 @@ type JobState = ScriptJob["state"];
 
 const RUNNING: JobState[] = ["downloading", "transcribing", "placing", "voicing"];
 
+/** What an import waiting by itself waits on (the job table's `waiting_on`): the transcription plan's credit, the encoder, ElevenLabs' voice credit or the day's voice allowance, Google Drive's download limit. */
+export type WaitingOn = "quota" | "encoder" | "voice" | "drive";
+
 /** A job as it's always been written: its fields in order, the unset ones left out. */
 function shownJob(job: ScriptJob): ScriptJob {
   const files = job.files.map((file) => {
@@ -1475,7 +1479,7 @@ export class Jobs {
   }
 
   /** The import ended here (done, failed or waiting): its job table entry as `settled` says, the excerpts kept only while it may go on. */
-  finish(project: string, settled: { state: "done" | "failed" | "waiting" | "end"; on?: "quota" | "encoder" } & durableJobs.Settled): void {
+  finish(project: string, settled: { state: "done" | "failed" | "waiting" | "end"; on?: WaitingOn } & durableJobs.Settled): void {
     this.active.delete(project);
     const timer = this.pending.get(project);
     if (timer !== undefined) clearTimeout(timer);
@@ -1598,15 +1602,20 @@ export function confirmLink(page: string): string | null {
   return endpoints.google(`${action}?${fields.join("&")}`);
 }
 
-/** Drive's page as an error: the person's when only they can change it (a download limit, a file nobody shared). */
-function pageError(problem: string): Error {
+/**
+ * Drive's page as an error: its download limit waits by itself (tried again
+ * once Google allows it, `retryAfterMs` when it said when); a file nobody
+ * shared is the person's.
+ */
+function pageError(problem: string, retryAfterMs: number | null = null): Error {
+  if (problem === DRIVE_LIMIT) return new steps.DriveLimit(problem, retryAfterMs);
   return problem === "Google Drive sent a page instead of the file." ? new Error(problem) : new steps.NeedsPerson(problem);
 }
 
+const DRIVE_LIMIT = "Google Drive's download limit for this file is used up for today.";
+
 export function pageProblem(page: string): string {
-  if (page.includes("Too many users") || page.includes("quota")) {
-    return "Google Drive's download limit for this file is used up for today. Try later, or upload a copy.";
-  }
+  if (page.includes("Too many users") || page.includes("quota")) return DRIVE_LIMIT;
   if (page.includes("accounts.google.com") || page.includes("ServiceLogin")) {
     return "This Drive file isn't shared. Set it so anyone with the link can view.";
   }
@@ -1800,14 +1809,16 @@ export async function resolve(file: string, scratch: string): Promise<[url: stri
   let head = await probe(url, scratch);
   if (head.html) {
     let page = "";
+    let hint: number | null = null;
     try {
       const response = await googleFetch(url, { signal: AbortSignal.timeout(30_000) });
+      hint = retryAfterOf(response.headers);
       page = new TextDecoder().decode(await boundedBody(response, 5_000_000));
     } catch {
       page = "";
     }
     const link = confirmLink(page);
-    if (link === null) throw pageError(pageProblem(page));
+    if (link === null) throw pageError(pageProblem(page), hint);
     url = link;
     head = await probe(url, scratch);
     if (head.html) throw pageError(pageProblem(""));
@@ -2313,17 +2324,23 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
     const missing = files.flatMap((_, index) => (toFetch(index) ? [index] : []));
     if (missing.length > 0 && !inserting) {
       const whys = missing.map((index) => steps.whyOf(errors[index] ?? ""));
-      // Only credit or the encoder in the way: it waits by itself, woken by the job table. Anything else is the person's (another link, skip, Retry).
-      const byItself = whys.every((why) => why === "quota" || why === "encoder");
-      const retryAt = whys.includes("quota") ? steps.retryAt("quota", nowMs()) : null;
+      // Only credit, Drive's download limit or the encoder in the way: it waits by itself, woken by the job table.
+      // Anything else is the person's (another link, skip, Retry).
+      const byItself = whys.every((why) => why === "quota" || why === "encoder" || why === "limit");
+      const now = nowMs();
+      // Each file's own time (credit's half hour, the day's reset, Google's); the import is woken at the soonest.
+      const fileAt = missing.map((index, n) => steps.retryAt(whys[n]!, now, errors[index]));
+      const times = fileAt.filter((at): at is number => at !== null);
+      const retryAt = times.length > 0 ? Math.min(...times) : null;
       app.scripts.set(app, id, (job) => {
         job.state = "waiting";
         for (const [n, index] of missing.entries()) {
           const entry = job.files[index];
           if (entry === undefined) continue;
+          const at = fileAt[n];
           if (byItself) {
             entry.state = "waiting";
-            if (whys[n] === "quota" && retryAt !== null) entry.retry_at = retryAt;
+            if (at !== null && at !== undefined) entry.retry_at = at;
             else delete entry.retry_at;
           } else delete entry.retry_at;
         }
@@ -2341,7 +2358,9 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
         byItself
           ? retryAt === null
             ? { state: "waiting", step: "waiting for the encoder", until: "encoder", on: "encoder" }
-            : { state: "waiting", step: "waiting for credit", retry_at: retryAt, on: "quota" }
+            : whys.includes("quota")
+              ? { state: "waiting", step: "waiting for credit", retry_at: retryAt, on: "quota" }
+              : { state: "waiting", step: "waiting for Google Drive", retry_at: retryAt, on: "drive" }
           : { state: "waiting", step: "waiting for the person", until: "person" },
       );
       return;
@@ -2411,13 +2430,19 @@ class CreditWait extends Error {}
 function waitingLine(whys: steps.Why[], missing: number, total: number, retryAt: number | null): string {
   const files = `${missing} of ${total} footage files`;
   if (whys.includes("quota")) return `The transcription plan is out of credit: ${files} wait for it${retryAt === null ? "" : `; Edit tries again at ${clockTime(retryAt)}`}.`;
+  if (whys.includes("limit")) {
+    const one = whys.filter((why) => why === "limit").length === 1;
+    return `Google Drive's download limit is used up for today for ${one ? "a footage file" : "some footage files"}: Edit tries again by itself${retryAt === null ? "" : ` at ${when(retryAt)}`}. To go on sooner, replace ${one ? "it" : "them"} with a copy's link (Make a copy in Drive).`;
+  }
   return `The hardware encoder is busy with an export: ${files} wait until it's free.`;
 }
 
-/** "14:30": a time of day on this computer. */
-function clockTime(ms: number): string {
-  const at = new Date(ms);
-  return `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+const clockTime = steps.clock;
+
+/** "14:30", or "Tue 14:30" when it isn't today. */
+function when(ms: number): string {
+  const today = new Date(ms).toDateString() === new Date(nowMs()).toDateString();
+  return today ? clockTime(ms) : `${new Date(ms).toLocaleDateString([], { weekday: "short" })} ${clockTime(ms)}`;
 }
 
 /** One follow-on's line, set (the others kept, in their order). */
@@ -2470,9 +2495,13 @@ async function followOn(app: App, id: string, inserting: string | null, recut: b
   // A courtroom video's too (the team couldn't get one made for Judge EXPLODES,
   // Oct 22): a recording added later takes its place (place_voiceovers).
   // Tried again by itself after a pause (a dropped connection to the voice
-  // service); a used-up allowance or quota isn't asked again (a spent ElevenLabs
-  // quota was asked twice more, minutes apart, Nov 8).
+  // service). ElevenLabs out of credit, or the day's voice allowance used up,
+  // isn't asked again minutes later (a spent quota was asked twice more, Nov 8):
+  // the import waits for it, woken by the job table every half hour (the
+  // allowance: at its reset), and carries on with the cut-ins still unvoiced;
+  // the takes already spoken are kept (voiceover.ts `generateMissing`).
   say("voiceover", "running");
+  let credit: { at: number; line: string } | null = null;
   for (let attempt = 0; ; attempt++) {
     try {
       await diag.timeAsync("script", "script: voice-over", () =>
@@ -2483,6 +2512,13 @@ async function followOn(app: App, id: string, inserting: string | null, recut: b
     } catch (error) {
       if (isBug(error)) throw error;
       const said = `The voice-over couldn't be made: ${diag.messageOf(error)}`;
+      if (inserting === null && voiceCredit(error)) {
+        const at = steps.retryAt("quota", nowMs(), error)!;
+        credit = { at, line: voiceWaits(error, at) };
+        diag.warn("script", `${title}: ${said} (the edit is laid out; the voice-over waits and is tried again at ${new Date(at).toLocaleString()})`);
+        say("voiceover", "waiting", credit.line);
+        break;
+      }
       const wait = timing.retryWaits[attempt];
       if (wait === undefined || /used up|allowance|budget|quota/i.test(diag.messageOf(error))) {
         diag.warn("script", `${title}: ${said} (the edit is laid out; Make the voice-over again from the agent)`);
@@ -2494,17 +2530,24 @@ async function followOn(app: App, id: string, inserting: string | null, recut: b
     }
   }
   app.scripts.set(app, id, (job) => {
+    if (credit !== null) {
+      job.state = "waiting";
+      job.error = credit.line;
+      job.retry_at = credit.at;
+      return;
+    }
     job.state = "done";
     delete job.error;
     delete job.retry_at;
   });
-  diag.info("script", `${title}: import done in ${diag.human(timing.now() - began)}`);
+  if (credit === null) diag.info("script", `${title}: import done in ${diag.human(timing.now() - began)}`);
   // A new edit starts with the case's research, so the articles and images
   // are waiting by the time the editing gets to them. Not a Short: it shows
-  // only its own footage (no maps, photos or articles to wait for).
+  // only its own footage (no maps, photos or articles to wait for). Once: a
+  // voice-over carried on after its wait doesn't ask again.
   const home = app.store.home;
   const now = app.store.get(id);
-  const researched = seams.research.articles(home, id).length > 0 || seams.research.items(home, id).length > 0;
+  const researched = seams.research.articles(home, id).length > 0 || seams.research.items(home, id).length > 0 || app.scripts.get(id)?.after?.some((line) => line.step === "research" && line.state === "done") === true;
   if (!recut && inserting === null && !researched && !(now !== null && now !== undefined && isEssay(now.project.style)) && now?.project.style !== "shorts") {
     try {
       await seams.agentPanel(app).send(id, RESEARCH, null, null);
@@ -2514,7 +2557,22 @@ async function followOn(app: App, id: string, inserting: string | null, recut: b
       say("research", "failed", `The research didn't start: ${diag.messageOf(error)}`);
     }
   }
+  if (credit !== null) {
+    app.scripts.finish(id, { state: "waiting", step: "waiting for voice credit", retry_at: credit.at, on: "voice" });
+    return;
+  }
   app.scripts.finish(id, { state: "done" });
+}
+
+/** ElevenLabs out of credit, or the day's voice allowance used up: what waits for it rather than failing. */
+function voiceCredit(error: unknown): boolean {
+  return /exceeds your quota|quota_exceeded|credits remaining|insufficient.credits|out of credit|voice (allowance|budget)[^.]*used up/i.test(diag.messageOf(error));
+}
+
+/** The voice-over's line while it waits (the person's and the agent's): which service, who adds credit, when Edit tries again. */
+function voiceWaits(error: unknown, at: number): string {
+  if (/voice (allowance|budget)[^.]*used up/i.test(diag.messageOf(error))) return `Today's voice-over allowance is used up: the cut-ins left wait for it, and Edit voices them by itself at ${when(at)}, when it resets.`;
+  return `ElevenLabs is out of credit: an admin adds credit, and Edit voices the cut-ins left by itself (tried again at ${when(at)}).`;
 }
 
 /** Retry, another link, skip, a remote resume or unstick, or the job table waking it: one way to carry an import on. What it did, in a word. */
@@ -2522,7 +2580,17 @@ export function carryOn(app: App, id: string): "started" | "working" | "finished
   if (app.scripts.working(id)) return "working";
   const live = app.store.get(id);
   if (live === null) return "nothing";
-  if (!unfinished(live.project) && app.scripts.get(id)?.state !== "voicing") return "finished";
+  if (!unfinished(live.project) && app.scripts.get(id)?.state !== "voicing") {
+    // Waited on the voice-over's credit, and its cut-ins were voiced or changed meanwhile: nothing waits any more.
+    if (app.scripts.get(id)?.state === "waiting" && laidOut(live.project)) {
+      app.scripts.set(app, id, (job) => {
+        job.state = "done";
+        delete job.error;
+        delete job.retry_at;
+      });
+    }
+    return "finished";
+  }
   return start(app, id, false) !== null ? "started" : "nothing";
 }
 
@@ -2902,6 +2970,11 @@ async function transcripts(app: App, project: Project, within: (block: ScriptBlo
           peaks = null;
         }
         return { words: transcript.words, peaks, model: transcript.model, ...(transcript.heard !== undefined ? { heard: transcript.heard } : {}) };
+      }
+      // Waiting on the plan's credit (media.ts tries it again by itself): the layout waits with it.
+      if (stage === "waiting") {
+        unheard.credit.push(item.name);
+        return null;
       }
       if (stage === "failed") {
         const why = app.media.status(item.path).transcript_error;

@@ -2601,7 +2601,9 @@ export function timelineTranscript(app: App, project: Project): string {
     if (source === undefined) continue;
     const transcript = readTranscript(app.media.paths(source.path).transcript);
     if (transcript === null) {
-      if (!missing.includes(source.name)) missing.push(source.name);
+      // Named with why when it waits (out of the transcription plan's credit, and when Edit tries again).
+      const named = app.media.unheard(source.path, source.name);
+      if (!missing.includes(named)) missing.push(named);
       continue;
     }
     const from = clip.source_in ?? 0;

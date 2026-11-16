@@ -23,6 +23,7 @@ import type { Store } from "./store.ts";
 import * as tools from "./tools.ts";
 import { FIRST_PASS_FROM_S, firstWords } from "./first_hearing.ts";
 import * as log from "./hearing_log.ts";
+import * as steps from "./import_steps.ts";
 import { hearJoined, merged, readKept, toHear, WHOLE_SHARE } from "./kept_hearing.ts";
 import * as transcribe from "./transcribe.ts";
 import * as voices from "./voices.ts";
@@ -106,7 +107,8 @@ export function mediaKey(path: string): string {
   return native().mediaKey(path);
 }
 
-export type Stage = "pending" | "working" | "ready" | "failed" | "skipped";
+/** `waiting` (a transcript only): it waits on something outside Edit (the plan's credit, the day's allowance) and is tried again by itself at `transcript_retry_at`. */
+export type Stage = "pending" | "working" | "ready" | "failed" | "skipped" | "waiting";
 
 export interface MediaStatus {
   proxy: Stage;
@@ -119,6 +121,8 @@ export interface MediaStatus {
   /** `pending` = not requested (it costs money, so it never starts on its own). */
   transcript: Stage;
   transcript_error?: string;
+  /** Transcript waiting: when Edit tries it again by itself (ms since the epoch). */
+  transcript_retry_at?: number;
   error?: string;
 }
 
@@ -134,8 +138,19 @@ function shown(status: MediaStatus): MediaStatus {
     transcript: status.transcript,
   };
   if (status.transcript_error !== undefined) out.transcript_error = status.transcript_error;
+  if (status.transcript_retry_at !== undefined) out.transcript_retry_at = status.transcript_retry_at;
   if (status.error !== undefined) out.error = status.error;
   return out;
+}
+
+/**
+ * A file whose words aren't in, named for the agent with why when it waits
+ * ("Bodycam.mp4 (the transcription plan … is out of credit …; Edit tries
+ * again by itself at 14:30)"), else its name alone.
+ */
+export function unheardName(name: string, status: MediaStatus): string {
+  if (status.transcript === "waiting" && status.transcript_error !== undefined) return `${name} (${status.transcript_error.replace(/\.$/, "")})`;
+  return name;
 }
 
 /**
@@ -457,9 +472,11 @@ export class Processor {
   retranscribe(source: string, hasAudio: boolean): MediaStatus {
     if (this.entry(source).transcript === "working") return this.status(source);
     fs.rmSync(this.paths(source).transcript, { force: true });
+    this.stopWaiting(source);
     this.set(source, (status) => {
       status.transcript = "pending";
       delete status.transcript_error;
+      delete status.transcript_retry_at;
     });
     return this.transcribe(source, hasAudio);
   }
@@ -479,13 +496,18 @@ export class Processor {
     if (!again && current.transcript !== "working" && isFile(this.paths(source).transcript)) {
       current.transcript = "ready";
       delete current.transcript_error;
+      delete current.transcript_retry_at;
     }
     if (!hasAudio || current.transcript === "working" || (current.transcript === "ready" && !again)) return shown(current);
+    // Waiting on the plan's credit: asked again at its time (`waitThenHear`), not into the same refusal now.
+    if (current.transcript === "waiting" && (current.transcript_retry_at ?? 0) > Date.now()) return shown(current);
+    this.stopWaiting(source);
     // Claimed before anything can wait: two requests cannot start the same
     // paid transcription between status() and set().
     this.set(source, (status) => {
       status.transcript = "working";
       delete status.transcript_error;
+      delete status.transcript_retry_at;
     });
     const target = this.paths(source).transcript;
     // A cloud excerpt whose whole recording was heard already (Writer shares its words) takes its words from there.
@@ -541,6 +563,19 @@ export class Processor {
             });
             return;
           }
+          // The plan out of credit, or the day's allowance used up: it waits, said plainly, and is heard by itself
+          // at its time (the plan's half hour, the allowance's reset). It failed for good, its reason lost (Nov 16 audit).
+          if (!isBug(error) && steps.whyOf(error) === "quota") {
+            const at = steps.retryAt("quota", Date.now(), error)!;
+            diag.warn("media", `${diag.scrub(source)}: transcription waits until ${new Date(at).toLocaleString()}: ${diag.messageOf(error)}`);
+            this.set(source, (status) => {
+              status.transcript = "waiting";
+              status.transcript_error = steps.hearingWaits(error, at);
+              status.transcript_retry_at = at;
+            });
+            this.waitThenHear(source, at, () => this.transcribe(source, hasAudio, keyterms, again, freeOnly, whole));
+            return;
+          }
           this.set(source, (status) => {
             status.transcript = "failed";
             status.transcript_error = isBug(error)
@@ -550,6 +585,35 @@ export class Processor {
         },
       );
     return this.status(source);
+  }
+
+  /** A file without words, named for the agent with why when it waits (`unheardName`): edit_tools' "Not transcribed yet". */
+  unheard(source: string, name: string): string {
+    return unheardName(name, this.status(source));
+  }
+
+  /** Files whose words wait on the plan's credit, each with its timer. */
+  private waits = new Map<string, ReturnType<typeof setTimeout>>();
+
+  /** Hears `source` again at `at`, by itself, if it's still waiting then. */
+  private waitThenHear(source: string, at: number, hear: () => void): void {
+    this.stopWaiting(source);
+    const timer = setTimeout(() => {
+      this.waits.delete(source);
+      if (this.entry(source).transcript !== "waiting") return;
+      this.set(source, (status) => {
+        delete status.transcript_retry_at;
+      });
+      hear();
+    }, Math.max(at - Date.now(), 0));
+    timer.unref?.();
+    this.waits.set(source, timer);
+  }
+
+  private stopWaiting(source: string): void {
+    const timer = this.waits.get(source);
+    if (timer !== undefined) clearTimeout(timer);
+    this.waits.delete(source);
   }
 
   /** Refinements running, by file: one at a time each, so two readers never pay for the same stretch. */

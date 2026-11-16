@@ -66,14 +66,23 @@ export async function add(picture: { bytes: Uint8Array; type: string; extension:
   return asset;
 }
 
-/** A picture's bytes from R2, kept on this Mac (`<cache>/thumbnails/`) after the first time. */
-export async function cached(cacheDir: string, key: string): Promise<Uint8Array> {
-  const path = join(cacheDir, "thumbnails", key.replace(/^edit\/thumbnails\//, "").replace(/[^\w.-]+/g, "_"));
-  if (fs.existsSync(path)) return new Uint8Array(fs.readFileSync(path));
-  const bytes = await cloud.bytesOf(key);
+/** Where a picture of `key` is kept on this Mac. */
+const cachePath = (cacheDir: string, key: string): string => join(cacheDir, "thumbnails", key.replace(/^edit\/thumbnails\//, "").replace(/[^\w.-]+/g, "_"));
+
+/** Keeps `bytes` on this Mac as `key`'s copy (a picture just made, before it goes up). */
+export function keep(cacheDir: string, key: string, bytes: Uint8Array): void {
+  const path = cachePath(cacheDir, key);
   fs.mkdirSync(join(cacheDir, "thumbnails"), { recursive: true });
   fs.writeFileSync(`${path}.part`, bytes);
   fs.renameSync(`${path}.part`, path);
+}
+
+/** A picture's bytes from R2, kept on this Mac (`<cache>/thumbnails/`) after the first time. */
+export async function cached(cacheDir: string, key: string): Promise<Uint8Array> {
+  const path = cachePath(cacheDir, key);
+  if (fs.existsSync(path)) return new Uint8Array(fs.readFileSync(path));
+  const bytes = await cloud.bytesOf(key);
+  keep(cacheDir, key, bytes);
   return bytes;
 }
 

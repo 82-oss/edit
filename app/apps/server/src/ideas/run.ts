@@ -797,7 +797,8 @@ async function work(context: Context, id: string, what: IdeaRun["what"], options
       folder = prepared.folder;
       // The pictures attached to this message, beside the run's own (Read them).
       const attached = what === "chat" ? await attachedPictures(idea, prepared.folder) : [];
-      await step(what === "chat" ? "Claude is working" : "Writing titles");
+      const working = what === "chat" ? "Claude is working" : "Writing titles";
+      await step(working);
       const youtube = idea.sources.find((one) => one.kind === "youtube");
       const session: Session = {
         id,
@@ -838,7 +839,7 @@ async function work(context: Context, id: string, what: IdeaRun["what"], options
         .join("\n\n");
       try {
         const answer = await live.within(running.turn, () =>
-          asking.ask({ model: modelFor(ideaBuilt(idea), modelChoice.current()).id, system: system(idea.workspace, session.place), prompt: ask, tools: `http://127.0.0.1:${context.port}/mcp/ideas/${token}`, read: prepared.folder, maxTurns: 40, effort: modelChoice.current().effort, timeoutMs: 20 * 60_000, label: `Ideas ${id}`, signal }),
+          asking.ask({ model: modelFor(ideaBuilt(idea), modelChoice.current()).id, system: system(idea.workspace, session.place), prompt: ask, tools: `http://127.0.0.1:${context.port}/mcp/ideas/${token}`, read: prepared.folder, maxTurns: 40, effort: modelChoice.current().effort, timeoutMs: 20 * 60_000, label: `Ideas ${id}`, signal, waiting: (line) => step(line ?? working) }),
         );
         const said = await inlinePictures((answer.text ?? running.turn.text).trim(), (source) => placePicture(id, source, [prepared.folder]));
         if (session.skipped !== null) return { state: "done" as const, text: session.skipped };

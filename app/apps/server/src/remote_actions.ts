@@ -150,6 +150,10 @@ export function waitingByItself(home: string | null): string[] {
     const next = Math.min(...credit.map((job) => job.retry_at ?? Number.POSITIVE_INFINITY));
     out.push(`The transcription plan is out of credit: ${credit.length} import${credit.length === 1 ? "" : "s"} waiting (top it up for the team; Edit tries again by itself${Number.isFinite(next) ? `, next at ${new Date(next).toISOString().slice(11, 16)} UTC` : ""}).`);
   }
+  const voice = on("voice");
+  if (voice.length > 0) out.push(`ElevenLabs is out of voice credit: ${voice.length} voice-over${voice.length === 1 ? "" : "s"} waiting (top it up for the team; Edit tries again by itself).`);
+  const drive = on("drive");
+  if (drive.length > 0) out.push(`Google Drive's download limit: ${drive.length} import${drive.length === 1 ? "" : "s"} waiting (Edit tries again by itself, or replace the file with a copy's link).`);
   const encoder = on("encoder");
   if (encoder.length > 0) out.push(`${encoder.length} import${encoder.length === 1 ? "" : "s"} waiting for the hardware encoder (an export holds it): they carry on when it's free.`);
   return out;

@@ -34,6 +34,7 @@ let chosen: Account = ACCOUNTS[0]!;
 /** Where this Mac keeps which account is in use (`<home>/openart-account.json`). */
 export function useHome(dir: string): void {
   home = dir;
+  pending = null;
   try {
     const saved = (JSON.parse(fs.readFileSync(join(dir, CHOICE), "utf8")) as { account?: unknown }).account;
     chosen = ACCOUNTS.find((one) => one.id === saved) ?? ACCOUNTS[0]!;
@@ -321,37 +322,114 @@ export function stateOf(data: Json): { state: "done"; url: string } | { state: "
   return { state: "failed", error: "OpenArt answered without a picture or a job." };
 }
 
-export type Made = { bytes: Uint8Array; type: string; model: string; credits: number | null; account: string };
+/** `request`: the paid request it came from (`delivered` lets it go once the picture is kept). */
+export type Made = { bytes: Uint8Array; type: string; model: string; credits: number | null; account: string; request: string };
+
+/** How long a picture may take before the wait stops (its job is kept, picked up when it's asked for again). */
+export const timing = { wait: 5 * 60_000, poll: 3000 };
+
+/**
+ * Paid requests not yet delivered, by what was asked (`requestKey`): OpenArt's
+ * job (`historyId`) once it started, and its picture's address once it was
+ * made. Asked again (a wait past five minutes, a download or upload that
+ * failed), the same picture is picked up where it is, never paid for twice
+ * (Nov 16 audit: the job's id was dropped at the five minutes). Kept in
+ * `<home>/openart-pending.json` across restarts, a day at most.
+ */
+type Pending = { account: string; historyId: string | null; url: string | null; at: number };
+const PENDING = "openart-pending.json";
+const KEEP_PENDING_MS = 24 * 60 * 60_000;
+let pending: Record<string, Pending> | null = null;
+
+function pendingList(): Record<string, Pending> {
+  if (pending !== null) return pending;
+  pending = {};
+  if (home !== null) {
+    try {
+      const kept = JSON.parse(fs.readFileSync(join(home, PENDING), "utf8")) as Record<string, Pending>;
+      for (const [key, one] of Object.entries(kept)) if (typeof one?.at === "number" && Date.now() - one.at < KEEP_PENDING_MS) pending[key] = one;
+    } catch {
+      // None kept.
+    }
+  }
+  return pending;
+}
+
+function keepPending(key: string, one: Pending | null): void {
+  const list = pendingList();
+  if (one === null) delete list[key];
+  else list[key] = one;
+  if (home === null) return;
+  try {
+    writeAtomic(join(home, PENDING), JSON.stringify(list));
+  } catch (error) {
+    diag.warn("thumbnails", `keeping OpenArt's job: ${diag.messageOf(error)}`);
+  }
+}
+
+/** What a request asks for, as a key: the same prompt, model, aspect, options and pictures on the same account. */
+export function requestKey(request: { prompt: string; model: string; aspect: string; references: Reference[]; options?: Json }, account: string): string {
+  const hash = new Bun.CryptoHasher("sha256");
+  hash.update(JSON.stringify([account, request.model, request.prompt, request.aspect, request.options ?? {}]));
+  for (const one of request.references) hash.update(new Bun.CryptoHasher("sha256").update(one.bytes).digest("hex"));
+  return hash.digest("hex").slice(0, 32);
+}
+
+/** The picture of `request` is kept (on R2): its job is let go, and the same ask again makes a new one. */
+export function delivered(request: string): void {
+  if (pendingList()[request] !== undefined) keepPending(request, null);
+}
+
+/** Test hook: forget what's pending (and read it from `home` again). */
+export function forgetPending(): void {
+  pending = null;
+}
 
 /**
  * A picture made on OpenArt: from the prompt alone, or from the pictures given
  * (an edit: "remove every overlay and caption", "the same man, at night").
- * Waits until it's done (up to five minutes) and fetches it.
+ * Waits until it's done (up to five minutes) and fetches it. A request asked
+ * before and not delivered carries on from its job instead of paying again.
  */
 export async function make(request: { prompt: string; model: string; aspect: string; references: Reference[]; options?: Json }, signal?: AbortSignal): Promise<Made> {
-  // The whole picture on one account, whichever is picked while it's made.
-  const account = chosen;
+  const key = requestKey(request, chosen.id);
+  const before = pendingList()[key];
+  // The whole picture on one account, whichever is picked while it's made (a pending one on its own).
+  const account = ACCOUNTS.find((one) => one.id === before?.account) ?? chosen;
   const edits = request.references.length > 0;
   const mode = edits ? "image2image" : "text2image";
-  const references: Json[] = [];
-  for (const one of request.references) references.push(await upload(one, signal, account));
-  const form = await tool("openart_model_form_get", { model: request.model, mode }, signal, account);
-  const params = paramsOf(form, request.prompt, request.aspect, references, request.options ?? {});
   const started = Date.now();
-  let state = stateOf(await tool("openart_generate_image", { model: request.model, mode, params }, signal, account));
-  while (state.state === "running") {
-    if (state.id === null) throw new Error("OpenArt started the picture without saying where to find it.");
-    if (Date.now() - started > 5 * 60_000) throw new Error("OpenArt took over five minutes on the picture: ask again.");
-    await Bun.sleep(3000);
-    if (signal?.aborted) throw new Error("Stopped.");
-    state = stateOf(await tool("openart_creation_get", { historyId: state.id }, signal, account));
+  let state: ReturnType<typeof stateOf>;
+  if (before?.url != null) state = { state: "done", url: before.url };
+  else if (before?.historyId != null) {
+    diag.info("thumbnails", `OpenArt: picking up the picture already asked for on ${request.model} (job ${before.historyId}), not paying again`);
+    state = stateOf(await tool("openart_creation_get", { historyId: before.historyId }, signal, account));
+  } else {
+    const references: Json[] = [];
+    for (const one of request.references) references.push(await upload(one, signal, account));
+    const form = await tool("openart_model_form_get", { model: request.model, mode }, signal, account);
+    const params = paramsOf(form, request.prompt, request.aspect, references, request.options ?? {});
+    state = stateOf(await tool("openart_generate_image", { model: request.model, mode, params }, signal, account));
   }
-  if (state.state === "failed") throw new Error(state.error);
+  const job = before?.historyId ?? (state.state === "running" ? state.id : null);
+  if (state.state !== "failed") keepPending(key, { account: account.id, historyId: job, url: state.state === "done" ? state.url : null, at: before?.at ?? Date.now() });
+  while (state.state === "running") {
+    if (state.id === null && job === null) throw new Error("OpenArt started the picture without saying where to find it.");
+    if (Date.now() - started > timing.wait) throw new Error("OpenArt is still making the picture after five minutes. Ask for it again: Edit picks up the same one, it isn't paid for twice.");
+    await Bun.sleep(timing.poll);
+    if (signal?.aborted) throw new Error("Stopped.");
+    state = stateOf(await tool("openart_creation_get", { historyId: state.id ?? job }, signal, account));
+  }
+  if (state.state === "failed") {
+    keepPending(key, null);
+    throw new Error(state.error);
+  }
+  keepPending(key, { account: account.id, historyId: job, url: state.url, at: before?.at ?? Date.now() });
   const answer = await fetch(state.url, { signal: signal ?? AbortSignal.timeout(120_000) });
-  if (!answer.ok) throw new Error(`OpenArt's picture didn't download (${answer.status}).`);
+  if (!answer.ok) throw new Error(`OpenArt's picture didn't download (${answer.status}). Ask for it again: it isn't paid for twice.`);
   const bytes = new Uint8Array(await answer.arrayBuffer());
   const type = answer.headers.get("content-type")?.split(";")[0]?.trim() || "image/png";
   diag.info("thumbnails", `OpenArt made a picture on ${request.model} (${mode}) in ${((Date.now() - started) / 1000).toFixed(0)} s`);
   const listed = models.get(account.id)?.list.find((one) => one.id === request.model);
-  return { bytes, type, model: request.model, credits: listed?.credits ?? null, account: account.id };
+  return { bytes, type, model: request.model, credits: listed?.credits ?? null, account: account.id, request: key };
 }

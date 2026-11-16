@@ -79,14 +79,43 @@ export async function change(id: string, by: string, change: (thumb: Thumbnail) 
   }
 }
 
-/** Bytes put on R2 under `folder` (named by their hash): the key. */
-export async function put(folder: string, bytes: Uint8Array, type: string, extension: string): Promise<string> {
+/** Where bytes go on R2 under `folder`: named by their hash. */
+export function keyOf(folder: string, bytes: Uint8Array, extension: string): string {
   const hash = new Bun.CryptoHasher("sha256").update(bytes).digest("hex").slice(0, 24);
-  const key = `edit/thumbnails/${folder}/${hash}.${extension}`;
-  const url = await cloudStorage.presign(key, "PUT");
-  const answer = await fetch(url, { method: "PUT", body: bytes, headers: { "content-type": type } });
-  if (!answer.ok) throw new Error(`the cloud refused the picture (${answer.status})`);
-  return key;
+  return `edit/thumbnails/${folder}/${hash}.${extension}`;
+}
+
+/** How a picture goes up: each try bounded, and the pauses between tries (tests make them short). */
+export const putting = { timeoutMs: 120_000, waits: [2_000, 8_000, 30_000] };
+
+/**
+ * Bytes put on R2 under `folder` (named by their hash): the key. Each try is
+ * bounded and a failed one (a dropped connection, R2 busy) is tried again a
+ * few times, a fresh address each time: a picture OpenArt was paid for went up
+ * in one PUT, with no time limit, and was lost when it failed (Nov 16 audit).
+ */
+export async function put(folder: string, bytes: Uint8Array, type: string, extension: string): Promise<string> {
+  const key = keyOf(folder, bytes, extension);
+  for (let attempt = 0; ; attempt++) {
+    let failure = "";
+    let answer: Response | null = null;
+    try {
+      const url = await cloudStorage.presign(key, "PUT");
+      answer = await fetch(url, { method: "PUT", body: bytes, headers: { "content-type": type }, signal: AbortSignal.timeout(putting.timeoutMs) });
+    } catch (error) {
+      failure = diag.messageOf(error);
+    }
+    if (answer !== null) {
+      if (answer.ok) return key;
+      failure = `the cloud refused the picture (${answer.status})`;
+      // A refusal that isn't passing (a bad address, no access) won't change on asking again.
+      if (answer.status < 500 && answer.status !== 408 && answer.status !== 429) throw new Error(failure);
+    }
+    const wait = putting.waits[attempt];
+    if (wait === undefined) throw new Error(`${failure}; tried ${attempt + 1} times`);
+    diag.warn("thumbnails", `putting ${key} up: ${failure}; trying again in ${Math.round(wait / 1000)} s`);
+    await Bun.sleep(wait);
+  }
 }
 
 /** A picture's bytes from R2. */

@@ -88,8 +88,13 @@ export async function transcriptOf(app: App, media: Media, project?: Project, re
         }
         return transcript;
       }
-      case "failed":
-        throw new Error(`${media.name} couldn't be transcribed`);
+      // Waiting on the plan's credit or the day's allowance (media.ts tries it again by itself): said plainly, when it's back.
+      case "waiting":
+        throw new Error(`${media.name} has no words yet: ${app.media.status(path).transcript_error ?? "its transcription waits and Edit tries it again by itself."}`);
+      case "failed": {
+        const why = app.media.status(path).transcript_error;
+        throw new Error(`${media.name} couldn't be transcribed${why === undefined ? "" : `: ${why}`}`);
+      }
       default:
         if (timing.now() - started > TRANSCRIBE_LIMIT_MS) throw new Error("transcription took too long");
         await timing.sleep(2000);

@@ -116,6 +116,15 @@ test.skipIf(ffmpeg === null)("transcribes through the relay, asking again while 
     mock.on("POST", "/v1/transcribe", () => Response.json({ error: "Today's transcription allowance for this connection is used up" }, { status: 429 }), 1);
     await expect(run(source, `${dir}/cache/allowance.json`)).rejects.toThrow("allowance");
     expect(mock.calls("/v1/transcribe", "POST").length).toBe(asked + 1);
+    // The relay's other daily refusals (its shared budget, the share for hearing again) are told at once too,
+    // as the day's allowance (they wait for the reset), never asked again ~7 times over 5 minutes as "busy".
+    for (const refusal of ["Edit's shared transcription budget for today is used up; it resets at midnight UTC.", "Today's share for hearing footage again with the case's names is used up; new footage is still heard. It resets at midnight UTC."]) {
+      const before = mock.calls("/v1/transcribe", "POST").length;
+      mock.on("POST", "/v1/transcribe", () => Response.json({ error: refusal }, { status: 429 }), 1);
+      const failed = await run(source, `${dir}/cache/budget-${before}.json`).catch((error: unknown) => error);
+      expect((failed as { _tag?: string })._tag ?? (failed as Error).message).toMatch(/AllowanceUsedUp|used up/);
+      expect(mock.calls("/v1/transcribe", "POST").length).toBe(before + 1);
+    }
     await expect(run(`${dir}/missing.wav`, `${dir}/cache/none.json`)).rejects.toThrow(/^could not extract audio: /);
   } finally {
     cleanup();

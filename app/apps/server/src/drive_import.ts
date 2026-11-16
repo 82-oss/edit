@@ -14,6 +14,7 @@ import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
 import * as jobs from "./jobs.ts";
 import { importPaths, placeAtEnd, type Imported } from "./import.ts";
+import * as steps from "./import_steps.ts";
 import { startsWith } from "./paths.ts";
 import * as seams from "./seams.ts";
 import { curl, driveError, encode, quote } from "./library.ts";
@@ -111,8 +112,14 @@ export function resumeImport(app: App, job: jobs.Job): void {
 
 function run(app: App, key: string, id: string, url: string, place: boolean, origin: string, resumed: boolean): Promise<Imported> {
   // Failed, it ends (the person is told); cut by Edit restarting itself, the table is frozen and it stays for the next run.
+  // At Google Drive's download limit for the day, it waits in the table instead and the table wakes it once Google
+  // allows it (import_steps.ts `retryAt`): "try later" was said, and Edit never did (Nov 16 audit).
   const work = importDriveNow(app, key, id, url, place, origin, resumed).catch((error: unknown) => {
-    jobs.end(app.store.home, key);
+    if (steps.whyOf(error) === "limit") {
+      const at = steps.retryAt("limit", Date.now(), error)!;
+      diag.warn("drive", `${id}: Google Drive's download limit is used up for ${url}; tried again by itself at ${new Date(at).toLocaleString()}`);
+      jobs.settle(app.store.home, key, "waiting", { step: "waiting for Google Drive", retry_at: at });
+    } else jobs.end(app.store.home, key);
     throw error;
   });
   going.set(key, work);

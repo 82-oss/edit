@@ -530,6 +530,7 @@ async function transcribed(app: App, media: Media, again: boolean): Promise<Word
       return parseTranscript(text).words;
     }
     if (status.transcript === "failed") throw new Error(`couldn't transcribe ${media.name}: ${status.transcript_error ?? ""}`);
+    if (status.transcript === "waiting") throw new Error(`${media.name} has no words yet: ${status.transcript_error ?? "its transcription waits and Edit tries it again by itself."}`);
     if (timing.now() - started > TRANSCRIBE_LIMIT_MS) throw new Error(`transcribing ${media.name} is taking too long`);
     await timing.sleep(2000);
   }

@@ -329,11 +329,13 @@ test.skipIf(ffmpeg === null || ffprobe === null)("an import stopped at its voice
     const http = serve(app);
     const id = app.store.create("Kent crash", { width: 1920, height: 1080, fps: 30 }).project.id;
     expect((await http("POST", `/api/projects/${id}/script`, { url: "https://docs.google.com/document/d/DOCvoiceResume1/edit" }))[0]).toBe(200);
-    while (!["done", "failed"].includes(app.scripts.get(id)?.state ?? "")) await Bun.sleep(20);
-    // Laid out, so the import is done; its voice-over's own line says it failed (main's follow-on lines).
-    expect(app.scripts.get(id)!.state).toBe("done");
-    expect(app.scripts.get(id)!.after?.find((line) => line.step === "voiceover")).toMatchObject({ state: "failed" });
-    expect(app.scripts.get(id)!.after?.find((line) => line.step === "voiceover")?.note).toContain("quota");
+    while (!["done", "failed", "waiting"].includes(app.scripts.get(id)?.state ?? "")) await Bun.sleep(20);
+    // Laid out, and the voice-over waits for ElevenLabs' credit by itself (Nov 16 audit: it was marked failed and never
+    // tried again): said plainly, in the job table with a time to wake it.
+    expect(app.scripts.get(id)!.state).toBe("waiting");
+    expect(app.scripts.get(id)!.error).toStartWith("ElevenLabs is out of credit: an admin adds credit");
+    expect(app.scripts.get(id)!.after?.find((line) => line.step === "voiceover")).toMatchObject({ state: "waiting" });
+    expect(app.scripts.get(id)!.retry_at).toBeGreaterThan(Date.now() + 20 * 60_000);
     expect(mock.calls("/v1/speech").length - asked).toBe(1);
     const laid = app.store.get(id)!.project;
     expect(laid.script!.blocks.some((block) => block.kind === "narration" && block.voiceover)).toBe(false);

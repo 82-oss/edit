@@ -24,6 +24,7 @@ import { writeAtomic } from "../files.ts";
 import * as durable from "../jobs.ts";
 import * as notices from "../notices.ts";
 import { join } from "../paths.ts";
+import * as claude from "./claude.ts";
 import * as live from "./live.ts";
 import { scriptDir } from "./store.ts";
 
@@ -354,7 +355,20 @@ export function start(data: string, id: string, title: string, work: Work, run: 
   let ran = false;
   void live.within(turn, async () => {
     try {
-      const [report, cost] = await run(context);
+      // A wait for the Claude plan's reset, said as the stage while it lasts (a Script build's questions are deep in build.ts).
+      let before: string | null = null;
+      const [report, cost] = await claude.sayingWaits(
+        (line) => {
+          if (line !== null) {
+            before ??= job.stage;
+            job.stage = line;
+          } else if (before !== null) {
+            job.stage = before;
+            before = null;
+          }
+        },
+        () => run(context),
+      );
       ran = true;
       if (!restarting) checkStopped(context);
       const first = [...(report.split("\n")[0] ?? "")].slice(0, 200).join("");

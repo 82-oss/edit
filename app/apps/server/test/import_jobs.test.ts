@@ -297,5 +297,90 @@ test("failures read as one vocabulary: the person's, passing, the plan's credit,
   expect(steps.whyOf(new steps.StepTimedOut("a proxy", 1000, true))).toBe("encoder");
   // Words kept from an older build still read the same way.
   expect(steps.whyOf("YouTube video abcdefghijk couldn't be downloaded: Private video")).toBe("person");
-  expect(steps.whyOf("Google Drive's download limit for this file is used up for today. Try later, or upload a copy.")).toBe("person");
+  // Drive's download limit waits by itself (it said "try later" and Edit never did).
+  expect(steps.whyOf("Google Drive's download limit for this file is used up for today. Try later, or upload a copy.")).toBe("limit");
+  expect(steps.whyOf(new steps.DriveLimit("Google Drive's download limit for this file is used up for today."))).toBe("limit");
+  // The relay's daily refusals are the plan's kind, never the person's.
+  expect(steps.whyOf("transcription failed (429): Edit's shared transcription budget for today is used up; it resets at midnight UTC.")).toBe("quota");
+  // A used-up Claude plan isn't the transcription plan.
+  expect(steps.whyOf("Your Claude plan is used up until 11:51 PM.")).toBe("passing");
+});
+
+test("each wait has its own time: credit every half hour, a daily allowance at its reset, Drive's limit a day on or at Google's word", () => {
+  const now = Date.UTC(2026, 10, 16, 21, 30);
+  expect(steps.retryAt("quota", now, "This request exceeds your quota of 0. You have 0 credits remaining.")).toBe(now + steps.QUOTA_RETRY_MS.value);
+  expect(steps.retryAt("quota", now, "transcription failed (429): Edit's shared transcription budget for today is used up; it resets at midnight UTC.")).toBe(Date.UTC(2026, 10, 17) + 60_000);
+  expect(steps.retryAt("limit", now, new steps.DriveLimit("limit"))).toBe(now + steps.LIMIT_RETRY_MS.value);
+  expect(steps.retryAt("limit", now, new Error("wrapped", { cause: new steps.DriveLimit("limit", 3_600_000) }))).toBe(now + 3_600_000);
+  expect(steps.retryAt("person", now)).toBeNull();
+  expect(steps.hearingWaits("transcription failed (429): Edit's shared transcription budget for today is used up", now)).toStartWith("Today's transcription allowance is used up; Edit tries again by itself at");
+});
+
+test("Google Drive's download limit: the import waits by itself for a day, says a copy's link goes sooner, and carries on when woken", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-drive-limit", { services: { scripts } });
+  try {
+    const id = await twoFiles(fixture);
+    let limited = true;
+    cloudFootage(SOUNDLESS, (file) => (limited && file === "FILEcase0002" ? new steps.DriveLimit("Google Drive's download limit for this file is used up for today.") : null));
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    await start(fixture.app, id, false);
+    const job = await settled(scripts, id);
+    expect(job.state).toBe("waiting");
+    expect(job.files.map((file) => [file.state, file.why ?? null])).toEqual([["done", null], ["waiting", "limit"]]);
+    expect(job.error).toContain("Google Drive's download limit is used up for today");
+    expect(job.error).toContain("copy's link");
+    expect(job.retry_at).toBeGreaterThan(Date.now() + 23 * 3_600_000);
+    // Waiting on a time, not on the person: the job table wakes it.
+    expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", step: "waiting for Google Drive", args: { waiting_on: "drive" } });
+    expect(caseJob(fixture.home, id)?.until).toBeUndefined();
+    // Due, and Google shares it again: woken, it carries on to the layout.
+    jobs.useResumers(fixture.home, { case: (one) => void carryOn(fixture.app, one.project) });
+    const listed = JSON.parse(fs.readFileSync(`${fixture.home}/jobs.json`, "utf8")) as jobs.Job[];
+    for (const one of listed) if (one.key === jobs.keyOf("case", id)) one.retry_at = Date.now() - 1;
+    fs.writeFileSync(`${fixture.home}/jobs.json`, JSON.stringify(listed));
+    limited = false;
+    await jobs.wake(fixture.home, ["case"]);
+    const done = await settled(scripts, id);
+    expect(done.state).toBe("done");
+    expect(fixture.store.get(id)!.project.clips.length).toBeGreaterThan(0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("ElevenLabs out of credit: the voice-over waits for it, the import kept waiting in the table, and it's voiced when woken", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-voice-credit", { services: { scripts } });
+  try {
+    const id = await twoFiles(fixture);
+    cloudFootage(SOUNDLESS);
+    const voice = mocked(
+      spyOn(seams.voiceover, "generate")
+        .mockRejectedValueOnce(new Error("ElevenLabs: This request exceeds your quota of 1334160. You have 15 credits remaining, while 1048 credits are required for this request. (quota_exceeded) (401)"))
+        .mockResolvedValue({}),
+    );
+    await start(fixture.app, id, false);
+    const job = await settled(scripts, id);
+    expect(job.state).toBe("waiting");
+    expect(job.error).toStartWith("ElevenLabs is out of credit: an admin adds credit");
+    expect(job.retry_at).toBeGreaterThan(Date.now() + 20 * 60_000);
+    expect(job.after?.find((line) => line.step === "voiceover")?.state).toBe("waiting");
+    // Asked once, not again minutes later; the layout stands.
+    expect(voice).toHaveBeenCalledTimes(1);
+    expect(fixture.store.get(id)!.project.clips.length).toBeGreaterThan(0);
+    expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", step: "waiting for voice credit", args: { waiting_on: "voice" } });
+    // The cut-in still unvoiced, the wait due: woken, only the voice-over is made (missing lines only), and the import ends done.
+    jobs.useResumers(fixture.home, { case: (one) => void carryOn(fixture.app, one.project) });
+    const listed = JSON.parse(fs.readFileSync(`${fixture.home}/jobs.json`, "utf8")) as jobs.Job[];
+    for (const one of listed) if (one.key === jobs.keyOf("case", id)) one.retry_at = Date.now() - 1;
+    fs.writeFileSync(`${fixture.home}/jobs.json`, JSON.stringify(listed));
+    await jobs.wake(fixture.home, ["case"]);
+    const done = await settled(scripts, id);
+    expect(done.state).toBe("done");
+    expect(voice).toHaveBeenCalledTimes(2);
+    expect(voice.mock.calls[1]).toEqual([fixture.app, id, true]);
+  } finally {
+    fixture.cleanup();
+  }
 });

@@ -139,7 +139,7 @@ export interface ScriptJob {
   back?: boolean;
 }
 
-export type ImportWhy = "passing" | "person" | "quota" | "encoder";
+export type ImportWhy = "passing" | "person" | "quota" | "encoder" | "limit";
 
 export interface ImportAfter {
   step: "voiceover" | "recording" | "research" | "words";

@@ -6,6 +6,8 @@
 // them over MCP). Writer ran a sidecar process for this; Edit's server holds
 // the SDK itself.
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 import type * as Sdk from "@anthropic-ai/claude-agent-sdk";
 
 import { nameOf } from "@edit/types/models";
@@ -69,6 +71,30 @@ export interface Question {
   /** For the log: "Claude opus", "Claude opus (repair turn)". */
   label: string;
   signal?: AbortSignal;
+  /**
+   * Told while the question waits for the plan's reset (`waitingLine`), then
+   * `null` once it's asked: the run shows it as its stage. Unset, the one
+   * `sayingWaits` set around the run is told.
+   */
+  waiting?: Waiting;
+}
+
+/** Hears a question's wait for the Claude plan: the line to show, then null when it's over. */
+export type Waiting = (line: string | null) => void | Promise<void>;
+
+const waitsTold = new AsyncLocalStorage<Waiting>();
+
+/**
+ * Runs `work` with `say` told of every wait for the Claude plan's reset in it
+ * (a Script build's stage: its questions are made deep inside build.ts).
+ */
+export const sayingWaits = <T>(say: Waiting, work: () => Promise<T>): Promise<T> => waitsTold.run(say, work);
+
+/** "Waiting for your Claude plan (back at 11:51 PM)": the stage while the plan's limit is waited out. */
+export function waitingLine(until: number, now: number = Date.now()): string {
+  const time = new Date(until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const day = new Date(until).toDateString() === new Date(now).toDateString() ? "" : `${new Date(until).toLocaleDateString([], { weekday: "short" })} `;
+  return `Waiting for your Claude plan (back at ${day}${time})`;
 }
 
 /** What a question came back with. */
@@ -130,10 +156,26 @@ const workspace = (): string => join(process.env.HOME ?? "/tmp", ".edit", "write
 
 /** One question through the Agent SDK, once there's room for another Claude Code (memory.ts `claudeTurn`: three at once while the Mac is short of memory). */
 export async function ask(question: Question): Promise<Answer> {
-  // The plan used up: wait for its reset rather than asking into it.
-  await planLimit.room(question.signal).catch((error: unknown) => {
-    throw new Trouble(question.signal?.aborted ? "Stopped by you. Completed work is saved." : diag.messageOf(error));
-  });
+  // The plan used up: wait for its reset rather than asking into it, saying so where the run shows its stage
+  // (Ideas, Thumbnails and Script builds waited silently, up to two resets, Nov 16 audit).
+  const until = planLimit.until();
+  const say = question.waiting ?? waitsTold.getStore();
+  const tell = async (line: string | null) => {
+    try {
+      await say?.(line);
+    } catch (error) {
+      diag.warn("writer", `${question.label}: saying it waits for the Claude plan: ${diag.messageOf(error)}`);
+    }
+  };
+  const waits = until !== null && until - Date.now() <= planLimit.MAX_WAIT_MS;
+  if (waits) await tell(waitingLine(until));
+  try {
+    await planLimit.room(question.signal).catch((error: unknown) => {
+      throw new Trouble(question.signal?.aborted ? "Stopped by you. Completed work is saved." : diag.messageOf(error));
+    });
+  } finally {
+    if (waits) await tell(null);
+  }
   const release = await claudeTurn(question.label, question.signal).catch(() => {
     throw new Trouble("Stopped by you. Completed work is saved.");
   });
