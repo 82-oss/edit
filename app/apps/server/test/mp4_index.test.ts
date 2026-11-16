@@ -111,9 +111,11 @@ test.skipIf(!have)("the seconds here are those whose every picture (with its key
   const hole = Math.floor(last * 0.75);
   const holed = secondsHere(index, (n) => n !== hole, block);
   const touching = (track: Packet[]) => track.filter((one) => blocksOf(one)[0] <= hole && hole <= blocksOf(one)[1]);
-  const stop = Math.min(touching(video)[0]!.pts, touching(audio)[0]!.pts);
+  // The block may hold sound too or not, as the muxer interleaved them (CI's Mac's FFmpeg put none of it there).
+  const sound = touching(audio);
+  const stop = Math.min(touching(video)[0]!.pts, ...sound.map((one) => one.pts));
   const lastVideo = video.indexOf(touching(video).at(-1)!);
-  const resume = Math.max(video.slice(lastVideo + 1).find((one) => one.key)!.pts, audio[audio.indexOf(touching(audio).at(-1)!) + 1]!.pts);
+  const resume = Math.max(video.slice(lastVideo + 1).find((one) => one.key)!.pts, ...(sound.length === 0 ? [] : [audio[audio.indexOf(sound.at(-1)!) + 1]!.pts]));
   expect(holed.length).toBe(2);
   expect(Math.abs(holed[0]![1] - stop)).toBeLessThan(1e-4);
   expect(Math.abs(holed[1]![0] - resume)).toBeLessThan(1e-4);

@@ -554,9 +554,15 @@ mod tests {
         assert!(error.contains("owned"), "{error}");
     }
 
-    /// `nice` with no arguments says its own niceness: what a tool started this way runs at.
+    /// A shell saying its own niceness (`ps`): what a tool started this way runs at. A Mac's `nice`
+    /// won't run without a tool to start, so it can't be asked alone.
     #[test]
     fn background_tools_and_threads_run_below_the_rest() {
+        let shell = || {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "ps -o nice= -p $$"]);
+            command
+        };
         let niceness = |command: &mut std::process::Command| -> i32 {
             let out = command.output().expect("nice runs");
             String::from_utf8_lossy(&out.stdout)
@@ -564,21 +570,21 @@ mod tests {
                 .parse()
                 .expect("a niceness")
         };
-        let ours = niceness(&mut std::process::Command::new("nice"));
-        let lowered = niceness(background_command(&mut std::process::Command::new("nice")));
+        let ours = niceness(&mut shell());
+        let lowered = niceness(background_command(&mut shell()));
         assert_eq!(lowered, BACKGROUND_NICE.max(ours));
         // A background thread's own work, and what it starts, on Linux (a Mac's QoS isn't a niceness).
         #[cfg(target_os = "linux")]
         {
             let from_thread = std::thread::spawn(move || {
                 background_thread();
-                niceness(&mut std::process::Command::new("nice"))
+                niceness(&mut shell())
             })
             .join()
             .unwrap();
             assert_eq!(from_thread, BACKGROUND_NICE.max(ours));
             // The thread that asked is left as it was.
-            assert_eq!(niceness(&mut std::process::Command::new("nice")), ours);
+            assert_eq!(niceness(&mut shell()), ours);
         }
     }
 

@@ -27,8 +27,8 @@ test("a tool's output comes back as bytes; a failure says its last line, and a m
 });
 
 test("background work's tools run below the rest (nice), anything else as it is; a missing tool still says so", async () => {
-  // `nice` alone says the niceness it runs at.
-  const niceness = async (background: boolean) => Number(new TextDecoder().decode(await run(["nice"], { background })).trim());
+  // A shell saying its own niceness (a Mac's `nice` won't run without a tool to start).
+  const niceness = async (background: boolean) => Number(new TextDecoder().decode(await run(["sh", "-c", "ps -o nice= -p $$"], { background })).trim());
   const ours = await niceness(false);
   // `nice -n` is relative: a runner already lowered (a parallel test worker at 5) runs it lower still, at most 19.
   expect(await niceness(true)).toBe(Math.min(19, ours + BACKGROUND_NICE));
