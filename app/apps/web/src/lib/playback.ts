@@ -130,6 +130,28 @@ const NATIVE_BACK_MS = 2000;
 const NATIVE_COMEBACKS = 5;
 const NATIVE_STEADY_MS = 60_000;
 
+/**
+ * Holding a play for footage that isn't here yet (a cloud project opened for the first time on this Mac): a play
+ * starts once the next `HOLD_AHEAD` seconds have every picture and sound here (the server's
+ * playback_ready.ts), a spinner over the picture meanwhile; one under way holds again where less than
+ * `HOLD_SHORT` seconds ahead are and the picture stalls or skips. Past `HOLD_MOST_MS` it plays what there is. The
+ * M4, Nov 16: a jump to the B-roll froze, then played with 199 frames passed over and the sound short 735 times,
+ * nothing on screen saying it was loading.
+ */
+const HOLD_AHEAD = 3;
+const HOLD_SHORT = 0.75;
+const HOLD_MOST_MS = 30_000;
+/** The window's clock not moving this long while it plays (its sound ran short): the spinner shows. */
+const STALL_MS = 400;
+/** The page's own play, its picture or sound missing this long: the clock holds until they're in. */
+const LIVE_HOLD_MS = 300;
+/** What's here is asked this often while playing or holding, and at rest; a play asks for what's ahead this often. */
+const READY_PLAYING_MS = 700;
+const READY_REST_MS = 3000;
+const WARM_PLAYING_MS = 5000;
+/** A jump farther than this (seconds) from where the footage was last asked for asks again. */
+const WARM_JUMP = 5;
+
 /** Whether `change` touches the edit's media: what each one is, or where it's read from. */
 function touchesMedia(change: patches.Patch): boolean {
   return "media" in change.set || "media" in change.lists || change.unset.includes("media");
@@ -289,6 +311,25 @@ class Preview {
   /** When a streamed render was last asked for what's near the playhead while it played. */
   private poked = 0;
   /**
+   * The stretches of the timeline (frames) whose footage is all here, as the server last said
+   * (`/playback/ready`): what a play waits for, and the progress bar's grey. Null: not said yet.
+   */
+  private ready: { project: string; stretches: [number, number][] } | null = null;
+  private readyTimer: ReturnType<typeof setTimeout> | undefined;
+  private readyAsking = false;
+  /** Where the footage was last asked to come from (`/playback/warm`), and when. */
+  private warmedFrame = -Infinity;
+  private warmedAt = -Infinity;
+  /** A play waiting for its footage (`holdFor`): its generation, since when, and the timer looking again. */
+  private holding: { generation: number; since: number; timer: ReturnType<typeof setTimeout> | undefined } | null = null;
+  /** The window's playhead last moved (frame, when), and since when the page's own play has missed a picture or its sound. */
+  private windowMoved = { frame: -1, at: 0 };
+  private shortSince: number | undefined;
+  /** A decoding failure paused a play: it plays on once the footage is tried again. */
+  private resumeAfterRetry = false;
+  /** A play that stopped by itself, said in one plain line over the picture until the next play or jump. */
+  stopped: string | null = null;
+  /**
    * Smooth playback: the edit rendered small (apps/server/src/playback_render.ts),
    * played and scrubbed as a video instead of drawing it live, when it shows
    * what's on screen (the team, Oct 31: "currently super laggy! we have too
@@ -340,7 +381,10 @@ class Preview {
       return;
     }
     this.error = message; note("error", "preview", this.error);
+    // Playing, it plays on once the footage is tried again (a spinner meanwhile), rather than stopping.
+    const playing = playhead.playing;
     this.pause();
+    this.resumeAfterRetry = playing;
     this.setBuffering(false);
     this.notify();
     // Most failures are the network's (a dropped or slow connection): try again
@@ -351,6 +395,7 @@ class Preview {
       this.error = null;
       this.notify();
       this.invalidate();
+      if (this.resumeAfterRetry) { this.resumeAfterRetry = false; this.play(); }
     }, DECODE_RETRY_MS);
   });
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -369,6 +414,103 @@ class Preview {
     return Math.floor(video.currentTime * rate(this.project.settings));
   }
 
+  /** Whether the next `seconds` from `frame` (to the edit's end) have all their footage here; yes while the server hasn't said. */
+  readyAhead(frame: number, seconds: number): boolean {
+    if (!this.project || this.ready === null || this.ready.project !== this.project.id) return true;
+    const from = Math.floor(frame);
+    const until = Math.min(this.duration, from + Math.ceil(seconds * rate(this.project.settings)));
+    if (until <= from) return true;
+    return this.ready.stretches.some(([start, end]) => start <= from && end >= until);
+  }
+
+  /** What's here, asked of the server now and then (often while playing or holding), for this project while it's open. */
+  private askReady(now = false) {
+    clearTimeout(this.readyTimer);
+    const project = this.project;
+    if (project === null || this.canvas === null) return;
+    const wait = now ? 0 : playhead.playing || this.holding !== null ? READY_PLAYING_MS : READY_REST_MS;
+    this.readyTimer = setTimeout(() => {
+      if (this.project?.id !== project.id || this.readyAsking) return;
+      // A hidden tab isn't looking.
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") { this.askReady(); return; }
+      this.readyAsking = true;
+      Promise.resolve()
+        .then(() => api.playbackReady(project.id))
+        .then(({ ready }) => {
+          if (this.project?.id !== project.id || !Array.isArray(ready)) return;
+          this.ready = { project: project.id, stretches: ready };
+          this.lookAgain();
+        })
+        .catch(() => {})
+        .finally(() => { this.readyAsking = false; if (this.project?.id === project.id) this.askReady(); });
+    }, wait);
+  }
+
+  /** The footage from `frame` asked to come first (an open, a jump, a play under way), and what's here asked soon after. */
+  private warmFrom(frame: number) {
+    const project = this.project;
+    if (project === null) return;
+    this.warmedFrame = frame;
+    this.warmedAt = performance.now();
+    void Promise.resolve().then(() => api.warmPlayback(project.id, Math.floor(frame))).catch(() => {});
+    clearTimeout(this.readyTimer);
+    this.readyTimer = setTimeout(() => this.askReady(true), 400);
+  }
+
+  /**
+   * Plays once the footage ahead of `from` is here: playing as far as anyone can see (the button says Pause), a
+   * spinner over the picture, the footage from there asked for first. `go` starts it; a pause or another play
+   * meanwhile, and it never does.
+   */
+  private holdFor(from: number, generation: () => number, go: () => void) {
+    this.endHold();
+    const mine = generation();
+    this.setBuffering(true);
+    if (Math.abs(from - this.warmedFrame) > 1 || performance.now() - this.warmedAt > WARM_PLAYING_MS) this.warmFrom(from);
+    recordTiming("preview: holding for footage", 0);
+    const hold: NonNullable<Preview["holding"]> = { generation: mine, since: performance.now(), timer: undefined };
+    this.holding = hold;
+    const look = () => {
+      if (this.holding !== hold) return;
+      if (!playhead.playing || generation() !== mine) { this.endHold(); return; }
+      const waited = performance.now() - hold.since;
+      if (this.readyAhead(from, HOLD_AHEAD) || waited > HOLD_MOST_MS) {
+        if (waited > HOLD_MOST_MS) note("warn", "preview", `played on from frame ${from} after waiting ${Math.round(waited / 1000)} s for its footage to come down`);
+        recordTiming("preview: held for footage", waited);
+        this.endHold();
+        this.setBuffering(false);
+        go();
+        return;
+      }
+      hold.timer = setTimeout(look, 250);
+    };
+    this.lookAgain = look;
+    look();
+  }
+
+  /** A hold looks again when what's here is heard (set by `holdFor`). */
+  private lookAgain: () => void = () => {};
+
+  private endHold() {
+    if (this.holding === null) return;
+    clearTimeout(this.holding.timer);
+    this.holding = null;
+    this.lookAgain = () => {};
+  }
+
+  /** A play stopped by itself: said over the picture in one plain line, and in the log with why. */
+  private stoppedBecause(detail: string) {
+    note("warn", "preview", `playing stopped: ${detail}`);
+    this.stopped = "Playback stopped: the footage here didn't load. Press play to try again.";
+    this.notify();
+  }
+
+  private clearStopped() {
+    if (this.stopped === null) return;
+    this.stopped = null;
+    this.notify();
+  }
+
   /**
    * What's loaded to play on without waiting, as stretches of timeline frames:
    * the smooth render's buffered parts (Sphe, Nov 12: "almost like a YouTube
@@ -377,7 +519,9 @@ class Preview {
    */
   bufferedFrames(): [number, number][] {
     const video = this.video;
-    if (!video || !this.project || this.smooth === null) return [];
+    if (!this.project) return [];
+    // Drawn live (and in Edit.app's window): the stretches whose footage is all here (the server's playback_ready.ts).
+    if (!video || this.smooth === null) return this.ready?.project === this.project.id ? this.ready.stretches : [];
     // A streamed render: its chunks appended or kept on disk (smoothStream.ts).
     if (this.stream !== null) return this.stream.loaded();
     const fps = rate(this.project.settings);
@@ -1007,15 +1151,26 @@ class Preview {
     this.queued = 0;
     cancelAnimationFrame(this.loop);
     this.loop = 0;
-    // The speed first, then the play at it; a pause meanwhile, and nothing is played.
+    // Its footage not here yet (a first open, a jump): held on a spinner until it is, then played.
+    if (!this.readyAhead(from, HOLD_AHEAD)) {
+      this.holdFor(from, () => this.nativePlay, () => this.startNative(generation, from));
+      return;
+    }
+    this.startNative(generation, from);
+  }
+
+  /** The window plays from `from`: the speed first, then the play at it; a pause meanwhile, and nothing is played. */
+  private startNative(generation: number, from: number) {
+    this.windowMoved = { frame: from, at: performance.now() };
     this.sendSpeed().then(() => (generation === this.nativePlay && playhead.playing && this.native ? nativePreview.play(from) : null)).then(() => {
       if (generation !== this.nativePlay || !playhead.playing) return;
+      this.windowMoved = { frame: from, at: performance.now() };
       this.followNative(generation);
     }, (error: unknown) => {
       if (generation !== this.nativePlay || !playhead.playing) return;
       if (String(error).includes("at the end")) { this.pause(); return; }
-      note("warn", "preview", `the window's player didn't start: ${error}`);
       this.pause();
+      this.stoppedBecause(`the window's player didn't start: ${error}`);
     });
   }
 
@@ -1035,6 +1190,7 @@ class Preview {
           if (!playhead.playing || generation !== this.nativePlay) return;
           this.nativeFailed(error);
           this.pause();
+          this.stoppedBecause(`the window's player didn't say where it was: ${error}`);
         });
       }
       if (playhead.playing) this.loop = requestAnimationFrame(tick);
@@ -1073,6 +1229,8 @@ class Preview {
     if (at.ended || !at.playing) {
       playhead.frame = Math.max(0, Math.floor(at.frame));
       this.pause();
+      // Not at the end, and nobody paused it: the window stopped by itself.
+      if (!at.ended) this.stoppedBecause(`the window's player stopped by itself at frame ${Math.floor(at.frame)}${at.problem ? ` (${at.problem})` : ""}`);
       return;
     }
     // The window plays on by itself: a range's end is kept here.
@@ -1083,8 +1241,20 @@ class Preview {
     }
     playhead.frame = Math.max(0, at.frame);
     if (!this.framed) { this.framed = true; this.notify(); }
-    this.setBuffering(false);
-    if (performance.now() - this.persistedAt >= 1000) this.remember();
+    // The window's clock held (its sound ran short) or its picture skipped: a spinner, and where the footage ahead
+    // isn't here, the play holds for it rather than passing over it.
+    const now = performance.now();
+    if (at.frame !== this.windowMoved.frame) this.windowMoved = { frame: at.frame, at: now };
+    const stalled = now - this.windowMoved.at > STALL_MS;
+    if ((stalled || at.skipped >= 3) && !this.readyAhead(at.frame, HOLD_SHORT)) {
+      recordTiming("preview: held for footage (native, playing)", 0);
+      void nativePreview.pause().catch(() => {});
+      this.playNative();
+      return;
+    }
+    this.setBuffering(stalled);
+    if (now - this.warmedAt > WARM_PLAYING_MS) this.warmFrom(at.frame);
+    if (now - this.persistedAt >= 1000) this.remember();
     playhead.emit();
   }
 
@@ -1225,6 +1395,8 @@ class Preview {
   }
 
   detach() {
+    clearTimeout(this.readyTimer);
+    this.endHold();
     this.leaveNative(null, false);
     this.nativeKey = "";
     this.nativeSourcesKey = "";
@@ -1314,6 +1486,8 @@ class Preview {
       this.use((engine) => engine.clearPeaks());
       playhead.frame = savedFrame(project.id);
       playhead.emit();
+      this.ready = null;
+      this.stopped = null;
     }
     // Clips are shared between snapshots (shareProject, Immer), so a changed clip is a new object.
     const before = changedSource ? new Map<string, Clip>() : this.clipsById;
@@ -1366,6 +1540,8 @@ class Preview {
     this.nativeStale = true;
     this.versions = proxyVersions;
     if (nativeAvailable()) this.nativeSourcesFor(project, proxyVersions);
+    // Opened: the footage from where the playhead is comes first, and what's here is asked now and then.
+    if (changedSource) { this.warmedFrame = -Infinity; this.warmFrom(playhead.frame); }
     this.notify();
     this.invalidate();
   }
@@ -1462,6 +1638,9 @@ class Preview {
     // The scrub tier is the page player's; the window reads its whole copies.
     if (this.dragging && !this.native) this.keepScrubbing(frame);
     this.lastSeekAt = now;
+    this.clearStopped();
+    // A jump: the footage from where it lands comes first (a drag asks once it rests: `settled`).
+    if (!this.dragging && this.project !== null && Math.abs(frame - this.warmedFrame) > WARM_JUMP * rate(this.project.settings)) this.warmFrom(frame);
     // A jump while playing plays on from where it lands, in whichever way can play there: the render's chunk
     // there, or live. Only moved, a render left for a stretch it hadn't loaded stopped, and nothing played on
     // (Sphe, Nov 12: a time clicked at the other end of the edit "just paused"). A drag keeps its own way.
@@ -1476,7 +1655,11 @@ class Preview {
     this.persistTimer = setTimeout(() => this.remember(), 200);
     this.settled = false;
     clearTimeout(this.settleTimer);
-    this.settleTimer = setTimeout(() => { this.settled = true; this.invalidate(); }, SETTLE_MS);
+    this.settleTimer = setTimeout(() => {
+      this.settled = true;
+      if (this.project !== null && Math.abs(playhead.frame - this.warmedFrame) > WARM_JUMP * rate(this.project.settings)) this.warmFrom(playhead.frame);
+      this.invalidate();
+    }, SETTLE_MS);
     this.resetClock();
     if (this.smooth) this.restLive();
     if (this.native && playhead.playing) { this.playNative(); return; }
@@ -1524,6 +1707,7 @@ class Preview {
 
   play() {
     if (!this.project || playhead.playing || this.duration <= 0) return;
+    this.clearStopped();
     // Stopped at a range's end: Space carries on with the rest, the range gone.
     if (this.range !== null && playhead.frame >= this.range.end) this.clearRange();
     if (atEnd(playhead.frame, this.duration)) playhead.frame = 0;
@@ -1701,6 +1885,9 @@ class Preview {
 
   pause() {
     this.remember();
+    this.endHold();
+    this.shortSince = undefined;
+    this.resumeAfterRetry = false;
     const playing = playhead.playing;
     playhead.playing = false;
     cancelAnimationFrame(this.loop);
@@ -1770,10 +1957,25 @@ class Preview {
       this.runningClock = true;
     }
     playhead.frame = frame;
-    if (!this.audioReady(frame, 0)) this.playbackStats.audioUnderruns++;
+    const soundShort = !this.audioReady(frame, 0);
+    if (soundShort) this.playbackStats.audioUnderruns++;
     this.scheduleAudio(frame);
     this.draw(scene);
-    if (performance.now() - this.persistedAt >= 1000) this.remember();
+    // A picture or the sound missing for longer than a moment: the clock holds here until both are in (the start's
+    // wait above), rather than running on past frames that aren't decoded.
+    const now = performance.now();
+    if (soundShort || this.waitingSince !== undefined) {
+      this.shortSince ??= now;
+      if (now - this.shortSince > LIVE_HOLD_MS) {
+        recordTiming("preview: held for footage (live)", now - this.shortSince);
+        this.shortSince = undefined;
+        this.resetClock();
+        this.setBuffering(true);
+        return;
+      }
+    } else this.shortSince = undefined;
+    if (now - this.warmedAt > WARM_PLAYING_MS) this.warmFrom(frame);
+    if (now - this.persistedAt >= 1000) this.remember();
     playhead.emit();
   }
 

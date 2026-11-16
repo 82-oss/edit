@@ -289,6 +289,10 @@ export const api = {
   /** What Edit.app's native preview decodes each picture from and reads each sound from, the local excerpts of streamed ones, the media cache, what each media named is in the server's edit (`of`: kind and file), and whether a file it names still comes down here (`coming`: ask again) (routes.ts `nativeSources`). */
   nativeSources: (id: string) =>
     request<{ cache: string; sources: Record<string, string>; sounds?: Record<string, string>; excerpts?: Record<string, { from: number; to: number; path: string }[]>; of?: Record<string, string>; coming?: boolean }>("GET", `/api/projects/${id}/native-sources`),
+  /** The stretches of the timeline (frames) whose every picture and sound is here to play from (playback_ready.ts). */
+  playbackReady: (id: string) => request<{ ready: [number, number][] }>("GET", `/api/projects/${id}/playback/ready`),
+  /** The viewer is at `frame` (an open, a jump, a play under way): its footage from there comes first. */
+  warmPlayback: (id: string, frame: number) => request<{ ok: boolean }>("POST", `/api/projects/${id}/playback/warm`, { frame }),
   /** `frame`: the playhead, whose chunk is rendered first. */
   renderPlayback: (id: string, frame?: number) => request<PlaybackStatus>("POST", `/api/projects/${id}/playback`, frame === undefined ? undefined : { frame }),
   /** Reads a Google Doc script (on the server, as its public link) without importing it. */

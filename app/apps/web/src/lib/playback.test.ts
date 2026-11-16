@@ -7,7 +7,9 @@ const engine = vi.hoisted(() => ({
   sources: vi.fn((_frame: number) => "[]"),
 }));
 vi.mock("../engine/pkg/edit_wasm", () => ({ default: vi.fn(), createEngine: vi.fn(async () => engine) }));
-const nativeApi = vi.hoisted(() => ({ nativeSources: vi.fn(async () => ({ cache: "/cache", sources: { m1: "/video.mp4" } })) }));
+const nativeApi = vi.hoisted(() => ({ nativeSources: vi.fn(async () => ({ cache: "/cache", sources: { m1: "/video.mp4" } })),
+  // What's here (playback_ready.ts): nothing said unless a test says (a play never waits on it).
+  playbackReady: vi.fn(async () => ({ ready: null as [number, number][] | null })), warmPlayback: vi.fn(async () => ({ ok: true })) }));
 vi.mock("./api", () => ({ api: nativeApi, fetchRetrying: vi.fn(async () => new Response(new Uint8Array())), mediaUrl: (p: string, m: string) => `/${p}/${m}`, mediaHost: (path: string) => path, request: vi.fn(() => new Promise(() => {})) }));
 
 const decoding = vi.hoisted(() => ({
@@ -830,6 +832,108 @@ describe("preview seeks and lifetime", () => {
     preview.setProject(fixture(), {}); await settle(); draw(); await settle();
     preview.seek(20); preview.seek(22); draw(); await settle();
     expect(fetched.some((url) => url.includes("/scrub"))).toBe(false);
+  });
+
+  // What the server says is here (playback_ready.ts), as the player last heard it.
+  const hereNow = (stretches: [number, number][] | null) => {
+    (preview as unknown as { ready: unknown }).ready = stretches === null ? null : { project: "p1", stretches };
+    (preview as unknown as { lookAgain: () => void }).lookAgain();
+  };
+
+  it("asks for the footage from the playhead as a project opens and at a jump, and shows what's here as the bar's grey while it draws live", async () => {
+    preview.setProject(fixture(), {}); await settle();
+    expect(nativeApi.warmPlayback).toHaveBeenCalledWith("p1", 0);
+    // Nothing said yet: nothing grey, nothing waited on.
+    expect(preview.bufferedFrames()).toEqual([]);
+    expect(preview.readyAhead(0, 3)).toBe(true);
+    hereNow([[0, 30], [60, 90]]);
+    expect(preview.bufferedFrames()).toEqual([[0, 30], [60, 90]]);
+    expect(preview.readyAhead(0, 1)).toBe(true);
+    expect(preview.readyAhead(20, 1)).toBe(false);
+    // A drag's seeks are one ask once it rests; a jump asks at once.
+    nativeApi.warmPlayback.mockClear();
+    const far = fixture(); far.clips[0]!.duration = 9000;
+    preview.setProject(far, {});
+    preview.seek(3000); await settle();
+    expect(nativeApi.warmPlayback).toHaveBeenCalledWith("p1", 3000);
+  });
+
+  it("holds a play in the window on a spinner until the footage ahead is here, then plays from where it was asked (the M4, Nov 16: a jump froze, then passed over 199 frames)", async () => {
+    const sent = await inWindow();
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    hereNow([[0, 30]]);
+    preview.seek(10); draw(); await settle();
+    preview.play(); await settle();
+    // Playing as far as the person can see, the window not yet asked, a spinner on its way.
+    expect(playhead.playing).toBe(true);
+    expect(sent("preview_play")).toEqual([]);
+    expect(nativeApi.warmPlayback).toHaveBeenLastCalledWith("p1", 10);
+    await new Promise((resolve) => setTimeout(resolve, 650));
+    expect(preview.buffering).toBe(true);
+    // In: played from there, the spinner gone.
+    hereNow([[0, 90]]); await settle();
+    expect(sent("preview_play")).toEqual([{ frame: 10 }]);
+    expect(preview.buffering).toBe(false);
+    // A pause while held plays nothing.
+    preview.pause(); await settle();
+    hereNow([[0, 30]]);
+    preview.seek(40); preview.play(); await settle();
+    preview.pause(); await settle();
+    hereNow([[0, 90]]); await settle();
+    expect(sent("preview_play")).toHaveLength(1);
+  });
+
+  it("holds a play in the window again where its clock stalls on footage not here, rather than passing over it", async () => {
+    const sent = await inWindow();
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    hereNow([[0, 90]]);
+    preview.play(); await settle();
+    expect(sent("preview_play")).toEqual([{ frame: 0 }]);
+    windowClock.frame = 20; draw(); await settle();
+    // Only the first second is here now, and the window's clock stops moving (its sound ran short).
+    hereNow([[0, 25]]);
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    draw(); await settle();
+    expect(sent("preview_pause").length).toBeGreaterThanOrEqual(1);
+    expect(playhead.playing).toBe(true);
+    expect(sent("preview_play")).toHaveLength(1);
+    // Here again: on from where it held.
+    hereNow([[0, 90]]); await settle();
+    expect(sent("preview_play").at(-1)).toEqual({ frame: 20 });
+  });
+
+  it("says in one plain line when the window's play stops by itself, and clears it at the next play", async () => {
+    await inWindow();
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    preview.play(); await settle();
+    windowClock.frame = 30; windowClock.playing = false; draw(); await settle();
+    expect(playhead.playing).toBe(false);
+    expect(preview.stopped).toBe("Playback stopped: the footage here didn't load. Press play to try again.");
+    preview.play(); await settle();
+    expect(preview.stopped).toBeNull();
+    // The end is no stop to explain.
+    windowClock.frame = 89; windowClock.ended = true; windowClock.playing = false; draw(); await settle();
+    expect(preview.stopped).toBeNull();
+  });
+
+  it("holds the page's own play where a picture is missing for more than a moment, and plays on once it's in", async () => {
+    const p = withSound();
+    engine.sources.mockImplementation((frame = 0) => JSON.stringify(frame < 90 ? [{ clip: "c1", media: "m1", time: 2 + frame / 30 }] : []));
+    preview.setProject(p, {}); draw(); await complete(0); preview.play(); draw();
+    clock.currentTime = 0.2; draw();
+    expect(playhead.frame).toBeCloseTo(4.5);
+    const now = performance.now();
+    const at = vi.spyOn(performance, "now").mockReturnValue(now + 400);
+    try {
+      clock.currentTime = 0.4; draw();
+      // Held: the clock no longer runs while the picture's missing.
+      const held = playhead.frame;
+      clock.currentTime = 2; draw();
+      expect(playhead.frame).toBe(held);
+      expect(playhead.playing).toBe(true);
+    } finally {
+      at.mockRestore();
+    }
   });
 
   it("in full screen while the window plays, the page plays on from where it was", async () => {
