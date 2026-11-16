@@ -293,30 +293,44 @@ export async function serve(root: string, key: string, range: string | null, url
   const open = asked === null || asked[2] === "";
   let to = open ? Number.POSITIVE_INFINITY : Number(asked![2]);
   if (!(to >= from)) return null;
+  const folder = folderOf(root, key);
   const first = Math.floor(from / BLOCK);
   // A read to the end (FFmpeg's) reads on from where it starts: the blocks after it are asked for with it, not one
   // after another once each lands (a cold open waited on two blocks in turn, 1.5–2.2 s to its first picture).
-  const size = metaOf(folderOf(root, key))?.size;
-  if (open && size !== undefined) for (let n = 1; n <= STREAM_AHEAD && (first + n) * BLOCK < size; n++) void block(root, key, first + n, url).catch(() => {});
-  // The first block says how big the object is.
-  const opening = await block(root, key, first, url, "asked").catch(async (error: unknown) => {
-    // A start past the end of an object we haven't the size of yet: the first block says it.
-    if (first === 0) throw error;
-    await block(root, key, 0, url, "asked");
-    return null;
-  });
-  const meta = metaOf(folderOf(root, key));
-  if (meta === null) return null;
-  if (from >= meta.size) return new Response(null, { status: 416, headers: { "content-range": `bytes */${meta.size}` } });
-  to = Math.min(to, meta.size - 1);
+  const known = metaOf(folder)?.size;
+  if (open && known !== undefined) for (let n = 1; n <= STREAM_AHEAD && (first + n) * BLOCK < known; n++) void block(root, key, first + n, url).catch(() => {});
+  // Not here: its first bytes straight from R2's own URL while its block lands (kept for the next read), so the
+  // reader starts on one round trip, not on a whole 2 MiB block (a cold open-and-seek took 1.1–2.7 s that way).
+  const cold = !fs.existsSync(join(folder, `${first}`));
+  const opening = block(root, key, first, url, "asked");
+  opening.catch(() => {});
+  let peek = cold && url.direct !== undefined ? await peekAt(url.direct, from, open ? from + PEEK - 1 : Math.min(to, from + PEEK - 1)).catch(() => null) : null;
+  let size = peek?.size ?? known;
+  let type = peek?.type ?? metaOf(folder)?.type ?? "video/mp4";
+  if (peek === null) {
+    // The first block says how big the object is.
+    await opening.catch(async (error: unknown) => {
+      // A start past the end of an object we haven't the size of yet: the first block says it.
+      if (first === 0) throw error;
+      await block(root, key, 0, url, "asked");
+    });
+    const meta = metaOf(folder);
+    if (meta === null) return null;
+    size = meta.size;
+    type = meta.type;
+  }
+  if (size === undefined) return null;
+  if (from >= size) return new Response(null, { status: 416, headers: { "content-range": `bytes */${size}` } });
+  to = Math.min(to, size - 1);
   const last = Math.floor(to / BLOCK);
   const end = to;
+  const total = size;
   const reach = open ? STREAM_AHEAD : AHEAD;
   // What's next, read while this plays.
   const ahead = (after: number) => {
     for (let n = 1; n <= reach; n++) {
       const next = after + n;
-      if (next * BLOCK < meta.size) void block(root, key, next, url).catch((error: unknown) => diag.warn("cloud", `reading ahead in ${key}: ${diag.messageOf(error)}`));
+      if (next * BLOCK < total) void block(root, key, next, url).catch((error: unknown) => diag.warn("cloud", `reading ahead in ${key}: ${diag.messageOf(error)}`));
     }
   };
   // Answered as it's read, a block at a time: a player asks a long preview
@@ -324,28 +338,68 @@ export async function serve(root: string, key: string, range: string | null, url
   // gigabytes, refused as "Out of memory" every time (JJ's Mac, Nov 10:
   // a script's preview that wouldn't play). A reader that stops early
   // (FFmpeg seeking elsewhere closes its connection) stops the reads.
-  let index = first;
+  let at = from;
   const body = new ReadableStream<Uint8Array>(
     {
       async pull(controller) {
-        if (index > last) {
+        if (peek !== null) {
+          const read = await peek.reader.read().catch(() => ({ done: true, value: undefined }));
+          if (!read.done && read.value !== undefined && read.value.length > 0) {
+            const bytes = read.value.subarray(0, Math.max(0, end - at + 1));
+            at += bytes.length;
+            controller.enqueue(bytes);
+            if (at > end) {
+              void peek.reader.cancel().catch(() => {});
+              peek = null;
+              controller.close();
+            }
+            return;
+          }
+          // Its first bytes sent (or the read gave out): on from the blocks.
+          void peek.reader.cancel().catch(() => {});
+          peek = null;
+        }
+        const index = Math.floor(at / BLOCK);
+        if (at > end || index > last) {
           controller.close();
           return;
         }
         // What's after it asked for before it's waited on.
         ahead(index);
-        const bytes = index === first && opening !== null ? opening : await block(root, key, index, url, "asked");
+        const bytes = await block(root, key, index, url, "asked");
         const base = index * BLOCK;
-        controller.enqueue(bytes.subarray(Math.max(from - base, 0), Math.min(end - base + 1, bytes.length)));
-        index++;
+        const piece = bytes.subarray(at - base, Math.min(end - base + 1, bytes.length));
+        if (piece.length === 0) {
+          controller.close();
+          return;
+        }
+        at += piece.length;
+        controller.enqueue(piece);
+      },
+      cancel() {
+        void peek?.reader.cancel().catch(() => {});
       },
     },
     { highWaterMark: 0 },
   );
   // Bun sends a stream chunked, without its length: the size is in `content-range`, which FFmpeg reads on a 200 too
   // (it opens with `bytes=0-`; a reader asking for no range at all still learns the size, and that it can seek).
-  const headers = { "content-type": meta.type, "content-range": `bytes ${from}-${to}/${meta.size}`, "accept-ranges": "bytes", "cache-control": "no-cache" };
+  const headers = { "content-type": type, "content-range": `bytes ${from}-${to}/${total}`, "accept-ranges": "bytes", "cache-control": "no-cache" };
   return new Response(body, { status: asked === null ? 200 : 206, headers });
+}
+
+/** How much of a cold read is sent straight from R2's own URL while its block lands. */
+const PEEK = 512 * 1024;
+
+/** Bytes `from..to` of the object from `direct`, as they arrive, and its size and type; rejects unless R2 answers 206. */
+async function peekAt(direct: () => Promise<string>, from: number, to: number): Promise<{ reader: ReadableStreamDefaultReader<Uint8Array>; size: number; type: string }> {
+  const answer = await fetch(await direct(), { headers: { range: `bytes=${from}-${to}` }, signal: AbortSignal.timeout(30_000) });
+  const size = Number(/\/(\d+)$/.exec(answer.headers.get("content-range") ?? "")?.[1] ?? NaN);
+  if (answer.status !== 206 || answer.body === null || !Number.isFinite(size)) {
+    void answer.body?.cancel();
+    throw new Error(`R2 answered ${answer.status} to a first read`);
+  }
+  return { reader: answer.body.getReader() as ReadableStreamDefaultReader<Uint8Array>, size, type: answer.headers.get("content-type") ?? "video/mp4" };
 }
 
 /** Whole copies' fills at once, each this many of its blocks in flight (the slots are shared: `slot`). */

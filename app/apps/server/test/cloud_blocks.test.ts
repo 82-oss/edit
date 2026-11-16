@@ -247,12 +247,54 @@ test("a read someone waits on goes to R2's own URL too when the edge is slow, an
     expect(new Uint8Array(await read!.arrayBuffer())).toEqual(object.subarray(0, 100));
     expect(performance.now() - began).toBeLessThan(300);
     expect(asked).toContain("r2 /hedged");
-    // A whole copy's fill waits on the edge alone.
+    // Read ahead of the playhead and warmed: the edge alone (the first read's own reads done first).
+    await Bun.sleep(500);
     asked.length = 0;
     await warm(hedgeRoot, "edit/proxies/ahead.mp4", 0, 0.01, source("ahead"));
     expect(asked.every((one) => one.startsWith("edge"))).toBe(true);
   } finally {
     hedgeHooks.ms = hedge;
+    void edge.stop(true);
+    void r2own.stop(true);
+  }
+});
+
+test("a cold read starts on its first bytes straight from R2's own URL while its block lands, then reads on from the blocks, every byte in place", async () => {
+  const answer = (request: Request) => {
+    const [, a, b] = /bytes=(\d+)-(\d+)/.exec(request.headers.get("range") ?? "") ?? [];
+    const [from, to] = [Number(a), Math.min(Number(b), size - 1)];
+    return new Response(object.subarray(from, to + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${from}-${to}/${size}` } });
+  };
+  // The edge slow to answer a block it hasn't seen; R2's own at once.
+  const edge = Bun.serve({ port: 0, async fetch(request) { await Bun.sleep(300); return answer(request); } });
+  const r2own = Bun.serve({ port: 0, fetch: answer });
+  try {
+    const coldRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-cold-"));
+    const source = Object.assign(async () => `http://127.0.0.1:${edge.port}/x`, { direct: async () => `http://127.0.0.1:${r2own.port}/x` });
+    // From just before a block's end, to the end: the first bytes cross into the next block.
+    const from = BLOCK - 1000;
+    const began = performance.now();
+    const read = await serve(coldRoot, "edit/proxies/cold.mp4", `bytes=${from}-`, source);
+    expect(read!.headers.get("content-range")).toBe(`bytes ${from}-${size - 1}/${size}`);
+    const reader = read!.body!.getReader();
+    const firstBytes = await reader.read();
+    expect(performance.now() - began).toBeLessThan(200);
+    const chunks = [firstBytes.value!];
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      chunks.push(next.value);
+    }
+    const whole = new Uint8Array(chunks.reduce((sum, one) => sum + one.length, 0));
+    let at = 0;
+    for (const one of chunks) {
+      whole.set(one, at);
+      at += one.length;
+    }
+    expect(whole).toEqual(object.subarray(from));
+    // Its block kept for the next read.
+    expect(blocksHere(coldRoot, "edit/proxies/cold.mp4")!.here.has(0)).toBe(true);
+  } finally {
     void edge.stop(true);
     void r2own.stop(true);
   }

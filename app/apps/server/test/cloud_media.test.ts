@@ -1006,8 +1006,9 @@ test("the preview reads a medium not on this Mac through the server: ranges from
   expect([...new Uint8Array(await first.arrayBuffer())]).toEqual([...bytes.subarray(1000, 2000)]);
   const second = (await read("bytes=150000-150099"))!;
   expect([...new Uint8Array(await second.arrayBuffer())]).toEqual([...bytes.subarray(150000, 150100)]);
-  // Signed once: a block read is one round trip to R2, not the relay's as well.
-  expect(mock.calls("/v1/cloud/r2/url", "POST").length - signedBefore).toBe(1);
+  // Signed once each, the edge's URL (the blocks) and R2's own (a cold read's first bytes): a block read is one
+  // round trip to R2, not the relay's as well.
+  expect(mock.calls("/v1/cloud/r2/url", "POST").length - signedBefore).toBe(2);
   // Not a playback file, or no proxy in the cloud: nothing to stream.
   expect(await cloudMedia.streamFromCloud(new Request("http://127.0.0.1/x"), { proxy: key }, "thumbs")).toBeNull();
   expect(await cloudMedia.streamFromCloud(new Request("http://127.0.0.1/x"), null, "proxy")).toBeNull();
@@ -1061,7 +1062,8 @@ test("a proxy's blocks are read through the relay's edge cache, FFmpeg's reads t
     expect(open!.status).toBe(206);
     expect(open!.headers.get("content-range")).toBe("bytes 29990-29999/30000");
     expect(new Uint8Array(await open!.arrayBuffer())).toEqual(object.subarray(29990));
-    expect(signs().slice(at).map((body) => [body.key, body.edge === true])).toEqual([[key, true]]);
+    // The blocks through the edge; a cold read's first bytes from R2's own URL meanwhile.
+    expect(signs().slice(at).map((body) => [body.key, body.edge === true]).sort()).toEqual([[key, false], [key, true]]);
   } finally {
     fixture.cleanup();
   }
