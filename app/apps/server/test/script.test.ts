@@ -237,6 +237,12 @@ test("reads_cue_words", () => {
   expect(cueWords(notes("Do you.....arm injured?"))).toEqual(["Do", "injured?"]);
   expect(cueWords(notes("*Victim groans*....hey man"))).toEqual(["*Victim", "man"]);
   expect(cueWords(["To Editor: Blur the victim"])).toBeNull();
+  // "first / last" (Lauana's scripts, Nov 16), winning over a trailing "...", never a date's or a link's slash.
+  expect(cueWords(notes("what happened? / a chance"))).toEqual(["what", "chance"]);
+  expect(cueWords(notes("is there / you know..."))).toEqual(["is", "know"]);
+  expect(cueWords(notes("so / cool"))).toEqual(["so", "cool"]);
+  expect(cueWords(["Born 3/4/2021 in town"])).toBeNull();
+  expect(cueWords(["See https://example.com/a/b"])).toBeNull();
 });
 
 const word = (text: string, start: number, end: number): Word => ({ text, start, end });

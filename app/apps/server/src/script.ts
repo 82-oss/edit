@@ -1103,19 +1103,26 @@ export function parseF64(text: string): number | null {
 
 /**
  * The first and last words of a range's "first words....last words" comment
- * (editors write where a range starts and ends this way).
+ * (editors write where a range starts and ends this way), or "first words /
+ * last words" (Lauana's scripts, Nov 16: "so I know / hi"; a slash with a
+ * space each side, so a date's or a link's never counts, and it wins over a
+ * trailing "..." as in "is there / you know...").
  */
 export function cueWords(found: string[]): [string, string] | null {
   for (const note of found) {
-    let split = note.indexOf("..");
-    let width = 2;
+    let split = note.indexOf(" / ");
+    let width = 3;
+    if (split < 0) {
+      split = note.indexOf("..");
+      width = 2;
+    }
     if (split < 0) {
       split = note.indexOf("…");
       width = 1;
     }
     if (split < 0) continue;
     const left = note.slice(0, split).replace(/\.+$/, "");
-    const right = note.slice(split + width).replace(/^[.…]+/, "");
+    const right = note.slice(split + width).replace(/^[.…]+/, "").replace(/[.…]+$/, "");
     const first = splitWhitespace(left)[0];
     const lastWord = splitWhitespace(right).at(-1);
     if (first === undefined || lastWord === undefined) continue;
