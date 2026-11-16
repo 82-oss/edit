@@ -157,3 +157,25 @@ describe("the chat's composer", () => {
     expect(data.getData("text/plain")).toBe("make “Cops Surprise Husband” punchier");
   });
 });
+
+describe("the model menu", () => {
+  it("opens a new project on Opus 5.5 whatever another project picked, and shows a project's own pick (Sphe, Nov 16)", async () => {
+    const { useModelChoice } = await import("../lib/models");
+    // The menu asks the server for the pick once; none here.
+    const fetched = globalThis.fetch;
+    globalThis.fetch = (() => new Promise(() => {})) as typeof fetch;
+    act(() => useModelChoice.setState({ revision: "claude-sonnet-5-5", effort: "medium", hq_effort: "high", projects: { old: "claude-fable-5-2" } }, true));
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    const menu = (project: string, hq: boolean) => {
+      act(() => root.render(<ChatComposer chat={CHAT} running={false} disabled={false} placeholder="Ask" project={project} hq={hq} revising={!hq} onSend={() => true} onStop={() => {}} />));
+      return container.querySelector('[aria-haspopup="menu"]')!.textContent;
+    };
+    expect(menu("old", true)).toContain("Fable 5.2");
+    expect(menu("new", true)).toContain("Opus 5.5");
+    // A V1 project's revisions: its own pick, not the scripts' Sonnet.
+    expect(menu("new", false)).toContain("Opus 5.5");
+    globalThis.fetch = fetched;
+  });
+});

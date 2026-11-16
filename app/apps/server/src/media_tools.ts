@@ -459,13 +459,19 @@ async function claudeSetupRoute(context: RouteContext<App>): Promise<Response> {
   return sortedJson(panel.claudeSetup(action));
 }
 
-/** The person's pick in the chats' model menu: GET reads it, PUT saves `{revision, effort}` and Edit V2's `{hq_model, hq_effort}` (model_choice.ts). */
+/**
+ * The person's pick in the chats' model menu: GET reads it, PUT saves
+ * `{revision, effort, hq_effort}`, or `{project, model}`: that project's own
+ * model (model_choice.ts).
+ */
 async function modelChoiceRoute(context: RouteContext<App>): Promise<Response> {
   modelChoice.use(context.app.store.home);
   if (context.request.method === "GET") return sortedJson(modelChoice.current());
   const given = await readJson(context);
   if (typeof given !== "object" || given === null || Array.isArray(given)) throw bad("expected {revision, effort}");
-  const saved = modelChoice.save({ ...modelChoice.current(), ...given });
+  const { project, model, projects: _whole, ...rest } = given as Record<string, unknown>;
+  if (project !== undefined && (typeof project !== "string" || project === "" || typeof model !== "string")) throw bad("expected {project, model}");
+  const saved = typeof project === "string" ? modelChoice.pickFor(project, model as string) : modelChoice.save({ ...modelChoice.current(), ...rest });
   seams.agentPanel(context.app).choiceChanged?.();
   return sortedJson(saved);
 }

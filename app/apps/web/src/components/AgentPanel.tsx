@@ -1093,6 +1093,7 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
       modelName={modelName ?? undefined}
       revising={revising}
       hq={hq}
+      project={projectId ?? undefined}
       // A channel with no edit style yet says so here, not in a notice of its own (Sphe, Nov 15: "this is horrible").
       placeholder={untaught !== null ? `Tell the agent how ${untaught}’s videos should look, or start the editing workflow…` : "Start the editing workflow, or ask for a change…"}
       // Where the playhead is goes with it: the agent starts there (the server reads it what's under it).

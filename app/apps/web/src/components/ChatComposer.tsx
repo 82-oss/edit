@@ -22,8 +22,8 @@ import { useSettled } from "../lib/settled";
 import { formatBytes } from "../lib/time";
 import { useEditor } from "../lib/store";
 import { ClaudeMark } from "./ClaudeMark";
-import { DEFAULT_EFFORT, EFFORTS, effortName, HQ_EFFORT, HQ_MODELS, hqModel, modelFor, REVISION_MODELS } from "@edit/types/models";
-import { loadModelChoice, pickModel, useModelChoice } from "../lib/models";
+import { BUILD_MODEL, DEFAULT_EFFORT, EFFORTS, effortName, HQ_EFFORT, HQ_MODELS, modelFor, projectModel, REVISION_MODELS } from "@edit/types/models";
+import { loadModelChoice, pickModel, pickProjectModel, useModelChoice } from "../lib/models";
 import { cx, ProgressRing } from "./ui";
 
 /** The card's edge, and the island's: a shade under the app's line (Sphe, Nov 3: "a slightly darker border"). */
@@ -139,6 +139,7 @@ export function ChatComposer({
   allowEmpty = false,
   hint,
   hq = false,
+  project,
 }: {
   running: boolean;
   disabled: boolean;
@@ -175,6 +176,8 @@ export function ChatComposer({
    * to queue (shown in `tray`), rather than waiting here.
    */
   hq?: boolean;
+  /** The project this chat is on: its model is its own pick (Opus 5.5 until picked in it), not the other chats'. */
+  project?: string;
 }) {
   const [own, setOwn] = useState(() => (draft === undefined ? "" : (localStorage.getItem(draft) ?? "")));
   const text = value ?? own;
@@ -482,7 +485,7 @@ export function ChatComposer({
             </>
           )}
           {/* A grey pill, its words light enough to read (Sphe, Nov 3); a chat with the model menu opens it there. */}
-          {hq ? <ModelMenu name={modelName} revising={false} hq /> : revising === undefined ? <ModelPill name={modelName ?? ""} /> : <ModelMenu name={modelName} revising={revising} />}
+          {hq ? <ModelMenu name={modelName} revising={false} hq project={project} /> : revising === undefined ? <ModelPill name={modelName ?? ""} /> : <ModelMenu name={modelName} revising={revising} project={project} />}
           {hint !== undefined && hint !== "" && <span className="ml-auto truncate text-[11.5px] text-faint">{hint}</span>}
           {showStop ? (
             <button
@@ -731,18 +734,21 @@ function ModelPill({ name }: { name: string }) {
  * Who answers and how hard it thinks, and the menu to change them (prototype
  * B in a box, Sphe, Nov 7): the revisions' model with Claude's mark, then the
  * thinking levels, Medium marked as the default. While the chat is being built
- * the models aren't offered (a build is always Opus's). One pick for every
- * chat on this computer (lib/models.ts). An Edit V2 chat's (`hq`) offers
- * every model at any time, on its own pick (Fable 5.2 at High until picked).
+ * the models aren't offered (a build is always Opus's). The levels are one
+ * pick for every chat on this computer (lib/models.ts); a project's model is
+ * its own (`project`: Opus 5.5 until picked in it). An Edit V2 chat's (`hq`)
+ * offers every model at any time, at its own level (High until picked).
  */
-function ModelMenu({ name: given, revising, hq = false }: { name?: string; revising: boolean; hq?: boolean }) {
+function ModelMenu({ name: given, revising, hq = false, project }: { name?: string; revising: boolean; hq?: boolean; project?: string }) {
   const [open, setOpen] = useState(false);
   const choice = useModelChoice();
-  // Edit V2's own pick: every model, at any time, apart from the other chats'.
+  // Edit V2's: every model, at any time.
   const models = hq ? HQ_MODELS : revising ? REVISION_MODELS : [];
-  const model = hq ? choice.hq_model : choice.revision;
+  const own = project === undefined ? null : projectModel(choice, project, hq);
+  const model = own?.id ?? choice.revision;
   const effort = hq ? choice.hq_effort : choice.effort;
-  const name = given || (hq ? hqModel(choice) : modelFor(revising, choice)).name;
+  const name = given || (own === null ? modelFor(revising, choice) : hq || revising ? own : BUILD_MODEL).name;
+  const pick = (id: string) => void (project === undefined ? pickModel({ revision: id }) : pickProjectModel(project, id));
   const box = useRef<HTMLDivElement>(null);
   useEffect(() => void loadModelChoice(), []);
   useEffect(() => {
@@ -797,7 +803,7 @@ function ModelMenu({ name: given, revising, hq = false }: { name?: string; revis
             {models.length > 0 && (
               <>
                 {models.map((one) => (
-                  <button key={one.id} type="button" role="menuitemradio" aria-checked={model === one.id} className={row} onClick={() => void pickModel(hq ? { hq_model: one.id } : { revision: one.id })}>
+                  <button key={one.id} type="button" role="menuitemradio" aria-checked={model === one.id} className={row} onClick={() => pick(one.id)}>
                     {tick(model === one.id)}
                     <ClaudeMark size={13} />
                     {one.name}

@@ -1,11 +1,12 @@
-// The person's pick in the chats' model menu (`@edit/types/models`): the
-// revisions' model and every chat's thinking level, one for every chat on this
-// computer, kept by the server (`/api/models`). The last answer is remembered
-// on the browser so the composer shows it from the first paint.
+// The person's pick in the chats' model menu (`@edit/types/models`): every
+// chat's thinking level and scripts' and ideas' model, one for every chat on
+// this computer, and each project's own model (Opus 5.5 until picked in it),
+// kept by the server (`/api/models`). The last answer is remembered on the
+// browser so the composer shows it from the first paint.
 
 import { create } from "zustand";
 
-import { readChoice, type ModelChoice } from "@edit/types/models";
+import { readChoice, withProjectPick, type ModelChoice } from "@edit/types/models";
 
 import { request } from "./api";
 import { readSetting, writeSetting } from "./storage";
@@ -46,6 +47,17 @@ export async function pickModel(change: Partial<ModelChoice>): Promise<void> {
   keep({ ...before, ...change });
   try {
     keep(readChoice(await request<unknown>("PUT", "/api/models", change)));
+  } catch {
+    keep(before);
+  }
+}
+
+/** Saves `project`'s own model (shown at once, put back if the server refuses it). */
+export async function pickProjectModel(project: string, model: string): Promise<void> {
+  const before = useModelChoice.getState();
+  keep(withProjectPick(before, project, model));
+  try {
+    keep(readChoice(await request<unknown>("PUT", "/api/models", { project, model })));
   } catch {
     keep(before);
   }

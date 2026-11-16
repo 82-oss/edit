@@ -36,8 +36,6 @@ export function sdk(): Promise<typeof Sdk> {
 
 /** The model the agent builds on: Claude Code's `opus` (the newest Opus, 5.5 now). */
 export const DEFAULT_MODEL = "opus";
-/** The model a built edit's revisions run on: the person's pick in the chat's model menu (model_choice.ts). */
-export const revisionModel = (): string => modelChoice.current().revision;
 /** How hard every chat thinks: the person's pick in the menu, medium until they pick. */
 export const effort = (): Options["effort"] => modelChoice.current().effort;
 

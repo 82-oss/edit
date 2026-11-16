@@ -2,11 +2,14 @@
 // idea's first package, every time. Once it's built, its revisions are on the
 // model the person picked in the chat's model menu (Opus 5.5 or Sonnet 5.5,
 // Opus until they pick), and every chat thinks at the level they picked there
-// (medium until they pick). The choice is the person's, one for every chat on
-// their computer (the server keeps it in `<home>/models.json`). Thumbnails
-// stay on Opus. An Edit V2 chat has its own pick, of every model at
-// any time (Fable 5.2 at high until they pick). The chats show the name of
-// whichever answers next.
+// (medium until they pick). The levels are the person's, one for every chat on
+// their computer (the server keeps them in `<home>/models.json`). A project's
+// model is its own: every new project opens on Opus 5.5, V1 and V2 alike,
+// whatever was picked in another (Sphe, Nov 16: "Opus is for most things"),
+// and a pick in it holds for it (`projects`). Scripts and ideas keep one pick
+// for all (`revision`). Thumbnails stay on Opus. An Edit V2 chat offers every
+// model at any time (Fable 5.2 among them) and thinks at its own level (high
+// until they pick). The chats show the name of whichever answers next.
 
 export interface ClaudeModel {
   /** What Claude Code is asked for. */
@@ -31,36 +34,54 @@ export type Effort = (typeof EFFORTS)[number];
 /** Edit's own level: its work is mostly the house style applied again and again, which medium does as well as high in far less time. */
 export const DEFAULT_EFFORT: Effort = "medium";
 
-/** An Edit V2 project's turns until the person picks: Fable 5.2 at high (Sphe, Nov 11: "for edit v2, let us use fable 5.2 high"). */
-export const HQ_MODEL = FABLE;
+/** An Edit V2 project's turns until the person picks: Opus 5.5 (Sphe, Nov 16; Fable 5.2 until then), thinking high. */
+export const HQ_MODEL = OPUS;
 export const HQ_EFFORT: Effort = "high";
 /** What an Edit V2 chat can be asked of at any time, build or revision, in the menu's order (Sphe, Nov 11: "allow us to switch models at any time in edit v2"). */
 export const HQ_MODELS: readonly ClaudeModel[] = [FABLE, OPUS, SONNET];
 
 /** The person's choice in the model menu. */
 export interface ModelChoice {
-  /** The revisions' model id (one of `REVISION_MODELS`). */
+  /** Scripts' and ideas' revisions' model id (one of `REVISION_MODELS`). */
   revision: string;
   effort: Effort;
-  /** Edit V2's own pick, apart from the other chats': its model id (one of `HQ_MODELS`) and thinking level. */
-  hq_model: string;
+  /** Edit V2's own thinking level, apart from the other chats'. */
   hq_effort: Effort;
+  /** Each project's own pick (project id → model id), oldest first; a project with none is on Opus 5.5. */
+  projects: Record<string, string>;
 }
 
-export const DEFAULT_CHOICE: ModelChoice = { revision: OPUS.id, effort: DEFAULT_EFFORT, hq_model: HQ_MODEL.id, hq_effort: HQ_EFFORT };
+/** How many projects' picks are kept (the oldest go first). */
+export const PROJECT_PICKS = 500;
+
+export const DEFAULT_CHOICE: ModelChoice = { revision: OPUS.id, effort: DEFAULT_EFFORT, hq_effort: HQ_EFFORT, projects: {} };
 
 /** A saved or sent choice, anything unknown in it taken as the default. */
 export function readChoice(value: unknown): ModelChoice {
   const given = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
   const revision = REVISION_MODELS.find((model) => model.id === given.revision)?.id ?? DEFAULT_CHOICE.revision;
   const effort = EFFORTS.find((level) => level === given.effort) ?? DEFAULT_CHOICE.effort;
-  const hq_model = HQ_MODELS.find((model) => model.id === given.hq_model)?.id ?? DEFAULT_CHOICE.hq_model;
   const hq_effort = EFFORTS.find((level) => level === given.hq_effort) ?? DEFAULT_CHOICE.hq_effort;
-  return { revision, effort, hq_model, hq_effort };
+  const picks = typeof given.projects === "object" && given.projects !== null && !Array.isArray(given.projects) ? Object.entries(given.projects as Record<string, unknown>) : [];
+  const projects = Object.fromEntries(picks.filter((pick): pick is [string, string] => HQ_MODELS.some((model) => model.id === pick[1])).slice(-PROJECT_PICKS));
+  return { revision, effort, hq_effort, projects };
 }
 
-/** The model an Edit V2 turn runs on. */
-export const hqModel = (choice: ModelChoice): ClaudeModel => HQ_MODELS.find((model) => model.id === choice.hq_model) ?? HQ_MODEL;
+/** `choice` with `project`'s pick set to `model` (the newest kept), or taken back to Opus 5.5 when it isn't a model. */
+export function withProjectPick(choice: ModelChoice, project: string, model: string): ModelChoice {
+  const { [project]: _was, ...rest } = choice.projects;
+  return readChoice({ ...choice, projects: HQ_MODELS.some((one) => one.id === model) ? { ...rest, [project]: model } : rest });
+}
+
+/**
+ * The model `project`'s chat runs on once it's built (an Edit V2 one's at any
+ * time, of `HQ_MODELS`; else of `REVISION_MODELS`): its own pick, Opus 5.5
+ * until it has one.
+ */
+export function projectModel(choice: ModelChoice, project: string, hq: boolean): ClaudeModel {
+  const pick = choice.projects[project];
+  return (hq ? HQ_MODELS : REVISION_MODELS).find((model) => model.id === pick) ?? (hq ? HQ_MODEL : OPUS);
+}
 
 /** The model a revision runs on. */
 export const revisionModel = (choice: ModelChoice): ClaudeModel => REVISION_MODELS.find((model) => model.id === choice.revision) ?? OPUS;

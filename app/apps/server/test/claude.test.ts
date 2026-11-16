@@ -129,11 +129,11 @@ test("an Edit V2 project's turn runs in its effects folder with the file tools, 
     // It compacts near the model's whole window, not the other chats' 180k (Sphe, Nov 12).
     expect(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe("1000000");
     expect(String(options.systemPrompt)).toContain("THIS IS AN EDIT V2 VIDEO");
-    // Fable 5.2 thinking high until the person picks, whatever the menu says elsewhere (Sphe, Nov 11).
-    expect(options.model).toBe("claude-fable-5-2");
+    // Opus 5.5 thinking high until the person picks in it, whatever another project's on (Sphe, Nov 16; Fable 5.2 until then).
+    expect(options.model).toBe("claude-opus-5-5");
     expect(options.effort).toBe("high");
     expect(agents.revising(project)).toBe(false);
-    expect(agents.modelName(project)).toBe("Fable 5.2");
+    expect(agents.modelName(project)).toBe("Opus 5.5");
     expect(String(options.systemPrompt)).toContain("- look_at_effect(name: string, beside?: object, detail?: normal|full, end?: number, every_frame?: boolean, grid?: boolean, start?: number, times?: array, zoom?: object)");
     expect(String(options.systemPrompt)).toContain("- fetch_font(family: string, weights?: array)");
     queries[0]!.push({ type: "system", subtype: "init", session_id: "session-hq" });
@@ -142,8 +142,9 @@ test("an Edit V2 project's turn runs in its effects folder with the file tools, 
     await settle();
 
     // Its own pick in the menu, at any time (Sphe, Nov 11): the next turn is on it, the other chats' pick untouched.
-    modelChoice.save({ ...modelChoice.current(), hq_model: "claude-sonnet-5-5", hq_effort: "medium" });
-    expect(JSON.parse(fs.readFileSync(`${home.home}/models.json`, "utf8"))).toEqual({ revision: "claude-opus-5-5", effort: "medium", hq_model: "claude-sonnet-5-5", hq_effort: "medium" });
+    modelChoice.pickFor(project, "claude-sonnet-5-5");
+    modelChoice.save({ ...modelChoice.current(), hq_effort: "medium" });
+    expect(JSON.parse(fs.readFileSync(`${home.home}/models.json`, "utf8"))).toEqual({ revision: "claude-opus-5-5", effort: "medium", hq_effort: "medium", projects: { [project]: "claude-sonnet-5-5" } });
     expect(agents.modelName(project)).toBe("Sonnet 5.5");
     expect(agents.revising(project)).toBe(false);
     await agents.send(project, "Make it red", null, null);
@@ -152,7 +153,14 @@ test("an Edit V2 project's turn runs in its effects folder with the file tools, 
     expect(asked[1]!.options.resume).toBe("session-hq");
     // The other chats' pick changed: HQ's stays.
     modelChoice.save({ ...modelChoice.current(), effort: "low" });
-    expect(modelChoice.current()).toMatchObject({ hq_model: "claude-sonnet-5-5", hq_effort: "medium" });
+    expect(modelChoice.current()).toMatchObject({ hq_effort: "medium", projects: { [project]: "claude-sonnet-5-5" } });
+    // A new Edit V2 project opens on Opus 5.5, though the last pick was Sonnet's (Sphe, Nov 16).
+    const next = home.store.create("HQ next", { width: 1920, height: 1080, fps: 30 }).project.id;
+    await home.store.update(next, "test", (made) => {
+      made.hq = true;
+    });
+    expect(agents.modelName(next)).toBe("Opus 5.5");
+    expect(agents.turnModel(next)).toBe("claude-opus-5-5");
     // Another project is as it was: Opus to build, at the other chats' level.
     const other = home.store.create("Not HQ", { width: 1920, height: 1080, fps: 30 }).project.id;
     expect(agents.modelName(other)).toBe("Opus 5.5");
@@ -952,9 +960,12 @@ test("opus builds the edit; once it's built, a revision is on the model menu's p
     expect(JSON.parse(fs.readFileSync(home.store.chatPath(project), "utf8")).built).toBe(chat.built);
     expect(agents.chat(project)).toMatchObject({ model_name: "Opus 5.5", revising: true, effort: null });
     expect(agents.turnModel(project, "Make the intro shorter")).toBe("claude-opus-5-5");
-    // Sonnet picked in the menu (kept in the home): the revisions are Sonnet's, at the picked level.
+    // Sonnet picked for the scripts and ideas: this project's own pick is still Opus (Sphe, Nov 16).
     modelChoice.save({ revision: "claude-sonnet-5-5", effort: "high" });
-    expect(JSON.parse(fs.readFileSync(`${home.home}/models.json`, "utf8"))).toEqual({ revision: "claude-sonnet-5-5", effort: "high", hq_model: "claude-fable-5-2", hq_effort: "high" });
+    expect(agents.turnModel(project, "Make the intro shorter")).toBe("claude-opus-5-5");
+    // Sonnet picked in this project's menu (kept in the home): its revisions are Sonnet's, at the picked level.
+    modelChoice.pickFor(project, "claude-sonnet-5-5");
+    expect(JSON.parse(fs.readFileSync(`${home.home}/models.json`, "utf8"))).toEqual({ revision: "claude-sonnet-5-5", effort: "high", hq_effort: "high", projects: { [project]: "claude-sonnet-5-5" } });
     expect(agents.chat(project)).toMatchObject({ model_name: "Sonnet 5.5" });
     // A new chat on the built edit still revises it.
     agents.reset(project);

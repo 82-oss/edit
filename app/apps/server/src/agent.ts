@@ -34,7 +34,7 @@ import { join, withExtension } from "./paths.ts";
 import { rateText } from "./project.ts";
 import { compareStrings, takeChars, charCount } from "./rust.ts";
 import { leftOver } from "./put_off.ts";
-import { hqModel, nameOf } from "@edit/types/models";
+import { nameOf, projectModel } from "@edit/types/models";
 
 import * as claudeUsage from "./claude_usage.ts";
 import * as modelChoice from "./model_choice.ts";
@@ -1164,7 +1164,7 @@ export class Agents implements seams.AgentPanel {
     // bunch of things at the same time", and compaction drops what it just studied; on trial: the turn log says its time and tokens).
     // Claude Code clamps it to the model's own window.
     if (code !== null) options.env = { ...options.env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(claude.HQ_COMPACT_WINDOW) };
-    // Edit V2 thinks at its own pick (Fable 5.2's high until picked), the other chats at theirs; a caller naming a level gets it.
+    // Edit V2 thinks at its own level (high until picked), the other chats at theirs; a caller naming a level gets it.
     const level = live.project.hq === true ? (chat.effort ?? modelChoice.current().hq_effort) : (chat.effort ?? claude.effort() ?? "medium");
     if (claude.EFFORTS.includes(level)) options.effort = level as claude.Options["effort"];
     if (chat.thread !== null) options.resume = chat.thread;
@@ -1933,11 +1933,12 @@ export class Agents implements seams.AgentPanel {
    * again from scratch is a build.
    */
   turnModel(project: string, text = ""): string {
-    if (this.isHq(project)) return hqModel(modelChoice.current()).id;
-    return this.revising(project, text) ? claude.revisionModel() : claude.DEFAULT_MODEL;
+    // The project's own pick (Opus 5.5 until it has one, whatever another project's is: Sphe, Nov 16).
+    if (this.isHq(project)) return projectModel(modelChoice.current(), projectOf(project), true).id;
+    return this.revising(project, text) ? projectModel(modelChoice.current(), projectOf(project), false).id : claude.DEFAULT_MODEL;
   }
 
-  /** An Edit V2 project: every turn, build or revision, on its own pick in the menu (Fable 5.2 at high until picked), and messages sent while it works queue on the server. */
+  /** An Edit V2 project: every turn, build or revision, on its own pick in the menu (Opus 5.5 until picked, at Edit V2's level), and messages sent while it works queue on the server. */
   isHq(project: string): boolean {
     return this.store.get(projectOf(project))?.project.hq === true;
   }
@@ -1981,7 +1982,7 @@ export class Agents implements seams.AgentPanel {
     if (chat.built !== null) return;
     chat.built = Date.now();
     this.save(project);
-    diag.info("agent", `${project}: the edit is built; its revisions are ${nameOf(claude.revisionModel())}'s`);
+    diag.info("agent", `${project}: the edit is built; its revisions are ${nameOf(projectModel(modelChoice.current(), projectOf(project), false).id)}'s`);
     this.emitModel(project);
   }
 

@@ -137,23 +137,27 @@ test("the model menu's pick: Opus at medium until picked, kept in the home, anyt
   const { app, home, cleanup } = fixtureHome("routes-models");
   try {
     const ask = asker(app);
-    const hq = { hq_effort: "high", hq_model: "claude-fable-5-2" } as const;
-    expect((await ask("GET", "/api/models")).text).toBe('{"effort":"medium","hq_effort":"high","hq_model":"claude-fable-5-2","revision":"claude-opus-5-5"}');
+    const hq = { hq_effort: "high", projects: {} } as const;
+    expect((await ask("GET", "/api/models")).text).toBe('{"effort":"medium","hq_effort":"high","projects":{},"revision":"claude-opus-5-5"}');
     expect((await ask("PUT", "/api/models", { revision: "claude-sonnet-5-5" })).json()).toEqual({ effort: "medium", revision: "claude-sonnet-5-5", ...hq });
     expect((await ask("PUT", "/api/models", { effort: "max" })).json()).toEqual({ effort: "max", revision: "claude-sonnet-5-5", ...hq });
     expect((await ask("PUT", "/api/models", { effort: "xhigh" })).json()).toEqual({ effort: "xhigh", revision: "claude-sonnet-5-5", ...hq });
     expect(JSON.parse(fs.readFileSync(`${home}/models.json`, "utf8"))).toEqual({ revision: "claude-sonnet-5-5", effort: "xhigh", ...hq });
-    // Edit V2's pick: every model, kept apart from the other chats' (neither changes the other).
-    expect((await ask("PUT", "/api/models", { hq_model: "claude-opus-5-5", hq_effort: "low" })).json()).toEqual({ effort: "xhigh", revision: "claude-sonnet-5-5", hq_effort: "low", hq_model: "claude-opus-5-5" });
-    expect((await ask("PUT", "/api/models", { effort: "medium" })).json()).toEqual({ effort: "medium", revision: "claude-sonnet-5-5", hq_effort: "low", hq_model: "claude-opus-5-5" });
-    expect((await ask("PUT", "/api/models", { hq_model: "claude-sonnet-5-5" })).json()).toMatchObject({ hq_model: "claude-sonnet-5-5", revision: "claude-sonnet-5-5", effort: "medium" });
-    expect(JSON.parse(fs.readFileSync(`${home}/models.json`, "utf8"))).toEqual({ revision: "claude-sonnet-5-5", effort: "medium", hq_model: "claude-sonnet-5-5", hq_effort: "low" });
-    // A saved file from before Edit V2's pick reads it as Fable 5.2 at high.
-    fs.writeFileSync(`${home}/models.json`, JSON.stringify({ revision: "claude-sonnet-5-5", effort: "low" }));
+    // Edit V2's level, kept apart from the other chats' (neither changes the other).
+    expect((await ask("PUT", "/api/models", { hq_effort: "low" })).json()).toEqual({ effort: "xhigh", revision: "claude-sonnet-5-5", hq_effort: "low", projects: {} });
+    expect((await ask("PUT", "/api/models", { effort: "medium" })).json()).toEqual({ effort: "medium", revision: "claude-sonnet-5-5", hq_effort: "low", projects: {} });
+    // A project's own model (Sphe, Nov 16): kept for it alone, the others' picks untouched; one not a model takes it back to Opus.
+    expect((await ask("PUT", "/api/models", { project: "p1", model: "claude-fable-5-2" })).json()).toMatchObject({ revision: "claude-sonnet-5-5", projects: { p1: "claude-fable-5-2" } });
+    expect((await ask("PUT", "/api/models", { project: "p2", model: "claude-sonnet-5-5" })).json()).toMatchObject({ projects: { p1: "claude-fable-5-2", p2: "claude-sonnet-5-5" } });
+    expect((await ask("PUT", "/api/models", { project: "p2", model: "gpt-6" })).json()).toMatchObject({ projects: { p1: "claude-fable-5-2" } });
+    expect((await ask("PUT", "/api/models", { project: 3, model: "claude-opus-5-5" })).status).toBe(400);
+    expect(JSON.parse(fs.readFileSync(`${home}/models.json`, "utf8"))).toEqual({ revision: "claude-sonnet-5-5", effort: "medium", hq_effort: "low", projects: { p1: "claude-fable-5-2" } });
+    // A saved file from before: its Mac-wide Edit V2 model is gone (a new project opens on Opus), its level kept.
+    fs.writeFileSync(`${home}/models.json`, JSON.stringify({ revision: "claude-sonnet-5-5", effort: "low", hq_model: "claude-fable-5-2", hq_effort: "max" }));
     modelChoice.use(`${home}/elsewhere`);
     modelChoice.use(home);
-    expect(modelChoice.current()).toEqual({ revision: "claude-sonnet-5-5", effort: "low", ...hq });
-    expect((await ask("PUT", "/api/models", { revision: "gpt-6", effort: "ultra", hq_model: "gpt-6", hq_effort: "ultra" })).json()).toEqual({ effort: "medium", revision: "claude-opus-5-5", ...hq });
+    expect(modelChoice.current()).toEqual({ revision: "claude-sonnet-5-5", effort: "low", hq_effort: "max", projects: {} });
+    expect((await ask("PUT", "/api/models", { revision: "gpt-6", effort: "ultra", hq_effort: "ultra" })).json()).toEqual({ effort: "medium", revision: "claude-opus-5-5", ...hq });
     expect((await ask("PUT", "/api/models", ["x"])).status).toBe(400);
   } finally {
     modelChoice.save({});

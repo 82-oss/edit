@@ -1,13 +1,13 @@
-// The person's pick in the chats' model menu (`@edit/types/models`): the
-// model a built edit's, script's or idea's revisions run on, and how hard
-// every chat thinks. One for every chat on this computer, kept in
-// `<home>/models.json`; Opus 5.5 at medium until they pick. An Edit V2 chat's
-// pick (`hq_model`, `hq_effort`: Fable 5.2 at high until they pick) is kept
-// beside it, and neither changes the other.
+// The person's pick in the chats' model menu (`@edit/types/models`), kept in
+// `<home>/models.json`: how hard every chat thinks (medium until they pick;
+// an Edit V2 chat at its own level, high until they pick), the model a
+// script's or idea's revisions run on (Opus 5.5 until they pick), and each
+// project's own model (`projects`): a new project opens on Opus 5.5 whatever
+// another was on (Sphe, Nov 16), and a pick in it holds for it.
 
 import * as fs from "node:fs";
 
-import { DEFAULT_CHOICE, readChoice, type ModelChoice } from "@edit/types/models";
+import { DEFAULT_CHOICE, readChoice, withProjectPick, type ModelChoice } from "@edit/types/models";
 
 import { writeAtomic } from "./files.ts";
 import { join } from "./paths.ts";
@@ -46,4 +46,9 @@ export function save(given: unknown): ModelChoice {
   }
   choice = next;
   return next;
+}
+
+/** Saves `project`'s own model pick (one of `HQ_MODELS`; anything else takes it back to Opus 5.5). */
+export function pickFor(project: string, model: string): ModelChoice {
+  return save(withProjectPick(current(), project, model));
 }
