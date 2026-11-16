@@ -27,6 +27,8 @@ const OUT = args.get("out") ?? `${os.homedir()}/.edit-bench-results`;
 const PHASES = new Set((args.get("phases") ?? "open,jumps,play,scrub,edit").split(","));
 const PLAY_SECONDS = Number(args.get("play-seconds") ?? 160);
 const JUMPS = Number(args.get("jumps") ?? 40);
+/** Where the play starts (a frame): a jump there and play, as a person jumping to the B-roll does; else a stretch of ~30 cuts. */
+const PLAY_FROM = args.has("play-from") ? Number(args.get("play-from")) : null;
 const PORT = 9350 + Math.floor(Math.random() * 40);
 const PROFILE = `${os.tmpdir()}/edit-playbench-chrome-${PORT}`;
 if (PROJECT === undefined) throw new Error("bun scripts/playback-bench.ts --label <label> --project <id>");
@@ -336,7 +338,7 @@ try {
     }
     if (PHASES.has("play")) {
       console.error(`${name}: play`);
-      const where = stretch(f, PLAY_SECONDS);
+      const where = PLAY_FROM === null ? stretch(f, PLAY_SECONDS) : { start: PLAY_FROM, cuts: f.cuts.filter((c: number) => c > PLAY_FROM && c < PLAY_FROM + PLAY_SECONDS * f.fps).length };
       result.play ??= {};
       result.play[name] = { ...(await play(cdp, where.start, PLAY_SECONDS, f.fps)), cuts: where.cuts, machine: await machine() };
     }
