@@ -127,6 +127,9 @@ pub struct Player {
     cache: PathBuf,
     /// The frame on screen, and whether the project or size changed since.
     drawn: Option<i64>,
+    /// The picture on screen stood in for the frame's own (a neighbour's, mid-drag:
+    /// `crate::behind`); `sharpen` draws the exact one once the playhead rests.
+    inexact: bool,
     /// The frame the playhead is on: the last one asked for or played, kept while the decoders rest.
     at: Option<i64>,
     /// The last frame drawn's timings (None when the last ask needed no drawing).
@@ -380,6 +383,7 @@ impl Player {
             sounds: HashMap::new(),
             cache: PathBuf::new(),
             drawn: None,
+            inexact: false,
             at: None,
             last: None,
             sound: Sound::default(),
@@ -591,13 +595,37 @@ impl Player {
         )
     }
 
-    /// Draws `frame`, unless it's on screen already (nothing changed since).
+    /// Draws `frame`, unless it's on screen already (nothing changed since). Mid-drag, a
+    /// neighbour's picture may stand in for a layer's (`inexact`); asked again, it's drawn exactly.
     pub fn draw(&mut self, frame: i64) -> Result<(), String> {
-        self.last = None;
-        self.at = Some(frame);
-        if self.drawn == Some(frame) {
+        let again = self.drawn == Some(frame);
+        if again && !self.inexact {
+            self.last = None;
+            self.at = Some(frame);
             return Ok(());
         }
+        self.draw_as(frame, again)
+    }
+
+    /// Whether the picture on screen stood in for the frame's own (`sharpen` draws that).
+    pub fn inexact(&self) -> bool {
+        self.inexact
+    }
+
+    /// The playhead has rested on a frame drawn with a neighbour's picture standing in: its own
+    /// is drawn now. None when there's nothing to draw again.
+    pub fn sharpen(&mut self) -> Option<(i64, Result<(), String>)> {
+        if !std::mem::take(&mut self.inexact) || self.playing.is_some() {
+            return None;
+        }
+        let frame = self.drawn.take()?;
+        Some((frame, self.draw_as(frame, true)))
+    }
+
+    fn draw_as(&mut self, frame: i64, exact: bool) -> Result<(), String> {
+        self.last = None;
+        self.at = Some(frame);
+        self.inexact = false;
         let Some(project) = &self.project else {
             return Err("no edit to draw yet".to_owned());
         };
@@ -618,9 +646,9 @@ impl Player {
         let rest = self.playing.is_none().then_some(frame);
         let pictures = self
             .pictures
-            .decode(project, &scene, shown, &self.sources, rest);
+            .decode(project, &scene, shown, &self.sources, rest, exact);
         times.decoders = decode_stats::take();
-        let pictures = pictures?;
+        let (pictures, stood_in) = pictures?;
         times.decode = ms(started);
         times.layers = pictures.len();
         let started = Instant::now();
@@ -637,6 +665,7 @@ impl Player {
         self.present()?;
         times.present = ms(started);
         self.drawn = Some(frame);
+        self.inexact = stood_in;
         self.last = Some(times);
         match &self.project {
             Some(project) if self.playing.is_none() => {
@@ -1088,6 +1117,7 @@ impl Player {
         if self.playing.is_some() {
             return;
         }
+        let _ = self.sharpen();
         let Some((frame, (fps, until))) = self.drawn.zip(
             self.project
                 .as_ref()

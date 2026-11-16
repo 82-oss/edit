@@ -49,6 +49,10 @@ use edit_engine::player::{describe_draw, trace, DrawTimes, Player};
 /// The playhead resting this long is settled: its sound armed, the cuts ahead decoded.
 const SETTLE: Duration = Duration::from_millis(250);
 
+/// The playhead resting this long after a drag's step drawn with a neighbour's picture: its own
+/// frame is drawn (`Player::sharpen`). Longer than a drag's steps, so a drag never stops for one.
+const SHARPEN: Duration = Duration::from_millis(80);
+
 /// An update's answer: the revision the window now draws, or why it refused (the last one stays).
 type Accepted = mpsc::Sender<Result<u64, String>>;
 
@@ -347,6 +351,14 @@ fn player_thread(layer: usize, commands: mpsc::Receiver<Command>) {
             settled = false;
             rested = std::time::Instant::now();
         }
+        let quiet = rested.elapsed();
+        if !player.is_playing() && player.inexact() && quiet >= SHARPEN {
+            let started = std::time::Instant::now();
+            if let Some((frame, drawn)) = player.sharpen() {
+                let ms = started.elapsed().as_secs_f64() * 1000.0;
+                trace(|| format!("at rest, {}", describe_draw(frame, ms, &drawn, player.last)));
+            }
+        }
         if player.is_playing() {
             wait = player.tick().unwrap_or(SETTLE);
         } else if settled {
@@ -355,7 +367,6 @@ fn player_thread(layer: usize, commands: mpsc::Receiver<Command>) {
             // Settled only once it has rested: after every command, a drag armed its sound at each
             // frame it passed (a mixer started and stopped thirty times a second, and the pictures
             // fell from 24 a second to 5 behind them).
-            let quiet = rested.elapsed();
             if quiet >= SETTLE {
                 player.settle();
                 settled = true;
@@ -363,6 +374,9 @@ fn player_thread(layer: usize, commands: mpsc::Receiver<Command>) {
             } else {
                 wait = SETTLE - quiet;
             }
+        }
+        if !player.is_playing() && player.inexact() {
+            wait = wait.min(SHARPEN.saturating_sub(quiet));
         }
     }
 }

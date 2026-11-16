@@ -1481,8 +1481,10 @@ impl PreviewPictures {
         let _ = self.ahead.send((source, source_time));
     }
 
-    /// `(clip, width, height, BGRA pixels)` for each video layer of `scene`. At rest (`rest`: the
-    /// frame), a picture decoded behind the playhead is read instead of a reader.
+    /// `(clip, width, height, BGRA pixels)` for each video layer of `scene`, and whether a
+    /// neighbour's picture stood in for one. At rest (`rest`: the frame), a picture decoded behind
+    /// the playhead is read instead of a reader: its own, or mid-drag (not `exact`) the nearest kept
+    /// within the step (`crate::behind`).
     pub(crate) fn decode(
         &mut self,
         project: &Project,
@@ -1490,11 +1492,15 @@ impl PreviewPictures {
         shown: (u32, u32),
         sources: &std::collections::HashMap<String, PathBuf>,
         rest: Option<i64>,
-    ) -> Result<Vec<Picture>, String> {
+        exact: bool,
+    ) -> Result<(Vec<Picture>, bool), String> {
         let (requests, clips) = video_requests(project, scene, shown, sources)?;
-        let kept = match rest {
-            Some(frame) => self.behind.lookup(frame, &requests),
-            None => vec![None; requests.len()],
+        let (kept, stood_in) = match rest {
+            Some(frame) => {
+                let found = self.behind.lookup(frame, &requests, exact);
+                (found.pictures, found.stood_in)
+            }
+            None => (vec![None; requests.len()], false),
         };
         let missing: Vec<(Source, f64)> = requests
             .iter()
@@ -1513,7 +1519,7 @@ impl PreviewPictures {
             self.behind.clear();
         }
         let mut decoded = decoded?.into_iter();
-        clips
+        let pictures = clips
             .into_iter()
             .zip(&requests)
             .zip(kept)
@@ -1523,7 +1529,8 @@ impl PreviewPictures {
                     .ok_or_else(|| "a frame wasn't decoded".to_owned())?;
                 Ok((clip, source.key.width, source.key.height, pixels))
             })
-            .collect()
+            .collect::<Result<Vec<Picture>, String>>()?;
+        Ok((pictures, stood_in))
     }
 }
 
