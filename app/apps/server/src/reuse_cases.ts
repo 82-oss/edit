@@ -5,7 +5,8 @@
 // video and detect when case 1 starts and when case 1 ends in a very clean
 // way"). Claude reads the video's words with their times and says where each
 // case begins (after the old video's own transition into it: "We begin with
-// the case of…", "Up next…", "Last up…") and ends (before the next one's, or
+// the case of…", "Up next…", "Last up…", keeping the case's own hook that
+// follows) and ends (before the next one's, or
 // the outro); each edge then moves to a clean cut near it: a shot change in
 // the pause between words, else the quietest moment of that pause, never into
 // a word. Claude's answer is kept per video, so a second reuse of it, or the
@@ -71,12 +72,18 @@ function stamp(seconds: number): string {
   return `${Math.floor(tenths / 600)}:${fixed((tenths % 600) / 10, 1).padStart(4, "0")}`;
 }
 
+/**
+ * The answers kept: 2 since a case keeps its own hook (Nov 16, on our videos: each case opens "Up next…", then a few
+ * of its strongest moments, then "On <date>…"; 1 started every case at its date and dropped the hook).
+ */
+const VERSION = 2;
+
 const SYSTEM = `You find where each case starts and ends in a finished true-crime compilation video of ours, from its transcript.
 
-The video tells several cases, one after another. A narrator opens each with a transition ("We begin with the case of…", "Up next…", "Our next case…", "Last up…"): a teaser line or two that announces the case before telling it. Then the case itself plays: the narrator's setup of the facts (a date, a place, what officers were called for), the footage's own voices, and narration cut in between. After the last case comes an outro (thanks for watching, subscribe, other videos). The video may open on a hook or intro before the first case's transition.
+The video tells several cases, one after another. A narrator opens each with a transition ("We begin with the case of…", "Up next, we have a case where…", "Moving on to the next case…", "Last up…"): the narrator's teaser line or two that announces the case. Then the case itself plays: first, usually, its hook, a few of the case's own strongest moments from the footage (the people's voices, before any date is given); then the narrator's setup of the facts ("On August 28th, 2023, officers from…"); then the footage's own voices with narration cut in between. After the last case comes an outro (thanks for watching, subscribe, other videos). The video may open on a hook or intro before the first case's transition.
 
 For each case, in order, give:
-- first_line: the case's first line, just after its transition. The transition is never part of the case (it's replaced by a new one); the case's own setup narration is.
+- first_line: the case's first line, just after the narrator's transition ends: usually the first line of the case's hook (footage voices), not the "On <date>" setup after it. The transition is never part of the case (it's replaced by a new one); the case's hook and its setup narration are.
 - last_line: the case's last line, just before the next case's transition, or before the outro after the last case.
 - about: a few words naming the case.
 - sure: false when the transcript leaves either edge unclear.
@@ -154,7 +161,7 @@ const keptAt = (home: string, file: string) => join(home, "reuse-cases", `${file
 function kept(home: string, file: string): Case[] | null {
   try {
     const value = JSON.parse(fs.readFileSync(keptAt(home, file), "utf8")) as { version?: unknown; cases?: unknown };
-    return value.version === 1 && Array.isArray(value.cases) ? (value.cases as Case[]) : null;
+    return value.version === VERSION && Array.isArray(value.cases) ? (value.cases as Case[]) : null;
   } catch {
     return null;
   }
@@ -175,7 +182,7 @@ export async function casesOf(home: string, file: string, words: Word[], length:
       const cases = readAnswer(await ask(SYSTEM, prompt, SCHEMA), lines);
       if (typeof cases === "string") throw new Error(cases);
       fs.mkdirSync(join(home, "reuse-cases"), { recursive: true });
-      writeAtomic(keptAt(home, file), JSON.stringify({ version: 1, cases }, null, 1));
+      writeAtomic(keptAt(home, file), JSON.stringify({ version: VERSION, cases }, null, 1));
       diag.info("script", `${file}: ${cases.length} cases found (${cases.map((one) => `${one.number} ${stamp(one.start)}-${stamp(one.end)}${one.sure ? "" : " unsure"}`).join(", ")})`);
       return cases;
     })().finally(() => asking.delete(file));
