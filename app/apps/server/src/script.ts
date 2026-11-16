@@ -1192,6 +1192,13 @@ export function parseF64(text: string): number | null {
  */
 export function cueWords(found: string[]): [string, string] | null {
   for (const note of found) {
+    // What's said, quoted ("\"that house is horrible\"", or two lines quoted one after the other): from its
+    // first word to its last. Lauana's hooks (Nov 16) were cut at the Doc's rounded seconds, a 1 s range for a
+    // line said in 1.5, and ended mid-line.
+    if (QUOTED.test(note)) {
+      const said = quoteCue(note.replace(/["“”]/gu, " "));
+      if (said !== null) return said;
+    }
     let split = note.indexOf(" / ");
     let width = 3;
     if (split < 0) {
@@ -1212,6 +1219,9 @@ export function cueWords(found: string[]): [string, string] | null {
   }
   return null;
 }
+
+/** A note that is only what's said, in double quotes (straight or curly), one quote or several. */
+const QUOTED = /^\s*["“”][^"“”]+["“”](?:\s*["“”][^"“”]+["“”])*\s*$/u;
 
 /** A quote's first and last words as a range's cue: Writer's commentary
  * excerpts start where their quote does (the team, N3on v1: "there's a second

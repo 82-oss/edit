@@ -243,6 +243,13 @@ test("reads_cue_words", () => {
   expect(cueWords(notes("so / cool"))).toEqual(["so", "cool"]);
   expect(cueWords(["Born 3/4/2021 in town"])).toBeNull();
   expect(cueWords(["See https://example.com/a/b"])).toBeNull();
+  // What's said, quoted (Lauana's hooks, Nov 16): its first word to its last, curly quotes, two quotes, and an
+  // ellipsis inside a quote too; a note that only mentions a quote isn't a cue.
+  expect(cueWords(['"that house is horrible"'])).toEqual(["that", "horrible"]);
+  expect(cueWords(["“So, it's probably one of the worst ones I've seen. And for me to tell you that, get ready.”"])).toEqual(["So,", "ready."]);
+  expect(cueWords(['"I know we were out here earlier." "Um, no one can come in."'])).toEqual(["I", "in."]);
+  expect(cueWords(['"is there... you know"'])).toEqual(["is", "know"]);
+  expect(cueWords(['Note to editor: he says "hello" here'])).toBeNull();
 });
 
 const word = (text: string, start: number, end: number): Word => ({ text, start, end });
