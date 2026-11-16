@@ -38,9 +38,9 @@ window.seek = (t) => {
 };
 </script></body></html>`;
 
-function hq(name: string) {
+function hq(name: string, size = { width: 1920, height: 1080 }) {
   const home = fixtureHome(name);
-  const live = home.app.store.create("Welfare check", { width: 1920, height: 1080, fps: 30 });
+  const live = home.app.store.create("Welfare check", { ...size, fps: 30 });
   return { ...home, id: live.project.id };
 }
 
@@ -340,10 +340,10 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
   }
 }, 120_000);
 
-// Its own test, apart from the one above, with more time: about 200 full-size frames, which CI's Mac draws slowly
-// (past two minutes there on Nov 16, where it's 25 s on mandalorian).
+// Its own test, apart from the one above: about 200 frames, at a third of HD (what's checked is which frames and sheets
+// come back, not their pixels; at 1920×1080 CI's Mac took over five minutes on Nov 16).
 test.skipIf(chrome === null)("look_at_effect every_frame: numbered sheets, the looker's reading of a long stretch, beside a reference and zoomed", async () => {
-  const { app, cleanup, id } = hq("effects-every");
+  const { app, cleanup, id } = hq("effects-every", { width: 640, height: 360 });
   const router = buildRouter();
   const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
   try {
@@ -354,10 +354,10 @@ test.skipIf(chrome === null)("look_at_effect every_frame: numbered sheets, the l
     // Every frame of a stretch, tiled into numbered sheets: what only moves between frames shows there (Sphe, Nov 12: a board's
     // handwriting shimmered as it drifted, in no single still). At most 48 a look, and where to carry on is said.
     write(app, id, "counter", {
-      "scene.html": `<!doctype html><body style="margin:0;background:#222"><canvas id="c" width="1920" height="1080"></canvas><script>
+      "scene.html": `<!doctype html><body style="margin:0;background:#222"><canvas id="c" width="640" height="360"></canvas><script>
         const c = document.getElementById("c").getContext("2d");
         window.duration = 3; window.ready = Promise.resolve();
-        window.seek = (t) => { c.fillStyle = "#222"; c.fillRect(0, 0, 1920, 1080); c.fillStyle = "#fff"; c.font = "300px monospace"; c.fillText(String(Math.round(t * 30)), 200, 600); };
+        window.seek = (t) => { c.fillStyle = "#222"; c.fillRect(0, 0, 640, 360); c.fillStyle = "#fff"; c.font = "100px monospace"; c.fillText(String(Math.round(t * 30)), 66, 200); };
       </script></body>`,
     });
     const every = async (args: Record<string, unknown>) => ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "counter", every_frame: true, ...args } } }, id)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
@@ -393,31 +393,31 @@ test.skipIf(chrome === null)("look_at_effect every_frame: numbered sheets, the l
     expect(full.content.find((part) => part.text?.includes("at full size"))).toBeDefined();
     // Beside a reference, zoomed: each of its frames paired with the reference's at the same moment, cropped to one region (Sphe, Nov 12).
     const reference = join(app.store.cacheDir(), "reference.mp4");
-    expect(Bun.spawnSync(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=30:duration=3:decimals=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", reference]).exitCode).toBe(0);
+    expect(Bun.spawnSync(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=30:duration=3:decimals=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", reference]).exitCode).toBe(0);
     await app.store.update(id, "test", (project) => {
-      project.media.push({ id: "ref", name: "reference.mp4", path: reference, kind: "video", duration: 3, width: 1920, height: 1080, fps: 30, has_audio: false });
+      project.media.push({ id: "ref", name: "reference.mp4", path: reference, kind: "video", duration: 3, width: 640, height: 360, fps: 30, has_audio: false });
     });
-    const paired = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "counter", every_frame: true, start: 0.5, end: 0.8, beside: { media_id: "ref", start: 1 }, zoom: { x: 100, y: 200, width: 960, height: 540 } } } }, id)) as { result: { content: { type: string; text?: string; data?: string }[]; isError: boolean } }).result;
+    const paired = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "counter", every_frame: true, start: 0.5, end: 0.8, beside: { media_id: "ref", start: 1 }, zoom: { x: 30, y: 60, width: 320, height: 180 } } } }, id)) as { result: { content: { type: string; text?: string; data?: string }[]; isError: boolean } }).result;
     expect(paired.isError, paired.content.map((part) => part.text).join(" ")).toBe(false);
     const sheetsOut = paired.content.filter((part) => part.type === "image");
     expect(sheetsOut.length).toBe(2);
-    expect(paired.content.find((part) => part.text?.includes("beside ref"))!.text).toContain("zoomed to 960×540 at 100,200");
+    expect(paired.content.find((part) => part.text?.includes("beside ref"))!.text).toContain("zoomed to 320×180 at 30,60");
     if (process.env.EDIT_KEEP_SHEET) fs.writeFileSync(process.env.EDIT_KEEP_SHEET, Buffer.from(sheetsOut[0]!.data!, "base64"));
-    const one = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "counter", times: [1], zoom: { x: 0, y: 0, width: 800, height: 450 } } } }, id)) as { result: { content: { type: string }[]; isError: boolean } }).result;
+    const one = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "counter", times: [1], zoom: { x: 0, y: 0, width: 320, height: 180 } } } }, id)) as { result: { content: { type: string }[]; isError: boolean } }).result;
     expect(one.isError).toBe(false);
     expect(one.content.filter((part) => part.type === "image").length).toBe(1);
     const nowhere = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "counter", times: [1], beside: { media_id: "nope", start: 0 } } } }, id)) as { result: { content: { text?: string }[]; isError: boolean } }).result;
     expect(nowhere.isError).toBe(true);
     // And footage zoomed: a region of the media's own frames.
-    const zoomed = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_media", arguments: { media_id: "ref", times: [0.5, 2], zoom: { x: 900, y: 400, width: 640, height: 360 } } } }, id)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
+    const zoomed = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_media", arguments: { media_id: "ref", times: [0.5, 2], zoom: { x: 300, y: 130, width: 240, height: 135 } } } }, id)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
     expect(zoomed.isError, zoomed.content.map((part) => part.text).join(" ")).toBe(false);
     expect(zoomed.content.filter((part) => part.type === "image").length).toBe(1);
     // Past the reference's end a pair is still a pair (black on its side), and frames over a look's most are said, not dropped.
-    const past = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "counter", every_frame: true, start: 0, end: 1, beside: { media_id: "ref", start: 2.5 }, zoom: { x: 0, y: 0, width: 960, height: 540 } } } }, id)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
+    const past = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "counter", every_frame: true, start: 0, end: 1, beside: { media_id: "ref", start: 2.5 }, zoom: { x: 0, y: 0, width: 320, height: 180 } } } }, id)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
     expect(past.isError, past.content.map((part) => part.text).join(" ")).toBe(false);
     expect(past.content.filter((part) => part.type === "image").length).toBe(3);
     expect(past.content.at(-1)!.text).toContain("Frames 24–29 are left: look again with start 0.800");
-    const stretch = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_media", arguments: { media_id: "ref", every_frame: true, start: 0, end: 1, zoom: { x: 900, y: 400, width: 640, height: 360 } } } }, id)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
+    const stretch = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_media", arguments: { media_id: "ref", every_frame: true, start: 0, end: 1, zoom: { x: 300, y: 130, width: 240, height: 135 } } } }, id)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
     expect(stretch.isError, stretch.content.map((part) => part.text).join(" ")).toBe(false);
     expect(stretch.content.at(-1)!.text).toContain("Frames 24–29 are left: look again with start 0.800");
   } finally {
@@ -425,7 +425,7 @@ test.skipIf(chrome === null)("look_at_effect every_frame: numbered sheets, the l
     await server.stop(true);
     cleanup();
   }
-}, 300_000);
+}, 120_000);
 
 test.skipIf(chrome === null)("an effect on the timeline is rendered from its code, in place of its still, and again when its code changes", async () => {
   const { app, cleanup, id } = hq("effects-render");
