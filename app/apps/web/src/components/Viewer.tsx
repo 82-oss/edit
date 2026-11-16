@@ -369,6 +369,11 @@ export function Viewer() {
             </div>
           )}
         </div>
+        {hq && !fullscreen && (
+          <div className={cx("absolute right-2.5 top-2.5 transition-opacity duration-300", hidden && "pointer-events-none opacity-0")}>
+            <CommentButton />
+          </div>
+        )}
         {hq ? (
           <div className={cx("absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 via-black/35 to-transparent pt-14 transition-opacity duration-300", hidden && "pointer-events-none opacity-0")}>
             <VideoControls fullscreen={fullscreen} />
@@ -604,8 +609,8 @@ function clock(frame: number, fps: number): string {
 /**
  * Edit V2's controls (Sphe, Nov 11: "much cleaner, without the
  * clumsy background almost like a youtube video controls"): a thin line to
- * scrub along, then play and the time on the left, a note, the speed and full
- * screen on the right, over a shade that fades up from the picture's foot.
+ * scrub along, then play and the time on the left, the speed and full screen
+ * on the right (commenting is in the top right: CommentButton), over a shade that fades up from the picture's foot.
  * Frame steps and the ends are the keys' (arrows, Home, End).
  */
 function VideoControls({ fullscreen }: { fullscreen: boolean }) {
@@ -614,7 +619,6 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
   const viewed = useViewedProject();
   const fps = viewed ? rate(viewed.settings) : 30;
   const duration = viewed ? projectDuration(viewed) : 0;
-  const noting = useNotes((state) => state.commenting);
   const notes = useNotes((state) => state.notes);
   const speed = useSpeed();
   const light = "text-white/90 hover:bg-white/10 hover:text-white";
@@ -656,11 +660,6 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
           </span>
         )}
         <div className="ml-auto flex items-center gap-1">
-          {!fullscreen && (
-            <IconButton label={noting ? "Stop commenting (Esc)" : "Comment on the picture (Q)"} active={noting} aria-pressed={noting} onClick={toggleNote} className={noting ? undefined : light}>
-              <MessageSquarePlus size={16} />
-            </IconButton>
-          )}
           <IconButton
             label={speed === 1 ? "Play at 2× speed (Shift+.)" : "Play at normal speed (Shift+,)"}
             aria-pressed={speed !== 1}
@@ -675,6 +674,26 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Commenting on the picture, named as the thumbnail page's is, in the
+ * player's top right (Sphe, Nov 16: "just for ease of reach"; it sat among
+ * the controls at the foot as an icon). Fades with the controls while playing.
+ */
+function CommentButton() {
+  const noting = useNotes((state) => state.commenting);
+  return (
+    <button
+      type="button"
+      title={noting ? "Stop commenting (Esc)" : "Comment on the picture (Q)"}
+      aria-pressed={noting}
+      onClick={toggleNote}
+      className={cx("flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] transition-colors", noting ? "bg-fg text-black" : "bg-black/45 text-white/90 backdrop-blur-sm hover:bg-black/60 hover:text-white")}
+    >
+      <MessageSquarePlus size={14} /> Comment
+    </button>
   );
 }
 
