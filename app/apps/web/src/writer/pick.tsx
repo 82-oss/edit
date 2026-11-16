@@ -69,7 +69,8 @@ function Picker({ title, extensions, onDone }: { title: string; extensions: stri
         </div>
         {problem && <p className="bad">{problem}</p>}
         <div className="file-picker-list">
-          {listing?.entries.length === 0 && <p className="faint">Nothing to choose here.</p>}
+          {listing?.refused && <p className="faint">{listing.refused === "privacy" ? "macOS hasn't let Edit open this folder." : "Edit isn't allowed to open this folder."}</p>}
+          {listing?.entries.length === 0 && !listing.refused && <p className="faint">Nothing to choose here.</p>}
           {listing?.entries.map((entry) => (
             <button key={entry.path} type="button" className="file-picker-row" onClick={() => (entry.dir ? void go(entry.path) : close(entry.path))}>
               <Icon name={entry.dir ? "folder" : "file"} size={14} />

@@ -137,6 +137,8 @@ export interface FsListing {
   parent: string | null;
   entries: FsEntry[];
   places: { name: string; path: string }[];
+  /** Edit may not open this folder (the server's 403): macOS's privacy settings keep it, or its permissions do. No entries then. */
+  refused?: "privacy" | "permission";
 }
 
 /** A finished export of a project (apps/server/src/exports.ts ExportRecord). */
@@ -233,8 +235,17 @@ export const api = {
     if (path) query.set("path", path);
     if (extensions.length) query.set("ext", extensions.join(","));
     const asked = query.toString();
-    return request<FsListing>("GET", `/api/fs${asked ? `?${asked}` : ""}`);
+    return request<FsListing>("GET", `/api/fs${asked ? `?${asked}` : ""}`).catch((error: unknown) => {
+      // A folder Edit may not open is still where the picker is: it stays there and says so.
+      const body = error instanceof ApiError && error.status === 403 ? (error.body as Partial<FsListing> | null) : null;
+      if (body?.refused && typeof body.path === "string") return { path: body.path, parent: body.parent ?? null, entries: [], places: body.places ?? [], refused: body.refused };
+      throw error;
+    });
   },
+  /** A new folder `name` in `path` (inside home) on the machine running Edit; its path. */
+  newFolder: (path: string, name: string) => request<{ path: string }>("POST", "/api/fs/folder", { path, name }),
+  /** Opens macOS's Files and Folders settings on the Mac running Edit. */
+  privacySettings: () => request<{ ok: boolean }>("POST", "/api/fs/privacy"),
   /** `drive`: upload the finished file to Drive (by default only a whole subtitled video is). */
   /** Exports to this computer only (the Share dialog's Export): into the exports folder, no review link, no Drive, no copy for the cloud. */
   exportHere: (id: string, options: ExportOptions, watermark: string | null) =>

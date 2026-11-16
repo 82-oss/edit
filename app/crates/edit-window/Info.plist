@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into Edit.app's Info.plist by `tauri build` / `tauri bundle` (beside tauri.conf.json).
+     Without these, macOS refuses Edit (and the `edit serve` it starts) these folders without asking. -->
+<plist version="1.0">
+<dict>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Edit opens footage on your Desktop and can save exports there.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Edit opens footage in Documents and can save exports there.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Edit opens footage in Downloads and can save exports there.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Edit opens footage on external drives and can save exports there.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Edit opens footage on network drives and can save exports there.</string>
+</dict>
+</plist>

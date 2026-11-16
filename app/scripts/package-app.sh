@@ -43,6 +43,11 @@ if [[ "${CI:-}" == true && -x "$helper" ]]; then tauri=(bundle); fi
 built="${CARGO_TARGET_DIR:-$root/target}/$target/release/bundle/macos/Edit.app"
 app="$work/Edit.app"
 ditto "$built" "$app"
+# crates/edit-window/Info.plist's reasons, merged in by tauri: without them macOS refuses Desktop, Documents and
+# Downloads without asking (the folder picker on the M4, nightly-75).
+for key in NSDesktopFolderUsageDescription NSDocumentsFolderUsageDescription NSDownloadsFolderUsageDescription; do
+  /usr/libexec/PlistBuddy -c "Print :$key" "$app/Contents/Info.plist" >/dev/null || { echo "Edit.app's Info.plist has no $key" >&2; exit 1; }
+done
 
 identity=-
 runtime=()

@@ -13,6 +13,7 @@ import { respond } from "../src/http/server.ts";
 import { useNative, wrap, type ExportJob, type Native } from "../src/native/index.ts";
 import { createStub } from "../src/native/stub.ts";
 import { buildRouter, fileStamp, reserveUpload } from "../src/routes.ts";
+import { refusal } from "../src/folders.ts";
 import { bindAddresses, parseSocketAddr, showAddress } from "../src/serve.ts";
 import { defaultExportPath } from "../src/server_seam.ts";
 import { fixtureHome, scratch } from "./helpers/home.ts";
@@ -234,6 +235,104 @@ test("the file browser lists folders first, then media, without hidden files", a
     ]);
     expect(listed.places.at(-1)!.name).toBe("Home");
     expect(await (await send(`/api/fs?path=${encodeURIComponent(`${dir}/none`)}`)).json()).toEqual({ error: "folder not found" });
+  } finally {
+    cleanup();
+  }
+});
+
+test("the file browser answers a folder it may not open as refused, staying on it, never as empty or missing", async () => {
+  const { dir, app, cleanup } = fixtureHome("server-fs-refused");
+  const kept = `${dir}/Documents`;
+  try {
+    fs.mkdirSync(`${kept}/inside`, { recursive: true });
+    fs.chmodSync(kept, 0o000);
+    const { send } = client(app);
+    // Root reads anything: nothing to refuse.
+    if (process.getuid?.() !== 0) {
+      for (const path of [kept, `${kept}/inside`]) {
+        const answer = await send(`/api/fs?path=${encodeURIComponent(path)}`);
+        expect(answer.status).toBe(403);
+        const body = (await answer.json()) as { error: string; refused: string; path: string; parent: string | null; places: { name: string }[] };
+        expect(body.refused).toBe("permission");
+        expect(body.path).toBe(path);
+        expect(body.parent).toBe(parent(path));
+        expect(body.error).toBe(`Edit isn't allowed to open ${path.split("/").at(-1)}`);
+        expect(body.places.at(-1)!.name).toBe("Home");
+      }
+    }
+  } finally {
+    fs.chmodSync(kept, 0o755);
+    cleanup();
+  }
+});
+
+test("EPERM is macOS's privacy settings on a Mac, a plain permission elsewhere", () => {
+  const perm = Object.assign(new Error("x"), { code: "EPERM" });
+  const access = Object.assign(new Error("x"), { code: "EACCES" });
+  expect(refusal(perm, "darwin")).toBe("privacy");
+  expect(refusal(perm, "linux")).toBe("permission");
+  expect(refusal(access, "darwin")).toBe("permission");
+  expect(refusal(Object.assign(new Error("x"), { code: "ENOENT" }), "darwin")).toBeNull();
+});
+
+test("a new folder goes where the picker is, inside home, with a name a folder can have", async () => {
+  const { dir, app, cleanup } = fixtureHome("server-fs-new");
+  const was = process.env.HOME;
+  process.env.HOME = fs.realpathSync(dir);
+  try {
+    const home = process.env.HOME;
+    fs.mkdirSync(`${home}/Movies`);
+    const { send, jsonBody } = client(app);
+    const make = async (path: string, name: unknown) => {
+      const answer = await send("/api/fs/folder", jsonBody("POST", { path, name }));
+      return { status: answer.status, body: (await answer.json()) as { path?: string; error?: string } };
+    };
+    expect(await make(`${home}/Movies`, "  Renders ")).toEqual({ status: 200, body: { path: `${home}/Movies/Renders` } });
+    // A folder in the one just made, given as ~/…
+    expect(await make("~/Movies/Renders", "Shorts")).toEqual({ status: 200, body: { path: `${home}/Movies/Renders/Shorts` } });
+    expect(fs.statSync(`${home}/Movies/Renders/Shorts`).isDirectory()).toBe(true);
+    expect(await make(`${home}/Movies`, "Renders")).toEqual({ status: 409, body: { error: "There's already a folder called “Renders” here" } });
+    fs.writeFileSync(`${home}/Movies/notes`, "x");
+    expect(await make(`${home}/Movies`, "notes")).toEqual({ status: 409, body: { error: "There's already a file called “notes” here" } });
+    for (const [name, error] of [
+      ["", "Name the folder first"],
+      ["   ", "Name the folder first"],
+      [".", "A folder's name can't start with a dot"],
+      ["..", "A folder's name can't start with a dot"],
+      [".hidden", "A folder's name can't start with a dot"],
+      ["a/b", "A folder's name can't have / or : in it"],
+      ["a:b", "A folder's name can't have / or : in it"],
+      ["a\u0000b", "That name has characters a folder can't have"],
+      ["x".repeat(256), "That name is too long"],
+    ]) {
+      expect(await make(`${home}/Movies`, name)).toEqual({ status: 400, body: { error: error! } });
+    }
+    expect((await make(`${home}/Movies`, 7)).status).toBe(400);
+    expect(await make(`${home}/none`, "x")).toEqual({ status: 404, body: { error: "folder not found" } });
+    // Outside home, even through a link from inside it.
+    const outside = fs.mkdtempSync(`${parent(home)}/outside-`);
+    try {
+      fs.symlinkSync(outside, `${home}/link`);
+      for (const path of [outside, `${home}/link`, "/"]) expect(await make(path, "x")).toEqual({ status: 400, body: { error: "New folders go inside your home folder" } });
+      expect(fs.readdirSync(outside)).toEqual([]);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+    expect(fs.readdirSync(`${home}/Movies`).sort()).toEqual(["Renders", "notes"]);
+  } finally {
+    process.env.HOME = was;
+    cleanup();
+  }
+});
+
+test("the privacy settings open only on a Mac", async () => {
+  // On a Mac this would open System Settings on the machine running the tests.
+  if (process.platform === "darwin") return;
+  const { app, cleanup } = fixtureHome("server-fs-privacy");
+  try {
+    const { send } = client(app);
+    const answer = await send("/api/fs/privacy", { method: "POST" });
+    expect([answer.status, await answer.json()]).toEqual([400, { error: "Only a Mac has these settings" }]);
   } finally {
     cleanup();
   }

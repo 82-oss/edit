@@ -144,16 +144,6 @@ export function ExportFolderPrompt() {
       confirm="Use this folder"
       cancel={ask ? "Not now" : "Cancel"}
       onPick={use}
-      aside={(here, pick, busy) =>
-        folder !== null &&
-        here !== "" &&
-        here !== folder.suggested &&
-        here !== folder.path && (
-          <button type="button" className="min-w-0 truncate text-left text-[12px] text-muted hover:text-fg hover:underline" title={folder.suggested} disabled={busy} onClick={() => pick(folder.suggested)}>
-            Use {folder.suggestedShown}
-          </button>
-        )
-      }
     />
   );
 }

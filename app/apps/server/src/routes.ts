@@ -6,6 +6,7 @@ import * as windowFocus from "./window_focus.ts";
 import * as linuxDesktop from "./linux_desktop.ts";
 import * as accounts from "./accounts.ts";
 import * as fs from "node:fs";
+import * as folders from "./folders.ts";
 
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
@@ -29,11 +30,11 @@ import { badShape, pathEndingAt, readJson, showPath, type RouteContext, type Rou
 import { baseRouter } from "./http/server.ts";
 import { importPaths } from "./import.ts";
 import { routes as mediaRoutes } from "./media_tools.ts";
-import { checkKey, isMediaPath, Semaphore } from "./media.ts";
+import { checkKey, Semaphore } from "./media.ts";
 import type { ExportOptions, Project, Style } from "./model.ts";
 import { withProjectAsync } from "./native/index.ts";
 import * as patches from "./patch.ts";
-import { canonical, expandHome, extension, fileName, fileStem, isFile, join, parent } from "./paths.ts";
+import { canonical, expandHome, extension, fileName, fileStem, isFile, join } from "./paths.ts";
 import { DEFAULT_SETTINGS, SHORTS_SETTINGS } from "./project.ts";
 import * as seams from "./seams.ts";
 import { readExportFolder, saveExportFolder } from "./export_folder.ts";
@@ -232,7 +233,7 @@ export function buildRouter(): Router<App> {
     .post("/api/exports/folder", setExportFolder)
     .get("/api/exports/file", exportedFile);
   seams.script.routes(router);
-  router.get("/api/fs", browse);
+  folders.routes(router);
   return router;
 }
 
@@ -1213,56 +1214,3 @@ async function exportedFile(context: Context): Promise<Response> {
   return response;
 }
 
-// ---------------------------------------------------------------------------
-// The file browser (picking footage on the machine running Edit)
-
-function browse(context: Context): Response {
-  const home = process.env.HOME !== undefined && process.env.HOME !== "" ? process.env.HOME : "/";
-  const asked = context.query.get("path");
-  const given = asked !== null && asked !== "" ? expandHome(asked) : home;
-  let dir: string;
-  try {
-    dir = fs.realpathSync(given);
-  } catch {
-    throw notFound("folder not found");
-  }
-  const entries: { name: string; path: string; dir: boolean; size: number }[] = [];
-  // `ext=txt,md`: files with these extensions instead of media (Script mode's text sources).
-  const wanted = context.query.get("ext")?.split(",").map((one) => one.trim().toLowerCase()).filter((one) => one !== "") ?? null;
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir);
-  } catch (error) {
-    throw bad(ioMessage(error));
-  }
-  for (const name of names) {
-    if (name.startsWith(".")) continue;
-    const path = join(dir, name);
-    let meta: fs.Stats;
-    try {
-      meta = fs.statSync(path);
-    } catch {
-      continue;
-    }
-    const isDir = meta.isDirectory();
-    if (!isDir && !(wanted === null ? isMediaPath(path) : wanted.includes((extension(path) ?? "").toLowerCase()))) continue;
-    entries.push({ name, path, dir: isDir, size: meta.size });
-  }
-  entries.sort((a, b) => {
-    if (a.dir !== b.dir) return a.dir ? -1 : 1;
-    const x = a.name.toLowerCase();
-    const y = b.name.toLowerCase();
-    return x < y ? -1 : x > y ? 1 : 0;
-  });
-  const places: { name: string | null; path: string }[] = [];
-  for (const name of ["Desktop", "Movies", "Downloads", "Documents", "Videos", "Music"]) {
-    const path = join(home, name);
-    try {
-      if (fs.statSync(path).isDirectory()) places.push({ name: fileName(path), path });
-    } catch {
-      // Not on this machine.
-    }
-  }
-  places.push({ name: "Home", path: home });
-  return json({ entries, parent: parent(dir) === "" ? null : parent(dir), path: dir, places });
-}
