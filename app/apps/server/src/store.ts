@@ -42,6 +42,16 @@ export interface Live {
   project: Project;
 }
 
+/** A version of a project kept aside (`Store.keepAside`). */
+export interface KeptVersion {
+  /** Its file's stem: what `keptVersion` and undo_changes' `kept` take. */
+  name: string;
+  /** When it was this machine's (ms since the epoch). */
+  at: number;
+  /** "overtaken": this machine's edit the cloud overtook (a conflict, a takeover); "copy": an old "(conflicted copy)" folded in. */
+  why: "overtaken" | "copy";
+}
+
 export type UpdateKind = "not_found" | "conflict" | "invalid" | "refused";
 
 /** Why a write didn't happen; callers word it for whoever asked. */
@@ -444,8 +454,8 @@ export class Store {
   /**
    * Keeps `project` in `id`'s history now (`projects/history/<id>/`, where
    * every project's earlier saves are), whatever the history's own pace: the
-   * edit before a reset, or this machine's version the cloud overtook (Sphe,
-   * Nov 15: no more "(conflicted copy)" projects on Home). The file's path.
+   * edit before a reset. It rotates out with the rest; what must never go is
+   * kept aside (`keepAside`). The file's path.
    */
   keepNow(id: string, project: Project): string {
     if (!validId(id)) throw new Error(`not a project id: ${JSON.stringify(id)}`);
@@ -456,6 +466,64 @@ export class Store {
     const path = join(dir, `${at}.json`);
     writeAtomic(path, jsonForSerde(project));
     return path;
+  }
+
+  /**
+   * Keeps `project` aside for good as a version of `id` (`projects/kept/<id>/`):
+   * this machine's version the cloud overtook, or an old "(conflicted copy)"
+   * folded in. Out of the history's rotation and the cache cleaner's reach,
+   * so nothing in it goes unless its project's own folder is removed by
+   * hand. `name` is the file's stem: a copy's id keeps it once, whatever
+   * happens after (the time, else). The kept version's name, as `kept` lists it.
+   */
+  keepAside(id: string, project: Project, name?: string): string {
+    if (!validId(id)) throw new Error(`not a project id: ${JSON.stringify(id)}`);
+    if (name !== undefined && !validId(name)) throw new Error(`not a kept version's name: ${JSON.stringify(name)}`);
+    const dir = join(this.home, "projects", "kept", id);
+    fs.mkdirSync(dir, { recursive: true });
+    let stem = name;
+    if (stem === undefined) {
+      let at = nowMs();
+      while (fs.existsSync(join(dir, `${at}.json`))) at++;
+      stem = String(at);
+    }
+    writeAtomic(join(dir, `${stem}.json`), jsonForSerde(project));
+    return stem;
+  }
+
+  /** `id`'s versions kept aside (`keepAside`), oldest first: each one's name, when it was this machine's, and why it's kept. */
+  kept(id: string): KeptVersion[] {
+    if (!validId(id)) return [];
+    let names: string[];
+    try {
+      names = fs.readdirSync(join(this.home, "projects", "kept", id));
+    } catch {
+      return [];
+    }
+    const out: KeptVersion[] = [];
+    for (const file of names) {
+      const name = file.endsWith(".json") ? file.slice(0, -".json".length) : null;
+      if (name === null || !validId(name)) continue;
+      // A copy's id (`p<ms>-<n>`) says when it was made; the time is a stem of its own.
+      const copy = /^p(\d+)-/.exec(name);
+      const at = /^\d+$/.test(name) ? Number(name) : copy !== null ? Number(copy[1]) : 0;
+      out.push({ name, at, why: copy !== null ? "copy" : "overtaken" });
+    }
+    return out.sort((a, b) => a.at - b.at || (a.name < b.name ? -1 : 1));
+  }
+
+  /** One of `id`'s versions kept aside, as it was kept. */
+  keptVersion(id: string, name: string): Project {
+    if (!validId(id) || !validId(name)) throw new Error(`no kept version ${JSON.stringify(name)}`);
+    let text: string;
+    try {
+      text = fs.readFileSync(join(this.home, "projects", "kept", id, `${name}.json`), "utf8");
+    } catch {
+      throw new Error(`no kept version ${JSON.stringify(name)}: edit_history lists them`);
+    }
+    const loaded = native().projectLoad(asSerdeRead(text));
+    if (loaded.problem !== undefined) throw new Error(`kept version ${name} won't read: ${loaded.problem}`);
+    return JSON.parse(loaded.json) as Project;
   }
 
   /**

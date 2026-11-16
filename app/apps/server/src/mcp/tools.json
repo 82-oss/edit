@@ -4252,7 +4252,7 @@
   },
   {
     "name": "edit_history",
-    "description": "The project's newest changes, newest first (Edit V2): each revision with when, who made it (you and which tool, the person, or Edit by itself) and what it changed. For undo_changes.",
+    "description": "The project's newest changes, newest first (Edit V2): each revision with when, who made it (you and which tool, the person, or Edit by itself) and what it changed. Then any versions kept aside: this computer's edit that another computer's overtook (a conflict, a takeover), or an old \"(conflicted copy)\" folded in. For undo_changes.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4270,7 +4270,7 @@
   },
   {
     "name": "undo_changes",
-    "description": "Take changes to the project back (Edit V2): revs, those changes alone (refused where a later change touched the same thing, so nothing done since is lost: it says which), or back_to, everything after that revision. Yours, the person's or Edit's, from edit_history. It's one new change, itself undone the same way. An effect's code has its own versions (restore_effect).",
+    "description": "Take changes to the project back (Edit V2): revs, those changes alone (refused where a later change touched the same thing, so nothing done since is lost: it says which), or back_to, everything after that revision. Yours, the person's or Edit's, from edit_history. Or kept, a version edit_history lists as kept aside, brought back as the whole edit (when the person asks for their lost changes). It's one new change, itself undone the same way. An effect's code has its own versions (restore_effect).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4284,6 +4284,10 @@
         "back_to": {
           "type": "integer",
           "description": "Undo everything after this revision."
+        },
+        "kept": {
+          "type": "string",
+          "description": "A version kept aside, by its name in edit_history: it becomes the edit (alone, without revs or back_to)."
         },
         "project_id": {
           "type": "string",

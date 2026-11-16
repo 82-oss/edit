@@ -387,7 +387,7 @@ test("its own save that landed while its answer was lost is no conflict: no copy
   }
 });
 
-test("a conflict keeps this machine's changes in the project's history and takes the cloud's version: no copy", async () => {
+test("a conflict keeps this machine's changes aside for good and takes the cloud's version: no copy", async () => {
   const { app, store, projects, events, cleanup } = setup("cloud-conflict");
   try {
     const id = store.create("Case", SETTINGS_1080).project.id;
@@ -402,17 +402,38 @@ test("a conflict keeps this machine's changes in the project's history and takes
     // No "(conflicted copy)" anywhere: one project, here and in the cloud.
     expect(store.list().map((summary) => summary.id)).toEqual([id]);
     expect(mock.cloud.convex.body(id)!.name).toBe("Case (their edit)");
-    // This machine's version is in the project's history.
-    const history = path.join(store.home, "projects", "history", id);
-    const kept = fs.readdirSync(history).map((name) => JSON.parse(fs.readFileSync(path.join(history, name), "utf8")) as Project);
-    expect(kept.some((project) => project.name === "Case (my edit)")).toBe(true);
+    // This machine's version is kept aside (out of the history's rotation and the cache cleaner's reach), listed for the agent.
+    const kept = store.kept(id);
+    expect(kept).toHaveLength(1);
+    expect(kept[0]!.why).toBe("overtaken");
+    expect(store.keptVersion(id, kept[0]!.name).name).toBe("Case (my edit)");
+    expect(fs.existsSync(path.join(store.home, "projects", "kept", id, `${kept[0]!.name}.json`))).toBe(true);
     // Settled: nothing left saying "conflict"; told once, in a line.
     expect(projects.status(id)).toMatchObject({ sync: "synced", rev: 2, dirty: false });
     const said = events.find((event) => event.type === "cloud-conflict");
     expect(said).toEqual({
       type: "cloud-conflict",
       id,
-      message: "“Case (my edit)” was changed on another computer meanwhile, so that version is open. Your last changes are saved in its history.",
+      message: "“Case (my edit)” was changed on another computer meanwhile, so that version is open. Your last changes are kept on this computer.",
+    });
+  } finally {
+    cleanup();
+  }
+});
+
+test("in Edit V2 the conflict's line says the agent brings this machine's changes back (its tools do)", async () => {
+  const { app, store, projects, events, cleanup } = setup("cloud-conflict-v2");
+  try {
+    const id = store.create("Case", SETTINGS_1080).project.id;
+    await store.update(id, "test", (project) => void (project.hq = true));
+    await runStep(app, projects, id, "Acquire");
+    await runStep(app, projects, id, "Push");
+    mock.cloud.convex.saveElsewhere({ ...structuredClone(store.get(id)!.project), name: "Case (their edit)" } as unknown as Record<string, unknown>, "kenobi");
+    await store.update(id, "test", (project) => void (project.name = "Case (my edit)"));
+    await runStep(app, projects, id, "Push");
+    expect(store.kept(id)).toHaveLength(1);
+    expect(events.find((event) => event.type === "cloud-conflict")).toMatchObject({
+      message: "“Case (my edit)” was changed on another computer meanwhile, so that version is open. Your last changes are kept on this computer: ask the agent to bring them back.",
     });
   } finally {
     cleanup();
@@ -495,7 +516,7 @@ test("a save landing while the lock's first download runs is never written over"
   }
 });
 
-test("losing the lock with changes not pushed keeps them in its history and goes read-only on the new holder's version", async () => {
+test("losing the lock with changes not pushed keeps them aside and goes read-only on the new holder's version", async () => {
   const { app, store, projects, events, cleanup } = setup("cloud-lost");
   try {
     const id = store.create("Case", SETTINGS_1080).project.id;
@@ -513,11 +534,10 @@ test("losing the lock with changes not pushed keeps them in its history and goes
     expect(projects.status(id)).toMatchObject({ lock: "elsewhere", holder: "kenobi", sync: "readonly" });
     expect(store.get(id)!.project.name).toBe("kenobi's");
     expect(store.list().map((summary) => summary.id)).toEqual([id]);
-    const history = path.join(store.home, "projects", "history", id);
-    expect(fs.readdirSync(history).some((name) => (JSON.parse(fs.readFileSync(path.join(history, name), "utf8")) as Project).name === "unpushed")).toBe(true);
+    expect(store.kept(id).map((one) => store.keptVersion(id, one.name).name)).toEqual(["unpushed"]);
     expect(events.find((event) => event.type === "cloud-conflict")).toMatchObject({
       id,
-      message: "kenobi took over “unpushed” before your last changes reached the cloud. They're saved in its history.",
+      message: "kenobi took over “unpushed” before your last changes reached the cloud. They're kept on this computer.",
     });
     // Heard at that renewal: the editor and the agent panel are told, and a turn running on it is stopped (agent.ts).
     expect(events.find((event) => event.type === "cloud-lost")).toMatchObject({ id, holder: "kenobi" });

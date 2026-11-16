@@ -126,10 +126,7 @@ export function keepOvertaken(dir: string, ours: Script, line: string): boolean 
     // The whole script, so nothing of it is lost; restoring it takes its cut (`read`).
     writeAtomic(join(root, `${id}.json`), JSON.stringify(ours));
     versions.push({ id, at: Date.now(), author: "kept", summary: line });
-    while (versions.length > KEPT) {
-      const gone = versions.shift()!;
-      fs.rmSync(join(root, `${gone.id}.json`), { force: true });
-    }
+    trim(root, versions);
     writeAtomic(join(root, "index.json"), JSON.stringify(versions));
     return true;
   } catch {
@@ -195,9 +192,20 @@ function record(dir: string, author: Author, before: Snapshot, after: Snapshot, 
       ...(restored === null ? {} : { restored }),
     });
   }
-  while (versions.length > KEPT) {
-    const gone = versions.shift()!;
-    fs.rmSync(join(root, `${gone.id}.json`), { force: true });
-  }
+  trim(root, versions);
   writeAtomic(join(root, "index.json"), JSON.stringify(versions));
+}
+
+/** The oldest versions past KEPT go; a Mac's version kept from an overtake ("kept") never does, being the only copy of that work. */
+function trim(root: string, versions: Version[]): void {
+  let over = versions.filter((version) => version.author !== "kept").length - KEPT;
+  for (let at = 0; over > 0 && at < versions.length; ) {
+    if (versions[at]!.author === "kept") {
+      at++;
+      continue;
+    }
+    const [gone] = versions.splice(at, 1);
+    fs.rmSync(join(root, `${gone!.id}.json`), { force: true });
+    over--;
+  }
 }

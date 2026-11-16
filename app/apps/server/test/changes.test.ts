@@ -61,3 +61,50 @@ test("the agent undoes any change: one alone, never over a later one to the same
     cleanup();
   }
 });
+
+test("a version kept aside is listed with the changes and brought back as the edit, the project staying itself, and undone like any change", async () => {
+  const { app, cleanup } = fixtureHome("changes-kept");
+  try {
+    changes.start(app);
+    const id = app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project.id;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      project.clips.push(solid("ours", 0));
+    });
+    // This computer's version, overtaken (cloud_projects keepOurs), and an old "(conflicted copy)" folded in (old_copies).
+    const ours = app.store.get(id)!.project;
+    const overtaken = app.store.keepAside(id, ours);
+    const copy = app.store.keepAside(id, { ...structuredClone(ours), id: "p1762500000000-7", name: "Case (conflicted copy)", clips: [solid("copy1", 0), solid("copy2", 30)] }, "p1762500000000-7");
+    expect(app.store.keepAside(id, { ...structuredClone(ours), name: "again" }, "p1762500000000-7")).toBe(copy);
+    expect(app.store.kept(id).map((one) => [one.name, one.why])).toEqual([["p1762500000000-7", "copy"], [overtaken, "overtaken"]]);
+    // The cloud's version comes in over it.
+    await app.store.update(id, "cloud", (project) => {
+      project.clips = [solid("theirs", 0)];
+    });
+    const listed = (await call(app, id, "edit_history", {})).content[0]!.text!;
+    expect(listed).toContain("Versions kept aside");
+    expect(listed).toContain(`- ${overtaken}, `);
+    expect(listed).toContain("this computer's version, which another computer's overtook (“Case”, 1 clips)");
+    expect(listed).toContain("- p1762500000000-7, ");
+    // The kept one became "again" (its name kept once, by the copy's id: rewritten, never a second file).
+    expect(listed).toContain("an old “(conflicted copy)” of it, folded in (“again”, 1 clips)");
+    const clips = () => app.store.get(id)!.project.clips.map((clip) => clip.id).join(" ");
+    expect(clips()).toBe("theirs");
+    const answer = await call(app, id, "undo_changes", { kept: overtaken });
+    expect(answer.isError).toBe(false);
+    expect(answer.content[0]!.text).toContain(`Brought back kept version ${overtaken}`);
+    expect(clips()).toBe("ours");
+    expect(app.store.get(id)!.project).toMatchObject({ id, name: "Case", hq: true });
+    // One new change: undone, the cloud's is back.
+    await call(app, id, "undo_changes", { revs: [app.store.get(id)!.rev] });
+    expect(clips()).toBe("theirs");
+    // A copy's kept version keeps the project's own id and name.
+    await call(app, id, "undo_changes", { kept: "p1762500000000-7" });
+    expect(app.store.get(id)!.project).toMatchObject({ id, name: "Case" });
+    const missing = await call(app, id, "undo_changes", { kept: "123" });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0]!.text).toContain("no kept version");
+  } finally {
+    cleanup();
+  }
+});

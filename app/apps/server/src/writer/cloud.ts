@@ -684,10 +684,14 @@ const sameFiles = (known: Record<string, Kept>, here: Record<string, Kept>): boo
 /** Whether this Mac has changed a script since it last synced it. */
 const changedHere = (dir: string, known: Known | undefined): boolean => known === undefined || known.body !== hash(fs.readFileSync(join(dir, "script.json")));
 
+/** Scripts deleted on another Mac whose version here couldn't be kept yet (`keepDeleted`): left as they are, not pushed, until it is. */
+const unkeptDeletes = new Set<string>();
+
 /**
  * A script deleted on another Mac after it changed here: the delete stands
  * (someone meant it), and this Mac's script and versions are kept in the data
  * folder's `kept/`, out of every list (a "(restored copy)" until Nov 15).
+ * Thrown when it can't be: then the script isn't deleted here.
  */
 function keepDeleted(data: string, id: string, dir: string): void {
   const kept = join(data, "kept", `${id}-${Date.now()}`);
@@ -697,7 +701,13 @@ function keepDeleted(data: string, id: string, dir: string): void {
       if (fs.existsSync(join(dir, name))) fs.cpSync(join(dir, name), join(kept, name), { recursive: true });
     }
   } catch (error) {
-    diag.warn("writer", `keeping ${id} before its delete: ${diag.messageOf(error)}`);
+    // Not kept, not deleted: the delete is taken next round, the script here as it was meanwhile.
+    try {
+      fs.rmSync(kept, { recursive: true, force: true });
+    } catch {
+      // What was copied of it stays in kept/ too.
+    }
+    throw new Error(`deleted on ${ANOTHER_MACHINE}, but ${THIS_MACHINE}'s changes couldn't be kept first, so it isn't deleted here yet: ${diag.messageOf(error)}`);
   }
 }
 
@@ -761,7 +771,7 @@ async function tick(data: string, pull: boolean): Promise<number> {
     const until = backoff.get(id)?.until ?? 0;
     // Worked on here: its lock is taken and kept meanwhile; pushed once done.
     if (busy(id)) locks.touch(id);
-    if (busy(id) || until > Date.now() || archive.archived(data, id)) continue;
+    if (busy(id) || until > Date.now() || archive.archived(data, id) || unkeptDeletes.has(id)) continue;
     const dir = store.scriptDir(data, id);
     let body: Uint8Array;
     let script: Script;
@@ -976,12 +986,19 @@ async function pullOne(data: string, ledger: Ledger, row: Record<string, unknown
     // Deleted on another Mac: gone here too. Changed here since, this Mac's version is kept in the data folder first.
     if (fs.existsSync(dir)) {
       if (decision.keepOurs) {
-        keepDeleted(data, id, dir);
+        try {
+          keepDeleted(data, id, dir);
+        } catch (error) {
+          // Never pushed meanwhile: that would bring back what someone deleted.
+          unkeptDeletes.add(id);
+          throw error;
+        }
         diag.info("writer", `${jobs.named(id, title)}: deleted on ${ANOTHER_MACHINE} after it changed here, so here too; ${THIS_MACHINE}'s version is kept in kept/`);
       } else diag.info("writer", `${jobs.named(id, title)}: deleted on ${ANOTHER_MACHINE}, so here too`);
       fs.rmSync(dir, { recursive: true, force: true });
       store.libraryChanged();
     }
+    unkeptDeletes.delete(id);
     delete ledger.scripts[id];
     return;
   }
@@ -1081,6 +1098,15 @@ async function pullOne(data: string, ledger: Ledger, row: Record<string, unknown
     diag.warn("writer", `${jobs.named(id, title)}: changed here while rev ${rev} came down; ${THIS_MACHINE}'s version is kept in its versions`);
     overtaken = parsed(now) ?? overtaken;
   }
+  // This Mac's version is kept before the cloud's is written over it: not kept, nothing is taken (the pull goes
+  // again next round, this Mac's script as it was). The versions changed here go up with the next push (the
+  // script's lock allowing): the ledger names the index as it came down.
+  if (overtaken !== null) {
+    if (!versions.keepOvertaken(dir, overtaken, `${machine.name()}'s changes, which didn't reach the cloud in time`)) {
+      throw new Error(`rev ${rev} from ${ANOTHER_MACHINE} would overtake ${THIS_MACHINE}'s changes, which couldn't be kept in its versions, so it isn't taken yet`);
+    }
+    diag.warn("writer", `${jobs.named(id, title)}: rev ${rev} from ${ANOTHER_MACHINE} overtook ${THIS_MACHINE}'s changes; they're kept in its versions`);
+  }
   // Who started it, as the cloud recorded it from their verified sign-in, wins over the body's.
   const given = withCreator(body, row.createdBy);
   writeAtomic(bodyPath, Buffer.from(given));
@@ -1091,11 +1117,6 @@ async function pullOne(data: string, ledger: Ledger, row: Record<string, unknown
   const summary = row.summary as { kind?: unknown } | undefined;
   ledger.scripts[id] = { rev, body: hash(given), files, summary: typeof summary?.kind === "string" ? SUMMARY_VERSION : 0 };
   if (ledger.copied !== undefined) delete ledger.copied[id];
-  // Recorded after the ledger, so the versions changed here go up with the next push (the script's lock allowing).
-  if (overtaken !== null) {
-    const kept = versions.keepOvertaken(dir, overtaken, `${machine.name()}'s changes, which didn't reach the cloud in time`);
-    diag.warn("writer", `${jobs.named(id, title)}: rev ${rev} from ${ANOTHER_MACHINE} overtook ${THIS_MACHINE}'s changes; ${kept ? "they're kept in its versions" : "keeping them in its versions failed"}`);
-  }
   store.libraryChanged();
 }
 

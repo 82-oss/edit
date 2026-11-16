@@ -61,6 +61,11 @@ function changesOf(app: App, id: string): Change[] {
   return kept.get(id)!;
 }
 
+/** Whether the person or an agent changed `id` here (its kept changes: since Nov 11, the last MOST). */
+export function workedIn(app: App, id: string): boolean {
+  return changesOf(app, id).some((one) => one.by === "person" || one.by === "agent");
+}
+
 /** A change's patch as a line: what it added, changed and removed. */
 function summary(forward: patches.Patch): string {
   const parts: string[] = [];
@@ -101,7 +106,8 @@ function record(app: App, id: string, before: Project, after: Project, rev: numb
   }
 }
 
-let started = false;
+/** The stores whose changes are kept (one, the server's; each test's its own). */
+const started = new WeakSet<object>();
 
 /** Keeps every project's changes from now on, and gives the agent its tools for them (once). */
 export function start(app: App): void {
@@ -113,11 +119,15 @@ export function start(app: App): void {
     registerTool("undo_changes", async ({ app, args, projectId }) => {
       const revs = Array.isArray(args.revs) ? (args.revs as unknown[]).filter((one): one is number => typeof one === "number" && Number.isInteger(one)) : undefined;
       const backTo = typeof args.back_to === "number" && Number.isInteger(args.back_to) ? args.back_to : undefined;
+      if (typeof args.kept === "string") {
+        if (revs !== undefined || backTo !== undefined) throw new Error("give kept alone, not with revs or back_to");
+        return text(await bringBack(app, projectId, args.kept));
+      }
       return text(await undo(app, projectId, { ...(revs !== undefined ? { revs } : {}), ...(backTo !== undefined ? { backTo } : {}) }));
     });
   }
-  if (started) return;
-  started = true;
+  if (started.has(app.store)) return;
+  started.add(app.store);
   app.store.subscribe((event) => {
     if (event.type !== "project" || typeof event.id !== "string") return;
     const before = (event as unknown as { before?: { rev: number; project: Project } }).before;
@@ -131,15 +141,64 @@ function clock(at: number): string {
   return new Date(at).toTimeString().slice(0, 8);
 }
 
-/** The newest `count` changes, newest first, as the agent reads them. */
+function when(at: number): string {
+  return `${new Date(at).toLocaleDateString("en-GB", { day: "numeric", month: "short" })} ${clock(at)}`;
+}
+
+/** The newest `count` changes, newest first, as the agent reads them; then the versions kept aside, if any. */
 export function history(app: App, id: string, count: number): string {
   const list = changesOf(app, id);
-  if (list.length === 0) return "No changes kept yet for this project.";
   const lines = list
     .slice(-count)
     .reverse()
     .map((one) => `- rev ${one.rev}, ${clock(one.at)}, ${one.by === "agent" ? `you (${one.tool ?? "a tool"})` : one.by === "person" ? "the person" : `Edit (${one.by})`}: ${one.what}`);
-  return `The newest changes (undo_changes takes their revs):\n${lines.join("\n")}`;
+  const changed = list.length === 0 ? "No changes kept yet for this project." : `The newest changes (undo_changes takes their revs):\n${lines.join("\n")}`;
+  const kept = keptLines(app, id);
+  return kept === "" ? changed : `${changed}\n\n${kept}`;
+}
+
+/**
+ * The project's versions kept aside (`Store.keepAside`: this computer's edit
+ * the cloud overtook, an old "(conflicted copy)" folded in), newest first,
+ * for undo_changes' `kept`.
+ */
+function keptLines(app: App, id: string): string {
+  const kept = app.store.kept(id).reverse();
+  if (kept.length === 0) return "";
+  const lines = kept.map((one) => {
+    let what = "";
+    try {
+      const project = app.store.keptVersion(id, one.name);
+      what = ` (“${project.name}”, ${project.clips.length} clips)`;
+    } catch {
+      // Listed all the same: its name is what bringing it back reports on.
+    }
+    return `- ${one.name}, ${when(one.at)}: ${one.why === "copy" ? "an old “(conflicted copy)” of it, folded in" : "this computer's version, which another computer's overtook"}${what}`;
+  });
+  return `Versions kept aside (undo_changes kept: <name> brings one back as the edit; the person asks for it):\n${lines.join("\n")}`;
+}
+
+/**
+ * Brings a version kept aside back as the edit, as one new change (undone
+ * like any other). The project stays itself: its id, name, and what says
+ * who it is and where it lives (Drive, its channel, its creator, its test
+ * mark, its note, V2) are the current ones; the edit is the kept version's.
+ */
+export async function bringBack(app: App, id: string, name: string): Promise<string> {
+  if (app.store.get(id) === null) throw new Error("no such project");
+  const kept = app.store.keptVersion(id, name);
+  const own = ["id", "name", "drive", "created_by", "origin", "shown", "note", "hq", "channel"] as const;
+  await app.store.update(id, "agent", (project) => {
+    const restored = structuredClone(kept) as unknown as Record<string, unknown>;
+    const current = project as unknown as Record<string, unknown>;
+    for (const key of own) {
+      if (key in current) restored[key] = current[key];
+      else delete restored[key];
+    }
+    for (const key of Object.keys(current)) if (!(key in restored)) delete current[key];
+    Object.assign(current, restored);
+  }, app.store.get(id) ?? undefined);
+  return `Brought back kept version ${name} (${kept.clips.length} clips) as the edit. It's one new change: undo_changes takes it back too.`;
 }
 
 /**

@@ -7,6 +7,7 @@ import type { Script } from "@edit/types/writer";
 
 import * as cloud from "../../src/writer/cloud.ts";
 import * as store from "../../src/writer/store.ts";
+import * as versions from "../../src/writer/versions.ts";
 
 const ID = "4a001eed-86e7-471f-b0c0-3fcc4009a771";
 
@@ -212,6 +213,55 @@ test("a pull that fails and is tried again keeps this Mac's version once, when i
   expect(copies(data)).toEqual([]);
   expect(kept(data, ID)).toHaveLength(1);
   expect(store.read(store.scriptDir(data, ID)).revision).toBe(7);
+});
+
+test("this Mac's version is kept before the cloud's is taken: not kept, nothing is taken, and the next round takes it once it can be", async () => {
+  inCloud(7, script({ title: "Predator Tutor", clips: builtClips, revision: 7 }), [{ name: "chat.json", bytes: "[]" }]);
+  const data = here(script({ title: "Predator Tutor, changed here", clips: builtClips, revision: 6 }), 5);
+  const dir = store.scriptDir(data, ID);
+  // Its versions can't be written (a file where their folder goes).
+  fs.writeFileSync(join(dir, "versions"), "");
+
+  await cloud.syncOnceForTests(data);
+
+  expect(store.read(dir)).toMatchObject({ title: "Predator Tutor, changed here", revision: 6 });
+  expect(rows.get(ID)!.rev).toBe(7);
+  fs.rmSync(join(dir, "versions"));
+  await cloud.syncOnceForTests(data);
+
+  expect(kept(data, ID)).toEqual(["Predator Tutor, changed here"]);
+  expect(store.read(dir).revision).toBe(7);
+});
+
+test("a script deleted elsewhere whose version here can't be kept isn't deleted here, nor pushed back, until it can be", async () => {
+  rows.set(ID, { scriptId: ID, title: "Predator Tutor", rev: 4, deletedAt: 1, files: [] });
+  const data = here(script({ title: "Predator Tutor, changed here", clips: builtClips }), 3);
+  // kept/ can't be made (a file where it goes).
+  fs.writeFileSync(join(data, "kept"), "");
+
+  await cloud.syncOnceForTests(data);
+
+  expect(store.ids(data)).toEqual([ID]);
+  expect(store.read(store.scriptDir(data, ID)).title).toBe("Predator Tutor, changed here");
+  expect(rows.get(ID)).toMatchObject({ rev: 4, deletedAt: 1 });
+  fs.rmSync(join(data, "kept"));
+  await cloud.syncOnceForTests(data);
+
+  expect(store.ids(data)).toEqual([]);
+  const keptDir = fs.readdirSync(join(data, "kept"));
+  expect(keptDir).toHaveLength(1);
+  expect((JSON.parse(fs.readFileSync(join(data, "kept", keptDir[0]!, "script.json"), "utf8")) as Script).title).toBe("Predator Tutor, changed here");
+});
+
+test("a Mac's version kept from an overtake never rotates out with the script's other versions", () => {
+  const data = here(script({}), null);
+  const dir = store.scriptDir(data, ID);
+  expect(versions.keepOvertaken(dir, script({ title: "Ours" }), "kept")).toBe(true);
+  // Alternating authors: each save a version of its own, 210 of them.
+  for (let n = 0; n < 210; n++) versions.keep(dir, n % 2 === 0 ? "you" : "claude", script({ clips: n === 0 ? [] : builtClips.slice(0, 1 + (n % 2)) }), script({ clips: builtClips.slice(0, 1 + ((n + 1) % 2)) }));
+  const listed = versions.list(dir);
+  expect(listed.filter((version) => version.author !== "kept")).toHaveLength(200);
+  expect(kept(data, ID)).toEqual(["Ours"]);
 });
 
 // Oct 31, M's Mac: four imports that never finished here (Writer's copies,

@@ -227,6 +227,10 @@ export interface CloudProjectsSeam {
   delete(app: App, id: string): Promise<boolean>;
   /** A project only the cloud has, brought here as opening it does (none when the cloud is off or hasn't it). */
   fetch(app: App, id: string): Promise<void>;
+  /** The cloud's projects (id, name, rev), every kind: null with the cloud off; thrown when it can't be read. */
+  listed(app: App): Promise<{ id: string; name: string; rev: number }[] | null>;
+  /** This machine's record of a cloud project: the rev its copy is based on and whether it has changes not pushed (null: not a cloud project here). */
+  synced(app: App, id: string): { rev: number; dirty: boolean } | null;
   /** The cloud routes (`/api/projects/{id}/cloud`, `/api/projects/{id}/cloud/*`, `/api/cloud/projects`), registered on the router. */
   routes(router: import("./http/router.ts").Router<App>): void;
   /** On the way out: pushes what's left and lets every lock go. */
@@ -261,6 +265,8 @@ export const channelMarks: ChannelMarksSeam = channelMarksModule;
 export const cloudProjects: CloudProjectsSeam = {
   delete: (app, id) => cloudProjectsModule.remove(app, id),
   fetch: (app, id) => cloudProjectsModule.fetchHere(app, id),
+  listed: (app) => cloudProjectsModule.listed(app),
+  synced: (app, id) => cloudProjectsModule.synced(app, id),
   routes: (router) => cloudProjectsModule.routes(router),
   shutdown: () => cloudProjectsModule.shutdown(),
   start: (app) => {

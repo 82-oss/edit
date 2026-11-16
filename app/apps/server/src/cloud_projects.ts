@@ -595,7 +595,7 @@ export class Cloud implements CloudHook {
       const dirty = this.dirty(id);
       this.with(id, (entry) => {
         entry.elsewhere(acquired.heldBy, at);
-        // Changes made here are kept in its history by the loop.
+        // Changes made here are kept aside by the loop.
         entry.wantPull = dirty || entry.wantPull;
       });
       throw new Error(message);
@@ -1107,9 +1107,9 @@ export async function runStep(app: App, cloudProjects: Cloud, id: string, step: 
 //
 // Pure, so the promises are property-tested (test/cloud_merge.test.ts):
 // offline never keeps or pulls; this machine's own lock is never "someone
-// else's"; a conflict over changes here keeps them in its history unless the
+// else's"; a conflict over changes here keeps them aside (projects/kept/) unless the
 // cloud's rev is exactly this machine's own save whose answer was lost
-// (8f67a6cf); losing the lock with changes here keeps them in its history.
+// (8f67a6cf); losing the lock with changes here keeps them aside.
 
 export type FailureDecision =
   | { readonly do: "offline" }
@@ -1227,7 +1227,7 @@ async function pull(app: App, cloudProjects: Cloud, id: string): Promise<void> {
   if (fetched === null) throw new Error("it isn't in the cloud any more");
   const [project, rev] = fetched;
   // Changes made here since are kept, never overwritten.
-  if (cloudProjects.dirty(id)) keepInHistory(app, cloudProjects, id, null);
+  if (cloudProjects.dirty(id)) keepOurs(app, cloudProjects, id, null);
   cloudProjects.take(id, project, rev);
   // Its footage is a step of its own, so renewing the lock never waits on a
   // long download.
@@ -1237,27 +1237,31 @@ async function pull(app: App, cloudProjects: Cloud, id: string): Promise<void> {
 }
 
 /**
- * Keeps this machine's version of `id` in the project's history before the
- * cloud's is taken (Sphe, Nov 15: "eradicate conflicted copies"): what didn't
- * reach the cloud is never lost, and no "(conflicted copy)" project appears on
- * everyone's Home. The person here is told once, in a line.
+ * Keeps this machine's version of `id` aside for good before the cloud's is
+ * taken (`Store.keepAside`, `projects/kept/<id>/`; Sphe, Nov 15: "eradicate
+ * conflicted copies"): what didn't reach the cloud is never lost, never
+ * rotated out with the history, and no "(conflicted copy)" project appears
+ * on everyone's Home. The agent lists it (edit_history) and brings it back
+ * (undo_changes' `kept`). The person here is told once, in a line.
  */
-function keepInHistory(app: App, cloudProjects: Cloud, id: string, tookOver: string | null): void {
+function keepOurs(app: App, cloudProjects: Cloud, id: string, tookOver: string | null): void {
   const live = app.store.get(id);
   if (live === null) return;
   let kept: string;
   try {
-    kept = app.store.keepNow(id, live.project);
+    kept = app.store.keepAside(id, live.project);
   } catch (error) {
     // Not kept: the cloud's isn't taken over it either (the sync tries again).
-    throw new Error(`keeping ${id}'s changes in its history: ${diag.messageOf(error)}`);
+    throw new Error(`keeping ${id}'s changes aside: ${diag.messageOf(error)}`);
   }
-  diag.warn("cloud", `${id}: ${tookOver === null ? "a conflict" : `${displayName(tookOver)} took over`}; this machine's changes kept in its history (${kept})`);
+  diag.warn("cloud", `${id}: ${tookOver === null ? "a conflict" : `${displayName(tookOver)} took over`}; this machine's changes kept aside (projects/kept/${id}/${kept}.json)`);
   const name = live.project.name;
+  // Edit V2's agent has the tools to bring it back (registry.ts HQ_TOOLS); elsewhere it's only kept.
+  const back = live.project.hq === true ? ": ask the agent to bring them back" : "";
   const message =
     tookOver !== null
-      ? `${displayName(tookOver)} took over “${name}” before your last changes reached the cloud. They're saved in its history.`
-      : `“${name}” was changed on another computer meanwhile, so that version is open. Your last changes are saved in its history.`;
+      ? `${displayName(tookOver)} took over “${name}” before your last changes reached the cloud. They're kept on this computer${back}.`
+      : `“${name}” was changed on another computer meanwhile, so that version is open. Your last changes are kept on this computer${back}.`;
   cloudProjects.with(id, (entry) => {
     entry.saved.dirty = false;
     delete entry.saved.attempt;
@@ -1266,10 +1270,10 @@ function keepInHistory(app: App, cloudProjects: Cloud, id: string, tookOver: str
   app.store.emit({ type: "cloud-conflict", id, message });
 }
 
-/** The cloud has moved on past this machine's base: keep ours in its history, take theirs. */
+/** The cloud has moved on past this machine's base: keep ours aside, take theirs. */
 async function conflict(app: App, cloudProjects: Cloud, id: string): Promise<void> {
   if (await ownSave(app, cloudProjects, id)) return;
-  if (cloudProjects.dirty(id)) keepInHistory(app, cloudProjects, id, null);
+  if (cloudProjects.dirty(id)) keepOurs(app, cloudProjects, id, null);
   return pull(app, cloudProjects, id);
 }
 
@@ -1326,11 +1330,11 @@ function tookOver(app: App, id: string, holder: string): void {
   }
 }
 
-/** Someone else has the lock: changes made here go into the project's history, the editor goes read-only and shows their version. */
+/** Someone else has the lock: changes made here are kept aside, the editor goes read-only and shows their version. */
 async function lost(app: App, cloudProjects: Cloud, id: string, holder: string): Promise<void> {
   const hadChanges = cloudProjects.dirty(id);
   const held = cloudProjects.with(id, (entry) => entry.lock.kind === "held") === true;
-  if (hadChanges) keepInHistory(app, cloudProjects, id, holder);
+  if (hadChanges) keepOurs(app, cloudProjects, id, holder);
   cloudProjects.with(id, (entry) => entry.elsewhere(holder, now()));
   // Taken over while this machine had it: the editor and the agent panel hear it now, and a turn running here stops (it could save nothing more).
   if (held) tookOver(app, id, holder);
@@ -1680,6 +1684,27 @@ export async function list(app: App): Promise<Record<string, unknown>> {
     };
   });
   return { holder, on: true, projects, statuses };
+}
+
+/**
+ * The cloud's projects, each one's id, name and rev, of every kind (unlike
+ * `list`, which is Home's): null with the cloud off; thrown when it can't be
+ * read. What old_copies.ts looks an old copy's original up in.
+ */
+export async function listed(app: App): Promise<{ id: string; name: string; rev: number }[] | null> {
+  const cloudProjects = cloudOf(app);
+  if (cloudProjects === null || !cloudProjects.on()) return null;
+  return (await remote.list()).flatMap((item) => {
+    const [id, name] = [field(item, "projectId"), field(item, "name")];
+    return typeof id === "string" && typeof name === "string" ? [{ id, name, rev: asU64(field(item, "rev")) ?? 0 }] : [];
+  });
+}
+
+/** This machine's record of cloud project `id`: the cloud rev its copy is based on and whether it has changes not pushed; null for one that isn't a cloud project here. */
+export function synced(app: App, id: string): { rev: number; dirty: boolean } | null {
+  const cloudProjects = cloudOf(app);
+  if (cloudProjects === null || !cloudProjects.isCloud(id)) return null;
+  return { rev: cloudProjects.savedRev(id), dirty: cloudProjects.dirty(id) };
 }
 
 /**

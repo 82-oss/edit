@@ -155,7 +155,7 @@ export function isOwnSave(attempt: Attempt | undefined | null, cloud: { readonly
   return attempt !== undefined && attempt !== null && cloud !== null && cloud.bodyHash !== null && cloud.rev === attempt.base + 1 && cloud.bodyHash === attempt.hash;
 }
 
-/** Someone else took the lock: what happens to this machine's version (changes here are kept in its history, theirs is taken). */
+/** Someone else took the lock: what happens to this machine's version (changes here are kept aside, theirs is taken). */
 export function afterLost(hadChanges: boolean, cloudNewer: boolean): { readonly keep: boolean; readonly pull: boolean } {
   return { keep: hadChanges, pull: hadChanges || cloudNewer };
 }
