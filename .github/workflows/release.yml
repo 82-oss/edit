@@ -306,7 +306,10 @@ jobs:
       # (apps/server/src/tools.ts), pinned in scripts/ffmpeg.sh and
       # scripts/fetch-quickjs.sh; kept between runs so a build doesn't need
       # their hosts up (both scripts skip a matching copy).
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      # Restored here and saved once they're made, not at the job's end: a build that fails later (Nov 16: Apple's
+      # notary refusing) kept nothing, and every build after fetched and compiled them again.
+      - id: tools-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             app/ffmpeg
@@ -317,8 +320,9 @@ jobs:
       - id: image
         if: runner.os == 'macOS'
         run: echo "version=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
-      - if: runner.os == 'macOS'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      - id: mac-cache
+        if: runner.os == 'macOS'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: |
             app/speech
@@ -340,7 +344,25 @@ jobs:
             [ -x speech/edit-speech ] || scripts/build-speech.sh speech/edit-speech
             cp speech/edit-speech package/
           fi
+          if [ "${{ runner.os }}" = macOS ] && [ ! -x ~/Library/Caches/edit/dmgbuild/bin/dmgbuild ]; then
+            python3 -m venv ~/Library/Caches/edit/dmgbuild
+            ~/Library/Caches/edit/dmgbuild/bin/pip install -q dmgbuild
+          fi
           echo "NAME=$name" >> "$GITHUB_ENV"
+      - if: steps.tools-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            app/ffmpeg
+            app/quickjs
+          key: ${{ steps.tools-cache.outputs.cache-primary-key }}
+      - if: runner.os == 'macOS' && steps.mac-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            app/speech
+            ~/Library/Caches/edit/dmgbuild
+          key: ${{ steps.mac-cache.outputs.cache-primary-key }}
       # The archive `edit` updates from outside Edit.app (install.sh, update.ts): on a Mac, made while Edit.app is
       # packaged and signed beside it (14 s of gzip), from package/ as it is.
       - name: The archive, and Edit.app with its disk image

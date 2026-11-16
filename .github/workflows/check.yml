@@ -48,13 +48,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The Mac's Rust is the `rust` job below, run only when its sources changed; that leaves a Mac runner (five
+        # at a time, the release's build one of them) for a third of the server's tests (Nov 16: the halves took
+        # 345 s and 280 s, the effects tests' Chrome alone ~240 s of them).
         include: ${{ fromJSON(inputs.parts == 'linux' && '[
           {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","part":"rust"},
-          {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","part":"tests-1"},
-          {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","part":"tests-2"}]' || '[
-          {"os":"macos-latest","target":"aarch64-apple-darwin","part":"rust"},
-          {"os":"macos-latest","target":"aarch64-apple-darwin","part":"tests-1"},
-          {"os":"macos-latest","target":"aarch64-apple-darwin","part":"tests-2"},
+          {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","part":"tests-1","shard":"1/2"},
+          {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","part":"tests-2","shard":"2/2"}]' || '[
+          {"os":"macos-latest","target":"aarch64-apple-darwin","part":"tests-1","shard":"1/3"},
+          {"os":"macos-latest","target":"aarch64-apple-darwin","part":"tests-2","shard":"2/3"},
+          {"os":"macos-latest","target":"aarch64-apple-darwin","part":"tests-3","shard":"3/3"},
           {"os":"macos-latest","target":"aarch64-apple-darwin","part":"acceptance"},
           {"os":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","part":"ts"}]') }}
     name: check (${{ matrix.os }}, ${{ matrix.part }})
@@ -148,13 +151,12 @@ jobs:
           case "${{ matrix.part }}" in
             rust) just check-rust && touch .rust-passed ;;
             ts) just check-ts ;;
-            tests-1)
-              if [ "$RUNNER_OS" = macOS ]; then just native-tests; fi
-              just check-tests 1/2 "$TIMINGS" ;;
-            tests-2) just check-tests 2/2 "$TIMINGS" ;;
+            tests-*)
+              if [ "$RUNNER_OS" = macOS ] && [ "${{ matrix.part }}" = tests-1 ]; then just native-tests; fi
+              just check-tests "${{ matrix.shard }}" "$TIMINGS" ;;
           esac
         env:
-          # Each platform's halves are balanced by its own measured times.
+          # Each platform's parts are balanced by its own measured times.
           TIMINGS: ${{ runner.os == 'macOS' && 'test/timings-mac.json' || 'test/timings.json' }}
       - if: always() && startsWith(matrix.part, 'tests-')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -184,6 +186,63 @@ jobs:
           name: acceptance
           path: ${{ runner.temp }}/acceptance
           if-no-files-found: ignore
+
+  # Whether the Mac's Rust part (fmt, clippy, the tests) has anything to say: not when these very Rust sources passed
+  # it already on today's stable Rust (its release manifest's hash), which a marker in the cache says, saved only by a
+  # pass. Most commits change no Rust (Nov 16: 3-4 minutes of every Check). Looked up on Linux, so no Mac runner is
+  # held for it; people-cases.json is the one file outside crates/ the Rust tests read.
+  rust-passed:
+    if: inputs.parts != 'linux'
+    runs-on: ubuntu-24.04
+    outputs:
+      key: ${{ steps.key.outputs.key }}
+      passed: ${{ steps.passed.outputs.cache-hit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: key
+        run: echo "key=rust-passed-aarch64-apple-darwin-$(curl -fsS --retry 3 https://static.rust-lang.org/dist/channel-rust-stable.toml.sha256 | cut -c1-16)-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/apps/web/src/lib/people-cases.json', 'app/scripts/ci-tools.sh', 'app/scripts/ffmpeg.sh', 'app/clippy.toml', 'app/Justfile') }}" >> "$GITHUB_OUTPUT"
+      - id: passed
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: app/.rust-passed
+          key: ${{ steps.key.outputs.key }}
+          lookup-only: true
+
+  rust:
+    needs: rust-passed
+    if: inputs.parts != 'linux' && needs.rust-passed.outputs.passed != 'true'
+    name: check (macos-latest, rust)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: aarch64-apple-darwin, wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: app
+          key: rust
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+      - id: image
+        run: echo "version=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: app/ci-tools
+          key: ci-tools-aarch64-apple-darwin-${{ steps.image.outputs.version }}-${{ hashFiles('app/scripts/ci-tools.sh', 'app/scripts/ffmpeg.sh') }}
+          restore-keys: ci-tools-aarch64-apple-darwin-
+      - name: Tools
+        run: |
+          scripts/ci-tools.sh aarch64-apple-darwin ci-tools
+          echo "$PWD/ci-tools/bin" >> "$GITHUB_PATH"
+      - name: Check
+        run: just check-rust && touch .rust-passed
+      - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: app/.rust-passed
+          key: ${{ needs.rust-passed.outputs.key }}
 
   # Edit.app's own player, which needs a Mac with a screen (a CI Mac has no
   # window): the same acceptance run with the window helper's self-check
