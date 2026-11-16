@@ -280,9 +280,20 @@ const RULES: Rule[] = [
 const TECHNICAL =
   /\/[\w.-]+\/|https?:\/\/|\b(?:stderr|stdout|exit (?:code )?\d|ffmpeg|ffprobe|curl|yt-dlp|R2|relay|convex|JSON|undefined|null|NaN|ETag|EDIT_\w+|\w+Error\b|errno|stack|\(\d{3}\)|\d{3} for|at \w+ \()/i;
 
-/** A message already fit for a person: short, one or two sentences, nothing technical. */
+/**
+ * A message already fit for a person: a few sentences on one line, nothing
+ * technical. Not by length alone: Edit's own lines run past 160 characters
+ * ("“Test Motion Graphics” was changed on another computer meanwhile, so that
+ * version is open. Your last changes are kept on this computer: ask the agent
+ * to bring them back.", Nov 16 on the M4, shown as "Something went wrong").
+ */
 function plain(message: string): boolean {
-  return message.length <= 160 && !TECHNICAL.test(message) && !message.includes("\n");
+  return message.length <= 400 && !TECHNICAL.test(message) && !message.includes("\n") && sentences(message).length <= 3;
+}
+
+/** A message's sentences, each with its stop ("Done. Go on." → ["Done.", "Go on."]). */
+function sentences(message: string): string[] {
+  return message.split(/(?<=[.!?…][)"”’]*)\s+(?=\S)/).map((part) => part.trim()).filter((part) => part !== "");
 }
 
 function sentence(text: string): string {
@@ -312,8 +323,11 @@ export function explain(error: unknown, doing = ""): Problem {
   }
   const title = doing === "" ? "Something went wrong" : `Couldn't ${doing}`;
   if (details !== "" && plain(details)) {
-    // Already written for a person: say it, under what was being done.
-    return doing === "" ? { title: sentence(details), fix: "", details, known: false } : { title, fix: sentence(details), details, known: false };
+    // Already written for a person: said as written, under what was being done,
+    // or with its first sentence the title and the rest what to do.
+    if (doing !== "") return { title, fix: sentence(details), details, known: false };
+    const [first = details, ...rest] = sentences(details);
+    return { title: sentence(first), fix: rest.length === 0 ? "" : sentence(rest.join(" ")), details, known: false };
   }
   return {
     title,

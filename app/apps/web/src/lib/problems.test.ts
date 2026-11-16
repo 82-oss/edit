@@ -48,6 +48,18 @@ describe("explain", () => {
     expect(explain("text is empty", "save the caption")).toMatchObject({ title: "Couldn't save the caption", fix: "Text is empty." });
   });
 
+  it("shows a longer plain line as written: its first sentence the title, the rest what to do", () => {
+    // Nov 16 on the M4: shown as "Something went wrong / Something unexpected got in the way".
+    const said = explain(
+      "“Test Motion Graphics” was changed on another computer meanwhile, so that version is open. Your last changes are kept on this computer: ask the agent to bring them back.",
+    );
+    expect(said).toMatchObject({
+      title: "“Test Motion Graphics” was changed on another computer meanwhile, so that version is open.",
+      fix: "Your last changes are kept on this computer: ask the agent to bring them back.",
+    });
+    expect(explain("Update to v0.0.12 first. Then open it again.")).toMatchObject({ title: "Update to v0.0.12 first.", fix: "Then open it again." });
+  });
+
   it("knows the download failures the import hits", () => {
     expect(explain("This Drive file isn't shared. Set it so anyone with the link can view.").title).toBe("That Google file isn't shared");
     expect(explain("Google Drive's download limit for this file is used up for today. Try later, or upload a copy.").title).toBe(
