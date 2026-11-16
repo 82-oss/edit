@@ -27,6 +27,9 @@ test("a date is read off a camera's overlay in the ways cameras and OCR write it
   // JJ's Motorola bodycam, as PaddleOCR read it off the 480p preview (a space inside the day).
   expect(dateIn("08/1 4/2025 16:13:33")).toEqual({ date: "2025-08-14", shown: "08/14/2025" });
   expect(dateIn("08/14/2025 16:16:58")!.date).toBe("2025-08-14");
+  // Vision on CI's Mac, the slashes read as 1s.
+  expect(dateIn("0811412025 16'.13'.33")).toEqual({ date: "2025-08-14", shown: "08/14/2025" });
+  expect(dateIn("0811412025")!.date).toBe("2025-08-14");
   expect(dateIn("2025-08-14T16:16:58Z AXON BODY 3")!.date).toBe("2025-08-14");
   expect(dateIn("AUG 14 2025 16:16")!.date).toBe("2025-08-14");
   expect(dateIn("14 Aug 2025")!.date).toBe("2025-08-14");
@@ -34,7 +37,7 @@ test("a date is read off a camera's overlay in the ways cameras and OCR write it
   expect(dateIn("14/08/2025")!.date).toBe("2025-08-14");
   expect(dateIn("03/04/2024")!.date).toBe("2024-03-04");
   // Not a date: a unit number, a time, a day that doesn't exist, one in the future, one before bodycams.
-  for (const text of ["BWL7-030069", "16:13:33", "MOTOROLA SOLUTIONS", "02/30/2025", "08/14/2999", "01/01/1970"]) expect(dateIn(text)).toBeNull();
+  for (const text of ["BWL7-030069", "16:13:33", "MOTOROLA SOLUTIONS", "02/30/2025", "08/14/2999", "01/01/1970", "1234567890", "9911412025"]) expect(dateIn(text)).toBeNull();
   expect(spoken("2025-08-14")).toBe("August 14, 2025");
 });
 

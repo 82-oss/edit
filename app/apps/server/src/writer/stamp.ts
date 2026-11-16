@@ -30,6 +30,13 @@ function numeric(word: string): { date: string; shown: string } | null {
     const found = day(Number(iso[1]), Number(iso[2]), Number(iso[3]));
     if (found !== null) return { date: found, shown: iso[0] };
   }
+  // Vision reads a stamp's slashes as 1s or bars ("08/14/2025" as "0811412025", CI's Mac, Nov 16): a month, a day and a
+  // year of exactly two, two and four digits around them is the same date.
+  const misread = /^(\d{2})[1lI|\\](\d{2})[1lI|\\](\d{4})(?!\d)/u.exec(word);
+  if (misread !== null) {
+    const found = day(Number(misread[3]), Number(misread[1]), Number(misread[2]));
+    if (found !== null) return { date: found, shown: `${misread[1]}/${misread[2]}/${misread[3]}` };
+  }
   const us = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})(?!\d)/u.exec(word);
   if (us !== null) {
     const [a, b, year] = [Number(us[1]), Number(us[2]), Number(us[3])];
