@@ -483,7 +483,8 @@ export async function install(release: Release, staged: string, progress: (progr
  * swap is two renames), its signature checked (and, when this one is signed by
  * a team, that it's the same team), then the old one moved aside and removed.
  * Returns the server to restart into: the new app's, at the same path. The
- * window stays the one running until Edit is next opened.
+ * window, still the old one, opens itself again from the new app once it's
+ * quiet (window_focus.ts tells it, crates/edit-window's `relaunch`).
  */
 export function installApp(zip: string, bundle: string): string {
   const dir = parent(bundle);

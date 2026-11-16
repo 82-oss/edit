@@ -18,6 +18,16 @@
 //! seconds to let its cloud projects go, then the group is killed. A server
 //! this app left behind before (found on the port, Resources/edit of this same
 //! app) is taken over and stopped on quit too, instead of reused forever.
+//!
+//! A window older than its server opens itself again. An update replaces
+//! Edit.app and execs the server into the new build, and the window stayed
+//! the old binary until Edit was reopened (nightly-76 on Sphe's M4, Nov 16),
+//! though the player's fixes are in it. The window learns its build from its
+//! own server's first answer, sends it with the long poll once it's quiet, and
+//! told `relaunch` (apps/server/src/window_focus.ts) opens its bundle again at
+//! the same path (the new one), onto the same page, letting go of the server
+//! for the new window to take over (`leftover_server`). Opened again for a
+//! build, it never is again for that build.
 
 #[cfg(target_os = "macos")]
 mod events;
@@ -53,7 +63,7 @@ fn main() {
             .cloned()
     };
     match flag("--url") {
-        Some(url) => run(&url, None, true),
+        Some(url) => run(&url, None, true, None),
         None => {
             let port = flag("--port")
                 .map(|port| {
@@ -62,18 +72,38 @@ fn main() {
                 })
                 .unwrap_or(DEFAULT_PORT);
             let server = start_server(port).or_else(|| leftover_server(port));
+            let home = format!("http://127.0.0.1:{port}/");
+            // Opened again (`relaunch`): the page it was on.
+            let page = flag("--page")
+                .filter(|page| same_origin(page, &home))
+                .unwrap_or(home);
             run(
-                &format!("http://127.0.0.1:{port}/"),
+                &page,
                 server.map(|server| (server, port)),
                 false,
+                flag("--relaunched"),
             );
         }
     }
 }
 
+/// Whether `page` is a page of the server at `home`.
+fn same_origin(page: &str, home: &str) -> bool {
+    match (page.parse::<Url>(), home.parse::<Url>()) {
+        (Ok(page), Ok(home)) => page.origin() == home.origin(),
+        _ => false,
+    }
+}
+
 /// Opens the editor at `url` and runs until the window closes (or, with
-/// `watch_stdin`, until stdin closes).
-fn run(url: &str, server: Option<(Server, u16)>, watch_stdin: bool) -> ! {
+/// `watch_stdin`, until stdin closes). `relaunched`: the server's build this
+/// window was opened again for.
+fn run(
+    url: &str,
+    server: Option<(Server, u16)>,
+    watch_stdin: bool,
+    relaunched: Option<String>,
+) -> ! {
     let url: Url = url.parse().unwrap_or_else(|_| fail("bad URL"));
     #[cfg(target_os = "macos")]
     events::guard();
@@ -84,6 +114,17 @@ fn run(url: &str, server: Option<(Server, u16)>, watch_stdin: bool) -> ! {
         let (server, closing) = (Arc::clone(&server), Arc::clone(&closing));
         std::thread::spawn(move || keep_serving(&server, &closing, port));
     }
+    // Only a server of this app's own is of the window's build.
+    let ours = port.map(|port| Ours {
+        server: Arc::clone(&server),
+        closing: Arc::clone(&closing),
+        port,
+    });
+    let build = Build {
+        owns: ours.is_some(),
+        mine: None,
+        relaunched_for: relaunched,
+    };
     let local = url.clone();
     let builder = tauri::Builder::default();
     // The native preview: the page's viewer drawn by the engine in a layer under it.
@@ -126,7 +167,9 @@ fn run(url: &str, server: Option<(Server, u16)>, watch_stdin: bool) -> ! {
             if let (Some(host), Some(port)) = (local.host_str(), local.port_or_known_default()) {
                 let handle = app.handle().clone();
                 let host = host.to_owned();
-                std::thread::spawn(move || follow_focus(&handle, &host, port));
+                std::thread::spawn(move || {
+                    follow_focus(&handle, &host, port, build, ours.as_ref());
+                });
             }
             let stays_inside = local.clone();
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(local.clone()))
@@ -236,13 +279,150 @@ struct Notice {
     path: String,
 }
 
-/// One poll's answer: whether to come to the front, and notices to post.
+/// One poll's answer: whether to come to the front, notices to post, the
+/// server's build, and whether this window should open itself again.
 #[derive(serde::Deserialize, Debug, Default, PartialEq)]
 struct Answer {
     #[serde(default)]
     focus: bool,
     #[serde(default)]
     notices: Vec<Notice>,
+    #[serde(default)]
+    build: Option<String>,
+    #[serde(default)]
+    relaunch: bool,
+}
+
+/// What the window knows of its build, to open itself again when its server's isn't it.
+#[derive(Debug, Default, PartialEq)]
+struct Build {
+    /// Whether the server is this app's own (started here or taken over): only then is its build the window's.
+    owns: bool,
+    /// The window's build: its own server's, as the first answer to say one had it.
+    mine: Option<String>,
+    /// The server's build this window was opened again for (`--relaunched`): never again for it.
+    relaunched_for: Option<String>,
+}
+
+impl Build {
+    /// Learns the window's build from the first answer that says the server's.
+    fn heard(&mut self, answer: &Answer) {
+        if self.owns && self.mine.is_none() {
+            self.mine.clone_from(&answer.build);
+        }
+    }
+
+    /// The build to ask with: the window's, once it's quiet (a server that finds it differs answers
+    /// `relaunch` at once). None when it isn't quiet, or the window doesn't know its own.
+    fn to_send(&self, quiet: bool) -> Option<&str> {
+        let mine = self.mine.as_deref().filter(|_| self.owns && quiet)?;
+        mine.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+            .then_some(mine)
+    }
+
+    /// The server's build to open this window again for, when the answer says to: one the window
+    /// isn't, and wasn't opened again for already.
+    fn relaunch_for<'a>(&self, answer: &'a Answer) -> Option<&'a str> {
+        let server = answer.build.as_deref()?;
+        (answer.relaunch
+            && self.owns
+            && self.mine.as_deref().is_some_and(|mine| mine != server)
+            && self.relaunched_for.as_deref() != Some(server))
+        .then_some(server)
+    }
+}
+
+/// The server this window runs (or took over), for `relaunch` to leave running.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+struct Ours {
+    server: Arc<Mutex<Option<Server>>>,
+    closing: Arc<AtomicBool>,
+    port: u16,
+}
+
+/// Input untouched this long (or the window not in front), and nothing playing: a quiet moment to
+/// open the window again in.
+const QUIET: Duration = Duration::from_secs(20);
+
+/// Whether nobody is using the window now: nothing playing, and it isn't in front or the Mac's
+/// input has been idle `QUIET`.
+fn quiet(handle: &AppHandle) -> bool {
+    #[cfg(target_os = "macos")]
+    if preview::playing() {
+        return false;
+    }
+    let front = handle
+        .get_webview_window("main")
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false);
+    !front || idle() >= QUIET
+}
+
+/// How long since the last key, click or mouse move anywhere in this Mac's session.
+#[cfg(target_os = "macos")]
+fn idle() -> Duration {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGEventSourceSecondsSinceLastEventType(state: i32, kind: u32) -> f64;
+    }
+    // kCGEventSourceStateCombinedSessionState, kCGAnyInputEventType.
+    // SAFETY: reads the session's input clock; it takes and returns plain numbers.
+    let seconds = unsafe { CGEventSourceSecondsSinceLastEventType(0, u32::MAX) };
+    Duration::try_from_secs_f64(seconds).unwrap_or_default()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn idle() -> Duration {
+    Duration::ZERO
+}
+
+/// Opens Edit.app again from its bundle's path (after an update, the new one) onto the page this
+/// window shows, and quits this window, leaving the server running for the new one to take over.
+/// In front only if this window was. False when the new one couldn't be opened (this one stays).
+#[cfg(target_os = "macos")]
+fn relaunch(handle: &AppHandle, ours: &Ours, build: &str) -> bool {
+    let Some(bundle) = std::env::current_exe()
+        .and_then(std::fs::canonicalize)
+        .ok()
+        .and_then(|exe| exe.ancestors().nth(3).map(PathBuf::from))
+        .filter(|bundle| bundle.extension().is_some_and(|ext| ext == "app"))
+    else {
+        return false;
+    };
+    let window = handle.get_webview_window("main");
+    let page = window.as_ref().and_then(|window| window.url().ok());
+    let front = window
+        .as_ref()
+        .and_then(|window| window.is_focused().ok())
+        .unwrap_or(false);
+    let mut open = Command::new("/usr/bin/open");
+    open.arg("-n");
+    if !front {
+        open.arg("-g");
+    }
+    let port = ours.port.to_string();
+    open.arg(&bundle)
+        .arg("--args")
+        .args(["--port", &port, "--relaunched", build]);
+    if let Some(page) = &page {
+        open.args(["--page", page.as_str()]);
+    }
+    if !open.status().is_ok_and(|status| status.success()) {
+        eprintln!("edit: couldn't open {} again", bundle.display());
+        return false;
+    }
+    // Not stopped on the way out: the new window takes it over.
+    ours.closing.store(true, Ordering::SeqCst);
+    let left = ours.server.lock().ok().and_then(|mut server| server.take());
+    drop(left);
+    handle.exit(0);
+    true
+}
+
+#[cfg(not(target_os = "macos"))]
+fn relaunch(_handle: &AppHandle, _ours: &Ours, _build: &str) -> bool {
+    false
 }
 
 /// Asks the server, again and again, whether the window should come to the
@@ -250,10 +430,22 @@ struct Answer {
 /// `{"focus":false}` after ~25 s to ask again), and brings it forward when
 /// told; notices that came with the answer are posted (src/notices.rs).
 /// A server without the route (older) or not answering is asked again later.
-fn follow_focus(handle: &AppHandle, host: &str, port: u16) {
+/// Told to `relaunch` at a quiet moment, it opens the window again.
+fn follow_focus(handle: &AppHandle, host: &str, port: u16, mut build: Build, ours: Option<&Ours>) {
     loop {
-        match ask_focus(host, port) {
+        let asking = build.to_send(quiet(handle)).map(str::to_owned);
+        match ask_focus(host, port, asking.as_deref()) {
             Ok(answer) => {
+                build.heard(&answer);
+                if let (Some(server), Some(ours)) = (build.relaunch_for(&answer), ours) {
+                    if quiet(handle) {
+                        if relaunch(handle, ours, server) {
+                            return;
+                        }
+                        // Not opened: not tried again for this build.
+                        build.relaunched_for = Some(server.to_owned());
+                    }
+                }
                 if answer.focus {
                     if let Some(window) = handle.get_webview_window("main") {
                         let _ = window.unminimize();
@@ -271,15 +463,17 @@ fn follow_focus(handle: &AppHandle, host: &str, port: u16) {
     }
 }
 
-/// One long poll: whether the server wants the window in front, and what to post.
-fn ask_focus(host: &str, port: u16) -> Result<Answer, ()> {
+/// One long poll: whether the server wants the window in front, and what to post. `build`: the
+/// window's, sent once it's quiet.
+fn ask_focus(host: &str, port: u16, build: Option<&str>) -> Result<Answer, ()> {
     let mut stream = TcpStream::connect((host, port)).map_err(|_| ())?;
     stream
         .set_read_timeout(Some(Duration::from_secs(40)))
         .map_err(|_| ())?;
+    let query = build.map_or(String::new(), |build| format!("?build={build}"));
     write!(
         stream,
-        "GET /api/window/next HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
+        "GET /api/window/next{query} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
     )
     .map_err(|_| ())?;
     let mut answer = String::new();
@@ -292,7 +486,7 @@ fn ask_focus(host: &str, port: u16) -> Result<Answer, ()> {
     Ok(
         serde_json::from_str(body.trim()).unwrap_or_else(|_| Answer {
             focus: answer.contains("\"focus\":true"),
-            notices: Vec::new(),
+            ..Answer::default()
         }),
     )
 }
@@ -476,7 +670,7 @@ fn leads_group(_pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{alive, ask_focus, stop, Answer, Notice, Server};
+    use super::{alive, ask_focus, same_origin, stop, Answer, Build, Notice, Server};
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::process::{Command, Stdio};
@@ -536,7 +730,7 @@ mod tests {
         let (port, asked) =
             serve_once("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{\"focus\":true}");
         assert_eq!(
-            ask_focus("127.0.0.1", port).map(|answer| answer.focus),
+            ask_focus("127.0.0.1", port, None).map(|answer| answer.focus),
             Ok(true)
         );
         assert!(asked
@@ -544,11 +738,11 @@ mod tests {
             .unwrap()
             .starts_with("GET /api/window/next HTTP/1.1\r\n"));
         let (port, _) = serve_once("HTTP/1.1 200 OK\r\n\r\n{\"focus\":false}");
-        assert_eq!(ask_focus("127.0.0.1", port), Ok(Answer::default()));
+        assert_eq!(ask_focus("127.0.0.1", port, None), Ok(Answer::default()));
         // Notices to post come with the answer.
         let (port, _) = serve_once("HTTP/1.1 200 OK\r\n\r\n{\"focus\":false,\"notices\":[{\"key\":\"k\",\"title\":\"First draft is ready\",\"body\":\"Mom\",\"path\":\"/scripts/a\"}]}");
         assert_eq!(
-            ask_focus("127.0.0.1", port).map(|answer| answer.notices),
+            ask_focus("127.0.0.1", port, None).map(|answer| answer.notices),
             Ok(vec![Notice {
                 key: "k".into(),
                 title: "First draft is ready".into(),
@@ -558,6 +752,87 @@ mod tests {
         );
         // An older server without the route: asked again later.
         let (port, _) = serve_once("HTTP/1.1 404 Not Found\r\n\r\nnot found");
-        assert_eq!(ask_focus("127.0.0.1", port), Err(()));
+        assert_eq!(ask_focus("127.0.0.1", port, None), Err(()));
+    }
+
+    /// The window sends its build with the poll, and hears the server's.
+    #[test]
+    fn the_poll_carries_both_builds() {
+        let (port, asked) = serve_once(
+            "HTTP/1.1 200 OK\r\n\r\n{\"focus\":false,\"notices\":[],\"relaunch\":true,\"build\":\"nightly-77\"}",
+        );
+        let answer = ask_focus("127.0.0.1", port, Some("nightly-76")).unwrap();
+        assert!(asked
+            .join()
+            .unwrap()
+            .starts_with("GET /api/window/next?build=nightly-76 HTTP/1.1\r\n"));
+        assert_eq!(
+            (answer.relaunch, answer.build.as_deref()),
+            (true, Some("nightly-77"))
+        );
+    }
+
+    fn told(relaunch: bool, build: &str) -> Answer {
+        Answer {
+            relaunch,
+            build: Some(build.to_owned()),
+            ..Answer::default()
+        }
+    }
+
+    /// The window's build is its own server's first answer's; it's sent only once quiet; a server
+    /// of another build that says so opens the window again, once per build, and never a window
+    /// onto a server that isn't its own.
+    #[test]
+    fn the_window_opens_again_only_for_a_newer_server_of_its_own() {
+        let mut build = Build {
+            owns: true,
+            ..Build::default()
+        };
+        assert_eq!(build.to_send(true), None, "its build isn't known yet");
+        build.heard(&told(false, "nightly-76"));
+        build.heard(&told(false, "nightly-77"));
+        assert_eq!(build.mine.as_deref(), Some("nightly-76"), "learnt once");
+        assert_eq!(build.to_send(false), None, "not while it's used");
+        assert_eq!(build.to_send(true), Some("nightly-76"));
+        assert_eq!(build.relaunch_for(&told(false, "nightly-77")), None);
+        assert_eq!(build.relaunch_for(&told(true, "nightly-76")), None);
+        assert_eq!(
+            build.relaunch_for(&told(true, "nightly-77")),
+            Some("nightly-77")
+        );
+        // Opened again for 77: never again for it, but for the next.
+        let mut again = Build {
+            owns: true,
+            relaunched_for: Some("nightly-77".to_owned()),
+            ..Build::default()
+        };
+        again.heard(&told(false, "nightly-76"));
+        assert_eq!(again.relaunch_for(&told(true, "nightly-77")), None);
+        assert_eq!(
+            again.relaunch_for(&told(true, "nightly-78")),
+            Some("nightly-78")
+        );
+        // A server not its own (a terminal's, `edit app`'s) is never its build.
+        let mut foreign = Build::default();
+        foreign.heard(&told(false, "nightly-76"));
+        assert_eq!((foreign.mine.as_ref(), foreign.to_send(true)), (None, None));
+        assert_eq!(foreign.relaunch_for(&told(true, "nightly-77")), None);
+        // A build that isn't a tag's isn't put in the URL.
+        let odd = Build {
+            owns: true,
+            mine: Some("v0 0&x".to_owned()),
+            ..Build::default()
+        };
+        assert_eq!(odd.to_send(true), None);
+    }
+
+    #[test]
+    fn a_relaunch_opens_its_own_servers_pages_only() {
+        let home = "http://127.0.0.1:7700/";
+        assert!(same_origin("http://127.0.0.1:7700/projects/abc?x=1", home));
+        assert!(!same_origin("http://127.0.0.1:7701/projects/abc", home));
+        assert!(!same_origin("https://example.com/", home));
+        assert!(!same_origin("not a url", home));
     }
 }

@@ -32,3 +32,49 @@ test("a notice goes to the window that's listening, once, and none is taken with
   expect((await windowFocus.next(20)).notices.map((one) => one.key)).toEqual(["k2"]);
   expect((await windowFocus.next(20)).notices).toEqual([]);
 });
+
+test("a window of another build is told to open itself again, unless an export runs; one of this build or sending none isn't", async () => {
+  let exporting = true;
+  const busy = () => exporting;
+  // An older window sends no build: held as ever.
+  expect(await windowFocus.next(20, {}, "nightly-77")).toEqual({ focus: false, notices: [] });
+  expect(await windowFocus.next(20, { build: null, busy }, "nightly-77")).toEqual({ focus: false, notices: [] });
+  // This build: held as ever.
+  expect(await windowFocus.next(20, { build: "nightly-77", busy }, "nightly-77")).toEqual({ focus: false, notices: [] });
+  // Another, while exporting: not yet.
+  expect(await windowFocus.next(20, { build: "nightly-76", busy }, "nightly-77")).toEqual({ focus: false, notices: [] });
+  exporting = false;
+  // At once, keeping what's owed and queued for the window it opens.
+  windowFocus.focus();
+  const notice = { key: "k", title: "First draft is ready", body: "Mom", path: "/scripts/a" };
+  expect(windowFocus.notify(notice)).toBe(true);
+  expect(await windowFocus.next(60_000, { build: "nightly-76", busy }, "nightly-77")).toEqual({ focus: false, notices: [], relaunch: true });
+  expect(await windowFocus.next(20, { build: "nightly-77", busy }, "nightly-77")).toEqual({ focus: true, notices: [notice] });
+});
+
+test("GET /api/window/next says the server's build, and tells a window of another one to relaunch", async () => {
+  const { respond } = await import("../src/http/server.ts");
+  const { buildRouter } = await import("../src/routes.ts");
+  const { fixtureHome } = await import("./helpers/home.ts");
+  const { BUILD } = await import("../src/version.ts");
+  const { app, cleanup } = fixtureHome("window-next");
+  try {
+    let exporting = true;
+    Object.defineProperty(app, "exports", { value: { running: () => exporting } });
+    const router = buildRouter();
+    const ask = async (query: string) => {
+      const request = new Request(`http://localhost:7700/api/window/next${query}`, { headers: { host: "localhost:7700" } });
+      return (await (await respond(app, router, request, null))!.json()) as Record<string, unknown>;
+    };
+    windowFocus.focus();
+    expect(await ask("?build=nightly-1")).toEqual({ focus: true, notices: [], build: BUILD });
+    exporting = false;
+    expect(await ask("?build=nightly-1")).toEqual({ focus: false, notices: [], relaunch: true, build: BUILD });
+    windowFocus.focus();
+    expect(await ask(`?build=${BUILD}`)).toEqual({ focus: true, notices: [], build: BUILD });
+    windowFocus.focus();
+    expect(await ask("")).toEqual({ focus: true, notices: [], build: BUILD });
+  } finally {
+    cleanup();
+  }
+});

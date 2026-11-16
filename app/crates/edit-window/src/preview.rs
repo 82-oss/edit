@@ -27,6 +27,7 @@
 #![allow(clippy::unreachable)]
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -52,6 +53,36 @@ const SETTLE: Duration = Duration::from_millis(250);
 /// The playhead resting this long after a drag's step drawn with a neighbour's picture: its own
 /// frame is drawn (`Player::sharpen`). Longer than a drag's steps, so a drag never stops for one.
 const SHARPEN: Duration = Duration::from_millis(80);
+
+/// Previews playing now: the window opens itself again only when none is (main.rs `quiet`).
+static PLAYING: AtomicUsize = AtomicUsize::new(0);
+
+/// Whether any preview is playing.
+pub fn playing() -> bool {
+    PLAYING.load(Ordering::Acquire) > 0
+}
+
+/// A player thread's share of `PLAYING`, let go when the thread ends.
+struct Plays(bool);
+
+impl Plays {
+    fn set(&mut self, now: bool) {
+        if now != self.0 {
+            if now {
+                PLAYING.fetch_add(1, Ordering::AcqRel);
+            } else {
+                PLAYING.fetch_sub(1, Ordering::AcqRel);
+            }
+            self.0 = now;
+        }
+    }
+}
+
+impl Drop for Plays {
+    fn drop(&mut self) {
+        self.set(false);
+    }
+}
 
 /// An update's answer: the revision the window now draws, or why it refused (the last one stays).
 type Accepted = mpsc::Sender<Result<u64, String>>;
@@ -222,6 +253,7 @@ fn player_thread(layer: usize, commands: mpsc::Receiver<Command>) {
     };
     let mut wait = SETTLE;
     let mut settled = false;
+    let mut plays = Plays(false);
     // When the last command was done with: the playhead has rested since.
     let mut rested = std::time::Instant::now();
     loop {
@@ -351,6 +383,7 @@ fn player_thread(layer: usize, commands: mpsc::Receiver<Command>) {
             settled = false;
             rested = std::time::Instant::now();
         }
+        plays.set(player.is_playing());
         let quiet = rested.elapsed();
         if !player.is_playing() && player.inexact() && quiet >= SHARPEN {
             let started = std::time::Instant::now();

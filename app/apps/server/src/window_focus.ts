@@ -10,9 +10,20 @@
 // The same poll carries the notifications the window posts in the Mac's
 // Notification Center (notices.ts decides when): `notices`, each with the
 // page a click opens.
+//
+// And it keeps the window the build the server is. An update replaces Edit.app
+// and execs the server into the new build, but the window stayed the old one
+// until Edit was next opened (nightly-76 on Sphe's M4, Nov 16: the window's
+// engine fixes never arrived). Every answer says the server's `build`; a
+// window learns its own from the first (its bundle's server), and once it's
+// quiet asks with `?build=`. Differing, and with no export running, it's told
+// `relaunch`: it opens itself again from its bundle's path (the new one), onto
+// this server and the same page. A window that sends no build (older ones) is
+// never told to.
 
 import type { App } from "./app.ts";
 import type { Router } from "./http/router.ts";
+import { BUILD } from "./version.ts";
 
 /** How long one poll is held before it's answered "nothing yet". */
 const HOLD_MS = 25_000;
@@ -33,6 +44,14 @@ export interface WindowNotice {
 export interface Answer {
   focus: boolean;
   notices: WindowNotice[];
+  /** The window is of another build than this server: it should open itself again. */
+  relaunch?: true;
+}
+
+/** What a poll says of its window: the build it is (none from older windows), and whether the server is busy. */
+export interface Asking {
+  build?: string | null;
+  busy?: () => boolean;
 }
 
 let waiting: ((answer: Answer) => void)[] = [];
@@ -73,9 +92,17 @@ export function notify(notice: WindowNotice): boolean {
   return true;
 }
 
-/** One poll: answered when `focus()` or `notify()` is called, else "nothing" after HOLD_MS (`holdMs` for tests). */
-export function next(holdMs = HOLD_MS): Promise<Answer> {
+/**
+ * One poll: answered when `focus()` or `notify()` is called, else "nothing" after HOLD_MS (`holdMs` for tests).
+ * A window of another build is answered `relaunch` at once unless `busy`; what's owed and queued stays for
+ * the window it opens.
+ */
+export function next(holdMs = HOLD_MS, asking: Asking = {}, build = BUILD): Promise<Answer> {
   lastAsked = Date.now();
+  const window = asking.build ?? "";
+  if (window !== "" && window !== build && asking.busy?.() !== true) {
+    return Promise.resolve({ focus: false, notices: [], relaunch: true });
+  }
   const focusOwed = owed > 0 && Date.now() - owed < 10_000;
   if (focusOwed || queued.length > 0) {
     owed = 0;
@@ -96,7 +123,10 @@ export function next(holdMs = HOLD_MS): Promise<Answer> {
 }
 
 export function routes(router: Router<App>): void {
-  router.get("/api/window/next", async () => Response.json(await next()));
+  router.get("/api/window/next", async ({ app, url }) => {
+    const asking = { build: url.searchParams.get("build"), busy: () => app.exports.running() };
+    return Response.json({ ...(await next(HOLD_MS, asking)), build: BUILD });
+  });
 }
 
 /** Tests: nothing waiting, nothing owed. */
