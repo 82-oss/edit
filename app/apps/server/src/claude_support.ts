@@ -7,6 +7,7 @@ import * as diag from "./diag.ts";
 import { writeAtomic } from "./files.ts";
 import { join } from "./paths.ts";
 import { THIS_MACHINE } from "./machine.ts";
+import * as planLimit from "./plan_limit.ts";
 
 export type SupportPhase = "idle" | "updating" | "checking" | "signing_in" | "ready" | "needs_login" | "error";
 export interface SupportCheck { name: string; ok: boolean; detail: string }
@@ -27,6 +28,38 @@ export interface SupportRuntime {
   run(command: string[], cwd: string, signal: AbortSignal, timeout: number, output?: (text: string) => void, env?: Record<string, string | undefined>): Promise<CommandResult>;
   sdkProbe?(binary: string, cwd: string, signal: AbortSignal): Promise<CommandResult>;
 }
+
+/** A failure because the model was busy (worth trying again), not because of anything in the request. */
+export function busyModel(error: string): boolean {
+  const lower = error.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  const signs = [
+    "at capacity",
+    "overloaded",
+    "temporarily unavailable",
+    "try again later",
+    "server_error",
+    "high demand",
+    // Claude Code's words for a failed API call: "API Error: 500 … api_error", a dropped connection.
+    "internal server error",
+    "api_error",
+    "connection error",
+    "request timed out",
+    "stream disconnected",
+    "econnreset",
+    "socket hang up",
+  ];
+  return signs.some((sign) => lower.includes(sign)) || /\b(500|502|503|504|529)\b/.test(lower);
+}
+
+/** The computer couldn't reach Claude (offline, DNS, a request that never came back): nothing wrong with Claude Code. */
+function offline(error: string): boolean {
+  return /fetch failed|enotfound|getaddrinfo|econnrefused|etimedout|enetunreach|network|did not finish in|timed out/i.test(error);
+}
+
+/** After a test request that failed for a passing reason (busy, offline, the plan used up), it's made again by itself this soon. */
+export const RECHECK_MS = 5 * 60_000;
+/** A check that last failed (or was cut off) is made again this long after Edit starts, never shown as still failing. */
+const LAUNCH_RECHECK_MS = 5_000;
 
 /** No authorization URLs, API keys or bearer tokens in saved reports. */
 export function safeDetail(text: string): string {
@@ -118,6 +151,11 @@ export class ClaudeSupport {
   private stored = false;
   private job: Promise<void> | null = null;
   private abort: AbortController | null = null;
+  /** Ready on a test request that failed for a passing reason: made again by itself (`recheck`), and at the next launch. */
+  private unverified = false;
+  private recheckTimer: ReturnType<typeof setTimeout> | null = null;
+  /** A recheck running in the background: never a phase the panel waits on. */
+  private quiet: AbortController | null = null;
   private file: string;
   private workspace: string;
 
@@ -131,12 +169,15 @@ export class ClaudeSupport {
       this.build = typeof saved.build === "string" ? saved.build : null;
       this.stored = saved.stored === true;
       claude.useStoredLogin(this.stored);
+      this.unverified = saved.unverified === true;
       // A saved success is useful evidence, but an interrupted operation never
       // restarts a browser or an update on every launch.
       if (["idle", "updating", "checking", "signing_in", "ready", "needs_login", "error"].includes(saved.state?.phase)) this.state = { ...this.state, ...saved.state, url: null };
-      if (["updating", "checking", "signing_in"].includes(this.state.phase)) {
-        this.state.phase = "error";
-        this.state.message = "Claude setup was interrupted. Choose Check Claude to continue.";
+      // A check that failed or was cut off is made again now, quietly, rather than kept: a failed probe after a
+      // nightly (Claude busy, the network out) locked the panel at every launch until someone pressed Repair.
+      if (["updating", "checking", "signing_in", "error"].includes(this.state.phase) || this.unverified) {
+        if (this.state.phase !== "ready") this.state = { ...this.state, phase: "idle", message: "", error: null };
+        if (process.env.EDIT_CLAUDE_MAINTENANCE !== "0") this.recheckIn(LAUNCH_RECHECK_MS);
       }
     } catch { /* First run. */ }
   }
@@ -155,6 +196,9 @@ export class ClaudeSupport {
 
   start(action: SupportAction): SupportStatus {
     if (this.job) return this.status();
+    // What's asked for now is the check that counts.
+    this.quiet?.abort();
+    this.stopRecheck();
     const abort = new AbortController();
     this.abort = abort;
     this.state.checks = [];
@@ -173,12 +217,86 @@ export class ClaudeSupport {
 
   cancel(): SupportStatus {
     this.abort?.abort();
+    this.quiet?.abort();
+    this.stopRecheck();
     this.set("idle", "Claude setup cancelled.");
     return this.status();
   }
 
   /** Shutdown preserves the interrupted phase for the next launch's recovery card. */
-  close(): void { this.abort?.abort(); }
+  close(): void {
+    this.abort?.abort();
+    this.quiet?.abort();
+    this.stopRecheck();
+  }
+
+  /** A turn went through: Claude works, whatever the last check said. */
+  turnWorked(): void {
+    if (this.job || !(this.state.phase === "error" || this.unverified)) return;
+    this.quiet?.abort();
+    this.success();
+  }
+
+  /**
+   * The test request made again in the background (after a passing failure,
+   * or at launch after one that failed): the phase changes only with what it
+   * finds, so the panel is never locked while it runs.
+   */
+  async recheck(): Promise<void> {
+    if (this.job || this.quiet) return;
+    const abort = new AbortController();
+    this.quiet = abort;
+    try {
+      const binary = await this.runtime.find();
+      if (abort.signal.aborted) return;
+      if (binary === null) { this.set("error", "Claude Code is not installed. Choose Set up Claude to install it."); return; }
+      this.state.path = binary;
+      this.state.checks = [];
+      const probe = await this.probe(binary, abort.signal);
+      if (abort.signal.aborted) return;
+      if (probe.ok) {
+        this.success();
+        await this.ready();
+      } else if (probe.auth) this.set("needs_login", "Sign in to Claude to continue. Your message is saved.", probe.error);
+      else if (!this.passed(probe.error)) this.set("error", "Claude's test request failed.", probe.error);
+    } catch (error) {
+      if (!abort.signal.aborted) diag.warn("claude", `checking Claude again: ${safeDetail(diag.messageOf(error))}`);
+    } finally {
+      if (this.quiet === abort) this.quiet = null;
+    }
+  }
+
+  private recheckIn(ms: number): void {
+    this.stopRecheck();
+    this.recheckTimer = setTimeout(() => {
+      this.recheckTimer = null;
+      void this.recheck();
+    }, ms);
+    this.recheckTimer.unref?.();
+  }
+
+  private stopRecheck(): void {
+    if (this.recheckTimer !== null) clearTimeout(this.recheckTimer);
+    this.recheckTimer = null;
+  }
+
+  /**
+   * A test request that failed only because Claude was busy, the network was
+   * out or the plan is used up: Claude Code itself is fine, so it's ready
+   * (the plan's reset said), and the request is made again by itself.
+   */
+  private passed(detail: string | null): boolean {
+    const said = detail ?? "";
+    const plan = planLimit.isLimit(said);
+    if (!plan && !busyModel(said) && !offline(said)) return false;
+    if (plan) planLimit.note(said);
+    const until = plan ? planLimit.until() : null;
+    this.unverified = true;
+    this.state.checkedAt = Date.now();
+    this.set("ready", until === null ? "Claude is ready." : `Claude is ready. Your Claude plan is used up until ${planLimit.when(until)}.`);
+    this.recheckIn(until === null ? RECHECK_MS : Math.max(RECHECK_MS, until - Date.now()));
+    return true;
+  }
 
   authenticationFailed(): void {
     if (this.job) return;
@@ -188,7 +306,7 @@ export class ClaudeSupport {
   private persist(): void {
     try {
       // The OAuth URL (including state/PKCE) lives only while signing in.
-      writeAtomic(this.file, JSON.stringify({ build: this.build, stored: this.stored, state: { ...this.state, url: null } }));
+      writeAtomic(this.file, JSON.stringify({ build: this.build, stored: this.stored, ...(this.unverified ? { unverified: true } : {}), state: { ...this.state, url: null } }));
     } catch (error) { diag.warn("claude", `saving the diagnosis: ${safeDetail(diag.messageOf(error))}`); }
   }
 
@@ -258,6 +376,7 @@ export class ClaudeSupport {
       } finally { claude.useStoredLogin(this.stored); }
     }
     if (probe.ok) { this.success(); return; }
+    if (!probe.auth && this.passed(probe.error)) return;
     if (!probe.auth) { this.set("error", "Claude's test request failed.", probe.error); return; }
     if (action === "diagnose") { this.set("needs_login", "Sign in to Claude to continue. Your message is saved.", probe.error); return; }
     // Use the user's own CLI and its PKCE/loopback callback. No sign-in codes
@@ -273,7 +392,7 @@ export class ClaudeSupport {
       this.set("checking", "Sign-in complete. Checking a real Claude request…");
       probe = await this.probe(binary, signal);
       if (probe.ok) { this.stored = true; this.success(); }
-      else this.set(probe.auth ? "needs_login" : "error", "Claude still could not complete its test request.", probe.error);
+      else if (probe.auth || !this.passed(probe.error)) this.set(probe.auth ? "needs_login" : "error", "Claude still could not complete its test request.", probe.error);
     } finally { claude.useStoredLogin(this.stored); }
   }
 
@@ -294,7 +413,9 @@ export class ClaudeSupport {
       "--effort", "low", "--max-turns", "1", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
       "--setting-sources", "", "--settings", JSON.stringify({ disableAllHooks: true }),
       "--strict-mcp-config", "--mcp-config", JSON.stringify({ mcpServers: {} })];
-    const answer = await this.run(binary, args, signal, 90_000);
+    let answer: CommandResult;
+    // A request that never came back (offline, a hung CLI) is a failed probe, judged as one, not an error of setup's.
+    try { answer = await this.run(binary, args, signal, 90_000); } catch (error) { signal.throwIfAborted(); answer = { code: 1, out: diag.messageOf(error) }; }
     let verdict = this.probeResult(answer, "Claude request");
     if (verdict.ok && this.runtime.sdkProbe) verdict = this.probeResult(await this.runtime.sdkProbe(binary, this.workspace, signal), "Edit connection");
     return verdict;
@@ -313,6 +434,8 @@ export class ClaudeSupport {
   }
 
   private success(): void {
+    this.unverified = false;
+    this.stopRecheck();
     this.state.checkedAt = Date.now();
     this.set("ready", "Claude is ready.");
   }

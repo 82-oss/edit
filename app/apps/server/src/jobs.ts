@@ -348,6 +348,7 @@ export function list(home: string | null, kind?: Kind): Job[] {
  */
 export function takeOver(home: string, kinds?: readonly Kind[]): Job[] {
   const out: Job[] = [];
+  const gaveUp: Job[] = [];
   // Edit restarted itself on purpose (an update): the jobs it cut aren't failing, and aren't counted.
   const planned = wasPlanned(home);
   const kept = kinds === undefined ? held(home) : [];
@@ -363,6 +364,7 @@ export function takeOver(home: string, kinds?: readonly Kind[]): Job[] {
       } else if (job.attempts >= MOST_RESUMES) {
         job.state = "given_up";
         job.given_up = `cut short by ${job.attempts + 1} restarts in a row`;
+        gaveUp.push(job);
         diag.warn("jobs", `${job.key} was cut short ${job.attempts + 1} times; not starting it again (kept; unstick starts it again)`);
       } else {
         job.attempts += 1;
@@ -371,7 +373,22 @@ export function takeOver(home: string, kinds?: readonly Kind[]): Job[] {
     }
     return changed;
   });
+  for (const job of gaveUp) {
+    try {
+      givingUp.get(home)?.[job.kind]?.(job);
+    } catch (error) {
+      diag.warn("jobs", `telling ${job.key} was given up: ${diag.messageOf(error)}`);
+    }
+  }
   return out;
+}
+
+/** Told as a kind's job is given up (`takeOver`), by data folder: its owner says so where the person looks (a turn: its chat). */
+const givingUp = new Map<string, Partial<Record<Kind, (job: Job) => void>>>();
+
+/** `tell` hears of each `kind` job in `home` given up from now on (the last one registered for the kind). */
+export function whenGivenUp(home: string, kind: Kind, tell: (job: Job) => void): void {
+  givingUp.set(home, { ...givingUp.get(home), [kind]: tell });
 }
 
 /** How long a planned restart's note counts: an exec takes seconds; an older note is a restart that never happened. */

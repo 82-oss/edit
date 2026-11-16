@@ -80,9 +80,17 @@ export function until(now: number = Date.now()): number | null {
   return limited?.until ?? null;
 }
 
+/** When the plan is back, as a person reads it: "11:51 PM" today, "Tue 9:01 AM" within the week, "Nov 23, 9:01 AM" after. */
+export function when(at: number, now: number = Date.now()): string {
+  const time = new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (new Date(at).toDateString() === new Date(now).toDateString()) return time;
+  if (at - now < 6 * 24 * 60 * 60_000) return `${new Date(at).toLocaleDateString([], { weekday: "short" })} ${time}`;
+  return `${new Date(at).toLocaleDateString([], { month: "short", day: "numeric" })}, ${time}`;
+}
+
 /** What the person sees when the work won't wait (a reset too far off). */
 export function tooLong(until: number): string {
-  return `Your Claude plan is used up until ${new Date(until).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}. Nothing was changed; start it again then.`;
+  return `Your Claude plan is used up until ${when(until)}. Nothing was changed; start it again then.`;
 }
 
 /** Waits while the plan is used up (stopped by `signal`); throws `tooLong`'s words when the reset is too far off. */

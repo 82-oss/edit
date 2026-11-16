@@ -19,7 +19,7 @@ import { attachedText, pictures as attachedPictures, savedAttached, type Attache
 import { CHAT_PICTURES, chatPictureAddress, inlinePictures } from "./chat_pictures.ts";
 import * as claude from "./claude.ts";
 import { readExportFolder } from "./export_folder.ts";
-import { ClaudeSupport, type SupportAction, type SupportStatus } from "./claude_support.ts";
+import { busyModel, ClaudeSupport, type SupportAction, type SupportStatus } from "./claude_support.ts";
 import * as diag from "./diag.ts";
 import * as jobs from "./jobs.ts";
 import * as reviewGuard from "./review_guard.ts";
@@ -204,6 +204,22 @@ function entryJson(item: Entry): Record<string, unknown> {
   return out;
 }
 
+/** A message waiting for Claude: for a sign-in, or (`until`, ms) the plan's reset. */
+interface Pending {
+  text: string;
+  /** The person's message it answers: one sent since takes its place. */
+  user: string;
+  model: string | null;
+  effort: string | null;
+  /** The turn had done work: it goes as a carry-on. */
+  continued: boolean;
+  retried: boolean;
+  until?: number;
+}
+
+/** The chat's words for a message held for the plan's reset ("… until 11:51 PM. Your message goes then."). */
+const PLAN_HELD = "Your Claude plan is used up until";
+
 function authFailure(item: Entry): boolean {
   return item.kind === "error" && (claude.signInProblem(item.text) || item.text === claude.SIGN_IN_AGAIN || /^Claude (needs to sign in again|still rejected its sign-in)/u.test(item.text));
 }
@@ -266,9 +282,27 @@ function stillOn(chat: Chat, generation: number): boolean {
   return chat.generation === generation && chat.running && !chat.halted && !chat.dropped;
 }
 
-/** The first words of a turn that starts a new Claude Code conversation because the last one's session is gone. */
+/** The first words of a turn that starts a new Claude Code conversation because the last one can't go on (its session gone, or refused). */
 const SESSION_GONE =
-  "(Edit, automatically) The earlier conversation couldn't be picked up again (Claude Code no longer has it), so this is a new one: get_edit_context shows what's already done. My message:";
+  "(Edit, automatically) The earlier conversation couldn't be picked up again, so this is a new one: get_edit_context shows what's already done. My message:";
+
+/**
+ * A resumed conversation Claude refuses before its first model call: too long
+ * for the model, a picture in it the API won't take, a request it calls
+ * invalid. Resumed every turn, it failed every turn, and the agent couldn't
+ * run to call new_chat: the turn starts a new one instead (`fresh`).
+ */
+export function stuckConversation(error: string): boolean {
+  return /prompt is too long|invalid_request_error|request_too_large|request too large|could not process image|\bimage\b[^.]{0,120}\b(exceeds|too large|too big|dimensions)/i.test(error);
+}
+
+/** Said in a turn's chat when the last run's turn won't be carried on (Edit away too long, or cut short too often). */
+export const TURN_LOST = "Edit closed during this turn: send a message to carry on.";
+
+/** How many times one message is held for the plan's reset before it's left to the person. */
+const MAX_PLAN_HOLDS = 3;
+/** A message held for the plan's reset and read back at start goes no sooner than this (the sign-in and the cloud come back first). */
+const PLAN_AFTER_START_MS = 30_000;
 
 /** Edit back this soon after it last noted a turn (jobs.json kind `turn`) was a restart: it carries on. */
 export const RESUME_WITHIN_MS = jobs.TURN_RESUME_MS;
@@ -344,6 +378,9 @@ function ranWholeEdit(entries: readonly Entry[]): boolean {
   return entries.some((item) => item.kind === "tool" && item.tool === "skill" && /edit-workflow|final-pass/u.test(item.text));
 }
 
+/** The chat's words while Edit waits out a busy model ("… Trying again in 20 s (1 of 3)."), Claude's own kept as the line's detail. */
+const BUSY_RETRY = "Claude is busy.";
+
 /** The turn that carries on one a restart cut short. */
 const RESUMED =
   "(Edit, automatically) Edit restarted while you were working, which cut your last turn off; your last tool call may not have finished. Carry on from where you stopped: get_edit_context shows what's already done; then finish the task.";
@@ -405,9 +442,14 @@ export class Agents implements seams.AgentPanel {
   chatLoaded(project: string): boolean {
     return this.chats.has(project);
   }
-  /** Failed messages survive app restarts, but never Stop, New Chat or a newer message. */
-  private authPending = new Map<string, { text: string; user: string; model: string | null; effort: string | null; continued: boolean; retried: boolean }>();
+  /**
+   * Messages waiting for Claude (a sign-in, or the plan's reset at `until`): they survive app restarts, but never
+   * Stop, New Chat or a newer message.
+   */
+  private authPending = new Map<string, Pending>();
   private authRetried = new Set<string>();
+  /** How many times each chat's message was held for the plan's reset (`holdForPlan`), until the person sends another. */
+  private planHolds = new Map<string, number>();
   /** Each project's automatic follow-ups for the user's last message: its generation, how many, the flags left at the last. */
   private followedUp = new Map<string, { generation: number; sent: number; count: number }>();
   /** Chats Edit's own next turn is about to start in (a follow-up, the fresh-eyes pass): running, as far as a restart goes. */
@@ -457,6 +499,9 @@ export class Agents implements seams.AgentPanel {
     this.dir = join(home, "agent");
     claudeUsage.use(home);
     modelChoice.use(home);
+    // A turn the last run left, cut short by restarts too often to be carried on: its chat says so.
+    const data = this.home();
+    if (data !== null) jobs.whenGivenUp(data, "turn", (job) => this.turnLost(chatOfJob(job)));
     this.claudeSupport = new ClaudeSupport(home, () => this.resumeAfterClaudeLogin(), () => {
       this.ready = null;
       this.emit("", { event: "claude", support: this.claudeSupport.status() });
@@ -472,6 +517,10 @@ export class Agents implements seams.AgentPanel {
         if (typeof project === "string" && typeof pending?.text === "string" && typeof pending?.user === "string") this.authPending.set(project, pending);
       }
     } catch { /* No message waiting for sign-in. */ }
+    // Held for the plan's reset: it goes then, or soon after this start when the reset has passed.
+    for (const [project, pending] of this.authPending) {
+      if (typeof pending.until === "number") this.planLater(project, pending.until, Math.max(pending.until - nowMs(), PLAN_AFTER_START_MS));
+    }
     try {
       const value = JSON.parse(fs.readFileSync(join(this.dir, "claude-models.json"), "utf8")) as { fetched_ms?: unknown; models?: unknown };
       if (typeof value.fetched_ms === "number" && Array.isArray(value.models)) {
@@ -520,30 +569,83 @@ export class Agents implements seams.AgentPanel {
     this.ready = null;
     this.claudeCatalog = null;
     for (const [project, pending] of [...this.authPending]) {
-      const chat = this.withChat(project);
       if (this.quitting) return;
-      if (chat.running) continue;
-      this.authPending.delete(project);
-      this.saveAuthPending();
-      if (chat.halted || this.store.get(projectOf(project)) === null || chat.entries.findLast((item) => item.kind === "user")?.id !== pending.user) continue;
-      try {
-        // A cloud lock may have moved while the browser was open.
-        await this.store.mayWrite(project);
-        if (this.withChat(project) !== chat || chat.halted || chat.running || chat.entries.findLast((item) => item.kind === "user")?.id !== pending.user) continue;
-        this.authRetried.add(project);
-        const userAt = chat.entries.findIndex((item) => item.id === pending.user);
-        for (const item of chat.entries.slice(userAt + 1)) if (authFailure(item) && item.status !== "done") {
-          this.upsert(project, { ...item, status: "done", detail: item.detail ?? item.text, text: "Claude sign-in restored. Continuing your message." });
-        }
-        this.save(project);
-        chat.model = pending.model;
-        chat.effort = pending.effort;
-        const prompt = pending.continued ? `(Edit, automatically) Claude's sign-in was renewed after this turn stopped. Continue the user's request below. Read get_edit_context first and check what is already done before making changes; do not repeat completed work.\n\n${pending.text}` : pending.text;
-        await this.sendTurn(project, prompt, pending.model, pending.effort, chat.generation, true);
-      } catch (error) {
-        this.upsert(project, entry({ id: newId("error"), kind: "error", text: `Claude is signed in, but the message could not continue: ${diag.messageOf(error)}` }));
-        this.save(project);
+      // One held for the plan goes at its reset, not at a sign-in.
+      if (pending.until !== undefined) continue;
+      await this.resumePending(project, pending, "sign-in");
+    }
+  }
+
+  /**
+   * The plan is used up (the chat's own turn heard it, or another Claude call
+   * did): the person's message is held and goes by itself at the reset, as one
+   * waiting for a sign-in does, said plainly in the chat. False when it can't
+   * wait (a reset more than plan_limit's 6 h off, or held too often): the turn
+   * ends saying when the plan is back (`planUsedUp`).
+   */
+  private holdForPlan(project: string, generation: number, text: string, continued: boolean, said: string | null): boolean {
+    const chat = this.withChat(project);
+    if (chat.generation !== generation || chat.halted || this.quitting) return false;
+    if (said !== null) planLimit.note(said);
+    const until = planLimit.until();
+    const user = chat.entries.findLast((item) => item.kind === "user");
+    const holds = (this.planHolds.get(project) ?? 0) + 1;
+    if (until === null || until - nowMs() > planLimit.MAX_WAIT_MS || user === undefined || holds > MAX_PLAN_HOLDS) return false;
+    this.planHolds.set(project, holds);
+    this.authPending.set(project, { text, user: user.id, model: chat.model, effort: chat.effort, continued, retried: false, until });
+    this.saveAuthPending();
+    this.finish(project, `${PLAN_HELD} ${planLimit.when(until)}. Your message goes then.`);
+    this.planLater(project, until, until - nowMs());
+    return true;
+  }
+
+  /** Why a turn ended when the plan is used up and the message can't be held. */
+  private planUsedUp(): string {
+    const until = planLimit.until();
+    return until === null ? "Your Claude plan is used up. Send your message again once it's back." : `${PLAN_HELD} ${planLimit.when(until)}. Send your message again then.`;
+  }
+
+  /** The message held for the plan's reset `until` goes in `ms` (unless it was cancelled or held again meanwhile). */
+  private planLater(project: string, until: number, ms: number): void {
+    timing.later(Math.max(ms, 0), () => {
+      const pending = this.authPending.get(project);
+      if (pending === undefined || pending.until !== until || this.quitting) return;
+      // Another Claude call heard of a later reset meanwhile, or a turn is running: a little later.
+      const later = planLimit.until();
+      if (later !== null && later > nowMs()) return this.planLater(project, until, later - nowMs());
+      if (this.withChat(project).running) return this.planLater(project, until, 60_000);
+      void this.resumePending(project, pending, "plan").catch((error: unknown) => diag.warn("agent", `${project}: sending the message held for the plan: ${diag.messageOf(error)}`));
+    });
+  }
+
+  /** A message that waited for Claude (a sign-in, the plan's reset) goes now, once, unless the person moved on. */
+  private async resumePending(project: string, pending: Pending, why: "sign-in" | "plan"): Promise<void> {
+    const chat = this.withChat(project);
+    if (this.quitting || chat.running) return;
+    this.authPending.delete(project);
+    this.saveAuthPending();
+    if (chat.halted || this.store.get(projectOf(project)) === null || chat.entries.findLast((item) => item.kind === "user")?.id !== pending.user) return;
+    try {
+      // A cloud lock may have moved while the browser was open (or the plan was out).
+      await this.store.mayWrite(project);
+      if (this.withChat(project) !== chat || chat.halted || chat.running || chat.entries.findLast((item) => item.kind === "user")?.id !== pending.user) return;
+      if (why === "sign-in") this.authRetried.add(project);
+      const userAt = chat.entries.findIndex((item) => item.id === pending.user);
+      for (const item of chat.entries.slice(userAt + 1)) {
+        if (item.status === "done" || item.kind !== "error") continue;
+        if (why === "sign-in" && authFailure(item)) this.upsert(project, { ...item, status: "done", detail: item.detail ?? item.text, text: "Claude sign-in restored. Continuing your message." });
+        if (why === "plan" && item.text.startsWith(PLAN_HELD)) this.upsert(project, { ...item, status: "done", detail: item.detail ?? item.text, text: "Your Claude plan is back. Your message went." });
       }
+      this.save(project);
+      chat.model = pending.model;
+      chat.effort = pending.effort;
+      const renewed = why === "sign-in" ? "Claude's sign-in was renewed" : "The Claude plan, used up, is back";
+      const prompt = pending.continued ? `(Edit, automatically) ${renewed} after this turn stopped. Continue the user's request below. Read get_edit_context first and check what is already done before making changes; do not repeat completed work.\n\n${pending.text}` : pending.text;
+      await this.sendTurn(project, prompt, pending.model, pending.effort, chat.generation, true);
+    } catch (error) {
+      const said = diag.messageOf(error);
+      this.upsert(project, entry({ id: newId("error"), kind: "error", text: why === "sign-in" ? `Claude is signed in, but the message could not continue: ${said}` : `Your Claude plan is back, but your message couldn't go: ${said}` }));
+      this.save(project);
     }
   }
 
@@ -916,6 +1018,7 @@ export class Agents implements seams.AgentPanel {
         this.authPending.delete(project);
         this.saveAuthPending();
         this.authRetried.delete(project);
+        this.planHolds.delete(project);
         // A review fix, Edit's follow-up to one, or the team's own message (review_guard.ts).
         reviewGuard.turnStarts(project, text);
         chat.generation = this.nextGeneration++;
@@ -940,7 +1043,7 @@ export class Agents implements seams.AgentPanel {
       try {
         // A failure here leaves the edit as it was; the turn goes on.
         await agentHooks.beforeTurn(projectOf(project)).catch((error: unknown) => diag.warn("agent", `${project}: before the turn: ${diag.messageOf(error)}`));
-        await this.prepareTurn(project, text, model, effort, current, replay, context, attached);
+        await this.prepareTurn(project, text, model, effort, current, replay, context, attached, release);
       } catch (error) {
         const said = isBug(error) ? crashed("the agent turn", error) : diag.messageOf(error);
         if (claude.signInProblem(said) && this.waitForClaudeLogin(project, current, text, false)) return null;
@@ -963,13 +1066,14 @@ export class Agents implements seams.AgentPanel {
     replay = false,
     context = "",
     attached: Attached[] = [],
+    unlock: () => void = () => {},
   ): Promise<void> {
     const live = this.store.get(projectOf(project));
     if (live === null) throw new Error("no such project");
     // The attached pictures as pictures, the rest named (the first build sent only the names, and the agent couldn't see them).
     const given = await attachedPictures(attached, live.project.media, join(this.dir, "workspace", "attached"));
     const about = attachedText(attached, new Set(given.map((one) => one.media)));
-    return this.claudeTurn(project, text, model, effort, generation, replay, context + about, attached, given);
+    return this.claudeTurn(project, text, model, effort, generation, replay, context + about, attached, given, unlock);
   }
 
   /**
@@ -988,6 +1092,8 @@ export class Agents implements seams.AgentPanel {
     context = "",
     attached: Attached[] = [],
     given: Picture[] = [],
+    /** Lets the chat's slot go (sendTurn's lock): the turn is running, shown, and stoppable from here. */
+    unlock: () => void = () => {},
   ): Promise<void> {
     const live = this.store.get(projectOf(project));
     if (live === null) throw new Error("no such project");
@@ -1004,10 +1110,18 @@ export class Agents implements seams.AgentPanel {
     this.save(project);
     // The once-per-nightly update finishes before a new CLI is started.
     // Sign-in failures below keep this already-visible message for recovery.
+    // The chat's slot isn't held through it (minutes, through a sign-in): the turn is running and shown, so a message
+    // sent meanwhile queues or is told at once, and a stop's next message isn't held behind it.
+    if (this.claudeSupport.busy) unlock();
     await this.claudeSupport.settled();
     if (!stillOn(chat, generation)) throw new Error("Stopped.");
     const setup = this.claudeSupport.status();
     if (setup.phase === "needs_login") throw new Error("Claude authentication_error: sign-in required");
+    // The plan is known to be used up (this chat or another Claude call heard it): the message waits for the reset, not asked into it.
+    if (planLimit.until() !== null) {
+      if (this.holdForPlan(project, generation, text + context, false, null)) return;
+      throw new Error(this.planUsedUp());
+    }
     const binary = await this.findClaude();
     if (binary === null) throw new Error("Claude Code isn't installed. Choose Set up Claude.");
     chat.model = model ?? chat.model;
@@ -1135,6 +1249,8 @@ export class Agents implements seams.AgentPanel {
       error = claude.resultError(result);
       // The chat's own turn ran the plan out: Edit's other Claude work waits for the reset too.
       if (error !== null && planLimit.isLimit(error)) planLimit.note(error);
+      // Claude answered: whatever the last setup check said, it works.
+      if (error === null) this.claudeSupport.turnWorked();
       const usage = (result.usage ?? {}) as Record<string, number | undefined>;
       // The chat's session total so far, less what its earlier turns spent (claude_usage.ts).
       const spent = typeof result.total_cost_usd === "number" ? claudeUsage.record(`edit chat ${typeof result.model === "string" ? result.model : (this.withChat(project).model ?? this.turnModel(project))}`, result.total_cost_usd, Date.now(), typeof result.duration_ms === "number" ? result.duration_ms : 0, typeof result.session_id === "string" ? result.session_id : null) : null;
@@ -1147,16 +1263,23 @@ export class Agents implements seams.AgentPanel {
       error = "Claude Code stopped before the turn finished; send your message again.";
     }
     if (error !== null && claude.signInProblem(error) && this.waitForClaudeLogin(project, generation, text, turn.tools > 0)) return;
+    // The plan ran out: the message goes again at the reset, said plainly, not Claude's own words.
+    if (error !== null && planLimit.isLimit(error)) {
+      if (this.holdForPlan(project, generation, text, turn.tools > 0, error)) return;
+      const ending = this.withChat(project);
+      if (ending.generation === generation && ending.running && !ending.halted) error = this.planUsedUp();
+    }
     const chat = this.withChat(project);
     if (chat.generation !== generation || !chat.running) return;
     // Stopped to steer (`steer`): the queued message that follows says it all.
     if (chat.halted && error !== null) error = this.steering.has(project) ? null : "Stopped.";
-    if (error !== null && /no conversation found/i.test(error)) {
-      // Its session is gone (Claude Code's history cleared): this turn starts a new one.
+    const gone = error !== null && /no conversation found/i.test(error);
+    // Its session is gone (Claude Code's history cleared), or Claude refuses to go on with it before a single call: this turn starts a new one, once.
+    if (error !== null && (gone || (fresh !== null && turn.calls === 0 && stuckConversation(error)))) {
       chat.thread = null;
       this.save(project);
       if (fresh !== null && turn.calls === 0) {
-        diag.warn("agent", `${project}: Claude Code no longer has the conversation; starting a new one`);
+        diag.warn("agent", gone ? `${project}: Claude Code no longer has the conversation; starting a new one` : `${project}: Claude refused to go on with the conversation (${takeChars(error, 200)}); starting a new one`);
         try {
           await fresh();
           return;
@@ -1522,9 +1645,12 @@ export class Agents implements seams.AgentPanel {
 
   /** One turn the last run left running, carried on (jobs.ts resumer for `turn`). */
   resumeTurn(job: jobs.Job): void {
-    const chat = typeof job.args.chat === "string" ? job.args.chat : job.project;
-    if (nowMs() - job.updated_ms > RESUME_WITHIN_MS) throw new jobs.Gone(`Edit was away ${diag.human(nowMs() - job.updated_ms)}, not a restart`);
+    const chat = chatOfJob(job);
     if (this.store.get(projectOf(chat)) === null) throw new jobs.Gone("the project is gone");
+    if (nowMs() - job.updated_ms > RESUME_WITHIN_MS) {
+      this.turnLost(chat);
+      throw new jobs.Gone(`Edit was away ${diag.human(nowMs() - job.updated_ms)}, not a restart`);
+    }
     if (this.withChat(chat).running) return;
     diag.info("agent", `${chat}: carrying on the turn the restart cut short`);
     // Listed still: as the turn carried on starts, this run takes the listing over (noteRunning), and crosses it off when it ends.
@@ -1540,13 +1666,37 @@ export class Agents implements seams.AgentPanel {
     });
   }
 
-  private finish(project: string, error: string | null): void {
+  /**
+   * A turn the last run left running that won't be carried on (Edit was away
+   * more than RESUME_WITHIN_MS, or the turn was cut short by restarts too
+   * often): only a graceful quit used to say so, and after a crash the turn
+   * just stopped with no word. Its chat says so, and the person hears.
+   */
+  private turnLost(chat: string): void {
+    const root = projectOf(chat);
+    const live = this.store.get(root);
+    if (live === null) return;
+    const one = this.withChat(chat);
+    if (one.running) return;
+    const last = one.entries.at(-1);
+    // A graceful quit already said it ("Edit was closed during this turn…"); a lost turn says it once.
+    const told = last?.kind === "error" && last.status !== "done" && (last.text === TURN_LOST || last.text.startsWith("Edit was closed during this turn"));
+    if (!told) {
+      this.upsert(chat, entry({ id: newId("error"), kind: "error", text: TURN_LOST }));
+      this.save(chat);
+    }
+    if (chat !== root) return;
+    notices.notify({ key: `agent:${root}:lost:${one.entries.at(-1)?.id ?? ""}`, title: "The agent stopped", body: `${live.project.name || "Untitled"}: ${notices.line(TURN_LOST)}`, path: `/p/${root}` });
+  }
+
+  /** A turn over: `error` is what the chat says when it failed (`detail` the words it came from, kept off screen). */
+  private finish(project: string, error: string | null, detail?: string): void {
     const chat = this.withChat(project);
     if (error === null) chat.retries = 0;
     const started = chat.started;
     chat.started = null;
-    if (started !== null) diag.record("agent", "agent turn", timing.now() - started, error);
-    if (error !== null) this.upsert(project, entry({ id: newId("error"), kind: "error", text: error }));
+    if (started !== null) diag.record("agent", "agent turn", timing.now() - started, detail ?? error);
+    if (error !== null) this.upsert(project, entry({ id: newId("error"), kind: "error", text: error, ...(detail === undefined ? {} : { detail }) }));
     const now = nowMs();
     chat.running = false;
     const waiting = this.ending.get(project);
@@ -1627,7 +1777,7 @@ export class Agents implements seams.AgentPanel {
         // Wait a little longer each time, then pick the work back up.
         const wait = 20 * tries;
         this.retrying.add(project);
-        this.finish(project, `${error} Trying again in ${wait} s (${tries} of ${MAX_RETRIES}).`);
+        this.finish(project, `${BUSY_RETRY} Trying again in ${wait} s (${tries} of ${MAX_RETRIES}).`, error);
         const failure = error;
         void (async () => {
           try {
@@ -1648,6 +1798,8 @@ export class Agents implements seams.AgentPanel {
       }
     }
     this.finish(project, error);
+    // A retry after a busy model went through: its "trying again" lines are answered.
+    if (error === null) this.retriesDone(project);
     // The user asked for a new chat: this one ends with the turn, and the next message starts afresh.
     if (this.resetAfter.has(project)) {
       // What they queued after asking goes to the new chat.
@@ -1664,6 +1816,18 @@ export class Agents implements seams.AgentPanel {
     // Only a turn that ended as it should sends the queue on: after an error or a stop it waits, shown, to steer or cancel.
     if (error === null && !halted && this.sendQueued(project)) return;
     if (error === null && !halted) this.followUp(project, generation);
+  }
+
+  /** The "Claude is busy. Trying again…" lines since the person's last message, marked done (a turn after them went through). */
+  private retriesDone(project: string): void {
+    const chat = this.withChat(project);
+    let changed = false;
+    for (const item of chat.entries.slice(lastAsked(chat.entries) + 1)) {
+      if (item.kind !== "error" || item.status === "done" || !item.text.startsWith(BUSY_RETRY)) continue;
+      this.upsert(project, { ...item, status: "done", detail: item.detail ?? item.text, text: "Claude was busy for a moment; Edit tried again and it went through." });
+      changed = true;
+    }
+    if (changed) this.save(project);
   }
 
   /**
@@ -1853,6 +2017,11 @@ export class Agents implements seams.AgentPanel {
     this.upsert(card.parent, { ...found, status: error === null ? "done" : error === "Stopped." ? "stopped" : "failed", ...(error !== null && error !== "Stopped." ? { text: `Fresh-eyes final pass: ${error}` } : {}) });
     this.save(card.parent);
   }
+}
+
+/** The chat a turn job (jobs.json kind `turn`) was running in. */
+function chatOfJob(job: jobs.Job): string {
+  return typeof job.args.chat === "string" ? job.args.chat : job.project;
 }
 
 /** A compaction's chat line: done, with its sizes ({pre, post} tokens) for the line to say. */
@@ -2049,30 +2218,10 @@ export function editToolsFailed(message: Record<string, unknown>): boolean {
   return edit !== undefined && edit.status !== "connected" && edit.status !== "pending";
 }
 
+export { busyModel };
+
 /** How many times in a row a turn cut off by a busy model is restarted. */
 export const MAX_RETRIES = 3;
-
-/** A turn that failed because the model was busy (worth trying again), not because of anything in the request. */
-export function busyModel(error: string): boolean {
-  const lower = error.replace(/[A-Z]/g, (c) => c.toLowerCase());
-  const signs = [
-    "at capacity",
-    "overloaded",
-    "temporarily unavailable",
-    "try again later",
-    "server_error",
-    "high demand",
-    // Claude Code's words for a failed API call: "API Error: 500 … api_error", a dropped connection.
-    "internal server error",
-    "api_error",
-    "connection error",
-    "request timed out",
-    "stream disconnected",
-    "econnreset",
-    "socket hang up",
-  ];
-  return signs.some((sign) => lower.includes(sign)) || /\b(500|502|503|504|529)\b/.test(lower);
-}
 
 /** The most model calls an agent turn may take: a stop for a runaway, well above a whole edit's few hundred. */
 export const MAX_TURNS = 1500;

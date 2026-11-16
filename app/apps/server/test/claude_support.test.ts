@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as claude from "../src/claude.ts";
+import * as planLimit from "../src/plan_limit.ts";
 import { ClaudeSupport, loginUrl, safeDetail, type SupportRuntime } from "../src/claude_support.ts";
 import { scratch } from "./helpers/home.ts";
 import { fixtureHome } from "./helpers/home.ts";
@@ -29,7 +30,7 @@ function harness() {
   const support = new ClaudeSupport(home.dir, () => { ready++; }, undefined, runtime);
   return { ...home, support, runtime, calls, ready: () => ready, refuse: () => { authenticated = false; } };
 }
-afterEach(() => claude.useStoredLogin(false));
+afterEach(() => { claude.useStoredLogin(false); planLimit.reset(); });
 
 test("nightly maintenance updates and probes once per build, including across restarts", async () => {
   const h = harness();
@@ -69,18 +70,71 @@ test("a saved login can be rejected: diagnosis identifies it, login verifies a r
   } finally { h.cleanup(); }
 });
 
-test("network and capacity failures are diagnosed without opening a sign-in loop", async () => {
+test("network and capacity failures are diagnosed without opening a sign-in loop, and don't lock the panel: ready, checked again by itself", async () => {
   const h = harness();
   const original = h.runtime.run;
-  h.runtime.run = async (...args) => args[0][1] === "-p" ? { code: 1, out: "API Error: 529 overloaded" } : original(...args);
+  let busy = true;
+  h.runtime.run = async (...args) => args[0][1] === "-p" && busy ? { code: 1, out: "API Error: 529 overloaded" } : original(...args);
   try {
     h.support.start("login");
     await h.support.settled();
-    expect(h.support.status().phase).toBe("error");
-    expect(h.support.status().error).toContain("529");
+    // A busy model after a nightly used to set "error": the composer stayed off until someone pressed Repair.
+    expect(h.support.status().phase).toBe("ready");
+    expect(h.support.status().error).toBeNull();
+    expect(h.support.status().checks.find((check) => check.name === "Claude request")?.detail).toContain("529");
     expect(h.calls.some((call) => call[2] === "login")).toBe(false);
-    expect(h.ready()).toBe(0);
-  } finally { h.cleanup(); }
+    expect(JSON.parse(fs.readFileSync(`${h.dir}/agent/claude-support.json`, "utf8")).unverified).toBe(true);
+    // The check made again (its timer's work): never a phase the panel waits on while it runs.
+    busy = false;
+    const again = h.support.recheck();
+    expect(h.support.status().phase).toBe("ready");
+    await again;
+    expect(h.support.status().phase).toBe("ready");
+    expect(JSON.parse(fs.readFileSync(`${h.dir}/agent/claude-support.json`, "utf8")).unverified).toBeUndefined();
+    // Offline: a request that never came back is the same.
+    h.runtime.run = async (...args) => { if (args[0][1] === "-p") throw new Error("-p did not finish in 90 seconds"); return original(...args); };
+    h.support.start("diagnose");
+    await h.support.settled();
+    expect(h.support.status().phase).toBe("ready");
+  } finally { h.support.close(); h.cleanup(); }
+});
+
+test("a used-up plan in the test request is ready, with when it's back; other Claude work waits for it", async () => {
+  const h = harness();
+  const original = h.runtime.run;
+  h.runtime.run = async (...args) => args[0][1] === "-p" ? { code: 1, out: JSON.stringify({ type: "result", subtype: "success", is_error: true, result: "You've hit your 5-hour limit" }) } : original(...args);
+  try {
+    h.support.start("diagnose");
+    await h.support.settled();
+    expect(h.support.status().phase).toBe("ready");
+    expect(h.support.status().message).toStartWith("Claude is ready. Your Claude plan is used up until ");
+    expect(planLimit.until()).not.toBeNull();
+  } finally { h.support.close(); h.cleanup(); }
+});
+
+test("a check that failed is made again at launch, not restored as failing; a turn that works clears it", async () => {
+  const h = harness();
+  try {
+    fs.mkdirSync(`${h.dir}/agent`, { recursive: true });
+    const failed = { build: "nightly-80", stored: false, state: { phase: "error", message: "Claude's test request failed.", error: "API Error: 400 bad", url: null, path: null, version: null, checkedAt: null, checks: [] } };
+    fs.writeFileSync(`${h.dir}/agent/claude-support.json`, JSON.stringify(failed));
+    const launched = new ClaudeSupport(h.dir, () => {}, undefined, h.runtime);
+    expect(launched.status().phase).toBe("idle");
+    await launched.recheck();
+    expect(launched.status().phase).toBe("ready");
+    launched.close();
+    // An interrupted setup is the same.
+    fs.writeFileSync(`${h.dir}/agent/claude-support.json`, JSON.stringify({ ...failed, state: { ...failed.state, phase: "checking" } }));
+    expect(new ClaudeSupport(h.dir, () => {}, undefined, h.runtime).status().phase).toBe("idle");
+    // A failure that isn't passing still says so (a real problem), and a turn that then works clears it.
+    const original = h.runtime.run;
+    h.runtime.run = async (...args) => args[0][1] === "-p" ? { code: 1, out: "API Error: 400 model not found" } : original(...args);
+    h.support.start("diagnose");
+    await h.support.settled();
+    expect(h.support.status().phase).toBe("error");
+    h.support.turnWorked();
+    expect(h.support.status().phase).toBe("ready");
+  } finally { h.support.close(); h.cleanup(); }
 });
 
 test("a working terminal request does not hide a rejected SDK connection", async () => {

@@ -10,9 +10,10 @@ import { join } from "node:path";
 import * as jobs from "../src/jobs.ts";
 import * as localPreviews from "../src/local_previews.ts";
 
-import { agentHooks, Agents, editToolsFailed, readChat, STALL_MS, timing } from "../src/agent.ts";
+import { agentHooks, Agents, editToolsFailed, readChat, STALL_MS, stuckConversation, timing, TURN_LOST, type Queued } from "../src/agent.ts";
 import * as claude from "../src/claude.ts";
 import * as modelChoice from "../src/model_choice.ts";
+import * as planLimit from "../src/plan_limit.ts";
 import * as notices from "../src/notices.ts";
 import * as toolChanges from "../src/tool_changes.ts";
 import { fixtureHome } from "./helpers/home.ts";
@@ -1016,6 +1017,233 @@ test("an edit shared for review is built, as is one a kept chat shows was done",
     );
     expect(agents.isBuilt(project)).toBe(true);
   } finally {
+    home.cleanup();
+  }
+});
+
+test("a resumed conversation claude refuses before its first call (too long, a picture it won't take) starts again as a new one, once per turn", async () => {
+  const refusals = [
+    "Prompt is too long",
+    'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"messages.12.content.1.image.source.base64: image exceeds 5 MB maximum"}}',
+  ];
+  expect(refusals.every(stuckConversation)).toBe(true);
+  expect(stuckConversation("API Error: 529 overloaded_error")).toBe(false);
+  for (const refusal of refusals) {
+    const { home, project, agents, asked, queries } = claudeProject("claude-stuck");
+    try {
+      agents.withChat(project).provider = "claude";
+      agents.withChat(project).thread = "session-big";
+      await agents.send(project, "And the outro", null, null);
+      queries[0]!.push({ type: "result", subtype: "success", is_error: true, result: refusal, usage: {} });
+      queries[0]!.end();
+      await settle();
+      expect(asked.length).toBe(2);
+      expect(asked[1]!.options.resume).toBeUndefined();
+      expect(asked[1]!.prompt).toStartWith("(Edit, automatically) The earlier conversation couldn't be picked up again");
+      expect(asked[1]!.prompt).toEndWith("\n\nAnd the outro");
+      expect(agents.withChat(project).running).toBe(true);
+      // Refused again in the new one: said, not tried a third time.
+      queries[1]!.push({ type: "result", subtype: "success", is_error: true, result: refusal, usage: {} });
+      queries[1]!.end();
+      await settle();
+      expect(asked.length).toBe(2);
+      expect(agents.withChat(project).running).toBe(false);
+      expect(agents.withChat(project).entries.at(-1)?.kind).toBe("error");
+    } finally {
+      agents.shutdown();
+      home.cleanup();
+    }
+  }
+  // Refused after a call went through: the turn ends as before (the next turn's resume is refused at once, and starts afresh).
+  const { home, project, agents, asked, queries } = claudeProject("claude-stuck-late");
+  try {
+    agents.withChat(project).provider = "claude";
+    agents.withChat(project).thread = "session-big";
+    await agents.send(project, "And the outro", null, null);
+    queries[0]!.push(stream({ type: "message_start", message: { usage: {} } }));
+    queries[0]!.push({ type: "result", subtype: "success", is_error: true, result: "Prompt is too long", usage: {} });
+    queries[0]!.end();
+    await settle();
+    expect(asked.length).toBe(1);
+    expect(agents.withChat(project).thread).toBe("session-big");
+  } finally {
+    agents.shutdown();
+    home.cleanup();
+  }
+});
+
+/** `timing.later` caught: the plan's wait is the one over a minute (the others are a turn's settle). */
+function laterCaught() {
+  const saved = { ...timing };
+  const timers: { ms: number; work: () => void }[] = [];
+  timing.later = (ms, work) => void timers.push({ ms, work });
+  const planTimers = () => timers.filter((one) => one.ms > 60_000);
+  return { timers, planTimers, restore: () => Object.assign(timing, saved) };
+}
+
+test("a plan used up mid-chat holds the person's message, says when it goes, and sends it at the reset, through a restart", async () => {
+  const home = fixtureHome("claude-plan");
+  const later = laterCaught();
+  let { agents, asked, queries } = agentsWith(home);
+  try {
+    const project = home.store.create("Plan", { width: 1920, height: 1080, fps: 30 }).project.id;
+    await agents.send(project, "Research this case", null, null);
+    queries[0]!.push({ type: "system", subtype: "init", session_id: "session-1" });
+    queries[0]!.push({ type: "result", subtype: "success", is_error: true, result: "You've hit your 5-hour limit", usage: {} });
+    queries[0]!.end();
+    await settle();
+    let chat = agents.withChat(project);
+    expect(chat.running).toBe(false);
+    const held = chat.entries.at(-1)!;
+    expect(held.kind).toBe("error");
+    expect(held.text).toMatch(/^Your Claude plan is used up until .+\. Your message goes then\.$/u);
+    expect(later.planTimers()).toHaveLength(1);
+    // Another message while the plan is known used up isn't asked into it: held the same way.
+    await agents.send(project, "And this one", null, null);
+    expect(asked).toHaveLength(1);
+    expect(agents.withChat(project).entries.at(-1)?.text).toStartWith("Your Claude plan is used up until");
+
+    // Edit restarts before the reset: the message is read back and goes then.
+    agents.shutdown();
+    later.timers.length = 0;
+    ({ agents, asked, queries } = agentsWith(home));
+    expect(later.planTimers()).toHaveLength(1);
+    planLimit.reset();
+    for (const one of later.planTimers()) one.work();
+    await settle();
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.prompt).toBe("And this one");
+    expect(asked[0]!.options.resume).toBe("session-1");
+    chat = agents.withChat(project);
+    expect(chat.running).toBe(true);
+    expect(chat.entries.filter((item) => item.kind === "user").map((item) => item.text)).toEqual(["Research this case", "And this one"]);
+    expect(chat.entries.at(-1)).toMatchObject({ kind: "error", status: "done", text: "Your Claude plan is back. Your message went." });
+    ends(queries[0]!);
+    await settle();
+    expect(agents.withChat(project).running).toBe(false);
+    expect(JSON.parse(fs.readFileSync(join(home.home, "agent", "claude-pending.json"), "utf8"))).toEqual([]);
+  } finally {
+    later.restore();
+    planLimit.reset();
+    agents.shutdown();
+    home.cleanup();
+  }
+});
+
+test("a plan used up for days isn't waited for: the chat says when it's back, plainly", async () => {
+  const { home, project, agents, queries } = claudeProject("claude-plan-weekly");
+  const later = laterCaught();
+  try {
+    const far = new Date(Date.now() + 3 * 86_400_000);
+    const hour = far.getHours() % 12 === 0 ? 12 : far.getHours() % 12;
+    const month = far.toLocaleString("en-US", { month: "short" });
+    await agents.send(project, "Research this case", null, null);
+    queries[0]!.push({ type: "result", subtype: "success", is_error: true, result: `You've hit your weekly limit · resets ${month} ${far.getDate()}, ${hour}${far.getHours() < 12 ? "am" : "pm"}`, usage: {} });
+    queries[0]!.end();
+    await settle();
+    expect(agents.withChat(project).entries.at(-1)?.text).toMatch(/^Your Claude plan is used up until .+\. Send your message again then\.$/u);
+    expect(later.planTimers()).toHaveLength(0);
+  } finally {
+    later.restore();
+    planLimit.reset();
+    agents.shutdown();
+    home.cleanup();
+  }
+});
+
+test("a busy model's 'trying again' line is plain, and answered once a retry goes through", async () => {
+  const { home, project, agents, asked, queries } = claudeProject("claude-busy-line");
+  const saved = { ...timing };
+  timing.sleep = async () => {};
+  try {
+    await agents.send(project, "Go", null, null);
+    queries[0]!.push({ type: "result", subtype: "error_during_execution", errors: ['API Error: 529 {"type":"error","error":{"type":"overloaded_error"}}'], usage: {} });
+    queries[0]!.end();
+    await askedCount(asked, 2);
+    const line = agents.withChat(project).entries.find((item) => item.kind === "error")!;
+    expect(line.text).toBe("Claude is busy. Trying again in 20 s (1 of 3).");
+    expect(line.detail).toContain("overloaded_error");
+    ends(queries[1]!);
+    await settle();
+    expect(agents.withChat(project).entries.find((item) => item.id === line.id)?.status).toBe("done");
+  } finally {
+    Object.assign(timing, saved);
+    agents.shutdown();
+    home.cleanup();
+  }
+});
+
+test("a turn a crash left that isn't carried on (away too long, or cut short too often) says so in its chat, and the person hears", async () => {
+  const home = fixtureHome("claude-turn-lost");
+  const notified = spyOn(notices, "notify");
+  const file = join(home.home, "jobs.json");
+  const edit = (change: (job: Record<string, number>) => void) => {
+    const listed = JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, number>[];
+    for (const job of listed) change(job);
+    fs.writeFileSync(file, JSON.stringify(listed));
+  };
+  const runs: ReturnType<typeof agentsWith>[] = [];
+  try {
+    const project = home.store.create("Lost", { width: 1920, height: 1080, fps: 30 }).project.id;
+    // A crash (no shutdown), and Edit back 11 minutes later.
+    runs.push(agentsWith(home));
+    await runs[0]!.agents.send(project, "Go on", null, null);
+    edit((job) => { job.updated_ms = (job.updated_ms ?? 0) - 11 * 60_000; });
+    runs.push(agentsWith(home));
+    await runs[1]!.agents.resumeInterrupted();
+    await settle();
+    expect(runs[1]!.asked).toHaveLength(0);
+    expect(runs[1]!.agents.withChat(project).entries.at(-1)).toMatchObject({ kind: "error", text: TURN_LOST });
+    expect(notified.mock.calls.some(([notice]) => notice.title === "The agent stopped" && notice.body.endsWith(TURN_LOST))).toBe(true);
+    expect(jobs.list(home.home, "turn").filter(jobs.live)).toEqual([]);
+
+    // Cut short by a restart too often: given up, and said the same way.
+    notified.mockClear();
+    runs.push(agentsWith(home));
+    await runs[2]!.agents.send(project, "Again", null, null);
+    edit((job) => { job.attempts = 2; });
+    runs.push(agentsWith(home));
+    await runs[3]!.agents.resumeInterrupted();
+    await settle();
+    expect(runs[3]!.asked).toHaveLength(0);
+    expect(runs[3]!.agents.withChat(project).entries.at(-1)).toMatchObject({ kind: "error", text: TURN_LOST });
+    expect(notified.mock.calls.some(([notice]) => notice.body.endsWith(TURN_LOST))).toBe(true);
+  } finally {
+    notified.mockRestore();
+    for (const run of runs) run.agents.shutdown();
+    home.cleanup();
+  }
+});
+
+test("a message sent during a sign-in in progress doesn't hold the chat: its turn shows, and the next one queues at once", async () => {
+  const { home, project, agents, asked, queries } = await hqProject("claude-hq-setup-busy");
+  let finish!: () => void;
+  const holding = new Promise<void>((resolve) => { finish = resolve; });
+  agents.claudeSupport.runtime = {
+    find: async () => { await holding; return "/test/claude"; },
+    async run(command) {
+      if (command[1] === "auth") return { code: 0, out: '{"loggedIn":true,"authMethod":"claude.ai"}' };
+      if (command[1] === "-p") return { code: 0, out: JSON.stringify({ type: "result", subtype: "success", is_error: false, result: "OK" }) };
+      return { code: 0, out: "ok" };
+    },
+  };
+  try {
+    agents.claudeSetup("diagnose");
+    const first = agents.send(project, "Make the evidence board", null, null);
+    await settle();
+    expect(agents.withChat(project).running).toBe(true);
+    const next = await Promise.race([agents.message(project, "Make it red", null, null, "", [], null), Bun.sleep(500).then(() => "held" as const)]);
+    expect(next).not.toBe("held");
+    expect((next as Queued).text).toBe("Make it red");
+    finish();
+    await first;
+    expect(asked).toHaveLength(1);
+    ends(queries[0]!);
+    await askedCount(asked, 2);
+    expect(String(asked[1]!.prompt)).toStartWith("Make it red");
+  } finally {
+    finish();
+    agents.shutdown();
     home.cleanup();
   }
 });
