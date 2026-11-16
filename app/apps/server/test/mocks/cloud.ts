@@ -433,7 +433,12 @@ export class ConvexMock {
         if (row === undefined) throw new Fail("invalid", `no channel ${String(args.key)}.`);
         for (const field of ["narration", "compilation", "label"] as const) if (args[field] !== undefined) row[field] = args[field];
         if (args.lanes !== undefined) row.lanes = { ...(row.lanes as object), ...(args.lanes as object) };
-        if (args.watermark !== undefined) row.watermark = args.watermark;
+        // One picture at a time: a Drive id, or one uploaded ({sha256, ext}); a look of null is the house's again.
+        if (args.watermark !== undefined) {
+          row.watermark = typeof args.watermark === "string" ? args.watermark : null;
+          row.watermarkUpload = typeof args.watermark === "object" && args.watermark !== null ? args.watermark : null;
+        }
+        if (args.watermarkLook !== undefined) row.watermarkLook = args.watermarkLook;
         return row;
       }
       case "archiveChannel": {

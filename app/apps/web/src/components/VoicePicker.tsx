@@ -167,15 +167,17 @@ export function VoicePicker({ value, voices, used, channel, onChange, className 
           {sample === row.id ? <Pause size={10} fill="currentColor" /> : <Play size={10} fill="currentColor" className="translate-x-px" />}
         </button>
       )}
-      <span className="min-w-0 flex-1 truncate">
-        {row.name}
+      {/* The name always shows (Sphe, Nov 16): its description goes first, then the tags give way, one and "+N". */}
+      <span className="min-w-[72px] flex-1 truncate">
+        <span className="text-fg">{row.name}</span>
         {row.more && <span className="text-faint"> · {row.more}</span>}
       </span>
-      {row.by.map((who) => (
-        <span key={who} className="max-w-[110px] shrink-0 truncate rounded bg-active px-1.5 py-px text-[11px] text-muted">
-          {who}
+      {row.by.length > 0 && (
+        <span className="flex min-w-0 max-w-[45%] shrink items-center gap-1" title={row.by.join(", ")}>
+          <span className="min-w-0 truncate rounded bg-active px-1.5 py-px text-[11px] text-muted">{row.by[0]}</span>
+          {row.by.length > 1 && <span className="shrink-0 rounded bg-active px-1.5 py-px text-[11px] text-muted tabular">+{row.by.length - 1}</span>}
         </span>
-      ))}
+      )}
       {row.id === current && <Check size={13} className="shrink-0 text-fg" />}
     </div>
   );

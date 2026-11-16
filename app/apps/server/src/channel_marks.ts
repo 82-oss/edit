@@ -10,10 +10,21 @@
 // the folder's pictures, each named by the channel linked to it when this
 // person sees that channel, else by its file's name (`SI_watermark.png` → SI).
 //
+// A channel's logo can also be uploaded on its page (Sphe, Nov 16), kept in
+// Edit's cloud under the channel's key (`edit/channels/<key>/watermark/
+// <sha256>.<ext>`, the live relay's R2: one channel list for dev and prod),
+// and each channel sets its own look there: opacity, size, speed, moving or
+// still (@edit/types/watermark, which the page's preview draws from too).
+//
+// What an export carries is a mark (`markOf`): the picture (a Drive id, or
+// `up/<channel>/<sha256>.<ext>`) and, when it isn't the house look, `~` and
+// the look's numbers. It's in the export's options key, so a changed look or
+// picture is a new export, and a restarted one draws the same thing.
+//
 // The logo goes on the timeline being exported, not into the project: a
-// locked top track over everything (subtitles too), at 10%, its x and y
-// keyframed in straight lines from wall to wall, so an export and one
-// started again after a restart (its snapshot) draw the same thing.
+// locked top track over everything (subtitles too), at the look's opacity,
+// its x and y keyframed in straight lines from wall to wall (or still in the
+// bottom-right corner).
 //
 // Only over the story's footage (JJ, Nov 5: "we only want watermarks where
 // we have 'story'", and not on reuse cases): one picture clip per stretch of
@@ -27,11 +38,14 @@
 
 import * as fs from "node:fs";
 
+import { boxOf, HOUSE_LOOK, MARGIN, type Picture, readMark, startOf, uploadKey, type WatermarkLook } from "@edit/types/watermark";
+
 import * as diag from "./diag.ts";
 import type { App } from "./app.ts";
 import * as channelList from "./channels.ts";
-import { bad, json } from "./http/errors.ts";
-import type { Router } from "./http/router.ts";
+import * as cloud from "./cloud.ts";
+import { ApiError, bad, json } from "./http/errors.ts";
+import { readBytes, type Router } from "./http/router.ts";
 import { curl, driveError, encode, quote } from "./library.ts";
 import type { Clip, Keyframe, Media, Plan, Project, Sections, Track } from "./model.ts";
 import { native } from "./native/index.ts";
@@ -46,17 +60,8 @@ const API = "https://www.googleapis.com/drive/v3";
 /** The team's Watermarks folder (Drive): one picture per channel. */
 export const FOLDER = "1E1I0ykeqXFqrjIcU8P6fQEXgNBwdS6OU";
 
-/** How the logo looks and moves, as the team asked: 10%, a DVD player's bounce. */
-export const LOOK = {
-  /** 20% at first, then 15% ("try a little lower opacity"), then "try 10%" (Sphe, Nov 2). */
-  opacity: 0.1,
-  /** The logo's height, a share of the frame's. */
-  height: 0.14,
-  /** Its speed along each axis, frame heights a second (a 1080p frame: 43 px/s, about 40 s across). 0.1 was "TOO fast" (Sphe, Nov 2). */
-  speed: 0.04,
-  /** Kept off the frame's edge, a share of its height. */
-  margin: 0.02,
-};
+/** The house look (@edit/types/watermark): 10%, 14% of the frame's height, 0.04 frame heights a second, a DVD player's bounce. */
+export const LOOK = { opacity: HOUSE_LOOK.opacity, height: HOUSE_LOOK.size, speed: HOUSE_LOOK.speed, margin: MARGIN };
 
 /** The track and clip the watermark is, on the exported timeline only. */
 export const TRACK = "watermark";
@@ -124,11 +129,23 @@ export async function logoFile(library: seams.Library, cacheDir: string, channel
   return path;
 }
 
-/** A number in [0, 1) from `seed`, so each video starts the logo somewhere of its own, the same every time it's exported. */
-function unit(seed: string, salt: number): number {
-  let hash = 2166136261 ^ salt;
-  for (let i = 0; i < seed.length; i++) hash = Math.imul(hash ^ seed.charCodeAt(i), 16777619);
-  return ((hash >>> 0) % 100_000) / 100_000;
+/** An uploaded picture on this Mac (`<cache>/watermarks/`), fetched from Edit's cloud once: it's named by its content. */
+export async function uploadFile(cacheDir: string, picture: Extract<Picture, { kind: "upload" }>): Promise<string> {
+  const dir = join(cacheDir, "watermarks");
+  fs.mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${picture.sha256}.${picture.ext}`);
+  if (fs.existsSync(path) && fs.statSync(path).size > 0) return path;
+  await cloud.download(uploadKey(picture.channel, picture.sha256, picture.ext), path);
+  return path;
+}
+
+/** A mark's picture on this Mac and what it's called in the log, from Drive or Edit's cloud. */
+export async function pictureFile(app: Pick<App, "library">, cacheDir: string, picture: Picture): Promise<{ path: string; code: string; name: string }> {
+  if (picture.kind === "upload") return { path: await uploadFile(cacheDir, picture), code: picture.sha256.slice(0, 8), name: "The channel's" };
+  let channel = (await channels(app.library)).find((one) => one.id === picture.id);
+  channel ??= (await channels(app.library, true)).find((one) => one.id === picture.id);
+  if (channel === undefined) throw new Error("that channel's watermark isn't in the Watermarks folder any more: pick it again");
+  return { path: await logoFile(app.library, cacheDir, channel), code: channel.code, name: `${channel.name}'s` };
 }
 
 /**
@@ -204,25 +221,24 @@ function slice(keys: Keyframe[], from: number, to: number): Keyframe[] {
 }
 
 /**
- * `project` with `logo` (a picture's media) bouncing across `plan`'s frames
- * at `LOOK`, shown over `spans` (timeline frames; all of `plan` when not
- * given): a new top track, locked, with a clip per span. Pure: the project
- * given is left as it was.
+ * `project` with `logo` (a picture's media) across `plan`'s frames at `look`
+ * (bouncing, or still in the bottom-right corner), shown over `spans`
+ * (timeline frames; all of `plan` when not given): a new top track, locked,
+ * with a clip per span. Pure: the project given is left as it was.
  */
-export function withWatermark(project: Project, plan: Pick<Plan, "start" | "end">, logo: Media, spans: [number, number][] = [[plan.start, plan.end]]): Project {
+export function withWatermark(project: Project, plan: Pick<Plan, "start" | "end">, logo: Media, spans: [number, number][] = [[plan.start, plan.end]], look: WatermarkLook = HOUSE_LOOK): Project {
   const frames = plan.end - plan.start;
   if (frames <= 0 || spans.length === 0) return project;
   const { width: W, height: H } = project.settings;
   const fps = project.settings.fps * (project.settings.ntsc ? 1000 / 1001 : 1);
   const fit = Math.min(W / Math.max(logo.width, 1), H / Math.max(logo.height, 1));
-  const scale = (LOOK.height * H) / Math.max(logo.height * fit, 1);
-  const [w, h] = [logo.width * fit * scale, logo.height * fit * scale];
-  const margin = LOOK.margin * H;
-  const reach = [Math.max(0, W / 2 - margin - w / 2), Math.max(0, H / 2 - margin - h / 2)] as const;
-  const speed = (LOOK.speed * H) / fps;
-  const seed = project.id;
-  const x = bounce((unit(seed, 1) * 2 - 1) * reach[0], unit(seed, 3) < 0.5 ? 1 : -1, reach[0], speed, frames);
-  const y = bounce((unit(seed, 2) * 2 - 1) * reach[1], unit(seed, 4) < 0.5 ? 1 : -1, reach[1], speed, frames);
+  const { h, reach } = boxOf(look, W, H, logo.width, logo.height);
+  const scale = h / Math.max(logo.height * fit, 1);
+  const speed = (look.speed * H) / fps;
+  const still = !look.motion || speed <= 0;
+  const start = startOf(project.id, reach);
+  const x = still ? [{ frame: 0, value: reach[0], ease: "linear" as const }] : bounce(start.from[0], start.heading[0], reach[0], speed, frames);
+  const y = still ? [{ frame: 0, value: reach[1], ease: "linear" as const }] : bounce(start.from[1], start.heading[1], reach[1], speed, frames);
   const out = structuredClone(project);
   const ids = new Set([...out.tracks.map((one) => one.id), ...out.clips.map((one) => one.id), ...out.media.map((one) => one.id)]);
   const fresh = (base: string) => {
@@ -235,7 +251,7 @@ export function withWatermark(project: Project, plan: Pick<Plan, "start" | "end"
   const track: Track = { id: fresh(TRACK), kind: "video", hidden: false, muted: false, locked: true };
   const clips = spans.map(([start, end]): Clip => {
     const [from, to] = [start - plan.start, end - plan.start];
-    const keyframes = { x: slice(x, from, to), y: slice(y, from, to) };
+    const keyframes = still ? null : { x: slice(x, from, to), y: slice(y, from, to) };
     return {
       id: fresh(TRACK),
       track: track.id,
@@ -249,9 +265,9 @@ export function withWatermark(project: Project, plan: Pick<Plan, "start" | "end"
       media: media.id,
       source_in: 0,
       speed: 1,
-      transform: { x: keyframes.x[0]!.value, y: keyframes.y[0]!.value, scale, rotation: 0 },
-      opacity: LOOK.opacity,
-      keyframes,
+      transform: { x: keyframes?.x[0]!.value ?? x[0]!.value, y: keyframes?.y[0]!.value ?? y[0]!.value, scale, rotation: 0 },
+      opacity: look.opacity,
+      ...(keyframes === null ? {} : { keyframes }),
     };
   });
   out.media.push(media);
@@ -260,20 +276,19 @@ export function withWatermark(project: Project, plan: Pick<Plan, "start" | "end"
   return out;
 }
 
-/** The export's timeline with channel `id`'s watermark on it: the picture fetched and laid over `plan`. */
-export async function addWatermark(app: Pick<App, "library">, cacheDir: string, project: Project, plan: Pick<Plan, "start" | "end">, id: string): Promise<Project> {
-  let channel = (await channels(app.library)).find((one) => one.id === id);
-  channel ??= (await channels(app.library, true)).find((one) => one.id === id);
-  if (channel === undefined) throw new Error("that channel's watermark isn't in the Watermarks folder any more: pick it again");
-  const path = await logoFile(app.library, cacheDir, channel);
-  const probe = await native().probe(path);
-  if (probe.kind !== "image") throw new Error(`${channel.name}'s watermark isn't a picture`);
-  const logo: Media = { id: `watermark-${channel.code.toLowerCase()}`, name: `${channel.code} watermark`, path, kind: "image", duration: probe.duration, width: probe.width, height: probe.height, fps: probe.fps, has_audio: false };
+/** The export's timeline with `mark`'s watermark on it (`markOf`): the picture fetched and laid over `plan` at its look. */
+export async function addWatermark(app: Pick<App, "library">, cacheDir: string, project: Project, plan: Pick<Plan, "start" | "end">, mark: string): Promise<Project> {
+  const read = readMark(mark);
+  if (read === null) throw new Error("that watermark isn't one Edit knows: pick it again");
+  const picture = await pictureFile(app, cacheDir, read.picture);
+  const probe = await native().probe(picture.path);
+  if (probe.kind !== "image") throw new Error(`${picture.name} watermark isn't a picture`);
+  const logo: Media = { id: `watermark-${picture.code.toLowerCase()}`, name: `${picture.code} watermark`, path: picture.path, kind: "image", duration: probe.duration, width: probe.width, height: probe.height, fps: probe.fps, has_audio: false };
   const fps = project.settings.fps * (project.settings.ntsc ? 1000 / 1001 : 1);
   const spans = storySpans(project, native().sections({ json: jsonForSerde(project) }), plan, fps);
   const shown = spans.reduce((sum, [a, b]) => sum + b - a, 0);
-  diag.info("watermark", `${project.name}: ${channel.name}'s watermark at ${Math.round(LOOK.opacity * 100)}% over ${spans.length} stretches of story (${Math.round(shown / fps)} of ${Math.round((plan.end - plan.start) / fps)} s)`);
-  return withWatermark(project, plan, logo, spans);
+  diag.info("watermark", `${project.name}: ${picture.name} watermark at ${Math.round(read.look.opacity * 100)}%, ${read.look.motion ? "moving" : "still"}, over ${spans.length} stretches of story (${Math.round(shown / fps)} of ${Math.round((plan.end - plan.start) / fps)} s)`);
+  return withWatermark(project, plan, logo, spans, read.look);
 }
 
 /** What the Export dialog offers. */
@@ -293,8 +308,10 @@ export function offerFor(project: { channel?: string | null } | null, given: Cha
   if (project !== null && typeof project.channel === "string" && project.channel !== "") {
     const channel = channelList.channelOf(project);
     if (channel === null) throw bad("Its channel couldn't be read: try again in a moment.");
-    const logo = given.find((one) => one.id === channel.watermark);
-    return { channel: { key: channel.key, name: channel.title }, channels: logo === undefined ? [] : [shown(logo, channel.title)] };
+    // Its own picture (Drive's, or one uploaded on its page) at its own look, as its exports carry it.
+    const mark = channelList.markFor(channel);
+    const logo = channel.watermarkUpload ? { code: channel.title } : given.find((one) => one.id === channel.watermark);
+    return { channel: { key: channel.key, name: channel.title }, channels: mark === undefined || logo === undefined ? [] : [{ id: mark, code: logo.code, name: channel.title }] };
   }
   const linked = new Map(channelList.knownChannels().flatMap((one) => (typeof one.watermark === "string" && !one.archived && one.masked !== true ? [[one.watermark, one.title] as const] : [])));
   const named = given.map((one) => shown(one, linked.get(one.id) ?? one.name)).sort((a, b) => a.name.localeCompare(b.name));
@@ -304,13 +321,66 @@ export function offerFor(project: { channel?: string | null } | null, given: Cha
   return { channel: null, channels: named, usual: most ?? named.find((one) => linked.has(one.id))?.id ?? null };
 }
 
+/** The biggest picture a channel's page takes as its watermark. */
+const UPLOAD_LIMIT = 10 << 20;
+
+/** A picture's file type from its first bytes (PNG, JPEG, WebP); null for anything else. */
+export function pictureType(bytes: Uint8Array): "png" | "jpg" | "webp" | null {
+  const starts = (...values: number[]) => values.every((value, at) => bytes[at] === value);
+  if (starts(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return "png";
+  if (starts(0xff, 0xd8, 0xff)) return "jpg";
+  if (starts(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "webp";
+  return null;
+}
+
+/**
+ * A picture uploaded on a channel's page as its watermark: kept in Edit's
+ * cloud by its content, under the channel's key, and the channel pointed at
+ * it (which takes a Drive picture's place). The channel as it is now back.
+ */
+export async function uploadWatermark(cacheDir: string, key: string, bytes: Uint8Array): Promise<channelList.Channel> {
+  const ext = pictureType(bytes);
+  if (ext === null) throw bad("A watermark is a PNG, JPEG or WebP picture.");
+  const sha256 = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+  const dir = join(cacheDir, "watermarks");
+  fs.mkdirSync(dir, { recursive: true });
+  const path = join(dir, `${sha256}.${ext}`);
+  fs.writeFileSync(`${path}.part`, bytes);
+  fs.renameSync(`${path}.part`, path);
+  const probe = await native().probe(path);
+  if (probe.kind !== "image" || probe.width < 8 || probe.height < 8) throw bad("That picture couldn't be read: try a PNG with a transparent background.");
+  await cloud.uploadFile(path, uploadKey(key, sha256, ext));
+  diag.info("watermark", `${key}: a ${probe.width}×${probe.height} ${ext} uploaded as its watermark (${sha256.slice(0, 12)})`);
+  return channelList.setWatermark(key, { watermark: { sha256, ext } });
+}
+
+/** A channel's watermark picture on this Mac, for its page's preview: null when it has none (or it's seen by its label alone). */
+export async function channelPicture(app: Pick<App, "library">, cacheDir: string, channel: channelList.Channel): Promise<string | null> {
+  const mark = channelList.markFor(channel);
+  const read = mark === undefined ? null : readMark(mark);
+  return read === null ? null : (await pictureFile(app, cacheDir, read.picture)).path;
+}
+
 export function routes(router: Router<App>): void {
-  router.get("/api/watermarks", async ({ app, url }) => {
-    const id = url.searchParams.get("project");
-    const project = id === null || id === "" ? null : (app.store.get(id)?.project ?? null);
-    const [given] = await Promise.all([channels(app.library), channelList.refresh()]);
-    return json(offerFor(project, given, Object.values(reviewState(app.store.home).shareWatermark ?? {})));
-  });
+  router
+    .get("/api/watermarks", async ({ app, url }) => {
+      const id = url.searchParams.get("project");
+      const project = id === null || id === "" ? null : (app.store.get(id)?.project ?? null);
+      const [given] = await Promise.all([channels(app.library), channelList.refresh()]);
+      return json(offerFor(project, given, Object.values(reviewState(app.store.home).shareWatermark ?? {})));
+    })
+    // The channel page's watermark (a teacher's): its picture, and a new one uploaded.
+    .get("/api/channels/{key}/watermark", async ({ app, params }) => {
+      const channel = await channelList.read(params.key!);
+      const path = await channelPicture(app, app.store.cacheDir(), channel);
+      if (path === null) throw new ApiError(404, "This channel has no watermark.");
+      return new Response(Bun.file(path), { headers: { "cache-control": "private, max-age=300" } });
+    })
+    .post("/api/channels/{key}/watermark", async (context) => {
+      channelList.needTeacher();
+      const bytes = await readBytes(context.request, UPLOAD_LIMIT);
+      return json({ channel: await uploadWatermark(context.app.store.cacheDir(), context.params.key!, bytes) });
+    });
 }
 
 /** Tests: the folder's pictures as given, as if just listed. */

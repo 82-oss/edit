@@ -175,6 +175,8 @@ DIARIZE = "off"
 CONVEX_CALLER = "1"  # dev Convex (determined-heron-867) has accounts 6d2c2a2's convex/access.ts
 # Thumbnails' OpenArt: the live relay holds the team's one sign-in (openart.ts); dev asks it.
 OPENART_UPSTREAM = "https://edit-relay.sphe-g-personal.workers.dev"
+# One channel list for dev and prod (Sphe, Nov 16): channels, groups and a channel's files are the live relay's (live_channels.ts).
+CHANNELS_UPSTREAM = "https://edit-relay.sphe-g-personal.workers.dev"
 ELEVENLABS_VOICES_IDS = "vVj9i7yXuhHiV9JHF0kj,QWUeV5PUhJjaGUhu0cKp"
 ACCOUNTS_ISSUER = "https://accounts.spheceo.com"
 OPEN_MAPS = "0"
@@ -226,9 +228,10 @@ namespace_id = "8711"
 limit = 20
 period = 60
 
-# Thumbnails' OpenArt: the live relay, bound (openart.ts; a fetch by its address is refused, error 1042).
+# The live relay, bound (a fetch by its address is refused, error 1042): thumbnails' OpenArt (openart.ts) and the one
+# channel list (live_channels.ts).
 [[env.dev.services]]
-binding = "OPENART_LIVE"
+binding = "LIVE_RELAY"
 service = "edit-relay"
 
 [[env.dev.durable_objects.bindings]]

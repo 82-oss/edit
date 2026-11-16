@@ -2,19 +2,11 @@
 
 Ideas and next steps that aren't started yet. Newest at the top.
 
-## A channel's watermark, set on its page (future)
-
-Sphe, Nov 16: on a channel's page, upload its watermark and play with how it looks: opacity, size and how it moves, seen on a sample of the channel's footage as you change them.
-- **Already built:** a channel holds the link to its watermark, by channel and not by name. The Export dialog offers it only on that channel's projects. An admin picks it from the Drive Watermarks folder.
-- **What this adds:**
-  - The picture is uploaded on the channel's page and kept with the channel, so the Drive folder stops being where watermarks live.
-  - The look becomes the channel's own: today it's one `LOOK` for everyone, 10% opacity, 14% of the frame's height and a DVD bounce (`app/apps/server/src/channel_marks.ts`). Exports and shares then use the channel's look.
-  - Older projects without a channel (V1's dropdown) move over once every channel's watermark is on its channel.
-
 ## Still open (from the plans and feedback logs cleared Nov 15)
 
 Paths are relative to `app/`.
 
+- A channel's watermark is set on its page now (uploaded, its own look; Nov 16). V1's dropdown of the Drive Watermarks folder (`apps/server/src/channel_marks.ts` `offerFor`) moves over once every channel's watermark is on its channel.
 - A share's export goes up twice in full: the archive (`edit/exports/…`), then the review's `full.mp4`; only the stored copy is deduplicated (`apps/server/src/exports.ts` `heldByReview`, `reviews.ts` `fullBehind`). The relay has no server-side copy.
 - One encoder lease with priorities (export > share copy > playback > made ahead > proxies): `apps/server/src/encoder.ts` only counts users; FFmpeg never pauses for an export, and Edit.app's playback doesn't hold off `export_ahead.ts` or `local_previews.ts`.
 - While someone watches, their playback comes first: effect renders (`apps/server/src/effects.ts`) and the look Chromes (`effect_looker.ts`) don't wait; only `export_ahead.ts` gives way.

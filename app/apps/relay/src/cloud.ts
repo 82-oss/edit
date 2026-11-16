@@ -25,13 +25,14 @@
  *   /v1/cloud/writer/…              Script mode's scripts, their reviews and lessons, under Writer's rules (writer_cloud.ts)
  */
 import { allow, burstKey, forbiddenOf, withCaller, type AuthEnv, type Caller, type Permission } from "./auth";
-import { EDIT_CALLS, grantedTo, ideaRefused, isAdmin, LISTABLE, maxExpires, mayWork, PROJECT_WRITES, projectOfKey, reportRefused, shapeOf, UNAVAILABLE, WRITABLE } from "./authz";
+import { channelRefused, EDIT_CALLS, grantedTo, ideaRefused, isAdmin, LISTABLE, maxExpires, mayWork, PROJECT_WRITES, projectOfKey, reportRefused, shapeOf, UNAVAILABLE, WRITABLE } from "./authz";
 import { mayUseDrive, NO_DRIVE } from "./google";
 import { cancelJob, driveJob, jobStatus, type JobsEnv } from "./jobs";
 import { readable as scriptReadable, scriptKeyRefused, writerCloud } from "./writer_cloud";
 import { mediaUrl, type MediaEnv } from "./media";
+import { channelCall, channelsLive, liveChannels, type LiveChannelsEnv } from "./live_channels";
 
-export interface CloudEnv extends JobsEnv, MediaEnv {
+export interface CloudEnv extends JobsEnv, MediaEnv, LiveChannelsEnv {
   R2_ACCOUNT_ID?: string;
   R2_ACCESS_KEY_ID?: string;
   R2_SECRET_ACCESS_KEY?: string;
@@ -111,6 +112,8 @@ export async function cloud(request: Request, url: URL, env: CloudEnv & AuthEnv)
     return json(400, { error: "Send a JSON object." });
   }
   const route = url.pathname.slice("/v1/cloud/".length);
+  // The dev relay: channels and groups, and a channel's files, are the live relay's (one list for dev and prod, live_channels.ts).
+  if (channelsLive(env) && channelCall(route, body)) return liveChannels(request, route, body, env, found);
   if (route === "support-config") {
     if (found.kind !== "person") return json(403, { error: "Sign in to Edit." });
     if (!env.CONVEX_URL || !env.CONVEX_URL.startsWith("https://")) return json(503, { error: "Remote support is not configured." });
@@ -213,7 +216,7 @@ interface Access {
  */
 async function mayTouch(access: Access, op: "read" | "write", key: string): Promise<void> {
   if (op === "write" && !isAdmin(access.found) && !WRITABLE.some((prefix) => key.startsWith(prefix))) throw new Forbidden("Edit doesn't write there.");
-  const refused = (op === "read" ? reportRefused(access.found, key) : null) ?? ideaRefused(access.found, key);
+  const refused = (op === "read" ? reportRefused(access.found, key) : null) ?? ideaRefused(access.found, key) ?? channelRefused(access.found, op, key);
   if (refused !== null) throw new Forbidden(refused);
   const project = projectOfKey(key);
   if (project !== null) await mayOpen(access, project);

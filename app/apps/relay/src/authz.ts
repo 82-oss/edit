@@ -122,6 +122,25 @@ export function ideaRefused(found: Caller, key: string): string | null {
   return "Your account can't work on ideas yet: an admin can give you Interrogation ideas at accounts.spheceo.com.";
 }
 
+/**
+ * A channel's own files (Nov 16: its watermark, uploaded on its page, at
+ * `edit/channels/<key>/watermark/<sha256>.<ext>`): read by who sees the
+ * channel in full, written by a teacher who does (mamagi's channels.ts rules:
+ * someone given only its label never sees its logo, which says whose it is).
+ */
+export const CHANNELS = "edit/channels/";
+
+/** Why `found` may not touch `key` when it's a channel's file (null: they may). */
+export function channelRefused(found: Caller, op: "read" | "write", key: string): string | null {
+  if (!key.startsWith(CHANNELS) || isAdmin(found)) return null;
+  const channel = /^edit\/channels\/([a-z0-9][a-z0-9-]{0,39})\//.exec(key)?.[1];
+  if (channel === undefined) return "That isn't a channel's file.";
+  const perms = found.kind === "person" ? found.perms : [];
+  if (!perms.includes(`channel.${channel}`) || perms.includes(`channel.${channel}.label`)) return "That channel isn't shown to your account in full: an admin can give it to you at accounts.spheceo.com.";
+  if (op === "write" && !perms.includes("agent.teach")) return "Only a teacher changes a channel's watermark: an admin can make you one at accounts.spheceo.com.";
+  return null;
+}
+
 /** Where Edit writes in R2 (cloud_media.ts, reviews.ts, reports, ideas). */
 export const WRITABLE = [
   "edit/originals/", "edit/proxies/", "edit/excerpts/", "edit/analysis/", "edit/sound/",
@@ -135,7 +154,7 @@ export const WRITABLE = [
   "edit/transcribe/",
   // Edit V2's cloud: the library's files (effects' and templates'), each by its content (library.ts).
   "edit/library/",
-  REPORTS, IDEAS, THUMBNAILS,
+  REPORTS, IDEAS, THUMBNAILS, CHANNELS,
 ];
 
 /** What a non-admin may list: the analysis beside a source (cloud_media's fetchAnalysisOf). */

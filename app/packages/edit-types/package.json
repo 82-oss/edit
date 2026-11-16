@@ -16,6 +16,7 @@
     "./script_cut": "./src/script_cut.ts",
     "./crossfades": "./src/crossfades.ts",
     "./marks": "./src/marks.ts",
+    "./watermark": "./src/watermark.ts",
     "./models": "./src/models.ts"
   },
   "scripts": {

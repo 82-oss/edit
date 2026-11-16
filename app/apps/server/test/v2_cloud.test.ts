@@ -763,3 +763,40 @@ test("a teacher links a channel to its watermark's picture on its page, and take
     cleanup();
   }
 });
+
+test("a watermark uploaded on a channel's page goes to Edit's cloud under the channel's key, by its content, and the channel points at it; its look is saved and read back", async () => {
+  const { app, cleanup } = fixtureHome("v2-channel-watermark-upload");
+  const router = buildRouter();
+  const ask = async (method: string, path: string, body?: Uint8Array | unknown, type = "application/json") => {
+    const sent = body instanceof Uint8Array ? body : body === undefined ? undefined : JSON.stringify(body);
+    const response = (await respond(app, router, new Request(`http://localhost:7700${path}`, { method, headers: { host: "localhost:7700", "content-type": type }, ...(sent === undefined ? {} : { body: sent }) }), null))!;
+    return { status: response.status, response };
+  };
+  const png = new Uint8Array(fs.readFileSync(join(import.meta.dir, "fixtures", "logo.png")));
+  try {
+    mock.cloud.convex.channels = [{ ...CHANNEL, key: "ch-0123456789", watermark: "1AbC_dEf-GhIjKlMnOpQrStUvWxYz0" }];
+    // Not a teacher: refused.
+    accounts.signedInForTests(["edit.bodycam", "channel.ch-0123456789"]);
+    expect((await ask("POST", "/api/channels/ch-0123456789/watermark", png, "image/png")).status).toBe(403);
+    accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.ch-0123456789"]);
+    expect((await ask("POST", "/api/channels/ch-0123456789/watermark", new TextEncoder().encode("<svg/>"), "image/svg+xml")).status).toBe(400);
+    const uploaded = await ask("POST", "/api/channels/ch-0123456789/watermark", png, "image/png");
+    expect(uploaded.status).toBe(200);
+    const sha = new Bun.CryptoHasher("sha256").update(png).digest("hex");
+    expect(((await uploaded.response.json()) as { channel: Record<string, unknown> }).channel).toMatchObject({ watermark: null, watermarkUpload: { sha256: sha, ext: "png" } });
+    expect(mock.cloud.objects.has(`edit/channels/ch-0123456789/watermark/${sha}.png`)).toBe(true);
+    // The page's preview reads it back.
+    const picture = await ask("GET", "/api/channels/ch-0123456789/watermark");
+    expect(picture.status).toBe(200);
+    expect(new Uint8Array(await picture.response.arrayBuffer())).toEqual(png);
+    // Its look: saved in range, the house's as none.
+    expect((await ask("PUT", "/api/channels/ch-0123456789", { watermarkLook: { opacity: 0.2, size: 0.1, speed: 0, motion: false } })).status).toBe(200);
+    expect(mock.cloud.convex.channels[0]).toMatchObject({ watermarkLook: { opacity: 0.2, size: 0.1, speed: 0, motion: false } });
+    expect((await ask("PUT", "/api/channels/ch-0123456789", { watermarkLook: { opacity: 0.1, size: 0.14, speed: 0.04, motion: true } })).status).toBe(200);
+    expect(mock.cloud.convex.channels[0]).toMatchObject({ watermarkLook: null });
+    expect((await ask("PUT", "/api/channels/ch-0123456789", { watermarkLook: { opacity: 9, size: 0.1, speed: 0, motion: false } })).status).toBe(400);
+  } finally {
+    mock.cloud.convex.channels = [];
+    cleanup();
+  }
+});

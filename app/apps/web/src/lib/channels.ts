@@ -9,7 +9,9 @@
 import { useEffect } from "react";
 import { create } from "zustand";
 
-import { request } from "./api";
+import type { WatermarkLook } from "@edit/types/watermark";
+
+import { ApiError, request } from "./api";
 
 export const LANES = [
   { key: "ideas", label: "Ideas" },
@@ -42,6 +44,10 @@ export interface Channel {
   compilation: boolean;
   /** Its watermark: its logo's Drive id in the Watermarks folder, put on its exports; null or missing: none, so its exports offer none. */
   watermark?: string | null;
+  /** Its watermark uploaded on its page instead (kept in Edit's cloud under its key); null or missing: none. */
+  watermarkUpload?: { sha256: string; ext: string } | null;
+  /** How its watermark looks on its exports; null or missing: the house look. */
+  watermarkLook?: WatermarkLook | null;
   lanes: Record<Lane, string>;
   /** Its group's key, or null. */
   group?: string | null;
@@ -133,8 +139,25 @@ export const channelApi = {
   addPlaceholder: (title: string) => request<{ channel: Channel }>("POST", "/api/channels", { title }).then((answer) => keep(answer.channel)),
   /** A placeholder linked to its YouTube channel: its teaching stays. */
   link: (key: string, url: string) => request<{ channel: Channel }>("POST", `/api/channels/${key}/link`, { url }).then((answer) => keep(answer.channel)),
-  set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>>; label?: string; watermark?: string | null }) =>
+  set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>>; label?: string; watermark?: string | null; watermarkLook?: WatermarkLook | null }) =>
     request<{ channel: Channel }>("PUT", `/api/channels/${key}`, change).then((answer) => keep(answer.channel)),
+  /** A picture uploaded as its watermark (a teacher's): kept with the channel, in place of a Drive one. */
+  uploadWatermark: async (key: string, file: File) => {
+    const response = await fetch(`/api/channels/${key}/watermark`, { method: "POST", headers: { "content-type": file.type || "application/octet-stream" }, body: file });
+    const parsed = (await response.json().catch(() => null)) as { channel?: Channel; error?: string } | null;
+    if (!response.ok || parsed?.channel === undefined) throw new ApiError(parsed?.error ?? `The picture couldn't be uploaded (${response.status}).`, response.status, parsed);
+    return keep(parsed.channel);
+  },
+  /** Its watermark's picture, as its exports draw it (null: none); named by the picture, so a new one is fetched. */
+  watermarkUrl: (channel: Channel): string | null => {
+    const picture = channel.watermarkUpload?.sha256 ?? (channel.watermark || null);
+    return picture === null ? null : `/api/channels/${channel.key}/watermark?p=${encodeURIComponent(picture)}`;
+  },
+  /** Its newest video's picture on YouTube: a still of its own to try the watermark on. */
+  latestStill: async (key: string): Promise<string | null> => {
+    const answer = await request<{ videos: { thumbnail?: string }[] }>("GET", `/api/channels/${key}/videos?order=recent`);
+    return answer.videos.find((one) => one.thumbnail)?.thumbnail ?? null;
+  },
   /** A channel with what each lane has been taught, and its group's. */
   page: (key: string) => request<{ channel: Channel; taught: Record<Lane, Taught[]>; group: (Group & { taught: Record<Lane, Taught[]> }) | null; teacher: boolean }>("GET", `/api/channels/${key}`),
   remove: async (key: string) => {

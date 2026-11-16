@@ -136,3 +136,50 @@ test("an export of a channel's project carries its channel's logo or none, whate
     cleanup();
   }
 });
+
+test("a watermark uploaded on the channel's page, at the channel's own look: offered and exported as one mark, read back the same", async () => {
+  const { app, ask, project, cleanup } = home("watermark-upload");
+  const asked: (string | undefined)[] = [];
+  (app as unknown as { exports: unknown }).exports = { running: () => false, runningFor: () => null, cancel: () => false, start: async (..._args: unknown[]) => (asked.push((_args[5] as { watermark?: string }).watermark), "/tmp/out.mp4") };
+  try {
+    const sha = "c".repeat(64);
+    const look = { opacity: 0.25, size: 0.1, speed: 0.08, motion: false };
+    const UP = { ...channel("ch-310bffe9ef", "Cuffed & Caught", null), watermarkUpload: { sha256: sha, ext: "png" as const }, watermarkLook: look };
+    channels.useChannelsForTests([UP, SI]);
+    channelMarks.usePicturesForTests(PICTURES);
+    const mark = `up/${UP.key}/${sha}.png~0.25,0.1,0.08,0`;
+    expect(channels.markFor(UP)).toBe(mark);
+    // The house look names none, so an older mark (a Drive id alone) is the same export.
+    expect(channels.markFor(SI)).toBe("pic-si");
+    expect(channels.markFor({ ...SI, watermarkLook: { opacity: 0.1, size: 0.14, speed: 0.04, motion: true } })).toBe("pic-si");
+    expect(channels.markFor({ ...SI, watermarkLook: look })).toBe("pic-si~0.25,0.1,0.08,0");
+    const id = await project("Compilation", UP.key);
+    expect((await ask("GET", `/api/watermarks?project=${id}`)).body).toEqual({ channel: { key: UP.key, name: "Cuffed & Caught" }, channels: [{ id: mark, code: "Cuffed & Caught", name: "Cuffed & Caught" }] });
+    expect((await ask("POST", `/api/projects/${id}/export`, { drive: false, keepLocal: true, watermark: mark })).status).toBe(200);
+    expect(asked).toEqual([mark]);
+    const { readMark } = await import("@edit/types/watermark");
+    expect(readMark(mark)).toEqual({ picture: { kind: "upload", channel: UP.key, sha256: sha, ext: "png" }, look });
+    expect(readMark("pic-si")).toEqual({ picture: { kind: "drive", id: "pic-si" }, look: { opacity: 0.1, size: 0.14, speed: 0.04, motion: true } });
+    // Out of range or not a picture: not a mark.
+    expect(readMark("pic-si~3,0.1,0.08,0")).toBeNull();
+    expect(readMark("up/../x.png")).toBeNull();
+  } finally {
+    cleanup();
+  }
+});
+
+test("a look as the channel page sends it: in range, rounded, and none when it's the house's", () => {
+  expect(channels.lookOf({ opacity: 0.2, size: 0.12, speed: 0.06, motion: true })).toEqual({ opacity: 0.2, size: 0.12, speed: 0.06, motion: true });
+  expect(channels.lookOf({ opacity: 0.12345, size: 0.12, speed: 0, motion: false })).toEqual({ opacity: 0.123, size: 0.12, speed: 0, motion: false });
+  expect(channels.lookOf({ opacity: 0.1, size: 0.14, speed: 0.04, motion: true })).toBeNull();
+  expect(channels.lookOf(null)).toBeNull();
+  expect(() => channels.lookOf({ opacity: 2, size: 0.1, speed: 0.1, motion: true })).toThrow(/opacity is between/);
+  expect(() => channels.lookOf({ opacity: 0.2 })).toThrow(/watermarkLook is/);
+});
+
+test("an uploaded picture is a PNG, a JPEG or a WebP, by its bytes", () => {
+  expect(channelMarks.pictureType(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]))).toBe("png");
+  expect(channelMarks.pictureType(new Uint8Array([0xff, 0xd8, 0xff, 0xe0]))).toBe("jpg");
+  expect(channelMarks.pictureType(new TextEncoder().encode("RIFF\u0000\u0000\u0000\u0000WEBPVP8 "))).toBe("webp");
+  expect(channelMarks.pictureType(new TextEncoder().encode("<svg xmlns=…"))).toBeNull();
+});

@@ -75,6 +75,31 @@ test("the watermark is a locked top track over the export at 20%, the logo 14% o
   expect(new Set(twice.media.map((one) => one.id)).size).toBe(twice.media.length);
 });
 
+test("a channel's own look: its opacity and size, its speed, or still in the bottom-right corner; the page's preview draws the same path", async () => {
+  const { placeAt } = await import("@edit/types/watermark");
+  const project = newProject("p1793000000000-abc", "Case", { width: 1920, height: 1080, fps: 30 });
+  const look = { opacity: 0.3, size: 0.2, speed: 0.1, motion: true };
+  const marked = withWatermark(project, { start: 0, end: 1800 }, logo, undefined, look);
+  const clip = marked.clips.at(-1)!;
+  if (clip.type !== "video") throw new Error("a picture clip");
+  expect(clip.opacity).toBe(0.3);
+  expect(801 * (1080 / 801) * clip.transform.scale).toBeCloseTo(0.2 * 1080, 6);
+  // Frame by frame where the preview says it is.
+  for (let frame = 0; frame <= 1800; frame += 13) {
+    const [x, y] = placeAt(look, 1920, 1080, 629, 801, project.id, frame / 30);
+    expect(valueAt(clip.keyframes!.x!, frame)).toBeCloseTo(x, 6);
+    expect(valueAt(clip.keyframes!.y!, frame)).toBeCloseTo(y, 6);
+  }
+  // Still: no keyframes, in the bottom-right corner inside the margin.
+  const still = withWatermark(project, { start: 0, end: 1800 }, logo, undefined, { ...look, motion: false }).clips.at(-1)!;
+  if (still.type !== "video") throw new Error("a picture clip");
+  expect(still.keyframes).toBeUndefined();
+  const [w, h] = [629 * (0.2 * 1080) / 801, 0.2 * 1080];
+  expect(still.transform.x).toBeCloseTo(960 - 0.02 * 1080 - w / 2, 6);
+  expect(still.transform.y).toBeCloseTo(540 - 0.02 * 1080 - h / 2, 6);
+  expect(placeAt({ ...look, motion: false }, 1920, 1080, 629, 801, project.id, 12)).toEqual([still.transform.x, still.transform.y]);
+});
+
 test("the engine takes the watermarked timeline as it is (with the real addon)", () => {
   native();
   if (!isReal()) return;

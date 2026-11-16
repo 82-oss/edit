@@ -26,7 +26,9 @@
 //   POST   /api/channels                {url} or {title} → {channel}: added, or a placeholder by its name (a teacher's)
 //   POST   /api/channels/{key}/link     {url} → {channel}: a placeholder linked to its YouTube channel
 //   GET    /api/channels/{key}          {channel, taught: {<lane>: [what its agent knows]}, teacher}
-//   PUT    /api/channels/{key}          {narration?, compilation?, lanes?, label?, watermark?} → {channel}
+//   PUT    /api/channels/{key}          {narration?, compilation?, lanes?, label?, watermark?, watermarkLook?} → {channel}
+//   GET    /api/channels/{key}/watermark   its watermark's picture (channel_marks.ts)
+//   POST   /api/channels/{key}/watermark   a picture's bytes → {channel}: uploaded as its watermark (a teacher's)
 //   DELETE /api/channels/{key}          put away (its teaching kept)
 //   POST   /api/channels/{key}/restore  brought back (an admin, or who sees it in full)
 //   GET    /api/channels/voices         {voices, used}: who could narrate, and who narrates for whom already
@@ -39,6 +41,8 @@
 //   POST   /api/groups/{key}/channels   {channel}: added, its own teaching kept as its exceptions
 //   DELETE /api/groups/{key}/channels/{channel}   taken out, with a copy of the group's teaching
 //   POST   /api/groups/{key}/move       {item}: a channel's own item moved into the group
+
+import { HOUSE_LOOK, LOOK_RANGE, markOf, type WatermarkLook } from "@edit/types/watermark";
 
 import type { App } from "./app.ts";
 import * as beta from "./beta.ts";
@@ -93,6 +97,10 @@ export interface Channel {
    * mamagi before watermarks.
    */
   watermark?: string | null;
+  /** Its watermark uploaded on its page instead ({sha256, ext}: on Edit's cloud under its key, channel_marks.ts); null or missing: none. */
+  watermarkUpload?: { sha256: string; ext: "png" | "jpg" | "webp" } | null;
+  /** How its watermark looks and moves on its exports, set on its page; null or missing: the house look. */
+  watermarkLook?: WatermarkLook | null;
   lanes: Record<Lane, string>;
   archived: boolean;
   /** Its group's key (missing from a mamagi before groups). */
@@ -124,7 +132,7 @@ function needCloud(): void {
   if (!v2cloud.enabled()) throw bad("Channels need this computer signed in to Edit.");
 }
 
-function needTeacher(): void {
+export function needTeacher(): void {
   needCloud();
   if (!v2cloud.teacher()) throw new ApiError(403, "Adding a channel or changing one is a teacher's: an admin can make you one at accounts.spheceo.com.");
 }
@@ -241,17 +249,24 @@ export function channelOf(project: { channel?: string | null }): Channel | null 
   return typeof project.channel === "string" && project.channel !== "" ? (known.find((one) => one.key === project.channel) ?? null) : null;
 }
 
+/** A channel's watermark as its exports carry it (channel_marks.ts' mark: its picture, uploaded or Drive's, and its look); undefined: it has none. */
+export function markFor(channel: Channel): string | undefined {
+  const upload = channel.watermarkUpload;
+  if (upload !== null && upload !== undefined) return markOf({ kind: "upload", channel: channel.key, sha256: upload.sha256, ext: upload.ext }, channel.watermarkLook);
+  return typeof channel.watermark === "string" && channel.watermark !== "" ? markOf({ kind: "drive", id: channel.watermark }, channel.watermarkLook) : undefined;
+}
+
 /**
- * The watermark a project's exports carry, from the one picked (a picture's
- * Drive id; undefined: none): a channel's project its channel's own picture
- * when one is picked and the channel has one, else none (a GTA 6 project was
- * offered Sams Interrogations', Nov 16); a project of no channel, or one whose
- * channel isn't read, the one picked.
+ * The watermark a project's exports carry, from the one picked (a mark, or
+ * a picture's Drive id; undefined: none): a channel's project its channel's
+ * own, at its look, when one is picked and the channel has one, else none (a
+ * GTA 6 project was offered Sams Interrogations', Nov 16); a project of no
+ * channel, or one whose channel isn't read, the one picked.
  */
 export function watermarkFor(project: { channel?: string | null }, picked: string | undefined): string | undefined {
   const channel = channelOf(project);
   if (channel === null || picked === undefined) return picked;
-  return typeof channel.watermark === "string" && channel.watermark !== "" ? channel.watermark : undefined;
+  return markFor(channel);
 }
 
 /** `watermarkFor` with the channels read again first when they're older than 30 s (an export about to start). */
@@ -318,6 +333,36 @@ export const styleOf = (channel: Channel): "bodycam" | "interrogation" => (chann
 
 export async function get(key: string): Promise<Channel | null> {
   return (await cloud.query("channels:getChannel", { key })) as Channel | null;
+}
+
+/** A channel as this person sees it, for a route: 404 when it isn't there for them. */
+export async function read(key: string): Promise<Channel> {
+  needCloud();
+  const channel = await asked(() => get(key));
+  if (channel === null) throw new ApiError(404, `no channel ${key}`);
+  return channel;
+}
+
+/** A channel's watermark changed (its picture, or its look; null: none, or the house look): the channel back. */
+export async function setWatermark(key: string, change: { watermark?: string | { sha256: string; ext: string } | null; watermarkLook?: WatermarkLook | null }): Promise<Channel> {
+  needTeacher();
+  const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key, ...change })) as Channel);
+  forget();
+  return channel;
+}
+
+/** A look as the channel page sends it: in range, and null when it's the house's (so the channel keeps none). */
+export function lookOf(given: unknown): WatermarkLook | null {
+  if (given === null) return null;
+  const value = given as Partial<Record<keyof WatermarkLook, unknown>> | undefined;
+  if (typeof value !== "object" || typeof value.motion !== "boolean") throw bad("watermarkLook is {opacity, size, speed, motion}, or null for the house look");
+  const look = { motion: value.motion } as WatermarkLook;
+  for (const [name, [low, high]] of Object.entries(LOOK_RANGE) as [keyof typeof LOOK_RANGE, readonly [number, number]][]) {
+    const number = value[name];
+    if (typeof number !== "number" || !Number.isFinite(number) || number < low || number > high) throw bad(`watermarkLook.${name} is between ${low} and ${high}`);
+    look[name] = Math.round(number * 1000) / 1000;
+  }
+  return (Object.keys(HOUSE_LOOK) as (keyof WatermarkLook)[]).every((one) => look[one] === HOUSE_LOOK[one]) ? null : look;
 }
 
 /** What YouTube says of the channel a link is to, as the relay reads it. */
@@ -531,7 +576,8 @@ export function routes(router: Router<App>): void {
     })
     .put("/api/channels/{key}", async (context: RouteContext<App>) => {
       needTeacher();
-      const given = await readJson<{ narration?: unknown; compilation?: unknown; lanes?: unknown; label?: unknown; watermark?: unknown }>(context);
+      const given = await readJson<{ narration?: unknown; compilation?: unknown; lanes?: unknown; label?: unknown; watermark?: unknown; watermarkLook?: unknown }>(context);
+      const look = given.watermarkLook === undefined ? undefined : lookOf(given.watermarkLook);
       if (given.label !== undefined && typeof given.label !== "string") throw bad("label is what someone allowed only its label sees");
       // Its picture in the Watermarks folder (the channel page's picker lists them), or null for none.
       if (given.watermark !== undefined && given.watermark !== null && (typeof given.watermark !== "string" || given.watermark === "")) throw bad("watermark is its picture's Drive id in the Watermarks folder, or null for none");
@@ -547,7 +593,7 @@ export function routes(router: Router<App>): void {
           lanes[lane] = text;
         }
       }
-      const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key: context.params.key!, ...(narration !== undefined ? { narration } : {}), ...(given.compilation !== undefined ? { compilation: given.compilation } : {}), ...(given.lanes !== undefined ? { lanes } : {}), ...(typeof given.label === "string" ? { label: given.label } : {}), ...(given.watermark !== undefined ? { watermark: given.watermark } : {}) })) as Channel);
+      const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key: context.params.key!, ...(narration !== undefined ? { narration } : {}), ...(given.compilation !== undefined ? { compilation: given.compilation } : {}), ...(given.lanes !== undefined ? { lanes } : {}), ...(typeof given.label === "string" ? { label: given.label } : {}), ...(given.watermark !== undefined ? { watermark: given.watermark } : {}), ...(look !== undefined ? { watermarkLook: look } : {}) })) as Channel);
       forget();
       return json({ channel });
     })
