@@ -271,6 +271,7 @@ function NotificationsGroup() {
   const [then, setThen] = useState<TurnedOn["then"] | null>(null);
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
+  const [unshown, setUnshown] = useState(false);
   useEffect(() => {
     const look = () => void permission().then(setState);
     look();
@@ -289,14 +290,22 @@ function NotificationsGroup() {
       .finally(() => setBusy(false));
   };
   const test = () => {
-    void sendTest().then(() => {
-      setSent(true);
-      setTimeout(() => setSent(false), 2500);
-    });
+    void sendTest()
+      .catch(() => false)
+      .then((shown) => {
+        setUnshown(!shown);
+        if (!shown) return;
+        setSent(true);
+        setTimeout(() => setSent(false), 2500);
+      });
   };
   const detail =
-    state === "on"
-      ? "On: you’re told when a draft, a revision or a share is done while you’re elsewhere."
+    state === "insecure"
+      ? "Notifications need Edit’s secure address: open Edit at its https:// address (its .ts.net one), not this http:// one."
+      : state === "on" && unshown
+      ? "This browser didn’t show it: allow notifications for this site, and for the browser itself in your computer’s settings."
+      : state === "on"
+      ? "On: you’re told when a draft, a revision or a share is done while you’re elsewhere. Nothing shows? Check your computer’s Focus or Do Not Disturb, and that notifications are allowed for Edit there."
       : then === "system"
         ? "Turn on Allow notifications for Edit in System Settings, then come back."
         : then === "reopening"
@@ -309,7 +318,7 @@ function NotificationsGroup() {
   return (
     <Group title="Notifications">
       <Row name="When work is done" detail={detail}>
-        {state === "on" ? (
+        {state === "insecure" ? null : state === "on" ? (
           <Button onClick={test} disabled={sent}>
             {sent ? "Sent" : "Send a test"}
           </Button>

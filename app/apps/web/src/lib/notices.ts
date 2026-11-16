@@ -32,19 +32,23 @@ const inEditApp = (): boolean => (window as unknown as { __TAURI_INTERNALS__?: u
 /** Linux's window: Chrome's app window onto edit.localhost (linux_desktop.ts). */
 const inLinuxWindow = (): boolean => location.hostname === "edit.localhost";
 
-/** Whether this page may show the system's notifications itself. */
-const mayShow = (): boolean => !inEditApp() && typeof Notification !== "undefined" && Notification.permission === "granted";
+/** A browser on Edit's plain http:// address (a Tailscale IP, not its https://….ts.net one): no browser shows notifications there. */
+const insecure = (): boolean => !inEditApp() && typeof window.isSecureContext === "boolean" && !window.isSecureContext;
 
-/** Where this page is and whether it's in front, as the server takes it. */
-export function attention(): { type: "attention"; focused: boolean; path: string; system: boolean } {
-  return { type: "attention", focused: document.visibilityState === "visible" && document.hasFocus(), path: location.pathname, system: mayShow() };
+/** Whether this page may show the system's notifications itself. */
+const mayShow = (): boolean => !inEditApp() && !insecure() && typeof Notification !== "undefined" && Notification.permission === "granted";
+
+/** Where this page is and whether it's in front, as the server takes it (`app`: Edit.app's own window). */
+export function attention(): { type: "attention"; focused: boolean; path: string; system: boolean; app: boolean } {
+  return { type: "attention", focused: document.visibilityState === "visible" && document.hasFocus(), path: location.pathname, system: mayShow(), app: inEditApp() };
 }
 
 /**
  * How notifications stand here: "on", "off" (turned off for Edit), "ask"
- * (never answered), or "none" (this window can't have them).
+ * (never answered), "insecure" (a browser on Edit's http:// address), or
+ * "none" (this window can't have them).
  */
-export type Permission = "on" | "off" | "ask" | "none";
+export type Permission = "on" | "off" | "ask" | "insecure" | "none";
 
 export async function permission(): Promise<Permission> {
   const calls = windowCalls();
@@ -57,6 +61,7 @@ export async function permission(): Promise<Permission> {
       return "none";
     }
   }
+  if (insecure()) return "insecure";
   if (typeof Notification === "undefined") return "none";
   return Notification.permission === "granted" ? "on" : Notification.permission === "denied" ? "off" : "ask";
 }
@@ -91,14 +96,25 @@ export async function turnOn(): Promise<TurnedOn> {
   return { now: await permission(), then: Notification.permission === "granted" ? "done" : "browser" };
 }
 
-/** A notification now, as one about finished work comes, so the person sees they arrive. */
-export async function sendTest(): Promise<void> {
+/** A notification now, as one about finished work comes, so the person sees they arrive; false when this browser wouldn't show it. */
+export async function sendTest(): Promise<boolean> {
   const calls = windowCalls();
   if (calls !== null) {
     await calls("notices_test", { path: location.pathname });
-    return;
+    return true;
   }
-  show("system", { key: "test", title: "Notifications are on", body: "This is how Edit tells you a draft, a revision or a share is done.", path: location.pathname });
+  return await show("system", { key: "test", title: "Notifications are on", body: "This is how Edit tells you a draft, a revision or a share is done.", path: location.pathname });
+}
+
+/** The service worker that shows notifications (public/notices-sw.js), registered once; null where there's none to be had. */
+let worker: Promise<ServiceWorkerRegistration | null> | null = null;
+function noticesWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (inEditApp() || insecure() || typeof navigator === "undefined" || !("serviceWorker" in navigator)) return Promise.resolve(null);
+  worker ??= navigator.serviceWorker.register("/notices-sw.js").then(
+    () => navigator.serviceWorker.ready,
+    () => null,
+  );
+  return worker;
 }
 
 /** Opens the notice's page and brings this window forward. */
@@ -107,20 +123,34 @@ function open(path: string): void {
   navigate(path);
 }
 
-function show(how: unknown, notice: Notice): void {
+/** Shows `notice`: a toast in this page, or the system's notification (whether it was shown). */
+async function show(how: unknown, notice: Notice): Promise<boolean> {
   if (how === "toast") {
     useEditor.getState().toast(`${notice.title} · ${notice.body}`, "agent", { label: "Open", run: () => navigate(notice.path) });
-    return;
+    return true;
   }
-  if (how !== "system" || !mayShow()) return;
+  if (how !== "system" || !mayShow()) return false;
+  const options = { body: notice.body, tag: notice.key, icon: "/apple-touch-icon.png" };
+  // From the service worker where there is one: a phone's browser shows none from a page, and its click finds the tab.
+  const registration = await noticesWorker().catch(() => null);
+  if (registration !== null) {
+    try {
+      await registration.showNotification(notice.title, { ...options, data: { path: notice.path } });
+      return true;
+    } catch {
+      // Shown from the page below instead.
+    }
+  }
   try {
-    const shown = new Notification(notice.title, { body: notice.body, tag: notice.key, icon: "/apple-touch-icon.png" });
+    const shown = new Notification(notice.title, options);
     shown.onclick = () => {
       open(notice.path);
       shown.close();
     };
+    return true;
   } catch {
     // A browser that won't show one from a page: the work is still there to see.
+    return false;
   }
 }
 
@@ -137,7 +167,12 @@ export function watchNotices(): () => void {
   const connected = () => report(true);
   const heard = (event: Event) => {
     const detail = (event as CustomEvent<{ how?: unknown; notice?: Notice }>).detail;
-    if (detail?.notice !== undefined) show(detail.how, detail.notice);
+    if (detail?.notice !== undefined) void show(detail.how, detail.notice);
+  };
+  // The service worker's notification was clicked.
+  const clicked = (event: MessageEvent) => {
+    const data = event.data as { type?: unknown; path?: unknown } | null;
+    if (data?.type === "edit:open" && typeof data.path === "string" && data.path.startsWith("/")) open(data.path);
   };
   // Edit.app's window: its notification was clicked.
   const opened = (event: Event) => {
@@ -146,7 +181,7 @@ export function watchNotices(): () => void {
   };
   // A browser asks once whether Edit may notify, on a click (it won't ask otherwise).
   const ask = () => {
-    if (inEditApp() || typeof Notification === "undefined" || Notification.permission !== "default") return;
+    if (inEditApp() || insecure() || typeof Notification === "undefined" || Notification.permission !== "default") return;
     void Notification.requestPermission()
       .then(() => report())
       .catch(() => {});
@@ -160,6 +195,9 @@ export function watchNotices(): () => void {
   window.addEventListener("edit:notice", heard);
   window.addEventListener("edit:open", opened);
   window.addEventListener("pointerdown", ask, { once: true, capture: true });
+  if (typeof navigator !== "undefined" && "serviceWorker" in navigator) navigator.serviceWorker.addEventListener("message", clicked);
+  // Ready before the first notice comes, where notifications are already allowed.
+  if (mayShow()) void noticesWorker();
   const stopPath = onPath(changed);
   report(true);
   return () => {
@@ -171,6 +209,7 @@ export function watchNotices(): () => void {
     window.removeEventListener("edit:notice", heard);
     window.removeEventListener("edit:open", opened);
     window.removeEventListener("pointerdown", ask, { capture: true });
+    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) navigator.serviceWorker.removeEventListener("message", clicked);
     stopPath();
   };
 }

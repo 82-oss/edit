@@ -8,10 +8,11 @@
 // When something finishes:
 //   - someone is on its page in a focused window: nothing, they saw it;
 //   - Edit is focused on another page: a toast there, with Open;
-//   - nobody has Edit in front: the system's notification. A Mac's from Edit's
-//     own window, in Notification Center (window_focus.ts carries it,
-//     crates/edit-window/src/notices.rs); else from the page that was in front
-//     last and may show them (Linux's Chrome window, a browser).
+//   - nobody has Edit in front: the system's notification, where the person
+//     was last: a browser page that may show them (another computer or a
+//     phone through Tailscale, Linux's Chrome window) when it was in front
+//     after Edit.app's window, else Edit.app's own window, in Notification
+//     Center (window_focus.ts carries it, crates/edit-window/src/notices.rs).
 // A click on either opens the page.
 
 import * as diag from "./diag.ts";
@@ -41,6 +42,8 @@ export interface Viewer {
   system: boolean;
   /** When it last had focus (ms), to pick the page that was in front last. */
   lastFocused: number;
+  /** It's Edit.app's own window (which posts its notifications itself), not a browser's page. */
+  app: boolean;
 }
 
 const viewers = new Set<Viewer>();
@@ -50,7 +53,7 @@ const REPEAT_MS = 10_000;
 
 /** A page connected: told notices through `send`. */
 export function connect(send: (text: string) => void): Viewer {
-  const viewer: Viewer = { send, focused: false, path: "/", system: false, lastFocused: 0 };
+  const viewer: Viewer = { send, focused: false, path: "/", system: false, lastFocused: 0, app: false };
   viewers.add(viewer);
   return viewer;
 }
@@ -61,7 +64,7 @@ export function disconnect(viewer: Viewer): void {
 
 /** A message from a page: where it is and whether it has focus. Anything else is ignored. */
 export function heard(viewer: Viewer, text: string): void {
-  let message: { type?: unknown; focused?: unknown; path?: unknown; system?: unknown };
+  let message: { type?: unknown; focused?: unknown; path?: unknown; system?: unknown; app?: unknown };
   try {
     message = JSON.parse(text) as typeof message;
   } catch {
@@ -71,6 +74,7 @@ export function heard(viewer: Viewer, text: string): void {
   viewer.focused = message.focused === true;
   if (typeof message.path === "string") viewer.path = message.path;
   viewer.system = message.system === true;
+  viewer.app = message.app === true;
   if (viewer.focused) viewer.lastFocused = Date.now();
 }
 
@@ -91,15 +95,21 @@ export function notify(notice: Notice): Reach {
   } else if (focused.length > 0) {
     for (const one of focused) one.send(text("toast"));
     reach = "toast";
-  } else if (windowFocus.notify(notice)) {
-    reach = "window";
   } else {
-    const last = [...viewers].filter((one) => one.system).sort((a, b) => b.lastFocused - a.lastFocused)[0];
-    if (last === undefined) {
-      reach = "nobody";
-    } else {
-      last.send(text("system"));
+    // Where the person was last: a browser in front more lately than Edit.app's window (another computer, or a
+    // phone, through Tailscale) is told there, not on a Mac nobody's at (Nov 16: every notice went to the window).
+    const browser = [...viewers].filter((one) => one.system && !one.app).sort((a, b) => b.lastFocused - a.lastFocused)[0];
+    const appLast = Math.max(0, ...[...viewers].filter((one) => one.app).map((one) => one.lastFocused));
+    if (browser !== undefined && browser.lastFocused > appLast) {
+      browser.send(text("system"));
       reach = "page";
+    } else if (windowFocus.notify(notice)) {
+      reach = "window";
+    } else if (browser !== undefined) {
+      browser.send(text("system"));
+      reach = "page";
+    } else {
+      reach = "nobody";
     }
   }
   diag.info("notices", `${notice.title} (${notice.path}): ${reach}`);

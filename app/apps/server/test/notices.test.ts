@@ -53,6 +53,25 @@ test("nobody in front: Edit.app's window posts it, else the page in front last t
   expect(notices.notify(notice("n"))).toBe("nobody");
 });
 
+test("a browser in front after Edit.app's window (through Tailscale, elsewhere) is told there, not the Mac nobody's at", async () => {
+  const app = notices.connect(() => {});
+  notices.heard(app, JSON.stringify({ type: "attention", focused: true, path: "/", app: true }));
+  notices.heard(app, JSON.stringify({ type: "attention", focused: false, path: "/", app: true }));
+  await Bun.sleep(5);
+  const browser = page("/", true, true);
+  notices.heard(browser.viewer, JSON.stringify({ type: "attention", focused: false, path: "/", system: true }));
+  const asked = windowFocus.next(50);
+  expect(notices.notify(notice("t"))).toBe("page");
+  expect(browser.sent).toEqual([{ type: "notice", how: "system", notice: notice("t") }] as never);
+  expect((await asked).notices).toEqual([]);
+  // Back at the Mac: its window posts it.
+  notices.heard(app, JSON.stringify({ type: "attention", focused: true, path: "/", app: true }));
+  notices.heard(app, JSON.stringify({ type: "attention", focused: false, path: "/", app: true }));
+  const again = windowFocus.next(5_000);
+  expect(notices.notify(notice("m"))).toBe("window");
+  expect((await again).notices).toEqual([notice("m")]);
+});
+
 test("a page's other messages are ignored, and a line fit for a notification is short and plain", () => {
   const one = page("/p/x", true);
   notices.heard(one.viewer, "not json");
