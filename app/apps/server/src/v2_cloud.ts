@@ -162,7 +162,7 @@ async function putFiles(dir: string): Promise<File[]> {
 const FILES_AT_ONCE = 8;
 
 /** `work` on each item, `FILES_AT_ONCE` at a time; the answers in the items' order. One that fails stops the rest taking more. */
-async function eachAtOnce<T, R>(items: readonly T[], work: (item: T) => Promise<R>): Promise<R[]> {
+export async function eachAtOnce<T, R>(items: readonly T[], work: (item: T) => Promise<R>): Promise<R[]> {
   const answers = new Array<R>(items.length);
   let next = 0;
   let failed = false;

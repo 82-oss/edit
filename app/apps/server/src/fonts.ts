@@ -186,16 +186,20 @@ export async function bringDownProject(store: Store, project: string): Promise<s
   const at = lookedAt.get(project);
   if (at !== undefined && Date.now() - at < LOOK_EVERY_MS) return [];
   lookedAt.set(project, Date.now());
-  const brought: string[] = [];
-  for (const [slug, files] of await inCloud(project)) {
-    const dir = join(projectDir(store, project), slug);
-    if (read(dir, slug) !== null || !files.includes(MANIFEST)) continue;
-    const partial = `${dir}.partial`;
+  const wanted = [...(await inCloud(project))].filter(([slug, files]) => read(join(projectDir(store, project), slug), slug) === null && files.includes(MANIFEST));
+  // Every family's files at once, several at a time (one by one, 7 families' 19 files took 14 s on kenobi, Nov 16).
+  for (const [slug] of wanted) {
+    const partial = `${join(projectDir(store, project), slug)}.partial`;
     fs.rmSync(partial, { recursive: true, force: true });
     fs.mkdirSync(partial, { recursive: true });
-    for (const file of files) await r2.download(`${cloudPrefix(project)}${slug}/${file}`, join(partial, file));
+  }
+  const files = wanted.flatMap(([slug, names]) => names.map((file) => ({ slug, file })));
+  await v2cloud.eachAtOnce(files, ({ slug, file }) => r2.download(`${cloudPrefix(project)}${slug}/${file}`, join(`${join(projectDir(store, project), slug)}.partial`, file)));
+  const brought: string[] = [];
+  for (const [slug] of wanted) {
+    const dir = join(projectDir(store, project), slug);
     fs.rmSync(dir, { recursive: true, force: true });
-    fs.renameSync(partial, dir);
+    fs.renameSync(`${dir}.partial`, dir);
     if (read(dir, slug) !== null) brought.push(slug);
   }
   return brought;

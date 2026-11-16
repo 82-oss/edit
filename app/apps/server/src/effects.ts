@@ -1770,14 +1770,15 @@ const lookedFor = new Set<string>();
 export function bringDown(app: App, project: string): Promise<string[]> {
   const going = bringing.get(project);
   if (going !== undefined) return going;
+  // Its own fonts and its effects' code side by side (one after the other, a first open waited 14 s more on kenobi).
   const work = Promise.all([
-    // Its own fonts first: an effect's key has the fonts it uses, so its code is judged with them here.
     fonts.bringDownProject(app.store, project).catch((error: unknown) => {
       diag.warn("effects", `${project}: its fonts couldn't come down from the cloud: ${diag.messageOf(error)}`);
-      return [];
+      return [] as string[];
     }),
+    bringDownNow(app, project),
   ])
-    .then(async ([fontsCame]) => [...fontsCame.map((slug) => `font ${slug}`), ...(await bringDownNow(app, project))])
+    .then(([fontsCame, code]) => [...fontsCame.map((slug) => `font ${slug}`), ...code])
     .then((brought) => {
       // Said here, not left to the folder's watch (which may not hear a folder swapped in whole): the viewer plays it
       // live, and its render follows on the computer editing it.
