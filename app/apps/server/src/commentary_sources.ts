@@ -70,16 +70,21 @@ export function rangeOf(value: unknown): BrollRange {
   return { url: one.url, start: one.start, end: one.end, purpose: one.purpose.trim() };
 }
 
-/** Bounded subprocess; never put proxy credentials in an error. */
+/**
+ * A research question for YouTube (a search, a video's details or captions, a
+ * channel), `args` ending in what's asked about. Other channels' videos, so
+ * asked as every question is (youtube.ts `ask`) and sparing of the person's
+ * address as an idea is: through the proxy first, each try from an address of
+ * its own, this Mac's only when that's refused (Sphe, Nov 16).
+ */
 async function run(home: string, args: string[], ms = 100_000): Promise<string> {
-  const binary = await youtube.ytdlp(home);
-  const child = Bun.spawn([binary, "--no-warnings", "--socket-timeout", "20", ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-  const timer = setTimeout(() => child.kill(), ms);
+  const target = args.at(-1)!;
   try {
-    const [out, , code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-    if (code !== 0) throw new Error("YouTube research failed or timed out; try another query or use an already supplied source");
-    return out;
-  } finally { clearTimeout(timer); }
+    return (await youtube.ask(home, target, ["--no-warnings", "--socket-timeout", "20", ...args.slice(0, -1)], ["proxy", "straight"], (one) => one.code === 0, { area: "broll", sparing: true, timeoutMs: ms })).stdout;
+  } catch (error) {
+    if (error instanceof youtube.Unanswered && !error.gone) throw new Error("YouTube turned Edit away just now; try again in a few minutes, or use an already supplied source");
+    throw new Error("YouTube research failed or timed out; try another query or use an already supplied source");
+  }
 }
 
 /**

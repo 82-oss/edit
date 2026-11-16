@@ -191,22 +191,22 @@ function asking(name: string) {
   };
 }
 
-test("an idea's captions come straight only when YouTube turns the proxy away, and the proxy is asked first every time", async () => {
+test("an idea's captions come straight only when YouTube turns the proxy away from three addresses, and the proxy is asked first every time", async () => {
   const home = asking("words-proxy-refused");
   try {
     const fake = ytdlp(home.dir, `if (proxied) refuse(${JSON.stringify(BOT)});\nput("en-orig", ${JSON.stringify(data)});`);
     const transcript = await words(home.home, "abcdefghijk", USES.idea);
     expect(transcript).toMatchObject({ model: MODEL, words: [{ text: "Hello" }, { text: "there." }, { text: "Yes." }] });
-    expect(fake.calls().map((args) => args.includes("--proxy"))).toEqual([true, false]);
+    expect(fake.calls().map((args) => args.includes("--proxy"))).toEqual([true, true, true, false]);
     // Kept where an import finds them: its excerpt asks nobody.
     expect(await writeCaptionTranscript(home.home, "youtube:abcdefghijk#10000-11000", `${home.dir}/excerpt.json`)).toBe(true);
-    expect(fake.calls()).toHaveLength(2);
+    expect(fake.calls()).toHaveLength(4);
     // Sparing of this Mac's address: the next case asks the proxy first again, refused a moment ago or not.
     await words(home.home, "bcdefghijkl", USES.idea);
-    expect(fake.calls().slice(2).map((args) => args.includes("--proxy"))).toEqual([true, false]);
-    // An import, whose video came down straight anyway, asks a way turned away lately last.
+    expect(fake.calls().slice(4).map((args) => args.includes("--proxy"))).toEqual([true, true, true, false]);
+    // An import's captions are a question too: the proxy first (Nov 16), then this Mac.
     expect(await read(home.home, "cdefghijklm", USES.footage)).not.toBeNull();
-    expect(fake.calls().slice(4).map((args) => args.includes("--proxy"))).toEqual([false]);
+    expect(fake.calls().slice(8).map((args) => args.includes("--proxy"))).toEqual([true, true, true, false]);
   } finally { home.done(); }
 });
 
@@ -226,17 +226,21 @@ test("an idea's straight asks go one at a time with a rest between, and none for
     // YouTube refuses this address: the next cases ask the proxy and leave the address alone.
     const before = fake.calls().length;
     expect(await words(home.home, "refusedhere", USES.idea).catch((error: unknown) => error)).toBeInstanceOf(NoWords);
-    expect(fake.calls().slice(before).map((args) => args.includes("--proxy"))).toEqual([true, false]);
+    expect(fake.calls().slice(before).map((args) => args.includes("--proxy"))).toEqual([true, true, true, false]);
     const after = fake.calls().length;
     expect(await words(home.home, "ddddddddddd", USES.idea).catch((error: unknown) => error)).toBeInstanceOf(NoWords);
-    expect(fake.calls().slice(after).map((args) => args.includes("--proxy"))).toEqual([true]);
+    expect(fake.calls().slice(after).map((args) => args.includes("--proxy"))).toEqual([true, true, true]);
+    // Nor does anything else of Edit's ask from it meanwhile: an import's captions stay with the proxy.
+    const later = fake.calls().length;
+    await read(home.home, "eeeeeeeeeee", USES.footage).catch(() => null);
+    expect(fake.calls().slice(later).map((args) => args.includes("--proxy"))).toEqual([true, true, true]);
   } finally { home.done(); }
 });
 
 test("turned away on every way is said as that, never as a video without captions, and isn't kept as one", async () => {
   const home = asking("words-refused");
   try {
-    const fake = ytdlp(home.dir, `if (n <= 2) refuse(${JSON.stringify(BOT)});\nput("en-orig", ${JSON.stringify(data)});`);
+    const fake = ytdlp(home.dir, `if (n <= 4) refuse(${JSON.stringify(BOT)});\nput("en-orig", ${JSON.stringify(data)});`);
     let heard = 0;
     hearing.hear = async () => {
       heard++;
@@ -247,12 +251,12 @@ test("turned away on every way is said as that, never as a video without caption
     expect((failure as Error).message).toContain("turned");
     expect((failure as Error).message).not.toContain("no English captions");
     expect((failure as Error).message).not.toContain("secret");
-    expect(fake.calls()).toHaveLength(2);
+    expect(fake.calls()).toHaveLength(4);
     // Not heard: its sound would be asked of the addresses YouTube just turned away.
     expect(heard).toBe(0);
     // Asked again (Try again), YouTube answers the proxy and the captions are read: nothing said "unavailable" meanwhile.
     expect((await words(home.home, "abcdefghijk", USES.idea)).words).toHaveLength(3);
-    expect(fake.calls()).toHaveLength(3);
+    expect(fake.calls()).toHaveLength(5);
   } finally { home.done(); }
 });
 
@@ -270,7 +274,7 @@ test("a refused track is passed over for one that comes down; every track refuse
     const failure = await read(home.home, "bcdefghijkl", USES.idea).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(youtube.Unanswered);
     expect((failure as youtube.Unanswered).gone).toBe(false);
-    expect(fake.calls()).toHaveLength(2);
+    expect(fake.calls()).toHaveLength(4);
     expect(fs.existsSync(`${home.home}/cache/youtube-captions/bcdefghijkl/unavailable.json`)).toBe(false);
   } finally { home.done(); }
 });

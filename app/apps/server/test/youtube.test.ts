@@ -1,16 +1,32 @@
 // youtube.ts: links, and downloads through a stand-in yt-dlp (EDIT_YTDLP).
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 
 import type { ScriptBlock } from "../src/model.ts";
 import { parse, REUSE } from "../src/script.ts";
-import { afterFailure, download, downloadRange, fileOf, idOf, reasonOf, startOf, timing, videoId } from "../src/youtube.ts";
+import { afterFailure, download, downloadRange, fileOf, forgetRefusals, idOf, PROXY_TRIES, reasonOf, session, startOf, timing, videoId } from "../src/youtube.ts";
 import { scratch } from "./helpers/home.ts";
 import { Database } from "bun:sqlite";
 import { keyring, status as signInStatus, where as signInWhere } from "../src/youtube_signin.ts";
 import type { App } from "../src/app.ts";
 import { probe } from "../src/writer/youtube.ts";
+
+// Every test starts with this Mac's address as good as new, no proxy unless it sets one, and no waits.
+const real = { pause: timing.pause, waveWaits: timing.waveWaits, proxy: process.env.PROXY_URL };
+beforeEach(() => {
+  forgetRefusals();
+  timing.pause = async () => {};
+  timing.waveWaits = [];
+  delete process.env.PROXY_URL;
+});
+afterEach(() => {
+  forgetRefusals();
+  timing.pause = real.pause;
+  timing.waveWaits = real.waveWaits;
+  if (real.proxy === undefined) delete process.env.PROXY_URL;
+  else process.env.PROXY_URL = real.proxy;
+});
 
 type Footage = Extract<ScriptBlock, { kind: "footage" }>;
 type Narration = Extract<ScriptBlock, { kind: "narration" }>;
@@ -106,6 +122,7 @@ function fakeYtdlp(dir: string, refusals: number): string {
     `#!/bin/sh
 n=$(cat "${count}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${count}"
 printf '%s\\n' "$@" > "${dir}/args"
+echo "$*" >> "${dir}/calls.log"
 for arg in "$@"; do case "$prev" in -P) out="$arg";; --ffmpeg-location) ff="$arg";; esac; prev="$arg"; done
 # As yt-dlp: FFmpeg by a bare name isn't found, and the streams stay unmerged.
 case "$ff" in /*) ;; *) echo "EDIT-FILE $out/never-merged.mp4"; exit 0;; esac
@@ -126,13 +143,15 @@ test("downloads_once_retries_a_refusal_and_reuses_the_file", async () => {
   try {
     const calls = fakeYtdlp(dir, 1);
     process.env.EDIT_YTDLP = `${dir}/yt-dlp`;
+    process.env.PROXY_URL = "http://user:secret@proxy.example:8080";
     const seen: [number, number | null][] = [];
     const into = `${dir}/out`;
     const got = await download(dir, "abcdefghijk", into, (bytes, total) => seen.push([bytes, total]));
     expect(got.name).toBe("Some title [abcdefghijk].mp4");
     expect(fs.readFileSync(got.path, "utf8")).toBe("video");
-    // Refused once, then downloaded; the sound's bytes carry on from the picture's.
+    // Refused straight once, then downloaded through the proxy (this Mac's address isn't asked twice); the sound's bytes carry on from the picture's.
     expect(fs.readFileSync(calls, "utf8").trim()).toBe("2");
+    expect(fs.readFileSync(`${dir}/calls.log`, "utf8").trim().split("\n").map((line) => line.includes("--proxy"))).toEqual([false, true]);
     expect(seen).toContainEqual([1124, 1124]);
     // The whole video's size from the first line, never shrinking as the sound starts.
     expect(seen.slice(0, 3).map(([, total]) => total)).toEqual([1124, 1124, 1124]);
@@ -148,8 +167,6 @@ test("downloads_once_retries_a_refusal_and_reuses_the_file", async () => {
 
 test("a_video_youtube_keeps_refusing_fails_saying_so", async () => {
   const { dir, cleanup } = scratch("youtube-refused");
-  const proxy = process.env.PROXY_URL;
-  delete process.env.PROXY_URL;
   try {
     fakeYtdlp(dir, 9);
     process.env.EDIT_YTDLP = `${dir}/yt-dlp`;
@@ -157,7 +174,73 @@ test("a_video_youtube_keeps_refusing_fails_saying_so", async () => {
     expect(failed).toContain("couldn't be downloaded");
     expect(failed).toContain("not a bot");
   } finally {
-    if (proxy !== undefined) process.env.PROXY_URL = proxy;
+    cleanup();
+  }
+});
+
+// Nov 16, JJ's Mac: YouTube refused this Mac and the proxy alike for 40
+// minutes, then let everything through. A download of footage waits a wave
+// out, each pass through the proxy from fresh addresses, this Mac's address
+// left alone while it's refused.
+test("a download every address is refused for waits the wave out and comes through", async () => {
+  const { dir, cleanup } = scratch("youtube-wave");
+  try {
+    const calls = fakeYtdlp(dir, 1 + 2 * PROXY_TRIES);
+    process.env.EDIT_YTDLP = `${dir}/yt-dlp`;
+    process.env.PROXY_URL = "http://user:secret@proxy.example:8080";
+    const waited: number[] = [];
+    timing.pause = async (ms) => {
+      waited.push(ms);
+    };
+    timing.waveWaits = [120_000, 300_000, 600_000];
+    const got = await download(dir, "abcdefghijk", `${dir}/out`, () => {});
+    expect(fs.readFileSync(got.path, "utf8")).toBe("video");
+    // Straight once, the proxy three times; a wave's wait; the proxy three times (this Mac's address still refused); a wait; the proxy.
+    expect(fs.readFileSync(calls, "utf8").trim()).toBe(String(2 + 2 * PROXY_TRIES));
+    expect(fs.readFileSync(`${dir}/calls.log`, "utf8").trim().split("\n").map((line) => line.includes("--proxy"))).toEqual([false, ...Array(2 * PROXY_TRIES + 1).fill(true)]);
+    expect(waited.filter((ms) => ms >= 120_000)).toEqual([120_000, 300_000]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("once YouTube refuses this Mac's address, the next download leaves it alone and goes through the proxy", async () => {
+  const { dir, cleanup } = scratch("youtube-refused-lately");
+  try {
+    fakeYtdlp(dir, 1);
+    process.env.EDIT_YTDLP = `${dir}/yt-dlp`;
+    process.env.PROXY_URL = "http://user:secret@proxy.example:8080";
+    await download(dir, "abcdefghijk", `${dir}/first`, () => {});
+    await download(dir, "bcdefghijkl", `${dir}/second`, () => {});
+    expect(fs.readFileSync(`${dir}/calls.log`, "utf8").trim().split("\n").map((line) => line.includes("--proxy"))).toEqual([false, true, true]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("each try through DataImpulse goes out from an address of its own; another proxy is used as it is", async () => {
+  const base = "http://login__cr.us%3Bsessttl.120:pw@gw.dataimpulse.com:10000/";
+  const one = new URL(session(base));
+  const two = new URL(session(base));
+  expect(decodeURIComponent(one.username)).toMatch(/^login__cr\.us;sessttl\.120;sessid\.[0-9a-f]{16}$/);
+  expect(one.username).not.toBe(two.username);
+  expect([one.password, one.host]).toEqual(["pw", "gw.dataimpulse.com:10000"]);
+  // A session given again is replaced, never stacked.
+  expect(decodeURIComponent(new URL(session(one.toString())).username).match(/sessid/g)).toHaveLength(1);
+  expect(decodeURIComponent(new URL(session("http://plain:pw@gw.dataimpulse.com:823")).username)).toMatch(/^plain__sessid\./);
+  expect(session("http://user:secret@proxy.example:8080")).toBe("http://user:secret@proxy.example:8080");
+  expect(session("")).toBe("");
+
+  const { dir, cleanup } = scratch("youtube-sessions");
+  try {
+    fakeYtdlp(dir, PROXY_TRIES);
+    process.env.EDIT_YTDLP = `${dir}/yt-dlp`;
+    process.env.PROXY_URL = base;
+    await download(dir, "abcdefghijk", `${dir}/out`, () => {});
+    const proxies = fs.readFileSync(`${dir}/calls.log`, "utf8").trim().split("\n").flatMap((line) => /--proxy (\S+)/.exec(line)?.[1] ?? []);
+    expect(proxies).toHaveLength(PROXY_TRIES);
+    expect(new Set(proxies).size).toBe(PROXY_TRIES);
+  } finally {
     cleanup();
   }
 });
@@ -305,7 +388,7 @@ echo "EDIT-FILE $out/Some title [abcdefghijk].mp4"
   }
 });
 
-test("the YouTube sign-in from Chrome is the last resort: an age-restricted video goes straight to it, a bot check only after the proxy", async () => {
+test("the YouTube sign-in from Chrome is only for a video that needs it: an age-restricted video goes straight to it, a bot check never does", async () => {
   const { dir, cleanup } = scratch("youtube-signin");
   const before = { chrome: signInWhere.chrome, setting: process.env.EDIT_YOUTUBE_SIGNIN, proxy: process.env.PROXY_URL };
   try {
@@ -331,16 +414,17 @@ test("the YouTube sign-in from Chrome is the last resort: an age-restricted vide
     expect(args).toContain(`chrome${keyring()}:${dir}/Chrome/Profile 2`);
     expect(args).not.toContain("--proxy");
 
-    // A bot check: straight twice, the proxy, and only then the sign-in (never sent through the proxy).
+    // A bot check (Nov 16: JJ's downloads got past one only on his own sign-in, nine times in half an hour): straight, the proxy, and never the sign-in.
     const bot = `${dir}/bot`;
     fs.mkdirSync(bot);
-    const botCalls = fakeScripted(bot, ["ERROR: [youtube] abc: Sign in to confirm you are not a bot", "ERROR: [youtube] abc: Sign in to confirm you are not a bot", "ERROR: [youtube] abc: Sign in to confirm you are not a bot"]);
+    const botCalls = fakeScripted(bot, Array(9).fill("ERROR: [youtube] abc: Sign in to confirm you are not a bot"));
     process.env.EDIT_YTDLP = `${bot}/yt-dlp`;
-    await download(bot, "abcdefghijk", `${bot}/out`, () => {});
-    expect(fs.readFileSync(botCalls, "utf8").trim()).toBe("4");
+    const failed = await download(bot, "abcdefghijk", `${bot}/out`, () => {}).catch((error: Error) => error.message);
+    expect(failed).toContain("not a bot");
+    expect(fs.readFileSync(botCalls, "utf8").trim()).toBe(String(1 + PROXY_TRIES));
     const last = fs.readFileSync(`${bot}/args`, "utf8").split("\n");
-    expect(last).toContain("--cookies-from-browser");
-    expect(last).not.toContain("--proxy");
+    expect(last).not.toContain("--cookies-from-browser");
+    expect(last).toContain("--proxy");
   } finally {
     signInWhere.chrome = before.chrome;
     for (const [key, value] of [["EDIT_YOUTUBE_SIGNIN", before.setting], ["PROXY_URL", before.proxy]] as const) {

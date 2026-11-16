@@ -10,8 +10,6 @@ import type { App } from "../app.ts";
 import { join } from "../paths.ts";
 import * as edit from "../youtube.ts";
 import { cookieArgs } from "../youtube_signin.ts";
-import { run } from "./proc.ts";
-import { THIS_MACHINE } from "../machine.ts";
 
 /** A single YouTube watch or short link. Other hosts are refused so yt-dlp is not pointed at an arbitrary site. */
 export function checkUrl(raw: string): void {
@@ -51,17 +49,22 @@ export interface Probe {
 /** Titles the New script check just read, by link, so the import that follows doesn't ask YouTube again. */
 const checked = new Map<string, [string, number]>();
 
-async function ytdlp(app: App, args: string[], timeoutMs: number): Promise<string> {
-  const binary = await edit.ytdlp(app.store.home);
-  const runtime = edit.runtimeArgs();
-  return run(binary, [...runtime, ...args], { timeoutMs, env: edit.runtimeEnv(runtime) ?? process.env });
+/**
+ * A question about a link, asked as every question to YouTube is (youtube.ts
+ * `ask`): through the proxy first, each try from an address of its own, then
+ * straight. With the editor's sign-in (an age-restricted video), straight
+ * only: the sign-in never goes through the proxy.
+ */
+async function ytdlp(app: App, url: string, args: string[], timeoutMs: number, signIn: string[] = []): Promise<string> {
+  const asked = await edit.ask(app.store.home, url, [...args, ...signIn], signIn.length > 0 ? ["straight"] : ["proxy", "straight"], (one) => one.code === 0, { area: "writer", timeoutMs });
+  return asked.stdout;
 }
 
 export async function title(app: App, url: string): Promise<string> {
   const known = checked.get(url);
   if (known !== undefined && Date.now() - known[1] < 3_600_000) return known[0];
   try {
-    const text = await ytdlp(app, ["--no-playlist", "--skip-download", "--print", "%(title)s", url], 60_000);
+    const text = await ytdlp(app, url, ["--no-playlist", "--skip-download", "--print", "%(title)s"], 60_000);
     const line = text.split("\n").find((one) => one.trim() !== "")?.trim().replace(/[\r\n]/g, " ");
     return line ? [...line].slice(0, 180).join("") : "YouTube video";
   } catch {
@@ -82,7 +85,7 @@ export async function probe(app: App, url: string): Promise<Probe> {
 async function probeOnce(app: App, url: string, signIn: string[]): Promise<{ probe: Probe; signInWouldHelp: boolean }> {
   let said: string;
   try {
-    said = await ytdlp(app, ["--no-playlist", "--skip-download", "--dump-single-json", "--no-warnings", ...signIn, url], 90_000);
+    said = await ytdlp(app, url, ["--no-playlist", "--skip-download", "--dump-single-json", "--no-warnings"], 90_000, signIn);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const [why, blocking] = probeTrouble(message);
@@ -126,7 +129,7 @@ function probeTrouble(error: string): [string, boolean] {
   const lower = error.toLowerCase();
   if (lower.includes("private video")) return ["It's private.", true];
   if (lower.includes("confirm your age") || lower.includes("age-restricted") || lower.includes("inappropriate")) return [AGE, true];
-  if (lower.includes("not a bot") || lower.includes("sign in")) return [`YouTube asked ${THIS_MACHINE} to sign in, so it couldn't be checked. It should still import through the proxy.`, false];
+  if (lower.includes("not a bot") || lower.includes("sign in") || lower.includes("turned")) return ["YouTube turned Edit away just now, so it couldn't be checked. It should still import.", false];
   if (["unavailable", "removed", "does not exist", "terminated"].some((word) => lower.includes(word))) return ["It's no longer available.", true];
   if (lower.includes("premiere") || lower.includes("live event")) return ["It hasn't premiered yet.", true];
   // Nov 6, Marius's Mac on a slow connection: checks ran past 90 s, and four of six links showed only their URL.

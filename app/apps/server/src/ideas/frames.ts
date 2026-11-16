@@ -11,7 +11,9 @@
 // proxy first ("try not to do research locally to not risk ip bans", Oct 31),
 // straight from this Mac only when YouTube turns the proxy's address away
 // (Nov 10: it did for every question on JJ's Mac for days, and the video
-// couldn't be looked at). The pictures come the way the video's details did.
+// couldn't be looked at). The pictures come the way the video's details did,
+// through the same proxy address: YouTube's links work only from the address
+// that asked for them, and each ask through the proxy has one of its own.
 // FFmpeg can't take the proxy itself (through it, it stood still for minutes
 // on the first try, Nov 2), so it reads the video from a forwarder on this Mac
 // that asks for each range that way: about 8 s and 1–2 MB a frame. The proxy's
@@ -42,30 +44,32 @@ export type Video = {
   stream: string | null;
   /** How YouTube answered for it: its pictures are fetched the same way. */
   way: youtube.Way;
+  /** The proxy's address it was asked through ("" straight): its pictures come through the same one. A credential: never in a line. */
+  proxy: string;
 };
 
 type Format = { format_id?: string; vcodec?: string; acodec?: string; protocol?: string; height?: number; width?: number; url?: string; rows?: number; columns?: number; fragments?: { url: string; duration?: number }[] };
 
 /** What yt-dlp says of the video (its formats), asked as an idea asks YouTube. Tests give their own. */
 export const looks = {
-  info: async (home: string, id: string, signal?: AbortSignal): Promise<{ duration: number; formats: Format[]; way: youtube.Way }> => {
+  info: async (home: string, id: string, signal?: AbortSignal): Promise<{ duration: number; formats: Format[]; way: youtube.Way; proxy?: string }> => {
     const asked = await youtube.ask(home, id, ["--no-playlist", "--no-warnings", "-J"], USES.idea.ways, (tried) => tried.code === 0, { area: "ideas", sparing: USES.idea.sparing, ...(signal ? { signal } : {}) }).catch((error: unknown) => {
       if (error instanceof youtube.Unanswered) throw new Error(`YouTube didn't give the video (${error.message.slice(0, 200)})`);
       throw error;
     });
     const json = JSON.parse(asked.stdout) as { duration?: number; formats?: Format[] };
-    return { duration: json.duration ?? 0, formats: json.formats ?? [], way: asked.way };
+    return { duration: json.duration ?? 0, formats: json.formats ?? [], way: asked.way, proxy: asked.proxy };
   },
   /** Bytes the way the video's details came (a storyboard sheet, or a range of the video). */
-  fetch: async (url: string, init: { way: youtube.Way; range?: string; signal?: AbortSignal }): Promise<Response> => {
-    const proxy = init.way === "proxy" ? await youtube.proxyUrl() : "";
+  fetch: async (url: string, init: { way: youtube.Way; proxy?: string; range?: string; signal?: AbortSignal }): Promise<Response> => {
+    const proxy = init.way === "proxy" ? init.proxy || youtube.session(await youtube.proxyUrl()) : "";
     if (init.way === "proxy" && proxy === "") throw new Error("The YouTube proxy isn't available just now.");
     return fetch(url, { ...(proxy === "" ? {} : { proxy }), headers: init.range ? { range: init.range } : {}, signal: init.signal ?? AbortSignal.timeout(60_000) });
   },
 };
 
 /** The video's storyboard and its picture stream, from yt-dlp's formats. */
-export function videoOf(id: string, duration: number, formats: Format[], way: youtube.Way = "proxy"): Video {
+export function videoOf(id: string, duration: number, formats: Format[], way: youtube.Way = "proxy", proxy = ""): Video {
   // The largest storyboard: 320×180 tiles, nine to a sheet, about every 5 s (YouTube's "sb0").
   const boards = formats.filter((one) => one.format_id?.startsWith("sb") && (one.fragments?.length ?? 0) > 0 && (one.width ?? 0) > 0).sort((a, b) => (b.width ?? 0) - (a.width ?? 0));
   const board = boards[0];
@@ -87,13 +91,13 @@ export function videoOf(id: string, duration: number, formats: Format[], way: yo
   const streams = formats
     .filter((one) => one.url !== undefined && one.protocol === "https" && (one.acodec === "none" || one.acodec === undefined) && one.vcodec?.startsWith("avc1") && (one.height ?? 0) <= 1080)
     .sort((a, b) => (b.height ?? 0) - (a.height ?? 0));
-  return { id, duration, every, columns: board?.columns ?? 0, rows: board?.rows ?? 0, width: board?.width ?? 0, height: board?.height ?? 0, sheets, stream: streams[0]?.url ?? null, way };
+  return { id, duration, every, columns: board?.columns ?? 0, rows: board?.rows ?? 0, width: board?.width ?? 0, height: board?.height ?? 0, sheets, stream: streams[0]?.url ?? null, way, proxy };
 }
 
 /** The video, looked up once a run. */
 export async function video(home: string, id: string, signal?: AbortSignal): Promise<Video> {
   const info = await looks.info(home, id, signal);
-  return videoOf(id, info.duration, info.formats, info.way);
+  return videoOf(id, info.duration, info.formats, info.way, info.proxy ?? "");
 }
 
 /** "m:ss" (or "h:mm:ss"), as the transcript writes times. */
@@ -133,7 +137,7 @@ export async function scan(found: Video, dir: string, from: number, to: number, 
     picked.map(async (sheet) => {
       const path = join(dir, `storyboard-${String(found.sheets.indexOf(sheet) + 1).padStart(2, "0")}.jpg`);
       if (!fs.existsSync(path)) {
-        const answer = await looks.fetch(sheet.url, { way: found.way, ...(signal ? { signal } : {}) });
+        const answer = await looks.fetch(sheet.url, { way: found.way, proxy: found.proxy, ...(signal ? { signal } : {}) });
         if (!answer.ok) throw new Error(`YouTube refused a storyboard sheet (${answer.status})`);
         fs.writeFileSync(path, new Uint8Array(await answer.arrayBuffer()));
       }
@@ -170,7 +174,7 @@ export async function grab(found: Video, times: number[], dir: string, signal?: 
     idleTimeout: 120,
     async fetch(request) {
       const range = request.headers.get("range") ?? undefined;
-      const answer = await looks.fetch(stream, { way: found.way, ...(range === undefined ? {} : { range }), ...(signal ? { signal } : {}) });
+      const answer = await looks.fetch(stream, { way: found.way, proxy: found.proxy, ...(range === undefined ? {} : { range }), ...(signal ? { signal } : {}) });
       const headers = new Headers();
       for (const name of ["content-type", "content-length", "content-range", "accept-ranges"]) {
         const value = answer.headers.get(name);

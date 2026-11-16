@@ -38,7 +38,6 @@ import { join, parent } from "./paths.ts";
 import * as transcribe from "./transcribe.ts";
 import { serialize, type Transcript, type Word } from "./transcribe.ts";
 import * as youtube from "./youtube.ts";
-import { THIS_MACHINE } from "./machine.ts";
 
 /** What a transcript made from captions is called (`Transcript.model`). */
 export const MODEL = "youtube-captions";
@@ -67,10 +66,17 @@ export const USES = {
    * proxy's address away.
    */
   idea: { area: "ideas", ways: ["proxy", "straight"], cues: true, hear: true, sparing: true },
-  /** An import's footage: cut on the word, so word-timed tracks only. With none, the file here is heard (media.ts). The video itself was downloaded straight, so its captions are asked the same way. */
-  footage: { area: "transcribe", ways: ["straight", "proxy"], cues: false, hear: false, sparing: false },
-  /** Script mode: a recording's rough words, and Find clips' videos. With none, the recording here is heard (writer/transcription.ts); chosen footage is heard exactly before it's cut. */
-  script: { area: "writer", ways: ["straight", "straight", "proxy"], cues: true, hear: false, sparing: false },
+  /**
+   * An import's footage: cut on the word, so word-timed tracks only. With
+   * none, the file here is heard (media.ts). A question is a few kilobytes,
+   * so through the proxy first (Sphe, Nov 16): Script mode's captions asked
+   * straight twice a video were what kept JJ's address asking that afternoon.
+   */
+  footage: { area: "transcribe", ways: ["proxy", "straight"], cues: false, hear: false, sparing: false },
+  /** Script mode: a recording's rough words. With none, the recording here is heard (writer/transcription.ts); chosen footage is heard exactly before it's cut. Through the proxy first, as `footage`. */
+  script: { area: "writer", ways: ["proxy", "straight"], cues: true, hear: false, sparing: false },
+  /** Find clips: other channels' videos, up to 40 a run, so sparing of the person's address as an idea is. */
+  clips: { area: "writer", ways: ["proxy", "straight"], cues: true, hear: false, sparing: true },
 } as const satisfies Record<string, Use>;
 
 export type Json3 = { events?: { tStartMs?: number; dDurationMs?: number; segs?: { utf8?: string; tOffsetMs?: number; isSpeakerChange?: number }[] }[] };
@@ -378,7 +384,7 @@ export async function words(home: string, id: string, use: Use, signal?: AbortSi
   }
   throw new NoWords(
     turnedAway
-      ? `YouTube turned ${THIS_MACHINE} away just now, so the video's words weren't read: try again in a few minutes.`
+      ? `YouTube turned Edit away just now, so the video's words weren't read: try again in a few minutes.`
       : use.hear
         ? "This video has no English captions, and nothing was heard in its sound."
         : "This video has no English captions.",

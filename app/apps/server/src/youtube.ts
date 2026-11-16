@@ -9,10 +9,19 @@
 // yt-dlp: `EDIT_YTDLP`, else on PATH, else `<home>/bin/yt-dlp` (the release
 // for macOS from GitHub, checked against its SHA2-256SUMS, fetched on first
 // use). Every run names a JavaScript runtime (`--js-runtimes` below), which
-// YouTube extraction now needs. YouTube is asked straight from this Mac; when
-// it refuses (a bot check, 403s) or a route gives no video, and `PROXY_URL`
-// is set (Repack's download proxy; `just dev` borrows it), once more through
-// the proxy. The proxy URL is a credential: never in a log line or an error.
+// YouTube extraction now needs.
+//
+// How YouTube is asked (Sphe, Nov 16, after JJ's Mac was refused everywhere
+// for 40 minutes and his downloads got through only on his own YouTube
+// sign-in): a question (captions, details, a search) goes through the proxy
+// first; footage comes straight from this Mac first (it's free, and faster),
+// then through the proxy. Each try through the proxy goes out from an address
+// of its own (`session`). Once YouTube refuses this Mac's address, nothing in
+// Edit asks from it for ten minutes. The person's YouTube sign-in is only for
+// a video that needs one (age, members), never to get past a bot check. When
+// every address is refused, a download waits and tries again by itself
+// (`timing.waveWaits`): YouTube's refusals come in waves that pass. The proxy
+// URL is a credential: never in a log line or an error.
 
 import * as fs from "node:fs";
 
@@ -340,8 +349,14 @@ export interface Downloaded {
 
 const running = new Map<string, Promise<Downloaded>>();
 
-/** The wait before asking YouTube again, and how long yt-dlp may say nothing before it's stopped (tests make them short). */
-export const timing = { pause: (ms: number): Promise<void> => Bun.sleep(ms), quiet: 10 * 60_000 };
+/**
+ * The wait before asking YouTube again, how long yt-dlp may say nothing
+ * before it's stopped, and the waits before a download every address was
+ * refused for is tried again: YouTube refuses in waves (Nov 16: every fresh
+ * address for a few minutes on mandalorian, everything for 40 minutes on JJ's
+ * Mac), so about half an hour in all before it's given up. Tests make them short.
+ */
+export const timing = { pause: (ms: number): Promise<void> => Bun.sleep(ms), quiet: 10 * 60_000, waveWaits: [2 * 60_000, 5 * 60_000, 10 * 60_000, 15 * 60_000] };
 
 /** What a run stopped for saying nothing reads as. */
 const STOOD_STILL = "ERROR: The download stood still";
@@ -426,7 +441,7 @@ const linkWhole = Effect.fn("youtube.downloadLink")(function* (home: string, url
     return kept;
   }
   let binary = yield* Effect.promise(() => ytdlp(home));
-  const route: Route = { proxy: null, signIn: false };
+  const route: Route = "straight";
   let tried = yield* tryRoute(binary, url, dir, route, progress, null, "bv*+ba/b");
   if (tried.path === null && reasonOf(tried.stderr)._tag === "YtdlpOutdated" && binary === join(home, "bin", "yt-dlp")) {
     const fresh = yield* Effect.tryPromise(() => freshen(binary, true)).pipe(Effect.option);
@@ -461,48 +476,70 @@ const overRoutes = Effect.fn("youtube.overRoutes")(function* (
 ) {
   let binary = yield* Effect.promise(() => ytdlp(home));
   const url = `https://www.youtube.com/watch?v=${id}`;
-  const proxy = yield* Effect.promise(() => proxyUrl());
-  // Sparing of this machine's own address: the proxy first, then straight once, and never the person's YouTube sign-in.
-  const routes: Route[] = sparing ? [...(proxy === "" ? [] : [{ proxy, signIn: false }]), { proxy: null, signIn: false }] : routesFor(proxy, straight);
   let updated = false;
   let last: TryFailure = new Unrecognised({ line: "yt-dlp failed" });
-  for (let attempt = 0; attempt < routes.length; ) {
-    const route = routes[attempt]!;
-    const began = Date.now();
-    const tried = yield* tryRoute(binary, url, dir, route, progress, range, format);
-    diag.record("youtube", "youtube: download", Date.now() - began, tried.path === null ? `${id}${said(route)}: ${errorLine(tried.stderr)}` : null);
-    if (tried.path !== null) return tried.path;
-    last = reasonOf(tried.stderr);
-    const next = afterFailure(last);
-    if (next.to === "update" && !updated && binary === join(home, "bin", "yt-dlp")) {
-      updated = true;
-      const fresh = yield* Effect.tryPromise(() => freshen(binary, true)).pipe(
-        Effect.tapError((error) => Effect.logWarning(`updating yt-dlp: ${diag.messageOf(error.cause)}`)),
-        Effect.option,
-      );
-      if (Option.isSome(fresh)) {
-        binary = fresh.value;
-        yield* Effect.logWarning(`${id}: ${last.line}; trying again with the newest yt-dlp`);
-        routes.splice(attempt + 1, 0, route);
-        attempt += 1;
-        continue;
+  for (let pass = 0; ; pass++) {
+    const routes = routesFor((yield* Effect.promise(() => proxyUrl())) !== "", straight, sparing);
+    // The next route from `after` on that may be tried: never the sign-in (it's only for what needs it), nor this Mac's address while it's refused.
+    const nextFrom = (after: number): number | null => {
+      const at = routes.findIndex((one, index) => index > after && one !== "sign-in" && !(one === "straight" && refusedLately()));
+      return at < 0 ? null : at;
+    };
+    let tries = 0;
+    // Whether every try of this pass was YouTube refusing an address (a wave), and nothing else.
+    let refusedEvery = true;
+    let ended = false;
+    for (let attempt = nextFrom(-1); attempt !== null; ) {
+      const route = routes[attempt]!;
+      tries++;
+      const began = Date.now();
+      const tried = yield* tryRoute(binary, url, dir, route, progress, range, format);
+      diag.record("youtube", "youtube: download", Date.now() - began, tried.path === null ? `${id}${said(route)}: ${errorLine(tried.stderr)}` : null);
+      if (tried.path !== null) {
+        if (route === "straight") straightRefusedAt = -Infinity;
+        return tried.path;
       }
+      last = reasonOf(tried.stderr);
+      if (last._tag !== "RouteRefused") refusedEvery = false;
+      if (last._tag === "RouteRefused" && route === "straight") straightRefusedAt = Date.now();
+      const next = afterFailure(last);
+      if (next.to === "update" && !updated && binary === join(home, "bin", "yt-dlp")) {
+        updated = true;
+        const fresh = yield* Effect.tryPromise(() => freshen(binary, true)).pipe(
+          Effect.tapError((error) => Effect.logWarning(`updating yt-dlp: ${diag.messageOf(error.cause)}`)),
+          Effect.option,
+        );
+        if (Option.isSome(fresh)) {
+          binary = fresh.value;
+          yield* Effect.logWarning(`${id}: ${last.line}; trying again with the newest yt-dlp`);
+          routes.splice(attempt + 1, 0, route);
+          attempt += 1;
+          continue;
+        }
+      }
+      if (next.to === "stop") ended = true;
+      const to =
+        next.to === "stop"
+          ? null
+          : next.to === "sign-in"
+            ? (() => {
+                const at = routes.findIndex((one, index) => index > attempt! && one === "sign-in");
+                if (at < 0) ended = true;
+                return at < 0 ? null : at;
+              })()
+            : nextFrom(attempt);
+      if (to === null) break;
+      yield* Effect.logWarning(`${id}: ${last.line}${last._tag === "Unrecognised" ? " (not a failure Edit knows: the next route may still get it)" : ""}; trying again${said(routes[to]!)}`);
+      yield* Effect.promise(() => timing.pause(attempt === 0 ? 3000 : 1000));
+      attempt = to;
     }
-    const to =
-      next.to === "stop"
-        ? null
-        : next.to === "sign-in"
-          ? (() => {
-              const at = routes.findIndex((one, index) => index > attempt && one.signIn);
-              return at < 0 ? null : at;
-            })()
-          : attempt + 1 < routes.length
-            ? attempt + 1
-            : null;
-    if (to === null) break;
-    yield* Effect.logWarning(`${id}: ${last.line}${last._tag === "Unrecognised" ? " (not a failure Edit knows: the next route may still get it)" : ""}; trying again${said(routes[to]!)}`);
-    yield* Effect.promise(() => timing.pause(attempt === 0 ? 3000 : 1000));
-    attempt = to;
+    // Nothing could be tried: this Mac's address was refused a moment ago, and there's no proxy (a wave's later pass keeps what YouTube said).
+    if (tries === 0 && last._tag !== "RouteRefused") last = new RouteRefused({ line: `YouTube turned ${THIS_MACHINE} away a few minutes ago` });
+    // A wave of refusals passes: a download of footage waits it out (research and ideas don't: they're asked again when they're wanted).
+    const wait = timing.waveWaits[pass];
+    if (ended || sparing || !refusedEvery || last._tag !== "RouteRefused" || wait === undefined) break;
+    yield* Effect.logWarning(`${id}: YouTube refused every address it was asked from (${last.line}); trying again in ${Math.round(wait / 60_000)} min`);
+    yield* Effect.promise(() => timing.pause(wait));
   }
   return yield* new DownloadFailed({ reason: last._tag, message: `${saying}: ${last.line}` });
 });
@@ -514,7 +551,7 @@ let fromRelay: { url: string; at: number } | null = null;
  * The YouTube proxy: this machine's own (`PROXY_URL`, the dev server's), else
  * the relay's, which gives it to signed-in people only (installed Edits carry
  * no keys: until Oct 30 a teammate's download YouTube refused had no proxy).
- * Only used when YouTube refuses a download straight; never logged.
+ * Each try asks through a `session` of it; never logged.
  */
 export async function proxyUrl(): Promise<string> {
   const own = process.env.PROXY_URL?.trim() ?? "";
@@ -530,31 +567,71 @@ export async function proxyUrl(): Promise<string> {
   return fromRelay.url;
 }
 
-/** One way of asking YouTube: straight from this Mac, with the editor's sign-in from Chrome, or through the paid proxy (never with the sign-in). */
-interface Route {
-  proxy: string | null;
-  /** The editor's YouTube sign-in from Chrome, read only when this route is tried. */
-  signIn: boolean;
+/**
+ * The proxy with an address of its own for one try. DataImpulse holds one
+ * exit address for a login (Nov 16: the relay's held a hosting company's,
+ * 2.56.110.39, for half an hour and more), so a try through the proxy after
+ * YouTube refused it went out from the same refused address, and every
+ * teammate's tries with it. A session id in the login is a fresh home
+ * connection (Cox, Charter, Comcast…), kept for every request of that try:
+ * YouTube's video links work only from the address that asked for them.
+ * Measured that day: YouTube refused 35–50% of fresh addresses, and a video
+ * refused on one came on the next every time (5 of 5). Another proxy is used
+ * as it is.
+ */
+export function session(proxy: string): string {
+  if (proxy === "") return proxy;
+  try {
+    const url = new URL(proxy);
+    if (!url.hostname.endsWith("dataimpulse.com")) return proxy;
+    const login = decodeURIComponent(url.username).replace(/;sessid\.[^;]*/g, "");
+    url.username = encodeURIComponent(`${login}${login.includes("__") ? ";" : "__"}sessid.${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`);
+    return url.toString();
+  } catch {
+    return proxy;
+  }
 }
 
+/** Tries through the proxy, each from a fresh address, before the next way. */
+export const PROXY_TRIES = 3;
+
+/** When YouTube last refused this machine's own address (any of Edit's asks): it isn't asked from for `TURNED_AWAY_MS` after. */
+let straightRefusedAt = -Infinity;
+const TURNED_AWAY_MS = 10 * 60_000;
+const refusedLately = (): boolean => Date.now() - straightRefusedAt < TURNED_AWAY_MS;
+
+/** Test hook: this machine's address as good as new. */
+export const forgetRefusals = (): void => {
+  straightRefusedAt = -Infinity;
+};
+
 /**
- * The ways to ask, in order: straight (it costs nothing; `straight` times,
- * YouTube's refusals come and go), through the proxy when there is one, and
- * last the editor's YouTube sign-in from Chrome when there is one (the user,
- * Oct 28: "a sort of last resort … other than that, we should just have
- * things work").
+ * One way of asking YouTube for a download: straight from this Mac, through
+ * the paid proxy (an address of its own each try), or with the editor's
+ * YouTube sign-in from Chrome (never through the proxy).
  */
-function routesFor(proxy: string, straight: number): Route[] {
-  const routes: Route[] = Array.from({ length: straight }, () => ({ proxy: null, signIn: false }));
-  if (proxy !== "") routes.push({ proxy, signIn: false });
+type Route = "straight" | "proxy" | "sign-in";
+
+/**
+ * The ways to ask, in order. Footage: straight (free; `straight` times, the
+ * second only when the first wasn't refused), through the proxy when there is
+ * one, then the editor's YouTube sign-in from Chrome when there is one, for a
+ * video only a signed-in YouTube has (the user, Oct 28: "a sort of last
+ * resort"; Sphe, Nov 16: never to get past a bot check). Sparing of this
+ * machine's address (research, ideas): the proxy first, straight once, never
+ * the sign-in.
+ */
+function routesFor(proxied: boolean, straight: number, sparing: boolean): Route[] {
+  const proxy: Route[] = proxied ? Array.from({ length: PROXY_TRIES }, () => "proxy" as const) : [];
+  if (sparing) return [...proxy, "straight"];
   // Chrome's folder is looked in only when it comes to this: macOS warns the
   // person whenever Edit reads another app's data (Oct 30: "Data Access Blocked").
-  if (signInSupported && process.env.EDIT_YOUTUBE_SIGNIN !== "0") routes.push({ proxy: null, signIn: true });
-  return routes;
+  const signIn: Route[] = signInSupported && process.env.EDIT_YOUTUBE_SIGNIN !== "0" ? ["sign-in"] : [];
+  return [...Array.from({ length: straight }, () => "straight" as const), ...proxy, ...signIn];
 }
 
 function said(route: Route): string {
-  return route.proxy !== null ? " (proxy)" : route.signIn ? " (with the YouTube sign-in from Chrome)" : "";
+  return route === "proxy" ? " (proxy)" : route === "sign-in" ? " (with the YouTube sign-in from Chrome)" : "";
 }
 
 /** An excerpt's try is stopped after this. */
@@ -576,9 +653,10 @@ const tryRoute = Effect.fn("youtube.tryRoute")(function* (
   range: [number, number] | null,
   format: string | null,
 ) {
-  const proxy = route.proxy;
-  const signIn = route.signIn ? cookieArgs() : [];
-  if (route.signIn && signIn.length === 0) return { path: null, stderr: `ERROR: no YouTube sign-in in Chrome on ${THIS_MACHINE}` };
+  const proxy = route === "proxy" ? session(yield* Effect.promise(() => proxyUrl())) : null;
+  if (proxy === "") return { path: null, stderr: "ERROR: the YouTube proxy isn't available just now" };
+  const signIn = route === "sign-in" ? cookieArgs() : [];
+  if (route === "sign-in" && signIn.length === 0) return { path: null, stderr: `ERROR: no YouTube sign-in in Chrome on ${THIS_MACHINE}` };
   const runtime = runtimeArgs();
   const args = [
     "--no-playlist",
@@ -695,10 +773,11 @@ const tryRoute = Effect.fn("youtube.tryRoute")(function* (
 /** A preview's picture: H.264 in an mp4, 480p at most (Script mode's review clips). */
 export const PREVIEW_FORMAT = "b[vcodec^=avc1][height<=480][ext=mp4]/bv*[vcodec^=avc1][height<=480]+ba[ext=m4a]/b[height<=480][ext=mp4]/bv*[height<=480]+ba/b";
 
-export async function downloadRange(home: string, id: string, range: [number, number], dir: string, progress: (bytes: number, total: number | null, name: string) => void = () => {}, format: string | null = null): Promise<Downloaded> {
+/** `sparing`: research's look at another channel's video (Find clips), asked as an idea asks: the proxy first, this Mac's address only when that's refused. */
+export async function downloadRange(home: string, id: string, range: [number, number], dir: string, progress: (bytes: number, total: number | null, name: string) => void = () => {}, format: string | null = null, sparing = false): Promise<Downloaded> {
   if (!/^[A-Za-z0-9_-]{11}$/.test(id) || !range.every(Number.isFinite) || range[0] < 0 || range[1] <= range[0] || range[1] - range[0] > 600) throw new Error("YouTube excerpt needs a valid video and a source range of at most 10 minutes");
   fs.mkdirSync(dir, { recursive: true });
-  const path = await runPromise(overRoutes(home, id, dir, 1, range, format, progress, `YouTube excerpt ${id} ${range[0]}–${range[1]} couldn't be downloaded`).pipe(inArea("youtube")));
+  const path = await runPromise(overRoutes(home, id, dir, 1, range, format, progress, `YouTube excerpt ${id} ${range[0]}–${range[1]} couldn't be downloaded`, sparing).pipe(inArea("youtube")));
   return { path, name: path.slice(dir.length + 1), size: fs.statSync(path).size };
 }
 
@@ -709,14 +788,16 @@ export async function downloadSound(home: string, id: string, dir: string, spari
   return { path, name: path.slice(dir.length + 1), size: fs.statSync(path).size };
 }
 
-// ── A question for YouTube that downloads no video (captions, formats) ──
+// ── A question for YouTube that downloads no video (captions, details, a search) ──
 //
 // Until Nov 10 each asker had its own single try (ideas through the proxy
 // only), and a refusal read as the answer: ten ideas on JJ's Mac were
 // "skipped: YouTube has no English captions" while every one of those videos
 // had them, because YouTube had turned the proxy's address away ("Sign in to
 // confirm you're not a bot"). Now a question goes over its use's ways until
-// one is answered, and a refusal is never taken for an answer.
+// one is answered, and a refusal is never taken for an answer. Since Nov 16
+// the proxy is `PROXY_TRIES` tries, each from a fresh address (`session`), and
+// a question is never sent from this Mac's address while YouTube refuses it.
 
 /** A way of asking: through the paid proxy, or straight from this machine. */
 export type Way = "proxy" | "straight";
@@ -724,6 +805,8 @@ export type Way = "proxy" | "straight";
 /** What yt-dlp said to one question. */
 export interface Asked {
   way: Way;
+  /** The proxy's address this was asked through, the same for what's fetched after it (YouTube's links work only from the address that asked for them); "" straight. A credential: never in a line. */
+  proxy: string;
   stdout: string;
   stderr: string;
   code: number;
@@ -738,13 +821,6 @@ export class Unanswered extends Error {
     super(message);
   }
 }
-
-/** When YouTube last turned each way away: for ten minutes that way is asked last, so one refused address doesn't cost every question its wait. */
-const turnedAway = new Map<Way, number>();
-const TURNED_AWAY_MS = 10 * 60_000;
-
-/** Test hook: every way as good as new. */
-export const forgetRefusals = (): void => turnedAway.clear();
 
 // Sparing of this machine's own address (Sphe, Nov 10, on ideas: "we can use
 // the Mac ip but sparingly, only if needed we don't want to get users banned
@@ -768,39 +844,47 @@ function inStraightLine<T>(work: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Asks YouTube about video `id` with yt-dlp `args` (no `--proxy`, no URL),
- * over `ways` in order, until `answered` says a try was (its files are
- * there, or yt-dlp ended well). A refusal, a 429 or a failure nobody has
- * seen goes on to the next way; a video that's gone or needs a sign-in ends
- * it; an outdated yt-dlp is brought up to date once and asked again. Throws
- * `Unanswered` with yt-dlp's last line when no way was answered. `sparing`
- * keeps this machine's own address for when it's needed (above).
+ * Asks YouTube about `target` (a video id, or what yt-dlp takes: a link, a
+ * `ytsearchN:` search) with yt-dlp `args` (no `--proxy`, no URL), over `ways`
+ * in order, until `answered` says a try was (its files are there, or yt-dlp
+ * ended well). The proxy is `PROXY_TRIES` tries, each from a fresh address;
+ * this machine's address isn't asked from while YouTube refuses it (ten
+ * minutes, whichever of Edit's asks it refused). A refusal, a 429 or a
+ * failure nobody has seen goes on to the next try; a video that's gone or
+ * needs a sign-in ends it; an outdated yt-dlp is brought up to date once and
+ * asked again. Throws `Unanswered` with yt-dlp's last line when no way was
+ * answered. `sparing` keeps this machine's own address for when it's needed (above).
  */
-export async function ask(home: string, id: string, args: readonly string[], ways: readonly Way[], answered: (asked: Asked) => boolean, options: { area: string; sparing?: boolean; signal?: AbortSignal; timeoutMs?: number } = { area: "youtube" }): Promise<Asked> {
-  const now = Date.now();
-  const lately = (way: Way) => now - (turnedAway.get(way) ?? -Infinity) < TURNED_AWAY_MS;
-  // A way turned away lately is asked last; a sparing question keeps its order (the proxy first, always) and leaves this address alone while it's refused.
-  const queue = options.sparing === true ? ways.filter((way) => way === "proxy" || !lately(way)) : [...ways.filter((way) => !lately(way)), ...ways.filter(lately)];
+export async function ask(home: string, target: string, args: readonly string[], ways: readonly Way[], answered: (asked: Asked) => boolean, options: { area: string; sparing?: boolean; signal?: AbortSignal; timeoutMs?: number } = { area: "youtube" }): Promise<Asked> {
+  const url = /^[A-Za-z0-9_-]{11}$/.test(target) ? `https://www.youtube.com/watch?v=${target}` : target;
+  // Named in a line: a video's id, or what was asked ("ytsearch8:…" stays short).
+  const name = target.length > 80 ? `${target.slice(0, 77)}…` : target;
+  // The proxy's address is asked for (the relay's, kept ten minutes) only when a way needs it.
+  const base = ways.includes("proxy") ? await proxyUrl() : "";
+  const queue: Way[] = ways.flatMap((way): Way[] => (way === "proxy" ? (base === "" ? [] : Array.from({ length: PROXY_TRIES }, () => "proxy" as const)) : refusedLately() ? [] : ["straight"]));
   let binary = await ytdlp(home);
   let updated = false;
-  let last: TryFailure = new Unrecognised({ line: queue.includes("straight") ? "the YouTube proxy isn't available" : `YouTube turned ${THIS_MACHINE} away a few minutes ago` });
+  let last: TryFailure = new Unrecognised({ line: ways.includes("straight") && refusedLately() ? `YouTube turned ${THIS_MACHINE} away a few minutes ago` : "the YouTube proxy isn't available" });
   for (let at = 0; at < queue.length; at++) {
     const way = queue[at]!;
-    // The proxy's address is asked for (the relay's, kept ten minutes) only when its turn comes; with none, the next way.
-    const proxy = way === "proxy" ? await proxyUrl() : "";
-    if (way === "proxy" && proxy === "") continue;
+    const proxy = way === "proxy" ? session(base) : "";
     const runtime = runtimeArgs();
     const once = async (): Promise<Asked | null> => {
       options.signal?.throwIfAborted();
-      // Its turn in the line may come after another idea's ask was turned away from this address: then not this one either.
-      if (way === "straight" && options.sparing === true && Date.now() - (turnedAway.get(way) ?? -Infinity) < TURNED_AWAY_MS) return null;
-      const child = Bun.spawn([binary, ...runtime, ...(way === "proxy" ? ["--proxy", proxy] : []), ...args, `https://www.youtube.com/watch?v=${id}`], { stdout: "pipe", stderr: "pipe", env: runtimeEnv(runtime) });
+      // Its turn may come after another ask was turned away from this address: then not this one either.
+      if (way === "straight" && refusedLately()) return null;
+      const child = Bun.spawn([binary, ...runtime, ...(way === "proxy" ? ["--proxy", proxy] : []), ...args, url], { stdout: "pipe", stderr: "pipe", env: runtimeEnv(runtime) });
       const stop = () => child.kill("SIGKILL");
       options.signal?.addEventListener("abort", stop, { once: true });
-      const timeout = setTimeout(stop, options.timeoutMs ?? 120_000);
+      let late = false;
+      const timeout = setTimeout(() => {
+        late = true;
+        stop();
+      }, options.timeoutMs ?? 120_000);
       try {
         const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-        return { way, stdout, stderr, code };
+        // Stopped for taking too long: said so, in words `reasonOf` reads as a try worth making again.
+        return { way, proxy, stdout, stderr: late ? `${stderr}\nERROR: YouTube took too long to answer and was timed out` : stderr, code: late ? -1 : code };
       } finally {
         clearTimeout(timeout);
         options.signal?.removeEventListener("abort", stop);
@@ -808,30 +892,33 @@ export async function ask(home: string, id: string, args: readonly string[], way
     };
     const asked = await (way === "straight" && options.sparing === true ? inStraightLine(once) : once());
     options.signal?.throwIfAborted();
-    if (asked === null) continue;
+    if (asked === null) {
+      last = new RouteRefused({ line: `YouTube turned ${THIS_MACHINE} away a few minutes ago` });
+      continue;
+    }
     if (answered(asked)) {
-      turnedAway.delete(way);
+      if (way === "straight") straightRefusedAt = -Infinity;
       return asked;
     }
     last = reasonOf(asked.stderr);
     const next = afterFailure(last);
-    if (last._tag === "RouteRefused") turnedAway.set(way, Date.now());
-    // The sign-in from Chrome is a download's last resort (macOS warns the person each time it's read): never for a question.
+    if (last._tag === "RouteRefused" && way === "straight") straightRefusedAt = Date.now();
+    // The sign-in from Chrome is for a download that needs it (macOS warns the person each time it's read): never for a question.
     if (next.to === "stop" || next.to === "sign-in") throw new Unanswered(last.line, true);
     if (next.to === "update" && !updated && binary === join(home, "bin", "yt-dlp")) {
       updated = true;
       const fresh = await freshen(binary, true).catch(() => null);
       if (fresh !== null) {
         binary = fresh;
-        diag.warn(options.area, `${id}: ${last.line}; asking again with the newest yt-dlp`);
+        diag.warn(options.area, `${name}: ${last.line}; asking again with the newest yt-dlp`);
         queue.splice(at + 1, 0, way);
         continue;
       }
     }
     const to = queue[at + 1];
-    diag.warn(options.area, `${id}: YouTube didn't answer${way === "proxy" ? " through the proxy" : ` straight from ${THIS_MACHINE}`} (${last.line})${to === undefined ? "" : `; asking ${to === "proxy" ? "through the proxy" : "straight"}`}`);
-    // Asked again the same way after "429: Too Many Requests", YouTube wants a while first.
-    if (to !== undefined) await timing.pause(to === way && /429/.test(last.line) ? 20_000 : 1000);
+    diag.warn(options.area, `${name}: YouTube didn't answer${way === "proxy" ? " through the proxy" : ` straight from ${THIS_MACHINE}`} (${last.line})${to === undefined ? "" : `; asking ${to === "proxy" ? "through the proxy from another address" : "straight"}`}`);
+    // Asked again straight after "429: Too Many Requests", YouTube wants a while first; through the proxy it's another address.
+    if (to !== undefined) await timing.pause(to === "straight" && way === "straight" && /429/.test(last.line) ? 20_000 : 1000);
   }
   throw new Unanswered(last.line, false);
 }

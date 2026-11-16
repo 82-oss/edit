@@ -134,10 +134,15 @@ async function each<T, R>(items: T[], lanes: number, work: (item: T) => Promise<
 
 const settled = <T>(work: Promise<T>): Promise<T | Error> => work.catch((error: unknown) => (error instanceof Error ? error : new Error(String(error))));
 
-async function ytdlp(app: App, args: string[], timeoutMs: number): Promise<string> {
-  const binary = await edit.ytdlp(app.store.home);
-  const runtime = edit.runtimeArgs();
-  return run(binary, [...runtime, ...args], { timeoutMs, env: edit.runtimeEnv(runtime) ?? process.env });
+/**
+ * A question for YouTube about other channels' videos (a search), asked as
+ * every question is (youtube.ts `ask`) and sparing of the person's address as
+ * an idea is: through the proxy first, each try from an address of its own,
+ * this Mac's only when that's refused (Sphe, Nov 16: Find clips asked up to 40
+ * videos a run straight from the person's Mac).
+ */
+async function ask(app: App, target: string, args: string[], timeoutMs: number): Promise<string> {
+  return (await edit.ask(app.store.home, target, args, ["proxy", "straight"], (one) => one.code === 0, { area: "writer", sparing: true, timeoutMs })).stdout;
 }
 
 /** yt-dlp's last line of a failure, briefly. */
@@ -385,7 +390,7 @@ interface Hit {
 }
 
 async function search(app: App, query: string): Promise<Hit[]> {
-  const said = await ytdlp(app, ["--flat-playlist", "--dump-single-json", "--no-warnings", `ytsearch${RESULTS_PER_QUERY}:${query}`], 90_000);
+  const said = await ask(app, `ytsearch${RESULTS_PER_QUERY}:${query}`, ["--flat-playlist", "--dump-single-json", "--no-warnings"], 90_000);
   let found: { entries?: Record<string, unknown>[] };
   try {
     found = JSON.parse(said.trim()) as typeof found;
@@ -434,7 +439,7 @@ async function captionsOf(app: App, video: string, dir: string): Promise<Line[]>
   const kept = () => fs.readdirSync(dir).filter((name) => name.startsWith(`${video}.`) && name.endsWith(".json3")).sort()[0];
   if (kept() === undefined) {
     // Asked as every reader of a video's words asks (youtube_words.ts): a way YouTube turns away, a 429 included, gives way to the next.
-    const chosen = await youtubeWords.track(app.store.home, video, youtubeWords.USES.script).catch((error: unknown) => {
+    const chosen = await youtubeWords.track(app.store.home, video, youtubeWords.USES.clips).catch((error: unknown) => {
       throw new Error(lastLine(error));
     });
     if (chosen === null) throw new Error("It has no English captions.");
@@ -511,9 +516,13 @@ async function heardLines(app: App, video: Video, dir: string, keyterms: string[
   fs.mkdirSync(folder, { recursive: true });
   const audio = () => fs.readdirSync(folder).find((name) => name.startsWith("audio.") && !name.endsWith(".part"));
   if (audio() === undefined) {
-    await ytdlp(app, ["-q", "--no-warnings", "--no-playlist", "--continue", "-f", "ba[ext=m4a]/ba/b", "-o", join(folder, "audio.%(ext)s"), url(video)], 15 * 60_000).catch((error: unknown) => {
+    // Its sound alone, as an idea's is fetched: through the proxy first, sparing of the person's address.
+    const into = join(folder, "download");
+    const got = await edit.downloadSound(app.store.home, video.id, into, true).catch((error: unknown) => {
       throw new Error(lastLine(error));
     });
+    fs.renameSync(got.path, join(folder, `audio${got.name.slice(got.name.lastIndexOf("."))}`));
+    fs.rmSync(into, { recursive: true, force: true });
     if (audio() === undefined) throw new Error("Its audio didn't download.");
   }
   const [words] = await transcribeSpan(app, join(folder, audio()!), [0, video.durationMs], null, folder, keyterms, "v", signal);
@@ -602,17 +611,19 @@ export function checked(item: Record<string, unknown>, flat: string, marks: [num
 const LOOK_SYSTEM = `You check a clip for a documentary by looking at its frames. Read the image you're given with the Read tool: it is a grid of frames from the clip, in order left to right, top to bottom, evenly spaced. Say plainly what is on screen: the setting, the people (by how they look), a stream layout, on-screen text and logos.
 Then judge whether the clip shows what the documentary wants. You can't recognise faces and needn't: take the people to be who the video's title, channel and captions say they are, and judge whether the scene fits (the place, the event, how many people, what they're doing). "yes" when it fits; "no" when it shows something else (a different place or event, an empty room, a still image, a talking head where action is wanted); "unsure" only when the frames are too dark, blurred or cut to tell.`;
 
+/** A clip to look at: its picture small (360p, else the smallest), else whatever YouTube gives up to 480p. */
+const LOOK_FORMAT = "bv*[height<=360][vcodec^=avc1]/bv*[height<=360]/wv*/b[height<=480]/b";
+
 async function look(app: App, video: Video, need: Need, clip: Found, dir: string, tag: string, signal?: AbortSignal): Promise<[Look, number]> {
   const endMs = Math.max(Math.min(clip.endMs, clip.startMs + LOOK_MS), clip.startMs + 4_000);
-  const span = `*${(clip.startMs / 1000).toFixed(1)}-${(endMs / 1000).toFixed(1)}`;
-  const fetch = (format: string) => ytdlp(app, ["-q", "--no-warnings", "--no-playlist", "--force-overwrites", "-f", format, "--download-sections", span, "-o", join(dir, `clip-${tag}.%(ext)s`), url(video)], 5 * 60_000);
-  await fetch("bv*[height<=360][vcodec^=avc1]/bv*[height<=360]/wv*/b")
-    .catch(() => fetch("b[height<=480]/b"))
-    .catch((error: unknown) => {
-      throw new Error(lastLine(error));
-    });
-  const section = fs.readdirSync(dir).find((name) => name.startsWith(`clip-${tag}.`));
-  if (section === undefined) throw new Error("The clip didn't download.");
+  // The stretch alone, small, as research asks: through the proxy first, sparing of the person's address.
+  const into = join(dir, `clip-${tag}-download`);
+  const got = await edit.downloadRange(app.store.home, video.id, [Math.round(clip.startMs / 100) / 10, Math.round(endMs / 100) / 10], into, () => {}, LOOK_FORMAT, true).catch((error: unknown) => {
+    throw new Error(lastLine(error));
+  });
+  const section = `clip-${tag}${got.name.slice(got.name.lastIndexOf("."))}`;
+  fs.renameSync(got.path, join(dir, section));
+  fs.rmSync(into, { recursive: true, force: true });
   const frames = join(dir, `frames-${tag}.jpg`);
   const seconds = (endMs - clip.startMs) / 1000;
   try {
