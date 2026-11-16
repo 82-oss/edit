@@ -1169,8 +1169,8 @@ export async function youtubeExcerpts(home: string, cache: string, file: string,
 export const jobTiming = { poll: 2000, stall: 10 * 60_000, sleep: (ms: number) => Bun.sleep(ms) };
 
 /**
- * Drive file `file` copied to R2 `key` by the relay's cloud job (speed-plan
- * 7.1: apps/relay/src/jobs.ts), following its progress; the bytes stored, or
+ * Drive file `file` copied to R2 `key` by the relay's cloud job
+ * (apps/relay/src/jobs.ts), following its progress; the bytes stored, or
  * null when the relay can't (an older relay, no Google sign-in there, the
  * job failed or stood still), so this Mac streams it instead.
  */
@@ -2295,7 +2295,7 @@ export async function forExport(
 }
 
 // ---------------------------------------------------------------------------
-// Sound copies (speed-plan 4.1): an export of footage that's only in the
+// Sound copies: an export of footage that's only in the
 // cloud decoded its sound over the network, clip by clip (11 minutes of a
 // 32-minute export, before its picture started). Each original's sound is
 // copied out without re-encoding (seconds, ~1% of the file) and kept beside
@@ -2613,7 +2613,7 @@ export function backfillSoon(app: App, id: string): void {
 export async function backfill(app: App, id: string): Promise<Record<string, unknown>> {
   if (app.store.get(id) === null) throw new Error("no such project");
   if (!cloud.enabled()) throw new Error("cloud is off here (this build has no cloud token)");
-  if (!cloudProject(app, id)) throw new Error("this isn't a cloud project (Move to cloud first)");
+  if (!cloudProject(app, id)) throw new Error("this project is only on this machine, not in the cloud: POST /api/projects/{id}/cloud/upload puts it there first");
   return backfillSlot.with(() => backfillNow(app, id, true));
 }
 

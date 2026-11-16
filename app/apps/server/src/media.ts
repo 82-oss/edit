@@ -629,7 +629,6 @@ export class Processor {
       throw error;
     }
     fs.rmSync(work, { recursive: true, force: true });
-    this.store.emit({ type: "transcript", path: source });
     return true;
   }
 

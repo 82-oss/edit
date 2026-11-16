@@ -93,35 +93,6 @@ export function relabel(label: string, role: string): string {
   return generic(label) ? roleTitle(role) : label;
 }
 
-/** Sets a voice's role (and label) by hand and recolours the transcript. */
-export async function setRole(
-  app: App,
-  source: string,
-  voice: string,
-  role: string,
-  label: string | null,
-): Promise<Transcript> {
-  if (!(ROLES as readonly string[]).includes(role) && role !== BACKGROUND) {
-    throw new Error(`role is one of ${ROLES.join(", ")}, ${BACKGROUND}`);
-  }
-  const target = app.media.paths(source).transcript;
-  const transcript = read(target);
-  if (transcript === null) throw new Error("no transcript");
-  transcript.roles![voice] = role;
-  const given = label === null ? "" : trim(label);
-  if (given !== "") {
-    transcript.speakers![voice] = given;
-  } else {
-    // A generic label ("Witness", "Raven (Officer)") follows the new role; a specific one ("Mother") stays.
-    const current = get(transcript.speakers, voice);
-    if (current !== undefined) transcript.speakers![voice] = relabel(current, role);
-  }
-  transcript.colors = colors(transcript);
-  save(target, transcript);
-  app.store.emit({ type: "transcript", path: source });
-  return transcript;
-}
-
 /**
  * Changes a file's transcript with `edit` (re-read first, so nothing written
  * meanwhile is lost), recolours it and saves it. `edit` must not await.
@@ -138,7 +109,6 @@ export async function editTranscript(
   if (done instanceof Promise) throw new TypeError("editTranscript's edit must be synchronous");
   transcript.colors = colors(transcript);
   save(target, transcript);
-  app.store.emit({ type: "transcript", path: source });
   return transcript;
 }
 
@@ -406,7 +376,6 @@ async function name(app: App, source: string, target: string): Promise<void> {
   }
   current.colors = colors(current);
   save(target, current);
-  app.store.emit({ type: "transcript", path: source });
 }
 
 /**

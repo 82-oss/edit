@@ -5,7 +5,7 @@ import { note, routeOf } from "./diagnostics";
 import type { ExportOptions } from "./exporting";
 import type { Patch } from "./patch";
 import type { PlaybackStatus } from "./store";
-import type { Creator, DriveFile, MediaStatus, Project, ProjectSummary, ScriptJob, Style, Transcript } from "./types";
+import type { Creator, DriveFile, MediaStatus, Project, ProjectSummary, ScriptJob, Style } from "./types";
 
 export class ApiError extends Error {
   constructor(
@@ -201,7 +201,7 @@ export const byPerson = (): { person?: true } => (navigator.webdriver ? {} : { p
 export const api = {
   projects: () => request<{ projects: ProjectSummary[] }>("GET", "/api/projects"),
   /** Home's New project: a person's (`byPerson`). */
-  createProject: (body: { name: string; style: Style; hq?: boolean; channel?: string; compilation?: boolean; width: number; height: number; fps: number }) =>
+  createProject: (body: { name: string; style: Style; channel?: string; compilation?: boolean; width: number; height: number; fps: number }) =>
     request<Live>("POST", "/api/projects", { ...body, ...byPerson() }),
   project: (id: string) => request<Live>("GET", `/api/projects/${id}`),
   saveProject: (id: string, baseRev: number, project: Project, origin: string) =>
@@ -280,9 +280,6 @@ export const api = {
     request<{ cache: string; sources: Record<string, string>; sounds?: Record<string, string>; excerpts?: Record<string, { from: number; to: number; path: string }[]> }>("GET", `/api/projects/${id}/native-sources`),
   /** `frame`: the playhead, whose chunk is rendered first. */
   renderPlayback: (id: string, frame?: number) => request<PlaybackStatus>("POST", `/api/projects/${id}/playback`, frame === undefined ? undefined : { frame }),
-  /** Sets who a voice is (its role decides its colour); returns the updated transcript. */
-  setSpeaker: (id: string, media: string, voice: string, role: string) =>
-    request<Transcript>("POST", `/api/projects/${id}/media/${media}/speakers`, { voice, role }),
   /** Reads a Google Doc script (on the server, as its public link) without importing it. */
   scriptPreview: (url: string) =>
     request<{

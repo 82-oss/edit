@@ -162,7 +162,6 @@ registerTool("redo_speakers", async ({ app, projectId }) => {
       continue;
     }
     await (await import("./speakers.ts")).nameNow(app, media.path).catch((error: unknown) => diag.warn("speakers", `${media.name}: naming its voices: ${diag.messageOf(error)}`));
-    app.store.emit({ type: "transcript", path: media.path });
     done.push(media.name);
   }
   return text(

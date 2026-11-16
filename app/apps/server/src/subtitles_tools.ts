@@ -1,8 +1,7 @@
 // The subtitles package's MCP tools (add_subtitles, place_subtitles,
-// repack_subtitles, mute_house_words, set_segments) and routes (`POST
-// /api/projects/{id}/repack-subtitles`, `POST
-// /api/projects/{id}/media/{media}/speakers`). Importing this module
-// registers the tools; the server calls `routes` on its router.
+// repack_subtitles, mute_house_words, set_segments) and its route (`POST
+// /api/projects/{id}/repack-subtitles`). Importing this module registers the
+// tools; the server calls `routes` on its router.
 
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
@@ -12,14 +11,12 @@ import { badShape, readJson, type RouteContext, type Router } from "./http/route
 import { registerTool, text } from "./mcp/registry.ts";
 import type { Project, Segment } from "./model.ts";
 import { isSubtitle, splitToOneLine, twoLineSubtitles } from "./one_line.ts";
-import { duration, fps as fpsOf, mediaOf } from "./project.ts";
+import { duration, fps as fpsOf } from "./project.ts";
 import * as faces from "./faces.ts";
 import { fixed, round, toI64 } from "./rust.ts";
 import * as seams from "./seams.ts";
-import * as speakers from "./speakers.ts";
 import { stableStringify } from "./stable.ts";
 import * as subtitles from "./subtitles.ts";
-import { serialize } from "./transcribe.ts";
 
 /** A JSON number argument (serde_json's `as_f64`), else null. */
 function number(value: unknown): number | null {
@@ -252,37 +249,7 @@ async function repackRoute(context: RouteContext<App>): Promise<Response> {
   return sortedJson(summary);
 }
 
-/** Sets who a voice is (its role, which decides its colour) by hand. */
-async function speakerRoute(context: RouteContext<App>): Promise<Response> {
-  const { app } = context;
-  const body = await readJson<unknown>(context);
-  const given = (typeof body === "object" && body !== null && !Array.isArray(body) ? body : null) as Record<string, unknown> | null;
-  if (given === null) throw badShape("invalid type: expected struct SpeakerBody");
-  for (const field of ["voice", "role"]) {
-    if (!(field in given)) throw badShape(`missing field \`${field}\``);
-    if (typeof given[field] !== "string") throw badShape(`${field}: invalid type: ${describe(given[field])}, expected a string`);
-  }
-  const label = given.label;
-  if (label !== undefined && label !== null && typeof label !== "string") {
-    throw badShape(`label: invalid type: ${describe(label)}, expected a string`);
-  }
-  const live = app.store.get(context.params.id ?? "");
-  if (live === null) throw notFound("no such project");
-  const media = mediaOf(live.project, context.params.media ?? "");
-  if (media === undefined) throw notFound("no such media");
-  let transcript;
-  try {
-    transcript = await speakers.setRole(app, media.path, given.voice as string, given.role as string, typeof label === "string" ? label : null);
-  } catch (error) {
-    if (isBug(error)) throw error;
-    throw bad(diag.messageOf(error));
-  }
-  // The transcript as it's always been written (its fields in order).
-  return new Response(serialize(transcript), { headers: { "content-type": "application/json" } });
-}
-
 /** The subtitles package's routes. */
 export function routes(router: Router<App>): void {
   router.post("/api/projects/{id}/repack-subtitles", repackRoute);
-  router.post("/api/projects/{id}/media/{media}/speakers", speakerRoute);
 }

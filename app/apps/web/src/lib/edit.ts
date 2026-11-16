@@ -54,7 +54,7 @@ export function addTrack(project: Project, kind: TrackKind) {
   return id;
 }
 
-/** The subtitles' track, made on top of every video track if there isn't one (as edit-core subtitles_track). */
+/** The subtitles' track, made on top of every video track if there isn't one (as the server's project.ts `subtitlesTrack`). */
 function subtitlesTrack(project: Project) {
   const existing = project.tracks.find((track) => track.subtitles);
   if (existing) return existing.id;

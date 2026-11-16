@@ -227,7 +227,7 @@ export interface CloudProjectsSeam {
   delete(app: App, id: string): Promise<boolean>;
   /** A project only the cloud has, brought here as opening it does (none when the cloud is off or hasn't it). */
   fetch(app: App, id: string): Promise<void>;
-  /** The cloud routes (`/api/projects/{id}/cloud/*`, `/api/cloud`), registered on the router. */
+  /** The cloud routes (`/api/projects/{id}/cloud`, `/api/projects/{id}/cloud/*`, `/api/cloud/projects`), registered on the router. */
   routes(router: import("./http/router.ts").Router<App>): void;
   /** On the way out: pushes what's left and lets every lock go. */
   shutdown(): Promise<void>;
@@ -601,9 +601,9 @@ export interface SubtitlesSeam {
   uncram(lines: Line[]): void;
   writeMutes(project: Project, mutes: ClipMutes): void;
   /**
-   * The subtitles package's routes (`/api/projects/{id}/repack-subtitles`,
-   * `/api/projects/{id}/media/{media}/speakers`), registered on the router.
-   * Its MCP tools register when the package loads (any use of this file).
+   * The subtitles package's route (`/api/projects/{id}/repack-subtitles`),
+   * registered on the router. Its MCP tools register when the package loads
+   * (any use of this file).
    */
   routes(router: import("./http/router.ts").Router<App>): void;
 }
@@ -626,7 +626,6 @@ export interface SpeakersSeam {
   /** Names a file's voices in the background if its transcript has no names yet. */
   ensure(app: App, source: string): void;
   roleTitle(role: string): string;
-  setRole(app: App, source: string, voice: string, role: string, label: string | null): Promise<Transcript>;
   /** Names the voices of every transcript that comes in, from now on (the server starts it); returns a way to stop. */
   watch(app: App): () => void;
 }

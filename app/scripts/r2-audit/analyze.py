@@ -16,7 +16,7 @@ media = [json.loads(l) for l in open(f'{D}/cx/editMedia.16000.jsonl') if l.strip
 
 SCHEMES = ('drive', 'youtube', 'sha256', 'posts', 'post', 'review')
 TEMP = ('edit/reviews/tmp/', 'edit/proxies/jobs/', 'edit/exports/results/', 'edit/transcribe/', 'edit/test/')
-KEEP = ('edit/reports/', 'edit/thumbnails/', 'edit/ideas/', 'edit/covers/', 'edit/sweep/', 'edit/library/', 'edit/research/images/')
+KEEP = ('edit/reports/', 'edit/thumbnails/', 'edit/ideas/', 'edit/sweep/', 'edit/library/', 'edit/research/images/')
 PIECE_RANGE = re.compile(r'_\d+-\d+$')
 
 # review timeline -> version n, per project

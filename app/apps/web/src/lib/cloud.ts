@@ -24,18 +24,6 @@ export interface CloudStatus {
   missing?: string | null;
 }
 
-/** Settings → Cloud. */
-export interface CloudSettings {
-  on: boolean;
-  /** Where the token comes from (EDIT_RELAY_TOKEN, or saved here). */
-  token: "env" | "saved" | "built-in" | null;
-  /** How teammates see this machine. */
-  holder: string;
-  relay: string;
-  connected?: boolean;
-  problem?: string | null;
-}
-
 /** A project in the cloud, as listed (no body). */
 export interface CloudProject {
   id: string;
@@ -82,7 +70,6 @@ export interface CloudList {
 }
 
 export const cloudApi = {
-  settings: (check = true) => request<CloudSettings>("GET", `/api/cloud${check ? "?check=true" : ""}`),
   projects: () => request<CloudList>("GET", "/api/cloud/projects"),
   status: (id: string) => request<CloudStatus>("GET", `/api/projects/${id}/cloud`),
   /** The editor opened it: a cloud-only project is downloaded, the lock asked for. */

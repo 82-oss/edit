@@ -17,7 +17,6 @@ import {
   pinkish,
   relabel,
   roleFromLabel,
-  setRole,
   type Person,
 } from "../src/speakers.ts";
 import { serialize, type Transcript, type Word } from "../src/transcribe.ts";
@@ -146,7 +145,7 @@ test("relabels_only_generic_titles", () => {
 
 // The TS side's own: the file-level operations around the colour code.
 
-test("set_role checks the role, relabels a generic label, recolours and saves", async () => {
+test("editTranscript recolours and saves what it changes", async () => {
   const { app, cleanup, dir } = fixtureHome("speakers-role");
   try {
     const source = `${dir}/clip.mp4`;
@@ -161,25 +160,13 @@ test("set_role checks the role, relabels a generic label, recolours and saves", 
         roles: { speaker_0: "witness", speaker_1: "witness" },
       }),
     );
-    const heard: unknown[] = [];
-    const stop = app.store.subscribe((event) => heard.push(event));
-    await expect(setRole(app, source, "speaker_0", "chief", null)).rejects.toThrow(
-      "role is one of officer, leader, suspect, victim, witness, medic, bystander, narrator, dispatch, other, background",
-    );
-    const transcript = await setRole(app, source, "speaker_0", "suspect", null);
-    expect(transcript.speakers?.speaker_0).toBe("Suspect");
-    expect(transcript.colors?.speaker_0).toBe("#ffff00");
-    const named = await setRole(app, source, "speaker_1", "victim", "  Tabitha (Mother) ");
-    expect(named.speakers?.speaker_1).toBe("Tabitha (Mother)");
-    const saved = JSON.parse(fs.readFileSync(target, "utf8")) as Transcript;
-    expect(saved.roles).toEqual({ speaker_0: "suspect", speaker_1: "victim" });
-    expect(heard).toContainEqual({ type: "transcript", path: source });
-    stop();
-    await expect(setRole(app, `${dir}/none.mp4`, "speaker_0", "officer", null)).rejects.toThrow("no transcript");
     const edited = await editTranscript(app, source, (t) => {
       t.roles!.speaker_1 = "officer";
     });
     expect(edited.colors?.speaker_1).toBe("#00e5c7");
+    const saved = JSON.parse(fs.readFileSync(target, "utf8")) as Transcript;
+    expect(saved.roles).toEqual({ speaker_0: "witness", speaker_1: "officer" });
+    await expect(editTranscript(app, `${dir}/none.mp4`, () => {})).rejects.toThrow("no transcript");
   } finally {
     cleanup();
   }

@@ -243,7 +243,7 @@ function request(path: string, init: RequestInit = {}): Request {
   return new Request(`http://localhost:7700${path}`, { ...init, headers });
 }
 
-test("the repack and speaker routes answer", async () => {
+test("the repack route answers", async () => {
   const { app, dir, cleanup } = fixtureHome("routes");
   try {
     const id = await footage(app, dir);
@@ -271,18 +271,6 @@ test("the repack and speaker routes answer", async () => {
     expect([response.status, await response.json()]).toEqual([404, { error: "no such project" }]);
     response = await post(`/api/projects/${id}/repack-subtitles`, { start: 5, end: 5 });
     expect([response.status, await response.json()]).toEqual([400, { error: "the span is empty" }]);
-    // Who a voice is, by hand.
-    response = await post(`/api/projects/${id}/media/m/speakers`, { voice: "speaker_1", role: "victim" });
-    expect(response.status).toBe(200);
-    const transcript = (await response.json()) as Transcript;
-    expect(transcript.roles?.speaker_1).toBe("victim");
-    expect(transcript.speakers?.speaker_1).toBe("Jane (Mother)");
-    response = await post(`/api/projects/${id}/media/x/speakers`, { voice: "speaker_1", role: "victim" });
-    expect([response.status, await response.json()]).toEqual([404, { error: "no such media" }]);
-    response = await post(`/api/projects/${id}/media/m/speakers`, { voice: "speaker_1", role: "chief" });
-    expect(response.status).toBe(400);
-    response = await post(`/api/projects/${id}/media/m/speakers`, { role: "victim" });
-    expect(response.status).toBe(422);
   } finally {
     cleanup();
   }

@@ -551,7 +551,7 @@ test("the backfill puts what Edit made in the cloud, says what it did, and waits
     await store.update(id, "test", (project) => {
       project.media.push(media("m1", shot, { name: "smooth.mp4" }), media("m2", still, { name: "map.mp4", kind: "image" }));
     });
-    await expect(cloudMedia.backfill(app, id)).rejects.toThrow("this isn't a cloud project (Move to cloud first)");
+    await expect(cloudMedia.backfill(app, id)).rejects.toThrow("this project is only on this machine, not in the cloud: POST /api/projects/{id}/cloud/upload puts it there first");
     testCloud(fixture.home, [[id, null]]).attach(store);
     const done = await cloudMedia.backfill(app, id);
     expect(done).toEqual({ analysis_shared: 0, failed: [], missing: [], skipped: ["map.mp4 (a map still rendering)"], uploaded: [{ media: "m1", name: "smooth.mp4" }] });

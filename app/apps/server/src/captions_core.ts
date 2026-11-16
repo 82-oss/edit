@@ -68,7 +68,6 @@ export async function transcriptOf(app: App, media: Media, project?: Project, re
         // Heard before pyannote's voices were on (voices.ts): given them now, once, and named again.
         if (transcript.voices !== voices.MODEL && (await voices.revoice(app.store.cacheDir(), await app.media.analysisInput(path), app.media.paths(path).transcript, app.media.cloudSource(path)))) {
           await (await import("./speakers.ts")).nameNow(app, path).catch((error: unknown) => diag.warn("speakers", `${media.name}: naming pyannote's voices: ${diag.messageOf(error)}`));
-          app.store.emit({ type: "transcript", path });
           continue;
         }
         const asked = `${path}\n${names.map((name) => name.toLowerCase()).sort().join("\n")}`;
