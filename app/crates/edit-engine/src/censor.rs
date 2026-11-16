@@ -108,6 +108,7 @@ pub fn analyse_in_background(cache: PathBuf, source: PathBuf, read: Option<PathB
         return;
     }
     std::thread::spawn(move || {
+        crate::util::background_thread();
         let _turn = running().lock();
         let result = crate::log::time_on(
             "media",
@@ -172,10 +173,13 @@ fn censored_seconds(frames: &[u8]) -> Vec<u8> {
 }
 
 /// A 128×72 grey frame a second of `file` (only its keyframes when `keyframes`:
-/// the light preview has one every half second). Background work: it waits
-/// while an export runs.
+/// the light preview has one every half second). Background work: its FFmpeg
+/// runs below what a person watches, stopped while an export runs or a play is
+/// watched here (Pause::ForPlays: kenobi, Nov 17, 46 of them at 155–245% CPU
+/// beside a cold play).
 fn grey_seconds(file: &Path, keyframes: bool) -> Result<Vec<u8>, String> {
     let mut command = Command::new(crate::util::ffmpeg());
+    crate::util::background_command(&mut command);
     command.args(["-hide_banner", "-loglevel", "error"]);
     if keyframes {
         command.args(["-skip_frame", "nokey"]);
@@ -189,7 +193,7 @@ fn grey_seconds(file: &Path, keyframes: bool) -> Result<Vec<u8>, String> {
         "rawvideo",
         "pipe:1",
     ]);
-    crate::media::run_background(&mut command)
+    crate::media::run_paused(&mut command, crate::media::Pause::ForPlays)
 }
 
 /// B-roll (video above the footage track) that's mostly censored, from the

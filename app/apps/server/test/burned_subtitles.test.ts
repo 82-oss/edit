@@ -230,3 +230,98 @@ test("the agent is told which footage has subtitles burned in; ours are left off
     cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Read lazily, behind a play (kenobi, Nov 17: opening Cops Found 3 Bodies began
+// 73 reads beside a cold play)
+
+test("opening footage doesn't read it for burned-in subtitles; the agent's first get_edit_context does, and its rows say where", async () => {
+  registerEditingTools();
+  const { app, dir, store, cleanup } = fixtureHome("burned-lazy");
+  reading();
+  const asked: string[] = [];
+  const detect = native().screenTextDetect;
+  native().screenTextDetect = (source, size, indexes) => {
+    asked.push(source);
+    return detect(source, size, indexes);
+  };
+  try {
+    const media = compilation(dir);
+    write(media.path, "");
+    write(app.media.paths(media.path).transcript, serialize(transcript()));
+    const live = store.create("p", { width: 1920, height: 1080, fps: 30 });
+    const project = structuredClone(live.project) as Project;
+    project.media = [media];
+    project.clips = [{ id: "f", track: "v1", start: 0, duration: 1200, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 }];
+    await store.replace(project.id, null, project, "test");
+    // Opened: its thumbnails and waveform, nothing read on screen.
+    app.media.ensure(media.path, media);
+    await Bun.sleep(50);
+    expect(asked).toEqual([]);
+    expect(burned.of(media)).toBeUndefined();
+    // The agent's first look waits for the timeline's footage to be read.
+    const context = JSON.parse((await call(app, "get_edit_context", { project_id: project.id })).text) as { media: string[] };
+    expect(asked.length).toBeGreaterThan(0);
+    expect(context.media[0]).toContain("· burned-in subtitles at 0–23s of it");
+    // Read once: asked again, nothing is read again.
+    const before = asked.length;
+    await call(app, "get_edit_context", { project_id: project.id });
+    expect(asked.length).toBe(before);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a read nobody waits on waits for a play to end and gives way between its steps; one the agent waits on goes first, a play or not", async () => {
+  const playing = await import("../src/playing.ts");
+  const { app, dir, cleanup } = fixtureHome("burned-plays");
+  reading();
+  playing.reset();
+  const poll = playing.hooks.pollMs;
+  playing.hooks.pollMs = 5;
+  /** Each read: the file and how many frames. */
+  const calls: [string, number][] = [];
+  let onCall = (_count: number) => {};
+  native().screenTextDetect = async (source, _size, indexes) => {
+    calls.push([source.slice(source.lastIndexOf("/") + 1), indexes.length]);
+    onCall(calls.length);
+    // A line low and centred at every second, changing: subtitled throughout.
+    return Object.fromEntries(indexes.map((index) => [index, [{ t: SAID[index % SAID.length]![1], b: [0.3, 0.85, 0.7, 0.9] }]]));
+  };
+  const long = (name: string) => ({ path: `${dir}/${name}.mp4`, name, kind: "video" as const, duration: 400, width: 1920, height: 1080 });
+  const [quiet, wanted, stepped] = [long("quiet"), long("wanted"), long("stepped")];
+  const frames = burned.grid(400).seconds.filter((second) => !burned.probes(400).includes(second)).length;
+  try {
+    // Something plays: a read nobody waits on doesn't start.
+    playing.note("p", true);
+    const later = burned.warm(app.media, quiet);
+    await Bun.sleep(30);
+    expect(calls).toEqual([]);
+    // One the agent waits on goes first, and reads its grid in one go.
+    expect(await burned.ready(app.media, [wanted], 5_000)).toEqual([]);
+    expect(calls).toEqual([["wanted.mp4", 24], ["wanted.mp4", frames]]);
+    expect(burned.of(wanted)?.spans).toEqual([[0, 400]]);
+    // The play over, the other is read, a step at a time.
+    calls.length = 0;
+    playing.note("p", false);
+    await later;
+    expect(calls[0]).toEqual(["quiet.mp4", 24]);
+    expect(calls.slice(1).map(([, count]) => count)).toEqual(Array.from({ length: Math.ceil(frames / 25) }, (_, index) => Math.min(25, frames - index * 25)));
+    // A play starting mid-read: it stops after the step under way, and goes on once the play ends.
+    calls.length = 0;
+    onCall = (count) => {
+      if (count === 2) playing.note("p", true);
+    };
+    const reading = burned.warm(app.media, stepped);
+    await Bun.sleep(50);
+    expect(calls.length).toBe(2);
+    playing.note("p", false);
+    await reading;
+    expect(calls.length).toBe(1 + Math.ceil(frames / 25));
+    expect(burned.of(stepped)).not.toBeUndefined();
+  } finally {
+    playing.hooks.pollMs = poll;
+    playing.reset();
+    cleanup();
+  }
+});

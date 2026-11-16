@@ -118,7 +118,13 @@ fn look(source: &Path, (width, height): (u32, u32), indexes: &[i64]) -> Result<T
     let results: Vec<Result<Read, String>> = std::thread::scope(|scope| {
         let reads: Vec<_> = indexes
             .chunks(chunk.max(1))
-            .map(|part| scope.spawn(move || read(part)))
+            .map(|part| {
+                scope.spawn(move || {
+                    // Analysis, behind the player and the page (`util::background_thread`).
+                    crate::util::background_thread();
+                    read(part)
+                })
+            })
             .collect();
         reads
             .into_iter()

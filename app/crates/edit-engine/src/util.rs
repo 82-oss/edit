@@ -428,6 +428,62 @@ pub fn utility_thread() {
     }
 }
 
+/// How far below everything else background analysis runs (nice): its own
+/// threads on Linux, and the tools it starts everywhere. On a Mac a nice of 10
+/// lowers a process's base priority from the default 31 to 21, about where
+/// utility QoS sits (20), and it still runs on the performance cores (background
+/// QoS would pin it to the efficiency cores, too slow for what an agent waits on).
+pub const BACKGROUND_NICE: i32 = 10;
+
+/// Marks this thread as background work (reading words or faces on screen, a
+/// censor check, smooth playback's render): utility QoS on a Mac (as [`utility_thread`]), nice
+/// [`BACKGROUND_NICE`] on Linux, so the player, the page and the server's own
+/// answers go first (kenobi, Nov 17: 73 subtitle reads and 46 censor checks
+/// on opening a project, load 16.7 on 8 cores, while a cold play passed over
+/// 515 frames in 23 s). Only on a thread of its own: a pool thread would keep it.
+pub fn background_thread() {
+    utility_thread();
+    #[cfg(target_os = "linux")]
+    // SAFETY: lowering this thread's own priority by its id; a failure leaves it as it was.
+    unsafe {
+        libc::setpriority(
+            libc::PRIO_PROCESS,
+            libc::gettid() as libc::id_t,
+            BACKGROUND_NICE,
+        );
+    }
+}
+
+/// Starts `command`'s tool at background priority (nice
+/// [`BACKGROUND_NICE`]): an FFmpeg that background analysis runs (a censor
+/// check, a waveform). Never for exports, previews or anything a person
+/// watches being made.
+#[cfg(unix)]
+pub fn background_command(command: &mut std::process::Command) -> &mut std::process::Command {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: setpriority is async-signal-safe, and nothing else runs between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            libc::setpriority(libc::PRIO_PROCESS, 0, BACKGROUND_NICE);
+            Ok(())
+        });
+    }
+    command
+}
+
+static PLAYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The host says whether a person is watching a play on this machine now
+/// (the server's playing.ts): background analysis waits while one is.
+pub fn set_playing(playing: bool) {
+    PLAYING.store(playing, Ordering::Release);
+}
+
+/// Whether a person is watching a play on this machine now.
+pub fn playing() -> bool {
+    PLAYING.load(Ordering::Acquire)
+}
+
 /// Marks this thread as what's on screen now (macOS QoS user-interactive):
 /// the window's player, which draws each frame as it comes due. At the default
 /// class it sat idle up to 134 ms between two 1 ms draws while the server
@@ -496,5 +552,42 @@ mod tests {
         assert!(error.contains("job crashed (boom)"), "{error}");
         let error = catch("job", || -> u8 { panic!("{}", String::from("owned")) }).unwrap_err();
         assert!(error.contains("owned"), "{error}");
+    }
+
+    /// `nice` with no arguments says its own niceness: what a tool started this way runs at.
+    #[test]
+    fn background_tools_and_threads_run_below_the_rest() {
+        let niceness = |command: &mut std::process::Command| -> i32 {
+            let out = command.output().expect("nice runs");
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse()
+                .expect("a niceness")
+        };
+        let ours = niceness(&mut std::process::Command::new("nice"));
+        let lowered = niceness(background_command(&mut std::process::Command::new("nice")));
+        assert_eq!(lowered, BACKGROUND_NICE.max(ours));
+        // A background thread's own work, and what it starts, on Linux (a Mac's QoS isn't a niceness).
+        #[cfg(target_os = "linux")]
+        {
+            let from_thread = std::thread::spawn(move || {
+                background_thread();
+                niceness(&mut std::process::Command::new("nice"))
+            })
+            .join()
+            .unwrap();
+            assert_eq!(from_thread, BACKGROUND_NICE.max(ours));
+            // The thread that asked is left as it was.
+            assert_eq!(niceness(&mut std::process::Command::new("nice")), ours);
+        }
+    }
+
+    #[test]
+    fn playing_is_said_by_the_host() {
+        assert!(!playing());
+        set_playing(true);
+        assert!(playing());
+        set_playing(false);
+        assert!(!playing());
     }
 }

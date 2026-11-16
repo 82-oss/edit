@@ -485,6 +485,12 @@ export declare function seatsScenes(gray: Buffer): Promise<Scenes>
 /** The edit's intro, cut-ins, story and outro (`edit_core::sections`). */
 export declare function sections(project: ProjectInput): Sections
 
+/**
+ * Whether a person is watching a play on this machine now (the server's
+ * playing.ts): the censor checks' FFmpeg stops while one is, and goes on after.
+ */
+export declare function setPlaying(playing: boolean): void
+
 /** A contact sheet's model tokens at most unless asked otherwise. */
 export declare const SHEET_BUDGET: number
 

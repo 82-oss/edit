@@ -219,6 +219,13 @@ pub fn censor_warm(path: String, read: Option<String>) {
     }
 }
 
+/// Whether a person is watching a play on this machine now (the server's
+/// playing.ts): the censor checks' FFmpeg stops while one is, and goes on after.
+#[napi]
+pub fn set_playing(playing: bool) {
+    edit_engine::util::set_playing(playing);
+}
+
 /// Has every analysis of the media at `path` decode `read` in its place (a
 /// pieced proxy's original); none: `path` itself again.
 #[napi]

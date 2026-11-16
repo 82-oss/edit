@@ -65,6 +65,35 @@ test("an urgent wait goes ahead of the background work in line, never ahead of t
   expect(order).toEqual(["fill 1", "viewer", "fill 2", "fill 3"]);
 });
 
+test("a file opened with only its thumbnails and waveform to make waits for a play to end; one that needs its preview copy doesn't", async () => {
+  const playing = await import("../src/playing.ts");
+  const { dir, app, cleanup } = fixtureHome("media-plays");
+  playing.reset();
+  const poll = playing.hooks.pollMs;
+  playing.hooks.pollMs = 5;
+  try {
+    const picture = `${dir}/still.png`;
+    const clip = `${dir}/clip.mp4`;
+    fs.writeFileSync(picture, "a picture");
+    fs.writeFileSync(clip, "a clip");
+    playing.note("p", true);
+    app.media.ensure(picture, { kind: "image", duration: 5, width: 640, height: 360, fps: 30, has_audio: false } as never);
+    app.media.ensure(clip, { kind: "video", duration: 5, width: 640, height: 360, fps: 30, has_audio: false } as never);
+    // The import's preview copy is under way beside the play (once the shared slot is free); the picture's thumbnails wait.
+    for (let waited = 0; app.media.status(clip).thumbs === "pending" && waited < 5_000; waited += 10) await Bun.sleep(10);
+    expect(app.media.status(clip).thumbs).not.toBe("pending");
+    await Bun.sleep(20);
+    expect(app.media.status(picture).thumbs).toBe("pending");
+    playing.note("p", false);
+    await Bun.sleep(40);
+    expect(app.media.status(picture).thumbs).toBe("ready");
+  } finally {
+    playing.hooks.pollMs = poll;
+    playing.reset();
+    cleanup();
+  }
+});
+
 /** Waits for `source`'s stages to settle (none pending or working), from its `media` events. */
 function settled(store: { subscribe: (fn: (event: Record<string, unknown>) => void) => () => void }, source: string, done: (status: MediaStatus) => boolean): Promise<MediaStatus> {
   return new Promise((resolve) => {
@@ -214,6 +243,11 @@ test.skipIf(ffmpeg === null)("a pieced proxy's thumbnails, waveform, censor chec
     const status = await done;
     expect([status.thumbs, status.peaks]).toEqual(["ready", "ready"]);
     expect(fs.existsSync(app.media.paths(source).thumbs)).toBe(true);
+    // The censor check waits for the agent (warmForAgent), never an import or an open.
+    await Bun.sleep(20);
+    expect(warmed).toEqual([]);
+    app.media.warmForAgent([{ path: source, name: "pieced.mp4", ...probe }]);
+    await Bun.sleep(20);
     expect(warmed).toEqual([[source, original]]);
     // The engine's own analyses (loudness) are told, once.
     expect(redirected).toEqual([[source, original]]);
@@ -243,6 +277,7 @@ test.skipIf(ffmpeg === null)("a streamed preview's censor check reads its whole 
     const done = settled(store, source, (status) => status.light !== "pending" && status.light !== "working" && status.proxy !== "working");
     app.media.ensure(source, probe);
     await done;
+    app.media.warmForAgent([{ path: source, name: "streamed.mp4", ...probe }]);
     await Bun.sleep(20);
     // Not started on the stream while the copy comes.
     expect(warmed).toEqual([]);

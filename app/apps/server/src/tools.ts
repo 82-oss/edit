@@ -243,6 +243,31 @@ export function lastLine(stderr: string, fallback = "ffmpeg failed"): string {
   return (line ?? fallback).trim();
 }
 
+/**
+ * How far below everything else background work's tools run (nice), as the
+ * engine's own (`util::BACKGROUND_NICE`): thumbnail strips, waveforms, censor
+ * checks, burned-in subtitle reads. On a Mac a nice of 10 takes a process's base
+ * priority from 31 to 21, about utility QoS's 20, still on the performance
+ * cores; Linux's scheduler weighs it about a tenth of a default process
+ * (kenobi, Nov 17: those tools beside a cold play, the load at 16.7 on 8 cores).
+ * Never for exports, previews, the player or a render a person waits on.
+ */
+export const BACKGROUND_NICE = 10;
+
+let niceTool: string | null | undefined;
+
+/**
+ * `command` started at background priority (`nice -n BACKGROUND_NICE …`);
+ * as it is where there's no `nice` or the tool itself isn't there (so a missing
+ * FFmpeg still says so).
+ */
+export function lowPriority(command: readonly string[]): string[] {
+  if (niceTool === undefined) niceTool = ["/usr/bin/nice", "/bin/nice"].find((path) => isFile(path)) ?? null;
+  const [program = ""] = command;
+  const there = program.includes("/") ? isFile(program) : Bun.which(program) !== null;
+  return niceTool === null || !there ? [...command] : [niceTool, "-n", String(BACKGROUND_NICE), ...command];
+}
+
 /** How long a tool may run before it's taken as stuck and ended (a review copy of a long edit takes a while; none takes this long). */
 export const TOOL_MS = 4 * 3600_000;
 
@@ -267,7 +292,11 @@ export const runTool = Effect.fn("tools.run")(function* (command: readonly strin
   return done.stdout;
 });
 
-/** `runTool` for code that isn't Effect yet; `signal` ends the tool's group. */
-export function run(command: string[], options: { readonly timeoutMs?: number; readonly signal?: AbortSignal } = {}): Promise<Uint8Array> {
-  return runPromise(runTool(command, options.timeoutMs), options.signal ? { signal: options.signal } : undefined);
+/**
+ * `runTool` for code that isn't Effect yet; `signal` ends the tool's group.
+ * `background`: background work's tool, started below the rest (`lowPriority`).
+ */
+export function run(command: string[], options: { readonly timeoutMs?: number; readonly signal?: AbortSignal; readonly background?: boolean } = {}): Promise<Uint8Array> {
+  const started = options.background === true ? lowPriority(command) : command;
+  return runPromise(runTool(started, options.timeoutMs), options.signal ? { signal: options.signal } : undefined);
 }

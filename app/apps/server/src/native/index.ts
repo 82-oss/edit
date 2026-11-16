@@ -270,6 +270,8 @@ export interface Native {
   readonly SCREEN_TEXT_RATE: number;
   censorIssues(project: ProjectInput, start: boolean): { issues: unknown[]; pending: string[] }; // S (+BG)
   censorWarm(path: string, read?: string | null): void; // BG
+  /** Whether a person is watching a play here (playing.ts): background analysis's FFmpeg stops while one is. Missing from an addon built before it (a dev server's). */
+  setPlaying?(playing: boolean): void; // S
   /** Every engine analysis of the media at `path` (its loudness) decodes `read` in its place: a pieced proxy's original. */
   analyseFrom(path: string, read?: string | null): void; // S
   /** Camera angles from 64×36 grey frames; TS does the FFmpeg read that makes them (the engine's seats.rs `scenes`). */

@@ -294,7 +294,20 @@ function skill({ app, args, projectId }: ToolCall): Content[] {
   return text(found.body);
 }
 
-function getEditContext({ app, args, projectId }: ToolCall): Content[] {
+/** Projects whose edit context an agent has asked for since the server started. */
+const contextAsked = new Set<string>();
+
+async function getEditContext({ app, args, projectId }: ToolCall): Promise<Content[]> {
+  // What only the agent's work needs of the footage starts now, not when the project opened (media.ts `warmForAgent`).
+  const first = live(app, projectId).project;
+  const ours = reusedMedia(first);
+  app.media.warmForAgent(first.media.filter((one) => one.effect_key === undefined && !ours.has(one.id)));
+  // The first time, the footage on the timeline is waited for a little, so a small edit's rows say where theirs are;
+  // after that it's never waited on here (the subtitling tools wait for what they subtitle).
+  if (!contextAsked.has(first.id)) {
+    contextAsked.add(first.id);
+    await burned.ready(app.media, burned.onTimeline(first).reading, burned.CONTEXT_WAIT_MS);
+  }
   return text(stableStringify(editContext(app, showAgent(live(app, projectId)), args)));
 }
 
@@ -2307,8 +2320,8 @@ export function editContext(app: App, found: Live, args: Args): Args {
 
 /**
  * A media row's burned-in subtitles (burned_subtitles.ts): where in the file
- * and the band. Footage not read yet starts being read here (a project
- * imported before Edit looked for them).
+ * and the band. Footage not read yet starts being read here (they're read
+ * only once an agent asks: `getEditContext`).
  */
 function burnedRow(app: App, p: Project, media: Media): string {
   if (media.kind !== "video" || media.effect_key !== undefined || reusedMedia(p).has(media.id)) return "";

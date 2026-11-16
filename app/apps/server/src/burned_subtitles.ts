@@ -3,8 +3,10 @@
 // yeNu3j_K6D8's white "That house is horrible." with the agent's own blue
 // subtitles stacked over it, two sets on screen).
 //
-// Found once per file after its import, from the words on screen Edit reads
-// anyway (screen_text.rs: Vision on a Mac, PaddleOCR elsewhere), sampled, never
+// Found once per file, when the agent first needs it (get_edit_context, or a
+// subtitling tool: never on opening or importing, where 73 reads of Cops Found 3
+// Bodies' footage ran beside a cold play on kenobi, Nov 17), from the words on
+// screen Edit reads anyway (screen_text.rs: Vision on a Mac, PaddleOCR elsewhere), sampled, never
 // every frame: PROBES frames spread over the file first, and only a file where
 // those show subtitle-like lines is read on a grid (at most MOST frames). A
 // subtitle line is low in the picture, centred, mostly letters, its words
@@ -28,6 +30,7 @@ import * as diag from "./diag.ts";
 import { fillsFrame } from "./frames_fill.ts";
 import * as markBlurs from "./mark_blurs.ts";
 import { mediaHooks } from "./media.ts";
+import * as playing from "./playing.ts";
 import type { AdjustmentClip, Keyframe, Media, Project, VideoClip } from "./model.ts";
 import { isReal, native, type ScreenText } from "./native/index.ts";
 import { join } from "./paths.ts";
@@ -73,6 +76,10 @@ const SAID = 0.5;
 export type BurnedIn = "leave_off" | "cover";
 /** How long a subtitling tool waits for the footage it subtitles to be read (ms). */
 export const WAIT_MS = 60_000;
+/** How long the agent's first get_edit_context of a project waits for the footage on its timeline to be read (ms). */
+export const CONTEXT_WAIT_MS = 8_000;
+/** Frames read at a time by a read nobody waits on: between them it gives way to a play. */
+const STEP = 25;
 /** The name of every blur `cover` lays; a re-run replaces them. */
 export const COVER = "Burned-in cover";
 
@@ -114,8 +121,66 @@ const reading = new Map<string, Promise<void>>();
 /** A file whose reading failed is tried again after this. */
 const RETRY_MS = 10 * 60_000;
 const failedAt = new Map<string, number>();
-/** One file read at a time: each is OCR on up to MOST frames, beside the edit's own work. */
-let queue: Promise<void> = Promise.resolve();
+
+// One file read at a time: each is OCR on up to MOST frames, beside the edit's
+// own work. A file someone waits on (a subtitling tool, the first
+// get_edit_context) goes first and never stops for a play; one nobody waits
+// on starts only while nothing plays here, and stops between its steps while
+// something does (playing.ts).
+
+/** Files someone waits on now, and how many wait. */
+const waited = new Map<string, number>();
+/** Files waiting their turn, in the order asked. */
+const line: { path: string; go: () => void }[] = [];
+let busy = false;
+
+function urgent(path: string): boolean {
+  return (waited.get(path) ?? 0) > 0;
+}
+
+/** Whether `path`'s read, or one in line behind it, is waited on. */
+function wanted(path: string): boolean {
+  return urgent(path) || line.some((one) => urgent(one.path));
+}
+
+/** `path`'s turn to be read; call what it resolves to when the read is over. */
+function turn(path: string): Promise<() => void> {
+  return new Promise((resolve) => {
+    line.push({
+      path,
+      go: () => {
+        let over = false;
+        resolve(() => {
+          if (over) return;
+          over = true;
+          busy = false;
+          next();
+        });
+      },
+    });
+    next();
+  });
+}
+
+function next(): void {
+  if (busy) return;
+  let at = line.findIndex((one) => urgent(one.path));
+  if (at < 0) {
+    if (line.length === 0 || playing.isPlaying()) return;
+    at = 0;
+  }
+  busy = true;
+  line.splice(at, 1)[0]!.go();
+}
+
+playing.onChange((now) => {
+  if (!now) next();
+});
+
+/** Between two steps of a read nobody waits on: until nothing plays (or someone waits on it, or on one behind it). */
+async function giveWay(path: string): Promise<void> {
+  if (!wanted(path)) await playing.whenIdle(() => wanted(path));
+}
 
 function stateFile(path: string): string | null {
   if (!isReal()) return null;
@@ -300,9 +365,12 @@ export function warm(reader: Reader, media: Footage): Promise<void> {
   if (Date.now() - (failedAt.get(media.path) ?? 0) < RETRY_MS) return Promise.resolve();
   const work = (async () => {
     const input = await inputOf(reader, media.path);
-    const run = queue.then(() => read(reader, media, input));
-    queue = run.catch(() => undefined);
-    await run;
+    const done = await turn(media.path);
+    try {
+      await read(reader, media, input);
+    } finally {
+      done();
+    }
   })()
     .catch((error: unknown) => {
       failedAt.set(media.path, Date.now());
@@ -313,16 +381,29 @@ export function warm(reader: Reader, media: Footage): Promise<void> {
   return work;
 }
 
+/** The words on screen at `seconds`: at once for a file someone waits on, else STEP frames at a time, giving way to a play between them (each kept by the engine as it's read). */
+async function look(path: string, input: string, size: [number, number], seconds: number[]): Promise<Record<number, ScreenText[]>> {
+  const out: Record<number, ScreenText[]> = {};
+  for (let at = 0; at < seconds.length; ) {
+    if (at > 0) await giveWay(path);
+    const step = urgent(path) ? seconds.length - at : STEP;
+    Object.assign(out, await native().screenTextDetect(input, size, seconds.slice(at, at + step)));
+    at += step;
+  }
+  return out;
+}
+
 async function read(reader: Reader, media: Footage, input: string): Promise<void> {
   const duration = media.duration ?? 0;
   const size: [number, number] = [media.width ?? 1920, media.height ?? 1080];
   const first = probes(duration);
-  const texts = await diag.timeOnAsync("media", "media: burned-in subtitles (probe)", media.path, () => native().screenTextDetect(input, size, first));
+  const texts = await diag.timeOnAsync("media", "media: burned-in subtitles (probe)", media.path, () => look(media.path, input, size, first));
   let seconds = first;
   let all: Record<number, ScreenText[]> = texts;
   if (first.filter((second) => candidates(texts[second] ?? []).length > 0).length >= PROBE_HITS) {
+    await giveWay(media.path);
     const more = grid(duration).seconds.filter((second) => !first.includes(second));
-    const rest = await diag.timeOnAsync("media", "media: burned-in subtitles (grid)", media.path, () => native().screenTextDetect(input, size, more));
+    const rest = await diag.timeOnAsync("media", "media: burned-in subtitles (grid)", media.path, () => look(media.path, input, size, more));
     all = { ...texts, ...rest };
     seconds = [...first, ...more];
   }
@@ -345,10 +426,29 @@ export function of(media: Pick<Media, "path">): Burned | null | undefined {
   return state === null ? undefined : state.found;
 }
 
-/** Waits up to `ms` for each of `media` to be read (started if it isn't): the ones still unread. */
+/**
+ * Waits up to `ms` for each of `media` to be read (started if it isn't, ahead
+ * of the reads nobody waits on, a play or not): the ones still unread. Read
+ * before, it's at once.
+ */
 export async function ready<T extends Footage>(reader: Reader, media: T[], ms: number): Promise<T[]> {
-  const waits = media.filter((one) => of(one) === undefined).map((one) => warm(reader, one));
-  if (waits.length > 0) await Promise.race([Promise.all(waits), Bun.sleep(ms)]);
+  const unread = media.filter((one) => of(one) === undefined);
+  for (const one of unread) waited.set(one.path, (waited.get(one.path) ?? 0) + 1);
+  try {
+    next();
+    const waits = unread.map((one) => warm(reader, one));
+    if (waits.length > 0) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([Promise.all(waits), new Promise((resolve) => (timer = setTimeout(resolve, ms)))]);
+      clearTimeout(timer);
+    }
+  } finally {
+    for (const one of unread) {
+      const left = (waited.get(one.path) ?? 1) - 1;
+      if (left > 0) waited.set(one.path, left);
+      else waited.delete(one.path);
+    }
+  }
   return media.filter((one) => one.kind === "video" && (one.duration ?? 0) >= 2 && of(one) === undefined && isReal());
 }
 

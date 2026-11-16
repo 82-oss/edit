@@ -74,6 +74,9 @@ pub fn is_background() -> bool {
 pub enum Pause {
     /// Background work: it waits (FFmpeg stopped, native frames held).
     ForExports,
+    /// Background analysis (a censor check): it waits while an export runs
+    /// and while a person watches a play here (`util::playing`).
+    ForPlays,
     /// An import's proxy or a preview: it runs beside the export.
     Never,
 }
@@ -406,7 +409,11 @@ pub fn run_paused(command: &mut Command, pause: Pause) -> Result<Vec<u8>, String
             Ok(None) => {}
             Err(error) => return Err(error.to_string()),
         }
-        paused.set(pause == Pause::ForExports && exporting());
+        paused.set(match pause {
+            Pause::ForExports => exporting(),
+            Pause::ForPlays => exporting() || crate::util::playing(),
+            Pause::Never => false,
+        });
         std::thread::sleep(Duration::from_millis(200));
     };
     drop(paused);
@@ -1195,7 +1202,8 @@ pub fn make_image_thumbs(source: &Path, paths: &CachePaths) -> Result<u32, Strin
 pub fn make_peaks(source: &Path, out: &Path) -> Result<(), String> {
     let rate = PEAKS_PER_SECOND * 40;
     let tmp = out.with_extension("partial");
-    let mut child = Command::new(crate::util::ffmpeg())
+    // Background work beside the player: below what a person watches.
+    let mut child = crate::util::background_command(&mut Command::new(crate::util::ffmpeg()))
         .args([
             "-hide_banner",
             "-loglevel",

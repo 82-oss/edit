@@ -6,7 +6,7 @@ import { expect, test } from "bun:test";
 import { failureKind } from "../src/effect/proc.ts";
 import { kindOf } from "../src/effect/service.ts";
 import * as jobs from "../src/jobs.ts";
-import { run } from "../src/tools.ts";
+import { BACKGROUND_NICE, lowPriority, run } from "../src/tools.ts";
 import { scratch } from "./helpers/home.ts";
 
 const alive = (pid: number) => {
@@ -24,6 +24,16 @@ test("a tool's output comes back as bytes; a failure says its last line, and a m
   expect((failed as Error).message).toBe("Invalid data found when processing input");
   expect(kindOf(failed)).toBe("permanent");
   await expect(run(["/no/such/ffmpeg"])).rejects.toThrow(/^ffmpeg is not available/);
+});
+
+test("background work's tools run below the rest (nice), anything else as it is; a missing tool still says so", async () => {
+  // `nice` alone says the niceness it runs at.
+  const niceness = async (background: boolean) => Number(new TextDecoder().decode(await run(["nice"], { background })).trim());
+  const ours = await niceness(false);
+  expect(await niceness(true)).toBe(Math.max(BACKGROUND_NICE, ours));
+  expect(lowPriority(["nice", "-n", "1"]).slice(1, 3)).toEqual(["-n", String(BACKGROUND_NICE)]);
+  expect(lowPriority(["/no/such/ffmpeg", "-i", "x"])).toEqual(["/no/such/ffmpeg", "-i", "x"]);
+  await expect(run(["/no/such/ffmpeg"], { background: true })).rejects.toThrow(/^ffmpeg is not available/);
 });
 
 test("a tool that runs past its time is ended with the children it started, and said to have timed out", async () => {

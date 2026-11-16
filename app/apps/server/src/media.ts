@@ -16,9 +16,10 @@ import { playbackKey } from "./cloud_playback.ts";
 import { writeAtomic } from "./files.ts";
 import * as framing from "./framing.ts";
 import { isBug, message as crashMessage } from "./guard.ts";
-import type { MediaKind, Probe } from "./model.ts";
+import type { Media, MediaKind, Probe } from "./model.ts";
 import { native, type CachePaths } from "./native/index.ts";
 import { extension, join, parent, startsWith, withExtension, canonical } from "./paths.ts";
+import * as playing from "./playing.ts";
 import type { Store } from "./store.ts";
 import * as tools from "./tools.ts";
 import { FIRST_PASS_FROM_S, firstWords } from "./first_hearing.ts";
@@ -74,6 +75,9 @@ export const backgroundSlots = new Semaphore(1);
  * They have their own single, bounded decoder slot.
  */
 const imageSlots = new Semaphore(1);
+
+// The engine stops background analysis's FFmpeg (the censor checks) while a play is watched here, and starts it again after.
+playing.onChange((now) => native().setPlaying?.(now));
 
 /** Waveform resolution. */
 export const PEAKS_PER_SECOND = 100;
@@ -302,8 +306,12 @@ export class Processor {
     // Limit all FFmpeg work, including waveforms and thumbnails, rather than
     // starting two unbounded extra decoders for every import.
     const slots = probe.kind === "image" ? imageSlots : backgroundSlots;
-    void slots
-      .with(() => this.process(source, probe, paths, whole))
+    // Only thumbnails and a waveform to make (a project opened: a cloud file's are made from its stream): they
+    // start once nothing plays here, file by file, never pulling the link and the CPU from a play someone watches
+    // (kenobi, Nov 17). A preview copy an import needs before it plays at all starts at once.
+    const copying = probe.kind === "video" && !whole && this.status(source).proxy !== "ready";
+    const start = (): Promise<void> => slots.with(() => this.process(source, probe, paths, whole));
+    void (copying || !playing.isPlaying() ? start() : playing.whenIdle().then(start))
       .catch((error: unknown) => {
         // A crash mid-way leaves no stage "working" (and the file can be processed again).
         const said = isBug(error) ? crashMessage(error) : diag.messageOf(error);
@@ -455,17 +463,45 @@ export class Processor {
         });
       }
     }
-    // Its censored stretches (from the light preview when there is one), so
-    // the audit's censored_broll is ready by the time the edit is reviewed:
-    // started only by the audit, Mom Leaves 5 Kids' final pass found all
-    // sixteen files still pending and its blurred B-roll went out.
-    if (whole) return;
-    if (probe.kind === "video") this.censorLater(source, input);
-    // Its own black borders (a tape's edge), so footage placed later fills the frame.
-    if (probe.kind === "video" || probe.kind === "image") framing.warmBorders({ path: source, name: source, ...probe });
-    // Subtitles already burned into its picture (another channel's finished video), so the agent knows before it subtitles.
+    // What only the agent's work needs (censor checks, borders, burned-in subtitles) waits for it: `warmForAgent`.
+  }
+
+  /** Footage `warmForAgent` has started on. */
+  private warmed = new Set<string>();
+
+  /**
+   * What only the agent's work needs of a project's footage, started when an
+   * agent first asks for its edit context (get_edit_context), never on opening
+   * or importing it (kenobi, Nov 17: opening Cops Found 3 Bodies on an M1 began
+   * 73 burned-in subtitle reads and 46 censor checks beside a cold play, the load
+   * at 16.7 on 8 cores): each video's censored stretches (the light preview's
+   * when there is one), so the audit's censored_broll is ready by the time the
+   * edit is reviewed (started only by the audit, Mom Leaves 5 Kids' final pass
+   * found all sixteen files still pending and its blurred B-roll went out); each
+   * picture's own black borders (a tape's edge), so footage placed later fills
+   * the frame; and the subtitles burned into each video's picture (another
+   * channel's finished video), so the agent knows before it subtitles. One file
+   * after another, each once nothing plays here. `footage`: the project's, less
+   * effects' renders and finished videos of ours.
+   */
+  warmForAgent(footage: readonly Pick<Media, "path" | "name" | "kind" | "duration" | "width" | "height">[]): void {
     // Imported when needed: it reaches the watch and the pieces, which import this file.
-    if (probe.kind === "video") void import("./burned_subtitles.ts").then((burned) => burned.warm(this, { path: source, name: source, ...probe }));
+    const videos = footage.filter((one) => one.kind === "video");
+    if (videos.length > 0) void import("./burned_subtitles.ts").then((burned) => videos.forEach((one) => void burned.warm(this, one)));
+    const fresh = footage.filter((one) => (one.kind === "video" || one.kind === "image") && !this.warmed.has(one.path));
+    for (const one of fresh) this.warmed.add(one.path);
+    if (fresh.length === 0) return;
+    void (async () => {
+      for (const one of fresh) {
+        await playing.whenIdle();
+        try {
+          if (one.kind === "video") this.censorLater(one.path, await this.inputOf(one.path));
+          framing.warmBorders(one);
+        } catch (error) {
+          diag.warn("media", `${diag.scrub(one.path)}: starting what the agent needs of it: ${diag.messageOf(error)}`);
+        }
+      }
+    })();
   }
 
   /**
@@ -873,7 +909,7 @@ export async function makeThumbs(source: string, probe: Probe, paths: CachePaths
       ...extra, "-protocol_whitelist", tools.protocols(source), ...tools.urlArgs(source), "-i", source, "-an",
       "-vf", frames === 1 ? `scale=-2:${THUMB_HEIGHT}` : `select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,${(interval * 0.99).toFixed(4)})',scale=-2:${THUMB_HEIGHT}`,
       "-fps_mode", "vfr", "-frames:v", String(frames), "-q:v", "5", out,
-    ]);
+    ], { background: true });
   if (interval >= LONG_THUMB_INTERVAL) {
     const frame = (n: number) => join(framesDir, `${String(n + 1).padStart(4, "0")}.jpg`);
     let next = 0;
@@ -920,7 +956,7 @@ export async function makeThumbs(source: string, probe: Probe, paths: CachePaths
       "-q:v",
       "5",
       tmp,
-    ]);
+    ], { background: true });
   } finally {
     fs.rmSync(framesDir, { recursive: true, force: true });
   }

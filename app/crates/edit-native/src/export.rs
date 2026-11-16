@@ -188,6 +188,10 @@ impl ExportJob {
         let stop = Arc::clone(&cancel);
         let background = job.background == Some(true);
         std::thread::spawn(move || {
+            // Smooth playback's render: behind the player and the page, as the analyses are.
+            if background {
+                edit_engine::util::background_thread();
+            }
             let started = Instant::now();
             let export = || {
                 edit_engine::render::export_file(
