@@ -283,6 +283,9 @@ struct Sound {
     change: Option<Change>,
     /// A clock with no speaker: when it started and from where.
     silent: Option<Instant>,
+    /// The sound sources (a cloud copy landed, the cleaner took a file) or the edit changed while playing:
+    /// the mixer plays on with what it had, and is let go at the next pause, never armed again from there.
+    stale: bool,
 }
 
 /// How playing went since the page last asked: frames drawn, frames the clock
@@ -448,9 +451,14 @@ impl Player {
             self.drawn = None;
             self.warmed_from = None;
         }
-        if sounds != self.sounds && self.playing.is_none() {
-            self.land(true);
-            self.sound.disarm();
+        if sounds != self.sounds {
+            if self.playing.is_none() {
+                self.land(true);
+                self.sound.disarm();
+            } else {
+                // Paused and played on in place, it went on reading the old files (silent past where one was taken).
+                self.sound.stale = true;
+            }
         }
         self.sources = sources;
         self.sounds = sounds;
@@ -512,12 +520,15 @@ impl Player {
 
     /// The edit changed: drawn again, the cuts ahead looked at again, and a
     /// mix armed for an edit that's gone dropped (one playing plays on: the
-    /// picture is the new edit's, the sound catches up at the next play).
+    /// picture is the new edit's, the sound catches up at the next play, not
+    /// kept armed through a pause).
     fn changed(&mut self) {
         self.drawn = None;
         self.warmed_from = None;
         if self.playing.is_none() {
             self.sound.disarm();
+        } else {
+            self.sound.stale = true;
         }
     }
 
@@ -828,6 +839,9 @@ impl Player {
                 mixer.from = playing.clock.at(taken);
             }
         }
+        if self.sound.stale {
+            self.sound.disarm();
+        }
         self.sound.silent = None;
         if let Some(at) = at {
             trace(|| format!("paused at {at}"));
@@ -1089,6 +1103,7 @@ impl Player {
             .sound
             .mixer
             .as_ref()
+            .filter(|_| !self.sound.stale)
             .filter(|mixer| (mixer.rate - self.rate).abs() < 1e-9)
             .map(|mixer| mixer.from)
             .filter(|armed| (armed - from).abs() < 1.5 / fps)
@@ -1188,6 +1203,7 @@ impl Sound {
     fn disarm(&mut self) {
         self.end_change();
         self.mixer = None;
+        self.stale = false;
     }
 
     /// Ends a change of speed on its way. Its sound already in the speaker,
