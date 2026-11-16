@@ -34,7 +34,15 @@ export function NewThumbnail({ open, onClose }: { open: boolean; onClose: () => 
   const [pictures, setPictures] = useState<Picture[]>([]);
   const [choosing, setChoosing] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  /**
+   * The thumbnail already made, whose pictures or first word didn't all go:
+   * trying again does only what's left (never a second thumbnail), with the
+   * title and guide as they are now.
+   */
+  const [made, setMade] = useState<{ id: string; title: string; guide: string } | null>(null);
+  /** Each picture already on the made thumbnail, and its image there. */
+  const uploaded = useRef(new Map<File, string>());
   const files = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -49,6 +57,8 @@ export function NewThumbnail({ open, onClose }: { open: boolean; onClose: () => 
     });
     setChoosing(false);
     setError(null);
+    setMade(null);
+    uploaded.current = new Map();
   }, [open]);
 
   const add = (given: Iterable<File>) => {
@@ -71,27 +81,47 @@ export function NewThumbnail({ open, onClose }: { open: boolean; onClose: () => 
 
   const starts = guide.trim() !== "" || pictures.length > 0;
   const unpicked = useChannelNeeded(channel);
-  const ready = title.trim() !== "" && !busy && !unpicked;
+  const ready = title.trim() !== "" && !busy && (!unpicked || made !== null);
 
   const create = async () => {
+    if (busy) return;
     setBusy(true);
     setError(null);
     try {
-      const { id } = await thumbnailsApi.create(title.trim(), guide.trim(), channel);
+      const named = title.trim();
+      const guided = guide.trim();
+      let id: string;
+      if (made === null) {
+        ({ id } = await thumbnailsApi.create(named, guided, channel));
+        setMade({ id, title: named, guide: guided });
+      } else {
+        // Made already: its title and guide as they're now, then only what didn't go.
+        id = made.id;
+        if (named !== made.title || guided !== made.guide) {
+          await thumbnailsApi.change(id, { title: named, brief: guided });
+          setMade({ id, title: named, guide: guided });
+        }
+      }
       const ids: string[] = [];
       for (const one of pictures) {
-        const { image } = (await postFile(`/api/thumbnails/${encodeURIComponent(id)}/images?name=${encodeURIComponent(one.file.name || "reference.png")}`, one.file, () => {}, new AbortController().signal, { "content-type": one.file.type })) as { image: { id: string } };
-        ids.push(image.id);
+        let image = uploaded.current.get(one.file);
+        if (image === undefined) {
+          const answer = (await postFile(`/api/thumbnails/${encodeURIComponent(id)}/images?name=${encodeURIComponent(one.file.name || "reference.png")}`, one.file, () => {}, new AbortController().signal, { "content-type": one.file.type })) as { image: { id: string } };
+          image = answer.image.id;
+          uploaded.current.set(one.file, image);
+        }
+        ids.push(image);
       }
       // A guide or pictures given: Claude starts on them; only a title: the person's first word starts it.
       if (starts) {
         const asked = guide.trim() !== "" && ids.length > 0 ? "Make it from the guide, with these reference pictures." : guide.trim() !== "" ? "Make it from the guide." : "Make it from these reference pictures.";
         await thumbnailsApi.chat(id, asked, ids);
       }
+      setMade(null);
       onClose();
       navigate(`/thumbnails/${id}`);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(cause ?? new Error("Can't reach Edit's server"));
     } finally {
       setBusy(false);
     }
@@ -105,8 +135,8 @@ export function NewThumbnail({ open, onClose }: { open: boolean; onClose: () => 
       onSubmit={() => void create()}
       ready={ready}
       busy={busy}
-      action={busy ? "Starting…" : starts ? "Make the thumbnail" : "Start"}
-      error={error && <ProblemView error={error} doing="start the thumbnail" className="pt-3" />}
+      action={busy ? "Starting…" : made !== null ? "Try again" : starts ? "Make the thumbnail" : "Start"}
+      error={error !== null && <ProblemView error={error} doing={made !== null ? "finish starting the thumbnail" : "start the thumbnail"} className="pt-3" />}
       aside={<Aside onClick={() => setChoosing(!choosing)}>{choosing ? "Write it here instead" : "From an idea"}</Aside>}
     >
       <ChannelField kind="thumbnail" channels={channels} value={channel} onChange={setChannel} />

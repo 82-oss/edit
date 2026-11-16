@@ -2,8 +2,11 @@ import { type ReactNode, useEffect, useState } from "react";
 import { clock } from "./clips";
 import { Icon } from "./ui";
 
+/** Where a script's unsent message is kept, so a send that fails after the page is left still comes back to it. */
+export const chatDraftKey = (id: string) => `writer.chat-draft.${id}`;
+
 export function useChatDraft(id: string) {
-  const key = `writer.chat-draft.${id}`;
+  const key = chatDraftKey(id);
   const [text, setText] = useState(() => localStorage.getItem(key) ?? "");
   useEffect(() => { if (text) localStorage.setItem(key, text); else localStorage.removeItem(key); }, [key, text]);
   return [text, setText] as const;

@@ -1,6 +1,6 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scriptBuilt } from "@edit/types/models";
-import { useChatDraft } from "./agent";
+import { chatDraftKey, useChatDraft } from "./agent";
 import { ChatShell, ChatTurns, Empty, ResetAsk } from "../components/AgentPanel";
 import { ChatComposer } from "../components/ChatComposer";
 import { buildTurns } from "../lib/agentTurns";
@@ -468,25 +468,28 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [script.id]);
 
-  const build = async (request = note) => {
+  // Each answers whether it started: a message that didn't (the server restarting or out of reach) goes back in the
+  // composer (it cleared the box on sending), so nothing typed is lost.
+  const build = async (request: string) => {
     setError(null);
     setStage("Starting");
     try {
       const job = await startBuild(script.id, request);
       setSent(request.trim() ? `Build the script. ${request.trim()}` : "Build the script.");
-      setNote("");
       follow(job.startedAt);
+      return true;
     } catch (cause) {
       setError(message(cause));
+      return false;
     }
   };
 
   // Once the script is built, a message asks Opus for targeted edits, as
   // Repack's chat does, with what the producer has selected as "this".
   // What's quoted (in front of the words already) points it at those narrations.
-  const revise = async (given?: string, quotes: ChatQuote[] = []) => {
-    const request = (given ?? note).trim();
-    if (!request) return;
+  const revise = async (given: string, quotes: ChatQuote[] = []) => {
+    const request = given.trim();
+    if (!request) return false;
     const clips = quotes.flatMap((one) => (one.clip !== undefined ? [one.clip] : []));
     setError(null);
     setStage("Editing the script");
@@ -497,10 +500,11 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
         playheadMs: Math.round(playhead.ms),
       });
       setSent(request);
-      setNote("");
       follow(job.startedAt);
+      return true;
     } catch (cause) {
       setError(message(cause));
+      return false;
     }
   };
 
@@ -817,6 +821,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
       footer={
         <ChatComposer
           chat={chatKey}
+          draft={chatDraftKey(script.id)}
           value={note}
           onValueChange={setNote}
           allowEmpty={!cueCount}
@@ -843,7 +848,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                     ? "Ask for a change, e.g. tighten the intro, rewrite cut-in 4 shorter, fix the edges…"
                     : "Notes for the build (optional), e.g. aim for 30 minutes…"
           }
-          onSend={(text, _files, quotes) => void (cueCount ? revise(text, quotes) : build(text))}
+          onSend={(text, _files, quotes) => (cueCount ? revise(text, quotes) : build(text))}
           onStop={() => void stopJob(script.id).catch((cause) => setError(message(cause)))}
         />
       }

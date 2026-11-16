@@ -1,6 +1,6 @@
 import { pickFile } from "./pick";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Elapsed, Said, Working, useChatDraft } from "./agent";
+import { chatDraftKey, Elapsed, Said, Working, useChatDraft } from "./agent";
 import { ChatShell, ChatTurns, Empty, ResetAsk } from "../components/AgentPanel";
 import { ChatComposer } from "../components/ChatComposer";
 import { buildTurns } from "../lib/agentTurns";
@@ -23,6 +23,7 @@ import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
 import { type Band, BandTip, bandProps, bandsOf, pieceBands, pieceOffset, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
 import { Avatar } from "./avatar";
 import { MemoryChip } from "../components/MemoryChip";
+import { ProblemView } from "../components/ProblemView";
 import { UpdateButton } from "./update";
 import { CAN, useGrants } from "./can";
 import { Dialog, Icon, Menu, Select, Tabs } from "./ui";
@@ -561,7 +562,8 @@ export function CommentaryEditor({
       )}
       {error && (
         <div className="notice">
-          {error}
+          {/* Said plainly (problems.ts): the original words are the log's. */}
+          <ProblemView error={error} className="min-w-0 flex-1" />
           <button type="button" className="ghost sm" onClick={() => setError(null)}>Dismiss</button>
         </div>
       )}
@@ -691,6 +693,7 @@ export function CommentaryEditor({
                   </div>
                   <ChatComposer
                     chat={`script:${script.id}`}
+                    draft={chatDraftKey(script.id)}
                     value={note}
                     onValueChange={setNote}
                     allowEmpty={!draft}
@@ -718,11 +721,11 @@ export function CommentaryEditor({
                               : "Ask for a change. Claude edits only the paragraphs it's about, or adds an edit: note for the editor\u2026"
                     }
                     onSend={(text) => {
-                      if (busy || !ready || (draft && !text.trim())) return;
-                      void (draft && !rewriting ? revise(text) : build(text)).then((done) => {
-                        if (!done) return;
-                        setNote("");
-                        setRewriting(false);
+                      // Not started (the server restarting or out of reach): the composer puts the words back.
+                      if (busy || !ready || (draft && !text.trim())) return false;
+                      return (draft && !rewriting ? revise(text) : build(text)).then((done) => {
+                        if (done) setRewriting(false);
+                        return done;
                       });
                     }}
                     onStop={() => void stopJob(script.id).catch((cause) => setError(message(cause)))}
