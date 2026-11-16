@@ -429,7 +429,9 @@ jobs:
   # Modal on Nov 3: nothing is deployed there.
   cloud:
     needs: publish
-    if: github.event_name == 'push'
+    # Explicit, or a job skipped further up (linux-check, on a nightly) skips this too: the live relay went out with
+    # no nightly before nightly-77 (each was skipped since the job's start).
+    if: github.event_name == 'push' && !cancelled() && needs.publish.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
