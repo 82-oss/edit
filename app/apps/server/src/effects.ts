@@ -624,17 +624,22 @@ export interface Still {
 /** Where a page fetches the still it just drew from (`edit-look/<token>` in its own folder): the screenshot's PNG. */
 const HANDED = "edit-look";
 const handed = new Map<string, Uint8Array>();
+/** A screenshot's base64 up to this size goes to its page in the call, not fetched (`OVER_CHECKS`). */
+const INLINE_MOST = 256 * 1024;
 
 /**
- * Run in the effect's page: its PNG screenshot, fetched from Edit as a file in
- * its own folder (`HANDED`), drawn over a grey checkerboard as a JPEG, and
- * whether any of it was see-through, so the agent sees which parts will show
- * what's beneath. Fetched, not sent in as base64 in the call's source: that
- * was 0.15 s of a 960 px still and 0.8 s of a full one, the same pictures
- * (Nov 15, mandalorian).
+ * Run in the effect's page: its PNG screenshot drawn over a grey checkerboard
+ * as a JPEG, and whether any of it was see-through, so the agent sees which
+ * parts will show what's beneath. A big screenshot is fetched from Edit as a
+ * file in its own folder (`HANDED`): sent in as base64 in the call, that was
+ * 0.15 s of a 960 px still and 0.8 s of a full one (Nov 15, mandalorian). A
+ * small one (`png`, up to `INLINE_MOST`) comes in the call: on a Mac each fetch
+ * cost ~0.3 s more (Nov 16, CI's Mac: 17 of a 48-frame look's 22 s, 8 ms a frame
+ * here), where a small one in the call is a few milliseconds.
  */
-const OVER_CHECKS = `async (address, quality) => {
-  const shot = await createImageBitmap(await (await fetch(address)).blob());
+const OVER_CHECKS = `async (address, png, quality) => {
+  const bytes = png === null ? null : typeof Uint8Array.fromBase64 === "function" ? Uint8Array.fromBase64(png) : Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
+  const shot = await createImageBitmap(bytes === null ? await (await fetch(address)).blob() : new Blob([bytes], { type: "image/png" }));
   const plain = new OffscreenCanvas(shot.width, shot.height).getContext("2d");
   plain.drawImage(shot, 0, 0);
   const pixels = plain.getImageData(0, 0, shot.width, shot.height).data;
@@ -754,13 +759,17 @@ export async function look(app: App, projectId: string, name: string, times: num
           at = performance.now(); // TEMP
           // At full size too a JPEG (fine enough for small text at this quality): a full-size PNG was 1.4–4 MB, kept again
           // in the agent's session with every look (Nov 13: 290 MB of one project's).
-          const handle = randomBytes(12).toString("hex");
-          handed.set(`${projectId}/${name}/${handle}`, new Uint8Array(Buffer.from(shot.data, "base64")));
+          const quality = side === 0 ? 0.92 : 0.82;
           let shown: { jpeg: string; clear: boolean };
-          try {
-            shown = await page.evaluate<{ jpeg: string; clear: boolean }>(`(${OVER_CHECKS})(${JSON.stringify(`${HANDED}/${handle}`)}, ${side === 0 ? 0.92 : 0.82})`, 60_000);
-          } finally {
-            handed.delete(`${projectId}/${name}/${handle}`);
+          if (shot.data.length <= INLINE_MOST) shown = await page.evaluate<{ jpeg: string; clear: boolean }>(`(${OVER_CHECKS})(null, ${JSON.stringify(shot.data)}, ${quality})`, 60_000);
+          else {
+            const handle = randomBytes(12).toString("hex");
+            handed.set(`${projectId}/${name}/${handle}`, new Uint8Array(Buffer.from(shot.data, "base64")));
+            try {
+              shown = await page.evaluate<{ jpeg: string; clear: boolean }>(`(${OVER_CHECKS})(${JSON.stringify(`${HANDED}/${handle}`)}, null, ${quality})`, 60_000);
+            } finally {
+              handed.delete(`${projectId}/${name}/${handle}`);
+            }
           }
           stills.push({ time, picture: new Uint8Array(Buffer.from(shown.jpeg, "base64")), mime: "image/jpeg", cost, seeThrough: shown.clear });
           phases.over += performance.now() - at; // TEMP

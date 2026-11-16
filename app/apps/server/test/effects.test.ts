@@ -333,6 +333,19 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     expect(tool.content.at(-1)!.text).toContain("BREAKS THE EFFECT CONTRACT");
     await expect(effects.add(app, id, "wrong")).rejects.toThrow("isn't ready for the timeline");
     await expect(effects.look(app, id, "nowhere", [0])).rejects.toThrow('no effect "nowhere"');
+    // A big screenshot (full-size noise, megabytes of PNG) reaches its page by a fetch, not in the call: a JPEG as any.
+    write(app, id, "noise", {
+      "scene.html": `<!doctype html><body style="margin:0"><canvas id="c" width="1920" height="1080"></canvas><script>
+        const c = document.getElementById("c").getContext("2d");
+        window.duration = 1; window.ready = Promise.resolve();
+        window.seek = () => { const d = c.createImageData(1920, 1080); let x = 7; for (let i = 0; i < d.data.length; i++) { x = (x * 1103515245 + 12345) >>> 0; d.data[i] = i % 4 === 3 ? 255 : x >>> 24; } c.putImageData(d, 0, 0); };
+      </script></body>`,
+    });
+    const noise = await effects.look(app, id, "noise", [0], 0, false);
+    expect(noise.errors).toEqual([]);
+    expect(noise.stills[0]!.mime).toBe("image/jpeg");
+    expect(noise.stills[0]!.picture.length).toBeGreaterThan(100_000);
+    expect(noise.stills[0]!.seeThrough).toBe(false);
   } finally {
     effects.closeChrome();
     await server.stop(true);
