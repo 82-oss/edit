@@ -30,7 +30,8 @@ test("background work's tools run below the rest (nice), anything else as it is;
   // `nice` alone says the niceness it runs at.
   const niceness = async (background: boolean) => Number(new TextDecoder().decode(await run(["nice"], { background })).trim());
   const ours = await niceness(false);
-  expect(await niceness(true)).toBe(Math.max(BACKGROUND_NICE, ours));
+  // `nice -n` is relative: a runner already lowered (a parallel test worker at 5) runs it lower still, at most 19.
+  expect(await niceness(true)).toBe(Math.min(19, ours + BACKGROUND_NICE));
   expect(lowPriority(["nice", "-n", "1"]).slice(1, 3)).toEqual(["-n", String(BACKGROUND_NICE)]);
   expect(lowPriority(["/no/such/ffmpeg", "-i", "x"])).toEqual(["/no/such/ffmpeg", "-i", "x"]);
   await expect(run(["/no/such/ffmpeg"], { background: true })).rejects.toThrow(/^ffmpeg is not available/);

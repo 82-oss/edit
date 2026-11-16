@@ -93,7 +93,8 @@ export async function findBorders(media: Picture): Promise<Borders> {
   const command = [tools.ffmpeg(), "-hide_banner", "-nostdin", ...input, "-an", "-vf", "fps=2,cropdetect=limit=24:round=2:reset=0", "-f", "null", "-"];
   let stderr = "";
   try {
-    const child = Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
+    // Nobody waits on it but the agent's first look: below the player and exports (tools.lowPriority).
+    const child = Bun.spawn(tools.lowPriority(command), { stdin: "ignore", stdout: "ignore", stderr: "pipe" });
     [stderr] = await Promise.all([new Response(child.stderr).text(), child.exited]);
   } catch (error) {
     diag.warn("media", `finding ${media.name}'s borders: ${diag.messageOf(error)}`);

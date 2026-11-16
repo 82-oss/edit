@@ -44,7 +44,7 @@ import { PLAYBACK_ROUTE } from "./cloud_playback.ts";
 import * as diag from "./diag.ts";
 import { cut, TO_THE_END } from "./export_excerpts.ts";
 import { json } from "./http/errors.ts";
-import { fetchWhole, onLanded } from "./local_previews.ts";
+import { fetchWhole, onLanded, previewBytes } from "./local_previews.ts";
 import type { Project } from "./model.ts";
 import { isFile } from "./paths.ts";
 import * as player from "./player.ts";
@@ -234,7 +234,8 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
         source = url;
         if (shown.has(media.id) || heard.has(media.id)) {
           if (base === null) {
-            fetchWhole(key, local);
+            // Its size guessed from the media, so the queue counts it as it starts (checked again once its first block says).
+            fetchWhole(key, local, previewBytes(media, key));
             streamed.add(key);
           }
           else if (shown.has(media.id)) {

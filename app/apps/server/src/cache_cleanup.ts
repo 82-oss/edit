@@ -50,6 +50,7 @@ import { pinned } from "./export_excerpts.ts";
 import { evicted as nativeEvicted } from "./native_preview.ts";
 import { openedTimes } from "./opened.ts";
 import { join } from "./paths.ts";
+import * as folderAccess from "./folder_access.ts";
 import * as research from "./research.ts";
 import * as writerStore from "./writer/store.ts";
 import { DEFAULT_LOCAL_BUDGET_BYTES, FREE_FLOOR_BYTES, diskHooks, localBudgetBytes } from "./storage.ts";
@@ -780,6 +781,12 @@ export function startCleaning(app: App): () => void {
   let running = false;
   const run = async () => {
     if (running) return;
+    // A cache on a drive macOS hasn't answered about yet (plugged in after the start): asked off the event loop, cleaned next time.
+    const open = folderAccess.unanswered([app.store.cacheDir()]);
+    if (open.length > 0) {
+      void folderAccess.reachRoots(open);
+      return;
+    }
     running = true;
     try {
       const cloud = await cleanCloudPreviews(app, false);
