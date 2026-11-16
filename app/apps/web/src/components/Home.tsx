@@ -26,7 +26,7 @@ import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
 import { ChannelAvatar } from "./Channels";
 import { ChannelsActions, ChannelsTitle, ChannelsView, useChannelsNav, type ChannelWork } from "./ChannelsHome";
-import { AREA, Aside, ChannelField, FIELD, Field, More, NewShell } from "./NewWork";
+import { AREA, Aside, ChannelField, FIELD, Field, More, NewShell, useChannelNeeded } from "./NewWork";
 import { loadChannels, useChannels } from "../lib/channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { AsideStatus, BackMark, BY, Category, CATEGORY, CHIP, COLUMNS, contextMenu, CreatorCell, KindMark, LaterContext, LENGTH, LengthCell, layoutFor, NAME, NoteMark, PILL, ROW, RowButtons, StatusCell, TableShape, Updated, useAside, useNote, withAside } from "./HomeTable";
@@ -805,6 +805,8 @@ function HomeList({ groups, solo, cross, lengthLabel }: { groups: { key: string;
     return () => watch.disconnect();
   }, []);
   const layout = layoutFor(width, solo);
+  // V2's work is a channel's; V1's column is its niche.
+  const v2 = useBeta((beta) => beta.v2);
   const seen = useRef<Map<string, string> | null>(null);
   const [lately, setLately] = useState<{ added: Set<string>; renamed: Set<string> }>({ added: new Set(), renamed: new Set() });
   const rows = groups.flatMap((group) => group.items);
@@ -838,7 +840,7 @@ function HomeList({ groups, solo, cross, lengthLabel }: { groups: { key: string;
         <div role="row" className={cx(COLUMNS, "px-3 pb-2 text-[12px] font-medium text-muted")}>
           <span role="columnheader">Name</span>
           <span role="columnheader" className={CATEGORY}>
-            Channel
+            {v2 ? "Channel" : "Niche"}
           </span>
           <span role="columnheader">Status</span>
           <span role="columnheader" className={BY}>
@@ -2035,12 +2037,11 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   const [picked, setPicked] = useState(false);
   const v2 = useBeta((beta) => beta.v2);
   const [prompt, setPrompt] = useState("");
-  // A channel (Nov 14; Sphe: "the main thing that shows up is Pick a channel"): with V2 on, an edit is made for one,
-  // today's kinds under Other kinds. Whether it's a compilation: the channel's unless changed here.
+  // A channel: with V2 on, every edit and script is made for one, and no niche is picked (Sphe, Nov 16); V1 picks the
+  // niche (today's kinds) and never sees channels. Whether it's a compilation: the channel's unless changed here.
   const channels = useChannels((state) => state.channels);
   const [channelKey, setChannelKey] = useState<string | null>(null);
   const [compilation, setCompilation] = useState<boolean | null>(null);
-  const [otherKinds, setOtherKinds] = useState(false);
   const [sources, setSources] = useState<Source[] | null>(null);
   /** Several videos: one case or a compilation, as the person said (null: not yet). */
   const [shape, setShape] = useState<Shape | null>(null);
@@ -2076,9 +2077,9 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   const styles = STYLES.filter((option) => (writing ? writable(option.value) : allowed === null || allowed.has(option.value)));
   const kind = styles.some((option) => option.value === style) ? style : (styles[0]?.value ?? "bodycam");
   // Scripts too (Sphe, Nov 14): an edit's, a script's, an idea's and a thumbnail's agent is taught its channel's lane.
-  const showChannels = v2 && (channels?.length ?? 0) > 0;
-  const channel = showChannels ? (channels?.find((one) => one.key === channelKey) ?? null) : null;
-  // A channel's script is its footage's (its kind from the channel); a commentary is one of Other kinds.
+  const channel = v2 ? (channels?.find((one) => one.key === channelKey) ?? null) : null;
+  const unpicked = useChannelNeeded(channel?.key ?? null);
+  // A channel's script is its footage's (its kind from the channel); a commentary is V1's alone (no channel makes them yet).
   const commentary = writing && channel === null && kind === "commentary";
 
   // A fresh dialog each time.
@@ -2096,7 +2097,6 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     setPicked(start !== null);
     setChannelKey(null);
     setCompilation(null);
-    setOtherKinds(false);
     setFrom("list");
     setQuery("");
     setScriptId(null);
@@ -2237,14 +2237,12 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, 60);
   const pickedScript = (scripts ?? []).find((one) => one.id === scriptId) ?? null;
-  const ready = listed ? pickedScript !== null : title.trim() !== "" &&
-    // With channels to pick from, one is picked, or another kind under Other kinds.
-    (!showChannels || channel !== null || otherKinds) &&
+  const ready = !unpicked && (listed ? pickedScript !== null : title.trim() !== "" &&
     (writing
       ? commentary
         ? links.length > 0
         : sources !== null && !reading && footage.length > 0 && !blocked
-      : input === "" || (preview?.result !== undefined && (editDoc || links.length > 0)));
+      : input === "" || (preview?.result !== undefined && (editDoc || links.length > 0))));
 
   const create = async () => {
     if (!ready || busy) return;
@@ -2285,7 +2283,8 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         toast(`“${title.trim()}”: importing its footage, then writing the script`, "info");
         return;
       }
-      if (input !== "" && allowed !== null && !allowed.has(kind)) throw new Error("Your account can’t make full edits: an admin can give you an Edit style at accounts.spheceo.com.");
+      // A channel's edit is its channel's kind, which the server checks.
+      if (channel === null && input !== "" && allowed !== null && !allowed.has(kind)) throw new Error("Your account can’t make full edits: an admin can give you an Edit style at accounts.spheceo.com.");
       const { project } = await api.createProject({
         name: title.trim(),
         style: kind,
@@ -2318,7 +2317,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   };
 
   const label = "mb-1.5 block text-[12px] font-medium text-muted";
-  // Today's kinds: New project's own pick without channels, Other kinds' with them.
+  // Today's kinds (V1's niche).
   const kindBlock = (labelled: boolean) => (
         <div>
           {labelled && <span className={label}>Kind</span>}
@@ -2347,7 +2346,6 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   const pickChannel = (key: string | null) => {
     setChannelKey(key);
     setCompilation(null);
-    setOtherKinds(false);
     // A script of another channel is no longer one of the list's.
     const chosenNow = (channels ?? []).find((one) => one.key === key) ?? null;
     if (chosenNow !== null && pickedScript?.channel && pickedScript.channel !== chosenNow.key) setScriptId(null);
@@ -2404,7 +2402,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
           ? commentary
             ? "Paste the sources: videos, articles, posts. The first is the brief."
             : "Paste the footage: YouTube or Drive videos, or a Trello card. A case the channel already covered goes in as a reuse."
-          : channel !== null
+          : v2
             ? "Paste the script’s Google Doc, or leave this empty to start blank and send the footage in the chat."
             : NARRATION[kind] === "recording"
               ? "Paste the script’s Google Doc, or all its text (copied from the Doc, links and all), and “Voice-over:” with the recording’s Drive link."
@@ -2463,16 +2461,11 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     >
       <ChannelField
         kind={work}
-        channels={showChannels ? (channels ?? []) : []}
+        channels={channels ?? []}
         value={channelKey}
         onChange={pickChannel}
         // An edit from a script is the script's kind: today's kinds are a pasted Doc's or a script's to write.
         other={listed ? undefined : kindBlock(false)}
-        otherOpen={otherKinds}
-        onOther={(next) => {
-          setOtherKinds(next);
-          if (next) setChannelKey(null);
-        }}
       />
 
       {listed ? (

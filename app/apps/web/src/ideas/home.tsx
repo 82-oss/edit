@@ -3,7 +3,8 @@
 // user: "one tab, one mode, one page … i think thats better").
 
 import { useChannelChoice } from "../components/Channels";
-import { AREA, ChannelField, FIELD, Field, More, NewShell } from "../components/NewWork";
+import { AREA, ChannelField, FIELD, Field, More, NewShell, useChannelNeeded } from "../components/NewWork";
+import { useBeta } from "../lib/beta";
 import { ArrowUpRight, CircleAlert, ExternalLink, Eye, Lightbulb, MessageSquare, Send, TriangleAlert } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
@@ -216,9 +217,11 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
     setWorkspace(value);
     localStorage.setItem("ideas.workspace", value);
   };
-  // The channel it's for (V2's): its agent is taught that channel's Ideas lane; none is a choice too.
+  // The channel it's for (V2's, always): its agent is taught that channel's Ideas lane.
   const channels = useChannelChoice(open);
   const [channel, setChannel] = useState<string | null>(null);
+  const unpicked = useChannelNeeded(channel);
+  const v2 = useBeta((beta) => beta.v2);
   const pick = (key: string | null) => {
     setChannel(key);
     // A channel narrated by the editor's recording makes interrogation ideas; a voice's, bodycam ones (where both are theirs).
@@ -270,7 +273,7 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
       open={open}
       onClose={close}
       onSubmit={make}
-      ready={count > 0 && !busy}
+      ready={count > 0 && !busy && !unpicked}
       busy={busy}
       action={busy ? "Starting…" : count > 1 ? `Repackage ${count}` : "Repackage"}
       error={
@@ -288,7 +291,7 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
       <Field label="Cases" hint={`${KIND[workspace].what}, one a line`}>
         <textarea autoFocus value={links} onChange={(event) => setLinks(event.target.value)} placeholder="https://www.youtube.com/watch?v=…" rows={4} aria-label="Links" className={AREA} />
       </Field>
-      {workspaces.length > 1 && channel === null && (
+      {workspaces.length > 1 && !v2 && (
         <div className="flex items-center justify-between text-[12px] font-medium text-muted">
           <span>Kind</span>
           <Tabs framed id="new-idea-kind" label="Kind of idea" value={workspace} onChange={choose} tabs={workspaces.map((value) => ({ value, label: WORKSPACE_NAMES[value] }))} />

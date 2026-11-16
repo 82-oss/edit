@@ -10,7 +10,8 @@ import { ChevronDown, FileText, Film, Image as ImageIcon, Lightbulb, type Lucide
 import { AnimatePresence, motion } from "motion/react";
 import { useState, type ReactNode } from "react";
 
-import type { Channel, Lane } from "../lib/channels";
+import { useBeta } from "../lib/beta";
+import { useChannels, type Channel, type Lane } from "../lib/channels";
 import { ChannelPicker } from "./Channels";
 import { Button, cx, Modal, spring } from "./ui";
 
@@ -95,42 +96,33 @@ export function Field({ label, hint, children, className }: { label: string; hin
 }
 
 /**
- * The channel it's for, first (Sphe, Nov 14: "the main thing that shows up
- * is Pick a channel"); a group first, then its channel (ChannelPicker);
- * picked, it's white. `other`: what's there besides the
- * channels (today's kinds), under Other kinds, opened when no
- * channel can be.
+ * What the work is for. Edit V2: a channel, always (Sphe, Nov 16: "you pick a
+ * channel, or you pick a placeholder channel, or you pick a group of
+ * channels"; a group opens to its channels, ChannelPicker), never a niche.
+ * Edit V1: `other`, the niche (today's kinds), and never a channel.
  */
-export function ChannelField({ kind, channels, value, onChange, other, otherOpen, onOther }: {
-  kind: WorkKind;
-  channels: Channel[];
-  value: string | null;
-  onChange: (key: string | null) => void;
-  other?: ReactNode;
-  otherOpen?: boolean;
-  onOther?: (open: boolean) => void;
-}) {
-  if (channels.length === 0) return other === undefined ? null : <Field label="Kind">{other}</Field>;
+export function ChannelField({ kind, channels, value, onChange, other }: { kind: WorkKind; channels: Channel[]; value: string | null; onChange: (key: string | null) => void; other?: ReactNode }) {
+  const v2 = useBeta((beta) => beta.v2);
+  const loaded = useChannels((state) => state.channels !== null);
+  const teacher = useChannels((state) => state.teacher);
+  if (!v2) return other === undefined ? null : <Field label="Kind">{other}</Field>;
   return (
     <Field label="Channel">
-      <ChannelPicker channels={channels} value={value} lane={KINDS[kind].lane} onChange={onChange} />
-      {other !== undefined && onOther !== undefined && (
-        <>
-          <button type="button" onClick={() => onOther(!otherOpen)} className="mt-2.5 flex items-center gap-1 text-[12px] text-faint transition-colors hover:text-muted">
-            Other kinds
-            <ChevronDown size={12} className={cx("transition-transform", otherOpen && "rotate-180")} />
-          </button>
-          <AnimatePresence initial={false}>
-            {otherOpen && (
-              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: "auto" }} exit={{ opacity: 0, height: 0 }} transition={spring} className="overflow-hidden pt-2">
-                {other}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </>
+      {channels.length > 0 ? (
+        <ChannelPicker channels={channels} value={value} lane={KINDS[kind].lane} onChange={onChange} />
+      ) : !loaded ? (
+        <div className="shimmer h-11 rounded-lg border border-line" />
+      ) : (
+        <p className="text-[12px] text-faint">{teacher ? "No channels yet: add one under Channels on Home." : "No channels yet: an admin can give you one at accounts.spheceo.com."}</p>
       )}
     </Field>
   );
+}
+
+/** Edit V2's work is a channel's: nothing starts until one is picked. */
+export function useChannelNeeded(channel: string | null): boolean {
+  const v2 = useBeta((beta) => beta.v2);
+  return v2 && channel === null;
 }
 
 /** What's rarely needed, folded: its names say what's inside; open by itself when something in it is set. */

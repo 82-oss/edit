@@ -11,7 +11,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useChannelChoice } from "../components/Channels";
-import { AREA, Aside, ChannelField, FIELD, Field, NewShell } from "../components/NewWork";
+import { AREA, Aside, ChannelField, FIELD, Field, NewShell, useChannelNeeded } from "../components/NewWork";
 import { cx } from "../components/ui";
 import { postFile } from "../lib/chatFiles";
 import { ideasApi } from "../lib/ideas";
@@ -69,7 +69,8 @@ export function NewThumbnail({ open, onClose }: { open: boolean; onClose: () => 
   }, [open]);
 
   const starts = guide.trim() !== "" || pictures.length > 0;
-  const ready = title.trim() !== "" && !busy;
+  const unpicked = useChannelNeeded(channel);
+  const ready = title.trim() !== "" && !busy && !unpicked;
 
   const create = async () => {
     setBusy(true);
