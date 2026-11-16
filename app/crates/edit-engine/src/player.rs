@@ -525,6 +525,7 @@ impl Player {
     fn changed(&mut self) {
         self.drawn = None;
         self.warmed_from = None;
+        self.pictures.forget();
         if self.playing.is_none() {
             self.sound.disarm();
         } else {
@@ -546,6 +547,8 @@ impl Player {
             self.config.width = width;
             self.config.height = height;
             self.warmed_from = None;
+            // Pictures are decoded at the size shown: those kept are another size's.
+            self.pictures.forget();
             if !self.out_of_sight() {
                 self.surface.configure(self.renderer.device(), &self.config);
                 self.drawn = None;
@@ -611,7 +614,11 @@ impl Player {
         times.evaluate = ms(started);
         let shown = self.shown(project);
         let started = Instant::now();
-        let pictures = self.pictures.decode(project, &scene, shown, &self.sources);
+        // At rest (a drag, a step), pictures decoded behind the playhead stand in for a seek back.
+        let rest = self.playing.is_none().then_some(frame);
+        let pictures = self
+            .pictures
+            .decode(project, &scene, shown, &self.sources, rest);
         times.decoders = decode_stats::take();
         let pictures = pictures?;
         times.decode = ms(started);
@@ -631,6 +638,12 @@ impl Player {
         times.present = ms(started);
         self.drawn = Some(frame);
         self.last = Some(times);
+        match &self.project {
+            Some(project) if self.playing.is_none() => {
+                self.pictures.moved(project, frame, shown, &self.sources);
+            }
+            _ => self.pictures.playing(),
+        }
         Ok(())
     }
 
@@ -1190,9 +1203,9 @@ pub fn describe_draw(
 ) -> String {
     match (drawn, times) {
         (Ok(()), Some(t)) => format!(
-            "frame {frame} in {ms:.1} ms: Ok, eval {:.1} decode {:.1} (layers {}, open {}×{:.1} seek {}×{:.1} fwd {}×{:.1} ffmpeg {}×{:.1} ahead {}×{:.1}) upload {:.1} composite {:.1} present {:.1}",
+            "frame {frame} in {ms:.1} ms: Ok, eval {:.1} decode {:.1} (layers {}, open {}×{:.1} seek {}×{:.1} fwd {}×{:.1} ffmpeg {}×{:.1} ahead {}×{:.1} kept {}) upload {:.1} composite {:.1} present {:.1}",
             t.evaluate, t.decode, t.layers, t.decoders.opens, t.decoders.open_ms, t.decoders.seeks, t.decoders.seek_ms,
-            t.decoders.forward, t.decoders.forward_ms, t.decoders.ffmpeg, t.decoders.ffmpeg_ms, t.decoders.ahead, t.decoders.ahead_ms,
+            t.decoders.forward, t.decoders.forward_ms, t.decoders.ffmpeg, t.decoders.ffmpeg_ms, t.decoders.ahead, t.decoders.ahead_ms, t.decoders.kept,
             t.upload, t.composite, t.present
         ),
         _ => format!("frame {frame} in {ms:.1} ms: {drawn:?}"),

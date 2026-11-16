@@ -20,7 +20,7 @@ Paths are relative to `app/`.
 - While someone watches, their playback comes first: effect renders (`apps/server/src/effects.ts`) and the look Chromes (`effect_looker.ts`) don't wait; only `export_ahead.ts` gives way.
 - Check a joined export by decoding, not only by frame count (`crates/edit-engine/src/render.rs` `export_chunked`); its fallback chain (chunked, again, whole native, whole FFmpeg) hides the first cause, and Marc's "joined 33826 frames, not 33786" was never explained.
 - `scripts/acceptance.ts --native` stops at "Sign in to Edit": only the Chrome run gets `/api/account`'s `required: false` (`nativeChecks`), so check.yml's `native` job fails the day a Mac runner (`EDIT_MAC_RUNNER`) is enrolled.
-- A drag in Edit.app is bound by the reader's seek (20–80 ms a position); a second reader kept ahead of the drag would hide it (`render.rs` `ReaderPool`, `player.rs` `hint`).
+- A drag forward in Edit.app past the 2 s a reader reads on is still bound by its seek (20–80 ms a position); a drag back reads pictures decoded behind the playhead (`behind.rs`, Nov 16). A reader kept ahead of a forward drag would hide the rest (`render.rs` `ReaderPool`, `player.rs` `hint`).
 - Retire the page player's smooth render, scrub pieces and block cache (`apps/server/src/playback_render.ts`, `playback_stream.ts`, `scrub.ts`, `cloud_blocks.ts`, `export_excerpts.ts`) once browser playback over whole copies alone is measured.
 - Measure a cold open on a slow line (JJ's took 6 s to 4 min a file) in Edit.app and the page.
 - After a hard crash the old `claude` process isn't ended: `apps/server/src/serve.ts` `endLeftovers` only ends children of the same pid, so an orphan can keep calling the new server's `/mcp`.

@@ -10,6 +10,8 @@
 //! its log lines (`log`). Its host is the native addon (`crates/edit-native`)
 //! under the Bun server.
 
+#[cfg(any(target_os = "macos", test))]
+mod behind;
 pub mod censor;
 pub mod chunks;
 pub mod desktop;

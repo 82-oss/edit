@@ -243,7 +243,7 @@ pub(crate) struct DecodeKey {
 
 #[derive(Clone, Debug)]
 pub(crate) struct Source {
-    key: DecodeKey,
+    pub(crate) key: DecodeKey,
     fps: f64,
 }
 
@@ -261,7 +261,22 @@ impl Source {
         }
     }
 
-    fn bytes(&self) -> usize {
+    /// A video file read as moving pictures at `(width, height)`.
+    #[cfg(test)]
+    pub(crate) fn video(path: &Path, (width, height): (u32, u32), order: Order, fps: f64) -> Self {
+        Self {
+            key: DecodeKey {
+                path: path.to_path_buf(),
+                width,
+                height,
+                order,
+                still: false,
+            },
+            fps,
+        }
+    }
+
+    pub(crate) fn bytes(&self) -> usize {
         let pixels = self.key.width as usize * self.key.height as usize;
         if self.key.order == Order::Yuv420 {
             pixels * 3 / 2
@@ -289,6 +304,8 @@ pub mod decode_stats {
     /// Decoders opened and seeked ahead of the playhead (`PreviewPictures::warm`), on their own threads.
     pub(crate) static AHEAD: AtomicU64 = AtomicU64::new(0);
     pub(crate) static AHEAD_NS: AtomicU64 = AtomicU64::new(0);
+    /// Pictures read from those decoded behind the playhead (`crate::behind`) instead of a reader.
+    pub(crate) static KEPT: AtomicU64 = AtomicU64::new(0);
 
     std::thread_local! {
         /// Set on a decode-ahead thread: its opens and seeks count as `AHEAD`, not as a frame's.
@@ -319,6 +336,8 @@ pub mod decode_stats {
         /// Opens and seeks done ahead of the playhead since the last call, and their time.
         pub ahead: u64,
         pub ahead_ms: f64,
+        /// Pictures read from those decoded behind the playhead.
+        pub kept: u64,
     }
 
     pub fn take() -> Taken {
@@ -334,6 +353,7 @@ pub mod decode_stats {
             forward_ms: ms(&FORWARD_NS),
             ffmpeg: FFMPEG.swap(0, Ordering::Relaxed),
             ffmpeg_ms: ms(&FFMPEG_NS),
+            kept: KEPT.swap(0, Ordering::Relaxed),
         }
     }
 }
@@ -341,7 +361,7 @@ pub mod decode_stats {
 /// Sequential reader for one source that restarts on jumps: AVFoundation on
 /// the Mac, FFmpeg for what it can't read (and elsewhere), ImageIO for stills.
 pub(crate) struct VideoReader {
-    source: Source,
+    pub(crate) source: Source,
     pub(crate) width: u32,
     pub(crate) height: u32,
     child: Option<(crate::util::Watched, ChildStdout)>,
@@ -392,7 +412,7 @@ impl VideoReader {
         })
     }
 
-    fn open(source: Source) -> Self {
+    pub(crate) fn open(source: Source) -> Self {
         #[cfg(test)]
         tests::OPENED.with(|opened| opened.set(opened.get() + 1));
         let (width, height) = (source.key.width, source.key.height);
@@ -689,7 +709,12 @@ impl VideoReader {
     /// The frame covering `time` into `out` (sized for this reader). With
     /// `if_changed`, Ok(false) leaves `out` alone when the picture is the one
     /// last copied out (a slowed clip shows each frame several times).
-    fn frame_into(&mut self, time: f64, out: &mut [u8], if_changed: bool) -> Result<bool, String> {
+    pub(crate) fn frame_into(
+        &mut self,
+        time: f64,
+        out: &mut [u8],
+        if_changed: bool,
+    ) -> Result<bool, String> {
         let read = self.read_into(time, out, if_changed);
         if read.is_err() {
             self.failed = true;
@@ -1318,6 +1343,8 @@ pub(crate) struct PreviewPictures {
     /// Shared with the decode-ahead threads, which put the readers they opened and seeked here.
     pool: Arc<Mutex<ReaderPool>>,
     ahead: mpsc::Sender<(Source, f64)>,
+    /// Pictures decoded behind the playhead while it moves back at rest.
+    behind: crate::behind::Behind,
 }
 
 /// Threads opening and seeking readers ahead of the playhead (a cut to a new
@@ -1327,7 +1354,7 @@ const AHEAD_THREADS: usize = 1;
 
 /// A clip's decoded picture: its clip, width, height and BGRA pixels.
 #[cfg(target_os = "macos")]
-pub(crate) type Picture = (String, u32, u32, Vec<u8>);
+pub(crate) type Picture = (String, u32, u32, crate::behind::Pixels);
 
 /// How many readers the preview keeps, and how many of one file (the one longest unused goes when there are more).
 #[cfg(target_os = "macos")]
@@ -1375,11 +1402,26 @@ impl PreviewPictures {
                     }
                 });
         }
-        Self { pool, ahead }
+        Self {
+            pool,
+            ahead,
+            behind: crate::behind::Behind::new(crate::behind::BUDGET),
+        }
     }
 
     pub(crate) fn clear(&mut self) {
         self.pool.lock().clear();
+        self.behind.clear();
+    }
+
+    /// Lets go of the pictures decoded behind the playhead (the edit or the size changed).
+    pub(crate) fn forget(&mut self) {
+        self.behind.clear();
+    }
+
+    /// Playing: the pictures behind the playhead stop being decoded (they're kept).
+    pub(crate) fn playing(&mut self) {
+        self.behind.stop();
     }
 
     /// Lets go of the readers of files not in `read` (a media read from another file now); the rest stay.
@@ -1388,6 +1430,23 @@ impl PreviewPictures {
             .lock()
             .readers
             .retain(|(reader, _)| read.contains(&reader.source.key.path));
+        self.behind.clear();
+    }
+
+    /// The playhead is at `frame` at rest: moving back, the pictures of the frames below it are decoded on
+    /// another thread (`crate::behind`), so the next steps back read them instead of seeking.
+    pub(crate) fn moved(
+        &mut self,
+        project: &Project,
+        frame: i64,
+        shown: (u32, u32),
+        sources: &std::collections::HashMap<String, PathBuf>,
+    ) {
+        self.behind.moved(frame, project.fps(), |at| {
+            video_requests(project, &evaluate_seen(project, at), shown, sources)
+                .map(|(requests, _)| requests)
+                .unwrap_or_default()
+        });
     }
 
     /// Has a reader of `media` opened and seeked to `source_time` on another
@@ -1422,54 +1481,91 @@ impl PreviewPictures {
         let _ = self.ahead.send((source, source_time));
     }
 
-    /// `(clip, width, height, BGRA pixels)` for each video layer of `scene`.
+    /// `(clip, width, height, BGRA pixels)` for each video layer of `scene`. At rest (`rest`: the
+    /// frame), a picture decoded behind the playhead is read instead of a reader.
     pub(crate) fn decode(
         &mut self,
         project: &Project,
         scene: &Scene,
         shown: (u32, u32),
         sources: &std::collections::HashMap<String, PathBuf>,
+        rest: Option<i64>,
     ) -> Result<Vec<Picture>, String> {
-        let mut requests = Vec::new();
-        let mut clips = Vec::new();
-        for layer in &scene.layers {
-            if let Layer::Video {
-                clip,
-                media,
-                source_time,
-                ..
-            } = layer
-            {
-                let found = project
-                    .media(media)
-                    .ok_or_else(|| format!("unknown media {media}"))?;
-                let path = sources
-                    .get(media)
-                    .cloned()
-                    .unwrap_or_else(|| PathBuf::from(&found.path));
-                requests.push((
-                    Source::new(
-                        found,
-                        path,
-                        decode_size(found, shown.0, shown.1),
-                        Order::Bgra,
-                    ),
-                    *source_time,
-                ));
-                clips.push(clip.clone());
-            }
+        let (requests, clips) = video_requests(project, scene, shown, sources)?;
+        let kept = match rest {
+            Some(frame) => self.behind.lookup(frame, &requests),
+            None => vec![None; requests.len()],
+        };
+        let missing: Vec<(Source, f64)> = requests
+            .iter()
+            .zip(&kept)
+            .filter(|(_, kept)| kept.is_none())
+            .map(|(request, _)| request.clone())
+            .collect();
+        decode_stats::KEPT.fetch_add(
+            (requests.len() - missing.len()) as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let threads = if missing.len() > 2 { 4 } else { 1 };
+        let decoded = decode_all(&mut self.pool.lock(), &missing, threads);
+        if decoded.is_err() {
+            // What's kept may be of a file that changed.
+            self.behind.clear();
         }
-        let threads = if requests.len() > 2 { 4 } else { 1 };
-        let decoded = decode_all(&mut self.pool.lock(), &requests, threads)?;
-        Ok(clips
+        let mut decoded = decoded?.into_iter();
+        clips
             .into_iter()
             .zip(&requests)
-            .zip(decoded)
-            .map(|((clip, (source, _)), pixels)| {
-                (clip, source.key.width, source.key.height, pixels)
+            .zip(kept)
+            .map(|((clip, (source, _)), kept)| -> Result<Picture, String> {
+                let pixels = kept
+                    .or_else(|| decoded.next().map(Arc::new))
+                    .ok_or_else(|| "a frame wasn't decoded".to_owned())?;
+                Ok((clip, source.key.width, source.key.height, pixels))
             })
-            .collect())
+            .collect()
     }
+}
+
+/// Each video layer of `scene` as what's read for it (its file, decoded at the size it's shown in a
+/// `shown` picture, and its source time), with its clip.
+#[cfg(target_os = "macos")]
+fn video_requests(
+    project: &Project,
+    scene: &Scene,
+    shown: (u32, u32),
+    sources: &std::collections::HashMap<String, PathBuf>,
+) -> Result<(Vec<(Source, f64)>, Vec<String>), String> {
+    let mut requests = Vec::new();
+    let mut clips = Vec::new();
+    for layer in &scene.layers {
+        if let Layer::Video {
+            clip,
+            media,
+            source_time,
+            ..
+        } = layer
+        {
+            let found = project
+                .media(media)
+                .ok_or_else(|| format!("unknown media {media}"))?;
+            let path = sources
+                .get(media)
+                .cloned()
+                .unwrap_or_else(|| PathBuf::from(&found.path));
+            requests.push((
+                Source::new(
+                    found,
+                    path,
+                    decode_size(found, shown.0, shown.1),
+                    Order::Bgra,
+                ),
+                *source_time,
+            ));
+            clips.push(clip.clone());
+        }
+    }
+    Ok((requests, clips))
 }
 
 /// Gives the renderer the sound levels this frame's waveforms read: each
