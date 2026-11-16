@@ -17,6 +17,7 @@ import { createHash } from "node:crypto";
 import * as diag from "./diag.ts";
 import { outOfSpace } from "./export_prep.ts";
 import { writeAtomic } from "./files.ts";
+import * as mp4 from "./mp4_index.ts";
 import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
 import { FREE_FLOOR_BYTES, freeBytes } from "./storage.ts";
@@ -181,6 +182,49 @@ export function keeping(root: string): boolean {
   return freeBytes(root) >= FREE_FLOOR_BYTES + KEEPING_MARGIN;
 }
 
+/**
+ * Blocks read but not kept on disk (its floor, or ENOSPC), held in memory a while, the least lately used let go
+ * first: at the floor Edit.app's window reads a stretch ahead of its play (preroll.rs, through `serve`) and its
+ * decoder then reads the same stretch, which went to R2 twice. 64 MiB is two to four minutes of a proxy (0.25–0.55
+ * MB/s on dev's), well past the window's 10–20 s ahead in several files at once, and little to an 8 GB M1.
+ */
+export const HELD_BYTES = 64 * 1024 * 1024;
+const held = new Map<string, Uint8Array>();
+let heldBytes = 0;
+
+function hold(id: string, bytes: Uint8Array): void {
+  unhold(id);
+  if (bytes.byteLength > HELD_BYTES) return;
+  held.set(id, bytes);
+  heldBytes += bytes.byteLength;
+  for (const [oldest, one] of held) {
+    if (heldBytes <= HELD_BYTES) break;
+    held.delete(oldest);
+    heldBytes -= one.byteLength;
+  }
+}
+
+function unhold(id: string): void {
+  const known = held.get(id);
+  if (known === undefined) return;
+  heldBytes -= known.byteLength;
+  held.delete(id);
+}
+
+/** A block held in memory, now the most lately used; or null. */
+function heldBlock(id: string): Uint8Array | null {
+  const bytes = held.get(id);
+  if (bytes === undefined) return null;
+  held.delete(id);
+  held.set(id, bytes);
+  return bytes;
+}
+
+/** How much the blocks held in memory take (for tests: it never passes `HELD_BYTES`). */
+export function heldInMemory(): { blocks: number; bytes: number } {
+  return { blocks: held.size, bytes: heldBytes };
+}
+
 /** Writes a block's file (or its meta); false when the disk refused it (ENOSPC): the read is answered from memory. */
 function keep(path: string, bytes: string | Uint8Array): boolean {
   try {
@@ -220,6 +264,28 @@ function fromCopy(key: string, index: number): Uint8Array | null {
 }
 
 /**
+ * Whether block `index` of `key` is here to read without R2 (on disk, held in memory, or in its whole copy): read-ahead
+ * and warming skip those, and only look (a block on disk read and thrown away was 10 MiB of synchronous reads on the
+ * event loop for each 2 MiB FFmpeg pulled). A block the cleaner takes after this said yes is read again by `block`.
+ */
+function isHere(root: string, key: string, index: number): boolean {
+  if (held.has(`${key}#${index}`)) return true;
+  const under = joining.get(key);
+  if ((under !== undefined && index < under.blocks) || joined.has(key)) return true;
+  return fs.existsSync(join(folderOf(root, key), `${index}`));
+}
+
+/** Block `index` of `key` if it's here (disk, memory, whole copy) without reading R2; null if not. */
+function blockHere(root: string, key: string, index: number): Uint8Array | null {
+  try {
+    const bytes = fs.readFileSync(join(folderOf(root, key), `${index}`));
+    return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  } catch {
+    return heldBlock(`${key}#${index}`) ?? fromCopy(key, index);
+  }
+}
+
+/**
  * One block of the object, from disk or R2 (once, however many ask), read as soon as `priority` says (`slot`).
  * One someone waits on ("asked": a page's range, the window's FFmpeg) that misses marks the viewer busy; a hit never does.
  */
@@ -236,10 +302,16 @@ function block(root: string, key: string, index: number, url: BlockSource, prior
   } catch {
     // Not here yet.
   }
+  const id = `${key}#${index}`;
+  const inMemory = heldBlock(id);
+  if (inMemory !== null) {
+    // Room on the disk again: kept there, and let go from memory.
+    if (keepable(root) && fs.existsSync(folder) && keep(path, inMemory)) unhold(id);
+    return Promise.resolve(inMemory);
+  }
   const copied = fromCopy(key, index);
   if (copied !== null) return Promise.resolve(copied);
   if (viewer) noteViewerMiss();
-  const id = `${key}#${index}`;
   const known = reading.get(id);
   if (known !== undefined) {
     hurryBlock(id, priority);
@@ -252,7 +324,7 @@ function block(root: string, key: string, index: number, url: BlockSource, prior
     fs.mkdirSync(folder, { recursive: true });
     // Its size is a few bytes, kept even at the floor: a read answered from memory still knows how big the object is.
     if (Number.isFinite(total) && metaOf(folder) === null) keep(join(folder, "meta.json"), JSON.stringify({ size: total, type: answer.headers.get("content-type") ?? "video/mp4", key }));
-    if (keepable(root)) keep(path, bytes);
+    if (!keepable(root) || !keep(path, bytes)) hold(id, bytes);
     return bytes;
   }).finally(() => reading.delete(id));
   reading.set(id, read);
@@ -335,6 +407,9 @@ export function blocksHere(root: string, key: string): { size: number; here: Set
   } catch {
     return null;
   }
+  // Held in memory (read where none could be kept): here too, while they're held.
+  const last = Math.floor((meta.size - 1) / BLOCK);
+  if (held.size > 0) for (let index = 0; index <= last; index++) if (held.has(`${key}#${index}`)) here.add(index);
   // Let go into the whole copy being joined: still here to read.
   for (let index = 0; index < (joining.get(key)?.blocks ?? 0); index++) here.add(index);
   return { size: meta.size, here };
@@ -352,27 +427,92 @@ export function bytesHere(root: string, key: string): number {
 }
 
 /**
- * Bytes `from..to` (a fraction of the object each, 0 to 1, as a time over its length maps onto a proxy whose
- * index is at its start) read into blocks, the first block too (it holds the index): behind what anyone waits on,
- * or as one (`priority` "asked": the seconds a held play waits for).
- * Resolves once they're here; how many were read.
+ * Indexes (mp4_index.ts) read lately, by key, the least lately used let go first past `INDEX_BYTES` (a 9-minute
+ * proxy's is about 1.1 MB): null for an object with none to read (not a faststart MP4), which is laid out evenly.
  */
-export async function warm(root: string, key: string, from: number, to: number, url: BlockSource, priority: "asked" | "ahead" = "ahead"): Promise<number> {
+const INDEX_BYTES = 32 * 1024 * 1024;
+const INDEX_COUNT = 1024;
+const indexes = new Map<string, { size: number; index: mp4.Mp4Index | null }>();
+let indexBytes = 0;
+
+function remember(key: string, size: number, index: mp4.Mp4Index | null): void {
+  const known = indexes.get(key);
+  if (known !== undefined) {
+    indexBytes -= known.index?.bytes ?? 0;
+    indexes.delete(key);
+  }
+  indexes.set(key, { size, index });
+  indexBytes += index?.bytes ?? 0;
+  for (const [oldest, one] of indexes) {
+    if ((indexBytes <= INDEX_BYTES && indexes.size <= INDEX_COUNT) || oldest === key) break;
+    indexes.delete(oldest);
+    indexBytes -= one.index?.bytes ?? 0;
+  }
+}
+
+/**
+ * The object's index from its first blocks: those here only (`url` absent: undefined while they aren't), or read
+ * as `priority` says. Null: it has none (not a faststart MP4, or one that doesn't parse).
+ */
+async function indexFrom(root: string, key: string, url?: BlockSource, priority: Priority = "ahead"): Promise<mp4.Mp4Index | null | undefined> {
+  const size = metaOf(folderOf(root, key))?.size;
+  if (size === undefined) return undefined;
+  const known = indexes.get(key);
+  if (known !== undefined && known.size === size) {
+    remember(key, size, known.index);
+    return known.index;
+  }
+  const read = async (index: number) => (url === undefined ? blockHere(root, key, index) : await block(root, key, index, url, priority));
+  const first = await read(0);
+  if (first === null) return undefined;
+  let parsed = mp4.parse(first, size);
+  if ("need" in parsed) {
+    // Its index passes the first block (a long file's): the blocks it reaches, then once more.
+    const need = Math.min(parsed.need, size);
+    const all = new Uint8Array(need);
+    all.set(first.subarray(0, need));
+    for (let index = 1; index * BLOCK < need; index++) {
+      const bytes = await read(index);
+      if (bytes === null) return undefined;
+      all.set(bytes.subarray(0, Math.min(bytes.length, need - index * BLOCK)), index * BLOCK);
+    }
+    parsed = mp4.parse(all, size);
+  }
+  const index = "index" in parsed ? parsed.index : null;
+  if (index === null) diag.info("cloud", `${key}: no index to read (${"none" in parsed ? parsed.none : "it runs past its end"}): its seconds laid out evenly`);
+  remember(key, size, index);
+  return index;
+}
+
+/** The object's index from blocks here (undefined: not here yet; null: it has none). For `playback_ready.ts`. */
+export async function indexHere(root: string, key: string): Promise<mp4.Mp4Index | null | undefined> {
+  return indexFrom(root, key);
+}
+
+/**
+ * Seconds `from..to` of the object (`duration` long) read into blocks: exactly the blocks a reader needs for them,
+ * from its index (mp4_index.ts: every sample of every track there, from the keyframe before `from`, and the index
+ * itself); an object with none, the bytes as if laid out evenly and a block either side. Behind what anyone waits
+ * on, or as one (`priority` "asked": the seconds a held play waits for). Resolves once they're here; how many were read.
+ */
+export async function warm(root: string, key: string, from: number, to: number, duration: number, url: BlockSource, priority: "asked" | "ahead" = "ahead"): Promise<number> {
   await block(root, key, 0, url, priority);
   const meta = metaOf(folderOf(root, key));
   if (meta === null) return 0;
   const last = Math.floor((meta.size - 1) / BLOCK);
-  const first = Math.max(0, Math.min(last, Math.floor((from * meta.size) / BLOCK) - 1));
-  const end = Math.max(first, Math.min(last, Math.floor((to * meta.size) / BLOCK) + 1));
-  const reads: Promise<Uint8Array>[] = [];
-  let read = 0;
-  for (let index = first; index <= end; index++) {
-    if (fs.existsSync(join(folderOf(root, key), `${index}`))) continue;
-    read++;
-    reads.push(block(root, key, index, url, priority));
+  const index = await indexFrom(root, key, url, priority);
+  let wanted: number[];
+  if (index) wanted = mp4.blocksFor(index, from, to, BLOCK).filter((one) => one <= last);
+  else {
+    const fraction = (seconds: number) => (duration > 0 ? Math.max(0, Math.min(1, seconds / duration)) : 0);
+    const first = Math.max(0, Math.min(last, Math.floor((fraction(from) * meta.size) / BLOCK) - 1));
+    const end = Math.max(first, Math.min(last, Math.floor((fraction(to) * meta.size) / BLOCK) + 1));
+    wanted = Array.from({ length: end - first + 1 }, (_, n) => first + n);
   }
+  const reads: Promise<Uint8Array>[] = [];
+  for (const one of wanted) if (!isHere(root, key, one)) reads.push(block(root, key, one, url, priority));
   await Promise.all(reads);
-  return read;
+  return reads.length;
 }
 
 /**
@@ -395,10 +535,12 @@ export async function serve(root: string, key: string, range: string | null, url
   // A read to the end (FFmpeg's) reads on from where it starts: the blocks after it are asked for with it, not one
   // after another once each lands (a cold open waited on two blocks in turn, 1.5–2.2 s to its first picture).
   const known = metaOf(folder)?.size;
-  if (open && known !== undefined) for (let n = 1; n <= STREAM_AHEAD && (first + n) * BLOCK < known; n++) void block(root, key, first + n, url, "ahead", true).catch(() => {});
+  if (open && known !== undefined) {
+    for (let n = 1; n <= STREAM_AHEAD && (first + n) * BLOCK < known; n++) if (!isHere(root, key, first + n)) void block(root, key, first + n, url, "ahead", true).catch(() => {});
+  }
   // Not here: its first bytes straight from R2's own URL while its block lands (kept for the next read), so the
   // reader starts on one round trip, not on a whole 2 MiB block (a cold open-and-seek took 1.1–2.7 s that way).
-  const cold = !fs.existsSync(join(folder, `${first}`));
+  const cold = !isHere(root, key, first);
   const opening = block(root, key, first, url, "asked");
   opening.catch(() => {});
   let peek = cold && url.direct !== undefined ? await peekAt(url.direct, from, open ? from + PEEK - 1 : Math.min(to, from + PEEK - 1)).catch(() => null) : null;
@@ -428,7 +570,7 @@ export async function serve(root: string, key: string, range: string | null, url
     for (let n = 1; n <= reach; n++) {
       const next = after + n;
       // A read to the end wants these within seconds: R2's own URL too where the edge is slow, as for the block it reads.
-      if (next * BLOCK < total) void block(root, key, next, url, "ahead", open).catch((error: unknown) => diag.warn("cloud", `reading ahead in ${key}: ${diag.messageOf(error)}`));
+      if (next * BLOCK < total && !isHere(root, key, next)) void block(root, key, next, url, "ahead", open).catch((error: unknown) => diag.warn("cloud", `reading ahead in ${key}: ${diag.messageOf(error)}`));
     }
   };
   // Answered as it's read, a block at a time: a player asks a long preview
@@ -580,6 +722,10 @@ export async function fetchWhole(root: string, key: string, local: string, url: 
 /** For tests: nothing queued or in flight. */
 export function resetForTests(): void {
   reading.clear();
+  held.clear();
+  heldBytes = 0;
+  indexes.clear();
+  indexBytes = 0;
   joining.clear();
   joined.clear();
   queued.clear();

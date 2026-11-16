@@ -26,6 +26,7 @@ import * as cloudBlocks from "./cloud_blocks.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import { json } from "./http/errors.ts";
+import * as mp4 from "./mp4_index.ts";
 import type { Router } from "./http/router.ts";
 import type { Media, Project } from "./model.ts";
 import { isFile } from "./paths.ts";
@@ -50,6 +51,9 @@ function played(project: Project) {
     return false;
   }) as (Project["clips"][number] & { media: string; source_in: number; speed?: number })[];
 }
+
+/** The seconds here last worked out from an index, by key, while the same blocks are here (the page asks often). */
+const secondsMemo = new Map<string, { index: mp4.Mp4Index; signature: string; spans: Spans }>();
 
 /** Seconds of `media` that are here to play from: "all", or stretches of it (sorted). */
 async function hereOf(cache: string, root: string | null, media: Media): Promise<"all" | Spans> {
@@ -77,8 +81,27 @@ async function hereOf(cache: string, root: string | null, media: Media): Promise
   }
   const blocks = root === null ? null : cloudBlocks.blocksHere(root, key);
   if (blocks === null || !blocks.here.has(0) || !(media.duration > 0)) return [];
-  // Each run of blocks here, as seconds of the file (its index at the start, the rest laid out evenly): a run's ends
-  // are pulled in by half a block's worth, the bytes there being only roughly where those seconds are.
+  // From its index (mp4_index.ts): the seconds whose every sample, picture and sound, lies in blocks here, a frame
+  // with every frame since its keyframe. Until Nov 17 a run of blocks was taken for an even share of the file's
+  // length, and a proxy's bitrate follows its picture: ready said 6.7 s and then 160 s ahead were here on kenobi while
+  // the window's decoder waited on blocks that weren't.
+  const index = await cloudBlocks.indexHere(root!, key);
+  if (index === undefined) return [];
+  if (index !== null) {
+    const signature = [...blocks.here].sort((a, b) => a - b).join(",");
+    const known = secondsMemo.get(key);
+    if (known !== undefined && known.index === index && known.signature === signature) return known.spans;
+    const spans = mp4
+      .secondsHere(index, (one) => blocks.here.has(one), cloudBlocks.BLOCK)
+      .map(([a, b]) => [Math.max(0, a), Math.min(media.duration, b)] as [number, number])
+      .filter(([a, b]) => b > a);
+    secondsMemo.delete(key);
+    secondsMemo.set(key, { index, signature, spans });
+    if (secondsMemo.size > 512) secondsMemo.delete(secondsMemo.keys().next().value!);
+    return spans;
+  }
+  // No index to read (not a faststart MP4): each run of blocks here as seconds of the file, laid out evenly, a
+  // run's ends pulled in by half a block's worth, the bytes there being only roughly where those seconds are.
   const seconds = (byte: number) => (Math.min(byte, blocks.size) / blocks.size) * media.duration;
   const half = seconds(cloudBlocks.BLOCK / 2);
   const lastBlock = Math.floor((blocks.size - 1) / cloudBlocks.BLOCK);
@@ -174,7 +197,7 @@ export async function warm(app: App, id: string, frame: number): Promise<void> {
       if (asked.has(stretch)) continue;
       asked.add(stretch);
       reads.push(
-        cloudBlocks.warm(root, key, start / one.duration, end / one.duration, cloudMedia.blockUrl(key), priority).catch((error: unknown) => {
+        cloudBlocks.warm(root, key, start, end, one.duration, cloudMedia.blockUrl(key), priority).catch((error: unknown) => {
           diag.warn("cloud", `${id}: reading ${key} ahead of the viewer: ${diag.messageOf(error)}`);
         }),
       );

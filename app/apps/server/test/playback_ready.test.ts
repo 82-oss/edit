@@ -9,6 +9,7 @@ import { keeping, readyStretches } from "../src/playback_ready.ts";
 import * as storage from "../src/storage.ts";
 import { scratch } from "./helpers/home.ts";
 import { media, project as newProject } from "./helpers/model.ts";
+import * as vbr from "./helpers/vbr_mp4.ts";
 
 const stream = (key: string) => `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(key)}`;
 const clip = (id: string, mediaId: string, start: number, duration: number, sourceIn = 0, type = "video") =>
@@ -70,5 +71,37 @@ test("the page is told whether what's read is kept here: not at the disk's floor
     expect(keeping(null)).toBe(true);
   } finally {
     storage.diskHooks.free = realFree;
+  }
+});
+
+test.skipIf(vbr.ffmpeg === null || vbr.ffprobe === null)("a streamed proxy is ready where every sample, picture and sound, lies in blocks here, by its own index: not an even share of its bytes (kenobi, Nov 17: ready said seconds were here that weren't)", async () => {
+  const home = scratch("playback-ready-index");
+  const file = vbr.makeVbr();
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    const key = "edit/proxies/drive/vbr.mp4";
+    const folder = path.join(root, createHash("sha1").update(key).digest("hex"));
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify({ size: file.bytes.length, type: "video/mp4", key }));
+    const last = Math.floor((file.bytes.length - 1) / BLOCK);
+    // Its first two blocks of seven: the still's 3 s and the start of the noise; an even share would say about 1.7 s.
+    for (const n of [0, 1]) fs.writeFileSync(path.join(folder, `${n}`), file.bytes.subarray(n * BLOCK, (n + 1) * BLOCK));
+    const project = newProject();
+    project.settings.fps = 30;
+    project.media.push(media({ id: "v", name: "v", path: stream(key), kind: "video", duration: 6, cloud: { proxy: key } } as never));
+    project.clips.push(clip("c1", "v", 0, 180), clip("c2", "v", 0, 180, 0, "audio"));
+    // Up to the first sample of either track that passes block 1, by ffprobe's word.
+    const until = Math.min(...[0, 1].map((stream) => file.packets.find((one) => one.stream === stream && one.pos + one.size > 2 * BLOCK)!.pts));
+    expect(until).toBeGreaterThan(3);
+    const even = (2 * BLOCK / file.bytes.length) * 6 - (BLOCK / 2 / file.bytes.length) * 6;
+    expect(until - even).toBeGreaterThan(1);
+    expect(await readyStretches(cache, project, root)).toEqual([[0, Math.round(until * 30)]]);
+    // Every block here: all of it.
+    for (let n = 2; n <= last; n++) fs.writeFileSync(path.join(folder, `${n}`), file.bytes.subarray(n * BLOCK, (n + 1) * BLOCK));
+    expect(await readyStretches(cache, project, root)).toEqual([[0, 180]]);
+  } finally {
+    file.cleanup();
+    home.cleanup();
   }
 });

@@ -1,12 +1,14 @@
 import { afterAll, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
 import * as playing from "../src/playing.ts";
 import * as storage from "../src/storage.ts";
+import * as vbr from "./helpers/vbr_mp4.ts";
 
-import { BLOCK, blocksHere, fetchWhole, keeping, NoRoom, hedgeHooks, noteViewerMiss, retryHooks, serve, viewerBusy, viewerHooks, waitForViewerRest, warm } from "../src/cloud_blocks.ts";
+import { BLOCK, blocksHere, fetchWhole, HELD_BYTES, heldInMemory, keeping, NoRoom, hedgeHooks, noteViewerMiss, retryHooks, serve, viewerBusy, viewerHooks, waitForViewerRest, warm } from "../src/cloud_blocks.ts";
 
 // R2 stood in for: a 5½-block object, every range read counted.
 const size = BLOCK * 5 + BLOCK / 2;
@@ -24,6 +26,7 @@ const r2 = Bun.serve({
 afterAll(() => r2.stop(true));
 const url = async () => `http://127.0.0.1:${r2.port}/object`;
 const root = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-"));
+const folderFor = (at: string, key: string) => join(at, createHash("sha1").update(key).digest("hex"));
 const bytes = async (response: Response | null) => new Uint8Array(await response!.arrayBuffer());
 
 test("a range comes from 2 MiB blocks read once, the next two read ahead, picture and sound sharing them", async () => {
@@ -104,12 +107,12 @@ test("a stretch is warmed into blocks (its index too), and what's here is said",
   const key = "edit/proxies/warmed.mp4";
   expect(blocksHere(root, key)).toBeNull();
   // The middle fifth: its blocks and one either side, and the first (the index).
-  expect(await warm(root, key, 0.4, 0.6, url)).toBeGreaterThan(0);
+  expect(await warm(root, key, 0.4, 0.6, 1, url)).toBeGreaterThan(0);
   const here = blocksHere(root, key)!;
   expect(here.size).toBe(size);
   expect([...here.here].sort()).toEqual([0, 1, 2, 3, 4]);
   // Warmed again: nothing read.
-  expect(await warm(root, key, 0.4, 0.6, url)).toBe(0);
+  expect(await warm(root, key, 0.4, 0.6, 1, url)).toBe(0);
 });
 
 test("a read someone waits on goes first, then the seconds ahead of a jump, then whole copies' fills (Nov 16: a jump froze behind them)", async () => {
@@ -137,7 +140,7 @@ test("a read someone waits on goes first, then the seconds ahead of a jump, then
     await Bun.sleep(20);
     expect(order.length).toBe(8);
     // A jump: the seconds ahead of it warmed in three files (two at once in the free reads, one waiting), then the page's read of the picture there.
-    const warming = Promise.all(["a", "b", "c"].map((name) => warm(slowRoot, `edit/proxies/ahead-${name}.mp4`, 0, 0.1, at(`ahead-${name}`))));
+    const warming = Promise.all(["a", "b", "c"].map((name) => warm(slowRoot, `edit/proxies/ahead-${name}.mp4`, 0, 0.1, 1, at(`ahead-${name}`))));
     for (let tries = 0; tries < 100 && order.length < 10; tries++) await Bun.sleep(5);
     expect(order.slice(8, 10)).toEqual(["/ahead-a 0", "/ahead-b 0"]);
     const jump = serve(slowRoot, "edit/proxies/jump.mp4", "bytes=0-100", at("jump"));
@@ -249,7 +252,7 @@ test("a read someone waits on goes to R2's own URL too when the edge is slow, an
     // Read ahead of the playhead and warmed: the edge alone (the first read's own reads done first).
     await Bun.sleep(500);
     asked.length = 0;
-    await warm(hedgeRoot, "edit/proxies/ahead.mp4", 0, 0.01, source("ahead"));
+    await warm(hedgeRoot, "edit/proxies/ahead.mp4", 0, 0.01, 1, source("ahead"));
     expect(asked.every((one) => one.startsWith("edge"))).toBe(true);
   } finally {
     hedgeHooks.ms = hedge;
@@ -308,16 +311,21 @@ test("at the disk's floor a block read is answered from memory and not kept, a w
     const key = "edit/proxies/floor.mp4";
     const read = await serve(floorRoot, key, `bytes=0-99`, url);
     expect(await bytes(read)).toEqual(object.subarray(0, 100));
-    // Its size kept (a few bytes), no block.
-    expect(blocksHere(floorRoot, key)).toEqual({ size, here: new Set() });
+    // Its size kept (a few bytes), no block on disk: the block held in memory.
+    expect(fs.existsSync(join(folderFor(floorRoot, key), "0"))).toBe(false);
+    expect(blocksHere(floorRoot, key)).toEqual({ size, here: new Set([0]) });
+    expect(heldInMemory().blocks).toBeGreaterThanOrEqual(1);
     const before = reads.length;
     await expect(fetchWhole(floorRoot, "edit/proxies/floor-whole.mp4", join(floorRoot, "floor-whole.mp4"), url)).rejects.toBeInstanceOf(NoRoom);
     expect(reads.length).toBe(before);
     // Room again: kept, and the page told so.
     storage.diskHooks.free = () => Number.POSITIVE_INFINITY;
     expect(keeping(floorRoot)).toBe(true);
+    const again = reads.length;
     await serve(floorRoot, key, `bytes=0-99`, url).then(bytes);
-    expect(blocksHere(floorRoot, key)!.here.has(0)).toBe(true);
+    // Read from memory, not R2 again, and kept on disk now there's room.
+    expect(reads.length).toBe(again);
+    expect(fs.existsSync(join(folderFor(floorRoot, key), "0"))).toBe(true);
   } finally {
     storage.diskHooks.free = realFree;
   }
@@ -364,4 +372,110 @@ test("whole copies' fills get no slot while a play is watched, and carry on once
   } finally {
     playing.reset();
   }
+});
+
+/** An R2 holding `bytes`, every block read counted by its start. */
+function holding(bytes: Uint8Array) {
+  const asked: number[] = [];
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const [, a, b] = /bytes=(\d+)-(\d+)/.exec(request.headers.get("range") ?? "") ?? [];
+      const [from, to] = [Number(a), Math.min(Number(b), bytes.length - 1)];
+      asked.push(from);
+      return new Response(bytes.subarray(from, to + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${from}-${to}/${bytes.length}` } });
+    },
+  });
+  return { asked, url: async () => `http://127.0.0.1:${server.port}/object`, stop: () => void server.stop(true) };
+}
+
+const haveFfmpeg = vbr.ffmpeg !== null && vbr.ffprobe !== null;
+
+test.skipIf(!haveFfmpeg)("a stretch of a proxy is warmed from its index: exactly the blocks its samples lie in, picture and sound, from the keyframe before it, not an even share of the bytes", async () => {
+  const file = vbr.makeVbr();
+  const r2file = holding(file.bytes);
+  try {
+    const warmRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-index-"));
+    const key = "edit/proxies/vbr.mp4";
+    const blocksOf = (from: number, to: number) => {
+      const out = new Set<number>([0]);
+      for (const [stream, packets] of [0, 1].map((n) => [n, file.packets.filter((one) => one.stream === n)] as const)) {
+        let first = packets.findIndex((one, n) => one.pts < to && (packets[n + 1]?.pts ?? Number.POSITIVE_INFINITY) > from);
+        const last = packets.findLastIndex((one) => one.pts < to && one.pts + 0.02 > from);
+        if (stream === 0) while (first > 0 && !packets[first]!.key) first--;
+        else first = Math.max(0, first - 1);
+        for (const one of packets.slice(first, last + 1)) for (let n = Math.floor(one.pos / BLOCK); n <= Math.floor((one.pos + one.size - 1) / BLOCK); n++) out.add(n);
+      }
+      return out;
+    };
+    // The still's first two seconds: all in the first block (an even share would have read four).
+    expect(blocksOf(0, 2)).toEqual(new Set([0]));
+    await warm(warmRoot, key, 0, 2, 6, r2file.url);
+    expect(r2file.asked).toEqual([0]);
+    // Into the noise: its blocks, no more.
+    const want = blocksOf(4.05, 4.6);
+    const read = await warm(warmRoot, key, 4.05, 4.6, 6, r2file.url);
+    expect(read).toBe(want.size - 1);
+    expect(blocksHere(warmRoot, key)!.here).toEqual(want);
+  } finally {
+    r2file.stop();
+    file.cleanup();
+  }
+});
+
+test("where nothing can be kept, blocks read are held in memory a while, at most HELD_BYTES, the least lately used let go first; a block read twice in a moment is read once", async () => {
+  const many = HELD_BYTES / BLOCK + 8;
+  const big = new Uint8Array(many * BLOCK).map((_, i) => (i * 13) % 251);
+  const r2big = holding(big);
+  const realFree = storage.diskHooks.free;
+  try {
+    const heldRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-held-"));
+    storage.diskHooks.free = () => storage.FREE_FLOOR_BYTES;
+    const key = "edit/proxies/held.mp4";
+    // The window's read-ahead then its decoder: the same block twice, R2 once.
+    expect(await bytes(await serve(heldRoot, key, `bytes=0-99`, r2big.url))).toEqual(big.subarray(0, 100));
+    await Bun.sleep(30);
+    const first = r2big.asked.filter((at) => at === 0).length;
+    expect(await bytes(await serve(heldRoot, key, `bytes=10-99`, r2big.url))).toEqual(big.subarray(10, 100));
+    expect(r2big.asked.filter((at) => at === 0).length).toBe(first);
+    // Every block, in turn: never more than HELD_BYTES held.
+    for (let n = 0; n < many; n++) {
+      const at = n * BLOCK + 5;
+      expect(await bytes(await serve(heldRoot, key, `bytes=${at}-${at + 9}`, r2big.url))).toEqual(big.subarray(at, at + 10));
+      expect(heldInMemory().bytes).toBeLessThanOrEqual(HELD_BYTES);
+    }
+    await Bun.sleep(30);
+    expect(heldInMemory().bytes).toBeLessThanOrEqual(HELD_BYTES);
+    expect(heldInMemory().blocks).toBe(HELD_BYTES / BLOCK);
+    // The first block was let go long since: read again.
+    const before = r2big.asked.length;
+    await serve(heldRoot, key, `bytes=0-9`, r2big.url).then(bytes);
+    expect(r2big.asked.slice(before)).toContain(0);
+    expect(fs.readdirSync(folderFor(heldRoot, key))).toEqual(["meta.json"]);
+  } finally {
+    storage.diskHooks.free = realFree;
+    r2big.stop();
+  }
+});
+
+test("a read to the end reads ahead only the blocks not here: those on disk aren't read and thrown away (each FFmpeg pull read 10 MiB off the disk for nothing)", async () => {
+  const aheadRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-skip-"));
+  const key = "edit/proxies/skip.mp4";
+  // Every block here.
+  const all = await serve(aheadRoot, key, `bytes=0-${size - 1}`, url);
+  await bytes(all);
+  const folder = folderFor(aheadRoot, key);
+  const long = new Date(Date.now() - 3_600_000);
+  for (let n = 0; n <= 5; n++) fs.utimesSync(join(folder, `${n}`), long, long);
+  const before = reads.length;
+  // FFmpeg opening at the start and reading its first block: the four after it already here are left alone.
+  const open = await serve(aheadRoot, key, "bytes=0-", url);
+  const reader = open!.body!.getReader();
+  await reader.read();
+  await reader.cancel();
+  await Bun.sleep(30);
+  expect(reads.length).toBe(before);
+  // Block 0 was read (touched); the ones ahead weren't.
+  expect(fs.statSync(join(folder, "0")).mtimeMs).toBeGreaterThan(long.getTime() + 1000);
+  for (let n = 2; n <= 4; n++) expect(fs.statSync(join(folder, `${n}`)).mtimeMs).toBe(long.getTime());
 });
