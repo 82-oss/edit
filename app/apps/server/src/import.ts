@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
+import * as folderAccess from "./folder_access.ts";
 import * as media from "./media.ts";
 import type { Clip, ClipColor, Media, Project } from "./model.ts";
 import { fileName, join } from "./paths.ts";
@@ -38,6 +39,9 @@ export async function importPaths(
   const probed: [string, media.Probe][] = [];
   const errors: string[] = [];
   const names = new Map<string, string>();
+  // Footage on a drive, or in Downloads or Desktop: macOS may ask the person first, and a sync look at it below
+  // would hold the whole server while it asks. Asked off the event loop; the import waits for the answer.
+  await folderAccess.reach(paths);
   for (const given of paths) {
     let path: string;
     try {

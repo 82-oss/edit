@@ -15,6 +15,7 @@ import type { Choice, Decision, ImportProgress, Kind, Label, Research, Reuse, Sc
 import type { App } from "../app.ts";
 import { creator } from "../accounts.ts";
 import * as diag from "../diag.ts";
+import * as folderAccess from "../folder_access.ts";
 import { inArea, runPromise, runtime } from "../effect/runtime.ts";
 import * as notices from "../notices.ts";
 import * as service from "../effect/service.ts";
@@ -251,6 +252,8 @@ function newScript(title: string, sourceKind: string, sourceUrl: string, origina
 
 export async function fromFile(app: App, data: string, source: string, link: string | null, title: string | null, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished", made: Made = {}): Promise<Script> {
   let path: string;
+  // A recording on a drive or in Downloads: macOS may ask first, which a sync look would wait on, holding the server.
+  await folderAccess.reach([source]);
   try {
     path = fs.realpathSync(source);
   } catch {

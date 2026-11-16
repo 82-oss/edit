@@ -10,6 +10,7 @@ import { Effect } from "effect";
 
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
+import * as folderAccess from "./folder_access.ts";
 import * as capacity from "./export_capacity.ts";
 import { diskFull, freeOn, outOfSpace, shownProgress } from "./export_prep.ts";
 import { runPromise } from "./effect/runtime.ts";
@@ -961,6 +962,8 @@ export class ExportRegistry implements seams.Exports {
     let path = addon.withExtension(output, options.format);
     const above = parent(path);
     const folder = above === null || above === "" ? "." : above;
+    // A folder on a drive or in Desktop: macOS may ask first, which the sync calls below would wait on, holding the server.
+    await folderAccess.reach([folder]);
     try {
       fs.mkdirSync(folder, { recursive: true });
     } catch (error) {

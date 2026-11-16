@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 
 import { creator } from "./accounts.ts";
 import * as diag from "./diag.ts";
+import * as folderAccess from "./folder_access.ts";
 import * as kinds from "./kinds.ts";
 import { enforceOneLine } from "./one_line.ts";
 import { enforcePointers } from "./pointers.ts";
@@ -192,7 +193,17 @@ export class Store {
   static open(home: string): Store {
     const root = canonical(home);
     fs.mkdirSync(join(root, "projects"), { recursive: true });
-    fs.mkdirSync(join(root, "cache"), { recursive: true });
+    // The cache may be a link to a drive that isn't plugged in, or one macOS asks about first (folder_access.ts):
+    // made here only when that can't hold the server up (serve.ts makes it once its place has answered), and
+    // a cache that can't be made isn't a server that can't start.
+    const cache = join(root, "cache");
+    if (folderAccess.ready(folderAccess.placeOf(cache))) {
+      try {
+        fs.mkdirSync(cache, { recursive: true });
+      } catch (error) {
+        diag.warn("store", `the cache folder ${cache}: ${diag.messageOf(error)}`);
+      }
+    }
     return new Store(root);
   }
 
@@ -330,6 +341,25 @@ export class Store {
     }
     const project = loaded.project;
     return [summaryOf(project, modifiedMs), project.media.map((item) => item.path)];
+  }
+
+  /**
+   * A project's footage, without loading it (folder_access.ts waits on the
+   * folders it's in before a route loads it, and loading looks at them): the
+   * project when it's loaded, else its media paths from the listing or its file.
+   */
+  footageOf(id: string): Project | string[] {
+    const live = this.projects.get(id);
+    if (live !== undefined) return live.project;
+    const listed = this.summaries.get(id);
+    if (listed !== undefined) return listed.media;
+    if (!validId(id)) return [];
+    try {
+      const value = JSON.parse(fs.readFileSync(this.path(id), "utf8")) as { media?: unknown };
+      return Array.isArray(value.media) ? value.media.flatMap((media: { path?: unknown } | null) => (typeof media?.path === "string" ? [media.path] : [])) : [];
+    } catch {
+      return [];
+    }
   }
 
   get(id: string): Live | null {

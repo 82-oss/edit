@@ -17,6 +17,8 @@ just nightly  # tag and publish a nightly (never just publish unless told)
 
 Data lives in `~/.edit`; exports go to the folder saved in Settings (`<home>/export-folder.json`), and to `~/Movies/Edit/` until one is saved (`~/Videos/Edit/` when Movies isn't a folder). From another device, `tailscale serve --bg http://127.0.0.1:7700` (WebGPU needs HTTPS).
 
+Folders macOS may ask about (`apps/server/src/folder_access.ts`; kenobi, Nov 17: a cache linked to a removable drive, and the server held in a sync `mkdir` while macOS asked): volumes, network mounts, Desktop, Documents, Downloads, iCloud and cloud-provider folders are looked at once with `fs.promises` (off the event loop) before any sync call; routes wait for them in `http/server.ts` (`beforeRoute`: the data folder's, a project's footage, the export folder; a 503 "Waiting for macOS: allow Edit to use “Drive”." after 20 s), imports and exports `reach` them first, and with the cache or media linked to such a place the server listens first and starts what reads them once they've answered. A new sync read of a path that may be on a drive goes after `await folderAccess.reach([path])`.
+
 Environment flags (`EDIT_*`; add one only when a constant won't do, and list it here):
 
 - `EDIT_HOME` — the data folder (`just dev`: `~/.edit-dev`; the trial server: `~/.edit-trials`).

@@ -10,6 +10,7 @@ import * as folders from "./folders.ts";
 
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
+import * as folderAccess from "./folder_access.ts";
 import { importDrive } from "./drive_import.ts";
 import * as busyNow from "./busy.ts";
 import * as remoteActions from "./remote_actions.ts";
@@ -232,6 +233,8 @@ export function buildRouter(): Router<App> {
       return json([...edits, ...shares].sort((a, b) => rank(a.state) - rank(b.state) || b.updated_ms - a.updated_ms));
     })
     .get("/api/exports/folder", ({ app }) => json(readExportFolder(app.store.home)))
+    // The places macOS is being asked about now (folder_access.ts), also sent as `access` events as they change.
+    .get("/api/access", () => json({ waiting: folderAccess.waiting() }))
     .post("/api/exports/folder", setExportFolder)
     .get("/api/exports/file", exportedFile);
   seams.script.routes(router);
@@ -1072,6 +1075,8 @@ async function startExport(context: Context): Promise<Response> {
     }
   }
   const output = path !== null && path.trim() !== "" ? expandHome(path) : defaultExportPath(app.store, liveOr404(app, id).project);
+  // A path given on a drive or in Desktop: macOS may ask first, and the export writes there synchronously.
+  await folderAccess.reachForRoute([output]);
   // Taken once what it shows is ready (the edit as it is then), however long its effects and map shots take.
   // A channel's project carries its channel's own logo, or none (channels.watermarkFor).
   const mark = await channels.watermarkOf(liveOr404(app, id).project, watermark === null || watermark === "" ? undefined : watermark);
@@ -1195,6 +1200,8 @@ async function deleteProjectExport(context: Context): Promise<Response> {
 async function setExportFolder(context: Context): Promise<Response> {
   const given = await body(context);
   const path = field<string>(given, "path", "string", true);
+  // A folder on a drive, or Desktop's: macOS may ask first, and saving looks at it synchronously.
+  await folderAccess.reachForRoute([expandHome(path.trim())]);
   try {
     return json(saveExportFolder(context.app.store.home, path));
   } catch (error) {

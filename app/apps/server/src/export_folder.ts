@@ -8,6 +8,7 @@
 import * as fs from "node:fs";
 
 import { writeAtomic } from "./files.ts";
+import * as folderAccess from "./folder_access.ts";
 import { defaultExportsDir, expandHome, homePath, isDir, join, parent, userHome } from "./paths.ts";
 import { THIS_MACHINE } from "./machine.ts";
 
@@ -74,11 +75,24 @@ export function saveExportFolder(home: string, given: string): ExportFolder {
   return readExportFolder(home);
 }
 
-function readSaved(home: string): string | null {
+/** The folder as saved, not looked at (folder_access.ts: an export's route waits on its drive first). */
+export function savedExportFolder(home: string): string | null {
   try {
     const value = JSON.parse(fs.readFileSync(join(home, FILE), "utf8")) as { path?: unknown };
-    return typeof value?.path === "string" && value.path !== "" && isDir(value.path) ? value.path : null;
+    return typeof value?.path === "string" && value.path !== "" ? value.path : null;
   } catch {
     return null;
   }
+}
+
+function readSaved(home: string): string | null {
+  const path = savedExportFolder(home);
+  if (path === null) return null;
+  // On a drive or in a folder macOS hasn't been asked about yet: taken as there, never looked at here (that
+  // look would wait on macOS asking, holding the server); asked about off the event loop meanwhile.
+  if (!folderAccess.ready(path)) {
+    void folderAccess.reach([path]);
+    return path;
+  }
+  return isDir(path) ? path : null;
 }

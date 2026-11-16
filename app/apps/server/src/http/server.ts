@@ -9,6 +9,8 @@ import type { Server, ServerWebSocket } from "bun";
 
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
+import { savedExportFolder } from "../export_folder.ts";
+import * as folderAccess from "../folder_access.ts";
 import { isBug, panicResponse } from "../guard.ts";
 import * as mcp from "../mcp/index.ts";
 import * as notices from "../notices.ts";
@@ -139,6 +141,11 @@ export async function respond(
       response = preflight;
     } else {
       if (match.kind === "route") {
+        // The folders it would read synchronously that macOS may ask about first: waited for here, off the event loop.
+        await folderAccess.beforeRoute(match.route.pattern, match.params, {
+          projectMedia: (id) => app.store.footageOf(id),
+          exportFolder: () => savedExportFolder(app.store.home),
+        });
         const answer = await match.route.handler({
           app,
           request,

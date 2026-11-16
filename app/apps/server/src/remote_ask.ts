@@ -32,6 +32,7 @@ import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
+import * as folderAccess from "./folder_access.ts";
 import { memorySummary } from "./export_capacity.ts";
 import { useNow as memoryUse } from "./memory.ts";
 import type { Router } from "./http/router.ts";
@@ -128,6 +129,19 @@ function slug(text: string): string {
 
 export async function respondTo(app: App, question: string): Promise<string> {
   const { verb, words, options } = parse(question);
+  // The data folder's cache or media on a place macOS is still asking about: reading them now would hold the server.
+  if (verb === "project" || verb === "ls" || verb === "file") {
+    const held = folderAccess.dataWaitingLine();
+    if (held !== null) return held;
+  }
+  if (verb === "project" && words[0] !== undefined) {
+    const footage = app.store.footageOf(words[0]);
+    try {
+      await folderAccess.reachForRoute(Array.isArray(footage) ? footage : footage.media.map((media) => media.path));
+    } catch (error) {
+      return diag.messageOf(error);
+    }
+  }
   switch (verb) {
     case "help":
       return HELP;
@@ -421,8 +435,12 @@ function workNow(app: App): string {
   const journals = cloud.uploadJournals().map((one) => `  ${one.key}: ${gb(one.up)} of ${gb(one.size)} up (${one.parts} parts)`);
   const uploads = cloudMedia.uploadsNow().map((one) => `  ${one.file} → ${one.uploadOriginal ? one.originalKey : "(original up already)"}${one.proxy ? ` + ${one.proxy}` : ""}`);
   const made = pieces.status();
+  const asking = folderAccess.waiting().map((one) => `  ${one.root}, for ${diag.human(Date.now() - one.since)}`);
   return [
     ...work(app),
+    "",
+    `waiting for macOS's permission: ${asking.length === 0 ? "none" : ""}`,
+    ...asking,
     "",
     `uploads going on: ${uploads.length === 0 ? "none" : ""}`,
     ...uploads,
