@@ -45,7 +45,7 @@ type Where = "here" | "feedback";
 type What = "whole" | RangesMode;
 const WHERE = "edit.export.where";
 const WHAT = "edit.export.what";
-const keptWhere = (): Where => (readSetting(WHERE) === "here" ? "here" : "feedback");
+const keptWhere = (): Where => (readSetting(WHERE) === "feedback" ? "feedback" : "here");
 const keptWhat = (): What => {
   const kept = readSetting(WHAT);
   return kept === "each" || kept === "joined" ? kept : "whole";
