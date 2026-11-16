@@ -64,6 +64,10 @@ test("the help dialog: up with who and why, every change a step in it, through r
 test("a shell command: its output and exit, stopped at its time limit", async () => {
   expect(await shell("echo hello; echo oops >&2; exit 3")).toBe("exit 3\n\nstdout:\nhello\n\n\nstderr:\noops\n");
   expect(await shell("sleep 5", 1)).toContain("stopped after 1 s");
+  // A child left running with the pipes open doesn't hold the answer (every later command waited behind it).
+  const started = Date.now();
+  expect(await shell("sleep 30 & echo left")).toContain("stdout:\nleft");
+  expect(Date.now() - started).toBeLessThan(5_000);
   await expect(shell("  ")).rejects.toThrow(/needs a command/);
 });
 

@@ -989,7 +989,8 @@ function useUntaughtChannel(): string | null {
     if (channel === null || running) return;
     let alive = true;
     void channelApi.page(channel).then(
-      (page) => alive && setEmpty(page.taught.edit.length === 0 ? page.channel.title : null),
+      // A grouped channel is taught what its group is, as well as its own.
+      (page) => alive && setEmpty(page.taught.edit.length === 0 && (page.group?.taught.edit.length ?? 0) === 0 ? page.channel.title : null),
       () => alive && setEmpty(null),
     );
     return () => {

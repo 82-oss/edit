@@ -362,6 +362,10 @@ function onPage<T>(origin: string, use: (open: Browser) => Promise<T>): Promise<
         diag.record("thumbnails", "draw", Date.now() - started);
         return answer;
       } catch (error) {
+        // Chrome gone (it crashed, or never started) is tried again once; a drawing's own error (a graphic's code) is
+        // its caller's, and the Chrome every thumbnail draws in stays up.
+        const gone = (await browser!.catch(() => null))?.closed !== false;
+        if (!gone) throw error;
         close();
         if (attempt >= 1) throw error;
       }

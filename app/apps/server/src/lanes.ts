@@ -19,6 +19,8 @@ import * as v2cloud from "./v2_cloud.ts";
 export type WorkLane = "ideas" | "script" | "thumbnails";
 
 const WORD: Record<WorkLane | "edit", string> = { ideas: "ideas", script: "script", thumbnails: "thumbnail", edit: "edit" };
+/** The lane's work, many of it ("this channel's ideas", "its scripts"). */
+const MANY: Record<WorkLane | "edit", string> = { ideas: "ideas", script: "scripts", thumbnails: "thumbnails", edit: "edits" };
 
 /** What a lane's agent is working for: the channel's key, and which of its lanes. */
 export interface Place {
@@ -78,6 +80,7 @@ export function laneText(place: Place, teach: Teach = "tools"): string {
   const word = WORD[place.lane];
   // One of them, for the rule's "this idea", "every idea".
   const single = place.lane === "ideas" ? "idea" : word;
+  // One of them, for the rule's "this idea", "every idea".
   const style = channel?.lanes[place.lane]?.trim() ?? "";
   const group = channels.groupOf(place.channel);
   const shared = group?.lanes[place.lane]?.trim() ?? "";
@@ -92,22 +95,22 @@ export function laneText(place: Place, teach: Teach = "tools"): string {
   ];
   const mineOnly = (one: v2cloud.Skill) => (group !== null && ownLesson(one, place) ? " (this channel only)" : "");
   if (group === null) {
-    if (always.length > 0) lines.push(`What the team has taught you for ${channel?.title ?? place.channel}'s ${word}s (always):\n${always.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
+    if (always.length > 0) lines.push(`What the team has taught you for ${channel?.title ?? place.channel}'s ${MANY[place.lane]} (always):\n${always.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
   } else {
     const groupWide = always.filter((one) => !ownLesson(one, place));
     const own = always.filter((one) => ownLesson(one, place));
-    if (groupWide.length > 0) lines.push(`What the team has taught you for the group's ${single}s (always):\n${groupWide.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
+    if (groupWide.length > 0) lines.push(`What the team has taught you for the group's ${MANY[place.lane]} (always):\n${groupWide.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
     if (own.length > 0) lines.push(`For ${channel?.title ?? "this channel"} alone, its exceptions (always; they win over the group's):\n${own.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
   }
   if (parts.length > 0) lines.push(`Read one with read_skill when it fits, once per conversation:\n${parts.map((one) => `- ${one.name}${mineOnly(one)}: ${one.note}`).join("\n")}`);
-  if (lessons.length === 0) lines.push(`THIS CHANNEL'S ${word.toUpperCase()} STYLE ISN'T TAUGHT YET: do what's asked plainly, and build the style with the person as they say what it should be.`);
+  if (!v2cloud.taughtAnything(channels.placesOf(place.channel, place.lane))) lines.push(`THIS CHANNEL'S ${word.toUpperCase()} STYLE ISN'T TAUGHT YET: do what's asked plainly, and build the style with the person as they say what it should be.`);
   if (teach === "none") return lines.join("\n\n");
   if (teach === "lesson") {
     // Script mode's revisions answer once with no tools: a lesson comes back in the answer (writer/lesson_note.ts) and is kept here.
     lines.push(
       // When to is LESSONS' (lesson_note.ts, beside this in the prompt); only where it goes is the lane's.
       v2cloud.teacher()
-        ? `A lesson of how this channel does its ${word}s goes with scope "channel" and a name (lower-case words joined by hyphens; one of the names above changes that lesson): it's kept in this channel's ${word} style at once, so its next ${word} has it.${group === null ? "" : ` ${groupRule()}`}`
+        ? `A lesson of how this channel does its ${MANY[place.lane]} goes with scope "channel" and a name (lower-case words joined by hyphens; one of the names above changes that lesson): it's kept in this channel's ${word} style at once, so its next ${single} has it.${group === null ? "" : ` ${groupRule()}`}`
         : NOT_TEACHER,
     );
     return lines.join("\n\n");
@@ -131,7 +134,7 @@ export function laneText(place: Place, teach: Teach = "tools"): string {
 export function section(channel: string | null | undefined, lane: WorkLane, teach: Teach = "tools"): string {
   const place = placeOf(channel, lane);
   if (place === null) return "";
-  return `\n\n# This channel's ${WORD[lane]}s\nWhat follows is this channel's own, taught by the team: where it differs from the guide above, it wins.\n\n${laneText(place, teach)}`;
+  return `\n\n# This channel's ${MANY[lane]}\nWhat follows is this channel's own, taught by the team: where it differs from the guide above, it wins.\n\n${laneText(place, teach)}`;
 }
 
 /** A lesson kept in a lane's style (its group's unless `given` "channel"): a teacher's (refused otherwise, in words for the person). */
@@ -152,7 +155,7 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
   const tools: { name: string; description: string; inputSchema: Record<string, unknown> }[] = [
     {
       name: "remember",
-      description: `Keep a lesson for this channel's ${word}s: what the person said holds beyond this one, or said yes to keeping when you asked (never what they let pass unanswered), in their words. A lesson is a line or two, always in your instructions from the next turn; a longer part (at most 2,400 characters) with a note (when to read it) is read with read_skill when it fits. The same name changes the lesson. A teacher's to do.`,
+      description: `Keep a lesson for this channel's ${MANY[lane]}: what the person said holds beyond this one, or said yes to keeping when you asked (never what they let pass unanswered), in their words. A lesson is a line or two, always in your instructions from the next turn; a longer part (at most 2,400 characters) with a note (when to read it) is read with read_skill when it fits. The same name changes the lesson. A teacher's to do.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -229,7 +232,7 @@ export async function call(name: string, args: Record<string, unknown>, place: P
 }
 
 async function remember(args: Record<string, unknown>, place: Place): Promise<string> {
-  teacherOnly(`Keeping a lesson for this channel's ${WORD[place.lane]}s`);
+  teacherOnly(`Keeping a lesson for this channel's ${MANY[place.lane]}`);
   const skill = nameArg(args.skill, "skill");
   if (typeof args.text !== "string" || args.text.trim() === "") throw new Error("text is required");
   if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");

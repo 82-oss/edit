@@ -492,7 +492,8 @@ function listProjects({ app }: Context): Response {
 const STYLES: Style[] = ["bodycam", "interrogation", "courtroom", "commentary", "horror", "shorts"];
 
 async function createChannelProject(context: Context, given: Record<string, unknown>, name: string, key: string, settings: { width: number; height: number; fps: number }): Promise<Response> {
-  const channel = (await channels.channelFor(key, context.app.store.home))!;
+  const channel = await channels.channelFor(key, context.app.store.home);
+  if (channel === null) throw bad("channel is a channel's key");
   const style = channels.styleOf(channel);
   if (!kinds.mayStart(style)) throw new ApiError(403, kinds.cantMake(`edit.${style}`));
   const compilation = field<boolean>(given, "compilation", "boolean");

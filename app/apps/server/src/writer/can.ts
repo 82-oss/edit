@@ -9,7 +9,7 @@
 
 import type { Kind, Script, Summary } from "@edit/types/writer";
 
-import { granted } from "../kinds.ts";
+import { granted, mayChannel } from "../kinds.ts";
 
 export const INTERROGATION = "scripts.interrogation";
 export const INTERROGATION_COMPILATION = "scripts.interrogation-compilation";
@@ -35,7 +35,7 @@ export function workOf(script: Pick<Script | Summary, "sourceKind" | "compilatio
 }
 
 /** May see and write this script. */
-export const sees = (script: Pick<Script | Summary, "sourceKind" | "compilation" | "kind">, given: Set<string> | null = granted()): boolean => has(workOf(script), given);
+export const sees = (script: Pick<Script | Summary, "sourceKind" | "compilation" | "kind" | "channel">, given: Set<string> | null = granted()): boolean => mayChannel(script.channel, given) && has(workOf(script), given);
 
 /** The one-case formats this person may write, in the editor's order. */
 export function singleKinds(given: Set<string> | null = granted()): Kind[] {
@@ -68,7 +68,7 @@ export function require(id: string): void {
   if (!has(id)) throw new Error(refusal(id));
 }
 
-export function requireScript(script: Pick<Script, "sourceKind" | "compilation" | "kind">): void {
+export function requireScript(script: Pick<Script, "sourceKind" | "compilation" | "kind" | "channel">): void {
   if (!sees(script)) throw new Error(NOT_AVAILABLE);
 }
 

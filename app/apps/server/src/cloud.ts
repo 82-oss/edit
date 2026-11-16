@@ -1095,7 +1095,9 @@ export function readable(said: string): string {
     .replace(/^Uncaught (?:Convex)?Error:\s*/u, "")
     .split(/\n\s+at /u)[0]!
     .trim();
-  return words === "" ? said.trim() : words;
+  // Nothing but Convex's own words (prod hides a function's message as "[Request ID: …] Server Error"): said plainly,
+  // the raw text kept in `said` for the log.
+  return words === "" ? "Edit's cloud had a problem. Try again in a moment." : words;
 }
 
 /**

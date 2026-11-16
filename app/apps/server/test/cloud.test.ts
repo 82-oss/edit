@@ -59,6 +59,8 @@ test("convex_answers_become_results", () => {
   // Said as a person reads it (Sphe, Nov 15): no "Convex:", request id, "Uncaught Error:" or stack.
   expect(plain.message).toBe("no");
   expect(failure({ status: "error", errorMessage: "[Request ID: 3f2a] Server Error\nUncaught Error: That name is taken.\n    at handler (../convex/edit.ts:12:9)" }).message).toBe("That name is taken.");
+  // Prod's Convex hides a function's own message: nothing technical is shown for it.
+  expect(failure({ status: "error", errorMessage: "[Request ID: 5b3e] Server Error" }).message).toBe("Edit's cloud had a problem. Try again in a moment.");
   expect(cloud.ConvexFailure.relay("Convex: no channel gta.").message).toBe("no channel gta.");
   expect(plain.code).toBeNull();
   // A ConvexError keeps its code and data (Edit's `conflict`, `locked`, …).

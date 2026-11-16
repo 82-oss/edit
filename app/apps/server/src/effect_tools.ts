@@ -387,7 +387,9 @@ async function useFromLibrary({ app, args, projectId }: ToolCall): Promise<Conte
   // The one of that name this channel uses (its own).
   const here = await placeHere(app, projectId);
   const found = v2cloud.forPlace(await v2cloud.list(kind), here).find((one) => one.name === name);
-  const from = await v2cloud.fetchInto(found?.key ?? keyOf(kind, name), n, into);
+  // Only this channel's (or its group's): another channel's comes in by other_channels' bring.
+  if (found === undefined) throw new Error(`no ${kind === "template" ? "effect" : "sound"} ${name} in this channel's edit style (library lists them)`);
+  const from = await v2cloud.fetchInto(found.key, n, into);
   if (from === null) throw new Error(`no ${kind === "template" ? "effect" : "sound"} ${name}${n === null ? "" : ` version ${n}`} in the library`);
   return text(`effects/${as}/ is ${name} (version ${from.n}, ${from.files?.length ?? 0} files): yours to change.${kind === "sound" ? " make_sound renders it." : " Look at it, then add_effect."}`);
 }
@@ -468,7 +470,8 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
   const most = part ? SKILL_MOST : MEMORY_MOST;
   if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part's skill short: its rules, not their history" : "a line or two, in the person's words"}`);
-  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note, { key: v2cloud.ownKey("skill", where.place, skill) });
+  // A part keeps its note when it's saved somewhere else (a channel's own changed for its group).
+  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note ?? before?.note, { key: v2cloud.ownKey("skill", where.place, skill) });
   // Kept for the group while this channel has its own of that name: the channel's still wins here.
   const shadowed = places !== null && where.place !== places[0] && v2cloud.ownPlaceOf(before?.key ?? "") === places[0];
   v2cloud.forgetSkills();

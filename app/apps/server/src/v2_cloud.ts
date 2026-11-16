@@ -316,12 +316,23 @@ export interface Skill {
 
 /** The skills in V2's cloud (the global one first), as last read. */
 let skills: Skill[] = [];
+/** The effects and sounds in V2's cloud, by key and name alone, as last read with the skills. */
+let pieces: { key: string; name: string }[] = [];
 let readAt = 0;
 const SKILLS_FRESH_MS = 30_000;
 
 /** What a place's agent knows (null: a V2 project without a channel): the global skill, then the place's own by name. */
 export function memories(place: Places): Skill[] {
   return forPlace(skills.map((one) => ({ ...one, key: one.key ?? skillKey(one.name) })), place);
+}
+
+/**
+ * Whether a place has been taught anything of its own, as last read: a lesson
+ * past the global skill, or an effect, a graphic or a sound. A channel taught
+ * only effects is taught (Nov 16 audit: it was told it had nothing).
+ */
+export function taughtAnything(place: Places): boolean {
+  return memories(place).some((one) => one.name !== GLOBAL) || forPlace(pieces, place).length > 0;
 }
 
 /** One skill a place knows, as last read. */
@@ -334,7 +345,8 @@ export async function refreshSkills(): Promise<void> {
   if (!enabled() || Date.now() - readAt < SKILLS_FRESH_MS) return;
   readAt = Date.now();
   try {
-    const items = await list("skill");
+    const [items, templates, sounds] = await Promise.all([list("skill"), list("template"), list("sound")]);
+    pieces = [...templates, ...sounds].map(({ key, name }) => ({ key, name }));
     // Each skill's text at once: a turn waits on this.
     const read = await Promise.all(items.map(async (item) => ({ item, text: (await version(item.key))?.version.text })));
     const next: Skill[] = [];
@@ -353,8 +365,9 @@ export function forgetSkills(): void {
 }
 
 /** Tests: the skills as given, read now. */
-export function useSkillsForTests(given: Skill[]): void {
+export function useSkillsForTests(given: Skill[], effectsAndSounds: { key: string; name: string }[] = []): void {
   skills = given;
+  pieces = effectsAndSounds;
   readAt = Date.now();
 }
 

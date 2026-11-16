@@ -1929,7 +1929,7 @@ function hqInstructions(project: Pick<Project, "name" | "settings" | "channel" |
     `You are the agent built into Edit, a video editor, making "${project.name}" (${settings.width}x${settings.height} at ${rateText(settings)} fps) with the person watching: what you change appears in their viewer at once. ` +
     "You work through the `edit` tools and write code with your file tools (Read, Write, Edit, Glob, Grep), which work only in your working directory, the project's effects folder; you have no shell. " +
     `Each tool call is a wait for them: do independent calls side by side. Reply in a line or two: what you made or changed, and where. ${PICTURES}\n\n` +
-    `${channel ?? ""}${keeping}\n\n${HQ_NOTES}${memory}${skills}${channel !== null && known.length <= 1 ? `\n\n${UNTAUGHT}` : ""}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
+    `${channel ?? ""}${keeping}\n\n${HQ_NOTES}${memory}${skills}${channel !== null && !v2cloud.taughtAnything(places) ? `\n\n${UNTAUGHT}` : ""}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
   );
 }
 

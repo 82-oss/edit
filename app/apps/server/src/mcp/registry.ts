@@ -66,6 +66,8 @@ export const HQ_TOOLS: readonly string[] = [
  */
 export const NOT_IN_HQ: readonly string[] = [
   "skill",
+  // V1's lessons inbox: a V2 teacher keeps lessons with remember, and nothing is kept for anyone else.
+  "note_lesson",
   "add_text",
   "map_view",
   "highlight_evidence",

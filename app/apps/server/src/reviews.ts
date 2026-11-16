@@ -1327,10 +1327,11 @@ export function fixMessage(project: Project, shared: Shared | undefined, notes: 
   });
   return (
     `${asked ? "Open" : "(Edit, automatically) New"} feedback on this edit's review${shared === undefined ? "" : ` (${shared.url})`}: ${notes.length} note${notes.length === 1 ? "" : "s"}. ` +
-    "Load the feedback skill and fix them across the video, the team's words being what they want. " +
+    // Edit V2 has no house skills (its own are in its instructions), and keeps lessons only as its instructions say.
+    `${project.hq ? "Fix them" : "Load the feedback skill and fix them"} across the video, the team's words being what they want. ` +
     'After each note, call feedback_done {note: "<its id>", summary: "<one line: what you changed>"}; for one you can\'t or shouldn\'t do, feedback_unfixed {note, reason}; a question (kind: question) gets feedback_answer {note, answer} and no change. A kind names the change wanted (a blur, a mute, music…): keep to it; "everywhere" means across the whole video. ' +
     "Answer every note in this turn, however many there are: work through them all, one after another, and end the turn only when each has its feedback_done, feedback_unfixed or feedback_answer (Edit sends back any you leave and shares nothing until they're answered). " +
-    `Then mute_house_words once if subtitles changed, and finish with a line per note (and, as your instructions say, a line on what you'll remember, or one question about the notes that might hold for every video)${asked ? "; when this turn ends Edit exports the edit and shares it on the review as the next version, so don't export or share it yourself" : ""}.\n` +
+    `Then mute_house_words once if subtitles changed, and finish with a line per note${project.hq ? "" : " (and, as your instructions say, a line on what you'll remember, or one question about the notes that might hold for every video)"}${asked ? "; when this turn ends Edit exports the edit and shares it on the review as the next version, so don't export or share it yourself" : ""}.\n` +
     `${UNTRUSTED_OPEN}\n` +
     lines.join("\n") +
     `\n${UNTRUSTED_CLOSE}`

@@ -8,6 +8,7 @@ import type { Script } from "@edit/types/writer";
 
 import * as diag from "../diag.ts";
 import * as lanes from "../lanes.ts";
+import * as v2cloud from "../v2_cloud.ts";
 import * as cloud from "../cloud.ts";
 import { note, noteFrom } from "../lesson_inbox.ts";
 
@@ -50,7 +51,8 @@ export async function keep(script: Script, lesson: Record<string, unknown> | nul
       return `\n\n${kept.replace(/: its agents have it.*$/u, ".")} This channel's next scripts have it.`;
     } catch (error) {
       diag.warn("lessons", `${script.title}: the channel's lesson wasn't kept: ${diag.messageOf(error)}`);
-      return `\n\nThat sounds like a lesson for this channel's scripts, but it wasn't kept: ${diag.messageOf(error)}`;
+      // The agent's words for why (a teacher's to do, too long) are its own: the person reads a plain line.
+      return v2cloud.teacher() ? "\n\nThat sounds like a lesson for this channel's scripts, but it couldn't be kept just now: say it again in a moment." : "";
     }
   }
   // Scope "channel" on a script that has none: one person's or channel's taste, as the inbox has it.

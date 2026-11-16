@@ -15,6 +15,7 @@ import { createContext, useContext, useState, type ReactNode } from "react";
 import { asideChoices, asleep, backLabel, type Later, type LaterEntry, type LaterKey } from "../lib/later";
 export { layoutFor } from "../lib/home-layout";
 import { ago } from "../lib/time";
+import { useBeta } from "../lib/beta";
 import { useChannels } from "../lib/channels";
 import { STYLES, type Creator, type Style } from "../lib/types";
 import { ChannelAvatar } from "./Channels";
@@ -99,7 +100,9 @@ export function KindMark({ kind }: { kind: "edit" | "subtitles" | "script" | "id
  */
 export function Category({ style, compilation = false, text: given, channel }: { style?: Style | null; compilation?: boolean; text?: string; channel?: string | null }) {
   const channels = useChannels((state) => state.channels);
-  const owner = channel ? channels?.find((one) => one.key === channel) : undefined;
+  // Channels are V2's: V1 shows the niche even of a channel's work.
+  const v2 = useBeta((beta) => beta.v2);
+  const owner = v2 && channel ? channels?.find((one) => one.key === channel) : undefined;
   if (owner !== undefined) {
     return (
       <span role="cell" className={cx("flex min-w-0 items-center gap-2 text-[13px] text-secondary", CATEGORY)} title={owner.title}>

@@ -21,6 +21,7 @@
 // or a notice outside one), so nothing is done to their Edit unseen. Answers go
 // up beside the problem reports, which only an admin reads.
 
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
@@ -230,22 +231,48 @@ export async function run(app: App, payload: string, by: string): Promise<string
   }
 }
 
-/** A shell command on this Mac, as the person: its output and exit, stopped after `seconds` (60 by default). */
+/**
+ * A shell command on this Mac, as the person: its output and exit, stopped
+ * after `seconds` (60 by default). It runs in a process group of its own, so
+ * the limit stops all of it; once its shell has exited, what it left running
+ * (`… &`, nohup) carries on and is read for a moment more, never waited for
+ * (it held the pipes open, and every later remote command waited behind it).
+ */
 export async function shell(command: string, seconds = 60): Promise<string> {
   if (command.trim() === "") throw new Error("sh needs a command.");
   const limit = Math.min(SH_MAX_S, Math.max(1, Math.round(seconds)));
   const program = process.platform === "darwin" ? "/bin/zsh" : "/bin/bash";
-  const child = Bun.spawn([program, "-lc", command], { cwd: os.homedir(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const child = spawn(program, ["-lc", command], { cwd: os.homedir(), stdio: ["ignore", "pipe", "pipe"], detached: true });
+  // The end of each, as it comes: never more than its most held at once.
+  const tail = (most: number) => {
+    let text = "";
+    return { add: (chunk: Buffer) => void (text = (text + chunk.toString("utf8")).slice(-most)), read: () => text };
+  };
+  const out = tail(OUTPUT_MAX);
+  const err = tail(OUTPUT_MAX / 4);
+  child.stdout.on("data", out.add);
+  child.stderr.on("data", err.add);
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
-    child.kill("SIGKILL");
+    try {
+      process.kill(-child.pid!, "SIGKILL");
+    } catch {
+      child.kill("SIGKILL");
+    }
   }, limit * 1000);
-  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
-  clearTimeout(timer);
+  const code = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (exit) => resolve(exit));
+  }).finally(() => clearTimeout(timer));
+  // What's still in the pipes, for a moment: a child left running keeps them open.
+  await Promise.race([Promise.all([new Promise((done) => child.stdout.once("close", done)), new Promise((done) => child.stderr.once("close", done))]), Bun.sleep(500)]);
+  child.stdout.destroy();
+  child.stderr.destroy();
+  child.unref();
   const parts = [`exit ${timedOut ? `(stopped after ${limit} s)` : code}`];
-  if (out !== "") parts.push(`stdout:\n${out.slice(-OUTPUT_MAX)}`);
-  if (err !== "") parts.push(`stderr:\n${err.slice(-OUTPUT_MAX / 4)}`);
+  if (out.read() !== "") parts.push(`stdout:\n${out.read()}`);
+  if (err.read() !== "") parts.push(`stderr:\n${err.read()}`);
   return parts.join("\n\n");
 }
 
