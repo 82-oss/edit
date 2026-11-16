@@ -52,3 +52,37 @@ test("a Google Fonts family comes into the project's fonts, for its effects by n
   expect(fonts.usedBy(mine, 'ctx.font = "80px Caveat"')).toContain("Caveat:");
   expect(fonts.usedBy(mine, 'ctx.font = "80px Geist"')).toBe("");
 });
+
+test("a project's own fonts follow it to another computer through the cloud; ones kept here from before are sent up (Nov 16: an effect rendered in a stand-in serif on the M4)", async () => {
+  const { MockServer } = await import("./mocks/server.ts");
+  const mock = MockServer.start();
+  const restore = mock.useEnv({ EDIT_RELAY_TOKEN: "cloud-token" });
+  const other = fixtureHome("fonts-other");
+  try {
+    fixture = fixtureHome("fonts-here");
+    const id = fixture.store.create("f", { width: 1920, height: 1080, fps: 30 }).project.id;
+    google({ Caveat: [400], "Reenie Beanie": [400] });
+    await fonts.fetchGoogle(fixture.store, id, "Caveat", [400]);
+    // Sent up as it's fetched.
+    for (let wait = 0; wait < 50 && ![...mock.cloud.objects.keys()].some((key) => key === `edit/exports/${id}/fonts/caveat/font.json`); wait++) await Bun.sleep(20);
+    expect([...mock.cloud.objects.keys()].filter((key) => key.startsWith(`edit/exports/${id}/fonts/`)).sort()).toEqual([`edit/exports/${id}/fonts/caveat/Caveat-400.ttf`, `edit/exports/${id}/fonts/caveat/font.json`]);
+
+    // Another computer opening it has it, whole, as here.
+    expect(await fonts.bringDownProject(other.store, id)).toEqual(["caveat"]);
+    expect(fonts.projectFonts(other.store, id).map((font) => font.family)).toEqual(["Caveat"]);
+    // Asked again within the minute: the cloud isn't listed again.
+    expect(await fonts.bringDownProject(other.store, id)).toEqual([]);
+
+    // A font fetched before fonts were kept in the cloud (here only): sent up by the computer editing.
+    const local = `${fonts.projectDir(fixture.store, id)}/reenie-beanie`;
+    fs.mkdirSync(local, { recursive: true });
+    fs.writeFileSync(`${local}/ReenieBeanie-400.ttf`, new Uint8Array([0, 1, 0, 0, 9]));
+    fs.writeFileSync(`${local}/font.json`, JSON.stringify({ family: "Reenie Beanie", faces: [{ weight: 400, style: "normal", file: "ReenieBeanie-400.ttf" }], source: "Google Fonts" }));
+    await fonts.keepUp(fixture.store, id);
+    expect(mock.cloud.objects.has(`edit/exports/${id}/fonts/reenie-beanie/font.json`)).toBe(true);
+  } finally {
+    other.cleanup();
+    restore();
+    mock.stop();
+  }
+});

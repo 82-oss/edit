@@ -1755,7 +1755,14 @@ const lookedFor = new Set<string>();
 export function bringDown(app: App, project: string): Promise<string[]> {
   const going = bringing.get(project);
   if (going !== undefined) return going;
-  const work = bringDownNow(app, project)
+  const work = Promise.all([
+    // Its own fonts first: an effect's key has the fonts it uses, so its code is judged with them here.
+    fonts.bringDownProject(app.store, project).catch((error: unknown) => {
+      diag.warn("effects", `${project}: its fonts couldn't come down from the cloud: ${diag.messageOf(error)}`);
+      return [];
+    }),
+  ])
+    .then(async ([fontsCame]) => [...fontsCame.map((slug) => `font ${slug}`), ...(await bringDownNow(app, project))])
     .then((brought) => {
       // Said here, not left to the folder's watch (which may not hear a folder swapped in whole): the viewer plays it
       // live, and its render follows on the computer editing it.
@@ -1917,6 +1924,8 @@ async function readyToRender(app: App, project: string): Promise<void> {
   // Code here older than the render another computer made comes down first: never drawn again over it.
   await bringDown(app, project).catch(() => []);
   await rekey(app, project).catch((error: unknown) => diag.warn("effects", `${project}: its renders' keys: ${diag.messageOf(error)}`));
+  // Its own fonts kept in the cloud by the computer editing it, those from before they were kept there among them.
+  if (editingHere(app, project)) await fonts.keepUp(app.store, project).catch((error: unknown) => diag.warn("effects", `${project}: its fonts didn't go to the cloud: ${diag.messageOf(error)}`));
   for (const [what, before] of beforeRenders) {
     await before(app, project).catch((error: unknown) => diag.warn("effects", `${project}: before its renders (${what}): ${diag.messageOf(error)}`));
   }

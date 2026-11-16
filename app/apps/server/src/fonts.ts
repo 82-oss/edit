@@ -16,6 +16,7 @@
 
 import * as fs from "node:fs";
 
+import * as r2 from "./cloud.ts";
 import * as diag from "./diag.ts";
 import { join } from "./paths.ts";
 import type { Store } from "./store.ts";
@@ -124,7 +125,89 @@ export async function fetchGoogle(store: Store, project: string, family: string,
   fs.writeFileSync(join(partial, MANIFEST), JSON.stringify({ family: name, faces, source }, null, 1));
   fs.rmSync(dir, { recursive: true, force: true });
   fs.renameSync(partial, dir);
+  // The project's on every computer that opens it, as its effects are.
+  sendUp(store, project, slug).catch((error: unknown) => diag.warn("effects", `${project}: the ${name} font didn't go to the cloud: ${diag.messageOf(error)}`));
   return { slug, family: name, faces, source, dir };
+}
+
+// ---------------------------------------------------------------- a project's own fonts in the cloud
+
+// A project's own fonts follow it to every computer that opens it, as its
+// effects' code does (Nov 16, the M4: Test Motion Graphics' seven fonts were
+// only on the Mac that fetched them, so its effect rendered elsewhere in a
+// stand-in serif). Each family's folder is kept as it is under the project's
+// own place in the cloud, `edit/exports/<project>/fonts/<slug>/`, beside its
+// effects' renders (which the renders' sweep, effect_cloud.ts, never touches).
+
+const cloudPrefix = (project: string) => `edit/exports/${project}/fonts/`;
+const SLUG = /^[a-z0-9][a-z0-9-]{0,59}$/u;
+const FILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/u;
+
+/** When each project's fonts in the cloud were last looked for. */
+const lookedAt = new Map<string, number>();
+const LOOK_EVERY_MS = 60_000;
+
+/** Families known to be in the cloud, by project: what this run of Edit listed or sent there. */
+const upThere = new Map<string, Set<string>>();
+
+/** A project's own font `slug` (its folder) into the cloud, each file as it is. */
+export async function sendUp(store: Store, project: string, slug: string): Promise<void> {
+  if (!r2.enabled() || !SLUG.test(slug)) return;
+  const dir = join(projectDir(store, project), slug);
+  if (read(dir, slug) === null) return;
+  for (const file of fs.readdirSync(dir)) {
+    if (FILE.test(file) && fs.statSync(join(dir, file)).isFile()) await r2.uploadFile(join(dir, file), `${cloudPrefix(project)}${slug}/${file}`);
+  }
+  let known = upThere.get(project);
+  if (known === undefined) upThere.set(project, (known = new Set()));
+  known.add(slug);
+}
+
+/** The project's families in the cloud, each with its files' keys. */
+async function inCloud(project: string): Promise<Map<string, string[]>> {
+  const prefix = cloudPrefix(project);
+  const families = new Map<string, string[]>();
+  for (const object of await r2.list(prefix)) {
+    const [slug, file, ...rest] = object.key.slice(prefix.length).split("/");
+    if (slug === undefined || file === undefined || rest.length > 0 || !SLUG.test(slug) || !FILE.test(file)) continue;
+    families.set(slug, [...(families.get(slug) ?? []), file]);
+  }
+  upThere.set(project, new Set(families.keys()));
+  return families;
+}
+
+/**
+ * The project's own fonts in the cloud that this computer hasn't, brought
+ * down (each family whole, swapped in at once): the families brought.
+ */
+export async function bringDownProject(store: Store, project: string): Promise<string[]> {
+  if (!r2.enabled()) return [];
+  // Asked on every change to a V2 project (effects.ts bringDown): the cloud's list read at most once a minute.
+  const at = lookedAt.get(project);
+  if (at !== undefined && Date.now() - at < LOOK_EVERY_MS) return [];
+  lookedAt.set(project, Date.now());
+  const brought: string[] = [];
+  for (const [slug, files] of await inCloud(project)) {
+    const dir = join(projectDir(store, project), slug);
+    if (read(dir, slug) !== null || !files.includes(MANIFEST)) continue;
+    const partial = `${dir}.partial`;
+    fs.rmSync(partial, { recursive: true, force: true });
+    fs.mkdirSync(partial, { recursive: true });
+    for (const file of files) await r2.download(`${cloudPrefix(project)}${slug}/${file}`, join(partial, file));
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.renameSync(partial, dir);
+    if (read(dir, slug) !== null) brought.push(slug);
+  }
+  return brought;
+}
+
+/** The project's own fonts here that the cloud hasn't (fetched before they were kept there, Nov 16), sent up. */
+export async function keepUp(store: Store, project: string): Promise<void> {
+  if (!r2.enabled()) return;
+  const here = projectFonts(store, project).map((font) => font.slug);
+  if (here.length === 0) return;
+  const known = upThere.get(project) ?? new Set((await inCloud(project)).keys());
+  for (const slug of here) if (!known.has(slug)) await sendUp(store, project, slug);
 }
 
 // ---------------------------------------------------------------- V2's cloud's fonts
