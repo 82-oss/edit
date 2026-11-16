@@ -463,6 +463,9 @@ export class Processor {
     if (probe.kind === "video") this.censorLater(source, input);
     // Its own black borders (a tape's edge), so footage placed later fills the frame.
     if (probe.kind === "video" || probe.kind === "image") framing.warmBorders({ path: source, name: source, ...probe });
+    // Subtitles already burned into its picture (another channel's finished video), so the agent knows before it subtitles.
+    // Imported when needed: it reaches the watch and the pieces, which import this file.
+    if (probe.kind === "video") void import("./burned_subtitles.ts").then((burned) => burned.warm(this, { path: source, name: source, ...probe }));
   }
 
   /**

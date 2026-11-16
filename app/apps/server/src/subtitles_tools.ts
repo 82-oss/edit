@@ -16,6 +16,7 @@ import * as faces from "./faces.ts";
 import { fixed, round, toI64 } from "./rust.ts";
 import * as seams from "./seams.ts";
 import { stableStringify } from "./stable.ts";
+import type { BurnedIn } from "./burned_subtitles.ts";
 import * as subtitles from "./subtitles.ts";
 
 /** A JSON number argument (serde_json's `as_f64`), else null. */
@@ -41,13 +42,21 @@ function span(args: Record<string, unknown>, fps: number, from: number, to: numb
   return [start === null ? from : frameOf(start, fps), end === null ? to : frameOf(end, fps)];
 }
 
+/** `burned_in`: what to do where footage has subtitles burned into its picture (burned_subtitles.ts); ours left off by default. */
+function burnedIn(args: Record<string, unknown>): BurnedIn {
+  const given = args.burned_in;
+  if (given === undefined || given === null) return "leave_off";
+  if (given !== "leave_off" && given !== "cover") throw new Error('burned_in is "leave_off" (the default: none of ours over theirs) or "cover" (theirs blurred, ours on it)');
+  return given;
+}
+
 registerTool("add_subtitles", async ({ app, args, projectId }) => {
   const project = liveProject(app, projectId);
   const fps = fpsOf(project);
   const introEnd = seams.captions.intro(project)?.[1] ?? 0;
   const [from, to] = span(args, fps, introEnd, duration(project));
   const neglect = args.neglect === true;
-  const summary = await seams.captions.subtitles(app, projectId, from, to, neglect, args.missing_only === true);
+  const summary = await seams.captions.subtitles(app, projectId, from, to, neglect, args.missing_only === true, burnedIn(args));
   return text(`subtitled ${fixed(from / fps, 2)}–${fixed(to / fps, 2)}s: ${stableStringify(summary)}`);
 });
 
@@ -146,6 +155,7 @@ registerTool("repack_subtitles", async ({ app, args, projectId }) => {
     hold_ms: holdMs(args.hold_ms),
     overlap,
     faces: typeof args.faces === "boolean" ? args.faces : overlap,
+    burned_in: burnedIn(args),
   };
   const stretches = questioning(args.interrogation, fps, from, to);
   const summary = await subtitles.repackSubtitles(app, projectId, options);

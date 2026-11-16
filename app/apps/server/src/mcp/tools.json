@@ -2291,6 +2291,14 @@
     "description": "Plain subtitles for footage speech after the intro, or fill missing lines with missing_only:true during recovery. Locked bottom middle, no animation or tracking, each line under its person's label and colour (one colour per person across the video). Made from the footage's own sound, skipping throwaway lines and the narrator, radio and background talk, and snapping to cuts. The house words (in their other forms too: punched, hitting) are muted in the footage's sound (`mutes` on its audio clips) and starred out on screen (\"f***\"), in the subtitles and in every other text on the timeline; some are muted but stay readable. Replaces subtitles and mutes it made before in that span, keeping the label and colour each voice's subtitles had (your relabels survive a re-run); a new subtitle over one moved, resized or keyframed by hand keeps that position and size. Ordinary replacement runs lock subtitles to bottom middle (off_faces in the result); missing_only preserves existing placement. Defaults to after the intro: from the cut-in before the full footage to the end of the timeline. Returns the subtitles placed, how many kept a hand adjustment, every mute (term, timeline time, starred) and each person's colour. For recovery, missing_only:true adds only lines with no overlap with existing subtitles/captions, preserving their text, labels, timing, placement and audio mutes. Run mute_house_words after final text changes. Narrow to confirmed unfinished spans; deliberate subtitle deletions cannot be inferred automatically.",
     "inputSchema": {
       "properties": {
+        "burned_in": {
+          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours: only for a channel whose taught style says so.",
+          "enum": [
+            "leave_off",
+            "cover"
+          ],
+          "type": "string"
+        },
         "end": {
           "description": "Seconds on the timeline (default: the end).",
           "type": "number"
@@ -2473,6 +2481,14 @@
     "description": "A subtitled video the Repack way: every line said in the footage (its own sound, transcribed if needed), split by Repack's rules, held a second after its last word (one at a time), in the house style in each speaker's colour (no two alike), on the subtitles track; the narrator, radio and background talk are hidden. The house words are muted in the footage's sound (sample-accurate, 12 ms cosine ramps; written as `mutes` on its audio clips) and starred out on screen (\"f***\"), in the subtitles and every other text on the timeline; words count in their other forms (punched, hitting); some are muted but stay readable. Replaces subtitles and mutes made before in the span (add_subtitles' too). Returns the subtitles placed, the speakers (name, role, colour, lines) and every mute (term, timeline time, starred).",
     "inputSchema": {
       "properties": {
+        "burned_in": {
+          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours: only for a channel whose taught style says so.",
+          "enum": [
+            "leave_off",
+            "cover"
+          ],
+          "type": "string"
+        },
         "end": {
           "description": "Seconds on the timeline (default: the end).",
           "type": "number"

@@ -14,6 +14,7 @@
 
 import type { App } from "./app.ts";
 import { hex, subtitleRow, transcriptOf } from "./captions_core.ts";
+import * as burned from "./burned_subtitles.ts";
 import * as diag from "./diag.ts";
 import type { Clip, Media, Mute, Project, Rgba, Segment, TextStyle, Transform } from "./model.ts";
 import {
@@ -1116,11 +1117,21 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
       }
     });
   }
+  // Lines over subtitles burned into the footage: left off there, or theirs covered (a channel taught so).
+  const burnedIn = options.burned_in ?? "leave_off";
+  const unread = await burned.ready(app.media, burned.onTimeline(project, from, to).reading, burned.WAIT_MS);
+  const theirs = burned.onTimeline(app.store.get(projectId)?.project ?? project).shown;
+  const clashing = theirs.filter((one) => shownLines.some((line) => burned.over([one], frame(line.start_ms), frame(line.end_ms))));
+  let leftOff = 0;
+  let covers = 0;
   if (!latestRun(projectId, run)) return SUPERSEDED;
   // Per voice: lines in footage with seats that sat under the face, and that didn't.
   const seatedLines = new Map<string, [under: number, bottom: number]>();
   const [after, [placed, skipped, outside, texts]] = await app.store.update(projectId, "agent", (edited) => {
     seatedLines.clear();
+    leftOff = 0;
+    const shownNow = clashing.length > 0 ? burned.onTimeline(edited).shown : [];
+    covers = burnedIn === "cover" && shownNow.length > 0 ? burned.cover(edited, shownNow) : 0;
     // Stacked lines (overlap) go on tracks of their own under the
     // subtitles' track, made as needed; a re-run removes them by name.
     const tracks: string[] = [];
@@ -1164,6 +1175,10 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
     for (const [line, start, end] of pieces) {
       if (end <= start) {
         skippedCount += 1;
+        continue;
+      }
+      if (burnedIn === "leave_off" && burned.over(shownNow, start, end)) {
+        leftOff += 1;
         continue;
       }
       const free = (track: string) =>
@@ -1280,6 +1295,9 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
     subtitles: placed,
     skipped,
     outside_segments: outside,
+    ...(leftOff > 0 ? { left_to_the_burned_in_subtitles: leftOff } : {}),
+    ...(covers > 0 ? { burned_in_subtitles_covered: covers } : {}),
+    ...(unread.length > 0 ? { not_yet_read_for_burned_in_subtitles: unread.map((one) => one.name) } : {}),
     texts_starred: texts,
     speakers: listedSpeakers,
     mutes: muted,

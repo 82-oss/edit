@@ -93,6 +93,9 @@ export type Event = Record<string, unknown>;
  */
 export const agentCalls = new AsyncLocalStorage<{ active: boolean; tool?: string }>();
 
+/** Rules for the agent's saves that live elsewhere: set as their modules load (burned_subtitles.ts). */
+export const agentRules: { subtitlesOver: ((before: Project, after: Project) => string | null) | null } = { subtitlesOver: null };
+
 /** What the agent last read of a project, and what it learns from its own writes (edit_tools.ts keeps it). */
 export const agentView = {
   known: (_id: string): { rev: number; project: Project } | null => null,
@@ -650,6 +653,9 @@ export class Store {
     // Made from what the caller read (an agent tool): refused when it changes what changed since, by hand or by another tool.
     const call = agentCalls.getStore();
     const agents = call?.active === true;
+    // The agent's subtitles never go over ones burned into the footage (burned_subtitles.ts).
+    const over = agents ? (agentRules.subtitlesOver?.(current.project, project) ?? null) : null;
+    if (over !== null) throw new Error(over);
     const knew = read ?? (agents ? agentView.known(id) : null);
     if (knew !== null && knew.project !== current.project) {
       const clash = patches.overlap(patches.diff(knew.project, current.project), patches.diff(current.project, project));

@@ -66,6 +66,7 @@ import "./shorts.ts";
 import "./motion_review.ts";
 import * as sfxModule from "./sfx.ts";
 import type { Store } from "./store.ts";
+import type { BurnedIn } from "./burned_subtitles.ts";
 import * as stylesModule from "./styles.ts";
 import type { Transcript, Word } from "./transcribe.ts";
 
@@ -570,6 +571,12 @@ export interface SubtitleOptions {
    * angle: questioning on a moving camera (bodycam at a cruiser).
    */
   moving?: boolean;
+  /**
+   * Where footage has subtitles burned into its picture (burned_subtitles.ts):
+   * "leave_off" (the default) leaves ours off there, "cover" (a channel taught
+   * so) blurs theirs and lays ours.
+   */
+  burned_in?: BurnedIn;
 }
 
 export interface SubtitlesSeam {
@@ -716,7 +723,7 @@ export interface CaptionsSeam {
   placeCaptions(app: App, projectId: string, from: number, to: number, under: Map<string, Under>): Promise<Json>;
   /** A known speaker's first name; a short role when no name is known. */
   subtitleName(name: string): string;
-  subtitles(app: App, projectId: string, from: number, to: number, neglect: boolean, missingOnly?: boolean): Promise<Json>;
+  subtitles(app: App, projectId: string, from: number, to: number, neglect: boolean, missingOnly?: boolean, burnedIn?: BurnedIn): Promise<Json>;
   /** A media's transcript, transcribing it first if needed. */
   /** A media's transcript; given the project, heard with the case's names (names.ts). */
   transcriptOf(app: App, media: Media, project?: Project): Promise<Transcript>;

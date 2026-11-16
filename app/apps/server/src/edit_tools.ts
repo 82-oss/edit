@@ -24,6 +24,7 @@ import * as footageLevels from "./footage_levels.ts";
 import * as framing from "./framing.ts";
 import * as tools from "./tools.ts";
 import * as onscreen from "./onscreen.ts";
+import * as burned from "./burned_subtitles.ts";
 import * as markBlurs from "./mark_blurs.ts";
 import { twoLineSubtitles } from "./one_line.ts";
 import { firstCut, pointerIssues } from "./pointers.ts";
@@ -64,6 +65,7 @@ import {
   merge,
   mergeClip,
   tidyTracks,
+  reusedMedia,
   touchesPeople,
   trackLabel,
   trackOf,
@@ -2193,7 +2195,7 @@ export function editContext(app: App, found: Live, args: Args): Args {
   const listedMedia = narrowed ? p.media.filter((own) => used.has(own.id)) : p.media;
   const media = listedMedia.map(
     (own) =>
-      `${own.id} ${debugKind(own)} ${fixed(own.duration, 1)}s${own.has_audio ? " sound" : ""} "${takeChars(own.name, 60)}"`,
+      `${own.id} ${debugKind(own)} ${fixed(own.duration, 1)}s${own.has_audio ? " sound" : ""} "${takeChars(own.name, 60)}"${burnedRow(app, p, own)}`,
   );
   if (narrowed && listedMedia.length < p.media.length) media.push(`(${p.media.length - listedMedia.length} more media not used here)`);
   const fullAudit = audited(app, p, found.rev) as Args & { issues: Args[] };
@@ -2225,6 +2227,7 @@ export function editContext(app: App, found: Live, args: Args): Args {
       return added.length === 0 ? {} : { uploads: added };
     })(),
     ...(isEssay(p.style) ? { chapters: commentaryAudit.outline(p) } : {}),
+    ...burnedContext(p, from ?? 0, to ?? Number.MAX_SAFE_INTEGER),
     speaker_line_counts: speakers,
     subtitles_in_span: subtitles,
     ...(comments.length > 0 ? { script_comments: comments.sort((a, b) => Number((a as Args).at ?? 0) - Number((b as Args).at ?? 0)) } : {}),
@@ -2300,6 +2303,44 @@ export function editContext(app: App, found: Live, args: Args): Args {
   }
   context.clips = kept;
   return context;
+}
+
+/**
+ * A media row's burned-in subtitles (burned_subtitles.ts): where in the file
+ * and the band. Footage not read yet starts being read here (a project
+ * imported before Edit looked for them).
+ */
+function burnedRow(app: App, p: Project, media: Media): string {
+  if (media.kind !== "video" || media.effect_key !== undefined || reusedMedia(p).has(media.id)) return "";
+  const found = burned.of(media);
+  if (found === undefined) {
+    void burned.warm(app.media, media);
+    return "";
+  }
+  if (found === null) return "";
+  const said = found.lines.length > 0 ? ` (${found.lines.slice(0, 2).map((line) => `"${takeChars(line, 40)}"`).join(", ")})` : "";
+  return ` · burned-in subtitles at ${burned.spansText(found.spans)} of it, ${burned.bandText(found.band)}${said}`;
+}
+
+/** Where the timeline shows footage's own burned-in subtitles, and what to do about ours there. */
+function burnedContext(p: Project, from: number, to: number): Args {
+  const { shown } = burned.onTimeline(p, from, to);
+  if (shown.length === 0) return {};
+  const fps = fpsOf(p);
+  const ours = p.clips.filter((clip) => trackOf(p, clip.track)?.subtitles === true || (clip.name ?? "").startsWith("Subtitle"));
+  const doubled = shown.some((one) => ours.some((clip) => clip.start < one.end && one.start < clipEnd(clip)));
+  return {
+    burned_subtitles: {
+      ...(doubled ? { fix: "ours_over_them: two sets on screen there; add_subtitles (or repack_subtitles) over those stretches again takes ours off them" } : {}),
+      shown: shown.map((one) => ({
+        media: one.media,
+        clip: one.clip,
+        seconds: [fixed(one.start / fps, 1), fixed(one.end / fps, 1)].join("–"),
+        ...(ours.some((clip) => clip.start < one.end && one.start < clipEnd(clip)) ? { ours_over_them: true } : {}),
+      })),
+      note: "This footage already has subtitles burned into its picture there: they are the subtitles, and ours stay off them (add_subtitles and repack_subtitles leave ours off there by themselves; a subtitle of ours laid over them is refused). Only a channel taught to cover theirs and place ours passes burned_in \"cover\" (a blur over their band, stuck to each clip). Never ask about it.",
+    },
+  };
 }
 
 /** Rust's `{:?}` of a MediaKind. */

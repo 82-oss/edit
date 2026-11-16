@@ -20,6 +20,7 @@ import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
 import { captionSize, hex, parseTranscript, subtitleName, subtitleRow, transcriptOf } from "./captions_core.ts";
+import * as burned from "./burned_subtitles.ts";
 import * as diag from "./diag.ts";
 import { fixTurns } from "./turns.ts";
 import { post as claudeAsk, spills as post } from "./ai_claude.ts";
@@ -551,6 +552,19 @@ export function glimpses(
   });
 }
 
+/**
+ * Subtitles burned into the footage (burned_subtitles.ts) while a caption is
+ * up (source seconds [from, to)): their band is one more thing on the
+ * picture it keeps off, as it keeps off faces.
+ */
+function keepOffBurned(seen: Glimpse[], media: Media, size: [number, number], fit: Transform, frame: [number, number], from: number, to: number): void {
+  const band = burned.obstacle(media, from, to);
+  if (band === null) return;
+  const box = seams.faces.inFrame(size, fit, frame, band);
+  if (seen.length === 0) seen.push({ frame: 0, faces: [box], speaker: null });
+  else for (const glimpse of seen) glimpse.faces.push(box);
+}
+
 /** A line at least this long (seconds) gets three stills for the model, not one. */
 const SEVERAL_STILLS = 1.5;
 /** Glimpses a second of a speaker followed frame by frame: where the caption's keyframes go. */
@@ -956,7 +970,12 @@ export function starredText(line: Line, found: Found[]): string {
  * and mutes made before in that span, keeping where and how big subtitles
  * moved by hand were.
  */
-export async function subtitles(app: App, projectId: string, from: number, to: number, neglect: boolean, missingOnly = false): Promise<unknown> {
+export async function subtitles(app: App, projectId: string, from: number, to: number, neglect: boolean, missingOnly = false, burnedIn: burned.BurnedIn = "leave_off"): Promise<unknown> {
+  // Footage with its own subtitles burned in is read first (a minute at most): ours stay off theirs unless the
+  // channel is taught to cover them ("cover").
+  const first = app.store.get(projectId);
+  if (first === null) throw new Error("no such project");
+  const unread = await burned.ready(app.media, burned.onTimeline(first.project, from, to).reading, burned.WAIT_MS);
   const live = app.store.get(projectId);
   if (live === null) throw new Error("no such project");
   const run = seams.subtitles.beginRun(projectId);
@@ -1013,8 +1032,16 @@ export async function subtitles(app: App, projectId: string, from: number, to: n
   const { width, height } = project.settings;
   const style = subtitleStyle(width, height);
   const transform: Transform = { x: 0, y: subtitleRow([width, height]), scale: 1, rotation: 0 };
+  // Lines that would sit over subtitles burned into the footage: left off there, or theirs covered.
+  const theirs = burned.onTimeline(project).shown;
+  const clashing = theirs.filter((one) => spans.some(([start, end]) => burned.over([one], Math.floor(start), Math.ceil(end))));
   if (!seams.subtitles.latestRun(projectId, run)) return seams.subtitles.SUPERSEDED;
+  let leftOff = 0;
+  let covers = 0;
   const [saved, [placed, kept, starred, people]] = await app.store.update(projectId, "agent", (project) => {
+    // Their band blurred on each clip where it shows, so ours read over it.
+    const shownNow = clashing.length > 0 ? burned.onTimeline(project).shown : [];
+    if (burnedIn === "cover" && shownNow.length > 0) covers = burned.cover(project, shownNow);
     const preserved = missingOnly ? new Map(project.clips.map((clip) => [clip.id, JSON.stringify(clip)])) : null;
     // Who each transcript voice was made out to be (a relabel: "Mother" →
     // "Tabitha:") and their colour: a re-run keeps them.
@@ -1099,6 +1126,10 @@ export async function subtitles(app: App, projectId: string, from: number, to: n
     let freeFrom = 0;
     for (const [index, line, slotStart, end] of kept) {
       let start = Math.max(slotStart, freeFrom);
+      if (burnedIn === "leave_off" && burned.over(shownNow, start, end)) {
+        leftOff += 1;
+        continue;
+      }
       if (missingOnly && !subtitledSpans(project, from, to).some(([a, b]) => a <= start && end <= b)) continue;
       // Recovery never replaces, trims, shifts or talks over existing text,
       // even on another/hidden subtitle track. Check the live project here:
@@ -1190,6 +1221,9 @@ export async function subtitles(app: App, projectId: string, from: number, to: n
     lines: said,
     hidden,
     ...(captioned > 0 ? { left_to_the_intro_captions: captioned } : {}),
+    ...(leftOff > 0 ? { left_to_the_burned_in_subtitles: leftOff } : {}),
+    ...(covers > 0 ? { burned_in_subtitles_covered: covers } : {}),
+    ...(unread.length > 0 ? { not_yet_read_for_burned_in_subtitles: unread.map((one) => one.name), burned_note: "still being read for subtitles in their picture: get_edit_context says when they are; the audit's burned_subtitles flags ours over theirs" } : {}),
     placed,
     kept_hand_adjustments: kept,
     texts_starred: starred,
@@ -1485,6 +1519,7 @@ export async function captionSpeakers(app: App, projectId: string, from: number,
         plan.followed.length > 0
           ? followedGlimpses(seen.get(plan.path) ?? null, plan.followed, [media.width, media.height], footage.transform, [width, height], local, end - start, media.fps)
           : glimpses(seen.get(plan.path) ?? null, indexes, plan.track, [media.width, media.height], footage.transform, [width, height], local);
+      keepOffBurned(here, media, [media.width, media.height], footage.transform, [width, height], lineStart(line), lineEnd(line));
       const laid = layOut(text, style, [width, height], here, plan.clear);
       if (laid.under_face) underFaces += 1;
       const keyframes: Record<string, Keyframe[]> = {};
@@ -1724,6 +1759,7 @@ export async function placeCaptions(app: App, projectId: string, from: number, t
       } else {
         glimpsed = glimpses(found ?? null, job.indexes, track, media, fit, framePx, local);
       }
+      if (source !== undefined) keepOffBurned(glimpsed, source, media, fit, framePx, span[0], span[1]);
     }
     const laid = layOut(job.text, job.style, frame, glimpsed, clear);
     if (track.length > 0 && !clear) why = "the face isn't clearly visible through the line";

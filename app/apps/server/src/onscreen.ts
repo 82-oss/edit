@@ -160,8 +160,10 @@ function burnedSubtitles(
   const mh = media.height ?? height;
   const fit = Math.min(width / mw, height / mh);
   const { scale, y } = placed(clip);
-  // Cropped off, or below the frame where the clip sits.
+  // Cropped off, or below the frame where the clip sits, or blurred over (add_subtitles burned_in "cover").
   if ((clip.crop?.bottom ?? 0) >= 1 - top) return null;
+  const band = onFrame(project, clip, media, [0.2, top, 0.8, Math.min(1, top + 0.08)]);
+  if (blurred(project, band, clip.start + Math.floor(clip.duration / 2))) return null;
   if (y + (top - 0.5) * mh * fit * scale >= height / 2 - 2) return null;
   // The least scale that puts the band's top below the frame with the picture's top at the frame's.
   const margin = top - 0.01;
@@ -172,7 +174,7 @@ function burnedSubtitles(
     end: clipEnd(clip),
     seconds,
     band_top: round(top * 1000) / 1000,
-    fix: `the footage's own subtitles show under ours: scale ${round(needed * 1000) / 1000} with y ${atTop} puts them below the frame (the tape's one fixed framing, every clip of it; a push starts there), or crop bottom ${round((1 - margin) * 1000) / 1000} and fill`,
+    fix: `the footage's own subtitles show under ours: scale ${round(needed * 1000) / 1000} with y ${atTop} puts them below the frame (the tape's one fixed framing, every clip of it; a push starts there), or crop bottom ${round((1 - margin) * 1000) / 1000} and fill; with nothing taught, ours come off there instead (add_subtitles over it again leaves them off by itself), and burned_in "cover" (theirs blurred, ours on it) only for a channel taught to`,
   };
 }
 
@@ -207,6 +209,8 @@ export function issues(project: Project): { issues: unknown[]; pending: string[]
   const subtitled = new Map<string, Record<string, unknown> & { clips: string[]; seconds: number; end: number }>();
   // A finished video of ours plays with our own subtitles burned in (Helpful Wife's husband's interview).
   const ours = reusedMedia(project);
+  // Our subtitles on the timeline.
+  const subtitles = project.clips.filter((one) => one.type === "text" && (trackOf(project, one.track)?.subtitles === true || (one.name ?? "").startsWith("Subtitle")));
   for (const [clip, media] of clips) {
     const [from, to] = played(project, clip);
     // Calls to action, as stretches of timeline frames with the box to blur.
@@ -246,7 +250,10 @@ export function issues(project: Project): { issues: unknown[]; pending: string[]
     // A page scrolling in a horror browser window (horror_look.scrollingPages) is a web page's own words, never
     // subtitles (Nov 9: three flagged).
     const page = media.name.startsWith("Scroll · ");
-    const burned = ours.has(media.id) || page ? null : burnedSubtitles(project, clip, media, text, from, to);
+    // Two sets at once only while ours are up over it (left off there, theirs are the subtitles), and not where
+    // theirs are blurred (burned_subtitles.ts `cover`).
+    const oursUp = subtitles.some((one) => one.start < clipEnd(clip) && clip.start < clipEnd(one));
+    const burned = ours.has(media.id) || page || !oursUp ? null : burnedSubtitles(project, clip, media, text, from, to);
     if (burned !== null) {
       const seen = subtitled.get(media.id);
       if (seen === undefined) subtitled.set(media.id, { kind: "burned_subtitles", media: media.name, ...burned, clips: [clip.id] });

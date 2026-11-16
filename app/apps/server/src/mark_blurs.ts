@@ -203,11 +203,11 @@ function overlap(a: [number, number, number, number], b: [number, number, number
   return (dx * dy) / Math.min(a[2] * a[3], b[2] * b[3]);
 }
 
-/** Tracks only Mark blurs are on, lowest first; a lane free over [start, end) of them, else a new one above every picture track. */
-function laneFor(project: Project, start: number, end: number): string {
+/** Tracks only blurs named `name` are on, lowest first; a lane free over [start, end) of them, else a new one above every picture track. */
+export function laneFor(project: Project, start: number, end: number, name = NAME): string {
   const lanes = project.tracks.filter((track) => {
     const mine = project.clips.filter((clip) => clip.track === track.id);
-    return track.kind === "video" && track.subtitles !== true && mine.length > 0 && mine.every((clip) => (clip.name ?? "").startsWith(NAME));
+    return track.kind === "video" && track.subtitles !== true && mine.length > 0 && mine.every((clip) => (clip.name ?? "").startsWith(name));
   });
   for (const lane of lanes) {
     if (!project.clips.some((clip) => clip.track === lane.id && clip.start < end && start < clipEnd(clip))) return lane.id;

@@ -114,26 +114,35 @@ const SUBTITLED: Record<number, ScreenText[]> = Object.fromEntries(
   ]),
 );
 
-test("another channel's subtitles burned into the footage are flagged with the scale that puts them off the frame, until they're off it", () => {
+/** One of our subtitles over frames [start, end). */
+const ours = (start: number, end: number): Clip =>
+  ({ id: `s${start}`, track: "v2", start, duration: end - start, color: "cyan", fade_in: 0, fade_out: 0, type: "text", name: "Subtitle · Officer", text: "Get out.", style: {}, transform: { x: 0, y: 432, scale: 1, rotation: 0 }, opacity: 1 }) as unknown as Clip;
+
+test("another channel's subtitles burned into the footage, under ours, are flagged with the scale that puts them off the frame, until they're off it", () => {
   addon(SUBTITLED, []);
-  const p = project([video("c1", 0, 300, 100)]);
-  const found = issues(p).issues.filter((one) => (one as { kind: string }).kind === "burned_subtitles");
-  expect(found).toEqual([
+  const p = project([video("c1", 0, 300, 100), ours(30, 90)]);
+  const burned = (one: Project) => issues(one).issues.filter((issue) => (issue as { kind: string }).kind === "burned_subtitles");
+  expect(burned(p)).toEqual([
     {
       kind: "burned_subtitles", media: "hearing.mp4", start: 0, end: 300, seconds: 10, band_top: 0.88, clips: ["c1"],
-      fix: "the footage's own subtitles show under ours: scale 1.149 with y 81 puts them below the frame (the tape's one fixed framing, every clip of it; a push starts there), or crop bottom 0.13 and fill",
+      fix: "the footage's own subtitles show under ours: scale 1.149 with y 81 puts them below the frame (the tape's one fixed framing, every clip of it; a push starts there), or crop bottom 0.13 and fill; with nothing taught, ours come off there instead (add_subtitles over it again leaves them off by itself), and burned_in \"cover\" (theirs blurred, ours on it) only for a channel taught to",
     },
   ]);
+  // Ours left off there: theirs are the subtitles, one set.
+  expect(burned(project([video("c1", 0, 300, 100)]))).toEqual([]);
+  // Theirs blurred over (burned_in "cover").
+  const blur = { id: "b", track: "v3", start: 0, duration: 300, color: "blue", fade_in: 0, fade_out: 0, type: "adjustment", grade: {}, blur: { radius: 35, x: 0, y: 420, width: 1400, height: 160, feather: 10, shape: "rect" }, opacity: 1 } as unknown as Clip;
+  expect(burned(project([video("c1", 0, 300, 100), ours(30, 90), blur]))).toEqual([]);
   // Placed as the fix says: off the frame.
-  const fixed = project([{ ...video("c1", 0, 300, 100), transform: { x: 0, y: 81, scale: 1.149, rotation: 0 } } as Clip]);
-  expect(issues(fixed).issues.filter((one) => (one as { kind: string }).kind === "burned_subtitles")).toEqual([]);
+  const fixed = project([{ ...video("c1", 0, 300, 100), transform: { x: 0, y: 81, scale: 1.149, rotation: 0 } } as Clip, ours(30, 90)]);
+  expect(burned(fixed)).toEqual([]);
   // A finished video of ours, reused whole, has our own subtitles burned in.
-  const reused = project([video("c1", 0, 300, 100)]);
+  const reused = project([video("c1", 0, 300, 100), ours(30, 90)]);
   reused.script = { blocks: [{ id: "b1", kind: "footage", label: REUSE_LABEL, media: "m1" }] } as unknown as Project["script"];
-  expect(issues(reused).issues.filter((one) => (one as { kind: string }).kind === "burned_subtitles")).toEqual([]);
+  expect(burned(reused)).toEqual([]);
   // A timestamp and a credit alone aren't subtitles.
   addon(Object.fromEntries(Object.entries(SUBTITLED).map(([second, lines]) => [second, lines.slice(1)])), []);
-  expect(issues(project([video("c1", 0, 300, 100)])).issues.filter((one) => (one as { kind: string }).kind === "burned_subtitles")).toEqual([]);
+  expect(burned(project([video("c1", 0, 300, 100), ours(30, 90)]))).toEqual([]);
 });
 
 test("cuts every half second (a bodycam walking) aren't cuts; one standing alone is", async () => {
