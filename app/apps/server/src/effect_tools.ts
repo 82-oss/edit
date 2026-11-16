@@ -59,7 +59,9 @@ async function lookAtStretch(app: ToolCall["app"], projectId: string, name: stri
   const count = Math.min(last - first + 1, EFFECT_FRAMES_MOST);
   const times = Array.from({ length: count }, (_, index) => (first + index) / fps);
   // A stretch says nothing of a frame's cost: not measured.
+  const began = performance.now(); // TEMP(Nov 16 CI probe)
   const look = await effects.look(app, projectId, name, times, SHEET_FRAME, false);
+  const looked = performance.now(); // TEMP
   const sheets: { data: Uint8Array; caption: string }[] = [];
   const dir = fs.mkdtempSync(join(app.store.cacheDir(), "effect-frames-"));
   let seen: looker.Seen | null = null;
@@ -90,6 +92,7 @@ async function lookAtStretch(app: ToolCall["app"], projectId: string, name: stri
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+  if (process.env.CI === "true") console.log(`TEMP stretch ${count} frames: look ${Math.round(looked - began)} ms, sheets and looker ${Math.round(performance.now() - looked)} ms`); // TEMP
   const out: Content[] = [];
   if (seen === null) for (const sheet of sheets) out.push(...image(sheet.data, sheet.caption, "image/jpeg"));
   else {
