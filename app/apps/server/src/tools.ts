@@ -221,6 +221,19 @@ const RECONNECT = [
 let certificates: string | null | undefined;
 
 /**
+ * Every child process reads HTTPS with the system's certificates by OpenSSL's own variable, not only the calls that
+ * pass `urlArgs`: the shipped static FFmpeg's OpenSSL doesn't know where macOS keeps them, and a call that forgot
+ * `-ca_file` failed every read ("certificate verify failed": the watch tool's windows on the M4, Nov 17). Set once,
+ * where it isn't set already; children inherit it.
+ */
+export function shareCertificates(env: Record<string, string | undefined> = process.env): void {
+  if (env.SSL_CERT_FILE !== undefined && env.SSL_CERT_FILE !== "") return;
+  const found = SYSTEM_CERTIFICATES.find((file) => isFile(file));
+  if (found !== undefined) env.SSL_CERT_FILE = found;
+}
+shareCertificates();
+
+/**
  * FFmpeg's input options for reading `path` over HTTPS: the system's
  * certificates (the shipped static FFmpeg's OpenSSL doesn't know where macOS
  * keeps them, so without them every HTTPS read fails verification; Linux's

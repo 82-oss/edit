@@ -521,13 +521,16 @@ async function cutAt(source: string, preview: [string, string] | null, window: W
     let audio: string[];
     if (preview !== null) {
       const [light, sound] = preview;
-      command.push("-skip_frame", "nokey", "-ss", start, "-t", length, "-i", light, "-ss", start, "-t", length, "-i", sound, "-map", "0:v:0", "-map", "1:a:0");
+      const remote = (input: string) => (tools.isUrl(input) ? ["-protocol_whitelist", tools.protocols(input), ...tools.urlArgs(input)] : []);
+      command.push("-skip_frame", "nokey", "-ss", start, "-t", length, ...remote(light), "-i", light, "-ss", start, "-t", length, ...remote(sound), "-i", sound, "-map", "0:v:0", "-map", "1:a:0");
       audio = ["-c:a", "copy"];
     } else {
       command.push(...tools.hardwareDecode());
       // Keyframes close together (Premiere exports put one every ~1.25 s):
       // decode only those, about as often as Gemini samples.
       if (await keyframesClose(source)) command.push("-skip_frame", "nokey");
+      // A cloud file read straight from R2: the system's certificates (Nov 17, the M4: every window "certificate verify failed").
+      if (tools.isUrl(source)) command.push("-protocol_whitelist", tools.protocols(source), ...tools.urlArgs(source));
       command.push("-ss", start, "-t", length, "-i", source, "-map", "0:v:0", "-map", "0:a:0?");
       audio = ["-c:a", "aac", "-b:a", "48k", "-ac", "1", "-ar", "48000"];
     }
