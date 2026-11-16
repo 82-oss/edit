@@ -227,20 +227,24 @@ fn upload(
     }
 }
 
-/// What a reader decodes: a file at a size, in an order.
+/// What a reader decodes: a file at a size, in an order, as a still or as
+/// moving pictures. The kind is part of it: an effect's render lands as an
+/// .mp4 at the path its clear still was read from a moment before, and the
+/// reader that read it as a picture (ImageIO, failing) was taken again for the
+/// video, failing every frame until the window gave up (Nov 16).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct DecodeKey {
     path: PathBuf,
     width: u32,
     height: u32,
     order: Order,
+    still: bool,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct Source {
     key: DecodeKey,
     fps: f64,
-    still: bool,
 }
 
 impl Source {
@@ -251,9 +255,9 @@ impl Source {
                 width,
                 height,
                 order,
+                still: media.kind == edit_core::MediaKind::Image,
             },
             fps: if media.fps > 0.0 { media.fps } else { 30.0 },
-            still: media.kind == edit_core::MediaKind::Image,
         }
     }
 
@@ -367,6 +371,8 @@ pub(crate) struct VideoReader {
     excerpt: Option<(usize, Box<VideoReader>)>,
     /// Excerpts that wouldn't read: the URL for those stretches.
     broken: Vec<usize>,
+    /// A read failed: never put back in a pool, so the next asks a fresh reader (`ReaderPool::put`).
+    failed: bool,
 }
 
 impl VideoReader {
@@ -380,9 +386,9 @@ impl VideoReader {
                 width,
                 height,
                 order: Order::Bgra,
+                still: false,
             },
             fps: 30.0,
-            still: false,
         })
     }
 
@@ -418,6 +424,7 @@ impl VideoReader {
             excerpts_seen,
             excerpt: None,
             broken: Vec::new(),
+            failed: false,
         }
     }
 
@@ -649,7 +656,7 @@ impl VideoReader {
     /// Frame covering `time` (seconds into the source), into the reader's own buffer.
     pub(crate) fn frame_at(&mut self, time: f64) -> Result<&[u8], String> {
         self.position = Some(time);
-        if self.source.still {
+        if self.source.key.still {
             if !self.has_frame {
                 self.decode_still()?;
             }
@@ -683,12 +690,20 @@ impl VideoReader {
     /// `if_changed`, Ok(false) leaves `out` alone when the picture is the one
     /// last copied out (a slowed clip shows each frame several times).
     fn frame_into(&mut self, time: f64, out: &mut [u8], if_changed: bool) -> Result<bool, String> {
+        let read = self.read_into(time, out, if_changed);
+        if read.is_err() {
+            self.failed = true;
+        }
+        read
+    }
+
+    fn read_into(&mut self, time: f64, out: &mut [u8], if_changed: bool) -> Result<bool, String> {
         // Read on from just behind (as the pool picks one), else a seek.
         self.forward = self
             .position
             .is_some_and(|position| position <= time + 1e-6 && time - position <= 2.0);
         self.position = Some(time);
-        if self.source.still {
+        if self.source.key.still {
             if !self.has_frame {
                 self.decode_still()?;
             }
@@ -889,7 +904,7 @@ impl ReaderPool {
     /// taken to seek somewhere else.
     fn take(&mut self, source: &Source, time: f64) -> VideoReader {
         let cost = |reader: &VideoReader, used: u64| match reader.position {
-            _ if reader.source.still && reader.has_frame => 0.0,
+            _ if reader.source.key.still && reader.has_frame => 0.0,
             Some(position) if position <= time + 1e-6 && time - position <= 2.0 => time - position,
             _ if reader
                 .ahead
@@ -926,7 +941,7 @@ impl ReaderPool {
         let mut found = false;
         for (reader, _) in &mut self.readers {
             if reader.source.key == source.key
-                && ((reader.source.still && reader.has_frame)
+                && ((reader.source.key.still && reader.has_frame)
                     || reader.position.is_some_and(|position| {
                         position <= time + 1e-6 && time - position <= FORWARD
                     }))
@@ -949,7 +964,12 @@ impl ReaderPool {
         self.put(reader);
     }
 
+    /// A reader back for later. One whose read failed is let go: put back, the same file asked
+    /// again took it, and it failed again however the file had changed since.
     fn put(&mut self, reader: VideoReader) {
+        if reader.failed {
+            return;
+        }
         self.clock += 1;
         let key = reader.source.key.clone();
         self.readers.push((reader, self.clock));
@@ -5074,6 +5094,73 @@ mod tests {
         pool.put(VideoReader::open(other.clone()));
         pool.put(VideoReader::open(other));
         assert_eq!(pool.readers.len(), 3);
+    }
+
+    /// An effect's render lands as an .mp4 where its clear still was read (Nov 16): the reader that
+    /// read the path as a picture isn't taken for the video, and the other way round.
+    #[test]
+    fn a_path_that_changes_kind_gets_a_fresh_reader() {
+        let media = |kind: &str| -> Media {
+            serde_json::from_value(json!({
+                "id": "m", "name": "m", "path": "/nowhere/effect.mp4", "kind": kind,
+                "duration": 10.0, "width": 1920, "height": 1080, "fps": 30
+            }))
+            .unwrap()
+        };
+        let path = PathBuf::from("/nowhere/effect.mp4");
+        let as_still = Source::new(&media("image"), path.clone(), (640, 360), Order::Bgra);
+        let as_video = Source::new(&media("video"), path, (640, 360), Order::Bgra);
+        let mut pool = ReaderPool::new(6, 2);
+        let mut still = VideoReader::open(as_still.clone());
+        still.has_frame = true;
+        pool.put(still);
+        let before = OPENED.with(std::cell::Cell::get);
+        let taken = pool.take(&as_video, 0.0);
+        assert!(!taken.source.key.still, "read as the video it is now");
+        assert_eq!(
+            OPENED.with(std::cell::Cell::get) - before,
+            1,
+            "a new reader"
+        );
+        pool.put(taken);
+        let back = pool.take(&as_still, 0.0);
+        assert!(back.source.key.still, "the still's own reader");
+        assert_eq!(
+            OPENED.with(std::cell::Cell::get) - before,
+            1,
+            "kept from before"
+        );
+    }
+
+    /// A reader whose read failed is let go, not pooled: the next ask for the file opens it again.
+    #[test]
+    fn a_failed_reader_isnt_reused() {
+        let media: Media = serde_json::from_value(json!({
+            "id": "m", "name": "m", "path": "/nowhere/gone.png", "kind": "image",
+            "duration": 0.0, "width": 64, "height": 36, "fps": 30
+        }))
+        .unwrap();
+        let source = Source::new(&media, "/nowhere/gone.png".into(), (64, 36), Order::Bgra);
+        let mut pool = ReaderPool::new(6, 2);
+        let before = OPENED.with(std::cell::Cell::get);
+        assert!(decode_all(&mut pool, &[(source.clone(), 0.0)], 1).is_err());
+        assert!(pool.readers.is_empty(), "the failed reader isn't kept");
+        assert!(decode_all(&mut pool, &[(source, 0.0)], 1).is_err());
+        assert_eq!(
+            OPENED.with(std::cell::Cell::get) - before,
+            2,
+            "opened afresh"
+        );
+        // One that read is kept as before.
+        let mut fine = VideoReader::open(Source::new(
+            &media,
+            "/nowhere/fine.png".into(),
+            (64, 36),
+            Order::Bgra,
+        ));
+        fine.has_frame = true;
+        pool.put(fine);
+        assert_eq!(pool.readers.len(), 1);
     }
 
     /// At 2× a cut's reader was made ready, then let go for being the longest unused just before
