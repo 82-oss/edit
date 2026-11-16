@@ -6,6 +6,7 @@ import { join } from "node:path";
 
 import * as cloud from "../src/cloud.ts";
 import * as cloudBlocks from "../src/cloud_blocks.ts";
+import * as localPreviews from "../src/local_previews.ts";
 import * as cloudMedia from "../src/cloud_media.ts";
 import * as effectCloud from "../src/effect_cloud.ts";
 import { pinned } from "../src/export_excerpts.ts";
@@ -433,7 +434,7 @@ test("opening cloud media streams proxies without downloads, including read-only
   }
 });
 
-test("cloud playback ignores obsolete local previews and repeated ranges never download proxies", async () => {
+test("cloud playback ignores obsolete local previews: ranges are read from the cloud while its whole copy comes down, the cloud's bytes", async () => {
   const fixture = home("cloud-playback");
   const { store, app, cleanup } = fixture;
   try {
@@ -449,6 +450,16 @@ test("cloud playback ignores obsolete local previews and repeated ranges never d
     fs.writeFileSync(paths.proxy, "obsolete local video");
     fs.writeFileSync(paths.proxyDone, "");
     const router = buildRouter();
+    // The page reading it brings the whole copy down behind it (bb982bcc, Nov 15): waited for, not raced (it failed
+    // CI when it landed before a check that it never would, Nov 16).
+    const landed = new Promise<void>((resolve) => {
+      const stop = localPreviews.onLanded((one) => {
+        if (one !== key) return;
+        stop();
+        resolve();
+      });
+      setTimeout(resolve, 10_000);
+    });
     for (const kind of ["proxy", "audio", "light"]) {
       const response = (await respond(app, router, new Request(`http://localhost:7700/api/projects/${id}/media/m1/${kind}`, { headers: { host: "localhost:7700", range: "bytes=4-8" } }), null))!;
       expect(response.status).toBe(206);
@@ -458,7 +469,8 @@ test("cloud playback ignores obsolete local previews and repeated ranges never d
     const native = (await respond(app, router, new Request(playbackPath(key, app.port), { headers: { host: "127.0.0.1:7700", range: "bytes=10-14" } }), null))!;
     expect(native.status).toBe(206);
     expect(await native.text()).toBe("video");
-    expect(fs.existsSync(cloudMedia.localPath(store.cacheDir(), key))).toBe(false);
+    await landed;
+    expect(fs.readFileSync(cloudMedia.localPath(store.cacheDir(), key), "utf8")).toBe("the cloud video");
     expect(app.media.status(source)).toMatchObject({ proxy: "ready", light: "skipped" });
     expect(mediaKey(playbackPath(key, 7700))).toBe(mediaKey(playbackPath(key, 8800)));
     const pulled = structuredClone(store.get(id)!.project);
