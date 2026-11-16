@@ -155,8 +155,10 @@ export async function sendUp(store: Store, project: string, slug: string): Promi
   if (!r2.enabled() || !SLUG.test(slug)) return;
   const dir = join(projectDir(store, project), slug);
   if (read(dir, slug) === null) return;
-  for (const file of fs.readdirSync(dir)) {
-    if (FILE.test(file) && fs.statSync(join(dir, file)).isFile()) await r2.uploadFile(join(dir, file), `${cloudPrefix(project)}${slug}/${file}`);
+  // Its font.json last: another computer takes a family only once that's there, so never one with a file still to come.
+  const files = fs.readdirSync(dir).filter((file) => FILE.test(file) && fs.statSync(join(dir, file)).isFile());
+  for (const file of [...files.filter((file) => file !== MANIFEST), ...files.filter((file) => file === MANIFEST)]) {
+    await r2.uploadFile(join(dir, file), `${cloudPrefix(project)}${slug}/${file}`);
   }
   let known = upThere.get(project);
   if (known === undefined) upThere.set(project, (known = new Set()));
