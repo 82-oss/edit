@@ -59,7 +59,9 @@ import { join, sep } from "node:path";
 import type { App } from "./app.ts";
 import * as devtools from "./chrome_devtools.ts";
 import * as diag from "./diag.ts";
+import * as cloudProjects from "./cloud_projects.ts";
 import * as effectCloud from "./effect_cloud.ts";
+import { diskFull, freeOn, outOfSpace } from "./export_prep.ts";
 import * as effectMap from "./effect_map.ts";
 import runtimeText from "./effect_runtime.html" with { type: "text" };
 import { writeAtomic } from "./files.ts";
@@ -161,8 +163,10 @@ export interface Effect {
   changed: number;
   /** Its page's address on this server, for the viewer's frame. */
   page: string;
-  /** The version of its code (`sourceKey`): a media whose `effect_key` is this one plays its render, not the page. */
+  /** The version of its code (`codeKey`): a media whose `effect_key` is this one plays its render, not the page. */
   key: string;
+  /** Its files' key as renders had it before Nov 16 (`oldKey`): a render saved with that is of this code too. */
+  old: string;
 }
 
 /** Every file in a folder, however deep: its path inside the folder, size and when it changed. */
@@ -180,14 +184,65 @@ function filesIn(dir: string, under = ""): [string, number, number][] {
 }
 
 /**
- * The version of an effect's code: its files (each by name, size and when it
- * last changed), Edit's runtime and the frame it's drawn at. A save makes a new
- * one, and so does a new build whose runtime draws differently. The fonts it
- * names beyond Edit's own count only when there are some, so an effect without
- * any keeps the key it had before fonts were fetched (and its render).
+ * Whether a file of an effect's folder is its code: not what Edit makes again
+ * from the timeline (effect_inputs.ts's `beneath.mp4`, whose `.beneath.json`
+ * says what it was made from and is code) nor a write that hasn't finished.
+ * The same files V2's cloud keeps of a version (v2_cloud.ts `walk`), so a
+ * version's key can be told from its list of files.
  */
-function sourceKey(files: [string, number, number][], frame: { width: number; height: number; fps: number }, used = ""): string {
+function isCode(path: string): boolean {
+  return path !== "beneath.mp4" && !path.endsWith(".partial.mp4");
+}
+
+/** Each file's sha256, kept while its size, time and inode stay the same: a folder's key is read on every save. */
+const contents = new Map<string, { size: number; mtimeMs: number; ino: number; sha256: string }>();
+
+/** A file's sha256 (`stat` its own), read again only when it changed. */
+function contentOf(path: string, stat: fs.Stats): string {
+  const known = contents.get(path);
+  if (known !== undefined && known.size === stat.size && known.mtimeMs === stat.mtimeMs && known.ino === stat.ino) return known.sha256;
+  const sha256 = new Bun.CryptoHasher("sha256").update(fs.readFileSync(path)).digest("hex");
+  if (contents.size > 20_000) contents.clear();
+  contents.set(path, { size: stat.size, mtimeMs: stat.mtimeMs, ino: stat.ino, sha256 });
+  return sha256;
+}
+
+/** An effect's code as V2's cloud lists a version's files: each by its path in the folder and its content. */
+function codeIn(dir: string): { path: string; sha256: string }[] {
+  const code: { path: string; sha256: string }[] = [];
+  for (const [path] of filesIn(dir)) {
+    if (!isCode(path)) continue;
+    const full = join(dir, path);
+    code.push({ path, sha256: contentOf(full, fs.statSync(full)) });
+  }
+  return code;
+}
+
+/**
+ * The version of an effect's code: its files (each by name and content, so
+ * the same code fetched onto another computer, with times of its own, is the
+ * same version and plays the render made of it), Edit's runtime and the frame
+ * it's drawn at. A change makes a new one, and so does a new build whose
+ * runtime draws differently. The fonts it names beyond Edit's own count only
+ * when there are some.
+ */
+function codeKey(code: { path: string; sha256: string }[], frame: { width: number; height: number; fps: number }, used = ""): string {
+  return fingerprint([RUNTIME, FACES, "content", ...(used === "" ? [] : [used]), `${frame.width}x${frame.height}@${frame.fps}`, ...code.map((file) => `${file.path} ${file.sha256}`)]);
+}
+
+/**
+ * The key renders had until Nov 16: the files by name, size and when they
+ * last changed. A render saved with it is of the code here when it's this
+ * key of the files here (`needed`), and is taken as the new key's, never
+ * drawn again for the change of key alone.
+ */
+function oldKey(files: [string, number, number][], frame: { width: number; height: number; fps: number }, used = ""): string {
   return fingerprint([RUNTIME, FACES, ...(used === "" ? [] : [used]), `${frame.width}x${frame.height}@${frame.fps}`, ...files.map(([path, size, changed]) => `${path} ${size} ${changed}`)]);
+}
+
+/** An effect's folder's version (`codeKey`) now. */
+function keyOf(store: Store, project: string, dir: string, frame: { width: number; height: number; fps: number }): string {
+  return codeKey(codeIn(dir), frame, fontsUsed(store, project, dir));
 }
 
 /** The fonts beyond Edit's own an effect's page names (fonts.ts), for its key: one changed or added re-renders only what uses it. */
@@ -218,7 +273,8 @@ export function list(store: Store, project: string): Effect[] {
     try {
       if (!fs.statSync(join(dir, ENTRY)).isFile()) continue;
       const files = filesIn(dir);
-      found.push({ name, changed: Math.max(0, ...files.map((one) => one[2])), page: `${addressOf(project, name)}${ENTRY}`, key: sourceKey(files, frame, fontsUsed(store, project, join(root(store, project), name))) });
+      const used = fontsUsed(store, project, dir);
+      found.push({ name, changed: Math.max(0, ...files.map((one) => one[2])), page: `${addressOf(project, name)}${ENTRY}`, key: codeKey(codeIn(dir), frame, used), old: oldKey(files, frame, used) });
     } catch {
       // A folder with no page yet: the agent is still writing it.
     }
@@ -715,7 +771,7 @@ export async function look(app: App, projectId: string, name: string, times: num
   const host = seams.broll.pageHost(app);
   const url = `http://${host}${addressOf(projectId, name)}${ENTRY}?look=${token}`;
   // The page as it is now: a kept one of another version is loaded afresh.
-  const version = `${host} ${sourceKey(filesIn(dir), frame, fontsUsed(app.store, projectId, dir))}`;
+  const version = `${host} ${keyOf(app.store, projectId, dir, frame)}`;
   const map = fs.readFileSync(join(dir, ENTRY), "utf8").includes("edit-map/map.js");
   const started = Date.now();
   try {
@@ -824,11 +880,15 @@ function clearStill(store: Store, project: string, name: string): string {
  * Each effect whose code here is newer than its render: the engine draws its
  * clear picture in the render's place until the new one is made, so the page
  * playing live is all that's seen of it (a see-through page over its old
- * render would show both), in the browser and a Mac's window alike.
+ * render would show both), in the browser and a Mac's window alike. Only on
+ * the computer editing the project (`editingHere`): code here older than the
+ * render another computer made is brought down (`bringDown`), never put in
+ * its place.
  */
 async function standIn(app: App, project: string): Promise<void> {
   const stale = needed(app.store, project).filter((effect) => effect.current !== null && !effect.fresh && typeof effect.media.effect_key === "string");
-  if (stale.length === 0) return;
+  // Only where the code was changed: a project another computer is editing keeps its renders, and its lock stays there.
+  if (stale.length === 0 || !editingHere(app, project)) return;
   const paths = new Map(stale.map((effect) => [effect.name, clearStill(app.store, project, effect.name)]));
   const gone: [string, string][] = [];
   await app.store.update(project, "effects", (edited) => {
@@ -1188,7 +1248,7 @@ async function settled(app: App, project: string, name: string): Promise<void> {
   while (Date.now() < until) {
     const live = app.store.get(project);
     if (live === null) return;
-    const now = sourceKey(filesIn(folder(app.store, project, name)), frameOf(live.project), fontsUsed(app.store, project, folder(app.store, project, name)));
+    const now = keyOf(app.store, project, folder(app.store, project, name), frameOf(live.project));
     if (now === before) return;
     before = now;
     await Bun.sleep(SETTLE_MS);
@@ -1198,6 +1258,8 @@ async function settled(app: App, project: string, name: string): Promise<void> {
 /** One effect's render: what it's for and how far it's got. */
 interface Render {
   project: string;
+  /** Its project's name, for a render waiting behind it. */
+  title: string;
   name: string;
   key: string;
   /** Frames drawn of all of them (0 until its length is known). */
@@ -1207,26 +1269,56 @@ interface Render {
 }
 
 const renders = new Map<string, Render>();
+/** The render drawing now (the one slot's), for a render waiting behind it to say whose it waits for. */
+let drawing: Render | null = null;
+
+/** Why a render failed, by what can be done about it. */
+type Failure = "code" | "passing" | "disk";
+
 /**
  * Renders that failed, by project, effect and code version: not tried again
  * until the code changes, or for `FAILED_RETRY_MS` (a map's page reaches the
  * network: tiles or a place that timed out once may load the next time, and an
- * export shouldn't stop on that failure until Edit restarts).
+ * export shouldn't stop on that failure until Edit restarts). `said` is what
+ * went wrong (the agent's and the log's), `told` what a person is told.
  */
-const failed = new Map<string, { said: string; at: number }>();
+const failed = new Map<string, { said: string; told: string; at: number }>();
 const FAILED_RETRY_MS = 5 * 60_000;
 
 /** Why a render failed, while that still stands. */
-function failureOf(render: string): string | undefined {
+function failureOf(render: string): { said: string; told: string } | undefined {
   const found = failed.get(render);
   if (found === undefined) return undefined;
-  if (Date.now() - found.at < FAILED_RETRY_MS) return found.said;
+  if (Date.now() - found.at < FAILED_RETRY_MS) return found;
   failed.delete(render);
   return undefined;
 }
 const settling = new Map<string, ReturnType<typeof setTimeout>>();
 const renderSlot = new Semaphore(1);
 const id = (project: string, name: string, key: string) => `${project}/${name}/${key}`;
+
+/** The disk can't hold a render: said as how much to free. */
+class DiskShort extends Error {}
+
+/**
+ * What kind of failure a render's is. Chrome not starting or going away, a
+ * call timing out and a map losing its drawing are the computer's state at
+ * that moment (`passing`): tried again at once. The disk running out is the
+ * person's to fix. The rest is the page's code.
+ */
+export function failureKind(error: unknown): Failure {
+  if (error instanceof DiskShort || outOfSpace(error)) return "disk";
+  const said = diag.messageOf(error);
+  if (/Chrome didn't start|Chrome has no page|Chrome's connection|Chrome closed|timed out|lost its drawing|didn't load in Chrome|Chrome drew nothing|needs Google Chrome/.test(said)) return "passing";
+  return "code";
+}
+
+/** What a person is told of an effect's render that failed: the effect, and what to do. */
+function toldOf(name: string, kind: Failure, error: unknown): string {
+  if (kind === "disk") return error instanceof DiskShort ? error.message : diskFull(0);
+  if (kind === "passing") return `The ${name} effect couldn't render just now: press Retry.`;
+  return `The ${name} effect didn't render: ask the agent to fix the ${name} effect.`;
+}
 
 /** The effects on a project's timeline, each with its media, its code now (null: not on this computer) and whether its render is that code's. */
 function needed(store: Store, project: string): { name: string; media: Media; current: Effect | null; fresh: boolean }[] {
@@ -1238,39 +1330,116 @@ function needed(store: Store, project: string): { name: string; media: Media; cu
     const media = live.project.media.find((one) => one.effect === name)!;
     const current = effects.find((one) => one.name === name) ?? null;
     // Made on another computer: whatever it rendered there is what there is.
-    const fresh = current === null ? media.effect_key !== undefined && media.effect_key !== null : media.effect_key === current.key;
+    const fresh = current === null ? media.effect_key !== undefined && media.effect_key !== null : sameCode(project, name, media.effect_key, current);
     out.push({ name, media, current, fresh });
   }
   return out;
 }
 
 /**
+ * Keys found (`bringDown`) to name the code here: a render saved under a key
+ * of another computer's (before Nov 16 a key had the files' times), its
+ * version in V2's cloud the same files as this folder. By `project/name/key`,
+ * the code's key here.
+ */
+const alike = new Map<string, string>();
+
+/** Whether a render saved as `key` is of effect `name`'s code here: its key now, its key from before Nov 16, or one found to be the same files. */
+function sameCode(project: string, name: string, key: string | null | undefined, current: Effect): boolean {
+  if (typeof key !== "string") return false;
+  return key === current.key || key === current.old || alike.get(`${project}/${name}/${key}`) === current.key;
+}
+
+/**
+ * Whether this computer is the one editing `project`: its own project (not
+ * the cloud's, or signed out), or the cloud's with its lock here. Another
+ * computer's edit is never written from here by what Edit does by itself:
+ * a write would take the lock from whoever is editing it.
+ */
+function editingHere(app: App, project: string): boolean {
+  let status: Record<string, unknown>;
+  try {
+    const cloud = cloudProjects.cloudOf(app);
+    if (cloud === null) return true;
+    status = cloud.status(project);
+  } catch {
+    return true;
+  }
+  if (status.cloud !== true || status.on !== true) return true;
+  return status.lock === "held" || status.lock === "provisional";
+}
+
+/**
+ * Renders saved under a key that names the code here another way (from
+ * before Nov 16, or found the same files as their version in V2's cloud): the
+ * key written as this computer's, nothing drawn again. Only on the computer
+ * editing the project.
+ */
+async function rekey(app: App, project: string): Promise<void> {
+  const moved = new Map(needed(app.store, project).filter((effect) => effect.fresh && effect.current !== null && effect.media.effect_key !== effect.current.key).map((effect) => [effect.name, { from: effect.media.effect_key, to: effect.current!.key }]));
+  if (moved.size === 0 || !editingHere(app, project)) return;
+  await app.store.update(project, "effects", (edited) => {
+    let changed = false;
+    for (const media of edited.media) {
+      const move = media.effect === undefined || media.effect === null ? undefined : moved.get(media.effect);
+      if (move === undefined || media.effect_key !== move.from) continue;
+      media.effect_key = move.to;
+      changed = true;
+    }
+    return changed;
+  });
+}
+
+/**
  * Renders an effect's code as it is now, unless it's rendered already or
  * under way: the frames drawn in `CHROMES` Chromes at once, kept on disk as
  * they land (a render cut short goes on from them), joined into a video, and
- * that put in place of the still. Answers when it's in place.
+ * that put in place of the still. Answers when it's in place. A failure that
+ * was the computer's at that moment (`passing`) is tried again once at once;
+ * one that stands is said with the effect's name and what to do, and the
+ * render is started again when that stops standing (unless it's the code's,
+ * which waits for the code to change).
  */
 export function renderNow(app: App, project: string, name: string): Promise<void> {
   const dir = folder(app.store, project, name);
   const live = app.store.get(project);
   if (live === null) return Promise.reject(new Error("no such project"));
-  const key = sourceKey(filesIn(dir), frameOf(live.project), fontsUsed(app.store, project, dir));
+  const key = keyOf(app.store, project, dir, frameOf(live.project));
   const running = renders.get(id(project, name, key));
   if (running !== undefined) return running.done;
   const failure = failureOf(id(project, name, key));
-  if (failure !== undefined) return Promise.reject(new Error(failure));
-  const render: Render = { project, name, key, drawn: 0, frames: 0, done: Promise.resolve() };
-  render.done = renderSlot
-    .with(() => draw(app, render))
+  if (failure !== undefined) return Promise.reject(new Error(failure.told));
+  const render: Render = { project, title: live.project.name, name, key, drawn: 0, frames: 0, done: Promise.resolve() };
+  const once = () =>
+    renderSlot.with(async () => {
+      drawing = render;
+      try {
+        await draw(app, render);
+      } finally {
+        drawing = null;
+      }
+    });
+  render.done = once()
+    .catch((error: unknown) => {
+      if (error instanceof Outdated || failureKind(error) !== "passing") throw error;
+      diag.warn("effects", `${project}: ${name}'s render stopped (${diag.messageOf(error)}); trying it again`);
+      return once();
+    })
     .catch((error: unknown) => {
       // The code changed under it: started again once the code has settled, never at once (Nov 11, on kenobi: renders
       // restarted every 60 frames for as long as the agent kept saving, and left 4.6 GB of frames behind).
       if (error instanceof Outdated) return settled(app, project, name).then(() => renderNow(app, project, name));
       const said = diag.messageOf(error);
-      // A map that lost its drawing is the card's state then, not the code's: tried again when it's asked for next.
-      if (!said.includes("lost its drawing")) failed.set(id(project, name, key), { said, at: Date.now() });
+      const kind = failureKind(error);
+      const told = toldOf(name, kind, error);
+      failed.set(id(project, name, key), { said, told, at: Date.now() });
+      // What isn't the code's may go the next time: started again once the failure stops standing.
+      if (kind !== "code") {
+        const again = setTimeout(() => renderSoon(app, project), FAILED_RETRY_MS + 1_000);
+        again.unref?.();
+      }
       diag.warn("effects", `${project}: ${name} didn't render: ${said}`);
-      throw new Error(`${name} didn't render: ${said}`);
+      throw new Error(told);
     })
     .finally(() => renders.delete(id(project, name, key)));
   renders.set(id(project, name, key), render);
@@ -1313,6 +1482,9 @@ async function draw(app: App, render: Render): Promise<void> {
       const wanted: number[] = [];
       for (let index = 0; index < render.frames; index++) if (!fs.existsSync(join(frames, frameName(index)))) wanted.push(index);
       render.drawn = render.frames - wanted.length;
+      // The frames it draws and the video they make, with a margin: refused before it fills the disk, not halfway.
+      const short = renderBytes(frame, wanted.length, duration) - freeOn(dir);
+      if (short > 0) throw new DiskShort(diskFull(short));
       let next = 0;
       await Promise.all(
         opened.map(async (page) => {
@@ -1320,7 +1492,7 @@ async function draw(app: App, render: Render): Promise<void> {
             const index = wanted[next++];
             if (index === undefined) return;
             // The code changed while it rendered: these frames are an older version's.
-            if (index % 60 === 0 && sourceKey(filesIn(folder(app.store, project, name)), frame, fontsUsed(app.store, project, folder(app.store, project, name))) !== key) throw new Outdated();
+            if (index % 60 === 0 && keyOf(app.store, project, folder(app.store, project, name), frame) !== key) throw new Outdated();
             const time = index / frame.fps;
             // A map's frame waits for its tiles while they keep coming (effect_map.html), the first ones longest.
             const drawn = await page.evaluate<{ error?: string }>(`window.__edit.seek(${time})`, 60_000);
@@ -1375,7 +1547,7 @@ async function draw(app: App, render: Render): Promise<void> {
   // A stacked render is twice as tall as the frame is for its width (whatever size it was kept at).
   const stacked = probe.width > 0 && Math.abs(probe.height / probe.width - (2 * frame.height) / frame.width) < 0.01;
   // Code changed while the video was made: the next render takes over.
-  if (sourceKey(filesIn(folder(app.store, project, name)), frame, fontsUsed(app.store, project, folder(app.store, project, name))) !== key) throw new Outdated();
+  if (keyOf(app.store, project, folder(app.store, project, name), frame) !== key) throw new Outdated();
   let placed = false;
   // The render this one replaces, when it went up as the project's own (effect_cloud.ts keeps it, the one before it goes).
   let before = null as string | null;
@@ -1426,20 +1598,70 @@ function keepVersion(app: App, project: string, name: string, key: string): void
     .catch((error: unknown) => diag.warn("effects", `${project}: ${name} wasn't kept in V2's cloud: ${diag.messageOf(error)}`));
 }
 
+/** Each project's bringDown under way: one at a time, every caller waiting on the same. */
+const bringing = new Map<string, Promise<string[]>>();
+/** Renders already looked for in V2's cloud (`project/name/render key/key here`): nothing there to bring, not asked again. */
+const lookedFor = new Set<string>();
+
 /**
- * The effects of a project's timeline whose code isn't on this computer (made
- * on another), brought down from V2's cloud at the version in use, so its
- * agent can see and change them, and the viewer play them live.
+ * The effects of a project's timeline whose code here isn't the code their
+ * render was made of, brought down from V2's cloud at that version (the one
+ * whose `source` is the render's key), so its agent can see and change them,
+ * and the viewer play them live: one made on another computer, or changed
+ * there since this computer last had it. Code here that's none of the
+ * versions kept (the agent's work not rendered yet) is left as it is; with
+ * no folder here, the version in use comes when the render's isn't found.
  */
-export async function bringDown(app: App, project: string): Promise<string[]> {
+export function bringDown(app: App, project: string): Promise<string[]> {
+  const going = bringing.get(project);
+  if (going !== undefined) return going;
+  const work = bringDownNow(app, project).finally(() => bringing.delete(project));
+  bringing.set(project, work);
+  return work;
+}
+
+async function bringDownNow(app: App, project: string): Promise<string[]> {
   const live = app.store.get(project);
   if (live === null || live.project.hq !== true || !v2cloud.enabled()) return [];
   const brought: string[] = [];
+  const frame = frameOf(live.project);
   for (const media of live.project.media) {
     const name = media.effect;
-    if (name === undefined || name === null || !NAME.test(name) || fs.existsSync(folder(app.store, project, name))) continue;
+    if (name === undefined || name === null || !NAME.test(name)) continue;
+    const dir = folder(app.store, project, name);
+    const item = v2cloud.effectKey(project, name);
+    const rendered = typeof media.effect_key === "string" ? media.effect_key : null;
     try {
-      if ((await v2cloud.fetchInto(v2cloud.effectKey(project, name), null, folder(app.store, project, name))) !== null) brought.push(name);
+      if (!fs.existsSync(dir)) {
+        const asked = `${project}/${name}/${rendered}/none`;
+        if (lookedFor.has(asked)) continue;
+        const versions = rendered === null ? [] : await v2cloud.versions(item);
+        const its = versions.find((one) => one.source === rendered && one.files !== null);
+        if ((await v2cloud.fetchInto(item, its?.n ?? null, dir)) !== null) brought.push(name);
+        else lookedFor.add(asked);
+        continue;
+      }
+      if (rendered === null || !fs.existsSync(join(dir, ENTRY))) continue;
+      const files = filesIn(dir);
+      const used = fontsUsed(app.store, project, dir);
+      const code = codeIn(dir);
+      const here: Effect = { name, changed: 0, page: "", key: codeKey(code, frame, used), old: oldKey(files, frame, used) };
+      if (sameCode(project, name, rendered, here)) continue;
+      const asked = `${project}/${name}/${rendered}/${here.key}`;
+      if (lookedFor.has(asked)) continue;
+      const versions = await v2cloud.versions(item);
+      lookedFor.add(asked);
+      const its = versions.find((one) => one.source === rendered && one.files !== null);
+      if (its === undefined) continue;
+      const same = (files: v2cloud.File[]) => files.length === code.length && [...files].sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0)).every((file, at) => file.path === code[at]!.path && file.sha256 === code[at]!.sha256);
+      // The same files under another computer's key: the render is of this code.
+      if (same(its.files!)) {
+        alike.set(`${project}/${name}/${rendered}`, here.key);
+        continue;
+      }
+      // An older version of it here: the render's comes in its place. Code that's no version kept is work not rendered yet.
+      if (!versions.some((one) => one.files !== null && same(one.files))) continue;
+      if ((await v2cloud.fetchInto(item, its.n, dir)) !== null) brought.push(name);
     } catch (error) {
       diag.warn("effects", `${project}: ${name} couldn't come down from V2's cloud: ${diag.messageOf(error)}`);
     }
@@ -1472,6 +1694,16 @@ function prune(store: Store, project: string, name: string, kept: string): void 
     if (!own(entry) || !entry.endsWith(".frames") || running.has(entry.slice(name.length + 1, name.length + 13))) continue;
     fs.rmSync(join(dir, entry), { recursive: true, force: true });
   }
+}
+
+/**
+ * The room a render takes on the disk: its frames still to draw (a PNG drawn
+ * for speed is about one and a half bytes a pixel), the video made of them
+ * (at most twice the best export's bitrate, as the encode caps it) and half
+ * a gigabyte to spare.
+ */
+export function renderBytes(frame: { width: number; height: number; fps: number }, frames: number, seconds: number): number {
+  return Math.ceil(frames * frame.width * frame.height * 1.5 + (seconds * frame.width * frame.height * frame.fps * 0.14 * 2 * 1.5) / 8 + 0.5e9);
 }
 
 /** The frames (RGB) as footage is: BT.709, video range, 4:2:0, and tagged so (the engine's fast path reads it as it is). */
@@ -1532,21 +1764,38 @@ function cloudFontsRead(app: App): Promise<void> {
 
 async function readyToRender(app: App, project: string): Promise<void> {
   await cloudFontsRead(app);
+  // Code here older than the render another computer made comes down first: never drawn again over it.
+  await bringDown(app, project).catch(() => []);
+  await rekey(app, project).catch((error: unknown) => diag.warn("effects", `${project}: its renders' keys: ${diag.messageOf(error)}`));
   for (const [what, before] of beforeRenders) {
     await before(app, project).catch((error: unknown) => diag.warn("effects", `${project}: before its renders (${what}): ${diag.messageOf(error)}`));
   }
 }
 
+/**
+ * A project's renders against its code here, before anything is drawn: code
+ * older than the render another computer made brought down (`bringDown`),
+ * a render's key from before Nov 16 written anew (`rekey`), and a render
+ * older than the code here swapped for the clear still (`standIn`). Judged
+ * only once the fonts a key has are known (`cloudFontsRead`).
+ */
+export async function bringUpToDate(app: App, project: string): Promise<void> {
+  await cloudFontsRead(app);
+  await bringDown(app, project).catch(() => []);
+  await rekey(app, project);
+  await standIn(app, project);
+}
+
 export function renderSoon(app: App, project: string): void {
-  // Judged stale only once the fonts its key has are known (cloudFontsRead).
-  cloudFontsRead(app)
-    .then(() => standIn(app, project))
-    .catch((error: unknown) => diag.warn("effects", `${project}: its effects' clear pictures: ${diag.messageOf(error)}`));
+  bringUpToDate(app, project).catch((error: unknown) => diag.warn("effects", `${project}: its effects' clear pictures: ${diag.messageOf(error)}`));
   const waiting = settling.get(project);
   if (waiting !== undefined) clearTimeout(waiting);
   const timer = setTimeout(() => {
     settling.delete(project);
     void readyToRender(app, project).then(() => {
+      // Drawn by itself only where the project is being edited: its render is written into the project (an export asked
+      // for here waits for it all the same, `waitForRenders`).
+      if (!editingHere(app, project)) return;
       for (const effect of needed(app.store, project)) {
         if (effect.fresh || effect.current === null) continue;
         renderNow(app, project, effect.name).catch(() => {});
@@ -1569,9 +1818,15 @@ export function renderLine(app: App, project: string, name: string): string | nu
 /** What an effect's render is doing, for the agent and the person: null when there's nothing to say. */
 export function renderState(project: string, name: string, key: string): string | null {
   const running = renders.get(id(project, name, key));
-  if (running !== undefined) return running.frames > 0 ? `rendering, ${running.drawn} of ${running.frames} frames` : "rendering";
+  if (running !== undefined) {
+    if (running.frames > 0) return `rendering, ${running.drawn} of ${running.frames} frames`;
+    // One render draws at a time: another's holds the place.
+    const ahead = drawing;
+    if (ahead !== null && ahead !== running) return ahead.project === project ? `waiting behind the ${ahead.name} effect's render` : `waiting behind ${ahead.title}'s render`;
+    return "rendering";
+  }
   const failure = failureOf(id(project, name, key));
-  return failure === undefined ? null : `its render failed: ${failure}`;
+  return failure === undefined ? null : `its render failed: ${failure.said}`;
 }
 
 /**
@@ -1585,15 +1840,47 @@ export async function waitForRenders(app: App, project: string, limitMs: number)
   await readyToRender(app, project);
   for (const effect of needed(app.store, project)) {
     if (effect.fresh) continue;
-    if (effect.current === null) throw new Error(`${effect.name} is a coded effect made on another computer and never rendered there: open the project there to render it`);
+    if (effect.current === null) throw new Error(`The ${effect.name} effect was made on another computer and never rendered there: open the project there to render it.`);
     const done = renderNow(app, project, effect.name);
     const left = until - Date.now();
     const timedOut = await Promise.race([done.then(() => false), Bun.sleep(Math.max(0, left)).then(() => true)]);
     if (timedOut) {
-      throw new Error(`${effect.name} is still rendering (${renderState(project, effect.name, effect.current.key) ?? "starting"}): it's done in a minute or two, then export again`);
+      const state = renderState(project, effect.name, effect.current.key);
+      if (state !== null && state.startsWith("waiting behind")) throw new Error(`The ${effect.name} effect is ${state}: export again once it's done.`);
+      throw new Error(`The ${effect.name} effect is still rendering${state !== null && state.startsWith("rendering,") ? ` (${state.slice("rendering, ".length)})` : ""}: export again in a minute or two.`);
     }
   }
 }
+
+/**
+ * Why an export of `project` (the edit it's of, as it was taken) from frame
+ * `start` to `end` can't go out yet, or null: an effect it shows that has no
+ * render, or whose render isn't of its code here. Checked on the edit the
+ * export is made of (exports.ts `start`), whichever way it was asked for, so
+ * none goes out with a clear still or an older version where an effect is.
+ */
+export function notReady(store: Store, project: Project, start = 0, end = Number.POSITIVE_INFINITY): string | null {
+  if (project.hq !== true) return null;
+  const shown = new Set(project.clips.filter((clip) => (clip.type === "video" || clip.type === "audio") && clip.start < end && clip.start + clip.duration > start).map((clip) => (clip as { media: string }).media));
+  const effects = list(store, project.id);
+  for (const media of project.media) {
+    const name = media.effect;
+    if (name === undefined || name === null || !shown.has(media.id)) continue;
+    const current = effects.find((one) => one.name === name) ?? null;
+    if (typeof media.effect_key !== "string") {
+      return current === null ? `The ${name} effect was made on another computer and never rendered there: open the project there to render it.` : `The ${name} effect is still rendering: export again in a minute or two.`;
+    }
+    if (current !== null && !sameCode(project.id, name, media.effect_key, current)) return `The ${name} effect is still rendering: export again in a minute or two.`;
+  }
+  return null;
+}
+
+/** Whether a file of a project's renders (`<name>-<key>.frames`, `.partial.mp4`) is a render's under way or waiting to go on (effect_cloud.ts's sweep leaves it). */
+function rendering(project: string, file: string): boolean {
+  for (const render of renders.values()) if (render.project === project && file.startsWith(`${render.name}-${render.key}.`)) return true;
+  return false;
+}
+effectCloud.renderingNow.is = rendering;
 
 /**
  * From Edit's start: every change to a project made the new way (a clip of an

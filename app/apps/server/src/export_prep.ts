@@ -4,6 +4,8 @@
 // percent only moved once frames were encoding. Prep now fills the first
 // slice; the encode fills the rest and still ends at 100%.
 
+import * as fs from "node:fs";
+
 /** One kind of prep, counted as it finishes. */
 export interface Count {
   done: number;
@@ -62,4 +64,33 @@ export function shareLine(current: string, event: { state?: unknown; waiting?: u
     return `exporting ${Math.round(progress * 100)}%`;
   }
   return null;
+}
+
+// ---------------------------------------------------------------------------
+// The disk: an export, a share's review copy and an effect's render each need
+// room for what they write, asked before they write it, and a write the disk
+// refused (ENOSPC) said as what to do about it.
+
+const GB = 1e9;
+
+/** The bytes free on the disk holding `path` (statfs); as good as endless when it can't be asked. */
+export function freeOn(path: string): number {
+  try {
+    const stats = fs.statfsSync(path);
+    return stats.bavail * stats.bsize;
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+/** What a person is told when work needs `short` bytes more than the disk has (at least a gigabyte, in whole ones). */
+export function diskFull(short: number): string {
+  return `Your disk is full: free about ${Math.max(1, Math.ceil(short / GB))} GB, then press Retry.`;
+}
+
+/** Whether a failure is the disk running out (ENOSPC, "No space left on device" from FFmpeg or the engine). */
+export function outOfSpace(error: unknown): boolean {
+  if (typeof error === "object" && error !== null && (error as { code?: unknown }).code === "ENOSPC") return true;
+  const said = error instanceof Error ? error.message : String(error);
+  return /ENOSPC|no space left on device|disk is full/i.test(said);
 }

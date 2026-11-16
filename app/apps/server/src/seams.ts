@@ -337,7 +337,7 @@ export interface ScriptJobs {
   /** Whether `project`'s import is working in this process now (one read back after a restart isn't, until it's resumed). */
   working(project: string): boolean;
   /** The import ended here: kept in the job table as `settled` says (`end` crosses it off). */
-  finish(project: string, settled: { state: "done" | "failed" | "waiting" | "end"; on?: "quota" | "encoder"; error?: string; step?: string; retry_at?: number; until?: "encoder" | "person" }): void;
+  finish(project: string, settled: { state: "done" | "failed" | "waiting" | "end"; on?: "quota" | "encoder" | "voice" | "drive"; error?: string; step?: string; retry_at?: number; until?: "encoder" | "person" }): void;
   keepMade(project: string, file: string, ranges: [number, number][], excerpts: Excerpt[]): void;
   keptMade(project: string, file: string, ranges: [number, number][]): Excerpt[] | null;
 }
@@ -937,6 +937,8 @@ export interface BrollSeam {
   /** The server's own address as a page in that Chrome reaches it ("127.0.0.1:7700"). */
   pageHost(app: App): string;
   isMapStandIn(path: string): boolean;
+  /** Why an export of this edit (frames `start` to `end`) can't go out yet (an effect not rendered, a map shot still its first frame), or null. */
+  exportReady?(store: Store, project: Project, start: number, end: number): string | null;
   /** A place for a coded effect's map: where it is, its address and its building's outline. */
   findPlace(app: App, place: string): Promise<{ lat: number; lon: number; address: string; outline: [number, number][] | null }>;
   mapView(app: App, projectId: string, args: Json): Promise<Json>;

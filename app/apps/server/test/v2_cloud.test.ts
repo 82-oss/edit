@@ -13,10 +13,13 @@ import * as channels from "../src/channels.ts";
 import * as lanes from "../src/lanes.ts";
 import { registerChannelTools } from "../src/channel_tools.ts";
 import * as cloud from "../src/cloud.ts";
+import * as cloudProjects from "../src/cloud_projects.ts";
 import { registerEffectTools } from "../src/effect_tools.ts";
 import { registerEditingTools } from "../src/edit_tools.ts";
 import * as effects from "../src/effects.ts";
+import { respond } from "../src/http/server.ts";
 import { dispatch } from "../src/mcp/index.ts";
+import { buildRouter } from "../src/routes.ts";
 import { HOUSE_VOICE } from "../src/voice.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
 import { fixtureHome } from "./helpers/home.ts";
@@ -99,6 +102,77 @@ test("an effect's code kept version by version, the same files never twice, and 
     expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe("<p>two</p>");
     // Here already: left as it is.
     expect(await effects.bringDown(app, id)).toEqual([]);
+  } finally {
+    cleanup();
+  }
+});
+
+test("an effect handed over to another computer: its fetched code is the render's version (its key by content), an older copy here is brought up to the render's, and work here that's no version is left alone", async () => {
+  // Nov 16 audit: keys of the files' times never matched on the computer the code was fetched onto, and a folder
+  // that was there already (older) won over the cloud's newer version.
+  const { app, cleanup, id } = hq("v2-hand-over");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    const item = v2cloud.effectKey(id, "board");
+    // Made and rendered twice on the first computer: each version kept with its render's key.
+    fs.writeFileSync(join(dir, "scene.html"), "<p>one</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>");
+    const first = effects.list(app.store, id)[0]!.key;
+    await v2cloud.save(item, "board", dir, { source: first, reason: "rendered" });
+    fs.writeFileSync(join(dir, "scene.html"), "<p>two</p><script>window.duration = 2; window.ready = Promise.resolve(); window.seek = () => {};</script>");
+    const second = effects.list(app.store, id)[0]!.key;
+    await v2cloud.save(item, "board", dir, { source: second, reason: "rendered" });
+    await app.store.update(id, "test", (project) => {
+      project.media.push({ id: "m1", name: "board", path: "/elsewhere/board.mp4", kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "board", effect_key: second });
+      project.tracks.push({ id: "t1", kind: "video", name: "V1" } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: "m1", source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    // This computer had the first version (fetched before, times of its own).
+    await v2cloud.fetchInto(item, 1, dir);
+    fs.utimesSync(join(dir, "scene.html"), new Date(2021, 0, 1), new Date(2021, 0, 1));
+    expect(effects.renderLine(app, id, "board")).not.toContain("Its render is of this code");
+    expect(await effects.bringDown(app, id)).toEqual(["board"]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toContain("<p>two</p>");
+    // Fetched, with new times: the same version as the render, so the render plays and exports, nothing drawn again.
+    expect(effects.list(app.store, id)[0]!.key).toBe(second);
+    expect(effects.renderLine(app, id, "board")).toContain("Its render is of this code");
+    expect(effects.notReady(app.store, app.store.get(id)!.project)).toBeNull();
+    // The agent's work here, rendered nowhere yet: no version of the cloud's, so it stays.
+    fs.writeFileSync(join(dir, "scene.html"), "<p>three, being written</p>");
+    expect(await effects.bringDown(app, id)).toEqual([]);
+    expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe("<p>three, being written</p>");
+    expect(effects.notReady(app.store, app.store.get(id)!.project)).toContain("The board effect is still rendering");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a project another computer is editing keeps its renders here: code here that isn't the render's never swaps it for the clear still, takes the lock or writes", async () => {
+  const { app, cleanup, id, home } = hq("v2-not-editing");
+  const projects = new cloudProjects.Cloud(home, "this-mac");
+  projects.attach(app.store);
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      project.media.push({ id: "m1", name: "board", path: "/elsewhere/board.mp4", kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "board", effect_key: "000000000abc", cloud: { original: "edit/exports/x/effect-board-000000000abc.mp4", proxy: "edit/exports/x/effect-board-000000000abc.mp4" } } as never);
+      project.tracks.push({ id: "t1", kind: "video", name: "V1" } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: "m1", source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    // A cloud project this computer hasn't taken (not open here, nobody's asked).
+    projects.projects.set(id, new cloudProjects.Entry({ rev: 1, dirty: false }));
+    const dir = effects.folder(app.store, id, "board");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(join(dir, "scene.html"), "<p>an old copy</p>");
+    const rev = app.store.get(id)!.rev;
+    await effects.bringUpToDate(app, id);
+    const media = app.store.get(id)!.project.media.find((one) => one.id === "m1")!;
+    expect(media.effect_key).toBe("000000000abc");
+    expect(media.cloud).toBeDefined();
+    expect(app.store.get(id)!.rev).toBe(rev);
+    expect(mock.cloud.convex.locks.has(id)).toBe(false);
   } finally {
     cleanup();
   }
@@ -570,6 +644,43 @@ test("in a grouped channel a lesson goes to the group by default and to the chan
     // Ungrouped: its own, said as before.
     expect(await lanes.call("remember", { skill: "slow", text: "Slow titles.", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).toBe("Kept as slow (version 1) in JCS (@jcs)'s ideas style: its agents have it from their next turn.");
   } finally {
+    channels.useChannelsForTests([]);
+    cleanup();
+  }
+});
+
+test("a put-away channel's projects keep its group's teaching, and it's never listed; it's brought back by an admin or who sees it in full", async () => {
+  // Nov 16 audit: the lists left put-away channels out, so groupOf said none for their projects (no group teaching,
+  // lessons kept in the channel's own lane, the agent given the raw key).
+  const { app, cleanup } = fixtureHome("v2-channel-put-away");
+  const router = buildRouter();
+  const ask = async (method: string, path: string) => {
+    const response = (await respond(app, router, new Request(`http://localhost:7700${path}`, { method, headers: { host: "localhost:7700", "content-type": "application/json" } }), null))!;
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  };
+  try {
+    mock.cloud.convex.channels = [{ ...BODYCAM, archived: true }, { ...COMPILATIONS }];
+    mock.cloud.convex.groups = [GROUP];
+    expect((await channels.list()).map((one) => one.key)).toEqual(["ch-samcompila"]);
+    expect(channels.knownGroups()).toEqual([{ ...GROUP, channels: ["ch-samcompila"] }]);
+    expect((await ask("GET", "/api/channels")).body).toMatchObject({ channels: [{ key: "ch-samcompila" }], groups: [{ key: GROUP.key, channels: ["ch-samcompila"] }] });
+    // Its projects: still its own, still in its group.
+    expect(channels.channelOf({ channel: "ch-sambodycam" })?.title).toBe("Sam's Bodycam");
+    expect(channels.placesOfProject({ channel: "ch-sambodycam" })).toEqual(["ch-sambodycam--edit", "gr-0123456789--edit"]);
+    expect(channels.keptIn("ch-sambodycam", "edit", undefined)).toEqual({ place: "gr-0123456789--edit", words: "for the group (Sam's Compilations)" });
+    expect(channels.groupText("ch-samcompila", "edit")).not.toContain("Sam's Bodycam");
+    // Brought back.
+    expect((await ask("POST", "/api/channels/ch-nobody/restore")).status).toBe(404);
+    mock.cloud.convex.channels.push({ ...OTHER, key: "ch-labelonly", title: "Channel 3", masked: true, archived: true });
+    const refused = await ask("POST", "/api/channels/ch-labelonly/restore");
+    expect(refused).toMatchObject({ status: 403, body: { error: "Only someone who sees Channel 3 in full can bring it back: ask an admin." } });
+    expect((await ask("POST", "/api/channels/ch-sambodycam/restore")).body).toMatchObject({ channel: { key: "ch-sambodycam", archived: false } });
+    expect(mock.cloud.convex.channels[0]).toMatchObject({ key: "ch-sambodycam", archived: false });
+    expect((await channels.list()).map((one) => one.key)).toEqual(["ch-sambodycam", "ch-samcompila"]);
+    expect(channels.knownGroups()).toEqual([GROUP]);
+  } finally {
+    mock.cloud.convex.channels = [];
+    mock.cloud.convex.groups = [];
     channels.useChannelsForTests([]);
     cleanup();
   }

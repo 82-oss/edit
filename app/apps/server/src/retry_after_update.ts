@@ -34,6 +34,7 @@ import { writeAtomic } from "./files.ts";
 import * as jobs from "./jobs.ts";
 import { join } from "./paths.ts";
 import * as reviews from "./reviews.ts";
+import * as seams from "./seams.ts";
 import { BUILD } from "./version.ts";
 import { THIS_MACHINE } from "./machine.ts";
 
@@ -121,6 +122,11 @@ const real: Actions = {
   share: (app, item) => reviews.shareFixes(app, item.project, null, item.name, NOTE),
   // Queued like any export; the next retry waits for it to end (the Mac isn't idle meanwhile).
   export: async (app, failure) => {
+    if (app.store.get(failure.project) === null) throw new Error(`the project isn't on ${THIS_MACHINE}`);
+    // Its effects' renders and map shots first, as a share waits for them; then the edit as it is once they're in.
+    await seams.broll.waitForMaps(app, failure.project, 20 * 60_000).catch((error: unknown) => {
+      if (!seams.isUnavailable(error)) throw error;
+    });
     const live = app.store.get(failure.project);
     if (live === null) throw new Error(`the project isn't on ${THIS_MACHINE}`);
     await app.exports.start(app.store, app.library, live.project, failure.options, failure.output, {

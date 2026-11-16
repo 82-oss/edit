@@ -497,3 +497,33 @@ test("exports made ahead: the two made last stay under three days old; older or 
     cleanup();
   }
 });
+
+// Nov 16 audit: past a fixed 100 MB the cleaner took whole projects' history folders, all 30 saves of each (a
+// reset's "edit before" among them).
+test("project history past its share of the budget loses the oldest saves across projects, each project keeping its newest three", () => {
+  const { app, store, cleanup } = fixtureHome("cache-history");
+  try {
+    const history = `${store.home}/projects/history`;
+    const MB = 1_000_000;
+    const save = (id: string, at: number) => {
+      const path = `${history}/${id}/${at}.json`;
+      fs.mkdirSync(`${history}/${id}`, { recursive: true });
+      fs.writeFileSync(path, "");
+      // Sparse: its size counts, the disk holds nothing.
+      fs.truncateSync(path, 5 * MB);
+      fs.utimesSync(path, at / 1000, at / 1000);
+      return path;
+    };
+    const day = 24 * 3600_000;
+    const t0 = Date.now() - 60 * day;
+    // An old project's four saves (its last a reset's "edit before"), then a busy one's thirty.
+    const quiet = [0, 1, 2, 3].map((n) => save("p-quiet", t0 + n * 60_000));
+    const busy = Array.from({ length: 30 }, (_, n) => save("p-busy", t0 + day + n * 600_000));
+    // 170 MB against a quarter of a 400 MB budget: 70 MB, the 14 oldest saves that may go.
+    cleanCache(app, false, Date.now(), { cacheBytes: 400 * MB, freeBytes: 0, free: 1e12 });
+    expect(quiet.filter((path) => fs.existsSync(path))).toEqual(quiet.slice(1));
+    expect(busy.filter((path) => fs.existsSync(path))).toEqual(busy.slice(13));
+  } finally {
+    cleanup();
+  }
+});

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -86,4 +86,44 @@ test("stopped part-way, it carries on with the parts left; a file that's gone st
   await run(dest);
   expect(asked.slice(from)).toHaveLength(6);
   expect(Buffer.from(fs.readFileSync(dest)).equals(Buffer.from(file))).toBe(true);
+});
+
+// Nov 16 audit: a part was noted done before its bytes were on the disk (a crash then left a hole the journal
+// called done), and nothing checked the whole against Drive's own checksum.
+test("a part is on the disk before it's noted done, and the whole is checked against Drive's MD5: one that doesn't match is fetched again from nothing", async () => {
+  const dest = path.join(dir(), "c.mp4");
+  const synced: number[] = [];
+  const fsync = spyOn(fs, "fsync").mockImplementation(((fd: number, done: (error: NodeJS.ErrnoException | null) => void) => {
+    // Each fsync comes before its part is in the journal.
+    synced.push(fs.existsSync(`${dest}.parts`) ? (JSON.parse(fs.readFileSync(`${dest}.parts`, "utf8")) as { done: number[] }).done.length : 0);
+    fs.fsyncSync(fd);
+    done(null);
+  }) as never);
+  try {
+    const md5 = new Bun.CryptoHasher("md5").update(file).digest("hex");
+    await rd.download({ url: `http://127.0.0.1:${server.port}/f`, size: file.length, dest, fetch: (url, init) => fetch(url, init), md5 });
+    expect(synced.length).toBe(6);
+    expect(synced.toSorted()).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(Buffer.from(fs.readFileSync(dest)).equals(Buffer.from(file))).toBe(true);
+    // Drive's checksum isn't this file's: none of it is kept, and it says so.
+    await expect(rd.download({ url: `http://127.0.0.1:${server.port}/f`, size: file.length, dest, fetch: (url, init) => fetch(url, init), md5: "0".repeat(32) })).rejects.toThrow("doesn't match Drive's checksum");
+    expect(fs.existsSync(dest)).toBe(false);
+    expect(rd.partlyDone(dest)).toBe(false);
+  } finally {
+    fsync.mockRestore();
+  }
+});
+
+test("Drive's MD5 is asked of Drive beside the parts when the address is a Drive file's", async () => {
+  const dest = path.join(dir(), "d.mp4");
+  const md5 = new Bun.CryptoHasher("md5").update(file).digest("hex");
+  const asked: string[] = [];
+  const drive = (url: string, init: RequestInit) => {
+    asked.push(url);
+    if (url.includes("fields=md5Checksum")) return Promise.resolve(Response.json({ md5Checksum: "f".repeat(32) }));
+    return fetch(`http://127.0.0.1:${server.port}/f`, init);
+  };
+  await expect(rd.download({ url: "https://www.googleapis.com/drive/v3/files/abc123?alt=media&supportsAllDrives=true", size: file.length, dest, fetch: drive })).rejects.toThrow("doesn't match Drive's checksum");
+  expect(asked).toContain("https://www.googleapis.com/drive/v3/files/abc123?fields=md5Checksum&supportsAllDrives=true");
+  expect(md5).not.toBe("f".repeat(32));
 });

@@ -1065,21 +1065,60 @@ async function startExport(context: Context): Promise<Response> {
       );
     }
   }
-  // A map shot still rendering would export as its first frame. The button
-  // answers soon (the agent's export waits longer).
+  const output = path !== null && path.trim() !== "" ? expandHome(path) : defaultExportPath(app.store, liveOr404(app, id).project);
+  // Taken once what it shows is ready (the edit as it is then), however long its effects and map shots take.
+  return whenReady(app, id, app.native.withExtension(output, options.format), () =>
+    app.exports.start(app.store, app.library, liveOr404(app, id).project, options, output, { ...(drive === null ? {} : { drive }), ...(keepLocal === true ? { keepLocal: true } : {}), ...(watermark === null || watermark === "" ? {} : { watermark }) }),
+  );
+}
+
+/** How long an export asked for here waits for its effects' renders and map shots: as long as a share waits (reviews.ts `exportStep`). */
+const READY_WAIT_MS = 20 * 60_000;
+/** Waited for in the request before the rest goes on in the background. */
+const READY_QUICK_MS = 5000;
+
+/**
+ * Starts an export (`go`, which answers its file) once what it shows is
+ * ready: a coded effect rendered from its code, a map shot made (broll.ts
+ * `waitForMaps`), else it would go out as their stand-ins. Most are ready at
+ * once; one still rendering is waited for as a share waits, in the
+ * background, the export's row saying so, and the export starts when it's
+ * done (or says why it can't). The answer is the file (`expected` while it
+ * waits), and `started` when it went on waiting.
+ */
+async function whenReady(app: App, id: string, expected: string, go: () => Promise<string>): Promise<Response> {
+  const wait = (limit: number) =>
+    seams.broll.waitForMaps(app, id, limit).catch((error: unknown) => {
+      if (!seams.isUnavailable(error)) throw error;
+    });
+  let waiting = false;
   try {
-    await seams.broll.waitForMaps(app, id, 5000);
+    await wait(READY_QUICK_MS);
   } catch (error) {
-    if (!seams.isUnavailable(error)) throw bad(diag.messageOf(error));
+    // Only what's still being made is waited for; a render that failed says why at once.
+    if (!/still rendering|waiting behind/.test(diag.messageOf(error))) throw bad(diag.messageOf(error));
+    waiting = true;
   }
-  const live = liveOr404(app, id);
-  const output =
-    path !== null && path.trim() !== "" ? expandHome(path) : defaultExportPath(app.store, live.project);
-  try {
-    return json({ path: await app.exports.start(app.store, app.library, live.project, options, output, { ...(drive === null ? {} : { drive }), ...(keepLocal === true ? { keepLocal: true } : {}), ...(watermark === null || watermark === "" ? {} : { watermark }) }) });
-  } catch (error) {
-    throw bad(diag.messageOf(error));
+  if (!waiting) {
+    try {
+      return json({ path: await go() });
+    } catch (error) {
+      throw bad(diag.messageOf(error));
+    }
   }
+  const row = (state: "queued" | "failed", extra: Record<string, unknown>) => app.store.emit({ type: "export", id, state, progress: 0, path: expected, ...extra });
+  row("queued", { waiting: "waiting for its effects to render" });
+  void (async () => {
+    try {
+      await wait(READY_WAIT_MS);
+      await go();
+    } catch (error) {
+      const said = diag.messageOf(error);
+      diag.warn("export", `${id}: ${said}`);
+      row("failed", { error: said });
+    }
+  })();
+  return json({ path: expected, started: true });
 }
 
 function cancelExport({ app, params }: Context): Response {
@@ -1114,11 +1153,8 @@ async function retryExport({ app, params }: Context): Promise<Response> {
     });
     return json(first === null ? { started: true } : first.done);
   }
-  try {
-    return json({ path: await app.exports.start(app.store, app.library, app.store.get(id)!.project, held!.options, held!.output, held!.extra) });
-  } catch (error) {
-    throw bad(diag.messageOf(error));
-  }
+  // Waited for as the first try was: what it shows ready, then the edit as it is.
+  return whenReady(app, id, held!.output, () => app.exports.start(app.store, app.library, liveOr404(app, id).project, held!.options, held!.output, held!.extra));
 }
 
 /** The project's exports, newest first (this machine's: each downloads from Edit, on the Mac or over Tailscale). */

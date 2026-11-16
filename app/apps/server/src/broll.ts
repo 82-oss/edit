@@ -13,7 +13,7 @@ import type { App } from "./app.ts";
 import { parseTranscript } from "./captions_core.ts";
 import * as diag from "./diag.ts";
 import * as jobs from "./jobs.ts";
-import { waitForRenders as waitForEffectRenders } from "./effects.ts";
+import { notReady as effectsNotReady, waitForRenders as waitForEffectRenders } from "./effects.ts";
 import { copyFile, ioMessage } from "./files.ts";
 import { isBug } from "./guard.ts";
 import { fingerprint } from "./hash.ts";
@@ -28,6 +28,7 @@ import * as relay from "./relay.ts";
 import { compareStrings, display, fixed, round, serdeParse, toI64, trim } from "./rust.ts";
 import * as seams from "./seams.ts";
 import * as seats from "./seats.ts";
+import type { Store } from "./store.ts";
 import { stableStringify } from "./stable.ts";
 import { rife, smooth as smoothWithRife } from "./rife.ts";
 import * as tools from "./tools.ts";
@@ -160,7 +161,8 @@ export async function transcript(app: App, media: Media): Promise<Transcript> {
       }
       return parseTranscript(text);
     }
-    if (status.transcript === "failed") {
+    // Waiting (the transcription plan out of credit) won't be heard in this wait either: said now, not after 15 minutes.
+    if (status.transcript === "failed" || status.transcript === "waiting") {
       throw new Error(`couldn't transcribe ${media.name}: ${status.transcript_error ?? ""}`);
     }
     if (timing.now() - started > 15 * 60 * 1000) throw new Error(`transcribing ${media.name} is taking too long`);
@@ -1170,6 +1172,21 @@ export function isMapStandIn(path: string): boolean {
 }
 
 /**
+ * Why an export of `project` (the edit as it was taken for the export) from
+ * frame `start` to `end` can't go out yet, or null: a coded effect with no
+ * render of its code (effects.ts `notReady`), or a map shot still its first
+ * frame. Asked by exports.start of the edit itself, after whatever waiting
+ * the caller did (`waitForMaps`).
+ */
+export function exportReady(store: Store, project: Project, start: number, end: number): string | null {
+  const effect = effectsNotReady(store, project, start, end);
+  if (effect !== null) return effect;
+  const shown = new Set(project.clips.filter((clip) => clip.start < end && clip.start + clip.duration > start).map(clipMedia).filter((id): id is string => id !== null));
+  if (project.media.some((media) => shown.has(media.id) && isMapStandIn(media.path))) return "A map view is still rendering: export again in a minute.";
+  return null;
+}
+
+/**
  * Waits (up to `limit`) for a project's map shots still being made, so an
  * export has the footage rather than its stand-in. An error says why it
  * can't: one still rendering after `limit`, or a stand-in on the timeline
@@ -1177,8 +1194,9 @@ export function isMapStandIn(path: string): boolean {
  * still by mistake.
  */
 export async function waitForMaps(app: App, projectId: string, limitMs: number): Promise<void> {
-  // A coded effect (Edit V2) exports as its render, made from its code as it is: waited for here, the one
-  // place every export (the agent's, the button's, a share's) stops before it starts.
+  // A coded effect (Edit V2) exports as its render, made from its code as it is: waited for here by every
+  // export that can wait (the agent's, the button's, a share's, a retry's); exports.start refuses the edit it's
+  // handed while one isn't (`exportReady`), so none goes out with a stand-in whichever way it came.
   const started = timing.now();
   await waitForEffectRenders(app, projectId, limitMs);
   // Each stand-in left without its footage is started again once, here,

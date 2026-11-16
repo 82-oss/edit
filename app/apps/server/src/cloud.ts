@@ -58,6 +58,13 @@ const STALL_WINDOW_MS = 60_000;
 /** How long a download may take to answer at all (curl's --connect-timeout 30). */
 const CONNECT_MS = 30_000;
 
+/**
+ * A file this big or more uploads resumably (its parts kept in a journal): a
+ * review copy (a few hundred MB) began again from nothing after every failure
+ * when only 512 MiB and up were (Nov 16 audit). Two parts at the least.
+ */
+export const RESUMABLE_FROM = 2 * FILE_PART;
+
 /** What tests change: the waits between retries, and part sizes (so a multipart upload needn't be 64 MiB). */
 export const timing = {
   sleep: (ms: number): Promise<void> => Bun.sleep(ms),
@@ -67,8 +74,10 @@ export const timing = {
   stallMs: STALL_WINDOW_MS,
   /** A download may take this long to answer at all. */
   connectMs: CONNECT_MS,
-  /** A file this big or more uploads resumably. */
-  resumableFrom: 512 * MIB,
+  /** A file this big or more uploads resumably (`RESUMABLE_FROM`). */
+  resumableFrom: RESUMABLE_FROM,
+  /** How long an upload that must get there (a share's) keeps at a network that comes and goes, its waits in all. */
+  keptAtMs: 10 * 60_000,
 };
 
 /** Whether cloud calls can work: someone is signed in (or `EDIT_RELAY_TOKEN` is set). Cloud is always on then. */
@@ -320,6 +329,32 @@ export async function uploadFile(path: string, key: string, progress: Report = (
       fs.closeSync(fd);
     }
   });
+}
+
+/**
+ * `uploadFile`, kept at through a network that comes and goes (a share's
+ * review copy, Nov 16 audit: each part had 4 tries over ~14 s, then the
+ * share failed for good): a temporary failure is tried again after 15 s,
+ * 30 s, 60 s, then every 2 minutes, for `timing.keptAtMs` of waits in all,
+ * each try carrying on from the parts already up (the journal). Anything
+ * else, or a cancel, is said at once.
+ */
+export async function uploadFileKeptAt(path: string, key: string, progress: Report = () => {}, signal?: AbortSignal): Promise<void> {
+  let waited = 0;
+  for (let tries = 1; ; tries++) {
+    try {
+      await uploadFile(path, key, progress, signal);
+      return;
+    } catch (error) {
+      const wait = Math.min(120_000, 15_000 * 2 ** (tries - 1));
+      if (signal?.aborted || isBug(error) || diag.messageOf(error).includes("was cancelled") || !service.isTemporary(error) || waited + wait > timing.keptAtMs) throw error;
+      diag.warn("cloud", `uploading ${key} failed (${diag.messageOf(error)}); trying again in ${Math.round(wait / 1000)} s, from the parts already up`);
+      waited += wait;
+      // A cancel isn't kept waiting for the next try.
+      await Promise.race([timing.sleep(wait), new Promise<void>((resolve) => signal?.addEventListener("abort", () => resolve(), { once: true }))]);
+      if (signal?.aborted) throw new Error("the share was cancelled");
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

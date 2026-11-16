@@ -28,6 +28,7 @@
 //   GET    /api/channels/{key}          {channel, taught: {<lane>: [what its agent knows]}, teacher}
 //   PUT    /api/channels/{key}          {narration?, compilation?, lanes?, label?} → {channel}
 //   DELETE /api/channels/{key}          put away (its teaching kept)
+//   POST   /api/channels/{key}/restore  brought back (an admin, or who sees it in full)
 //   GET    /api/channels/voices         {voices, used}: who could narrate, and who narrates for whom already
 //   GET    /api/channels/{key}/videos?order=top|recent   {channel, videos}: its most viewed or newest, with their numbers
 //   POST   /api/channels/{key}/projects/{id}   an edit project moved onto the channel (its Edit lane from its next turn)
@@ -120,39 +121,54 @@ function needTeacher(): void {
   if (!v2cloud.teacher()) throw new ApiError(403, "Adding a channel or changing one is a teacher's: an admin can make you one at accounts.spheceo.com.");
 }
 
-/** The channels, newest change first (what's put away only with `archived`). */
+/**
+ * The channels, newest change first (what's put away only with `archived`).
+ * Read with those put away every time, and kept so: a put-away channel's
+ * projects are still its own, and still in its group (Nov 16 audit: its
+ * projects lost the group's teaching), but it's never in a list or a picker.
+ */
 export async function list(archived = false): Promise<Channel[]> {
-  const [found, groups] = await Promise.all([cloud.query("channels:listChannels", archived ? { archived: true } : {}) as Promise<Channel[]>, archived ? null : listGroups()]);
-  if (!archived) {
-    known = found;
-    knownGroupList = groups ?? [];
-    readAt = Date.now();
-  }
-  return found;
+  const [found, groups] = await Promise.all([cloud.query("channels:listChannels", { archived: true }) as Promise<Channel[]>, listGroups(true)]);
+  known = found;
+  knownGroupList = groups;
+  readAt = Date.now();
+  return archived ? found : found.filter((one) => !one.archived);
 }
 
-/** The groups this person sees ([] from a mamagi or a relay before groups: every channel then stands alone). */
-async function listGroups(): Promise<Group[]> {
+/** The groups this person sees, with their put-away channels when `archived` ([] from a mamagi or a relay before groups: every channel then stands alone). */
+async function listGroups(archived = false): Promise<Group[]> {
   try {
-    return (await cloud.query("groups:listGroups", {})) as Group[];
+    return (await cloud.query("groups:listGroups", archived ? { archived: true } : {})) as Group[];
   } catch (error) {
     diag.warn("channels", `the channel groups from the cloud: ${diag.messageOf(error)}`);
     return [];
   }
 }
 
-/** The channels as last read: an agent's instructions are written from them without waiting (`refresh` at a turn's start). */
+/** The channels as last read, put-away ones too (to find a project's): an agent's instructions are written from them without waiting (`refresh` at a turn's start). */
 let known: Channel[] = [];
+/** The groups as last read, with their put-away channels. */
 let knownGroupList: Group[] = [];
 let readAt = 0;
 const FRESH_MS = 30_000;
 
+/** Every channel as last read, those put away too: for finding work's channel, never for a list. */
 export function knownChannels(): Channel[] {
   return known;
 }
 
+/** Whether a channel was put away, as last read. */
+const putAway = (key: string) => known.find((one) => one.key === key)?.archived === true;
+
+/** A group as it's shown: its channels that aren't put away; null when none is left. */
+function shownGroup(group: Group): Group | null {
+  const channels = group.channels.filter((key) => !putAway(key));
+  return channels.length === 0 ? null : { ...group, channels };
+}
+
+/** The groups as they're shown (their put-away channels left out), as last read. */
 export function knownGroups(): Group[] {
-  return knownGroupList;
+  return knownGroupList.map(shownGroup).filter((one): one is Group => one !== null);
 }
 
 /** A channel's group, as last read; null when it's in none. */
@@ -165,9 +181,10 @@ export function groupOf(channel: string): Group | null {
 /** "A & B", "A, B & C". */
 export const joined = (names: string[]) => (names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} & ${names.at(-1)}`);
 
-/** A group as it's called: its channels' names together (labels for one seen by its label alone), as last read. */
+/** A group as it's called: its channels' names together (labels for one seen by its label alone; those put away left out unless that's all), as last read. */
 export function groupName(group: Group): string {
-  return joined(group.channels.map((key) => known.find((one) => one.key === key)?.title).filter((one): one is string => one !== undefined));
+  const named = (shownGroup(group) ?? group).channels;
+  return joined(named.map((key) => known.find((one) => one.key === key)?.title).filter((one): one is string => one !== undefined));
 }
 
 /** Where a channel's lane is taught, nearest first: its own place, then its group's when it's in one. */
@@ -202,7 +219,7 @@ export function keptIn(channel: string, lane: Lane, given: unknown): { place: st
 export function groupText(channel: string, word: string): string {
   const group = groupOf(channel);
   if (group === null) return "";
-  const others = group.channels.filter((key) => key !== channel).map((key) => known.find((one) => one.key === key)).filter((one): one is Channel => one !== undefined);
+  const others = group.channels.filter((key) => key !== channel).map((key) => known.find((one) => one.key === key)).filter((one): one is Channel => one !== undefined && !one.archived);
   const named = others.map((one) => `${one.title}${one.compilation ? " (compilations)" : ""}`);
   const mine = known.find((one) => one.key === channel);
   return (
@@ -408,7 +425,7 @@ export function routes(router: Router<App>): void {
   router
     .get("/api/channels/voices", async ({ app }: RouteContext<App>) => {
       const listing = (await asked(() => app.voices.voices(false))) as { voices?: unknown[] };
-      const given = v2cloud.enabled() ? await list().catch(() => knownChannels()) : [];
+      const given = v2cloud.enabled() ? await list().catch(() => knownChannels().filter((one) => !one.archived)) : [];
       return json({ voices: listing.voices ?? [], used: usedVoices(given) });
     })
     .get("/api/channels", async ({ app }: RouteContext<App>) => {
@@ -479,7 +496,9 @@ export function routes(router: Router<App>): void {
       const channel = await asked(() => get(params.key!));
       if (channel === null) throw new ApiError(404, `no channel ${params.key}`);
       // What each lane's agent has been taught: its own lessons, effects and sounds (the global skill is Edit's, not a style), and its group's.
-      const group = typeof channel.group === "string" ? ((await listGroups()).find((one) => one.key === channel.group) ?? null) : null;
+      // Found with its put-away channels (this one may be), shown without them.
+      const found = typeof channel.group === "string" ? ((await listGroups(true)).find((one) => one.key === channel.group) ?? null) : null;
+      const group = found === null ? null : { ...found, channels: found.channels.filter((key) => key === channel.key || !putAway(key)) };
       const [taught, shared] = await asked(() => Promise.all([taughtOf(channel.key), group === null ? null : taughtOf(group.key)]));
       return json({ channel, taught, group: group === null ? null : { ...group, taught: shared }, teacher: v2cloud.teacher() });
     })
@@ -508,6 +527,17 @@ export function routes(router: Router<App>): void {
       await asked(() => cloud.mutation("channels:archiveChannel", { key: params.key!, archived: true }));
       forget();
       return json({ ok: true });
+    })
+    .post("/api/channels/{key}/restore", async ({ params }: RouteContext<App>) => {
+      needCloud();
+      const channel = await asked(() => get(params.key!));
+      if (channel === null) throw new ApiError(404, "That channel isn't in Edit, or isn't shown to your account: ask an admin to give it to you.");
+      if (!channel.archived) return json({ channel });
+      if (channel.masked === true) throw new ApiError(403, `Only someone who sees ${channel.title} in full can bring it back: ask an admin.`);
+      await asked(() => cloud.mutation("channels:archiveChannel", { key: channel.key, archived: false }));
+      forget();
+      diag.info("channels", `${channel.title} (${channel.key}) brought back`);
+      return json({ channel: { ...channel, archived: false } });
     })
     .get("/api/groups/{key}", async ({ params }: RouteContext<App>) => {
       needCloud();

@@ -2109,11 +2109,19 @@ class ExportOriginals implements Originals {
   excerpts: ExportExcerpt[] = [];
   /** Lets the cleaner have the excerpts again. */
   unpin: () => void = () => {};
+  /** Lets the cleaner have again the other copies here it reads (renders, stills, sound copies): `hold`'s. */
+  private held: (() => void)[] = [];
+
+  /** Holds `paths` (copies in the cache the export reads) against the cleaner until it's released. */
+  hold(paths: string[]): void {
+    if (paths.length > 0) this.held.push(exportExcerpts.pin(paths));
+  }
 
   release(): void {
     for (const dir of this.dirs) fs.rmSync(dir, { recursive: true, force: true });
     this.dirs.length = 0;
     this.unpin();
+    for (const unpin of this.held.splice(0)) unpin();
   }
 }
 
@@ -2151,8 +2159,26 @@ export async function forExport(
   /** How far the excerpts and sound copies are (0–1), so the card moves before a frame is encoded. */
   onPrep?: (phase: string, ratio: number) => void,
 ): Promise<[Project, Originals]> {
-  const out = structuredClone(project) as Project;
   const originals = new ExportOriginals();
+  try {
+    return await prepareForExport(project, start, end, cache, originals, cancelled, onPrep);
+  } catch (error) {
+    // What it held for the export it didn't hand over goes back to the cleaner.
+    originals.release();
+    throw error;
+  }
+}
+
+async function prepareForExport(
+  project: Project,
+  start: number,
+  end: number,
+  cache: string,
+  originals: ExportOriginals,
+  cancelled: () => boolean,
+  onPrep?: (phase: string, ratio: number) => void,
+): Promise<[Project, Originals]> {
+  const out = structuredClone(project) as Project;
   const needed: [string, string][] = [];
   // Originals imported from this machine and still here: read from the disk.
   const onDisk = new Map<string, string>();
@@ -2191,6 +2217,8 @@ export async function forExport(
     const media = out.media.find((item) => item.id === mediaId);
     if (media !== undefined) media.path = path;
   }
+  // The cache's copies it reads (an effect's render, a whole preview, an original fetched before): the cleaner leaves them while it runs.
+  originals.hold([...onDisk.values()]);
   if (onDisk.size > 0) diag.info("export", `${project.id}: reading ${onDisk.size} cloud originals from this machine's copies`);
   if (needed.length === 0) return [out, originals];
   if (!cloud.enabled()) throw new Error("this edit's footage is in the cloud: exporting it needs the cloud: sign in to Edit");
@@ -2207,6 +2235,7 @@ export async function forExport(
       const release = await fetching.acquire();
       try {
         const local = localPath(cache, key);
+        originals.hold([local]);
         await fetchKey(key, local);
         const media = out.media.find((item) => item.id === mediaId);
         if (media !== undefined) media.path = local;
@@ -2264,6 +2293,8 @@ export async function forExport(
     heard.map(async ([mediaId, key]) => {
       const release = await copies.acquire();
       try {
+        // Held from before it's had: one fetched or made now is never taken while the mix reads it.
+        originals.hold([localPath(cache, soundKey(key))]);
         const copy = await soundCopy(cache, key, urls.get(mediaId)!);
         if (copy !== null) originals.sounds[mediaId] = copy;
       } finally {

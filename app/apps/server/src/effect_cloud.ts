@@ -181,6 +181,13 @@ export async function forgetProject(app: App, project: string, used: (string | n
 
 /** A render file of effect `<name>`: `<name>-<12 hex>.mp4`. */
 const RENDER_FILE = /^(.+)-[0-9a-f]{12}\.mp4$/;
+/** What a render leaves while it's under way: its frames' folder and the video being joined from them. */
+const RENDER_WORK = /^.+-[0-9a-f]{12}\.(frames|partial\.mp4)$/;
+/** Work of a render that stopped (a failure, Edit quit) untouched this long goes, unless a render is on it again. */
+const WORK_LEFT_MS = 3600_000;
+
+/** Whether a render is under way or waiting to go on with `file` of `project`'s renders (effects.ts says, as it renders). */
+export const renderingNow = { is: (_project: string, _file: string): boolean => false };
 /** A render placed this recently may not be in its project's file yet. */
 const SETTLED_MS = 3600_000;
 
@@ -190,7 +197,9 @@ const SETTLED_MS = 3600_000;
  * there, or kept there before this file did that), or of an effect no
  * longer on the timeline, or of a deleted project. Kept: the render a
  * project plays from this file (not up yet: signed out, a project that isn't
- * the cloud's) and, for one of those, the render before it (prune's).
+ * the cloud's) and, for one of those, the render before it (prune's). Also
+ * what a render that stopped left (its frames, a join cut short), an hour on
+ * and with no render going on from it.
  */
 export function sweepRenders(home: string, now = Date.now(), dryRun = false): { files: number; bytes: number } {
   const out = { files: 0, bytes: 0 };
@@ -220,6 +229,21 @@ export function sweepRenders(home: string, now = Date.now(), dryRun = false): { 
     const items = saved?.media ?? [];
     const playing = new Set(items.map((one) => one.path).filter((path): path is string => typeof path === "string"));
     for (const name of names) {
+      // A failed render's frames (a PNG each, gigabytes of them) and a join cut short: nothing goes on from them.
+      if (RENDER_WORK.test(name)) {
+        const path = join(dir, name);
+        try {
+          const stat = fs.statSync(path);
+          if (now - stat.mtimeMs < WORK_LEFT_MS || renderingNow.is(id, name)) continue;
+          const bytes = stat.isDirectory() ? fs.readdirSync(path).reduce((sum, one) => { try { return sum + fs.statSync(join(path, one)).size; } catch { return sum; } }, 0) : stat.size;
+          if (!dryRun) fs.rmSync(path, { recursive: true, force: true });
+          out.files += 1;
+          out.bytes += bytes;
+        } catch {
+          // Gone already.
+        }
+        continue;
+      }
       const effect = RENDER_FILE.exec(name)?.[1];
       if (effect === undefined) continue;
       const path = join(dir, name);

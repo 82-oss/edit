@@ -402,6 +402,128 @@ test("an export short of room asks the cache to make some before it's refused", 
   }
 });
 
+// Nov 16 audit: a Retry, a retry after an update and a marked stretch went straight to exports.start, which
+// exported a coded effect's clear still or a map's first frame where nothing had waited for them.
+test("an export of an edit showing an effect not rendered from its code, or a map shot still its first frame, is refused however it was asked for", async () => {
+  const { dir, home, store, app, native, cleanup } = fixtureHome("export-not-ready");
+  const registry = new ExportRegistry(home);
+  app.exports = registry;
+  const plan = spyOn(native, "exportPlan").mockReturnValue({ plan: { start: 0, end: 60, width: 64, height: 36, audio: false }, fps: 30 });
+  try {
+    const id = store.create("V2", { width: 64, height: 36, fps: 30 }).project.id;
+    await store.update(id, "test", (p) => {
+      p.hq = true;
+      p.media.push({ id: "m1", name: "board", path: `${dir}/board.clear.png`, kind: "image", duration: 2, width: 64, height: 36, fps: 0, has_audio: false, effect: "board" });
+      p.clips.push(clip({ id: "c1", track: p.tracks[0]!.id, start: 0, duration: 60, type: "video", media: "m1" }));
+    });
+    const options = native.exportDefaults();
+    // Its media still the clear stand-in (no render yet): nothing goes out.
+    await expect(registry.start(store, app.library, store.get(id)!.project, options, `${dir}/v2.mp4`, { drive: false })).rejects.toThrow("The board effect");
+    expect(registry.runningFor(id)).toBeNull();
+    // A map shot that's still its first frame.
+    await store.update(id, "test", (p) => {
+      delete p.media[0]!.effect;
+      p.media[0]!.path = `${dir}/map-abc123-first.jpg`;
+    });
+    await expect(registry.start(store, app.library, store.get(id)!.project, options, `${dir}/v2.mp4`, { drive: false })).rejects.toThrow("A map view is still rendering");
+  } finally {
+    plan.mockRestore();
+    cleanup();
+  }
+});
+
+test("the Export button and Retry wait for an effect still rendering as a share does: in the background, the row saying so, and the edit taken once it's in", async () => {
+  const { dir, home, store, app, cleanup } = fixtureHome("export-waits");
+  const registry = new ExportRegistry(home);
+  app.exports = registry;
+  const { respond } = await import("../src/http/server.ts");
+  const { buildRouter } = await import("../src/routes.ts");
+  const broll = await import("../src/broll.ts");
+  let rendered!: () => void;
+  const done = new Promise<void>((resolve) => (rendered = resolve));
+  const waits: number[] = [];
+  const wait = spyOn(broll, "waitForMaps").mockImplementation(async (_app, _id, limit) => {
+    waits.push(limit);
+    if (limit <= 5000) throw new Error("The board effect is still rendering (12 of 60 frames): export again in a minute or two.");
+    await done;
+  });
+  const taken: Project[] = [];
+  const start = spyOn(registry, "start").mockImplementation(async (_store, _library, project, _options, output) => {
+    taken.push(structuredClone(project));
+    return output;
+  });
+  const events: Record<string, unknown>[] = [];
+  const off = store.subscribe((event) => void (event.type === "export" && events.push(event)));
+  try {
+    const id = store.create("V2", { width: 64, height: 36, fps: 30 }).project.id;
+    const response = (await respond(app, buildRouter(), new Request(`http://localhost:7700/api/projects/${id}/export`, { method: "POST", headers: { host: "localhost:7700", "content-type": "application/json" }, body: JSON.stringify({ path: `${dir}/v2.mp4`, keepLocal: true }) }), null))!;
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ started: true });
+    expect(events.at(-1)).toMatchObject({ id, state: "queued", waiting: "waiting for its effects to render" });
+    expect(start).not.toHaveBeenCalled();
+    // Changed while it waited: the export is of the edit once the render is in.
+    await store.update(id, "test", (p) => void (p.name = "V2, rendered"));
+    rendered();
+    for (let tries = 0; taken.length === 0 && tries < 100; tries++) await Bun.sleep(5);
+    expect(taken.map((one) => one.name)).toEqual(["V2, rendered"]);
+    expect(waits).toEqual([5000, 20 * 60_000]);
+  } finally {
+    off();
+    start.mockRestore();
+    wait.mockRestore();
+    cleanup();
+  }
+});
+
+test("an export asks the disks again as it starts, a share's review copy counted, and the disk running out under it is said as what to free", async () => {
+  const { exportBytes, roomShort, reviewBytes } = await import("../src/exports.ts");
+  const { diskFull, outOfSpace } = await import("../src/export_prep.ts");
+  const oneDisk = () => 1;
+  const bytes = exportBytes({ format: "h264", quality: "high", target_mb: null } as never, { start: 0, end: 26 * 60 * 30, width: 1920, height: 1080, audio: true }, 30);
+  // One disk: chunks and file twice, a gigabyte's margin, and the review copy beside them.
+  const review = reviewBytes(26 * 60);
+  expect(Math.abs(review / 1e6 - 670)).toBeLessThan(20);
+  expect(roomShort(bytes, 0, "/cache", "/out", () => 10e9, oneDisk)).toBeLessThanOrEqual(0);
+  expect(roomShort(bytes, review, "/cache", "/out", () => 4.6e9, oneDisk)).toBeGreaterThan(0);
+  expect(roomShort(bytes, 0, "/cache", "/out", () => 4.6e9, oneDisk)).toBeLessThanOrEqual(0);
+  expect(diskFull(2.2e9)).toBe("Your disk is full: free about 3 GB, then press Retry.");
+  expect(outOfSpace(Object.assign(new Error("write"), { code: "ENOSPC" }))).toBe(true);
+  expect(outOfSpace(new Error("Error writing trailer: No space left on device"))).toBe(true);
+  expect(outOfSpace(new Error("Fixture encoder failed"))).toBe(false);
+
+  // Queued with room, and the disk full by the time it renders: refused then, with the plain message.
+  const { dir, home, store, app, native, cleanup } = fixtureHome("export-room-at-start");
+  const registry = new ExportRegistry(home);
+  app.exports = registry;
+  const plan = spyOn(native, "exportPlan").mockReturnValue({ plan: { start: 0, end: 30, width: 64, height: 36, audio: false }, fps: 30 });
+  const archive = spyOn(exportCloud, "enabled").mockReturnValue(false);
+  const render = spyOn(native.ExportJob, "start").mockImplementation((job) => ({ cancel: () => {}, wait: async () => { throw new Error(`writing ${job.output}: No space left on device (os error 28)`); } }));
+  const free = room.free;
+  try {
+    const id = store.create("full", { width: 64, height: 36, fps: 30 }).project.id;
+    await store.update(id, "test", (p) => p.clips.push(clip({ id: "solid", track: p.tracks[0]!.id, start: 0, duration: 30, type: "solid" })));
+    await registry.start(store, app.library, store.get(id)!.project, native.exportDefaults(), `${dir}/full.mp4`, { drive: false, keepLocal: true });
+    for (let tries = 0; registry.runningFor(id) !== null && tries < 200; tries++) await Bun.sleep(5);
+    expect(registry.activity().find((one) => one.id === id)).toMatchObject({ state: "failed" });
+    expect(registry.activity().find((one) => one.id === id)!.error).toMatch(/^Your disk is full: free about \d+ GB, then press Retry\.$/);
+    // Room when it was asked for, none by the time it renders (another export, a download filled the disk): refused
+    // before anything is written, with nothing rendered.
+    render.mockClear();
+    let asked = 0;
+    room.free = () => (++asked <= 1 ? 1e15 : 0.5e9);
+    await registry.start(store, app.library, store.get(id)!.project, native.exportDefaults(), `${dir}/full.mp4`, { drive: false, keepLocal: true });
+    for (let tries = 0; registry.runningFor(id) !== null && tries < 200; tries++) await Bun.sleep(5);
+    expect(render).not.toHaveBeenCalled();
+    expect(registry.activity().find((one) => one.id === id)!.error).toBe("Your disk is full: free about 1 GB, then press Retry.");
+  } finally {
+    room.free = free;
+    render.mockRestore();
+    archive.mockRestore();
+    plan.mockRestore();
+    cleanup();
+  }
+});
+
 test("a Mac with room exports several at once, and the rest wait for room", async () => {
   const most = process.env.EDIT_LOCAL_EXPORTS;
   process.env.EDIT_LOCAL_EXPORTS = "2";

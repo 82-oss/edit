@@ -424,11 +424,21 @@ export class ConvexMock {
     const projectId = String(args.projectId ?? "");
     switch (name) {
       case "listChannels":
-        return this.channels;
+        return args.archived === true ? this.channels : this.channels.filter((one) => one.archived !== true);
       case "getChannel":
         return this.channels.find((one) => one.key === args.key) ?? null;
-      case "listGroups":
-        return this.groups;
+      case "archiveChannel": {
+        const row = this.channels.find((one) => one.key === args.key);
+        if (row === undefined) throw new Fail("invalid", `no channel ${String(args.key)}.`);
+        row.archived = args.archived === true;
+        return { key: args.key, archived: args.archived };
+      }
+      case "listGroups": {
+        // A put-away channel is still in its group, listed only with `archived`.
+        const away = (key: unknown) => this.channels.some((one) => one.key === key && one.archived === true);
+        if (args.archived === true) return this.groups;
+        return this.groups.map((group) => ({ ...group, channels: (group.channels as unknown[]).filter((key) => !away(key)) })).filter((group) => group.channels.length > 0);
+      }
       case "listProjects":
         return [...this.projects.values()].sort((a, b) => b.updatedAt - a.updatedAt).map((row) => this.card(row));
       case "listLibrary": {

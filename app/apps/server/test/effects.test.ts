@@ -173,14 +173,51 @@ test("a font the project fetched is there in its effects by name: declared ahead
   }
 });
 
-test("an effect that names no fetched font keeps the key it had before fonts could be fetched, so an update doesn't re-render it", () => {
+test("an effect's key is its code's content: the same files with other times (fetched onto another computer) are the same version, and a font-free one has no font part", () => {
   const { app, cleanup, id } = hq("effects-key");
+  try {
+    const dir = write(app, id, "bar", { "scene.html": GOOD, ".beneath.json": "{\"key\":\"k\"}" });
+    const faces = effects.FONTS.map((font) => `@font-face { font-family: "${font.family}"; font-weight: ${font.weight}; src: url(edit-fonts/${font.file}); }`).join("\n");
+    const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
+    const key = effects.list(app.store, id)[0]!.key;
+    expect(key).toBe(fingerprint([runtimeText as unknown as string, faces, "content", "1920x1080@30", `.beneath.json ${sha("{\"key\":\"k\"}")}`, `scene.html ${sha(GOOD)}`]));
+    // Fetched again (V2's cloud writes every file anew) or touched: the same version, so its render plays.
+    fs.utimesSync(join(dir, "scene.html"), new Date(2020, 0, 1), new Date(2020, 0, 1));
+    expect(effects.list(app.store, id)[0]!.key).toBe(key);
+    // What's beneath it is made again from the timeline on each computer, and a write cut short isn't code: neither changes it.
+    fs.writeFileSync(join(dir, "beneath.mp4"), "a picture beneath");
+    fs.writeFileSync(join(dir, "beneath.mp4.partial.mp4"), "half of one");
+    expect(effects.list(app.store, id)[0]!.key).toBe(key);
+    // A change to the code is a new version.
+    fs.writeFileSync(join(dir, "scene.html"), GOOD.replace("#e0343c", "#34e03c"));
+    expect(effects.list(app.store, id)[0]!.key).not.toBe(key);
+  } finally {
+    cleanup();
+  }
+});
+
+test("a render saved under the key from before Nov 16 (the files' times) is taken as its code's: its key written anew, nothing drawn again", async () => {
+  const { app, cleanup, id } = hq("effects-old-key");
   try {
     const dir = write(app, id, "bar", { "scene.html": GOOD });
     const stat = fs.statSync(join(dir, "scene.html"));
     const faces = effects.FONTS.map((font) => `@font-face { font-family: "${font.family}"; font-weight: ${font.weight}; src: url(edit-fonts/${font.file}); }`).join("\n");
     const before = fingerprint([runtimeText as unknown as string, faces, "1920x1080@30", `scene.html ${stat.size} ${Math.floor(stat.mtimeMs)}`]);
-    expect(effects.list(app.store, id)[0]!.key).toBe(before);
+    expect(effects.list(app.store, id)[0]!.old).toBe(before);
+    fs.writeFileSync(join(app.store.uploadsDir(id), "bar-render.mp4"), "the render");
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      project.media.push({ id: "m1", name: "bar", path: join(app.store.uploadsDir(id), "bar-render.mp4"), kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "bar", effect_key: before });
+      project.tracks.push({ id: "t1", kind: "video", name: "V1" } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: "m1", source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    // Rendered already: an export needn't wait (it would have waited for a new render of the same code, in Chrome).
+    expect(effects.renderLine(app, id, "bar")).toContain("Its render is of this code");
+    expect(effects.notReady(app.store, app.store.get(id)!.project)).toBeNull();
+    await seams.broll.waitForMaps(app, id, 10);
+    const media = app.store.get(id)!.project.media.find((one) => one.id === "m1")!;
+    expect(media.effect_key).toBe(effects.list(app.store, id)[0]!.key);
+    expect(media.path.endsWith("bar-render.mp4")).toBe(true);
   } finally {
     cleanup();
   }
@@ -235,7 +272,7 @@ test("an effect's tools are refused outside an HQ project, and an export waits f
     });
     expect(effects.onTimeline(app.store.get(id)!.project)).toEqual(["bar"]);
     // Its code isn't on this computer and it was never rendered: an export can't have it, and says so.
-    await expect(seams.broll.waitForMaps(app, id, 10)).rejects.toThrow("bar is a coded effect made on another computer and never rendered there");
+    await expect(seams.broll.waitForMaps(app, id, 10)).rejects.toThrow("The bar effect was made on another computer and never rendered there");
     // Rendered on that computer (its media is the render): exported as it is.
     await app.store.update(id, "test", (project) => {
       project.media[0]!.effect_key = "abc";
@@ -424,6 +461,21 @@ window.seek = (t) => { if (t > 1.5) throw new Error("no second " + t); document.
     void server.stop(true);
     cleanup();
   }
+});
+
+test("a render's failure is the computer's at that moment (tried again at once), the disk's (what to free), or the code's (the agent's to fix)", () => {
+  expect(effects.failureKind(new Error("Rendering an effect: Chrome didn't start."))).toBe("passing");
+  expect(effects.failureKind(new Error("Chrome closed"))).toBe("passing");
+  expect(effects.failureKind(new Error("Chrome Page.captureScreenshot timed out"))).toBe("passing");
+  expect(effects.failureKind(new Error("its page threw at 1.20 s: the map lost its drawing (WebGL context lost)"))).toBe("passing");
+  expect(effects.failureKind(Object.assign(new Error("write"), { code: "ENOSPC" }))).toBe("disk");
+  expect(effects.failureKind(new Error("its frames didn't join into a video: No space left on device"))).toBe("disk");
+  expect(effects.failureKind(new Error("its page threw at 1.20 s: TypeError: x is undefined"))).toBe("code");
+  expect(effects.failureKind(new Error("its page has no window.duration"))).toBe("code");
+  // A 12 s 1080p board: its frames and video, with room to spare, asked of the disk before it draws.
+  const bytes = effects.renderBytes({ width: 1920, height: 1080, fps: 30 }, 360, 12);
+  expect(bytes / 1e9).toBeGreaterThan(1.5);
+  expect(bytes / 1e9).toBeLessThan(2);
 });
 
 test("a render's error says where it was thrown when its first line is only its kind", async () => {

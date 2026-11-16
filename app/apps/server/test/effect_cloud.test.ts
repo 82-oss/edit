@@ -135,3 +135,36 @@ test("render files no edit plays from go; one still playing from its file, and t
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("what a render that stopped left (its PNG frames, a join cut short) goes an hour on; a render under way or going on from them keeps its", () => {
+  // Nov 16 audit: a failed render's frames stayed for good (only .mp4 files were swept), a gigabyte or more each.
+  const dir = home();
+  const before = effectCloud.renderingNow.is;
+  try {
+    const renders = join(dir, "media", "p1", "effect-renders");
+    fs.mkdirSync(join(dir, "projects"), { recursive: true });
+    fs.writeFileSync(join(dir, "projects", "p1.json"), JSON.stringify({ media: [] }));
+    const old = Date.now() - 2 * 3600_000;
+    const frames = (name: string, at: number) => {
+      const path = join(renders, name);
+      fs.mkdirSync(path, { recursive: true });
+      fs.writeFileSync(join(path, "frame-00000.png"), "x".repeat(100));
+      fs.utimesSync(join(path, "frame-00000.png"), at / 1000, at / 1000);
+      fs.utimesSync(path, at / 1000, at / 1000);
+      return path;
+    };
+    const failed = frames("board-0000000000aa.frames", old);
+    const resuming = frames("board-0000000000bb.frames", old);
+    const lately = frames("board-0000000000cc.frames", Date.now());
+    const joined = join(renders, "board-0000000000aa.partial.mp4");
+    fs.writeFileSync(joined, "x".repeat(50));
+    fs.utimesSync(joined, old / 1000, old / 1000);
+    effectCloud.renderingNow.is = (project, file) => project === "p1" && file.startsWith("board-0000000000bb.");
+    expect(effectCloud.sweepRenders(dir)).toEqual({ files: 2, bytes: 150 });
+    for (const path of [failed, joined]) expect(fs.existsSync(path)).toBe(false);
+    for (const path of [resuming, lately]) expect(fs.existsSync(path)).toBe(true);
+  } finally {
+    effectCloud.renderingNow.is = before;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

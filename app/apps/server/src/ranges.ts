@@ -22,6 +22,7 @@ import { native } from "./native/index.ts";
 import { join } from "./paths.ts";
 import { clipEnd, duration as durationOf, fps as fpsOf } from "./project.ts";
 import { fixed, isAlphanumeric, jsonForSerde } from "./rust.ts";
+import * as seams from "./seams.ts";
 import * as tools from "./tools.ts";
 
 /** Frames of `ranges` made valid: in order, inside the edit, none empty, none overlapping (a later one starts where the one before ends). */
@@ -220,11 +221,12 @@ async function withSound(parts: string[]): Promise<string[]> {
 }
 
 /** Exports `project`'s marked stretches with `options` (the house's), each its own file or one of them joined, in the background. */
-export function exportRanges(app: App, project: Project, options: ExportOptions, mode: Mode, watermark: string | null): Batch {
+export function exportRanges(app: App, given: Project, options: ExportOptions, mode: Mode, watermark: string | null): Batch {
+  let project = given;
   const running = batches.get(project.id);
   if (running !== undefined && !running.finished) throw new Error("its marked stretches are already being exported");
   // What's left of them in the edit as it is now: one past an end shortened since it was marked was refused, and stopped the batch.
-  const ranges = marked(project);
+  let ranges = marked(project);
   if (ranges.length === 0) throw new Error("no stretches are marked: set in and out points (I / O), or ask the agent to mark them");
   if ((app.exports.runningFor?.(project.id) ?? null) !== null) throw new Error("an export of this edit is running: wait for it, or cancel it");
   const batch: Batch = { mode, total: ranges.length, done: 0, current: null, outputs: [], error: null, cancelled: false, finished: false, finished_ms: null };
@@ -246,6 +248,18 @@ export function exportRanges(app: App, project: Project, options: ExportOptions,
     // Every part asked for (joined): its export lists it, and it comes off the list however the batch ends.
     const asked: string[] = [];
     try {
+      // Its effects' renders and map shots first, as a share waits for them (each stretch would go out with their
+      // stand-ins), then the edit as it is once they're in.
+      await seams.broll.waitForMaps(app, project.id, 20 * 60_000).catch((error: unknown) => {
+        if (!seams.isUnavailable(error)) throw error;
+      });
+      if (batch.cancelled) return;
+      const now = app.store.get(project.id)?.project;
+      if (now !== undefined && marked(now).length > 0) {
+        project = now;
+        ranges = marked(now);
+        batch.total = ranges.length;
+      }
       fs.mkdirSync(dir, { recursive: true });
       if (mode === "joined") fs.mkdirSync(parts, { recursive: true });
       // Each its own file: two stretches whose names come out the same (two "Call"s, "Part 1/2" and "Part 1:2") numbered.

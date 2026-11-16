@@ -11,7 +11,7 @@ import { Effect } from "effect";
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
 import * as capacity from "./export_capacity.ts";
-import { shownProgress } from "./export_prep.ts";
+import { diskFull, freeOn, outOfSpace, shownProgress } from "./export_prep.ts";
 import { runPromise } from "./effect/runtime.ts";
 import * as jobs from "./jobs.ts";
 import { ioMessage, nowMs, writeAtomic } from "./files.ts";
@@ -113,6 +113,9 @@ interface Running {
   ended?: Promise<void>;
   /** A batch's stretch (`StartExtra.stretch`). */
   stretch?: boolean;
+  /** About how big its file is (`exportBytes`), and a share's review copy beside it: what the disks are asked for again as it starts. */
+  bytes?: number;
+  review?: number;
 }
 
 /** Export jobs across projects, including the recent outcomes. Local jobs
@@ -943,6 +946,15 @@ export class ExportRegistry implements seams.Exports {
     await this.stopAhead(project.id);
     const addon = native();
     const { plan, fps } = addon.exportPlan({ json: jsonForSerde(project) }, options);
+    // The edit it's handed, whoever asked: a coded effect not rendered from its code, or a map shot still its first
+    // frame, would go out as its stand-in (a Retry, a retry after an update and a stretch never waited for them).
+    let notReady: string | null = null;
+    try {
+      notReady = seams.broll.exportReady?.(store, project, plan.start, plan.end) ?? null;
+    } catch (error) {
+      if (!seams.isUnavailable(error)) throw error;
+    }
+    if (notReady !== null) throw new Error(notReady);
     // The edit as it is, before a watermark goes over it: what this export is of (its hash and clip map).
     const edit = project;
     if (extra.watermark !== undefined) project = await seams.channelMarks.addWatermark({ library }, store.cacheDir(), project, plan, extra.watermark);
@@ -1030,7 +1042,8 @@ export class ExportRegistry implements seams.Exports {
     // after enqueueing must never change the export that was accepted.
     project = structuredClone(project);
     options = structuredClone(options);
-    const running: Running = { output: path, key, cancelled: false, job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}) };
+    const review = extra.share === true ? reviewBytes(Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1)) : 0;
+    const running: Running = { output: path, key, cancelled: false, job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review };
     this.jobs.set(project.id, running);
     let upload = false;
     try {
@@ -1114,6 +1127,21 @@ export class ExportRegistry implements seams.Exports {
     };
     emit("running", 0, { phase: "preparing the footage" });
     const started = performance.now();
+    const folder = parent(output) ?? ".";
+    /** Room for it now, as it starts (it may have waited in line a long while since it was asked for), and once the excerpts it reads are cut. */
+    const roomNow = () => {
+      if (quiet || running.bytes === undefined) return;
+      let short = roomShort(running.bytes, running.review ?? 0, store.cacheDir(), folder);
+      if (short > 0 && room.make !== null) {
+        try {
+          room.make(roomWanted(running.bytes, store.cacheDir(), folder) + (running.review ?? 0));
+        } catch (error) {
+          diag.warn("export", `making room for ${project.name}'s export: ${diag.messageOf(error)}`);
+        }
+        short = roomShort(running.bytes, running.review ?? 0, store.cacheDir(), folder);
+      }
+      if (short > 0) throw new Error(diskFull(short));
+    };
     // A speed sample (`fresh_fps`): rendered here from the start, every frame new, never restarted.
     let fresh = !quiet && options.format === "h264" && nothingToReuse(store.cacheDir(), id);
     let result: { ok: true } | { ok: false; error: string };
@@ -1121,6 +1149,7 @@ export class ExportRegistry implements seams.Exports {
       await catchBugsAsync("the export", async () => {
         // Fetched back to reuse its chunks; gone again after if this export writes elsewhere.
         let restored: string | null = null;
+        roomNow();
         try {
           // A stalled render (a read from the cloud that never answers: card 1's
           // export sat at 28% for seven minutes, Oct 29) is stopped and started
@@ -1149,6 +1178,7 @@ export class ExportRegistry implements seams.Exports {
                 );
               }
               if (running.cancelled) throw new Error("cancelled");
+              if (attempt === 1) roomNow();
               if (attempt === 1) {
                 let fetched = -1;
                 restored = this.home === null ? null : await restorePrevious(store.cacheDir(), this.home, project.id, (key, dest) => cloud.download(key, dest, (got, size) => {
@@ -1217,7 +1247,9 @@ export class ExportRegistry implements seams.Exports {
       }
       result = { ok: true };
     } catch (error) {
-      result = { ok: false, error: diag.messageOf(error) };
+      // The disk ran out under it: said as what to free (the room it needed less what's free now).
+      const short = (running.bytes ?? 0) + (running.review ?? 0) - freeOn(store.cacheDir());
+      result = { ok: false, error: outOfSpace(error) && !running.cancelled && !diag.messageOf(error).startsWith("Your disk is full") ? diskFull(short) : diag.messageOf(error) };
     } finally {
       // Archiving/uploading a completed file doesn't occupy the renderer.
       releaseLocal?.();
@@ -1351,11 +1383,41 @@ export function exportBytes(options: ExportOptions, plan: Plan, fps: number): nu
 const GB = 1e9;
 
 /** Frees room on the cache's disk until `wanted` bytes are free, as far as the cache can give (cache_cleanup.ts `makeRoom`, set by serve.ts; none in tests). */
-export const room = { make: null as ((wanted: number) => void) | null };
+export const room = {
+  make: null as ((wanted: number) => void) | null,
+  /** The bytes free on the disk holding a path (statfs; tests stand in for it). */
+  free: (path: string): number => freeAt(path),
+};
 
 /** The free bytes an export of `bytes` needs on the cache's disk (`roomFor`'s sum for it). */
 export function roomWanted(bytes: number, cacheDir: string, outputDir: string, device: (path: string) => number = deviceOf): number {
   return Math.max(bytes * 0.1, GB) + bytes * (device(cacheDir) === device(outputDir) ? 2 : 1);
+}
+
+/** About how big a share's review copy of `seconds` is (reviews.ts `reviewCopy`: 720p at 3 Mbit/s, the sound at 128k). */
+export function reviewBytes(seconds: number): number {
+  return Math.ceil(seconds * ((3_000_000 + 128_000) / 8) * 1.1);
+}
+
+/**
+ * How many bytes the disks are short of for an export of `bytes` as it starts
+ * (0: there's room): its chunks in `cacheDir` with a share's review copy
+ * (`review`) beside them, joined into a file in `outputDir`, with a margin of
+ * a tenth or a gigabyte; the excerpts it reads are on the disk already when
+ * it's asked again after they're cut.
+ */
+export function roomShort(bytes: number, review: number, cacheDir: string, outputDir: string, free: (path: string) => number = room.free, device: (path: string) => number = deviceOf): number {
+  if (bytes <= 0 && review <= 0) return 0;
+  const margin = Math.max(bytes * 0.1, GB);
+  const need = new Map<number, { path: string; bytes: number }>();
+  for (const [path, more] of [[cacheDir, bytes + review], [outputDir, bytes]] as const) {
+    const disk = device(path);
+    const had = need.get(disk);
+    need.set(disk, { path: had?.path ?? path, bytes: (had?.bytes ?? margin) + more });
+  }
+  let short = 0;
+  for (const { path, bytes: wanted } of need.values()) short = Math.max(short, wanted - free(path));
+  return short;
 }
 
 /**
@@ -1363,7 +1425,7 @@ export function roomWanted(bytes: number, cacheDir: string, outputDir: string, d
  * `cacheDir`, then are joined into a file in `outputDir` (both on one disk:
  * twice the room), with a margin of a tenth or a gigabyte.
  */
-export function roomFor(bytes: number, cacheDir: string, outputDir: string, free: (path: string) => number = freeAt, device: (path: string) => number = deviceOf): string | null {
+export function roomFor(bytes: number, cacheDir: string, outputDir: string, free: (path: string) => number = room.free, device: (path: string) => number = deviceOf): string | null {
   if (bytes <= 0) return null;
   const margin = Math.max(bytes * 0.1, GB);
   const need = new Map<number, { path: string; bytes: number }>();

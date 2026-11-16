@@ -669,24 +669,49 @@ export function cleanCache(
     }
   }
   // Project history is metadata, but unbounded it breaks the budget alone:
-  // past a quarter of it, the oldest snapshots go (the live projects stay).
+  // past a quarter of it, the oldest saves go, across every project's
+  // (`projects/history/<id>/<ms>.json`), each project keeping its newest few
+  // (a reset's "edit before" among them). It took whole projects' folders
+  // until Nov 16, all 30 saves of one at a time, past a fixed 100 MB.
   {
     const history = join(app.store.home, "projects", "history");
-    let over = size(history) - Math.floor(DEFAULT_LOCAL_BUDGET_BYTES / 4);
+    let over = size(history) - historyBudget(limits.cacheBytes);
     if (over > 0) {
-      const files = safeList(history).map((name) => {
-        const path = join(history, name);
-        try { const s = fs.statSync(path); return { path, at: s.mtimeMs }; } catch { return null; }
-      }).filter((f): f is { path: string; at: number } => f !== null).sort((a, b) => a.at - b.at);
-      for (const file of files) {
+      const saves: { path: string; at: number }[] = [];
+      for (const id of safeList(history)) {
+        const dir = join(history, id);
+        const own = safeList(dir)
+          .filter((name) => /^\d+\.json$/.test(name))
+          .map((name) => {
+            const path = join(dir, name);
+            try {
+              return { path, at: fs.statSync(path).mtimeMs };
+            } catch {
+              return null;
+            }
+          })
+          .filter((one): one is { path: string; at: number } => one !== null)
+          .sort((a, b) => b.at - a.at);
+        saves.push(...own.slice(HISTORY_KEPT_EACH));
+      }
+      saves.sort((a, b) => a.at - b.at);
+      for (const save of saves) {
         if (over <= 0) break;
         const before = report.bytes;
-        remove(file.path);
+        remove(save.path);
         over -= report.bytes - before;
       }
     }
   }
   return report;
+}
+
+/** The saves of each project's history the cleaner never takes: the newest, the one before it and the one before that. */
+const HISTORY_KEPT_EACH = 3;
+
+/** How much of the local budget (storage.ts `localBudgetBytes`) project history may take: a quarter, and never less than a quarter of the smallest budget. */
+export function historyBudget(budget: number): number {
+  return Math.floor(Math.max(budget, DEFAULT_LOCAL_BUDGET_BYTES) / 4);
 }
 
 /** The project whose export is being made ahead now (exports.ts `aheadFor`); none where there are no exports (tests). */

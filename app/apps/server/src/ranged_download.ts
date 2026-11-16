@@ -5,6 +5,9 @@
 // done are noted beside it (`<dest>.parts`), so a download stopped by a
 // dropped connection, a stall or a restart carries on with the parts left.
 // A part that fails is asked again (a few times, waiting longer each time).
+// A part is noted done only once its bytes are on the disk (fsync), so a
+// crash or a power cut can't leave a noted part that never landed; and the
+// whole is checked against Drive's own MD5 when Drive has one for it.
 
 import * as fs from "node:fs";
 
@@ -70,8 +73,12 @@ export async function download(options: {
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   onBytes?: (bytes: number) => void;
   signal?: AbortSignal;
+  /** Drive's md5Checksum of the file, when the caller has it; else asked of Drive beside the parts (a Drive file's `alt=media` address). */
+  md5?: string | null;
 }): Promise<void> {
   const { url, size, dest } = options;
+  // Asked beside the parts, so it costs no time; a file Drive has no checksum for (a Google Doc, a shortcut) isn't checked.
+  const checksum: Promise<string | null> = options.md5 !== undefined ? Promise.resolve(options.md5) : driveMd5(url, options.fetch).catch(() => null);
   const count = Math.ceil(size / ranged.part);
   // Parts noted for a file that's gone (removed as damaged) are no parts.
   const journal = (fs.existsSync(dest) ? readJournal(dest, size) : null) ?? { size, part: ranged.part, done: [] };
@@ -124,6 +131,8 @@ export async function download(options: {
         if (options.signal?.aborted) throw new Error("Stopped.");
         try {
           await fetchPart(n);
+          // On the disk before it's noted done: a journal that names a part the disk never got would never fetch it again.
+          await new Promise<void>((resolve, reject) => fs.fsync(fd, (error) => (error ? reject(error) : resolve())));
           break;
         } catch (error) {
           if (error instanceof Refused || options.signal?.aborted || attempt >= ranged.tries) throw error;
@@ -150,5 +159,31 @@ export async function download(options: {
     fs.closeSync(fd);
   }
   if (failure !== null) throw failure;
+  const expected = await checksum;
+  if (typeof expected === "string" && /^[0-9a-f]{32}$/i.test(expected)) {
+    const got = await md5Of(dest);
+    if (got !== expected.toLowerCase()) {
+      // Damaged on the way: none of it is kept, so the next try fetches it all again.
+      fs.rmSync(dest, { force: true });
+      fs.rmSync(journalOf(dest), { force: true });
+      throw new Error("the file came down damaged (it doesn't match Drive's checksum), so it's fetched again from the start");
+    }
+  }
   fs.rmSync(journalOf(dest), { force: true });
+}
+
+/** Drive's MD5 of the file a `…/drive/v3/files/<id>?alt=media…` address downloads (its metadata, by the same sign-in), or null. */
+async function driveMd5(url: string, fetch: (url: string, init: RequestInit) => Promise<Response>): Promise<string | null> {
+  if (!/\/drive\/v3\/files\/[^/?]+\?/.test(url) || !/[?&]alt=media(&|$)/.test(url)) return null;
+  const answer = await fetch(url.replace(/([?&])alt=media(&|$)/, "$1fields=md5Checksum$2"), {});
+  if (!answer.ok) return null;
+  const value = (await answer.json()) as { md5Checksum?: unknown };
+  return typeof value.md5Checksum === "string" ? value.md5Checksum : null;
+}
+
+/** A file's MD5, read through once. */
+async function md5Of(path: string): Promise<string> {
+  const hasher = new Bun.CryptoHasher("md5");
+  for await (const chunk of fs.createReadStream(path, { highWaterMark: 4 << 20 })) hasher.update(chunk as Buffer);
+  return hasher.digest("hex");
 }

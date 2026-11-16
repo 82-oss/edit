@@ -8,6 +8,7 @@ import * as cloud from "../src/cloud.ts";
 import * as cloudBlocks from "../src/cloud_blocks.ts";
 import * as cloudMedia from "../src/cloud_media.ts";
 import * as effectCloud from "../src/effect_cloud.ts";
+import { pinned } from "../src/export_excerpts.ts";
 import * as hearingLog from "../src/hearing_log.ts";
 import * as steps from "../src/import_steps.ts";
 import { playbackKey, playbackPath } from "../src/cloud_playback.ts";
@@ -642,6 +643,37 @@ test("a Drive file streams to R2 with nothing on this disk, the registry remembe
     await expect(cloudMedia.driveOriginal("Short2", scratch, () => {})).rejects.toThrow("The download ended early. Retry to start it again.");
     expect(mock.cloud.objects.has("edit/originals/drive/Short2/short.mp4")).toBe(false);
     await expect(cloudMedia.driveOriginal("a/b", scratch, () => {})).rejects.toThrow('"a/b" isn\'t a Drive file id');
+  } finally {
+    cleanup();
+  }
+});
+
+// Nov 16 audit: only the excerpts were held from the cleaner while an export read them; its renders, stills and
+// sound copies, all copies in the cache, could go from under it.
+test("the cache's copies an export reads (an effect's render, a still, a sound copy) are held from the cleaner until it lets go", async () => {
+  const fixture = home("cloud-export-pins");
+  const { store, cleanup } = fixture;
+  try {
+    const cache = store.cacheDir();
+    const render = "edit/exports/p1/effect-board-000000000001.mp4";
+    fs.mkdirSync(join(cache, "cloud", "exports", "p1"), { recursive: true });
+    fs.writeFileSync(cloudMedia.localPath(cache, render), "the render");
+    const still = "edit/originals/sha256/ee/badge.png";
+    mock.cloud.objects.set(still, new TextEncoder().encode("png bytes"));
+    const project = projectWith([
+      { ...media("m1", "/elsewhere/board.mp4"), effect: "board", cloud: { source: "sha256:ff", original: render, proxy: render, size: 10 } },
+      { ...media("m2", "/elsewhere/badge.png", { kind: "image", name: "badge.png" }), cloud: { source: "sha256:ee", original: still, proxy: still, size: 9 } },
+    ]);
+    project.clips.push(
+      { id: "c1", track: "v1", start: 0, duration: 30, type: "video", media: "m1", source_in: 0, speed: 1 } as Project["clips"][number],
+      { id: "c2", track: "v1", start: 30, duration: 30, type: "video", media: "m2", source_in: 0, speed: 1 } as Project["clips"][number],
+    );
+    const [out, originals] = await cloudMedia.forExport(project, 0, 60, cache);
+    expect(out.media[0]!.path).toBe(cloudMedia.localPath(cache, render));
+    expect(out.media[1]!.path).toBe(cloudMedia.localPath(cache, still));
+    for (const path of [out.media[0]!.path, out.media[1]!.path]) expect(pinned(path)).toBe(true);
+    originals.release();
+    for (const path of [out.media[0]!.path, out.media[1]!.path]) expect(pinned(path)).toBe(false);
   } finally {
     cleanup();
   }

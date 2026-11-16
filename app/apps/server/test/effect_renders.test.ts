@@ -1,8 +1,9 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 
+import * as devtools from "../src/chrome_devtools.ts";
 import * as effects from "../src/effects.ts";
 import { registerEffectTools } from "../src/effect_tools.ts";
 import { registerEditingTools } from "../src/edit_tools.ts";
@@ -96,7 +97,7 @@ test.skipIf(chrome === null)("an effect on the timeline is rendered from its cod
     fs.writeFileSync(join(dir, "scene.html"), GOOD.replace("#e0343c", "#34e03c"));
     const now = effects.list(app.store, id)[0]!.key;
     expect(now).not.toBe(key);
-    await expect(seams.broll.waitForMaps(app, id, 10)).rejects.toThrow("bar is still rendering");
+    await expect(seams.broll.waitForMaps(app, id, 10)).rejects.toThrow("The bar effect is still rendering");
     await seams.broll.waitForMaps(app, id, 90_000);
     expect(app.store.get(id)!.project.media.find((one) => one.id === added.media)!.effect_key).toBe(now);
     // A third version: the oldest render goes, the one before the newest stays (an undo shows it).
@@ -300,6 +301,68 @@ test.skipIf(chrome === null)("an effect with see-through parts renders with its 
     expect(size(media.path)).toBe("1920,1080");
   } finally {
     if (addon !== null) useNative(before);
+    await server.stop(true);
+    cleanup();
+  }
+}, 240_000);
+
+test.skipIf(chrome === null)("a render that fails names its effect and says what to do; the agent is told what went wrong", async () => {
+  const { app, cleanup, id } = hq("effects-render-fails");
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const dir = write(app, id, "breaks", { "scene.html": GOOD });
+    const added = await effects.add(app, id, "breaks");
+    await app.store.update(id, "test", (project) => {
+      project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    // Its seek throws past the first second: the code's to fix, so the agent is asked to.
+    fs.writeFileSync(join(dir, "scene.html"), GOOD.replace("window.seek = (t) => {", "window.seek = (t) => { if (t > 1) throw new Error('nope');"));
+    await expect(seams.broll.waitForMaps(app, id, 90_000)).rejects.toThrow("The breaks effect didn't render: ask the agent to fix the breaks effect.");
+    expect(effects.renderLine(app, id, "breaks")).toContain("its page threw at");
+    // Asked again while it stands: the same, at once, and no export takes the clear still for it.
+    await expect(seams.broll.waitForMaps(app, id, 10)).rejects.toThrow("ask the agent to fix the breaks effect");
+    expect(effects.notReady(app.store, app.store.get(id)!.project)).toContain("The breaks effect");
+  } finally {
+    await server.stop(true);
+    cleanup();
+  }
+}, 240_000);
+
+test.skipIf(chrome === null)("a render Chrome let down (it didn't start) is tried again at once, not failed for five minutes", async () => {
+  const { app, cleanup, id } = hq("effects-render-again");
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  const open = devtools.open;
+  let failed = 0;
+  const spy = spyOn(devtools, "open").mockImplementation(((opening: Parameters<typeof devtools.open>[0]) => {
+    if (opening.what === "Rendering an effect" && failed === 0) {
+      failed += 1;
+      return Promise.reject(new Error("Rendering an effect: Chrome didn't start."));
+    }
+    return open(opening);
+  }) as typeof devtools.open);
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    write(app, id, "again", { "scene.html": GOOD });
+    const added = await effects.add(app, id, "again");
+    await app.store.update(id, "test", (project) => {
+      project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    await seams.broll.waitForMaps(app, id, 90_000);
+    expect(failed).toBe(1);
+    expect(app.store.get(id)!.project.media.find((one) => one.id === added.media)!.effect_key).toBe(effects.list(app.store, id)[0]!.key);
+  } finally {
+    spy.mockRestore();
     await server.stop(true);
     cleanup();
   }

@@ -342,6 +342,54 @@ test("a big upload whose connection keeps dropping stops, then picks up from the
   }
 });
 
+// Nov 16 audit: a share's review copy (a few hundred MB) restarted from zero after every failure (only 512 MiB and up
+// resumed), and each part had 4 tries over ~14 s before the share failed for good.
+test("a share's upload keeps at a network that's gone for minutes, each try from the parts already up; a refusal is said at once", async () => {
+  expect(cloud.RESUMABLE_FROM).toBeLessThanOrEqual(32 * MIB);
+  const { dir, cleanup } = scratch("cloud-kept-at");
+  let online = false;
+  let done = false;
+  // Gone for three whole tries of the upload (each part asked 4 times), back after the third wait between them.
+  const r2 = droppingR2((part) => part >= 4 && !online);
+  const waits: number[] = [];
+  const sleep = cloud.timing.sleep;
+  cloud.timing.sleep = async (ms) => {
+    waits.push(ms);
+    if (waits.filter((one) => one >= 15_000).length >= 3) online = true;
+  };
+  try {
+    cloud.timing.filePart = MIB;
+    cloud.timing.resumableFrom = MIB;
+    cloud.keepUploadJournalsIn(`${dir}/uploads`);
+    const key = "edit/test/kept-at.mp4";
+    const data = pattern(4 * MIB + 99);
+    const file = `${dir}/copy.mp4`;
+    fs.writeFileSync(file, data);
+    mock.on("POST", "/v1/cloud/r2/multipart/urls", (request) => {
+      const body = request.json<{ key: string; uploadId: string; parts: number[] }>();
+      const url = (part: number) => (body.key === key && !done ? r2.url(body.key, body.uploadId, part) : mock.cloud.url(body.key, { partNumber: String(part), uploadId: body.uploadId }));
+      return Response.json({ urls: Object.fromEntries(body.parts.map((part) => [String(part), url(part)])) });
+    });
+    await cloud.uploadFileKeptAt(file, key);
+    expect(Buffer.from(mock.cloud.objects.get(key)!).equals(Buffer.from(data))).toBe(true);
+    // Parts 1-3 went once: each try carried on from the journal.
+    expect(r2.sent.filter((part) => part < 4).toSorted()).toEqual([1, 2, 3]);
+    // Waited longer each time between the tries of the whole upload (15 s, 30 s, …), as well as the parts' own.
+    expect(waits.filter((ms) => ms >= 15_000)).toEqual([15_000, 30_000, 60_000]);
+    // A refusal isn't a network that comes and goes: said at once.
+    mock.on("PUT", "/r2/edit/test/refused.mp4", () => new Response("<Error><Code>AccessDenied</Code><Message>no</Message></Error>", { status: 403 }));
+    fs.writeFileSync(`${dir}/small.mp4`, "small");
+    waits.length = 0;
+    await expect(cloud.uploadFileKeptAt(`${dir}/small.mp4`, "edit/test/refused.mp4")).rejects.toThrow("403");
+    expect(waits.filter((ms) => ms >= 15_000)).toEqual([]);
+  } finally {
+    done = true;
+    cloud.timing.sleep = sleep;
+    r2.stop();
+    cleanup();
+  }
+});
+
 test("an upload R2 let go of, or a file that changed, begins again", async () => {
   const { dir, cleanup } = scratch("cloud-resume-again");
   try {

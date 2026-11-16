@@ -697,24 +697,32 @@ async function exportStep(app: App, projectId: string, args: ShareArgs): Promise
   const home = app.store.home;
   const key = shareKey(projectId);
   let project = readSnapshot(home, projectId, args.snapshot);
+  // Kept with a stand-in in it (taken before exports refused one): taken again once what it shows is ready.
+  if (project !== null && (seams.broll.exportReady?.(app.store, project, 0, Number.POSITIVE_INFINITY) ?? null) !== null) project = null;
   if (project === null) {
-    // A map shot still rendering would export as its first frame. Waited for as long as slowed shots are: a
-    // minute failed a Ready for changes share whose map had just been started again (Nov 6, Female Police Captain).
-    sharing.set(projectId, "waiting for map shots");
-    await seams.broll.waitForMaps(app, projectId, 20 * 60_000).catch((error: unknown) => {
-      if (!seams.isUnavailable(error)) throw error;
-    });
-    haltShare(projectId);
-    // Slowed shots still being smoothed would go out stuttering or half
-    // swapped (N3on's fourth preview was shared with 16 still rendering).
-    sharing.set(projectId, "waiting for slowed shots");
-    await seams.broll.waitForSmoothing(projectId, 20 * 60_000).catch((error: unknown) => {
-      if (!seams.isUnavailable(error)) throw error;
-    });
-    haltShare(projectId);
-    const live = app.store.get(projectId);
-    if (live === null) throw new Error("no such project");
-    project = live.project;
+    let taken: Project | null = null;
+    // The edit is taken once what it shows is ready, and waited for again (a few times) when an effect changed while
+    // slowed shots were smoothed: exports.start refuses an edit with a stand-in in it.
+    for (let tries = 0; taken === null; tries++) {
+      // A map shot still rendering would export as its first frame. Waited for as long as slowed shots are: a
+      // minute failed a Ready for changes share whose map had just been started again (Nov 6, Female Police Captain).
+      sharing.set(projectId, "waiting for map shots");
+      await seams.broll.waitForMaps(app, projectId, 20 * 60_000).catch((error: unknown) => {
+        if (!seams.isUnavailable(error)) throw error;
+      });
+      haltShare(projectId);
+      // Slowed shots still being smoothed would go out stuttering or half
+      // swapped (N3on's fourth preview was shared with 16 still rendering).
+      sharing.set(projectId, "waiting for slowed shots");
+      await seams.broll.waitForSmoothing(projectId, 20 * 60_000).catch((error: unknown) => {
+        if (!seams.isUnavailable(error)) throw error;
+      });
+      haltShare(projectId);
+      const live = app.store.get(projectId);
+      if (live === null) throw new Error("no such project");
+      if (tries >= 2 || (seams.broll.exportReady?.(app.store, live.project, 0, Number.POSITIVE_INFINITY) ?? null) === null) taken = live.project;
+    }
+    project = taken;
     jobs.step(home, key, "exporting", { snapshot: shareSnapshot(home, projectId, project) });
   } else {
     // Carried on: an export of this edit that finished after the share began (its end came just before the restart) is it.
@@ -830,9 +838,10 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       jobs.step(home, key, "uploading");
       haltShare(projectId);
       // Carried on after a restart: what's already up isn't sent again (never for a replace, whose keys hold the version it replaces).
-      if (!(resumed && !replace && (await alreadyUp(`${prefix}/video.mp4`, copy)))) await cloud.uploadFile(copy, `${prefix}/video.mp4`, tick("uploading"), signal);
+      // Kept at through a network that comes and goes, for minutes, each try from the parts already up (cloud.ts).
+      if (!(resumed && !replace && (await alreadyUp(`${prefix}/video.mp4`, copy)))) await cloud.uploadFileKeptAt(copy, `${prefix}/video.mp4`, tick("uploading"), signal);
       haltShare(projectId);
-      if (!(resumed && !replace && (await alreadyUp(`${prefix}/poster.jpg`, poster)))) await cloud.uploadFile(poster, `${prefix}/poster.jpg`, () => haltShare(projectId), signal);
+      if (!(resumed && !replace && (await alreadyUp(`${prefix}/poster.jpg`, poster)))) await cloud.uploadFileKeptAt(poster, `${prefix}/poster.jpg`, () => haltShare(projectId), signal);
       haltShare(projectId);
       jobs.step(home, key, "publishing", { uploaded: true });
     }
