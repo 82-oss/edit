@@ -85,6 +85,14 @@ jobs:
         with:
           path: app/apps/web/src/engine/pkg
           key: wasm-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/scripts/build-wasm.sh') }}
+      # The TS types generated from the Rust matched what's committed for these very Rust sources and types before:
+      # regenerating them (a Rust build, 48 s, and setting Rust up for it, ~45 s) can't say anything new.
+      - id: types
+        if: matrix.part == 'ts'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: app/.types-matched
+          key: types-matched-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/packages/edit-types/**', '!app/packages/edit-types/node_modules/**', 'app/Justfile') }}
       # The debug addon every part but the Rust runs on, kept by a hash of the
       # Rust it's built from (a minute and more on each part, every run: the
       # workspace's own crates are never in rust-cache's cache), built when
@@ -97,11 +105,11 @@ jobs:
           path: app/crates/edit-native/edit-native.node
           key: addon-debug-${{ matrix.target }}-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**') }}
       # Rust only where something is compiled: the Rust part, the TypeScript's
-      # generated types (`just types`), or an addon or WASM engine the caches
-      # above didn't have. A server-tests or acceptance part on a warm cache
+      # generated types (`just types`) when they're to be made again, or an
+      # addon or WASM engine the caches above didn't have. A server-tests or acceptance part on a warm cache
       # compiles nothing (Nov 16: 20-25 s of each went on setting Rust up).
       - id: rust
-        run: echo "needed=${{ (matrix.part == 'rust' && steps.passed.outputs.cache-hit != 'true') || matrix.part == 'ts' || steps.addon.outputs.cache-hit != 'true' || (matrix.part == 'acceptance' && steps.wasm.outputs.cache-hit != 'true') }}" >> "$GITHUB_OUTPUT"
+        run: echo "needed=${{ (matrix.part == 'rust' && steps.passed.outputs.cache-hit != 'true') || (matrix.part == 'ts' && steps.types.outputs.cache-hit != 'true') || steps.addon.outputs.cache-hit != 'true' || ((matrix.part == 'acceptance' || matrix.part == 'ts') && steps.wasm.outputs.cache-hit != 'true') }}" >> "$GITHUB_OUTPUT"
       - if: steps.rust.outputs.needed == 'true'
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -150,7 +158,8 @@ jobs:
         run: |
           case "${{ matrix.part }}" in
             rust) just check-rust && touch .rust-passed ;;
-            ts) just check-ts ;;
+            ts)
+              if [ "${{ steps.types.outputs.cache-hit }}" = true ]; then just check-ts-code; else just types-committed && touch .types-matched && just check-ts-code; fi ;;
             tests-*)
               if [ "$RUNNER_OS" = macOS ] && [ "${{ matrix.part }}" = tests-1 ]; then just native-tests; fi
               just check-tests "${{ matrix.shard }}" "$TIMINGS" ;;

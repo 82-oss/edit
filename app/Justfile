@@ -348,10 +348,15 @@ check-rust:
 
 # Everything but the server's tests: the same TypeScript anywhere, so CI runs it on Linux alone. Like
 # check-tests, it takes the debug addon as built already (`just native debug`, or CI's cache of it).
-check-ts: types
-    # The generated TS types are committed: they must match the Rust.
+check-ts: types-committed check-ts-code
+
+# The generated TS types are committed: they must match the Rust.
+types-committed: types
     git diff --exit-code -- packages/edit-types
     test -z "$(git status --porcelain -- packages/edit-types)"
+
+# check-ts but the generated types: CI's Check, where these Rust sources and these types matched before.
+check-ts-code:
     just native-tests
     # So is the addon's index.d.ts (napi writes it as it builds).
     git diff --exit-code -- crates/edit-native/index.d.ts
