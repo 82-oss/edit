@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as nodePath from "node:path";
 
 import * as folderAccess from "../src/folder_access.ts";
-import { readExportFolder } from "../src/export_folder.ts";
+import { exportRoots, readExportFolder } from "../src/export_folder.ts";
 import { respond } from "../src/http/server.ts";
 import { importPaths } from "../src/import.ts";
 import { buildRouter } from "../src/routes.ts";
@@ -251,12 +251,16 @@ test("the export folder saved on a drive isn't looked at while macOS is asked ab
     // Read as saved (a look would hold the server), and asked about meanwhile.
     expect(readExportFolder(home)).toMatchObject({ path: "/Volumes/Exports/Edit", chosen: true });
     expect(probe.asked).toEqual(["/Volumes/Exports"]);
+    // The cleaner and the storage list read the export folders synchronously: that one's left out until it answers.
+    expect(exportRoots(home)).not.toContain("/Volumes/Exports/Edit");
     folderAccess.ROUTE_WAIT_MS.value = 200;
     // The export routes wait on the saved folder's drive.
     const activity = ask(app, "/api/exports/folder");
     expect(await within(100, activity)).toBe("still waiting");
     probe.answer("/Volumes/Exports");
     expect(((await activity)!).status).toBe(200);
+    // Answered, it's looked at as before (here there's no such folder, so it's the suggestion again).
+    expect(readExportFolder(home).chosen).toBe(false);
     // A new folder picked on another drive: its save waits on that drive.
     const saving = (await ask(app, "/api/exports/folder", { method: "POST", body: JSON.stringify({ path: "/Volumes/Other/Exports" }) }))!;
     expect(saving.status).toBe(503);

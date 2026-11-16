@@ -35,9 +35,16 @@ export function exportsDir(home: string): string {
   return readExportFolder(home).path;
 }
 
-/** The saved folder, the suggestion, and `<home>/exports`: retention may clean any of them. */
+/**
+ * The saved folder, the suggestion, and `<home>/exports`: retention may clean any of them. Their callers read
+ * them synchronously (the cleaner, the storage list), so one macOS hasn't answered about yet is left out until
+ * it has (asked about meanwhile, off the event loop).
+ */
 export function exportRoots(home: string): string[] {
-  return [...new Set([exportsDir(home), defaultExportsDir(), join(home, "exports")])];
+  const roots = [...new Set([exportsDir(home), defaultExportsDir(), join(home, "exports")])];
+  const open = roots.filter((root) => !folderAccess.ready(root));
+  if (open.length > 0) void folderAccess.reach(open);
+  return roots.filter((root) => folderAccess.ready(root));
 }
 
 /** Reads the choice. A missing file, bad JSON, or a folder that is gone counts as not chosen. */
