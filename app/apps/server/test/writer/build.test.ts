@@ -125,3 +125,38 @@ test("the log keeps each tool call, a refused one with what it was told", () => 
   expect(draft.trail[0]).toBe("read_plan");
   expect(draft.trail[1]).toStartWith("finish (refused: ");
 });
+
+test("a FOIA case opening no source dates is refused, then kept without its date on a second finish, the producer told", () => {
+  // JJ's "6-Year-Old Secretly Calls 911…" (Nov 14-16): no article matched the case and the footage says no date, so every
+  // finish was refused for the date, Claude rightly wouldn't guess one, and each build ended "Claude stopped".
+  const foia = (opening: string): Draft => {
+    const draft = newDraft("steps", { ...script(), kind: "foia" }, []);
+    call(draft, "set_opening", { opening: "two-split" });
+    call(draft, "add_section", { items: [{ kind: "clip", firstWordId: "w0", lastWordId: "w4" }, { kind: "cut-in", narration: "Officers have just arrived at what looks like a routine call…" }, { kind: "clip", firstWordId: "w5", lastWordId: "w9" }, { kind: "cut-in", narration: opening }, { kind: "clip", firstWordId: "w0", lastWordId: "w19" }, { kind: "cut-in", narration: "In the end, she was charged." }] });
+    return draft;
+  };
+  const undated = foia("A six-year-old in Fairborn, Ohio, called 911 about her mother…");
+  // Looking (review_plan) doesn't count as a finish.
+  expect(call(undated, "review_plan", {})[0]).toContain("verified date");
+  expect(call(undated, "review_plan", {})[0]).toContain("verified date");
+  let [said, refused] = call(undated, "finish", { report: "No source gives the date." });
+  expect(refused).toBe(true);
+  expect(said).toContain("never guess one: call finish again");
+  [said, refused] = call(undated, "finish", { report: "No source gives the date." });
+  // Kept undated (here then judged on its length, as any plan is: a 40 s test script is off target, and a second finish keeps that).
+  if (refused) [said, refused] = call(undated, "finish", { report: "No source gives the date." });
+  expect(refused).toBe(false);
+  const kept = (undated.done ?? undated.best)!;
+  expect(kept[1]).toContain("No source gives this case's date");
+  // A dated one is never told so.
+  const dated = foia("On March 3, 2023, a six-year-old in Fairborn, Ohio, called 911 about her mother…");
+  expect(call(dated, "review_plan", {})[0]).not.toContain("verified date");
+  call(dated, "finish", { report: "Dated." });
+  call(dated, "finish", { report: "Dated." });
+  expect((dated.done ?? dated.best)![1]).not.toContain("No source gives");
+  // Left unfinished for want of the date alone, it's kept so rather than thrown away.
+  const left = foia("A six-year-old in Fairborn, Ohio, called 911 about her mother…");
+  call(left, "review_plan", {});
+  expect(keepAnyway(left, "Left.")).toBe(true);
+  expect((left.done ?? left.best)![1]).toContain("No source gives this case's date");
+});

@@ -443,7 +443,8 @@ export function planOf(script: Script): Plan {
     }
   }
   close();
-  return { items, report: "" };
+  // Its case opening was accepted when it was built (dated, or kept undated when no source gave the date): a recut doesn't judge it again.
+  return { items, report: "", undated: true };
 }
 
 /** The producer's notes on the clips a script had, moved onto the new clip that plays the same first word. */

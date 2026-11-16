@@ -26,7 +26,7 @@ import type { Format } from "./formats.ts";
 import { isFoia } from "./formats.ts";
 import { pageCount } from "./pages.ts";
 import { clock } from "./paragraphs.ts";
-import { cleanupLine, compile, evidence, formatOfScript, itemClip, offTarget, reportOf, systemPrompt, wordAt, type Compiled, type Item, type Plan } from "./plan.ts";
+import { cleanupLine, compile, evidence, formatOfScript, itemClip, offTarget, reportOf, systemPrompt, UndatedOpening, wordAt, type Compiled, type Item, type Plan } from "./plan.ts";
 
 /** Items one call may add or replace: small replies, whatever the script's length. */
 const MAX_ITEMS_PER_CALL = 40;
@@ -79,6 +79,12 @@ export interface Draft {
   best: [Compiled, string, string] | null;
   /** `finish` called on an off-target plan: a second one keeps it. */
   offTargetFinishes: number;
+  /** `finish` refused for a FOIA case opening with no date: a second one keeps it undated (no source gives it). */
+  undatedFinishes: number;
+  /** The last review refused the plan for that alone. */
+  undatedRefused: boolean;
+  /** What the last refused `finish` was told: a build that ends there says so, not just that Claude stopped. */
+  stuck: string | null;
   /** A fast build's section that a cut-in comes before (every one but the first). */
   afterCutIn: boolean;
   outline: Outline | null;
@@ -89,7 +95,7 @@ export interface Draft {
 }
 
 export function newDraft(phase: Phase, script: Script, peaks: ArrayLike<number>): Draft {
-  return { phase, script, format: formatOfScript(script), peaks, items: [], opening: null, next: 0, calls: 0, refused: 0, biggestCall: 0, done: null, best: null, offTargetFinishes: 0, afterCutIn: false, outline: null, sectionNote: null, trail: [] };
+  return { phase, script, format: formatOfScript(script), peaks, items: [], opening: null, next: 0, calls: 0, refused: 0, biggestCall: 0, done: null, best: null, offTargetFinishes: 0, undatedFinishes: 0, undatedRefused: false, stuck: null, afterCutIn: false, outline: null, sectionNote: null, trail: [] };
 }
 
 const drafts = new Map<string, Draft>();
@@ -212,6 +218,7 @@ export function call(draft: Draft, name: string, args: Args): [string, boolean] 
     draft.refused++;
     const said = diag.messageOf(error);
     draft.trail.push(`${name} (refused: ${[...said].slice(0, 160).join("")})`);
+    if (name === "finish") draft.stuck = said;
     return [said, true];
   }
 }
@@ -370,18 +377,28 @@ function read(draft: Draft): string {
 }
 
 function planOf(draft: Draft, report: string): Plan {
-  return { items: draft.items.map(([, item]) => item), report, ...(draft.opening === null ? {} : { opening: draft.opening }) };
+  return { items: draft.items.map(([, item]) => item), report, ...(draft.opening === null ? {} : { opening: draft.opening }), ...(draft.undatedFinishes >= 2 ? { undated: true } : {}) };
 }
 
+/** What the producer is told of a case opening kept without its date. */
+const UNDATED_NOTE = "No source gives this case's date (not the footage, and no article matched it), so the case opening has none: add it before this goes out.";
+const undatedReport = (draft: Draft, report: string): string => (draft.undatedFinishes >= 2 ? `${report.trim()}\n\n${UNDATED_NOTE}`.trim() : report);
+
 /** The whole plan checked as it will be saved: what to say, and the compiled cut and how it misses its target if it passed. */
-function review(draft: Draft): [string, [Compiled, string | null] | null] {
+function review(draft: Draft, finishing = false): [string, [Compiled, string | null] | null] {
   if (draft.items.length === 0) return ["The plan is empty: add the sections first.", null];
   let done: Compiled;
   try {
     done = compile(draft.script, planOf(draft, ""), draft.peaks);
   } catch (error) {
+    // Refused only for its missing date, at finish: a second finish keeps it so (the house's rule: never guess a date).
+    if (error instanceof UndatedOpening) {
+      draft.undatedRefused = true;
+      if (finishing) draft.undatedFinishes++;
+    }
     return [`Not yet: ${diag.messageOf(error)}`, null];
   }
+  draft.undatedRefused = false;
   const footage = done.clips.filter((clip) => !isCutIn(clip)).reduce((sum, clip) => sum + Math.max(0, clip.endMs - clip.startMs), 0);
   const cutIns = done.clips.filter(isCutIn).length;
   const words = done.clips.reduce((sum, clip) => sum + (clip.narration ?? "").split(/\s+/u).filter(Boolean).length, 0);
@@ -394,10 +411,12 @@ function review(draft: Draft): [string, [Compiled, string | null] | null] {
 function finish(draft: Draft, given: string): string {
   const report = given.trim();
   if (report === "") throw new Error("Give your report for the producer.");
-  const [said, outcome] = review(draft);
+  let [said, outcome] = review(draft, true);
+  // The second finish refused only for the date: kept without it, and the producer told.
+  if (outcome === null && draft.undatedFinishes >= 2) [said, outcome] = review(draft);
   if (outcome === null) throw new Error(said);
   const [done, miss] = outcome;
-  const saved = reportOf(planOf(draft, report));
+  const saved = reportOf(planOf(draft, undatedReport(draft, report)));
   if (miss === null) {
     draft.done = [done, saved];
     return "Saved. The script is done: end your turn now.";
@@ -470,7 +489,8 @@ function built(draft: Draft, answer: claude.Answer | null, failure: unknown, cos
     return { clips: done.clips, report: `${report}\n\n${cleanupLine(done)}\n\n${miss}`, costUsd: cost, plan: planned, stats };
   }
   if (failure !== null) throw failure;
-  throw claude.stoppedShort(answer?.result ?? {}) ?? new Error("Claude stopped before the plan was finished. Build again; nothing was changed.");
+  const stuck = draft.stuck === null ? "" : (draft.stuck.replace(/^Not yet: /, "").match(/^[^.]*\./)?.[0] ?? "");
+  throw claude.stoppedShort(answer?.result ?? {}) ?? new Error(stuck !== "" ? `Claude stopped with the plan still refused: ${stuck} Build again; nothing was changed.` : "Claude stopped before the plan was finished. Build again; nothing was changed.");
 }
 
 /** What a turn that ended without `finish` is told when it's asked once more, in the same session. */
@@ -488,13 +508,19 @@ export const stoppedShort = (draft: Draft, failure: unknown, signal?: AbortSigna
  * doesn't compile: then the build fails as before.
  */
 export function keepAnyway(draft: Draft, report: string): boolean {
-  const [said, outcome] = review(draft);
+  let [said, outcome] = review(draft);
+  // Left only for want of a date no source gives (JJ's FOIA case, Nov 14-16: refused at every finish until Claude stopped):
+  // kept without it, the producer told, rather than thrown away.
+  if (outcome === null && draft.undatedRefused) {
+    draft.undatedFinishes = 2;
+    [said, outcome] = review(draft);
+  }
   if (outcome === null) {
     diag.warn("writer", `the plan Claude left unfinished isn't kept: ${said}`);
     return false;
   }
   const [done, miss] = outcome;
-  const saved = reportOf(planOf(draft, report));
+  const saved = reportOf(planOf(draft, undatedReport(draft, report)));
   if (miss === null) draft.done = [done, saved];
   else draft.best = [done, saved, miss];
   return true;

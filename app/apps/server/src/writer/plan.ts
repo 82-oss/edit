@@ -89,7 +89,12 @@ export interface Plan {
   items?: Item[];
   opening?: string;
   report?: string;
+  /** No source gives a FOIA case's date: its case opening is kept without one (a second `finish` that says so). */
+  undated?: boolean;
 }
+
+/** A FOIA case opening without its date: refused, unless no source gives one (`Plan.undated`). */
+export class UndatedOpening extends Error {}
 
 /** A plan made into a cut, and what the clean-up did to it. */
 export interface Compiled {
@@ -345,9 +350,9 @@ export function compile(script: Script, plan: Plan, peaks: ArrayLike<number> = [
   if (formats.isFoia(format)) {
     const at = roles.indexOf("case-opening");
     const text = at < 0 ? undefined : narrations[at];
-    if (text !== undefined && !dated(text)) {
-      throw new Error(
-        'A FOIA case opening begins on its verified date, then who and where: "On December 1, 2024, a passerby in Panama City, Florida, …" or "On March 3, 2023, deputies in Pompano Beach, Florida, …". Nothing was saved. Find the date in the footage or the case\'s article, start the case opening with "On [Month Day, Year],", then send the whole plan again.',
+    if (text !== undefined && !dated(text) && plan.undated !== true) {
+      throw new UndatedOpening(
+        'A FOIA case opening begins on its verified date, then who and where: "On December 1, 2024, a passerby in Panama City, Florida, …" or "On March 3, 2023, deputies in Pompano Beach, Florida, …". Nothing was saved. Find the date in the footage or the case\'s article and start the case opening with "On [Month Day, Year],". When no source gives the date, never guess one: call finish again with your report saying so, and the case opening is kept without it.',
       );
     }
   }
