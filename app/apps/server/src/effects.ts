@@ -642,7 +642,11 @@ const OVER_CHECKS = `async (address, quality) => {
   const pixels = plain.getImageData(0, 0, shot.width, shot.height).data; lap(); // TEMP
   let clear = false;
   for (let at = 3; at < pixels.length; at += 4) if (pixels[at] < 250) { clear = true; break; }
-  const canvas = new OffscreenCanvas(shot.width, shot.height);
+  // A canvas of the page's, encoded at once by toDataURL: OffscreenCanvas.convertToBlob encodes in the page's idle
+  // time, which a headless page on a Mac never has, so each waited out its ~1 s fallback (CI's Mac, Nov 16).
+  const canvas = document.createElement("canvas");
+  canvas.width = shot.width;
+  canvas.height = shot.height;
   const ctx = canvas.getContext("2d");
   const cell = Math.max(8, Math.round(shot.width / 60));
   for (let y = 0; y < shot.height; y += cell) for (let x = 0; x < shot.width; x += cell) {
@@ -650,11 +654,8 @@ const OVER_CHECKS = `async (address, quality) => {
     ctx.fillRect(x, y, cell, cell);
   }
   ctx.drawImage(shot, 0, 0); lap(); // TEMP
-  const jpeg = new Uint8Array(await (await canvas.convertToBlob({ type: "image/jpeg", quality })).arrayBuffer()); lap(); // TEMP
-  if (typeof jpeg.toBase64 === "function") return { jpeg: jpeg.toBase64(), clear, took }; // TEMP took
-  let text = "";
-  for (let at = 0; at < jpeg.length; at += 0x8000) text += String.fromCharCode(...jpeg.subarray(at, at + 0x8000));
-  return { jpeg: btoa(text), clear };
+  const jpeg = canvas.toDataURL("image/jpeg", quality); lap(); // TEMP
+  return { jpeg: jpeg.slice(jpeg.indexOf(",") + 1), clear, took }; // TEMP took
 }`;
 
 export interface Look {
