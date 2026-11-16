@@ -101,6 +101,31 @@ describe("the folder picker", () => {
     expect(calls.slice(before)).toEqual([`GET /api/fs?path=${HOME}/Documents`]);
   });
 
+  it("shows the folder last clicked, never an older answer that came in after it (kenobi, Nov 16: Documents' refusal over Downloads')", async () => {
+    server();
+    const real = globalThis.fetch as (url: string, init?: RequestInit) => Promise<Response>;
+    let release: (() => void) | null = null;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      // Documents asked again as Edit comes forward: its answer held back until after the next click's.
+      if (release === null && url.includes("Documents") && (globalThis as { holding?: boolean }).holding) await new Promise<void>((resolve) => (release = resolve));
+      return real(url, init);
+    }));
+    render();
+    await settle();
+    await act(async () => button("Documents")!.click());
+    await settle();
+    (globalThis as { holding?: boolean }).holding = true;
+    await act(async () => void window.dispatchEvent(new Event("focus")));
+    await act(async () => button("Movies")!.click());
+    await settle();
+    expect(rows()).toContain("Old");
+    await act(async () => (release as unknown as () => void)());
+    await settle();
+    delete (globalThis as { holding?: boolean }).holding;
+    expect(rows()).toContain("Old");
+    expect(document.body.textContent).not.toContain("macOS hasn't let Edit open Documents.");
+  });
+
   it("makes a new folder where it is, named in place, then one inside it, and picks it", async () => {
     const calls = server();
     const { onPick, onClose } = render();

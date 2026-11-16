@@ -266,14 +266,21 @@ function Picking({ title, detail, start, confirm, cancel, onClose, onPick }: { t
   const [busy, setBusy] = useState(false);
   const [naming, setNaming] = useState(false);
   const [fresh, setFresh] = useState<string | null>(null);
+  // Only the newest ask is shown: a refused folder asked again as Edit comes forward answered after a click on
+  // another place, and showed the folder left (kenobi, Nov 16: Documents' refusal over Downloads').
+  const asked = useRef(0);
   const go = (path?: string, opening = false) => {
+    const ask = ++asked.current;
     setProblem(null);
     setNaming(false);
     setFresh(null);
     api
       .browse(path)
-      .then(setListing)
+      .then((given) => {
+        if (ask === asked.current) setListing(given);
+      })
       .catch((error: Error) => {
+        if (ask !== asked.current) return;
         // Where it opens may be gone (a folder not made yet, or deleted): the nearest one above, then home.
         if (opening && path !== undefined) return go(above(path) ?? undefined, true);
         setProblem(error.message);

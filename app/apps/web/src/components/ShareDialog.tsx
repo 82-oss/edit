@@ -208,6 +208,11 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
     setProblem(null);
     try {
       await askExportFolder();
+      // The folder just chosen is the one the card names (it said ~/Movies/Edit still: kenobi, Nov 16).
+      void api.exportFolder().then(
+        (given) => setFolder({ shown: given.shown, home: given.home }),
+        () => {},
+      );
       useEditor.getState().endGesture();
       await flushSave();
       if (useEditor.getState().dirty) throw new Error("The latest changes couldn’t be saved. Try again once the connection returns.");
