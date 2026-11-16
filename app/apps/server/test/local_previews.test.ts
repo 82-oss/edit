@@ -214,3 +214,24 @@ test("the censor check waits for a streamed preview's whole copy: resolved with 
     home.cleanup();
   }
 });
+
+test("whole copies come in the order a person is likely to watch: the next half minute, the edit's start, each part's start, then on, then what's before (Nov 16: a jump to the B-roll waited behind everything between)", async () => {
+  const home = scratch("local-previews-likely");
+  try {
+    const started: string[] = [];
+    localPreviews.hooks.fetch = (key) => new Promise<void>(() => void started.push(key));
+    const keys = ["a", "b", "c", "d", "e", "f", "g", "h"].map((name) => `edit/originals/sha256/${name}/clip.mp4`);
+    const project = newProject();
+    project.settings.fps = 30;
+    keys.forEach((key, n) => project.media.push(media({ id: `m${n}`, name: `m${n}`, path: stream(key), kind: "video", duration: 600, cloud: { proxy: key } } as never)));
+    // A minute each: m0 at the start, m1, m2, m3 at a part's start (6000), m4 after it, m5 the playhead's (12000), m6 after, m7 just before the playhead.
+    const at = (id: string, media: string, start: number) => ({ type: "video", id, track: "v1", media, start, duration: 1800, source_in: 0, speed: 1 }) as never;
+    project.clips.push(at("c0", "m0", 0), at("c1", "m1", 1800), at("c2", "m2", 3600), at("c3", "m3", 6000), at("c4", "m4", 7800), at("c7", "m7", 10200), at("c5", "m5", 12000), at("c6", "m6", 13800));
+    expect(localPreviews.fetchInPlayheadOrder(home.dir, project, 12000, [0, 6000])).toBe(8);
+    // Four at a time: the playhead's minute, the start, the part's start, then on from the playhead.
+    await Bun.sleep(5);
+    expect(started).toEqual([keys[5]!, keys[0]!, keys[3]!, keys[6]!]);
+  } finally {
+    home.cleanup();
+  }
+});

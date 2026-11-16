@@ -60,7 +60,6 @@ import type { App } from "./app.ts";
 import * as cloudBlocks from "./cloud_blocks.ts";
 import * as localPreviews from "./local_previews.ts";
 import * as exportExcerpts from "./export_excerpts.ts";
-import * as player from "./player.ts";
 import { prepLine } from "./export_prep.ts";
 import * as pieces from "./proxy_pieces.ts";
 import * as cloud from "./cloud.ts";
@@ -1885,25 +1884,50 @@ export function fillPieces(app: App, id: string, from = 0): void {
     });
 }
 
+/** Where each project's viewer last was (a frame: playback_ready.ts `warm`), so an open's prefetch orders from there. */
+const viewerAt = new Map<string, number>();
+
+/** Where the edit's parts start (intro, cut-ins, story, outro: frames), where a person often jumps to. */
+function partStarts(project: Project): number[] {
+  try {
+    return native()
+      .sections(project as never)
+      .parts.map((part) => part.start);
+  } catch {
+    return [];
+  }
+}
+
 /**
- * The footage project `id`'s timeline plays, brought here for the page's
- * player from frame `from` on: each file whole, in the timeline's order from
- * there (local_previews.ts `fetchInPlayheadOrder`), and a long video's pieces
- * (`fillPieces`). Until Nov 15 this read 2 MiB blocks of the next ten minutes
- * of the timeline (and at most 600 MB) behind the viewer, and nothing further:
- * a jump anywhere else waited on R2. How many files were queued.
+ * The footage project `id`'s timeline plays, brought here from frame `from` on (where its viewer last was, else
+ * the start): each file whole, in the order a person is likely to watch from there (local_previews.ts
+ * `fetchInPlayheadOrder`: the next half minute, the edit's start, each part's start, then on), and a long video's
+ * pieces (`fillPieces`). For both players: Edit.app's window reads the same whole copies (native_preview.ts), and
+ * until Nov 16 a jump in it moved only the one file it was reading up. Until Nov 15 this read 2 MiB blocks of the
+ * next ten minutes of the timeline (and at most 600 MB) behind the viewer, and nothing further. How many files were
+ * queued.
  */
-export async function prefetchProject(app: App, id: string, from = 0): Promise<number> {
+export async function prefetchProject(app: App, id: string, from?: number): Promise<number> {
   if (playbackBlocks === null || !cloud.enabled()) return 0;
+  const at = from ?? viewerAt.get(id) ?? 0;
+  if (from !== undefined) viewerAt.set(id, from);
   // A long video's pieces are the one footage form both players read, so they come down for either.
-  fillPieces(app, id, from);
-  // Drawn by Edit.app's window: its whole copies are queued with where it reads from (native_preview.ts).
-  if (player.isNative(id)) return 0;
+  fillPieces(app, id, at);
   const live = app.store.get(id);
   if (live === null) return 0;
-  const queued = localPreviews.fetchInPlayheadOrder(app.store.cacheDir(), live.project, from);
-  if (queued > 0) diag.info("cloud", `${id}: ${queued} files of its footage coming down whole, from frame ${from}`);
+  const queued = localPreviews.fetchInPlayheadOrder(app.store.cacheDir(), live.project, at, partStarts(live.project));
+  if (queued > 0) diag.info("cloud", `${id}: ${queued} files of its footage coming down whole, from frame ${at}`);
   return queued;
+}
+
+/** Where cloud previews' 2 MiB blocks are kept (cloud_blocks.ts), once playback is configured. */
+export function blocksRoot(): string | null {
+  return playbackBlocks;
+}
+
+/** What `key`'s blocks are read from (the relay's edge, else R2), for a read ahead of the viewer (playback_ready.ts). */
+export function blockUrl(key: string): () => Promise<string> {
+  return () => streamingUrl(key, true);
 }
 
 /**

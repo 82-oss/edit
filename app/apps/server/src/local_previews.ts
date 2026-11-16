@@ -151,25 +151,44 @@ export function fetchNow(key: string, local: string): void {
   hurry(key);
 }
 
+/** Seconds after the playhead whose files come first, and seconds of the edit's start and of each part's start next. */
+const NEXT_SECONDS = 30;
+const START_SECONDS = 30;
+const PART_SECONDS = 15;
+
 /**
  * Every picture and sound file `project`'s timeline plays, whole, onto this
- * machine for the page's player, in the order the timeline plays them from
- * frame `from` (what's after the playhead first, then what's before it),
- * ahead of anything already waiting: the page player's one footage form, as
- * Edit.app's window's (native_preview.ts). Until Nov 15 the page read ahead
- * 2 MiB blocks of ten minutes of the timeline and nothing else, so every jump
- * past them waited on R2 (two reads of 0.45–1.1 s from mandalorian, the
- * file's index and the stretch asked) and none landed in a tenth of a second.
- * A pieced proxy is no file (its pieces come instead: `fillPieces`). Asked
- * again from another frame (a jump), the files from there move to the front.
+ * machine, ahead of anything already waiting, in the order a person is likely
+ * to watch from frame `from`: what plays in the next half minute, then the
+ * edit's start, then the start of each of its parts (`starts`: frames, the
+ * intro, cut-ins, story and outro, where people jump), then the rest after
+ * the playhead and what's before it. The one footage form of both players:
+ * the page's and Edit.app's window's (native_preview.ts). Until Nov 15 the
+ * page read ahead 2 MiB blocks of ten minutes of the timeline and nothing
+ * else, so every jump past them waited on R2; until Nov 16 the order was the
+ * timeline's from the playhead alone, and a jump to a part waited behind
+ * everything between. A pieced proxy is no file (its pieces come instead:
+ * `fillPieces`). Asked again from another frame (a jump), the files from there
+ * move to the front.
  */
-export function fetchInPlayheadOrder(cache: string, project: Project, from: number): number {
-  const after: string[] = [];
-  const before: string[] = [];
-  for (const clip of [...project.clips].sort((a, b) => a.start - b.start)) {
+export function fetchInPlayheadOrder(cache: string, project: Project, from: number, starts: number[] = []): number {
+  const fps = project.settings.fps > 0 ? project.settings.fps : 30;
+  const overlaps = (clip: { start: number; duration: number }, at: number, seconds: number) => clip.start < at + seconds * fps && clip.start + clip.duration > at;
+  const ranked: { media: string; rank: number; start: number }[] = [];
+  for (const clip of project.clips) {
     if (clip.type !== "video" && clip.type !== "audio") continue;
-    (clip.start + clip.duration > from ? after : before).push(clip.media);
+    const rank = overlaps(clip, from, NEXT_SECONDS)
+      ? 0
+      : overlaps(clip, 0, START_SECONDS)
+        ? 1
+        : starts.some((at) => overlaps(clip, at, PART_SECONDS))
+          ? 2
+          : clip.start + clip.duration > from
+            ? 3
+            : 4;
+    ranked.push({ media: clip.media, rank, start: clip.start });
   }
+  ranked.sort((a, b) => a.rank - b.rank || a.start - b.start);
   const byId = new Map(project.media.map((media) => [media.id, media]));
   const wanted: { key: string; local: string }[] = [];
   const seen = new Set<string>();
@@ -177,7 +196,7 @@ export function fetchInPlayheadOrder(cache: string, project: Project, from: numb
   // Until Nov 15 a read-ahead of at most ~600 MB; whole copies of every file need the check.
   let room = hooks.free(cache) - FREE_FLOOR_BYTES;
   let skipped = 0;
-  for (const id of [...after, ...before]) {
+  for (const { media: id } of ranked) {
     const media = byId.get(id);
     const key = media === undefined ? null : cloudMedia.streamKey(media.cloud, "proxy");
     if (media === undefined || key === null || pieces.baseOf(key) !== null || isFile(media.path) || seen.has(key)) continue;

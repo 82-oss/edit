@@ -1164,9 +1164,10 @@ test("a long video's pieces come down behind the viewer for a project Edit.app's
         { type: "video", id: "c3", track: "v1", media: "long", start: 3660, duration: 300, source_in: 3000, speed: 1 } as never,
       );
     });
-    // The window's: where it reads from was asked (native-sources), so no block is read ahead for it.
+    // The window's (where it reads from was asked: native-sources): its whole copies come in the same order as the
+    // page's (since Nov 16), the short one here; the long one's pieces through the fill.
     player.markNative(id);
-    expect(await cloudMedia.prefetchProject(app, id, 0)).toBe(0);
+    expect(await cloudMedia.prefetchProject(app, id, 0)).toBe(1);
     await Bun.sleep(5);
     expect(asked.length).toBe(1);
     expect(asked[0]!.wants.every((want) => want.base === base)).toBe(true);

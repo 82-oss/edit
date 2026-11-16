@@ -1489,7 +1489,7 @@ export async function open(app: App, id: string, client: string): Promise<Record
   // reads from first (native_preview.ts), and the window's project takes whole copies instead, never blocks.
   setTimeout(() => {
     if (app.store.get(id) === null) return;
-    void cloudMedia.prefetchProject(app, id, 0).catch((error: unknown) => diag.warn("cloud", `reading ${id}'s proxies ahead: ${diag.messageOf(error)}`));
+    void cloudMedia.prefetchProject(app, id).catch((error: unknown) => diag.warn("cloud", `reading ${id}'s proxies ahead: ${diag.messageOf(error)}`));
   }, PAGE_PREFETCH_DELAY_MS).unref?.();
   const step = cloudProjects.with(id, (entry) => {
     // A new look: what was said last time has been seen.
