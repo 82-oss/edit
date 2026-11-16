@@ -306,8 +306,11 @@ export class SmoothStream {
     try {
       const prefix = this.chunkUrl("");
       const keys = (await store.keys()).map((one) => one.url).filter((url) => url.startsWith(prefix));
+      // Said only when the listing found chunks not known kept: said every look, the playhead resting on the render
+      // asked for the render's state again at once, and listed again, over and over.
+      const known = this.stored.size;
       for (const url of keys) this.stored.add(url.slice(prefix.length));
-      this.changed();
+      if (this.stored.size > known) this.changed();
       for (;;) {
         if (this.closed || this.next() !== null) return;
         const here = this.at();

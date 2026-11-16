@@ -31,7 +31,8 @@
 //
 // Until then a picture is the server's loopback stream: a jump to one moves
 // its whole copy to the front (`local_previews.hurry`), and as each lands the
-// page hears it and asks again (it also asks every 15 s while any is). And when the cache's cleaner takes a copy handed
+// page hears it and asks again (it also asks every 15 s while one the timeline plays is, or a piece it plays isn't cut
+// yet: `coming`; never for media it doesn't play, or a pieced proxy, which stay streamed). And when the cache's cleaner takes a copy handed
 // out here (cache_cleanup.ts), the project's pages hear it (`native-sources`)
 // and ask again, rather than a jump failing on the missing file.
 
@@ -141,13 +142,13 @@ function cutNext(): void {
  * Only those: a cut piece is a second copy of its minute of the preview (a
  * two-hour interview's, 3.6 GB), and an edit plays a part of it.
  */
-async function pieceExcerpts(cache: string, base: string, url: string, played: [number, number][]): Promise<NativeExcerpt[]> {
+async function pieceExcerpts(cache: string, base: string, url: string, played: [number, number][]): Promise<{ here: NativeExcerpt[]; coming: boolean }> {
   const context = cloudMedia.piecesHere(cache);
   let layout: pieces.Layout;
   try {
     layout = await pieces.layoutOf(context, base);
   } catch {
-    return [];
+    return { here: [], coming: false };
   }
   const wanted: number[] = [];
   for (const [from, to] of played) {
@@ -165,15 +166,18 @@ async function pieceExcerpts(cache: string, base: string, url: string, played: [
     const [from, to] = span(n);
     out.push({ from, to: n === layout.pieces - 1 ? TO_THE_END : to, path: file(n) });
   }
+  // A piece played and not cut yet is coming (made or brought here by `fillPieces`, then cut), unless its cut failed lately.
+  let coming = false;
   for (const n of wanted) {
     const path = file(n);
-    if (isFile(path) || !pieces.pictureHere(context, base, n)) continue;
-    if (Date.now() - (cutFailed.get(path) ?? 0) < RETRY_MS || cutting.has(path) || cutsWaiting.some((one) => one.out === path)) continue;
+    if (isFile(path) || Date.now() - (cutFailed.get(path) ?? 0) < RETRY_MS) continue;
+    coming = true;
+    if (!pieces.pictureHere(context, base, n) || cutting.has(path) || cutsWaiting.some((one) => one.out === path)) continue;
     const [from, to] = span(n);
     cutsWaiting.push({ url, from, to, out: path });
   }
   cutNext();
-  return out;
+  return { here: out, coming };
 }
 
 /**
@@ -196,6 +200,7 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
   const shown = new Set(project.clips.flatMap((clip) => (clip.type === "video" ? [clip.media] : [])));
   const heard = new Set(project.clips.flatMap((clip) => (clip.type === "audio" ? [clip.media] : [])));
   const streamed = new Set<string>();
+  let piecesComing = false;
   const firstUse = new Map<string, number>();
   // The stretches of each video the timeline shows (seconds of it), in the timeline's order.
   const fps = project.settings.fps > 0 ? project.settings.fps : 30;
@@ -229,8 +234,9 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
             streamed.add(key);
           }
           else if (shown.has(media.id)) {
-            const here = await pieceExcerpts(cache, base, url, played.get(media.id) ?? []);
+            const { here, coming } = await pieceExcerpts(cache, base, url, played.get(media.id) ?? []);
             if (here.length > 0) excerpts[media.id] = here;
+            if (coming) piecesComing = true;
           }
         }
       }
@@ -248,7 +254,8 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
   landedApp = app;
   if (streamed.size > 0) streaming.set(project.id, streamed);
   else streaming.delete(project.id);
-  return json({ cache, sources, sounds, excerpts });
+  // Whether a file named here comes down or is cut yet: the page asks again in 15 s while one is (`coming`).
+  return json({ cache, sources, sounds, excerpts, coming: streamed.size > 0 || piecesComing });
 }
 
 /**

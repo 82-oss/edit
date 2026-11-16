@@ -46,8 +46,10 @@ test("the native preview reads a media's made preview, else its footage; a cloud
     const fetched: string[] = [];
     const fetch = spyOn(cloudMedia, "fetchKey").mockImplementation(async (key) => { fetched.push(key); });
     fs.writeFileSync(made.audio, "sound");
-    const answer = (await (await nativeSources(app, store.get(id)!.project)).json()) as { cache: string; sources: Record<string, string>; sounds: Record<string, string> };
+    const answer = (await (await nativeSources(app, store.get(id)!.project)).json()) as { cache: string; sources: Record<string, string>; sounds: Record<string, string>; coming: boolean };
     fetch.mockRestore();
+    // Copies the timeline plays still come down: the page asks again in a while.
+    expect(answer.coming).toBe(true);
     // Whole copies in playhead order: the footage the timeline plays first comes first; and the project is the window's now.
     expect(fetched).toEqual(["edit/proxies/bb/there.mp4", "edit/proxies/ee/later.mp4"]);
     expect(player.isNative(id)).toBe(true);
@@ -94,12 +96,17 @@ test("footage that's its own proxy (an original of 256 MB or less) comes down wh
       fs.mkdirSync(local.slice(0, local.lastIndexOf("/")), { recursive: true });
       fs.writeFileSync(local, "copy");
     });
-    const ask = async () => ((await (await nativeSources(app, store.get(id)!.project)).json()) as { sources: Record<string, string> }).sources;
+    const answer = async () => (await (await nativeSources(app, store.get(id)!.project)).json()) as { sources: Record<string, string>; coming: boolean };
     try {
-      expect((await ask()).map).toBe(`http://127.0.0.1:${app.port}${PLAYBACK_ROUTE}?key=${encodeURIComponent(own)}`);
+      const first = await answer();
+      expect(first.sources.map).toBe(`http://127.0.0.1:${app.port}${PLAYBACK_ROUTE}?key=${encodeURIComponent(own)}`);
+      expect(first.coming).toBe(true);
       await Bun.sleep(10);
       expect(fetched).toEqual([own]);
-      expect((await ask()).map).toBe(localPath(store.cacheDir(), own));
+      const second = await answer();
+      expect(second.sources.map).toBe(localPath(store.cacheDir(), own));
+      // Nothing left to come down: the page stops asking.
+      expect(second.coming).toBe(false);
     } finally {
       fetch.mockRestore();
     }
@@ -135,11 +142,13 @@ test("a pieced proxy's pieces here that the timeline plays are cut into files th
       cuts.push([from, start, end, out]);
       write(out, "cut");
     });
-    const ask = async () => (await (await nativeSources(app, store.get(id)!.project)).json()) as { sources: Record<string, string>; excerpts: Record<string, unknown> };
+    const ask = async () => (await (await nativeSources(app, store.get(id)!.project)).json()) as { sources: Record<string, string>; excerpts: Record<string, unknown>; coming: boolean };
     try {
       const first = await ask();
       expect(first.sources.long).toBe(url);
       expect(first.excerpts).toEqual({});
+      // The piece played isn't cut yet: asked again.
+      expect(first.coming).toBe(true);
       await Bun.sleep(10);
       const file = localPath(cache, `${base}/native/1.mp4`);
       // Only what the timeline plays is cut: a cut piece is a second copy of its minute.
@@ -147,6 +156,8 @@ test("a pieced proxy's pieces here that the timeline plays are cut into files th
       const second = await ask();
       expect(second.sources.long).toBe(url);
       expect(second.excerpts).toEqual({ long: [{ from: 60, to: 120, path: file }] });
+      // Every piece played is cut: still streamed, but nothing more comes, so the page stops asking.
+      expect(second.coming).toBe(false);
     } finally {
       cutting.mockRestore();
     }

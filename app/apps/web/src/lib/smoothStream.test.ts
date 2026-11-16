@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { leadOf, soundAt, soundSync } from "./smoothStream";
+import { describe, expect, it, vi } from "vitest";
+import { leadOf, SmoothStream, soundAt, soundSync } from "./smoothStream";
+
+vi.mock("./api", () => ({ mediaHost: (path: string) => `http://edit${path}`, request: vi.fn(() => new Promise(() => {})) }));
 
 describe("the render's sound kept with its picture", () => {
   it("drifts back at a slightly off rate instead of seeking, and only seeks when far out", () => {
@@ -48,5 +50,31 @@ describe("the render's sound ready to start with its picture (Nov 13: after a ju
     expect(soundAt(sound({ currentTime: 0, duration: 1800 }), 1799.99)).toBe("ready");
     // Its very end: what's left of it is enough.
     expect(soundAt(sound({ currentTime: 1799.8, buffered: ranges([1790, 1800]) }), 1799.8)).toBe("ready");
+  });
+});
+
+describe("the render's chunks kept on disk", () => {
+  it("says a look at what's kept changed something only when it found chunks not known kept (each look said so, and the resting playhead looked again at once, for good)", async () => {
+    vi.stubGlobal("MediaSource", class { addEventListener() {} });
+    const created = URL.createObjectURL;
+    URL.createObjectURL = () => "blob:render";
+    const kept = ["http://edit/api/projects/p1/playback/segment/a"];
+    vi.stubGlobal("caches", { open: async () => ({ keys: async () => kept.map((url) => ({ url })) }) });
+    try {
+      let said = 0;
+      const stream = new SmoothStream("p1", 1, 30, 90, () => 0, {} as HTMLAudioElement, () => { said++; });
+      const stock = () => (stream as unknown as { stock: () => Promise<void> }).stock();
+      await stock();
+      expect(said).toBe(1);
+      expect(stream.loaded()).toEqual([]);
+      await stock();
+      expect(said).toBe(1);
+      kept.push("http://edit/api/projects/p1/playback/segment/b");
+      await stock();
+      expect(said).toBe(2);
+    } finally {
+      URL.createObjectURL = created;
+      vi.unstubAllGlobals();
+    }
   });
 });

@@ -563,6 +563,40 @@ describe("preview seeks and lifetime", () => {
     expect(internals.streamSound.paused).toBe(true);
   });
 
+  it("a render chunk landing just after a jump waits out the rest's grace for the live picture, and a seek to the frame drawn already keeps it", async () => {
+    class FakeMediaSource { addEventListener() {} }
+    class FakeSound { currentTime = 0; paused = true; seeking = false; playbackRate = 1; src = ""; play = vi.fn(async () => {}); pause = vi.fn(); removeAttribute() {} }
+    vi.stubGlobal("MediaSource", FakeMediaSource);
+    vi.stubGlobal("Audio", FakeSound);
+    (URL as unknown as { createObjectURL: unknown }).createObjectURL = vi.fn(() => "blob:render");
+    const video = {
+      src: "", currentTime: 0, paused: true, ended: false, muted: true, seeking: false, readyState: 4,
+      getAttribute(name: string) { return name === "src" ? this.src || null : null; },
+      play: vi.fn(async () => {}), pause: vi.fn(), addEventListener() {}, removeEventListener() {},
+    };
+    preview.attachVideo(video as unknown as HTMLVideoElement);
+    preview.setProject(fixture(), {}); draw();
+    preview.setSmooth("stream:p1:1");
+    const stream = (preview as unknown as { stream: { info: unknown; appended: Map<number, string>; changed: () => void } }).stream;
+    stream.info = { segments: [{ start: 0, end: 90, key: "a", ready: true }], codec: null, sound: "none", soundUrl: null };
+    preview.seek(30); draw();
+    // The chunk there lands at once: the live picture still has its grace.
+    stream.appended.set(0, "a");
+    stream.changed();
+    expect(preview.smoothShown).toBe(false);
+    // The live picture never came: the render stands in once the grace is out.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(preview.smoothShown).toBe(true);
+    // Drawn live at 45, then sought to 45 again: its exact picture is still on screen, so the render stays hidden.
+    preview.seek(45);
+    await complete(45);
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(preview.smoothShown).toBe(false);
+    preview.seek(45); draw();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(preview.smoothShown).toBe(false);
+  });
+
   // Edit.app's window (lib/nativePreview.ts): its calls answered as crates/edit-window/src/preview.rs does.
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
   // The window's clock, as the page sees it: `preview_position` says this frame while playing.
@@ -845,6 +879,28 @@ describe("preview seeks and lifetime", () => {
     const asked = nativeApi.nativeSources.mock.calls.length;
     window.dispatchEvent(new Event("edit:native-sources")); await settle();
     expect(nativeApi.nativeSources.mock.calls.length).toBe(asked + 1);
+  });
+
+  it("asks for the window's sources again on one timer while a file they name still comes down, however many landings asked, and stops once none does", async () => {
+    await inWindow();
+    preview.setProject(fixture(), {}); await settle(); draw(); await settle();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      nativeApi.nativeSources.mockResolvedValue({ cache: "/cache", sources: { m1: "http://127.0.0.1/stream" }, coming: true } as never);
+      for (let n = 0; n < 3; n++) { window.dispatchEvent(new Event("edit:native-sources")); await vi.advanceTimersByTimeAsync(0); }
+      const asked = nativeApi.nativeSources.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(nativeApi.nativeSources.mock.calls.length).toBe(asked + 1);
+      // Nothing more comes (media nothing plays, a pieced proxy's pieces all cut): no more asks.
+      nativeApi.nativeSources.mockResolvedValue({ cache: "/cache", sources: { m1: "http://127.0.0.1/stream" }, coming: false } as never);
+      await vi.advanceTimersByTimeAsync(15_000);
+      const last = nativeApi.nativeSources.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(nativeApi.nativeSources.mock.calls.length).toBe(last);
+    } finally {
+      vi.useRealTimers();
+      nativeApi.nativeSources.mockResolvedValue({ cache: "/cache", sources: { m1: "/video.mp4" } } as never);
+    }
   });
 
   it("in full screen the page draws, still as Edit.app's window's picture (no smooth-playback render asked for), and says why", async () => {

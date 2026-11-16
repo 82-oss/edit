@@ -151,6 +151,8 @@ class Preview {
   /** The media's preview versions the page last had (what the window's sources are asked for with). */
   private versions: Record<string, string> = {};
   private nativeKey = "";
+  /** The one timer asking for the window's sources again while a file they name still comes down here. */
+  private nativeAgain: ReturnType<typeof setTimeout> | null = null;
   private nativeBusy = false;
   private nativeWanted: number | null = null;
   private nativeDrawn: number | null = null;
@@ -229,8 +231,8 @@ class Preview {
   /** The seek whose exact picture was drawn live last (`seekSerial`): at rest, the render isn't needed over it. */
   private exactSerial = -1;
   private restTimer: ReturnType<typeof setTimeout> | undefined;
-  /** The playhead has rested `REST_LIVE_MS` since its last seek, its picture drawn live. */
-  private rested = false;
+  /** The playhead has rested `REST_LIVE_MS` since its last seek (or not moved since the render came): the render may stand in. */
+  private rested = true;
   private direction = 1;
   private playedFrom = 0;
   /**
@@ -459,10 +461,12 @@ class Preview {
       this.streamSound ??= new Audio();
       this.applyVolume();
       this.stream = new SmoothStream(streamed[1]!, Number(streamed[2]), rate(this.project.settings), this.duration, () => playhead.frame, this.streamSound, () => {
-        // Its chunk at the resting playhead just came: shown there now.
-        if (playhead.playing || this.smoothShown || this.smooth !== url) return;
+        // Its chunk at the resting playhead just came: shown there now if the live picture still isn't, but never
+        // before the rest's grace, nor mid-drag (it stood in over the exact picture, which then never replaced it).
+        if (playhead.playing || this.smoothShown || this.smooth !== url || !this.rested) return;
         if (this.exactSerial !== this.seekSerial) this.showSmooth(playhead.frame);
-        else if (this.rested) this.primeSmooth();
+        // Not asked again from here: the stream's look listing what's kept called this, and its ask looked again (a loop).
+        else this.primeSmooth(false);
       });
     }
     const src = this.stream?.url ?? url;
@@ -492,8 +496,8 @@ class Preview {
     const serial = this.seekSerial;
     this.restTimer = setTimeout(() => {
       if (playhead.playing || this.smoothShown || serial !== this.seekSerial || this.smooth === null) return;
-      if (this.exactSerial !== serial) { this.showSmooth(playhead.frame); return; }
       this.rested = true;
+      if (this.exactSerial !== serial) { this.showSmooth(playhead.frame); return; }
       this.primeSmooth();
     }, REST_LIVE_MS);
   }
@@ -503,8 +507,8 @@ class Preview {
    * sound with it), so Play plays it at once. Once the playhead has rested,
    * not at each step of a drag, and again when its chunk there lands.
    */
-  private primeSmooth() {
-    this.stream?.poke();
+  private primeSmooth(fetch = true) {
+    if (fetch) this.stream?.poke();
     const video = this.video;
     if (video === null || this.project === null || playhead.playing || this.smoothShown || !this.smoothAt(playhead.frame)) return;
     const fps = rate(this.project.settings);
@@ -750,7 +754,9 @@ class Preview {
     const key = `${project.id}|${project.media.map((media) => `${media.id}:${media.path}:${versions[media.id] ?? ""}`).join(",")}`;
     if (key === this.nativeKey) return;
     this.nativeKey = key;
-    api.nativeSources(project.id).then((given) => {
+    if (this.nativeAgain !== null) clearTimeout(this.nativeAgain);
+    this.nativeAgain = null;
+    api.nativeSources(project.id).then(({ coming, ...given }) => {
       if (this.nativeKey !== key) return;
       const found = { ...given, sounds: given.sounds ?? {}, excerpts: given.excerpts ?? {} };
       const before = JSON.stringify(this.nativeSources ?? null);
@@ -759,9 +765,12 @@ class Preview {
         this.nativeStale = true;
         this.invalidate();
       }
-      // A cloud preview still streamed comes down whole behind it (the server's native_preview.ts): asked again until it's here.
-      if (Object.values(found.sources).some((source) => source.startsWith("http"))) {
-        setTimeout(() => {
+      // A cloud preview the timeline plays still streamed comes down whole behind it, or a long video's pieces are cut
+      // into files (the server's native_preview.ts, `coming`): asked again until they're here. One timer, whatever asks:
+      // each landing's `native-sources` started a chain of its own, every 15 s for the session (~165 on a cold open).
+      if (coming === true) {
+        this.nativeAgain = setTimeout(() => {
+          this.nativeAgain = null;
           if (this.nativeKey !== key || this.project?.id !== project.id) return;
           this.nativeKey = "";
           this.nativeSourcesFor(project, versions);
@@ -2041,13 +2050,14 @@ class Preview {
     }
     this.setBuffering(false);
     if (!this.framed) { this.framed = true; this.notify(); }
+    // A seek to the frame drawn already has its exact picture too: the render needn't stand in over it.
+    if (ready && !playhead.playing) { this.renderedScrub = this.seekSerial; this.exactSerial = this.seekSerial; }
     if (!changed && this.renderedFrame === frame) return;
     this.use((engine) => {
       if (this.canvas) engine.resize(this.canvas.width, this.canvas.height);
       engine.render(frame);
     });
     if (this.engine) this.renderedFrame = frame;
-    if (ready && !playhead.playing) { this.renderedScrub = this.seekSerial; this.exactSerial = this.seekSerial; }
     const visible = new Set(selected.map((source) => source.clip ?? source.media));
     for (const key of this.copied.keys()) if (!visible.has(key)) this.copied.delete(key);
     if (ready) this.pendingScenes.clear();
