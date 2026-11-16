@@ -83,6 +83,56 @@ test("the agent panel's routes", async () => {
   }
 });
 
+test("a message sent again with its send_id (its answer lost) is the same message: answered as taken, never sent twice", async () => {
+  const { app, cleanup } = fixtureHome("routes-agent-once");
+  // A turn that takes a moment to start, and an Edit V2 queue: what the panel keeps, as agent.ts keeps it.
+  const entries: { kind: string; text: string; send_id?: string }[] = [];
+  const queue: { id: string; text: string; send_id?: string }[] = [];
+  const sent: string[] = [];
+  let starting: () => void = () => {};
+  let running = false;
+  (app as unknown as { agents: unknown }).agents = {
+    chat: () => ({ running, entries, queue }),
+    message: async (_id: string, text: string, _model: null, _effort: null, _context: string, _attached: unknown[], _playhead: null, sendId: string | null) => {
+      sent.push(text);
+      if (running) {
+        const item = { id: `queued-${sent.length}`, text, ...(sendId === null ? {} : { send_id: sendId }) };
+        queue.push(item);
+        return item;
+      }
+      await new Promise<void>((resolve) => (starting = resolve));
+      entries.push({ kind: "user", text, ...(sendId === null ? {} : { send_id: sendId }) });
+      running = true;
+      return null;
+    },
+  };
+  try {
+    const ask = asker(app);
+    const project = app.store.create("p", { width: 1920, height: 1080, fps: 30 }).project.id;
+    // Sent again while the first is still being taken: the first's answer.
+    const first = ask("POST", `/api/projects/${project}/agent`, { text: "make it red", send_id: "a1" });
+    await Bun.sleep(20);
+    const again = ask("POST", `/api/projects/${project}/agent`, { text: "make it red", send_id: "a1" });
+    await Bun.sleep(20);
+    starting();
+    expect([(await first).json(), (await again).json()]).toEqual([{ ok: true }, { ok: true }]);
+    // Sent again once it's in the chat (the connection dropped, or Edit restarted since).
+    expect((await ask("POST", `/api/projects/${project}/agent`, { text: "make it red", send_id: "a1" })).json()).toEqual({ ok: true });
+    expect(sent).toEqual(["make it red"]);
+    // Queued while the turn runs: sent again, its place in the queue.
+    const queued = (await ask("POST", `/api/projects/${project}/agent`, { text: "and a stamp", send_id: "b2" })).json();
+    expect((await ask("POST", `/api/projects/${project}/agent`, { text: "and a stamp", send_id: "b2" })).json()).toEqual(queued);
+    expect(queue.length).toBe(1);
+    // Another id is another message; one with no id is as ever.
+    await ask("POST", `/api/projects/${project}/agent`, { text: "and a stamp", send_id: "c3" });
+    await ask("POST", `/api/projects/${project}/agent`, { text: "and a stamp" });
+    expect(sent).toEqual(["make it red", "and a stamp", "and a stamp", "and a stamp"]);
+    expect((await ask("POST", `/api/projects/${project}/agent`, { text: "hi", send_id: "no spaces" })).status).toBe(400);
+  } finally {
+    cleanup();
+  }
+});
+
 test("the model menu's pick: Opus at medium until picked, kept in the home, anything unknown taken as the default", async () => {
   const { app, home, cleanup } = fixtureHome("routes-models");
   try {

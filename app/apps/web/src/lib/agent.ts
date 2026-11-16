@@ -24,6 +24,8 @@ export interface AgentEntry {
   updated?: number;
   /** A person's message: the files attached to it (the server's chat_attachments.ts), shown above it. */
   attachments?: { name: string; kind: FileKind; media?: string; file?: string; url?: string | null }[];
+  /** A person's message: the id this page sent it with (`sendToAgent`). */
+  send_id?: string;
 }
 
 /** A message sent while an Edit V2 turn runs, waiting on the server for it to end (the server's agent.ts `Queued`): Steer or Cancel. */
@@ -33,6 +35,7 @@ export interface QueuedMessage {
   at: number;
   playhead: number | null;
   attachments?: AgentEntry["attachments"];
+  send_id?: string;
 }
 
 export type AgentProvider = "claude";
@@ -277,6 +280,34 @@ export async function openAgent(project: string) {
 }
 
 /**
+ * The ids of messages whose send got no answer, by project and words: the
+ * words go back in the composer, and sent again they go with the same id, so
+ * the server takes them once even if the first send did reach it.
+ */
+const unanswered = new Map<string, string>();
+
+/**
+ * Whether the message sent with `sendId` is in the project's chat after all
+ * (its answer lost to the connection, not the server refusing it): the chat
+ * read again, once the server answers (a restart waited out), and shown.
+ * Null when the server still doesn't answer.
+ */
+async function landed(project: string, sendId: string): Promise<boolean | null> {
+  const chat = await fetchRetrying(`/api/projects/${project}/agent`)
+    .then((response) => json<{ entries: AgentEntry[]; queue?: QueuedMessage[] }>(response))
+    .catch(() => null);
+  if (chat === null) return null;
+  const queued = (chat.queue ?? []).some((one) => one.send_id === sendId);
+  if (!queued && !chat.entries.some((one) => one.send_id === sendId)) return false;
+  if (useAgent.getState().project === project) {
+    // Queued: shown in the queue, not the conversation.
+    if (queued) dropSent(project);
+    await openAgent(project);
+  }
+  return true;
+}
+
+/**
  * `playhead`: the editor's frame when the message was written, so the agent
  * starts there. `files`: what's attached, already in the project (the chat's
  * uploader); pictures reach the model as pictures. `queues`: an Edit V2 chat,
@@ -295,21 +326,33 @@ export async function sendToAgent(text: string, playhead?: number, files: ChatFi
   events.flush();
   const shown = files.map((one, index) => ({ ...attachments[index]!, url: one.kind === "image" ? one.preview : null }));
   const queueing = queues && useAgent.getState().running;
+  const words = `${project}\n${text}`;
+  const sendId = unanswered.get(words) ?? Array.from(crypto.getRandomValues(new Uint8Array(12)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  unanswered.delete(words);
   // Show the message now (sentNow.ts); the server's copy takes its place when it arrives. A queued one shows in the queue instead.
   if (!queueing) {
     holdSent(project, useAgent.getState().entries, text, shown);
     useAgent.setState({ running: true, activityAt: Date.now() });
   }
   try {
-    const answer = await fetchRetrying(`/api/projects/${project}/agent`, {
+    const response = await fetchRetrying(`/api/projects/${project}/agent`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         text,
         ...(playhead === undefined ? {} : { playhead: String(Math.round(playhead)) }),
         ...(attachments.length === 0 ? {} : { attachments: JSON.stringify(attachments) }),
+        send_id: sendId,
       }),
-    }).then((response) => json<{ queued?: QueuedMessage }>(response));
+    }).catch(async () => {
+      // No answer: the server may have taken it before the connection went. The chat says.
+      const there = await landed(project, sendId);
+      if (there === true) return null;
+      unanswered.set(words, sendId);
+      throw new Error(there === null ? "Can't reach Edit's server. Send your message again once it's back." : "Your message didn't reach Edit's server. Send it again.");
+    });
+    if (response === null) return true;
+    const answer = await json<{ queued?: QueuedMessage }>(response);
     const queued = answer.queued;
     // Queued after all (the turn was still running), or before its event: shown in the queue, never twice.
     if (queued !== undefined) {

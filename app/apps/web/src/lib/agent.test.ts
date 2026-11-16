@@ -91,6 +91,58 @@ describe("a chat that can't be read", () => {
   });
 });
 
+describe("a send whose answer is lost", () => {
+  const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+  const sentWith = (call: number) => JSON.parse(String(fetchRetrying.mock.calls[call]![1]!.body)).send_id as string;
+
+  beforeEach(() => {
+    vi.resetModules();
+    fetchRetrying.mockReset();
+  });
+
+  it("is taken as sent when the chat read again has it, so its words don't go back to be sent twice", async () => {
+    const { sendToAgent, useAgent } = await import("./agent");
+    const { sending } = await import("./sentNow");
+    let chat: { entries: unknown[]; running: boolean; queue: unknown[] } = { entries: [], running: false, queue: [] };
+    fetchRetrying.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        // The server takes it, then the connection drops before its answer.
+        chat = { entries: [{ id: "user-1", kind: "user", text: "make it shorter", send_id: JSON.parse(String(init.body)).send_id, at: 1 }], running: true, queue: [] };
+        throw new TypeError("Failed to fetch");
+      }
+      if (url === "/api/agent") return response({ ready: true, provider: "claude" });
+      return response(chat);
+    });
+    useAgent.setState({ project: "p1", loaded: true, running: false, entries: [] });
+    expect(await sendToAgent("make it shorter")).toBe(true);
+    expect(useAgent.getState().entries.map((entry) => [entry.kind, entry.text])).toEqual([["user", "make it shorter"]]);
+    expect(sending("p1", useAgent.getState().entries)).toBe(false);
+    expect(useAgent.getState().running).toBe(true);
+  });
+
+  it("goes back in the composer when the chat hasn't it, and sent again goes with the same id (the server takes it once)", async () => {
+    const { sendToAgent, useAgent } = await import("./agent");
+    let lose = true;
+    fetchRetrying.mockImplementation(async (_url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        if (lose) throw new TypeError("Failed to fetch");
+        return response({ ok: true });
+      }
+      return response({ entries: [], running: false, queue: [] });
+    });
+    useAgent.setState({ project: "p1", loaded: true, running: false, entries: [] });
+    expect(await sendToAgent("make it shorter")).toBe(false);
+    expect(useAgent.getState().entries.map((entry) => entry.text)).toEqual(["Your message didn't reach Edit's server. Send it again."]);
+    lose = false;
+    const posts = () => fetchRetrying.mock.calls.flatMap((call, index) => (call[1]?.method === "POST" ? [index] : []));
+    expect(await sendToAgent("make it shorter")).toBe(true);
+    expect(sentWith(posts()[1]!)).toBe(sentWith(posts()[0]!));
+    // A new message (or one the server answered) gets its own.
+    expect(await sendToAgent("make it shorter")).toBe(true);
+    expect(sentWith(posts()[2]!)).not.toBe(sentWith(posts()[1]!));
+  });
+});
+
 describe("an Edit V2 chat's queue, kept on the server", () => {
   const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
   const waiting = { id: "queued-1", text: "make it red", at: 1, playhead: 120 };
@@ -106,7 +158,7 @@ describe("an Edit V2 chat's queue, kept on the server", () => {
     fetchRetrying.mockImplementation(async () => response({ ok: true, queued: waiting }));
     useAgent.setState({ project: "p1", loaded: true, running: true, entries: [{ id: "u", kind: "user", text: "make the board" }], queue: [] });
     await sendToAgent("make it red", 120, [], true);
-    expect(JSON.parse(String(fetchRetrying.mock.calls[0]![1]!.body))).toEqual({ text: "make it red", playhead: "120" });
+    expect(JSON.parse(String(fetchRetrying.mock.calls[0]![1]!.body))).toEqual({ text: "make it red", playhead: "120", send_id: expect.stringMatching(/^[0-9a-f]{24}$/) });
     expect(sending("p1", useAgent.getState().entries)).toBe(false);
     expect(useAgent.getState().entries.map((entry) => entry.text)).toEqual(["make the board"]);
     expect(useAgent.getState().queue).toEqual([waiting]);

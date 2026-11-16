@@ -69,6 +69,8 @@ export interface Entry {
   updated: number;
   /** A person's message: the files attached to it (chat_attachments.ts). */
   attachments?: Attached[];
+  /** A person's message: the id its page sent it with, so a send repeated (its answer lost) is told as the same one (media_tools.ts). */
+  sendId?: string;
 }
 
 /**
@@ -89,6 +91,8 @@ export interface Queued {
   /** A caller that named them (the teaching loop); the panel names neither. */
   model?: string;
   effort?: string;
+  /** The id its page sent it with (`Entry.sendId`). */
+  sendId?: string;
 }
 
 /** A queued message as it's saved and sent: its fields in order, the empty options left out. */
@@ -97,6 +101,7 @@ function queuedJson(item: Queued): Record<string, unknown> {
   if (item.attachments !== undefined) out.attachments = item.attachments;
   if (item.model !== undefined) out.model = item.model;
   if (item.effort !== undefined) out.effort = item.effort;
+  if (item.sendId !== undefined) out.send_id = item.sendId;
   return out;
 }
 
@@ -117,6 +122,7 @@ function readQueue(value: unknown): Queued[] {
         ...(attachments === undefined ? {} : { attachments }),
         ...(typeof given.model === "string" ? { model: given.model } : {}),
         ...(typeof given.effort === "string" ? { effort: given.effort } : {}),
+        ...(typeof given.send_id === "string" ? { sendId: given.send_id } : {}),
       },
     ];
   });
@@ -199,6 +205,7 @@ function entryJson(item: Entry): Record<string, unknown> {
   if (item.status !== undefined) out.status = item.status;
   if (item.detail !== undefined) out.detail = item.detail;
   if (item.attachments !== undefined) out.attachments = item.attachments;
+  if (item.sendId !== undefined) out.send_id = item.sendId;
   out.at = item.at;
   out.updated = item.updated;
   return out;
@@ -851,8 +858,9 @@ export class Agents implements seams.AgentPanel {
    * as `send` sends it, or, in an Edit V2 chat whose turn is running, queued
    * (and returned) to go when it ends. `playhead`: the editor's frame, for when
    * a queued one goes (`context` is what's read with it if it goes now).
+   * `sendId`: the id the page sent it with, kept on its entry and in the queue.
    */
-  message(project: string, text: string, model: string | null, effort: string | null, context: string, attached: Attached[], playhead: number | null): Promise<Queued | null> {
+  message(project: string, text: string, model: string | null, effort: string | null, context: string, attached: Attached[], playhead: number | null, sendId: string | null = null): Promise<Queued | null> {
     const item: Queued = {
       id: newId("queued"),
       text,
@@ -861,6 +869,7 @@ export class Agents implements seams.AgentPanel {
       ...(attached.length > 0 ? { attachments: attached } : {}),
       ...(model === null ? {} : { model }),
       ...(effort === null ? {} : { effort }),
+      ...(sendId === null ? {} : { sendId }),
     };
     return this.sendTurn(project, text, model, effort, null, false, context, attached, { front: false, item });
   }
@@ -1043,7 +1052,7 @@ export class Agents implements seams.AgentPanel {
       try {
         // A failure here leaves the edit as it was; the turn goes on.
         await agentHooks.beforeTurn(projectOf(project)).catch((error: unknown) => diag.warn("agent", `${project}: before the turn: ${diag.messageOf(error)}`));
-        await this.prepareTurn(project, text, model, effort, current, replay, context, attached, release);
+        await this.prepareTurn(project, text, model, effort, current, replay, context, attached, release, queue?.item.sendId);
       } catch (error) {
         const said = isBug(error) ? crashed("the agent turn", error) : diag.messageOf(error);
         if (claude.signInProblem(said) && this.waitForClaudeLogin(project, current, text, false)) return null;
@@ -1067,13 +1076,14 @@ export class Agents implements seams.AgentPanel {
     context = "",
     attached: Attached[] = [],
     unlock: () => void = () => {},
+    sendId?: string,
   ): Promise<void> {
     const live = this.store.get(projectOf(project));
     if (live === null) throw new Error("no such project");
     // The attached pictures as pictures, the rest named (the first build sent only the names, and the agent couldn't see them).
     const given = await attachedPictures(attached, live.project.media, join(this.dir, "workspace", "attached"));
     const about = attachedText(attached, new Set(given.map((one) => one.media)));
-    return this.claudeTurn(project, text, model, effort, generation, replay, context + about, attached, given, unlock);
+    return this.claudeTurn(project, text, model, effort, generation, replay, context + about, attached, given, unlock, sendId);
   }
 
   /**
@@ -1094,6 +1104,8 @@ export class Agents implements seams.AgentPanel {
     given: Picture[] = [],
     /** Lets the chat's slot go (sendTurn's lock): the turn is running, shown, and stoppable from here. */
     unlock: () => void = () => {},
+    /** The id the person's page sent the message with (`Entry.sendId`). */
+    sendId?: string,
   ): Promise<void> {
     const live = this.store.get(projectOf(project));
     if (live === null) throw new Error("no such project");
@@ -1106,7 +1118,7 @@ export class Agents implements seams.AgentPanel {
       chat.effort = effort;
       chat.provider = "claude";
     }
-    if (!replay) this.upsert(project, entry({ id: newId("user"), kind: "user", text, ...(attached.length > 0 ? { attachments: attached } : {}) }));
+    if (!replay) this.upsert(project, entry({ id: newId("user"), kind: "user", text, ...(attached.length > 0 ? { attachments: attached } : {}), ...(sendId === undefined ? {} : { sendId }) }));
     this.save(project);
     // The once-per-nightly update finishes before a new CLI is started.
     // Sign-in failures below keep this already-visible message for recovery.
@@ -2184,6 +2196,7 @@ export function readChat(text: string): Chat {
       }
       const attachments = savedAttached(fields.attachments);
       if (attachments !== undefined) read.attachments = attachments;
+      if (typeof fields.send_id === "string") read.sendId = fields.send_id;
       chat.entries.push(read);
     }
   }

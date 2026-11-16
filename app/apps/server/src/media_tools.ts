@@ -14,6 +14,7 @@ import * as diag from "./diag.ts";
 import { join } from "./paths.ts";
 import * as drive from "./drive.ts";
 import * as editNotes from "./edit_notes.ts";
+import * as effects from "./effects.ts";
 import { cachedTranscripts } from "./edit_tools.ts";
 import * as footageLevels from "./footage_levels.ts";
 import { isBug } from "./guard.ts";
@@ -496,12 +497,56 @@ function agentChatRoute(context: RouteContext<App>): Response {
   return sortedJson(seams.agentPanel(context.app).chat(chatKey(context)));
 }
 
+/**
+ * Messages being sent, by project and the id their page sent them with
+ * (`send_id`): a send whose answer was lost (the connection dropped after the
+ * server took it) and is sent again gets the first one's answer, not a second
+ * message. Once it's in the chat, its entry or queued place says so
+ * (`sentBefore`), through a restart too.
+ */
+const sending = new Map<string, Promise<Taken>>();
+
+/** A message's answer: taken, and queued (an Edit V2 turn running) or not. */
+type Taken = { ok: true; queued?: unknown };
+
+/** The answer to a message already in project `id`'s chat by its `send_id`, or null. */
+function sentBefore(app: App, id: string, sendId: string): Taken | null {
+  const chat = seams.agentPanel(app).chat(id) as { entries?: { send_id?: string }[]; queue?: { send_id?: string }[] };
+  const queued = chat.queue?.find((one) => one.send_id === sendId);
+  if (queued !== undefined) return { ok: true, queued };
+  return chat.entries?.some((one) => one.send_id === sendId) === true ? { ok: true } : null;
+}
+
 async function agentSendRoute(context: RouteContext<App>): Promise<Response> {
   const { app } = context;
   const id = context.params.id ?? "";
-  const given = await body(context, "AgentMessage", ["text"], ["attachments", "effort", "model", "playhead"]);
+  const given = await body(context, "AgentMessage", ["text"], ["attachments", "effort", "model", "playhead", "send_id"]);
   const said = given.text!.trim();
   if (said === "") throw bad("say something");
+  const sendId = given.send_id ?? null;
+  if (sendId === null) return sortedJson(await takeMessage(context, said, given, null));
+  if (!/^[\w-]{1,100}$/u.test(sendId)) throw bad("send_id is up to 100 letters, digits, dashes and underscores");
+  const key = `${id}\n${sendId}`;
+  const first = sending.get(key);
+  if (first !== undefined) return sortedJson(await first);
+  if (app.store.get(id) !== null) {
+    const before = sentBefore(app, id, sendId);
+    if (before !== null) return sortedJson(before);
+  }
+  const taking = takeMessage(context, said, given, sendId);
+  sending.set(key, taking);
+  try {
+    return sortedJson(await taking);
+  } finally {
+    // In the chat by now (its entry or queued place), or refused: a refused one may be sent again.
+    sending.delete(key);
+  }
+}
+
+/** The person's message taken into the chat: sent now, or (Edit V2, a turn running) queued. */
+async function takeMessage(context: RouteContext<App>, said: string, given: Record<string, string | null>, sendId: string | null): Promise<Taken> {
+  const { app } = context;
+  const id = context.params.id ?? "";
   // Files attached to it, already in the project (chat_attachments.ts): a JSON list, as the fields here are strings.
   let attached: Attached[];
   try {
@@ -525,13 +570,13 @@ async function agentSendRoute(context: RouteContext<App>): Promise<Response> {
   const panel = seams.agentPanel(app);
   try {
     if (panel.message !== undefined) {
-      const queued = await panel.message(id, said, given.model ?? null, given.effort ?? null, read, attached, playhead);
-      if (queued !== null) return sortedJson({ ok: true, queued });
+      const queued = await panel.message(id, said, given.model ?? null, given.effort ?? null, read, attached, playhead, sendId);
+      if (queued !== null) return { ok: true, queued };
     } else await panel.send(id, said, given.model ?? null, given.effort ?? null, read, attached);
   } catch (error) {
     failed(error);
   }
-  return sortedJson({ ok: true });
+  return { ok: true };
 }
 
 /**
@@ -539,30 +584,39 @@ async function agentSendRoute(context: RouteContext<App>): Promise<Response> {
  * editor's playhead (`playhead` its frame, null when not sent from the editor)
  * and, with `notes`, the team's queued notes, which ride the next message
  * whatever it says (Sphe, Nov 3: "implement the feedback" isn't needed to send
- * them); the ones the turn doesn't answer go back in the queue. An Edit V2
- * chat's queued message reads it as it goes (agent.ts `agentHooks.messageContext`).
+ * them); the ones the turn doesn't answer go back in the queue. With `notes`
+ * (the turn goes now), an Edit V2 project's effects whose render failed for
+ * their code since the agent last heard (effects.ts `untoldFailures`): renders
+ * start after the turn that wrote them has ended. An Edit V2 chat's queued
+ * message reads it as it goes (agent.ts `agentHooks.messageContext`).
  */
 export async function messageContext(app: App, id: string, playhead: number | null, notes: boolean): Promise<string> {
   const live = app.store.get(id);
   if (live === null) return "";
   const at = playhead === null ? "" : playheadContext(live.project, playhead, cachedTranscripts(app, live.project, false));
   // Its footage cleared by the footage sweep (archive.ts): said plainly, so the agent asks for it back instead of failing on missing files.
-  const where = archive.clearedOf(id) === null || archive.backRunning(id) ? at : `${CLEARED_NOTE}${at === "" ? "" : `\n\n${at}`}`;
+  const cleared = archive.clearedOf(id) === null || archive.backRunning(id) ? at : `${CLEARED_NOTE}${at === "" ? "" : `\n\n${at}`}`;
+  const broken = notes ? effects.untoldFailures(app, id) : [];
+  const said = broken.length === 0 ? "" : `\n\n(Edit, automatically) ${broken.join(" ")}`;
+  const where = said === "" || cleared === "" || cleared.startsWith("\n") ? `${said}${cleared}` : `${said}\n\n${cleared}`;
   const taken = !notes
     ? []
     : await editNotes.take(app, id).catch((error: unknown) => {
         diag.warn("notes", `${id}: taking queued notes for the message: ${diag.messageOf(error)}`);
         return [] as editNotes.AppNote[];
       });
-  if (taken.length === 0) return where;
+  if (taken.length === 0) return apart(where);
   void editNotes.requeueAfterTurn(app, id, taken.map((note) => note.id)).catch((error: unknown) => diag.warn("notes", `${id}: putting unanswered notes back: ${diag.messageOf(error)}`));
   // Edit V2's are comments on the picture, numbered as the team sees them, and asks: done whatever the message says.
   const told =
     live.project.hq === true
       ? editNotes.hqContext(live.project, taken, editNotes.numbered(await editNotes.list(app, id).catch(() => taken)))
       : editNotes.context(live.project, taken);
-  return `${where}${where === "" ? "" : "\n\n"}${told}`;
+  return apart(`${where}${where === "" ? "" : "\n\n"}${told}`);
 }
+
+/** The context set apart from the person's words it follows: a paragraph of its own (it read "tighten the introThe team's own notes…"). */
+const apart = (context: string): string => (context === "" || context.startsWith("\n") ? context : `\n\n${context}`);
 
 /** What the agent is told with each message while a project's footage is cleared. */
 export const CLEARED_NOTE =

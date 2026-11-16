@@ -1293,6 +1293,14 @@ function failureOf(render: string): { said: string; told: string } | undefined {
   failed.delete(render);
   return undefined;
 }
+/**
+ * Renders that failed for their code's sake that the agent hasn't been told
+ * of, by render (`id`): what went wrong. A render starts seconds after the
+ * code settles, mostly after the turn that wrote it has ended, so the agent
+ * hears of it with the person's next message (`untoldFailures`), or by
+ * looking at the effect; once either way.
+ */
+const untold = new Map<string, string>();
 const settling = new Map<string, ReturnType<typeof setTimeout>>();
 const renderSlot = new Semaphore(1);
 const id = (project: string, name: string, key: string) => `${project}/${name}/${key}`;
@@ -1433,6 +1441,7 @@ export function renderNow(app: App, project: string, name: string): Promise<void
       const kind = failureKind(error);
       const told = toldOf(name, kind, error);
       failed.set(id(project, name, key), { said, told, at: Date.now() });
+      if (kind === "code") untold.set(id(project, name, key), said);
       // What isn't the code's may go the next time: started again once the failure stops standing.
       if (kind !== "code") {
         const again = setTimeout(() => renderSoon(app, project), FAILED_RETRY_MS + 1_000);
@@ -1812,6 +1821,8 @@ export function renderLine(app: App, project: string, name: string): string | nu
   if (effect === undefined) return null;
   if (effect.fresh) return "Its render is of this code: that's what plays and exports.";
   const state = effect.current === null ? null : renderState(project, name, effect.current.key);
+  // A failure said here isn't said again with the next message (`untoldFailures`).
+  if (effect.current !== null && state?.startsWith("its render failed") === true) untold.delete(id(project, name, effect.current.key));
   return state === null ? "Its render follows a few seconds after the code stops changing; until then the viewer plays the code live, and Edit's frames (render_frame, contact_sheet) show nothing of it: look_at_effect does." : `Its render: ${state}.`;
 }
 
@@ -1827,6 +1838,24 @@ export function renderState(project: string, name: string, key: string): string 
   }
   const failure = failureOf(id(project, name, key));
   return failure === undefined ? null : `its render failed: ${failure.said}`;
+}
+
+/**
+ * What the agent is told with the person's next message of a V2 project's
+ * effects whose render of their code as it is failed for the code's sake (a
+ * passing failure Edit tries again itself; a full disk is the person's): each
+ * failure once, and none of code that has changed since. Read once a turn
+ * goes (media_tools.messageContext).
+ */
+export function untoldFailures(app: App, project: string): string[] {
+  const out: string[] = [];
+  for (const effect of needed(app.store, project)) {
+    if (effect.fresh || effect.current === null) continue;
+    const said = untold.get(id(project, effect.name, effect.current.key));
+    if (said !== undefined) out.push(`The ${effect.name} effect's render failed: ${said.replace(/[.\s]+$/u, "")}. Fix its code, then check it with look_at_effect.`);
+  }
+  for (const render of [...untold.keys()]) if (render.startsWith(`${project}/`)) untold.delete(render);
+  return out;
 }
 
 /**

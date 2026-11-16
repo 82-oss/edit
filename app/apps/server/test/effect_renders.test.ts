@@ -13,6 +13,7 @@ import { dispatch } from "../src/mcp/index.ts";
 import { respond } from "../src/http/server.ts";
 import { buildRouter } from "../src/routes.ts";
 import * as seams from "../src/seams.ts";
+import { messageContext } from "../src/media_tools.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
 // An effect rendered from its code, a file of its own beside effects.test.ts: its renders in Chrome are most of that
@@ -324,6 +325,12 @@ test.skipIf(chrome === null)("a render that fails names its effect and says what
     // Its seek throws past the first second: the code's to fix, so the agent is asked to.
     fs.writeFileSync(join(dir, "scene.html"), GOOD.replace("window.seek = (t) => {", "window.seek = (t) => { if (t > 1) throw new Error('nope');"));
     await expect(seams.broll.waitForMaps(app, id, 90_000)).rejects.toThrow("The breaks effect didn't render: ask the agent to fix the breaks effect.");
+    // The render went after the turn that wrote it: the agent hears of it with the person's next message, once.
+    const next = await messageContext(app, id, null, true);
+    expect(next).toStartWith("\n\n(Edit, automatically) The breaks effect's render failed: ");
+    expect(next).toContain("its page threw at");
+    expect(next).toEndWith(". Fix its code, then check it with look_at_effect.");
+    expect(await messageContext(app, id, null, true)).toBe("");
     expect(effects.renderLine(app, id, "breaks")).toContain("its page threw at");
     // Asked again while it stands: the same, at once, and no export takes the clear still for it.
     await expect(seams.broll.waitForMaps(app, id, 10)).rejects.toThrow("ask the agent to fix the breaks effect");

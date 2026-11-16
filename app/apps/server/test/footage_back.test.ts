@@ -82,7 +82,8 @@ test("cleared footage: sources checked, the gone ones named, a replacement link 
 
     expect(await archive.lookUp(id)).toMatchObject({ at: 1 });
     // The agent is told plainly, with each message.
-    expect(await messageContext(fixture.app, id, null, false)).toBe(CLEARED_NOTE);
+    // A paragraph of its own after the person's words.
+    expect(await messageContext(fixture.app, id, null, false)).toBe(`\n\n${CLEARED_NOTE}`);
     expect([...cloudMedia.footageBySource(store.get(id)!.project).keys()]).toEqual(["drive:BackFile123456789012", "drive:GoneFile123456789012", LOCAL]);
 
     const missing = await cloudMedia.unfetchable(fixture.app, id);

@@ -189,7 +189,7 @@ test("a message sent while an Edit V2 turn runs waits on the server, kept with t
     await agents.send(project, "Make the evidence board", null, null);
     queries[0]!.push({ type: "system", subtype: "init", session_id: "session-1" });
     await settle();
-    const first = await agents.message(project, "Make it red", null, null, "(read now)", [{ name: "ref.png", kind: "image", media: "m1" }], 120);
+    const first = await agents.message(project, "Make it red", null, null, "(read now)", [{ name: "ref.png", kind: "image", media: "m1" }], 120, "s1");
     const second = await agents.message(project, "And add a stamp", null, null, "", [], null);
     const third = await agents.message(project, "Never mind", null, null, "", [], null);
     expect([first?.text, second?.text, third?.text]).toEqual(["Make it red", "And add a stamp", "Never mind"]);
@@ -202,7 +202,7 @@ test("a message sent while an Edit V2 turn runs waits on the server, kept with t
     // Kept in the chat's file, read back as it was (a restart, another editor).
     const saved = readChat(fs.readFileSync(home.store.chatPath(project), "utf8"));
     expect(saved.queue).toEqual([
-      { id: first!.id, text: "Make it red", at: first!.at, playhead: 120, attachments: [{ name: "ref.png", kind: "image", media: "m1" }] },
+      { id: first!.id, text: "Make it red", at: first!.at, playhead: 120, attachments: [{ name: "ref.png", kind: "image", media: "m1" }], sendId: "s1" },
       { id: second!.id, text: "And add a stamp", at: second!.at, playhead: null },
     ]);
 
@@ -211,7 +211,10 @@ test("a message sent while an Edit V2 turn runs waits on the server, kept with t
     await askedCount(asked, 2);
     expect(asked[1]!.options.resume).toBe("session-1");
     expect(String(asked[1]!.prompt)).toStartWith("Make it red");
-    expect(agents.withChat(project).entries.filter((item) => item.kind === "user").at(-1)).toMatchObject({ text: "Make it red", attachments: [{ name: "ref.png", kind: "image", media: "m1" }] });
+    expect(agents.withChat(project).entries.filter((item) => item.kind === "user").at(-1)).toMatchObject({ text: "Make it red", attachments: [{ name: "ref.png", kind: "image", media: "m1" }], sendId: "s1" });
+    // Its page's id goes with it into the chat, so a send of it repeated is told as the same message (media_tools.ts).
+    expect((agents.chat(project) as { entries: { send_id?: string }[] }).entries.filter((item) => item.send_id !== undefined).map((item) => item.send_id)).toEqual(["s1"]);
+    expect(readChat(fs.readFileSync(home.store.chatPath(project), "utf8")).entries.find((item) => item.sendId === "s1")?.text).toBe("Make it red");
     expect(agents.withChat(project).queue.map((one) => one.text)).toEqual(["And add a stamp"]);
     expect(agents.withChat(project).running).toBe(true);
 
