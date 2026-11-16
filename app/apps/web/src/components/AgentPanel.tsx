@@ -43,7 +43,7 @@ import { Button, cx, Modal } from "./ui";
 import { ClaudeSetupCard } from "./ClaudeSetupCard";
 import { ClaudeMark } from "./ClaudeMark";
 import { MOD, THIS_MACHINE } from "../lib/platform";
-import { channelApi } from "../lib/channels";
+import { UntaughtLine, useUntaughtChannel } from "./Untaught";
 
 export { ClaudeMark };
 
@@ -984,32 +984,6 @@ export function ResetAsk({
  * The agent asked to reset the edit (`reset_edit`, "reset the video"): the
  * user accepts or rejects here, and the agent, waiting on the answer, carries on.
  */
-/**
- * A channel's project whose channel's edit style is still empty, once its
- * footage is in (Sphe, Nov 14: "a note in the editor after importing all the
- * footage saying that you can now build out the style you want"): asked again
- * after each turn, and gone once something is taught.
- */
-function useUntaughtChannel(): string | null {
-  const channel = useEditor((state) => state.project?.channel ?? null);
-  const footage = useEditor((state) => (state.project?.media.length ?? 0) > 0);
-  const running = useAgent((state) => state.running);
-  const [empty, setEmpty] = useState<string | null>(null);
-  useEffect(() => {
-    if (channel === null || running) return;
-    let alive = true;
-    void channelApi.page(channel).then(
-      // A grouped channel is taught what its group is, as well as its own.
-      (page) => alive && setEmpty(page.taught.edit.length === 0 && (page.group?.taught.edit.length ?? 0) === 0 ? page.channel.title : null),
-      () => alive && setEmpty(null),
-    );
-    return () => {
-      alive = false;
-    };
-  }, [channel, running]);
-  return channel !== null && footage ? empty : null;
-}
-
 function ResetCard({ projectId }: { projectId: string }) {
   const [answering, setAnswering] = useState(false);
   const answer = (accept: boolean) => {
@@ -1082,6 +1056,8 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
     ),
     // Edit V2's are pinned on the picture and the progress bar instead.
     notes > 0 && !hq && <NoteQueue key="notes" />,
+    // Its agent doesn't edit, and its first message waits, until the channel is taught (Sphe, Nov 16).
+    untaught !== null && <UntaughtLine key="untaught" />,
   ].filter(Boolean);
   return (
     <ChatComposer
@@ -1094,8 +1070,8 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
       revising={revising}
       hq={hq}
       project={projectId ?? undefined}
-      // A channel with no edit style yet says so here, not in a notice of its own (Sphe, Nov 15: "this is horrible").
-      placeholder={untaught !== null ? `Tell the agent how ${untaught}’s videos should look, or start the editing workflow…` : "Start the editing workflow, or ask for a change…"}
+      // A channel with no edit style yet says so here, not in a notice of its own (Sphe, Nov 15: "this is horrible"); it isn't edited until it has one.
+      placeholder={untaught !== null ? `Tell the agent how ${untaught}’s videos should look…` : "Start the editing workflow, or ask for a change…"}
       // Where the playhead is goes with it: the agent starts there (the server reads it what's under it).
       onSend={(message, files) => sendToAgent(message, playhead.frame, files, hq)}
       onStop={() => void stopAgent().catch((error: unknown) => useEditor.getState().toastError(error, "stop the agent"))}

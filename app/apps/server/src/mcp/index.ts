@@ -15,6 +15,7 @@ import { isBug, crashed } from "../guard.ts";
 import { empty, json, text as plain } from "../http/errors.ts";
 import { readJson, type RouteContext } from "../http/router.ts";
 import { stableStringify } from "../stable.ts";
+import * as teachingGate from "../teaching_gate.ts";
 import { VERSION } from "../version.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import { handlerFor, registerTool, text, TOOLS, toolsFor, type Content } from "./registry.ts";
@@ -136,6 +137,10 @@ export async function call(
     if (TOOLS.some((tool) => tool.name === name)) throw new Error(`${name} is not available`);
     throw new Error(`unknown tool ${name}`);
   }
+  // A channel not taught yet: nothing in the edit changes (teaching_gate.ts; Sphe, Nov 16).
+  const live = app.store.get(projectId);
+  const untaught = live === null ? null : await teachingGate.refusal(live.project, name);
+  if (untaught !== null) throw new Error(untaught);
   // The agent's own edits, checked against what it read (store.ts agentCalls); not what it leaves running after.
   const asAgent = async (): Promise<Content[]> => {
     const state = { active: true, tool: name };

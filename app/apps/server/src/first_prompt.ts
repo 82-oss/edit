@@ -3,6 +3,8 @@
 // anyone until it's ready to check (the user, Oct 30: "have the initial prompt
 // be included in the importing stage so that once import is done the prompt is
 // sent and it's out of your way"). Kept on disk, so a restart doesn't lose it.
+// A channel's project not taught yet keeps it until it is, then it goes by
+// itself (teaching_gate.ts; Sphe, Nov 16).
 
 import * as fs from "node:fs";
 import { join } from "node:path";
@@ -13,6 +15,7 @@ import { writeAtomic } from "./files.ts";
 import { ApiError, bad } from "./http/errors.ts";
 import { readJson, type Router } from "./http/router.ts";
 import * as seams from "./seams.ts";
+import * as teachingGate from "./teaching_gate.ts";
 
 /** How often waiting prompts are looked at. */
 const EVERY_MS = 5_000;
@@ -45,6 +48,8 @@ export function waiting(app: App, project: string): string | null {
 }
 
 let sending = false;
+/** The projects whose message is said to wait for their channel's teaching (once each, not every 5 s). */
+const untaughtSaid = new Set<string>();
 
 /** Sends each waiting message whose project is ready: imported, and its agent not on a turn. */
 export async function sendReady(app: App): Promise<void> {
@@ -63,6 +68,13 @@ export async function sendReady(app: App): Promise<void> {
       // Still importing, or waiting on the person (a file it couldn't get, a failure): not yet.
       if (job !== null && job.state !== "done") continue;
       if (live.project.script !== undefined && live.project.script !== null && !seams.script.laidOut(live.project)) continue;
+      // A channel not taught yet: the agent doesn't start on the edit until it is.
+      if (await teachingGate.stillWaiting(live.project)) {
+        if (!untaughtSaid.has(project)) diag.info("agent", `${live.project.name}: its first message waits for its channel to be taught`);
+        untaughtSaid.add(project);
+        continue;
+      }
+      untaughtSaid.delete(project);
       const panel = seams.agentPanel(app);
       if ((panel.turn?.(project) ?? (panel.chat(project) as { running?: boolean })).running === true) continue;
       try {

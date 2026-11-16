@@ -2155,7 +2155,7 @@ const UNREAD =
 
 /** Said to a channel's agent while its edit style is still empty. */
 const UNTAUGHT =
-  "THIS CHANNEL ISN'T TAUGHT YET: no lessons, effects or sounds of its own. Put the footage in as asked, one after the other, and nothing else of your own (no music, sound effects, graphics or captions until the person asks), then build the channel's style with the person as they say what it should be, keeping it (remember, save_to_library) as KEEPING WHAT YOU'RE TAUGHT says, so the next project of this channel has it.";
+  "THIS CHANNEL ISN'T TAUGHT YET: no lessons, effects or sounds of its own, so you don't edit until it is (Edit's tools that change the edit refuse; reading, research and teaching work). Ask the person how this channel's videos should look and keep what they say (remember; an effect or a sound with save_to_library) as KEEPING WHAT YOU'RE TAUGHT says, or bring another channel's style in with other_channels when they point you at one. Once something is kept, the editing tools work and you can start.";
 
 /** A saved chat, read as serde reads `Chat` (every field defaults; a wrong type refuses the whole file). */
 export function readChat(text: string): Chat {

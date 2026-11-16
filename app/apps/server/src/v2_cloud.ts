@@ -108,6 +108,7 @@ export async function list(kind: Exclude<Kind, "effect">, archived = false): Pro
 /** Puts an item away (out of every list unless asked for, its versions kept), or back. */
 export async function archive(key: string, archived: boolean): Promise<void> {
   await cloud.mutation("edit:archiveLibrary", { key, archived });
+  forgetSkills();
 }
 
 export async function versions(key: string, text = false): Promise<Version[]> {
@@ -224,7 +225,10 @@ export async function save(key: string, name: string, dir: string, options: { re
   const now = await version(key).catch(() => null);
   const same = (a: File[], b: File[]) => a.length === b.length && a.every((one, at) => one.path === b[at]!.path && one.sha256 === b[at]!.sha256);
   if (now !== null && now.version.files !== null && same(files, now.version.files)) return { n: now.version.n, made: false };
-  return (await cloud.mutation("edit:saveLibraryVersion", { key, name, files, ...options })) as { n: number; made: boolean };
+  const saved = (await cloud.mutation("edit:saveLibraryVersion", { key, name, files, ...options })) as { n: number; made: boolean };
+  // A library piece kept (not a project's own effect): what's taught is read again (teaching_gate.ts sees it at once).
+  if (!key.startsWith("effect:")) forgetSkills();
+  return saved;
 }
 
 /**
@@ -261,6 +265,7 @@ export async function copyItem(from: Item, toKey: string, reason: string): Promi
     ...(from.brief !== null ? { brief: from.brief } : {}),
     ...(from.category !== null ? { category: from.category } : {}),
   });
+  forgetSkills();
   return true;
 }
 
