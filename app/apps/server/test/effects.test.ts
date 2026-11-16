@@ -340,7 +340,8 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
   }
 }, 120_000);
 
-// Its own test, apart from the one above: together they ran past two minutes on CI's Mac (Nov 15).
+// Its own test, apart from the one above, with more time: about 200 full-size frames, which CI's Mac draws slowly
+// (past two minutes there on Nov 16, where it's 25 s on mandalorian).
 test.skipIf(chrome === null)("look_at_effect every_frame: numbered sheets, the looker's reading of a long stretch, beside a reference and zoomed", async () => {
   const { app, cleanup, id } = hq("effects-every");
   const router = buildRouter();
@@ -424,7 +425,7 @@ test.skipIf(chrome === null)("look_at_effect every_frame: numbered sheets, the l
     await server.stop(true);
     cleanup();
   }
-}, 120_000);
+}, 300_000);
 
 test.skipIf(chrome === null)("an effect on the timeline is rendered from its code, in place of its still, and again when its code changes", async () => {
   const { app, cleanup, id } = hq("effects-render");
