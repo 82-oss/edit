@@ -74,8 +74,16 @@ test.skipIf(chrome === null)("an effect on the timeline is rendered from its cod
       project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
       project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
     });
-    // What every export does first: waits for it, rendering it now.
-    await seams.broll.waitForMaps(app, id, 90_000);
+    // What every export does first: waits for it, rendering it now; an export waiting says how far it is.
+    const going = seams.broll.waitForMaps(app, id, 90_000);
+    let line: string | null = null;
+    for (let wait = 0; wait < 400 && (line === null || !/of \d+ frames/.test(line)); wait++) {
+      line = effects.renderingLine(id);
+      await Bun.sleep(25);
+    }
+    expect(line).toMatch(/^rendering the bar effect · \d+ of 60 frames$/);
+    await going;
+    expect(effects.renderingLine(id)).toBeNull();
     media = app.store.get(id)!.project.media.find((one) => one.id === added.media)!;
     const key = effects.list(app.store, id)[0]!.key;
     expect(media.effect_key).toBe(key);

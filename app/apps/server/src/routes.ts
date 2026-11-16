@@ -1110,12 +1110,21 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
     }
   }
   const row = (state: "queued" | "failed", extra: Record<string, unknown>) => app.store.emit({ type: "export", id, state, progress: 0, path: expected, ...extra });
-  row("queued", { waiting: "waiting for its effects to render" });
+  // How far its effects' renders are, said as they go (Sphe, Nov 16: "I don't know how long that's going to take").
+  let said = "";
+  const tell = () => {
+    const line = effects.renderingLine(id) ?? "waiting for its effects to render";
+    if (line !== said) row("queued", { waiting: (said = line) });
+  };
+  tell();
+  const ticking = setInterval(tell, 1000);
   void (async () => {
     try {
       await wait(READY_WAIT_MS);
+      clearInterval(ticking);
       await go();
     } catch (error) {
+      clearInterval(ticking);
       const said = diag.messageOf(error);
       diag.warn("export", `${id}: ${said}`);
       row("failed", { error: said });

@@ -1403,6 +1403,21 @@ const renders = new Map<string, Render>();
 /** The render drawing now (the one slot's), for a render waiting behind it to say whose it waits for. */
 let drawing: Render | null = null;
 
+/**
+ * What an export of `project` waiting on its effects is waiting for, in a few
+ * words: the render drawing and how far it is, or the one it waits behind;
+ * null when none of its renders is under way.
+ */
+export function renderingLine(project: string): string | null {
+  const own = [...renders.values()].filter((render) => render.project === project);
+  if (own.length === 0) return null;
+  const now = own.find((render) => render === drawing) ?? own[0]!;
+  const ahead = drawing;
+  if (now !== drawing && ahead !== null) return ahead.project === project ? `waiting behind the ${ahead.name} effect's render` : `waiting behind ${ahead.title}'s render`;
+  const more = own.length > 1 ? ` (then ${own.length - 1} more)` : "";
+  return now.frames > 0 ? `rendering the ${now.name} effect · ${now.drawn} of ${now.frames} frames${more}` : `rendering the ${now.name} effect${more}`;
+}
+
 /** Why a render failed, by what can be done about it. */
 type Failure = "code" | "passing" | "disk";
 
