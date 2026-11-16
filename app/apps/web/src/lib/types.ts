@@ -178,7 +178,9 @@ export interface ScriptJob {
   /** State waiting by itself: when Edit tries again (ms), or none while it waits for the encoder. */
   retry_at?: number;
   /**
-   * `retry_at`: when Edit tries a failed file again by itself (ms). `why`: what
+   * `retry_at`: when Edit tries a failed file again by itself (ms); on a
+   * downloading file, when a YouTube video waiting out YouTube turning Edit
+   * away goes again (youtube.ts `park`). `why`: what
    * its failure is (`import_steps.ts`): passing (Retry helps), person (another
    * link, or go on without it), quota or encoder (it waits, state waiting).
    */

@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 
 import type { ScriptBlock } from "../src/model.ts";
 import { parse, REUSE } from "../src/script.ts";
-import { afterFailure, download, downloadRange, fileOf, forgetRefusals, idOf, PROXY_TRIES, reasonOf, session, startOf, timing, videoId } from "../src/youtube.ts";
+import { afterFailure, download, downloadRange, fileOf, forgetRefusals, idOf, PROXY_TRIES, reasonOf, session, startOf, timing, videoId, waiting } from "../src/youtube.ts";
 import { scratch } from "./helpers/home.ts";
 import { Database } from "bun:sqlite";
 import { keyring, status as signInStatus, where as signInWhere } from "../src/youtube_signin.ts";
@@ -189,8 +189,11 @@ test("a download every address is refused for waits the wave out and comes throu
     process.env.EDIT_YTDLP = `${dir}/yt-dlp`;
     process.env.PROXY_URL = "http://user:secret@proxy.example:8080";
     const waited: number[] = [];
+    const shown: (ReturnType<typeof waiting> | null)[] = [];
     timing.pause = async (ms) => {
       waited.push(ms);
+      // While it waits, the window's "Waiting on YouTube" chip has it, and when it goes again.
+      if (ms >= 120_000) shown.push(waiting());
     };
     timing.waveWaits = [120_000, 300_000, 600_000];
     const got = await download(dir, "abcdefghijk", `${dir}/out`, () => {});
@@ -199,6 +202,9 @@ test("a download every address is refused for waits the wave out and comes throu
     expect(fs.readFileSync(calls, "utf8").trim()).toBe(String(2 + 2 * PROXY_TRIES));
     expect(fs.readFileSync(`${dir}/calls.log`, "utf8").trim().split("\n").map((line) => line.includes("--proxy"))).toEqual([false, ...Array(2 * PROXY_TRIES + 1).fill(true)]);
     expect(waited.filter((ms) => ms >= 120_000)).toEqual([120_000, 300_000]);
+    expect(shown.map((one) => one?.count)).toEqual([1, 1]);
+    expect(shown.every((one) => one !== null && one.until > Date.now() + 60_000)).toBe(true);
+    expect(waiting()).toBeNull();
   } finally {
     cleanup();
   }

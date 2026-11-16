@@ -2265,6 +2265,20 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
       });
       errors[index] = undefined;
       const fileBegan = timing.now();
+      // A YouTube file waiting a wave of refusals out says when it goes again (a downloading file with a `retry_at`): nothing for the person to do.
+      const video = youtube.idOf(file);
+      const stopWatching =
+        video === null
+          ? () => {}
+          : youtube.onWaiting((key, at) => {
+              if (key !== video) return;
+              app.scripts.set(app, id, (job) => {
+                const entry = job.files[index];
+                if (entry === undefined || entry.state !== "downloading") return;
+                if (at === null) delete entry.retry_at;
+                else entry.retry_at = at;
+              });
+            });
       try {
         if (file.startsWith("sha256:") && !cloudEnabled()) throw new steps.NeedsPerson("A shared folder master needs Edit's cloud connection. Sign in and retry.");
         if (reviewOf(file) !== null && !cloudEnabled()) throw new steps.NeedsPerson("A finished video from its review link needs Edit's cloud connection: sign in to Edit.");
@@ -2296,6 +2310,8 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
           entry.why = why;
           delete entry.cut;
         });
+      } finally {
+        stopWatching();
       }
     };
     const toFetch = (index: number) => fetched[index] === undefined;

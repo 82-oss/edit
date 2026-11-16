@@ -13,7 +13,7 @@ import { DocChangesButton } from "./DocChangesBar";
 import { toggleMenu } from "./ContextMenu";
 import { Tile } from "./Logo";
 import { StartedBy } from "./StartedBy";
-import { MemoryChip } from "./MemoryChip";
+import { StatusChips } from "./MemoryChip";
 import { UpdateButton } from "./UpdateButton";
 import { Button, cx, IconButton } from "./ui";
 import { MOD, SHIFT_MOD, THIS_MACHINE } from "../lib/platform";
@@ -51,7 +51,7 @@ export function TopBar({ onShare }: { onShare: () => void }) {
       </AnimatePresence>
 
       <div className="ml-auto flex items-center gap-1.5">
-        <MemoryChip />
+        <StatusChips />
         <UpdateButton />
         {scriptId && (
           <Button variant="subtle" onClick={() => navigate(`/scripts/${scriptId}`)} title="This video's script, in Script mode">

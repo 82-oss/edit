@@ -20,6 +20,7 @@ import * as sources from "../src/ideas/sources.ts";
 import * as live from "../src/writer/live.ts";
 import { scratch } from "./helpers/home.ts";
 import { MockServer } from "./mocks/server.ts";
+import * as youtube from "../src/youtube.ts";
 import { NoWords } from "../src/youtube_words.ts";
 
 let mock: MockServer;
@@ -378,13 +379,27 @@ test("a video already on the board is the person's decision, not a run; no capti
   expect(idea.skipped).toContain("no English captions");
   // YouTube turning Edit away is said as that, never as a video without captions (JJ, Nov 10: ten ideas skipped for captions their videos had).
   await cloud.commit(videoIdea("i7b-test", "turnedAway1"), 0, "Sphe");
+  // Turned away, the idea waits and asks again by itself, saying when (Sphe, Nov 16), and is skipped only once that's spent.
+  const waits = run.youtubeWaits.ms;
+  run.youtubeWaits.ms = [5, 5];
+  let reads = 0;
+  const waited: (number | undefined)[] = [];
   sources.captions.words = async () => {
-    throw new NoWords("YouTube turned this Mac away just now, so the video's words weren't read: try again in a few minutes.");
+    reads++;
+    throw new NoWords("YouTube turned Edit away just now, so the video's words weren't read: try again in a few minutes.", true);
   };
+  const stopWatching = youtube.onWaiting((key, at) => {
+    if (key === "idea:i7b-test" && at !== null) waited.push(youtube.waiting()?.count);
+  });
   await run.repackage(context(), "i7b-test");
   idea = await settled("i7b-test");
+  stopWatching();
+  run.youtubeWaits.ms = waits;
   sources.captions.words = before;
   expect(asked).toBe(false);
+  expect(reads).toBe(3);
+  expect(waited).toEqual([1, 1]);
+  expect(youtube.waiting()).toBeNull();
   expect(idea.skipped).toContain("try again in a few minutes");
   expect(idea.skipped).not.toContain("no English captions");
 });

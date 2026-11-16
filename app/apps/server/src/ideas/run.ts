@@ -23,6 +23,8 @@ import * as runLease from "../run_lease.ts";
 import * as modelChoice from "../model_choice.ts";
 import * as notices from "../notices.ts";
 import { join } from "../paths.ts";
+import * as steps from "../import_steps.ts";
+import { park as parkOnYoutube } from "../youtube.ts";
 import { NoWords } from "../youtube_words.ts";
 import * as claude from "../writer/claude.ts";
 import { ideaBuilt, modelFor } from "@edit/types/models";
@@ -475,6 +477,25 @@ const clock = (seconds: number | null) => {
 type Prepared = { caseText: string; examples: string[]; style: LengthStyle | null; folder: string; bases: Map<string, { title: string; image: string }>; caseThumbnail: string | null; pictures: string };
 
 /** What Claude reads of the case: its source, the transcript or article, the team's approved titles, the thumbnails. */
+/** The waits before an idea asks YouTube again for its case's words, once YouTube turned Edit away (tests make them short). */
+export const youtubeWaits = { ms: [2 * 60_000, 5 * 60_000, 10 * 60_000] };
+
+/** `ms` of nothing, ended early (throwing) when the run is stopped. */
+function rest(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) return reject(new Error("Stopped."));
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", stopped);
+      resolve();
+    }, ms);
+    const stopped = () => {
+      clearTimeout(timer);
+      reject(new Error("Stopped."));
+    };
+    signal.addEventListener("abort", stopped, { once: true });
+  });
+}
+
 async function prepare(context: Context, idea: Idea, step: (text: string) => Promise<void>, signal: AbortSignal): Promise<Prepared | string> {
   const parts: string[] = [];
   let title = "";
@@ -493,10 +514,26 @@ async function prepare(context: Context, idea: Idea, step: (text: string) => Pro
         `Description: ${video.description.trim() || "(none)"}`,
       );
       await step("Reading the video's words");
-      const words = await sources.transcript(context.home, source.videoId, signal, (text) => void step(text).catch(() => {})).catch((error: unknown) => {
-        if (error instanceof NoWords) return error;
-        throw error;
-      });
+      const read = () =>
+        sources.transcript(context.home, source.videoId, signal, (text) => void step(text).catch(() => {})).catch((error: unknown) => {
+          if (error instanceof NoWords) return error;
+          throw error;
+        });
+      let words = await read();
+      // YouTube turning Edit away passes: the idea waits and asks again by itself, saying when (Sphe, Nov 16), before it's skipped.
+      for (const wait of youtubeWaits.ms) {
+        if (!(words instanceof NoWords) || !words.turnedAway) break;
+        const at = Date.now() + wait;
+        parkOnYoutube(`idea:${idea.id}`, at);
+        try {
+          await step(`YouTube turned Edit away · trying again at ${steps.clock(at)}`);
+          await rest(wait, signal);
+        } finally {
+          parkOnYoutube(`idea:${idea.id}`, null);
+        }
+        await step("Reading the video's words");
+        words = await read();
+      }
       if (words instanceof NoWords) return `${words.message} It wasn't repackaged: titles come from the transcript, never from the title alone.`;
       parts.push("", `### Transcript${words.truncated ? " (the first part)" : ""}`, words.text, "");
     } else {

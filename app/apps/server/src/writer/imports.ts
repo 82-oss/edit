@@ -43,6 +43,7 @@ import * as trello from "./trello.ts";
 import * as caption_turns from "./caption_turns.ts";
 import * as versions from "./versions.ts";
 import * as watch from "./watch.ts";
+import * as edit from "../youtube.ts";
 import * as youtube from "./youtube.ts";
 import { THIS_MACHINE } from "../machine.ts";
 
@@ -186,6 +187,19 @@ function stageTimes(id: string): string {
 function say(script: Script, detail: string, stage = script.stage, percent = script.progress): void {
   if (running.has(script.id)) noteStage(script.id, stage);
   if (running.has(script.id)) latest.set(script.id, { id: script.id, title: script.title, stage, percent, detail, ...(started.has(script.id) ? { startedAt: started.get(script.id)! } : {}) });
+}
+
+/**
+ * While the video at `url` waits out YouTube turning Edit away (youtube.ts
+ * `park`), the script says so and when it goes again; nothing for the person
+ * to do. Returns how to stop.
+ */
+function sayWhileParked(script: Script, url: string): () => void {
+  const id = edit.videoId(url);
+  if (id === null) return () => {};
+  return edit.onWaiting((key, at) => {
+    if (key === id && at !== null) say(script, `YouTube turned Edit away · trying again at ${steps.clock(at)}.`);
+  });
 }
 
 const clock = (ms: number): string => {
@@ -969,7 +983,8 @@ async function fetchYoutube(app: App, dir: string, script: Script): Promise<Fetc
       return { joined: null };
     }
     const began = Date.now();
-    const inCloud = await streamed.fromYoutube(app, dir, script.sourceUrl, (bytes) => say(script, `Streaming from YouTube to the cloud: ${Math.round(bytes / 1e6)} MB.`, "downloading", 10));
+    const stop = sayWhileParked(script, script.sourceUrl);
+    const inCloud = await streamed.fromYoutube(app, dir, script.sourceUrl, (bytes) => say(script, `Streaming from YouTube to the cloud: ${Math.round(bytes / 1e6)} MB.`, "downloading", 10)).finally(stop);
     diag.info("writer", `${jobs.named(script.id, script.title)}: YouTube video streamed to the cloud in ${Math.round((Date.now() - began) / 1000)} s`);
     say(script, "Making the preview.", "downloading", 15);
     await encodePiece(dir, inCloud.url, jobs.named(script.id, script.title));
@@ -1371,7 +1386,8 @@ async function fetchCompilation(app: App, dir: string, script: Script): Promise<
       const link = video.url.includes("drive.google.com") ? drive.parse(video.url) : null;
       if (streamed.on() && !(await media.readable(dest)) && (link === null || link.kind === "file")) {
         const onBytes = () => say(script, `Streaming videos to the cloud: ${percents.filter((value) => value === 100).length} of ${wanted.length} ready.`, "downloading", 5 + Math.floor((percents.reduce((sum, value) => sum + value, 0) * 33) / (wanted.length * 100)));
-        const put = link !== null ? await streamed.drive(dir, (await drive.recordings(await drive.hooks.accessToken(), link))[1][0]!, onBytes) : await streamed.fromYoutube(app, dir, video.url, onBytes);
+        const stop = link === null ? sayWhileParked(script, video.url) : () => {};
+        const put = await (link !== null ? streamed.drive(dir, (await drive.recordings(await drive.hooks.accessToken(), link))[1][0]!, onBytes) : streamed.fromYoutube(app, dir, video.url, onBytes)).finally(stop);
         if (!(await media.readable(put.url))) throw new Error("Couldn't be read as video, so it was dropped.");
         percents[step] = 100;
         await encodePiece(dir, put.url, `${jobs.named(script.id, script.title)} · video ${index + 1}`);

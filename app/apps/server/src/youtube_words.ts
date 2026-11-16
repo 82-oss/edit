@@ -352,8 +352,15 @@ export async function writeCaptionTranscript(home: string, source: string, targe
   return true;
 }
 
-/** A video's words couldn't be had: `message` says why, for the person. */
-export class NoWords extends Error {}
+/** A video's words couldn't be had: `message` says why, for the person; `turnedAway` when it was YouTube turning Edit away for now (worth asking again a little later). */
+export class NoWords extends Error {
+  constructor(
+    message: string,
+    readonly turnedAway = false,
+  ) {
+    super(message);
+  }
+}
 
 /** Test hook: how a captionless video is heard (its sound fetched, then Apple or Scribe). */
 export const hearing = { hear };
@@ -388,6 +395,7 @@ export async function words(home: string, id: string, use: Use, signal?: AbortSi
       : use.hear
         ? "This video has no English captions, and nothing was heard in its sound."
         : "This video has no English captions.",
+    turnedAway,
   );
 }
 

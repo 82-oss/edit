@@ -358,6 +358,37 @@ const running = new Map<string, Promise<Downloaded>>();
  */
 export const timing = { pause: (ms: number): Promise<void> => Bun.sleep(ms), quiet: 10 * 60_000, waveWaits: [2 * 60_000, 5 * 60_000, 10 * 60_000, 15 * 60_000] };
 
+// ── Work waiting on YouTube ──
+//
+// What waits for YouTube to stop turning Edit away, and when it goes again
+// (Sphe, Nov 16: "this is parked, this is going to retry on its own in 10
+// minutes, I don't have to do anything"): a download waiting a wave out (by
+// its video's id), an idea waiting to read its case (`idea:<id>`). The
+// window's "Waiting on YouTube" chip reads `waiting()`; an import or a script
+// shows its own with `onWaiting`.
+
+const parked = new Map<string, number>();
+const watchers = new Set<(key: string, at: number | null) => void>();
+
+/** `key` waits on YouTube until `at` (ms), or no longer (null). */
+export function park(key: string, at: number | null): void {
+  if (at === null) {
+    if (!parked.delete(key)) return;
+  } else parked.set(key, at);
+  for (const watcher of watchers) watcher(key, at);
+}
+
+/** What waits on YouTube now: how many, and when the soonest goes again; null when nothing does. */
+export function waiting(): { count: number; until: number } | null {
+  return parked.size === 0 ? null : { count: parked.size, until: Math.min(...parked.values()) };
+}
+
+/** Called as anything starts or stops waiting on YouTube; returns how to stop being told. */
+export function onWaiting(watcher: (key: string, at: number | null) => void): () => void {
+  watchers.add(watcher);
+  return () => watchers.delete(watcher);
+}
+
 /** What a run stopped for saying nothing reads as. */
 const STOOD_STILL = "ERROR: The download stood still";
 
@@ -539,7 +570,8 @@ const overRoutes = Effect.fn("youtube.overRoutes")(function* (
     const wait = timing.waveWaits[pass];
     if (ended || sparing || !refusedEvery || last._tag !== "RouteRefused" || wait === undefined) break;
     yield* Effect.logWarning(`${id}: YouTube refused every address it was asked from (${last.line}); trying again in ${Math.round(wait / 60_000)} min`);
-    yield* Effect.promise(() => timing.pause(wait));
+    park(id, Date.now() + wait);
+    yield* Effect.promise(() => timing.pause(wait)).pipe(Effect.ensuring(Effect.sync(() => park(id, null))));
   }
   return yield* new DownloadFailed({ reason: last._tag, message: `${saying}: ${last.line}` });
 });

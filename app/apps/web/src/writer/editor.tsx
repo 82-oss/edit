@@ -10,7 +10,7 @@ import { buildStatus, completeTranscription, correctWord, editProject, getChat, 
 import { navigate } from "../lib/route";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { Avatar } from "./avatar";
-import { MemoryChip } from "../components/MemoryChip";
+import { StatusChips } from "../components/MemoryChip";
 import { ProblemView } from "../components/ProblemView";
 import { UpdateButton } from "./update";
 import { DocsDialog } from "./docs-dialog";
@@ -609,7 +609,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           {saving && <span className={saving === "saved" ? "save-state ok" : "save-state"}>{saving === "saved" ? "Saved" : "Saving…"}</span>}
         </div>
         <div className="top-actions">
-          <MemoryChip />
+          <StatusChips />
           <UpdateButton />
           {working && (
             <span className="agent-working">

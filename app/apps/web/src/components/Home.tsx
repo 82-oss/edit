@@ -37,7 +37,7 @@ import { NewThumbnail } from "../thumbnails/new";
 import { Loader, Tile } from "./Logo";
 import { SetupCard } from "./SetupCard";
 import { StartedBy } from "./StartedBy";
-import { MemoryChip } from "./MemoryChip";
+import { StatusChips } from "./MemoryChip";
 import { UpdateButton } from "./UpdateButton";
 import { Button, ConfirmDialog, cx, Modal, Pulse, spring, Switch } from "./ui";
 import { isListed, promoteItem, TestBadge } from "./TestProjects";
@@ -555,7 +555,7 @@ export function Home() {
             </h1>
             )}
             <div className="ml-auto flex items-center gap-1.5">
-              <MemoryChip />
+              <StatusChips />
               <UpdateButton />
               {/* One main action a screen, in white (the user, Oct 30). */}
               {inIdeas ? (

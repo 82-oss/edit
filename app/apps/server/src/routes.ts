@@ -12,6 +12,7 @@ import * as diag from "./diag.ts";
 import { importDrive } from "./drive_import.ts";
 import * as busyNow from "./busy.ts";
 import * as remoteActions from "./remote_actions.ts";
+import * as youtube from "./youtube.ts";
 import * as youtubeSignIn from "./youtube_signin.ts";
 import * as problemReports from "./problem_reports.ts";
 import * as remoteControl from "./remote_control.ts";
@@ -197,6 +198,8 @@ export function buildRouter(): Router<App> {
     })
     // The YouTube sign-in from Chrome (youtube_signin.ts): how it stands, and a check that brings up the Mac's Keychain dialog.
     .get("/api/youtube/sign-in", () => json(youtubeSignIn.status()))
+    // What waits on YouTube turning Edit away, for the window's "Waiting on YouTube" chip (youtube.ts `waiting`).
+    .get("/api/youtube/waiting", () => json({ waiting: youtube.waiting() }))
     .post("/api/youtube/sign-in/check", async ({ app }) => json(await youtubeSignIn.check(app.store.home)))
     .post("/api/projects/{id}/exports/delete", deleteProjectExport);
   router

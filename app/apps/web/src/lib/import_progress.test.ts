@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { importProgress } from "./import_progress";
+import { importProgress, timeOfDay } from "./import_progress";
 import type { ScriptJob } from "./types";
 
 describe("a script import's lines", () => {
@@ -14,6 +14,17 @@ describe("a script import's lines", () => {
       ],
     };
     expect(importProgress(job).line).toBe(job.error);
+  });
+
+  it("a YouTube file waiting out YouTube turning Edit away says when it goes again, and a file tried again by itself says when", () => {
+    const at = new Date(2026, 10, 16, 14, 5).getTime();
+    const parked: ScriptJob = { state: "downloading", files: [{ file: "youtube:abcdefghijk", bytes: 0, state: "downloading", retry_at: at }, { file: "b", bytes: 10, total: 10, state: "done" }] };
+    expect(importProgress(parked).line).toBe(`YouTube turned Edit away · trying again at ${timeOfDay(at)}`);
+    const again: ScriptJob = { state: "downloading", files: [{ file: "a", bytes: 0, state: "failed", why: "passing", retry_at: at }, { file: "b", bytes: 10, total: 10, state: "done" }] };
+    expect(importProgress(again).line).toBe(`Trying a file again at ${timeOfDay(at)}`);
+    // While another file still comes down, the import says that.
+    const busy: ScriptJob = { state: "downloading", files: [{ file: "a", bytes: 0, state: "failed", why: "passing", retry_at: at }, { file: "b", bytes: 5, total: 10, state: "downloading" }] };
+    expect(importProgress(busy).line).toBe("Downloading footage · file 1 of 2");
   });
 
   it("waiting on the person still asks for them", () => {

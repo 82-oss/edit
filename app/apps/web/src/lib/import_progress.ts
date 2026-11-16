@@ -28,6 +28,14 @@ export function importProgress(job: ScriptJob): { fraction: number; line: string
     return { fraction: footage * 0.85, line: `Waiting for you: ${missing === 1 ? "one file" : `${missing} files`} couldn’t be downloaded` };
   }
   if (job.state === "done") return { fraction: 1, line: "Ready" };
+  // A YouTube file waiting out YouTube turning Edit away (a downloading file with a time): it goes again by itself.
+  const parked = files.find((file) => file.state === "downloading" && file.retry_at !== undefined);
+  if (parked?.retry_at !== undefined) return { fraction: footage * 0.85, line: `YouTube turned Edit away · trying again at ${timeOfDay(parked.retry_at)}` };
+  // Files that failed in a way that passes, tried again by themselves a little later.
+  const again = files.filter((file) => file.state === "failed" && file.retry_at !== undefined);
+  if (again.length > 0 && !files.some((file) => file.state === "downloading" || file.state === "cutting")) {
+    return { fraction: footage * 0.85, line: `Trying ${again.length === 1 ? "a file" : `${again.length} files`} again at ${timeOfDay(Math.min(...again.map((file) => file.retry_at!)))}` };
+  }
   const cutting = files.find((file) => file.state === "cutting" && file.cut);
   const line = cutting?.cut
     ? `Cutting excerpts · ${cutting.cut.done} of ${cutting.cut.total}`
@@ -36,3 +44,6 @@ export function importProgress(job: ScriptJob): { fraction: number; line: string
       : "Getting the footage ready";
   return { fraction: footage * 0.85, line: files.length > 1 ? `${line} · file ${Math.min(done + 1, files.length)} of ${files.length}` : line };
 }
+
+/** "2:05 PM" / "14:05", as this computer writes a time. */
+export const timeOfDay = (ms: number): string => new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
