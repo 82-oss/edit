@@ -153,7 +153,7 @@ export async function smooth(rife: Rife, input: string, start: number, length: n
     await tools.run([
       tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-framerate", rate(fps), "-i", join(made, "%08d.png"),
       "-vf", `scale=out_color_matrix=${matrix}:out_range=tv,format=yuv420p`, "-colorspace", matrix, "-color_range", "tv",
-      ...encode, "-movflags", "+faststart", out,
+      ...encode, ...tools.seekable(fps), "-movflags", "+faststart", out,
     ], { timeoutMs: left() });
   } finally {
     fs.rmSync(work, { recursive: true, force: true });

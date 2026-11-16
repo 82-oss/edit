@@ -119,6 +119,16 @@ export function hardwareH264(): string[] | null {
   return null;
 }
 
+/**
+ * The encoder's settings for footage Edit makes and then edits (maps,
+ * smoothed slow motion, RIFE's or FFmpeg's; libx264, NVENC and VideoToolbox
+ * alike): a keyframe every half second and no B-frames, as the previews are.
+ * x264's defaults put a keyframe every 250 frames, so a jump into a 12 s map
+ * decoded up to 90 frames first (436 ms in Edit.app's window, Nov 15, where a
+ * preview's jump takes 20–60 ms).
+ */
+export const seekable = (fps: number): string[] => ["-g", String(Math.max(1, Math.round(fps / 2))), "-bf", "0"];
+
 /** As `hardwareH264`, else libx264 at `veryfast`. */
 export function h264(): string[] {
   return hardwareH264() ?? ["-c:v", "libx264", "-preset", "veryfast"];

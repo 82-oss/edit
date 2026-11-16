@@ -22,6 +22,11 @@ test.skipIf(gpu === null)("a stretch slowed to a half at 30 fps comes out twice 
     );
     // 1.2 s of source slowed to a half is 2.4 s, at 30 fps: 72 frames; kept at the source's size (it's smaller than the frame).
     expect(probe.trim()).toBe("h264,640,360,30/1,72");
+    // Seekable as the previews are (tools.seekable): a keyframe every half second, no B-frames.
+    const kinds = new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-select_streams", "v", "-show_entries", "frame=pict_type", "-of", "csv=p=0", out]));
+    const types = kinds.trim().split("\n").map((line) => line.trim().replace(/,$/, ""));
+    expect(types.filter((type) => type === "B")).toEqual([]);
+    expect([0, 15, 30, 45, 60].every((n) => types[n] === "I")).toBe(true);
     expect(fs.existsSync(join(home, "work"))).toBe(false);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
