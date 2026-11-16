@@ -76,13 +76,19 @@ test.skipIf(chrome === null)("an effect on the timeline is rendered from its cod
     });
     // What every export does first: waits for it, rendering it now; an export waiting says how far it is.
     const going = seams.broll.waitForMaps(app, id, 90_000);
-    let line: string | null = null;
-    for (let wait = 0; wait < 400 && (line === null || !/of \d+ frames/.test(line)); wait++) {
-      line = effects.renderingLine(id);
-      await Bun.sleep(25);
+    // What it says while it waits: behind another test's render still drawing (CI's Mac), then its own frames.
+    const lines = new Set<string>();
+    let done = false;
+    void going.finally(() => (done = true));
+    while (!done) {
+      const line = effects.renderingLine(id);
+      if (line !== null) lines.add(line);
+      await Bun.sleep(10);
     }
-    expect(line).toMatch(/^rendering the bar effect · \d+ of 60 frames$/);
     await going;
+    expect(lines.size).toBeGreaterThan(0);
+    for (const line of lines) expect(line).toMatch(/^(rendering the bar effect( · \d+ of 60 frames)?|waiting behind .+'s render)$/);
+    expect([...lines].some((line) => / of 60 frames$/.test(line))).toBe(true);
     expect(effects.renderingLine(id)).toBeNull();
     media = app.store.get(id)!.project.media.find((one) => one.id === added.media)!;
     const key = effects.list(app.store, id)[0]!.key;
