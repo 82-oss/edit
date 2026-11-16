@@ -22,6 +22,7 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
+import * as channels from "./channels.ts";
 import * as diag from "./diag.ts";
 import { aheadFile, type ExportRegistry, listExports, optionsKey, timelineHash, withWatermarkKey } from "./exports.ts";
 import type { ExportOptions, Project } from "./model.ts";
@@ -96,7 +97,9 @@ export function tryNow(app: App, id: string): string | null {
     if (!seams.isUnavailable(error)) throw error;
   }
   if (pending.length > 0) return "slowed shots still smoothing";
-  const { options, watermark } = nextShare(app.store.home, id);
+  const { options, watermark: kept } = nextShare(app.store.home, id);
+  // As the share will (reviews.exportAndShare): a channel's project its channel's logo, or none.
+  const watermark = channels.watermarkFor(project, kept);
   if (upToDate(app.store.home, app.store.cacheDir(), project, options, watermark)) return "up to date";
   let other: string | null;
   try {

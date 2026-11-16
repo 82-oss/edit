@@ -51,6 +51,8 @@ const keptWhat = (): What => {
   return kept === "each" || kept === "joined" ? kept : "whole";
 };
 const HOUSE: Omit<ExportOptions, "range" | "chapters"> = { ...DEFAULTS, size: null, fps: null, preset: "youtube" };
+/** "Sam's Interrogations’ logo", "Inspector Ted’s logo". */
+const possessive = (name: string) => (/s$/iu.test(name) ? `${name}’` : `${name}’s`);
 
 export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const project = useEditor((state) => state.project);
@@ -64,9 +66,13 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   const [deleting, setDeleting] = useState<"ask" | "running" | null>(null);
   const mayDelete = useGrants().shares;
   // A channel's watermark on the export (Sphe, Nov 2: "a checkbox to include the watermark and we pick the channel"):
-  // the channels are the Watermarks folder's pictures; the project's last choice is the server's (review.watermark).
+  // a channel's project offers its channel's logo alone, or nothing when it has none (Sphe, Nov 16: "show watermarks
+  // when available for that specific channel"); a project of no channel picks from the Watermarks folder's pictures.
+  // What's offered and the project's last choice are the server's (channel_marks.ts, review.watermark).
   const [channels, setChannels] = useState<{ id: string; code: string; name: string }[] | null>(null);
+  const [usual, setUsual] = useState<string | null>(null);
   const [channelsFailed, setChannelsFailed] = useState<string | null>(null);
+  const own = Boolean(project?.channel);
   const [marked, setMarked] = useState(false);
   const [channel, setChannel] = useState<string | null>(null);
   const [markTouched, setMarkTouched] = useState(false);
@@ -91,14 +97,16 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
       // Shown whole, then.
       () => {},
     );
-    void api.watermarks().then(
+    if (!project?.id) return;
+    void api.watermarks(project.id).then(
       (given) => {
         setChannels(given.channels);
+        setUsual(given.usual ?? null);
         setChannelsFailed(null);
       },
       (error: Error) => setChannelsFailed(error.message),
     );
-  }, [open]);
+  }, [open, project?.id]);
   const batchRunning = batch !== null && !batch.finished;
   // The dialog opened (after a reload too): the last stretches' export shows, finished or not, with its Download (Sphe, Nov 12: "I refreshed ... it was just gone").
   const openedRef = useRef(false);
@@ -162,8 +170,10 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
     if (savedMark !== null) setChannel(savedMark);
   }, [review, savedMark, markTouched]);
   useEffect(() => {
-    if (channel === null && channels && channels.length > 0) setChannel((channels.find((one) => one.code === "SI") ?? channels[0]!).id);
-  }, [channels, channel]);
+    // A channel's project: its channel's logo, whatever was picked before.
+    if (own && channels) setChannel(channels[0]?.id ?? null);
+    else if (channel === null && channels && channels.length > 0) setChannel((channels.find((one) => one.id === usual) ?? channels[0]!).id);
+  }, [own, channels, channel, usual]);
 
   // A share that just finished: its link copied, said once.
   const [said, setSaid] = useState<string | null>(null);
@@ -432,37 +442,40 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
           </div>
         )}
 
-        <div className="mt-4 flex items-center gap-3 rounded-[10px] border border-line bg-panel px-3 py-2.5">
-          <label className="flex min-w-0 flex-1 items-center gap-2.5 text-[13px]" title="The channel's logo at 10%, moving around the frame like a DVD player's, over everything">
-            <input
-              type="checkbox"
-              checked={marked}
-              disabled={busy || channels === null || channels.length === 0}
-              onChange={(event) => {
-                setMarkTouched(true);
-                setMarked(event.target.checked);
-              }}
-            />
-            <span className="min-w-0">
-              <span className="block text-fg">Watermark</span>
-              <span className="block text-[12px] leading-snug text-muted">
-                {channelsFailed ? `The channels didn’t load: ${channelsFailed}` : channels === null ? "Loading the channels…" : channels.length === 0 ? "No channels in the Watermarks folder" : "The channel’s logo at 10%, moving around the frame"}
+        {/* A channel's project whose channel has no watermark: no watermark at all (shown while it's read only if reading it failed). */}
+        {(!own || channelsFailed !== null || (channels !== null && channels.length > 0)) && (
+          <div className="mt-4 flex items-center gap-3 rounded-[10px] border border-line bg-panel px-3 py-2.5">
+            <label className="flex min-w-0 flex-1 items-center gap-2.5 text-[13px]" title="The channel's logo at 10%, moving around the frame like a DVD player's, over everything">
+              <input
+                type="checkbox"
+                checked={marked}
+                disabled={busy || channels === null || channels.length === 0}
+                onChange={(event) => {
+                  setMarkTouched(true);
+                  setMarked(event.target.checked);
+                }}
+              />
+              <span className="min-w-0">
+                <span className="block text-fg">Watermark</span>
+                <span className="block text-[12px] leading-snug text-muted">
+                  {channelsFailed ? `The channels didn’t load: ${channelsFailed}` : channels === null ? "Loading the channels…" : channels.length === 0 ? "No channels in the Watermarks folder" : own ? `${possessive(channels[0]!.name)} logo at 10%, moving around the frame` : "The channel’s logo at 10%, moving around the frame"}
+                </span>
               </span>
-            </span>
-          </label>
-          {channels && channels.length > 0 && channel !== null && (
-            <Select
-              value={channel}
-              options={channels.map((one) => ({ value: one.id, label: one.name }))}
-              onChange={(value) => {
-                setMarkTouched(true);
-                setChannel(value);
-                setMarked(true);
-              }}
-              className={cx("h-[30px] min-w-[150px] shrink-0 justify-between rounded-lg border border-line-strong bg-bg pr-2.5 pl-3 text-[13px] hover:border-muted", !marked && "opacity-50")}
-            />
-          )}
-        </div>
+            </label>
+            {!own && channels && channels.length > 0 && channel !== null && (
+              <Select
+                value={channel}
+                options={channels.map((one) => ({ value: one.id, label: one.name }))}
+                onChange={(value) => {
+                  setMarkTouched(true);
+                  setChannel(value);
+                  setMarked(true);
+                }}
+                className={cx("h-[30px] min-w-[150px] shrink-0 justify-between rounded-lg border border-line-strong bg-bg pr-2.5 pl-3 text-[13px] hover:border-muted", !marked && "opacity-50")}
+              />
+            )}
+          </div>
+        )}
 
         {/* An Export's file, where it is (JJ, Nov 10: "save it locally and display where it is saved"). */}
         {showBatch && batch.finished && !batch.error && !batch.cancelled && batch.outputs.length > 0 && (

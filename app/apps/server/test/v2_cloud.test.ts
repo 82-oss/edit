@@ -735,3 +735,31 @@ test("a put-away channel's projects keep its group's teaching, and it's never li
     cleanup();
   }
 });
+
+test("a teacher links a channel to its watermark's picture on its page, and takes it off; a channel's export offer follows it", async () => {
+  const { app, cleanup } = fixtureHome("v2-channel-watermark");
+  const router = buildRouter();
+  const ask = async (method: string, path: string, body?: unknown) => {
+    const response = (await respond(app, router, new Request(`http://localhost:7700${path}`, { method, headers: { host: "localhost:7700", "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }), null))!;
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  };
+  try {
+    mock.cloud.convex.channels = [{ ...COMPILATIONS }];
+    expect((await ask("PUT", "/api/channels/ch-samcompila", { watermark: "pic-sc" })).body).toMatchObject({ channel: { key: "ch-samcompila", watermark: "pic-sc" } });
+    expect(mock.cloud.convex.channels[0]).toMatchObject({ watermark: "pic-sc", compilation: true });
+    // Read again at the next ask (it was just changed here).
+    await channels.refresh();
+    expect(channels.watermarkFor({ channel: "ch-samcompila" }, "pic-si")).toBe("pic-sc");
+    expect((await ask("PUT", "/api/channels/ch-samcompila", { watermark: 3 })).status).toBe(400);
+    expect((await ask("PUT", "/api/channels/ch-samcompila", { watermark: null })).body).toMatchObject({ channel: { watermark: null } });
+    await channels.refresh();
+    expect(channels.watermarkFor({ channel: "ch-samcompila" }, "pic-sc")).toBeUndefined();
+    // Not a teacher: refused before the cloud is asked.
+    accounts.signedInForTests(["edit.bodycam", "channel.ch-samcompila"]);
+    expect((await ask("PUT", "/api/channels/ch-samcompila", { watermark: "pic-sc" })).status).toBe(403);
+  } finally {
+    mock.cloud.convex.channels = [];
+    channels.useChannelsForTests([]);
+    cleanup();
+  }
+});

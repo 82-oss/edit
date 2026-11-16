@@ -40,6 +40,8 @@ export interface Channel {
   /** Who narrates its videos; null until it's set up. */
   narration: Narration | null;
   compilation: boolean;
+  /** Its watermark: its logo's Drive id in the Watermarks folder, put on its exports; null or missing: none, so its exports offer none. */
+  watermark?: string | null;
   lanes: Record<Lane, string>;
   /** Its group's key, or null. */
   group?: string | null;
@@ -131,7 +133,7 @@ export const channelApi = {
   addPlaceholder: (title: string) => request<{ channel: Channel }>("POST", "/api/channels", { title }).then((answer) => keep(answer.channel)),
   /** A placeholder linked to its YouTube channel: its teaching stays. */
   link: (key: string, url: string) => request<{ channel: Channel }>("POST", `/api/channels/${key}/link`, { url }).then((answer) => keep(answer.channel)),
-  set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>>; label?: string }) =>
+  set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>>; label?: string; watermark?: string | null }) =>
     request<{ channel: Channel }>("PUT", `/api/channels/${key}`, change).then((answer) => keep(answer.channel)),
   /** A channel with what each lane has been taught, and its group's. */
   page: (key: string) => request<{ channel: Channel; taught: Record<Lane, Taught[]>; group: (Group & { taught: Record<Lane, Taught[]> }) | null; teacher: boolean }>("GET", `/api/channels/${key}`),

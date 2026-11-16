@@ -10,6 +10,7 @@
 import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
+import * as channels from "./channels.ts";
 import * as diag from "./diag.ts";
 import { exportsDir } from "./export_folder.ts";
 import { chunkFolder, listExports, listMade, unlist } from "./exports.ts";
@@ -369,7 +370,9 @@ export function routes(router: Router<App>): void {
       if (mode === null) throw bad("mode is each or joined");
       const options: ExportOptions = { ...app.native.exportDefaults(), ...((given.options ?? {}) as Partial<ExportOptions>) };
       try {
-        return json(exportRanges(app, live.project, options, mode, typeof given.watermark === "string" && given.watermark !== "" ? given.watermark : null));
+        // A channel's project carries its channel's own logo, or none (channels.watermarkFor).
+        const mark = await channels.watermarkOf(live.project, typeof given.watermark === "string" && given.watermark !== "" ? given.watermark : undefined);
+        return json(exportRanges(app, live.project, options, mode, mark ?? null));
       } catch (error) {
         throw bad(diag.messageOf(error));
       }

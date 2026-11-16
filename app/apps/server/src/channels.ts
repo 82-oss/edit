@@ -26,7 +26,7 @@
 //   POST   /api/channels                {url} or {title} → {channel}: added, or a placeholder by its name (a teacher's)
 //   POST   /api/channels/{key}/link     {url} → {channel}: a placeholder linked to its YouTube channel
 //   GET    /api/channels/{key}          {channel, taught: {<lane>: [what its agent knows]}, teacher}
-//   PUT    /api/channels/{key}          {narration?, compilation?, lanes?, label?} → {channel}
+//   PUT    /api/channels/{key}          {narration?, compilation?, lanes?, label?, watermark?} → {channel}
 //   DELETE /api/channels/{key}          put away (its teaching kept)
 //   POST   /api/channels/{key}/restore  brought back (an admin, or who sees it in full)
 //   GET    /api/channels/voices         {voices, used}: who could narrate, and who narrates for whom already
@@ -85,6 +85,14 @@ export interface Channel {
   /** Who narrates its videos; null until it's set up. */
   narration: Narration | null;
   compilation: boolean;
+  /**
+   * Its watermark (Sphe, Nov 16: "show watermarks when available for that
+   * specific channel"): its picture's Drive id in the Watermarks folder
+   * (channel_marks.ts), linked to the channel, never its name. null: none, so
+   * its exports offer none (seen by its label alone too); missing from a
+   * mamagi before watermarks.
+   */
+  watermark?: string | null;
   lanes: Record<Lane, string>;
   archived: boolean;
   /** Its group's key (missing from a mamagi before groups). */
@@ -231,6 +239,25 @@ export function groupText(channel: string, word: string): string {
 /** A project's channel, as last read (null: none, or not read yet). */
 export function channelOf(project: { channel?: string | null }): Channel | null {
   return typeof project.channel === "string" && project.channel !== "" ? (known.find((one) => one.key === project.channel) ?? null) : null;
+}
+
+/**
+ * The watermark a project's exports carry, from the one picked (a picture's
+ * Drive id; undefined: none): a channel's project its channel's own picture
+ * when one is picked and the channel has one, else none (a GTA 6 project was
+ * offered Sams Interrogations', Nov 16); a project of no channel, or one whose
+ * channel isn't read, the one picked.
+ */
+export function watermarkFor(project: { channel?: string | null }, picked: string | undefined): string | undefined {
+  const channel = channelOf(project);
+  if (channel === null || picked === undefined) return picked;
+  return typeof channel.watermark === "string" && channel.watermark !== "" ? channel.watermark : undefined;
+}
+
+/** `watermarkFor` with the channels read again first when they're older than 30 s (an export about to start). */
+export async function watermarkOf(project: { channel?: string | null }, picked: string | undefined): Promise<string | undefined> {
+  if (picked !== undefined && typeof project.channel === "string" && project.channel !== "") await refresh();
+  return watermarkFor(project, picked);
 }
 
 /** The read under way, which every caller shares (a turn starting while another's read was out got no channels, so no group). */
@@ -504,8 +531,10 @@ export function routes(router: Router<App>): void {
     })
     .put("/api/channels/{key}", async (context: RouteContext<App>) => {
       needTeacher();
-      const given = await readJson<{ narration?: unknown; compilation?: unknown; lanes?: unknown; label?: unknown }>(context);
+      const given = await readJson<{ narration?: unknown; compilation?: unknown; lanes?: unknown; label?: unknown; watermark?: unknown }>(context);
       if (given.label !== undefined && typeof given.label !== "string") throw bad("label is what someone allowed only its label sees");
+      // Its picture in the Watermarks folder (the channel page's picker lists them), or null for none.
+      if (given.watermark !== undefined && given.watermark !== null && (typeof given.watermark !== "string" || given.watermark === "")) throw bad("watermark is its picture's Drive id in the Watermarks folder, or null for none");
       const narration = narrationOf(given.narration);
       if (given.compilation !== undefined && typeof given.compilation !== "boolean") throw bad("compilation is true or false");
       const lanes: Partial<Record<Lane, string>> = {};
@@ -518,7 +547,7 @@ export function routes(router: Router<App>): void {
           lanes[lane] = text;
         }
       }
-      const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key: context.params.key!, ...(narration !== undefined ? { narration } : {}), ...(given.compilation !== undefined ? { compilation: given.compilation } : {}), ...(given.lanes !== undefined ? { lanes } : {}), ...(typeof given.label === "string" ? { label: given.label } : {}) })) as Channel);
+      const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key: context.params.key!, ...(narration !== undefined ? { narration } : {}), ...(given.compilation !== undefined ? { compilation: given.compilation } : {}), ...(given.lanes !== undefined ? { lanes } : {}), ...(typeof given.label === "string" ? { label: given.label } : {}), ...(given.watermark !== undefined ? { watermark: given.watermark } : {}) })) as Channel);
       forget();
       return json({ channel });
     })

@@ -427,6 +427,15 @@ export class ConvexMock {
         return args.archived === true ? this.channels : this.channels.filter((one) => one.archived !== true);
       case "getChannel":
         return this.channels.find((one) => one.key === args.key) ?? null;
+      case "setChannel": {
+        // What's left out stays; a watermark of null takes it off (accounts' channels.ts).
+        const row = this.channels.find((one) => one.key === args.key);
+        if (row === undefined) throw new Fail("invalid", `no channel ${String(args.key)}.`);
+        for (const field of ["narration", "compilation", "label"] as const) if (args[field] !== undefined) row[field] = args[field];
+        if (args.lanes !== undefined) row.lanes = { ...(row.lanes as object), ...(args.lanes as object) };
+        if (args.watermark !== undefined) row.watermark = args.watermark;
+        return row;
+      }
       case "archiveChannel": {
         const row = this.channels.find((one) => one.key === args.key);
         if (row === undefined) throw new Fail("invalid", `no channel ${String(args.key)}.`);

@@ -1071,8 +1071,10 @@ async function startExport(context: Context): Promise<Response> {
   }
   const output = path !== null && path.trim() !== "" ? expandHome(path) : defaultExportPath(app.store, liveOr404(app, id).project);
   // Taken once what it shows is ready (the edit as it is then), however long its effects and map shots take.
+  // A channel's project carries its channel's own logo, or none (channels.watermarkFor).
+  const mark = await channels.watermarkOf(liveOr404(app, id).project, watermark === null || watermark === "" ? undefined : watermark);
   return whenReady(app, id, app.native.withExtension(output, options.format), () =>
-    app.exports.start(app.store, app.library, liveOr404(app, id).project, options, output, { ...(drive === null ? {} : { drive }), ...(keepLocal === true ? { keepLocal: true } : {}), ...(watermark === null || watermark === "" ? {} : { watermark }) }),
+    app.exports.start(app.store, app.library, liveOr404(app, id).project, options, output, { ...(drive === null ? {} : { drive }), ...(keepLocal === true ? { keepLocal: true } : {}), ...(mark === undefined ? {} : { watermark: mark }) }),
   );
 }
 

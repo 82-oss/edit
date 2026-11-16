@@ -36,13 +36,14 @@ import {
   type Lane,
   type Taught,
 } from "../lib/channels";
+import { api } from "../lib/api";
 import { thumbnailsApi } from "../lib/thumbnails";
 import { useEditor } from "../lib/store";
 import { AddChannel, AddToGroup, ChannelAvatar, ChannelsFailed, facts, GroupAvatar, InPlace, LABEL, LabelField, LinkChannel, MakeGroup, TAUGHT_WORD, useVoices } from "./Channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { COLUMNS, NAME, PILL, ROW } from "./HomeTable";
 import { Loader } from "./Logo";
-import { Button, ConfirmDialog, cx, IconButton, spring, Switch } from "./ui";
+import { Button, ConfirmDialog, cx, IconButton, Select, spring, Switch } from "./ui";
 import { VoicePicker } from "./VoicePicker";
 
 /** A piece of work for a channel that isn't done, as Home lists it. */
@@ -660,6 +661,42 @@ function Compilation({ channel, boxed = false }: { channel: Channel; boxed?: boo
 }
 
 /**
+ * Its watermark (Sphe, Nov 16: "show watermarks when available for that
+ * specific channel"): its logo, picked from the Watermarks folder's pictures,
+ * is what its projects' exports offer; None, they offer nothing. A teacher's
+ * to pick, linked to the channel (not its name), so nobody else sees it here.
+ */
+function Watermark({ channel }: { channel: Channel }) {
+  const [pictures, setPictures] = useState<{ id: string; name: string }[] | null>(null);
+  useEffect(() => {
+    let live = true;
+    void api.watermarks().then(
+      (given) => live && setPictures(given.channels),
+      () => live && setPictures([]),
+    );
+    return () => {
+      live = false;
+    };
+  }, []);
+  const value = channel.watermark ?? "";
+  const options = [{ value: "", label: "None" }, ...(pictures ?? []).map((one) => ({ value: one.id, label: one.name }))];
+  // Its own before the folder is read, or once it's left the folder.
+  if (value !== "" && !options.some((one) => one.value === value)) options.push({ value, label: pictures === null ? "…" : "Not in the folder" });
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[13px] font-medium">Watermark</span>
+      <Select
+        value={value}
+        options={options}
+        onChange={(picked) => change(channel, "watermark", { watermark: picked === "" ? null : picked })}
+        className="h-[30px] min-w-[140px] shrink-0 justify-between rounded-lg border border-line-strong bg-bg pr-2.5 pl-3 text-[13px] hover:border-muted"
+        menuWidth={200}
+      />
+    </div>
+  );
+}
+
+/**
  * A channel's page: its banner, picture and YouTube facts; its lanes, each
  * with what comes from its group and what's its alone (which a teacher moves
  * into the group); its settings, who it's grouped with, and what's in
@@ -793,6 +830,7 @@ function ChannelPage({ channel, group, work }: { channel: Channel; group: { grou
                   <Narrator channel={channel} />
                 </div>
                 <Compilation channel={channel} />
+                {teacher && channel.masked !== true && <Watermark channel={channel} />}
                 {/* What someone given only its label sees for its name (accounts.spheceo.com), set by a teacher. */}
                 {teacher && channel.masked !== true && (
                   <div className="border-t border-line pt-3">

@@ -22,6 +22,7 @@ import { Deferred, Effect, Exit } from "effect";
 
 import type { App } from "./app.ts";
 import * as archive from "./archive.ts";
+import * as channels from "./channels.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as accounts from "./accounts.ts";
@@ -553,7 +554,10 @@ export async function exportAndShare(app: App, projectId: string, options: Parti
       state.shareWatermark = { ...state.shareWatermark, [projectId]: watermark };
     }
   });
-  const mark = read(home).shareWatermark?.[projectId];
+  // A channel's project carries its channel's own logo, or none (channels.watermarkFor).
+  const live = app.store.get(projectId);
+  const kept = read(home).shareWatermark?.[projectId];
+  const mark = live === null ? kept : await channels.watermarkOf(live.project, kept);
   const from = fixes === undefined ? undefined : jobs.keyOf("fix", projectId);
   return startShare(app, projectId, { export: { options, ...(mark === undefined ? {} : { watermark: mark }) }, ...(replace ? { replace } : {}), ...(note === undefined ? {} : { note }), ...(fixes === undefined ? {} : { fixes }) }, from);
 }
@@ -2410,7 +2414,7 @@ export function view(app: App, projectId: string): unknown {
     sharing: now.line,
     share: now.share,
     // The channel whose watermark its shares carry (a picture id in the Watermarks folder), or none.
-    watermark: state.shareWatermark?.[projectId] ?? null,
+    watermark: (live === null ? state.shareWatermark?.[projectId] : channels.watermarkFor(live.project, state.shareWatermark?.[projectId])) ?? null,
     review: shared === undefined ? null : { url: shared.url, versions: shared.versions.map((one) => ({ n: one.n, path: one.path })), approved: shared.approved ?? null },
     // What the next share makes (the dialog's button says it): the server's own rule, never worked out again on the page.
     next: shared === undefined ? null : nextShare(app.store.home, projectId),

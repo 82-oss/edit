@@ -1,9 +1,14 @@
 // A channel's watermark on the final video (Sphe, Nov 2: "once we do the
 // FINAL export and are happy we have a checkbox to include the watermark and
 // we pick the channel. so the opacity is like 20% and the logo moves around
-// the screen like the dvd player"). The channels are the pictures in the
-// team's Watermarks folder on Drive, one per channel (`SI_watermark.png` is
-// Sams Interrogations), so a new channel is a new picture there, nothing here.
+// the screen like the dvd player"). The logos are the pictures in the team's
+// Watermarks folder on Drive. A channel (channels.ts) is linked to its picture
+// by the picture's Drive id, set on its page by a teacher (Sphe, Nov 16: "it's
+// linked to a channel"), so a renamed channel keeps its logo and nothing here
+// names one. A channel's project offers its channel's logo alone, or nothing
+// when it has none; a project of no channel (V1's, a niche's) still picks from
+// the folder's pictures, each named by the channel linked to it when this
+// person sees that channel, else by its file's name (`SI_watermark.png` → SI).
 //
 // The logo goes on the timeline being exported, not into the project: a
 // locked top track over everything (subtitles too), at 10%, its x and y
@@ -16,19 +21,23 @@
 // reused case's footage. The bounce runs across the whole export, so the
 // logo comes back after a cut-in where it would have been.
 //
-//   GET /api/watermarks    {channels: [{id, code, name}]}: the folder's pictures
+//   GET /api/watermarks?project=   a channel's project: {channel: {key, name}, channels: [its picture] or []};
+//                                  else {channel: null, channels: [{id, code, name}], usual}: the folder's
+//                                  pictures, and the one to start on (`usual`)
 
 import * as fs from "node:fs";
 
 import * as diag from "./diag.ts";
 import type { App } from "./app.ts";
-import { json } from "./http/errors.ts";
+import * as channelList from "./channels.ts";
+import { bad, json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
 import { curl, driveError, encode, quote } from "./library.ts";
 import type { Clip, Keyframe, Media, Plan, Project, Sections, Track } from "./model.ts";
 import { native } from "./native/index.ts";
 import { join } from "./paths.ts";
 import { clipEnd, reusedScriptBlock, reusedSpans } from "./project.ts";
+import { read as reviewState } from "./reviews.ts";
 import { jsonForSerde, serdeParse } from "./rust.ts";
 import * as seams from "./seams.ts";
 
@@ -36,9 +45,6 @@ const API = "https://www.googleapis.com/drive/v3";
 
 /** The team's Watermarks folder (Drive): one picture per channel. */
 export const FOLDER = "1E1I0ykeqXFqrjIcU8P6fQEXgNBwdS6OU";
-
-/** What a channel's short name in its file stands for, when the team has said. */
-const NAMES: Record<string, string> = { SI: "Sams Interrogations" };
 
 /** How the logo looks and moves, as the team asked: 10%, a DVD player's bounce. */
 export const LOOK = {
@@ -55,21 +61,22 @@ export const LOOK = {
 /** The track and clip the watermark is, on the exported timeline only. */
 export const TRACK = "watermark";
 
+/** A picture in the Watermarks folder: a channel's logo. */
 export interface Channel {
-  /** The picture's Drive file id. */
+  /** The picture's Drive file id: what a channel is linked to. */
   id: string;
   /** Its short name, from the file's ("SI"). */
   code: string;
-  /** What the menu says ("Sams Interrogations"). */
+  /** Its file's name in words ("SI", "Inspector Ted"); the menu says the linked channel's when there is one. */
   name: string;
   /** Drive's checksum: a changed picture is fetched again. */
   md5?: string;
 }
 
-/** A Watermarks folder picture as a channel: `SI_watermark.png` → SI, Sams Interrogations; `InspectorTed_watermark_under.png` → Inspector Ted. */
+/** A Watermarks folder picture: `SI_watermark.png` → SI; `InspectorTed_watermark_under.png` → Inspector Ted. */
 export function channelOf(file: { id: string; name: string; md5Checksum?: string }): Channel {
   const code = file.name.replace(/\.[a-z0-9]+$/iu, "").replace(/[_ -]*watermark.*$/iu, "").trim() || file.name;
-  const name = NAMES[code] ?? code.replace(/([a-z])([A-Z])/gu, "$1 $2");
+  const name = code.replace(/([a-z])([A-Z])/gu, "$1 $2");
   return { id: file.id, code, name, ...(file.md5Checksum ? { md5: file.md5Checksum } : {}) };
 }
 
@@ -269,6 +276,44 @@ export async function addWatermark(app: Pick<App, "library">, cacheDir: string, 
   return withWatermark(project, plan, logo, spans);
 }
 
+/** What the Export dialog offers. */
+export type Offer = { channel: { key: string; name: string } | null; channels: Pick<Channel, "id" | "code" | "name">[]; usual?: string | null };
+
+/**
+ * What a project's Export dialog offers (`given`: the folder's pictures; the
+ * channels as last read). A channel's project: its channel's logo alone,
+ * named by the channel as it's called now, or nothing when it has none (or
+ * its picture left the folder). A project of no channel: every picture, by
+ * its linked channel's name when this person sees that channel, the one
+ * picked most on this computer to start on (`picked`: each project's last),
+ * else one linked to a channel.
+ */
+export function offerFor(project: { channel?: string | null } | null, given: Channel[], picked: string[] = []): Offer {
+  const shown = (one: Channel, name = one.name) => ({ id: one.id, code: one.code, name });
+  if (project !== null && typeof project.channel === "string" && project.channel !== "") {
+    const channel = channelList.channelOf(project);
+    if (channel === null) throw bad("Its channel couldn't be read: try again in a moment.");
+    const logo = given.find((one) => one.id === channel.watermark);
+    return { channel: { key: channel.key, name: channel.title }, channels: logo === undefined ? [] : [shown(logo, channel.title)] };
+  }
+  const linked = new Map(channelList.knownChannels().flatMap((one) => (typeof one.watermark === "string" && !one.archived && one.masked !== true ? [[one.watermark, one.title] as const] : [])));
+  const named = given.map((one) => shown(one, linked.get(one.id) ?? one.name)).sort((a, b) => a.name.localeCompare(b.name));
+  const counts = new Map<string, number>();
+  for (const id of picked) if (named.some((one) => one.id === id)) counts.set(id, (counts.get(id) ?? 0) + 1);
+  const most = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+  return { channel: null, channels: named, usual: most ?? named.find((one) => linked.has(one.id))?.id ?? null };
+}
+
 export function routes(router: Router<App>): void {
-  router.get("/api/watermarks", async ({ app }) => json({ channels: (await channels(app.library)).map(({ id, code, name }) => ({ id, code, name })) }));
+  router.get("/api/watermarks", async ({ app, url }) => {
+    const id = url.searchParams.get("project");
+    const project = id === null || id === "" ? null : (app.store.get(id)?.project ?? null);
+    const [given] = await Promise.all([channels(app.library), channelList.refresh()]);
+    return json(offerFor(project, given, Object.values(reviewState(app.store.home).shareWatermark ?? {})));
+  });
+}
+
+/** Tests: the folder's pictures as given, as if just listed. */
+export function usePicturesForTests(given: Channel[]): void {
+  listed = { at: Date.now(), channels: given };
 }

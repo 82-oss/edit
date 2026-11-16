@@ -340,8 +340,14 @@ export const api = {
   /** `options` null: the last Share's settings. `watermark`: a channel's picture id, or null for none; left out, the last Share's. */
   shareProject: (id: string, options: ExportOptions | null, replace = false, byRule = false, watermark?: string | null) =>
     request<{ started?: boolean; url?: string; version?: number }>("POST", `/api/projects/${id}/share`, { ...(options === null ? {} : { options }), replace, byRule, ...(watermark === undefined ? {} : { watermark }) }),
-  /** The channels with a watermark: the pictures in the team's Watermarks folder on Drive. */
-  watermarks: () => request<{ channels: { id: string; code: string; name: string }[] }>("GET", "/api/watermarks"),
+  /**
+   * The watermarks `project`'s Export offers (channel_marks.ts): a channel's
+   * project its channel's logo alone, or none (`channel` set); a project of
+   * no channel, or none given, every picture in the team's Watermarks folder,
+   * and the one to start on (`usual`).
+   */
+  watermarks: (project?: string) =>
+    request<{ channel: { key: string; name: string } | null; channels: { id: string; code: string; name: string }[]; usual?: string | null }>("GET", `/api/watermarks${project ? `?project=${encodeURIComponent(project)}` : ""}`),
   /** A reset the agent is asking about (`reset_edit`), and the user's answer to it. */
   resetAsked: (id: string) => request<{ pending: { asked_ms: number } | null }>("GET", `/api/projects/${id}/reset`),
   answerReset: (id: string, accept: boolean) => request<{ answered: boolean }>("POST", `/api/projects/${id}/reset`, { accept }),
@@ -467,7 +473,7 @@ export interface Review {
   sharing: string | null;
   /** How the last share stands; "Up on the link" only once it's `done`. */
   share?: ShareState | null;
-  /** The channel whose watermark this project's shares carry (a picture id in the Watermarks folder), or none. */
+  /** The watermark this project's shares carry (a picture id in the Watermarks folder; a channel's project its channel's), or none. */
   watermark?: string | null;
   review: { url: string; versions: { n: number; path: string }[]; approved: { version: number; by: string; at: number } | null } | null;
   /** What the next share makes: its version, and whether it replaces the latest (no reviewer comments on it). Null before the first. */

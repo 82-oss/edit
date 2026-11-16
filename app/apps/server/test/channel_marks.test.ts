@@ -16,8 +16,8 @@ const valueAt = (keys: Keyframe[], frame: number): number => {
   return a.value + ((b.value - a.value) * (frame - a.frame)) / (b.frame - a.frame);
 };
 
-test("a channel is named from its picture in the Watermarks folder", () => {
-  expect(channelOf({ id: "a", name: "SI_watermark.png" })).toEqual({ id: "a", code: "SI", name: "Sams Interrogations" });
+test("a picture in the Watermarks folder is named from its file (a channel linked to it names it in the menu: channel_watermark.test.ts)", () => {
+  expect(channelOf({ id: "a", name: "SI_watermark.png" })).toEqual({ id: "a", code: "SI", name: "SI" });
   expect(channelOf({ id: "b", name: "SB_watermark.png", md5Checksum: "f00" })).toEqual({ id: "b", code: "SB", name: "SB", md5: "f00" });
   expect(channelOf({ id: "c", name: "InspectorTed_watermark_under.png" }).name).toBe("Inspector Ted");
 });
