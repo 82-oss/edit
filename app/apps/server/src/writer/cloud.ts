@@ -53,6 +53,11 @@ const TICK_MS = 3_000;
 const PULL_EVERY_MS = 30_000;
 /** A save is pushed once the script has been still this long. */
 const SETTLE_MS = 2_000;
+let settleMs = SETTLE_MS;
+/** How long a save waits to be pushed (tests, which wait it out between saves); null puts it back. */
+export const settleForTests = (ms: number | null): void => {
+  settleMs = ms ?? SETTLE_MS;
+};
 const PREFIX = "writer/scripts";
 /** Files bigger than this go up in parts of PART_SIZE. */
 const MULTIPART_OVER = 100_000_000;
@@ -781,7 +786,7 @@ async function tick(data: string, pull: boolean): Promise<number> {
     } catch {
       continue;
     }
-    if (script.status === "processing" || Date.now() - script.updatedAt < SETTLE_MS) {
+    if (script.status === "processing" || Date.now() - script.updatedAt < settleMs) {
       waiting++;
       continue;
     }

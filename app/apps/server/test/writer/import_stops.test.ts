@@ -54,8 +54,9 @@ test.skipIf(ffmpeg === null)("an import whose words fail stops its preview too, 
   const { dir, app, cleanup } = fixtureHome("import-stops");
   try {
     // 8 minutes of sound: its preview (sound over black) takes a while to make (20 minutes ran past the test's time in the full suite).
+    // AAC's fast coder makes the same file in a quarter of the time (0.9 s, not 3.3).
     const source = `${dir}/interview.m4a`;
-    expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=480", "-c:a", "aac", "-b:a", "32k", source]).exitCode).toBe(0);
+    expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=480", "-c:a", "aac", "-aac_coder", "fast", "-b:a", "32k", source]).exitCode).toBe(0);
     // The relay refuses at once (a quota): not asked again, so the words fail long before the preview is made.
     mock.on("POST", "/v1/transcribe", () => Response.json({ detail: { message: "quota exceeded" } }, { status: 402 }));
     const data = store.dataDir(app.store.home);

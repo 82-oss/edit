@@ -177,10 +177,10 @@ test("Script mode takes what Edit already heard of a recording: all of it as its
   }
 });
 
-/** A 10-minute recording and its media. */
+/** A 10-minute recording and its media (AAC's fast coder: the same file in half the time). */
 function tape(dir: string, name: string): Media {
   const path = `${dir}/${name}.m4a`;
-  expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=600", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "16k", path]).exitCode).toBe(0);
+  expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=600", "-ac", "1", "-ar", "16000", "-c:a", "aac", "-aac_coder", "fast", "-b:a", "16k", path]).exitCode).toBe(0);
   return { id: name, name, path, kind: "video", duration: 600, width: 0, height: 0, fps: 0, has_audio: true } as Media;
 }
 

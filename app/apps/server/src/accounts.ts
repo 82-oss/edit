@@ -508,6 +508,9 @@ const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 /** The device sign-in being polled (one at a time). */
 let polling: Promise<void> | null = null;
 
+/** How much longer each poll waits once the site says `slow_down` (RFC 8628's 5 s; tests make it short). */
+export const devicePace = { slowDownMs: 5_000 };
+
 /**
  * A sign-in for an Edit with no browser of its own (headless `edit serve`,
  * Edit used over Tailscale): RFC 8628's device grant. The accounts site
@@ -564,7 +567,7 @@ export async function beginDevice(app: App, via: string): Promise<NonNullable<St
       const error = answer.value.error ?? "";
       if (error === "authorization_pending") continue;
       if (error === "slow_down") {
-        wait += 5_000;
+        wait += devicePace.slowDownMs;
         continue;
       }
       if (answer.status === 429) {

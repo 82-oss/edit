@@ -369,12 +369,13 @@ test("the background fill's piece gives way to one someone is waiting on, and is
 
 test("FFmpeg reads a pieced proxy's picture and sound together, from its start and after a seek", async () => {
   // 150 s of picture and a tone: three pieces. Their pictures as makeVideo leaves them (from libx264 here,
-  // VideoToolbox in Edit: a keyframe at each piece's start, no B-frames); their sound made as it's read.
+  // VideoToolbox in Edit: High 4:2:0, a keyframe at each piece's start, no B-frames); their sound made as it's read.
+  // On libx264's veryfast: made in under half the time, and what's read of it is the same.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pieces-ffmpeg-"));
   const original = path.join(root, "original.mp4");
   const made = Bun.spawnSync([
     "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30:duration=150", "-f", "lavfi", "-i", "sine=frequency=440:duration=150",
-    "-c:v", "libx264", "-bf", "0", "-g", "15", "-force_key_frames", "expr:gte(t,n_forced*60)", "-c:a", "aac", original,
+    "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-bf", "0", "-g", "15", "-force_key_frames", "expr:gte(t,n_forced*60)", "-c:a", "aac", original,
   ]);
   expect(made.exitCode).toBe(0);
   const layout = pieces.plan("sha256:ff", "k", 150, 30, 320, 180, true);

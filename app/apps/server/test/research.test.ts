@@ -37,7 +37,7 @@ test("decodes_duckduckgo_links", () => {
 const ffmpeg = Bun.which("ffmpeg");
 let mock: MockServer;
 let restore: () => void;
-const dump = hooks.dump;
+const { dump, againAfterMs } = hooks;
 let photo: Uint8Array = new Uint8Array();
 let tiny: Uint8Array = new Uint8Array();
 
@@ -66,7 +66,7 @@ afterAll(() => {
 });
 
 afterEach(() => {
-  hooks.dump = dump;
+  Object.assign(hooks, { dump, againAfterMs });
   research.forgetPages();
 });
 
@@ -266,6 +266,8 @@ test("research images are pooled once and the pool keeps only what a project lin
 test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)("collect_images keeps the other queries' pictures when one page never loads", async () => {
   // Loop 7's holdout on a busy Mac: one slow page failed the whole call twice.
   const { app, cleanup } = fixtureHome("research-collect-slow");
+  // The page is asked again 50 ms after it ran out of time, not Edit's 5 s.
+  hooks.againAfterMs = 50;
   try {
     app.store.create("Case", { width: 1920, height: 1080, fps: 30 });
     const asked: string[] = [];

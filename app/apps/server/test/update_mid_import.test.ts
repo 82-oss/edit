@@ -42,9 +42,11 @@ test.skipIf(ffmpeg === null)("a script's import stopped for an update stays impo
   try {
     const data = store.dataDir(app.store.home);
     const source = `${dir}/call.m4a`;
-    expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=200", "-c:a", "aac", "-b:a", "32k", source]).exitCode).toBe(0);
+    // AAC's fast coder: the same file, made in a quarter of the time.
+    expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=200", "-c:a", "aac", "-aac_coder", "fast", "-b:a", "32k", source]).exitCode).toBe(0);
     // Each piece answered slowly: the import is mid-transcription when the update comes.
-    mock.on("POST", "/v1/transcribe", async () => (await Bun.sleep(1_500), Response.json(scribeAnswer(["Where", "were", "you?"]))));
+    const answerMs = 750;
+    mock.on("POST", "/v1/transcribe", async () => (await Bun.sleep(answerMs), Response.json(scribeAnswer(["Where", "were", "you?"]))));
     const script = await imports.fromFile(app, data, source, null, "Mid import", null, null, "started");
     for (let i = 0; i < 600 && mock.calls("/v1/transcribe").length === 0; i++) await Bun.sleep(50);
     expect(mock.calls("/v1/transcribe").length).toBeGreaterThan(0);
@@ -54,7 +56,8 @@ test.skipIf(ffmpeg === null)("a script's import stopped for an update stays impo
     expect(await imports.stopAll()).toBe(1);
     expect(imports.importing(script.id)).toBe(false);
     const asked = mock.calls("/v1/transcribe").length;
-    await Bun.sleep(3_000);
+    // Twice the answer's time: the one under way would have been answered by then, and anything asked after it.
+    await Bun.sleep(2 * answerMs);
     // Nothing more asked of the transcriber, and the script is still importing on disk, not stopped as failed.
     expect(mock.calls("/v1/transcribe").length).toBe(asked);
     expect(store.read(store.scriptDir(data, script.id)).status).toBe("processing");

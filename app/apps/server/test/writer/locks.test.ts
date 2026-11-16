@@ -29,6 +29,10 @@ let env: Record<string, string | undefined>;
 
 const ok = (value: unknown) => Response.json({ status: "success", value });
 
+/** A save is pushed once still this long here (2 s in Edit), and `settled` waits it out between saves. */
+const SETTLE_MS = 100;
+const settled = () => Bun.sleep(SETTLE_MS + 100);
+
 beforeAll(() => {
   server = Bun.serve({
     port: 0,
@@ -110,6 +114,7 @@ beforeEach(() => {
   keepsLocks = true;
   loseCommit = false;
   locks.resetForTests();
+  cloud.settleForTests(SETTLE_MS);
   // The cloud's waits after a refusal are kept by script id for the whole
   // process: cloud_sync.test.ts ends with this file's X (the same id) still
   // waiting, and run before this file (CI's Mac order) nothing here pushed.
@@ -119,6 +124,7 @@ beforeEach(() => {
 afterEach(() => {
   store.hooks.mayWrite = () => {};
   locks.resetForTests();
+  cloud.settleForTests(null);
 });
 
 const script = (id: string, title: string, change: Partial<Script> = {}): Script =>
@@ -158,7 +164,7 @@ test("two Macs changing different scripts keep no copies, and each gets the othe
   // Both change their own again.
   store.update(store.scriptDir(a, X), (one) => void (one.title = "Predator Tutor 2"));
   store.update(store.scriptDir(b, Y), (one) => void (one.title = "Female Police Captain 2"));
-  await Bun.sleep(2_100);
+  await settled();
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa");
   await syncAs(b, "Marc's Mac #bbbbbbbbbbbb");
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa");
@@ -174,10 +180,10 @@ test("two Macs changing the same script with no lock to stop them: the overtaken
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa");
   const b = mac();
   await syncAs(b, "Marc's Mac #bbbbbbbbbbbb");
-  await Bun.sleep(2_100);
+  await settled();
   store.update(store.scriptDir(a, X), (one) => void (one.title = "Sphe's version"));
   store.update(store.scriptDir(b, X), (one) => void (one.title = "Marc's version"));
-  await Bun.sleep(2_100);
+  await settled();
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa");
   await syncAs(b, "Marc's Mac #bbbbbbbbbbbb");
   await syncAs(b, "Marc's Mac #bbbbbbbbbbbb");
@@ -186,7 +192,7 @@ test("two Macs changing the same script with no lock to stop them: the overtaken
   // Marc's, overtaken, is a "Not synced" version of the script: no script of its own.
   expect(copies(b)).toEqual([]);
   expect(kept(b, X)).toEqual(["Marc's version"]);
-  await Bun.sleep(2_100);
+  await settled();
   await syncAs(b, "Marc's Mac #bbbbbbbbbbbb");
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa");
   // Pushed with the script's versions, so Sphe's Mac has it too.
@@ -210,7 +216,7 @@ test("a script another computer holds is read-only here, and Take over makes it 
   expect(await locks.takeOver(X, "Sphe's Mac #aaaaaaaaaaaa")).toEqual({ holder: null, writable: true });
   expect(leases.get(`writer-${X}`)!.holder).toBe("Sphe's Mac #aaaaaaaaaaaa");
   store.update(store.scriptDir(a, X), (one) => void (one.title = "mine"));
-  await Bun.sleep(2_100);
+  await settled();
   await cloud.syncOnceForTests(a);
   expect(rows.get(X)!.title).toBe("mine");
   // Closed here: the lock goes once nothing's left to push and the push's linger is over.
@@ -223,13 +229,13 @@ test("a commit whose answer was lost is this Mac's own save, never a copy", { ti
   const a = mac(script(X, "Predator Tutor"));
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa");
   store.update(store.scriptDir(a, X), (one) => void (one.title = "Predator Tutor, edited"));
-  await Bun.sleep(2_100);
+  await settled();
   loseCommit = true;
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa").catch(() => undefined);
   expect(rows.get(X)!.rev).toBe(2);
   // Changed again before the next round (the next start): its body isn't the cloud's any more.
   store.update(store.scriptDir(a, X), (one) => void (one.title = "Predator Tutor, edited again"));
-  await Bun.sleep(2_100);
+  await settled();
   cloud.tryAllAgain();
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa");
   await syncAs(a, "Sphe's Mac #aaaaaaaaaaaa");

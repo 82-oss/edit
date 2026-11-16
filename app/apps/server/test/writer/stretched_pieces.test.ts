@@ -17,32 +17,55 @@ import * as tools from "../../src/tools.ts";
 import * as media from "../../src/writer/media.ts";
 
 const ffmpeg = Bun.which("ffmpeg");
-/** 3.2 s stretches (on the 0.32 s grid) of a 20 s clip: seven, the last 0.8 s. */
+/** 3.2 s stretches, on the 0.32 s grid. */
 const STRETCH = 3_200;
 
+interface Clip {
+  source: string;
+  part: media.JoinPart;
+  /** The piece as one encode makes it, to hold the stretched one against. */
+  reference: string;
+  ms: number;
+  stretches: number;
+}
+
 let root: string;
-let source: string;
-let part: media.JoinPart;
-let reference: string;
+/** 20 s: seven stretches, the last 0.8 s. Read from the cloud, enough of them start part-way through the file to tell sought from read from the start. */
+let long: Clip;
+/**
+ * 10.4 s: four stretches, the last 0.8 s, for what doesn't need seven (a cut part-way, a stop, the hardware
+ * failing part-way): each stretch is an FFmpeg of its own, and its start-up is most of its time on the
+ * video hardware (about 0.45 s on NVENC), so three fewer a run take seconds off each.
+ */
+let short: Clip;
+
+async function clip(name: string, ms: number): Promise<Clip> {
+  const source = `${root}/${name}.mp4`;
+  const seconds = String(ms / 1000);
+  // A moving picture at 25 fps (fitted to 30 as recordings are) and a chirp at 44.1 kHz (resampled to 48):
+  // a stretch a frame or a few samples off its place shows in either.
+  const made = Bun.spawn(
+    [
+      ffmpeg!, "-v", "error", "-y",
+      "-f", "lavfi", "-i", `testsrc2=size=640x360:rate=25:duration=${seconds}`,
+      "-f", "lavfi", "-i", `aevalsrc=0.5*sin(2*PI*(200*t+100*t*t)):s=44100:d=${seconds}`,
+      "-c:v", "libx264", "-g", "50", "-c:a", "aac", "-b:a", "128k", "-shortest", source,
+    ],
+    { stderr: "pipe" },
+  );
+  if ((await made.exited) !== 0) throw new Error(await new Response(made.stderr).text());
+  const part = { path: source, streams: await media.streams(source) };
+  const reference = `${root}/${name}-reference.mp4`;
+  await media.join([part], reference);
+  return { source, part, reference, ms, stretches: Math.ceil(ms / STRETCH) };
+}
 
 beforeAll(async () => {
   if (ffmpeg === null) return;
   tools.forget();
   root = fs.mkdtempSync(`${os.tmpdir()}/stretched-`);
-  source = `${root}/source.mp4`;
-  // A moving picture at 25 fps (fitted to 30 as recordings are) and a chirp at 44.1 kHz (resampled to 48):
-  // a stretch a frame or a few samples off its place shows in either.
-  const made = Bun.spawnSync([
-    ffmpeg, "-v", "error", "-y",
-    "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=20",
-    "-f", "lavfi", "-i", "aevalsrc=0.5*sin(2*PI*(200*t+100*t*t)):s=44100:d=20",
-    "-c:v", "libx264", "-g", "50", "-c:a", "aac", "-b:a", "128k", "-shortest", source,
-  ]);
-  if (made.exitCode !== 0) throw new Error(made.stderr.toString());
-  part = { path: source, streams: await media.streams(source) };
-  // The piece as one encode makes it, to hold the stretched one against.
-  reference = `${root}/reference.mp4`;
-  await media.join([part], reference);
+  [long, short] = await Promise.all([clip("long", 20_000), clip("short", 10_400)]);
+  expect([long.stretches, short.stretches]).toEqual([7, 4]);
 });
 
 afterAll(() => {
@@ -57,7 +80,7 @@ const format = (file: string) => Bun.spawnSync(["ffprobe", "-v", "error", "-show
 const sound = (file: string) => new Float32Array(Bun.spawnSync([ffmpeg!, "-v", "error", "-i", file, "-ac", "1", "-ar", "48000", "-f", "f32le", "-"]).stdout.buffer);
 
 /** The worst match of `file`'s sound with the reference's, 20 ms at a time (1: the same); a gap or a jump at a join is far below it. */
-function worstMatch(file: string): { worst: number; at: number; samples: [number, number] } {
+function worstMatch(file: string, reference: string): { worst: number; at: number; samples: [number, number] } {
   const [x, y] = [sound(reference), sound(file)];
   let worst = 1;
   let at = 0;
@@ -75,7 +98,7 @@ function worstMatch(file: string): { worst: number; at: number; samples: [number
 }
 
 /** The worst frame's likeness (SSIM) to the reference's: a frame out of place at a join is far below a re-encode's. */
-function worstFrame(file: string): number {
+function worstFrame(file: string, reference: string): number {
   const out = Bun.spawnSync([ffmpeg!, "-v", "error", "-i", reference, "-i", file, "-lavfi", "[0:v][1:v]ssim=stats_file=-", "-f", "null", "-"]).stdout.toString();
   return Math.min(...out.trim().split("\n").map((line) => Number(/All:([\d.]+)/.exec(line)?.[1] ?? 0)));
 }
@@ -83,6 +106,7 @@ function worstFrame(file: string): number {
 const wholeIn = (work: string) => fs.readdirSync(work).filter((name) => /-\d{4}\.mov$/.test(name)).sort();
 
 test.skipIf(ffmpeg === null)("a long recording's piece cut part-way carries on from its whole stretches, and plays as one encode of it would", async () => {
+  const { part, reference, stretches } = short;
   const work = `${root}/cut.stretches`;
   const dest = `${root}/cut.mp4`;
   // Cut as a restart cuts it: FFmpeg stopped mid-stretch, once two stretches are whole.
@@ -94,33 +118,33 @@ test.skipIf(ffmpeg === null)("a long recording's piece cut part-way carries on f
   clearInterval(watch);
   const kept = wholeIn(work);
   expect(kept.length).toBeGreaterThanOrEqual(2);
-  expect(kept.length).toBeLessThan(7);
+  expect(kept.length).toBeLessThan(stretches);
   // Nothing half-written is left as a stretch, and the piece isn't there.
   expect(fs.readdirSync(work).filter((name) => name.includes(".partial"))).toEqual([]);
   expect(fs.existsSync(dest)).toBe(false);
   // What a cut run of another build might leave: a partial of its own name, a stretch made another way.
   const prefix = kept[0]!.replace(/-\d{4}\.mov$/, "");
-  fs.writeFileSync(`${work}/${prefix}-0005.deadbeef.partial.mov`, "half");
+  fs.writeFileSync(`${work}/${prefix}-0003.deadbeef.partial.mov`, "half");
   fs.writeFileSync(`${work}/hw-oldbuild-0003.mov`, "another way");
   const before = new Map(kept.map((name) => [name, fs.statSync(`${work}/${name}`).mtimeMs]));
 
   const made = await media.joinStretched(part, dest, work, () => {}, undefined, STRETCH);
-  expect(made.stretches).toBe(7);
+  expect(made.stretches).toBe(stretches);
   expect(made.kept).toBe(kept.length);
   // The kept stretches weren't made again; the leftovers are gone.
   for (const [name, mtime] of before) expect(fs.statSync(`${work}/${name}`).mtimeMs).toBe(mtime);
-  expect(wholeIn(work)).toHaveLength(7);
+  expect(wholeIn(work)).toHaveLength(stretches);
   expect(fs.readdirSync(work).filter((name) => !/-\d{4}\.mov$/.test(name))).toEqual([]);
 
   // As long as the source, every frame of it at 30 fps.
-  expect(Math.abs((await media.streams(dest)).durationMs - 20_000)).toBeLessThanOrEqual(50);
-  expect(probe(dest, "stream=nb_read_frames", "v:0")).toBe("600");
-  // The sound as one encode's, everywhere (the six joins included), and not a sample longer or shorter.
-  const match = worstMatch(dest);
-  console.log(`stretched piece: sound's worst 20 ms match ${match.worst.toFixed(4)} at ${match.at.toFixed(2)} s, ${match.samples[1]} samples (one encode: ${match.samples[0]}); picture's worst frame SSIM ${worstFrame(dest).toFixed(4)}`);
+  expect(Math.abs((await media.streams(dest)).durationMs - short.ms)).toBeLessThanOrEqual(50);
+  expect(probe(dest, "stream=nb_read_frames", "v:0")).toBe(String((short.ms * 30) / 1000));
+  // The sound as one encode's, everywhere (the three joins included, the short last stretch's too), and not a sample longer or shorter.
+  const match = worstMatch(dest, reference);
+  console.log(`stretched piece: sound's worst 20 ms match ${match.worst.toFixed(4)} at ${match.at.toFixed(2)} s, ${match.samples[1]} samples (one encode: ${match.samples[0]}); picture's worst frame SSIM ${worstFrame(dest, reference).toFixed(4)}`);
   expect(match.samples[1]).toBe(match.samples[0]);
   expect(match.worst).toBeGreaterThan(0.99);
-  expect(worstFrame(dest)).toBeGreaterThan(0.95);
+  expect(worstFrame(dest, reference)).toBeGreaterThan(0.95);
   // In the format a piece made in one go has, so the two are copied end to end with the case's other pieces.
   expect(format(dest)).toBe(format(reference));
   expect(await media.append(reference, [dest], `${root}/appended.mp4`)).toBe(true);
@@ -129,6 +153,7 @@ test.skipIf(ffmpeg === null)("a long recording's piece cut part-way carries on f
 test.skipIf(ffmpeg === null)("an import stopped for an update stops its piece's stretch at once: no FFmpeg left writing, nothing half-made, carried on after", async () => {
   // As imports.ts runs it: the piece inside the import's fiber, its signal ended with the fiber
   // (`importSignal`), the fiber interrupted as `stop`/`stopAll` interrupt it before Edit restarts.
+  const { part, reference } = short;
   const work = `${root}/stopped.stretches`;
   const dest = `${root}/stopped.mp4`;
   const ended = new AbortController();
@@ -148,11 +173,12 @@ test.skipIf(ffmpeg === null)("an import stopped for an update stops its piece's 
   // After the restart it carries on from what's whole.
   const made = await media.joinStretched(part, dest, work, () => {}, undefined, STRETCH);
   expect(made.kept).toBe(kept);
-  expect(worstMatch(dest).worst).toBeGreaterThan(0.99);
+  expect(worstMatch(dest, reference).worst).toBeGreaterThan(0.99);
 }, 120_000);
 
 test.skipIf(ffmpeg === null)("read from the cloud, each stretch is sought where it is, not read from the start, and joins the same", async () => {
   // A stand-in for R2's presigned URL: ranges answered from the file, where each read starts noted.
+  const { source, reference } = long;
   const size = fs.statSync(source).size;
   const starts: number[] = [];
   const server = Bun.serve({
@@ -180,9 +206,9 @@ test.skipIf(ffmpeg === null)("read from the cloud, each stretch is sought where 
     const partWay = starts.filter((at) => at > 0.25 && at < 0.9);
     console.log(`read from a URL: ${starts.length} reads, ${partWay.length} starting part-way through the file (${partWay.map((at) => `${Math.round(at * 100)}%`).join(", ")})`);
     expect(partWay.length).toBeGreaterThanOrEqual(2);
-    expect(Math.abs((await media.streams(dest)).durationMs - 20_000)).toBeLessThanOrEqual(50);
-    expect(worstMatch(dest).worst).toBeGreaterThan(0.99);
-    expect(worstFrame(dest)).toBeGreaterThan(0.95);
+    expect(Math.abs((await media.streams(dest)).durationMs - long.ms)).toBeLessThanOrEqual(50);
+    expect(worstMatch(dest, reference).worst).toBeGreaterThan(0.99);
+    expect(worstFrame(dest, reference)).toBeGreaterThan(0.95);
   } finally {
     void server.stop(true);
   }
@@ -190,21 +216,23 @@ test.skipIf(ffmpeg === null)("read from the cloud, each stretch is sought where 
 
 test.skipIf(ffmpeg === null)("AAC encoded stretch by stretch would not join without a seam (why the stretches keep their sound as samples)", async () => {
   // The trap, measured on the same clip: each stretch's own AAC adds the encoder's delay and a padded frame at every join.
+  const { source, reference, stretches } = short;
   const list: string[] = [];
-  for (let n = 0; n < 7; n++) {
+  for (let n = 0; n < stretches; n++) {
     const out = `${root}/naive-${n}.mp4`;
     Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-ss", ((n * STRETCH) / 1000).toFixed(3), "-i", source, "-t", (STRETCH / 1000).toFixed(3), "-vf", "scale=854:480:force_original_aspect_ratio=decrease,pad=854:480:(ow-iw)/2:(oh-ih)/2,fps=30", "-c:v", "libx264", "-g", "30", "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "96k", out]);
     list.push(`file '${out}'`);
   }
   fs.writeFileSync(`${root}/naive.txt`, `${list.join("\n")}\n`);
   Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", `${root}/naive.txt`, "-c", "copy", `${root}/naive.mp4`]);
-  const match = worstMatch(`${root}/naive.mp4`);
+  const match = worstMatch(`${root}/naive.mp4`, reference);
   console.log(`AAC per stretch: sound's worst 20 ms match ${match.worst.toFixed(4)} at ${match.at.toFixed(2)} s, ${match.samples[1] - match.samples[0]} samples more than one encode`);
   expect(match.worst).toBeLessThan(0.9);
 }, 60_000);
 
 test.skipIf(ffmpeg === null || tools.videoHardware() === null)("a piece whose video hardware fails part-way is made on libx264 throughout, never the two in one piece, and carries on so", async () => {
-  // FFmpeg that refuses the hardware encoder for a stretch read from 6 s on (the fourth), as footage the hardware can't take would.
+  // FFmpeg that refuses the hardware encoder for a stretch read from 6 s on (the fourth, the last), as footage the hardware can't take would.
+  const { part, reference, stretches } = short;
   const wrapper = `${root}/ffmpeg-refusing`;
   fs.writeFileSync(
     wrapper,
@@ -231,14 +259,14 @@ exec "${ffmpeg}" "$@"
     expect(made.kept).toBe(0);
     // Only libx264's stretches are left, and the piece says libx264 made it.
     expect(wholeIn(work).every((name) => name.startsWith("x264-"))).toBe(true);
-    expect(wholeIn(work)).toHaveLength(7);
+    expect(wholeIn(work)).toHaveLength(stretches);
     expect(probe(dest, "stream_tags=encoder", "v:0")).toContain("libx264");
-    expect(Math.abs((await media.streams(dest)).durationMs - 20_000)).toBeLessThanOrEqual(50);
-    expect(worstMatch(dest).worst).toBeGreaterThan(0.99);
+    expect(Math.abs((await media.streams(dest)).durationMs - short.ms)).toBeLessThanOrEqual(50);
+    expect(worstMatch(dest, reference).worst).toBeGreaterThan(0.99);
     // Carried on after a restart, it stays on libx264 and keeps every stretch.
     fs.rmSync(dest);
     const again = await media.joinStretched(part, dest, work, () => {}, undefined, STRETCH);
-    expect(again).toEqual({ encoder: "libx264", stretches: 7, kept: 7 });
+    expect(again).toEqual({ encoder: "libx264", stretches, kept: stretches });
   } finally {
     if (was === undefined) delete process.env.EDIT_FFMPEG;
     else process.env.EDIT_FFMPEG = was;

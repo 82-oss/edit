@@ -92,11 +92,19 @@ test("footage in the cloud is read twice, the picture from one and the sound fro
   }
 }, 120_000);
 
+/**
+ * A recording in the cloud whose read stalled: the server takes the connection and never answers, so
+ * FFmpeg waits on it forever. (A pipe nobody writes to stalls it too, but FFmpeg blocked opening one ignores the
+ * stop's SIGTERM, so each try then waited out the 5 s to its SIGKILL: 10 of this file's 28 s.)
+ */
+function stalled() {
+  const server = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  return { never: `http://127.0.0.1:${server.port}/never.mp4`, server };
+}
+
 test("an encode that makes no progress is stopped by its pace, not left to run out its hour", async () => {
   const dir = fs.mkdtempSync(joinPath(os.tmpdir(), "edit-pace-"));
-  const never = joinPath(dir, "never.mp4");
-  // A pipe nobody writes to: FFmpeg waits on it forever, as on a read from the cloud that stalled.
-  expect(Bun.spawnSync(["mkfifo", never]).exitCode).toBe(0);
+  const { never, server } = stalled();
   const was = { ...PACE };
   Object.assign(PACE, { afterMs: 400, everyMs: 100 });
   const began = Date.now();
@@ -108,14 +116,14 @@ test("an encode that makes no progress is stopped by its pace, not left to run o
     expect(fs.existsSync(joinPath(dir, "out.mp4"))).toBe(false);
   } finally {
     Object.assign(PACE, was);
+    server.stop(true);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }, 30_000);
 
 test("an encode sharing the hardware encoder with an export isn't judged by its pace until the export ends", async () => {
   const dir = fs.mkdtempSync(joinPath(os.tmpdir(), "edit-pace-shared-"));
-  const never = joinPath(dir, "never.mp4");
-  expect(Bun.spawnSync(["mkfifo", never]).exitCode).toBe(0);
+  const { never, server } = stalled();
   const was = { ...PACE };
   Object.assign(PACE, { afterMs: 400, everyMs: 100 });
   let exporting = true;
@@ -132,6 +140,7 @@ test("an encode sharing the hardware encoder with an export isn't judged by its 
   } finally {
     undo();
     Object.assign(PACE, was);
+    server.stop(true);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }, 30_000);

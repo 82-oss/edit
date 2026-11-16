@@ -1,7 +1,7 @@
 // accounts.ts's tests: signing in to Edit (PKCE through the loopback), renewing, signing out,
 // against a stand-in for accounts.spheceo.com's /app/* (its plan's contract).
 
-import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, onTestFinished, test } from "bun:test";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -286,6 +286,10 @@ test("every map shares one session for two hours: one root asked of the relay (o
 test("a device sign-in (headless, over Tailscale): a code to type, polled through pending and slow_down until it's approved", async () => {
   fs.writeFileSync(join(dir, "keychain.json"), JSON.stringify({}));
   deviceScript = ["authorization_pending", "slow_down", "authorization_pending", "ok"];
+  // slow_down adds 50 ms to the wait here, not Edit's 5 s.
+  const was = accounts.devicePace.slowDownMs;
+  accounts.devicePace.slowDownMs = 50;
+  onTestFinished(() => void (accounts.devicePace.slowDownMs = was));
   const device = await accounts.beginDevice(app, "edit serve");
   expect([device.userCode, device.uri, device.complete]).toEqual(["BCDF-GHJK", "https://accounts.test/device", "https://accounts.test/device?code=BCDF-GHJK"]);
   expect(devices.at(-1)).toMatch(/^Edit\/\S+ \((macOS|Linux); edit serve\)$/u);

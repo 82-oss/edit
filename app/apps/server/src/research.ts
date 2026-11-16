@@ -43,6 +43,8 @@ const PAGE = 35;
 export const hooks = {
   /** A page as the browser renders it (scripts run), from a fresh profile that's deleted afterwards. */
   dump: (url: string, waitMs?: number): Promise<string> => chromeDump(url, waitMs),
+  /** How long a page that ran out of time waits before it's asked once more. */
+  againAfterMs: 5_000,
 };
 
 /** Collections in progress (by project). */
@@ -663,7 +665,7 @@ async function collectInner(home: string, project: string, queries: string[], pe
       // A page that ran out of time (a busy Mac, Bing slow) is asked once more before the query gives up.
       const page = await hooks.dump(url).catch(async (error: unknown) => {
         if (isBug(error)) throw error;
-        await Bun.sleep(5_000);
+        await Bun.sleep(hooks.againAfterMs);
         return hooks.dump(url);
       });
       const before = hits.length;
