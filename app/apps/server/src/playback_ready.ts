@@ -34,6 +34,8 @@ import * as pieces from "./proxy_pieces.ts";
 
 /** Seconds of the timeline from a jump (or the playhead, as it plays) whose streamed footage is read into blocks at once. */
 export const WARM_SECONDS = 20;
+/** Of those, the first seconds (what a held play waits for: the page's `HOLD_AHEAD`, and a margin) are read first. */
+const FIRST_SECONDS = 4;
 
 type Spans = [number, number][];
 
@@ -152,28 +154,32 @@ export async function warm(app: App, id: string, frame: number): Promise<void> {
   await cloudMedia.prefetchProject(app, id, at);
   const cache = app.store.cacheDir();
   const fps = projectFps(project);
-  const until = at + WARM_SECONDS * fps;
   const media = new Map(project.media.map((one) => [one.id, one]));
-  const reads: Promise<unknown>[] = [];
-  const asked = new Set<string>();
-  for (const clip of played(project)) {
-    if (clip.start >= until || clip.start + clip.duration <= at) continue;
-    const one = media.get(clip.media);
-    const key = one === undefined ? null : cloudMedia.streamKey(one.cloud, "proxy");
-    if (one === undefined || key === null || pieces.baseOf(key) !== null || isFile(one.path) || isFile(cloudMedia.localPath(cache, key)) || !(one.duration > 0)) continue;
-    const speed = clip.speed ?? 1;
-    const from = (clip.source_in ?? 0) + ((Math.max(at, clip.start) - clip.start) / fps) * speed;
-    const to = (clip.source_in ?? 0) + ((Math.min(until, clip.start + clip.duration) - clip.start) / fps) * speed;
-    const stretch = `${key} ${Math.floor(from)}`;
-    if (asked.has(stretch)) continue;
-    asked.add(stretch);
-    reads.push(
-      cloudBlocks.warm(root, key, from / one.duration, to / one.duration, cloudMedia.blockUrl(key)).catch((error: unknown) => {
-        diag.warn("cloud", `${id}: reading ${key} ahead of the viewer: ${diag.messageOf(error)}`);
-      }),
-    );
-  }
-  await Promise.all(reads);
+  // The seconds a held play waits for (`FIRST_SECONDS`) of every file first, then the rest.
+  const pass = async (from: number, until: number) => {
+    const reads: Promise<unknown>[] = [];
+    const asked = new Set<string>();
+    for (const clip of played(project)) {
+      if (clip.start >= until || clip.start + clip.duration <= from) continue;
+      const one = media.get(clip.media);
+      const key = one === undefined ? null : cloudMedia.streamKey(one.cloud, "proxy");
+      if (one === undefined || key === null || pieces.baseOf(key) !== null || isFile(one.path) || isFile(cloudMedia.localPath(cache, key)) || !(one.duration > 0)) continue;
+      const speed = clip.speed ?? 1;
+      const start = (clip.source_in ?? 0) + ((Math.max(from, clip.start) - clip.start) / fps) * speed;
+      const end = (clip.source_in ?? 0) + ((Math.min(until, clip.start + clip.duration) - clip.start) / fps) * speed;
+      const stretch = `${key} ${Math.floor(start)}`;
+      if (asked.has(stretch)) continue;
+      asked.add(stretch);
+      reads.push(
+        cloudBlocks.warm(root, key, start / one.duration, end / one.duration, cloudMedia.blockUrl(key)).catch((error: unknown) => {
+          diag.warn("cloud", `${id}: reading ${key} ahead of the viewer: ${diag.messageOf(error)}`);
+        }),
+      );
+    }
+    await Promise.all(reads);
+  };
+  await pass(at, at + FIRST_SECONDS * fps);
+  await pass(at + FIRST_SECONDS * fps, at + WARM_SECONDS * fps);
 }
 
 export function routes(router: Router<App>): void {
