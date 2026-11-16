@@ -46,7 +46,7 @@ test("the native preview reads a media's made preview, else its footage; a cloud
     const fetched: string[] = [];
     const fetch = spyOn(cloudMedia, "fetchKey").mockImplementation(async (key) => { fetched.push(key); });
     fs.writeFileSync(made.audio, "sound");
-    const answer = (await (await nativeSources(app, store.get(id)!.project)).json()) as { cache: string; sources: Record<string, string>; sounds: Record<string, string>; coming: boolean };
+    const answer = (await (await nativeSources(app, store.get(id)!.project)).json()) as { cache: string; sources: Record<string, string>; sounds: Record<string, string>; of: Record<string, string>; coming: boolean };
     fetch.mockRestore();
     // Copies the timeline plays still come down: the page asks again in a while.
     expect(answer.coming).toBe(true);
@@ -76,6 +76,9 @@ test("the native preview reads a media's made preview, else its footage; a cloud
       // In the project but on no clip: streamed if ever asked, never fetched.
       unshown: `http://127.0.0.1:${app.port}${PLAYBACK_ROUTE}?key=${encodeURIComponent("edit/proxies/dd/unshown.mp4")}`,
     });
+    // What each is in the edit they were made from: the page leaves out one its own edit has otherwise (playback.ts).
+    const project = store.get(id)!.project;
+    expect(answer.of).toEqual(Object.fromEntries(project.media.map((media) => [media.id, `${media.kind}:${media.path}`])));
   } finally {
     cleanup();
   }

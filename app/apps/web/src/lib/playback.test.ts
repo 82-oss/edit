@@ -864,6 +864,112 @@ describe("preview seeks and lifetime", () => {
     expect(preview.native).toBe(true);
   });
 
+  // An effect re-rendering stands in as a clear still; its render lands as an .mp4 in that media (server effects.ts `standIn`).
+  const standingIn = (): Project => ({ ...fixture(), media: [{ ...fixture().media[0]!, path: "/clear.png", kind: "image" }] });
+  const landed = (): Project => ({ ...fixture(), media: [{ ...fixture().media[0]!, path: "/render.mp4", kind: "video" }] });
+  const sourcesOf = (project: Project) => ({ cache: "/cache", sources: { m1: project.media[0]!.path }, of: { m1: `${project.media[0]!.kind}:${project.media[0]!.path}` } });
+
+  it("an effect's render landing: the window gets the media's new kind and file together, never one before the other (Nov 16: an .mp4 read as a picture)", async () => {
+    const sent = await inWindow();
+    nativeApi.nativeSources.mockResolvedValueOnce(sourcesOf(standingIn()));
+    preview.setProject(standingIn(), {}); await settle(); draw(); await settle();
+    expect(sent("preview_project")).toHaveLength(1);
+    expect(sent("preview_project")[0]!.sources).toEqual({ m1: "/clear.png" });
+    // The render lands: the edit is here, where it's read from is still being asked.
+    let answer: ((value: unknown) => void) | null = null;
+    nativeApi.nativeSources.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)) as never);
+    preview.setProject(landed(), {}); await settle(); draw(); await settle(); draw(); await settle();
+    expect(answer).not.toBeNull();
+    expect(sent("preview_patch")).toHaveLength(0);
+    expect(sent("preview_sources")).toHaveLength(0);
+    expect(sent("preview_project")).toHaveLength(1);
+    answer!(sourcesOf(landed())); await settle(); draw(); await settle(); draw(); await settle();
+    // Both at once: the whole edit with its sources.
+    expect(sent("preview_sources")).toHaveLength(0);
+    expect(sent("preview_patch")).toHaveLength(0);
+    expect(sent("preview_project")).toHaveLength(2);
+    expect(sent("preview_project")[1]!.sources).toEqual({ m1: "/render.mp4" });
+    expect(JSON.parse(String(sent("preview_project")[1]!.json)).media[0]).toMatchObject({ kind: "video", path: "/render.mp4" });
+    expect(preview.native).toBe(true);
+  });
+
+  it("where the window reads from, asked while the server's edit is ahead of the page's, keeps a media the page has otherwise as it was until its edit comes", async () => {
+    const sent = await inWindow();
+    nativeApi.nativeSources.mockResolvedValueOnce(sourcesOf(standingIn()));
+    preview.setProject(standingIn(), {}); await settle(); draw(); await settle();
+    expect(sent("preview_project")).toHaveLength(1);
+    // The server has the render already (a cleaner's event, a frame failed): the page's edit still has the still.
+    nativeApi.nativeSources.mockResolvedValue(sourcesOf(landed()) as never);
+    window.dispatchEvent(new Event("edit:native-sources")); await settle(); draw(); await settle(); draw(); await settle();
+    const told = [...sent("preview_sources").map((args) => args.sources), ...sent("preview_project").map((args) => args.sources)];
+    expect(told).not.toContainEqual({ m1: "/render.mp4" });
+    // Its edit comes: the two go together.
+    preview.setProject(landed(), {}); await settle(); draw(); await settle(); draw(); await settle();
+    expect(sent("preview_project").at(-1)!.sources).toEqual({ m1: "/render.mp4" });
+    expect(JSON.parse(String(sent("preview_project").at(-1)!.json)).media[0].kind).toBe("video");
+    expect(sent("preview_sources").map((args) => args.sources)).not.toContainEqual({ m1: "/render.mp4" });
+    nativeApi.nativeSources.mockResolvedValue({ cache: "/cache", sources: { m1: "/video.mp4" } } as never);
+  });
+
+  it("a window that failed for a while is opened again after a short while, not left off until a reload; one that keeps failing is left off for the session", async () => {
+    let failing = true;
+    const sent = await inWindow((command) => (failing && command === "preview_frame" ? "ImageIO couldn't decode the image" : null));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const tick = async (ms = 0) => { await vi.advanceTimersByTimeAsync(ms); draw(); await vi.advanceTimersByTimeAsync(0); };
+    const failOut = async () => { for (let n = 0; n < 12 && preview.native; n++) await tick(300); };
+    try {
+      preview.setProject(fixture(), {}); await tick(); await tick();
+      await failOut();
+      expect(preview.native).toBe(false);
+      expect(preview.diagnostics.nativeFrames.off).toContain("failed");
+      // Still the window's to draw: no smooth-playback render is asked for meanwhile.
+      expect(preview.nativeHere).toBe(true);
+      // What failed has passed (the render's patch landed): opened again, it draws.
+      failing = false;
+      const opened = sent("preview_open").length;
+      await tick(2000); await tick(); await tick();
+      expect(sent("preview_open").length).toBe(opened + 1);
+      expect(preview.native).toBe(true);
+      expect(preview.diagnostics.nativeFrames.off).toBeNull();
+      preview.seek(20); await tick();
+      expect(sent("preview_frame").at(-1)!.frame).toBe(20);
+      // Failing each time it comes back (after 4, 8, 16 and 32 s now): left off for good once five comebacks failed.
+      failing = true;
+      for (let back = 1; back <= 4; back++) {
+        preview.seek(30 + back); await failOut();
+        expect(preview.native).toBe(false);
+        await tick(2000 * 2 ** back); await tick(); await tick();
+        expect(preview.native).toBe(true);
+      }
+      preview.seek(50); await failOut();
+      expect(preview.native).toBe(false);
+      expect(preview.nativeHere).toBe(false);
+      const last = sent("preview_open").length;
+      await tick(120_000);
+      expect(sent("preview_open").length).toBe(last);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a window that can't draw here (refused open) is never asked again", async () => {
+    const invoke = vi.fn(async (command: string) => (command === "preview_open" ? false : null));
+    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = { invoke };
+    vi.stubGlobal("navigator", { gpu: {}, platform: "MacIntel" });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      preview.detach();
+      await preview.attach({ width: 320, height: 180 } as HTMLCanvasElement);
+      expect(preview.native).toBe(false);
+      expect(preview.diagnostics.nativeFrames.off).toContain("refused open");
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(invoke.mock.calls.filter(([command]) => command === "preview_open")).toHaveLength(1);
+      expect(preview.nativeHere).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("asks the window for a jump's frame at once, not at the next animation frame", async () => {
     const sent = await inWindow();
     preview.setProject(fixture(), {}); await settle(); draw(); await settle();

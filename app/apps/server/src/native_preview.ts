@@ -192,6 +192,9 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
   const sources: Record<string, string> = {};
   const sounds: Record<string, string> = {};
   const excerpts: Record<string, NativeExcerpt[]> = {};
+  // What each media named here is in the edit these were made from (its kind and file): the page's own edit can be
+  // behind this one, and a source it hasn't the media for yet is left out there (playback.ts `nativeSourcesFor`).
+  const of: Record<string, string> = {};
   player.markNative(project.id);
   // A pieced proxy's pieces the timeline plays come down behind the viewer, in its order (one fill a project).
   cloudMedia.fillPieces(app, project.id);
@@ -218,6 +221,7 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
   for (const media of inPlayheadOrder) {
     const sound = media.kind === "audio" || (media.kind === "video" && media.has_audio);
     if (media.kind !== "video" && media.kind !== "image" && !sound) continue;
+    of[media.id] = `${media.kind}:${media.path}`;
     const key = cloudMedia.streamKey(media.cloud, "proxy");
     if (key !== null) {
       const local = cloudMedia.localPath(cache, key);
@@ -255,7 +259,7 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
   if (streamed.size > 0) streaming.set(project.id, streamed);
   else streaming.delete(project.id);
   // Whether a file named here comes down or is cut yet: the page asks again in 15 s while one is (`coming`).
-  return json({ cache, sources, sounds, excerpts, coming: streamed.size > 0 || piecesComing });
+  return json({ cache, sources, sounds, excerpts, of, coming: streamed.size > 0 || piecesComing });
 }
 
 /**

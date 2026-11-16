@@ -120,6 +120,23 @@ const NATIVE_SLOW_MS = 33;
 type NativeSources = { cache: string; sources: Record<string, string>; sounds: Record<string, string>; excerpts: Record<string, NativeExcerpt[]> };
 /** The window's player is asked where it is this often at most while it plays (once an animation frame otherwise). */
 const NATIVE_HINT_GAP_MS = 100;
+/**
+ * A window that stopped on a passing failure is opened again after this, doubled each time it stops
+ * again (2, 4, 8, 16, 32 s), and left off for the session after `NATIVE_COMEBACKS` of them; one that
+ * draws on for `NATIVE_STEADY_MS` since it came back starts the count again. An effect's render
+ * landing failed five frames and left the page drawing until a reload (Nov 16).
+ */
+const NATIVE_BACK_MS = 2000;
+const NATIVE_COMEBACKS = 5;
+const NATIVE_STEADY_MS = 60_000;
+
+/** Whether `change` touches the edit's media: what each one is, or where it's read from. */
+function touchesMedia(change: patches.Patch): boolean {
+  return "media" in change.set || "media" in change.lists || change.unset.includes("media");
+}
+
+/** A media as the window takes it: what it is and its file (the server's `of`). */
+const madeOf = (media: Media) => `${media.kind}:${media.path}`;
 /** What changed between two snapshots of the project, made once and shared by the engine's and the window's patches. */
 type Change = { from: Project; to: Project; patch: patches.Patch };
 
@@ -137,10 +154,11 @@ class Preview {
    * asked for; playing is the window's, on its speaker's clock (the sound is
    * mixed there), and the page follows its position. Off in a browser, in
    * full screen (the window's layer isn't in the full-screen one), and after
-   * the window fails a frame five times running (the page draws again, as before).
+   * the window fails a frame five times running (the page draws until it's
+   * opened again, `nativeAgainIn`).
    */
   native = false;
-  /** The window can't draw it this session (it failed, or refused to open). */
+  /** The window can't draw it this session (it refused to open, or kept failing each time it came back). */
   private nativeRefused = false;
   /** Full screen, or anything else the window's layer can't show under: the page draws. */
   private nativeAllowed = true;
@@ -157,6 +175,14 @@ class Preview {
   private nativeWanted: number | null = null;
   private nativeDrawn: number | null = null;
   private nativeFailures = 0;
+  /** The window stopped on a passing failure this many times running, when it last opened, and the timer opening it again. */
+  private nativeLeft = 0;
+  private nativeOpenedAt = 0;
+  private nativeBack: ReturnType<typeof setTimeout> | null = null;
+  /** The key (`nativeKey`) the sources in hand were asked for: the edit waits while newer ones are on their way. */
+  private nativeSourcesKey = "";
+  /** Answers running that named media otherwise than the page's edit (`of`): asked again soon a few times, then as `coming` is. */
+  private nativeAhead = 0;
   /**
    * The window's edit: the last revision sent, the one it said it draws, and
    * the project and sources it has (what the next change is a patch of; null:
@@ -674,6 +700,7 @@ class Preview {
         return;
       }
       this.native = true;
+      this.nativeOpenedAt = performance.now();
       this.nativeVolume = null;
       this.applyVolume();
       this.nativeSpeed = null;
@@ -730,8 +757,13 @@ class Preview {
     if (playing) this.pause();
     this.native = false;
     if (refuse !== null) {
-      this.nativeRefused = true;
       this.nativeOff(refuse.startsWith("the window refused the edit") ? "refused edit" : "failed", `the window's own preview stopped (${refuse}): the page draws it`);
+      // A passing failure (a file read as the wrong kind while an effect's render landed): the window is
+      // opened again in a while, and only one that keeps failing is left off for the session.
+      if (performance.now() - this.nativeOpenedAt >= NATIVE_STEADY_MS) this.nativeLeft = 0;
+      this.nativeLeft++;
+      if (this.nativeLeft > NATIVE_COMEBACKS) this.nativeRefused = true;
+      else this.nativeAgainIn(NATIVE_BACK_MS * 2 ** (this.nativeLeft - 1));
     }
     void nativePreview.close().catch(() => {});
     this.nativeBusy = false;
@@ -740,6 +772,19 @@ class Preview {
     this.notify();
     this.invalidate();
     if (playing && resume) this.play();
+  }
+
+  /** The window opened again in `ms`, once at rest (a switch mid-play would hitch the picture), for this attach. */
+  private nativeAgainIn(ms: number) {
+    if (this.nativeBack !== null) clearTimeout(this.nativeBack);
+    const generation = this.generation;
+    this.nativeBack = setTimeout(() => {
+      this.nativeBack = null;
+      if (generation !== this.generation || this.native || this.nativeRefused || !this.engine) return;
+      if (playhead.playing) { this.nativeAgainIn(1000); return; }
+      recordTiming("preview: native again", 0);
+      void this.openNative(generation).then(() => { this.notify(); this.invalidate(); });
+    }, ms);
   }
 
   /** Whether the window may draw the picture now (not in full screen). */
@@ -754,30 +799,52 @@ class Preview {
 
   /** The window's sources for this project, asked again when its media or their versions change. */
   private nativeSourcesFor(project: Project, versions: Record<string, string>) {
-    const key = `${project.id}|${project.media.map((media) => `${media.id}:${media.path}:${versions[media.id] ?? ""}`).join(",")}`;
+    const key = `${project.id}|${project.media.map((media) => `${media.id}:${media.kind}:${media.path}:${versions[media.id] ?? ""}`).join(",")}`;
     if (key === this.nativeKey) return;
     this.nativeKey = key;
     if (this.nativeAgain !== null) clearTimeout(this.nativeAgain);
     this.nativeAgain = null;
-    api.nativeSources(project.id).then(({ coming, ...given }) => {
+    api.nativeSources(project.id).then(({ coming, of, ...given }) => {
       if (this.nativeKey !== key) return;
-      const found = { ...given, sounds: given.sounds ?? {}, excerpts: given.excerpts ?? {} };
-      const before = JSON.stringify(this.nativeSources ?? null);
-      this.nativeSources = found;
-      if (JSON.stringify(found) !== before) {
+      const found = { cache: given.cache, sources: { ...given.sources }, sounds: { ...given.sounds }, excerpts: { ...given.excerpts } };
+      // The server reads its edit as it is now, which can be ahead of the page's (an effect's render landed there,
+      // and its patch is still on its way here): a media it names otherwise keeps what it was read from (or its file
+      // in the page's edit), never a file the window would read as the wrong kind (an .mp4 read as a picture, Nov 16).
+      // Asked again soon.
+      let ahead = false;
+      const had = this.nativeSourcesKey.startsWith(`${project.id}|`) ? this.nativeSources : null;
+      const keep = <T,>(into: Record<string, T>, from: Record<string, T> | undefined, id: string) => {
+        if (from?.[id] === undefined) delete into[id]; else into[id] = from[id];
+      };
+      for (const [id, made] of Object.entries(of ?? {})) {
+        const media = project.media.find((one) => one.id === id);
+        if (media !== undefined && madeOf(media) === made) continue;
+        keep(found.sources, had?.sources, id);
+        keep(found.sounds, had?.sounds, id);
+        keep(found.excerpts, had?.excerpts, id);
+        ahead = true;
+      }
+      this.nativeAhead = ahead ? this.nativeAhead + 1 : 0;
+      const waited = this.nativeSourcesKey !== key;
+      this.nativeSourcesKey = key;
+      // The same as before: kept as they were, so the window isn't told them again. An edit that waited on them goes now.
+      const changed = JSON.stringify(found) !== JSON.stringify(this.nativeSources ?? null);
+      if (changed) this.nativeSources = found;
+      if (changed || waited) {
         this.nativeStale = true;
         this.invalidate();
       }
       // A cloud preview the timeline plays still streamed comes down whole behind it, or a long video's pieces are cut
       // into files (the server's native_preview.ts, `coming`): asked again until they're here. One timer, whatever asks:
       // each landing's `native-sources` started a chain of its own, every 15 s for the session (~165 on a cold open).
-      if (coming === true) {
+      // Ahead of the page's edit, soon (a few times: an edit the page never takes isn't asked after each second).
+      if (coming === true || ahead) {
         this.nativeAgain = setTimeout(() => {
           this.nativeAgain = null;
           if (this.nativeKey !== key || this.project?.id !== project.id) return;
           this.nativeKey = "";
           this.nativeSourcesFor(project, versions);
-        }, 15_000);
+        }, ahead && this.nativeAhead <= 3 ? 1000 : 15_000);
       }
     }).catch((error: unknown) => {
       if (this.nativeKey === key) this.nativeKey = "";
@@ -806,26 +873,32 @@ class Preview {
   private syncNative() {
     if (!this.nativeStale || this.nativeSending || !this.project || this.nativeSources === null) return;
     if (!this.nativeKey.startsWith(`${this.project.id}|`)) return;
+    // Its media changed and where they're read from is still being asked: the edit waits for it, so the window never
+    // has one without the other (an effect's .mp4 taken as the picture it replaced, or the picture as the video).
+    if (this.nativeSourcesKey !== this.nativeKey) return;
     this.nativeStale = false;
     this.nativeDrawn = null;
     const project = this.project;
     const sources = this.nativeSources;
     const has = this.nativeHas;
+    const base = has !== null && has.project.id === project.id && has.revision === this.nativeAccepted ? has : null;
+    const change = base === null ? null : this.changeSince(base.project, project);
     let patch: string | null = null;
-    if (has !== null && has.sources === sources && has.project.id === project.id && has.revision === this.nativeAccepted) {
-      const change = this.changeSince(has.project, project);
+    if (base !== null && change !== null && base.sources === sources) {
       if (patches.empty(change)) return;
       patch = JSON.stringify(change);
       // A change touching most of the edit goes whole: parsing it is the same work, and it can't not fit.
       if (patch.length > PATCH_MOST) patch = null;
     }
     // Only where its media are read from changed (a cloud preview's whole copy came down): told without the edit,
-    // which went whole for it (2.4 MB parsed again, and every reader reopened, for each copy landing: Nov 15).
-    if (has !== null && has.sources !== sources && has.project.id === project.id && has.revision === this.nativeAccepted && this.nativeSourcesAlone) {
+    // which went whole for it (2.4 MB parsed again, and every reader reopened, for each copy landing: Nov 15). With
+    // the media themselves changed too (an effect's render in its clear still's place), the two go together, whole:
+    // either alone, the window reads a file as the kind it isn't (Nov 16).
+    if (base !== null && change !== null && base.sources !== sources && !touchesMedia(change) && this.nativeSourcesAlone) {
       this.nativeSending = true;
       nativePreview.sources(sources.sources, sources.sounds, sources.excerpts, sources.cache).then(() => {
         this.nativeSending = false;
-        if (this.nativeHas === has) this.nativeHas = { ...has, sources };
+        if (this.nativeHas === base) this.nativeHas = { ...base, sources };
         this.nativeStale = true;
         this.invalidate();
       }, () => {
@@ -1154,6 +1227,7 @@ class Preview {
   detach() {
     this.leaveNative(null, false);
     this.nativeKey = "";
+    this.nativeSourcesKey = "";
     this.nativeSources = null;
     this.nativeHas = null;
     this.setBuffering(false);
