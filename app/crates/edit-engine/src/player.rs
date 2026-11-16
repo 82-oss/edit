@@ -41,6 +41,14 @@
 //! parsed again here (Nov 8). Every update carries the page's revision, and
 //! the player answers with the one it now draws, or why it refused: a refused
 //! update leaves the last one on screen, and the page has to know.
+//!
+//! What's streamed through Edit's server is read ahead of the picture
+//! (`crate::preroll`): ten seconds from a play, the next ten once it's half
+//! way through, so the decoder reads from the server's disk rather than
+//! waiting on R2 at the frame that needs it. A play the page holds for its
+//! footage (`hold`: its spinner) has its picture drawn, its sound mixed and
+//! those seconds read meanwhile, and `position` says how far they are
+//! (`ahead`, `sound`), which is what the page plays on at.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -57,6 +65,7 @@ use serde_json::Value;
 
 use crate::mac_media::Speaker;
 use crate::mix::{self, Part, RATE};
+use crate::preroll::{self, Preroll};
 use crate::render::{
     decode_stats, feed_peaks, heard_segments, PreviewPictures, READERS, READERS_A_FILE,
 };
@@ -97,6 +106,13 @@ const JOIN_FRAMES: usize = 240;
 const END_SILENCE: usize = RATE / 4;
 /// A frame drawn slower than this is counted as slow (two frames at 60 fps).
 const SLOW_MS: f64 = 33.0;
+/// Seconds of playing read ahead of the playhead (`crate::preroll`); the next
+/// ones are read once the playhead is half way through them.
+const READ_AHEAD_SECONDS: f64 = 10.0;
+/// FFmpegs reading ahead at once: two for a held play (someone's waiting on
+/// it), one while it plays (it's ahead already, and the decoder reads beside it).
+const HELD_READERS: usize = 2;
+const PLAYING_READERS: usize = 1;
 
 /// Where one drawn frame's time went, in milliseconds (the decoders' share by kind in `decoders`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -145,6 +161,20 @@ pub struct Player {
     /// The speed it plays at (1: as the edit is) and how loud (0–1), kept until changed.
     rate: f64,
     volume: f32,
+    /// A play the page holds for its footage (`hold`): the frame it plays from.
+    held: Option<i64>,
+    /// The seconds being read ahead (`crate::preroll`), and the ones before them, still finishing.
+    reading: Option<Reading>,
+    read_before: Option<Reading>,
+}
+
+/// Timeline frames `from..end` read ahead of the picture, asked for with the
+/// playhead at `asked` (None to read: nothing there is streamed).
+struct Reading {
+    from: i64,
+    end: i64,
+    asked: i64,
+    preroll: Option<Preroll>,
 }
 
 /// What's playing: the clock's sound starts at the speaker's count
@@ -308,12 +338,17 @@ pub struct Report {
 }
 
 /// Where the player is: the playhead (a frame and a fraction), whether it's
-/// playing, and why it stopped (the end, or asked to).
+/// playing, and why it stopped (the end, or asked to). Held (`hold`), how many
+/// seconds of playing from there are read (`ahead`: `READ_AHEAD_SECONDS` once
+/// all are, or all to the end); and the seconds of sound in the speaker
+/// (`sound`, none without one).
 pub struct Position {
     pub frame: f64,
     pub playing: bool,
     pub ended: bool,
     pub report: Report,
+    pub ahead: Option<f64>,
+    pub sound: Option<f64>,
 }
 
 impl Player {
@@ -393,6 +428,9 @@ impl Player {
             starved_before: 0,
             rate: 1.0,
             volume: 1.0,
+            held: None,
+            reading: None,
+            read_before: None,
         })
     }
 
@@ -464,9 +502,13 @@ impl Player {
                 self.sound.stale = true;
             }
         }
+        let moved = sources != self.sources || sounds != self.sounds;
         self.sources = sources;
         self.sounds = sounds;
         self.cache = cache;
+        if moved {
+            self.read_again();
+        }
     }
 
     /// What changed since `base` (the page's lib/patch.ts), making `revision`.
@@ -513,6 +555,7 @@ impl Player {
             self.pictures.clear();
             self.stop();
             self.at = None;
+            self.let_go_of_reads();
         }
         self.renderer
             .resize(project.settings.width, project.settings.height);
@@ -535,6 +578,7 @@ impl Player {
         } else {
             self.sound.stale = true;
         }
+        self.read_again();
     }
 
     /// The layer's size in pixels (said each time the page places it in
@@ -598,6 +642,10 @@ impl Player {
     /// Draws `frame`, unless it's on screen already (nothing changed since). Mid-drag, a
     /// neighbour's picture may stand in for a layer's (`inexact`); asked again, it's drawn exactly.
     pub fn draw(&mut self, frame: i64) -> Result<(), String> {
+        // At rest, a frame other than the one held for: the page moved on from that play.
+        if self.playing.is_none() && self.held.is_some_and(|held| held != frame) {
+            self.let_go_of_reads();
+        }
         let again = self.drawn == Some(frame);
         if again && !self.inexact {
             self.last = None;
@@ -704,6 +752,7 @@ impl Player {
     /// Lets go of the decoders and the sound (the preview is hidden); they open again on the next frame.
     pub fn rest(&mut self) {
         self.stop();
+        self.let_go_of_reads();
         self.sound.disarm();
         self.pictures.clear();
         self.drawn = None;
@@ -796,6 +845,145 @@ impl Player {
     }
 
     // ----------------------------------------------------------------------
+    // Reading ahead, and holding a play for it
+
+    /// The page holds a play from `frame` for its footage (a spinner over the
+    /// picture, kenobi, Nov 17: a play that passed over 515 frames in 23 s
+    /// rather than wait): playing stops, the sound from `frame` is mixed into
+    /// the speaker, the cuts after it get their readers, the seconds after it
+    /// are read (`crate::preroll`), and its picture is drawn, which leaves its
+    /// readers standing on it for the play. `position` says how far those
+    /// reads are (`ahead`) and how much sound is in (`sound`); the page plays
+    /// from `frame` once there's enough, and a frame asked for elsewhere
+    /// meanwhile lets the hold go.
+    pub fn hold(&mut self, frame: i64) {
+        self.stop();
+        let Some(project) = &self.project else {
+            return;
+        };
+        let (fps, until) = (project.fps(), Self::until(project, frame));
+        if frame < 0 || frame >= until {
+            return;
+        }
+        let started = Instant::now();
+        self.held = Some(frame);
+        if self
+            .reading
+            .as_ref()
+            .is_none_or(|reading| reading.from != frame)
+        {
+            self.read_before = None;
+            self.reading = self.read_ahead(frame, frame, HELD_READERS);
+        }
+        self.arm(frame as f64 / fps, until);
+        self.warmed_from = None;
+        self.warm_ahead(frame, false);
+        let drawn = self.draw(frame);
+        trace(|| {
+            format!(
+                "held at {frame}: {} in {:.1} ms",
+                drawn.as_ref().err().map_or("drawn", String::as_str),
+                started.elapsed().as_secs_f64() * 1000.0
+            )
+        });
+    }
+
+    /// Seconds of playing from the held frame that are read (`READ_AHEAD_SECONDS`
+    /// once they all are, or all to the play's end); None when nothing's held.
+    fn held_ahead(&self) -> Option<f64> {
+        let held = self.held?;
+        let read = match &self.reading {
+            Some(reading) if reading.from == held => match &reading.preroll {
+                Some(preroll) if !preroll.done() => preroll.covered() / self.rate,
+                _ => READ_AHEAD_SECONDS,
+            },
+            _ => 0.0,
+        };
+        Some(read.clamp(0.0, READ_AHEAD_SECONDS))
+    }
+
+    /// Seconds of sound in the speaker, mixed and not yet heard (None without a speaker).
+    fn sound_ahead(&self) -> Option<f64> {
+        let feed = self.sound.feed.as_ref()?;
+        Some(feed.speaker.state().buffered as f64 / RATE as f64)
+    }
+
+    /// What the timeline streams through Edit's server from `frame` (the
+    /// next `READ_AHEAD_SECONDS` of playing, to the play's end), read by
+    /// `workers` FFmpegs (`crate::preroll`); `asked`: the playhead now. A file
+    /// on this Mac, an R2 original read straight (nothing there is kept), and
+    /// a long video's pieces (cut into files behind the viewer) aren't read.
+    fn read_ahead(&self, frame: i64, asked: i64, workers: usize) -> Option<Reading> {
+        let project = self.project.as_ref()?;
+        let fps = project.fps();
+        let until = Self::until(project, frame);
+        let end =
+            (frame + (READ_AHEAD_SECONDS * fps * self.rate.max(1.0)).ceil() as i64).min(until);
+        if end <= frame {
+            return None;
+        }
+        let streamed =
+            |path: &&PathBuf| through_server(path) && crate::excerpts::of(path).is_none();
+        let picture = |media: &str| self.sources.get(media).filter(streamed).cloned();
+        let sound = |media: &str| {
+            self.sounds
+                .get(media)
+                .or_else(|| self.sources.get(media))
+                .filter(streamed)
+                .cloned()
+        };
+        let stretches = preroll::stretches(project, frame, end, picture, sound);
+        let count = stretches.len();
+        let preroll = (count > 0).then(|| Preroll::start(stretches, frame, end, fps, workers));
+        if count > 0 {
+            trace(|| format!("reading ahead {frame}–{end}: {count} stretches"));
+        }
+        Some(Reading {
+            from: frame,
+            end,
+            asked,
+            preroll,
+        })
+    }
+
+    /// Playing at `frame`: read ahead from it after a jump (or at the start),
+    /// and the next seconds once it's half way through those being read.
+    fn read_on(&mut self, frame: i64) {
+        let until = self.playing.as_ref().map_or(frame, |playing| playing.until);
+        match &self.reading {
+            Some(reading) if frame >= reading.asked && frame < reading.end => {
+                let half = reading.from + (reading.end - reading.from) / 2;
+                if frame >= half && reading.end < until {
+                    let next = self.read_ahead(reading.end, frame, PLAYING_READERS);
+                    self.read_before = self.reading.take();
+                    self.reading = next;
+                }
+            }
+            _ => {
+                self.read_before = None;
+                self.reading = self.read_ahead(frame, frame, PLAYING_READERS);
+            }
+        }
+    }
+
+    /// The edit or where it's read from changed: what's read ahead is read
+    /// again from the held frame, or from the playhead at the next frame played.
+    fn read_again(&mut self) {
+        self.read_before = None;
+        self.reading = match self.held {
+            Some(held) => self.read_ahead(held, held, HELD_READERS),
+            None => None,
+        };
+    }
+
+    /// No hold, and nothing read ahead (its FFmpegs stopped).
+    fn let_go_of_reads(&mut self) {
+        self.held = None;
+        self.reading = None;
+        self.read_before = None;
+    }
+
+    // ----------------------------------------------------------------------
     // Playing
 
     /// Where the clock stops for a play from `from`: the out point when the
@@ -822,6 +1010,16 @@ impl Player {
         let from = frame as f64 / fps;
         self.stop();
         let started = Instant::now();
+        // A hold from here: its reads go on as the play's (the tick reads on from them).
+        self.held = None;
+        if self
+            .reading
+            .as_ref()
+            .is_none_or(|reading| frame < reading.from || frame >= reading.end)
+        {
+            self.read_before = None;
+            self.reading = self.read_ahead(frame, frame, PLAYING_READERS);
+        }
         let from = self.arm(from, until);
         let played_at_start = self
             .sound
@@ -861,6 +1059,10 @@ impl Player {
     /// there, so playing on from it starts at once.
     pub fn pause(&mut self) -> Option<i64> {
         let at = self.playing.as_ref().map(|_| self.clock_frame());
+        // What was read ahead of the play (or for a hold: the page paused it) stops being read; a hold reads its own after.
+        if self.playing.is_some() || self.held.is_some() {
+            self.let_go_of_reads();
+        }
         if let Some(feed) = &self.sound.feed {
             feed.speaker.run(false);
         }
@@ -1039,6 +1241,9 @@ impl Player {
             )
         };
         let frame = at.floor() as i64;
+        if frame < until {
+            self.read_on(frame);
+        }
         if frame >= until {
             self.pause();
             self.drawn = None;
@@ -1104,6 +1309,8 @@ impl Player {
             playing: self.playing.is_some(),
             ended: report.ended,
             report,
+            ahead: self.held_ahead(),
+            sound: self.sound_ahead(),
         }
     }
 
@@ -1118,10 +1325,12 @@ impl Player {
             return;
         }
         let _ = self.sharpen();
-        let Some((frame, (fps, until))) = self.drawn.zip(
+        // Held, its sound is armed at the frame held for (`hold`), whatever's on screen.
+        let resting = self.held.or(self.drawn);
+        let Some((frame, (fps, until))) = resting.zip(
             self.project
                 .as_ref()
-                .map(|project| (project.fps(), Self::until(project, self.drawn.unwrap_or(0)))),
+                .map(|project| (project.fps(), Self::until(project, resting.unwrap_or(0)))),
         ) else {
             return;
         };
@@ -1221,6 +1430,15 @@ impl Player {
         trace(|| format!("sound armed from {from:.3} s at {rate}×, {count} parts, {seconds:.1} s"));
         Some(Mixer { from, rate, cancel })
     }
+}
+
+/// Whether `path` is this server's loopback stream of a cloud preview (`…/api/cloud/preview?key=`), whose bytes it
+/// keeps in blocks on disk as they're read: what's worth reading ahead.
+fn through_server(path: &std::path::Path) -> bool {
+    path.to_str().is_some_and(|text| {
+        (text.starts_with("http://127.0.0.1:") || text.starts_with("http://localhost:"))
+            && text.contains("/api/cloud/preview?")
+    })
 }
 
 /// A draw's trace line: "Ok" first (the acceptance check, scripts/acceptance.ts,

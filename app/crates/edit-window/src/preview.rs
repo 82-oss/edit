@@ -12,7 +12,10 @@
 //! (`preview_play`, `preview_pause`): it runs on the speaker's clock, draws
 //! the frames as they come due and says where it is when the page asks
 //! (`preview_position`, once an animation frame); `preview_hint` names a
-//! frame the playhead is about to land on, so its pictures are made ready.
+//! frame the playhead is about to land on, so its pictures are made ready,
+//! or (`hold`) a play the page holds for its footage: stopped there, its
+//! picture drawn, its sound mixed and the seconds after it read, which
+//! `preview_position` then says (`ahead`, `sound`) until the page plays it.
 //! `preview_rate` is the speed it plays at (Script mode's 2×, the sound's
 //! pitch kept) and `preview_volume` how loud, both kept until changed and 1
 //! in a preview just opened.
@@ -130,6 +133,7 @@ enum Command {
     },
     Hint {
         frame: i64,
+        hold: bool,
     },
     Rate {
         rate: f64,
@@ -144,7 +148,9 @@ enum Command {
 /// playing and whether it reached the end since the last ask, and how playing
 /// went since then: frames drawn, frames the clock passed undrawn, slow draws
 /// (over 33 ms), their times, the speaker's output calls that ran short, and
-/// why the sound went silent when it did (a file that won't open).
+/// why the sound went silent when it did (a file that won't open). Held for
+/// its footage, the seconds of playing from there that are read (`ahead`);
+/// and the seconds of sound in the speaker (`sound`).
 #[derive(serde::Serialize, Clone, Default)]
 pub struct Where {
     frame: f64,
@@ -157,6 +163,10 @@ pub struct Where {
     starved: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     problem: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ahead: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sound: Option<f64>,
 }
 
 /// A frame's answer to the page: the revision it shows, whether it was drawn
@@ -333,7 +343,8 @@ fn player_thread(layer: usize, commands: mpsc::Receiver<Command>) {
                 }
                 Command::Resize { width, height } => player.resize(width, height),
                 Command::Rest => player.rest(),
-                Command::Hint { frame } => player.hint(frame),
+                Command::Hint { frame, hold: false } => player.hint(frame),
+                Command::Hint { frame, hold: true } => player.hold(frame),
                 Command::Rate { rate } => player.set_rate(rate),
                 Command::Volume { level } => player.set_volume(level),
                 Command::Play { frame, reply } => {
@@ -354,6 +365,8 @@ fn player_thread(layer: usize, commands: mpsc::Receiver<Command>) {
                         draws: at.report.draws,
                         starved: at.report.starved,
                         problem: at.report.problem,
+                        ahead: at.ahead.filter(|seconds| seconds.is_finite()),
+                        sound: at.sound.filter(|seconds| seconds.is_finite()),
                     }));
                 }
                 Command::Draw { frame, reply } => {
@@ -699,11 +712,19 @@ pub async fn preview_position(previews: State<'_, Previews>) -> Result<Where, St
     ask(&previews, |reply| Command::Position { reply }).await
 }
 
-/// The playhead is about to land on `frame`: its pictures are made ready.
+/// The playhead is about to land on `frame`: its pictures are made ready. With
+/// `hold`, a play from there is held for its footage (`Player::hold`).
 #[tauri::command]
-pub fn preview_hint(previews: State<'_, Previews>, frame: i64) -> Result<(), String> {
+pub fn preview_hint(
+    previews: State<'_, Previews>,
+    frame: i64,
+    hold: Option<bool>,
+) -> Result<(), String> {
     commands(&previews)?
-        .send(Command::Hint { frame })
+        .send(Command::Hint {
+            frame,
+            hold: hold == Some(true),
+        })
         .map_err(|_| "the preview stopped".to_owned())
 }
 

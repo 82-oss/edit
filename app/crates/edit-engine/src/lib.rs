@@ -31,6 +31,8 @@ pub mod motion;
 pub mod pipe_writer;
 #[cfg(target_os = "macos")]
 pub mod player;
+#[cfg(any(target_os = "macos", test))]
+mod preroll;
 pub mod render;
 pub mod screen_text;
 pub mod seats;

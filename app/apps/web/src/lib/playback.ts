@@ -67,6 +67,20 @@ type Sound = AudioClip & { clip: AudioClip; edges: SoundEdges | null };
 interface PictureSource { clip: string; media: string; time: number }
 /** A stretch of a clip's sound queued on the audio clock, and what it was cut from. */
 interface ScheduledSound { source: AudioBufferSourceNode; gain: GainNode; mute?: GainNode; clip: string; url: string }
+/**
+ * A play held for its footage (`holdFor`): its generation, since when, the timer looking again, whether it held a
+ * play under way that stalled, and in the window: whether the window has the hold, an ask of it under way, and its
+ * last answer (how far it has read: `ahead`, `sound`).
+ */
+interface Hold {
+  generation: number;
+  since: number;
+  timer: ReturnType<typeof setTimeout> | undefined;
+  stalled: boolean;
+  hinted: boolean;
+  asking: boolean;
+  window: NativeWhere | null;
+}
 const BUFFERING_BADGE_MS = 600;
 /** Waiting this long for a frame is noted in the log. */
 const STUCK_MS = 10_000;
@@ -132,17 +146,33 @@ const NATIVE_STEADY_MS = 60_000;
 
 /**
  * Holding a play for footage that isn't here yet (a cloud project opened for the first time on this Mac): a play
- * starts once the next `HOLD_AHEAD` seconds have every picture and sound here (the server's
- * playback_ready.ts), a spinner over the picture meanwhile; one under way holds again where less than
- * `HOLD_SHORT` seconds ahead are and the picture stalls or skips. Past `HOLD_MOST_MS` it plays what there is. The
- * M4, Nov 16: a jump to the B-roll froze, then played with 199 frames passed over and the sound short 735 times,
- * nothing on screen saying it was loading.
+ * waits on a spinner where the next `HOLD_AHEAD` seconds haven't every picture and sound here (the server's
+ * playback_ready.ts). The M4, Nov 16: a jump to the B-roll froze, then played with 199 frames passed over and the
+ * sound short 735 times, nothing on screen saying it was loading.
+ *
+ * In Edit.app's window the window itself is held there (`nativePreview.hint(frame, true)`: the frame drawn, its
+ * sound mixed, the seconds after it read through the server) and says how far it has got; the play goes once
+ * `RESUME_AHEAD` seconds are read and `RESUME_SOUND` of sound is in. One under way holds the same way wherever its
+ * clock stalls (`STALL_MS`) or it passes over `SKIP_HOLD` frames in a second, whatever the server says is here:
+ * "here" is bytes on disk, and kenobi (an M1, Nov 17) stalled 1.2–4.6 s a time inside the decoder's reads with the
+ * server saying the next seconds were here, 515 frames passed over in 23 s with no hold. A window that doesn't say
+ * what it read (one from before) plays on once the server says the footage is here, and after a stall not before
+ * `STALL_HOLD_MS`. Where nothing can be kept (the server's `keeping` false: this Mac's disk at Edit's floor) no
+ * play waits for the footage to be here: it plays from the stream (kenobi, Nov 17: every play waited its 30 s).
+ * A hold never lasts past `HOLD_MOST_MS`: it plays what there is.
  */
 const HOLD_AHEAD = 3;
-const HOLD_SHORT = 0.75;
 const HOLD_MOST_MS = 30_000;
-/** The window's clock not moving this long while it plays (its sound ran short): the spinner shows. */
+const RESUME_AHEAD = 2;
+const RESUME_SOUND = 1;
+const SKIP_HOLD = 8;
+const STALL_HOLD_MS = 1500;
+/** A held play looks again this often (and asks the window how far it has read). */
+const HOLD_LOOK_MS = 250;
+/** The window's clock not moving this long while it plays (its sound ran short): it's held. */
 const STALL_MS = 400;
+/** A play just (re)started has this long more before a clock that hasn't moved is a stall (the speaker starting up). */
+const START_GRACE_MS = 600;
 /** The page's own play, its picture or sound missing this long: the clock holds until they're in. */
 const LIVE_HOLD_MS = 300;
 /** What's here is asked this often while playing or holding, and at rest; a play asks for what's ahead this often. */
@@ -320,8 +350,19 @@ class Preview {
   /** Where the footage was last asked to come from (`/playback/warm`), and when. */
   private warmedFrame = -Infinity;
   private warmedAt = -Infinity;
-  /** A play waiting for its footage (`holdFor`): its generation, since when, and the timer looking again. */
-  private holding: { generation: number; since: number; timer: ReturnType<typeof setTimeout> | undefined } | null = null;
+  /** A play waiting for its footage (`holdFor`). */
+  private holding: Hold | null = null;
+  /** Whether this Mac keeps the footage it reads (the server's `keeping`; false: its disk is at Edit's floor). */
+  private keeping = true;
+  /** The last pause sent to the window, which a hold's ask waits behind (they'd otherwise cross on the way). */
+  private nativeQuiet: Promise<unknown> = Promise.resolve();
+  /** When the window was last asked where it is (`followNative`), for a spinner while it doesn't answer. */
+  private nativeAskedAt = 0;
+  /** Frames the window passed over lately while playing, with when it said so (the last second's: `SKIP_HOLD`). */
+  private windowSkips: [number, number][] = [];
+  /** Whether the server was last told a play is on (`api.warmPlayback`'s `playing`), and the timer saying so again. */
+  private toldPlaying = false;
+  private playingTimer: ReturnType<typeof setInterval> | undefined;
   /** The window's playhead last moved (frame, when), and since when the page's own play has missed a picture or its sound. */
   private windowMoved = { frame: -1, at: 0 };
   private shortSince: number | undefined;
@@ -436,9 +477,10 @@ class Preview {
       this.readyAsking = true;
       Promise.resolve()
         .then(() => api.playbackReady(project.id))
-        .then(({ ready }) => {
+        .then(({ ready, keeping }) => {
           if (this.project?.id !== project.id || !Array.isArray(ready)) return;
           this.ready = { project: project.id, stretches: ready };
+          this.keeping = keeping !== false;
           this.lookAgain();
         })
         .catch(() => {})
@@ -446,46 +488,119 @@ class Preview {
     }, wait);
   }
 
-  /** The footage from `frame` asked to come first (an open, a jump, a play under way), and what's here asked soon after. */
+  /**
+   * The footage from `frame` asked to come first (an open, a jump, a play under way), and what's here asked soon after.
+   * Whether a play is on goes with it (the server's background work gives way to one: playing.ts).
+   */
   private warmFrom(frame: number) {
     const project = this.project;
     if (project === null) return;
     this.warmedFrame = frame;
     this.warmedAt = performance.now();
-    void Promise.resolve().then(() => api.warmPlayback(project.id, Math.floor(frame))).catch(() => {});
+    const playing = playhead.playing;
+    this.toldPlaying = playing;
+    void Promise.resolve().then(() => api.warmPlayback(project.id, Math.floor(frame), playing)).catch(() => {});
     clearTimeout(this.readyTimer);
     this.readyTimer = setTimeout(() => this.askReady(true), 400);
   }
 
   /**
-   * Plays once the footage ahead of `from` is here: playing as far as anyone can see (the button says Pause), a
-   * spinner over the picture, the footage from there asked for first. `go` starts it; a pause or another play
-   * meanwhile, and it never does.
+   * A play started (the window's or the page's own, held or not): the server is told now, and again every
+   * `WARM_PLAYING_MS` while it plays (a play it hears nothing of for 12 s is over, playing.ts), so its background
+   * work gives way to it.
    */
-  private holdFor(from: number, generation: () => number, go: () => void) {
+  private tellPlaying() {
+    clearInterval(this.playingTimer);
+    this.playingTimer = setInterval(() => {
+      if (!playhead.playing) { this.tellStopped(); return; }
+      if (performance.now() - this.warmedAt >= WARM_PLAYING_MS) this.warmFrom(playhead.frame);
+    }, WARM_PLAYING_MS);
+    if (!this.toldPlaying || performance.now() - this.warmedAt >= WARM_PLAYING_MS) this.warmFrom(playhead.frame);
+  }
+
+  /** The play stopped (a pause, its end, the page leaving): the server's told, once. */
+  private tellStopped() {
+    clearInterval(this.playingTimer);
+    this.playingTimer = undefined;
+    const project = this.project;
+    if (!this.toldPlaying || project === null) return;
+    this.toldPlaying = false;
+    const frame = Math.floor(playhead.frame);
+    void Promise.resolve().then(() => api.warmPlayback(project.id, frame, false)).catch(() => {});
+  }
+
+  /**
+   * Plays once the footage ahead of `from` is here: playing as far as anyone can see (the button says Pause), a
+   * spinner over the picture, the footage from there asked for first, and in Edit.app's window the window held
+   * there reading it (see `HOLD_AHEAD`). `go` starts it; a pause or another play meanwhile, and it never does.
+   * `stalled`: a play under way that stalled or skipped, whatever the server said was here.
+   */
+  private holdFor(from: number, generation: () => number, go: () => void, stalled = false) {
     this.endHold();
     const mine = generation();
-    this.setBuffering(true);
-    if (Math.abs(from - this.warmedFrame) > 1 || performance.now() - this.warmedAt > WARM_PLAYING_MS) this.warmFrom(from);
-    recordTiming("preview: holding for footage", 0);
-    const hold: NonNullable<Preview["holding"]> = { generation: mine, since: performance.now(), timer: undefined };
+    const hold: Hold = { generation: mine, since: performance.now(), timer: undefined, stalled, hinted: false, asking: false, window: null };
     this.holding = hold;
-    const look = () => {
-      if (this.holding !== hold) return;
-      if (!playhead.playing || generation() !== mine) { this.endHold(); return; }
+    // At once: the spinner's own fade-in (`appear-late`, 350 ms) keeps a hold that's over sooner from flashing it.
+    this.setBuffering(true, true);
+    if (Math.abs(from - this.warmedFrame) > 1 || performance.now() - this.warmedAt > WARM_PLAYING_MS) this.warmFrom(from);
+    recordTiming(stalled ? "preview: holding for footage (stalled)" : "preview: holding for footage", 0);
+    if (this.native) {
+      // Behind the pause sent before it: the two cross on the way otherwise, and the pause let go of the hold.
+      const frame = Math.floor(from);
+      void this.nativeQuiet.then(() => (this.holding === hold ? nativePreview.hint(frame, true) : undefined))
+        .then(() => { hold.hinted = true; }, () => { hold.hinted = true; });
+    }
+    // Whether it's done: played (enough here, or waited past the most), or let go (a pause, another play).
+    const over = (): boolean => {
+      if (this.holding !== hold) return true;
+      if (!playhead.playing || generation() !== mine) { this.endHold(); this.setBuffering(false); return true; }
       const waited = performance.now() - hold.since;
-      if (this.readyAhead(from, HOLD_AHEAD) || waited > HOLD_MOST_MS) {
-        if (waited > HOLD_MOST_MS) note("warn", "preview", `played on from frame ${from} after waiting ${Math.round(waited / 1000)} s for its footage to come down`);
-        recordTiming("preview: held for footage", waited);
-        this.endHold();
-        this.setBuffering(false);
-        go();
-        return;
+      if (!this.heldEnough(from, hold, waited) && waited <= HOLD_MOST_MS) return false;
+      if (waited > HOLD_MOST_MS) note("warn", "preview", `played on from frame ${from} after waiting ${Math.round(waited / 1000)} s for its footage to come down`);
+      recordTiming("preview: held for footage", waited);
+      this.endHold();
+      this.setBuffering(false);
+      go();
+      return true;
+    };
+    const look = () => {
+      clearTimeout(hold.timer);
+      if (over()) return;
+      // The window, held, says how far it has read; asked once it has the hold, one ask a look.
+      if (this.native && hold.hinted && !hold.asking) {
+        hold.asking = true;
+        nativePreview.position().then((at) => {
+          hold.asking = false;
+          hold.window = at;
+          over();
+        }, () => { hold.asking = false; });
       }
-      hold.timer = setTimeout(look, 250);
+      hold.timer = setTimeout(look, HOLD_LOOK_MS);
     };
     this.lookAgain = look;
     look();
+  }
+
+  /** Whether a play held at `from` (for `waited` ms) can go: see `HOLD_AHEAD`. */
+  private heldEnough(from: number, hold: Hold, waited: number): boolean {
+    if (this.project === null) return true;
+    const fps = rate(this.project.settings);
+    const out = this.stopFrame();
+    const end = out !== null && from < out && out < this.duration ? out : this.duration;
+    // Seconds of playing left: near the end, less is enough.
+    const left = Math.max(0, (end - from) / fps / this.speed);
+    if (this.native) {
+      // Its word on the hold first: until then, nothing.
+      if (hold.window === null) return false;
+      const { ahead, sound } = hold.window;
+      if (typeof ahead === "number") {
+        const heard = typeof sound !== "number" || sound >= Math.min(RESUME_SOUND, left - 0.25);
+        return ahead >= Math.min(RESUME_AHEAD, left) && heard;
+      }
+      // A window that doesn't say what it read: what the server says is here, as before.
+    }
+    if (hold.stalled && waited < STALL_HOLD_MS) return false;
+    return !this.keeping || this.readyAhead(from, HOLD_AHEAD);
   }
 
   /** A hold looks again when what's here is heard (set by `holdFor`). */
@@ -1135,11 +1250,15 @@ class Preview {
     if (answer.ms > NATIVE_SLOW_MS) recordTiming(answer.ffmpeg > 0 ? "preview: native slow draw (streamed)" : answer.opens > 0 ? "preview: native slow draw (opened)" : "preview: native slow draw (seek)", answer.ms);
   }
 
-  /** Plays from the playhead on the window's clock, the page following its position. */
-  private playNative() {
+  /**
+   * Plays from the playhead on the window's clock, the page following its position. `stalled`: the play under way
+   * stalled or skipped there, and holds whatever the server says is here.
+   */
+  private playNative(stalled = false) {
     const from = Math.floor(playhead.frame);
     // A play from somewhere else while playing (a seek) is a play of its own.
     this.endNativeRun();
+    this.endHold();
     if (this.project) this.nativeRun = { from, fps: rate(this.project.settings), shown: 0, skipped: 0, slow: 0, longest: 0, starved: 0 };
     const generation = ++this.nativePlay;
     playhead.playing = true;
@@ -1147,13 +1266,15 @@ class Preview {
     this.pendingScenes.clear();
     recordTiming("preview: play (native)", 0);
     playhead.emit();
+    this.tellPlaying();
     cancelAnimationFrame(this.queued);
     this.queued = 0;
     cancelAnimationFrame(this.loop);
     this.loop = 0;
-    // Its footage not here yet (a first open, a jump): held on a spinner until it is, then played.
-    if (!this.readyAhead(from, HOLD_AHEAD)) {
-      this.holdFor(from, () => this.nativePlay, () => this.startNative(generation, from));
+    // Its footage not here yet (a first open, a jump), or the play stalled: held on a spinner until the window has
+    // it, then played. Where nothing can be kept, a play waits for nothing to be here: it plays from the stream.
+    if (stalled || (this.keeping && !this.readyAhead(from, HOLD_AHEAD))) {
+      this.holdFor(from, () => this.nativePlay, () => this.startNative(generation, from), stalled);
       return;
     }
     this.startNative(generation, from);
@@ -1161,10 +1282,11 @@ class Preview {
 
   /** The window plays from `from`: the speed first, then the play at it; a pause meanwhile, and nothing is played. */
   private startNative(generation: number, from: number) {
-    this.windowMoved = { frame: from, at: performance.now() };
+    this.windowMoved = { frame: from, at: performance.now() + START_GRACE_MS };
+    this.windowSkips = [];
     this.sendSpeed().then(() => (generation === this.nativePlay && playhead.playing && this.native ? nativePreview.play(from) : null)).then(() => {
       if (generation !== this.nativePlay || !playhead.playing) return;
-      this.windowMoved = { frame: from, at: performance.now() };
+      this.windowMoved = { frame: from, at: performance.now() + START_GRACE_MS };
       this.followNative(generation);
     }, (error: unknown) => {
       if (generation !== this.nativePlay || !playhead.playing) return;
@@ -1179,8 +1301,11 @@ class Preview {
     const tick = () => {
       this.loop = 0;
       if (!playhead.playing || generation !== this.nativePlay || !this.native) return;
+      // The window not answering where it is (its thread stuck in a read): the spinner, until it says.
+      if (this.nativePolling && performance.now() - this.nativeAskedAt > STALL_MS) this.setBuffering(true, true);
       if (!this.nativePolling) {
         this.nativePolling = true;
+        this.nativeAskedAt = performance.now();
         nativePreview.position().then((at) => {
           this.nativePolling = false;
           if (!playhead.playing || generation !== this.nativePlay) return;
@@ -1241,18 +1366,21 @@ class Preview {
     }
     playhead.frame = Math.max(0, at.frame);
     if (!this.framed) { this.framed = true; this.notify(); }
-    // The window's clock held (its sound ran short) or its picture skipped: a spinner, and where the footage ahead
-    // isn't here, the play holds for it rather than passing over it.
+    // The window's clock held (its sound ran short) or its picture passed over frames: the play holds there on a
+    // spinner until the window has read on, whatever the server says is here, rather than passing over more.
     const now = performance.now();
-    if (at.frame !== this.windowMoved.frame) this.windowMoved = { frame: at.frame, at: now };
+    if (at.frame !== this.windowMoved.frame) this.windowMoved = { frame: at.frame, at: Math.max(now, this.windowMoved.at) };
     const stalled = now - this.windowMoved.at > STALL_MS;
-    if ((stalled || at.skipped >= 3) && !this.readyAhead(at.frame, HOLD_SHORT)) {
-      recordTiming("preview: held for footage (native, playing)", 0);
-      void nativePreview.pause().catch(() => {});
-      this.playNative();
+    if (at.skipped > 0) this.windowSkips.push([now, at.skipped]);
+    while (this.windowSkips.length > 0 && now - this.windowSkips[0]![0] > 1000) this.windowSkips.shift();
+    const skipped = this.windowSkips.reduce((sum, [, count]) => sum + count, 0);
+    if (stalled || skipped >= SKIP_HOLD) {
+      recordTiming(stalled ? "preview: held for footage (native, stalled)" : "preview: held for footage (native, skipping)", 0);
+      this.nativeQuiet = nativePreview.pause().catch(() => null);
+      this.playNative(true);
       return;
     }
-    this.setBuffering(stalled);
+    this.setBuffering(false);
     if (now - this.warmedAt > WARM_PLAYING_MS) this.warmFrom(at.frame);
     if (now - this.persistedAt >= 1000) this.remember();
     playhead.emit();
@@ -1807,6 +1935,7 @@ class Preview {
     });
     this.resetClock();
     playhead.emit();
+    this.tellPlaying();
     cancelAnimationFrame(this.queued);
     this.queued = 0;
     const tick = () => {
@@ -1893,11 +2022,15 @@ class Preview {
     cancelAnimationFrame(this.loop);
     this.loop = 0;
     this.resetClock();
+    if (playing) this.tellStopped();
     if (this.native && playing) {
       this.endNativeRun();
-      // The window stops its clock; where it rested is the playhead (it's told after, a frame at most from the last position).
+      // The window stops its clock (and lets go of a hold); where it rested is the playhead (it's told after, a frame
+      // at most from the last position).
       const generation = ++this.nativePlay;
-      nativePreview.pause().then((at) => {
+      const paused = nativePreview.pause();
+      this.nativeQuiet = paused.catch(() => null);
+      paused.then((at) => {
         if (at === null || playhead.playing || generation !== this.nativePlay || !this.native) return;
         if (playhead.frame !== at) { playhead.frame = at; playhead.emit(); }
         this.invalidate();
@@ -2344,7 +2477,17 @@ class Preview {
   }
 
   private notify() { for (const listener of this.listeners) listener(); }
-  private setBuffering(waiting: boolean) {
+  /**
+   * The spinner: shown after `BUFFERING_BADGE_MS` of waiting for a frame, or at once (`now`: a hold, whose spinner's
+   * own fade-in keeps a short one from flashing). A held play keeps it until it plays or stops: a frame asked for at
+   * rest landing meanwhile, or the preview finishing its start, took it away (kenobi, Nov 17: a 30 s hold with none).
+   */
+  private setBuffering(waiting: boolean, now = false) {
+    if (!waiting && this.holding !== null) return;
+    if (waiting && now && !this.buffering) {
+      clearTimeout(this.bufferingTimer); this.bufferingTimer = undefined;
+      this.buffering = true; this.notify();
+    }
     if (waiting) {
       if (this.waitingSince === undefined) {
         this.waitingSince = performance.now();

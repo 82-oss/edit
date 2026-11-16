@@ -601,11 +601,12 @@ describe("preview seeks and lifetime", () => {
 
   // Edit.app's window (lib/nativePreview.ts): its calls answered as crates/edit-window/src/preview.rs does.
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-  // The window's clock, as the page sees it: `preview_position` says this frame while playing.
-  const windowClock = { frame: 0, playing: false, ended: false };
+  // The window's clock, as the page sees it: `preview_position` says this frame while playing. A window that says what
+  // it read for a hold (`says`: crates/edit-window's `Where.ahead`/`sound`) says `ahead` and `sound` while `held`.
+  const windowClock = { frame: 0, playing: false, ended: false, says: false, held: null as number | null, ahead: 0, sound: 0 };
   const inWindow = async (refuse: (command: string) => string | null = () => null) => {
     const calls: [string, Record<string, unknown>][] = [];
-    windowClock.frame = 0; windowClock.playing = false; windowClock.ended = false;
+    Object.assign(windowClock, { frame: 0, playing: false, ended: false, says: false, held: null, ahead: 0, sound: 0 });
     const invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
       calls.push([command, args]);
       const refused = refuse(command);
@@ -613,9 +614,13 @@ describe("preview seeks and lifetime", () => {
       if (command === "preview_open") return true;
       if (command === "preview_project" || command === "preview_patch") return args.revision;
       if (command === "preview_frame") return { revision: 0, drawn: true, skipped: false, ms: 4, decode: 3, composite: 0.5, present: 0.3, opens: 0, seeks: 0, ffmpeg: 0 };
-      if (command === "preview_play") { windowClock.frame = Number(args.frame); windowClock.playing = true; return null; }
-      if (command === "preview_pause") { windowClock.playing = false; return Math.floor(windowClock.frame); }
-      if (command === "preview_position") return { frame: windowClock.frame, playing: windowClock.playing, ended: windowClock.ended, drawn: 1, skipped: 0, slow: 0, draws: [2.5], starved: 0 };
+      if (command === "preview_play") { windowClock.frame = Number(args.frame); windowClock.playing = true; windowClock.held = null; return null; }
+      if (command === "preview_pause") { windowClock.playing = false; windowClock.held = null; return Math.floor(windowClock.frame); }
+      if (command === "preview_hint" && args.hold === true) { windowClock.playing = false; windowClock.held = Number(args.frame); return null; }
+      if (command === "preview_position") {
+        const said = windowClock.says && windowClock.held !== null ? { ahead: windowClock.ahead, sound: windowClock.sound } : {};
+        return { frame: windowClock.frame, playing: windowClock.playing, ended: windowClock.ended, drawn: 1, skipped: 0, slow: 0, draws: [2.5], starved: 0, ...said };
+      }
       return null;
     });
     (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = { invoke };
@@ -842,7 +847,7 @@ describe("preview seeks and lifetime", () => {
 
   it("asks for the footage from the playhead as a project opens and at a jump, and shows what's here as the bar's grey while it draws live", async () => {
     preview.setProject(fixture(), {}); await settle();
-    expect(nativeApi.warmPlayback).toHaveBeenCalledWith("p1", 0);
+    expect(nativeApi.warmPlayback).toHaveBeenCalledWith("p1", 0, false);
     // Nothing said yet: nothing grey, nothing waited on.
     expect(preview.bufferedFrames()).toEqual([]);
     expect(preview.readyAhead(0, 3)).toBe(true);
@@ -855,7 +860,7 @@ describe("preview seeks and lifetime", () => {
     const far = fixture(); far.clips[0]!.duration = 9000;
     preview.setProject(far, {});
     preview.seek(3000); await settle();
-    expect(nativeApi.warmPlayback).toHaveBeenCalledWith("p1", 3000);
+    expect(nativeApi.warmPlayback).toHaveBeenCalledWith("p1", 3000, false);
   });
 
   it("holds a play in the window on a spinner until the footage ahead is here, then plays from where it was asked (the M4, Nov 16: a jump froze, then passed over 199 frames)", async () => {
@@ -867,7 +872,7 @@ describe("preview seeks and lifetime", () => {
     // Playing as far as the person can see, the window not yet asked, a spinner on its way.
     expect(playhead.playing).toBe(true);
     expect(sent("preview_play")).toEqual([]);
-    expect(nativeApi.warmPlayback).toHaveBeenLastCalledWith("p1", 10);
+    expect(nativeApi.warmPlayback).toHaveBeenLastCalledWith("p1", 10, true);
     await new Promise((resolve) => setTimeout(resolve, 650));
     expect(preview.buffering).toBe(true);
     // In: played from there, the spinner gone.
@@ -883,23 +888,155 @@ describe("preview seeks and lifetime", () => {
     expect(sent("preview_play")).toHaveLength(1);
   });
 
-  it("holds a play in the window again where its clock stalls on footage not here, rather than passing over it", async () => {
+  // The page's clock, moved by hand (timers still run on their own).
+  const clockFrom = () => {
+    const base = performance.now();
+    const at = { ms: 0 };
+    const spy = vi.spyOn(performance, "now").mockImplementation(() => base + at.ms);
+    return { at, restore: () => spy.mockRestore() };
+  };
+  const lookAgain = async () => { (preview as unknown as { lookAgain: () => void }).lookAgain(); for (let n = 0; n < 6; n++) await settle(); };
+
+  it("holds a play in the window where its clock stalls, whatever the server says is here, and plays on once the window has read ahead (kenobi, Nov 17: 515 frames passed over in 23 s, the server saying the bytes were here)", async () => {
+    const sent = await inWindow();
+    windowClock.says = true;
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    hereNow([[0, 90]]);
+    const time = clockFrom();
+    try {
+      preview.play(); await settle();
+      expect(sent("preview_play")).toEqual([{ frame: 0 }]);
+      time.at.ms = 300; windowClock.frame = 20; draw(); await settle();
+      // The clock stops at 20 (its sound ran short): past the start's grace and the stall's 400 ms, held there.
+      time.at.ms = 1500; draw(); await settle(); await settle(); await settle();
+      expect(sent("preview_pause").length).toBeGreaterThanOrEqual(1);
+      expect(sent("preview_hint").at(-1)).toEqual({ frame: 20, hold: true });
+      expect(playhead.playing).toBe(true);
+      expect(preview.buffering).toBe(true);
+      // Everything's here by the server's word, but the window hasn't read 2 s on, nor its sound: still held.
+      windowClock.ahead = 1.2; windowClock.sound = 1.5; await lookAgain();
+      expect(sent("preview_play")).toHaveLength(1);
+      windowClock.ahead = 10; windowClock.sound = 0.4; await lookAgain();
+      expect(sent("preview_play")).toHaveLength(1);
+      expect(preview.buffering).toBe(true);
+      // Read on and its sound in: on from where it held, the spinner gone.
+      windowClock.sound = 2; await lookAgain();
+      expect(sent("preview_play").at(-1)).toEqual({ frame: 20 });
+      expect(preview.buffering).toBe(false);
+    } finally {
+      time.restore();
+    }
+  });
+
+  it("holds a play in the window where it passes over frames, and asks the window to hold only once its pause is in", async () => {
+    const calls: string[] = [];
+    const sent = await inWindow((command) => { calls.push(command); return null; });
+    windowClock.says = true;
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    const invoke = (window as unknown as { __TAURI_INTERNALS__: { invoke: ReturnType<typeof vi.fn> } }).__TAURI_INTERNALS__.invoke;
+    const answer = invoke.getMockImplementation() as (command: string, args: Record<string, unknown>) => Promise<unknown>;
+    let skipped = 0;
+    let pausing: (() => void) | null = null;
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+      if (command === "preview_pause" && windowClock.playing) await new Promise<void>((resolve) => (pausing = resolve));
+      const said = await answer(command, args);
+      if (command === "preview_position" && skipped > 0) { const out = { ...(said as object), skipped }; skipped = 0; return out; }
+      return said;
+    });
+    preview.play(); await settle(); await settle();
+    // 3 frames passed over: on it plays; 9 in a second: held.
+    const answered = async () => { for (let n = 0; n < 4; n++) await settle(); };
+    windowClock.frame = 5; skipped = 3; draw(); await answered();
+    expect(sent("preview_pause")).toHaveLength(0);
+    windowClock.frame = 12; skipped = 6; draw(); await answered();
+    // Paused (its answer held back here).
+    expect(pausing).not.toBeNull();
+    // The pause still on its way: no hold asked yet, or the pause, landing after it, would let it go.
+    expect(sent("preview_hint")).toHaveLength(0);
+    pausing!(); for (let n = 0; n < 4; n++) await settle();
+    expect(sent("preview_hint").at(-1)).toEqual({ frame: 12, hold: true });
+    expect(calls.lastIndexOf("preview_pause")).toBeLessThan(calls.lastIndexOf("preview_hint"));
+    windowClock.ahead = 3; windowClock.sound = 2; await lookAgain();
+    expect(sent("preview_play").at(-1)).toEqual({ frame: 12 });
+  });
+
+  it("a window from before that says nothing of what it read holds a stalled play until the server says the footage is here, and a moment at least", async () => {
     const sent = await inWindow();
     preview.setProject(withSound(), {}); await settle(); draw(); await settle();
     hereNow([[0, 90]]);
+    const time = clockFrom();
+    try {
+      preview.play(); await settle();
+      time.at.ms = 300; windowClock.frame = 20; draw(); await settle();
+      time.at.ms = 1500; draw(); await settle(); await settle(); await settle();
+      expect(sent("preview_pause").length).toBeGreaterThanOrEqual(1);
+      // Here by the server's word, but the hold's only just begun.
+      await lookAgain();
+      expect(sent("preview_play")).toHaveLength(1);
+      time.at.ms = 1500 + 1600; await lookAgain();
+      expect(sent("preview_play").at(-1)).toEqual({ frame: 20 });
+    } finally {
+      time.restore();
+    }
+  });
+
+  it("keeps the spinner through a hold, shown at once: a frame landing meanwhile (a cold open's first) doesn't take it away (kenobi, Nov 17: a 30 s hold with none)", async () => {
+    const sent = await inWindow();
+    windowClock.says = true;
+    const invoke = (window as unknown as { __TAURI_INTERNALS__: { invoke: ReturnType<typeof vi.fn> } }).__TAURI_INTERNALS__.invoke;
+    const answer = invoke.getMockImplementation() as (command: string, args: Record<string, unknown>) => Promise<unknown>;
+    let land: (() => void) | null = null;
+    invoke.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+      // A cold open: its first frame takes its time.
+      if (command === "preview_frame") await new Promise<void>((resolve) => (land = resolve));
+      return answer(command, args);
+    });
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle(); draw(); await settle();
+    expect(land).not.toBeNull();
+    expect(preview.framed).toBe(false);
+    hereNow([[0, 10]]);
     preview.play(); await settle();
+    expect(sent("preview_play")).toEqual([]);
+    expect(preview.buffering).toBe(true);
+    // The first frame lands mid-hold: framed now, the spinner still up.
+    land!(); await settle(); await settle();
+    expect(preview.framed).toBe(true);
+    expect(preview.buffering).toBe(true);
+    windowClock.ahead = 10; windowClock.sound = 2; await lookAgain();
     expect(sent("preview_play")).toEqual([{ frame: 0 }]);
-    windowClock.frame = 20; draw(); await settle();
-    // Only the first second is here now, and the window's clock stops moving (its sound ran short).
-    hereNow([[0, 25]]);
-    await new Promise((resolve) => setTimeout(resolve, 450));
-    draw(); await settle();
-    expect(sent("preview_pause").length).toBeGreaterThanOrEqual(1);
-    expect(playhead.playing).toBe(true);
-    expect(sent("preview_play")).toHaveLength(1);
-    // Here again: on from where it held.
-    hereNow([[0, 90]]); await settle();
-    expect(sent("preview_play").at(-1)).toEqual({ frame: 20 });
+    expect(preview.buffering).toBe(false);
+  });
+
+  it("where nothing can be kept (this Mac's disk at Edit's floor), a play waits for nothing to be here: it plays from the stream", async () => {
+    const sent = await inWindow();
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    nativeApi.playbackReady.mockResolvedValue({ ready: [[0, 10]], keeping: false } as never);
+    (preview as unknown as { askReady: (now: boolean) => void }).askReady(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    preview.seek(30); draw(); await settle();
+    preview.play(); await settle(); await settle();
+    expect(sent("preview_play")).toEqual([{ frame: 30 }]);
+    expect(sent("preview_hint").filter((args) => args.hold === true)).toHaveLength(0);
+  });
+
+  it("tells the server a play is on as it starts, again while it plays, and once at its pause: the window's and the page's own", async () => {
+    await inWindow();
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    nativeApi.warmPlayback.mockClear();
+    const time = clockFrom();
+    try {
+      preview.play(); await settle();
+      expect(nativeApi.warmPlayback).toHaveBeenLastCalledWith("p1", 0, true);
+      time.at.ms = 5200; windowClock.frame = 40; draw(); await settle();
+      expect(nativeApi.warmPlayback).toHaveBeenLastCalledWith("p1", 40, true);
+      preview.pause(); await settle();
+      expect(nativeApi.warmPlayback).toHaveBeenLastCalledWith("p1", 40, false);
+      const calls = nativeApi.warmPlayback.mock.calls.length;
+      preview.pause(); await settle();
+      expect(nativeApi.warmPlayback.mock.calls.length).toBe(calls);
+    } finally {
+      time.restore();
+    }
   });
 
   it("says in one plain line when the window's play stops by itself, and clears it at the next play", async () => {
@@ -914,6 +1051,15 @@ describe("preview seeks and lifetime", () => {
     // The end is no stop to explain.
     windowClock.frame = 89; windowClock.ended = true; windowClock.playing = false; draw(); await settle();
     expect(preview.stopped).toBeNull();
+  });
+
+  it("tells the server the page's own play is on, and that it stopped", async () => {
+    preview.setProject(withSound(), {}); draw(); await complete(0);
+    nativeApi.warmPlayback.mockClear();
+    preview.play(); await settle();
+    expect(nativeApi.warmPlayback).toHaveBeenLastCalledWith("p1", 0, true);
+    preview.pause(); await settle();
+    expect(nativeApi.warmPlayback).toHaveBeenLastCalledWith("p1", 0, false);
   });
 
   it("holds the page's own play where a picture is missing for more than a moment, and plays on once it's in", async () => {

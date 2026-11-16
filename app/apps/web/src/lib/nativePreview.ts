@@ -59,6 +59,13 @@ export interface NativeWhere {
   starved: number;
   /** The sound went silent since the last ask, and why (a file that won't open: gone from this Mac). */
   problem?: string;
+  /**
+   * Held for its footage (`hint` with `hold`): seconds of playing from there it has read through the server (10 once
+   * all are, or all to the end). Absent when it isn't held, and in a window from before it said.
+   */
+  ahead?: number;
+  /** Seconds of sound in its speaker, mixed and not yet heard (absent with no speaker, or a window from before). */
+  sound?: number;
 }
 
 /**
@@ -97,8 +104,12 @@ export const nativePreview = {
   pause: async (): Promise<number | null> => { const at = await call("preview_pause"); return typeof at === "number" ? at : null; },
   /** Where the player is, and how playing went since the last ask. */
   position: async (): Promise<NativeWhere> => (await call("preview_position")) as NativeWhere,
-  /** The playhead is about to land on `frame`: its pictures are made ready. */
-  hint: (frame: number): Promise<unknown> => call("preview_hint", { frame }),
+  /**
+   * The playhead is about to land on `frame`: its pictures are made ready. `hold`: a play from there is held for its
+   * footage: the window stops, draws it, mixes its sound and reads the seconds after it, and `position` says how far
+   * (`ahead`, `sound`) until it's played (a window from before only makes its pictures ready).
+   */
+  hint: (frame: number, hold = false): Promise<unknown> => call("preview_hint", hold ? { frame, hold } : { frame }),
   /** The playing speed (1, or 2 for Script mode's 2×): the sound sped with it, its pitch kept; playing carries on from where it is. */
   rate: (rate: number): Promise<unknown> => call("preview_rate", { rate }),
   /** How loud the speaker is, 0 to 1, at once. */

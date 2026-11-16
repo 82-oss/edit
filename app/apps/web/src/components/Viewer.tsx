@@ -333,19 +333,15 @@ export function Viewer() {
             </div>
           )}
           {/* Its first frame on the way: a video player's ring in the middle, no words (Sphe, Nov 12: not the logo's loader). */}
-          {!shownError && !framed && !empty && (
-            <div role="status" aria-label="Loading the preview" className="appear-late pointer-events-none absolute inset-0 flex items-center justify-center">
-              <Spinner />
-            </div>
-          )}
-          {/* Edit V2: a spinner in the middle of the picture, as a video player's (Sphe, Nov 11: the corner pill sat behind the controls). */}
-          {hq && !shownError && framed && (buffering || retrying) && (
-            <div role="status" aria-label="Loading the frame" className="appear-late pointer-events-none absolute inset-0 flex items-center justify-center">
+          {/* Edit V2: the same ring while a frame or a held play waits, as a video player's (Sphe, Nov 11: the corner pill sat */}
+          {/* behind the controls); one element for both, so a first play held on a cold open keeps its ring as its first frame lands. */}
+          {!shownError && ((!framed && !empty) || (hq && framed && (buffering || retrying))) && (
+            <div role="status" aria-label={framed ? "Loading the frame" : "Loading the preview"} className="appear-late pointer-events-none absolute inset-0 flex items-center justify-center">
               <Spinner />
             </div>
           )}
           {!hq && !shownError && framed && (buffering || retrying) && (
-            <div role="status" className="pointer-events-none absolute bottom-3 right-3 flex items-center gap-2 rounded-md bg-black/70 px-2.5 py-1.5 text-[11px] text-muted">
+            <div role="status" className="appear-late pointer-events-none absolute bottom-3 right-3 flex items-center gap-2 rounded-md bg-black/70 px-2.5 py-1.5 text-[11px] text-muted">
               <Pulse size={12} /> Loading frame…
             </div>
           )}
