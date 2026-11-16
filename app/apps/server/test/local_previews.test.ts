@@ -116,6 +116,34 @@ test("the page player's footage comes down whole in the timeline's order from th
   }
 });
 
+test("the page player's footage comes down whole only while the disk keeps its floor free; a file that would take it under streams on", async () => {
+  const home = scratch("local-previews");
+  const realFree = localPreviews.hooks.free;
+  try {
+    const started: string[] = [];
+    localPreviews.hooks.fetch = (key) => new Promise<void>(() => { started.push(key); });
+    // 300 MB over the floor.
+    localPreviews.hooks.free = () => 1_300_000_000;
+    const own = (name: string, size: number) => {
+      const key = `edit/originals/sha256/${name}/clip.mp4`;
+      return { key, cloud: { source: name, original: key, proxy: key, size } };
+    };
+    const big = own("big", 250_000_000);
+    const bigger = own("bigger", 200_000_000);
+    const small = own("small", 40_000_000);
+    const project = newProject();
+    [big, bigger, small].forEach((one, n) => project.media.push(media({ id: `m${n}`, name: `m${n}`, path: stream(one.key), kind: "video", duration: 60, cloud: one.cloud } as never)));
+    project.clips.push(...[0, 1, 2].map((n) => ({ type: "video", id: `c${n}`, track: "v1", media: `m${n}`, start: n * 100, duration: 100, source_in: 0, speed: 1 }) as never));
+    // The first fits; the second would take the disk under its floor; the third still fits after the first.
+    expect(localPreviews.fetchInPlayheadOrder(home.dir, project, 0)).toBe(2);
+    await Bun.sleep(5);
+    expect(started).toEqual([big.key, small.key]);
+  } finally {
+    localPreviews.hooks.free = realFree;
+    home.cleanup();
+  }
+});
+
 test("a preview read now (a jump to it in the window) comes down next, beside the ones under way, and its landing is told", async () => {
   const home = scratch("local-previews");
   try {

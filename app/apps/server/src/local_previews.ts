@@ -15,12 +15,15 @@
 // (`localized`), never the saved project: its paths are the cloud's, the same
 // on every Mac.
 
+import * as fs from "node:fs";
+
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import { objectOf } from "./export_excerpts.ts";
 import type { Media, Project } from "./model.ts";
 import { isFile } from "./paths.ts";
 import * as pieces from "./proxy_pieces.ts";
+import { FREE_FLOOR_BYTES } from "./storage.ts";
 
 /** Whole previews fetched at once, and how many more may start for ones read now (`hurry`). */
 const AT_ONCE = 4;
@@ -34,7 +37,29 @@ const RETRY_MS = 10 * 60_000;
 /** Seams for tests. */
 export const hooks = {
   fetch: (key: string, local: string): Promise<void> => cloudMedia.fetchKey(key, local),
+  /** Bytes free on the disk holding `dir` (unknown: as good as endless). */
+  free: (dir: string): number => {
+    try {
+      const stat = fs.statfsSync(dir);
+      return stat.bavail * stat.bsize;
+    } catch {
+      return Number.POSITIVE_INFINITY;
+    }
+  },
 };
+
+/**
+ * About how big `media`'s preview `key` is: footage that's its own proxy is
+ * the original, its size known; a made proxy is at most the cloud proxy's
+ * bitrate (media.rs `cloud_proxy_bitrate`) and its sound for the duration.
+ */
+function previewBytes(media: Media, key: string): number {
+  const original = media.cloud?.size;
+  const known = typeof original === "number" && original > 0 ? original : Number.POSITIVE_INFINITY;
+  if (key === media.cloud?.original) return Number.isFinite(known) ? known : 0;
+  const made = (Math.max(media.duration, 0) * (pieces.bitrateFor(media.width || 1920, media.height || 1080) + 160_000)) / 8;
+  return Math.min(known, made);
+}
 
 /** Told each time a whole preview lands here (its key). */
 const landedListeners = new Set<(key: string) => void>();
@@ -108,6 +133,10 @@ export function fetchInPlayheadOrder(cache: string, project: Project, from: numb
   const byId = new Map(project.media.map((media) => [media.id, media]));
   const wanted: { key: string; local: string }[] = [];
   const seen = new Set<string>();
+  // Never below the cache's floor of free space (storage.ts): a file that would take the disk under it streams on.
+  // Until Nov 15 a read-ahead of at most ~600 MB; whole copies of every file need the check.
+  let room = hooks.free(cache) - FREE_FLOOR_BYTES;
+  let skipped = 0;
   for (const id of [...after, ...before]) {
     const media = byId.get(id);
     const key = media === undefined ? null : cloudMedia.streamKey(media.cloud, "proxy");
@@ -115,8 +144,15 @@ export function fetchInPlayheadOrder(cache: string, project: Project, from: numb
     seen.add(key);
     const local = cloudMedia.localPath(cache, key);
     if (isFile(local) || fetching.has(local) || Date.now() - (failed.get(local) ?? 0) < RETRY_MS) continue;
+    const bytes = previewBytes(media, key);
+    if (bytes > room) {
+      skipped++;
+      continue;
+    }
+    room -= bytes;
     wanted.push({ key, local });
   }
+  if (skipped > 0) diag.info("preview", `${project.id}: ${skipped} files of its footage stream on, the disk too full to keep them whole`);
   const first = new Set(wanted.map((one) => one.local));
   const rest = waiting.filter((one) => !first.has(one.local));
   waiting.length = 0;
