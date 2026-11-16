@@ -7,7 +7,7 @@ import { join } from "node:path";
 
 import type { Script, Word } from "@edit/types/writer";
 
-import { findAddon, useNative, wrap, type Native } from "../../src/native/index.ts";
+import { findAddon, native, useNative, wrap, type Native } from "../../src/native/index.ts";
 import { createStub } from "../../src/native/stub.ts";
 import { evidence } from "../../src/writer/plan.ts";
 import { dateIn, spoken, stampsOf, stampText } from "../../src/writer/stamp.ts";
@@ -92,7 +92,9 @@ test.skipIf(ffmpeg === null || addon === null)("a bodycam's date overlay is read
     const made = Bun.spawnSync([ffmpeg!, "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=854x480:rate=30:duration=12", "-vf", `drawbox=x=0:y=0:w=854:h=28:color=black@0.6:t=fill,${overlay}`, "-c:v", "libx264", "-pix_fmt", "yuv420p", footage]);
     expect(made.exitCode).toBe(0);
     const stamps = await stampsOf({ ...script(), durationMs: 12_000 }, footage, [854, 480]);
-    expect(stamps.map((one) => one.date)).toEqual(["2025-08-14"]);
+    // What the picture's words were read as, when it isn't the date (Vision on a Mac, PaddleOCR elsewhere).
+    const read = stamps.length > 0 ? "" : JSON.stringify(await native().screenTextDetect(footage, [854, 480], [2, 10]));
+    expect(stamps.map((one) => one.date), read).toEqual(["2025-08-14"]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
