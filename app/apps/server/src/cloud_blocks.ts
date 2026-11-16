@@ -142,7 +142,7 @@ function metaOf(folder: string): Meta | null {
  * One block of the object, from disk or R2 (once, however many ask), read as soon as `priority` says (`slot`).
  * One someone waits on ("asked": a page's range, the window's FFmpeg) that misses marks the viewer busy; a hit never does.
  */
-function block(root: string, key: string, index: number, url: BlockSource, priority: Priority = "ahead"): Promise<Uint8Array> {
+function block(root: string, key: string, index: number, url: BlockSource, priority: Priority = "ahead", hedge = priority === "asked"): Promise<Uint8Array> {
   const viewer = priority === "asked";
   const folder = folderOf(root, key);
   const path = join(folder, `${index}`);
@@ -164,7 +164,7 @@ function block(root: string, key: string, index: number, url: BlockSource, prior
   }
   const read = slot(id, priority, async () => {
     const start = index * BLOCK;
-    const { answer, bytes } = await fetchBlock(url, start, viewer);
+    const { answer, bytes } = await fetchBlock(url, start, hedge);
     const total = Number(/\/(\d+)$/.exec(answer.headers.get("content-range") ?? "")?.[1] ?? NaN);
     fs.mkdirSync(folder, { recursive: true });
     if (Number.isFinite(total) && metaOf(folder) === null) writeAtomic(join(folder, "meta.json"), JSON.stringify({ size: total, type: answer.headers.get("content-type") ?? "video/mp4", key }));
@@ -298,7 +298,7 @@ export async function serve(root: string, key: string, range: string | null, url
   // A read to the end (FFmpeg's) reads on from where it starts: the blocks after it are asked for with it, not one
   // after another once each lands (a cold open waited on two blocks in turn, 1.5–2.2 s to its first picture).
   const known = metaOf(folder)?.size;
-  if (open && known !== undefined) for (let n = 1; n <= STREAM_AHEAD && (first + n) * BLOCK < known; n++) void block(root, key, first + n, url).catch(() => {});
+  if (open && known !== undefined) for (let n = 1; n <= STREAM_AHEAD && (first + n) * BLOCK < known; n++) void block(root, key, first + n, url, "ahead", true).catch(() => {});
   // Not here: its first bytes straight from R2's own URL while its block lands (kept for the next read), so the
   // reader starts on one round trip, not on a whole 2 MiB block (a cold open-and-seek took 1.1–2.7 s that way).
   const cold = !fs.existsSync(join(folder, `${first}`));
@@ -330,7 +330,8 @@ export async function serve(root: string, key: string, range: string | null, url
   const ahead = (after: number) => {
     for (let n = 1; n <= reach; n++) {
       const next = after + n;
-      if (next * BLOCK < total) void block(root, key, next, url).catch((error: unknown) => diag.warn("cloud", `reading ahead in ${key}: ${diag.messageOf(error)}`));
+      // A read to the end wants these within seconds: R2's own URL too where the edge is slow, as for the block it reads.
+      if (next * BLOCK < total) void block(root, key, next, url, "ahead", open).catch((error: unknown) => diag.warn("cloud", `reading ahead in ${key}: ${diag.messageOf(error)}`));
     }
   };
   // Answered as it's read, a block at a time: a player asks a long preview
