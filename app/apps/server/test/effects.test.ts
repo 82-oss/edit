@@ -472,10 +472,20 @@ test("a render's failure is the computer's at that moment (tried again at once),
   expect(effects.failureKind(new Error("its frames didn't join into a video: No space left on device"))).toBe("disk");
   expect(effects.failureKind(new Error("its page threw at 1.20 s: TypeError: x is undefined"))).toBe("code");
   expect(effects.failureKind(new Error("its page has no window.duration"))).toBe("code");
-  // A 12 s 1080p board: its frames and video, with room to spare, asked of the disk before it draws.
-  const bytes = effects.renderBytes({ width: 1920, height: 1080, fps: 30 }, 360, 12);
-  expect(bytes / 1e9).toBeGreaterThan(1.5);
-  expect(bytes / 1e9).toBeLessThan(2);
+  // What a render holds at once, asked of the disk before it draws: two chunks of its frames (two seconds each at
+  // 1080p, in whole half-second keyframe intervals) and its video twice (its chunks, and the video joined from them).
+  const hd = { width: 1920, height: 1080, fps: 30 };
+  expect(effects.chunkFrames(hd)).toBe(60);
+  expect(effects.chunkFrames({ width: 3840, height: 2160, fps: 30 })).toBe(15);
+  expect(effects.chunkFrames({ width: 1920, height: 1080, fps: 25 })).toBe(52);
+  // A 12 s board: about 0.45 GB (1.6 GB until Nov 17, every frame kept until the end).
+  const board = effects.renderBytes(hd, 360, 12);
+  expect(board / 1e9).toBeGreaterThan(0.4);
+  expect(board / 1e9).toBeLessThan(0.5);
+  // A minute-long one well under a gigabyte, where it took 7.4 GB (kenobi, Nov 17: "free about 8 GB").
+  expect(effects.renderBytes(hd, 1800, 60) / 1e9).toBeLessThan(0.8);
+  // Frames left to draw fewer than two chunks: only those.
+  expect(effects.renderBytes(hd, 10, 12)).toBeLessThan(board - 100 * 1920 * 1080 * 1.5);
 });
 
 test("a render's error says where it was thrown when its first line is only its kind", async () => {

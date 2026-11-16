@@ -61,7 +61,7 @@ import * as devtools from "./chrome_devtools.ts";
 import * as diag from "./diag.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as effectCloud from "./effect_cloud.ts";
-import { diskFull, freeOn, outOfSpace } from "./export_prep.ts";
+import { diskFull, outOfSpace } from "./export_prep.ts";
 import * as effectMap from "./effect_map.ts";
 import runtimeText from "./effect_runtime.html" with { type: "text" };
 import watchText from "./effect_watch.html" with { type: "text" };
@@ -78,6 +78,8 @@ import { native } from "./native/index.ts";
 import { fps as rateOf } from "./project.ts";
 import * as relay from "./relay.ts";
 import * as seams from "./seams.ts";
+import * as storage from "./storage.ts";
+import { FREE_FLOOR_BYTES } from "./storage.ts";
 import type { Store } from "./store.ts";
 import * as tools from "./tools.ts";
 import * as v2cloud from "./v2_cloud.ts";
@@ -1614,89 +1616,7 @@ async function draw(app: App, render: Render): Promise<void> {
   const started = Date.now();
   // Drawn before and kept in the cache since it went up (effect_cloud.ts): that file again, not drawn again.
   if (!fs.existsSync(out) && effectCloud.bringBack(app.store.cacheDir(), project, `${name}-${key}.mp4`, out)) diag.info("effects", `${project}: ${name}'s render of this code was here already`);
-  if (!fs.existsSync(out)) {
-    fs.mkdirSync(frames, { recursive: true });
-    const url = `http://${seams.broll.pageHost(app)}${addressOf(project, name)}${ENTRY}?render=`;
-    const opened: devtools.Page[] = [];
-    try {
-      // A map's page is far heavier on the graphics card (Google's 3D city, drawn half as big again from high up): four of
-      // them at once with the viewer's and the agent's looks beside them ran an 8 GB card out, and their maps went black
-      // (Nov 13: call-map-a failed at the same second every try, where its camera rose).
-      const map = fs.readFileSync(join(folder(app.store, project, name), ENTRY), "utf8").includes("edit-map/map.js");
-      for (let at = 0; at < (map ? MAP_CHROMES : CHROMES); at++) opened.push(await devtools.open({ profile: RENDER_PROFILE, width: frame.width, height: frame.height, gpu: true, what: "Rendering an effect" }));
-      // Nothing behind the page: what it leaves unpainted is see-through.
-      await Promise.all(opened.map((page) => page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } })));
-      const loaded = await Promise.all(opened.map((page, at) => load(page, `${url}${key}-${at}`, `${key}-${at}`, project, name)));
-      // A page whose window.ready failed (a map whose place wasn't found) says so, not what breaks after it.
-      const rejected = (await Promise.all(opened.map((page) => page.evaluate<string | null>("window.__edit.errors.find((error) => error.startsWith('window.ready was rejected')) ?? null")))).find((error) => error !== null);
-      if (rejected !== undefined && rejected !== null) throw new Error(`its ${rejected}`);
-      const duration = loaded[0]!.duration;
-      if (!(duration > 0)) throw new Error("its page has no window.duration");
-      if (!loaded[0]!.seek) throw new Error("its page has no window.seek(t)");
-      render.frames = Math.max(1, Math.round(duration * frame.fps));
-      const wanted: number[] = [];
-      for (let index = 0; index < render.frames; index++) if (!fs.existsSync(join(frames, frameName(index)))) wanted.push(index);
-      render.drawn = render.frames - wanted.length;
-      // The frames it draws and the video they make, with a margin: refused before it fills the disk, not halfway.
-      const short = renderBytes(frame, wanted.length, duration) - freeOn(dir);
-      if (short > 0) throw new DiskShort(diskFull(short));
-      let next = 0;
-      await Promise.all(
-        opened.map(async (page) => {
-          for (;;) {
-            const index = wanted[next++];
-            if (index === undefined) return;
-            // The code changed while it rendered: these frames are an older version's.
-            if (index % 60 === 0 && keyOf(app.store, project, folder(app.store, project, name), frame) !== key) throw new Outdated();
-            const time = index / frame.fps;
-            // A map's frame waits for its tiles while they keep coming (effect_map.html), the first ones longest.
-            const drawn = await page.evaluate<{ error?: string }>(`window.__edit.seek(${time})`, 60_000);
-            if (drawn.error !== undefined) throw new Error(`its page threw at ${time.toFixed(2)} s: ${firstLines(drawn.error)}`);
-            const shot = await page.call("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, clip: { x: 0, y: 0, width: frame.width, height: frame.height, scale: 1 } }, 60_000);
-            if (typeof shot.data !== "string") throw new Error(`Chrome drew nothing at ${time.toFixed(2)} s`);
-            // Whole frames only: one cut short by a quit is drawn again.
-            const path = join(frames, frameName(index));
-            fs.writeFileSync(`${path}.partial`, Buffer.from(shot.data, "base64"));
-            fs.renameSync(`${path}.partial`, path);
-            render.drawn += 1;
-          }
-        }),
-      );
-    } catch (error) {
-      // Outrun by the code: its frames are of a version nobody will play.
-      if (error instanceof Outdated) fs.rmSync(frames, { recursive: true, force: true });
-      throw error;
-    } finally {
-      for (const page of opened) page.close();
-    }
-    const partial = join(dir, `${name}-${key}.partial.mp4`);
-    try {
-      // At most twice the bitrate of Edit's best export (export.rs: 0.14 bits a pixel), which is what the render goes into:
-      // uncapped, the agent's first board (grain on every frame) was 204 MB for 12 s, too much to send up for the cloud.
-      const cap = Math.round(frame.width * frame.height * frame.fps * 0.14 * 2);
-      // On the video hardware where there is some (the encoder Edit's export uses: tools.hardwareH264), at the cap: on a
-      // busy M1, libx264 took 75 s to join a 12 s board's frames (Nov 11, kenobi). Else libx264, by quality, under the cap.
-      const hardware = tools.hardwareH264();
-      const input = ["-framerate", rateArg(live.project), "-i", join(frames, "frame-%05d.png")];
-      const stacked = await seeThrough(input);
-      // Stacked, it's twice the pixels (the alpha half costs little). Every render plays as it is, with no preview copy to
-      // seek in (a preview made of each, ~1 MB a second, was thrown away once it went up): a keyframe every half second
-      // and no B-frames. Kept within H.264's 4096 lines: a 4K project's stack is half size.
-      const rate = stacked ? Math.round(cap * 1.5) : cap;
-      const shrink = Math.min(1, 4096 / (frame.height * 2));
-      const gop = ["-g", String(Math.max(1, Math.round(frame.fps / 2))), "-bf", "0"];
-      const encode = hardware === null ? ["-c:v", "libx264", "-preset", "medium", "-crf", "17", "-maxrate", String(rate), "-bufsize", String(rate * 2)] : [...hardware, "-b:v", String(rate), "-maxrate", String(rate), "-bufsize", String(rate * 2)];
-      const picture = stacked
-        ? ["-filter_complex", `[0:v]format=rgba,split[c][m];[c]premultiply=inplace=1,format=rgb24[p];[m]alphaextract,format=rgb24[a];[p][a]vstack=inputs=2${shrink < 1 ? `,scale=${even(frame.width * shrink)}:${even(frame.height * 2 * shrink)}` : ""},${TO_VIDEO}`]
-        : ["-vf", TO_VIDEO];
-      await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...input, ...picture, ...encode, ...gop, ...VIDEO_TAGS, "-an", "-movflags", "+faststart", partial]);
-      fs.renameSync(partial, out);
-    } catch (error) {
-      fs.rmSync(partial, { force: true });
-      throw new Error(`its frames didn't join into a video: ${diag.messageOf(error)}`);
-    }
-    fs.rmSync(frames, { recursive: true, force: true });
-  }
+  if (!fs.existsSync(out)) await drawAndJoin(app, render, live.project, dir, frames, out);
   const probe = await probeFile(out);
   if (probe.kind !== "video" || !(probe.duration > 0)) throw new Error("its render isn't a video Edit can read");
   // A stacked render is twice as tall as the frame is for its width (whatever size it was kept at).
@@ -1870,13 +1790,244 @@ function prune(store: Store, project: string, name: string, kept: string): void 
 }
 
 /**
- * The room a render takes on the disk: its frames still to draw (a PNG drawn
- * for speed is about one and a half bytes a pixel), the video made of them
- * (at most twice the best export's bitrate, as the encode caps it) and half
- * a gigabyte to spare.
+ * An effect's frames drawn in its Chromes and made into `out`, in chunks of a
+ * couple of seconds (`chunkFrames`): each chunk's frames drawn, then encoded
+ * into a video of its own while the next is drawn, its frames let go, and the
+ * chunks joined at the end by a stream copy (the concat demuxer: nothing
+ * encoded twice). So a render needs room for two chunks' frames and its video,
+ * not every frame at once: until Nov 17 each of its frames was kept as a PNG
+ * (3.1 MB a 1080p frame) until all were drawn, and on kenobi, an M1 with
+ * little disk, every render was refused ("free about 8 GB").
+ *
+ * See-through (some pixel less than opaque) is asked of each chunk as it's
+ * encoded: once one is, the whole render is stacked (colour over alpha), the
+ * chunks encoded before it plain are drawn again stacked (a page draws each
+ * moment the same), never made from their H.264, and `state.json` says so. A
+ * render cut short (a quit) goes on from its chunks and frames.
+ */
+async function drawAndJoin(app: App, render: Render, project: Project, dir: string, frames: string, out: string): Promise<void> {
+  const { name, key } = render;
+  const frame = frameOf(project);
+  const id = render.project;
+  fs.mkdirSync(frames, { recursive: true });
+  const url = `http://${seams.broll.pageHost(app)}${addressOf(id, name)}${ENTRY}?render=`;
+  const opened: devtools.Page[] = [];
+  const claim = storage.claim(0);
+  // What this render holds on the disk now beyond what it had when it began, so its claim is what it still needs.
+  let held = 0;
+  let need = 0;
+  const hold = (bytes: number) => {
+    held += bytes;
+    claim.bytes = Math.max(0, Math.min(need, need - held));
+  };
+  const statePath = join(frames, "state.json");
+  const per = chunkFrames(frame);
+  let count = 0;
+  let stacked = false;
+  const chunkPath = (n: number, alpha: boolean) => join(frames, `chunk-${String(n).padStart(5, "0")}${alpha ? ".alpha" : ""}.mp4`);
+  const rangeOf = (n: number): [number, number] => [n * per, Math.min(render.frames, (n + 1) * per)];
+  const rate = rateArg(project);
+  try {
+    try {
+      // A map's page is far heavier on the graphics card (Google's 3D city, drawn half as big again from high up): four of
+      // them at once with the viewer's and the agent's looks beside them ran an 8 GB card out, and their maps went black
+      // (Nov 13: call-map-a failed at the same second every try, where its camera rose).
+      const map = fs.readFileSync(join(folder(app.store, id, name), ENTRY), "utf8").includes("edit-map/map.js");
+      for (let at = 0; at < (map ? MAP_CHROMES : CHROMES); at++) opened.push(await devtools.open({ profile: RENDER_PROFILE, width: frame.width, height: frame.height, gpu: true, what: "Rendering an effect" }));
+      // Nothing behind the page: what it leaves unpainted is see-through.
+      await Promise.all(opened.map((page) => page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } })));
+      const loaded = await Promise.all(opened.map((page, at) => load(page, `${url}${key}-${at}`, `${key}-${at}`, id, name)));
+      // A page whose window.ready failed (a map whose place wasn't found) says so, not what breaks after it.
+      const rejected = (await Promise.all(opened.map((page) => page.evaluate<string | null>("window.__edit.errors.find((error) => error.startsWith('window.ready was rejected')) ?? null")))).find((error) => error !== null);
+      if (rejected !== undefined && rejected !== null) throw new Error(`its ${rejected}`);
+      const duration = loaded[0]!.duration;
+      if (!(duration > 0)) throw new Error("its page has no window.duration");
+      if (!loaded[0]!.seek) throw new Error("its page has no window.seek(t)");
+      render.frames = Math.max(1, Math.round(duration * frame.fps));
+      count = Math.ceil(render.frames / per);
+      // Stacked already (said, or a chunk made so): the chunks made plain before that are drawn again.
+      stacked = readState(statePath) || Array.from({ length: count }, (_, n) => n).some((n) => fs.existsSync(chunkPath(n, true)));
+      if (stacked) for (let n = 0; n < count; n++) fs.rmSync(chunkPath(n, false), { force: true });
+      const queue: number[] = [];
+      let toDraw = 0;
+      render.drawn = 0;
+      for (let n = 0; n < count; n++) {
+        const [first, end] = rangeOf(n);
+        if (fs.existsSync(chunkPath(n, stacked))) {
+          render.drawn += end - first;
+          continue;
+        }
+        queue.push(n);
+        for (let index = first; index < end; index++) {
+          if (fs.existsSync(join(frames, frameName(index)))) render.drawn += 1;
+          else toDraw += 1;
+        }
+      }
+      // Room for what it holds at once (two chunks' frames, its chunks and the video joined from them), asked before it
+      // draws, beside every other write under way (storage.ts claims), the disk's floor kept; the cleaner asked once.
+      need = renderBytes(frame, toDraw, duration);
+      let left = storage.spare(dir, need, FREE_FLOOR_BYTES);
+      if (left < 0 && storage.askForRoom(storage.freeBytes(dir) - left) > 0) left = storage.spare(dir, need, FREE_FLOOR_BYTES);
+      if (left < 0) throw new DiskShort(diskFull(-left));
+      claim.bytes = need;
+      const pixels = frame.width * frame.height;
+      const drawChunk = async (n: number) => {
+        // The code changed while it rendered: these frames are an older version's.
+        if (keyOf(app.store, id, folder(app.store, id, name), frame) !== key) throw new Outdated();
+        const [first, end] = rangeOf(n);
+        const wanted: number[] = [];
+        for (let index = first; index < end; index++) if (!fs.existsSync(join(frames, frameName(index)))) wanted.push(index);
+        // Something else took the disk to its floor meanwhile: refused here, never written into ENOSPC.
+        const free = storage.freeBytes(dir);
+        if (wanted.length > 0 && free - wanted.length * pixels * PNG_BYTES_A_PIXEL < FREE_FLOOR_BYTES) throw new DiskShort(diskFull(FREE_FLOOR_BYTES + wanted.length * pixels * PNG_BYTES_A_PIXEL - free));
+        let next = 0;
+        await Promise.all(
+          opened.map(async (page) => {
+            for (;;) {
+              const index = wanted[next++];
+              if (index === undefined) return;
+              if (index % 60 === 0 && keyOf(app.store, id, folder(app.store, id, name), frame) !== key) throw new Outdated();
+              const time = index / frame.fps;
+              // A map's frame waits for its tiles while they keep coming (effect_map.html), the first ones longest.
+              const drawn = await page.evaluate<{ error?: string }>(`window.__edit.seek(${time})`, 60_000);
+              if (drawn.error !== undefined) throw new Error(`its page threw at ${time.toFixed(2)} s: ${firstLines(drawn.error)}`);
+              const shot = await page.call("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, clip: { x: 0, y: 0, width: frame.width, height: frame.height, scale: 1 } }, 60_000);
+              if (typeof shot.data !== "string") throw new Error(`Chrome drew nothing at ${time.toFixed(2)} s`);
+              // Whole frames only: one cut short by a quit is drawn again.
+              const path = join(frames, frameName(index));
+              const png = Buffer.from(shot.data, "base64");
+              fs.writeFileSync(`${path}.partial`, png);
+              fs.renameSync(`${path}.partial`, path);
+              hold(png.length);
+              render.drawn += 1;
+            }
+          }),
+        );
+      };
+      const encodeChunk = async (n: number) => {
+        const [first, end] = rangeOf(n);
+        const input = ["-framerate", rate, "-start_number", String(first), "-i", join(frames, "frame-%05d.png")];
+        const limit = ["-frames:v", String(end - first)];
+        try {
+          if (!stacked && (await seeThrough(input, limit))) {
+            stacked = true;
+            writeAtomic(statePath, JSON.stringify({ stacked: true }));
+            for (let m = 0; m < count; m++) {
+              if (m === n || !fs.existsSync(chunkPath(m, false))) continue;
+              hold(-fs.statSync(chunkPath(m, false)).size);
+              fs.rmSync(chunkPath(m, false), { force: true });
+              const [a, b] = rangeOf(m);
+              render.drawn -= b - a;
+              queue.push(m);
+            }
+          }
+          const partial = join(frames, `chunk-${String(n).padStart(5, "0")}.partial.mp4`);
+          await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...input, ...limit, ...encodeArgs(frame, stacked), "-an", partial]);
+          fs.renameSync(partial, chunkPath(n, stacked));
+          let freed = 0;
+          for (let index = first; index < end; index++) {
+            const path = join(frames, frameName(index));
+            try {
+              freed += fs.statSync(path).size;
+              fs.rmSync(path);
+            } catch {
+              // Gone already.
+            }
+          }
+          hold(fs.statSync(chunkPath(n, stacked)).size - freed);
+        } catch (error) {
+          if (error instanceof Outdated || error instanceof DiskShort) throw error;
+          throw new Error(`its frames didn't join into a video: ${diag.messageOf(error)}`);
+        }
+      };
+      // One chunk drawn while the one before it is encoded: at most two chunks' frames on the disk.
+      let encoding: Promise<void> = Promise.resolve();
+      for (;;) {
+        if (queue.length === 0) {
+          await encoding;
+          if (queue.length === 0) break;
+        }
+        const n = queue.shift()!;
+        await drawChunk(n);
+        await encoding;
+        encoding = encodeChunk(n);
+        encoding.catch(() => {});
+      }
+    } finally {
+      for (const page of opened) page.close();
+    }
+    const partial = join(dir, `${name}-${key}.partial.mp4`);
+    try {
+      const list = join(frames, "chunks.txt");
+      fs.writeFileSync(list, `${Array.from({ length: count }, (_, n) => `file '${chunkPath(n, stacked).replaceAll("'", "'\\''")}'`).join("\n")}\n`);
+      await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-an", "-movflags", "+faststart", partial]);
+      fs.renameSync(partial, out);
+    } catch (error) {
+      fs.rmSync(partial, { force: true });
+      throw new Error(`its frames didn't join into a video: ${diag.messageOf(error)}`);
+    }
+    fs.rmSync(frames, { recursive: true, force: true });
+  } catch (error) {
+    // Outrun by the code: its frames are of a version nobody will play.
+    if (error instanceof Outdated) fs.rmSync(frames, { recursive: true, force: true });
+    throw error;
+  } finally {
+    claim.release();
+  }
+}
+
+/** Whether a render was found see-through (`state.json`), so its chunks are stacked. */
+function readState(path: string): boolean {
+  try {
+    return (JSON.parse(fs.readFileSync(path, "utf8")) as { stacked?: unknown }).stacked === true;
+  } catch {
+    return false;
+  }
+}
+
+/** A PNG drawn for speed: about one and a half bytes a pixel. */
+const PNG_BYTES_A_PIXEL = 1.5;
+/** About how much of its frames a render's chunk holds (`bytes`: two seconds of 1080p); a seam for tests. */
+export const chunkHooks = { bytes: 200_000_000 };
+
+/** Frames in a render's chunk: about `chunkHooks.bytes` of its frames, in whole keyframe intervals (half a second), one at least. */
+export function chunkFrames(frame: { width: number; height: number; fps: number }): number {
+  const gop = Math.max(1, Math.round(frame.fps / 2));
+  const fit = Math.floor(chunkHooks.bytes / (frame.width * frame.height * PNG_BYTES_A_PIXEL));
+  return gop * Math.max(1, Math.floor(fit / gop));
+}
+
+/**
+ * How a render's frames are encoded (each chunk alike, so they join by a stream copy): at most twice the bitrate of
+ * Edit's best export (export.rs: 0.14 bits a pixel), which is what the render goes into (uncapped, the agent's first
+ * board, grain on every frame, was 204 MB for 12 s, too much to send up for the cloud); on the video hardware where
+ * there is some (the encoder Edit's export uses: tools.hardwareH264; on a busy M1, libx264 took 75 s to join a 12 s
+ * board's frames, Nov 11, kenobi), else libx264 by quality under the cap. Stacked, it's twice the pixels (the alpha
+ * half costs little). Every render plays as it is, with no preview copy to seek in (a preview made of each, ~1 MB a
+ * second, was thrown away once it went up): a keyframe every half second and no B-frames. Kept within H.264's 4096
+ * lines: a 4K project's stack is half size.
+ */
+function encodeArgs(frame: { width: number; height: number; fps: number }, stacked: boolean): string[] {
+  const cap = Math.round(frame.width * frame.height * frame.fps * 0.14 * 2);
+  const hardware = tools.hardwareH264();
+  const rate = stacked ? Math.round(cap * 1.5) : cap;
+  const shrink = Math.min(1, 4096 / (frame.height * 2));
+  const gop = ["-g", String(Math.max(1, Math.round(frame.fps / 2))), "-bf", "0"];
+  const encode = hardware === null ? ["-c:v", "libx264", "-preset", "medium", "-crf", "17", "-maxrate", String(rate), "-bufsize", String(rate * 2)] : [...hardware, "-b:v", String(rate), "-maxrate", String(rate), "-bufsize", String(rate * 2)];
+  const picture = stacked
+    ? ["-filter_complex", `[0:v]format=rgba,split[c][m];[c]premultiply=inplace=1,format=rgb24[p];[m]alphaextract,format=rgb24[a];[p][a]vstack=inputs=2${shrink < 1 ? `,scale=${even(frame.width * shrink)}:${even(frame.height * 2 * shrink)}` : ""},${TO_VIDEO}`]
+    : ["-vf", TO_VIDEO];
+  return [...picture, ...encode, ...gop, ...VIDEO_TAGS];
+}
+
+/**
+ * The room a render takes on the disk at once: two chunks of its frames still to draw (one drawn while the one
+ * before is encoded), and its video twice (its chunks, and the video joined from them), at most twice the best
+ * export's bitrate (as the encode caps it) and half as much again stacked.
  */
 export function renderBytes(frame: { width: number; height: number; fps: number }, frames: number, seconds: number): number {
-  return Math.ceil(frames * frame.width * frame.height * 1.5 + (seconds * frame.width * frame.height * frame.fps * 0.14 * 2 * 1.5) / 8 + 0.5e9);
+  const video = (seconds * frame.width * frame.height * frame.fps * 0.14 * 2 * 1.5) / 8;
+  return Math.ceil(Math.min(frames, 2 * chunkFrames(frame)) * frame.width * frame.height * PNG_BYTES_A_PIXEL + 2 * video);
 }
 
 /** The frames (RGB) as footage is: BT.709, video range, 4:2:0, and tagged so (the engine's fast path reads it as it is). */
@@ -1888,9 +2039,9 @@ function even(value: number): number {
   return Math.max(2, Math.round(value / 2) * 2);
 }
 
-/** Whether any of the frames (`input`: FFmpeg's arguments for them) has a pixel less than opaque. */
-async function seeThrough(input: string[]): Promise<boolean> {
-  const out = new TextDecoder().decode(await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", ...input, "-vf", "format=rgba,alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YMIN:file=-", "-f", "null", "-"]));
+/** Whether any of the frames (`input`: FFmpeg's arguments for them, `limit` how many) has a pixel less than opaque. */
+async function seeThrough(input: string[], limit: string[] = []): Promise<boolean> {
+  const out = new TextDecoder().decode(await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", ...input, ...limit, "-vf", "format=rgba,alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YMIN:file=-", "-f", "null", "-"]));
   return [...out.matchAll(/YMIN=(\d+)/g)].some((match) => Number(match[1]) < 255);
 }
 

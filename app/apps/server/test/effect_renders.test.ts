@@ -13,6 +13,7 @@ import { dispatch } from "../src/mcp/index.ts";
 import { respond } from "../src/http/server.ts";
 import { buildRouter } from "../src/routes.ts";
 import * as seams from "../src/seams.ts";
+import * as storage from "../src/storage.ts";
 import { messageContext } from "../src/media_tools.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
@@ -390,6 +391,94 @@ test.skipIf(chrome === null)("an effect with see-through parts renders with its 
     cleanup();
   }
 }, 240_000);
+
+/** Opaque for its first 1.1 s, then half of it see-through: a render that turns stacked part way. */
+const TURNS_SEE_THROUGH = `<!doctype html>
+<html><body style="margin:0;overflow:hidden">
+<div id="left" style="position:absolute;left:0;top:0;width:960px;height:1080px;background:#ff0000"></div>
+<div id="right" style="position:absolute;left:960px;top:0;width:960px;height:1080px;background:#0000ff"></div>
+<script>
+window.duration = 2;
+window.ready = Promise.resolve();
+window.seek = (t) => { document.getElementById("right").style.display = t >= 1.1 ? "none" : "block"; };
+</script></body></html>`;
+
+test.skipIf(chrome === null)("a render is made in chunks of its frames, joined by a stream copy into one video as before; a chunk found see-through makes it stacked, the ones before drawn again so (kenobi, Nov 17: every frame kept at once needed 8 GB free)", async () => {
+  const { app, cleanup, id } = hq("effects-chunks");
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  const bytes = effects.chunkHooks.bytes;
+  try {
+    app.port = server.port!;
+    // Half a second a chunk (one keyframe interval): four of them, the third the first see-through.
+    effects.chunkHooks.bytes = 16 * 1920 * 1080 * 1.5;
+    expect(effects.chunkFrames({ width: 1920, height: 1080, fps: 30 })).toBe(15);
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    write(app, id, "turns", { "scene.html": TURNS_SEE_THROUGH });
+    const added = await effects.add(app, id, "turns");
+    await app.store.update(id, "test", (project) => {
+      project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    await seams.broll.waitForMaps(app, id, 120_000);
+    const media = app.store.get(id)!.project.media.find((one) => one.id === added.media)!;
+    expect(media.kind).toBe("video");
+    expect(media.stacked_alpha).toBe(true);
+    expect(size(media.path)).toBe("1920,2160");
+    expect(fs.existsSync(media.path.replace(/\.mp4$/, ".frames"))).toBe(false);
+    const probe = (entries: string, extra: string[] = []) => Bun.spawnSync(["ffprobe", "-v", "error", ...extra, "-select_streams", "v:0", "-show_entries", entries, "-of", "csv=p=0", media.path]).stdout.toString().trim();
+    // Every frame once, a keyframe every half second, no B-frames, video range BT.709 as before.
+    expect(probe("stream=nb_read_frames", ["-count_frames"]).replace(/,$/, "")).toBe("60");
+    const keyframes = probe("frame=key_frame,pict_type").split("\n").map((line, n) => [n, line] as const).filter(([, line]) => line.startsWith("1")).map(([n]) => n);
+    expect(keyframes).toEqual([0, 15, 30, 45]);
+    expect(probe("frame=pict_type").includes("B")).toBe(false);
+    expect(probe("stream=pix_fmt,color_range,color_space").replace(/,$/, "")).toBe("yuv420p,tv,bt709");
+    expect(Math.abs(media.duration - 2)).toBeLessThan(0.05);
+    // Its alpha (the lower half) at 0.5 s, from a chunk made plain before and drawn again: all of it opaque; at 1.5 s
+    // the right half clear.
+    const frameAt = (t: number, x: number, y: number) => [...Bun.spawnSync(["ffmpeg", "-v", "error", "-ss", String(t), "-i", media.path, "-frames:v", "1", "-vf", `format=rgb24,crop=1:1:${x}:${y}`, "-f", "rawvideo", "-pix_fmt", "rgb24", "-"]).stdout];
+    expect(frameAt(0.5, 1440, 1620)[0]).toBeGreaterThan(230);
+    expect(frameAt(1.5, 1440, 1620)[0]).toBeLessThan(25);
+    expect(frameAt(1.5, 480, 1620)[0]).toBeGreaterThan(230);
+    // The colour half: blue on the right while it's there.
+    const blue = frameAt(0.5, 1440, 540);
+    expect(blue[2]).toBeGreaterThan(200);
+    expect(blue[0]).toBeLessThan(40);
+  } finally {
+    effects.chunkHooks.bytes = bytes;
+    await server.stop(true);
+    cleanup();
+  }
+}, 240_000);
+
+test.skipIf(chrome === null)("a render with no room on the disk for what it holds at once is refused before it draws, saying how much to free", async () => {
+  const { app, cleanup, id } = hq("effects-no-room");
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  const free = storage.diskHooks.free;
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    write(app, id, "bar", { "scene.html": GOOD });
+    const added = await effects.add(app, id, "bar");
+    await app.store.update(id, "test", (project) => {
+      project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    // The floor and 100 MB: a 2 s board holds ~0.2 GB at once.
+    storage.diskHooks.free = () => storage.FREE_FLOOR_BYTES + 100_000_000;
+    await expect(effects.renderNow(app, id, "bar")).rejects.toThrow("Your disk is full: free about 1 GB, then press Retry.");
+    expect(fs.readdirSync(join(app.store.uploadsDir(id), "effect-renders")).filter((name) => name.endsWith(".frames")).flatMap((name) => fs.readdirSync(join(app.store.uploadsDir(id), "effect-renders", name)))).toEqual([]);
+  } finally {
+    storage.diskHooks.free = free;
+    await server.stop(true);
+    cleanup();
+  }
+}, 120_000);
 
 test.skipIf(chrome === null)("a render that fails names its effect and says what to do; the agent is told what went wrong", async () => {
   const { app, cleanup, id } = hq("effects-render-fails");
