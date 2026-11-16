@@ -130,7 +130,9 @@ async function show(how: unknown, notice: Notice): Promise<boolean> {
     return true;
   }
   if (how !== "system" || !mayShow()) return false;
-  const options = { body: notice.body, tag: notice.key, icon: "/apple-touch-icon.png" };
+  // Each its own tag: one tagged as another still in the list replaces it without a sound or a banner, so a project's
+  // second "Changes are done", or a second test, seemed never to come (Nov 16).
+  const options = { body: notice.body, tag: `${notice.key}:${Date.now()}`, icon: "/apple-touch-icon.png" };
   // From the service worker where there is one: a phone's browser shows none from a page, and its click finds the tab.
   const registration = await noticesWorker().catch(() => null);
   if (registration !== null) {

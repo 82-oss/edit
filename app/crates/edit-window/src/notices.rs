@@ -92,9 +92,14 @@ impl Delegate {
     }
 }
 
-/// A notice's identifier: its key, then the page a click opens.
+/// A notice's identifier: its key and when it's posted (each its own: one
+/// with another's identifier replaces it, so a project's second "Changes are
+/// done", or a second test, didn't come as a new one), then the page a click opens.
 fn identifier(notice: &Notice) -> String {
-    format!("{}|{}", notice.key.replace('|', "/"), notice.path)
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_millis());
+    format!("{}:{at}|{}", notice.key.replace('|', "/"), notice.path)
 }
 
 /// The page in an identifier made by `identifier`.
@@ -289,6 +294,10 @@ mod tests {
             path: "/scripts/abc".into(),
         };
         assert_eq!(path_of(&identifier(&notice)), Some("/scripts/abc"));
+        // The same notice twice is two notifications, not one replacing the other.
+        let first = identifier(&notice);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_ne!(first, identifier(&notice));
         assert_eq!(path_of("nothing"), None);
         assert_eq!(quoted("say \"hi\" \\"), "\"say \\\"hi\\\" \\\\\"");
     }
