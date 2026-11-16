@@ -156,3 +156,12 @@ export function postFile(url: string, file: File, progress: (loaded: number) => 
     xhr.send(file);
   });
 }
+
+/** Files taken for a message that didn't go: back on the composer, ahead of any attached since. */
+export function restoreFiles(key: string, files: ChatFile[]): void {
+  if (files.length === 0) return;
+  useChatFiles.setState(({ chats }) => {
+    const had = chats[key] ?? [];
+    return { chats: { ...chats, [key]: [...files.filter((one) => !had.some((each) => each.id === one.id)), ...had] } };
+  });
+}

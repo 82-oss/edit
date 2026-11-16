@@ -27,6 +27,8 @@ import { chatImageUrl, ideasApi, imageUrl, NICHE, viewsLabel, working, type Idea
 import { navigate } from "../lib/route";
 import { useEditor } from "../lib/store";
 import { Loader as EditLoader } from "../components/Logo";
+import { ProblemView } from "../components/ProblemView";
+import { explain } from "@edit/types/problems";
 
 /** Home, on its Ideas section. */
 export function backToIdeas(): void {
@@ -70,7 +72,8 @@ function cardMarkdown(idea: Idea): string {
 
 export function IdeaScreen({ id }: { id: string }) {
   const [page, setPage] = useState<Page | null>(null);
-  const [missing, setMissing] = useState<string | null>(null);
+  /** Why the idea couldn't be read (null: read, or not yet). */
+  const [missing, setMissing] = useState<unknown>(null);
   const [saving, setSaving] = useState<"saving" | "saved" | "error" | null>(null);
   const [sending, setSending] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -84,7 +87,7 @@ export function IdeaScreen({ id }: { id: string }) {
           setPage(answer);
           setMissing(null);
         })
-        .catch((error: unknown) => setMissing((error as Error).message)),
+        .catch((error: unknown) => setMissing(error ?? new Error("Can't reach Edit's server"))),
     [id],
   );
   const active = page !== null && working(page.idea);
@@ -133,7 +136,7 @@ export function IdeaScreen({ id }: { id: string }) {
       <div className="flex min-h-0 flex-1 pb-2">
         <main className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-auto">
           {page === null ? (
-            <div className="flex h-full items-center justify-center text-[13px] text-white/40">{missing ?? <EditLoader size={32} />}</div>
+            <div className="flex h-full items-center justify-center p-8">{missing !== null ? <ProblemView error={missing} doing="open this idea" onReload={() => void load()} className="max-w-[420px]" /> : <EditLoader size={32} />}</div>
           ) : (
             <>
               <Notices page={page} busy={busy} onRepackage={(options) => void act("repackage it", () => ideasApi.repackage(id, options))} />
@@ -326,6 +329,8 @@ function Notices({ page, busy, onRepackage }: { page: Page; busy: string | null;
   const { idea } = page;
   const off = busy !== null || working(idea);
   const run = idea.run;
+  // Why Claude stopped short, said plainly (problems.ts): the original words are the log's, never the band's.
+  const short = run !== null && run.state === "failed" ? explain(run.error ?? "", run.what === "chat" ? "finish that change" : "finish repackaging") : null;
   const band = "shrink-0 border-b border-amber-400/20 bg-amber-400/[0.05] px-5 py-2.5";
   const link = "underline decoration-amber-100/20 underline-offset-2 transition-colors hover:text-amber-100/90 disabled:opacity-40";
   return (
@@ -363,7 +368,13 @@ function Notices({ page, busy, onRepackage }: { page: Page; busy: string | null;
       )}
       {run !== null && (run.state === "failed" || run.state === "stopped") && (
         <p className="shrink-0 border-b border-red-500/15 bg-red-500/[0.04] px-5 py-2 text-[12.5px] leading-relaxed text-red-200/75">
-          {run.state === "stopped" ? "Stopped" : "Claude stopped short"}: {run.error}{" "}
+          {short === null ? (
+            "Stopped."
+          ) : (
+            <>
+              <span className="font-medium">{short.title}.</span> {short.fix}
+            </>
+          )}{" "}
           <button type="button" disabled={off} onClick={() => onRepackage({ changes: run.what === "repackage" && idea.changes !== null && idea.card !== null })} className="underline underline-offset-2 disabled:opacity-40">
             Repackage again
           </button>
@@ -906,10 +917,18 @@ function Chat({ id, idea, onAsked }: { id: string; idea: Idea; onAsked: () => vo
           files={files}
           onSend={(message, attached) => {
             sent.hold(message, attached.map((one) => ({ name: one.name, kind: one.kind, url: one.preview })));
-            void ideasApi.chat(id, message, attached.map((one) => one.landed as IdeaImage)).then(onAsked, (error: unknown) => {
-              sent.drop();
-              toastError(error, "ask Claude");
-            });
+            // Not asked: the words go back in the composer.
+            return ideasApi.chat(id, message, attached.map((one) => one.landed as IdeaImage)).then(
+              () => {
+                onAsked();
+                return true;
+              },
+              (error: unknown) => {
+                sent.drop();
+                toastError(error, "ask Claude");
+                return false;
+              },
+            );
           }}
           onStop={() => void ideasApi.stop(id).then(onAsked, (error: unknown) => toastError(error, "stop it"))}
         />
@@ -931,7 +950,7 @@ function SendDialog({ open, idea, onClose, onSent }: { open: boolean; idea: Idea
   const [lanes, setLanes] = useState<{ key: string; name: string }[]>([]);
   const [lane, setLane] = useState(() => localStorage.getItem("ideas.lane") ?? "sphe");
   const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [problem, setProblem] = useState<unknown>(null);
   const [anyway, setAnyway] = useState(false);
   const toast = useEditor((state) => state.toast);
   useEffect(() => {
@@ -956,7 +975,7 @@ function SendDialog({ open, idea, onClose, onSent }: { open: boolean; idea: Idea
         onSent();
         onClose();
       })
-      .catch((error: unknown) => setProblem((error as Error).message))
+      .catch((error: unknown) => setProblem(error ?? new Error("Can't reach Edit's server")))
       .finally(() => setBusy(false));
   };
   return (
@@ -982,7 +1001,7 @@ function SendDialog({ open, idea, onClose, onSent }: { open: boolean; idea: Idea
             </span>
           </label>
         )}
-        {problem !== null && <p className="mt-3 text-[12px] text-danger">{problem}</p>}
+        {problem !== null && <ProblemView error={problem} doing="send it to Trello" className="mt-3" />}
         <DialogActions>
           <Button variant="subtle" onClick={onClose} disabled={busy}>
             Cancel

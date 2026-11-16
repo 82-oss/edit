@@ -14,11 +14,12 @@ import { navigate } from "../lib/route";
 import { useEditor } from "../lib/store";
 import { renderUrl, thumbnailsApi, type ThumbRow } from "../lib/thumbnails";
 import { Loader } from "../components/Logo";
+import { ProblemView } from "../components/ProblemView";
 
 /** The thumbnails' grid (or the way to the first), looked at again every 10 s. */
 export function ThumbnailGrid({ onMake }: { onMake: () => void }) {
   const [rows, setRows] = useState<ThumbRow[] | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
+  const [problem, setProblem] = useState<unknown>(null);
   const load = useCallback(
     () =>
       thumbnailsApi
@@ -27,7 +28,7 @@ export function ThumbnailGrid({ onMake }: { onMake: () => void }) {
           setRows(thumbnails);
           setProblem(null);
         })
-        .catch((error: unknown) => setProblem((error as Error).message)),
+        .catch((error: unknown) => setProblem(error ?? new Error("Can't reach Edit's server"))),
     [],
   );
   useEffect(() => {
@@ -40,7 +41,12 @@ export function ThumbnailGrid({ onMake }: { onMake: () => void }) {
   const [deleting, setDeleting] = useState<ThumbRow | null>(null);
   const toastError = useEditor((state) => state.toastError);
   const menu = (row: ThumbRow): MenuItem[] => [{ label: "Delete thumbnail", danger: true, icon: <Trash2 size={14} />, onSelect: () => setDeleting(row) }];
-  if (rows === null) return <div className="flex h-full min-h-40 items-center justify-center text-[13px] text-muted">{problem ?? <Loader size={32} />}</div>;
+  if (rows === null)
+    return (
+      <div className="flex h-full min-h-40 items-center justify-center p-8">
+        {problem !== null ? <ProblemView error={problem} doing="load the thumbnails" onReload={() => void load()} className="max-w-[420px]" /> : <Loader size={32} />}
+      </div>
+    );
   if (rows.length === 0) {
     return (
       <div className="mt-[14vh] flex flex-col items-center text-center">

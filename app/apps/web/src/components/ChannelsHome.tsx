@@ -38,7 +38,7 @@ import {
 } from "../lib/channels";
 import { thumbnailsApi } from "../lib/thumbnails";
 import { useEditor } from "../lib/store";
-import { AddChannel, AddToGroup, ChannelAvatar, facts, GroupAvatar, InPlace, LABEL, LabelField, LinkChannel, MakeGroup, TAUGHT_WORD, useVoices } from "./Channels";
+import { AddChannel, AddToGroup, ChannelAvatar, ChannelsFailed, facts, GroupAvatar, InPlace, LABEL, LabelField, LinkChannel, MakeGroup, TAUGHT_WORD, useVoices } from "./Channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { COLUMNS, NAME, PILL, ROW } from "./HomeTable";
 import { Loader } from "./Logo";
@@ -161,7 +161,8 @@ export function ChannelsView({ work }: { work: ChannelWork[] }) {
   useEffect(() => {
     void loadChannels();
   }, []);
-  // A page whose channel or group is gone (taken out, ungrouped, archived) is the table again.
+  // A page whose channel or group is gone (taken out, ungrouped, archived) is the table again; not while the
+  // channels couldn't be read (they're null then, never an empty list), so a failed read keeps the page you're on.
   const gone = channels !== null && open !== null && channel === null && group === null;
   useEffect(() => {
     if (gone) go(null);
@@ -224,6 +225,13 @@ function ChannelTable({ work }: { work: ChannelWork[] }) {
   const groups = useChannels((state) => state.groups);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+  const failed = useChannels((state) => state.failed !== null);
+  if (channels === null && failed)
+    return (
+      <div className="mx-auto mt-16 flex max-w-[360px] justify-center">
+        <ChannelsFailed />
+      </div>
+    );
   if (channels === null)
     return (
       <div className="mt-20 flex justify-center">

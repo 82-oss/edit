@@ -44,7 +44,8 @@ export function VideoComments({ wrap }: { wrap: HTMLDivElement | null }) {
   const paused = usePaused();
   const frame = useFrame();
   const [size, setSize] = useState({ width: 0, height: 0 });
-  const [draft, setDraft] = useState<{ at: { x: number; y: number }; box: NoteBox; frame: number } | null>(null);
+  /** The comment being written; `text`: the words of one that couldn't be left, back in it. */
+  const [draft, setDraft] = useState<{ at: { x: number; y: number }; box: NoteBox; frame: number; text?: string } | null>(null);
   const [drag, setDrag] = useState<{ a: { x: number; y: number }; b: { x: number; y: number } } | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
   const layer = useRef<HTMLDivElement>(null);
@@ -179,9 +180,14 @@ export function VideoComments({ wrap }: { wrap: HTMLDivElement | null }) {
             bounds={bounds}
             scale={scale}
             n={notes.length + 1}
+            initial={draft.text}
             onCancel={() => setDraft(null)}
             onSave={(text) => {
-              void addComment(draft.frame, draft.box, text);
+              const left = draft;
+              void addComment(left.frame, left.box, text).then((failed) => {
+                // Not left: open again where it was, with its words (unless another is being written by then).
+                if (failed !== null) setDraft((now) => now ?? { ...left, text });
+              });
               setDraft(null);
             }}
           />

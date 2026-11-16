@@ -3,6 +3,7 @@
 // user: "one tab, one mode, one page … i think thats better").
 
 import { useChannelChoice } from "../components/Channels";
+import { ProblemView } from "../components/ProblemView";
 import { AREA, ChannelField, FIELD, Field, More, NewShell, useChannelNeeded } from "../components/NewWork";
 import { useBeta } from "../lib/beta";
 import { ArrowUpRight, CircleAlert, ExternalLink, Eye, Lightbulb, MessageSquare, Send, TriangleAlert } from "lucide-react";
@@ -233,7 +234,8 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
   const [summary, setSummary] = useState(false);
   const [footage, setFootage] = useState("");
   const [busy, setBusy] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
+  /** Why it didn't start, and what didn't ("repackage 2 of the links": those left in the box). */
+  const [problem, setProblem] = useState<{ error: unknown; doing: string } | null>(null);
   // Links already an idea: theirs to open.
   const [known, setKnown] = useState<{ id: string; why: string }[]>([]);
   const count = (links.match(/https?:\/\/\S+/g) ?? []).length;
@@ -253,7 +255,8 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
         const others = refused.filter((one) => one.id === undefined);
         setKnown(refused.flatMap((one) => (one.id !== undefined ? [{ id: one.id, why: one.why }] : [])));
         if (refused.length > 0) {
-          setProblem(others.length > 0 ? others.map((one) => `${one.link}: ${one.why}`).join("\n") : null);
+          // The links that didn't go stay in the box; why, said plainly (the first's).
+          setProblem(others.length > 0 ? { error: others[0]!.why, doing: others.length === 1 ? "repackage the link left in the box" : `repackage the ${others.length} links left in the box` } : null);
           setLinks(others.map((one) => one.link).join("\n"));
           return;
         }
@@ -264,7 +267,7 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
         onClose();
         if (ideas.length === 1) navigate(`/ideas/${ideas[0]!.id}`);
       })
-      .catch((failure: unknown) => setProblem((failure as Error).message))
+      .catch((failure: unknown) => setProblem({ error: failure, doing: "start repackaging" }))
       .finally(() => setBusy(false));
   };
   return (
@@ -278,7 +281,7 @@ export function NewIdea({ open, onClose, onMade }: { open: boolean; onClose: () 
       action={busy ? "Starting…" : count > 1 ? `Repackage ${count}` : "Repackage"}
       error={
         <>
-          {problem !== null && <p className="pt-3 text-[12px] whitespace-pre-line text-danger">{problem}</p>}
+          {problem !== null && <ProblemView error={problem.error} doing={problem.doing} className="pt-3" />}
           {known.map((one) => (
             <button key={one.id} type="button" onClick={() => navigate(`/ideas/${one.id}`)} className="mt-2 block text-left text-[12px] text-warning hover:underline hover:underline-offset-[3px]">
               {one.why} Open it ›

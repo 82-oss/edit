@@ -219,8 +219,8 @@ export function Pin({ comment, bounds, scale, opened, movable = true, status, on
 }
 
 /** A new comment where the person clicked: its words, Enter to leave it, Escape to drop it. */
-export function Draft({ at, bounds, scale, n, placeholder = "What should change here?", onCancel, onSave }: { at: { x: number; y: number }; bounds: Bounds; scale: number; n: number; placeholder?: string; onCancel: () => void; onSave: (text: string) => void }) {
-  const [text, setText] = useState("");
+export function Draft({ at, bounds, scale, n, placeholder = "What should change here?", initial = "", onCancel, onSave }: { at: { x: number; y: number }; bounds: Bounds; scale: number; n: number; placeholder?: string; /** The words it opens with (a comment that couldn't be left, back). */ initial?: string; onCancel: () => void; onSave: (text: string) => void }) {
+  const [text, setText] = useState(initial);
   const save = () => {
     if (text.trim() !== "") onSave(text);
   };

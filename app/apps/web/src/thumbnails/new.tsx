@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { useChannelChoice } from "../components/Channels";
 import { AREA, Aside, ChannelField, FIELD, Field, NewShell, useChannelNeeded } from "../components/NewWork";
+import { ProblemView } from "../components/ProblemView";
 import { cx } from "../components/ui";
 import { postFile } from "../lib/chatFiles";
 import { ideasApi } from "../lib/ideas";
@@ -105,7 +106,7 @@ export function NewThumbnail({ open, onClose }: { open: boolean; onClose: () => 
       ready={ready}
       busy={busy}
       action={busy ? "Starting…" : starts ? "Make the thumbnail" : "Start"}
-      error={error && <p className="pt-3 text-[12px] text-danger">{error}</p>}
+      error={error && <ProblemView error={error} doing="start the thumbnail" className="pt-3" />}
       aside={<Aside onClick={() => setChoosing(!choosing)}>{choosing ? "Write it here instead" : "From an idea"}</Aside>}
     >
       <ChannelField kind="thumbnail" channels={channels} value={channel} onChange={setChannel} />
@@ -231,7 +232,11 @@ function IdeaPicker({ channel, onPick }: { channel: string | null; onPick: (pick
         {rows === null ? (
           <div className="shimmer px-3 py-2.5 text-[12px] text-muted">Reading the ideas…</div>
         ) : shown.length === 0 ? (
-          <div className="px-3 py-3 text-[12px] text-faint">{problem ?? (query.trim() ? "No idea by that name." : "No ideas yet.")}</div>
+          problem !== null ? (
+            <ProblemView error={problem} doing="read the ideas" className="px-3 py-3" />
+          ) : (
+            <div className="px-3 py-3 text-[12px] text-faint">{query.trim() ? "No idea by that name." : "No ideas yet."}</div>
+          )
         ) : (
           shown.map((row) => (
             <button
@@ -250,7 +255,7 @@ function IdeaPicker({ channel, onPick }: { channel: string | null; onPick: (pick
           ))
         )}
       </div>
-      {problem !== null && shown.length > 0 && <p className="mt-1.5 text-[12px] text-danger">{problem}</p>}
+      {problem !== null && shown.length > 0 && <ProblemView error={problem} doing="read that idea" className="mt-1.5" />}
     </Field>
   );
 }

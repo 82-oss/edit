@@ -36,24 +36,58 @@ describe("the chat's live events", () => {
     expect(useAgent.getState().running).toBe(false);
   });
 
-  it("shows a message as it's sent until the chat has it, and keeps it with why when it's refused", async () => {
+  it("shows a message as it's sent until the chat has it, and says why when it's refused (its words go back in the composer)", async () => {
     const { sendToAgent, applyAgentEvent, flushAgentEvents, useAgent } = await import("./agent");
     const { sending } = await import("./sentNow");
     fetchRetrying.mockReset();
     let refuse = false;
     fetchRetrying.mockImplementation(async () => (refuse ? new Response(JSON.stringify({ error: "the agent is still working" }), { status: 409 }) : new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } })));
     useAgent.setState({ project: "p1", loaded: true, running: false, entries: [] });
-    await sendToAgent("make it shorter");
+    expect(await sendToAgent("make it shorter")).toBe(true);
     expect(sending("p1", useAgent.getState().entries)).toBe(true);
     expect(useAgent.getState().running).toBe(true);
     applyAgentEvent({ project: "p1", event: "entry", entry: { id: "user-1", kind: "user", text: "make it shorter", at: Date.now() } });
     flushAgentEvents();
     expect(sending("p1", useAgent.getState().entries)).toBe(false);
     refuse = true;
-    await sendToAgent("and louder");
+    expect(await sendToAgent("and louder")).toBe(false);
     expect(sending("p1", useAgent.getState().entries)).toBe(false);
-    expect(useAgent.getState().entries.map((entry) => [entry.kind, entry.text])).toEqual([["user", "make it shorter"], ["user", "and louder"], ["error", "the agent is still working"]]);
+    expect(useAgent.getState().entries.map((entry) => [entry.kind, entry.text])).toEqual([["user", "make it shorter"], ["error", "the agent is still working"]]);
     expect(useAgent.getState().running).toBe(false);
+  });
+});
+
+describe("a chat that can't be read", () => {
+  const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
+
+  beforeEach(() => {
+    vi.resetModules();
+    fetchRetrying.mockReset();
+  });
+
+  it("says so until it's read, and Stop waits for the server's answer, throws a refusal and reads the chat again", async () => {
+    const { openAgent, stopAgent, useAgent } = await import("./agent");
+    let down = true;
+    let stopRefused = false;
+    fetchRetrying.mockImplementation(async (url: string) => {
+      if (down) throw new Error("Can't reach Edit's server");
+      if (url.endsWith("/stop")) return stopRefused ? response({ error: "nothing is running" }, 409) : response({ ok: true });
+      if (url === "/api/agent") return response({ ready: true, provider: "claude" });
+      if (url === "/api/agent/models") return response({ models: [] });
+      return response({ entries: [{ id: "u", kind: "user", text: "hi" }], running: false, queue: [] });
+    });
+    await openAgent("p1");
+    expect(useAgent.getState().loaded).toBe(true);
+    expect(useAgent.getState().status).toBeNull();
+    expect((useAgent.getState().failed as Error).message).toBe("Can't reach Edit's server");
+    down = false;
+    await openAgent("p1");
+    expect(useAgent.getState().failed).toBeNull();
+    expect(useAgent.getState().entries.map((entry) => entry.text)).toEqual(["hi"]);
+    stopRefused = true;
+    const reads = fetchRetrying.mock.calls.length;
+    await expect(stopAgent()).rejects.toThrow("nothing is running");
+    expect(fetchRetrying.mock.calls.slice(reads).map(([url]) => url)).toContain("/api/projects/p1/agent");
   });
 });
 

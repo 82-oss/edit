@@ -5,17 +5,26 @@
 
 import { explain, type Problem } from "@edit/types/problems";
 import { CircleAlert } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { setupClaude } from "../lib/agent";
 import { signIn } from "../lib/account";
 import { cx } from "./ui";
 
-/** The button for a problem's action; `onRetry` only where trying again is something this place can do. */
-function ActionButton({ problem, onRetry }: { problem: Problem; onRetry?: () => void }) {
-  const button = "mt-1.5 rounded-md border border-line-strong px-2 py-0.5 text-[12px] text-fg hover:bg-hover";
+/**
+ * The button for a problem's action; `onRetry` only where trying again is
+ * something this place can do; `onReload` whenever there's no other button
+ * (a read nothing else will repeat: a page's, a list's).
+ */
+/** A problem's button, for a place's own beside it (ProblemView's `actions`). */
+export const PROBLEM_BUTTON = "mt-1.5 rounded-md border border-line-strong px-2 py-0.5 text-[12px] text-fg hover:bg-hover";
+
+function ActionButton({ problem, onRetry, onReload }: { problem: Problem; onRetry?: () => void; onReload?: () => void }) {
+  const button = PROBLEM_BUTTON;
   if (problem.action === "sign-in") return <button className={button} onClick={() => void signIn()}>Sign in</button>;
   if (problem.action === "claude-sign-in") return <button className={button} onClick={() => void setupClaude("login")}>Sign in to Claude</button>;
-  if (problem.action === "retry" && onRetry) return <button className={button} onClick={onRetry}>Try again</button>;
+  const again = (problem.action === "retry" ? onRetry : undefined) ?? onReload;
+  if (again) return <button className={button} onClick={again}>Try again</button>;
   return null;
 }
 
@@ -23,6 +32,8 @@ export function ProblemView({
   error,
   doing,
   onRetry,
+  onReload,
+  actions,
   compact,
   className,
 }: {
@@ -31,6 +42,10 @@ export function ProblemView({
   /** What was being done, as "Couldn't …" finishes it ("download this file"). */
   doing?: string;
   onRetry?: () => void;
+  /** Try again whatever went wrong: what failed was a read nothing else repeats (a page loading, a list). */
+  onReload?: () => void;
+  /** A place's own buttons after the problem's (the editor's All projects), as PROBLEM_BUTTON. */
+  actions?: ReactNode;
   /** One line for a row in a list (the fix shows on hover). */
   compact?: boolean;
   className?: string;
@@ -49,7 +64,14 @@ export function ProblemView({
       <div className="min-w-0 flex-1">
         <div className="font-medium text-fg">{problem.title}</div>
         {problem.fix && <p className="mt-0.5 leading-relaxed text-muted">{problem.fix}</p>}
-        <ActionButton problem={problem} onRetry={onRetry} />
+        {actions === undefined ? (
+          <ActionButton problem={problem} onRetry={onRetry} onReload={onReload} />
+        ) : (
+          <div className="flex flex-wrap items-center gap-2">
+            <ActionButton problem={problem} onRetry={onRetry} onReload={onReload} />
+            {actions}
+          </div>
+        )}
       </div>
     </div>
   );

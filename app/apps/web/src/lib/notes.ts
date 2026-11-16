@@ -113,7 +113,8 @@ export const SPOT = 0.005;
 /**
  * A comment left at `frame`, at once (as the thumbnail page's: the page shows
  * it before the server answers); `box` the area dragged, or a spot. The
- * error's words if it couldn't be left.
+ * error's words if it couldn't be left (the caller opens the draft again
+ * with its words, so nothing written is lost).
  */
 export async function addComment(frame: number, box: NoteBox, text: string): Promise<string | null> {
   const { project } = useNotes.getState();
@@ -127,7 +128,7 @@ export async function addComment(frame: number, box: NoteBox, text: string): Pro
   } catch (error) {
     useNotes.setState((state) => ({ notes: state.notes.filter((one) => one.id !== local.id) }));
     const said = error instanceof Error ? error.message : String(error);
-    useEditor.getState().toast(`The comment wasn't left: ${said}`, "error");
+    useEditor.getState().toastError(error, "leave the comment");
     return said;
   }
 }
@@ -142,7 +143,7 @@ export async function editComment(id: string, text: string): Promise<void> {
     await api.editNote(project, id, text.trim());
   } catch (error) {
     useNotes.setState((state) => ({ notes: state.notes.map((note) => (note.id === id ? was : note)) }));
-    useEditor.getState().toast(`The comment wasn't changed: ${error instanceof Error ? error.message : String(error)}`, "error");
+    useEditor.getState().toastError(error, "change the comment");
   }
 }
 
@@ -188,7 +189,7 @@ export async function removeNote(id: string): Promise<void> {
   try {
     await api.removeNote(project, id);
   } catch (error) {
-    useEditor.getState().toast(`The note wasn't removed: ${error instanceof Error ? error.message : String(error)}`, "error");
+    useEditor.getState().toastError(error, "remove the note");
     void loadNotes(project);
   }
 }

@@ -136,6 +136,8 @@ interface AgentState {
   sub: SubChat | null;
   /** Edit V2: the messages waiting on the server for the running turn to end, in order (empty elsewhere). */
   queue: QueuedMessage[];
+  /** Why this project's chat couldn't be read (null once it is): the panel says so, with Try again. */
+  failed: unknown;
 }
 
 /** A sub-agent's chat: its key (`<project>~<name>`), title and conversation. */
@@ -160,6 +162,7 @@ export const useAgent = create<AgentState>(() => ({
   revising: false,
   sub: null,
   queue: [],
+  failed: null,
 }));
 
 /** Opens a sub-agent's chat from its card in the main chat. */
@@ -181,10 +184,35 @@ export async function openSub(card: AgentEntry) {
 /** Back to the main chat. */
 export const closeSub = () => useAgent.setState({ sub: null });
 
+/**
+ * Asks the server to stop a turn and waits for its answer, then reads the
+ * chat again either way, so what shows is whether it stopped, not that Stop
+ * was pressed. A refusal (or no answer) is thrown for the panel to say.
+ */
+async function stopTurn(project: string, chat?: string): Promise<void> {
+  let refused: unknown = null;
+  try {
+    await json(await fetchRetrying(`/api/projects/${project}/agent/stop${chat === undefined ? "" : `?chat=${chat}`}`, { method: "POST" }));
+  } catch (error) {
+    refused = error;
+  }
+  if (useAgent.getState().project === project) {
+    if (chat === undefined) await openAgent(project);
+    else {
+      const key = useAgent.getState().sub?.key;
+      const read = await fetchRetrying(`/api/projects/${project}/agent?chat=${chat}`)
+        .then((response) => json<{ entries: AgentEntry[]; running: boolean }>(response))
+        .catch(() => null);
+      if (read !== null && key !== undefined) useAgent.setState((state) => (state.sub?.key === key ? { sub: { ...state.sub, entries: read.entries, running: read.running } } : {}));
+    }
+  }
+  if (refused !== null) throw refused;
+}
+
 /** Stops the sub-agent being viewed. */
-export const stopSub = () => {
+export const stopSub = async () => {
   const { project, sub } = useAgent.getState();
-  if (project && sub) void fetchRetrying(`/api/projects/${project}/agent/stop?chat=${sub.name}`, { method: "POST" });
+  if (project && sub) await stopTurn(project, sub.name);
 };
 
 /** The name of the model Edit runs turns on (the server's default: the panel sends none). */
@@ -213,17 +241,24 @@ export async function openAgent(project: string) {
   const state = useAgent.getState();
   if (state.project !== project) {
     const cached = chats.get(project);
-    useAgent.setState({ project, loaded: Boolean(cached), entries: cached?.entries ?? [], running: cached?.running ?? false, chatModel: cached?.chatModel ?? null, revising: cached?.revising ?? false, sub: null, queue: cached?.queue ?? [] });
+    useAgent.setState({ project, loaded: Boolean(cached), entries: cached?.entries ?? [], running: cached?.running ?? false, chatModel: cached?.chatModel ?? null, revising: cached?.revising ?? false, sub: null, queue: cached?.queue ?? [], failed: null });
+  } else if (state.failed !== null) {
+    // Tried again: the chat's wait shows, not the failure.
+    useAgent.setState({ failed: null, loaded: state.entries.length > 0 });
   }
+  let failure: unknown = null;
   const [status, chat] = await Promise.all([
     fetchRetrying("/api/agent").then((response) => json<AgentStatus>(response)),
     fetchRetrying(`/api/projects/${project}/agent`).then((response) =>
       json<{ entries: AgentEntry[]; running: boolean; model_name?: string; revising?: boolean; queue?: QueuedMessage[] }>(response),
     ),
-  ]).catch(() => [null, null] as const);
+  ]).catch((error: unknown) => {
+    failure = error;
+    return [null, null] as const;
+  });
   if (useAgent.getState().project !== project || serial !== openedSerial) return;
   if (!status || !chat) {
-    useAgent.setState({ loaded: true });
+    useAgent.setState({ loaded: true, failed: failure ?? new Error("Can't reach Edit's server") });
     return;
   }
   events.flush();
@@ -236,6 +271,7 @@ export async function openAgent(project: string) {
     chatModel: chat.model_name ?? null,
     revising: chat.revising === true,
     queue: chat.queue ?? [],
+    failed: null,
   });
   if (status.ready) loadModelName().catch(() => {});
 }
@@ -245,11 +281,12 @@ export async function openAgent(project: string) {
  * starts there. `files`: what's attached, already in the project (the chat's
  * uploader); pictures reach the model as pictures. `queues`: an Edit V2 chat,
  * where a message sent while the turn runs waits in the server's queue (shown
- * above the composer, not in the conversation) until it ends.
+ * above the composer, not in the conversation) until it ends. Answers whether
+ * it went: false puts the words and files back in the composer (ChatComposer).
  */
-export async function sendToAgent(text: string, playhead?: number, files: ChatFile[] = [], queues = false) {
+export async function sendToAgent(text: string, playhead?: number, files: ChatFile[] = [], queues = false): Promise<boolean> {
   const state = useAgent.getState();
-  if (!state.project) return;
+  if (!state.project) return false;
   const project = state.project;
   const attachments = files.map((one) => {
     const landed = (one.landed ?? {}) as ProjectFile;
@@ -279,20 +316,23 @@ export async function sendToAgent(text: string, playhead?: number, files: ChatFi
       dropSent(project);
       useAgent.setState((current) => (current.project !== project || current.queue.some((one) => one.id === queued.id) ? {} : { queue: [...current.queue, queued], running: true }));
     }
+    return true;
   } catch (error) {
-    // Refused: the message stays in the chat with why, as it was sent (a turn still running goes on).
+    // Refused or the server down: the words go back in the composer (the caller's), and the chat says why (a turn
+    // still running goes on). Never a copy of the message only this page holds: reading the chat again would lose it.
     const now = Date.now();
     dropSent(project);
-    useAgent.setState((current) => ({
-      running: queueing && current.running,
-      entries: [...current.entries, { id: `local-user-${now}`, kind: "user", text, at: now, updated: now, ...(shown.length > 0 ? { attachments: shown } : {}) }, { id: `local-${now}`, kind: "error", text: (error as Error).message }],
-    }));
+    useAgent.setState((current) =>
+      current.project !== project ? {} : { running: queueing && current.running, entries: [...current.entries, { id: `local-${now}`, kind: "error", text: (error as Error).message }] },
+    );
+    return false;
   }
 }
 
-export const stopAgent = () => {
+/** Stops this project's turn (awaited: a refusal throws, the chat read again either way). */
+export const stopAgent = async () => {
   const project = useAgent.getState().project;
-  if (project) void fetchRetrying(`/api/projects/${project}/agent/stop`, { method: "POST" });
+  if (project) await stopTurn(project);
 };
 
 /** Takes a queued message out (shown gone at once, back if the server refuses). */

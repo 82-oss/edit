@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Project } from "./types";
 
+const connection = vi.hoisted(() => ({ down: false }));
 const api = vi.hoisted(() => ({ saveProject: vi.fn(), saveChanges: vi.fn(), project: vi.fn(), mediaStatus: vi.fn(), scriptJob: vi.fn() }));
-vi.mock("./api", () => ({ api, ApiError: class extends Error { status = 409; body: unknown; }, useConnection: { setState: vi.fn() } }));
+vi.mock("./api", () => ({ api, ApiError: class extends Error { status = 409; body: unknown; }, useConnection: { setState: vi.fn(), getState: () => connection } }));
 vi.mock("./agent", () => ({ applyAgentEvent: vi.fn(), openAgent: vi.fn() }));
 // This browser's copy of unsaved edits (unsaved.ts), as a map; `failing` is storage that's full or blocked.
 const unsaved = vi.hoisted(() => {
@@ -177,6 +178,25 @@ describe("save isolation", () => {
     // One undo step takes it back off.
     useEditor.getState().undo();
     expect(useEditor.getState().project?.name).toBe("p1");
+  });
+
+  it("the server down isn't a toast a second: saves back off, and it's said once after a minute", async () => {
+    const { useEditor } = await import("./store");
+    api.saveProject.mockReset();
+    api.saveProject.mockRejectedValue(new Error("Failed to fetch"));
+    const said: string[] = [];
+    const seen = new Set<number>();
+    const off = useEditor.subscribe(state => { for (const toast of state.toasts) if (!seen.has(toast.id)) { seen.add(toast.id); said.push(toast.text); } });
+    useEditor.getState().load(4, project("p1"));
+    useEditor.getState().edit(draft => { draft.name = "offline edit"; });
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(said).toEqual([]);
+    // 250 ms, then 1, 2, 4, 8 and 16 s apart: a handful of tries in half a minute, not thirty.
+    expect(api.saveProject.mock.calls.length).toBeLessThanOrEqual(6);
+    await vi.advanceTimersByTimeAsync(180_000);
+    off();
+    expect(said).toEqual([expect.stringMatching(/aren't saved yet/)]);
+    expect(unsaved.kept.get("p1")).toMatchObject({ base_rev: 4, patch: { set: { name: "offline edit" } } });
   });
 
   it("kept edits go on top of a version that moved on since", async () => {

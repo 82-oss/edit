@@ -88,16 +88,23 @@ export interface Used {
   channel?: string;
 }
 
-/** The channels, as last asked (null: not yet), and whether this person adds and teaches them. */
-export const useChannels = create<{ channels: Channel[] | null; groups: Group[]; teacher: boolean }>(() => ({ channels: null, groups: [], teacher: false }));
+/**
+ * The channels, as last read (null: not read yet), whether this person adds
+ * and teaches them (false until read), and why they couldn't be read (null
+ * once they are): a failed read is never "no channels".
+ */
+export const useChannels = create<{ channels: Channel[] | null; groups: Group[]; teacher: boolean; failed: unknown }>(() => ({ channels: null, groups: [], teacher: false, failed: null }));
 
 export async function loadChannels(): Promise<Channel[]> {
+  // Tried again after a failure: the wait shows, not the failure.
+  if (useChannels.getState().channels === null) useChannels.setState({ failed: null });
   try {
     const { channels, groups, teacher } = await request<{ channels: Channel[]; groups?: Group[]; teacher: boolean }>("GET", "/api/channels");
-    useChannels.setState({ channels, groups: groups ?? [], teacher });
+    useChannels.setState({ channels, groups: groups ?? [], teacher, failed: null });
     return channels;
-  } catch {
-    useChannels.setState((now) => ({ channels: now.channels ?? [], teacher: now.teacher }));
+  } catch (error) {
+    // What was read stays; never read, it's a failure to show (with Try again), not an empty list.
+    useChannels.setState((now) => (now.channels === null ? { failed: error } : {}));
     return useChannels.getState().channels ?? [];
   }
 }

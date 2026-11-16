@@ -12,7 +12,7 @@ import { useState, type ReactNode } from "react";
 
 import { useBeta } from "../lib/beta";
 import { useChannels, type Channel, type Lane } from "../lib/channels";
-import { ChannelPicker } from "./Channels";
+import { ChannelPicker, ChannelsFailed } from "./Channels";
 import { Button, cx, Modal, spring } from "./ui";
 
 export type WorkKind = "edit" | "script" | "idea" | "thumbnail";
@@ -51,7 +51,8 @@ export function NewShell({ kind, open, onClose, onSubmit, ready, busy, action, e
 }) {
   const { title, icon: Icon } = KINDS[kind];
   return (
-    <Modal open={open} onClose={onClose} width={width}>
+    // Not closed while it works: what it's doing would finish unseen (a failure never shown, a success that still navigates).
+    <Modal open={open} onClose={busy ? () => {} : onClose} width={width}>
       <form
         className="flex max-h-[min(86vh,820px)] flex-col"
         onSubmit={(event) => {
@@ -69,7 +70,7 @@ export function NewShell({ kind, open, onClose, onSubmit, ready, busy, action, e
         <div className="px-6">{error}</div>
         <footer className="flex items-center gap-2 px-6 pt-4 pb-5">
           <div className="min-w-0 flex-1">{aside}</div>
-          <Button type="button" variant="subtle" onClick={onClose}>
+          <Button type="button" variant="subtle" onClick={onClose} disabled={busy}>
             Cancel
           </Button>
           <Button type="submit" variant="primary" disabled={!ready} busy={busy}>
@@ -104,12 +105,15 @@ export function Field({ label, hint, children, className }: { label: string; hin
 export function ChannelField({ kind, channels, value, onChange, other }: { kind: WorkKind; channels: Channel[]; value: string | null; onChange: (key: string | null) => void; other?: ReactNode }) {
   const v2 = useBeta((beta) => beta.v2);
   const loaded = useChannels((state) => state.channels !== null);
+  const failed = useChannels((state) => state.failed !== null);
   const teacher = useChannels((state) => state.teacher);
   if (!v2) return other === undefined ? null : <Field label="Kind">{other}</Field>;
   return (
     <Field label="Channel">
       {channels.length > 0 ? (
         <ChannelPicker channels={channels} value={value} lane={KINDS[kind].lane} onChange={onChange} />
+      ) : failed ? (
+        <ChannelsFailed />
       ) : !loaded ? (
         <div className="shimmer h-11 rounded-lg border border-line" />
       ) : (

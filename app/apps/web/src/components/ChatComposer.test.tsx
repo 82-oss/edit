@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { addQuote, inlineQuote, takeQuotes, type ChatQuote } from "../lib/chatQuotes";
-import { ChatComposer } from "./ChatComposer";
+import { ChatComposer, type SendResult } from "./ChatComposer";
 
 // happy-dom's Web Animations reject when cancelled; motion animates by itself without them.
 delete (Element.prototype as { animate?: unknown }).animate;
@@ -13,6 +13,8 @@ const CHAT = "test-chat";
 let root: Root;
 let sent: { message: string; quotes: ChatQuote[] }[];
 let saved: string[];
+/** What the chat's send answers (false: it didn't go). */
+let answer: SendResult;
 
 /** A chat that keeps its own words, as Writer's do (useChatDraft). */
 function Controlled({ initial }: { initial: string }) {
@@ -28,7 +30,10 @@ function Controlled({ initial }: { initial: string }) {
         saved.push(next);
         setValue(next);
       }}
-      onSend={(message, _files, quotes) => sent.push({ message, quotes })}
+      onSend={(message, _files, quotes) => {
+        sent.push({ message, quotes });
+        return answer;
+      }}
       onStop={() => {}}
     />
   );
@@ -61,6 +66,7 @@ describe("the chat's composer", () => {
     (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     sent = [];
     saved = [];
+    answer = undefined;
     takeQuotes(CHAT);
   });
   afterEach(() => {
@@ -112,6 +118,27 @@ describe("the chat's composer", () => {
     expect(sent).toEqual([]);
     enter(box);
     expect(sent.map((one) => one.message)).toEqual(["にほん"]);
+  });
+
+  it("puts a message that didn't go back in the box, its quote with it (the server down: nothing typed is lost)", async () => {
+    const box = mount();
+    type(box, () => box.append("make it "));
+    act(() => addQuote(CHAT, { from: "title 2", text: "Cops Surprise Husband" }));
+    type(box, () => box.append("louder"));
+    answer = Promise.resolve(false);
+    enter(box);
+    expect(sent).toHaveLength(1);
+    expect(box.textContent).toBe("");
+    await act(async () => {
+      await answer;
+    });
+    expect(saved.at(-1)).toBe("make it  louder");
+    expect(box.textContent).toContain("make it  louder");
+    expect(box.querySelectorAll("[data-quote-id]")).toHaveLength(1);
+    // Sent again, it's the same message.
+    answer = undefined;
+    enter(box);
+    expect(sent[1]!.quotes.map((one) => one.text)).toEqual(["Cops Surprise Husband"]);
   });
 
   it("copies a chip as its quote's words in quotation marks", () => {

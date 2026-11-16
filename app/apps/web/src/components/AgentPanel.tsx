@@ -143,7 +143,7 @@ function SubAgentPanel() {
           </Button>
           <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{sub.title}</span>
           {sub.running && (
-            <Button variant="ghost" onClick={stopSub} className="h-7 gap-1 px-2 text-[12px]">
+            <Button variant="ghost" onClick={() => void stopSub().catch((error: unknown) => useEditor.getState().toastError(error, "stop it"))} className="h-7 gap-1 px-2 text-[12px]">
               <Square size={11} strokeWidth={2.4} /> Stop
             </Button>
           )}
@@ -187,6 +187,8 @@ function MainAgentPanel() {
   const chat = useAgent((state) => state.entries);
   const running = useAgent((state) => state.running);
   const loaded = useAgent((state) => state.loaded);
+  const failed = useAgent((state) => state.failed);
+  const reload = () => projectId !== undefined && void openAgent(projectId);
   // The message just sent shows at once (sendToAgent holds it).
   const { entries } = useSentNow(projectId ?? "", chat);
   // Entries already there when the chat loaded don’t animate in.
@@ -213,6 +215,8 @@ function MainAgentPanel() {
         entries.length > 0 || !blocked ? (
           <>
             {blocked && <NotReadyNote />}
+            {/* The chat couldn't be read again: what's on screen may be older, so it says so, with Try again. */}
+            {failed !== null && entries.length > 0 && <ProblemView error={failed} doing="load the chat" onReload={reload} className="px-4 pt-1" />}
             <Composer disabled={!status?.ready} projectId={projectId} />
             {/* Words selected in the chat: "Add to chat" over them, as on the idea page. */}
             {projectId !== undefined && <QuoteSelection chat={`project:${projectId}`} />}
@@ -220,7 +224,11 @@ function MainAgentPanel() {
         ) : undefined
       }
     >
-      {!entries.length && status && !status.ready ? (
+      {!entries.length && failed !== null ? (
+        <div className="flex flex-1 flex-col justify-center px-2">
+          <ProblemView error={failed} doing="load the chat" onReload={reload} className="mx-auto max-w-[280px]" />
+        </div>
+      ) : !entries.length && status && !status.ready ? (
         <SetupClaude />
       ) : !entries.length ? (
         <Empty title="Ask for an edit" detail={`Ask for captions, cuts, B-roll, grades. Changes land on your timeline live and undo with ${MOD}Z.`} />
@@ -812,7 +820,9 @@ function EntryView({ entry, muted, fresh }: { entry: AgentEntry; muted?: boolean
         {resolved ? (
           <>
             <Check size={13} className="mt-px shrink-0" />
-            <span>{explain(entry.text, "carry on").title}</span>
+            {/* Settled since (the agent carried on, the message went): the line's own words, quietly, never a failure's title
+                (a long or many-line one, only what problems.ts makes of it). */}
+            <span>{entry.text.length <= 160 && !entry.text.includes("\n") ? entry.text.trim() : explain(entry.text).title}</span>
           </>
         ) : (
           <ProblemView error={entry.text} doing="carry on" className="min-w-0 flex-1" />
@@ -1086,8 +1096,8 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
       // A channel with no edit style yet says so here, not in a notice of its own (Sphe, Nov 15: "this is horrible").
       placeholder={untaught !== null ? `Tell the agent how ${untaught}’s videos should look, or start the editing workflow…` : "Start the editing workflow, or ask for a change…"}
       // Where the playhead is goes with it: the agent starts there (the server reads it what's under it).
-      onSend={(message, files) => void sendToAgent(message, playhead.frame, files, hq)}
-      onStop={stopAgent}
+      onSend={(message, files) => sendToAgent(message, playhead.frame, files, hq)}
+      onStop={() => void stopAgent().catch((error: unknown) => useEditor.getState().toastError(error, "stop the agent"))}
     />
   );
 }

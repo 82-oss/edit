@@ -11,6 +11,7 @@ import { navigate } from "../lib/route";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { Avatar } from "./avatar";
 import { MemoryChip } from "../components/MemoryChip";
+import { ProblemView } from "../components/ProblemView";
 import { UpdateButton } from "./update";
 import { DocsDialog } from "./docs-dialog";
 import { VersionsDialog } from "./versions-dialog";
@@ -648,7 +649,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
       <ArchivedBanner script={script} working={working} onJob={(job) => follow(job.startedAt)} onProblem={setError} />
       {error && (
         <div className="notice">
-          {error}
+          {/* Said plainly (problems.ts): the original words are the log's. */}
+          <ProblemView error={error} className="min-w-0 flex-1" />
           <button type="button" className="ghost sm" onClick={() => setError(null)}>Dismiss</button>
         </div>
       )}

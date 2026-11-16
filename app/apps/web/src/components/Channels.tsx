@@ -13,7 +13,9 @@ import { AnimatePresence, motion } from "motion/react";
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { channelApi, channelsOf, compact, groupApi, groupTitle, loadChannels, rowsOf, useChannels, type Channel, type Found, type Group, type Lane, type Narration, type Taught, type Used, type Voice } from "../lib/channels";
+import { useAccount } from "../lib/account";
 import { useBeta } from "../lib/beta";
+import { ProblemView } from "./ProblemView";
 import { Button, cx, DialogActions, DialogTitle, Modal, spring, Switch } from "./ui";
 import { VoicePicker } from "./VoicePicker";
 
@@ -59,6 +61,17 @@ export function GroupAvatar({ channels, size = 26, ring = "ring-2 ring-panel" }:
       )}
     </span>
   );
+}
+
+/**
+ * Why the channels aren't here: they couldn't be read (Try again reads them
+ * again), or, signed out, a sign-in. Never "No channels yet" for either.
+ */
+export function ChannelsFailed({ className }: { className?: string }) {
+  const failed = useChannels((state) => state.failed);
+  const signedOut = useAccount((state) => state.account !== null && state.account.person === null && !state.account.signed_in);
+  if (failed === null) return null;
+  return <ProblemView error={signedOut ? "Sign in to Edit" : failed} doing="load the channels" onReload={() => void loadChannels()} className={className} />;
 }
 
 /**
@@ -431,7 +444,7 @@ export function AddChannel({ open, onClose, onAdded }: { open: boolean; onClose:
             </label>
           </>
         )}
-        {error && <p className="text-[12px] text-danger">{error}</p>}
+        {error && <ProblemView error={error} doing="add the channel" />}
         <DialogActions className="mt-1">
           <Button type="button" variant="subtle" onClick={onClose}>
             {added !== null ? "Later" : "Cancel"}
@@ -525,7 +538,7 @@ export function MakeGroup({ open, channel, onClose, onMade }: { open: boolean; c
             <ChannelPills channels={channels.filter((one) => members.includes(one.key))} value={from} lane="edit" onChange={(key) => key !== null && setFrom(key)} />
           </div>
         )}
-        {error && <p className="text-[12px] text-danger">{error}</p>}
+        {error && <ProblemView error={error} doing="group them" />}
         <DialogActions className="mt-1">
           <Button variant="subtle" onClick={onClose}>
             Cancel
@@ -568,7 +581,7 @@ export function AddToGroup({ open, group, onClose }: { open: boolean; group: Gro
       <div className="flex flex-col gap-4 p-6">
         <DialogTitle title="Add a channel" />
         {others.length === 0 ? <p className="text-[13px] text-muted">Every channel is in a group already.</p> : <ChannelPills channels={others} value={picked} lane="edit" onChange={setPicked} />}
-        {error && <p className="text-[12px] text-danger">{error}</p>}
+        {error && <ProblemView error={error} doing="add it to the group" />}
         <DialogActions className="mt-1">
           <Button variant="subtle" onClick={onClose}>
             Cancel
@@ -611,7 +624,7 @@ export function LinkChannel({ channel, onDone }: { channel: Channel; onDone: () 
     >
       <input autoFocus value={link} onChange={(event) => setLink(event.target.value)} onKeyDown={(event) => event.key === "Escape" && onDone()} placeholder="youtube.com/@channel, a video of theirs, or the channel ID" className={FIELD} />
       <FoundCard found={found} looking={looking} />
-      {error && <p className="text-[12px] text-danger">{error}</p>}
+      {error && <ProblemView error={error} doing="link it" />}
       <div className="flex justify-end gap-2">
         <Button type="button" variant="subtle" onClick={onDone}>
           Cancel

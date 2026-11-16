@@ -28,6 +28,7 @@ import { sourceUrl, thumbnailsApi, working, type Design, type OpenArtAccount, ty
 import { drawThumbnail, type Context as DrawContext } from "@edit/types/thumbnail_render";
 import { captionShadow, HEIGHT, WIDTH } from "@edit/types/thumbnails";
 import { Loader } from "../components/Logo";
+import { ProblemView } from "../components/ProblemView";
 
 // The caption faces ship with Edit (the server has them); Helvetica Neue, Arial Black and Impact are the Mac's own.
 let fontsAdded = false;
@@ -135,7 +136,8 @@ function settleCaptions(design: Design): Design {
 
 export function ThumbnailScreen({ id }: { id: string }) {
   const [thumb, setThumb] = useState<Thumbnail | null>(null);
-  const [missing, setMissing] = useState<string | null>(null);
+  /** Why the thumbnail couldn't be read (null: read, or not yet). */
+  const [missing, setMissing] = useState<unknown>(null);
   const toastError = useEditor((state) => state.toastError);
   const canvas = useRef<HTMLCanvasElement>(null);
 
@@ -155,7 +157,7 @@ export function ThumbnailScreen({ id }: { id: string }) {
           setMissing(null);
           if (rev !== shownRev.current && switching.current === 0) show(thumb, rev);
         })
-        .catch((error: unknown) => setMissing((error as Error).message)),
+        .catch((error: unknown) => setMissing(error ?? new Error("Can't reach Edit's server"))),
     [id, show],
   );
   const running = thumb !== null && working(thumb);
@@ -379,7 +381,7 @@ export function ThumbnailScreen({ id }: { id: string }) {
       <div className="flex min-h-0 flex-1 pb-2 pl-2">
         <main className="flex min-w-0 flex-1 flex-col items-center gap-3 px-4 pt-2 pb-2">
           {thumb === null || design === null ? (
-            <div className="flex flex-1 items-center justify-center text-[13px] text-white/40">{missing ?? <Loader size={32} />}</div>
+            <div className="flex flex-1 items-center justify-center p-8">{missing !== null ? <ProblemView error={missing} doing="open this thumbnail" onReload={() => void load()} className="max-w-[420px]" /> : <Loader size={32} />}</div>
           ) : (
             <>
               <Stage
@@ -918,10 +920,18 @@ function Chat({ id, thumb, upload, viewing, onSending, onAsked }: { id: string; 
           onSend={(message, files) => {
             sent.hold(message, files.map((one) => ({ name: one.name, kind: one.kind, url: one.preview })));
             onSending();
-            void thumbnailsApi.chat(id, message, files.map((one) => one.landed as string), viewing).then(onAsked, (error: unknown) => {
-              sent.drop();
-              toastError(error, "ask Claude");
-            });
+            // Not asked: the words go back in the composer.
+            return thumbnailsApi.chat(id, message, files.map((one) => one.landed as string), viewing).then(
+              () => {
+                onAsked();
+                return true;
+              },
+              (error: unknown) => {
+                sent.drop();
+                toastError(error, "ask Claude");
+                return false;
+              },
+            );
           }}
           onStop={() => void thumbnailsApi.stop(id).then(onAsked, (error: unknown) => toastError(error, "stop it"))}
         />

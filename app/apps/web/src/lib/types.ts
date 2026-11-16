@@ -188,7 +188,7 @@ export interface ScriptJob {
   back?: boolean;
 }
 
-export type ImportWhy = "passing" | "person" | "quota" | "encoder";
+export type ImportWhy = "passing" | "person" | "quota" | "encoder" | "limit";
 
 export interface ImportAfter {
   step: "voiceover" | "recording" | "research" | "words";
@@ -234,7 +234,7 @@ export interface ProjectSummary {
   channel?: string;
 }
 
-export type Stage = "pending" | "working" | "ready" | "failed" | "skipped";
+export type Stage = "pending" | "working" | "ready" | "failed" | "skipped" | "waiting";
 
 export interface MediaStatus {
   proxy: Stage;
@@ -247,6 +247,8 @@ export interface MediaStatus {
   /** "pending" = not requested yet (transcription costs money). */
   transcript: Stage;
   transcript_error?: string;
+  /** When Edit hears it again by itself (a transcript waiting for the plan's credit). */
+  transcript_retry_at?: number;
   error?: string;
   /** Each preview file's version, for URLs the browser can cache for good. */
   stamps?: { preview?: string | null; light?: string | null };

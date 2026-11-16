@@ -22,7 +22,8 @@ import { MissingBanner } from "./MissingBanner";
 import { FootageBack } from "./FootageBack";
 import { Timeline } from "./Timeline";
 import { TopBar } from "./TopBar";
-import { ProblemView } from "./ProblemView";
+import { PROBLEM_BUTTON, ProblemView } from "./ProblemView";
+import { navigate } from "../lib/route";
 import { cx } from "./ui";
 import { Loader } from "./Logo";
 import { toggleFullscreen, Viewer } from "./Viewer";
@@ -39,7 +40,9 @@ export function Editor({ id }: { id: string }) {
   const agentWorking = useAgent((state) => state.running);
   const [importing, setImporting] = useState(false);
   const [sharing, setSharing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  // Try again after the project couldn't open: everything asked again.
+  const [attempt, setAttempt] = useState(0);
 
   // The team's notes on this edit, for the player and the row above the composer.
   useEffect(() => {
@@ -75,9 +78,16 @@ export function Editor({ id }: { id: string }) {
           .then(({ pending }) => alive && pending !== null && useEditor.setState({ resetAsked: true }))
           // Noted by api.ts; the agent asks again in its turn if it still wants the reset.
           .catch(() => {});
-        return api.mediaStatus(id).then(({ media }) => alive && useEditor.setState({ media }));
+        // The footage's states on their own: their failure never stands in for an editor that opened (events and a
+        // reconnect bring them too), asked again a few times meanwhile.
+        const readMedia = (left: number) =>
+          api
+            .mediaStatus(id)
+            .then(({ media }) => alive && useEditor.setState({ media }))
+            .catch(() => alive && left > 0 && setTimeout(() => void readMedia(left - 1), 3000));
+        void readMedia(3);
       })
-      .catch((error) => alive && setError(error.message));
+      .catch((error: unknown) => alive && setError(error ?? new Error("Can't reach Edit's server")));
     // Still open (an editor that stops saying so lets the lock go).
     const heartbeat = setInterval(() => {
       void cloudApi
@@ -93,15 +103,34 @@ export function Editor({ id }: { id: string }) {
       // Leaving: a close that doesn't arrive is the same as one, once the beats stop (the lock goes after 75 s).
       void leave().finally(() => cloudApi.close(id, clientId).catch(() => {}));
     };
-  }, [id]);
+  }, [id, attempt]);
 
   useShortcuts({ onImport: () => setImporting(true), onExport: () => setSharing(true) });
   useDropToChat();
 
-  if (error) {
+  if (error !== null) {
+    // Not this account's or gone (403, 404): trying again can't help; anything else can.
+    const final = error instanceof ApiError && (error.status === 403 || error.status === 404);
     return (
       <div className="flex h-full items-center justify-center p-8">
-        <ProblemView error={error} doing="open this project" className="max-w-[420px]" />
+        <ProblemView
+          error={error}
+          doing="open this project"
+          onReload={
+            final
+              ? undefined
+              : () => {
+                  setError(null);
+                  setAttempt((count) => count + 1);
+                }
+          }
+          actions={
+            <button className={PROBLEM_BUTTON} onClick={() => navigate("/")}>
+              All projects
+            </button>
+          }
+          className="max-w-[420px]"
+        />
       </div>
     );
   }

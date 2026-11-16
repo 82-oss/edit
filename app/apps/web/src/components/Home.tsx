@@ -24,6 +24,7 @@ import type { Kind } from "../writer/types";
 import { useKept } from "../lib/kept";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
+import { explain } from "@edit/types/problems";
 import { ChannelAvatar } from "./Channels";
 import { ChannelsActions, ChannelsTitle, ChannelsView, useChannelsNav, type ChannelWork } from "./ChannelsHome";
 import { AREA, Aside, ChannelField, FIELD, Field, More, NewShell, useChannelNeeded } from "./NewWork";
@@ -614,15 +615,12 @@ export function Home() {
               <StageSteps place={shownPlace!} steps={steps} stage={placeOf(shownWhere).stage} onChoose={choose} />
             )}
             {cloud?.on && cloud.error && (
-              <p className="mb-2 px-3 text-[12px] text-warning" title={cloud.error}>
+              <p className="mb-2 px-3 text-[12px] text-warning">
                 {cloud.offline ? `Can’t reach the cloud: showing what’s on ${THIS_MACHINE}.` : "The cloud’s list didn’t load."}
               </p>
             )}
-            {inIdeas && (ideasHome?.boardError ?? ideasError) && (
-              <p className="mb-2 px-3 text-[12px] text-warning/80" title={ideasHome?.boardError ?? ideasError ?? ""}>
-                {ideasHome === null ? `The ideas didn’t load: ${ideasError}` : "The board couldn’t be read just now: where cards are may be out of date."}
-              </p>
-            )}
+            {inIdeas && ideasHome === null && ideasError !== null && <ProblemView error={ideasError} doing="load the ideas" onReload={refreshIdeas} className="mb-2 px-3" />}
+            {inIdeas && ideasHome !== null && ideasHome.boardError && <p className="mb-2 px-3 text-[12px] text-warning/80">The board couldn’t be read just now: where cards are may be out of date.</p>}
             {loading || (inIdeas && ideasHome === null && ideasError === null) ? (
               <div className="mt-20 flex justify-center">
                 <Loader size={32} />
@@ -1298,17 +1296,16 @@ export function useIssueDialogs(issue: ScriptIssueRow) {
   const [url, setUrl] = useState("");
   const failed = issue.decision?.failed ?? [];
   const [which, setWhich] = useState(failed[0]?.id ?? "");
-  const [copied, setCopied] = useState(false);
   const close = () => setOpen(null);
+  // Why, said plainly (problems.ts): the original words go to the log, never on screen.
   const said = issue.decision?.summary ?? issue.error ?? "It stopped without saying why.";
-  const full = [said, ...failed.map((one) => `${one.title}: ${one.error}`)].join("\n\n");
   const retry = () => {
     close();
     void answerIssue(issue, { kind: "retry" });
   };
   const helps = issue.retryHelps !== false;
   const items: MenuItem[] = [
-    { label: "View error", icon: <TriangleAlert size={14} />, onSelect: () => setOpen("error") },
+    { label: "Why it stopped", icon: <TriangleAlert size={14} />, onSelect: () => setOpen("error") },
     ...(helps ? [{ label: "Retry", icon: <RotateCw size={14} />, onSelect: retry }] : []),
     ...(issue.decision?.kind === "failed_recordings" ? [{ label: "Go on without them", icon: <SkipForward size={14} />, onSelect: () => void answerIssue(issue, { kind: "skip_failed" }) }] : []),
     { label: "Replace…", icon: <Replace size={14} />, onSelect: () => setOpen("replace") },
@@ -1321,20 +1318,19 @@ export function useIssueDialogs(issue: ScriptIssueRow) {
         <div className="p-6">
           <h2 className="text-[18px] font-semibold tracking-[-0.3px]">Why “{issue.title}” stopped</h2>
           <p className="mt-1 text-[13px] text-muted">Stopped {stageWords(issue.stage)}{issue.progress ? `, ${Math.round(issue.progress)}% in` : ""}. It waits there until it’s answered.</p>
-          <pre className="mt-4 max-h-[320px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-black p-3 font-mono text-[12px] leading-relaxed text-secondary select-text">{full}</pre>
+          <ProblemView error={said} doing="finish the import" className="mt-4" />
+          {failed.length > 0 && (
+            <ul className="mt-3 space-y-1 text-[12px]">
+              {failed.map((one) => (
+                <li key={one.id} className="flex min-w-0 gap-2">
+                  <span className="min-w-0 truncate text-secondary">{one.title}</span>
+                  <span className="shrink-0 text-muted">{explain(one.error, "download it").title}</span>
+                </li>
+              ))}
+            </ul>
+          )}
           {!helps && <p className="mt-3 text-[13px] leading-relaxed text-muted">{NEEDS_A_FIX}</p>}
-          <div className="mt-[22px] flex items-center justify-between gap-2">
-            <Button
-              variant="ghost"
-              onClick={() => {
-                void navigator.clipboard?.writeText(full).then(() => {
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1500);
-                });
-              }}
-            >
-              {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? "Copied" : "Copy"}
-            </Button>
+          <div className="mt-[22px] flex items-center justify-end gap-2">
             <div className="flex gap-2">
               <Button variant={helps ? "subtle" : "primary"} onClick={() => setOpen("replace")}>
                 Replace…
@@ -1461,7 +1457,7 @@ function ScriptIssue({ issue, onOpen }: { issue: ScriptIssueRow; onOpen: (id: st
           <AsideStatus entry={aside.entry} />
         ) : (
           // Where it stopped, so it's plain what's being fixed.
-          <span title={`Stopped ${stageWords(issue.stage)}: ${issue.decision?.summary ?? issue.error ?? "it stopped without saying why"}`} className={cx(CHIP, "text-warning")}>
+          <span title={`Stopped ${stageWords(issue.stage)}: ${explain(issue.decision?.summary ?? issue.error ?? "", "finish the import").title}`} className={cx(CHIP, "text-warning")}>
             <TriangleAlert size={12} className="shrink-0" />
             <span className="truncate">Stopped · {stageName(issue.stage)}</span>
           </span>
@@ -1541,7 +1537,9 @@ export function ImportDialog({ id, writing, issues, onClose }: { id: string | nu
     return () => window.clearInterval(timer);
   }, [id]);
   const done = id !== null && live === null && stopped === null && last.current !== null;
-  const why = stopped ? (stopped.decision?.summary ?? stopped.error ?? "Stopped.") : null;
+  // Why, said plainly (problems.ts): the original words are the log's.
+  const problem = stopped ? explain(stopped.decision?.summary ?? stopped.error ?? "", "finish the import") : null;
+  const why = problem ? `${problem.title}. ${problem.fix}`.trim() : null;
   const at = done ? STEPS.length : STEPS.findIndex((candidate) => candidate.key === step);
   const percent = done ? 100 : Math.floor(Math.max(0, Math.min(100, live ? creeping(live.id, live.percent, now) : (shown?.percent ?? 0))));
   return (
@@ -1690,7 +1688,6 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
   const [starting, setStarting] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [why, setWhy] = useState(false);
   const failed = script.runFailed ?? null;
   // Its category, changed (JJ, Nov 5: a compilation started as Bodycam was Interrogation): the kinds this person writes, a commentary none.
   const grants = useGrants();
@@ -1727,12 +1724,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
   const items = withAside(
     [
       { label: "Open script", icon: <FileText size={14} />, onSelect: () => navigate(`/scripts/${script.id}`) },
-      ...(failed !== null
-        ? ([
-            { label: "View error", icon: <TriangleAlert size={14} />, onSelect: () => setWhy(true) },
-            { label: "Run again", icon: <RotateCw size={14} />, onSelect: () => void write() },
-          ] satisfies MenuItem[])
-        : []),
+      ...(failed !== null ? ([{ label: "Run again", icon: <RotateCw size={14} />, onSelect: () => void write() }] satisfies MenuItem[]) : []),
       ...(here
         ? ([
             { label: "Rename", icon: <Pencil size={14} />, onSelect: () => setRenaming(script.title) },
@@ -1845,8 +1837,8 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
             Sharing
           </span>
         ) : failed !== null ? (
-          // Its last run failed: said in orange, and a click runs it again (what went wrong is in its tooltip and ⋯ View error).
-          <button disabled={starting} title={`Claude's last run stopped: ${failed.error}\nClick to run it again.`} onClick={(event) => void write(event)} className={cx(CHIP, "cursor-pointer text-warning transition-colors hover:bg-hover disabled:opacity-60")}>
+          // Its last run failed: said in orange, and a click runs it again (why, plainly, in its tooltip).
+          <button disabled={starting} title={`${explain(failed.error, "finish the script").title}. Click to run it again.`} onClick={(event) => void write(event)} className={cx(CHIP, "cursor-pointer text-warning transition-colors hover:bg-hover disabled:opacity-60")}>
             <RotateCw size={12} />
             {starting ? "Starting…" : "Run failed"}
           </button>
@@ -1883,27 +1875,6 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
             </Button>
           </div>
         </form>
-      </Modal>
-      <Modal open={why} onClose={() => setWhy(false)} width={460}>
-        <div className="p-6">
-          <h2 className="text-[18px] font-semibold tracking-[-0.3px]">Claude's last run stopped</h2>
-          <p className="mt-1 text-[13px] text-muted">{failed ? ago(failed.at) : ""}</p>
-          <pre className="mt-3 max-h-60 overflow-auto rounded-md bg-raised p-3 text-[12px] leading-relaxed whitespace-pre-wrap text-secondary">{failed?.error}</pre>
-          <div className="mt-[22px] flex justify-end gap-2">
-            <Button variant="subtle" onClick={() => setWhy(false)}>
-              Close
-            </Button>
-            <Button
-              variant="light"
-              onClick={() => {
-                setWhy(false);
-                void write();
-              }}
-            >
-              Run again
-            </Button>
-          </div>
-        </div>
       </Modal>
       <ConfirmDialog
         open={deleting}
@@ -2052,7 +2023,13 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   const ticked = useRef(new Map<string, boolean>());
   const [preview, setPreview] = useState<{ url: string; result?: Preview; error?: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  /**
+   * The project already made, whose first message didn't go: trying again
+   * sends only that (never a second project), then does what was left
+   * (`open` it, or say its import is under way).
+   */
+  const [made, setMade] = useState<{ project: string; message: string; then: "open" | "importing" } | null>(null);
   const toast = useEditor((state) => state.toast);
 
   const input = text.trim();
@@ -2094,6 +2071,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     ticked.current.clear();
     setPreview(null);
     setError(null);
+    setMade(null);
     setPicked(start !== null);
     setChannelKey(null);
     setCompilation(null);
@@ -2244,12 +2222,31 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         : sources !== null && !reading && footage.length > 0 && !blocked
       : input === "" || (preview?.result !== undefined && (editDoc || links.length > 0))));
 
+  /** The project's first message, then what's left: opened, or its import said to be under way. */
+  const begin = async (project: string, message: string, then: "open" | "importing") => {
+    try {
+      await api.firstPrompt(project, message);
+    } catch (refused) {
+      setMade({ project, message, then });
+      throw refused;
+    }
+    setMade(null);
+    onClose();
+    if (then === "open") navigate(`/p/${project}`);
+    else toast(`“${title.trim()}”: importing its footage, then editing`, "info");
+  };
+
   const create = async () => {
-    if (!ready || busy) return;
+    if (busy || (!ready && made === null)) return;
     setBusy(true);
     setError(null);
     const extra = prompt.trim();
     try {
+      if (made !== null) {
+        // Made already: only its first message again, never a second project.
+        await begin(made.project, made.message, made.then);
+        return;
+      }
       if (listed && pickedScript !== null) {
         // Already edited: its edit, rather than a second one.
         if (pickedScript.project !== null) {
@@ -2259,9 +2256,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         }
         const { project } = await api.importWriter(pickedScript.id, channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}) } : {});
         // The edit workflow starts once its footage is in, as a pasted Doc's does.
-        await api.firstPrompt(project, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`);
-        onClose();
-        navigate(`/p/${project}`);
+        await begin(project, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`, "open");
         return;
       }
       if (writing) {
@@ -2293,9 +2288,11 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
       });
       if (input === "") {
         // A blank project: the first message, if there is one, goes to its agent at once (a V2 edit's footage comes in the chat).
-        if (extra !== "") await api.firstPrompt(project.id, extra);
-        onClose();
-        navigate(`/p/${project.id}`);
+        if (extra !== "") await begin(project.id, extra, "open");
+        else {
+          onClose();
+          navigate(`/p/${project.id}`);
+        }
         return;
       }
       try {
@@ -2306,11 +2303,9 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         throw refused;
       }
       // The edit workflow starts once the import is in, with what was added to it.
-      await api.firstPrompt(project.id, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`);
-      onClose();
-      toast(`“${title.trim()}”: importing its footage, then editing`, "info");
+      await begin(project.id, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`, "importing");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(cause ?? new Error("Can't reach Edit's server"));
     } finally {
       setBusy(false);
     }
@@ -2357,7 +2352,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   };
   // Compilation is a channel's edit's, set as the channel has it unless changed here.
   const compiles = !writing && channel !== null;
-  const action = busy ? "Starting…" : writing ? "Write the script" : listed ? (pickedScript?.project ? "Open its edit" : "Start the edit") : input === "" ? "Create" : "Start the edit";
+  const action = busy ? "Starting…" : made !== null ? "Try again" : writing ? "Write the script" : listed ? (pickedScript?.project ? "Open its edit" : "Start the edit") : input === "" ? "Create" : "Start the edit";
 
   const footageList = writing && !commentary && (reading || sources !== null) && (
     <div className="mt-2 max-h-[220px] divide-y divide-line overflow-y-auto rounded-lg border border-line">
@@ -2442,13 +2437,13 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
       open={open}
       onClose={onClose}
       onSubmit={() => void create()}
-      ready={ready && !busy}
+      ready={(ready || made !== null) && !busy}
       busy={busy}
       action={action}
       error={
         <>
-          {error && <p className="pt-3 text-[12px] text-danger">{error}</p>}
-          {!error && blocked && !reading && <p className="pt-3 text-[12px] text-muted">Take out the video that can’t be imported, or tick it as a reuse.</p>}
+          {error !== null && <ProblemView error={error} doing={made !== null ? "start the agent on the new project" : writing ? "start the script" : "make the project"} className="pt-3" />}
+          {error === null && blocked && !reading && <p className="pt-3 text-[12px] text-muted">Take out the video that can’t be imported, or tick it as a reuse.</p>}
         </>
       }
       aside={

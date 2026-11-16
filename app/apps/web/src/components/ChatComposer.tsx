@@ -17,7 +17,7 @@ import { create } from "zustand";
 
 import { inlineQuote, parseQuoted, quoteLabel, quotedMessage, removeQuote, restoreQuote, takeQuotes, useQuotesOf, type ChatQuote } from "../lib/chatQuotes";
 import { CHIP, MARK } from "./Quotes";
-import { attachFiles, detachFile, takeFiles, uploading, useFilesOf, type Accept, type ChatFile, type FileKind, type Uploader } from "../lib/chatFiles";
+import { attachFiles, detachFile, restoreFiles, takeFiles, uploading, useFilesOf, type Accept, type ChatFile, type FileKind, type Uploader } from "../lib/chatFiles";
 import { useSettled } from "../lib/settled";
 import { formatBytes } from "../lib/time";
 import { useEditor } from "../lib/store";
@@ -32,9 +32,14 @@ const EDGE = "border-[#1c1c1c]";
 interface Queued {
   id: number;
   text: string;
+  /** The words alone, as typed: what goes back in the box if it can't be sent. */
+  words: string;
   files: ChatFile[];
   quotes: ChatQuote[];
 }
+
+/** What a chat's send answers: false (or a failure) when the message didn't go, and the composer gets it back. */
+export type SendResult = void | boolean | Promise<void | boolean>;
 
 /** Messages waiting for the turn to end, per chat. */
 const useQueue = create<{ chats: Record<string, Queued[]> }>(() => ({ chats: {} }));
@@ -142,8 +147,12 @@ export function ChatComposer({
   /** This chat has the model menu: whether its next turn is a revision (the model's the person's pick) or a build (always Opus). Without it, `modelName` alone (thumbnails). */
   revising?: boolean;
   placeholder: string;
-  /** The words (the quotes in front of them), the files that made it in, and the quotes. */
-  onSend: (message: string, files: ChatFile[], quotes: ChatQuote[]) => void;
+  /**
+   * The words (the quotes in front of them), the files that made it in, and
+   * the quotes. Answering false (or failing) puts them back in the composer,
+   * so nothing typed is lost to a send that didn't go (the server down).
+   */
+  onSend: (message: string, files: ChatFile[], quotes: ChatQuote[]) => SendResult;
   onStop: () => void;
   /** Where an unsent message is kept (localStorage), if anywhere. */
   draft?: string;
@@ -188,6 +197,39 @@ export function ChatComposer({
   const armed = useFileDrag(files !== undefined);
   const [over, setOver] = useState(false);
   const toast = useEditor((state) => state.toast);
+  // A message that didn't go: its words back in the box (ahead of anything typed since), its files and quotes back on it.
+  // Gone from the screen meanwhile (another project), the words wait in the draft it opens with.
+  const live = useRef({ chat, draft, text, setText, mounted: true });
+  live.current = { chat, draft, text, setText, mounted: true };
+  useEffect(() => {
+    live.current.mounted = true;
+    return () => {
+      live.current.mounted = false;
+    };
+  }, []);
+  const putBack = (sentFrom: { chat: string; draft: string | undefined }, words: string, given: ChatFile[], said: ChatQuote[]) => {
+    restoreFiles(sentFrom.chat, given);
+    for (const quote of said) restoreQuote(sentFrom.chat, quote);
+    if (words === "") return;
+    const now = live.current;
+    if (now.mounted && now.chat === sentFrom.chat) {
+      now.setText(now.text.trim() === "" ? words : `${words}\n${now.text}`);
+    } else if (sentFrom.draft !== undefined) {
+      const kept = localStorage.getItem(sentFrom.draft) ?? "";
+      localStorage.setItem(sentFrom.draft, kept.trim() === "" ? words : `${words}\n${kept}`);
+    }
+  };
+  const settle = (result: SendResult, words: string, given: ChatFile[], said: ChatQuote[]) => {
+    const from = { chat, draft };
+    if (result === false) putBack(from, words, given, said);
+    else if (result instanceof Promise)
+      result.then(
+        (ok) => ok === false && putBack(from, words, given, said),
+        () => putBack(from, words, given, said),
+      );
+  };
+  const settleNow = useRef(settle);
+  settleNow.current = settle;
   useEffect(() => {
     if (draft === undefined) return;
     // The words alone: a chip's quote lives in the chat's quotes, not the draft.
@@ -264,7 +306,7 @@ export function ChatComposer({
       if (first === undefined) return;
       nextAt.current = Date.now() + AFTER_SEND_MS;
       useQueue.setState(({ chats }) => ({ chats: { ...chats, [chat]: (chats[chat] ?? []).filter((one) => one.id !== first.id) } }));
-      sendNow.current(first.text, first.files, first.quotes);
+      settleNow.current(sendNow.current(first.text, first.files, first.quotes), first.words, first.files, first.quotes);
     }, Math.max(0, nextAt.current - Date.now()));
     return () => clearTimeout(timer);
   }, [running, queue, disabled, chat]);
@@ -282,6 +324,7 @@ export function ChatComposer({
     // The words with each quote where it was put (a quote whose chip is gone from the box goes in front, as before).
     const box = input.current;
     const placed = box === null ? "" : read(box, quotes, true).trim();
+    const typed = box === null ? "" : read(box, quotes).trim();
     const loose = quotes.filter((one) => box === null || box.querySelector(`[data-quote-id="${one.id}"]`) === null);
     const given = takeFiles(chat);
     const said = takeQuotes(chat);
@@ -293,10 +336,10 @@ export function ChatComposer({
     setEmpty(true);
     setText("");
     if (!hq && (running || queue.length > 0)) {
-      useQueue.setState(({ chats }) => ({ chats: { ...chats, [chat]: [...(chats[chat] ?? []), { id: ++queuedId, text: sent, files: given, quotes: said }] } }));
+      useQueue.setState(({ chats }) => ({ chats: { ...chats, [chat]: [...(chats[chat] ?? []), { id: ++queuedId, text: sent, words: typed, files: given, quotes: said }] } }));
       return;
     }
-    onSend(sent, given, said);
+    settle(onSend(sent, given, said), typed, given, said);
   };
   const copyOut = (event: ClipboardEvent<HTMLDivElement>, cut: boolean) => {
     const selection = window.getSelection();

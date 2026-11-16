@@ -388,6 +388,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   load: (rev, project) => {
     editorSession++;
     clearTimeout(saveTimer);
+    forgetUnsavedRun();
     server = { rev, project };
     synced = project;
     set({ project, rev, past: [], future: [], gestureBase: null, selection: [], dirty: false, saving: false, exportState: null, driveState: null, media: {}, scriptJob: null, resetAsked: false, playback: null });
@@ -396,6 +397,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   close: () => {
     editorSession++;
     clearTimeout(saveTimer);
+    forgetUnsavedRun();
     server = null;
     synced = null;
     set({ project: null, rev: 0, past: [], future: [], gestureBase: null, dirty: false, saving: false, selection: [], media: {}, cloud: null, playback: null });
@@ -524,6 +526,22 @@ export const useEditor = create<EditorState>((set, get) => ({
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let inFlight: Promise<void> | null = null;
 
+/**
+ * Saves failing in a row: since when, how many, and whether that was said.
+ * The server down (a restart, sleep) is never a toast a second: the edits
+ * are kept on this browser, tried again less and less often (up to every
+ * 30 s), at once when the connection's back, and said once if still not
+ * saved after a minute.
+ */
+const unsavedFor = { since: null as number | null, count: 0, said: false };
+const UNSAVED_SAY_MS = 60_000;
+function forgetUnsavedRun(): void {
+  Object.assign(unsavedFor, { since: null, count: 0, said: false });
+}
+const retryIn = () => (unsavedFor.count === 0 ? 1000 : Math.min(30_000, 1000 * 2 ** (unsavedFor.count - 1)));
+/** No answer, or the server restarting: nothing a person can do but wait. */
+const unreachable = (error: unknown) => useConnection.getState().down || !(error instanceof ApiError) || error.status === 502 || error.status === 503 || error.status === 504;
+
 function scheduleSave(delay = 250) {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(flush, delay);
@@ -542,7 +560,7 @@ async function flush() {
   inFlight = task;
   try { await task; } finally {
     inFlight = null;
-    if (useEditor.getState().dirty) scheduleSave(1000);
+    if (useEditor.getState().dirty) scheduleSave(retryIn());
   }
 }
 
@@ -563,8 +581,11 @@ async function saveProject(state: EditorState) {
     const dirty = current.project !== project;
     useEditor.setState({ rev: Math.max(rev, current.rev), dirty });
     if (!dirty && keptHere.delete(project.id)) void forgetUnsaved(project.id);
+    forgetUnsavedRun();
   } catch (error) {
     if (session !== editorSession) return;
+    unsavedFor.since ??= Date.now();
+    unsavedFor.count += 1;
     if (error instanceof ApiError && error.status === 409) {
       // Changed elsewhere meanwhile: the edits on screen go on top of the latest version.
       const body = error.body as { rev: number; project: Project };
@@ -606,9 +627,16 @@ async function saveProject(state: EditorState) {
         // Offline: keep what's on screen; the next save retries.
       }
     } else {
-      // Offline or the server down: kept on this browser until a save lands.
+      // Offline or the server down: kept on this browser until a save lands, said once (not each try).
       void keepLocally();
-      useEditor.getState().toastError(error, "save");
+      const said = unsavedFor.said;
+      if (!unreachable(error)) {
+        unsavedFor.said = true;
+        if (!said) useEditor.getState().toastError(error, "save");
+      } else if (!said && Date.now() - unsavedFor.since >= UNSAVED_SAY_MS) {
+        unsavedFor.said = true;
+        useEditor.getState().toast("Your latest changes aren't saved yet. They're kept on this computer and save by themselves once Edit is back.", "error");
+      }
     }
   } finally {
     if (session === editorSession) useEditor.setState({ saving: false });
@@ -751,6 +779,8 @@ export function connectEvents() {
     heardAt = Date.now();
     clearTimeout(downTimer);
     useConnection.setState({ down: false });
+    // Back: what couldn't be saved goes now, not at the end of its wait.
+    if (useEditor.getState().dirty) scheduleSave(0);
     if (dropped) catchUp();
     dropped = false;
     // A new connection hasn't heard where this page is (lib/notices.ts).
