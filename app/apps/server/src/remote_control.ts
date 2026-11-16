@@ -26,6 +26,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 import type { App } from "./app.ts";
+import { FROM_AFAR } from "./dev_projects.ts";
 import * as diag from "./diag.ts";
 import { json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
@@ -149,7 +150,8 @@ export async function run(app: App, payload: string, by: string): Promise<string
       if (method !== "GET") tell(app, who, `${who} changed something in Edit (${method} ${request.path.split("?")[0]})`);
       const answer = await fetch(`http://127.0.0.1:${app.port}${request.path}`, {
         method,
-        headers: request.body === undefined ? {} : { "content-type": "application/json" },
+        // From afar: what's made is the person's here, not a test project (dev_projects.ts).
+        headers: { [FROM_AFAR]: "1", ...(request.body === undefined ? {} : { "content-type": "application/json" }) },
         ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
         signal: AbortSignal.timeout(120_000),
       });

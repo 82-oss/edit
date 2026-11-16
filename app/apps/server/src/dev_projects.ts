@@ -9,6 +9,11 @@
 // project only the cloud has too (it's brought here first), so a test project
 // made on another machine or server is marked and shown the same way.
 //
+// One made through remote control (remote_control.ts's `call`, which sends
+// FROM_AFAR) is made on a person's Mac for them, so it's theirs: shown like
+// one from Home's New project (Nov 16: one made on Sphe's M4 came out hidden
+// until …/show). An admin's test there says so with `person: false`.
+//
 //   POST /api/projects/{id}/show      {ok}: a test project brought forth
 //   POST /api/projects/{id}/hide      {ok}: hidden again with the rest
 //   POST /api/projects/{id}/promote   {ok}: the mark cleared, a real project
@@ -20,6 +25,17 @@ import * as diag from "./diag.ts";
 import { ApiError, json } from "./http/errors.ts";
 import type { RouteContext, Router } from "./http/router.ts";
 import * as seams from "./seams.ts";
+
+/** The header remote control's calls carry: made from afar, for the person at that Mac. */
+export const FROM_AFAR = "x-edit-from-afar";
+
+/**
+ * Whether a new project is a person's (not a test project): `person` when the
+ * request says (Home's New project sends true), else whether it came from afar.
+ */
+export function madeForPerson(request: Request, person: boolean | null): boolean {
+  return person ?? request.headers.has(FROM_AFAR);
+}
 
 /** `id` here, brought from the cloud when only the cloud has it (why it couldn't be, a 409); 404 when neither has it. */
 async function here(app: App, id: string): Promise<void> {

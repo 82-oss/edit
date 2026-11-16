@@ -503,7 +503,7 @@ async function createChannelProject(context: Context, given: Record<string, unkn
   // A channel given (or added) since this token was issued: a fresh one first, and a plain refusal before anything is made.
   if (!(await channels.tokenCarries([channel.key], context.app.store.home))) throw new ApiError(403, `${channel.title} isn't given to your account yet: ask an admin to give it to you on accounts.spheceo.com.`);
   const compilation = field<boolean>(given, "compilation", "boolean");
-  const person = field<boolean>(given, "person", "boolean") === true;
+  const person = devProjects.madeForPerson(context.request, field<boolean>(given, "person", "boolean"));
   let live;
   try {
     live = context.app.store.createAs(name, style, settings, true, !person);
@@ -554,8 +554,8 @@ async function createProject(context: Context): Promise<Response> {
   try {
     // A test project unless a person started it from Home (`person`): what a coding agent, a script or a trial makes
     // is hidden on Home (Sphe, Nov 14: "projects created by me should by default just be at the forefront, but all
-    // projects created by you should be test projects").
-    const person = field<boolean>(given, "person", "boolean") === true;
+    // projects created by you should be test projects"). One made through remote control is the person's at that Mac.
+    const person = devProjects.madeForPerson(context.request, field<boolean>(given, "person", "boolean"));
     live = context.app.store.createAs(name, style as Style, settings, hq, !person);
   } catch (error) {
     throw bad(diag.messageOf(error));

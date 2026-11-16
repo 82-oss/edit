@@ -5,6 +5,7 @@
 
 import { expect, test } from "bun:test";
 
+import { FROM_AFAR } from "../src/dev_projects.ts";
 import type { Project } from "../src/model.ts";
 import { respond } from "../src/http/server.ts";
 import { buildRouter } from "../src/routes.ts";
@@ -33,6 +34,20 @@ test("a project made through the API is a test project; one a person starts from
     expect(listed.get(trial)?.dev).toBe(true);
     expect(listed.get(trial)?.shown).toBeUndefined();
     expect(listed.get(real)?.dev).toBeUndefined();
+  } finally {
+    cleanup();
+  }
+});
+
+test("a project made through remote control is the person's at that Mac; an admin's test there says so", async () => {
+  const { app, store, cleanup } = fixtureHome("dev-afar");
+  try {
+    const from = (body: unknown) =>
+      respond(app, buildRouter(), new Request("http://localhost:7700/api/projects", { method: "POST", headers: { host: "localhost:7700", "content-type": "application/json", [FROM_AFAR]: "1" }, body: JSON.stringify(body) }), null);
+    const theirs = (await (await from({ name: "For Sphe", ...settings }))!.json()) as { project: Project };
+    const test = (await (await from({ name: "Repro", ...settings, person: false }))!.json()) as { project: Project };
+    expect(store.get(theirs.project.id)?.project.origin).toBeUndefined();
+    expect(store.get(test.project.id)?.project.origin).toBe("dev");
   } finally {
     cleanup();
   }
