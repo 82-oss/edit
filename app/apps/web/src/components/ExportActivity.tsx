@@ -70,14 +70,14 @@ function Finished({ job }: { job: Activity }) {
 }
 
 /** One face. The red sits behind it, so a word is never half one colour and half another. */
-function QueueFace({ subtitle, percent, attention }: { subtitle: string; percent: number | null; attention: boolean }) {
+function QueueFace({ subtitle, percent, attention, seen }: { subtitle: string; percent: number | null; attention: boolean; seen: boolean }) {
   return (
     <span className="relative z-10 flex w-full min-w-0 flex-col px-3 py-[7px]">
-      <span className={cx("flex w-full items-center gap-2 text-[13px] font-medium", attention ? "text-secondary" : "text-white")}>
+      <span className={cx("flex w-full items-center gap-2 text-[13px] font-medium", attention || seen ? "text-secondary" : "text-white")}>
         <span className="min-w-0 flex-1 truncate">Exports</span>
         {percent !== null && <span className="tabular">{percent}%</span>}
       </span>
-      <span className={cx("mt-0.5 block truncate text-[11.5px]", attention ? "text-danger" : "text-white/75")}>{subtitle}</span>
+      <span className={cx("mt-0.5 block truncate text-[11.5px]", attention ? "text-danger" : seen ? "text-muted" : "text-white/75")}>{subtitle}</span>
     </span>
   );
 }
@@ -88,9 +88,21 @@ function QueueFace({ subtitle, percent, attention }: { subtitle: string; percent
  * the share button's red fills it left to right with the overall progress.
  * Clicking opens the queue. Hidden while nothing is running or left undismissed.
  */
+/** Finished exports already looked at in the queue, by job and its last change: this viewer's, kept across reloads. */
+const SEEN_KEY = "edit:exports-seen";
+function readSeen(): Record<string, number> {
+  try {
+    const kept = JSON.parse(localStorage.getItem(SEEN_KEY) ?? "{}") as unknown;
+    return kept !== null && typeof kept === "object" ? (kept as Record<string, number>) : {};
+  } catch {
+    return {};
+  }
+}
+
 export function ExportActivity() {
   const [jobs, setJobs] = useState<Activity[]>([]);
   const [open, setOpen] = useState(false);
+  const [seen, setSeen] = useState<Record<string, number>>(readSeen);
   const [hidden, setHidden] = useState<Record<string, number>>({});
   const [stopping, setStopping] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
@@ -148,12 +160,24 @@ export function ExportActivity() {
   };
   if (!visible.length) return null;
   const face = cardFace(visible);
+  // Looked at in the queue and nothing new since: grey, not red, until another export starts or ends (Sphe, Nov 16).
+  const allSeen = visible.every((job) => !exportActive(job) && seen[jobKey(job)] === job.updated_ms);
+  const look = () => {
+    setOpen(true);
+    const next = Object.fromEntries(visible.filter((job) => !exportActive(job)).map((job) => [jobKey(job), job.updated_ms]));
+    setSeen(next);
+    try {
+      localStorage.setItem(SEEN_KEY, JSON.stringify(next));
+    } catch {
+      /* Seen for this page only. */
+    }
+  };
   const dismiss = (job: Activity) => setHidden((previous) => ({ ...previous, [jobKey(job)]: job.updated_ms }));
   return (
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={look}
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={face.percent === null ? `Exports, ${face.title}` : `Exports, ${face.title}, ${face.percent}%`}
@@ -161,9 +185,9 @@ export function ExportActivity() {
         className="relative mb-1 w-full min-w-0 overflow-hidden rounded-xl border border-line bg-panel text-left transition-colors hover:bg-hover"
       >
         {face.percent !== null && face.percent > 0 && (
-          <span aria-hidden className="pointer-events-none absolute inset-y-0 left-0 bg-primary transition-[width] duration-300 ease-out" style={{ width: `${face.percent}%` }} />
+          <span aria-hidden className={cx("pointer-events-none absolute inset-y-0 left-0 transition-[width,background-color] duration-300 ease-out", allSeen ? "bg-active" : "bg-primary")} style={{ width: `${face.percent}%` }} />
         )}
-        <QueueFace subtitle={face.subtitle} percent={face.percent} attention={face.attention} />
+        <QueueFace subtitle={face.subtitle} percent={face.percent} attention={face.attention} seen={allSeen} />
       </button>
       <Modal open={open} onClose={() => setOpen(false)} width={500}>
         <div className="px-6 pt-6">
