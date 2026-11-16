@@ -61,15 +61,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      # The debug addon every part but the Rust runs on, kept by a hash of the
+      # Rust it's built from (a minute and more on each part, every run: the
+      # workspace's own crates are never in rust-cache's cache), built when
+      # that changed. Its index.d.ts is in the key, so a hit is a build whose
+      # check of it passed.
+      - id: addon
+        if: matrix.part != 'rust'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
-          targets: ${{ matrix.target }}, wasm32-unknown-unknown
-          components: rustfmt, clippy
-      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          workspaces: app
-          # Two caches: the Rust tests and clippy's, and the debug addon's (every other part builds that).
-          key: ${{ matrix.part == 'rust' && 'rust' || 'app' }}
+          path: app/crates/edit-native/edit-native.node
+          key: addon-debug-${{ matrix.target }}-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**') }}
       # The web typecheck needs the WASM preview engine (gitignored, built
       # from Rust): engine-cache.yml's copy when there is one, else built.
       - id: wasm
@@ -78,6 +80,23 @@ jobs:
         with:
           path: app/apps/web/src/engine/pkg
           key: wasm-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/scripts/build-wasm.sh') }}
+      # Rust only where something is compiled: the Rust part, the TypeScript's
+      # generated types (`just types`), or an addon or WASM engine the caches
+      # above didn't have. A server-tests or acceptance part on a warm cache
+      # compiles nothing (Nov 16: 20-25 s of each went on setting Rust up).
+      - id: rust
+        run: echo "needed=${{ matrix.part == 'rust' || matrix.part == 'ts' || steps.addon.outputs.cache-hit != 'true' || (matrix.part == 'acceptance' && steps.wasm.outputs.cache-hit != 'true') }}" >> "$GITHUB_OUTPUT"
+      - if: steps.rust.outputs.needed == 'true'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ matrix.target }}, wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - if: steps.rust.outputs.needed == 'true'
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: app
+          # Two caches: the Rust tests and clippy's, and the debug addon's (every other part builds that).
+          key: ${{ matrix.part == 'rust' && 'rust' || 'app' }}
       - if: (matrix.part == 'acceptance' || matrix.part == 'ts') && steps.wasm.outputs.cache-hit != 'true'
         run: scripts/build-wasm.sh
       # Pinned, as in release.yml: what Edit is built and checked with.
@@ -102,17 +121,6 @@ jobs:
       - name: Dependencies
         if: matrix.part != 'rust'
         run: bun install --frozen-lockfile
-      # The debug addon every part but the Rust runs on, kept by a hash of the
-      # Rust it's built from (a minute and more on each part, every run: the
-      # workspace's own crates are never in rust-cache's cache), built when
-      # that changed. Its index.d.ts is in the key, so a hit is a build whose
-      # check of it passed.
-      - id: addon
-        if: matrix.part != 'rust'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: app/crates/edit-native/edit-native.node
-          key: addon-debug-${{ matrix.target }}-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**') }}
       - name: The addon
         if: matrix.part != 'rust' && steps.addon.outputs.cache-hit != 'true'
         run: just native debug
