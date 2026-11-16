@@ -327,7 +327,7 @@ jobs:
           path: |
             app/speech
             ~/Library/Caches/edit/dmgbuild
-          key: mac-tools-${{ matrix.target }}-${{ steps.image.outputs.version }}-${{ hashFiles('app/scripts/edit-speech.swift', 'app/scripts/build-speech.sh', 'app/scripts/make-dmg.sh') }}
+          key: mac-tools-${{ matrix.target }}-${{ steps.image.outputs.version }}-${{ hashFiles('app/scripts/edit-speech.swift', 'app/scripts/build-speech.sh', 'app/scripts/make-dmg.sh', 'app/scripts/dmg/background.swift') }}
       - name: Package
         run: |
           set -euo pipefail
@@ -356,13 +356,6 @@ jobs:
             app/ffmpeg
             app/quickjs
           key: ${{ steps.tools-cache.outputs.cache-primary-key }}
-      - if: runner.os == 'macOS' && steps.mac-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: |
-            app/speech
-            ~/Library/Caches/edit/dmgbuild
-          key: ${{ steps.mac-cache.outputs.cache-primary-key }}
       # The archive `edit` updates from outside Edit.app (install.sh, update.ts): on a Mac, made while Edit.app is
       # packaged and signed beside it (14 s of gzip), from package/ as it is.
       - name: The archive, and Edit.app with its disk image
@@ -382,6 +375,14 @@ jobs:
           # signed with the Developer ID and notarised when these secrets are set, ad hoc until then.
           if [ "${{ runner.os }}" = macOS ]; then scripts/package-app.sh "${{ matrix.target }}" package dist; fi
           wait "$archive"
+      # After the disk image, whose background is drawn into that folder once; kept even when the notary refuses.
+      - if: always() && runner.os == 'macOS' && steps.mac-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            app/speech
+            ~/Library/Caches/edit/dmgbuild
+          key: ${{ steps.mac-cache.outputs.cache-primary-key }}
       # Handed to the upload job: this job's token can't write the release.
       - name: Keep for the release
         if: env.RELEASE == 'true'

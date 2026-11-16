@@ -18,11 +18,16 @@ fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-swift "$here/dmg/background.swift" "$work" >/dev/null
-tiffutil -cathidpicheck "$work/background.png" "$work/background@2x.png" -out "$work/background.tiff" 2>/dev/null
+# Drawn once for each version of background.swift, kept beside dmgbuild (the release's build keeps that folder).
+background="$venv/background-$(shasum -a 256 "$here/dmg/background.swift" | cut -c1-16).tiff"
+if [[ ! -f "$background" ]]; then
+  swift "$here/dmg/background.swift" "$work" >/dev/null
+  tiffutil -cathidpicheck "$work/background.png" "$work/background@2x.png" -out "$work/background.tiff" 2>/dev/null
+  mv "$work/background.tiff" "$background"
+fi
 
 rm -f "$out"
 "$venv/bin/dmgbuild" -s "$here/dmg/settings.py" \
-  -D app="$app" -D background="$work/background.tiff" -D icon="$app/Contents/Resources/icon.icns" \
+  -D app="$app" -D background="$background" -D icon="$app/Contents/Resources/icon.icns" \
   "Edit" "$out" >/dev/null
 echo "==> $out ($(du -h "$out" | cut -f1))"
