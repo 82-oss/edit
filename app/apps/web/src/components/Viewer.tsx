@@ -39,6 +39,7 @@ Object.assign(((window as unknown as { __edit?: Record<string, unknown> }).__edi
 const useFrame = () => useSyncExternalStore(playhead.subscribe, () => Math.floor(playhead.frame));
 const usePlaying = () => useSyncExternalStore(playhead.subscribe, () => playhead.playing);
 const useSpeed = () => useSyncExternalStore(preview.onStatus, () => preview.speed);
+const useStopped = () => useSyncExternalStore(preview.onStatus, () => preview.stopped);
 const useFullscreen = () => useSyncExternalStore(
   (listener) => {
     document.addEventListener("fullscreenchange", listener);
@@ -295,6 +296,7 @@ export function Viewer() {
 
   // Full screen's controls go when the mouse rests; HQ's only while it plays, and when the mouse leaves the picture.
   const hidden = fullscreen ? idle : hq && idle && playing;
+  const stopped = useStopped();
   return (
     // A frame round the viewer, for Edit V2's working light: the thumbnail page's own glow and ring, round its edge and outside it, where nothing clips them.
     <div className="relative isolate flex min-h-0 min-w-0 flex-1 rounded-xl">
@@ -345,6 +347,12 @@ export function Viewer() {
           {!hq && !shownError && framed && (buffering || retrying) && (
             <div role="status" className="pointer-events-none absolute bottom-3 right-3 flex items-center gap-2 rounded-md bg-black/70 px-2.5 py-1.5 text-[11px] text-muted">
               <Pulse size={12} /> Loading frame…
+            </div>
+          )}
+          {/* A play that stopped by itself: why, in one line, until the next play or jump. */}
+          {stopped !== null && !shownError && (
+            <div role="status" className={cx("pointer-events-none absolute inset-x-0 flex justify-center px-4", hq || fullscreen ? "bottom-20" : "bottom-3")}>
+              <motion.span initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.18, ease: "easeOut" }} className="rounded-md bg-black/75 px-3 py-1.5 text-[12.5px] text-white/90">{stopped}</motion.span>
             </div>
           )}
           {!error && empty && importing !== null && job?.state === "waiting" && project && (
@@ -760,7 +768,7 @@ function VolumeControl({ light }: { light: string }) {
  * tall hit area over a playhead-pink track; click or drag to move through
  * the edit while watching.
  */
-function ScrubBar({ frame, duration, thin = false, marks = [], agent = null }: { frame: number; duration: number; thin?: boolean; marks?: { id: string; n: number; frame: number; text: string }[]; agent?: { frame: number; what: string } | null }) {
+export function ScrubBar({ frame, duration, thin = false, marks = [], agent = null }: { frame: number; duration: number; thin?: boolean; marks?: { id: string; n: number; frame: number; text: string }[]; agent?: { frame: number; what: string } | null }) {
   const trackRef = useRef<HTMLDivElement>(null);
   const fraction = duration > 0 ? Math.min(1, Math.max(0, frame / duration)) : 0;
   const loaded = useBuffered();
@@ -821,10 +829,10 @@ function ScrubBar({ frame, duration, thin = false, marks = [], agent = null }: {
                 <div key={chapter.start} className="absolute inset-y-0" style={{ left: `${(chapter.start / duration) * 100}%`, width: `${((chapter.end - chapter.start) / duration) * 100}%`, background: `rgba(${SECTION_COLORS[chapter.kind]}, 0.45)` }} />
               ),
             )}
-          {/* What's loaded to play on without waiting, light grey under the played part, as on YouTube. */}
+          {/* What's here to play on without waiting (the render's buffer, else the footage here), a quiet grey under the played part, as on YouTube. */}
           {duration > 0 &&
             loaded.map(([from, to]) => (
-              <div key={from} className="absolute inset-y-0 bg-white/35" style={{ left: `${Math.min(1, from / duration) * 100}%`, width: `${Math.max(0, Math.min(1, to / duration) - Math.min(1, from / duration)) * 100}%` }} />
+              <div key={from} data-ready className="absolute inset-y-0 bg-white/30" style={{ left: `${Math.min(1, from / duration) * 100}%`, width: `${Math.max(0, Math.min(1, to / duration) - Math.min(1, from / duration)) * 100}%` }} />
             ))}
           {range !== null && duration > 0 && (
             <div className="absolute inset-y-0 bg-white/70" style={{ left: `${(range.start / duration) * 100}%`, width: `${((range.end - range.start) / duration) * 100}%` }} />
@@ -855,7 +863,8 @@ function ScrubBar({ frame, duration, thin = false, marks = [], agent = null }: {
           [range.start, range.end].map((at) => (
             <div key={at} className="pointer-events-none absolute -top-1 -bottom-1 w-[2px] -translate-x-1/2 rounded-full bg-white" style={{ left: `${(at / duration) * 100}%` }} />
           ))}
-        <div className={cx("absolute top-1/2 z-[3] -translate-x-1/2 -translate-y-1/2 rounded-full bg-playhead opacity-0 transition-opacity group-hover:opacity-100", thin ? "size-3" : "size-3.5")} style={{ left: `${fraction * 100}%` }} />
+        {/* The playhead: a dot of its own size whatever the edit's length, always there (Sphe, Nov 16: at 0:07 of 96 minutes the played part is a sliver), a touch bigger hovered. */}
+        <div data-playhead className={cx("absolute top-1/2 z-[3] -translate-x-1/2 -translate-y-1/2 rounded-full bg-playhead shadow-[0_0_3px_#0006] transition-transform group-hover:scale-125", thin ? "size-[10px]" : "size-3")} style={{ left: `${fraction * 100}%` }} />
         {hover !== null && (
           <ScrubPreview
             at={hover}
