@@ -193,7 +193,7 @@ export interface ScriptJob {
 export type ImportWhy = "passing" | "person" | "quota" | "encoder" | "limit";
 
 export interface ImportAfter {
-  step: "voiceover" | "recording" | "research" | "words";
+  step: "voiceover" | "recording" | "research" | "words" | "reuse";
   state: "running" | "done" | "failed" | "waiting";
   /** What happened, in a line (why it failed, what's still going). */
   note?: string;

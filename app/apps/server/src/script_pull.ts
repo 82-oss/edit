@@ -13,7 +13,7 @@ import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
 import { importMade } from "./import.ts";
 import type { Project, ScriptBlock } from "./model.ts";
-import { mediaOf, REUSE_LABEL, WHOLE_SOURCE_LABEL } from "./project.ts";
+import { mediaOf, reusedLabel, WHOLE_SOURCE_LABEL } from "./project.ts";
 import * as script from "./script.ts";
 import * as seams from "./seams.ts";
 import * as youtube from "./youtube.ts";
@@ -73,8 +73,8 @@ export function pair(was: ScriptBlock[], now: ScriptBlock[]): [number, number][]
   return pairs;
 }
 
-/** A whole video (reused, or a case's footage whole) plays to its end, whatever its times in the Doc: only a range can change. */
-const whole = (block: Footage) => block.label === REUSE_LABEL || block.label === WHOLE_SOURCE_LABEL;
+/** A whole video (reused, or a case's footage whole) plays to its end, and a reused video's case where it was found in it, whatever its times in the Doc: only a range can change. */
+const whole = (block: Footage) => reusedLabel(block.label) || block.label === WHOLE_SOURCE_LABEL;
 
 const rangeChanged = (was: Footage, now: Footage): boolean =>
   !whole(was) && (was.start !== now.start || was.end !== now.end || JSON.stringify(was.words ?? null) !== JSON.stringify(now.words ?? null));

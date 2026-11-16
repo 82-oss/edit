@@ -23,10 +23,11 @@ import * as mediaModule from "./media.ts";
 import { cloudEnabled } from "./relay.ts";
 import type { ClipColor, Media, Project, Script, ScriptBlock, ScriptJob, Style, TextStyle, TrackKind } from "./model.ts";
 import { isEssay, NARRATION } from "./model.ts";
-import { addTrack, clipOf, duration as projectDuration, fps as fpsOf, freeTrack, freshId, insertTime, marksCut, mediaOf, REUSE_LABEL, WHOLE_SOURCE_LABEL, REUSED_SCRIPT_NOTE, reusedScriptBlock } from "./project.ts";
+import { addTrack, clipOf, duration as projectDuration, fps as fpsOf, freeTrack, freshId, insertTime, marksCut, mediaOf, REUSE_LABEL, reuseCaseLabel, reuseCaseOf, reusedLabel, WHOLE_SOURCE_LABEL, REUSED_SCRIPT_NOTE, reusedScriptBlock } from "./project.ts";
 import { fileName, fileStem, extension as pathExtension, join, parent } from "./paths.ts";
 import { byteLength, charCount, display, f32, isAlphanumeric, isWhitespace, parseHex, round, splitWhitespace, takeChars, trim } from "./rust.ts";
 import * as ranged from "./ranged_download.ts";
+import * as reuseCases from "./reuse_cases.ts";
 import * as seams from "./seams.ts";
 import type { DriveHead, Excerpt, Parsed } from "./seams.ts";
 import * as tools from "./tools.ts";
@@ -858,9 +859,76 @@ function chapterTitle(para: Para, text: string): boolean {
 /** The note a chapter title leaves on the narration after it. */
 export const CHAPTER_NOTE = "Chapter title (on screen, not voiced): ";
 
+/** A narration's link to a finished video of ours whose words are "Reuse" ("(Reuse)", "REUSE"). */
+const REUSE_WORD = /^\(?\s*re-?use\s*\)?$/iu;
+/** A comment naming which case of a reused video plays: "Case 1", "case 2", "Case #3". */
+const CASE_COMMENT = /^case\s*(?:#|no\.?|number)?\s*(\d+)\b/iu;
+
+/** A "(Reuse)" link in a paragraph: where it was, what it plays, and the case its comment names (null: the whole video). */
+interface ReuseLink {
+  at: number;
+  url: string;
+  file: string;
+  case: number | null;
+  note: string | null;
+}
+
+/**
+ * Takes a paragraph's "(Reuse)" links out of it (Sphe, Nov 16: the team
+ * writes a reused case as a "Reuse" link in the narration, with a comment
+ * saying which case of that video): the link and its brackets are blanked
+ * (so the offsets of what's left hold) and never voiced, and each "Case N"
+ * comment on the paragraph goes to the reuse link nearest it.
+ */
+function takeReuseLinks(para: Para, comments: Map<string, string>): ReuseLink[] {
+  const found = para.links.filter(([start, end, url]) => REUSE_WORD.test(para.text.slice(start, end).trim()) && footageFile(url) !== null);
+  if (found.length === 0) return [];
+  let text = para.text;
+  const blank = (from: number, to: number) => {
+    text = text.slice(0, from) + " ".repeat(Math.max(0, to - from)) + text.slice(to);
+  };
+  for (const [start, end] of found) {
+    blank(start, end);
+    let before = start - 1;
+    while (before >= 0 && /\s/u.test(text[before]!)) before--;
+    let after = end;
+    while (after < text.length && /\s/u.test(text[after]!)) after++;
+    if (text[before] === "(" && text[after] === ")") {
+      blank(before, before + 1);
+      blank(after, after + 1);
+    }
+  }
+  para.text = text;
+  para.links = para.links.filter((link) => !found.includes(link));
+  const out: ReuseLink[] = found.map(([start, , url]) => ({ at: start, url, file: footageFile(url)!, case: null, note: null }));
+  // Each case comment to its nearest reuse link; a link given two keeps the nearer.
+  const distance = (at: number, [start, end]: [number, number, string]) => (at < start ? start - at : at > end ? at - end : 0);
+  const best = new Map<number, [ref: [number, string], distance: number, number: number, note: string]>();
+  for (const ref of para.refs) {
+    const note = collapse(comments.get(ref[1]) ?? "").split("\n")[0]!.trim();
+    const number = /https?:/u.test(note) ? undefined : CASE_COMMENT.exec(note)?.[1];
+    if (number === undefined) continue;
+    let nearest = 0;
+    found.forEach((link, index) => {
+      if (distance(ref[0], link) < distance(ref[0], found[nearest]!)) nearest = index;
+    });
+    const far = distance(ref[0], found[nearest]!);
+    const held = best.get(nearest);
+    if (held === undefined || far < held[1]) best.set(nearest, [ref, far, Number(number), note]);
+  }
+  for (const [index, [ref, , number, note]] of best) {
+    out[index]!.case = number;
+    out[index]!.note = note;
+    para.refs = para.refs.filter((one) => one !== ref);
+  }
+  return out;
+}
+
 /** Reads a script Doc's HTML export into footage ranges and narration. */
 export function parse(html: string): Parsed {
   const [title, paras, comments] = readHtml(html);
+  // A narration's "(Reuse)" links: never voiced, never a range's file.
+  const reuseLinks = new Map(paras.map((para) => [para, takeReuseLinks(para, comments)]));
   // The Doc's first line says which kind of video it is.
   // Its first line of words (a Doc opening on ranges has none to name it by).
   const heading = paras.find((para) => collapse(para.text) !== "" && findRanges(para.text).length === 0 && /[\p{L}]{3}/u.test(para.text));
@@ -898,6 +966,15 @@ export function parse(html: string): Parsed {
       const file = link === undefined ? null : footageFile(link);
       if (link === undefined || file === null) continue;
       blocks.push({ kind: "footage", url: link, file, start: 0, end: 1, label: REUSE, notes: [note] });
+    }
+  };
+  // A narration's "(Reuse)" link (before `offset` in its paragraph): that
+  // finished video plays after it, whole, or only the case its comment names.
+  const reuseAfter = (para: Para, offset = Number.MAX_SAFE_INTEGER) => {
+    const due = reuseLinks.get(para) ?? [];
+    while (due.length > 0 && due[0]!.at < offset) {
+      const link = due.shift()!;
+      blocks.push({ kind: "footage", url: link.url, file: link.file, start: 0, end: 1, label: link.case === null ? REUSE : reuseCaseLabel(link.case), notes: link.note === null ? [] : [link.note] });
     }
   };
   // "Edit case 2 based on this script here: <Doc>": that case comes next,
@@ -979,6 +1056,8 @@ export function parse(html: string): Parsed {
           docLinks(para.links);
           caseNotes(notes(para.refs, comments));
         }
+        // "(Reuse)" on a line of its own, after the narration it follows.
+        if (started) reuseAfter(para);
         continue;
       }
       const found = notes(para.refs, comments);
@@ -997,6 +1076,7 @@ export function parse(html: string): Parsed {
         const file = posts.fileOf(url)!;
         blocks.push({ kind: "footage", url, file, start: 0, end: 1, label: WHOLE_SOURCE_LABEL, notes: spoken === null ? found : [] });
       }
+      reuseAfter(para);
       reuse(found);
       caseNotes(found);
       docLinks(para.links);
@@ -1023,6 +1103,7 @@ export function parse(html: string): Parsed {
       if (gap !== null && gap !== undefined) {
         narrate(gap, notes(para.refs.filter(([at]) => at >= gapFrom && at < range.start), comments), true);
       }
+      reuseAfter(para, range.start);
       let linked: [string, string] | null = null;
       for (const [start, end, url] of para.links) {
         if (start < range.end && end > range.start) {
@@ -1079,6 +1160,7 @@ export function parse(html: string): Parsed {
       reuse(found);
       caseNotes(found);
     }
+    reuseAfter(para);
     docsBefore(Number.MAX_SAFE_INTEGER);
   }
   // A title or comment after the last line stays with the last block.
@@ -2122,7 +2204,7 @@ export function clock(seconds: number): string {
 /** The ranges (seconds) a project's script plays from one file. */
 function fileRanges(project: Project, file: string): [number, number][] {
   return (project.script?.blocks ?? []).flatMap((block): [number, number][] =>
-    block.kind === "footage" && block.file === file ? [[block.start, block.label === REUSE || block.label === WHOLE_SOURCE_LABEL ? Number.MAX_SAFE_INTEGER : block.end]] : [],
+    block.kind === "footage" && block.file === file ? [[reuseCaseOf(block.label) !== null ? 0 : block.start, reusedLabel(block.label) || block.label === WHOLE_SOURCE_LABEL ? Number.MAX_SAFE_INTEGER : block.end]] : [],
   );
 }
 
@@ -2472,7 +2554,7 @@ function when(ms: number): string {
 function afterLine(after: ScriptJob["after"], step: NonNullable<ScriptJob["after"]>[number]["step"], state: NonNullable<ScriptJob["after"]>[number]["state"], note?: string): NonNullable<ScriptJob["after"]> {
   const out = (after ?? []).filter((one) => one.step !== step);
   out.push(note === undefined ? { step, state } : { step, state, note });
-  const order = ["words", "recording", "voiceover", "research"];
+  const order = ["words", "reuse", "recording", "voiceover", "research"];
   return out.sort((a, b) => order.indexOf(a.step) - order.indexOf(b.step));
 }
 
@@ -2784,8 +2866,8 @@ async function place(app: App, id: string, done: [string, Excerpt[]][], recut: b
         (excerpt) => excerpt.from <= block.start + 1e-6 && block.end <= excerpt.to + 1e-6,
       );
       if (found === undefined) continue;
-      // A reused video plays to its end.
-      if ((block.label === REUSE || block.label === WHOLE_SOURCE_LABEL) && found.from === 0) block.end = found.to;
+      // A reused video plays to its end (a case of it, until it's found in it).
+      if ((reusedLabel(block.label) || block.label === WHOLE_SOURCE_LABEL) && found.from === 0) block.end = found.to;
       const mediaId = byPath.get(found.path);
       if (mediaId === undefined) continue;
       block.media = mediaId;
@@ -2802,6 +2884,14 @@ async function place(app: App, id: string, done: [string, Excerpt[]][], recut: b
   // The plan out of credit: the words decide every cut, so it waits for them (the job table tries again).
   if (said.credit.length > 0) throw new CreditWait(`The transcription plan is out of credit: ${said.credit.length === 1 ? "1 file waits" : `${said.credit.length} files wait`} for ${said.credit.length === 1 ? "its" : "their"} words before the edit is laid out; Edit tries again every ${Math.round(steps.QUOTA_RETRY_MS.value / 60_000)} min.`);
 
+  const cases = await reusedCases(app, live.project);
+  if (cases.size > 0) {
+    const problems = [...cases.values()].flatMap((one) => ("problem" in one ? [one.problem] : []));
+    app.scripts.set(app, id, (job) => {
+      job.after = afterLine(job.after, "reuse", problems.length > 0 ? "failed" : "done", problems.length > 0 ? problems.join(" ") : undefined);
+    });
+  }
+
   app.scripts.set(app, id, (job) => {
     job.state = "placing";
   });
@@ -2809,6 +2899,16 @@ async function place(app: App, id: string, done: [string, Excerpt[]][], recut: b
     const inserting = pendingCase(project);
     const previous = new Set(project.clips.map((clip) => clip.id));
     const blocks = project.script?.blocks ?? [];
+    // A reused video's case plays where it was found in it; not found, the whole video.
+    for (const [index, found] of cases) {
+      const block = blocks[index];
+      if (block === undefined || block.kind !== "footage" || reuseCaseOf(block.label) === null || !isSome(block.media)) continue;
+      if (inserting && placed(project, block)) continue;
+      const media = mediaOf(project, block.media);
+      if (media === undefined) continue;
+      [block.start, block.end] = "span" in found ? found.span : [0, media.duration];
+      delete block.cut;
+    }
     for (const [index, block] of blocks.entries()) {
       if (inserting && placed(project, block)) continue;
       if (block.kind !== "footage" || reusedScriptBlock(block) || !isSome(block.words)) continue;
@@ -3036,6 +3136,41 @@ async function transcripts(app: App, project: Project, within: (block: ScriptBlo
       }
     }
     out.set(item.id, { words: found.words, peaks: found.peaks });
+  }
+  return out;
+}
+
+/**
+ * Where each reused video's case plays (reuse_cases.ts), by block index: its
+ * span of the video, or why it wasn't found. The video's words are heard for
+ * it (captions first, as every transcript); the video was downloaded whole
+ * (`fileRanges`), so its media starts at the file's start.
+ */
+async function reusedCases(app: App, project: Project): Promise<Map<number, Awaited<ReturnType<typeof reuseCases.findCase>>>> {
+  const out = new Map<number, Awaited<ReturnType<typeof reuseCases.findCase>>>();
+  const blocks = project.script?.blocks ?? [];
+  const wanted = new Set(blocks.filter((block) => block.kind === "footage" && reuseCaseOf(block.label) !== null && isSome(block.media) && !(pendingCase(project) && placed(project, block))));
+  if (wanted.size === 0) return out;
+  const heard = await transcripts(app, project, (block) => wanted.has(block), true);
+  for (const [index, block] of blocks.entries()) {
+    if (!wanted.has(block) || block.kind !== "footage") continue;
+    const number = reuseCaseOf(block.label)!;
+    const media = mediaOf(project, block.media!);
+    if (media === undefined) continue;
+    if ((block.media_start ?? 0) !== 0) {
+      out.set(index, { problem: `Case ${number} of “${media.name}” wasn't found: only part of the video was downloaded. The whole of that part plays there; trim it to the case on the timeline.` });
+      continue;
+    }
+    const words = heard.get(media.id);
+    out.set(
+      index,
+      await diag.timeOnAsync("script", "script: a reused video's case", `${block.file} case ${number}`, () =>
+        reuseCases.findCase(
+          { home: app.store.home, file: block.file, name: media.name, words: words?.words ?? null, peaks: words?.peaks ?? null, length: media.duration, shots: (from, to) => reuseCases.shotChanges(media.path, from, to) },
+          number,
+        ),
+      ),
+    );
   }
   return out;
 }
@@ -3291,7 +3426,7 @@ export function summary(parsed: Parsed): {
   for (const block of parsed.blocks) {
     if (block.kind === "footage") {
       footage += 1;
-      if (block.label === REUSE || block.label === WHOLE_SOURCE_LABEL) whole++;
+      if (reusedLabel(block.label) || block.label === WHOLE_SOURCE_LABEL) whole++;
       else seconds += block.end - block.start;
       if (!files.includes(block.file)) files.push(block.file);
     } else {

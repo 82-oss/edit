@@ -8,7 +8,7 @@ import { folderId, videosIn } from "./drive_import.ts";
 import { trelloGet } from "./writer/trello.ts";
 import type { Parsed } from "./seams.ts";
 import type { ScriptBlock } from "./model.ts";
-import { REUSED_SCRIPT_NOTE, WHOLE_SOURCE_LABEL } from "./project.ts";
+import { REUSED_SCRIPT_NOTE, reuseCaseOf, WHOLE_SOURCE_LABEL } from "./project.ts";
 
 export const WHOLE_SOURCE = WHOLE_SOURCE_LABEL;
 export const REUSED_SCRIPT = REUSED_SCRIPT_NOTE;
@@ -154,7 +154,8 @@ export async function lookUpFinished(blocks: ScriptBlock[], find: (url: string) 
       found.set(block.url, video);
     }
     block.file = video.file;
-    block.label = script.REUSE;
+    // A case of it stays that case (found in it once downloaded).
+    if (reuseCaseOf(block.label) === null) block.label = script.REUSE;
     block.start = 0;
     block.end = 1;
     block.notes = [...(block.notes ?? []), `Finished video: ${video.title} (v${video.version}), played as it is`];

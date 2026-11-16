@@ -287,17 +287,26 @@ export function subtitledSpans(project: Project, start: number, end: number): [n
 
 /** The label of a script block that plays a finished video of ours whole (a narration's "Reuse: <link>" note). */
 export const REUSE_LABEL = "Reuse (the whole video)";
+/** The label of a script block that plays one case of a finished video of ours (a narration's "(Reuse)" link with a "Case N" comment), found in it once it's downloaded (reuse_cases.ts). */
+export const reuseCaseLabel = (number: number): string => `Reuse (case ${number})`;
+/** The case a block's label plays of a finished video, or null. */
+export function reuseCaseOf(label: string): number | null {
+  const found = /^Reuse \(case (\d+)\)$/.exec(label);
+  return found === null ? null : Number(found[1]);
+}
+/** Whether a block's label plays a finished video of ours: whole, or one of its cases. */
+export const reusedLabel = (label: string): boolean => label === REUSE_LABEL || reuseCaseOf(label) !== null;
 export const WHOLE_SOURCE_LABEL = "Source (the whole video)";
 export const REUSED_SCRIPT_NOTE = "Reused script (preserve ranges and cut-in words): ";
 export function reusedScriptBlock(block: ScriptBlock): boolean {
   return (block.notes ?? []).some((note) => note.startsWith(REUSED_SCRIPT_NOTE));
 }
 
-/** The media of the finished videos a script reuses whole (their subtitles and mutes are burned in). */
+/** The media of the finished videos a script reuses, whole or a case of them (their subtitles and mutes are burned in). */
 export function reusedMedia(project: Project): Set<string> {
   const out = new Set<string>();
   for (const block of project.script?.blocks ?? []) {
-    if (block.kind === "footage" && block.label === REUSE_LABEL && typeof block.media === "string") out.add(block.media);
+    if (block.kind === "footage" && reusedLabel(block.label) && typeof block.media === "string") out.add(block.media);
   }
   return out;
 }
