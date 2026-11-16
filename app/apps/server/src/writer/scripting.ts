@@ -4,14 +4,17 @@
 // again before saving, so what the producer edited meanwhile stays, and
 // says in the chat what it did or why it couldn't.
 
-import type { Clip, Focus, Kind, Research, Script } from "@edit/types/writer";
+import type { Clip, Focus, Kind, Research, Script, StampedDate } from "@edit/types/writer";
 
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
+import { probe as probeFile } from "../media.ts";
+import { isFile } from "../paths.ts";
 import * as build from "./build.ts";
 import * as casefiles from "./casefiles.ts";
 import * as chat from "./chat.ts";
 import * as house from "./house.ts";
+import * as cloud from "./cloud.ts";
 import * as commentary from "./commentary.ts";
 import { checkClips } from "./edits.ts";
 import * as exact from "./exact.ts";
@@ -26,6 +29,7 @@ import { compile, type Plan } from "./plan.ts";
 import * as research from "./research.ts";
 import * as reuse from "./reuse.ts";
 import { revise } from "./revise.ts";
+import * as stamp from "./stamp.ts";
 import * as store from "./store.ts";
 import { keepPeaks, readPeaks } from "./tidy.ts";
 import * as versions from "./versions.ts";
@@ -47,6 +51,17 @@ export async function peaksOf(dir: string, script: Script, signal?: AbortSignal)
   }
   if (read.length > 0) keepPeaks(dir, read);
   return read;
+}
+
+/** Each recording's date stamp, read off its footage here or the cloud's preview; none when neither is to hand. */
+async function footageStamps(data: string, dir: string, script: Script, signal?: AbortSignal): Promise<StampedDate[]> {
+  const original = script.originalPath !== "" && isFile(script.originalPath);
+  let footage: string | null = original ? script.originalPath : isFile(store.proxyPath(dir)) ? store.proxyPath(dir) : null;
+  if (footage === null) footage = await cloud.previewUrl(data, script.id).catch(() => null);
+  if (footage === null) return [];
+  const size = await probeFile(footage).then((probe) => [probe.width ?? 0, probe.height ?? 0] as [number, number]).catch(() => [0, 0] as [number, number]);
+  if (size[0] === 0 || size[1] === 0) return [];
+  return await stamp.stampsOf(script, footage, size, signal);
 }
 
 /** The research the page lists: the case folder's PDFs first, then what was searched for. */
@@ -130,6 +145,10 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   }
   found = casefiles.withDocuments(dir, found);
   found = await withNoteDocs(note, found, id, script.title);
+  // The day the camera burned into its picture: the case opening's verified date when no report gives one.
+  job.stage("Reading the footage's date");
+  const stamps = await footageStamps(data, dir, script, job.signal);
+  if (stamps.length > 0) found = { ...found, stamps };
   script = await pickReused(dir, script, job);
   // The sound, so pauses with speech the transcript missed are kept.
   const peaks = await peaksOf(dir, script, job.signal);

@@ -243,7 +243,10 @@ export type Article = {
   video?: number;
 };
 
-export type Research = { articles: Article[]; queries: string[]; at: number; problem?: string };
+export type Research = { articles: Article[]; queries: string[]; at: number; problem?: string; stamps?: StampedDate[] };
+
+/** A recording's date as its camera burned it into the picture (writer/stamp.ts): read at each build, never saved. */
+export type StampedDate = { recording: number; date: string; shown: string };
 
 /** A script build. It runs on the Mac; the page only asks how it is going. */
 export type BuildStatus = {
