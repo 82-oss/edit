@@ -9,6 +9,11 @@ process.env.EDIT_RELAY_URL ??= "http://127.0.0.1:9";
 // A busy model is asked again after a pause (cast.ts): none in tests.
 import { busyTiming } from "../src/cast.ts";
 busyTiming.waitMs = 0;
+// CI's Macs are virtual: Chrome on their paravirtual graphics card draws a frame 2.5-3.5x slower than on the CPU
+// (Nov 16: a screenshot 280-330 ms against 130, a full-size JPEG 276 ms against 76; the effects tests ~4 minutes
+// of Check). A team Mac's card is what Edit draws on, so only tests there draw on the CPU.
+import { drawing } from "../src/chrome_devtools.ts";
+if (process.env.CI === "true" && process.platform === "darwin") drawing.gpu = false;
 // Edit asks Claude (ai_claude.ts, watch.ts); in tests the mock server's
 // stand-in model answers instead (mocks/model.ts).
 import { standIn } from "../src/ai_claude.ts";

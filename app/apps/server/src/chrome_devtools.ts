@@ -33,6 +33,9 @@ export interface Opening {
   what: string;
 }
 
+/** Whether `gpu` asks draw on the graphics card at all: tests on CI's virtual Macs turn it off (test/setup.ts). */
+export const drawing = { gpu: true };
+
 /** The Chromes this Edit started and hasn't closed: leaving closes them (an exit handler can't wait on a promise). */
 const started = new Set<ReturnType<typeof Bun.spawn>>();
 process.on("exit", () => {
@@ -85,7 +88,7 @@ export async function open(opening: Opening): Promise<Page> {
   if (binary === null) throw new Error(`${opening.what} needs Google Chrome installed.`);
   sweepOrphans(opening.profile);
   const profile = fs.mkdtempSync(join(os.tmpdir(), opening.profile));
-  const gpu = opening.gpu !== true ? [] : process.platform === "darwin" ? ["--use-angle=metal"] : process.platform === "linux" ? ["--use-angle=vulkan"] : [];
+  const gpu = opening.gpu !== true || !drawing.gpu ? [] : process.platform === "darwin" ? ["--use-angle=metal"] : process.platform === "linux" ? ["--use-angle=vulkan"] : [];
   const child = Bun.spawn(
     [
       binary,
