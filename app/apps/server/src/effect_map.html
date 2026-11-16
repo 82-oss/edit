@@ -22,6 +22,9 @@
   // Edit's own Chrome opens the page by itself; the viewer frames it.
   const driven = window.parent === window;
   const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+  // How long a wait for tiles goes on with none coming before it's given up: as Edit waits on an effect's page (effects.ts
+  // `waits.quietMs`). A test names a shorter one (map.js?stall=ms).
+  const STALL = Number(new URL(document.currentScript?.src ?? location.href).searchParams.get("stall")) || 15000;
 
   // The tiles' links are paths on the relay (/v1/3dtiles/…): brought under the
   // folder, where Edit passes them on with its sign-in. On a loopback name in
@@ -45,12 +48,98 @@
     for (let i = 0; i < path.length; i++) hash = (hash * 31 + path.charCodeAt(i)) | 0;
     return `http://t${Math.abs(hash) % 8}.localhost:${here.port}${path}${url.search}`;
   };
+
+  // How the tiles are coming (Nov 17, Sphe's M4, busy with an import, downloads and censor checks: find() gave its
+  // heights a fixed 15 s and every map date title failed "the map's tiles didn't come in time", while they were still
+  // coming, each level of Google's tree a round trip through Edit and the relay). A wait goes on while any tile's bytes
+  // are arriving, and stops at once on a refusal, saying it (signed out, no key, today's maps used up, a key Google
+  // blocks), never as a timeout.
+  const tiles = { came: 0, waiting: 0, refused: null, failed: null };
+  const isTile = (href) => {
+    try {
+      return new URL(String(href), here).pathname.includes("/v1/3dtiles/");
+    } catch {
+      return false;
+    }
+  };
+  const answered = (status, text) => {
+    tiles.came = Date.now();
+    if (status >= 200 && status < 400) return;
+    const said = refusalOf(status, text);
+    if (said.refused) tiles.refused ??= said.words;
+    else tiles.failed = said.words;
+  };
   const open = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    if (isTile(url) && !this.__editTile) {
+      this.__editTile = true;
+      this.addEventListener("loadstart", () => (tiles.waiting += 1));
+      this.addEventListener("progress", () => (tiles.came = Date.now()));
+      this.addEventListener("error", () => (tiles.failed = "Edit's server didn't answer"));
+      // Heard on load, ahead of Cesium's own onload (set after this), so a refusal is known before Cesium acts on it.
+      this.addEventListener("load", () => answered(this.status, this.status >= 400 ? textOf(this) : ""));
+      this.addEventListener("loadend", () => {
+        tiles.waiting = Math.max(0, tiles.waiting - 1);
+      });
+    }
     return open.call(this, method, tile(url), ...rest);
   };
   const fetched = window.fetch.bind(window);
-  window.fetch = (input, init) => (typeof input === "string" || input instanceof URL ? fetched(tile(input), init) : fetched(input, init));
+  window.fetch = (input, init) => {
+    if (!(typeof input === "string" || input instanceof URL)) return fetched(input, init);
+    const asked = fetched(tile(input), init);
+    if (!isTile(input)) return asked;
+    tiles.waiting += 1;
+    return asked.then(
+      async (answer) => {
+        tiles.waiting = Math.max(0, tiles.waiting - 1);
+        answered(answer.status, answer.ok ? "" : await answer.clone().text().catch(() => ""));
+        return answer;
+      },
+      (error) => {
+        tiles.waiting = Math.max(0, tiles.waiting - 1);
+        if (error?.name !== "AbortError") tiles.failed = "Edit's server didn't answer";
+        throw error;
+      },
+    );
+  };
+
+  /** A failed tile request's body as text, whatever Cesium asked it as. */
+  function textOf(request) {
+    try {
+      if (request.responseType === "" || request.responseType === "text") return request.responseText;
+      if (request.responseType === "json") return JSON.stringify(request.response);
+      if (request.responseType === "arraybuffer" && request.response) return new TextDecoder().decode(request.response);
+    } catch {}
+    return "";
+  }
+
+  /**
+   * What a failed tile answer means, in a line: a refusal (the map can't come until something changes: a sign-in, the
+   * relay's key, today's maps, Google's say on the key) or a failure that may pass (a missing tile, Google or the relay
+   * down a moment, Edit offline), which only says why if the tiles then stop coming.
+   */
+  function refusalOf(status, text) {
+    let said = null;
+    let google = null;
+    try {
+      const value = JSON.parse(text);
+      if (typeof value?.error === "string") said = value.error;
+      else if (typeof value?.error?.message === "string") google = value.error.message;
+      else if (Array.isArray(value) && typeof value[0]?.error?.message === "string") google = value[0].error.message;
+    } catch {}
+    const short = (words) => (words.length > 200 ? `${words.slice(0, 199)}…` : words);
+    // Edit's relay says why in its own words: signed out, no key on it yet, too many at once, today's maps used up.
+    if (said !== null) {
+      if (/could not reach Edit's relay/.test(said)) return { refused: false, words: short(said) };
+      return { refused: status !== 404 && status !== 500 && status !== 502 && status !== 504, words: `the map's tiles were refused: ${short(said)}` };
+    }
+    const from = google === null ? "" : ` (Google: ${short(google)})`;
+    if (status === 401 || status === 403) return { refused: true, words: `Google refused the map's key${from}` };
+    if (status === 429) return { refused: true, words: `Google's map quota is used up for now${from}` };
+    if (status === 400 || status === 410) return { refused: true, words: `Google ended the map's session: look again and a new one starts${from}` };
+    return { refused: false, words: `Google answered ${status}${from}` };
+  }
 
   // The page has no origin, so every picture is another's to it: one Cesium loads as a plain <img> (its sky's, its
   // sun's) taints WebGL and stops the drawing. Asked for openly instead (Edit says a page of no origin may read them).
@@ -155,10 +244,18 @@
     const preview = 0.75;
     widget.resolutionScale = driven ? 1 : preview;
     grade(Cesium, scene, options.tone ?? "natural");
-    const tileset = await Cesium.createGooglePhotorealistic3DTileset(
-      { onlyUsingWithGoogleGeocoder: true },
-      { maximumScreenSpaceError: driven ? 4 : 8, enableCollision: false, showCreditsOnScreen: true },
-    );
+    let tileset;
+    try {
+      tileset = await Cesium.createGooglePhotorealistic3DTileset(
+        { onlyUsingWithGoogleGeocoder: true },
+        { maximumScreenSpaceError: driven ? 4 : 8, enableCollision: false, showCreditsOnScreen: true },
+      );
+    } catch (error) {
+      // Cesium's own words for a refused root are "Request has failed. Status Code: 503": the answer's instead.
+      if (tiles.refused !== null) throw new Error(tiles.refused);
+      if (tiles.failed !== null) throw new Error(`the map didn't open: ${tiles.failed}`);
+      throw error instanceof Error ? error : new Error(`the map didn't open: ${String(error?.statusCode ? `status ${error.statusCode}` : error)}`);
+    }
     // The camera moves every frame: every tile a view needs is asked for at once.
     tileset.foveatedScreenSpaceError = false;
     tileset.cullRequestsWhileMoving = false;
@@ -178,20 +275,31 @@
       }
     };
 
-    // Draws Google's work out while a promise of its is pending (a height asked of the tiles needs the scene drawing).
-    const pump = async (promise, ms) => {
+    // Tiles come in through the tileset too (a tile's content ready), which counts as them coming.
+    tileset.tileLoad.addEventListener(() => (tiles.came = Date.now()));
+    /** Why a wait for tiles is given up: none came for STALL ms. */
+    const stalled = () =>
+      `the map's tiles stopped coming: none came in ${Math.round(STALL / 1000)} s` +
+      (tiles.waiting > 0 ? `, ${tiles.waiting} asked for and unanswered (Edit's server or its relay isn't answering)` : "") +
+      (tiles.failed !== null ? `; the last answer: ${tiles.failed}` : "");
+    // Draws Google's work out while a promise of its is pending (a height asked of the tiles needs the scene drawing), for
+    // as long as tiles keep coming: on a busy Mac a place's heights took past the 15 s they had.
+    const pump = async (promise) => {
       let settled = false;
       promise.then(() => (settled = true), () => (settled = true));
-      const end = Date.now() + ms;
-      while (!settled && Date.now() < end) {
+      const started = Date.now();
+      while (!settled) {
+        if (tiles.refused !== null) throw new Error(tiles.refused);
+        if (Date.now() - Math.max(tiles.came, started) > STALL) throw new Error(stalled());
         render();
         await sleep(30);
       }
-      if (!settled) throw new Error("the map's tiles didn't come in time");
-      return promise;
+      return promise.catch((error) => {
+        throw tiles.refused !== null ? new Error(tiles.refused) : error instanceof Error ? error : new Error(`the map's tiles failed (${error?.statusCode ? `status ${error.statusCode}` : String(error)})`);
+      });
     };
     const heights = async (points) => {
-      const found = await pump(scene.sampleHeightMostDetailed(points.map(([lon, lat]) => Cesium.Cartographic.fromDegrees(lon, lat))), 15000);
+      const found = await pump(scene.sampleHeightMostDetailed(points.map(([lon, lat]) => Cesium.Cartographic.fromDegrees(lon, lat))));
       return found.map((c) => (c && Number.isFinite(c.height) ? c.height : null));
     };
 
@@ -346,10 +454,9 @@
       return quad;
     };
 
-    // When a tile last came in: a frame waits while they keep coming, never for being slow (V1: "a render is stopped
-    // only when it stalls"; capped at 6 s a frame, the first frames of a render came out a blur, Nov 12).
-    let came = 0;
-    tileset.tileLoad.addEventListener(() => (came = Date.now()));
+    // A frame waits while its tiles keep coming, never for being slow (V1: "a render is stopped only when it stalls";
+    // capped at 6 s a frame, the first frames of a render came out a blur, Nov 12), up to 45 s in all: Edit gives a
+    // frame's drawing a minute (effects.ts). A refusal fails the frame, saying it, where it drew an empty map.
     let drawing = 0;
     /** Draws the camera's view: live, at once and again as tiles come in; in Edit's Chrome, a Promise done once they're all in. */
     const draw = () => {
@@ -374,8 +481,9 @@
         await sleep(0);
         render();
         while (!tileset.tilesLoaded && mine === drawing) {
+          if (tiles.refused !== null) throw new Error(tiles.refused);
           const now = Date.now();
-          if (now - Math.max(came, started) > 8000 || now - started > 45000) break;
+          if (now - Math.max(tiles.came, started) > STALL || now - started > 45000) break;
           await sleep(25);
           render();
         }

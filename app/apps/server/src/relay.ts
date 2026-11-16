@@ -13,6 +13,7 @@ import type { ChildProcessSpawner } from "effect/process";
 
 import * as accounts from "./accounts.ts";
 import { messageOf } from "./diag.ts";
+import * as mapTiles from "./map_tiles.ts";
 import { runPromise } from "./effect/runtime.ts";
 import * as service from "./effect/service.ts";
 import { serdeParse } from "./rust.ts";
@@ -99,30 +100,76 @@ export function failure(code: string, answer: Uint8Array | string, feature: stri
  * The map page's tiles (`GET /v1/3dtiles/…` on Edit's own server, where
  * the page fetches them): passed on to the relay with this Edit's token, so
  * headless Chrome never holds one and a long render outlives the hour a
- * token lasts.
+ * token lasts. With `keptIn` (a folder), each tile is kept there as long as
+ * Google's answer allows (map_tiles.ts) and answered from it while good, and
+ * pages asking for the same tile at once wait on the one fetch.
  */
-export async function forwardTiles(request: Request, from: URL): Promise<Response> {
+export async function forwardTiles(request: Request, from: URL, keptIn: string | null = null): Promise<Response> {
   if (from.pathname === ROOT) return sharedRoot(request, from);
+  const origin = request.headers.get("origin");
+  if (keptIn !== null) {
+    const kept = mapTiles.read(keptIn, from);
+    if (kept !== null) {
+      const headers = new Headers({ "content-type": kept.type, "cache-control": `private, max-age=${kept.left}` });
+      if (kept.etag !== null) headers.set("etag", kept.etag);
+      if (origin !== null) headers.set("access-control-allow-origin", origin);
+      return new Response(kept.body, { status: 200, headers });
+    }
+    const name = `${keptIn}/${mapTiles.nameOf(from)}`;
+    let got = tilesComing.get(name);
+    if (got === undefined) {
+      got = askTile(request, from).then(async (answer) => {
+        const body = new Uint8Array(await answer.arrayBuffer());
+        if (answer.status === 200) mapTiles.keep(keptIn, from, answer.headers, body);
+        return { status: answer.status, headers: answer.headers, body };
+      });
+      const asked = got;
+      tilesComing.set(name, asked);
+      void asked.catch(() => {}).finally(() => tilesComing.delete(name));
+    }
+    let answer: { status: number; headers: Headers; body: Uint8Array };
+    try {
+      answer = await got;
+    } catch (error) {
+      return new Response(JSON.stringify({ error: `${UNREACHABLE}: ${messageOf(error)}` }), { status: 502, headers: { "content-type": "application/json" } });
+    }
+    return tileAnswer(request, from, answer.status, answer.headers, answer.body);
+  }
   let answer: Response;
   try {
-    answer = await fetch(`${url()}${from.pathname}${from.search}`, {
-      headers: { ...authHeaders(), accept: request.headers.get("accept") ?? "*/*" },
-      signal: AbortSignal.timeout(60_000),
-    });
+    answer = await askTile(request, from);
   } catch (error) {
     return new Response(JSON.stringify({ error: `${UNREACHABLE}: ${messageOf(error)}` }), { status: 502, headers: { "content-type": "application/json" } });
   }
+  return tileAnswer(request, from, answer.status, answer.headers, answer.body);
+}
+
+/** Tiles being fetched now, by the file each is kept in. */
+const tilesComing = new Map<string, Promise<{ status: number; headers: Headers; body: Uint8Array }>>();
+
+/** A tile from the relay, with the sign-in's token (waited for while it's restored or renewed, as `ask` does: a tile sent without one is refused "Sign in to Edit"). */
+async function askTile(request: Request, from: URL): Promise<Response> {
+  const used = accounts.accessToken() ?? (await accounts.tokenWhenReady()) ?? envToken();
+  return fetch(`${url()}${from.pathname}${from.search}`, {
+    headers: { ...authHeaders(used), accept: request.headers.get("accept") ?? "*/*" },
+    signal: AbortSignal.timeout(60_000),
+  });
+}
+
+/** A tile's answer passed on to the page, its headers Google's. */
+function tileAnswer(request: Request, from: URL, status: number, got: Headers, body: ReadableStream<Uint8Array> | Uint8Array | null): Response {
   const headers = new Headers();
-  for (const name of ["content-type", "content-length", "cache-control", "etag"]) {
-    const value = answer.headers.get(name);
+  // A body read whole is its own length (fetch may have unzipped it).
+  for (const name of body instanceof Uint8Array ? ["content-type", "cache-control", "etag"] : ["content-type", "content-length", "cache-control", "etag"]) {
+    const value = got.get(name);
     if (value !== null) headers.set(name, value);
   }
   // The map page asks from its own address (checked by `mapSibling`).
   const origin = request.headers.get("origin");
   if (origin !== null) headers.set("access-control-allow-origin", origin);
   // Refused under the shared session (Google ended it early): the next map opens a new one.
-  if (shared !== null && (answer.status === 400 || answer.status === 401 || answer.status === 403 || answer.status === 410) && from.searchParams.get("session") === shared.session) shared = null;
-  return new Response(answer.body, { status: answer.status, headers });
+  if (shared !== null && (status === 400 || status === 401 || status === 403 || status === 410) && from.searchParams.get("session") === shared.session) shared = null;
+  return new Response(body, { status, headers });
 }
 
 /**
@@ -133,8 +180,9 @@ export async function forwardTiles(request: Request, from: URL): Promise<Respons
  * the viewer loads a page, V1's renders and their restarts) was a paid session
  * every time. The root's answer is held in memory, never on disk, and handed
  * to every map for two hours, so any map opened on it still has an hour of
- * its session left; then the next map starts a new one. No tile is kept: each
- * still comes from Google.
+ * its session left; then the next map starts a new one. The root is never
+ * kept on disk; the tiles are, as long as Google's answer allows
+ * (map_tiles.ts).
  */
 const ROOT = "/v1/3dtiles/root.json";
 export const SHARED_SESSION_MS = 2 * 60 * 60_000;

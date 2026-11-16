@@ -6,7 +6,8 @@
 //
 //     edit-map/map.js            the helper (effect_map.html): EditMap.open(), find(), look(), fly(), screen(), draw()
 //     edit-map/cesium/…          CesiumJS's build, fetched once from jsDelivr and kept in `<cache>/cesium-<version>/`
-//     edit-map/v1/3dtiles/…      the tiles, through the relay with this Edit's sign-in (relay.forwardTiles), as V1's map page has them
+//     edit-map/v1/3dtiles/…      the tiles, through the relay with this Edit's sign-in (relay.forwardTiles), as V1's map page has them,
+//                                kept in `<cache>/map-tiles/` as long as Google allows (map_tiles.ts), so a second look is read off the disk
 //     edit-map/place?q=…         where a place is and its building's outline (broll.ts `findPlace`: Google, through the relay, asked once)
 //
 // All of it is under the effect's own folder, so the page's walls stay as
@@ -21,6 +22,7 @@ import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
 import helperText from "./effect_map.html" with { type: "text" };
 import { serveFile } from "./http/files.ts";
+import * as mapTiles from "./map_tiles.ts";
 import * as relay from "./relay.ts";
 import * as seams from "./seams.ts";
 
@@ -105,7 +107,7 @@ export async function serve(app: App, request: Request, parts: string[]): Promis
   }
   if (rest[0] === "v1" && rest[1] === "3dtiles") {
     const url = new URL(request.url);
-    return relay.forwardTiles(request, new URL(`/${rest.join("/")}${url.search}`, url));
+    return relay.forwardTiles(request, new URL(`/${rest.join("/")}${url.search}`, url), mapTiles.folderOf(app.store));
   }
   if (rest.length === 1 && rest[0] === "place") {
     const asked = new URL(request.url).searchParams.get("q")?.trim() ?? "";

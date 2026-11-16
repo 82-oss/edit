@@ -11,6 +11,7 @@ import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
 import { savedExportFolder } from "../export_folder.ts";
 import * as folderAccess from "../folder_access.ts";
+import * as mapTiles from "../map_tiles.ts";
 import { isBug, panicResponse } from "../guard.ts";
 import * as mcp from "../mcp/index.ts";
 import * as notices from "../notices.ts";
@@ -162,7 +163,7 @@ export async function respond(
         response = new Response(null, { status: 405, headers: { allow: match.allowed.join(",") } });
       } else if (method === "GET" && url.pathname.startsWith("/v1/3dtiles/")) {
         // The map page's tiles, through the relay with this Edit's sign-in.
-        response = await relay.forwardTiles(request, url);
+        response = await relay.forwardTiles(request, url, mapTiles.folderOf(app.store));
       } else if (method === "GET" || method === "HEAD") {
         response = await compressed(request, staticAsset(url.pathname), url.pathname);
       } else {
