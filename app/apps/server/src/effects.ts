@@ -634,10 +634,12 @@ const handed = new Map<string, Uint8Array>();
  * (Nov 15, mandalorian).
  */
 const OVER_CHECKS = `async (address, quality) => {
-  const shot = await createImageBitmap(await (await fetch(address)).blob());
+  const took = []; let mark = performance.now(); const lap = () => { const now = performance.now(); took.push(Math.round(now - mark)); mark = now; }; // TEMP
+  const blob = await (await fetch(address)).blob(); lap(); // TEMP
+  const shot = await createImageBitmap(blob); lap(); // TEMP
   const plain = new OffscreenCanvas(shot.width, shot.height).getContext("2d");
   plain.drawImage(shot, 0, 0);
-  const pixels = plain.getImageData(0, 0, shot.width, shot.height).data;
+  const pixels = plain.getImageData(0, 0, shot.width, shot.height).data; lap(); // TEMP
   let clear = false;
   for (let at = 3; at < pixels.length; at += 4) if (pixels[at] < 250) { clear = true; break; }
   const canvas = new OffscreenCanvas(shot.width, shot.height);
@@ -647,9 +649,9 @@ const OVER_CHECKS = `async (address, quality) => {
     ctx.fillStyle = ((x / cell + y / cell) & 1) === 0 ? "#9a9a9a" : "#6a6a6a";
     ctx.fillRect(x, y, cell, cell);
   }
-  ctx.drawImage(shot, 0, 0);
-  const jpeg = new Uint8Array(await (await canvas.convertToBlob({ type: "image/jpeg", quality })).arrayBuffer());
-  if (typeof jpeg.toBase64 === "function") return { jpeg: jpeg.toBase64(), clear };
+  ctx.drawImage(shot, 0, 0); lap(); // TEMP
+  const jpeg = new Uint8Array(await (await canvas.convertToBlob({ type: "image/jpeg", quality })).arrayBuffer()); lap(); // TEMP
+  if (typeof jpeg.toBase64 === "function") return { jpeg: jpeg.toBase64(), clear, took }; // TEMP took
   let text = "";
   for (let at = 0; at < jpeg.length; at += 0x8000) text += String.fromCharCode(...jpeg.subarray(at, at + 0x8000));
   return { jpeg: btoa(text), clear };
@@ -737,6 +739,7 @@ export async function look(app: App, projectId: string, name: string, times: num
         const duration = warm.duration;
         const wanted = times ?? (duration > 0 ? [0, 1, 2, 3, 4, 5].map((part) => Math.round(((part + 0.5) * duration * 100) / 6) / 100) : [0]);
         const phases = { seek: 0, shot: 0, over: 0 }; // TEMP(Nov 16 CI probe)
+        const inside = [0, 0, 0, 0, 0, 0]; // TEMP: fetch, decode, readback, checkerboard, encode; the whole call
         for (const time of wanted) {
           let at = performance.now(); // TEMP
           // Unmeasured, the cost's same five seeks one after another, not a refresh apart (five refreshes a still, 4 s of a
@@ -758,14 +761,18 @@ export async function look(app: App, projectId: string, name: string, times: num
           handed.set(`${projectId}/${name}/${handle}`, new Uint8Array(Buffer.from(shot.data, "base64")));
           let shown: { jpeg: string; clear: boolean };
           try {
+            const evalAt = performance.now(); // TEMP
             shown = await page.evaluate<{ jpeg: string; clear: boolean }>(`(${OVER_CHECKS})(${JSON.stringify(`${HANDED}/${handle}`)}, ${side === 0 ? 0.92 : 0.82})`, 60_000);
+            const inPage = (shown as unknown as { took?: number[] }).took ?? []; // TEMP
+            inside.forEach((_, at) => (inside[at]! += inPage[at] ?? 0)); // TEMP
+            inside[5]! += performance.now() - evalAt; // TEMP
           } finally {
             handed.delete(`${projectId}/${name}/${handle}`);
           }
           stills.push({ time, picture: new Uint8Array(Buffer.from(shown.jpeg, "base64")), mime: "image/jpeg", cost, seeThrough: shown.clear });
           phases.over += performance.now() - at; // TEMP
         }
-        if (process.env.CI === "true") console.log(`TEMP look ${name} ${wanted.length} stills ${width}x${height} side ${side}: seeks ${Math.round(phases.seek)} ms, screenshots ${Math.round(phases.shot)} ms, jpeg ${Math.round(phases.over)} ms, since asked ${Date.now() - started} ms`); // TEMP
+        if (process.env.CI === "true") console.log(`TEMP look ${name} ${wanted.length} stills ${width}x${height} side ${side}: seeks ${Math.round(phases.seek)} ms, screenshots ${Math.round(phases.shot)} ms, jpeg ${Math.round(phases.over)} ms (in the page: fetch ${Math.round(inside[0]!)}, decode ${Math.round(inside[1]!)}, readback ${Math.round(inside[2]!)}, checkerboard ${Math.round(inside[3]!)}, encode ${Math.round(inside[4]!)}; the call ${Math.round(inside[5]!)}), since asked ${Date.now() - started} ms`); // TEMP
       }
       const said = await page.evaluate<{ problems: string[]; errors: string[] }>("({ problems: window.__edit.problems, errors: window.__edit.errors })");
       if (warm.animation === null) warm.animation = said.problems.find((problem) => problem === ANIMATION) ?? null;

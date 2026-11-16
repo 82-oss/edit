@@ -87,12 +87,15 @@ jobs:
           key: wasm-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/scripts/build-wasm.sh') }}
       # The TS types generated from the Rust matched what's committed for these very Rust sources and types before:
       # regenerating them (a Rust build, 48 s, and setting Rust up for it, ~45 s) can't say anything new.
+      - id: recipe
+        if: matrix.part == 'ts'
+        run: echo "hash=$(sed -n -e '/^types:/,/^$/p' -e '/^types-committed:/,/^$/p' Justfile | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - id: types
         if: matrix.part == 'ts'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: app/.types-matched
-          key: types-matched-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/packages/edit-types/**', '!app/packages/edit-types/node_modules/**', 'app/Justfile') }}
+          key: types-matched-${{ steps.recipe.outputs.hash }}-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/packages/edit-types/**', '!app/packages/edit-types/node_modules/**') }}
       # The debug addon every part but the Rust runs on, kept by a hash of the
       # Rust it's built from (a minute and more on each part, every run: the
       # workspace's own crates are never in rust-cache's cache), built when
@@ -208,8 +211,11 @@ jobs:
       passed: ${{ steps.passed.outputs.cache-hit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Of the Justfile, only what says what the Rust part runs: a recipe changed elsewhere in it (Nov 16) ran 12 minutes of cold Rust.
       - id: key
-        run: echo "key=rust-passed-aarch64-apple-darwin-$(curl -fsS --retry 3 https://static.rust-lang.org/dist/channel-rust-stable.toml.sha256 | cut -c1-16)-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/apps/web/src/lib/people-cases.json', 'app/scripts/ci-tools.sh', 'app/scripts/ffmpeg.sh', 'app/clippy.toml', 'app/Justfile') }}" >> "$GITHUB_OUTPUT"
+        run: |
+          recipe="$(sed -n -e '/^rust_crates :=/p' -e '/^check-rust:/,/^$/p' Justfile | shasum -a 256 | cut -c1-16)"
+          echo "key=rust-passed-aarch64-apple-darwin-$(curl -fsS --retry 3 https://static.rust-lang.org/dist/channel-rust-stable.toml.sha256 | cut -c1-16)-$recipe-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/apps/web/src/lib/people-cases.json', 'app/scripts/ci-tools.sh', 'app/scripts/ffmpeg.sh', 'app/clippy.toml') }}" >> "$GITHUB_OUTPUT"
       - id: passed
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:

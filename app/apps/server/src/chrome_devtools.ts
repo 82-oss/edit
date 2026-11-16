@@ -99,11 +99,6 @@ export async function open(opening: Opening): Promise<Page> {
       "--mute-audio",
       "--hide-scrollbars",
       "--force-color-profile=srgb",
-      // A headless window a Mac counts as hidden is backgrounded, and its page's work (decoding a still, encoding its
-      // JPEG) waits on throttled tasks: ~0.9 s a still on CI's Mac, Nov 16, against 8 ms on Linux.
-      "--disable-renderer-backgrounding",
-      "--disable-background-timer-throttling",
-      "--disable-backgrounding-occluded-windows",
       // Room for the page at full size: a headless window loses some height to the browser's own frame.
       `--window-size=${opening.width + 64},${opening.height + 200}`,
       "--remote-debugging-port=0",
