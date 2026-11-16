@@ -145,14 +145,40 @@ function walk(dir: string, under = ""): string[] {
 
 /** A folder's files in R2, each once by its content: the list of them. */
 async function putFiles(dir: string): Promise<File[]> {
-  const files: File[] = [];
-  for (const path of walk(dir)) {
+  return eachAtOnce(walk(dir), async (path) => {
     const full = join(dir, path);
     const sha256 = await sha256File(full);
     if (!(await cloud.has(fileKey(sha256)))) await cloud.uploadFile(full, fileKey(sha256));
-    files.push({ path, sha256, size: fs.statSync(full).size });
-  }
-  return files;
+    return { path, sha256, size: fs.statSync(full).size };
+  });
+}
+
+/**
+ * How many of a version's files go up or come down at once. One at a time, an
+ * effect of 45 pictures took 54 s to come down on a Mac that opened its
+ * project (Nov 16, Test Motion Graphics on the M4: about a second a file,
+ * most of it the asking), its viewer blank all the while.
+ */
+const FILES_AT_ONCE = 8;
+
+/** `work` on each item, `FILES_AT_ONCE` at a time; the answers in the items' order. One that fails stops the rest taking more. */
+async function eachAtOnce<T, R>(items: readonly T[], work: (item: T) => Promise<R>): Promise<R[]> {
+  const answers = new Array<R>(items.length);
+  let next = 0;
+  let failed = false;
+  const lane = async () => {
+    while (!failed && next < items.length) {
+      const at = next++;
+      try {
+        answers[at] = await work(items[at]!);
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(FILES_AT_ONCE, items.length) }, lane));
+  return answers;
 }
 
 /**
@@ -164,14 +190,16 @@ async function getFiles(files: File[], dir: string): Promise<void> {
   const fresh = `${dir}.incoming-${process.pid}`;
   fs.rmSync(fresh, { recursive: true, force: true });
   for (const file of files) {
+    if (!join(fresh, file.path).startsWith(fresh + sep)) throw new Error(`a file outside the folder: ${file.path}`);
+  }
+  await eachAtOnce(files, async (file) => {
     const target = join(fresh, file.path);
-    if (!target.startsWith(fresh + sep)) throw new Error(`a file outside the folder: ${file.path}`);
     fs.mkdirSync(dirname(target), { recursive: true });
     // The same content already here (most of a revision is): copied, not fetched.
     const here = join(dir, file.path);
     if (fs.existsSync(here) && (await sha256File(here)) === file.sha256) fs.copyFileSync(here, target);
     else await cloud.download(fileKey(file.sha256), target);
-  }
+  });
   // What's made again from the timeline stays as it was here (a version that has none of its own); its key says whether it's still of what's there.
   for (const path of REMADE) {
     if (files.some((file) => file.path === path) || !fs.existsSync(join(dir, path))) continue;

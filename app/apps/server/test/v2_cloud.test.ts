@@ -110,6 +110,27 @@ test("an effect's code kept version by version, the same files never twice, and 
   }
 });
 
+test("an effect of many files goes up and comes down several at a time, whole and in order (Nov 16: 45 pictures took 54 s one by one)", async () => {
+  const { app, cleanup, id } = hq("v2-many-files");
+  try {
+    const dir = effects.folder(app.store, id, "wall");
+    fs.mkdirSync(join(dir, "img"), { recursive: true });
+    fs.writeFileSync(join(dir, "scene.html"), "<p>wall</p>");
+    for (let at = 0; at < 30; at++) fs.writeFileSync(join(dir, `img/t${String(at).padStart(2, "0")}.jpg`), `picture ${at}`);
+    const key = v2cloud.effectKey(id, "wall");
+    expect(await v2cloud.save(key, "wall", dir, { source: "w1" })).toMatchObject({ n: 1, made: true });
+    const kept = (await v2cloud.version(key))!.version.files!;
+    expect(kept.map((one) => one.path)).toEqual([...kept.map((one) => one.path)].sort());
+    expect(kept.length).toBe(31);
+    fs.rmSync(dir, { recursive: true });
+    await v2cloud.fetchInto(key, 1, dir);
+    for (let at = 0; at < 30; at++) expect(fs.readFileSync(join(dir, `img/t${String(at).padStart(2, "0")}.jpg`), "utf8")).toBe(`picture ${at}`);
+    expect(fs.readdirSync(join(dir, "img")).length).toBe(30);
+  } finally {
+    cleanup();
+  }
+});
+
 test("an effect handed over to another computer: its fetched code is the render's version (its key by content), an older copy here is brought up to the render's, and work here that's no version is left alone", async () => {
   // Nov 16 audit: keys of the files' times never matched on the computer the code was fetched onto, and a folder
   // that was there already (older) won over the cloud's newer version.
