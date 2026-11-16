@@ -64,6 +64,7 @@ import * as effectCloud from "./effect_cloud.ts";
 import { diskFull, freeOn, outOfSpace } from "./export_prep.ts";
 import * as effectMap from "./effect_map.ts";
 import runtimeText from "./effect_runtime.html" with { type: "text" };
+import watchText from "./effect_watch.html" with { type: "text" };
 import { writeAtomic } from "./files.ts";
 import { ApiError, json, notFound } from "./http/errors.ts";
 import { serveFile } from "./http/files.ts";
@@ -128,6 +129,8 @@ const FACES = FONTS.map((font) => `@font-face { font-family: "${font.family}"; f
 
 /** Edit's side of every effect page (effect_runtime.html), put in ahead of the page's own code. */
 const RUNTIME = runtimeText as unknown as string;
+/** What Edit watches while a page gets ready (effect_watch.html): no part of a render's key, as it changes no picture. */
+const WATCH = watchText as unknown as string;
 /** What the runtime says of a CSS animation running, which it checks at a page's first seek alone (a kept page says it again: `look`). */
 export const ANIMATION = /problem\("(A CSS animation[^"]*)"\)/.exec(RUNTIME)?.[1] ?? "";
 
@@ -393,9 +396,19 @@ function ownSource(request: Request, project: string, name: string): string {
   return `http://${path} https://${path}${siblings}`;
 }
 
+/** Files an effect's page asked for that its folder hasn't, by `project/name`: what a page stuck getting ready waits on. */
+const misses = new Map<string, { path: string; at: number }[]>();
+
+function missed(project: string, name: string, path: string): void {
+  const key = `${project}/${name}`;
+  const list = (misses.get(key) ?? []).filter((one) => one.path !== path && one.at > Date.now() - 10 * 60_000);
+  list.push({ path, at: Date.now() });
+  misses.set(key, list.slice(-12));
+}
+
 /** The page with Edit's runtime and faces ahead of its own code. */
 function withRuntime(page: string, more = ""): string {
-  const ahead = `<style>\n${FACES}${more === "" ? "" : `\n${more}`}\n</style>\n${RUNTIME}`;
+  const ahead = `<style>\n${FACES}${more === "" ? "" : `\n${more}`}\n</style>\n${RUNTIME}\n${WATCH}`;
   const doctype = /^\s*<!doctype[^>]*>/i.exec(page);
   return doctype === null ? `${ahead}${page}` : `${doctype[0]}\n${ahead}${page.slice(doctype[0].length)}`;
 }
@@ -423,7 +436,10 @@ async function file(context: RouteContext<App>): Promise<Response> {
     map.headers.set("access-control-allow-origin", "null");
     return map;
   }
-  if (parts.length > 3 && parts[0] !== "edit-map") throw notFound("no such file");
+  if (parts.length > 3 && parts[0] !== "edit-map") {
+    missed(project, params.name!, parts.join("/"));
+    throw notFound("no such file");
+  }
   // A still Edit's Chrome just drew, handed back to the page that drew it (`look`), once.
   if (parts.length === 2 && parts[0] === HANDED && !fs.existsSync(join(dir, ...parts))) {
     const key = `${project}/${params.name}/${parts[1]}`;
@@ -452,6 +468,7 @@ async function file(context: RouteContext<App>): Promise<Response> {
     path = fs.realpathSync(join(dir, ...parts));
     if (!path.startsWith(fs.realpathSync(dir) + sep)) throw new Error("outside");
   } catch {
+    missed(project, params.name!, parts.join("/"));
     throw notFound("no such file");
   }
   if (path.endsWith(".html")) {
@@ -722,6 +739,8 @@ export interface Look {
   problems: string[];
   /** What the page threw. */
   errors: string[];
+  /** How its page got ready, when this look loaded it (null: kept from a look before): how long it took and the longest its code ran without a break (ms). */
+  ready: { ms: number; longest: number } | null;
 }
 
 /** The size an effect is drawn at, and its frames a second: the project's. */
@@ -729,25 +748,109 @@ function frameOf(project: Project): { width: number; height: number; fps: number
   return { width: project.settings.width, height: project.settings.height, fps: rateOf(project) };
 }
 
-/** Opens an effect's page (`url`, carrying `token`) in a Chrome's page and waits for it to be ready: its length, and whether it has a seek. */
-async function load(page: devtools.Page, url: string, token: string, name: string): Promise<{ duration: number; seek: boolean }> {
+/**
+ * A page getting ready (or making its sound) that has got nowhere this long, its code idle and nothing arriving, is
+ * waiting on something that never comes. One still working is waited for, however long it takes (Sphe, Nov 16:
+ * "throw this at anything"; a painting of thousands of strokes takes as long as it takes), up to `workingMostMs`.
+ */
+export const waits = {
+  quietMs: 15_000,
+  /** A page still working after this long is in a loop that never ends. */
+  workingMostMs: 10 * 60_000,
+};
+/** The share of the time its main thread runs that counts as working: an idle page's is a fraction of a percent, one drawing nearly all of it. */
+const WORKING_SHARE = 0.02;
+
+/** What the runtime says of a page while it's waited on (`window.__edit.waiting()`), with what it's waited for. */
+interface Waiting<T> {
+  done: T | null;
+  /** Milliseconds since a file arrived, a font loaded or a worker answered. */
+  quiet: number;
+  /** Workers it started that haven't answered yet. */
+  unheard: number;
+  errors: string[];
+}
+
+/**
+ * Waits for `poll` (an expression answering a `Waiting`, or null before the
+ * runtime is there) to be done, for as long as the page gets anywhere: its
+ * main thread working (Chrome's own count, which it answers even while the
+ * page's code runs on without a break), a file arriving, a font loading, a
+ * worker answering. Refused with what it was waiting on once nothing has
+ * happened for `waits.quietMs`, or after `waits.workingMostMs` in all.
+ */
+async function settle<T>(page: devtools.Page, poll: string, said: { stuck: (errors: string[]) => string; endless: string; unloaded: string }): Promise<{ value: T; ms: number }> {
+  const started = Date.now();
+  await page.call("Performance.enable").catch(() => {});
+  let working = started;
+  let task: number | null = null;
+  let taskAt = started;
+  let seen = false;
+  let errors: string[] = [];
+  for (;;) {
+    const metrics = await page.call("Performance.getMetrics", {}, 5_000).catch(() => null);
+    if (page.closed) throw new Error("Chrome closed");
+    let now = Date.now();
+    const count = (metrics?.metrics as { name: string; value: number }[] | undefined)?.find((metric) => metric.name === "TaskDuration")?.value;
+    if (typeof count === "number") {
+      // A new document counts from 0 again.
+      if (task !== null && count - task > ((now - taskAt) / 1000) * WORKING_SHARE) working = now;
+      task = count;
+      taskAt = now;
+    }
+    let state: Waiting<T> | null | "blocked";
+    const asked = Date.now();
+    try {
+      state = await page.evaluate<Waiting<T> | null>(poll, 5_000);
+      // Answered only once its code stopped running: it was working all that while.
+      if (Date.now() - asked > 1_000 && (state === null || state.done === null)) state = state === null ? "blocked" : { ...state, quiet: 0 };
+    } catch (error) {
+      if (page.closed) throw error;
+      // Its code running on without a break answers nothing; a page between documents has no context to ask.
+      state = /timed out/.test(diag.messageOf(error)) ? "blocked" : null;
+    }
+    now = Date.now();
+    if (state === "blocked") working = now;
+    else if (state !== null) {
+      seen = true;
+      errors = state.errors;
+      if (state.done !== null) return { value: state.done, ms: now - started };
+      working = Math.max(working, state.unheard > 0 ? now : now - state.quiet);
+    }
+    if (now - working > waits.quietMs) throw new Error(seen ? said.stuck(errors) : said.unloaded);
+    if (now - started > waits.workingMostMs) throw new Error(said.endless);
+    await Bun.sleep(250);
+  }
+}
+
+/** What a page did getting ready: its length, whether it has a seek, how long it took and the longest its code ran without a break (ms). */
+interface Loaded {
+  duration: number;
+  seek: boolean;
+  ms: number;
+  longest: number;
+}
+
+/** Opens an effect's page (`url`, carrying `token`) in a Chrome's page and waits for it to be ready, as long as it's getting there (`settle`). */
+async function load(page: devtools.Page, url: string, token: string, project: string, name: string): Promise<Loaded> {
+  const since = Date.now();
   await page.call("Page.navigate", { url });
-  const loaded = await page.evaluate<{ duration: number; seek: boolean } | "none" | "slow">(
-    `new Promise((resolve) => {
-      const until = Date.now() + 20000;
-      (function wait() {
-        if (location.search.includes(${JSON.stringify(token)}) && window.__edit) {
-          const slow = setTimeout(() => resolve("slow"), Math.max(0, until - Date.now()));
-          window.__edit.ready.then((value) => { clearTimeout(slow); resolve(value); });
-        } else if (Date.now() > until) resolve("none");
-        else setTimeout(wait, 30);
-      })();
-    })`,
-    40_000,
+  const { value, ms } = await settle<{ duration: number; seek: boolean; longest: number }>(
+    page,
+    `(() => { if (!location.search.includes(${JSON.stringify(token)}) || !window.__edit) return null; const now = window.__edit.waiting(); return { ...now, done: now.loaded }; })()`,
+    {
+      stuck: (errors) => {
+        const asked = (misses.get(`${project}/${name}`) ?? []).filter((one) => one.at >= since).map((one) => `"${one.path}"`);
+        const parts = [`${name}'s window.ready never resolved: its page got nowhere for ${waits.quietMs / 1000} s (no code running, nothing loading), waiting on something that never comes`];
+        parts.push(asked.length > 0 ? `it asked for ${asked.join(", ")}, not in its folder` : "a picture, font or video whose load it waits for and whose error it never hears, or a Promise nothing resolves");
+        if (errors.length > 0) parts.push(`it said: ${errors.join("; ")}`);
+        return `${parts.join(": ")}. Everything it loads must be in its own folder.`;
+      },
+      endless: `${name}'s page was still working on window.ready after ${waits.workingMostMs / 60_000} minutes: a loop that never ends, or work to make lighter`,
+      unloaded: `${name}'s page didn't load in Chrome`,
+    },
   );
-  if (loaded === "none") throw new Error(`${name}'s page didn't load in Chrome`);
-  if (loaded === "slow") throw new Error(`${name}'s window.ready didn't resolve in 20 s: a picture or font it waits for never loads (everything it loads must be in its own folder)`);
-  return loaded;
+  return { duration: value.duration, seek: value.seek, ms, longest: value.longest };
 }
 
 /**
@@ -777,12 +880,14 @@ export async function look(app: App, projectId: string, name: string, times: num
   try {
     return await inChrome(width, height, { owner: `${projectId}/${name}`, map }, async (page, interval, held) => {
       let warm = held !== null && held.version === version ? held : null;
+      let readied: Look["ready"] = null;
       if (warm === null) {
-        const loaded = await load(page, url, token, name);
+        const loaded = await load(page, url, token, projectId, name);
+        readied = { ms: loaded.ms, longest: loaded.longest };
         // As it renders: nothing behind the page, its unpainted parts see-through, shown over a checkerboard.
         await page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
         const said = await page.evaluate<{ problems: string[]; errors: string[] }>("({ problems: [...window.__edit.problems], errors: [...window.__edit.errors] })");
-        warm = { version, ...loaded, problems: said.problems, errors: said.errors, animation: null };
+        warm = { version, duration: loaded.duration, seek: loaded.seek, problems: said.problems, errors: said.errors, animation: null };
       } else {
         // Kept from a look before: it says what it said as it loaded, and what this look's seeks say, as a fresh page would.
         const before = [...warm.problems, ...(warm.animation === null ? [] : [warm.animation])];
@@ -818,7 +923,7 @@ export async function look(app: App, projectId: string, name: string, times: num
       }
       const said = await page.evaluate<{ problems: string[]; errors: string[] }>("({ problems: window.__edit.problems, errors: window.__edit.errors })");
       if (warm.animation === null) warm.animation = said.problems.find((problem) => problem === ANIMATION) ?? null;
-      return { value: { duration: warm.duration, stills, interval, problems: said.problems, errors: said.errors }, warm };
+      return { value: { duration: warm.duration, stills, interval, problems: said.problems, errors: said.errors, ready: readied }, warm };
     });
   } finally {
     diag.record("effects", "look", Date.now() - started);
@@ -940,8 +1045,12 @@ export async function give(app: App, projectId: string, name: string, mediaId: s
   return { file, width: media.width, height: media.height };
 }
 
-/** The longest stretch of footage an effect is given at once: an effect is a graphic, not the edit's footage. */
-const MOST_FOOTAGE_S = 180;
+/**
+ * Footage longer than this is given only as a stretch the agent names: left to its defaults, a two-hour source
+ * would be copied whole. A stretch it names is given at any length (Sphe, Nov 16: nothing the team asks of an
+ * effect is refused by a number of ours).
+ */
+const WHOLE_FOOTAGE_S = 180;
 /** The frequency bands a sound's levels are given in, low to high, spaced as the ear hears them. */
 const BANDS = 16;
 
@@ -978,7 +1087,7 @@ export async function giveFootage(app: App, projectId: string, name: string, med
   const start = Math.max(0, from ?? 0);
   const end = Math.min(media.duration, to ?? media.duration);
   if (!(end > start)) throw new Error(`start and end are seconds of ${mediaId}, 0 to ${media.duration.toFixed(2)}, start before end`);
-  if (end - start > MOST_FOOTAGE_S) throw new Error(`at most ${MOST_FOOTAGE_S} s of footage at once (asked ${(end - start).toFixed(1)} s): give the stretch the effect shows`);
+  if (from === null && to === null && media.duration > WHOLE_FOOTAGE_S) throw new Error(`${mediaId} is ${(media.duration / 60).toFixed(1)} minutes long: give start and end, the stretch the effect shows (any length)`);
   const dir = folder(app.store, projectId, name);
   fs.mkdirSync(dir, { recursive: true });
   const stem = (as ?? media.name).replace(/\.[A-Za-z0-9]+$/, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "footage";
@@ -1114,7 +1223,10 @@ function fft(re: Float64Array, im: Float64Array): void {
 /** A sound's page: `window.sound = { render(rate) }` answering its samples, a Float32Array a channel (or an AudioBuffer). */
 export const SOUND_ENTRY = "sound.html";
 const SOUND_RATE = 48_000;
-const MOST_SOUND_S = 60;
+/** Longer is a length gone wrong (milliseconds taken for seconds), not a sound: half an hour is 350 MB of samples in the page. */
+const MOST_SOUND_S = 30 * 60;
+/** Samples read out of the page a call: 10 s, under 3 MB of base64 (a minute of one channel is 15 MB). */
+const SOUND_PART = 10 * SOUND_RATE;
 
 /**
  * A sound effect made from its code (Sphe, Nov 11: sound effects "stored
@@ -1131,10 +1243,12 @@ export async function makeSound(app: App, projectId: string, name: string): Prom
   if (!fs.existsSync(join(dir, SOUND_ENTRY))) throw new Error(`effects/${name}/ has no ${SOUND_ENTRY}: write it, with window.sound = { render(rate) } answering a Float32Array a channel (or an AudioBuffer)`);
   const token = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const url = `http://${seams.broll.pageHost(app)}${addressOf(projectId, name)}${SOUND_ENTRY}?sound=${token}`;
-  const made = await inChrome(640, 360, { owner: null, map: false }, async (page) => {
-    await load(page, url, token, name);
-    const value = await page.evaluate<{ rate: number; channels: string[] } | { error: string }>(
-      `(async () => {
+  const made = await inChrome<{ channels: Float32Array[] } | { error: string }>(640, 360, { owner: null, map: false }, async (page) => {
+    await load(page, url, token, projectId, name);
+    // Made in the page while Edit waits as long as it's working (`settle`), then read out a stretch at a time.
+    await page.evaluate(`(() => {
+      const made = (window.__sound = { done: null, channels: [] });
+      (async () => {
         const sound = window.sound;
         if (!sound || typeof sound.render !== "function") return { error: "The page has no window.sound = { render(rate) }." };
         let channels = await sound.render(${SOUND_RATE});
@@ -1142,19 +1256,36 @@ export async function makeSound(app: App, projectId: string, name: string): Prom
         if (channels instanceof Float32Array) channels = [channels];
         if (!Array.isArray(channels) || channels.length === 0 || !channels.every((one) => one instanceof Float32Array)) return { error: "render(rate) must answer a Float32Array a channel (or an AudioBuffer)." };
         if (channels[0].length === 0) return { error: "render(rate) answered no samples." };
-        if (channels[0].length > ${MOST_SOUND_S * SOUND_RATE}) return { error: "A sound is at most ${MOST_SOUND_S} s." };
-        const encode = (samples) => { const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength); let out = ""; for (let at = 0; at < bytes.length; at += 32768) out += String.fromCharCode.apply(null, bytes.subarray(at, at + 32768)); return btoa(out); };
-        return { rate: ${SOUND_RATE}, channels: channels.slice(0, 2).map(encode) };
-      })()`,
-      90_000,
-    );
-    return { value, warm: null };
+        if (channels[0].length > ${MOST_SOUND_S * SOUND_RATE}) return { error: "A sound is at most ${MOST_SOUND_S / 60} minutes (this is " + Math.round(channels[0].length / ${SOUND_RATE}) + " s): its length is in seconds of samples at the rate given." };
+        made.channels = channels.slice(0, 2);
+        return { length: channels[0].length, count: made.channels.length };
+      })().then((done) => { made.done = done; }, (error) => { made.done = { error: "render(rate) failed: " + String((error && error.stack) || error) }; });
+    })()`);
+    const { value: done } = await settle<{ length: number; count: number } | { error: string }>(page, "(() => ({ ...window.__edit.waiting(), done: window.__sound.done }))()", {
+      stuck: (errors) => `${name}'s render(rate) never answered: its page got nowhere for ${waits.quietMs / 1000} s (no code running, nothing loading), waiting on a Promise nothing resolves${errors.length > 0 ? `: it said: ${errors.join("; ")}` : ""}`,
+      endless: `${name}'s render(rate) was still working after ${waits.workingMostMs / 60_000} minutes: a loop that never ends, or work to make lighter`,
+      unloaded: `${name}'s page didn't load in Chrome`,
+    });
+    if ("error" in done) return { value: done, warm: null };
+    const channels: Float32Array[] = [];
+    for (let channel = 0; channel < done.count; channel++) {
+      const parts: Buffer[] = [];
+      for (let at = 0; at < done.length; at += SOUND_PART) {
+        const part = await page.evaluate<string>(
+          `(() => { const samples = window.__sound.channels[${channel}].subarray(${at}, ${Math.min(done.length, at + SOUND_PART)}); const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength); let out = ""; for (let at = 0; at < bytes.length; at += 32768) out += String.fromCharCode.apply(null, bytes.subarray(at, at + 32768)); return btoa(out); })()`,
+        );
+        parts.push(Buffer.from(part, "base64"));
+      }
+      // Copied into its own memory: a Buffer may start anywhere in Node's pool, where a Float32Array can't.
+      const bytes = Buffer.concat(parts);
+      const samples = new Float32Array(Math.floor(bytes.byteLength / 4));
+      new Uint8Array(samples.buffer).set(bytes.subarray(0, samples.byteLength));
+      channels.push(samples);
+    }
+    return { value: { channels }, warm: null };
   });
   if ("error" in made) throw new Error(`${name}: ${made.error}`);
-  const channels = made.channels.map((one) => {
-    const bytes = Buffer.from(one, "base64");
-    return new Float32Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 4));
-  });
+  const channels = made.channels;
   const left = channels[0]!;
   const right = channels[1] ?? left;
   const frames = left.length;
@@ -1166,8 +1297,8 @@ export async function makeSound(app: App, projectId: string, name: string): Prom
   wav.writeUInt32LE(16, 16);
   wav.writeUInt16LE(1, 20);
   wav.writeUInt16LE(2, 22);
-  wav.writeUInt32LE(made.rate, 24);
-  wav.writeUInt32LE(made.rate * 4, 28);
+  wav.writeUInt32LE(SOUND_RATE, 24);
+  wav.writeUInt32LE(SOUND_RATE * 4, 28);
   wav.writeUInt16LE(4, 32);
   wav.writeUInt16LE(16, 34);
   wav.write("data", 36);
@@ -1480,7 +1611,7 @@ async function draw(app: App, render: Render): Promise<void> {
       for (let at = 0; at < (map ? MAP_CHROMES : CHROMES); at++) opened.push(await devtools.open({ profile: RENDER_PROFILE, width: frame.width, height: frame.height, gpu: true, what: "Rendering an effect" }));
       // Nothing behind the page: what it leaves unpainted is see-through.
       await Promise.all(opened.map((page) => page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } })));
-      const loaded = await Promise.all(opened.map((page, at) => load(page, `${url}${key}-${at}`, `${key}-${at}`, name)));
+      const loaded = await Promise.all(opened.map((page, at) => load(page, `${url}${key}-${at}`, `${key}-${at}`, project, name)));
       // A page whose window.ready failed (a map whose place wasn't found) says so, not what breaks after it.
       const rejected = (await Promise.all(opened.map((page) => page.evaluate<string | null>("window.__edit.errors.find((error) => error.startsWith('window.ready was rejected')) ?? null")))).find((error) => error !== null);
       if (rejected !== undefined && rejected !== null) throw new Error(`its ${rejected}`);

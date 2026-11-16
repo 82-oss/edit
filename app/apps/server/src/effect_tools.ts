@@ -35,6 +35,15 @@ function costLine(look: effects.Look, fps: number): string {
   return `IT WON'T PLAY LIVE at ${slow.map((still) => `${fixed(still.time, 2)} s (${fixed(still.cost, 0)} ms a frame, about ${fixed(1000 / still.cost, 0)} a second)`).join(", ")} on this computer: the video's frames are ${fixed(frame, 0)} ms apart. Make those moments lighter (whole-frame blurs and filters, big blurred shadows and thousands of things redrawn each frame are what cost).`;
 }
 
+/** Code running this long without a break while a page gets ready is said: the person's viewer runs it too. */
+const UNBROKEN_MS = 2_000;
+
+/** How the page got ready, when this look loaded it and its code ran long without a break: "" otherwise. */
+function readyLine(look: effects.Look): string {
+  if (look.ready === null || look.ready.longest < UNBROKEN_MS) return "";
+  return `ITS CODE RAN ${fixed(look.ready.longest / 1000, 1)} s WITHOUT A BREAK getting ready (${fixed(look.ready.ms / 1000, 1)} s in all). It may take as long as it needs, but the person's viewer loads the same page, where a long stretch can hold up Edit's window: do that work in slices of about 50 ms, with await new Promise((go) => setTimeout(go)) between them.`;
+}
+
 /** Frames a look at a stretch shows, each one, at most (1.6 s at 30 fps); 16 to a sheet, 4 across. */
 export const EFFECT_FRAMES_MOST = 48;
 const PER_SHEET = 16;
@@ -100,6 +109,7 @@ async function lookAtStretch(app: ToolCall["app"], projectId: string, name: stri
   const lines: string[] = [];
   if (first + count <= last) lines.push(`Frames ${first + count}–${last} are left: look again with start ${fixed((first + count) / fps, 3)}.`);
   if (look.errors.length > 0) lines.push(`ERRORS its page threw (fix these first):\n${look.errors.map((error) => `- ${error}`).join("\n")}`);
+  if (readyLine(look) !== "") lines.push(readyLine(look));
   if (look.problems.length > 0) lines.push(`BREAKS THE EFFECT CONTRACT:\n${look.problems.map((problem) => `- ${problem}`).join("\n")}`);
   if (lines.length > 0) out.push(...text(lines.join("\n")));
   return out;
@@ -178,6 +188,7 @@ async function lookCompared(app: ToolCall["app"], projectId: string, name: strin
     pictures.forEach((picture, index) => out.push(...image(picture, `${name} ${what}: sheet ${index + 1} of ${pictures.length}, left-to-right then down`, "image/jpeg")));
     const lines: string[] = rest === "" ? [] : [rest];
     if (look.errors.length > 0) lines.push(`ERRORS its page threw (fix these first):\n${look.errors.map((error) => `- ${error}`).join("\n")}`);
+    if (readyLine(look) !== "") lines.push(readyLine(look));
     if (look.problems.length > 0) lines.push(`BREAKS THE EFFECT CONTRACT:\n${look.problems.map((problem) => `- ${problem}`).join("\n")}`);
     if (lines.length > 0) out.push(...text(lines.join("\n")));
     return out;
@@ -206,6 +217,7 @@ async function lookAtEffect({ app, args, projectId }: ToolCall): Promise<Content
   // What it leaves unpainted plays over what's beneath it: said, so a background left out by mistake is seen as one.
   if (look.stills.some((still) => still.seeThrough)) lines.push("See-through where the checkerboard shows: there it plays over whatever is beneath it on the timeline. Paint a background if it should fill the frame.");
   if (look.errors.length > 0) lines.push(`ERRORS its page threw (fix these first):\n${look.errors.map((error) => `- ${error}`).join("\n")}`);
+  if (readyLine(look) !== "") lines.push(readyLine(look));
   if (look.problems.length > 0) lines.push(`BREAKS THE EFFECT CONTRACT:\n${look.problems.map((problem) => `- ${problem}`).join("\n")}`);
   const cost = costLine(look, fps);
   if (cost !== "") lines.push(cost);

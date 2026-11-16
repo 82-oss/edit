@@ -199,11 +199,81 @@ test.skipIf(chrome === null)("a sound made from its code: rendered in the page, 
     expect(again.media).toBe(first.media);
     media = app.store.get(id)!.project.media.find((one) => one.id === first.media)!;
     expect(Math.abs(media.duration - 1)).toBeLessThan(0.02);
+    // Longer than a minute (a bed, a drone), read out of the page a stretch at a time: every sample, both sides.
+    write(app, id, "drone", {
+      "sound.html": `<script>window.sound = { render: (rate) => { const left = new Float32Array(rate * 75), right = new Float32Array(rate * 75); for (let at = 0; at < left.length; at++) { left[at] = 0.25 * Math.sin(2 * Math.PI * 110 * at / rate); right[at] = at >= left.length - rate ? 0.5 : 0; } return [left, right]; } };</script>`,
+    });
+    const drone = await effects.makeSound(app, id, "drone");
+    expect(Math.abs(drone.duration - 75)).toBeLessThan(0.05);
+    const end = Bun.spawnSync(["ffmpeg", "-hide_banner", "-ss", "74.2", "-i", app.store.get(id)!.project.media.find((one) => one.id === drone.media)!.path, "-af", "pan=mono|c0=c1,volumedetect", "-f", "null", "-"], { stderr: "pipe" }).stderr.toString();
+    expect(end).toContain("max_volume: -6.0 dB");
+    // One that never answers is said to, without waiting out a clock.
+    effects.waits.quietMs = 1_500;
+    try {
+      write(app, id, "never", { "sound.html": `<script>window.sound = { render: () => new Promise(() => {}) };</script>` });
+      await expect(effects.makeSound(app, id, "never")).rejects.toThrow("never's render(rate) never answered");
+    } finally {
+      effects.waits.quietMs = 15_000;
+    }
     // A page with no sound says so.
     write(app, id, "silent", { "sound.html": `<p>nothing</p>` });
     await expect(effects.makeSound(app, id, "silent")).rejects.toThrow("no window.sound");
     await expect(effects.makeSound(app, id, "nothing-here")).rejects.toThrow("has no sound.html");
   } finally {
+    await server.stop(true);
+    cleanup();
+  }
+}, 120_000);
+
+test.skipIf(chrome === null)("a page is waited for as long as it works to be ready, and given up on once it gets nowhere, with what it waited on", async () => {
+  const { app, cleanup, id } = hq("effects-ready-waits", { width: 640, height: 360 });
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  // The same rules with a shorter clock: what a page doing nothing for 15 s is refused for, in 1.5.
+  effects.waits.quietMs = 1_500;
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    const page = (ready: string) => `<!doctype html><body style="margin:0"><canvas id="c" width="640" height="360"></canvas><script>
+window.duration = 1;
+window.ready = ${ready};
+window.seek = () => {};
+</script></body>`;
+    // Painting for 4 s in one go (ten times the clock's quiet), and in slices with breaks between: both are ready.
+    write(app, id, "painted", { "scene.html": page(`new Promise((done) => setTimeout(() => { const end = performance.now() + 4000; const c = document.getElementById("c").getContext("2d"); while (performance.now() < end) { c.fillStyle = "hsl(" + (performance.now() % 360) + ",50%,50%)"; c.fillRect(Math.random() * 640, Math.random() * 360, 4, 4); } done(); }, 50))`) });
+    const painted = await effects.look(app, id, "painted", [0.5]);
+    expect(painted.errors).toEqual([]);
+    expect(painted.ready!.ms).toBeGreaterThan(3_500);
+    expect(painted.ready!.longest).toBeGreaterThan(3_500);
+    write(app, id, "sliced", { "scene.html": page(`(async () => { const end = performance.now() + 4000; while (performance.now() < end) { const slice = performance.now() + 30; while (performance.now() < slice); await new Promise((go) => setTimeout(go)); } })()`) });
+    const sliced = await effects.look(app, id, "sliced", [0.5]);
+    expect(sliced.errors).toEqual([]);
+    expect(sliced.ready!.ms).toBeGreaterThan(3_500);
+    expect(sliced.ready!.longest).toBeLessThan(500);
+    // Kept from that look, it isn't loaded again: nothing to say of its getting ready.
+    expect((await effects.look(app, id, "sliced", [0.2])).ready).toBeNull();
+    // A picture that isn't in its folder, waited for by its load alone: said by name, soon.
+    write(app, id, "missing", { "scene.html": page(`new Promise((done) => { const picture = new Image(); picture.onload = done; picture.src = "board.png"; })`) });
+    const from = Date.now();
+    await expect(effects.look(app, id, "missing", [0.5])).rejects.toThrow(`missing's window.ready never resolved: its page got nowhere for 1.5 s (no code running, nothing loading), waiting on something that never comes: it asked for "board.png", not in its folder`);
+    expect(Date.now() - from).toBeLessThan(10_000);
+    // A promise nothing resolves.
+    write(app, id, "forgot", { "scene.html": page(`new Promise(() => {})`) });
+    await expect(effects.look(app, id, "forgot", [0.5])).rejects.toThrow("a Promise nothing resolves");
+    // A loop that never ends, past the most a working page is given.
+    effects.waits.workingMostMs = 4_000;
+    write(app, id, "endless", { "scene.html": page(`(async () => { for (;;) { const slice = performance.now() + 30; while (performance.now() < slice); await new Promise((go) => setTimeout(go)); } })()`) });
+    await expect(effects.look(app, id, "endless", [0.5])).rejects.toThrow("endless's page was still working on window.ready after");
+    // What the agent is told: how long its code ran without a break, for the person's viewer runs it too.
+    const told = async (name: string) => JSON.stringify(await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name, times: [0.5] } } }, id));
+    expect(await told("sliced")).not.toContain("WITHOUT A BREAK");
+    write(app, id, "painted", { "scene.html": page(`new Promise((done) => setTimeout(() => { const end = performance.now() + 2500; while (performance.now() < end); done(); }, 50))`) });
+    expect(await told("painted")).toContain("WITHOUT A BREAK");
+  } finally {
+    effects.waits.quietMs = 15_000;
+    effects.waits.workingMostMs = 10 * 60_000;
     await server.stop(true);
     cleanup();
   }

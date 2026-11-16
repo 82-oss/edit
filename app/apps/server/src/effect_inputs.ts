@@ -72,7 +72,7 @@ export async function track(app: App, projectId: string, name: string, time: num
   const first = Math.max(shot.start, Math.round((span[0] ?? -Infinity) * fps));
   const last = Math.min(clipEnd(shot), Math.round((span[1] ?? Infinity) * fps));
   if (last - first < 2) throw new Error(`the footage there (${shot.id}) plays ${(shot.start / fps).toFixed(2)}–${(clipEnd(shot) / fps).toFixed(2)} s: give from and to inside it`);
-  if ((last - first) / fps > MOST_TRACKED_S) throw new Error(`at most ${MOST_TRACKED_S} s tracked in one go: give from and to`);
+  if ((last - first) / fps > MOST_TRACKED_S) throw new Error(`at most ${MOST_TRACKED_S} s tracked in one call (the tracker holds that much footage at once; this is ${((last - first) / fps).toFixed(0)} s): track it in stretches, each with its own from, to and as, and in the page use each stretch's track over its own seconds`);
   const toSourceTime = (at: number) => shot.source_in + ((at - shot.start) / fps) * shot.speed;
   const toTimelineFrame = (seconds: number) => shot.start + ((seconds - shot.source_in) / shot.speed) * fps;
   const centre = (x: number, y: number): [number, number] => [x - width / 2, y - height / 2];

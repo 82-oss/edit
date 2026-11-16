@@ -3825,7 +3825,7 @@
           "type": "string"
         },
         "end": {
-          "description": "Seconds of the media (default its end; at most 180 s after start).",
+          "description": "Seconds of the media (default its end). Any length; footage over 3 minutes needs start and end.",
           "type": "number"
         },
         "media_id": {

@@ -1,0 +1,74 @@
+<script>
+// What Edit watches while an effect's page gets ready (effects.ts, `settle`), put in after the runtime
+// (effect_runtime.html) and ahead of the effect's own code. Kept apart from the runtime because it changes no
+// picture: the runtime's text is part of every render's key, and this isn't.
+//
+// Edit waits as long as a page is getting somewhere (a painting of thousands of strokes, a map's tiles) and gives
+// up on one that isn't. Its main thread's work Chrome counts itself; a file arriving, a font loading and a worker's
+// answer are counted here. A worker not yet heard from counts as working: one painting off the main thread says
+// nothing until it's done.
+(() => {
+  const edit = window.__edit;
+  if (!edit) return;
+  let lastWork = performance.now();
+  const worked = () => {
+    lastWork = performance.now();
+  };
+  let unheard = 0;
+  let loaded = null;
+  // The longest its code ran without a break before it was ready: the person's viewer runs the same code, where
+  // a long stretch holds up Edit's window.
+  let longest = 0;
+  try {
+    new PerformanceObserver((list) => {
+      if (list.getEntries().length > 0) worked();
+    }).observe({ type: "resource", buffered: true });
+  } catch {}
+  let readyAt = Infinity;
+  const stretches = (entries) => {
+    for (const entry of entries) if (entry.startTime < readyAt) longest = Math.max(longest, entry.duration);
+  };
+  let tasks = null;
+  try {
+    tasks = new PerformanceObserver((list) => stretches(list.getEntries()));
+    tasks.observe({ type: "longtask", buffered: true });
+  } catch {}
+  try {
+    document.fonts.addEventListener("loadingdone", worked);
+  } catch {}
+  if (typeof window.Worker === "function") {
+    const Original = window.Worker;
+    const Watched = function Worker(...given) {
+      const worker = new Original(...given);
+      unheard += 1;
+      let heard = false;
+      const answered = () => {
+        worked();
+        if (heard) return;
+        heard = true;
+        unheard -= 1;
+      };
+      worker.addEventListener("message", answered);
+      worker.addEventListener("error", answered);
+      const terminate = worker.terminate.bind(worker);
+      worker.terminate = () => {
+        if (!heard) answered();
+        terminate();
+      };
+      return worker;
+    };
+    Watched.prototype = Original.prototype;
+    window.Worker = Watched;
+  }
+  edit.ready.then((value) => {
+    readyAt = performance.now();
+    // The stretch that made it ready is counted once it ends: after this task.
+    setTimeout(() => {
+      if (tasks !== null) stretches(tasks.takeRecords());
+      loaded = { ...value, longest: Math.round(longest) };
+    });
+  });
+  /** Where it is: `loaded` once it's ready, how long since it last got anywhere (ms), and what it threw. */
+  edit.waiting = () => ({ loaded, quiet: performance.now() - lastWork, unheard, errors: [...edit.errors] });
+})();
+</script>
