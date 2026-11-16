@@ -331,6 +331,25 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     expect(tool.isError).toBe(false);
     expect(tool.content.filter((part) => part.type === "image").length).toBe(1);
     expect(tool.content.at(-1)!.text).toContain("BREAKS THE EFFECT CONTRACT");
+    await expect(effects.add(app, id, "wrong")).rejects.toThrow("isn't ready for the timeline");
+    await expect(effects.look(app, id, "nowhere", [0])).rejects.toThrow('no effect "nowhere"');
+  } finally {
+    effects.closeChrome();
+    await server.stop(true);
+    cleanup();
+  }
+}, 120_000);
+
+// Its own test, apart from the one above: together they ran past two minutes on CI's Mac (Nov 15).
+test.skipIf(chrome === null)("look_at_effect every_frame: numbered sheets, the looker's reading of a long stretch, beside a reference and zoomed", async () => {
+  const { app, cleanup, id } = hq("effects-every");
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
     // Every frame of a stretch, tiled into numbered sheets: what only moves between frames shows there (Sphe, Nov 12: a board's
     // handwriting shimmered as it drifted, in no single still). At most 48 a look, and where to carry on is said.
     write(app, id, "counter", {
@@ -400,9 +419,8 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     const stretch = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_media", arguments: { media_id: "ref", every_frame: true, start: 0, end: 1, zoom: { x: 900, y: 400, width: 640, height: 360 } } } }, id)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
     expect(stretch.isError, stretch.content.map((part) => part.text).join(" ")).toBe(false);
     expect(stretch.content.at(-1)!.text).toContain("Frames 24–29 are left: look again with start 0.800");
-    await expect(effects.add(app, id, "wrong")).rejects.toThrow("isn't ready for the timeline");
-    await expect(effects.look(app, id, "nowhere", [0])).rejects.toThrow('no effect "nowhere"');
   } finally {
+    effects.closeChrome();
     await server.stop(true);
     cleanup();
   }
