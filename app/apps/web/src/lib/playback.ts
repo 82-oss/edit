@@ -689,7 +689,10 @@ class Preview {
       if (this.speed !== 1) void this.sendSpeed();
     } catch (error) {
       this.nativeRefused = true;
-      this.nativeOff("refused open", `the window's own preview didn't open: ${error}`);
+      // Where the page was and what it was, for a refusal by the window's permissions (Nov 16: one on the M4 that a
+      // nightly-75 window elsewhere never gave): an origin they don't name, or a page in a frame.
+      const where = typeof location === "undefined" ? "" : ` (page at ${location.origin}${window.top !== window ? ", in a frame" : ""})`;
+      this.nativeOff("refused open", `the window's own preview didn't open: ${error}${where}`);
     }
   }
 
