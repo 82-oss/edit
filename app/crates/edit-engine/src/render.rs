@@ -1527,6 +1527,10 @@ impl PreviewPictures {
     }
 }
 
+/// What's read for each video layer of a scene (its file and source time), and the layers' clips.
+#[cfg(target_os = "macos")]
+type Requests = (Vec<(Source, f64)>, Vec<String>);
+
 /// Each video layer of `scene` as what's read for it (its file, decoded at the size it's shown in a
 /// `shown` picture, and its source time), with its clip.
 #[cfg(target_os = "macos")]
@@ -1535,7 +1539,7 @@ fn video_requests(
     scene: &Scene,
     shown: (u32, u32),
     sources: &std::collections::HashMap<String, PathBuf>,
-) -> Result<(Vec<(Source, f64)>, Vec<String>), String> {
+) -> Result<Requests, String> {
     let mut requests = Vec::new();
     let mut clips = Vec::new();
     for layer in &scene.layers {
