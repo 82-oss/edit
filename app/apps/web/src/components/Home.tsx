@@ -257,23 +257,29 @@ export function Home() {
   // it's in: listed from here meanwhile, so it shows in Importing at once (JJ,
   // Nov 2: "It's just confusing when you import and it doesn't get into the
   // importing while it's in progress").
+  // Every one of this Mac's not in the cloud's list yet, whatever it's at: one imported and being written (or just
+  // written) isn't sent up until it's done, and was listed nowhere for its last two hours (JJ, Nov 16: "I can't seem
+  // to find them anywhere").
   const cloudIds = new Set(scripts.map((one) => one.id));
   const pending: WriterScriptRow[] = [
-    ...localScripts.filter((one) => !cloudIds.has(one.id) && (one.status === "processing" || one.status === "error" || one.status === "needs_choice" || one.firstBuild === true)),
+    ...localScripts.filter((one) => !cloudIds.has(one.id)),
     ...writing.filter((one) => !cloudIds.has(one.id) && !localScripts.some((local) => local.id === one.id)).map((one) => ({ id: one.id, title: one.title, createdAt: one.startedAt })),
   ].map((one): WriterScriptRow => ({
     id: one.id,
     title: one.title,
     rev: 0,
-    updatedAt: ("createdAt" in one ? one.createdAt : undefined) ?? Date.now(),
+    updatedAt: ("updatedAt" in one ? one.updatedAt : undefined) ?? ("createdAt" in one ? one.createdAt : undefined) ?? Date.now(),
     updatedBy: null,
     createdBy: "createdBy" in one ? (one.createdBy ?? null) : null,
     project: null,
     handoff: null,
-    clips: 0,
-    durationMs: 0,
-    built: false,
+    clips: "clipCount" in one ? (one.clipCount ?? 0) : 0,
+    durationMs: "durationMs" in one ? (one.durationMs ?? 0) : 0,
+    // As the cloud's list says it (writer_handoff.ts): written once it has more than its one source clip.
+    built: "clipCount" in one && (one.clipCount ?? 0) > 1,
     style: null,
+    ...("channel" in one && one.channel ? { channel: one.channel } : {}),
+    ...("runFailed" in one && one.runFailed ? { runFailed: one.runFailed } : {}),
     ...("compilation" in one && one.compilation !== undefined ? { compilation: one.compilation } : {}),
     ...("note" in one && one.note ? { note: one.note } : {}),
   }));
@@ -1268,6 +1274,11 @@ export type ScriptIssueRow = {
   sharing?: { startedAt: number };
   /** Its script being written (a build running on this Mac). */
   building?: boolean;
+  /** Its footage clips (more than one: written), its length, when it last changed and its channel, as this Mac has them. */
+  clipCount?: number;
+  durationMs?: number;
+  updatedAt?: number;
+  channel?: string;
   /** Its note, left from Home's ⋯. */
   note?: string;
   /** Stopped on a failure this build meets again however often it's retried (a 413): Retry isn't offered until an update. */
