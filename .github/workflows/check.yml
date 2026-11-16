@@ -73,6 +73,15 @@ jobs:
         with:
           path: app/.rust-passed
           key: rust-passed-${{ matrix.target }}-${{ steps.stable.outputs.sha }}-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/apps/web/src/lib/people-cases.json', 'app/scripts/ci-tools.sh', 'app/scripts/ffmpeg.sh', 'app/clippy.toml', 'app/Justfile') }}
+      # The web typecheck needs the WASM preview engine (gitignored, built
+      # from Rust): engine-cache.yml's copy when there is one, else built.
+      # Before the addon's restore: that lands in crates/, which this key hashes.
+      - id: wasm
+        if: matrix.part == 'acceptance' || matrix.part == 'ts'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: app/apps/web/src/engine/pkg
+          key: wasm-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/scripts/build-wasm.sh') }}
       # The debug addon every part but the Rust runs on, kept by a hash of the
       # Rust it's built from (a minute and more on each part, every run: the
       # workspace's own crates are never in rust-cache's cache), built when
@@ -84,14 +93,6 @@ jobs:
         with:
           path: app/crates/edit-native/edit-native.node
           key: addon-debug-${{ matrix.target }}-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**') }}
-      # The web typecheck needs the WASM preview engine (gitignored, built
-      # from Rust): engine-cache.yml's copy when there is one, else built.
-      - id: wasm
-        if: matrix.part == 'acceptance' || matrix.part == 'ts'
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
-        with:
-          path: app/apps/web/src/engine/pkg
-          key: wasm-${{ hashFiles('app/Cargo.toml', 'app/Cargo.lock', 'app/.cargo/**', 'app/crates/**', '!app/crates/**/node_modules/**', 'app/scripts/build-wasm.sh') }}
       # Rust only where something is compiled: the Rust part, the TypeScript's
       # generated types (`just types`), or an addon or WASM engine the caches
       # above didn't have. A server-tests or acceptance part on a warm cache
