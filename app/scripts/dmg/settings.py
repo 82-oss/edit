@@ -5,7 +5,7 @@ import os.path
 app = defines["app"]
 appname = os.path.basename(app)
 
-format = "UDZO"
+format = "ULFO"
 filesystem = "HFS+"
 files = [app]
 # Named " ": Finder writes names in near-black over the picture, so the background draws "Applications" in white.

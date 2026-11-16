@@ -312,6 +312,18 @@ jobs:
             app/ffmpeg
             app/quickjs
           key: ffmpeg-${{ matrix.target }}-${{ hashFiles('app/scripts/ffmpeg.sh', 'app/scripts/fetch-quickjs.sh') }}
+      # edit-speech compiled once for its source (20 s of Swift each build), and
+      # dmgbuild installed once (scripts/make-dmg.sh), kept by the runner's image.
+      - id: image
+        if: runner.os == 'macOS'
+        run: echo "version=${ImageOS:-unknown}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+      - if: runner.os == 'macOS'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: |
+            app/speech
+            ~/Library/Caches/edit/dmgbuild
+          key: mac-tools-${{ matrix.target }}-${{ steps.image.outputs.version }}-${{ hashFiles('app/scripts/edit-speech.swift', 'app/scripts/build-speech.sh', 'app/scripts/make-dmg.sh') }}
       - name: Package
         run: |
           set -euo pipefail
@@ -324,22 +336,30 @@ jobs:
           cp "quickjs/qjs-${{ matrix.target }}" package/
           "package/qjs-${{ matrix.target }}" --version
           # The Mac's on-device word source (apps/server/src/mac_speech.ts), built from scripts/edit-speech.swift.
-          speech=()
-          if [ "${{ runner.os }}" = macOS ]; then scripts/build-speech.sh package/edit-speech; speech=(edit-speech); fi
-          tar -czf "dist/$name" -C package edit edit-ffmpeg edit-ffprobe "qjs-${{ matrix.target }}" "${speech[@]}"
-          (cd dist && sha256sum "$name" > "$name.sha256" 2>/dev/null || shasum -a 256 "$name" > "$name.sha256")
+          if [ "${{ runner.os }}" = macOS ]; then
+            [ -x speech/edit-speech ] || scripts/build-speech.sh speech/edit-speech
+            cp speech/edit-speech package/
+          fi
           echo "NAME=$name" >> "$GITHUB_ENV"
-      # Edit.app, the zip installed apps update from, and the disk image (scripts/package-app.sh):
-      # signed with the Developer ID and notarised when these secrets are set, ad hoc until then.
-      - name: Edit.app and its disk image
-        if: runner.os == 'macOS'
+      # The archive `edit` updates from outside Edit.app (install.sh, update.ts): on a Mac, made while Edit.app is
+      # packaged and signed beside it (14 s of gzip), from package/ as it is.
+      - name: The archive, and Edit.app with its disk image
         env:
           MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
           NOTARY_KEY: ${{ secrets.NOTARY_KEY }}
           NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
           NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
-        run: scripts/package-app.sh "${{ matrix.target }}" package dist
+        run: |
+          set -euo pipefail
+          files=(edit edit-ffmpeg edit-ffprobe "qjs-${{ matrix.target }}")
+          if [ "${{ runner.os }}" = macOS ]; then files+=(edit-speech); fi
+          (tar -czf "dist/$NAME" -C package "${files[@]}" && cd dist && { sha256sum "$NAME" > "$NAME.sha256" 2>/dev/null || shasum -a 256 "$NAME" > "$NAME.sha256"; }) &
+          archive=$!
+          # Edit.app, the zip installed apps update from, and the disk image (scripts/package-app.sh):
+          # signed with the Developer ID and notarised when these secrets are set, ad hoc until then.
+          if [ "${{ runner.os }}" = macOS ]; then scripts/package-app.sh "${{ matrix.target }}" package dist; fi
+          wait "$archive"
       # Handed to the upload job: this job's token can't write the release.
       - name: Keep for the release
         if: env.RELEASE == 'true'
