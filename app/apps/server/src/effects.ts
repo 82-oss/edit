@@ -1755,7 +1755,17 @@ const lookedFor = new Set<string>();
 export function bringDown(app: App, project: string): Promise<string[]> {
   const going = bringing.get(project);
   if (going !== undefined) return going;
-  const work = bringDownNow(app, project).finally(() => bringing.delete(project));
+  const work = bringDownNow(app, project)
+    .then((brought) => {
+      // Said here, not left to the folder's watch (which may not hear a folder swapped in whole): the viewer plays it
+      // live, and its render follows on the computer editing it.
+      if (brought.length > 0) {
+        app.store.emit({ type: "effects", id: project, effects: list(app.store, project) });
+        changed?.(project);
+      }
+      return brought;
+    })
+    .finally(() => bringing.delete(project));
   bringing.set(project, work);
   return work;
 }
@@ -2049,6 +2059,11 @@ effectCloud.renderingNow.is = rendering;
  */
 export function start(app: App): void {
   changed = (project) => renderSoon(app, project);
+  // A project opened again here, nothing changed in it: what wasn't drawn while another computer (or nobody) held it is
+  // drawn now (Nov 16, the M4: an effect brought down after its project was closed again never rendered on reopening).
+  cloudProjects.hooks.held = (project) => {
+    if (app.store.get(project)?.project.hq === true) renderSoon(app, project);
+  };
   app.store.subscribe((event) => {
     if (event.type !== "project" || typeof event.id !== "string" || event.origin === "effects") return;
     if ((event.project as Project | undefined)?.hq === true) renderSoon(app, event.id);

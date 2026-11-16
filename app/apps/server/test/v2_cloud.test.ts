@@ -101,8 +101,15 @@ test("an effect's code kept version by version, the same files never twice, and 
       project.media.push({ id: "m1", name: "board", path: "/elsewhere/board.mp4", kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "board", effect_key: "k2" });
     });
     fs.rmSync(dir, { recursive: true });
+    const heard: string[][] = [];
+    const stop = app.store.subscribe((event) => {
+      if (event.type === "effects") heard.push((event as unknown as { effects: { name: string }[] }).effects.map((one) => one.name));
+    });
     expect(await effects.bringDown(app, id)).toEqual(["board"]);
+    stop();
     expect(fs.readFileSync(join(dir, "scene.html"), "utf8")).toBe("<p>two</p>");
+    // The viewer hears it came, whether or not a watch of the folder did (Nov 16, the M4: no picture until reopened).
+    expect(heard).toContainEqual(["board"]);
     // Here already: left as it is.
     expect(await effects.bringDown(app, id)).toEqual([]);
   } finally {

@@ -601,6 +601,7 @@ export class Cloud implements CloudHook {
       throw new Error(message);
     }
     this.with(id, (entry) => entry.acquired(acquired.got, at));
+    hooks.held(id);
     let meta: Meta | null;
     try {
       meta = await remote.get(id);
@@ -1167,6 +1168,7 @@ async function acquire(app: App, cloudProjects: Cloud, id: string, force: boolea
   }
   if ("got" in acquired) {
     cloudProjects.with(id, (entry) => entry.acquired(acquired.got, now()));
+    hooks.held(id);
     return catchUp(app, cloudProjects, id);
   }
   if (acquired.heldBy === holder) return;
@@ -1314,8 +1316,10 @@ async function ownSave(app: App, cloudProjects: Cloud, id: string): Promise<bool
 }
 
 /** Told when someone else takes over a project this machine held (the agent stops its turn there: agent.ts). */
-export const hooks: { tookOver: (app: App, id: string, holder: string) => void } = {
+export const hooks: { tookOver: (app: App, id: string, holder: string) => void; held: (id: string) => void } = {
   tookOver: (app, id, holder) => (app.agents as { lockLost?: (project: string, holder: string) => void } | undefined)?.lockLost?.(id, displayName(holder)),
+  /** This machine took the project's lock: what only the computer editing it does may go now (effects.ts renders). */
+  held: () => {},
 };
 
 /** Someone else took over a project held here: the editor and the agent panel hear it at once, and a turn running on it stops. */
