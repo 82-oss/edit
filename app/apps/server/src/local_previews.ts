@@ -15,38 +15,35 @@
 // (`localized`), never the saved project: its paths are the cloud's, the same
 // on every Mac.
 
-import * as fs from "node:fs";
-
+import * as cloudBlocks from "./cloud_blocks.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import { objectOf } from "./export_excerpts.ts";
 import type { Media, Project } from "./model.ts";
-import { isFile } from "./paths.ts";
+import { isFile, parent } from "./paths.ts";
+import * as playing from "./playing.ts";
 import * as pieces from "./proxy_pieces.ts";
-import { FREE_FLOOR_BYTES } from "./storage.ts";
+import * as storage from "./storage.ts";
 
 /** Whole previews fetched at once, and how many more may start for ones read now (`hurry`). */
 const AT_ONCE = 4;
 const HURRIED_AT_ONCE = 2;
-const waiting: { key: string; local: string }[] = [];
+/** A whole preview waiting to start: its key, where it goes, and about how big it is (0: not known yet). */
+type Waiting = { key: string; local: string; bytes: number; sized?: boolean };
+const waiting: Waiting[] = [];
 const fetching = new Set<string>();
 /** When a fetch last failed, so it isn't asked again on every frame (again after `RETRY_MS`). */
 const failed = new Map<string, number>();
 const RETRY_MS = 10 * 60_000;
+/** Each object's exact size, once its first block has said it (a copy stopped for room keeps it). */
+const sizes = new Map<string, number>();
+/** Files waiting that the disk has no room for now, already said in the log (said again once they've come). */
+const short = new Set<string>();
 
 /** Seams for tests. */
 export const hooks = {
-  // In 2 MiB blocks behind every read a person waits on (cloud_blocks.ts `fetchWhole`).
-  fetch: (key: string, local: string): Promise<void> => cloudMedia.fetchWholeCopy(key, local),
-  /** Bytes free on the disk holding `dir` (unknown: as good as endless). */
-  free: (dir: string): number => {
-    try {
-      const stat = fs.statfsSync(dir);
-      return stat.bavail * stat.bsize;
-    } catch {
-      return Number.POSITIVE_INFINITY;
-    }
-  },
+  // In 2 MiB blocks behind every read a person waits on (cloud_blocks.ts `fetchWhole`); `room` is told what's left to write.
+  fetch: (key: string, local: string, room?: (left: number, size: number) => boolean): Promise<void> => cloudMedia.fetchWholeCopy(key, local, room),
 };
 
 /**
@@ -54,7 +51,7 @@ export const hooks = {
  * the original, its size known; a made proxy is at most the cloud proxy's
  * bitrate (media.rs `cloud_proxy_bitrate`) and its sound for the duration.
  */
-function previewBytes(media: Media, key: string): number {
+export function previewBytes(media: Media, key: string): number {
   const original = media.cloud?.size;
   const known = typeof original === "number" && original > 0 ? original : Number.POSITIVE_INFINITY;
   if (key === media.cloud?.original) return Number.isFinite(known) ? known : 0;
@@ -70,39 +67,127 @@ export function onLanded(listener: (key: string) => void): () => void {
   return () => landedListeners.delete(listener);
 }
 
-function fetchNext(): void {
-  while (fetching.size < AT_ONCE) {
-    const next = waiting.shift();
-    if (next === undefined) return;
-    start(next);
+/** About how big `one` is: its exact size once a first block has said it (read once), else its guess. */
+function sizeOf(one: Waiting): number {
+  const exact = sizes.get(one.key);
+  if (exact !== undefined) return exact;
+  if (one.sized !== true) {
+    one.sized = true;
+    const root = cloudMedia.blocksRoot();
+    const read = root === null ? null : cloudBlocks.sizeOf(root, one.key);
+    if (read !== null) sizes.set(one.key, read);
+    if (read !== null) return read;
+  }
+  return one.bytes;
+}
+
+/**
+ * Starts what's waiting, in its order, while slots are free (`most`) and the disk has room for each: one check,
+ * here, of the disk's free space less what every copy under way still has to write (storage.ts claims) less this
+ * file's own size, kept over the cache's floor (storage.ts `CACHE_FLOOR_BYTES`); checked again with what's left
+ * to write exactly once its first block says its size (`start`). Until Nov 17 the check was made when the files
+ * were queued, counting nothing under way or queued, made again at every warm, and the window's own queue had
+ * none: on kenobi 3.3 GB came down in a minute, to ENOSPC. A file with no room waits (it streams on) and is
+ * looked at again as the queue moves: a copy ending, a new ask, the cleaner freeing room. Nothing new starts
+ * while a play is watched (playing.ts); what's waiting starts once it stops.
+ */
+function fetchNext(most = AT_ONCE, only?: Waiting): void {
+  if (playing.isPlaying() || waiting.length === 0 || fetching.size >= most) return;
+  const dir = parent(waiting[0]!.local) ?? waiting[0]!.local;
+  let room = storage.spare(dir, 0, storage.CACHE_FLOOR_BYTES);
+  let newlyShort = 0;
+  let wanted = 0;
+  for (let at = 0; at < waiting.length && fetching.size < most; ) {
+    const one = waiting[at]!;
+    if (only !== undefined && one !== only) {
+      at++;
+      continue;
+    }
+    if (isFile(one.local) || fetching.has(one.local)) {
+      waiting.splice(at, 1);
+      continue;
+    }
+    // Its size not known yet (the window queues by key): its first block at least, where the exact size is said.
+    const need = Math.max(sizeOf(one), cloudBlocks.BLOCK);
+    if (need > room) {
+      if (!short.has(one.local)) {
+        short.add(one.local);
+        newlyShort++;
+        for (const listener of failedListeners) listener(one.key, NO_ROOM);
+      }
+      wanted = Math.max(wanted, need - room);
+      at++;
+      continue;
+    }
+    waiting.splice(at, 1);
+    room -= need;
+    start(one, need);
+  }
+  if (newlyShort > 0) {
+    diag.info("preview", `${newlyShort} files stream on, the disk too full to keep them whole (${(storage.freeBytes(dir) / 1e9).toFixed(2)} GB free, ${(storage.claimedBytes() / 1e9).toFixed(2)} GB still coming)`);
+  }
+  // The cleaner asked for the room the next one needs (a few minutes apart, never what an open project plays): what it frees may take it.
+  if (wanted > 0) {
+    setTimeout(() => {
+      if (storage.askForRoom(storage.freeBytes(dir) + wanted) > 0) fetchNext();
+    }, 0).unref?.();
   }
 }
 
-function start(next: { key: string; local: string }): void {
-  if (fetching.has(next.local) || isFile(next.local)) return;
+const NO_ROOM = "the disk too full to keep it whole";
+
+function start(next: Waiting, need: number): void {
   fetching.add(next.local);
+  short.delete(next.local);
+  const claim = storage.claim(need);
+  const dir = parent(next.local) ?? next.local;
   const started = performance.now();
+  // Told the exact bytes left once the first block says the size: refused there (a guess too small) it waits again.
+  let checked = false;
+  const room = (left: number, size: number): boolean => {
+    sizes.set(next.key, size);
+    claim.bytes = left;
+    if (checked) return true;
+    checked = true;
+    return storage.spare(dir, left, storage.CACHE_FLOOR_BYTES, claim) >= 0;
+  };
   void hooks
-    .fetch(next.key, next.local)
+    .fetch(next.key, next.local, room)
     .then(() => {
       diag.info("preview", `${next.key}: whole preview here in ${diag.human(performance.now() - started)}`);
       for (const listener of landedListeners) listener(next.key);
     })
     .catch((error: unknown) => {
+      if (error instanceof cloudBlocks.NoRoom) {
+        // Not a failure: it streams on, and comes down when there's room.
+        waiting.push({ ...next, bytes: sizes.get(next.key) ?? next.bytes });
+        if (!short.has(next.local)) {
+          short.add(next.local);
+          diag.info("preview", `${next.key}: streams on, ${NO_ROOM}`);
+          for (const listener of failedListeners) listener(next.key, NO_ROOM);
+        }
+        return;
+      }
       failed.set(next.local, Date.now());
       diag.warn("preview", `${next.key}: whole preview not fetched: ${diag.messageOf(error)}`);
       for (const listener of failedListeners) listener(next.key, diag.messageOf(error));
     })
     .finally(() => {
+      claim.release();
       fetching.delete(next.local);
       fetchNext();
     });
 }
 
-/** Queues `key`'s whole preview into `local`, once. */
-export function fetchWhole(key: string, local: string): void {
+// What waited for a play to stop starts once it does.
+playing.onChange((now) => {
+  if (!now) fetchNext();
+});
+
+/** Queues `key`'s whole preview into `local`, once (`bytes`: about how big it is, when known). */
+export function fetchWhole(key: string, local: string, bytes = 0): void {
   if (Date.now() - (failed.get(local) ?? 0) < RETRY_MS || fetching.has(local) || waiting.some((one) => one.local === local) || isFile(local)) return;
-  waiting.push({ key, local });
+  waiting.push({ key, local, bytes });
   fetchNext();
 }
 
@@ -131,6 +216,11 @@ export function whenHere(key: string, local: string, waitMs = 15 * 60_000): Prom
       done(new Error("its fetch failed lately"));
       return;
     }
+    // No room for it now: what waits reads the stream, not the minutes until there is.
+    if (short.has(local)) {
+      done(new Error(NO_ROOM));
+      return;
+    }
     fetchWhole(key, local);
     // Landed between the check and the listener.
     if (isFile(local)) done(null);
@@ -148,7 +238,7 @@ function onFailed(listener: (key: string, error: string) => void): () => void {
 /** A file the page's player is reading from R2 this moment (a jump past what's here) comes down whole at once, as a jump in the window's does (`hurry`). */
 export function fetchNow(key: string, local: string): void {
   if (pieces.baseOf(key) !== null || isFile(local) || fetching.has(local) || Date.now() - (failed.get(local) ?? 0) < RETRY_MS) return;
-  if (!waiting.some((one) => one.local === local)) waiting.push({ key, local });
+  if (!waiting.some((one) => one.local === local)) waiting.push({ key, local, bytes: 0 });
   hurry(key);
 }
 
@@ -191,12 +281,8 @@ export function fetchInPlayheadOrder(cache: string, project: Project, from: numb
   }
   ranked.sort((a, b) => a.rank - b.rank || a.start - b.start);
   const byId = new Map(project.media.map((media) => [media.id, media]));
-  const wanted: { key: string; local: string }[] = [];
+  const wanted: Waiting[] = [];
   const seen = new Set<string>();
-  // Never below the cache's floor of free space (storage.ts): a file that would take the disk under it streams on.
-  // Until Nov 15 a read-ahead of at most ~600 MB; whole copies of every file need the check.
-  let room = hooks.free(cache) - FREE_FLOOR_BYTES;
-  let skipped = 0;
   for (const { media: id } of ranked) {
     const media = byId.get(id);
     const key = media === undefined ? null : cloudMedia.streamKey(media.cloud, "proxy");
@@ -204,15 +290,10 @@ export function fetchInPlayheadOrder(cache: string, project: Project, from: numb
     seen.add(key);
     const local = cloudMedia.localPath(cache, key);
     if (isFile(local) || fetching.has(local) || Date.now() - (failed.get(local) ?? 0) < RETRY_MS) continue;
-    const bytes = previewBytes(media, key);
-    if (bytes > room) {
-      skipped++;
-      continue;
-    }
-    room -= bytes;
-    wanted.push({ key, local });
+    const queued = waiting.find((one) => one.local === local);
+    wanted.push(queued ?? { key, local, bytes: previewBytes(media, key) });
   }
-  if (skipped > 0) diag.info("preview", `${project.id}: ${skipped} files of its footage stream on, the disk too full to keep them whole`);
+  // Whether each has room is asked as it starts (`fetchNext`), counting what's under way.
   const first = new Set(wanted.map((one) => one.local));
   const rest = waiting.filter((one) => !first.has(one.local));
   waiting.length = 0;
@@ -232,8 +313,8 @@ export function hurry(key: string): void {
   const at = waiting.findIndex((one) => one.key === key);
   if (at < 0) return;
   const [one] = waiting.splice(at, 1);
-  if (fetching.size < AT_ONCE + HURRIED_AT_ONCE) start(one!);
-  else waiting.unshift(one!);
+  waiting.unshift(one!);
+  fetchNext(AT_ONCE + HURRIED_AT_ONCE, one);
 }
 
 /**
@@ -251,7 +332,7 @@ function previewKey(media: Media): string | null {
 export function fetchAll(cache: string, project: Project): void {
   for (const media of project.media) {
     const key = previewKey(media);
-    if (key !== null && !isFile(media.path)) fetchWhole(key, cloudMedia.localPath(cache, key));
+    if (key !== null && !isFile(media.path)) fetchWhole(key, cloudMedia.localPath(cache, key), previewBytes(media, key));
   }
 }
 
@@ -267,7 +348,7 @@ export function localized(cache: string, project: Project): Project | null {
     if (key === null || isFile(media.path) || objectOf(media.path) !== `cloud:${key}`) return;
     const local = cloudMedia.localPath(cache, key);
     if (!isFile(local)) {
-      fetchWhole(key, local);
+      fetchWhole(key, local, previewBytes(media, key));
       return;
     }
     out ??= { ...project, media: [...project.media] };
@@ -289,4 +370,6 @@ export function reset(): void {
   waiting.length = 0;
   fetching.clear();
   failed.clear();
+  sizes.clear();
+  short.clear();
 }

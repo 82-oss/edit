@@ -15,8 +15,11 @@ import * as fs from "node:fs";
 import { createHash } from "node:crypto";
 
 import * as diag from "./diag.ts";
+import { outOfSpace } from "./export_prep.ts";
 import { writeAtomic } from "./files.ts";
 import { join } from "./paths.ts";
+import * as playing from "./playing.ts";
+import { FREE_FLOOR_BYTES, freeBytes } from "./storage.ts";
 
 export const BLOCK = 2 * 1024 * 1024;
 /** Blocks read ahead past the last one asked for: a bounded read's (the page's), and a read to the end's (FFmpeg reading on: Edit.app's window, its sound, the censor check). */
@@ -82,13 +85,40 @@ let inFlight = 0;
  */
 export type Priority = "asked" | "ahead" | "fill";
 const ORDER: Priority[] = ["asked", "ahead", "fill"];
-type Waiter = { go: () => void; priority: Priority };
+type Waiter = { go: () => void; priority: Priority; filling?: boolean };
 const lanes: Record<Priority, Waiter[]> = { asked: [], ahead: [], fill: [] };
 /** The block reads still waiting for a slot, by id: one someone now waits on moves up. */
 const queued = new Map<string, Waiter>();
 
 let fillsInFlight = 0;
-const full = (priority: Priority) => inFlight >= AT_ONCE || (priority === "fill" && fillsInFlight >= FILLS_AT_ONCE);
+/**
+ * Whole copies' fills get no slot while a play is watched (playing.ts): only the blocks a person waits on and the
+ * seconds ahead of the playhead are read, and the fills carry on from the block they stopped at once it stops
+ * (kenobi, Nov 17: a cold play on an M1 passed over 515 frames in 23 s with every whole copy coming down beside it).
+ */
+const full = (priority: Priority) => inFlight >= AT_ONCE || (priority === "fill" && (fillsInFlight >= FILLS_AT_ONCE || playing.isPlaying()));
+
+/** A read given its slot: counted as what it is now (one moved up while it waited counts as what it was moved to). */
+function take(waiter: Waiter): void {
+  inFlight++;
+  waiter.filling = waiter.priority === "fill";
+  if (waiter.filling) fillsInFlight++;
+}
+
+/** Waiting reads let go into the slots free, the most wanted lane first. */
+function pump(): void {
+  for (;;) {
+    const lane = ORDER.find((one) => lanes[one].length > 0 && !full(one));
+    if (lane === undefined) return;
+    const waiter = lanes[lane].shift()!;
+    take(waiter);
+    waiter.go();
+  }
+}
+
+playing.onChange((now) => {
+  if (!now) pump();
+});
 
 async function slot<T>(id: string, priority: Priority, work: () => Promise<T>): Promise<T> {
   const waiter: Waiter = { go: () => {}, priority };
@@ -99,21 +129,13 @@ async function slot<T>(id: string, priority: Priority, work: () => Promise<T>): 
       lanes[priority].push(waiter);
     });
     queued.delete(id);
-  }
-  // Moved up while it waited, it's counted as what it is now.
-  const filling = waiter.priority === "fill";
-  inFlight++;
-  if (filling) fillsInFlight++;
+  } else take(waiter);
   try {
     return await work();
   } finally {
     inFlight--;
-    if (filling) fillsInFlight--;
-    for (const lane of ORDER) {
-      if (lanes[lane].length === 0 || full(lane)) continue;
-      lanes[lane].shift()!.go();
-      break;
-    }
+    if (waiter.filling === true) fillsInFlight--;
+    pump();
   }
 }
 
@@ -126,6 +148,8 @@ function hurryBlock(id: string, priority: Priority): void {
   lanes[waiter.priority].splice(at, 1);
   waiter.priority = priority;
   lanes[priority].push(waiter);
+  // A slot held back from the fills (a play under way) may be free for it now.
+  pump();
 }
 
 const folderOf = (root: string, key: string) => join(root, createHash("sha1").update(key).digest("hex"));
@@ -135,6 +159,63 @@ function metaOf(folder: string): Meta | null {
     return JSON.parse(fs.readFileSync(join(folder, "meta.json"), "utf8")) as Meta;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Blocks are kept only while the disk keeps its floor free after them (storage.ts `FREE_FLOOR_BYTES`): below it a
+ * block read is answered from memory and not kept (kenobi, Nov 17: blocks and whole copies wrote until ENOSPC).
+ */
+function keepable(root: string): boolean {
+  return freeBytes(root) - BLOCK >= FREE_FLOOR_BYTES;
+}
+
+/** How much over the floor the disk must have for the page to be told blocks are kept (a play's next seconds of every file). */
+const KEEPING_MARGIN = 256 * 1024 * 1024;
+
+/**
+ * Whether blocks are being kept on this disk: false at its floor, where nothing read is kept and a play waiting for
+ * blocks to land waits for nothing (playback_ready.ts `keeping`: the page plays from the stream instead).
+ */
+export function keeping(root: string): boolean {
+  return freeBytes(root) >= FREE_FLOOR_BYTES + KEEPING_MARGIN;
+}
+
+/** Writes a block's file (or its meta); false when the disk refused it (ENOSPC): the read is answered from memory. */
+function keep(path: string, bytes: string | Uint8Array): boolean {
+  try {
+    writeAtomic(path, bytes);
+    return true;
+  } catch (error) {
+    if (outOfSpace(error)) return false;
+    throw error;
+  }
+}
+
+/**
+ * Whole copies being joined (a key's file so far and how many of its blocks are in it), and joined: a block let go
+ * once it's in its whole copy is read from there by a read still under way from the blocks.
+ */
+const joining = new Map<string, { path: string; blocks: number }>();
+const joined = new Map<string, string>();
+
+/** Block `index` of `key` from its whole copy here (being joined, or joined), or null. */
+function fromCopy(key: string, index: number): Uint8Array | null {
+  const under = joining.get(key);
+  const path = under !== undefined && index < under.blocks ? under.path : joined.get(key);
+  if (path === undefined) return null;
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(path, "r");
+    const out = new Uint8Array(BLOCK);
+    const read = fs.readSync(fd, out, 0, BLOCK, index * BLOCK);
+    return read > 0 ? out.subarray(0, read) : null;
+  } catch {
+    // The copy gone (the cleaner took it): read again.
+    joined.delete(key);
+    return null;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
   }
 }
 
@@ -155,6 +236,8 @@ function block(root: string, key: string, index: number, url: BlockSource, prior
   } catch {
     // Not here yet.
   }
+  const copied = fromCopy(key, index);
+  if (copied !== null) return Promise.resolve(copied);
   if (viewer) noteViewerMiss();
   const id = `${key}#${index}`;
   const known = reading.get(id);
@@ -167,8 +250,9 @@ function block(root: string, key: string, index: number, url: BlockSource, prior
     const { answer, bytes } = await fetchBlock(url, start, hedge);
     const total = Number(/\/(\d+)$/.exec(answer.headers.get("content-range") ?? "")?.[1] ?? NaN);
     fs.mkdirSync(folder, { recursive: true });
-    if (Number.isFinite(total) && metaOf(folder) === null) writeAtomic(join(folder, "meta.json"), JSON.stringify({ size: total, type: answer.headers.get("content-type") ?? "video/mp4", key }));
-    writeAtomic(path, bytes);
+    // Its size is a few bytes, kept even at the floor: a read answered from memory still knows how big the object is.
+    if (Number.isFinite(total) && metaOf(folder) === null) keep(join(folder, "meta.json"), JSON.stringify({ size: total, type: answer.headers.get("content-type") ?? "video/mp4", key }));
+    if (keepable(root)) keep(path, bytes);
     return bytes;
   }).finally(() => reading.delete(id));
   reading.set(id, read);
@@ -251,7 +335,20 @@ export function blocksHere(root: string, key: string): { size: number; here: Set
   } catch {
     return null;
   }
+  // Let go into the whole copy being joined: still here to read.
+  for (let index = 0; index < (joining.get(key)?.blocks ?? 0); index++) here.add(index);
   return { size: meta.size, here };
+}
+
+/** The object's size, once its first block has said it (null: not read yet). */
+export function sizeOf(root: string, key: string): number | null {
+  return metaOf(folderOf(root, key))?.size ?? null;
+}
+
+/** About how many of the object's bytes are kept here in blocks (0: none, or not read yet). */
+export function bytesHere(root: string, key: string): number {
+  const blocks = blocksHere(root, key);
+  return blocks === null ? 0 : Math.min(blocks.size, blocks.here.size * BLOCK);
 }
 
 /**
@@ -405,32 +502,53 @@ async function peekAt(direct: () => Promise<string>, from: number, to: number): 
 
 /** Whole copies' fills at once, each this many of its blocks in flight (the slots are shared: `slot`). */
 const FILL_EACH = 3;
-/** A whole copy's blocks are let go this long after it's made (a read under way from them finishes from them). */
-export const fillHooks = { dropAfterMs: 60_000 };
+
+/** A whole copy stopped for want of room: its blocks would take the disk under its floor (storage.ts). */
+export class NoRoom extends Error {
+  constructor(message = "the disk too full to keep it whole") {
+    super(message);
+  }
+}
 
 /**
  * `key` whole into `local`, through its blocks: each read in the fill's lane, behind every read a person waits on
- * and every read ahead of the playhead, so a copy coming down never holds up the picture (see `Priority`), then
- * joined into `local` (whole or not at all) and its blocks let go a minute later. Its stretches are ready to play
- * as their blocks land (playback_ready.ts), not only once the whole copy is in.
+ * and every read ahead of the playhead, so a copy coming down never holds up the picture (see `Priority`), and none
+ * while a play is watched; then joined into `local` (whole or not at all), each block let go as it goes in, so a copy
+ * takes its own size on the disk, not twice it (until Nov 17 its blocks stayed a minute beside it). Its stretches
+ * are ready to play as their blocks land (playback_ready.ts), not only once the whole copy is in.
+ *
+ * `room` is told the bytes still to write once the first block says the object's size, and again as blocks land;
+ * false from it (no room for that) stops the copy with `NoRoom`, as does a block the disk's floor won't let be kept.
  */
-export async function fetchWhole(root: string, key: string, local: string, url: BlockSource): Promise<void> {
+export async function fetchWhole(root: string, key: string, local: string, url: BlockSource, room: (left: number, size: number) => boolean = () => true): Promise<void> {
+  if (!keepable(root) && !fs.existsSync(join(folderOf(root, key), "0"))) throw new NoRoom();
   await block(root, key, 0, url, "fill");
   const folder = folderOf(root, key);
   const meta = metaOf(folder);
   if (meta === null) throw new Error(`${key}: no size known after its first block`);
   const last = Math.floor((meta.size - 1) / BLOCK);
+  const missing = new Set<number>();
+  for (let index = 0; index <= last; index++) if (!fs.existsSync(join(folder, `${index}`))) missing.add(index);
+  const left = () => Math.min(meta.size, missing.size * BLOCK);
+  if (!room(left(), meta.size)) throw new NoRoom();
   let next = 1;
   const worker = async () => {
     while (next <= last) {
       const index = next++;
-      if (!fs.existsSync(join(folder, `${index}`))) await block(root, key, index, url, "fill");
+      if (!missing.has(index)) continue;
+      if (!keepable(root)) throw new NoRoom();
+      await block(root, key, index, url, "fill");
+      if (!fs.existsSync(join(folder, `${index}`))) throw new NoRoom();
+      missing.delete(index);
+      room(left(), meta.size);
     }
   };
   await Promise.all(Array.from({ length: FILL_EACH }, worker));
   const part = `${local}.${process.pid}.part`;
   fs.mkdirSync(local.slice(0, local.lastIndexOf("/")), { recursive: true });
   const fd = fs.openSync(part, "w");
+  const into = { path: part, blocks: 0 };
+  joining.set(key, into);
   let written = 0;
   try {
     for (let index = 0; index <= last; index++) {
@@ -438,26 +556,32 @@ export async function fetchWhole(root: string, key: string, local: string, url: 
       const bytes = await block(root, key, index, url, "fill");
       fs.writeSync(fd, bytes);
       written += bytes.length;
+      into.blocks = index + 1;
+      fs.rmSync(join(folder, `${index}`), { force: true });
     }
   } catch (error) {
     fs.closeSync(fd);
+    joining.delete(key);
     fs.rmSync(part, { force: true });
-    throw error;
+    throw outOfSpace(error) ? new NoRoom() : error;
   }
   fs.closeSync(fd);
   if (written !== meta.size) {
+    joining.delete(key);
     fs.rmSync(part, { force: true });
     throw new Error(`${key}: ${written} bytes joined of ${meta.size}`);
   }
   fs.renameSync(part, local);
-  setTimeout(() => {
-    if (fs.existsSync(local)) fs.rmSync(folder, { recursive: true, force: true });
-  }, fillHooks.dropAfterMs).unref?.();
+  joined.set(key, local);
+  joining.delete(key);
+  fs.rmSync(folder, { recursive: true, force: true });
 }
 
 /** For tests: nothing queued or in flight. */
 export function resetForTests(): void {
   reading.clear();
+  joining.clear();
+  joined.clear();
   queued.clear();
   for (const lane of ORDER) lanes[lane].length = 0;
   inFlight = 0;

@@ -3,7 +3,10 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
-import { BLOCK, blocksHere, fetchWhole, fillHooks, hedgeHooks, noteViewerMiss, retryHooks, serve, viewerBusy, viewerHooks, waitForViewerRest, warm } from "../src/cloud_blocks.ts";
+import * as playing from "../src/playing.ts";
+import * as storage from "../src/storage.ts";
+
+import { BLOCK, blocksHere, fetchWhole, keeping, NoRoom, hedgeHooks, noteViewerMiss, retryHooks, serve, viewerBusy, viewerHooks, waitForViewerRest, warm } from "../src/cloud_blocks.ts";
 
 // R2 stood in for: a 5½-block object, every range read counted.
 const size = BLOCK * 5 + BLOCK / 2;
@@ -123,8 +126,6 @@ test("a read someone waits on goes first, then the seconds ahead of a jump, then
       return new Response(object.subarray(from, to + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${from}-${to}/${size}` } });
     },
   });
-  const drop = fillHooks.dropAfterMs;
-  fillHooks.dropAfterMs = 0;
   try {
     const slowRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-slow-"));
     const at = (name: string) => async () => `http://127.0.0.1:${slow.port}/${name}`;
@@ -153,11 +154,9 @@ test("a read someone waits on goes first, then the seconds ahead of a jump, then
     await Promise.all(fills);
     clearInterval(drain);
     expect(new Uint8Array(fs.readFileSync(join(slowRoot, "big0.mp4")))).toEqual(object);
-    // Its blocks let go once it's made.
-    await Bun.sleep(20);
+    // Its blocks let go as it's joined: the copy takes its own size on the disk, not twice it.
     expect(blocksHere(slowRoot, "edit/proxies/big0.mp4")).toBeNull();
   } finally {
-    fillHooks.dropAfterMs = drop;
     void slow.stop(true);
   }
 });
@@ -297,5 +296,72 @@ test("a cold read starts on its first bytes straight from R2's own URL while its
   } finally {
     void edge.stop(true);
     void r2own.stop(true);
+  }
+});
+
+test("at the disk's floor a block read is answered from memory and not kept, a whole copy stops (NoRoom) before it reads, and the page is told nothing is kept", async () => {
+  const realFree = storage.diskHooks.free;
+  try {
+    const floorRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-floor-"));
+    storage.diskHooks.free = () => storage.FREE_FLOOR_BYTES + BLOCK / 2;
+    expect(keeping(floorRoot)).toBe(false);
+    const key = "edit/proxies/floor.mp4";
+    const read = await serve(floorRoot, key, `bytes=0-99`, url);
+    expect(await bytes(read)).toEqual(object.subarray(0, 100));
+    // Its size kept (a few bytes), no block.
+    expect(blocksHere(floorRoot, key)).toEqual({ size, here: new Set() });
+    const before = reads.length;
+    await expect(fetchWhole(floorRoot, "edit/proxies/floor-whole.mp4", join(floorRoot, "floor-whole.mp4"), url)).rejects.toBeInstanceOf(NoRoom);
+    expect(reads.length).toBe(before);
+    // Room again: kept, and the page told so.
+    storage.diskHooks.free = () => Number.POSITIVE_INFINITY;
+    expect(keeping(floorRoot)).toBe(true);
+    await serve(floorRoot, key, `bytes=0-99`, url).then(bytes);
+    expect(blocksHere(floorRoot, key)!.here.has(0)).toBe(true);
+  } finally {
+    storage.diskHooks.free = realFree;
+  }
+});
+
+test("a whole copy is told what's left to write as its blocks land, stops where its room says no, and takes its own size, not twice it", async () => {
+  const wholeRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-whole-"));
+  const told: number[] = [];
+  const local = join(wholeRoot, "copy.mp4");
+  await fetchWhole(wholeRoot, "edit/proxies/told.mp4", local, url, (left, total) => {
+    expect(total).toBe(size);
+    told.push(left);
+    return true;
+  });
+  // After its first block: five left, then one fewer each.
+  expect(told[0]).toBe(5 * BLOCK);
+  expect(told.at(-1)).toBe(0);
+  expect(told).toEqual([...told].sort((a, b) => b - a));
+  expect(new Uint8Array(fs.readFileSync(local))).toEqual(object);
+  expect(blocksHere(wholeRoot, "edit/proxies/told.mp4")).toBeNull();
+  // Its room says no once its size is known: nothing past its first block read.
+  const before = reads.length;
+  await expect(fetchWhole(wholeRoot, "edit/proxies/refused.mp4", join(wholeRoot, "refused.mp4"), url, () => false)).rejects.toBeInstanceOf(NoRoom);
+  expect(reads.length - before).toBe(1);
+  expect(fs.existsSync(join(wholeRoot, "refused.mp4"))).toBe(false);
+});
+
+test("whole copies' fills get no slot while a play is watched, and carry on once it stops; a read someone waits on still goes", async () => {
+  const playRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-play-"));
+  const at = (name: string) => async () => `http://127.0.0.1:${r2.port}/${name}`;
+  try {
+    playing.note("p", true);
+    const before = reads.length;
+    let done = false;
+    const copy = fetchWhole(playRoot, "edit/proxies/paused.mp4", join(playRoot, "paused.mp4"), at("paused")).then(() => (done = true));
+    await Bun.sleep(30);
+    expect(reads.length).toBe(before);
+    // The page's own read isn't held.
+    expect((await serve(playRoot, "edit/proxies/watched.mp4", "bytes=0-99", at("watched")))!.status).toBe(206);
+    expect(done).toBe(false);
+    playing.note("p", false);
+    await copy;
+    expect(new Uint8Array(fs.readFileSync(join(playRoot, "paused.mp4")))).toEqual(object);
+  } finally {
+    playing.reset();
   }
 });

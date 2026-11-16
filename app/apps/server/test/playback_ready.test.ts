@@ -5,7 +5,8 @@ import * as path from "node:path";
 
 import { BLOCK } from "../src/cloud_blocks.ts";
 import { localPath } from "../src/cloud_media.ts";
-import { readyStretches } from "../src/playback_ready.ts";
+import { keeping, readyStretches } from "../src/playback_ready.ts";
+import * as storage from "../src/storage.ts";
 import { scratch } from "./helpers/home.ts";
 import { media, project as newProject } from "./helpers/model.ts";
 
@@ -54,5 +55,20 @@ test("the timeline's ready stretches: a file here or its whole copy throughout, 
     expect(await readyStretches(cache, project, root)).toEqual([[0, 300]]);
   } finally {
     home.cleanup();
+  }
+});
+
+test("the page is told whether what's read is kept here: not at the disk's floor, where a play waiting for its next seconds would wait for nothing (kenobi, Nov 17: 30 s every play)", () => {
+  const realFree = storage.diskHooks.free;
+  try {
+    storage.diskHooks.free = () => storage.FREE_FLOOR_BYTES + 10_000_000;
+    expect(keeping("/cache/cloud/blocks")).toBe(false);
+    storage.diskHooks.free = () => storage.FREE_FLOOR_BYTES + 2_000_000_000;
+    expect(keeping("/cache/cloud/blocks")).toBe(true);
+    // Playback not configured: nothing is read into blocks, as before.
+    storage.diskHooks.free = () => 0;
+    expect(keeping(null)).toBe(true);
+  } finally {
+    storage.diskHooks.free = realFree;
   }
 });

@@ -30,6 +30,7 @@ import type { Router } from "./http/router.ts";
 import type { Media, Project } from "./model.ts";
 import { isFile } from "./paths.ts";
 import { duration as projectDuration, fps as projectFps } from "./project.ts";
+import * as playing from "./playing.ts";
 import * as pieces from "./proxy_pieces.ts";
 
 /** Seconds of the timeline from a jump (or the playhead, as it plays) whose streamed footage is read into blocks at once. */
@@ -152,6 +153,8 @@ export async function warm(app: App, id: string, frame: number): Promise<void> {
   const project = live.project;
   const at = Math.max(0, Math.floor(frame));
   await cloudMedia.prefetchProject(app, id, at);
+  // At the disk's floor nothing read ahead would be kept: the page plays from the stream (`keeping`).
+  if (!cloudBlocks.keeping(root)) return;
   const cache = app.store.cacheDir();
   const fps = projectFps(project);
   const media = new Map(project.media.map((one) => [one.id, one]));
@@ -184,18 +187,30 @@ export async function warm(app: App, id: string, frame: number): Promise<void> {
   await pass(at + FIRST_SECONDS * fps, at + WARM_SECONDS * fps, "ahead");
 }
 
+/**
+ * Whether blocks and whole copies are kept on this disk now: false at its floor (storage.ts), where none is, so a
+ * play waiting for its next seconds to be here would wait for nothing (kenobi, Nov 17: with the disk full every play
+ * waited its 30 s). Without playback configured, nothing is read into blocks: kept as before.
+ */
+export function keeping(root = cloudMedia.blocksRoot()): boolean {
+  return root === null || cloudBlocks.keeping(root);
+}
+
 export function routes(router: Router<App>): void {
   router
-    // The timeline's stretches ready to play here (frames): the progress bar's grey, and what a play waits for.
+    // The timeline's stretches ready to play here (frames): the progress bar's grey, and what a play waits for; and
+    // whether anything read is kept here (`keeping`: false at the disk's floor, where the page plays from the stream).
     .get("/api/projects/{id}/playback/ready", async ({ app, params }) => {
       const live = app.store.get(params.id ?? "");
-      if (live === null) return json({ ready: [] });
-      return json({ ready: await readyStretches(app.store.cacheDir(), live.project) });
+      if (live === null) return json({ ready: [], keeping: true });
+      return json({ ready: await readyStretches(app.store.cacheDir(), live.project), keeping: keeping() });
     })
     // The viewer is here (an open, a jump, a play): what's next comes first. Answers at once; the reads carry on.
+    // `playing` (true while a play runs, false at its pause) is what background work gives way to (playing.ts).
     .post("/api/projects/{id}/playback/warm", async ({ app, params, request }) => {
-      const body = (await request.json().catch(() => ({}))) as { frame?: unknown };
+      const body = (await request.json().catch(() => ({}))) as { frame?: unknown; playing?: unknown };
       const frame = typeof body.frame === "number" && Number.isFinite(body.frame) ? body.frame : 0;
+      if (typeof body.playing === "boolean") playing.note(params.id ?? "", body.playing);
       void warm(app, params.id ?? "", frame).catch((error: unknown) => diag.warn("cloud", `${params.id}: warming from ${frame}: ${diag.messageOf(error)}`));
       return json({ ok: true });
     });

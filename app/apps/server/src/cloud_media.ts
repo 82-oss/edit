@@ -59,6 +59,8 @@ import * as fs from "node:fs";
 import type { App } from "./app.ts";
 import * as cloudBlocks from "./cloud_blocks.ts";
 import * as localPreviews from "./local_previews.ts";
+import * as playing from "./playing.ts";
+import * as storage from "./storage.ts";
 import * as exportExcerpts from "./export_excerpts.ts";
 import { prepLine } from "./export_prep.ts";
 import * as pieces from "./proxy_pieces.ts";
@@ -1829,6 +1831,9 @@ export async function streamFromCloud(request: Request, cloudMedia: { proxy?: st
 /** The fill of pieces under way per project, and the frame it began from. */
 const fills = new Map<string, { from: number; stopped: boolean }>();
 
+/** About what a piece of a long video takes on the disk (a minute of a 1080p proxy, with room to spare). */
+const PIECE_ROOM = 150_000_000;
+
 /** Seams for tests. */
 export const fillHooks = {
   fill: (context: pieces.Context, wants: { base: string; seconds: number }[], stop: () => boolean): Promise<number> => pieces.fill(context, wants, stop),
@@ -1875,10 +1880,24 @@ export function fillPieces(app: App, id: string, from = 0): void {
   const mine = { from, stopped: false };
   fills.set(id, mine);
   const stop = () => mine.stopped;
-  // Behind the viewer like the block prefetch: making pieces reads R2 too, so it starts only once the viewer rests.
+  const cache = app.store.cacheDir();
+  // Behind the viewer like the block prefetch: making pieces reads R2 too, so it starts only once the viewer rests;
+  // between pieces it gives way to a play (playing.ts) and carries on once it stops, and it stops where a piece would
+  // take the disk under the cache's floor (storage.ts), as whole copies do.
   void (async () => {
-    if (!(await cloudBlocks.waitForViewerRest(stop))) return;
-    await fillHooks.fill(piecesContext(app.store.cacheDir()), wants, stop);
+    for (;;) {
+      if (!(await cloudBlocks.waitForViewerRest(stop)) || !(await playing.whenIdle(stop))) return;
+      let paused = false;
+      let full = false;
+      await fillHooks.fill(piecesContext(cache), wants, () => {
+        if (mine.stopped) return true;
+        if (playing.isPlaying()) return (paused = true);
+        if (storage.spare(cache, PIECE_ROOM, storage.CACHE_FLOOR_BYTES) < 0) return (full = true);
+        return false;
+      });
+      if (full) diag.info("pieces", `${id}: its long videos' pieces stream on, the disk too full to keep them`);
+      if (!paused || mine.stopped) return;
+    }
   })()
     .catch((error: unknown) => diag.warn("pieces", `${id}: ${diag.messageOf(error)}`))
     .finally(() => {
@@ -1888,6 +1907,8 @@ export function fillPieces(app: App, id: string, from = 0): void {
 
 /** Where each project's viewer last was (a frame: playback_ready.ts `warm`), so an open's prefetch orders from there. */
 const viewerAt = new Map<string, number>();
+/** How many files each project's last prefetch said were queued. */
+const queuedSaid = new Map<string, number>();
 
 /** Where the edit's parts start (intro, cut-ins, story, outro: frames), where a person often jumps to. */
 function partStarts(project: Project): number[] {
@@ -1918,7 +1939,11 @@ export async function prefetchProject(app: App, id: string, from?: number): Prom
   const live = app.store.get(id);
   if (live === null) return 0;
   const queued = localPreviews.fetchInPlayheadOrder(app.store.cacheDir(), live.project, at, partStarts(live.project));
-  if (queued > 0) diag.info("cloud", `${id}: ${queued} files of its footage coming down whole, from frame ${at}`);
+  // Said when it changes, not at every warm (every 5 s of a play).
+  if (queued > 0 && queuedSaid.get(id) !== queued) {
+    queuedSaid.set(id, queued);
+    diag.info("cloud", `${id}: ${queued} files of its footage queued to come down whole as the disk has room, from frame ${at}`);
+  }
   return queued;
 }
 
@@ -1932,9 +1957,9 @@ export function blocksRoot(): string | null {
  * (cloud_blocks.ts `fetchWhole`), so a copy coming down never takes the link from a read someone waits on; as one
  * read where playback isn't configured.
  */
-export function fetchWholeCopy(key: string, local: string): Promise<void> {
+export function fetchWholeCopy(key: string, local: string, room?: (left: number, size: number) => boolean): Promise<void> {
   if (playbackBlocks === null) return fetchKey(key, local);
-  return cloudBlocks.fetchWhole(playbackBlocks, key, local, () => streamingUrl(key, true));
+  return cloudBlocks.fetchWhole(playbackBlocks, key, local, () => streamingUrl(key, true), room);
 }
 
 /** What `key`'s blocks are read from (the relay's edge, else R2), for a read ahead of the viewer (playback_ready.ts). */

@@ -52,7 +52,7 @@ import { openedTimes } from "./opened.ts";
 import { join } from "./paths.ts";
 import * as research from "./research.ts";
 import * as writerStore from "./writer/store.ts";
-import { DEFAULT_LOCAL_BUDGET_BYTES, FREE_FLOOR_BYTES, localBudgetBytes } from "./storage.ts";
+import { DEFAULT_LOCAL_BUDGET_BYTES, FREE_FLOOR_BYTES, diskHooks, localBudgetBytes } from "./storage.ts";
 
 /** Made again cheaply from the source. */
 const REBUILT = /^(preview|thumbs|peaks|loudness|censor|light)/;
@@ -760,18 +760,23 @@ export function cleanExports(app: App, dryRun: boolean, now = Date.now()): { fil
 /** Cleans now and then: a few minutes after the start, then hourly (a day of imports and exports filled the disk). */
 /**
  * Room for work that needs `wanted` bytes free on the cache's disk and hasn't
- * them (an export about to be refused): the cache's least recently used
+ * them (an export about to be refused, a whole copy or an effect's render
+ * with no room: storage.ts `askForRoom`): the cache's least recently used
  * copies go, as when the disk is nearly full, and exports kept here that are
- * in the cloud. What was freed (bytes).
+ * in the cloud; never a copy of a project open in the last ten minutes (the
+ * editor says it's open every 30 s) nor one touched in the last hours. What
+ * was freed (bytes).
  */
 export function makeRoom(app: App, wanted: number): number {
   const cache = app.store.cacheDir();
   const report = cleanCache(app, false, Date.now(), { cacheBytes: localBudgetBytes({ freeBytes: freeSpace(cache), cacheBytes: size(cache) }), freeBytes: wanted });
-  if (report.bytes > 0) diag.info("cache", `freed ${(report.bytes / 1e9).toFixed(2)} GB for an export that needs ${(wanted / 1e9).toFixed(1)} GB free`);
+  if (report.bytes > 0) diag.info("cache", `freed ${(report.bytes / 1e9).toFixed(2)} GB for work that needs ${(wanted / 1e9).toFixed(1)} GB free`);
   return report.bytes;
 }
 
 export function startCleaning(app: App): () => void {
+  // Whole copies and effects' renders with no room ask the cleaner for it (storage.ts `askForRoom`).
+  diskHooks.makeRoom = (wanted) => makeRoom(app, wanted);
   let running = false;
   const run = async () => {
     if (running) return;

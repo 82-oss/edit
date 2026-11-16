@@ -1,6 +1,8 @@
 // How much of this disk Edit's local data may take (cache_cleanup.ts and
 // Script mode's storage.ts keep to it).
 
+import * as fs from "node:fs";
+
 /**
  * The smallest local cache, and what it was until Nov 2. Sized for a Mac that
  * did its heavy work on Modal; once Edit moved back onto the Macs (Sphe,
@@ -25,4 +27,102 @@ export function localBudgetBytes(disk?: { freeBytes: number; cacheBytes: number 
   if (disk === undefined || !Number.isFinite(disk.freeBytes)) return DEFAULT_LOCAL_BUDGET_BYTES;
   const room = Math.max(disk.freeBytes, 0) + Math.max(disk.cacheBytes, 0);
   return Math.floor(Math.max(DEFAULT_LOCAL_BUDGET_BYTES, Math.min(room * SHARE, room - FREE_FLOOR_BYTES, MOST)));
+}
+
+// ---------------------------------------------------------------------------
+// The disk's room, shared by everything that fills it in the background
+// (kenobi, Nov 17: an M1 with little disk opened Cops Found 3 Bodies, 7.85 GB
+// in R2; whole copies queued with no check counted 3.3 GB in about a minute,
+// went on past "the disk too full to keep them whole" to ENOSPC at 233 MB free,
+// and every effect render after was refused). Each writer claims what it still
+// has to write before it starts (`claim`), and a new one starts only while the
+// free space less every claim and its own need stays over its floor (`spare`).
+
+/**
+ * What copies kept only to play sooner (whole previews, a long video's pieces) leave free: the floor and a
+ * gigabyte more, for the work that can't stream (an effect's render, an export), which keeps to the floor alone.
+ */
+export const CACHE_FLOOR_BYTES = FREE_FLOOR_BYTES + 1_000_000_000;
+
+/** Seams for tests: the disk's free space, and the cleaner asked to make room (cache_cleanup.ts `makeRoom`, set at the server's start). */
+export const diskHooks = {
+  free: (dir: string): number => {
+    // A folder not made yet is on its nearest parent's disk.
+    for (let at = dir; ; ) {
+      try {
+        const stat = fs.statfsSync(at);
+        return stat.bavail * stat.bsize;
+      } catch {
+        const up = at.lastIndexOf("/") > 0 ? at.slice(0, at.lastIndexOf("/")) : "/";
+        if (up === at || at === "") return Number.POSITIVE_INFINITY;
+        at = up;
+      }
+    }
+  },
+  makeRoom: (_wanted: number): number => 0,
+};
+
+/** Bytes free on the disk holding `dir` (unknown: as good as endless). */
+export function freeBytes(dir: string): number {
+  return diskHooks.free(dir);
+}
+
+/** Room a write under way has promised itself: what it still has to write (set as it writes), until released. */
+export interface Claim {
+  bytes: number;
+  release(): void;
+}
+
+const claims = new Set<Claim>();
+
+/** Claims `bytes` of the disk for a write about to start. */
+export function claim(bytes: number): Claim {
+  const one: Claim = {
+    bytes: Math.max(0, bytes),
+    release: () => {
+      claims.delete(one);
+    },
+  };
+  claims.add(one);
+  return one;
+}
+
+/** What every write under way still has to write, but `except`'s. */
+export function claimedBytes(except?: Claim): number {
+  let total = 0;
+  for (const one of claims) if (one !== except) total += Math.max(0, one.bytes);
+  return total;
+}
+
+/**
+ * Bytes over `floor` the disk holding `dir` keeps once `bytes` more are written beside every claim but `except`'s
+ * (below zero: short by that much).
+ */
+export function spare(dir: string, bytes: number, floor = FREE_FLOOR_BYTES, except?: Claim): number {
+  return freeBytes(dir) - claimedBytes(except) - Math.max(0, bytes) - floor;
+}
+
+/** The cleaner is asked for room at most this often (a pass walks the whole cache). */
+const ROOM_EVERY_MS = 5 * 60_000;
+let roomAsked = 0;
+
+/**
+ * The cleaner asked to free the disk until `wanted` bytes are free (cache_cleanup.ts `makeRoom`: the least recently
+ * used copies, never a project open in the last ten minutes nor any copy touched in the last hours), at most once
+ * every few minutes; what it freed.
+ */
+export function askForRoom(wanted: number, now = Date.now()): number {
+  if (now - roomAsked < ROOM_EVERY_MS) return 0;
+  roomAsked = now;
+  try {
+    return diskHooks.makeRoom(wanted);
+  } catch {
+    return 0;
+  }
+}
+
+/** For tests. */
+export function resetRoom(): void {
+  claims.clear();
+  roomAsked = 0;
 }

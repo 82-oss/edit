@@ -2,15 +2,22 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { NoRoom } from "../src/cloud_blocks.ts";
 import { localPath } from "../src/cloud_media.ts";
 import * as localPreviews from "../src/local_previews.ts";
+import * as playing from "../src/playing.ts";
+import * as storage from "../src/storage.ts";
 import { scratch } from "./helpers/home.ts";
 import { media, project as newProject } from "./helpers/model.ts";
 
 const realFetch = localPreviews.hooks.fetch;
+const realFree = storage.diskHooks.free;
 afterEach(() => {
   localPreviews.hooks.fetch = realFetch;
+  storage.diskHooks.free = realFree;
   localPreviews.reset();
+  storage.resetRoom();
+  playing.reset();
 });
 
 const KEY = "edit/proxies/youtube/abc/0-1000.mp4";
@@ -116,30 +123,143 @@ test("the page player's footage comes down whole in the timeline's order from th
   }
 });
 
-test("the page player's footage comes down whole only while the disk keeps its floor free; a file that would take it under streams on", async () => {
+/** A disk with `free` bytes free, which each fake fetch fills as it "writes" (telling its room what's left). */
+function disk(free: number) {
+  const state = { free, lowest: free };
+  storage.diskHooks.free = () => state.free;
+  const write = (bytes: number) => {
+    state.free -= bytes;
+    state.lowest = Math.min(state.lowest, state.free);
+  };
+  return { state, write };
+}
+
+const own = (name: string, size: number) => {
+  const key = `edit/originals/sha256/${name}/clip.mp4`;
+  return { key, cloud: { source: name, original: key, proxy: key, size } };
+};
+
+function projectOf(files: { key: string; cloud: object }[]) {
+  const project = newProject();
+  files.forEach((one, n) => project.media.push(media({ id: `m${n}`, name: `m${n}`, path: stream(one.key), kind: "video", duration: 60, cloud: one.cloud } as never)));
+  project.clips.push(...files.map((_, n) => ({ type: "video", id: `c${n}`, track: "v1", media: `m${n}`, start: n * 100, duration: 100, source_in: 0, speed: 1 }) as never));
+  return project;
+}
+
+test("whole copies start only while the disk keeps the cache's floor beside what's still coming; one with no room streams on, and starts once there's room (kenobi, Nov 17: 3.3 GB in a minute, to ENOSPC)", async () => {
   const home = scratch("local-previews");
-  const realFree = localPreviews.hooks.free;
   try {
     const started: string[] = [];
-    localPreviews.hooks.fetch = (key) => new Promise<void>(() => { started.push(key); });
-    // 300 MB over the floor.
-    localPreviews.hooks.free = () => 1_300_000_000;
-    const own = (name: string, size: number) => {
-      const key = `edit/originals/sha256/${name}/clip.mp4`;
-      return { key, cloud: { source: name, original: key, proxy: key, size } };
-    };
+    const finish = new Map<string, () => void>();
+    localPreviews.hooks.fetch = (key) => new Promise<void>((resolve) => { started.push(key); finish.set(key, resolve); });
+    // 300 MB over the cache's floor.
+    const { state } = disk(storage.CACHE_FLOOR_BYTES + 300_000_000);
     const big = own("big", 250_000_000);
     const bigger = own("bigger", 200_000_000);
     const small = own("small", 40_000_000);
-    const project = newProject();
-    [big, bigger, small].forEach((one, n) => project.media.push(media({ id: `m${n}`, name: `m${n}`, path: stream(one.key), kind: "video", duration: 60, cloud: one.cloud } as never)));
-    project.clips.push(...[0, 1, 2].map((n) => ({ type: "video", id: `c${n}`, track: "v1", media: `m${n}`, start: n * 100, duration: 100, source_in: 0, speed: 1 }) as never));
-    // The first fits; the second would take the disk under its floor; the third still fits after the first.
-    expect(localPreviews.fetchInPlayheadOrder(home.dir, project, 0)).toBe(2);
+    const project = projectOf([big, bigger, small]);
+    // All three wait their turn; the first fits; the second doesn't beside it (until Nov 17 nothing under way was
+    // counted); the third does.
+    expect(localPreviews.fetchInPlayheadOrder(home.dir, project, 0)).toBe(3);
     await Bun.sleep(5);
     expect(started).toEqual([big.key, small.key]);
+    // Asked again (a warm, every 5 s of a play): nothing more starts.
+    localPreviews.fetchInPlayheadOrder(home.dir, project, 0);
+    await Bun.sleep(5);
+    expect(started).toEqual([big.key, small.key]);
+    // The big one written and in: still no room for the one waiting beside the small one's 40 MB.
+    state.free -= 250_000_000;
+    finish.get(big.key)!();
+    await Bun.sleep(5);
+    expect(started).toEqual([big.key, small.key]);
+    // Room again (something deleted): it starts as the queue next moves.
+    state.free += 500_000_000;
+    finish.get(small.key)!();
+    await Bun.sleep(5);
+    expect(started).toEqual([big.key, small.key, bigger.key]);
   } finally {
-    localPreviews.hooks.free = realFree;
+    home.cleanup();
+  }
+});
+
+test("a whole copy's exact size is checked again once its first block says it: one too big stops, isn't failed, and the censor check reads the stream at once", async () => {
+  const home = scratch("local-previews");
+  try {
+    disk(storage.CACHE_FLOOR_BYTES + 300_000_000);
+    let asked = 0;
+    localPreviews.hooks.fetch = async (_key, _local, room) => {
+      asked++;
+      // The first block: 500 MB, where nothing was known (Edit.app's window queues by key alone).
+      if (room !== undefined && !room(500_000_000, 500_000_000)) throw new NoRoom();
+    };
+    const key = "edit/proxies/youtube/abc/0-1000.mp4";
+    const local = localPath(home.dir, key);
+    localPreviews.fetchWhole(key, local);
+    await Bun.sleep(5);
+    expect(asked).toBe(1);
+    // It waits with its size known: not asked again (no block read again) while there's no room for it.
+    localPreviews.fetchWhole(key, local);
+    localPreviews.fetchNow(key, local);
+    await Bun.sleep(5);
+    expect(asked).toBe(1);
+    await expect(localPreviews.whenHere(key, local, 1_000)).rejects.toThrow("the disk too full to keep it whole");
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("no whole copy starts while a play is watched; what waited starts once it stops", async () => {
+  const home = scratch("local-previews");
+  try {
+    disk(Number.POSITIVE_INFINITY);
+    const started: string[] = [];
+    localPreviews.hooks.fetch = (key) => new Promise<void>(() => { started.push(key); });
+    playing.note("p", true);
+    const one = own("one", 10_000_000);
+    localPreviews.fetchInPlayheadOrder(home.dir, projectOf([one]), 0);
+    // A jump in the window (`hurry`) doesn't start one either.
+    localPreviews.hurry(one.key);
+    await Bun.sleep(5);
+    expect(started).toEqual([]);
+    playing.note("p", false);
+    await Bun.sleep(5);
+    expect(started).toEqual([one.key]);
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("a project's every file asked for at once, from both players, on a small disk: the cache's floor is never crossed, and what doesn't fit streams", async () => {
+  const home = scratch("local-previews");
+  try {
+    // 4 GB free, 60 files of 150 MB each (9 GB), written 10 MB at a time as the blocks of a fill would be.
+    const { state, write } = disk(4_000_000_000);
+    const files = Array.from({ length: 60 }, (_, n) => own(`f${n}`, 150_000_000));
+    let kept = 0;
+    localPreviews.hooks.fetch = async (_key, _local, room) => {
+      let left = 150_000_000;
+      if (room !== undefined && !room(left, left)) throw new NoRoom();
+      while (left > 0) {
+        await Bun.sleep(1);
+        write(10_000_000);
+        left -= 10_000_000;
+        room?.(left, 150_000_000);
+      }
+      kept++;
+    };
+    const project = projectOf(files);
+    localPreviews.fetchInPlayheadOrder(home.dir, project, 0);
+    // Edit.app's window queues each by key alone, and every warm asks again.
+    for (const one of files) localPreviews.fetchWhole(one.key, localPath(home.dir, one.key));
+    for (let n = 0; n < 20; n++) {
+      localPreviews.fetchInPlayheadOrder(home.dir, project, n * 100);
+      await Bun.sleep(10);
+    }
+    for (let wait = 0; wait < 200 && state.free > storage.CACHE_FLOOR_BYTES + 150_000_000; wait++) await Bun.sleep(5);
+    await Bun.sleep(100);
+    expect(state.lowest).toBeGreaterThanOrEqual(storage.CACHE_FLOOR_BYTES);
+    expect(kept).toBe(Math.floor((4_000_000_000 - storage.CACHE_FLOOR_BYTES) / 150_000_000));
+  } finally {
     home.cleanup();
   }
 });
