@@ -4413,6 +4413,25 @@ mod tests {
         path
     }
 
+    /// A cloud address here that answers every read with a 404 at once: a
+    /// read of it fails as an unreachable one does, without FFmpeg's
+    /// reconnect backoff on a network error (r2.invalid: 10-20 s a read).
+    fn missing_url(path: &str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                use std::io::{Read, Write};
+                let mut asked = [0_u8; 4096];
+                let _ = stream.read(&mut asked);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+        format!("http://127.0.0.1:{port}{path}")
+    }
+
     /// Which frame of [`frame_counter`] a decoded RGBA picture is.
     fn counted(frame: &[u8]) -> i64 {
         // Limited-range grey 16 + 3n is full-range 3n × 255 / 219.
@@ -4444,7 +4463,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(cut.success());
-        let object = "https://r2.invalid/edit/originals/drive/counterB/counter-b.mp4";
+        let object = &missing_url("/edit/originals/drive/counterB/counter-b.mp4");
         crate::excerpts::add(
             object,
             [crate::excerpts::Excerpt {
@@ -4508,7 +4527,7 @@ mod tests {
             assert!(done.success());
             out
         };
-        let object = "https://r2.invalid/edit/pieces/v3/youtube/lateLATE01/proxy.mp4";
+        let object = &missing_url("/edit/pieces/v3/youtube/lateLATE01/proxy.mp4");
         let media: Media = serde_json::from_value(json!({
             "id": "m", "name": "m", "path": format!("{object}?sig=1"), "kind": "video",
             "duration": 2.0, "width": 64, "height": 36, "fps": 30
