@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
-import { BLOCK, blocksHere, fetchWhole, fillHooks, noteViewerMiss, retryHooks, serve, viewerBusy, viewerHooks, waitForViewerRest, warm } from "../src/cloud_blocks.ts";
+import { BLOCK, blocksHere, fetchWhole, fillHooks, hedgeHooks, noteViewerMiss, retryHooks, serve, viewerBusy, viewerHooks, waitForViewerRest, warm } from "../src/cloud_blocks.ts";
 
 // R2 stood in for: a 5½-block object, every range read counted.
 const size = BLOCK * 5 + BLOCK / 2;
@@ -128,21 +128,24 @@ test("a read someone waits on goes first, then the seconds ahead of a jump, then
   try {
     const slowRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-slow-"));
     const at = (name: string) => async () => `http://127.0.0.1:${slow.port}/${name}`;
-    // Four whole copies filling: their first blocks, then three each in flight (six reads at once, the rest waiting).
+    // Four whole copies filling: four of the six reads at most, so two are always there for someone waiting.
     const fills = Array.from({ length: 4 }, (_, n) => fetchWhole(slowRoot, `edit/proxies/big${n}.mp4`, join(slowRoot, `big${n}.mp4`), at(`big${n}`)));
     for (let tries = 0; tries < 100 && order.length < 4; tries++) await Bun.sleep(5);
     gates.splice(0).forEach((go) => go());
+    for (let tries = 0; tries < 100 && order.length < 8; tries++) await Bun.sleep(5);
+    await Bun.sleep(20);
+    expect(order.length).toBe(8);
+    // A jump: the seconds ahead of it warmed in three files (two at once in the free reads, one waiting), then the page's read of the picture there.
+    const warming = Promise.all(["a", "b", "c"].map((name) => warm(slowRoot, `edit/proxies/ahead-${name}.mp4`, 0, 0.1, at(`ahead-${name}`))));
     for (let tries = 0; tries < 100 && order.length < 10; tries++) await Bun.sleep(5);
-    expect(order.length).toBe(10);
-    // A jump: the seconds ahead warmed, and the page's read of the picture there.
-    const warming = warm(slowRoot, "edit/proxies/ahead.mp4", 0, 0.1, at("ahead"));
+    expect(order.slice(8, 10)).toEqual(["/ahead-a 0", "/ahead-b 0"]);
     const jump = serve(slowRoot, "edit/proxies/jump.mp4", "bytes=0-100", at("jump"));
     await Bun.sleep(20);
+    expect(order.length).toBe(10);
+    // A read lets go: the page's goes next, ahead of the warming and the fills waiting.
     gates.shift()!();
     for (let tries = 0; tries < 100 && order.length < 11; tries++) await Bun.sleep(5);
-    gates.shift()!();
-    for (let tries = 0; tries < 100 && order.length < 12; tries++) await Bun.sleep(5);
-    expect(order.slice(10, 12)).toEqual(["/jump 0", "/ahead 0"]);
+    expect(order[10]).toBe("/jump 0");
     // Everything let go, everything answers, and each copy is the object whole.
     const drain = setInterval(() => gates.splice(0).forEach((go) => go()), 2);
     expect((await jump)!.status).toBe(206);
@@ -221,5 +224,36 @@ test("a block read that fails in passing is tried again, so a read to the end ne
   } finally {
     retryHooks.waits = waits;
     void flaky.stop(true);
+  }
+});
+
+test("a read someone waits on goes to R2's own URL too when the edge is slow, and takes the first answer; read-ahead and fills stay on the edge", async () => {
+  const hedge = hedgeHooks.ms;
+  hedgeHooks.ms = 30;
+  const asked: string[] = [];
+  const answer = (request: Request) => {
+    const [, a, b] = /bytes=(\d+)-(\d+)/.exec(request.headers.get("range") ?? "") ?? [];
+    const [from, to] = [Number(a), Math.min(Number(b), size - 1)];
+    return new Response(object.subarray(from, to + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${from}-${to}/${size}` } });
+  };
+  // The edge answers in 400 ms (a block it hasn't seen), R2 at once.
+  const edge = Bun.serve({ port: 0, async fetch(request) { asked.push(`edge ${new URL(request.url).pathname}`); await Bun.sleep(400); return answer(request); } });
+  const r2own = Bun.serve({ port: 0, fetch(request) { asked.push(`r2 ${new URL(request.url).pathname}`); return answer(request); } });
+  try {
+    const hedgeRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-hedge-"));
+    const source = (name: string) => Object.assign(async () => `http://127.0.0.1:${edge.port}/${name}`, { direct: async () => `http://127.0.0.1:${r2own.port}/${name}` });
+    const began = performance.now();
+    const read = await serve(hedgeRoot, "edit/proxies/hedged.mp4", "bytes=0-99", source("hedged"));
+    expect(new Uint8Array(await read!.arrayBuffer())).toEqual(object.subarray(0, 100));
+    expect(performance.now() - began).toBeLessThan(300);
+    expect(asked).toContain("r2 /hedged");
+    // A whole copy's fill waits on the edge alone.
+    asked.length = 0;
+    await warm(hedgeRoot, "edit/proxies/ahead.mp4", 0, 0.01, source("ahead"));
+    expect(asked.every((one) => one.startsWith("edge"))).toBe(true);
+  } finally {
+    hedgeHooks.ms = hedge;
+    void edge.stop(true);
+    void r2own.stop(true);
   }
 });

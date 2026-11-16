@@ -1798,7 +1798,9 @@ export async function streamFromCloud(request: Request, cloudMedia: { proxy?: st
   if (playbackBlocks !== null) {
     // The page's player reads it now: the whole file comes next, so the rest of it is read here.
     if (/^\/api\/projects\/[^/]+\/media\//u.test(new URL(request.url).pathname)) localPreviews.fetchNow(key, localPath(parent(parent(playbackBlocks)!)!, key));
-    const served = await cloudBlocks.serve(playbackBlocks, key, range, () => streamingUrl(key, true)).catch((error: unknown) => {
+    // Through the edge, and R2's own URL too where the edge is slow to answer a read someone waits on.
+    const source = Object.assign(() => streamingUrl(key, true), { direct: () => streamingUrl(key) });
+    const served = await cloudBlocks.serve(playbackBlocks, key, range, source).catch((error: unknown) => {
       diag.warn("cloud", `reading ${key} in blocks: ${diag.messageOf(error)}`);
       forgetStreams(key);
       return null;

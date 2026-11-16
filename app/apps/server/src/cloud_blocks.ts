@@ -24,6 +24,8 @@ const AHEAD = 2;
 const STREAM_AHEAD = 4;
 /** R2 reads at once across every object; a read someone waits on goes ahead of read-ahead and warming (`slot`). */
 const AT_ONCE = 6;
+/** Of those, whole copies' fills take at most this many: a read someone waits on never waits for one to finish. */
+const FILLS_AT_ONCE = 4;
 
 interface Meta {
   size: number;
@@ -85,26 +87,32 @@ const lanes: Record<Priority, Waiter[]> = { asked: [], ahead: [], fill: [] };
 /** The block reads still waiting for a slot, by id: one someone now waits on moves up. */
 const queued = new Map<string, Waiter>();
 
+let fillsInFlight = 0;
+const full = (priority: Priority) => inFlight >= AT_ONCE || (priority === "fill" && fillsInFlight >= FILLS_AT_ONCE);
+
 async function slot<T>(id: string, priority: Priority, work: () => Promise<T>): Promise<T> {
-  if (inFlight >= AT_ONCE) {
+  const waiter: Waiter = { go: () => {}, priority };
+  if (full(priority)) {
     await new Promise<void>((resolve) => {
-      const waiter: Waiter = { go: resolve, priority };
+      waiter.go = resolve;
       queued.set(id, waiter);
       lanes[priority].push(waiter);
     });
     queued.delete(id);
   }
+  // Moved up while it waited, it's counted as what it is now.
+  const filling = waiter.priority === "fill";
   inFlight++;
+  if (filling) fillsInFlight++;
   try {
     return await work();
   } finally {
     inFlight--;
+    if (filling) fillsInFlight--;
     for (const lane of ORDER) {
-      const next = lanes[lane].shift();
-      if (next !== undefined) {
-        next.go();
-        break;
-      }
+      if (lanes[lane].length === 0 || full(lane)) continue;
+      lanes[lane].shift()!.go();
+      break;
     }
   }
 }
@@ -134,7 +142,7 @@ function metaOf(folder: string): Meta | null {
  * One block of the object, from disk or R2 (once, however many ask), read as soon as `priority` says (`slot`).
  * One someone waits on ("asked": a page's range, the window's FFmpeg) that misses marks the viewer busy; a hit never does.
  */
-function block(root: string, key: string, index: number, url: () => Promise<string>, priority: Priority = "ahead"): Promise<Uint8Array> {
+function block(root: string, key: string, index: number, url: BlockSource, priority: Priority = "ahead"): Promise<Uint8Array> {
   const viewer = priority === "asked";
   const folder = folderOf(root, key);
   const path = join(folder, `${index}`);
@@ -156,7 +164,7 @@ function block(root: string, key: string, index: number, url: () => Promise<stri
   }
   const read = slot(id, priority, async () => {
     const start = index * BLOCK;
-    const { answer, bytes } = await fetchBlock(url, start);
+    const { answer, bytes } = await fetchBlock(url, start, viewer);
     const total = Number(/\/(\d+)$/.exec(answer.headers.get("content-range") ?? "")?.[1] ?? NaN);
     fs.mkdirSync(folder, { recursive: true });
     if (Number.isFinite(total) && metaOf(folder) === null) writeAtomic(join(folder, "meta.json"), JSON.stringify({ size: total, type: answer.headers.get("content-type") ?? "video/mp4", key }));
@@ -171,26 +179,64 @@ function block(root: string, key: string, index: number, url: () => Promise<stri
 export const retryHooks = { waits: [500, 2_000] };
 
 /**
- * A block's bytes from R2, tried again on a passing failure (the network's, a timeout, R2's 5xx or 429): a
- * read to the end that failed one block ended its answer short, which FFmpeg reads as "Input/output error".
+ * Where a block is read from: the relay's edge (cached there for every Mac), and optionally R2's own URL, which a
+ * read someone waits on also tries when the edge is slow to answer (`HEDGE_MS`).
  */
-async function fetchBlock(url: () => Promise<string>, start: number): Promise<{ answer: Response; bytes: Uint8Array }> {
+export type BlockSource = (() => Promise<string>) & { direct?: () => Promise<string> };
+
+/**
+ * A read someone waits on goes to R2's own URL too when the edge hasn't answered in this long, and takes whichever
+ * comes first. Measured on mandalorian (Nov 16): a block the edge hadn't seen took it 1.8–2.8 s, a cold open's
+ * first picture through it 1.5–3 s, where R2's own answered a whole open-and-seek in 0.7–1 s.
+ */
+export const hedgeHooks = { ms: 400 };
+
+/** One read of a block's range; rejects with the answer's status when it isn't 206. */
+async function readOnce(url: string, start: number, signal: AbortSignal): Promise<{ answer: Response; bytes: Uint8Array }> {
+  const answer = await fetch(url, { headers: { range: `bytes=${start}-${start + BLOCK - 1}` }, signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]) });
+  if (answer.status === 206) return { answer, bytes: new Uint8Array(await answer.arrayBuffer()) };
+  void answer.body?.cancel();
+  throw Object.assign(new Error(`R2 answered ${answer.status} to a block read`), { status: answer.status });
+}
+
+/** From the edge, and for someone waiting, from R2's own URL too once the edge is slow: the first answer wins, the other's dropped. */
+async function readHedged(source: BlockSource, start: number, hedge: boolean): Promise<{ answer: Response; bytes: Uint8Array }> {
+  const stop = new AbortController();
+  const edge = readOnce(await source(), start, stop.signal);
+  if (!hedge || source.direct === undefined) return edge;
+  const direct = source.direct;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), hedgeHooks.ms)));
+  const early = await Promise.race([edge.then((value) => ({ value }), (error: unknown) => ({ error })), late]);
+  clearTimeout(timer);
+  if (early !== "late" && "value" in early) return early.value;
+  const other = readOnce(await direct(), start, stop.signal);
+  try {
+    // The edge failing outright: R2's alone.
+    return early !== "late" ? await other : await Promise.any([edge, other]);
+  } catch (error) {
+    throw error instanceof AggregateError ? error.errors[0] : error;
+  } finally {
+    stop.abort();
+  }
+}
+
+/**
+ * A block's bytes, tried again on a passing failure (the network's, a timeout, R2's 5xx or 429): a read to the
+ * end that failed one block ended its answer short, which FFmpeg reads as "Input/output error".
+ */
+async function fetchBlock(source: BlockSource, start: number, hedge: boolean): Promise<{ answer: Response; bytes: Uint8Array }> {
   for (let attempt = 0; ; attempt++) {
-    let problem: unknown;
     try {
-      const answer = await fetch(await url(), { headers: { range: `bytes=${start}-${start + BLOCK - 1}` }, signal: AbortSignal.timeout(30_000) });
-      if (answer.status === 206) return { answer, bytes: new Uint8Array(await answer.arrayBuffer()) };
-      void answer.body?.cancel();
-      problem = new Error(`R2 answered ${answer.status} to a block read`);
-      // Not there, or past its end: asking again won't change it.
-      if (answer.status < 500 && answer.status !== 429) throw problem;
+      return await readHedged(source, start, hedge);
     } catch (error) {
-      if (error === problem) throw error;
-      problem = error;
+      const status = (error as { status?: number }).status;
+      // Not there, or past its end: asking again won't change it.
+      if (status !== undefined && status < 500 && status !== 429) throw error;
+      const wait = retryHooks.waits[attempt];
+      if (wait === undefined) throw error;
+      await new Promise((resolve) => setTimeout(resolve, wait));
     }
-    const wait = retryHooks.waits[attempt];
-    if (wait === undefined) throw problem;
-    await new Promise((resolve) => setTimeout(resolve, wait));
   }
 }
 
@@ -213,7 +259,7 @@ export function blocksHere(root: string, key: string): { size: number; here: Set
  * index is at its start) read into blocks behind what anyone waits on, the first block too (it holds the index).
  * Resolves once they're here; how many were read.
  */
-export async function warm(root: string, key: string, from: number, to: number, url: () => Promise<string>): Promise<number> {
+export async function warm(root: string, key: string, from: number, to: number, url: BlockSource): Promise<number> {
   await block(root, key, 0, url);
   const meta = metaOf(folderOf(root, key));
   if (meta === null) return 0;
@@ -239,7 +285,7 @@ export async function warm(root: string, key: string, from: number, to: number, 
  * its picture and its sound read twice, none of it kept, and the window's sound ran short 735 times in an
  * 18 s play from a jump on a first open.
  */
-export async function serve(root: string, key: string, range: string | null, url: () => Promise<string>): Promise<Response | null> {
+export async function serve(root: string, key: string, range: string | null, url: BlockSource): Promise<Response | null> {
   const asked = range === null ? null : /^bytes=(\d+)-(\d*)$/.exec(range);
   if (range !== null && asked === null) return null;
   const from = asked === null ? 0 : Number(asked[1]);
@@ -247,6 +293,10 @@ export async function serve(root: string, key: string, range: string | null, url
   let to = open ? Number.POSITIVE_INFINITY : Number(asked![2]);
   if (!(to >= from)) return null;
   const first = Math.floor(from / BLOCK);
+  // A read to the end (FFmpeg's) reads on from where it starts: the blocks after it are asked for with it, not one
+  // after another once each lands (a cold open waited on two blocks in turn, 1.5–2.2 s to its first picture).
+  const size = metaOf(folderOf(root, key))?.size;
+  if (open && size !== undefined) for (let n = 1; n <= STREAM_AHEAD && (first + n) * BLOCK < size; n++) void block(root, key, first + n, url).catch(() => {});
   // The first block says how big the object is.
   const opening = await block(root, key, first, url, "asked").catch(async (error: unknown) => {
     // A start past the end of an object we haven't the size of yet: the first block says it.
@@ -259,14 +309,13 @@ export async function serve(root: string, key: string, range: string | null, url
   if (from >= meta.size) return new Response(null, { status: 416, headers: { "content-range": `bytes */${meta.size}` } });
   to = Math.min(to, meta.size - 1);
   const last = Math.floor(to / BLOCK);
-  const size = meta.size;
   const end = to;
   const reach = open ? STREAM_AHEAD : AHEAD;
   // What's next, read while this plays.
   const ahead = (after: number) => {
     for (let n = 1; n <= reach; n++) {
       const next = after + n;
-      if (next * BLOCK < size) void block(root, key, next, url).catch((error: unknown) => diag.warn("cloud", `reading ahead in ${key}: ${diag.messageOf(error)}`));
+      if (next * BLOCK < meta.size) void block(root, key, next, url).catch((error: unknown) => diag.warn("cloud", `reading ahead in ${key}: ${diag.messageOf(error)}`));
     }
   };
   // Answered as it's read, a block at a time: a player asks a long preview
@@ -282,10 +331,11 @@ export async function serve(root: string, key: string, range: string | null, url
           controller.close();
           return;
         }
+        // What's after it asked for before it's waited on.
+        ahead(index);
         const bytes = index === first && opening !== null ? opening : await block(root, key, index, url, "asked");
         const base = index * BLOCK;
         controller.enqueue(bytes.subarray(Math.max(from - base, 0), Math.min(end - base + 1, bytes.length)));
-        ahead(index);
         index++;
       },
     },
@@ -308,7 +358,7 @@ export const fillHooks = { dropAfterMs: 60_000 };
  * joined into `local` (whole or not at all) and its blocks let go a minute later. Its stretches are ready to play
  * as their blocks land (playback_ready.ts), not only once the whole copy is in.
  */
-export async function fetchWhole(root: string, key: string, local: string, url: () => Promise<string>): Promise<void> {
+export async function fetchWhole(root: string, key: string, local: string, url: BlockSource): Promise<void> {
   await block(root, key, 0, url, "fill");
   const folder = folderOf(root, key);
   const meta = metaOf(folder);
@@ -355,4 +405,5 @@ export function resetForTests(): void {
   queued.clear();
   for (const lane of ORDER) lanes[lane].length = 0;
   inFlight = 0;
+  fillsInFlight = 0;
 }
