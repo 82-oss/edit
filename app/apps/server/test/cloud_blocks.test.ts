@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
-import { BLOCK, noteViewerMiss, serve, viewerBusy, viewerHooks, waitForViewerRest } from "../src/cloud_blocks.ts";
+import { BLOCK, blocksHere, noteViewerMiss, retryHooks, serve, viewerBusy, viewerHooks, waitForViewerRest, warm } from "../src/cloud_blocks.ts";
 
 // R2 stood in for: a 5½-block object, every range read counted.
 const size = BLOCK * 5 + BLOCK / 2;
@@ -66,10 +66,86 @@ test("a range to the object's end is sent a block at a time, whole; a reader tha
   expect(reads.length - started).toBeLessThanOrEqual(3);
 });
 
-test("an open-ended or odd ask isn't served from blocks; one past the end is refused", async () => {
-  expect(await serve(root, "edit/proxies/a.mp4", "bytes=100-", url)).toBeNull();
-  expect(await serve(root, "edit/proxies/a.mp4", null, url)).toBeNull();
+test("a read to the end or of the whole object comes from blocks too, its length said (FFmpeg's reads: Edit.app's window, the censor check)", async () => {
+  const key = "edit/proxies/open.mp4";
+  const before = reads.length;
+  const edit = Bun.serve({ port: 0, fetch: async (request) => (await serve(root, key, request.headers.get("range"), url))! });
+  try {
+    // A read asking for no range: the whole object, as 200 with its size said (Bun sends it chunked), so FFmpeg knows it can seek.
+    const whole = await fetch(`http://127.0.0.1:${edit.port}/`);
+    expect(whole.status).toBe(200);
+    expect(whole.headers.get("content-range")).toBe(`bytes 0-${size - 1}/${size}`);
+    expect(whole.headers.get("accept-ranges")).toBe("bytes");
+    expect(new Uint8Array(await whole.arrayBuffer())).toEqual(object);
+    // After a seek, a range to the end: from the blocks kept, not R2 again.
+    const kept = reads.length;
+    const rest = await fetch(`http://127.0.0.1:${edit.port}/`, { headers: { range: `bytes=${BLOCK + 5}-` } });
+    expect(rest.status).toBe(206);
+    expect(rest.headers.get("content-range")).toBe(`bytes ${BLOCK + 5}-${size - 1}/${size}`);
+    expect(new Uint8Array(await rest.arrayBuffer())).toEqual(object.subarray(BLOCK + 5));
+    expect(reads.length).toBe(kept);
+  } finally {
+    void edit.stop(true);
+  }
+  expect(reads.length - before).toBe(6);
+});
+
+test("an odd ask isn't served from blocks; one past the end is refused", async () => {
+  expect(await serve(root, "edit/proxies/a.mp4", "bytes=-500", url)).toBeNull();
+  expect(await serve(root, "edit/proxies/a.mp4", "bytes=0-10,20-30", url)).toBeNull();
   expect((await serve(root, "edit/proxies/a.mp4", `bytes=${size + 10}-${size + 20}`, url))?.status).toBe(416);
+  expect((await serve(root, "edit/proxies/a.mp4", `bytes=${size + 10}-`, url))?.status).toBe(416);
+});
+
+test("a stretch is warmed into blocks (its index too), and what's here is said", async () => {
+  const key = "edit/proxies/warmed.mp4";
+  expect(blocksHere(root, key)).toBeNull();
+  // The middle fifth: its blocks and one either side, and the first (the index).
+  expect(await warm(root, key, 0.4, 0.6, url)).toBeGreaterThan(0);
+  const here = blocksHere(root, key)!;
+  expect(here.size).toBe(size);
+  expect([...here.here].sort()).toEqual([0, 1, 2, 3, 4]);
+  // Warmed again: nothing read.
+  expect(await warm(root, key, 0.4, 0.6, url)).toBe(0);
+});
+
+test("a read someone waits on goes ahead of read-ahead and warming waiting for R2 (Nov 16: a jump froze behind them)", async () => {
+  // An R2 that answers only when let go, in the order asked.
+  const order: string[] = [];
+  const gates: (() => void)[] = [];
+  const slow = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const [, a, b] = /bytes=(\d+)-(\d+)/.exec(request.headers.get("range") ?? "") ?? [];
+      order.push(`${new URL(request.url).pathname} ${a}`);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      const [from, to] = [Number(a), Math.min(Number(b), size - 1)];
+      return new Response(object.subarray(from, to + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${from}-${to}/${size}` } });
+    },
+  });
+  try {
+    const slowRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-slow-"));
+    const at = (name: string) => async () => `http://127.0.0.1:${slow.port}/${name}`;
+    // A big object's warming: its first block first, then eight more queued behind it (six reads at once).
+    const big = Array.from({ length: 4 }, (_, n) => warm(slowRoot, `edit/proxies/big${n}.mp4`, 0, 1, at(`big${n}`)));
+    for (let tries = 0; tries < 100 && order.length < 4; tries++) await Bun.sleep(5);
+    gates.splice(0).forEach((go) => go());
+    for (let tries = 0; tries < 100 && order.length < 10; tries++) await Bun.sleep(5);
+    expect(order.length).toBe(10);
+    // Now the page asks for another file: queued behind the warming in one line, it goes next here.
+    const jump = serve(slowRoot, "edit/proxies/jump.mp4", "bytes=0-100", at("jump"));
+    await Bun.sleep(20);
+    gates.shift()!();
+    for (let tries = 0; tries < 100 && order.length < 11; tries++) await Bun.sleep(5);
+    expect(order[10]).toBe("/jump 0");
+    // Everything let go, everything answers.
+    const drain = setInterval(() => gates.splice(0).forEach((go) => go()), 5);
+    expect((await jump)!.status).toBe(206);
+    await Promise.all(big);
+    clearInterval(drain);
+  } finally {
+    void slow.stop(true);
+  }
 });
 
 test("a viewer read that misses on R2 marks the viewer busy; a cache hit does not, and a rest wait waits for rest", async () => {
@@ -106,3 +182,33 @@ test("a bounded rest wait proceeds anyway once it is up, however busy the viewer
   noteViewerMiss(0);
 });
 
+
+test("a block read that fails in passing is tried again, so a read to the end never ends short (FFmpeg: \"Input/output error\"); one not there fails at once", async () => {
+  const waits = retryHooks.waits;
+  retryHooks.waits = [5, 5];
+  let failures = 2;
+  let gone = 0;
+  const flaky = Bun.serve({
+    port: 0,
+    fetch(request) {
+      if (new URL(request.url).pathname === "/gone") {
+        gone++;
+        return new Response("no", { status: 404 });
+      }
+      if (failures-- > 0) return new Response("busy", { status: 503 });
+      const [, a, b] = /bytes=(\d+)-(\d+)/.exec(request.headers.get("range") ?? "") ?? [];
+      const [from, to] = [Number(a), Math.min(Number(b), size - 1)];
+      return new Response(object.subarray(from, to + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${from}-${to}/${size}` } });
+    },
+  });
+  try {
+    const flakyRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-flaky-"));
+    const answer = await serve(flakyRoot, "edit/proxies/flaky.mp4", "bytes=0-99", async () => `http://127.0.0.1:${flaky.port}/flaky`);
+    expect(new Uint8Array(await answer!.arrayBuffer())).toEqual(object.subarray(0, 100));
+    await expect(serve(flakyRoot, "edit/proxies/gone.mp4", "bytes=0-99", async () => `http://127.0.0.1:${flaky.port}/gone`)).rejects.toThrow("404");
+    expect(gone).toBe(1);
+  } finally {
+    retryHooks.waits = waits;
+    void flaky.stop(true);
+  }
+});

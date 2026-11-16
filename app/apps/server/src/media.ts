@@ -460,7 +460,7 @@ export class Processor {
     // started only by the audit, Mom Leaves 5 Kids' final pass found all
     // sixteen files still pending and its blurred B-roll went out.
     if (whole) return;
-    if (probe.kind === "video") native().censorWarm(source, input === source ? null : input);
+    if (probe.kind === "video") this.censorLater(source, input);
     // Its own black borders (a tape's edge), so footage placed later fills the frame.
     if (probe.kind === "video" || probe.kind === "image") framing.warmBorders({ path: source, name: source, ...probe });
   }
@@ -696,6 +696,28 @@ export class Processor {
     return true;
   }
 
+  /**
+   * Its censored stretches read in the background. A streamed cloud preview is read from its whole copy here,
+   * once it's come down (the copy the players read: `mediaHooks.censorInput`), never through the stream: read
+   * whole through the loopback, every frame of it, while an import filled the link, it failed again and again
+   * with "Error opening input files: Input/output error" (the M4, Nov 16), FFmpeg's word for an answer that
+   * ended short. A copy that doesn't come reads the stream, as before (its blocks now tried again on a failure).
+   */
+  private censorLater(source: string, input: string): void {
+    const read = input === source ? null : input;
+    const local = read === null ? mediaHooks.censorInput?.(source) ?? null : null;
+    if (local === null) {
+      native().censorWarm(source, read);
+      return;
+    }
+    void local
+      .catch((error: unknown) => {
+        diag.warn("media", `${diag.scrub(source)}: its whole copy for the censor check didn't come (${diag.messageOf(error)}); reading the stream`);
+        return null;
+      })
+      .then((path) => native().censorWarm(source, path));
+  }
+
   /** What a file's analyses read: a pieced proxy's original, else the file itself. */
   analysisInput(source: string): Promise<string> {
     return this.inputOf(source);
@@ -787,7 +809,12 @@ export const mediaHooks: {
    * it. The results are still kept as the source's.
    */
   analysisInput: ((source: string) => Promise<string | null>) | null;
-} = { keyAnswers: null, wholeTranscript: null, analysisInput: null };
+  /**
+   * The file here the censor check reads for a streamed cloud preview `source` (its whole copy, fetched if it
+   * isn't here yet, resolved once it is), or null for any other source (read as it is).
+   */
+  censorInput: ((source: string) => Promise<string> | null) | null;
+} = { keyAnswers: null, wholeTranscript: null, analysisInput: null, censorInput: null };
 
 /** `transcribe` was asked for free words only (an import) and there are none for this file. */
 class NothingFree extends Error {}

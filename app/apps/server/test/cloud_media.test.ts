@@ -1045,20 +1045,23 @@ test("a proxy made here and not uploaded yet is read from here: the import's ana
   }
 });
 
-test("a proxy's blocks are read through the relay's edge cache, every other read through R2's own URL", async () => {
-  // Nov 3: the edge (the relay's media.ts) answers bounded ranges of up to 8 MiB only;
-  // FFmpeg's open-ended reads through the same URL would have been refused.
+test("a proxy's blocks are read through the relay's edge cache, FFmpeg's reads to the end too (from the blocks)", async () => {
+  // Nov 3: the edge (the relay's media.ts) answers bounded ranges of up to 8 MiB only, so FFmpeg's open-ended
+  // reads went to R2's own URL. Since Nov 16 they're answered from 2 MiB blocks too, each a bounded read.
   const fixture = home("edge-blocks");
   try {
     const signs = () => mock.calls("/v1/cloud/r2/url", "POST").map((call) => call.json() as { key: string; edge?: boolean });
     const key = "edit/proxies/sha256/edge-blocks.mp4";
-    mock.cloud.objects.set(key, new Uint8Array(30_000).map((_, index) => index % 249));
+    const object = new Uint8Array(30_000).map((_, index) => index % 249);
+    mock.cloud.objects.set(key, object);
     const at = signs().length;
     const block = await cloudMedia.streamFromCloud(new Request("http://127.0.0.1/x", { headers: { range: "bytes=10-19" } }), { proxy: key }, "proxy");
     expect(block!.status).toBe(206);
     const open = await cloudMedia.streamFromCloud(new Request("http://127.0.0.1/x", { headers: { range: "bytes=29990-" } }), { proxy: key }, "proxy");
-    expect([...new Uint8Array(await open!.arrayBuffer())].length).toBe(10);
-    expect(signs().slice(at).map((body) => [body.key, body.edge === true])).toEqual([[key, true], [key, false]]);
+    expect(open!.status).toBe(206);
+    expect(open!.headers.get("content-range")).toBe("bytes 29990-29999/30000");
+    expect(new Uint8Array(await open!.arrayBuffer())).toEqual(object.subarray(29990));
+    expect(signs().slice(at).map((body) => [body.key, body.edge === true])).toEqual([[key, true]]);
   } finally {
     fixture.cleanup();
   }

@@ -225,6 +225,37 @@ test.skipIf(ffmpeg === null)("a pieced proxy's thumbnails, waveform, censor chec
   }
 });
 
+test.skipIf(ffmpeg === null)("a streamed preview's censor check reads its whole copy here once it's come, not the stream (the M4, Nov 16: \"Input/output error\" during an import)", async () => {
+  const { dir, app, store, cleanup } = fixtureHome("media-censor-copy");
+  const { mediaHooks } = await import("../src/media.ts");
+  const { native } = await import("../src/native/index.ts");
+  const was = mediaHooks.censorInput;
+  const censor = native().censorWarm;
+  const warmed: [string, string | null | undefined][] = [];
+  try {
+    const source = `${dir}/streamed.mp4`;
+    const made = Bun.spawnSync([ffmpeg!, "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30:duration=2", "-c:v", "libx264", "-g", "15", source]);
+    expect(made.exitCode).toBe(0);
+    let land: (path: string) => void = () => {};
+    mediaHooks.censorInput = (asked) => (asked === source ? new Promise<string>((resolve) => (land = resolve)) : null);
+    native().censorWarm = (path, read) => void warmed.push([path, read]);
+    const probe = await app.native.probe(source);
+    const done = settled(store, source, (status) => status.light !== "pending" && status.light !== "working" && status.proxy !== "working");
+    app.media.ensure(source, probe);
+    await done;
+    await Bun.sleep(20);
+    // Not started on the stream while the copy comes.
+    expect(warmed).toEqual([]);
+    land(`${dir}/whole.mp4`);
+    await Bun.sleep(10);
+    expect(warmed).toEqual([[source, `${dir}/whole.mp4`]]);
+  } finally {
+    mediaHooks.censorInput = was;
+    native().censorWarm = censor;
+    cleanup();
+  }
+});
+
 test.skipIf(ffmpeg === null)("long footage's thumbnails are each read where they are, one a frame past the end its neighbour's", async () => {
   const { dir, app, cleanup } = fixtureHome("media-long-thumbs");
   try {

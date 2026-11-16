@@ -90,6 +90,7 @@ function start(next: { key: string; local: string }): void {
     .catch((error: unknown) => {
       failed.set(next.local, Date.now());
       diag.warn("preview", `${next.key}: whole preview not fetched: ${diag.messageOf(error)}`);
+      for (const listener of failedListeners) listener(next.key, diag.messageOf(error));
     })
     .finally(() => {
       fetching.delete(next.local);
@@ -102,6 +103,45 @@ export function fetchWhole(key: string, local: string): void {
   if (Date.now() - (failed.get(local) ?? 0) < RETRY_MS || fetching.has(local) || waiting.some((one) => one.local === local) || isFile(local)) return;
   waiting.push({ key, local });
   fetchNext();
+}
+
+/**
+ * `key`'s whole preview in `local`, fetched like the players' (queued at the back, once), resolved with its path
+ * once it's here; rejected when the fetch fails, or after `waitMs`.
+ */
+export function whenHere(key: string, local: string, waitMs = 15 * 60_000): Promise<string> {
+  if (isFile(local)) return Promise.resolve(local);
+  return new Promise<string>((resolve, reject) => {
+    const done = (error: Error | null) => {
+      clearTimeout(timer);
+      off();
+      offFailed();
+      if (error === null) resolve(local);
+      else reject(error);
+    };
+    const timer = setTimeout(() => done(new Error(`not here after ${Math.round(waitMs / 60_000)} min`)), waitMs);
+    const off = onLanded((landed) => {
+      if (landed === key && isFile(local)) done(null);
+    });
+    const offFailed = onFailed((failedKey, error) => {
+      if (failedKey === key) done(new Error(error));
+    });
+    if (Date.now() - (failed.get(local) ?? 0) < RETRY_MS) {
+      done(new Error("its fetch failed lately"));
+      return;
+    }
+    fetchWhole(key, local);
+    // Landed between the check and the listener.
+    if (isFile(local)) done(null);
+  });
+}
+
+/** Told each time a whole preview fails to come down (its key, and why). */
+const failedListeners = new Set<(key: string, error: string) => void>();
+
+function onFailed(listener: (key: string, error: string) => void): () => void {
+  failedListeners.add(listener);
+  return () => failedListeners.delete(listener);
 }
 
 /** A file the page's player is reading from R2 this moment (a jump past what's here) comes down whole at once, as a jump in the window's does (`hurry`). */

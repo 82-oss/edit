@@ -177,3 +177,40 @@ test("a preview read now (a jump to it in the window) comes down next, beside th
     home.cleanup();
   }
 });
+
+test("the censor check waits for a streamed preview's whole copy: resolved with its path once it lands, rejected when it can't come (Nov 16: read through the stream during an import, it failed with an I/O error)", async () => {
+  const home = scratch("local-previews-when-here");
+  try {
+    const local = localPath(home.dir, KEY);
+    let land: () => void = () => {};
+    localPreviews.hooks.fetch = (_key, at) =>
+      new Promise<void>((resolve) => {
+        land = () => {
+          fs.mkdirSync(path.dirname(at), { recursive: true });
+          fs.writeFileSync(at, "mp4");
+          resolve();
+        };
+      });
+    const waited = localPreviews.whenHere(KEY, local);
+    let settled = false;
+    void waited.then(() => (settled = true));
+    await Bun.sleep(10);
+    expect(settled).toBe(false);
+    land();
+    expect(await waited).toBe(local);
+    // Here already: at once.
+    expect(await localPreviews.whenHere(KEY, local)).toBe(local);
+    // One that fails to come down: said, not waited on for good.
+    const other = "edit/proxies/youtube/def/0-1000.mp4";
+    localPreviews.hooks.fetch = async () => {
+      throw new Error("offline");
+    };
+    await expect(localPreviews.whenHere(other, localPath(home.dir, other))).rejects.toThrow("offline");
+    // And a timeout, however long the queue.
+    localPreviews.reset();
+    localPreviews.hooks.fetch = () => new Promise<void>(() => {});
+    await expect(localPreviews.whenHere(other, localPath(home.dir, other), 20)).rejects.toThrow("not here");
+  } finally {
+    home.cleanup();
+  }
+});

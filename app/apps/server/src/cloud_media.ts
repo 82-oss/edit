@@ -193,6 +193,12 @@ export function configurePlayback(app: App): void {
     if (base === null) return null;
     return originalFor(cache, (await pieces.layoutOf(piecesContext(cache), base)).original);
   };
+  // The censor check reads a streamed preview's whole copy here, never the stream (media.ts `censorLater`).
+  mediaHooks.censorInput = (source) => {
+    const key = playbackKey(source);
+    if (key === null || pieces.baseOf(key) !== null) return null;
+    return localPreviews.whenHere(key, localPath(cache, key));
+  };
   app.store.setMediaResolver((project) => {
     for (const media of project.media) {
       // A picture whose path is another computer's (a project made on another Mac, or on Linux): its copy here,
