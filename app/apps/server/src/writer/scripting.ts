@@ -8,6 +8,7 @@ import type { Clip, Focus, Kind, Research, Script, StampedDate } from "@edit/typ
 
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
+import { join } from "../paths.ts";
 import { probe as probeFile } from "../media.ts";
 import { isFile } from "../paths.ts";
 import * as build from "./build.ts";
@@ -156,7 +157,8 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   chat.asked(dir, note.trim() === "" ? "Build the script." : `Build the script. ${note.trim()}`, job.resumed);
   let built: build.Built;
   try {
-    built = await build.buildFast(script, note, found, peaks, job.signal, job.stage);
+    // Its progress kept beside it, so a restart carries on from the last phase done, not from the outline.
+    built = await build.buildFast(script, note, found, peaks, job.signal, job.stage, join(dir, ".build-progress.json"));
   } catch (error) {
     failed(dir, job, error);
   }

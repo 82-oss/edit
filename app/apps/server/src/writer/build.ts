@@ -17,7 +17,11 @@ import * as lanes from "../lanes.ts";
 import type { Clip, Research, Script } from "@edit/types/writer";
 
 import type { App } from "../app.ts";
+import fs from "node:fs";
+
 import * as diag from "../diag.ts";
+import { writeAtomic } from "../files.ts";
+import { fingerprint } from "../hash.ts";
 import { json, empty } from "../http/errors.ts";
 import { readJson, type Router } from "../http/router.ts";
 import { isCutIn } from "./blocks.ts";
@@ -633,16 +637,69 @@ Call review_plan and fix what it reports by ID. Read the cut-ins where the secti
  * finish on the joined plan; without an outline, in steps instead. Nothing
  * is saved to the script unless a plan passes.
  */
-export async function buildFast(script: Script, note: string, research: Research | null, peaks: ArrayLike<number>, signal?: AbortSignal, stage: (text: string) => void = () => {}): Promise<Built> {
+/**
+ * A fast build's system prompt: the evidence and the ask close it, the same for every call of the build, with
+ * only the phase in the message. Claude caches the system prompt, so the outline writes it once and the sections
+ * and the finish read it at a tenth of the price. In the message, each paid for it whole, eight at a time (Nov 5,
+ * JJ's Mac: a 1 h 47 min recording's sections $2.50 each, $91 of a week's $430 on sections alone).
+ */
+export function fastSystemFor(script: Script, note: string, research: Research | null): string {
+  return `${fastSystem(script, formatOfScript(script))}\n\nTHE EVIDENCE AND THE ASK (the same for every phase)\n\n${evidence(script, research)}\n\n${request(script, note)}`;
+}
+
+/** The key a fast build's kept progress goes by: the same build only. */
+export const progressKey = (script: Script, note: string, research: Research | null): string => fingerprint([fastSystemFor(script, note, research), fastEffort()]);
+
+/**
+ * A fast build's progress, kept as each phase ends (Nov 16: an Edit restarted while Claude reviewed JJ's joined
+ * script, and the build began again from the outline): its outline, then its sections. Only for the same build
+ * (`key`: the evidence, the ask and the format, as the system prompt says them) and for 6 hours; never synced
+ * (a dot file). Gone once the build ends either way.
+ */
+interface Progress {
+  key: string;
+  at: number;
+  cost: number;
+  outline: Outline;
+  sections?: { items: Item[]; note: string | null }[];
+}
+const PROGRESS_MS = 6 * 3_600_000;
+
+function progressIn(path: string | null, key: string): Progress | null {
+  if (path === null) return null;
+  try {
+    const kept = JSON.parse(fs.readFileSync(path, "utf8")) as Progress;
+    return kept.key === key && Date.now() - kept.at < PROGRESS_MS && Array.isArray(kept.outline?.sections) ? kept : null;
+  } catch {
+    return null;
+  }
+}
+
+function keepProgress(path: string | null, progress: Progress): void {
+  if (path === null) return;
+  try {
+    writeAtomic(path, JSON.stringify(progress));
+  } catch (error) {
+    diag.warn("writer", `fast build: its progress wasn't kept: ${diag.messageOf(error)}`);
+  }
+}
+
+export async function buildFast(script: Script, note: string, research: Research | null, peaks: ArrayLike<number>, signal?: AbortSignal, stage: (text: string) => void = () => {}, progressAt: string | null = null): Promise<Built> {
+  try {
+    const done = await buildFastFrom(script, note, research, peaks, signal, stage, progressAt);
+    if (progressAt !== null) fs.rmSync(progressAt, { force: true });
+    return done;
+  } catch (error) {
+    // Ended, not cut short by a restart (that never comes back here): the next build starts afresh.
+    if (progressAt !== null && !signal?.aborted) fs.rmSync(progressAt, { force: true });
+    throw error;
+  }
+}
+
+async function buildFastFrom(script: Script, note: string, research: Research | null, peaks: ArrayLike<number>, signal: AbortSignal | undefined, stage: (text: string) => void, progressAt: string | null): Promise<Built> {
   // A channel's script reads its Script lane (lanes.ts), fresh.
   if (script.channel) await lanes.refresh();
-  const ask_ = request(script, note);
-  const format = formatOfScript(script);
-  // The evidence and the ask close the system prompt, the same for every call of the build, with only the
-  // phase in the message: Claude caches the system prompt, so the outline writes it once and the sections
-  // and the finish read it at a tenth of the price. In the message, each paid for it whole, eight at a time
-  // (Nov 5, JJ's Mac: a 1 h 47 min recording's sections $2.50 each, $91 of a week's $430 on sections alone).
-  const system_ = `${fastSystem(script, format)}\n\nTHE EVIDENCE AND THE ASK (the same for every phase)\n\n${evidence(script, research)}\n\n${ask_}`;
+  const system_ = fastSystemFor(script, note, research);
   const effort = fastEffort();
   const began = Date.now();
   const totals = { cost: 0, tokens: 0, turns: 0, calls: 0, refused: 0, biggest: 0 };
@@ -657,31 +714,58 @@ export async function buildFast(script: Script, note: string, research: Research
     }
   };
 
-  stage("Outlining the script");
-  const outlining = open(newDraft("outline", script, peaks));
-  const [outlined, outlineFailure] = await settle(ask(system_, outlinePhase(), outlining, effort, 12, "Claude opus outlining", signal));
-  const outlineDraft = close(outlining);
-  count(outlined, outlineDraft);
-  const outline = outlineDraft?.outline ?? null;
-  if (outline === null) {
-    if (signal?.aborted) throw outlineFailure ?? new Error("Stopped by you.");
-    diag.info("writer", "fast build: no outline came back; building in steps instead");
-    stage("Writing the script");
-    return buildInSteps(script, note, research, peaks, signal);
+  const key = progressKey(script, note, research);
+  const kept = progressIn(progressAt, key);
+  if (kept !== null) {
+    totals.cost += kept.cost;
+    diag.info("writer", `fast build: carrying on from its ${kept.sections ? "written sections" : "outline"}, kept before a restart`);
+  }
+  let outline: Outline;
+  if (kept !== null) outline = kept.outline;
+  else {
+    stage("Outlining the script");
+    const outlining = open(newDraft("outline", script, peaks));
+    const [outlined, outlineFailure] = await settle(ask(system_, outlinePhase(), outlining, effort, 12, "Claude opus outlining", signal));
+    const outlineDraft = close(outlining);
+    count(outlined, outlineDraft);
+    const given = outlineDraft?.outline ?? null;
+    if (given === null) {
+      if (signal?.aborted) throw outlineFailure ?? new Error("Stopped by you.");
+      diag.info("writer", "fast build: no outline came back; building in steps instead");
+      stage("Writing the script");
+      return buildInSteps(script, note, research, peaks, signal);
+    }
+    outline = given;
+    keepProgress(progressAt, { key, at: Date.now(), cost: totals.cost, outline });
   }
   const outlinedAt = Date.now();
 
-  // The sections at once, each on its own draft.
-  stage(`Writing ${outline.sections.length} sections at once`);
-  const sections = await Promise.all(
-    outline.sections.map(async (_, index): Promise<[Draft | null, claude.Answer | null]> => {
+  // The sections at once, each on its own draft (or as kept before a restart).
+  let sections: [Draft | null, claude.Answer | null][];
+  if (kept?.sections !== undefined && kept.sections.length === outline.sections.length) {
+    sections = kept.sections.map((one, index): [Draft | null, claude.Answer | null] => {
       const draft = newDraft("section", script, peaks);
       draft.afterCutIn = index > 0;
-      const token = open(draft);
-      const [answer] = await settle(ask(system_, sectionPhase(outline, index), token, effort, 40, `Claude opus writing section ${index + 1} of ${outline.sections.length}`, signal));
-      return [close(token), answer];
-    }),
-  );
+      draft.sectionNote = one.note;
+      for (const item of one.items) draft.items.push([`i${++draft.next}`, item]);
+      return [draft, null];
+    });
+  } else {
+    stage(`Writing ${outline.sections.length} sections at once`);
+    sections = await Promise.all(
+      outline.sections.map(async (_, index): Promise<[Draft | null, claude.Answer | null]> => {
+        const draft = newDraft("section", script, peaks);
+        draft.afterCutIn = index > 0;
+        const token = open(draft);
+        const [answer] = await settle(ask(system_, sectionPhase(outline, index), token, effort, 40, `Claude opus writing section ${index + 1} of ${outline.sections.length}`, signal));
+        return [close(token), answer];
+      }),
+    );
+    if (!signal?.aborted) {
+      const cost = totals.cost + sections.reduce((sum, [, answer]) => sum + (answer?.costUsd ?? 0), 0);
+      keepProgress(progressAt, { key, at: Date.now(), cost, outline, sections: sections.map(([draft]) => ({ items: (draft?.items ?? []).map(([, item]) => item), note: draft?.sectionNote ?? null })) });
+    }
+  }
   const writtenAt = Date.now();
 
   // Joined in the outline's order, with new ids.
