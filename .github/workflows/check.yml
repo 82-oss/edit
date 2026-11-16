@@ -155,7 +155,7 @@ jobs:
         if: matrix.part != 'rust' && steps.addon.outputs.cache-hit != 'true'
         run: just native debug
       # The addon's own tests once on each platform: in Linux's TypeScript part
-      # (check-ts) and the Mac's first half of the server's tests.
+      # (check-ts) and the Mac's acceptance part.
       - name: Check
         if: matrix.part != 'acceptance' && steps.passed.outputs.cache-hit != 'true'
         run: |
@@ -163,9 +163,7 @@ jobs:
             rust) just check-rust && touch .rust-passed ;;
             ts)
               if [ "${{ steps.types.outputs.cache-hit }}" = true ]; then just check-ts-code; else just types-committed && touch .types-matched && just check-ts-code; fi ;;
-            tests-*)
-              if [ "$RUNNER_OS" = macOS ] && [ "${{ matrix.part }}" = tests-1 ]; then just native-tests; fi
-              just check-tests "${{ matrix.shard }}" "$TIMINGS" ;;
+            tests-*) just check-tests "${{ matrix.shard }}" "$TIMINGS" ;;
           esac
         env:
           # Each platform's parts are balanced by its own measured times.
@@ -183,9 +181,12 @@ jobs:
       # decode error) and Home's layout at two widths. A part of its own since
       # Nov 11, beside the server's tests rather than after them. What a
       # virtual Mac can't do is skipped and said in the run's summary.
-      - name: The UI, for acceptance
+      # The addon's own tests on the Mac here, the part with the most room (Linux runs them in check-ts).
+      - name: The UI, for acceptance, and the addon's tests
         if: matrix.part == 'acceptance'
-        run: bun run --cwd apps/web build
+        run: |
+          bun run --cwd apps/web build
+          just native-tests
       - name: Acceptance
         if: matrix.part == 'acceptance'
         timeout-minutes: 8
