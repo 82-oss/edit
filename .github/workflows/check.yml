@@ -174,6 +174,10 @@ jobs:
       - name: The UI, for acceptance
         if: matrix.part == 'acceptance'
         run: bun run --cwd apps/web build
+      # A one-off (Nov 16): where a look's frame goes on this Mac, with and without the graphics card. Removed once read.
+      - name: Chrome probe
+        if: matrix.part == 'acceptance'
+        run: timeout 150 bun scripts/chrome-probe.ts || true
       - name: Acceptance
         if: matrix.part == 'acceptance'
         timeout-minutes: 8
