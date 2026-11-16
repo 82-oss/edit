@@ -634,12 +634,10 @@ const handed = new Map<string, Uint8Array>();
  * (Nov 15, mandalorian).
  */
 const OVER_CHECKS = `async (address, quality) => {
-  const took = []; let mark = performance.now(); const lap = () => { const now = performance.now(); took.push(Math.round(now - mark)); mark = now; }; // TEMP
-  const blob = await (await fetch(address)).blob(); lap(); // TEMP
-  const shot = await createImageBitmap(blob); lap(); // TEMP
+  const shot = await createImageBitmap(await (await fetch(address)).blob());
   const plain = new OffscreenCanvas(shot.width, shot.height).getContext("2d");
   plain.drawImage(shot, 0, 0);
-  const pixels = plain.getImageData(0, 0, shot.width, shot.height).data; lap(); // TEMP
+  const pixels = plain.getImageData(0, 0, shot.width, shot.height).data;
   let clear = false;
   for (let at = 3; at < pixels.length; at += 4) if (pixels[at] < 250) { clear = true; break; }
   // A canvas of the page's, encoded at once by toDataURL: OffscreenCanvas.convertToBlob encodes in the page's idle
@@ -653,9 +651,9 @@ const OVER_CHECKS = `async (address, quality) => {
     ctx.fillStyle = ((x / cell + y / cell) & 1) === 0 ? "#9a9a9a" : "#6a6a6a";
     ctx.fillRect(x, y, cell, cell);
   }
-  ctx.drawImage(shot, 0, 0); lap(); // TEMP
-  const jpeg = canvas.toDataURL("image/jpeg", quality); lap(); // TEMP
-  return { jpeg: jpeg.slice(jpeg.indexOf(",") + 1), clear, took }; // TEMP took
+  ctx.drawImage(shot, 0, 0);
+  const jpeg = canvas.toDataURL("image/jpeg", quality);
+  return { jpeg: jpeg.slice(jpeg.indexOf(",") + 1), clear };
 }`;
 
 export interface Look {
@@ -739,41 +737,28 @@ export async function look(app: App, projectId: string, name: string, times: num
         // Six of it, each from the middle of its sixth, when no moments are asked for.
         const duration = warm.duration;
         const wanted = times ?? (duration > 0 ? [0, 1, 2, 3, 4, 5].map((part) => Math.round(((part + 0.5) * duration * 100) / 6) / 100) : [0]);
-        const phases = { seek: 0, shot: 0, over: 0 }; // TEMP(Nov 16 CI probe)
-        const inside = [0, 0, 0, 0, 0, 0]; // TEMP: fetch, decode, readback, checkerboard, encode; the whole call
         for (const time of wanted) {
-          let at = performance.now(); // TEMP
           // Unmeasured, the cost's same five seeks one after another, not a refresh apart (five refreshes a still, 4 s of a
           // stretch's 48 frames): what they throw is said as before, and the still is drawn after the same seeks.
           const cost = measure
             ? await page.evaluate<number>(`window.__edit.cost(${time}, ${1 / fps})`)
             : (await page.evaluate(`(() => { for (let drawn = 0; drawn < 5; drawn++) window.__edit.seek(${time} + drawn * ${1 / fps}); })()`), 0);
           await page.evaluate(`window.__edit.seek(${time})`);
-          phases.seek += performance.now() - at; // TEMP
-          at = performance.now(); // TEMP
           const scale = side > 0 ? Math.min(1, side / Math.max(width, height)) : 1;
           const shot = await page.call("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, clip: { x: 0, y: 0, width, height, scale } }, 90_000);
           if (typeof shot.data !== "string") throw new Error("Chrome drew nothing");
-          phases.shot += performance.now() - at; // TEMP
-          at = performance.now(); // TEMP
           // At full size too a JPEG (fine enough for small text at this quality): a full-size PNG was 1.4–4 MB, kept again
           // in the agent's session with every look (Nov 13: 290 MB of one project's).
           const handle = randomBytes(12).toString("hex");
           handed.set(`${projectId}/${name}/${handle}`, new Uint8Array(Buffer.from(shot.data, "base64")));
           let shown: { jpeg: string; clear: boolean };
           try {
-            const evalAt = performance.now(); // TEMP
             shown = await page.evaluate<{ jpeg: string; clear: boolean }>(`(${OVER_CHECKS})(${JSON.stringify(`${HANDED}/${handle}`)}, ${side === 0 ? 0.92 : 0.82})`, 60_000);
-            const inPage = (shown as unknown as { took?: number[] }).took ?? []; // TEMP
-            inside.forEach((_, at) => (inside[at]! += inPage[at] ?? 0)); // TEMP
-            inside[5]! += performance.now() - evalAt; // TEMP
           } finally {
             handed.delete(`${projectId}/${name}/${handle}`);
           }
           stills.push({ time, picture: new Uint8Array(Buffer.from(shown.jpeg, "base64")), mime: "image/jpeg", cost, seeThrough: shown.clear });
-          phases.over += performance.now() - at; // TEMP
         }
-        if (process.env.CI === "true") console.log(`TEMP look ${name} ${wanted.length} stills ${width}x${height} side ${side}: seeks ${Math.round(phases.seek)} ms, screenshots ${Math.round(phases.shot)} ms, jpeg ${Math.round(phases.over)} ms (in the page: fetch ${Math.round(inside[0]!)}, decode ${Math.round(inside[1]!)}, readback ${Math.round(inside[2]!)}, checkerboard ${Math.round(inside[3]!)}, encode ${Math.round(inside[4]!)}; the call ${Math.round(inside[5]!)}), since asked ${Date.now() - started} ms`); // TEMP
       }
       const said = await page.evaluate<{ problems: string[]; errors: string[] }>("({ problems: window.__edit.problems, errors: window.__edit.errors })");
       if (warm.animation === null) warm.animation = said.problems.find((problem) => problem === ANIMATION) ?? null;
