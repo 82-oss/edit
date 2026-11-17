@@ -267,6 +267,8 @@ export interface Native {
   readonly FACES_RATE: number;
   screenTextDetect(source: string, size: [number, number], indexes: number[]): Promise<Record<number, ScreenText[]>>; // A
   screenTextCached(source: string): Record<number, ScreenText[]> | null; // S
+  /** The words in `region` of the frames at `times` (seconds; the file's own frames at `fps`), at the file's own size: a bodycam's clock (camera_clock.ts). Missing from an addon built before it (a dev server's). */
+  screenTextAt?(source: string, size: [number, number], fps: number, region: Box, times: number[]): Promise<ScreenText[][]>; // A
   readonly SCREEN_TEXT_RATE: number;
   censorIssues(project: ProjectInput, start: boolean): { issues: unknown[]; pending: string[] }; // S (+BG)
   censorWarm(path: string, read?: string | null): void; // BG

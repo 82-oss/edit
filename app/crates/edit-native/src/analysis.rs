@@ -163,6 +163,38 @@ pub async fn screen_text_detect(
     .await
 }
 
+/// The words in `region` (x0, y0, x1, y1 as shares) of the frames at `times`
+/// (source seconds, the file's own frames at `fps`) of the footage at
+/// `source`, read at its own size: small text in a corner (a bodycam's
+/// clock). One list a time, in `times`' order; nothing kept.
+#[napi(
+    ts_args_type = "source: string, size: [number, number], fps: number, region: Box, times: number[]",
+    ts_return_type = "Promise<ScreenText[][]>"
+)]
+pub async fn screen_text_at(
+    source: String,
+    size: Vec<u32>,
+    fps: f64,
+    region: Vec<f64>,
+    times: Vec<f64>,
+) -> napi::Result<serde_json::Value> {
+    crate::blocking("reading text on screen", move || {
+        let size = pair(&size, "size")?;
+        let region: [f64; 4] = region
+            .try_into()
+            .map_err(|_| "region: four numbers".to_owned())?;
+        serde_json::to_value(edit_engine::screen_text::read_at(
+            Path::new(&source),
+            size,
+            fps,
+            region,
+            &times,
+        )?)
+        .map_err(|error| error.to_string())
+    })
+    .await
+}
+
 /// The words on screen read in `source` so far, without looking at anything new.
 #[napi(ts_return_type = "Record<number, ScreenText[]> | null")]
 pub fn screen_text_cached(source: String) -> napi::Result<Option<serde_json::Value>> {

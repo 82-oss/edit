@@ -1,6 +1,6 @@
 // The captions package's MCP tools (caption_speakers, place_captions,
 // track_region, watch_footage, transcribe, media_transcript, find_in_footage,
-// read_transcript) and routes (`POST /api/projects/{id}/captions`,
+// find_camera_time, read_transcript) and routes (`POST /api/projects/{id}/captions`,
 // `POST /api/projects/{id}/watch`, `POST
 // /api/projects/{id}/media/{media}/transcribe`). Importing this module
 // registers the tools; the server calls `routes` on its router.
@@ -8,6 +8,7 @@
 import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
+import * as cameraClock from "./camera_clock.ts";
 import * as captions from "./captions.ts";
 import * as diag from "./diag.ts";
 import * as footageSearch from "./footage_search.ts";
@@ -70,6 +71,21 @@ registerTool("find_in_footage", ({ app, args, projectId }) => {
   const limit = Math.min(Math.max(unsigned(args.limit) ?? 4, 1), 12);
   const context = Math.min(unsigned(args.context) ?? 8, 40);
   return text(stableStringify(footageSearch.find(app, project, phrases, limit, context)));
+});
+
+registerTool("find_camera_time", async ({ app, args, projectId }) => {
+  const project = liveProject(app, projectId);
+  const strings = (name: string, value: unknown): string[] => {
+    if (!Array.isArray(value)) throw new Error(`${name}: invalid type: ${unexpected(value)}, expected a sequence`);
+    return value.map((one) => {
+      if (typeof one !== "string") throw new Error(`${name}: invalid type: ${unexpected(one)}, expected a string`);
+      return one;
+    });
+  };
+  const times = strings("times", args.times);
+  if (times.length === 0 || times.length > 12) throw new Error("give 1 to 12 times");
+  const ids = args.media_ids === undefined || args.media_ids === null ? null : strings("media_ids", args.media_ids);
+  return text(stableStringify(await cameraClock.find(app.media, cameraClock.footageOf(project, ids), times)));
 });
 
 registerTool("media_transcript", async ({ app, args, projectId }) => {

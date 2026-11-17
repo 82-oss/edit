@@ -937,6 +937,36 @@
     "name": "find_in_footage"
   },
   {
+    "description": "A time on the clock burned into the footage (a bodycam's \"14:32:05\") as its source seconds, exact to the frame. The timestamp of bodycam, dashcam or interview-room footage (\"2023-05-14 T14:32:05 Z AXON BODY 3\"): for each time, where it shows (media id, at = the first frame of that second, until = the first frame of the next one or where the shot cuts away, clock = what the frame reads). Use it whenever the person, a comment or a script note gives a camera time (\"cut from 14:32:05\", \"start at 2:32:05 PM\"), never reading the clock by eye. Compilations and excerpts are fine: each continuous stretch has its own clock. When a time isn't on screen it says so, with the nearest stretches the clock does show; files with no clock are listed in no_clock. The first ask of a file reads its clock over the whole file (seconds); later asks are quick.",
+    "inputSchema": {
+      "properties": {
+        "times": {
+          "description": "Up to 12, as the clock shows them: \"14:32:05\", \"2:32:05 PM\", \"2023-05-14 14:32:05\" (a date narrows it to that day; without one any day matches).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "media_ids": {
+          "description": "The videos to look in. Default: every video in the project, the ones on the timeline first.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "times"
+      ],
+      "type": "object"
+    },
+    "name": "find_camera_time"
+  },
+  {
     "description": "What's said in a media file (its own seconds, the whole source), as phrases with times and speakers; transcribes it first if needed. For finding moments to use as B-roll (someone confused, a witness reacting). Several files: one batch, not a call each.",
     "inputSchema": {
       "properties": {

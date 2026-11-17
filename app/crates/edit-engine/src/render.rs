@@ -400,6 +400,12 @@ impl VideoReader {
     /// elsewhere), using FFmpeg's ranged input for cloud media and
     /// AVFoundation for local files on a Mac, just as timeline rendering does.
     pub(crate) fn analysis(path: &Path, width: u32, height: u32) -> Self {
+        Self::analysis_at(path, width, height, 30.0)
+    }
+
+    /// As `analysis`, each frame asked for the file's own frame at `fps` (its
+    /// rate): a read that must land on the frame where something changes.
+    pub(crate) fn analysis_at(path: &Path, width: u32, height: u32, fps: f64) -> Self {
         Self::open(Source {
             key: DecodeKey {
                 path: path.to_path_buf(),
@@ -408,7 +414,11 @@ impl VideoReader {
                 order: Order::Bgra,
                 still: false,
             },
-            fps: 30.0,
+            fps: if fps.is_finite() && fps > 0.0 {
+                fps
+            } else {
+                30.0
+            },
         })
     }
 

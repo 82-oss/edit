@@ -517,6 +517,9 @@ export function createStub(): Stub {
     screenTextCached() {
       return null;
     },
+    async screenTextAt() {
+      notInStub("screenTextAt");
+    },
     SCREEN_TEXT_RATE: 1.0,
     censorWarm() {},
     setPlaying() {},

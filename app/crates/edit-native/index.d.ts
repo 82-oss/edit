@@ -466,6 +466,14 @@ export interface Scenes {
 /** Frames looked at per second of source when reading text on screen. */
 export declare const SCREEN_TEXT_RATE: number
 
+/**
+ * The words in `region` (x0, y0, x1, y1 as shares) of the frames at `times`
+ * (source seconds, the file's own frames at `fps`) of the footage at
+ * `source`, read at its own size: small text in a corner (a bodycam's
+ * clock). One list a time, in `times`' order; nothing kept.
+ */
+export declare function screenTextAt(source: string, size: [number, number], fps: number, region: Box, times: number[]): Promise<ScreenText[][]>
+
 /** The words on screen read in `source` so far, without looking at anything new. */
 export declare function screenTextCached(source: string): Record<number, ScreenText[]> | null
 

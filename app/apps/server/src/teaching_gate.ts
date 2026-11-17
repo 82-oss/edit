@@ -40,6 +40,7 @@ export const WHILE_UNTAUGHT: ReadonlySet<string> = new Set([
   "recover_project",
   "look_at_media",
   "find_in_footage",
+  "find_camera_time",
   "media_transcript",
   "read_transcript",
   "transcribe",
