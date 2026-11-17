@@ -38,6 +38,11 @@ const ffmpeg = Bun.which("ffmpeg");
 let mock: MockServer;
 let restore: () => void;
 const { dump, againAfterMs } = hooks;
+// Never Claude's own search in tests unless one says so.
+hooks.claudeSearch = async () => {
+  throw new Error("no Claude here");
+};
+const noClaude = hooks.claudeSearch;
 let photo: Uint8Array = new Uint8Array();
 let tiny: Uint8Array = new Uint8Array();
 
@@ -66,7 +71,7 @@ afterAll(() => {
 });
 
 afterEach(() => {
-  Object.assign(hooks, { dump, againAfterMs });
+  Object.assign(hooks, { dump, againAfterMs, claudeSearch: noClaude });
   research.forgetPages();
 });
 
@@ -97,6 +102,19 @@ test("search_web lists DuckDuckGo's results through its redirect links", async (
       isError: true,
     });
     expect((await call(app, "search_web", {})).text).toBe("query is required");
+    // Its bot check, or nothing found: Claude's own web search instead (Nov 17).
+    const claudeAsked: string[] = [];
+    hooks.claudeSearch = async (query) => {
+      claudeAsked.push(query);
+      return [{ title: "Joliet woman arrested", url: "https://patch.com/illinois/joliet/arrest", snippet: "Police said." }];
+    };
+    expect(await call(app, "search_web", { query: "leslie brassard joliet" })).toEqual({
+      text: "1. Joliet woman arrested\n   https://patch.com/illinois/joliet/arrest\n   Police said.",
+      isError: false,
+    });
+    hooks.dump = async () => "<html><body>no results</body></html>";
+    expect((await call(app, "search_web", { query: "kent crash" })).text).toStartWith("1. Joliet woman arrested");
+    expect(claudeAsked).toEqual(["leslie brassard joliet", "kent crash"]);
   } finally {
     cleanup();
   }
