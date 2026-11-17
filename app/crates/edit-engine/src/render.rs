@@ -19,7 +19,7 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use edit_core::{audio_segments, evaluate_seen, AudioSegment, Layer, Media, Project, Scene};
-use edit_render::{text::BUNDLED_FONTS, wgpu, Renderer};
+use edit_render::{frame::Framing, text::BUNDLED_FONTS, wgpu, Renderer};
 
 use crate::export::{ExportOptions, Format, Plan};
 #[cfg(target_os = "macos")]
@@ -2183,10 +2183,14 @@ fn export_chunked(
     let extension = options.format.extension();
     let dir = chunks::folder(cache, &project.id);
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-    let key = format!(
+    let framed = framing(project, options, plan);
+    let mut key = format!(
         "{:?}|{}x{}|{}|{}|{}",
         options.format, plan.width, plan.height, settings.bitrate, settings.key_interval, fps
     );
+    if let Some(framed) = framed {
+        key.push_str(&format!("|{:?}", framed.fill));
+    }
     let list = crate::log::time_on("export", "export: chunks", &project.id, || {
         Ok::<_, String>(chunks::split(project, plan, &key))
     })?;
@@ -2309,6 +2313,7 @@ fn export_chunked(
                 .collect(),
             open: None,
             size: (plan.width, plan.height),
+            framing: framed,
             fps,
             settings: WriterOptions {
                 faststart: false,
@@ -2810,6 +2815,7 @@ fn render_picture(
                 Sink::Native {
                     writer,
                     first: plan.start,
+                    framing: framing(project, options, plan),
                 },
                 cache,
                 cancel,
@@ -2913,8 +2919,6 @@ fn native_options(
     if !options.hardware
         || std::env::var_os("EDIT_FFMPEG_VIDEO").is_some()
         || !matches!(options.format, Format::H264 | Format::Hevc)
-        || options.shape != crate::export::Shape::Original
-        || (plan.width, plan.height) != (project.settings.width, project.settings.height)
         || options
             .fps
             .is_some_and(|fps| fps > 0 && fps != project.settings.fps)
@@ -2938,6 +2942,29 @@ fn native_options(
         #[cfg(not(target_os = "macos"))]
         yuv420: false,
     }))
+}
+
+/// An export's other shape or size, framed on the GPU (`edit_render::frame`)
+/// for the native encoders, where FFmpeg's graph (`export::video_graph`) did
+/// it on the CPU: none at the project's own shape and size.
+fn framing(project: &Project, options: &ExportOptions, plan: &Plan) -> Option<Framing> {
+    use crate::export::{Fill as Shaped, Shape};
+    let fill = match (options.shape, options.fill) {
+        (Shape::Original, _) => {
+            if (plan.width, plan.height) == (project.settings.width, project.settings.height) {
+                return None;
+            }
+            edit_render::frame::Fill::Stretch
+        }
+        (_, Shaped::Blur) => edit_render::frame::Fill::Blur,
+        (_, Shaped::Crop) => edit_render::frame::Fill::Crop,
+        (_, Shaped::Black) => edit_render::frame::Fill::Black,
+    };
+    Some(Framing {
+        width: plan.width,
+        height: plan.height,
+        fill,
+    })
 }
 
 /// An error of the native (AVFoundation) encoder, which FFmpeg's may not
@@ -2980,6 +3007,8 @@ struct ChunkSink {
     /// The chunk being written: its frames, file, writer and frames written.
     open: Option<(i64, i64, PathBuf, ChunkWriter, i64)>,
     size: (u32, u32),
+    /// The render framed to `size` (`framing`), when that isn't the project's.
+    framing: Option<Framing>,
     fps: f64,
     settings: WriterOptions,
 }
@@ -3058,6 +3087,7 @@ enum Sink {
     Native {
         writer: crate::mac_media::Writer,
         first: i64,
+        framing: Option<Framing>,
     },
     /// Each chunk into its own file (`chunks.rs`).
     Chunks(ChunkSink),
@@ -3069,6 +3099,16 @@ enum Sink {
 }
 
 impl Sink {
+    /// The framing the frames are rendered to (`framing`).
+    fn framing(&self) -> Option<Framing> {
+        match self {
+            #[cfg(target_os = "macos")]
+            Sink::Native { framing, .. } => *framing,
+            Sink::Chunks(chunks) => chunks.framing,
+            Sink::Pipe { .. } => None,
+        }
+    }
+
     /// Takes its frames as the GPU's 4:2:0 (`Renderer::copy_output_yuv420_to`)
     /// when it can: FFmpeg's chunks of a `width`×`height` render off a Mac.
     fn take_yuv420(&mut self, width: u32, height: u32) -> bool {
@@ -3087,7 +3127,7 @@ impl Sink {
     fn write(&mut self, _frame: i64, pixels: &[u8], stride: usize) -> Result<(), String> {
         match self {
             #[cfg(target_os = "macos")]
-            Sink::Native { writer, first } => {
+            Sink::Native { writer, first, .. } => {
                 writer.frame(_frame - *first, pixels, stride, Order::Rgba)
             }
             Sink::Chunks(chunks) => chunks.write(_frame, pixels, stride),
@@ -3388,8 +3428,9 @@ fn render_frames_watched(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(f32),
 ) -> Result<(), String> {
-    let (width, height) = (project.settings.width, project.settings.height);
-    let mut renderer = new_renderer(width, height)?;
+    let mut renderer = new_renderer(project.settings.width, project.settings.height)?;
+    renderer.set_framing(sink.framing());
+    let (width, height) = renderer.picture_size();
     let device = renderer.device().clone();
     let row = renderer.output_row_bytes() as usize;
     let yuv420 = sink.take_yuv420(width, height);
