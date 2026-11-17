@@ -57,7 +57,7 @@ const MODELS_TTL_MS = 24 * 3600 * 1000;
 
 export interface Entry {
   id: string;
-  /** "user", "assistant", "tool", "error" or "thinking". */
+  /** "user", "assistant", "tool", "error", "thinking", or "note" (a line of Edit's own, `note`). */
   kind: string;
   text: string;
   tool?: string;
@@ -778,6 +778,12 @@ export class Agents implements seams.AgentPanel {
   chat(project: string): Json {
     const chat = this.withChat(project);
     return sorted({ entries: chat.entries.map(entryJson), running: chat.running, model: chat.model, effort: chat.effort, model_name: this.modelName(project), revising: this.revising(project), queue: chat.queue.map(queuedJson) });
+  }
+
+  /** One plain line of Edit's own at the end of a project's chat (house_words_pass.ts: "Muted 3 house words in the narration."): the person's alone, never sent to the agent. */
+  note(project: string, text: string): void {
+    this.upsert(project, entry({ id: newId("note"), kind: "note", status: "done", text }));
+    this.save(project);
   }
 
   /** The agent's `new_chat` (the user asked for one): this chat goes when the turn now running ends. */

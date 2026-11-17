@@ -13,6 +13,7 @@ import * as effects from "./effects.ts";
 import * as looker from "./effect_looker.ts";
 import * as frameCompare from "./frame_compare.ts";
 import * as fonts from "./fonts.ts";
+import * as houseWords from "./house_words_pass.ts";
 import { handlerFor, image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
 import { fixed } from "./rust.ts";
 import * as tools from "./tools.ts";
@@ -223,6 +224,8 @@ async function lookAtEffect({ app, args, projectId }: ToolCall): Promise<Content
   if (look.errors.length > 0) lines.push(`ERRORS its page threw (fix these first):\n${look.errors.map((error) => `- ${error}`).join("\n")}`);
   if (readyLine(look) !== "") lines.push(readyLine(look));
   if (look.problems.length > 0) lines.push(`BREAKS THE EFFECT CONTRACT:\n${look.problems.map((problem) => `- ${problem}`).join("\n")}`);
+  const house = houseWords.effectLine(app.store, projectId, name);
+  if (house !== null) lines.push(house);
   const cost = costLine(look, fps);
   if (cost !== "") lines.push(cost);
   const render = effects.renderLine(app, projectId, name);
@@ -250,7 +253,8 @@ async function addEffect({ app, args, projectId }: ToolCall): Promise<Content[]>
   const name = named(app, projectId, args);
   const added = await effects.add(app, projectId, name);
   const fps = app.store.get(projectId)!.project.settings.fps;
-  return text(`${name} is media ${added.media}: ${fixed(added.duration, 2)} s (${Math.round(added.duration * fps)} frames). Place it like a video (add_clip or apply_edit_plan with media ${added.media}); the viewer plays its page live wherever its clip is, and a change to its code shows there at once. Edit's frames (render_frame, contact_sheet) show it once its render lands, a few seconds after its code stops changing.`);
+  const house = houseWords.effectLine(app.store, projectId, name);
+  return text(`${name} is media ${added.media}: ${fixed(added.duration, 2)} s (${Math.round(added.duration * fps)} frames). Place it like a video (add_clip or apply_edit_plan with media ${added.media}); the viewer plays its page live wherever its clip is, and a change to its code shows there at once. Edit's frames (render_frame, contact_sheet) show it once its render lands, a few seconds after its code stops changing.${house === null ? "" : `\n${house}`}`);
 }
 
 async function effectPicture({ app, args, projectId }: ToolCall): Promise<Content[]> {

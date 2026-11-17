@@ -15,7 +15,8 @@ export interface AgentEntry {
   /** "subagent": a sub-agent's card (its chat key in `detail`), opened to view its own chat. */
   /** "thinking": a reasoning block. `status` "running" while it is still being written. */
   /** "compact": Claude Code compacting the conversation; `detail` its sizes, {pre, post} tokens, once done. */
-  kind: "user" | "assistant" | "tool" | "error" | "subagent" | "thinking" | "compact";
+  /** "note": a plain line of Edit's own after a turn ("Muted 3 house words in the narration."). */
+  kind: "user" | "assistant" | "tool" | "error" | "subagent" | "thinking" | "compact" | "note";
   text: string;
   tool?: string;
   status?: "running" | "done" | "failed" | "stopped";

@@ -13,7 +13,7 @@
 // Rust (`f32` after every step), so the saved numbers come out the same.
 
 import type { App } from "./app.ts";
-import { hex, subtitleRow, transcriptOf } from "./captions_core.ts";
+import { cachedTranscript, hex, subtitleRow, transcriptOf } from "./captions_core.ts";
 import * as burned from "./burned_subtitles.ts";
 import * as diag from "./diag.ts";
 import type { Clip, Media, Mute, Project, Rgba, Segment, TextStyle, Transform } from "./model.ts";
@@ -122,7 +122,7 @@ const starredTerm = (entry: string) => {
 const commentaryTerms = [...HOUSE_TERMS, ...COMMENTARY_TERMS].map(starredTerm);
 const horrorTerms = [...HOUSE_TERMS, ...HORROR_TERMS].map(starredTerm);
 /** The style's own words on top of the house list (commentary, horror). */
-const styleTerms = (style: string): string[] => style === "commentary" ? commentaryTerms : style === "horror" ? horrorTerms : [];
+export const styleTerms = (style: string): string[] => style === "commentary" ? commentaryTerms : style === "horror" ? horrorTerms : [];
 /** Muted and starred out too, only in a heavy neglect case. */
 export const NEGLECT_TERMS = [
   "endangerment",
@@ -1436,6 +1436,25 @@ export function muteOf(suggestion: Suggestion, words: TimedWord[], voiceOver: bo
   return { from: round(fromMs) / 1000.0, to: suggestion.end_ms / 1000.0 };
 }
 
+/** How `houseWords` hears: Edit's own pass after an Edit V2 turn (house_words_pass.ts) reads only transcripts already made, and hears speech recordings too. */
+export interface HouseOptions {
+  /** Only transcripts already in the cache: a file not heard yet is skipped, never transcribed or waited on. */
+  cachedOnly?: boolean;
+  /** Which sound files besides footage and voice-overs are speech to mute (a 911 call): their whole word, as footage's. */
+  recordings?: (media: Media) => boolean;
+}
+
+/** Sound files' clips heard in the span that `speech` says are speech: not footage's own sound, nor a voice-over. */
+function recordedSound(project: Project, from: number, to: number, speech: (media: Media) => boolean): Clip[] {
+  return project.clips.filter((clip) => {
+    const track = trackOf(project, clip.track);
+    if (track === undefined || track.kind !== "audio" || track.muted) return false;
+    if (clip.type !== "audio" || !(clip.start < to && clipEnd(clip) > from)) return false;
+    const media = mediaOf(project, clip.media);
+    return media !== undefined && media.kind === "audio" && speech(media);
+  });
+}
+
 /**
  * Finds the house words (and the neglect list's when `neglect`) said in the
  * footage and the voice-overs between `from` and `to` (timeline frames), and
@@ -1448,6 +1467,7 @@ export async function houseWords(
   to: number,
   neglect: boolean,
   extra: readonly string[] = [],
+  options: HouseOptions = {},
 ): Promise<HouseWords> {
   extra = [...styleTerms(project.style), ...extra];
   const fps = fpsOf(project);
@@ -1455,15 +1475,21 @@ export async function houseWords(
     ...footageSound(project, from, to).map((clip) => [clip, false] as [Clip, boolean]),
     ...seams.voiceover.voiceoverSound(project, from, to).map((clip) => [clip, true] as [Clip, boolean]),
   ];
+  if (options.recordings !== undefined) {
+    const taken = new Set(sound.map(([clip]) => clip.id));
+    sound.push(...recordedSound(project, from, to, options.recordings).filter((clip) => !taken.has(clip.id)).map((clip) => [clip, false] as [Clip, boolean]));
+  }
   sound.sort((a, b) => a[0].start - b[0].start);
-  const transcripts = new Map<string, Transcript>();
+  const transcripts = new Map<string, Transcript | null>();
   const out: HouseWords = { mutes: new Map(), found: [], listed: [], kept: [] };
   for (const [clip, voiceOver] of sound) {
     if (clip.type !== "audio") continue;
     const media = mediaOf(project, clip.media);
     if (media === undefined) continue;
-    if (!transcripts.has(media.id)) transcripts.set(media.id, await transcriptOf(app, media, project));
+    if (!transcripts.has(media.id)) transcripts.set(media.id, options.cachedOnly === true ? cachedTranscript(app, media) : await transcriptOf(app, media, project));
     const transcript = transcripts.get(media.id)!;
+    // Not heard yet (cachedOnly): left as it is, never waited on.
+    if (transcript === null) continue;
     const [visibleFrom, visibleTo] = visible(clip, from, to, fps);
     const words = timedWords(transcript.words, visibleFrom, visibleTo);
     const onTimeline = onTimelineOf(clip, fps);

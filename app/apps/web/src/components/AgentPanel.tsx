@@ -881,6 +881,8 @@ function EntryView({ entry, muted, fresh }: { entry: AgentEntry; muted?: boolean
   if (entry.kind === "compact") return <CompactLine entry={entry} />;
   // Stopped by the person: a line across the chat where it ended, as a compaction's (Sphe, Nov 12), not a problem card. Steered, there's none.
   if (entry.kind === "error" && entry.text.trim() === "Stopped.") return <ChatDivider label="Stopped" />;
+  // Edit's own line after a turn (house_words_pass.ts): quiet, under the answer.
+  if (entry.kind === "note") return <div className="px-1.5 text-[12px] text-muted">{entry.text}</div>;
   if (entry.kind === "error") {
     const resolved = entry.status === "done";
     return (

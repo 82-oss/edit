@@ -44,6 +44,7 @@ import * as firstPrompt from "./first_prompt.ts";
 import * as researchCloud from "./research_cloud.ts";
 import * as playbackRender from "./playback_render.ts";
 import * as hqEars from "./hq_ears.ts";
+import * as houseWordsPass from "./house_words_pass.ts";
 import * as agentSessions from "./agent_sessions.ts";
 import * as effectCloud from "./effect_cloud.ts";
 import * as exportAhead from "./export_ahead.ts";
@@ -377,6 +378,7 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     // Smooth playback: the open edit rendered small in the background, out of the way of exports.
     optional("playback", () => playbackRender.start(app));
     optional("hq ears", () => hqEars.start(app));
+    optional("house words", () => houseWordsPass.start(app));
     // The agent's old Claude Code sessions (a chat's left ones, one-off questions) removed from this computer.
     if (!trials) optional("agent sessions", () => void agentSessions.start(app));
     // Effect render files nothing plays from any more (replaced by one in the cloud, or of an effect gone).

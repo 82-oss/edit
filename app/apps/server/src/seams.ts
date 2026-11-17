@@ -910,6 +910,8 @@ export interface AgentPanel extends Agents {
   stop(project: string): Promise<void>;
   /** Forgets a project's chat (and its conversation). */
   reset(project: string): void;
+  /** One plain line of Edit's own at the end of a project's chat, the person's alone (agent.ts `note`). */
+  note?(project: string, text: string): void;
   /** Forgets it once the turn now running ends (the agent's `new_chat`), so its last words are seen. */
   resetAfterTurn?(project: string): void;  /** The person changed the model menu (model_choice.ts): open chats show who answers next. */
   choiceChanged?(): void;
