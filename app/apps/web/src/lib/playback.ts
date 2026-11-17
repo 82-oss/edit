@@ -1298,23 +1298,17 @@ class Preview {
     });
   }
 
-  /**
-   * While the window plays: where it is, into the playhead, asked once a frame of the edit; the end stops here. Asked
-   * once an animation frame (60 to 120 a second), the asks were most of the page's own work during a play in Edit.app
-   * (kenobi, Nov 17: 67 of the 76 samples in its animation frames), and each one the window's to answer.
-   */
+  /** Once an animation frame while the window plays: where it is, into the playhead; the end stops here. */
   private followNative(generation: number) {
     this.toldFrame = -1;
     const tick = () => {
       this.loop = 0;
       if (!playhead.playing || generation !== this.nativePlay || !this.native) return;
       // The window not answering where it is (its thread stuck in a read): the spinner, until it says.
-      const now = performance.now();
-      if (this.nativePolling && now - this.nativeAskedAt > STALL_MS) this.setBuffering(true, true);
-      const frameMs = this.project ? 1000 / (rate(this.project.settings) * Math.max(this.speed, 0.25)) : 0;
-      if (!this.nativePolling && now - this.nativeAskedAt >= frameMs - 4) {
+      if (this.nativePolling && performance.now() - this.nativeAskedAt > STALL_MS) this.setBuffering(true, true);
+      if (!this.nativePolling) {
         this.nativePolling = true;
-        this.nativeAskedAt = now;
+        this.nativeAskedAt = performance.now();
         nativePreview.position().then((at) => {
           this.nativePolling = false;
           if (!playhead.playing || generation !== this.nativePlay) return;
