@@ -460,7 +460,9 @@ const wakes = new Map<string, Map<string, PieceRow>>();
 /** Starts the agent's turn on what's done once no turn is under way (a person's message meanwhile goes first; this waits behind it). */
 async function wake(app: App, id: string): Promise<void> {
   const until = Date.now() + 12 * 3_600_000;
-  while (Date.now() < until) {
+  const mine = wakeGeneration;
+  let failures = 0;
+  while (Date.now() < until && mine === wakeGeneration) {
     const panel = seams.agentPanel(app);
     const running = (panel.turn?.(id) ?? (panel.chat(id) as { running?: boolean })).running === true;
     if (!running) {
@@ -472,7 +474,9 @@ async function wake(app: App, id: string): Promise<void> {
         await panel.send(id, wakeText([...rows.values()]), null, null);
         return;
       } catch (error) {
-        diag.warn("removal", `${id}: telling the agent removal is done: ${diag.messageOf(error)}; trying again`);
+        // Said once; tried again less and less often (Claude not set up here can be a long while).
+        if (failures === 0) diag.warn("removal", `${id}: telling the agent removal is done: ${diag.messageOf(error)}; trying again`);
+        failures += 1;
         // Not sent: what it would have told goes with the next try (and whatever joined meanwhile).
         const joined = wakes.get(id);
         if (joined !== undefined) {
@@ -482,10 +486,13 @@ async function wake(app: App, id: string): Promise<void> {
         wakes.set(id, rows);
       }
     }
-    await Bun.sleep(timing.wakeEveryMs);
+    await Bun.sleep(timing.wakeEveryMs * Math.min(20, 1 + failures * 4));
   }
-  wakes.delete(id);
+  if (mine === wakeGeneration) wakes.delete(id);
 }
+
+/** Bumped by `reset`: wake-ups waiting from before give up. */
+let wakeGeneration = 0;
 
 /** Every project of a channel taught to take theirs out is brought up to date as soon as its edits rest, and again when the server starts (`resume`), here (not a save pulled from another Mac); every export waits for its pieces still out. */
 export function start(app: App): void {
@@ -510,6 +517,7 @@ export function reset(): void {
   looked.clear();
   active.clear();
   wakes.clear();
+  wakeGeneration += 1;
   if (watcher !== null) clearInterval(watcher);
   watcher = null;
 }

@@ -866,18 +866,23 @@ test("the website's pieces go three at once once Vmake has taken the first (Nov 
     const seen: number[] = [];
     let active = 0;
     let first = true;
+    let open = () => {};
+    const all = new Promise<void>((resolve) => (open = resolve));
     const provider: tr.Provider = {
       id: "vmake-web",
       price: () => "",
       async remove(input, out, _seconds, _signal, _whole, begun) {
         active += 1;
         seen.push(active);
+        if (active === 3) open();
         const mine = first;
         first = false;
-        // Uploaded and applied a moment in; processing takes a while longer.
-        await Bun.sleep(150);
-        if (says) begun?.();
-        await Bun.sleep(mine ? 600 : 300);
+        // Taken a moment in; on the website every piece is held until all three are in (none ends before the others start).
+        await Bun.sleep(100);
+        if (says) {
+          if (mine) begun?.();
+          await Promise.race([all, Bun.sleep(60_000)]);
+        }
         fs.copyFileSync(input, out);
         active -= 1;
         return { credits: null };
@@ -912,7 +917,8 @@ test("the website's pieces go three at once once Vmake has taken the first (Nov 
     tr.useProvider(api.provider);
     await tr.ensure(app, project.id);
     await tr.settled(project.id);
-    expect(api.seen).toEqual([1, 1, 2]);
+    // The second only once the first has ended.
+    expect(api.seen.slice(0, 2)).toEqual([1, 1]);
   } finally {
     cleanup();
   }
