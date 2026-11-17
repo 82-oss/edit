@@ -649,18 +649,20 @@ test("a render's failure is the computer's at that moment (tried again at once),
   expect(effects.failureKind(new Error("its window.ready was rejected: the map's tiles stopped coming: none came in 15 s, 3 asked for and unanswered (Edit's server or its relay isn't answering)"))).toBe("network");
   expect(effects.failureKind(new Error("its window.ready was rejected: could not reach Edit's relay: getaddrinfo ETIMEOUT"))).toBe("network");
   expect(effects.failureKind(new Error("its window.ready was rejected: the map's tiles were refused: today's maps are used up"))).toBe("code");
-  // What a render holds at once, asked of the disk before it draws: two chunks of its frames (two seconds each at
-  // 1080p, in whole half-second keyframe intervals) and its video twice (its chunks, and the video joined from them).
+  // What a render asks of the disk before it draws: two chunks of its frames (two seconds each at 1080p, in whole
+  // half-second keyframe intervals) and those chunks' video twice; the whole video's room is asked at the join.
   const hd = { width: 1920, height: 1080, fps: 30 };
   expect(effects.chunkFrames(hd)).toBe(60);
   expect(effects.chunkFrames({ width: 3840, height: 2160, fps: 30 })).toBe(15);
   expect(effects.chunkFrames({ width: 1920, height: 1080, fps: 25 })).toBe(52);
-  // A 12 s board: about 0.45 GB (1.6 GB until Nov 17, every frame kept until the end).
+  // A 12 s board: about 0.4 GB (1.6 GB until Nov 17, every frame kept until the end).
   const board = effects.renderBytes(hd, 360, 12);
-  expect(board / 1e9).toBeGreaterThan(0.4);
-  expect(board / 1e9).toBeLessThan(0.5);
+  expect(board / 1e9).toBeGreaterThan(0.35);
+  expect(board / 1e9).toBeLessThan(0.45);
   // A minute-long one well under a gigabyte, where it took 7.4 GB (kenobi, Nov 17: "free about 8 GB").
   expect(effects.renderBytes(hd, 1800, 60) / 1e9).toBeLessThan(0.8);
+  // An hour of subtitles asks no more before it draws (it asked ~30 GB: Sphe's M4 edits refused with 20 GB free, Nov 18).
+  expect(effects.renderBytes(hd, 132_000, 4400)).toBe(effects.renderBytes(hd, 1800, 60));
   // Frames left to draw fewer than two chunks: only those.
   expect(effects.renderBytes(hd, 10, 12)).toBeLessThan(board - 100 * 1920 * 1080 * 1.5);
 });

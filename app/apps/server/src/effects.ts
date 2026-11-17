@@ -2313,6 +2313,17 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
       for (const page of opened) page.close();
     }
     const partial = join(dir, `${name}-${key}.partial.mp4`);
+    // The joined video is as big as its chunks: room for it asked now, at their real size (its chunks are kept, so a
+    // Retry once there's room only joins them).
+    let chunkBytes = 0;
+    for (let n = 0; n < count; n++) chunkBytes += fs.statSync(chunkPath(n, stacked)).size;
+    need = chunkBytes;
+    held = 0;
+    claim.bytes = 0;
+    let room = storage.spare(dir, chunkBytes, WORK_FLOOR_BYTES, claim);
+    if (room < 0 && storage.askForRoom(storage.freeBytes(dir) - room) > 0) room = storage.spare(dir, chunkBytes, WORK_FLOOR_BYTES, claim);
+    if (room < 0) throw new DiskShort(diskFull(-room));
+    claim.bytes = chunkBytes;
     try {
       const list = join(frames, "chunks.txt");
       fs.writeFileSync(list, `${Array.from({ length: count }, (_, n) => `file '${chunkPath(n, stacked).replaceAll("'", "'\\''")}'`).join("\n")}\n`);
@@ -2377,12 +2388,16 @@ function encodeArgs(frame: { width: number; height: number; fps: number }, stack
 }
 
 /**
- * The room a render takes on the disk at once: two chunks of its frames still to draw (one drawn while the one
- * before is encoded), and its video twice (its chunks, and the video joined from them), at most twice the best
- * export's bitrate (as the encode caps it) and half as much again stacked.
+ * The room a render asks for before it draws: two chunks of its frames still to draw (one drawn while the one
+ * before is encoded), and those chunks' video twice (each chunk, and its share of the video joined from them), at
+ * most twice the best export's bitrate (as the encode caps it) and half as much again stacked. The whole video's
+ * room is asked for at the join, at the chunks' real size (`drawAndJoin`): asked up front at the cap, an hour of
+ * subtitles reserved about 30 GB for what's mostly see-through, and both of Sphe's M4 edits were refused with
+ * 20 GB free (Nov 18); each chunk is already drawn only above the floor.
  */
 export function renderBytes(frame: { width: number; height: number; fps: number }, frames: number, seconds: number): number {
-  const video = (seconds * frame.width * frame.height * frame.fps * 0.14 * 2 * 1.5) / 8;
+  const inFlight = Math.min(seconds, (2 * chunkFrames(frame)) / frame.fps);
+  const video = (inFlight * frame.width * frame.height * frame.fps * 0.14 * 2 * 1.5) / 8;
   return Math.ceil(Math.min(frames, 2 * chunkFrames(frame)) * frame.width * frame.height * PNG_BYTES_A_PIXEL + 2 * video);
 }
 
