@@ -267,9 +267,10 @@ test("a cold read starts on its first bytes straight from R2's own URL while its
     const [from, to] = [Number(a), Math.min(Number(b), size - 1)];
     return new Response(object.subarray(from, to + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${from}-${to}/${size}` } });
   };
-  // The edge slow to answer a block it hasn't seen; R2's own at once.
-  const edge = Bun.serve({ port: 0, async fetch(request) { await Bun.sleep(300); return answer(request); } });
-  const r2own = Bun.serve({ port: 0, fetch: answer });
+  // The edge slow to answer a block it hasn't seen; R2's own at once. Every ask counted.
+  let asks = 0;
+  const edge = Bun.serve({ port: 0, async fetch(request) { asks++; await Bun.sleep(300); return answer(request); } });
+  const r2own = Bun.serve({ port: 0, fetch(request) { asks++; return answer(request); } });
   try {
     const coldRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-cold-"));
     const source = Object.assign(async () => `http://127.0.0.1:${edge.port}/x`, { direct: async () => `http://127.0.0.1:${r2own.port}/x` });
@@ -294,8 +295,16 @@ test("a cold read starts on its first bytes straight from R2's own URL while its
       at += one.length;
     }
     expect(whole).toEqual(object.subarray(from));
-    // Its block kept for the next read.
+    // Its block kept for the next read. The answer never waits on it (its first bytes came from the peek), so it
+    // may land after the blocks read on from: waited for, not assumed (CI's Macs, Nov 17, it hadn't yet).
+    const landed = performance.now() + 5_000;
+    while (!blocksHere(coldRoot, "edit/proxies/cold.mp4")?.here.has(0) && performance.now() < landed) await Bun.sleep(5);
     expect(blocksHere(coldRoot, "edit/proxies/cold.mp4")!.here.has(0)).toBe(true);
+    // The next read of it is the disk's alone: nothing asked of the edge or R2.
+    const before = asks;
+    const again = await serve(coldRoot, "edit/proxies/cold.mp4", `bytes=0-99`, source);
+    expect(await bytes(again)).toEqual(object.subarray(0, 100));
+    expect(asks).toBe(before);
   } finally {
     void edge.stop(true);
     void r2own.stop(true);
