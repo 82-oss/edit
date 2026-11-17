@@ -1,14 +1,17 @@
 // notices.ts's tests: the person is told what finished the way that fits where they are.
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 
 import * as notices from "../src/notices.ts";
 import * as windowFocus from "../src/window_focus.ts";
 
-afterEach(() => {
+// Before too: an earlier file's notices may have left pages counted.
+const reset = () => {
   notices.resetForTests();
   windowFocus.resetForTests();
-});
+};
+beforeEach(reset);
+afterEach(reset);
 
 const notice = (key: string, path = "/scripts/abc"): notices.Notice => ({ key, title: "First draft is ready", body: "Mom Leaves 5 Kids", path });
 
@@ -79,4 +82,35 @@ test("a page's other messages are ignored, and a line fit for a notification is 
   expect(one.viewer).toMatchObject({ focused: true, path: "/p/x" });
   expect(notices.line("\n**Tightened** the [intro](http://x).\nMore")).toBe("Tightened the intro.");
   expect(notices.line("x".repeat(200), 10)).toBe(`${"x".repeat(9)}…`);
+});
+
+test("what was told and not looked at counts on the Dock, each page once, until a focused window is on it", async () => {
+  const there = page("/", true);
+  // Seen where it happened: nothing to count.
+  notices.heard(there.viewer, JSON.stringify({ type: "attention", focused: true, path: "/p/one" }));
+  expect(notices.notify(notice("s", "/p/one"))).toBe("seen");
+  expect(notices.unseenCount()).toBe(0);
+  // Told elsewhere: counted, the same page twice once.
+  notices.heard(there.viewer, JSON.stringify({ type: "attention", focused: true, path: "/" }));
+  expect(notices.notify(notice("a", "/scripts/abc"))).toBe("toast");
+  expect(notices.notify(notice("b", "/scripts/abc"))).toBe("toast");
+  expect(notices.notify(notice("c", "/p/two"))).toBe("toast");
+  expect(notices.unseenCount()).toBe(2);
+  // The window showing none is told at once.
+  expect((await windowFocus.next(5_000, { badge: 0 })).badge).toBe(2);
+  // Opened in a window not in front: still unseen; in front (a click on the notice), seen.
+  notices.heard(there.viewer, JSON.stringify({ type: "attention", focused: false, path: "/scripts/abc" }));
+  expect(notices.unseenCount()).toBe(2);
+  const asked = windowFocus.next(5_000, { badge: 2 });
+  notices.heard(there.viewer, JSON.stringify({ type: "attention", focused: true, path: "/scripts/abc/review" }));
+  expect(notices.unseenCount()).toBe(1);
+  expect((await asked).badge).toBe(1);
+  notices.heard(there.viewer, JSON.stringify({ type: "attention", focused: true, path: "/p/two" }));
+  expect(notices.unseenCount()).toBe(0);
+  expect((await windowFocus.next(5_000, { badge: 1 })).badge).toBe(0);
+  // Nobody to tell: nothing counted.
+  notices.disconnect(there.viewer);
+  windowFocus.resetForTests();
+  expect(notices.notify(notice("n", "/p/three"))).toBe("nobody");
+  expect(notices.unseenCount()).toBe(0);
 });

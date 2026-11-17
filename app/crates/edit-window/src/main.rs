@@ -280,7 +280,8 @@ struct Notice {
 }
 
 /// One poll's answer: whether to come to the front, notices to post, the
-/// server's build, and whether this window should open itself again.
+/// server's build, whether this window should open itself again, and the
+/// Dock's badge when it isn't the one shown (finished things not looked at yet).
 #[derive(serde::Deserialize, Debug, Default, PartialEq)]
 struct Answer {
     #[serde(default)]
@@ -291,6 +292,8 @@ struct Answer {
     build: Option<String>,
     #[serde(default)]
     relaunch: bool,
+    #[serde(default)]
+    badge: Option<i64>,
 }
 
 /// What the window knows of its build, to open itself again when its server's isn't it.
@@ -428,13 +431,15 @@ fn relaunch(_handle: &AppHandle, _ours: &Ours, _build: &str) -> bool {
 /// Asks the server, again and again, whether the window should come to the
 /// front (`GET /api/window/next`, a long poll: `{"focus":true}` when it should,
 /// `{"focus":false}` after ~25 s to ask again), and brings it forward when
-/// told; notices that came with the answer are posted (src/notices.rs).
+/// told; notices that came with the answer are posted (src/notices.rs), and
+/// the Dock's badge set to the count it says (0 clears it).
 /// A server without the route (older) or not answering is asked again later.
 /// Told to `relaunch` at a quiet moment, it opens the window again.
 fn follow_focus(handle: &AppHandle, host: &str, port: u16, mut build: Build, ours: Option<&Ours>) {
+    let mut badge = 0;
     loop {
         let asking = build.to_send(quiet(handle)).map(str::to_owned);
-        match ask_focus(host, port, asking.as_deref()) {
+        match ask_focus(host, port, asking.as_deref(), badge) {
             Ok(answer) => {
                 build.heard(&answer);
                 if let (Some(server), Some(ours)) = (build.relaunch_for(&answer), ours) {
@@ -457,6 +462,13 @@ fn follow_focus(handle: &AppHandle, host: &str, port: u16, mut build: Build, our
                 for notice in &answer.notices {
                     notices::post(notice);
                 }
+                // Taken as shown even when it couldn't be, so the server isn't asked again at once.
+                if let Some(count) = answer.badge {
+                    if let Some(window) = handle.get_webview_window("main") {
+                        let _ = window.set_badge_count((count > 0).then_some(count));
+                    }
+                    badge = count;
+                }
             }
             Err(()) => std::thread::sleep(Duration::from_secs(5)),
         }
@@ -464,13 +476,15 @@ fn follow_focus(handle: &AppHandle, host: &str, port: u16, mut build: Build, our
 }
 
 /// One long poll: whether the server wants the window in front, and what to post. `build`: the
-/// window's, sent once it's quiet.
-fn ask_focus(host: &str, port: u16, build: Option<&str>) -> Result<Answer, ()> {
+/// window's, sent once it's quiet; `badge`: the count its Dock badge shows.
+fn ask_focus(host: &str, port: u16, build: Option<&str>, badge: i64) -> Result<Answer, ()> {
     let mut stream = TcpStream::connect((host, port)).map_err(|_| ())?;
     stream
         .set_read_timeout(Some(Duration::from_secs(40)))
         .map_err(|_| ())?;
-    let query = build.map_or(String::new(), |build| format!("?build={build}"));
+    let query = build.map_or(format!("?badge={badge}"), |build| {
+        format!("?build={build}&badge={badge}")
+    });
     write!(
         stream,
         "GET /api/window/next{query} HTTP/1.1\r\nHost: {host}:{port}\r\nAccept: application/json\r\nConnection: close\r\n\r\n"
@@ -730,19 +744,19 @@ mod tests {
         let (port, asked) =
             serve_once("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n{\"focus\":true}");
         assert_eq!(
-            ask_focus("127.0.0.1", port, None).map(|answer| answer.focus),
+            ask_focus("127.0.0.1", port, None, 0).map(|answer| answer.focus),
             Ok(true)
         );
         assert!(asked
             .join()
             .unwrap()
-            .starts_with("GET /api/window/next HTTP/1.1\r\n"));
+            .starts_with("GET /api/window/next?badge=0 HTTP/1.1\r\n"));
         let (port, _) = serve_once("HTTP/1.1 200 OK\r\n\r\n{\"focus\":false}");
-        assert_eq!(ask_focus("127.0.0.1", port, None), Ok(Answer::default()));
+        assert_eq!(ask_focus("127.0.0.1", port, None, 0), Ok(Answer::default()));
         // Notices to post come with the answer.
         let (port, _) = serve_once("HTTP/1.1 200 OK\r\n\r\n{\"focus\":false,\"notices\":[{\"key\":\"k\",\"title\":\"First draft is ready\",\"body\":\"Mom\",\"path\":\"/scripts/a\"}]}");
         assert_eq!(
-            ask_focus("127.0.0.1", port, None).map(|answer| answer.notices),
+            ask_focus("127.0.0.1", port, None, 0).map(|answer| answer.notices),
             Ok(vec![Notice {
                 key: "k".into(),
                 title: "First draft is ready".into(),
@@ -752,23 +766,23 @@ mod tests {
         );
         // An older server without the route: asked again later.
         let (port, _) = serve_once("HTTP/1.1 404 Not Found\r\n\r\nnot found");
-        assert_eq!(ask_focus("127.0.0.1", port, None), Err(()));
+        assert_eq!(ask_focus("127.0.0.1", port, None, 0), Err(()));
     }
 
-    /// The window sends its build with the poll, and hears the server's.
+    /// The window sends its build and badge with the poll, and hears the server's.
     #[test]
     fn the_poll_carries_both_builds() {
         let (port, asked) = serve_once(
-            "HTTP/1.1 200 OK\r\n\r\n{\"focus\":false,\"notices\":[],\"relaunch\":true,\"build\":\"nightly-77\"}",
+            "HTTP/1.1 200 OK\r\n\r\n{\"focus\":false,\"notices\":[],\"relaunch\":true,\"build\":\"nightly-77\",\"badge\":2}",
         );
-        let answer = ask_focus("127.0.0.1", port, Some("nightly-76")).unwrap();
+        let answer = ask_focus("127.0.0.1", port, Some("nightly-76"), 0).unwrap();
         assert!(asked
             .join()
             .unwrap()
-            .starts_with("GET /api/window/next?build=nightly-76 HTTP/1.1\r\n"));
+            .starts_with("GET /api/window/next?build=nightly-76&badge=0 HTTP/1.1\r\n"));
         assert_eq!(
-            (answer.relaunch, answer.build.as_deref()),
-            (true, Some("nightly-77"))
+            (answer.relaunch, answer.build.as_deref(), answer.badge),
+            (true, Some("nightly-77"), Some(2))
         );
     }
 

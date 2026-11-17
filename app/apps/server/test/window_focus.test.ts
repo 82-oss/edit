@@ -78,3 +78,37 @@ test("GET /api/window/next says the server's build, and tells a window of anothe
     cleanup();
   }
 });
+
+test("the Dock's badge goes to a window showing another, at once or as it changes; one sending none is never told", async () => {
+  // A window showing what the count is: held.
+  expect(await windowFocus.next(20, { badge: 0 })).toEqual({ focus: false, notices: [] });
+  const waiting = windowFocus.next(5_000, { badge: 0 });
+  const older = windowFocus.next(20);
+  windowFocus.setBadge(2);
+  expect(await waiting).toEqual({ focus: false, notices: [], badge: 2 });
+  expect(await older).toEqual({ focus: false, notices: [] });
+  // A window opened again, or onto a server started again, shows another: told at once.
+  expect(await windowFocus.next(5_000, { badge: 5 })).toEqual({ focus: false, notices: [], badge: 2 });
+  // Set to what it shows: nothing to tell; then cleared.
+  const shown = windowFocus.next(5_000, { badge: 2 });
+  windowFocus.setBadge(2);
+  windowFocus.setBadge(0);
+  expect(await shown).toEqual({ focus: false, notices: [], badge: 0 });
+});
+
+test("GET /api/window/next reads the badge the window shows", async () => {
+  const { respond } = await import("../src/http/server.ts");
+  const { buildRouter } = await import("../src/routes.ts");
+  const { fixtureHome } = await import("./helpers/home.ts");
+  const { BUILD } = await import("../src/version.ts");
+  const { app, cleanup } = fixtureHome("window-badge");
+  try {
+    Object.defineProperty(app, "exports", { value: { running: () => false } });
+    const router = buildRouter();
+    windowFocus.setBadge(1);
+    const request = new Request(`http://localhost:7700/api/window/next?build=${BUILD}&badge=0`, { headers: { host: "localhost:7700" } });
+    expect(await (await respond(app, router, request, null))!.json()).toEqual({ focus: false, notices: [], badge: 1, build: BUILD });
+  } finally {
+    cleanup();
+  }
+});

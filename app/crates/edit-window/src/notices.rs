@@ -148,11 +148,14 @@ pub fn init(app: &AppHandle) {
 }
 
 /// macOS's question, whether Edit may notify (asked once: after an answer it says that answer again).
+/// Badges too: the Dock's count of finished things not looked at yet (main.rs's `follow_focus`).
 fn ask(center: &UNUserNotificationCenter, answered: impl Fn(bool) + 'static) {
     let answered =
         RcBlock::new(move |granted: Bool, _error: *mut NSError| answered(granted.as_bool()));
     center.requestAuthorizationWithOptions_completionHandler(
-        UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound,
+        UNAuthorizationOptions::Alert
+            | UNAuthorizationOptions::Sound
+            | UNAuthorizationOptions::Badge,
         &answered,
     );
 }

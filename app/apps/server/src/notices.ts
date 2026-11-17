@@ -14,6 +14,12 @@
 //     after Edit.app's window, else Edit.app's own window, in Notification
 //     Center (window_focus.ts carries it, crates/edit-window/src/notices.rs).
 // A click on either opens the page.
+//
+// What was told and not yet looked at counts on Edit.app's Dock icon (Sphe,
+// Nov 17: "a red one or two after we get a notification that something is
+// done and it goes away when we view said done thing"): each page told once
+// however often, until a focused window is on it (a click on the notice opens
+// it, which is that). Kept in memory only: a server started again counts from 0.
 
 import * as diag from "./diag.ts";
 import * as windowFocus from "./window_focus.ts";
@@ -50,6 +56,11 @@ const viewers = new Set<Viewer>();
 /** Keys notified lately, with when. */
 const recent = new Map<string, number>();
 const REPEAT_MS = 10_000;
+/** Pages told something finished that nobody has looked at since. */
+const unseen = new Set<string>();
+
+/** Tells Edit.app's window how many there are, for its Dock badge. */
+const badge = () => windowFocus.setBadge(unseen.size);
 
 /** A page connected: told notices through `send`. */
 export function connect(send: (text: string) => void): Viewer {
@@ -75,11 +86,23 @@ export function heard(viewer: Viewer, text: string): void {
   if (typeof message.path === "string") viewer.path = message.path;
   viewer.system = message.system === true;
   viewer.app = message.app === true;
-  if (viewer.focused) viewer.lastFocused = Date.now();
+  if (viewer.focused) {
+    viewer.lastFocused = Date.now();
+    const seen = [...unseen].filter((path) => shows(viewer.path, path));
+    for (const path of seen) unseen.delete(path);
+    if (seen.length > 0) badge();
+  }
 }
 
 /** Whether a page at `at` shows what's on `path` (the page itself, or a part of it). */
-const shows = (at: string, path: string): boolean => at === path || at.startsWith(`${path}/`) || at.startsWith(`${path}?`);
+function shows(at: string, path: string): boolean {
+  return at === path || at.startsWith(`${path}/`) || at.startsWith(`${path}?`);
+}
+
+/** How many finished things were told and not looked at yet (the Dock's badge). */
+export function unseenCount(): number {
+  return unseen.size;
+}
 
 /** Tells the person `notice`, the way that fits where they are (see the top); how it went. */
 export function notify(notice: Notice): Reach {
@@ -112,6 +135,10 @@ export function notify(notice: Notice): Reach {
       reach = "nobody";
     }
   }
+  if ((reach === "toast" || reach === "window" || reach === "page") && !unseen.has(notice.path)) {
+    unseen.add(notice.path);
+    badge();
+  }
   diag.info("notices", `${notice.title} (${notice.path}): ${reach}`);
   return reach;
 }
@@ -131,4 +158,5 @@ export function line(text: string, max = 140): string {
 export function resetForTests(): void {
   viewers.clear();
   recent.clear();
+  unseen.clear();
 }
