@@ -1054,6 +1054,31 @@ fn decode_all(
     requests: &[(Source, f64)],
     threads: usize,
 ) -> Result<Vec<Vec<u8>>, String> {
+    decode_all_into(pool, requests, threads, &mut Vec::new())
+}
+
+/// `decode_all` into buffers taken from `spare` where one is the size (a
+/// reader writes every byte of its frame): a fresh zeroed buffer each layer and
+/// frame was pages faulted in and zeroed at every one of the native preview's
+/// draws, 8 MB a 1080p picture.
+fn decode_all_into(
+    pool: &mut ReaderPool,
+    requests: &[(Source, f64)],
+    threads: usize,
+    spare: &mut Vec<Vec<u8>>,
+) -> Result<Vec<Vec<u8>>, String> {
+    let mut buffers: Vec<Option<Vec<u8>>> = requests
+        .iter()
+        .map(|(source, _)| {
+            let bytes = source.bytes();
+            Some(
+                match spare.iter().position(|buffer| buffer.len() == bytes) {
+                    Some(at) => spare.swap_remove(at),
+                    None => vec![0_u8; bytes],
+                },
+            )
+        })
+        .collect();
     let mut order: Vec<usize> = (0..requests.len()).collect();
     order.sort_by(|a, b| {
         let (Some((sa, ta)), Some((sb, tb))) = (requests.get(*a), requests.get(*b)) else {
@@ -1073,6 +1098,15 @@ fn decode_all(
     // seeks in 160 s of Cops Realize (Nov 8), 20–30 ms a frame.
     let mut work = Vec::new();
     for share in shares {
+        let outs: Vec<Vec<u8>> = share
+            .iter()
+            .map(|index| {
+                buffers
+                    .get_mut(*index)
+                    .and_then(Option::take)
+                    .unwrap_or_default()
+            })
+            .collect();
         let mut readers = VecDeque::new();
         let mut last: Option<&DecodeKey> = None;
         for index in &share {
@@ -1085,10 +1119,11 @@ fn decode_all(
             }
         }
         if !readers.is_empty() {
-            work.push((share, readers));
+            work.push((share, readers, outs));
         }
     }
-    let run = |(share, mut readers): (Vec<usize>, VecDeque<VideoReader>)| {
+    let run = |(share, mut readers, outs): (Vec<usize>, VecDeque<VideoReader>, Vec<Vec<u8>>)| {
+        let mut outs = outs.into_iter();
         let mut done = Vec::new();
         let mut spent = Vec::new();
         let mut reader: Option<VideoReader> = None;
@@ -1110,7 +1145,8 @@ fn decode_all(
             let Some(reader) = reader.as_mut() else {
                 continue;
             };
-            let mut out = vec![0_u8; source.bytes()];
+            let mut out = outs.next().unwrap_or_default();
+            out.resize(source.bytes(), 0);
             let decoded = reader.frame_into(*time, &mut out, false);
             done.push((index, decoded.map(|_| out)));
         }
@@ -1378,6 +1414,8 @@ pub(crate) struct PreviewPictures {
     ahead: mpsc::Sender<(Source, f64)>,
     /// Pictures decoded behind the playhead while it moves back at rest.
     behind: crate::behind::Behind,
+    /// Buffers of pictures drawn and let go (`recycle`), decoded into again.
+    spare: Vec<Vec<u8>>,
 }
 
 /// Threads opening and seeking readers ahead of the playhead (a cut to a new
@@ -1439,6 +1477,7 @@ impl PreviewPictures {
             pool,
             ahead,
             behind: crate::behind::Behind::new(crate::behind::BUDGET),
+            spare: Vec::new(),
         }
     }
 
@@ -1546,7 +1585,7 @@ impl PreviewPictures {
             std::sync::atomic::Ordering::Relaxed,
         );
         let threads = if missing.len() > 2 { 4 } else { 1 };
-        let decoded = decode_all(&mut self.pool.lock(), &missing, threads);
+        let decoded = decode_all_into(&mut self.pool.lock(), &missing, threads, &mut self.spare);
         if decoded.is_err() {
             // What's kept may be of a file that changed.
             self.behind.clear();
@@ -1564,6 +1603,19 @@ impl PreviewPictures {
             })
             .collect::<Result<Vec<Picture>, String>>()?;
         Ok((pictures, stood_in))
+    }
+
+    /// Takes back pictures drawn: each one nothing else holds (the pictures
+    /// kept behind the playhead share theirs) is decoded into again, a few kept.
+    pub(crate) fn recycle(&mut self, pictures: Vec<Picture>) {
+        for (_, _, _, pixels) in pictures {
+            if self.spare.len() >= 8 {
+                break;
+            }
+            if let Ok(buffer) = Arc::try_unwrap(pixels) {
+                self.spare.push(buffer);
+            }
+        }
     }
 }
 
