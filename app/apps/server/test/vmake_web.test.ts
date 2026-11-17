@@ -360,7 +360,7 @@ test("vmake.ai's own words that the day's allowance is used are the account's st
   expect(said("The video exceeds the maximum duration of 5 minutes")).toBeNull();
   expect(said("File size limit exceeded (2 GB max)")).toBeNull();
   expect(said("Upgrade to Pro to download the full video")).toBeNull();
-  expect(web.DAILY_FILES).toBe(40);
+  expect(web.DAILY_FILES).toBe(50);
 });
 
 test.skipIf(CHROME === undefined)("the piece's card refused for the day (the team's by-hand uploads used it): the account's daily stop at once, whatever Edit's own count says", async () => {

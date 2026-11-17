@@ -51,13 +51,13 @@ const MODE = "smart pro";
 /** Pieces at once when the relay doesn't say (its AT_ONCE: one a browser). */
 export const AT_ONCE = 3;
 /**
- * Files a day Edit sends at most, the team's: Pro's table says 50 for the
- * remover, and the team uses the same account by hand too (its other jobs on
- * the list, which Edit's count doesn't see), so 40, leaving them about ten
- * (Nov 17). Vmake's own refusal is the real stop (`dailyLimit`). The first
- * file past FAQ_FILES a day has the credits pill read before and after.
+ * Files a day Edit sends at most, the team's: the plan's whole allowance,
+ * Pro's 50 for the remover, nothing kept back for by-hand uploads (Sphe,
+ * Nov 17). Those aren't in Edit's count, so Vmake's own refusal is the real
+ * stop (`dailyLimit`). The first file past FAQ_FILES a day has the credits
+ * pill read before and after.
  */
-export const DAILY_FILES = 40;
+export const DAILY_FILES = 50;
 export const FAQ_FILES = 30;
 /** A job's longest wait for Vmake (a 60 s piece took 2.5 min; 300 s of 1080p far longer at busy hours). */
 const JOB_MS = 2 * 3_600_000;
