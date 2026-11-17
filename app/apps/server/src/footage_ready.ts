@@ -114,8 +114,8 @@ function guessBytes(media: Media, key: string): number {
   return (Math.max(media.duration, 0) * (pieces.bitrateFor(media.width || 1920, media.height || 1080) + 160_000)) / 8;
 }
 
-/** Seams for tests: the clock, and where blocks are kept. */
-export const hooks = { now: () => Date.now(), root: () => cloudMedia.blocksRoot() };
+/** Seams for tests: the clock, where blocks are kept, and the bytes read from the cloud so far (the speed's measure). */
+export const hooks = { now: () => Date.now(), root: () => cloudMedia.blocksRoot(), received: () => cloudBlocks.receivedBytes() };
 
 /** The files of `project` a play reads from the cloud, with how much of each is here. */
 async function filesOf(cache: string, project: Project, root: string | null): Promise<FileState[]> {
@@ -183,7 +183,13 @@ async function needsOf(cache: string, project: Project, root: string | null, fil
   return needs;
 }
 
-/** What's measured coming down for each project: its bytes here a moment ago, to tell the speed by. */
+/**
+ * What's measured coming down, asked for each project: the bytes read from the cloud a moment ago, to tell the speed
+ * by. Read off what was downloaded, never the project's bytes here: a file landing all at once that came another way
+ * (the backfill registering a graphic rendered here, a whole copy joined from its blocks) read as a burst of
+ * speed, and the dialog opened the project on it (kenobi at 8 Mbit/s, Nov 17: 65 MB in 3 s, "8 MB/s", ready, then
+ * not ready 15 s later); other downloads sharing the link left it a third of the real speed, its times hours off.
+ */
 interface Measure {
   samples: [number, number][];
   bps: number | null;
@@ -191,8 +197,12 @@ interface Measure {
   kept: [number, number] | null;
 }
 const measures = new Map<string, Measure>();
-/** Seconds of samples the speed is read over. */
-const WINDOW_MS = 8_000;
+/**
+ * How long the speed is read over: blocks land 2 MiB at a time, several together, so over 8 s a steady half a MB a
+ * second read anywhere from 12 kB/s to 1.2 MB/s from one ask to the next, and "about" went from 34 min to 17 h and back
+ * (kenobi at 32 and 100 Mbit/s, Nov 17).
+ */
+const WINDOW_MS = 30_000;
 
 function measure(home: string, id: string, bytes: number, now: number): number | null {
   let one = measures.get(id);
@@ -201,7 +211,7 @@ function measure(home: string, id: string, bytes: number, now: number): number |
   while (one.samples.length > 2 && now - one.samples[1]![0] >= WINDOW_MS) one.samples.shift();
   const [at, was] = one.samples[0]!;
   const seconds = (now - at) / 1000;
-  // Bytes going (a cleaner's pass, a join) say nothing of the link; nothing moving with nothing left keeps the last.
+  // Nothing coming (all here, or nothing can be kept) keeps the last.
   if (seconds >= 1.5 && bytes > was) one.bps = (bytes - was) / seconds;
   one.kept ??= [now, bytes];
   if (now - one.kept[0] >= 15_000) {
@@ -232,7 +242,7 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
   if (files.length === 0) return empty;
   const bytes_total = files.reduce((sum, file) => sum + file.size, 0);
   const bytes_done = files.reduce((sum, file) => sum + file.done, 0);
-  const bps = measure(app.store.home, id, bytes_done, now);
+  const bps = measure(app.store.home, id, hooks.received(), now);
   const needs = await needsOf(cache, project, root, files);
   // Kept once there's a speed to work it out by (before, it's the whole edit's needs).
   const head_s = bps === null ? headFor(needs, bps, length_s) : Math.max(heads.get(id) ?? 0, headFor(needs, bps, length_s));

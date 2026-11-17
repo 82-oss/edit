@@ -19,6 +19,7 @@ const MB = 1_000_000;
 const realFree = storage.diskHooks.free;
 const realRoot = footageReady.hooks.root;
 const realNow = footageReady.hooks.now;
+const realReceived = footageReady.hooks.received;
 const realFetch = localPreviews.hooks.fetch;
 let token: string | undefined;
 beforeEach(() => {
@@ -33,6 +34,7 @@ afterEach(() => {
   storage.resetRoom();
   footageReady.hooks.root = realRoot;
   footageReady.hooks.now = realNow;
+  footageReady.hooks.received = realReceived;
   localPreviews.hooks.fetch = realFetch;
   localPreviews.reset();
   footageReady.reset();
@@ -132,6 +134,8 @@ test("a project's readiness from what's here: a whole copy, blocks of a file, no
     footageReady.hooks.root = () => root;
     let now = 1_000_000;
     footageReady.hooks.now = () => now;
+    let received = 0;
+    footageReady.hooks.received = () => received;
     const [a, b, c] = ["a", "b", "c"].map((name) => `edit/proxies/drive/${name}.mp4`) as [string, string, string];
     const project = newProject();
     project.settings.fps = 30;
@@ -156,6 +160,7 @@ test("a project's readiness from what's here: a whole copy, blocks of a file, no
 
     // Two seconds on, half of c has come (5 blocks, ~10.5 MB: ~5 MB/s): the rest would come in time.
     keep(root, c, 10, [0, 1, 2, 3, 4]);
+    received += 5 * BLOCK;
     now += 2_000;
     const second = await readiness(app, project.id, false);
     expect(second.speed_bps).toBeCloseTo((5 * BLOCK) / 2, 0);
@@ -188,6 +193,8 @@ test("a slow link: not ready until the first minutes are here, and the graphics 
     footageReady.hooks.root = () => root;
     let now = 1_000_000;
     footageReady.hooks.now = () => now;
+    let received = 0;
+    footageReady.hooks.received = () => received;
     const keys = ["a", "b", "g"].map((name) => `edit/proxies/drive/${name}.mp4`) as [string, string, string];
     const project = newProject();
     project.settings.fps = 30;
@@ -205,6 +212,7 @@ test("a slow link: not ready until the first minutes are here, and the graphics 
     await readiness(app, project.id, false);
     // 2 MB/s measured: two blocks in 2.1 s.
     keep(root, keys[0], 100, [0, 1, 2]);
+    received += 2 * BLOCK;
     now += 2_097.152;
     const slow = await readiness(app, project.id, false);
     expect(Math.round(slow.speed_bps! / 1e5)).toBe(20);
@@ -218,6 +226,83 @@ test("a slow link: not ready until the first minutes are here, and the graphics 
     expect(later.ready).toBe(true);
     expect(later.steps[0]!.state).toBe("done");
     expect(later.done).toBe(false);
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("the speed is what's downloaded: a file landing here at once without coming down (a graphic the backfill registered, a joined copy) is no burst of speed, and doesn't open the project", async () => {
+  const home = scratch("footage-ready-landed");
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    footageReady.hooks.root = () => root;
+    let now = 1_000_000;
+    footageReady.hooks.now = () => now;
+    let received = 0;
+    footageReady.hooks.received = () => received;
+    const keys = ["a", "b"].map((name) => `edit/proxies/drive/${name}.mp4`) as [string, string];
+    const project = newProject();
+    project.settings.fps = 30;
+    // Ten minutes of a (300 blocks: 1 MB a second of it), and b a minute after it starts.
+    project.media.push(
+      media({ id: "a", name: "a", path: stream(keys[0]), kind: "video", duration: 600, cloud: { proxy: keys[0] } } as never),
+      media({ id: "b", name: "b", path: stream(keys[1]), kind: "video", duration: 60, cloud: { proxy: keys[1] } } as never),
+    );
+    project.clips.push(clip("ca", "a", 0, 18000), clip("cb", "b", 1800, 1800, "v2"));
+    keep(root, keys[0], 300, [0]);
+    const app = appOf(cache, project);
+    await readiness(app, project.id, false);
+    // 0.5 MB/s coming down: too slow for a.
+    keep(root, keys[0], 300, [0, 1]);
+    received += BLOCK;
+    now += 4_194.304;
+    const slow = await readiness(app, project.id, false);
+    expect(Math.round(slow.speed_bps! / 1e5)).toBe(5);
+    expect(slow.ready).toBe(false);
+    // b's whole copy (32 MB) lands at once, nothing more downloaded: the speed holds, still not ready.
+    whole(cache, keys[1], 16 * BLOCK);
+    now += 2_000;
+    const landed = await readiness(app, project.id, false);
+    expect(landed.bytes_done).toBe(18 * BLOCK);
+    // Measured off the project's bytes here, that read as 5.8 MB/s, and ready.
+    expect(landed.speed_bps!).toBeLessThan(0.6e6);
+    expect(landed.ready).toBe(false);
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("the speed holds steady while blocks land in bursts: a few together now and then is still the speed the footage comes at", async () => {
+  const home = scratch("footage-ready-bursts");
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    footageReady.hooks.root = () => root;
+    let now = 1_000_000;
+    footageReady.hooks.now = () => now;
+    let received = 0;
+    footageReady.hooks.received = () => received;
+    const key = "edit/proxies/drive/a.mp4";
+    const project = newProject();
+    project.settings.fps = 30;
+    project.media.push(media({ id: "a", name: "a", path: stream(key), kind: "video", duration: 600, cloud: { proxy: key } } as never));
+    project.clips.push(clip("ca", "a", 0, 18000));
+    keep(root, key, 300, [0]);
+    const app = appOf(cache, project);
+    // Blocks landing as several lanes finish together, a burst every few seconds (kenobi's series, Nov 17): 24 blocks
+    // in 96 s, half a MB a second.
+    const bursts = new Map([[3, 1], [5, 3], [14, 1], [16, 4], [27, 2], [35, 1], [37, 3], [48, 2], [51, 1], [62, 4], [70, 1], [79, 2], [88, 3], [96, 1]]);
+    const truth = (29 * BLOCK) / 96;
+    const speeds: number[] = [];
+    // Asked every second, as the dialog asks.
+    for (let second = 0; second <= 96; second++) {
+      received += (bursts.get(second) ?? 0) * BLOCK;
+      const answer = await readiness(app, project.id, false);
+      if (second >= 30) speeds.push(answer.speed_bps!);
+      now += 1_000;
+    }
+    for (const speed of speeds) expect(Math.abs(speed / truth - 1)).toBeLessThan(0.4);
   } finally {
     home.cleanup();
   }
