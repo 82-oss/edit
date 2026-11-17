@@ -784,7 +784,7 @@ test("a run in the background: the chat row's numbers while it's out, then the a
     const until = Date.now() + 10_000;
     while (sent.length === 0 && Date.now() < until) await Bun.sleep(20);
     expect(sent.length).toBe(1);
-    expect(sent[0]).toStartWith(`${EDIT_EVENT} Taking their text out of the footage is done: 1 piece cleaned.`);
+    expect(sent[0]).toStartWith(`${EDIT_EVENT} Their text is out of the footage (1 piece).`);
     expect(sent[0]).toContain("- tape: text 0–8 s");
     expect(sent[0]).toContain("lay OUR subtitles");
     await Bun.sleep(200);
@@ -850,7 +850,7 @@ test("two runs done while the person's turn runs: one turn of Edit's own once it
     while (sent.length === 0 && Date.now() < until) await Bun.sleep(20);
     await Bun.sleep(200);
     expect(sent.length).toBe(1);
-    expect(sent[0]).toContain("2 pieces cleaned");
+    expect(sent[0]).toContain("(2 pieces)");
   } finally {
     Object.assign(removalSchedule.timing, before);
     cleanup();

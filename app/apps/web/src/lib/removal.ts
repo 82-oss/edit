@@ -7,8 +7,8 @@ import type { RemovalRun } from "./api";
 /** What a turn of Edit's own starts with (the server's edit_event.ts). */
 export const EDIT_EVENT = "(Edit, background)";
 
-/** The row's words: "Removing their text · 12 of 81". */
-export const runLine = (run: RemovalRun) => `${run.label} · ${run.done} of ${run.total}`;
+/** The row's words: "Removing their text · 12 of 81 pieces". */
+export const runLine = (run: RemovalRun) => `${run.label} · ${run.done} of ${run.total} pieces`;
 
 /** "4 min left", "under a minute left", or nothing until the pace is known. */
 export function leftLine(seconds: number | null): string | null {

@@ -1,5 +1,5 @@
 import { explain } from "@edit/types/problems";
-import { Sparkles, ArrowLeft, AudioLines, Check, ChevronRight, CircleSlash, Eye, FileInput, Image, ImageDown, FileText, FolderOpen, LayoutGrid, ListChecks, MousePointerClick, Music, RotateCcw, ScrollText, Scissors, Share, SlidersHorizontal, Spline, Square, SquarePlus, Star, Trash2, Type, Wrench, ScanEye, Pencil, type LucideIcon, Copy, Quote, SquareTerminal, FilePen, Search, Globe, BookOpen, ImagePlus, Hourglass, Minimize2, ArrowRight, Clapperboard } from "lucide-react";
+import { ArrowLeft, AudioLines, Check, ChevronRight, CircleSlash, Eye, FileInput, Image, ImageDown, FileText, FolderOpen, LayoutGrid, ListChecks, MousePointerClick, Music, RotateCcw, ScrollText, Scissors, Share, SlidersHorizontal, Spline, Square, SquarePlus, Star, Trash2, Type, Wrench, ScanEye, Pencil, type LucideIcon, Copy, Quote, SquareTerminal, FilePen, Search, Globe, BookOpen, ImagePlus, Hourglass, Minimize2, ArrowRight, Clapperboard } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -372,12 +372,9 @@ const TurnView = memo(function TurnView({ turn, known, thinking: said }: { turn:
       )}
       {turn.user?.by === "edit" ? (
         // Edit's own event (a removal finished), not the person's message: a quiet line, its whole text on hover.
-        <motion.div {...appear(fresh(turn.user.id))} className="mb-1 flex items-center gap-1.5 px-1.5 text-[12px] text-muted" title={turn.user.text} data-testid="edit-event">
-          <Sparkles size={12} className="shrink-0 text-faint" aria-hidden />
-          <span className="min-w-0 truncate">
-            <span className="text-faint">Edit · </span>
-            {eventLine(turn.user.text)}
-          </span>
+        <motion.div {...appear(fresh(turn.user.id))} className="mb-1 flex items-start gap-2 px-0.5 text-[12px] leading-5 text-muted" title={turn.user.text} data-testid="edit-event">
+          <span className="mt-[7px] size-1.5 shrink-0 rounded-full bg-success" aria-hidden />
+          <span className="min-w-0 [overflow-wrap:anywhere]">Edit · {eventLine(turn.user.text)}</span>
         </motion.div>
       ) : turn.user && (
         <motion.div

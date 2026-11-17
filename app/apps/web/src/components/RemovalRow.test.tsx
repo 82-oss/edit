@@ -34,13 +34,16 @@ function mount(running: boolean): HTMLElement {
 }
 
 describe("the chat's waiting row for a removal in the background", () => {
-  it("says what, how far, how long and about how long left, never cut (it wraps); one button, Stop, and the row goes", async () => {
+  it("a dashed ring, what, how far and about how long left, never cut (it wraps), a thin line of how far; one button, Stop, and the row goes", async () => {
     vi.spyOn(api, "textRemoval").mockResolvedValue(RUN);
     const stop = vi.spyOn(api, "stopRemoval").mockResolvedValue({ line: null, action: null, running: null });
     const container = mount(false);
     await settle();
     const row = container.querySelector("[data-testid=removal-row]")!;
-    expect(row.textContent).toContain("Removing their text · 12 of 81 · 1m 32s · about 5 min left");
+    expect(row.textContent).toContain("Waiting · Removing their text · 12 of 81 pieces · about 5 min left");
+    expect(row.querySelector(".wait-ring")).not.toBeNull();
+    // How far: 12 of 81.
+    expect((row.querySelector(".bg-primary") as HTMLElement).style.width).toBe("15%");
     // Nothing truncates its words.
     expect(row.querySelector(".truncate")).toBeNull();
     expect([...row.querySelectorAll("button")].map((one) => one.textContent)).toEqual(["Stop"]);
@@ -66,8 +69,8 @@ describe("the chat's waiting row for a removal in the background", () => {
   });
 
   it("its words, and a turn of Edit's own read as Edit's line", () => {
-    expect(runLine(RUN.background!)).toBe("Removing their text · 12 of 81");
+    expect(runLine(RUN.background!)).toBe("Removing their text · 12 of 81 pieces");
     expect([leftLine(null), leftLine(40), leftLine(600), leftLine(3 * 3600)]).toEqual([null, "under a minute left", "about 10 min left", "about 3 h left"]);
-    expect(eventLine("(Edit, background) Taking their watermarks out of the footage is done: 23 pieces cleaned.\n\nCleaned:\n- tape")).toBe("Taking their watermarks out of the footage is done: 23 pieces cleaned.");
+    expect(eventLine("(Edit, background) Their text and watermarks are out of the footage (24 pieces, 1 blurred).\n\nCleaned:\n- tape")).toBe("Their text and watermarks are out of the footage (24 pieces, 1 blurred).");
   });
 });

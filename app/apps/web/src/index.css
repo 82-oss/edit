@@ -227,10 +227,13 @@ html.native-preview .editor-root {
   to { transform: rotate(360deg); }
 }
 .step-spin { animation: step-spin 0.9s linear infinite; }
+/* Work in the background the chat waits on (a removal): a dashed ring turning slowly. */
+.wait-ring { animation: step-spin 3s linear infinite; }
 
 @media (prefers-reduced-motion: reduce) {
   .fill-shimmer { animation: none; }
   .step-spin { animation-duration: 2.4s; }
+  .wait-ring { animation: none; }
 }
 
 /* Home's rows as the list changes under them: a new one slides in, a renamed one flashes once. */

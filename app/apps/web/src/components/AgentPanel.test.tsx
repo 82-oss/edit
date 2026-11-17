@@ -53,7 +53,7 @@ describe("the editor's chat as a turn ends", () => {
     const entries = [
       { id: "u0", kind: "user", text: "Cut the case", at: 1_000, updated: 1_000 },
       { id: "a0", kind: "assistant", text: "Cut.", at: 1_001, updated: 1_001 },
-      { id: "u1", kind: "user", by: "edit", text: "(Edit, background) Taking their watermarks out of the footage is done: 23 pieces cleaned.\n\nCleaned:\n- tape: watermark 0–30 s", at: 2_000, updated: 2_000 },
+      { id: "u1", kind: "user", by: "edit", text: "(Edit, background) Their text and watermarks are out of the footage (24 pieces, 1 blurred).\n\nCleaned:\n- tape: watermark 0–30 s", at: 2_000, updated: 2_000 },
       { id: "a1", kind: "assistant", text: "Their watermarks are out of all 23 pieces.", at: 2_001, updated: 2_001 },
     ];
     useAgent.setState({ project: "p1", loaded: true, running: false, entries: entries as never, status: { ready: true }, activityAt: Date.now() - 5_000 });
@@ -63,7 +63,7 @@ describe("the editor's chat as a turn ends", () => {
     act(() => root.render(<AgentPanel />));
     await act(async () => void (await new Promise((done) => setTimeout(done, 50))));
     const event = container.querySelector("[data-testid=edit-event]");
-    expect(event?.textContent).toBe("Edit · Taking their watermarks out of the footage is done: 23 pieces cleaned.");
+    expect(event?.textContent).toBe("Edit · Their text and watermarks are out of the footage (24 pieces, 1 blurred).");
     expect(container.querySelector('[data-quote="my earlier message"]')?.textContent).toBe("Cut the case");
     expect(container.querySelectorAll('[data-quote="my earlier message"]').length).toBe(1);
     expect(errors).toEqual([]);

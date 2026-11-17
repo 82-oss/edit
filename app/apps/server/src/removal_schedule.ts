@@ -437,9 +437,13 @@ export function wakeText(rows: PieceRow[]): string {
   const cleaned = rows.filter((row) => row.state === "done" || row.state === "check");
   const left = rows.filter((row) => row.state === "failed");
   const held = rows.filter((row) => row.state === "held");
-  const what = `Taking ${whatOf(rows)}`;
+  // Its first line is what the chat shows as Edit's event: "Their text and watermarks are out of the footage (24 pieces, 1 blurred)".
+  const what = whatOf(rows);
+  const blurred = left.filter((row) => row.what === "text").length;
+  const kept = left.length - blurred;
+  const said = [`${cleaned.length} piece${cleaned.length === 1 ? "" : "s"}`, ...(blurred > 0 ? [`${blurred} blurred`] : []), ...(kept > 0 ? [`${kept} with the mark left`] : [])].join(", ");
   return (
-    `${EDIT_EVENT} ${what} out of the footage is done: ${cleaned.length} piece${cleaned.length === 1 ? "" : "s"} cleaned${left.length > 0 ? `, ${left.length} not clean (their blur laid back, a watermark left)` : ""}.\n\n` +
+    `${EDIT_EVENT} ${what[0]!.toUpperCase()}${what.slice(1)} ${what === "their text" ? "is" : "are"} out of the footage (${said}).\n\n` +
     (cleaned.length > 0 ? `Cleaned:\n${byFile(cleaned.slice(0, 60))}\n\n` : "") +
     (left.length > 0 ? `Not clean, and why:\n${byFile(left.slice(0, 30), true)}\n\n` : "") +
     (held.length > 0 ? `${held.length} piece${held.length === 1 ? " waits" : "s wait"} for the Vmake account (the line at the top of the editor says why); they go once it can be used, their blur on until then.\n\n` : "") +
