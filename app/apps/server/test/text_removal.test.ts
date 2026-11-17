@@ -955,6 +955,26 @@ test("after a start nothing else has read the channels: removal reads them itsel
   }
 }, 60_000);
 
+test("a finished result from before is used only when it's this piece's footage: as long, and the same picture but for small parts", async () => {
+  const { dir, cleanup } = scratch("same-footage");
+  try {
+    const original = await labelledFootage(dir, 8);
+    const cleaned = join(dir, "cleaned.mp4");
+    await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", original, "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", cleaned]);
+    expect(await tr.sameFootage(original, cleaned)).toBe(true);
+    // Another stretch of footage, as long: not this piece's.
+    const other = join(dir, "other.mp4");
+    await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=8", "-c:v", "libx264", "-qp", "0", other]);
+    expect(await tr.sameFootage(original, other)).toBe(false);
+    // Not as long: not this piece's.
+    const short = join(dir, "short.mp4");
+    await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", original, "-t", "6", "-c:v", "libx264", "-qp", "0", short]);
+    expect(await tr.sameFootage(original, short)).toBe(false);
+  } finally {
+    cleanup();
+  }
+}, 60_000);
+
 test("removal starts by itself as soon as edits rest (no button on the website's plan); a longer clip sends only its new seconds", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });

@@ -28,6 +28,7 @@
 // the team's, on Edit's relay (relay/src/vmake.ts), which lends a Mac a
 // browser one at a time: no Mac holds a key or a sign-in.
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 
 import * as cloud from "./cloud.ts";
@@ -316,6 +317,19 @@ async function apply(page: Page, name: string, step: (what: string) => void): Pr
   throw new VmakeError("vmake.ai didn't begin the piece when Apply was pressed", "piece");
 }
 
+/** Smart pro chosen on the piece's card, if it isn't already. */
+async function smartProOn(page: Page, name: string, step: (what: string) => void): Promise<void> {
+  const state = await page.evaluate<{ smartPro: string | null } | null>(cardState(name));
+  if (state?.smartPro == null || /disabled--/u.test(state.smartPro)) throw new VmakeError("vmake.ai doesn't offer Smart pro for the piece", "piece");
+  if (!/active--/u.test(state.smartPro)) {
+    await pacing.wait();
+    await click(page, `[...(${cardOf(name)}).querySelectorAll('ul[class*=radio] li')].find((li) => li.innerText.trim().toLowerCase() === '${MODE}')`);
+    await waitFor(page, `(() => { const s = ${cardState(name)}; return !!s && /active--/.test(s.smartPro ?? ''); })()`, 15_000, "Smart pro chosen on the piece");
+  }
+  await pacing.wait();
+  step("Smart pro chosen");
+}
+
 /** The cards of jobs the remover's page shows (the account's jobs, anyone's: Nov 17, two 7–9 minute files of the team's at 40%). */
 const CARDS = `[...document.querySelectorAll('[class*=viewport-task-card]')].filter((el) => el.getClientRects().length > 0)`;
 const cardOf = (name: string) => `${CARDS}.find((el) => el.innerText.includes(${JSON.stringify(name)}))`;
@@ -359,69 +373,157 @@ const cardState = (name: string) => `(() => {
 /**
  * A piece's file name on vmake.ai: its own, never another's (the page finds a
  * piece's job card by it, among every card the account has; Nov 17, packed
- * pieces are mostly 300 s: "piece-300s.mp4" was many cards at once).
+ * pieces are mostly 300 s: "piece-300s.mp4" was many cards at once). From
+ * `label` (its file, seconds and try) it's the same each time the piece is
+ * asked for, so a card already there is picked up, after a restart too, and
+ * never sent again.
  */
-export const pieceName = (seconds: number): string => `edit-${Math.random().toString(36).slice(2, 8)}-${Math.round(seconds)}s.mp4`;
+export const pieceName = (seconds: number, label?: string): string =>
+  `edit-${label === undefined ? Math.random().toString(36).slice(2, 8) : createHash("sha256").update(label).digest("hex").slice(0, 8)}-${Math.round(seconds)}s.mp4`;
 
-/** `onBegun`: vmake.ai took the piece and is processing it (the account worked for it: the run's other pieces may go now). */
 /** The account's credits as the page's pill shows them (null when it shows none). */
 export async function creditsPill(page: Page): Promise<string | null> {
   return page.evaluate<string | null>(`[...document.querySelectorAll('[class*=credit], [class*=Credit], [class*=point]')].filter((el) => el.getClientRects().length > 0).map((el) => el.innerText.trim()).find((t) => /^[0-9,]+$/.test(t)) ?? null`).catch(() => null);
 }
 
-/** `credits`: the pill read as the piece goes in and once it's done, and said (the first file past FAQ_FILES a day). */
-export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string, name: string, site = SITE, onProgress: (percent: number) => void = () => {}, onBegun: () => void = () => {}, credits = false): Promise<string> {
+/** What removeOnPage is told along the way. */
+export interface PieceHooks {
+  progress?: (percent: number) => void;
+  /** vmake.ai took the piece and is processing it (the account worked for it: the run's other pieces may go now). */
+  begun?: () => void;
+  /** About to send the file (it's counted then; a card already there sends nothing): whether to read the credits pill before and after. */
+  sending?: () => Promise<boolean>;
+  /**
+   * A finished result from before (a card named as pieces were before Nov 17's
+   * evening, `piece-<s>s.mp4`, as long as this one): whether it's this piece's
+   * (the provider fetches and compares it). The first that is, is used:
+   * nothing is sent (Sphe, Nov 17: the jobs given up on that afternoon had
+   * finished on vmake.ai, already paid for).
+   */
+  adopt?: (url: string) => Promise<boolean>;
+  /** The piece's length, for `adopt`'s cards. */
+  seconds?: number;
+}
+
+/** The finished cards named `legacy` and as long as `seconds` (±0.2 s, as each card shows it), by their place in the list. */
+const doneCards = (legacy: string, seconds: number) => `(() => {
+  const all = ${CARDS};
+  const length = (text) => { const m = /\\/\\s*(?:(\\d+):)?(\\d+):(\\d+(?:\\.\\d+)?)/.exec(text); return m ? Number(m[1] || 0) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null; };
+  return all.map((el, at) => ({ el, at })).filter(({ el }) => {
+    const text = el.innerText;
+    const download = [...el.querySelectorAll('button')].find((b) => /download/i.test(b.innerText));
+    const seen = length(text);
+    return text.includes(${JSON.stringify(legacy)}) && !!download && !download.disabled && !/uploading|to be processed|processing|failed/i.test(text) && seen !== null && Math.abs(seen - ${seconds}) <= 0.2;
+  }).map(({ at }) => at);
+})()`;
+
+/** Every card of the list drawn once (the page draws a card's words only once it's been in view), then back to the top. */
+async function drawCards(page: Page): Promise<void> {
+  const count = await page.evaluate<number>(`${CARDS}.length`).catch(() => 0);
+  for (let at = 0; at < count; at++) {
+    await page.evaluate(`(() => { ${CARDS}[${at}]?.scrollIntoView({ block: "center" }); return 1; })()`).catch(() => 0);
+    await Bun.sleep(700);
+  }
+  await page.evaluate(`(() => { ${CARDS}[0]?.scrollIntoView({ block: "center" }); return 1; })()`).catch(() => 0);
+}
+
+/** The full video's address as a download of card `at` (in the list) starts (null when none starts). */
+async function downloadOf(page: Page, at: number): Promise<string | null> {
+  await page.call("Page.setDownloadBehavior", { behavior: "deny" }).catch(() => {});
+  const asked = new Promise<string | null>((resolve) => {
+    const off = page.on("Page.downloadWillBegin", (params) => {
+      off();
+      resolve(typeof params.url === "string" ? params.url : null);
+    });
+    setTimeout(() => (off(), resolve(null)), 20_000);
+  });
+  await click(page, `(() => { const el = ${CARDS}[${at}]; el?.scrollIntoView({ block: "center" }); return [...(el?.querySelectorAll('button') ?? [])].find((b) => /download/i.test(b.innerText)); })()`);
+  await Bun.sleep(2500);
+  await click(page, `[...document.querySelectorAll('.ant-dropdown *, .ant-popover *, .ant-modal *, [role=menu] *, [role=dialog] *')].find((el) => el.children.length === 0 && el.getClientRects().length > 0 && /full/i.test(el.innerText))`).catch(() => {});
+  return asked;
+}
+
+/**
+ * One piece through the remover's page: its card if vmake.ai has one already
+ * (by name: processing, waiting on Apply, or done), else the file sent
+ * (`piece`: its address, or what stages it, only then).
+ */
+export async function removeOnPage(page: Page, remote: Remote, piece: string | (() => Promise<string>), name: string, site = SITE, given: PieceHooks | ((percent: number) => void) = {}): Promise<string> {
+  const hooks: PieceHooks = typeof given === "function" ? { progress: given } : given;
+  const onProgress = hooks.progress ?? (() => {});
   await go(page, `${site}${REMOVER}`);
   await waitFor(page, `!!document.querySelector('.ant-upload-btn input[type=file][name=file]:not([multiple])')`, 60_000, "the remover's page");
   await pacing.wait();
   const problem = await accountProblem(page);
   if (problem !== null) throw problem;
-  const creditsBefore = credits ? await creditsPill(page) : null;
-  // A fresh page showing the modes: the mode first, since the upload starts processing by itself.
-  // The account's job cards come a moment after the page (its task list): looked for a few seconds first.
-  // A fresh page with no modes shown (Nov 17 afternoon: only Upload and Batch upload until a file goes in) chooses Smart pro on the piece's card, as a page with cards does.
-  const cards = await waitFor<boolean>(page, `${CARDS}.length > 0`, 8_000, "the job cards", 500).catch(() => false);
-  const mode = cards ? null : await waitFor<string>(page, `(() => { const li = ${MODE_ITEM}; return li ? li.className : null; })()`, 30_000, "Smart pro").catch(() => null);
-  const fresh = mode !== null;
-  if (mode !== null) {
-    if (/disabled--/u.test(mode)) throw new VmakeError("vmake.ai doesn't offer Smart pro on the remover's page now", "piece");
-    if (!/active--/u.test(mode)) {
-      await click(page, MODE_ITEM);
-      await waitFor(page, `(() => { const li = ${MODE_ITEM}; return !!li && /active--/.test(li.className); })()`, 15_000, "Smart pro chosen");
-    }
-    await pacing.wait();
-  }
   const began = Date.now();
   const step = (what: string) => said(`vmake.ai ${name}: ${what} (${Math.round((Date.now() - began) / 1000)} s)`);
-  await putPiece(page, remote, pieceUrl, name);
-  step("in the page");
-  // Our card, when the page makes one: Smart pro on it (a file of 5 minutes or less has it).
-  const card = await waitFor<boolean>(page, `!!${cardOf(name)}`, fresh ? 15_000 : 120_000, "the piece's card", 1500).catch(() => false);
-  if (card) {
-    // Uploaded to Vmake from the browser (the card says how far), then waiting on Apply: Smart pro chosen first.
-    step("its card");
-    await waitFor(page, `(() => { const s = ${cardState(name)}; return !!s && (s.ready || s.percent !== null || s.done); })()`, 30 * 60_000, "the piece's upload to vmake.ai", 2000);
-    const state = await page.evaluate<{ smartPro: string | null; ready: boolean } | null>(cardState(name));
-    step(`uploaded: ${JSON.stringify(state)}`);
-    if (state?.smartPro == null || /disabled--/u.test(state.smartPro)) throw new VmakeError("vmake.ai doesn't offer Smart pro for the piece", "piece");
-    if (state.ready) {
-      if (!/active--/u.test(state.smartPro)) {
-        await pacing.wait();
-        await click(page, `[...(${cardOf(name)}).querySelectorAll('ul[class*=radio] li')].find((li) => li.innerText.trim().toLowerCase() === '${MODE}')`);
-        await waitFor(page, `(() => { const s = ${cardState(name)}; return !!s && /active--/.test(s.smartPro ?? ''); })()`, 15_000, "Smart pro chosen on the piece");
+  // The account's job cards come a moment after the page (its task list): looked for a few seconds first.
+  const cards = await waitFor<boolean>(page, `${CARDS}.length > 0`, 8_000, "the job cards", 500).catch(() => false);
+  if (cards) await drawCards(page);
+  const before = cards ? await page.evaluate<{ ready: boolean; percent: number | null; done: boolean } | null>(cardState(name)).catch(() => null) : null;
+  let card = before !== null;
+  let credits = false;
+  let creditsBefore: string | null = null;
+  if (before !== null) {
+    // Sent before (a run cut short, a restart): its own card, picked up where it is.
+    step(`its card from before: ${JSON.stringify(before)}`);
+    if (before.ready) {
+      await smartProOn(page, name, step);
+      await apply(page, name, step);
+    }
+  } else {
+    // Finished before under the old names (as long as this piece): the first that's this piece's is used, nothing sent.
+    if (hooks.adopt !== undefined && hooks.seconds !== undefined && cards) {
+      const legacy = `piece-${Math.round(hooks.seconds)}s.mp4`;
+      const found = await page.evaluate<number[]>(doneCards(legacy, hooks.seconds)).catch(() => []);
+      for (const at of found) {
+        const url = await downloadOf(page, at);
+        if (url !== null && /^https?:/u.test(url) && (await hooks.adopt(url))) {
+          step(`${legacy}'s result from before is this piece's: used, nothing sent`);
+          return url;
+        }
+        step(`${legacy} (card ${at}) is another piece's`);
+      }
+    }
+    // A fresh page showing the modes: the mode first, since the upload starts processing by itself.
+    // A fresh page with no modes shown (Nov 17 afternoon: only Upload and Batch upload until a file goes in) chooses Smart pro on the piece's card, as a page with cards does.
+    const mode = cards ? null : await waitFor<string>(page, `(() => { const li = ${MODE_ITEM}; return li ? li.className : null; })()`, 30_000, "Smart pro").catch(() => null);
+    const fresh = mode !== null;
+    if (mode !== null) {
+      if (/disabled--/u.test(mode)) throw new VmakeError("vmake.ai doesn't offer Smart pro on the remover's page now", "piece");
+      if (!/active--/u.test(mode)) {
+        await click(page, MODE_ITEM);
+        await waitFor(page, `(() => { const li = ${MODE_ITEM}; return !!li && /active--/.test(li.className); })()`, 15_000, "Smart pro chosen");
       }
       await pacing.wait();
-      step("Smart pro chosen");
-      await apply(page, name, step);
-    } else if (!/active--/u.test(state.smartPro)) throw new VmakeError("vmake.ai began the piece in another mode than Smart pro", "piece");
+    }
+    credits = (await hooks.sending?.()) ?? false;
+    if (credits) creditsBefore = await creditsPill(page);
+    await putPiece(page, remote, typeof piece === "string" ? piece : await piece(), name);
+    step("in the page");
+    // Our card, when the page makes one: Smart pro on it (a file of 5 minutes or less has it).
+    card = await waitFor<boolean>(page, `!!${cardOf(name)}`, fresh ? 15_000 : 120_000, "the piece's card", 1500).catch(() => false);
+    if (card) {
+      // Uploaded to Vmake from the browser (the card says how far), then waiting on Apply: Smart pro chosen first.
+      step("its card");
+      await waitFor(page, `(() => { const s = ${cardState(name)}; return !!s && (s.ready || s.percent !== null || s.done); })()`, 30 * 60_000, "the piece's upload to vmake.ai", 2000);
+      const state = await page.evaluate<{ smartPro: string | null; ready: boolean } | null>(cardState(name));
+      step(`uploaded: ${JSON.stringify(state)}`);
+      if (state?.smartPro == null || /disabled--/u.test(state.smartPro)) throw new VmakeError("vmake.ai doesn't offer Smart pro for the piece", "piece");
+      if (state.ready) {
+        await smartProOn(page, name, step);
+        await apply(page, name, step);
+      } else if (!/active--/u.test(state.smartPro)) throw new VmakeError("vmake.ai began the piece in another mode than Smart pro", "piece");
+    }
   }
-  onBegun();
+  hooks.begun?.();
   // Processing: the result, or the account's or the file's trouble said on the page.
   const until = Date.now() + JOB_MS;
   let last = -1;
   let videos: string[] = [];
   let moved = Date.now();
-  let pressedAgain = false;
+  let pressedAgain = 0;
   for (;;) {
     await Bun.sleep(3000 + Math.random() * 2000);
     if (card) {
@@ -435,15 +537,20 @@ export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string,
         videos = state.videos;
         break;
       }
-      // No progress for timing.stallMs: back at "To be processed" its Apply is pressed again (once), else the piece is given up on (tried again by the run).
+      // No change for timing.stallMs: only a card back at "To be processed" (its Apply lost) is pressed again, twice at
+      // most. A card still processing is waited on, however slowly its percent moves (Nov 17, Sphe's M4: every piece
+      // sat over three minutes at one percent while vmake.ai worked through several, each was given up on and sent
+      // again, a file of the day each time, and none came back). A card gone is the piece's trouble.
       if (Date.now() - moved > timing.stallMs) {
-        const now = await page.evaluate<{ ready: boolean } | null>(cardState(name)).catch(() => null);
-        if (now?.ready === true && !pressedAgain) {
-          pressedAgain = true;
-          step("stalled at To be processed: Apply again");
+        const now = await page.evaluate<{ ready: boolean; done: boolean } | null>(cardState(name)).catch(() => undefined);
+        if (now === null) throw new VmakeError("vmake.ai's card for the piece went away", "piece");
+        if (now?.ready === true) {
+          if (pressedAgain >= 2) throw new VmakeError("vmake.ai didn't begin the piece when Apply was pressed again", "piece");
+          pressedAgain += 1;
+          step("back at To be processed: Apply again");
           await apply(page, name, step);
-          moved = Date.now();
-        } else throw new VmakeError(`vmake.ai showed no progress on the piece for ${Math.round(timing.stallMs / 60_000)} minutes`, "piece");
+        } else step(`still processing at ${last}%`);
+        moved = Date.now();
       }
     } else {
       const state = await page.evaluate<{ video: string | null; full: boolean; percent: number | null }>(PROGRESS_SCRIPT, 15_000).catch(() => null);
@@ -700,7 +807,7 @@ export class Driver {
   }
 
   /** One piece (at `pieceUrl`) cleaned: the result's URL. */
-  async run(pieceUrl: string, name: string, onProgress?: (percent: number) => void, onBegun?: () => void, credits = false): Promise<string> {
+  async run(piece: string | (() => Promise<string>), name: string, hooks: PieceHooks = {}): Promise<string> {
     await this.slot();
     let got: { held: Held; session: Session } | null = null;
     try {
@@ -710,7 +817,7 @@ export class Driver {
         got = await this.browser();
         const page = await got.session.remote.tab();
         try {
-          return await removeOnPage(page, got.session.remote, pieceUrl, name, this.site, onProgress, onBegun, credits);
+          return await removeOnPage(page, got.session.remote, piece, name, this.site, hooks);
         } catch (error) {
           // A browser whose way out is down: another.
           if (!(error instanceof ProxyDown) || attempt >= 3) throw error;

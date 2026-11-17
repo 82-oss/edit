@@ -23,7 +23,9 @@ const CHROME = ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/App
 const seen = { mode: "", bytes: 0, uploads: 0, others: 0 };
 /** `cards`: the page as Sphe's account showed it (Nov 17): a stack of job cards, a teammate's long file among them. */
 /** `noModes`: a fresh page as it showed on Nov 17 afternoon: no modes until a file goes in, then its card (waiting on Apply). */
-const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, noModes: false };
+/** `stall`: a job that sits at one percent for `slowMs` (as vmake.ai's did for minutes, Nov 17), then finishes. */
+/** `legacy`: a finished card from before named as pieces were (piece-8s.mp4, 8 s long); `existing`: a finished card of this name. */
+const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, slowMs: 0, noModes: false, legacy: false, existing: "" };
 const PIECE = new Uint8Array(3_000_000).map((_, at) => at % 251);
 
 const PAGE = () => `<!doctype html><html><body>
@@ -33,7 +35,7 @@ ${site.noModes ? "" : `<div style="display:none"><ul class="radio--q7"><li class
 <ul class="radio--q7">${["Smart", "Smart pro", "Subtitle", "Watermark", "Passerby"].map((mode, at) => `<li class="item--a ${at === 0 ? "active--z" : ""} ${mode === "Smart pro" && site.noSmartPro ? "disabled--d" : ""}">${mode}</li>`).join("")}</ul>`}
 <span class="ant-upload-btn"><input type="file" name="file" accept=".mp4,.mov"></span>
 <span class="ant-upload-btn"><input type="file" name="file" multiple></span>
-<div id="work">${site.cards ? `<div class="viewport-task-card--o5h" id="other"><span>v3p2.mp4</span> 40% <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul><button>Download</button></div>` : ""}</div>
+<div id="work">${site.cards ? `<div class="viewport-task-card--o5h" id="other"><span>v3p2.mp4</span> 40% <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul><button>Download</button></div>` : ""}${[site.legacy ? "piece-8s.mp4" : "", site.existing].filter(Boolean).map((name) => `<div class="viewport-task-card--o5h"><span>${name}</span> 00:00.04 / 00:08.00 60% <button onclick="location.href='/result.mp4?full=1'">Download</button></div>`).join("")}</div>
 <script>
 document.getElementById('other')?.addEventListener('click', () => fetch('/record-other', { method: 'POST' }));
 document.querySelectorAll('ul[class*=radio] li').forEach((li) => li.addEventListener('click', () => {
@@ -66,11 +68,14 @@ document.querySelector('input:not([multiple])').addEventListener('change', async
       let pressed = 0;
       apply.addEventListener('click', () => {
         if (++pressed === 1) return;
-        if (${site.stall}) { card.querySelector('i').textContent = 'Processing… 0%'; return; }
         fetch('/record', { method: 'POST', body: JSON.stringify({ mode: card.querySelector('li.active--z').innerText, bytes: file.size }) });
         apply.remove();
         let percent = 0;
+        // Slow: at 50% for a long while, then on.
+        const hold = ${site.stall ? site.slowMs : 0};
+        let held = 0;
         const tick = setInterval(() => {
+          if (percent === 50 && held < hold) { held += 150; return; }
           percent += 25;
           card.querySelector('i').textContent = percent < 100 ? 'Processing… ' + percent + '%, Est. 1 min' : '';
           if (percent >= 100) {
@@ -216,25 +221,65 @@ test.skipIf(CHROME === undefined)("a fresh page that shows no modes until a file
   }
 }, 90_000);
 
-test.skipIf(CHROME === undefined)("a piece that shows no progress after Apply is given up on, not waited on for hours", async () => {
+test.skipIf(CHROME === undefined)("a piece whose card sits at one percent for longer than the stall time is waited on, never given up or sent again (Nov 17, Sphe's M4: every piece was)", async () => {
   site.cards = true;
   site.stall = true;
-  web.timing.stallMs = 4_000;
+  site.slowMs = 6_000;
+  web.timing.stallMs = 1_500;
   const session = await browsers.open();
   try {
     const page = await session.remote.tab();
-    const error = await web.removeOnPage(page, session.remote, piece(), "piece-stall.mp4", `http://localhost:${vmake.port}`).catch((thrown: unknown) => thrown);
-    expect(error).toBeInstanceOf(VmakeError);
-    expect((error as VmakeError).scope).toBe("piece");
-    expect((error as VmakeError).message).toContain("no progress");
+    const uploads = seen.uploads;
+    const url = await web.removeOnPage(page, session.remote, piece(), "piece-slow.mp4", `http://localhost:${vmake.port}`);
+    expect(url).toBe(`http://localhost:${vmake.port}/result.mp4?full=1`);
+    expect(seen.uploads - uploads).toBe(1);
     page.close();
   } finally {
     site.cards = false;
     site.stall = false;
+    site.slowMs = 0;
     web.timing.stallMs = 3 * 60_000;
     await session.stop();
   }
 }, 60_000);
+
+test.skipIf(CHROME === undefined)("a piece's own card already on vmake.ai is picked up (after a restart too), and a finished one from before under the old name is used once it's this piece's: nothing staged, counted or sent", async () => {
+  site.cards = true;
+  const session = await browsers.open();
+  const sent: string[] = [];
+  const hooks = (adopt: (url: string) => Promise<boolean> = async () => false): web.PieceHooks => ({ seconds: 8, adopt, sending: async () => (sent.push("counted"), false) });
+  const staging = async () => (sent.push("staged"), piece());
+  try {
+    // Its own name: the same each time it's asked for.
+    const name = web.pieceName(8, "drive:abc|0|8|1");
+    expect(name).toBe(web.pieceName(8, "drive:abc|0|8|1"));
+    expect(name).not.toBe(web.pieceName(8, "drive:abc|0|8|2"));
+    site.existing = name;
+    let page = await session.remote.tab();
+    const uploads = seen.uploads;
+    expect(await web.removeOnPage(page, session.remote, staging, name, `http://localhost:${vmake.port}`, hooks())).toBe(`http://localhost:${vmake.port}/result.mp4?full=1`);
+    expect([sent, seen.uploads - uploads]).toEqual([[], 0]);
+    page.close();
+    site.existing = "";
+    // The old name, as long: asked whether it's this piece's; yes, it's used.
+    site.legacy = true;
+    const asked: string[] = [];
+    page = await session.remote.tab();
+    expect(await web.removeOnPage(page, session.remote, staging, web.pieceName(8, "drive:abc|8|16|1"), `http://localhost:${vmake.port}`, hooks(async (url) => (asked.push(url), true)))).toBe(`http://localhost:${vmake.port}/result.mp4?full=1`);
+    expect([asked.length, sent, seen.uploads - uploads]).toEqual([1, [], 0]);
+    page.close();
+    // Another piece's: the file is staged, counted and sent.
+    page = await session.remote.tab();
+    await web.removeOnPage(page, session.remote, staging, web.pieceName(8, "drive:abc|16|24|1"), `http://localhost:${vmake.port}`, hooks(async () => false));
+    expect([sent, seen.uploads - uploads]).toEqual([["counted", "staged"], 1]);
+    page.close();
+  } finally {
+    site.cards = false;
+    site.legacy = false;
+    site.existing = "";
+    await session.stop();
+  }
+}, 90_000);
 
 test.skipIf(CHROME === undefined)("the account's troubles on the page are the account's: signed out, no Smart pro, the day's files used", async () => {
   const session = await browsers.open();

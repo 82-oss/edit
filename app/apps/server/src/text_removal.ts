@@ -378,6 +378,26 @@ export function packed(pieces: [number, number][], cached: Cached[]): [number, n
 // ---------------------------------------------------------------------------
 // The strip
 
+/**
+ * Whether `cleaned` (Vmake's result) is `original`'s footage: as long (±0.25 s)
+ * and, at a quarter, half and three quarters in, the same picture but for
+ * small parts (their text taken out): a result from before is used only then.
+ */
+export async function sameFootage(original: string, cleaned: string): Promise<boolean> {
+  const [a, b] = await Promise.all([probe(original).catch(() => null), probe(cleaned).catch(() => null)]);
+  if (a === null || b === null || !(a.duration > 0) || Math.abs(a.duration - b.duration) > 0.25) return false;
+  const grey = (file: string, at: number) =>
+    tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-ss", at.toFixed(3), "-i", file, "-frames:v", "1", "-vf", "scale=64:36,format=gray", "-f", "rawvideo", "-"], { background: true });
+  for (const share of [0.25, 0.5, 0.75]) {
+    const [x, y] = await Promise.all([grey(original, a.duration * share), grey(cleaned, a.duration * share)]);
+    if (x.length !== y.length || x.length === 0) return false;
+    let diff = 0;
+    for (let at = 0; at < x.length; at++) diff += Math.abs(x[at]! - y[at]!);
+    if (diff / x.length > 12) return false;
+  }
+  return true;
+}
+
 /** The mask's sizes for a picture `height` lines tall. */
 function maskSizes(height: number): { grow: number; feather: number } {
   return { grow: Math.max(2, Math.round((GROW_AT_720 * height) / 720)), feather: Math.max(1, Math.round(((FEATHER_AT_720 * height) / 720) * 10) / 10) };
@@ -538,7 +558,7 @@ export interface Provider {
   /** The price of sending `seconds` of footage in `files` pieces, as the line says it. */
   price(seconds: number, files: number): string;
   /** Takes the text out of the piece at `input` into `out`. Throws VmakeError (its `scope` says whose the failure is). */
-  remove(input: string, out: string, seconds: number, signal?: AbortSignal, whole?: { key: string }, begun?: () => void): Promise<{ credits: number | null }>;
+  remove(input: string, out: string, seconds: number, signal?: AbortSignal, whole?: { key: string }, begun?: () => void, label?: string): Promise<{ credits: number | null }>;
   /** Whether the account can be used, nothing spent. Throws VmakeError. */
   check(): Promise<void>;
   /** Pieces it takes at once (PARALLEL when it doesn't say). */
@@ -672,15 +692,37 @@ export function websiteProvider(home: string, browsers: web.Browsers, site = web
       const browser = dollars < 0.5 ? "under $0.50" : `≈ $${dollars.toFixed(2)}`;
       return `${count} ${count === 1 ? "file" : "files"} on your Vmake plan${count > left ? ` (${Math.max(0, left)} today, the rest tomorrow)` : ""}, ${browser} of cloud browser`;
     },
-    async remove(input, out, seconds, _signal, whole, begun) {
-      if (files.left() <= 0) throw new VmakeError("today's files on the Vmake plan are used", "account", "daily_limit");
-      const staged = whole !== undefined ? { url: await cloud.presign(whole.key, "GET", 3 * 3600), drop: async () => {} } : await put(input, `${PREFIX}/send/${Date.now()}-${Math.round(Math.random() * 1e9)}.mp4`);
+    async remove(input, out, seconds, _signal, whole, begun, label) {
+      // Staged and counted only when the file is sent: a card of it already on vmake.ai (its name from `label`), or
+      // a finished result from before that's this piece's, sends nothing.
+      const staged: { drop: () => Promise<void> }[] = [];
+      let adopted = false;
       try {
-        const today = await files.count();
-        const url = await driver.run(staged.url, web.pieceName(seconds), undefined, begun, today === web.FAQ_FILES + 1);
-        await web.fetchResult(url, out);
+        const url = await driver.run(
+          async () => {
+            const one = whole !== undefined ? { url: await cloud.presign(whole.key, "GET", 3 * 3600), drop: async () => {} } : await put(input, `${PREFIX}/send/${Date.now()}-${Math.round(Math.random() * 1e9)}.mp4`);
+            staged.push(one);
+            return one.url;
+          },
+          web.pieceName(seconds, label),
+          {
+            ...(begun ? { begun } : {}),
+            seconds,
+            sending: async () => {
+              if (files.left() <= 0) throw new VmakeError("today's files on the Vmake plan are used", "account", "daily_limit");
+              return (await files.count()) === web.FAQ_FILES + 1;
+            },
+            adopt: async (found) => {
+              await web.fetchResult(found, out);
+              if (await sameFootage(input, out)) return (adopted = true);
+              fs.rmSync(out, { force: true });
+              return false;
+            },
+          },
+        );
+        if (!adopted) await web.fetchResult(url, out);
       } finally {
-        await staged.drop();
+        for (const one of staged) await one.drop();
       }
       return { credits: null };
     },
@@ -1333,7 +1375,8 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
         const fileKey = file.media.cloud?.original;
         const whole = fileKey && from <= 0.05 && to >= (file.media.duration ?? 0) - 0.05 && (file.media.cloud?.size ?? Infinity) <= 300_000_000 ? { key: fileKey } : undefined;
         piece = notePiece(id, { ...piece, tries: piece.tries + 1 });
-        const spent = await provider.remove(original, out, to - from, run.stop.signal, whole, begun);
+        // Named by its file, seconds and try: asked again (a restart), its card on vmake.ai is picked up, never sent twice.
+        const spent = await provider.remove(original, out, to - from, run.stop.signal, whole, begun, `${file.source}|${from}|${to}|${piece.tries}`);
         sent.seconds += to - from;
         if (spent.credits !== null) {
           sent.credits += spent.credits;
