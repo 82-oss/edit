@@ -354,6 +354,7 @@ const cardState = (name: string) => `(() => {
     smartPro: smartPro ? smartPro.className : null,
     ready: !!apply && !apply.disabled && /to be processed|click apply/i.test(text),
     percent: percent ? Number(percent[1]) : null,
+    failed: /download failed|failed to process|processing failed/i.test(text),
     done: !!download && !download.disabled && !busy,
     videos,
   };
@@ -492,7 +493,10 @@ export async function removeOnPage(page: Page, remote: Remote, piece: string | (
   // The account's job cards come a moment after the page (its task list): looked for a few seconds first.
   const cards = await waitFor<boolean>(page, `${CARDS}.length > 0`, 8_000, "the job cards", 500).catch(() => false);
   if (cards) await drawCards(page);
-  const before = cards ? await page.evaluate<{ ready: boolean; percent: number | null; done: boolean } | null>(cardState(name)).catch(() => null) : null;
+  // Its card from before. One vmake.ai gave up on ("Download failed… credits returned") is the piece's trouble: it's
+  // sent once more, under its next try's name (never this one's, whose dead card the page still shows).
+  const before = cards ? await page.evaluate<{ ready: boolean; percent: number | null; done: boolean; failed: boolean } | null>(cardState(name)).catch(() => null) : null;
+  if (before?.failed === true) throw new VmakeError("vmake.ai failed the piece (its card says so)", "piece");
   let card = before !== null;
   let credits = false;
   let creditsBefore: string | null = null;

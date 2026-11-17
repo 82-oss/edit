@@ -596,6 +596,13 @@ interface Kept {
   day?: web.Day;
   /** Each run: what it sent and what it spent. */
   runs: { at: number; project: string; provider: ProviderId; seconds: number; pieces: number; failed: number; credits: number | null; estimate: number | null }[];
+  /**
+   * Pieces out at Vmake now (by `source|from|to`): the try they went as and
+   * when, so after a restart (an update mid-run) a piece goes under the same
+   * name and its card is picked up, never a file spent twice; gone once it's
+   * back, a try on when it failed (sent once more, under a new name).
+   */
+  out?: Record<string, { tries: number; at: number }>;
 }
 
 const keptFile = (home: string) => join(home, "text-removal.json");
@@ -615,6 +622,20 @@ function writeKept(home: string, kept: Kept): void {
   } catch (error) {
     diag.warn("removal", `keeping the Vmake account's state: ${diag.messageOf(error)}`);
   }
+}
+
+/** The try a piece out at Vmake went as (a day at most: its card's gone by then), or null. */
+function outstanding(home: string, key: string): number | null {
+  const one = readKept(home).out?.[key];
+  return one === undefined || Date.now() - one.at > 86_400_000 ? null : one.tries;
+}
+
+function setOutstanding(home: string, key: string, tries: number | null): void {
+  const kept = readKept(home);
+  const out = { ...kept.out };
+  if (tries === null) delete out[key];
+  else out[key] = { tries, at: Date.now() };
+  writeKept(home, { ...kept, out });
 }
 
 /** The account's refusal standing now, if any (gone once RECHECK_MS has passed; `check` asks again). */
@@ -1449,9 +1470,21 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
         // A whole file already on R2 goes from there (a cloud browser fetches it at a datacenter's speed).
         const fileKey = file.media.cloud?.original;
         const whole = fileKey && from <= 0.05 && to >= (file.media.duration ?? 0) - 0.05 && (file.media.cloud?.size ?? Infinity) <= 300_000_000 ? { key: fileKey } : undefined;
-        piece = notePiece(id, { ...piece, tries: piece.tries + 1 });
-        // Named by its file, seconds and try: asked again (a restart), its card on vmake.ai is picked up, never sent twice.
-        const spent = await provider.remove(original, out, to - from, run.stop.signal, whole, begun, `${file.source}|${from}|${to}|${piece.tries}`);
+        // Named by its file, seconds and try: asked again (a restart, an update mid-run), its card on vmake.ai is picked
+        // up under the same name, never sent twice: the try it went as is kept on disk while it's out.
+        const outKey = `${file.source}|${from}|${to}`;
+        const was = outstanding(app.store.home, outKey);
+        piece = notePiece(id, { ...piece, tries: Math.max(piece.tries + 1, was ?? 0) });
+        setOutstanding(app.store.home, outKey, piece.tries);
+        let spent: { credits: number | null };
+        try {
+          spent = await provider.remove(original, out, to - from, run.stop.signal, whole, begun, `${outKey}|${piece.tries}`);
+        } catch (error) {
+          // The piece's own trouble (its card gone or failed): the next try goes under a new name. An account's: the same.
+          if (error instanceof VmakeError && error.scope === "piece") setOutstanding(app.store.home, outKey, piece.tries + 1);
+          throw error;
+        }
+        setOutstanding(app.store.home, outKey, null);
         sent.seconds += to - from;
         if (spent.credits !== null) {
           sent.credits += spent.credits;

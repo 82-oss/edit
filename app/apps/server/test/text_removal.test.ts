@@ -27,6 +27,7 @@ import * as asks from "../src/removal_asks.ts";
 import * as removalSchedule from "../src/removal_schedule.ts";
 import * as cloudMedia from "../src/cloud_media.ts";
 import { dispatch } from "../src/mcp/index.ts";
+import * as web from "../src/vmake_web.ts";
 import * as wm from "../src/watermark_removal.ts";
 import type { WatermarkRemoved } from "../src/native/index.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
@@ -1046,6 +1047,55 @@ test("finished results from before (named by length) are matched to the whole vi
     cleanup();
   }
 }, 180_000);
+
+test("an update mid-piece: after the restart the piece goes under the same name, its card on vmake.ai is picked up and its result used; one file counted", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-restart-piece");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  // The account's job list: a card a name, done once vmake.ai finishes.
+  const cards = new Map<string, Promise<void>>();
+  const names: string[] = [];
+  let counted = 0;
+  let finish = () => {};
+  const processing = new Promise<void>((resolve) => (finish = resolve));
+  const provider: tr.Provider = {
+    id: "vmake-web",
+    price: () => "",
+    async remove(input, out, seconds, _signal, _whole, _begun, label) {
+      const name = web.pieceName(seconds, label);
+      names.push(name);
+      if (!cards.has(name)) {
+        counted += 1;
+        cards.set(name, processing);
+      }
+      // The Edit that sent it stops here for good (the update ended its process); vmake.ai's job goes on.
+      if (names.length === 1) await new Promise(() => {});
+      await cards.get(name);
+      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", input, "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", out]);
+      return { credits: null };
+    },
+    async check() {},
+  };
+  tr.useProvider(provider);
+  try {
+    const file = await labelledFootage(dir, 8);
+    const id = await labelledProject(app, file, 8);
+    await removalSchedule.ensure(app, id);
+    while (names.length === 0) await Bun.sleep(20);
+    // The update: this Edit's memory gone (its run with it), its disk kept; vmake.ai goes on and finishes the job.
+    tr.reset();
+    finish();
+    await removalSchedule.resume(app);
+    await tr.settled(id);
+    expect(names.length).toBe(2);
+    expect(names[1]).toBe(names[0]);
+    expect(counted).toBe(1);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).length).toBe(1);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
 
 test("removal starts by itself as soon as edits rest (no button on the website's plan); a longer clip sends only its new seconds", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
