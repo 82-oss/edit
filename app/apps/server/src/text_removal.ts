@@ -701,8 +701,19 @@ const homeFiles = (home: string): Files => ({
  * Paid by the file (DAILY_FILES a day, the team's), plus Browser Use's
  * minutes and bytes on the team's account.
  */
-export function websiteProvider(home: string, browsers: web.Browsers, site = web.SITE, put = web.stage, files: Files = homeFiles(home), atOnce: () => number = () => web.AT_ONCE): Provider {
+export function websiteProvider(home: string, browsers: web.Browsers, site = web.SITE, put = web.stage, files: Files = homeFiles(home), atOnce: () => number = () => web.AT_ONCE, onQuota: (quota: web.Quota) => void = () => {}): Provider {
   const driver = new web.Driver(browsers, site, atOnce);
+  // The account's day as the page last loaded it: its first read said whole (a Pro account's real numbers).
+  const day: { quota: web.Quota | null; said: boolean } = { quota: null, said: false };
+  const quotaSeen = (quota: web.Quota) => {
+    day.quota = quota;
+    onQuota(quota);
+    const of = (model: string) => quota.modes[model];
+    const line = `Smart Pro ${of(web.MODELS.pro)?.remain ?? "?"} of ${of(web.MODELS.pro)?.limit ?? "?"} left (up to ${of(web.MODELS.pro)?.seconds ?? "?"} s), Smart ${of(web.MODELS.smart)?.remain ?? "?"} of ${of(web.MODELS.smart)?.limit ?? "?"} (up to ${of(web.MODELS.smart)?.seconds ?? "?"} s), credits ${quota.balance ?? "?"}`;
+    if (!day.said) diag.info("removal", `vmake.ai's own count of the day, first read: ${line}`);
+    else diag.info("removal", `vmake.ai's count: ${line}`);
+    day.said = true;
+  };
   return {
     id: "vmake-web",
     atOnce,
@@ -738,9 +749,14 @@ export function websiteProvider(home: string, browsers: web.Browsers, site = web
           {
             ...(begun ? { begun } : {}),
             seconds,
+            quota: quotaSeen,
+            // Past the free files the plan's credits pay, and Edit goes on (vmake.ai's own refusal stops it), never past
+            // SANITY_FILES a day. Whether this one is past them: the page's own count (by-hand uploads in it), else Edit's.
             sending: async () => {
-              if (files.left() <= 0) throw new VmakeError("today's files on the Vmake plan are used", "account", "daily_limit");
-              return (await files.count()) === web.FAQ_FILES + 1;
+              if (web.DAILY_FILES - files.left() >= web.SANITY_FILES) throw new VmakeError(`Edit's own ceiling of ${web.SANITY_FILES} Vmake files a day is reached`, "account", "daily_limit");
+              const today = await files.count();
+              const remain = day.quota?.modes[web.MODELS.pro]?.remain;
+              return remain === 0 || (remain == null && today > web.DAILY_FILES);
             },
             adopt: async (found) => {
               await web.fetchResult(found, out);
@@ -775,7 +791,10 @@ export const website = {
 };
 
 /** The team's account on the relay as last asked (a minute ago at most): whether it's set up there, and the day's files. */
-const team = { ready: false, filesToday: 0, atOnce: web.AT_ONCE, at: 0 };
+const team: { ready: boolean; filesToday: number; atOnce: number; at: number; quota: web.Quota | null } = { ready: false, filesToday: 0, atOnce: web.AT_ONCE, at: 0, quota: null };
+
+/** The day's free files left as vmake.ai last said (Smart Pro's), or null not read yet. */
+export const freeLeft = (): number | null => team.quota?.modes[web.MODELS.pro]?.remain ?? null;
 
 /** Forgets what the relay said (tests). */
 export function forgetTeam(): void {
@@ -814,7 +833,7 @@ async function websiteHere(app: App): Promise<Provider | null> {
       return team.filesToday;
     },
   };
-  return websiteProvider(app.store.home, teamBrowsers(app), website.site, web.stage, files, () => team.atOnce);
+  return websiteProvider(app.store.home, teamBrowsers(app), website.site, web.stage, files, () => team.atOnce, (quota) => (team.quota = quota));
 }
 
 /** The sign-in under way: its live view. */
@@ -1151,7 +1170,7 @@ export interface Status {
   action: "remove" | "retry" | "sign_in" | null;
   running: { done: number; total: number } | null;
   /** Removal under way in the background (the chat's waiting row, removal_schedule.ts): what, how far, since when. */
-  background?: { label: string; done: number; total: number; started_at: number } | null;
+  background?: { label: string; done: number; total: number; started_at: number; free_left?: number } | null;
 }
 
 const minutes = (seconds: number) => (seconds < 90 ? `${Math.max(1, Math.round(seconds))} s` : `${Math.round(seconds / 60)} min`);
@@ -1281,6 +1300,9 @@ export async function status(app: App, id: string): Promise<Status> {
     if (count > 0) return { line: `Take their text out of ${minutes(seconds)} of footage: ${provider.price(seconds, count)}`, action: "remove", running: null };
   }
   if (failed > 0) return { line: `Vmake couldn't clean ${failed === 1 ? "one piece" : `${failed} pieces`}; their text stays blurred there.`, action: null, running: null };
+  // Past the free files the plan's credits pay: said only when they run low.
+  const credits = provider.id === "vmake-web" ? (team.quota?.balance ?? null) : null;
+  if (credits !== null && credits < web.LOW_CREDITS) return { line: `Vmake's credits are running low: ${credits} left.`, action: null, running: null };
   return { line: null, action: null, running: null };
 }
 

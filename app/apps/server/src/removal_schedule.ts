@@ -375,7 +375,9 @@ export function backgroundOf(id: string): NonNullable<textRemoval.Status["backgr
   if (out === 0) return null;
   const run = active.get(id);
   const rows = pieceRows(id);
-  return { label: labelOf(rows.filter((row) => row.state === "queued" || row.state === "running" || run?.before.get(row.key) !== row.state)), done, total: done + out, started_at: run?.startedAt ?? Date.now() };
+  // The day's free Vmake files, said only when few are left (past them the plan's credits pay).
+  const free = rows.some((row) => row.what === "text") ? textRemoval.freeLeft() : null;
+  return { label: labelOf(rows.filter((row) => row.state === "queued" || row.state === "running" || run?.before.get(row.key) !== row.state)), done, total: done + out, started_at: run?.startedAt ?? Date.now(), ...(free !== null && free < 10 ? { free_left: free } : {}) };
 }
 
 /** The person's Stop: nothing more sent or done (what's under way comes back and is kept); kept across restarts until someone asks again. */

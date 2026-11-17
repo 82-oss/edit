@@ -26,7 +26,8 @@ const seen = { mode: "", bytes: 0, uploads: 0, others: 0 };
 /** `stall`: a job that sits at one percent for `slowMs` (as vmake.ai's did for minutes, Nov 17), then finishes. */
 /** `legacy`: a finished card from before named as pieces were (piece-8s.mp4, 8 s long); `existing`: a finished card of this name. */
 /** `cardLimit`: the piece's own card refuses it for the day (as a by-hand upload of the team's could have used the allowance). */
-const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, slowMs: 0, noModes: false, legacy: false, existing: "", cardLimit: false };
+/** `remain`/`balance`: the account's day as the page's own purchase_config says it; `spend`: a "use credits?" prompt before the job starts. */
+const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, slowMs: 0, noModes: false, legacy: false, existing: "", cardLimit: false, remain: 37, balance: 4110, spend: false };
 const PIECE = new Uint8Array(3_000_000).map((_, at) => at % 251);
 
 const PAGE = () => `<!doctype html><html><body>
@@ -38,6 +39,7 @@ ${site.noModes ? "" : `<div style="display:none"><ul class="radio--q7"><li class
 <span class="ant-upload-btn"><input type="file" name="file" multiple></span>
 <div id="work">${site.cards ? `<div class="viewport-task-card--o5h" id="other"><span>v3p2.mp4</span> 40% <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul><button>Download</button></div>` : ""}${[site.legacy ? "piece-8s.mp4" : "", site.existing].filter(Boolean).map((name) => `<div class="viewport-task-card--o5h"><span>${name}</span> 00:00.04 / 00:08.00 60% <button onclick="location.href='/result.mp4?full=1'">Download</button></div>`).join("")}</div>
 <script>
+fetch('/vm/tool/purchase_config.json').then((r) => r.text());
 document.getElementById('other')?.addEventListener('click', () => fetch('/record-other', { method: 'POST' }));
 document.querySelectorAll('ul[class*=radio] li').forEach((li) => li.addEventListener('click', () => {
   if (/disabled--/.test(li.className)) return;
@@ -70,6 +72,15 @@ document.querySelector('input:not([multiple])').addEventListener('change', async
       let pressed = 0;
       apply.addEventListener('click', () => {
         if (++pressed === 1) return;
+        if (${site.spend} && !card.dataset.spent) {
+          // Past the free files: the plan's credits, asked first.
+          const box = document.createElement('div');
+          box.className = 'ant-modal';
+          box.innerHTML = '<p>This file is past the free uses of the day: it will use 12 credits.</p><button>Continue</button>';
+          document.body.append(box);
+          box.querySelector('button').addEventListener('click', () => { card.dataset.spent = '1'; box.remove(); apply.click(); });
+          return;
+        }
         fetch('/record', { method: 'POST', body: JSON.stringify({ mode: card.querySelector('li.active--z').innerText, bytes: file.size }) });
         apply.remove();
         let percent = 0;
@@ -116,6 +127,8 @@ beforeAll(async () => {
     port: 0,
     async fetch(request) {
       const url = new URL(request.url);
+      if (url.pathname === "/vm/tool/purchase_config.json")
+        return Response.json({ meta: { code: 0 }, response: { list: [{ effect_model: "video_remove_full_pro", remain: site.remain, limit_count: 50, duration_limit: 300 }, { effect_model: "video_remove_full", remain: site.remain, limit_count: 50, duration_limit: 600 }], balance: site.balance } });
       if (url.pathname === "/pricing") return new Response(`<html><body>${site.signedOut ? "<button>Get Started</button>" : '<div class="ant-avatar avatar--x">S</div><button>Workspace</button>'}<p>Current plan: ${site.free ? "Free" : "Pro"}</p></body></html>`, { headers: { "content-type": "text/html" } });
       if (url.pathname === "/video-watermark-remover/upload") return new Response(PAGE(), { headers: { "content-type": "text/html" } });
       if (url.pathname === "/record") {
@@ -381,6 +394,27 @@ test.skipIf(CHROME === undefined)("the piece's card refused for the day (the tea
   }
 }, 60_000);
 
+test("the account's day is read off the page's own purchase_config (files left a mode, credits); a prompt to spend credits past the free files is accepted", async () => {
+  expect(web.parseQuota(JSON.stringify({ response: { list: [{ effect_model: "video_remove_full_pro", remain: 0, limit_count: 50, duration_limit: 300 }], balance: 4110 } }))).toMatchObject({ modes: { video_remove_full_pro: { remain: 0, limit: 50, seconds: 300 } }, balance: 4110 });
+  expect(web.parseQuota("not json")).toBeNull();
+  if (CHROME === undefined) return;
+  site.cards = true;
+  site.spend = true;
+  const session = await browsers.open();
+  try {
+    const page = await session.remote.tab();
+    const quotas: web.Quota[] = [];
+    const url = await web.removeOnPage(page, session.remote, piece(), web.pieceName(8, "drive:abc|0|8|1"), `http://localhost:${vmake.port}`, { quota: (quota) => quotas.push(quota), sending: async () => true });
+    expect(url).toBe(`http://localhost:${vmake.port}/result.mp4?full=1`);
+    expect(quotas[0]).toMatchObject({ modes: { video_remove_full_pro: { remain: 37, limit: 50 } }, balance: 4110 });
+    page.close();
+  } finally {
+    site.cards = false;
+    site.spend = false;
+    await session.stop();
+  }
+}, 60_000);
+
 test("Browser Use's own refusals, said by the relay, are the team account's (Nov 17: $0.08 left, every browser refused with 402)", async () => {
   const refused = (said: string) => web.teamBrowsers("kenobi", async () => Promise.reject(new Error(said))).open().then(() => new VmakeError("lent", "piece"), (thrown: unknown) => thrown as VmakeError);
   const credits = await refused("the team's Vmake account: browser_credits (402)");
@@ -424,7 +458,7 @@ test.skipIf(CHROME === undefined)("one Mac at a time on the team's profile: busy
   }
 }, 30_000);
 
-test.skipIf(CHROME === undefined)("the website's provider counts the day's files, prices by the file, and stops at the day's allowance without sending", async () => {
+test.skipIf(CHROME === undefined)("the website's provider counts the day's files, prices by the file, goes on past the free ones (the plan's credits) and stops at Edit's own ceiling without sending", async () => {
   const { dir, cleanup } = scratch("vmake-web");
   try {
     const home = join(dir, "home");
@@ -449,8 +483,13 @@ test.skipIf(CHROME === undefined)("the website's provider counts the day's files
     expect((lapsed as VmakeError).reason).toBe("lapsed");
     expect(seen.uploads).toBe(sent);
     site.free = false;
-    // The day's files used (as kept in the home): the account's, nothing sent.
+    // Past the day's free files: still sent (the plan's credits pay).
     fs.writeFileSync(join(home, "text-removal.json"), JSON.stringify({ accounts: {}, runs: [], day: { date: web.today(), files: web.DAILY_FILES } }));
+    const past = seen.uploads;
+    expect(await provider.remove(input, out, 8)).toEqual({ credits: null });
+    expect(seen.uploads - past).toBe(1);
+    // Edit's own ceiling a day: the account's stop, nothing sent.
+    fs.writeFileSync(join(home, "text-removal.json"), JSON.stringify({ accounts: {}, runs: [], day: { date: web.today(), files: web.SANITY_FILES } }));
     const uploads = seen.uploads;
     const error = await provider.remove(input, out, 8).catch((thrown: unknown) => thrown);
     expect(error).toBeInstanceOf(VmakeError);
@@ -460,4 +499,4 @@ test.skipIf(CHROME === undefined)("the website's provider counts the day's files
   } finally {
     cleanup();
   }
-}, 60_000);
+}, 150_000);

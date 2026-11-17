@@ -221,6 +221,8 @@ export interface RemovalRun {
   done: number;
   total: number;
   started_at: number;
+  /** The day's free Vmake files left, when few are (past them the plan's credits pay). */
+  free_left?: number;
 }
 
 

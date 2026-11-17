@@ -51,14 +51,90 @@ const MODE = "smart pro";
 /** Pieces at once when the relay doesn't say (its AT_ONCE: one a browser). */
 export const AT_ONCE = 3;
 /**
- * Files a day Edit sends at most, the team's: the plan's whole allowance,
- * Pro's 50 for the remover, nothing kept back for by-hand uploads (Sphe,
- * Nov 17). Those aren't in Edit's count, so Vmake's own refusal is the real
- * stop (`dailyLimit`). The first file past FAQ_FILES a day has the credits
- * pill read before and after.
+ * The plan's free files a day, the team's: Pro's 50 for the remover, nothing
+ * kept back for by-hand uploads (Sphe, Nov 17). Not a stop: past them
+ * vmake.ai spends the plan's credits ("Credits can be used beyond this
+ * quota"), so Edit goes on while it takes the jobs, each such file's credits
+ * read before and after and said; vmake.ai's own refusal is the real stop
+ * (`dailyLimit`). The page's own count (`Quota`, its purchase_config) says
+ * what's left, by-hand uploads included.
  */
 export const DAILY_FILES = 50;
-export const FAQ_FILES = 30;
+/** Files a day Edit never goes past, whatever the credits: so a fault can't spend the month's credits. */
+export const SANITY_FILES = 150;
+/** Credits under which the editor says, in one line, that they're running low. */
+export const LOW_CREDITS = 300;
+
+/** Vmake's own name for each mode, in its purchase_config. */
+export const MODELS = { pro: "video_remove_full_pro", smart: "video_remove_full" } as const;
+
+/** The account's day as the remover's page loads it (its purchase_config): files left a mode, and its credits. */
+export interface Quota {
+  modes: Record<string, { remain: number | null; limit: number | null; seconds: number | null }>;
+  balance: number | null;
+  at: number;
+}
+
+/** The page's purchase_config answer read, or null when it isn't one. */
+export function parseQuota(text: string): Quota | null {
+  try {
+    const given = JSON.parse(text) as { response?: { list?: { effect_model?: unknown; remain?: unknown; limit_count?: unknown; duration_limit?: unknown }[]; balance?: unknown } };
+    const list = given.response?.list;
+    if (!Array.isArray(list)) return null;
+    const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    const modes: Quota["modes"] = {};
+    for (const one of list) if (typeof one.effect_model === "string") modes[one.effect_model] = { remain: number(one.remain), limit: number(one.limit_count), seconds: number(one.duration_limit) };
+    return { modes, balance: number(given.response?.balance), at: Date.now() };
+  } catch {
+    return null;
+  }
+}
+
+/** Every purchase_config answer the page loads itself, read off its own traffic (never asked for by Edit: their terms). */
+function watchQuota(page: Page, onQuota: (quota: Quota) => void): () => void {
+  const ids = new Set<string>();
+  const offs = [
+    page.on("Network.responseReceived", (params) => {
+      const url = (params.response as { url?: unknown } | undefined)?.url;
+      if (typeof url === "string" && url.includes("/vm/tool/purchase_config.json")) ids.add(String(params.requestId));
+    }),
+    page.on("Network.loadingFinished", (params) => {
+      const id = String(params.requestId);
+      if (!ids.delete(id)) return;
+      void page
+        .call("Network.getResponseBody", { requestId: id })
+        .then((body) => {
+          const quota = parseQuota(String(body.body ?? ""));
+          if (quota !== null) onQuota(quota);
+        })
+        .catch(() => {});
+    }),
+  ];
+  return () => offs.forEach((off) => off());
+}
+
+/**
+ * A prompt to spend the plan's credits on a file past the free ones
+ * (vmake.ai's "use N credits?"): accepted, as the plan's credits are what
+ * it's for, its words said. Never one that says there aren't enough.
+ */
+async function acceptSpend(page: Page, name: string): Promise<void> {
+  const prompt = await page
+    .evaluate<string | null>(
+      `(() => {
+        const shown = (el) => !!el && el.getClientRects().length > 0;
+        const box = [...document.querySelectorAll('.ant-modal, [role=dialog]')].find((el) => shown(el) && /credit/i.test(el.innerText) && !/insufficient|not enough|top up|buy more|purchase/i.test(el.innerText));
+        if (!box) return null;
+        const yes = [...box.querySelectorAll('button')].find((b) => shown(b) && /^(confirm|continue|ok|yes|use|start|apply|generate)/i.test(b.innerText.trim()));
+        if (!yes) return null;
+        const words = box.innerText.replace(/\s+/g, ' ').slice(0, 200);
+        yes.click();
+        return words;
+      })()`,
+    )
+    .catch(() => null);
+  if (prompt !== null) said(`vmake.ai ${name}: its prompt to spend credits accepted: "${prompt}"`);
+}
 /** A job's longest wait for Vmake (a 60 s piece took 2.5 min; 300 s of 1080p far longer at busy hours). */
 const JOB_MS = 2 * 3_600_000;
 /** Browser Use's price (Nov 17), and a session's longest life. */
@@ -332,6 +408,9 @@ async function apply(page: Page, name: string, step: (what: string) => void): Pr
   for (let press = 1; press <= 3; press++) {
     await pacing.wait(2500 + Math.random() * 1500);
     await click(page, `[...(${cardOf(name)}).querySelectorAll('button')].find((b) => /^apply/i.test(b.innerText.trim()))`);
+    // Past the free files vmake.ai may ask first to spend the plan's credits: yes.
+    await Bun.sleep(800);
+    await acceptSpend(page, name);
     const took = await waitFor<boolean>(page, `(() => { const s = ${cardState(name)}; return !!s && !s.ready; })()`, 15_000, "Apply taking", 1000).catch(() => false);
     step(took ? `applied (press ${press})` : `Apply didn't take (press ${press})`);
     if (took) return;
@@ -415,8 +494,10 @@ export interface PieceHooks {
   progress?: (percent: number) => void;
   /** vmake.ai took the piece and is processing it (the account worked for it: the run's other pieces may go now). */
   begun?: () => void;
-  /** About to send the file (it's counted then; a card already there sends nothing): whether to read the credits pill before and after. */
+  /** About to send the file (it's counted then; a card already there sends nothing): whether it's past the free files (its credits read before and after). */
   sending?: () => Promise<boolean>;
+  /** The account's day, each time the page loads it (files left a mode, credits). */
+  quota?: (quota: Quota) => void;
   /**
    * A finished result from before (a card named as pieces were before Nov 17's
    * evening, `piece-<s>s.mp4`, as long as this one): whether it's this piece's
@@ -505,6 +586,21 @@ async function downloadOf(page: Page, at: number): Promise<string | null> {
  */
 export async function removeOnPage(page: Page, remote: Remote, piece: string | (() => Promise<string>), name: string, site = SITE, given: PieceHooks | ((percent: number) => void) = {}): Promise<string> {
   const hooks: PieceHooks = typeof given === "function" ? { progress: given } : given;
+  // The page's own count of the day, as it loads it.
+  const latest: { quota: Quota | null } = { quota: null };
+  await page.call("Network.enable").catch(() => {});
+  const stop = watchQuota(page, (quota) => {
+    latest.quota = quota;
+    hooks.quota?.(quota);
+  });
+  try {
+    return await onPage(page, remote, piece, name, site, hooks, latest);
+  } finally {
+    stop();
+  }
+}
+
+async function onPage(page: Page, remote: Remote, piece: string | (() => Promise<string>), name: string, site: string, hooks: PieceHooks, latest: { quota: Quota | null }): Promise<string> {
   const onProgress = hooks.progress ?? (() => {});
   await go(page, `${site}${REMOVER}`);
   await waitFor(page, `!!document.querySelector('.ant-upload-btn input[type=file][name=file]:not([multiple])')`, 60_000, "the remover's page");
@@ -557,9 +653,10 @@ export async function removeOnPage(page: Page, remote: Remote, piece: string | (
       await pacing.wait();
     }
     credits = (await hooks.sending?.()) ?? false;
-    if (credits) creditsBefore = await creditsPill(page);
+    if (credits) creditsBefore = latest.quota?.balance?.toString() ?? (await creditsPill(page));
     await putPiece(page, remote, typeof piece === "string" ? piece : await piece(), name);
     step("in the page");
+    await acceptSpend(page, name);
     // Our card, when the page makes one: Smart pro on it (a file of 5 minutes or less has it).
     card = await waitFor<boolean>(page, `!!${cardOf(name)}`, fresh ? 15_000 : 120_000, "the piece's card", 1500).catch(() => false);
     if (card) {
@@ -625,6 +722,7 @@ export async function removeOnPage(page: Page, remote: Remote, piece: string | (
         break;
       }
     }
+    await acceptSpend(page, name);
     const problem = await accountProblem(page).catch(() => null);
     if (problem !== null) throw problem;
     if (Date.now() > until) throw new VmakeError("vmake.ai took over two hours on the piece", "piece");
@@ -649,9 +747,11 @@ export async function removeOnPage(page: Page, remote: Remote, piece: string | (
   if (refused !== null) throw refused;
   if (url === null || !/^https?:/u.test(url)) throw new VmakeError("vmake.ai gave no video to download", "piece");
   if (credits) {
-    // To learn Pro's real daily rule (30 or 50 files): what the first file past 30 cost, if anything.
-    const after = await creditsPill(page);
-    diag.info("removal", `vmake.ai ${name}: the day's file past ${FAQ_FILES}: credits ${creditsBefore ?? "not shown"} before, ${after ?? "not shown"} after`);
+    // Past the free files: what it cost in the plan's credits, to learn the price (read again from the page as it shows them).
+    await go(page, `${site}${REMOVER}`).catch(() => {});
+    await Bun.sleep(2000);
+    const after = latest.quota?.balance?.toString() ?? (await creditsPill(page));
+    diag.info("removal", `vmake.ai ${name}: past the day's free files: credits ${creditsBefore ?? "not shown"} before, ${after ?? "not shown"} after`);
   }
   return url;
 }

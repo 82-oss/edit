@@ -68,7 +68,8 @@ describe("the chat's waiting row for a removal in the background", () => {
     expect(container.querySelector("[data-testid=removal-row]")).toBeNull();
   });
 
-  it("its words", () => {
+  it("its words, and the day's free files only when few are left", () => {
     expect(runLine(RUN.background!)).toBe("Removing their text and watermarks · 12 of 25 pieces");
+    expect(runLine({ ...RUN.background!, free_left: 3 })).toBe("Removing their text and watermarks · 12 of 25 pieces · 3 free files left today");
   });
 });
