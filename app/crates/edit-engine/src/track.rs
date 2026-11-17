@@ -820,7 +820,7 @@ pub(crate) fn frames(
         (rate * 1000.0).round() as u64,
     );
     let lookup = |kept: &mut Kept| {
-        kept.frames.retain(|_, (_, used)| used.elapsed() < KEEP);
+        sweep(kept);
         kept.frames.get_mut(&key).map(|(frames, used)| {
             *used = Instant::now();
             Arc::clone(frames)
@@ -861,7 +861,41 @@ pub(crate) fn frames(
         };
         kept.frames.remove(&oldest);
     }
+    drop(kept);
+    sweep_later();
     Ok(frames)
+}
+
+/// Lets frames past `KEEP` go while nothing asks for any: they went only at
+/// the next pass's lookup, and with none coming a reframe's 256 MB stayed in
+/// the server for good. One sweeper at a time, while anything is kept.
+fn sweep_later() {
+    static SWEEPING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if SWEEPING.swap(true, std::sync::atomic::Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(|| loop {
+        std::thread::sleep(KEEP / 6);
+        let mut kept = kept().lock();
+        let before = kept.frames.len();
+        sweep(&mut kept);
+        let left = kept.frames.len();
+        if left == 0 {
+            SWEEPING.store(false, std::sync::atomic::Ordering::Release);
+        }
+        drop(kept);
+        if left < before {
+            crate::util::give_back_memory();
+        }
+        if left == 0 {
+            return;
+        }
+    });
+}
+
+/// Drops the frames not used for `KEEP`.
+fn sweep(kept: &mut Kept) {
+    kept.frames.retain(|_, (_, used)| used.elapsed() < KEEP);
 }
 
 /// What to decode: the media's light preview (720p, made in the background
