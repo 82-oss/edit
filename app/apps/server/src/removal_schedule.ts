@@ -38,7 +38,6 @@ import { EDIT_EVENT } from "./edit_event.ts";
 import * as seams from "./seams.ts";
 import * as textRemoval from "./text_removal.ts";
 import * as tools from "./tools.ts";
-import * as v2cloud from "./v2_cloud.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
 
 /** How long an export waits for pieces still out (Vmake's site takes minutes a piece, three at once); how soon after the server starts its work resumes. */
@@ -56,7 +55,7 @@ const RESUME_WITHIN_MS = 14 * 86_400_000;
  * restart at 15:26 nothing resumed until an edit).
  */
 export async function resume(app: App): Promise<number> {
-  await v2cloud.refreshSkills().catch(() => {});
+  await removal.refresh().catch(() => {});
   const since = Date.now() - RESUME_WITHIN_MS;
   let count = 0;
   for (const summary of app.store.list()) {
@@ -78,7 +77,7 @@ export async function resume(app: App): Promise<number> {
 export async function ensure(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
   if (live === null) return;
-  await v2cloud.refreshSkills();
+  await removal.refresh();
   // Stopped by the person (the chat's Stop): nothing more until someone asks again.
   if (asks.isStopped(app.store.home, id)) return;
   // The parts that run by themselves, and those asked for here (a part taught to wait for an ask does nothing until then).
@@ -245,7 +244,7 @@ async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content
   const live = app.store.get(projectId);
   if (live === null) throw new Error(`no project ${projectId}`);
   const project = live.project;
-  await v2cloud.refreshSkills();
+  await removal.refresh();
   const lesson = removal.lessonOf(project);
   const given = Array.isArray(args.kinds) ? (args.kinds as unknown[]) : [];
   if (given.some((kind) => !removal.KINDS.includes(kind as removal.Kind))) throw new Error('kinds are "subtitles", "watermarks" and "text"');

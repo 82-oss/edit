@@ -141,6 +141,17 @@ export function kinds(lesson: Lesson | null): { vmake: Kind[]; local: Kind[] } {
   };
 }
 
+/**
+ * The lessons and the channels read again (at most every 30 s each): a
+ * channel's group is only known once the channels are read, and a group's
+ * lesson only found then (Nov 17, Sphe's M4 on nightly-82: after the update
+ * nothing read the channels, so the group's lesson was nowhere and removal
+ * didn't resume). Every removal path calls this before `lessonOf`.
+ */
+export async function refresh(): Promise<void> {
+  await Promise.all([v2cloud.refreshSkills(), channels.refresh()]);
+}
+
 /** What a project's channel (or its group) is taught to take out, as last read (v2cloud's skills); null untaught or no channel. */
 export function lessonOf(project: Pick<Project, "channel">): Lesson | null {
   const places = channels.placesOfProject(project);

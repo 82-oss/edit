@@ -8,11 +8,12 @@
 // stand-in provider: kept pieces never paid for twice, a failed piece left
 // blurred, an account that can't be used stopping every send at once.
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 
 import type { App } from "../src/app.ts";
 import * as burned from "../src/burned_subtitles.ts";
+import * as channels from "../src/channels.ts";
 import { enforceCleanStrips, NAME, strippedFrames } from "../src/clean_strips.ts";
 import type { Media, Project, VideoClip } from "../src/model.ts";
 import { native, useNative, type Native, type ScreenText } from "../src/native/index.ts";
@@ -926,6 +927,33 @@ test("the website's pieces go three at once once Vmake has taken the first (Nov 
     cleanup();
   }
 }, 180_000);
+
+test("after a start nothing else has read the channels: removal reads them itself, so a group's lesson is found and the work resumes (Nov 17, Sphe's M4 on nightly-82)", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-group-resume");
+  reading({});
+  const calls: string[] = [];
+  wm.useEngine(engine(calls));
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  tr.useProvider(null);
+  // The lesson is the group's; the channel's group is known only once the channels are read.
+  const lesson = removal.changed(null, { watermarks: true }, []);
+  v2cloud.useSkillsForTests([{ name: removal.SKILL, key: v2cloud.ownKey("skill", "gr-caught--edit", removal.SKILL), text: removal.write(lesson) }]);
+  channels.useChannelsForTests([], []);
+  const read = spyOn(channels, "refresh").mockImplementation(async () => channels.useChannelsForTests([], [{ key: "gr-caught", lanes: { ideas: "", thumbnails: "", script: "", edit: "" }, channels: ["ch-taught"] }]));
+  try {
+    const file = await labelledFootage(dir, 20);
+    const id = await labelledProject(app, file, 20);
+    expect(await removalSchedule.resume(app)).toBe(1);
+    await wm.settled();
+    expect(read).toHaveBeenCalled();
+    expect(calls).toEqual(["learn null", "remove 0-20"]);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(1);
+  } finally {
+    read.mockRestore();
+    channels.useChannelsForTests([], []);
+    cleanup();
+  }
+}, 60_000);
 
 test("removal starts by itself as soon as edits rest (no button on the website's plan); a longer clip sends only its new seconds", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");

@@ -61,7 +61,6 @@ import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
 import { holderFor } from "./sync_core.ts";
 import * as tools from "./tools.ts";
-import * as v2cloud from "./v2_cloud.ts";
 import * as vmake from "./vmake_api.ts";
 import * as web from "./vmake_web.ts";
 import { VmakeError, type AccountReason } from "./vmake_api.ts";
@@ -1120,7 +1119,7 @@ export async function ensure(app: App, id: string): Promise<void> {
 export async function status(app: App, id: string): Promise<Status> {
   const live = app.store.get(id);
   if (live === null) throw new ApiError(404, "no such project");
-  await v2cloud.refreshSkills();
+  await removal.refresh();
   const lesson = inForceOf(app, live.project);
   if (removal.kinds(lesson).vmake.length === 0) return { line: null, action: null, running: null };
   const pieces = piecesOf(id);
@@ -1152,7 +1151,7 @@ export async function status(app: App, id: string): Promise<Status> {
 export async function begin(app: App, id: string, retry = false): Promise<Status> {
   const live = app.store.get(id);
   if (live === null) throw new ApiError(404, "no such project");
-  await v2cloud.refreshSkills();
+  await removal.refresh();
   const provider = await providerHere(app);
   if (provider === null) {
     // Their watermarks alone need no Vmake: the engine's work goes on (removal_schedule.ts).
