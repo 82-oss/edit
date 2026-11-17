@@ -4258,7 +4258,7 @@
     "name": "remember"
   },
   {
-    "description": "Teach what this channel takes out of its footage's picture, when the person says so (\"we only want their subtitles removed\", \"only the watermarks\", \"subtitles and the 'Actual case footage' labels, keep the camera stamp\"): one lesson of the channel's edit style, kept for its group (every channel in it) unless for says this channel alone. A part on means theirs out wherever a footage file actually has it: Edit looks at every file on the timeline itself (their subtitles and text read off it, each file's own see-through mark found without an example; a compilation's files come from many re-uploaders, most with none) and does nothing to a file without. Each part given is set, the others stay; the camera's own stamp is never taken out. Examples are optional and only help: give one when the person shows one, a second of a footage file (media and at) or a picture from the chat (picture: its file), with what to take out or keep there and where (box, shares of the picture); its words are read there, a watermark's box is a hint for that file. Untaught, nothing is taken out (theirs are left, ours stay off them). Edit does the rest itself as footage is cut. A teacher's to do.",
+    "description": "Teach what this channel takes out of its footage's picture, and when, as the person says. Examples: \"we only want their subtitles removed\", \"only the watermarks\", \"subtitles and the 'Actual case footage' labels, keep the camera stamp\", \"remove watermarks only when we ask\", \"remove watermarks automatically after import\". One lesson of the channel's edit style, kept for its group (every channel in it) unless for says this channel alone. A part on means theirs out wherever a footage file actually has it: Edit looks at every file on the timeline itself (their subtitles and text read off it, each file's own see-through mark found without an example; a compilation's files come from many re-uploaders, most with none) and does nothing to a file without. Each part given is set (and when it runs: automatically after import, or only when someone asks), the others stay; the camera's own stamp is never taken out. Examples are optional and only help: give one when the person shows one, a second of a footage file (media and at) or a picture from the chat (picture: its file), with what to take out or keep there and where (box, shares of the picture); its words are read there, a watermark's box is a hint for that file. Untaught, nothing is taken out (theirs are left, ours stay off them). Edit does the rest itself as footage is cut. A teacher's to do.",
     "inputSchema": {
       "properties": {
         "clear_examples": {
@@ -4347,6 +4347,33 @@
         "watermarks": {
           "description": "Their see-through marks (a channel's name or logo laid faintly over the picture), each file's own, wherever one has one",
           "type": "boolean"
+        },
+        "when": {
+          "description": "When each part runs, as the person says: \"automatic\" (by itself on every footage file as it's cut: \"remove watermarks automatically after import\") or \"asked\" (only once someone asks in the chat, then start_removal: \"remove watermarks only when we ask\"). Parts turned on run automatically unless said.",
+          "properties": {
+            "subtitles": {
+              "enum": [
+                "automatic",
+                "asked"
+              ],
+              "type": "string"
+            },
+            "watermarks": {
+              "enum": [
+                "automatic",
+                "asked"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "enum": [
+                "automatic",
+                "asked"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
         }
       },
       "required": [
@@ -4388,6 +4415,50 @@
       "type": "object"
     },
     "name": "check_removal"
+  },
+  {
+    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"). Say where: whole (the whole project, and footage cut in later), media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask. It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal as they come back; exports wait for them.",
+    "inputSchema": {
+      "properties": {
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        },
+        "kinds": {
+          "description": "What to take out (default: the parts the lesson keeps for an ask)",
+          "items": {
+            "enum": [
+              "subtitles",
+              "watermarks",
+              "text"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "whole": {
+          "description": "The whole project (as it grows)",
+          "type": "boolean"
+        },
+        "media": {
+          "description": "Footage files of this project (media ids)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "from": {
+          "description": "Timeline seconds: from",
+          "type": "number"
+        },
+        "to": {
+          "description": "Timeline seconds: to",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "name": "start_removal"
   },
   {
     "description": "Read one of your skills in V2's cloud: the part of the edit it covers, as the team does it (Edit V2). Read it before working on that part, once per conversation; your instructions list them with when each fits.",

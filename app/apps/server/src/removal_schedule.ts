@@ -30,7 +30,9 @@ import type { Router } from "./http/router.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import { image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
-import type { Media } from "./model.ts";
+import type { Clip, Media, Project } from "./model.ts";
+import { clipEnd, fps as fpsOf } from "./project.ts";
+import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
 import * as textRemoval from "./text_removal.ts";
 import * as tools from "./tools.ts";
@@ -49,16 +51,30 @@ export async function ensure(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
   if (live === null) return;
   await v2cloud.refreshSkills();
-  const lesson = removal.lessonOf(live.project);
-  if (lesson?.remove.watermarks === true) await watermarkRemoval.ensure(app, id, hintsOf(lesson));
+  // The parts that run by themselves, and those asked for here (a part taught to wait for an ask does nothing until then).
+  const lesson = asks.inForce(removal.lessonOf(live.project), app.store.home, id);
+  if (lesson?.remove.watermarks === true) await watermarkRemoval.ensure(app, id);
   if (removal.kinds(lesson).vmake.length > 0) await textRemoval.ensure(app, id);
 }
 
-/** What the lesson's examples say of marks: where a source's is (its example's box), and what's kept (never a mark). */
-function hintsOf(lesson: removal.Lesson): watermarkRemoval.Hints {
-  const shown = lesson.examples.filter((one) => one.kind === "watermarks" && one.action === "remove" && one.box !== undefined && one.from !== undefined);
-  return { hint: (source) => shown.find((one) => one.from!.source === source)?.box ?? null, keep: removal.keepBoxes(lesson) };
+/**
+ * What a project's lesson says of marks: where a source's is (its example's
+ * box), what's kept (never a mark), and the seconds of each file to look at
+ * (all the timeline shows when watermarks run by themselves, else what was
+ * asked for).
+ */
+function hintsOf(app: App, id: string): watermarkRemoval.Hints {
+  const project = app.store.get(id)?.project;
+  const lesson = project === undefined ? null : removal.lessonOf(project);
+  const shown = (lesson?.examples ?? []).filter((one) => one.kind === "watermarks" && one.action === "remove" && one.box !== undefined && one.from !== undefined);
+  return {
+    hint: (source) => shown.find((one) => one.from!.source === source)?.box ?? null,
+    keep: removal.keepBoxes(lesson),
+    scope: (media, seconds) => asks.scope(lesson, app.store.home, id, "watermarks", media, seconds),
+  };
 }
+
+watermarkRemoval.hintsFor.project = hintsOf;
 
 /** Pieces out (queued or being done) and done, of both workers, for the line and the export's step. */
 export function progressOf(id: string): { done: number; out: number } {
@@ -170,6 +186,69 @@ async function checkRemoval({ app, args, projectId }: ToolCall): Promise<Content
 }
 
 registerTool("check_removal", checkRemoval);
+
+/** The source seconds of each footage file the timeline shows between `from` and `to` (timeline seconds). */
+export function shownBetween(project: Project, from: number, to: number): Map<string, [number, number][]> {
+  const fps = fpsOf(project);
+  const [a, b] = [Math.round(from * fps), Math.round(to * fps)];
+  const trimmed = structuredClone(project);
+  trimmed.clips = trimmed.clips.flatMap((clip): Clip[] => {
+    if (clip.type !== "video") return [clip];
+    const start = Math.max(clip.start, a);
+    const end = Math.min(clipEnd(clip), b);
+    if (end <= start) return [];
+    return [{ ...clip, start, duration: end - start, source_in: clip.source_in + ((start - clip.start) / fps) * clip.speed }];
+  });
+  return textRemoval.shownSeconds(trimmed);
+}
+
+/**
+ * `start_removal`: what the person asked to have taken out, now (a part the
+ * lesson says runs only when asked, or one not taught at all): the whole
+ * project, some footage files, or a stretch of the timeline. Kept
+ * (removal_asks.ts) and started at once; its pieces come back, are checked
+ * and counted as any others.
+ */
+async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content[]> {
+  const live = app.store.get(projectId);
+  if (live === null) throw new Error(`no project ${projectId}`);
+  const project = live.project;
+  await v2cloud.refreshSkills();
+  const lesson = removal.lessonOf(project);
+  const given = Array.isArray(args.kinds) ? (args.kinds as unknown[]) : [];
+  if (given.some((kind) => !removal.KINDS.includes(kind as removal.Kind))) throw new Error('kinds are "subtitles", "watermarks" and "text"');
+  // What the person didn't name: the parts taught to wait for an ask, else every part taught.
+  const waiting = removal.KINDS.filter((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "asked");
+  const kinds = given.length > 0 ? (given as removal.Kind[]) : waiting.length > 0 ? waiting : removal.KINDS.filter((kind) => lesson?.remove[kind] === true);
+  if (kinds.length === 0) throw new Error('say what to take out: kinds ["subtitles", "watermarks", "text"] (nothing is taught for this channel)');
+  const ids = Array.isArray(args.media) ? (args.media as unknown[]).filter((one): one is string => typeof one === "string") : [];
+  for (const one of ids) {
+    const media = project.media.find((m) => m.id === one);
+    if (media === undefined || media.kind !== "video" || media.cleans != null || media.effect != null) throw new Error(`${one} isn't a footage file of this project`);
+  }
+  const from = typeof args.from === "number" ? args.from : null;
+  const to = typeof args.to === "number" ? args.to : null;
+  let scope: asks.Ask["media"];
+  if (args.whole === true) scope = "all";
+  else if (from !== null || to !== null) {
+    const between = shownBetween(project, from ?? 0, to ?? Number.MAX_SAFE_INTEGER / 1e6);
+    scope = Object.fromEntries([...between].filter(([id]) => ids.length === 0 || ids.includes(id)));
+  } else if (ids.length > 0) scope = Object.fromEntries(ids.map((id) => [id, "all" as const]));
+  else throw new Error("say where: whole: true (the whole project, as it grows), media (footage files), or from/to (timeline seconds)");
+  if (scope !== "all" && Object.keys(scope).length === 0) throw new Error("no footage is on the timeline there");
+  asks.add(app.store.home, projectId, { at: Date.now(), kinds, media: scope });
+  await ensure(app, projectId);
+  const names = scope === "all" ? "the whole project" : Object.keys(scope).map((id) => project.media.find((m) => m.id === id)?.name ?? id).join(", ");
+  const words: Record<removal.Kind, string> = { subtitles: "their subtitles", watermarks: "their watermarks", text: "their labels and other text" };
+  const { done, out } = progressOf(projectId);
+  return text(
+    `Taking ${kinds.map((kind) => words[kind]).join(", ")} out of ${names}, in the background, wherever the footage has them (the camera's stamp kept)${out > 0 ? `: ${out} piece${out === 1 ? "" : "s"} out${done > 0 ? `, ${done} done` : ""}` : ""}. ` +
+      "Look at pieces with check_removal as they come back; exports wait for them." +
+      (kinds.includes("subtitles") ? " Their subtitles are blurred until theirs are out: lay ours with add_subtitles over them as usual." : ""),
+  );
+}
+
+registerTool("start_removal", startRemoval);
 
 // ---------------------------------------------------------------------------
 // Watching edits

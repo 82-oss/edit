@@ -51,6 +51,7 @@ export const HQ_TOOLS: readonly string[] = [
   "remember",
   "teach_removal",
   "check_removal",
+  "start_removal",
   "read_skill",
   "other_channels",
   "make_sound",

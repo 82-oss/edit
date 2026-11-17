@@ -523,6 +523,14 @@ async function teachRemoval({ app, args, projectId }: ToolCall): Promise<Content
     if (typeof args[kind] !== "boolean") throw new Error(`${kind} is true (take theirs out) or false (leave them)`);
     parts[kind] = args[kind] as boolean;
   }
+  // When each part runs: by itself as footage is cut, or only once someone asks (start_removal).
+  const when: Partial<Record<removal.Kind, removal.When>> = {};
+  const timing = args.when === undefined || args.when === null ? {} : (args.when as Record<string, unknown>);
+  if (typeof timing !== "object" || Array.isArray(timing)) throw new Error('when is {subtitles?, watermarks?, text?}, each "automatic" or "asked"');
+  for (const [kind, value] of Object.entries(timing)) {
+    if (!removal.KINDS.includes(kind as removal.Kind) || (value !== "automatic" && value !== "asked")) throw new Error(`when.${kind} is "automatic" (by itself after import) or "asked" (only when someone asks)`);
+    when[kind as removal.Kind] = value;
+  }
   const given = Array.isArray(args.examples) ? (args.examples as Record<string, unknown>[]) : [];
   if (given.length > 6) throw new Error("at most 6 examples at a time");
   const examples: removal.Example[] = [];
@@ -551,7 +559,7 @@ async function teachRemoval({ app, args, projectId }: ToolCall): Promise<Content
     );
   }
   const before = v2cloud.skill(removal.SKILL, places);
-  const lesson = removal.changed(before === undefined ? null : removal.parse(before.text), parts, examples, args.clear_examples === true);
+  const lesson = removal.changed(before === undefined ? null : removal.parse(before.text), parts, examples, args.clear_examples === true, when);
   const key = v2cloud.ownKey("skill", where.place, removal.SKILL);
   const saved = await v2cloud.saveSkill(removal.SKILL, removal.write(lesson), args.reason.trim(), removal.NOTE, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
   // Kept for the group while this channel has its own: the channel's still wins here.
@@ -563,7 +571,10 @@ async function teachRemoval({ app, args, projectId }: ToolCall): Promise<Content
   return text(
     `${removal.summary(lesson)} Kept as ${removal.SKILL} (version ${saved.n}) in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}.` +
       (read.length > 0 ? ` Examples: ${read.join("; ")}.` : "") +
-      " Edit looks at every footage file itself as it's cut, in the background, and takes out what each one actually has (nothing where a file has none; their subtitles blurred until then); look at pieces as they come back with check_removal." +
+      (removal.KINDS.some((kind) => lesson.remove[kind] && lesson.when[kind] === "automatic")
+        ? " Edit looks at every footage file itself as it's cut, in the background, and takes out what each one actually has (nothing where a file has none; their subtitles blurred until then); look at pieces as they come back with check_removal."
+        : "") +
+      (removal.KINDS.some((kind) => lesson.remove[kind] && lesson.when[kind] === "asked") ? " What runs only when asked waits until someone asks: then start_removal on what they point to." : "") +
       (shadowed ? ` This channel's own ${removal.SKILL} still wins here: change that one (for: "channel") to change it for this channel.` : ""),
   );
 }

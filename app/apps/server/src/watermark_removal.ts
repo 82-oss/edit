@@ -319,9 +319,14 @@ export interface Hints {
   hint(source: string): Box | null;
   /** Boxes kept as the original's (the lesson's keep examples): never taken for a mark. */
   keep: Box[];
+  /** Of what the timeline shows of a footage file, the seconds to clean (none: the file isn't looked at); all of them when not given. */
+  scope?(media: string, shown: [number, number][]): [number, number][];
 }
 
 const NO_HINTS: Hints = { hint: () => null, keep: [] };
+
+/** A project's hints (removal_schedule.ts: its lesson's examples, and what it covers: by itself, or what was asked for); none in tests. */
+export const hintsFor = { project: (_app: App, _id: string): Hints => NO_HINTS };
 
 export interface Cell {
   media: Media;
@@ -340,7 +345,9 @@ export interface Cell {
 export async function plan(app: App, project: Project, hints: Hints = NO_HINTS): Promise<{ cells: Cell[]; unknown: { media: Media; source: string }[] }> {
   const cells: Cell[] = [];
   const unknown: { media: Media; source: string }[] = [];
-  for (const [id, shown] of shownSeconds(project)) {
+  for (const [id, all] of shownSeconds(project)) {
+    const shown = hints.scope === undefined ? all : hints.scope(id, all);
+    if (shown.length === 0) continue;
     const media = project.media.find((one) => one.id === id);
     if (media === undefined || !(media.duration! > 0)) continue;
     const laid = project.media.filter((one) => one.cleans?.media === id && one.cleans.what === "watermark");
@@ -368,7 +375,7 @@ export async function plan(app: App, project: Project, hints: Hints = NO_HINTS):
  * caller decides it's wanted (removal_schedule.ts: a lesson that takes
  * watermarks out).
  */
-export async function ensure(app: App, id: string, hints: Hints = NO_HINTS): Promise<void> {
+export async function ensure(app: App, id: string, hints: Hints = hintsFor.project(app, id)): Promise<void> {
   const live = app.store.get(id);
   if (live === null || engine() === null) return;
   const { cells, unknown } = await plan(app, live.project, hints);
@@ -443,7 +450,7 @@ async function lookAt(app: App, look: Look): Promise<void> {
   } finally {
     looking.delete(look.source);
   }
-  for (const project of waiting) await ensure(app, project, { hint: () => null, keep: look.keep }).catch((error: unknown) => diag.warn("watermark", `${project}: ${diag.messageOf(error)}`));
+  for (const project of waiting) await ensure(app, project).catch((error: unknown) => diag.warn("watermark", `${project}: ${diag.messageOf(error)}`));
 }
 
 async function work(app: App, job: Job): Promise<void> {

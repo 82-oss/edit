@@ -233,7 +233,7 @@ test("the agent is told which footage has subtitles burned in; ours are left off
       p.clips = p.clips.filter((clip) => !(clip.name ?? "").startsWith(burned.COVER));
       p.channel = "ch-taught";
     });
-    v2cloud.useSkillsForTests([{ name: removal.SKILL, key: v2cloud.ownKey("skill", "ch-taught--edit", removal.SKILL), text: removal.write({ remove: { subtitles: true, watermarks: false, text: false }, examples: [] }) }]);
+    v2cloud.useSkillsForTests([{ name: removal.SKILL, key: v2cloud.ownKey("skill", "ch-taught--edit", removal.SKILL), text: removal.write({ remove: { subtitles: true, watermarks: false, text: false }, when: { subtitles: "automatic", watermarks: "automatic", text: "automatic" }, examples: [] }) }]);
     try {
       expect((await call(app, "add_subtitles", { project_id: id, start: 0 })).text).toContain('"burned_in_subtitles_covered":1');
       expect(store.get(id)!.project.clips.filter((clip) => (clip.name ?? "").startsWith(burned.COVER)).map((clip) => clip.name)).toEqual([`${burned.UNTIL_REMOVED} · f`]);

@@ -7,7 +7,7 @@
 // frames, and only a text strip ending the blur over their subtitles. The
 // engine is a stand-in here (its own tests are Rust's: edit-engine watermark).
 
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 
 import type { App } from "../src/app.ts";
@@ -20,7 +20,14 @@ import * as tools from "../src/tools.ts";
 import * as wm from "../src/watermark_removal.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
+// The footage's own seconds, whatever lesson another file's import set up (removal_schedule.ts's hints read the channel's).
+const neutral = wm.hintsFor.project;
+beforeEach(() => {
+  wm.hintsFor.project = () => ({ hint: () => null, keep: [] });
+});
+
 afterEach(() => {
+  wm.hintsFor.project = neutral;
   wm.useEngine(null);
   wm.useShelf(null);
   wm.reset();

@@ -12,6 +12,7 @@ import { registerTool, text } from "./mcp/registry.ts";
 import type { Project, Segment } from "./model.ts";
 import { isSubtitle, splitToOneLine, twoLineSubtitles } from "./one_line.ts";
 import { duration, fps as fpsOf } from "./project.ts";
+import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
 import * as faces from "./faces.ts";
 import { fixed, round, toI64 } from "./rust.ts";
@@ -46,13 +47,15 @@ function span(args: Record<string, unknown>, fps: number, from: number, to: numb
 /**
  * `burned_in`: what to do where footage has subtitles burned into its picture
  * (burned_subtitles.ts); ours left off by default. A channel taught to take
- * theirs out (its removal lesson, removal_lesson.ts) has theirs blurred until
- * Edit does and ours laid, whatever the agent passes but "cover".
+ * theirs out (its removal lesson, removal_lesson.ts: by itself, or asked for
+ * here) has theirs blurred until Edit does and ours laid, whatever the agent
+ * passes but "cover".
  */
-function burnedIn(args: Record<string, unknown>, project: Project): BurnedIn {
+function burnedIn(app: App, args: Record<string, unknown>, project: Project): BurnedIn {
   const given = args.burned_in;
   if (given !== undefined && given !== null && given !== "leave_off" && given !== "cover") throw new Error('burned_in is "leave_off" (the default: none of ours over theirs) or "cover" (theirs blurred, ours on it)');
-  if (given !== "cover" && removal.lessonOf(project)?.remove.subtitles === true) return "remove";
+  // Taught to wait for an ask: theirs are left as an untaught channel's until someone asks (removal_asks.ts).
+  if (given !== "cover" && asks.inForce(removal.lessonOf(project), app.store.home, project.id)?.remove.subtitles === true) return "remove";
   return given === "cover" ? "cover" : "leave_off";
 }
 
@@ -62,7 +65,7 @@ registerTool("add_subtitles", async ({ app, args, projectId }) => {
   const introEnd = seams.captions.intro(project)?.[1] ?? 0;
   const [from, to] = span(args, fps, introEnd, duration(project));
   const neglect = args.neglect === true;
-  const summary = await seams.captions.subtitles(app, projectId, from, to, neglect, args.missing_only === true, burnedIn(args, project));
+  const summary = await seams.captions.subtitles(app, projectId, from, to, neglect, args.missing_only === true, burnedIn(app, args, project));
   return text(`subtitled ${fixed(from / fps, 2)}–${fixed(to / fps, 2)}s: ${stableStringify(summary)}`);
 });
 
@@ -161,7 +164,7 @@ registerTool("repack_subtitles", async ({ app, args, projectId }) => {
     hold_ms: holdMs(args.hold_ms),
     overlap,
     faces: typeof args.faces === "boolean" ? args.faces : overlap,
-    burned_in: burnedIn(args, project),
+    burned_in: burnedIn(app, args, project),
   };
   const stretches = questioning(args.interrogation, fps, from, to);
   const summary = await subtitles.repackSubtitles(app, projectId, options);

@@ -2368,17 +2368,21 @@ function burnedContext(p: Project, from: number, to: number): Args {
  */
 function removalContext(p: Project): Args {
   const lesson = removalLesson.lessonOf(p);
-  if (!removalLesson.takesOut(lesson)) return {};
+  const asked = removalLesson.KINDS.filter((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "asked");
+  if (!removalLesson.takesOut(lesson) && watermarkRemoval.piecesOf(p.id).length === 0 && textRemoval.piecesOf(p.id).length === 0) return {};
   const pieces = [...textRemoval.piecesOf(p.id), ...watermarkRemoval.piecesOf(p.id)];
   const back = textRemoval.piecesOf(p.id).filter((one) => one.state === "check").length + watermarkRemoval.piecesOf(p.id).filter((one) => one.state === "done").length;
   const { done, out } = removalSchedule.progressOf(p.id);
   const failed = pieces.filter((one) => one.state === "failed").length;
   return {
     removal: {
-      taught: removalLesson.summary(lesson!),
+      taught: lesson === null ? "Nothing is taught; what was asked for here is being taken out." : removalLesson.summary(lesson),
+      ...(asked.length > 0 ? { when_asked: `${asked.join(", ")}: only when someone asks in the chat; then start_removal on what they point to (media, from/to, or whole: true)` } : {}),
       pieces: `${done} done, ${out} still being done${failed > 0 ? `, ${failed} not clean` : ""}`,
       note:
-        "Edit takes this out of the footage by itself as it's cut, in the background (only the seconds the timeline shows; a re-cut sends only what's new). " +
+        (removalLesson.KINDS.some((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "automatic")
+          ? "Edit takes the parts that run by themselves out of the footage as it's cut, in the background (only the seconds the timeline shows; a re-cut sends only what's new). "
+          : "What's asked for with start_removal runs in the background on what was pointed to. ") +
         (back > 0 ? `${back} piece${back === 1 ? " is" : "s are"} back: look at them with check_removal and reject any that isn't clean. ` : "Look at pieces with check_removal as they come back. ") +
         "Their subtitles stay blurred until theirs are out; lay ours as usual. Exports wait for pieces still being done.",
     },

@@ -57,6 +57,7 @@ import * as playing from "./playing.ts";
 import { clipEnd, fps as fpsOf, freshId, reusedMedia, trackOf } from "./project.ts";
 import * as seams from "./seams.ts";
 import * as relay from "./relay.ts";
+import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
 import { holderFor } from "./sync_core.ts";
 import * as tools from "./tools.ts";
@@ -933,23 +934,45 @@ export interface FilePlan {
   source: string;
   send: [number, number][];
   use: Cached[];
+  /** The parts its pieces take out (what's pasted back): those in force for this file's seconds. */
+  kinds: removal.Kind[];
 }
+
+/** The lesson as it applies to `project` now (its parts that run by themselves, and those asked for: removal_asks.ts). */
+export const inForceOf = (app: App, project: Pick<Project, "id" | "channel">): removal.Lesson | null => asks.inForce(lessonOf(project), app.store.home, project.id);
 
 /** Every file of `project` to send to Vmake (what its channel's lesson takes out there: their subtitles, their text), or the files still being read. */
 export async function plan(app: App, project: Project, provider: Provider | null = null): Promise<{ files: FilePlan[]; reading: string[] }> {
   const files: FilePlan[] = [];
   const reading: string[] = [];
-  const lesson = lessonOf(project);
-  if (removal.kinds(lesson).vmake.length === 0) return { files, reading };
+  const taught = lessonOf(project);
+  const lesson = asks.inForce(taught, app.store.home, project.id);
+  if (lesson === null || removal.kinds(lesson).vmake.length === 0) return { files, reading };
   for (const [id, shown] of shownSeconds(project)) {
     const media = project.media.find((one) => one.id === id)!;
-    const spans = textOf(media, cameraFromReads(media, null), lesson);
-    if (spans === undefined) {
+    // Each part on the seconds it covers: all the timeline shows for one that runs by itself, what was asked for else.
+    const found: [number, number][] = [];
+    const kinds: removal.Kind[] = [];
+    let unread = false;
+    for (const kind of removal.kinds(lesson).vmake) {
+      const within = asks.scope(taught, app.store.home, project.id, kind, id, shown);
+      if (within.length === 0) continue;
+      const spans = textOf(media, cameraFromReads(media, null), removal.only(lesson, [kind]));
+      if (spans === undefined) {
+        unread = true;
+        break;
+      }
+      const mine = spans.flatMap(([a, b]) => within.flatMap(([x, y]): [number, number][] => (Math.min(b, y) > Math.max(a, x) ? [[Math.max(a, x), Math.min(b, y)]] : [])));
+      if (mine.length === 0) continue;
+      found.push(...mine);
+      kinds.push(kind);
+    }
+    if (unread) {
       reading.push(media.name);
       void burned.warm(app.media, media);
       continue;
     }
-    const wanted = merged(spans.flatMap(([a, b]) => shown.flatMap(([x, y]): [number, number][] => (Math.min(b, y) > Math.max(a, x) ? [[Math.max(a, x), Math.min(b, y)]] : []))));
+    const wanted = merged(found);
     if (wanted.length === 0) continue;
     const source = await sourceOf(media);
     // A piece given up on (twice not clean) stays blurred: never sent again in this project.
@@ -961,7 +984,7 @@ export async function plan(app: App, project: Project, provider: Provider | null
     // Pieces already in the project as strips (or given up on) need nothing.
     const have = project.media.filter((one) => one.cleans?.media === media.id && (one.cleans.what ?? "text") === "text");
     const used = use.filter((one) => one.key !== "" && !have.some((strip) => Math.abs(strip.cleans!.from - one.from) < 0.01 && Math.abs(strip.cleans!.to - one.to) < 0.05));
-    if (send.length > 0 || used.length > 0) files.push({ media, source, send, use: used });
+    if (send.length > 0 || used.length > 0) files.push({ media, source, send, use: used, kinds });
   }
   return { files, reading };
 }
@@ -1054,7 +1077,7 @@ const minutes = (seconds: number) => (seconds < 90 ? `${Math.max(1, Math.round(s
  */
 export async function ensure(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
-  if (live === null || removal.kinds(lessonOf(live.project)).vmake.length === 0) return;
+  if (live === null || removal.kinds(inForceOf(app, live.project)).vmake.length === 0) return;
   const running = runs.get(id);
   if (running !== undefined && !running.over) {
     running.again = true;
@@ -1082,7 +1105,7 @@ export async function status(app: App, id: string): Promise<Status> {
   const live = app.store.get(id);
   if (live === null) throw new ApiError(404, "no such project");
   await v2cloud.refreshSkills();
-  const lesson = lessonOf(live.project);
+  const lesson = inForceOf(app, live.project);
   if (removal.kinds(lesson).vmake.length === 0) return { line: null, action: null, running: null };
   const pieces = piecesOf(id);
   const out = pieces.filter((one) => one.state === "queued" || one.state === "running").length;
@@ -1245,7 +1268,8 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
   const run: Run = { provider: provider.id, total: jobs.length, done: 0, account: null, over: false, again: false, stop: new AbortController() };
   // Pieces waiting (or held by the account) the plan no longer has (a re-cut took their footage off): gone, never waited for.
   prune(id, new Set(jobs.map((job) => pieceKeyOf(job.file.media.id, job.range[0]))));
-  const lesson = lessonOf(app.store.get(id)?.project ?? {});
+  const project = app.store.get(id)?.project;
+  const lesson = project === undefined ? null : inForceOf(app, project);
   runs.set(id, run);
   for (const job of jobs) {
     const known = textPieces.get(id)?.get(pieceKeyOf(job.file.media.id, job.range[0]));
@@ -1291,7 +1315,7 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
       const cleaned = await shelfOf(app).bring(file.source, cached);
       const info = await probe(original);
       // The camera's text, and what the lesson keeps out of reach (only the subtitles' band when that's all it takes out).
-      const keep = [...(await stamps.get(file.media.id)!), ...keptFor(lesson, burned.of(file.media)?.band ?? null)];
+      const keep = [...(await stamps.get(file.media.id)!), ...keptFor(lesson === null ? null : removal.only(lesson, file.kinds), burned.of(file.media)?.band ?? null)];
       const out = join(app.store.cacheDir(), "cleaned", `${id}-${file.media.id}-${Math.round(cached.from * 1000)}-${Math.round(cached.to * 1000)}.${cached.provider}.strip.mp4`);
       const made = await makeStrip(original, cleaned, { width: info.width, height: info.height, fps: info.fps }, keep, out);
       // The automatic look: their words read again in what Vmake gave back (never their see-through watermark's: the engine's, Vmake leaves it).

@@ -54,27 +54,41 @@ export interface Example {
   note?: string;
 }
 
+/** When a part taught runs: by itself as footage is cut (the default), or only once someone asks in the chat (the agent's start_removal). */
+export type When = "automatic" | "asked";
+
 export interface Lesson {
   remove: Record<Kind, boolean>;
+  when: Record<Kind, When>;
   examples: Example[];
 }
+
+const AUTOMATIC: Record<Kind, When> = { subtitles: "automatic", watermarks: "automatic", text: "automatic" };
 
 const OPEN = "<removal>";
 const CLOSE = "</removal>";
 
 const WORDS: Record<Kind, string> = { subtitles: "their subtitles", watermarks: "their watermarks", text: "their labels and other text" };
 
-/** The line the person reads: what's taken out, and that the camera's stamp stays. */
+const listed = (words: string[]) => (words.length === 1 ? words[0]! : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`);
+
+/** The line the person reads: what's taken out and when, and that the camera's stamp stays. */
 export function summary(lesson: Lesson): string {
-  const out = KINDS.filter((kind) => lesson.remove[kind]).map((kind) => WORDS[kind]);
-  const said = out.length === 0 ? "Nothing is taken out of the footage's picture" : `Take ${out.length === 1 ? out[0] : `${out.slice(0, -1).join(", ")} and ${out.at(-1)}`} out of the footage's picture wherever a file has them`;
+  const on = KINDS.filter((kind) => lesson.remove[kind]);
+  const automatic = on.filter((kind) => lesson.when[kind] === "automatic").map((kind) => WORDS[kind]);
+  const asked = on.filter((kind) => lesson.when[kind] === "asked").map((kind) => WORDS[kind]);
+  const parts = [
+    ...(automatic.length > 0 ? [`Take ${listed(automatic)} out of the footage's picture wherever a file has them, by itself as footage is cut`] : []),
+    ...(asked.length > 0 ? [`${automatic.length > 0 ? "" : "Take "}${listed(asked)} out${automatic.length > 0 ? "" : " of the footage's picture"} only when someone asks`] : []),
+  ];
+  const said = on.length === 0 ? "Nothing is taken out of the footage's picture" : parts.join("; ");
   const kept = lesson.examples.filter((one) => one.action === "keep" && one.text).map((one) => `"${one.text}"`);
   return `${said}; the camera's stamp${kept.length > 0 ? ` and ${kept.join(", ")}` : ""} always kept.`;
 }
 
 /** The lesson's text as kept: its line, then its data. */
 export function write(lesson: Lesson): string {
-  return `${summary(lesson)}\n${OPEN}${JSON.stringify({ remove: lesson.remove, examples: lesson.examples })}${CLOSE}`;
+  return `${summary(lesson)}\n${OPEN}${JSON.stringify({ remove: lesson.remove, when: lesson.when, examples: lesson.examples })}${CLOSE}`;
 }
 
 const isBox = (value: unknown): value is Box => Array.isArray(value) && value.length === 4 && value.every((one) => typeof one === "number" && one >= 0 && one <= 1) && value[0] < value[2] && value[1] < value[3];
@@ -84,13 +98,15 @@ export function parse(text: string): Lesson | null {
   const start = text.indexOf(OPEN);
   const end = text.indexOf(CLOSE, start + OPEN.length);
   if (start < 0 || end < 0) return null;
-  let given: { remove?: Record<string, unknown>; examples?: unknown[] };
+  let given: { remove?: Record<string, unknown>; when?: Record<string, unknown>; examples?: unknown[] };
   try {
     given = JSON.parse(text.slice(start + OPEN.length, end)) as typeof given;
   } catch {
     return null;
   }
   const remove = Object.fromEntries(KINDS.map((kind) => [kind, given.remove?.[kind] === true])) as Record<Kind, boolean>;
+  // A lesson from before timings was taught: every part by itself.
+  const when = Object.fromEntries(KINDS.map((kind) => [kind, given.when?.[kind] === "asked" ? "asked" : "automatic"])) as Record<Kind, When>;
   const examples = (Array.isArray(given.examples) ? given.examples : []).flatMap((raw): Example[] => {
     const one = raw as Record<string, unknown>;
     const kind = one.kind;
@@ -109,7 +125,7 @@ export function parse(text: string): Lesson | null {
       },
     ];
   });
-  return { remove, examples };
+  return { remove, when, examples };
 }
 
 /**
@@ -152,10 +168,31 @@ export function keepBoxes(lesson: Lesson | null): Box[] {
  * were), the examples given added to the ones there (the same frame and kind
  * replaced), or all of them cleared with `clear_examples`.
  */
-export function changed(before: Lesson | null, remove: Partial<Record<Kind, boolean>>, examples: Example[], clear = false): Lesson {
-  const was = before ?? { remove: { subtitles: false, watermarks: false, text: false }, examples: [] };
+export function changed(before: Lesson | null, remove: Partial<Record<Kind, boolean>>, examples: Example[], clear = false, when: Partial<Record<Kind, When>> = {}): Lesson {
+  const was = before ?? { remove: { subtitles: false, watermarks: false, text: false }, when: AUTOMATIC, examples: [] };
   const kept = clear ? [] : was.examples.filter((old) => !examples.some((one) => one.kind === old.kind && one.action === old.action && sameFrame(one, old)));
-  return { remove: { ...was.remove, ...Object.fromEntries(Object.entries(remove).filter(([, value]) => typeof value === "boolean")) }, examples: [...kept, ...examples].slice(-12) };
+  return {
+    remove: { ...was.remove, ...Object.fromEntries(Object.entries(remove).filter(([, value]) => typeof value === "boolean")) },
+    when: { ...AUTOMATIC, ...was.when, ...Object.fromEntries(Object.entries(when).filter(([, value]) => value === "automatic" || value === "asked")) },
+    examples: [...kept, ...examples].slice(-12),
+  };
+}
+
+/**
+ * The lesson as it applies to a project now: the parts taught to run by
+ * themselves, and the parts someone has asked for there (`asked`: taught to
+ * wait for an ask, or not taught at all: the person asked). Null when
+ * nothing applies.
+ */
+export function inForce(lesson: Lesson | null, asked: Kind[]): Lesson | null {
+  const remove = Object.fromEntries(KINDS.map((kind) => [kind, (lesson?.remove[kind] === true && lesson.when[kind] === "automatic") || asked.includes(kind)])) as Record<Kind, boolean>;
+  if (!KINDS.some((kind) => remove[kind])) return null;
+  return { remove, when: lesson?.when ?? AUTOMATIC, examples: lesson?.examples ?? [] };
+}
+
+/** The lesson with only `kinds` taken out (what one file's pieces paste back). */
+export function only(lesson: Lesson, kinds: Kind[]): Lesson {
+  return { ...lesson, remove: Object.fromEntries(KINDS.map((kind) => [kind, lesson.remove[kind] && kinds.includes(kind)])) as Record<Kind, boolean> };
 }
 
 function sameFrame(a: Example, b: Example): boolean {

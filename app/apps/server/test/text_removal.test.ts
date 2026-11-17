@@ -21,6 +21,7 @@ import { join } from "../src/paths.ts";
 import * as tr from "../src/text_removal.ts";
 import * as tools from "../src/tools.ts";
 import * as removal from "../src/removal_lesson.ts";
+import * as asks from "../src/removal_asks.ts";
 import * as removalSchedule from "../src/removal_schedule.ts";
 import * as cloudMedia from "../src/cloud_media.ts";
 import { dispatch } from "../src/mcp/index.ts";
@@ -37,6 +38,7 @@ afterEach(() => {
   tr.useProvider(undefined);
   tr.useShelf(null);
   tr.reset();
+  asks.reset();
   removalSchedule.reset();
   wm.useEngine(null);
   wm.useShelf(null);
@@ -398,8 +400,8 @@ async function labelledFootage(dir: string, seconds: number): Promise<string> {
 }
 
 /** A channel's removal lesson, as teach_removal keeps it, for the projects of channel ch-taught. */
-function teach(remove: Partial<Record<removal.Kind, boolean>>, examples: removal.Example[] = []): void {
-  const lesson = removal.changed(null, remove, examples);
+function teach(remove: Partial<Record<removal.Kind, boolean>>, examples: removal.Example[] = [], when: Partial<Record<removal.Kind, removal.When>> = {}): void {
+  const lesson = removal.changed(null, remove, examples, false, when);
   v2cloud.useSkillsForTests([{ name: removal.SKILL, key: v2cloud.ownKey("skill", "ch-taught--edit", removal.SKILL), text: removal.write(lesson) }]);
 }
 
@@ -514,8 +516,15 @@ test("a removal lesson reads back as kept, changes part by part, and says where 
   const stamp: removal.Example = { kind: "stamp", action: "keep", text: "AXON BODY 3", box: [0.66, 0.01, 0.97, 0.09] };
   const lesson = removal.changed(null, { subtitles: true, text: true }, [actual, stamp]);
   const kept = removal.write(lesson);
-  expect(kept.split("\n")[0]).toBe(`Take their subtitles and their labels and other text out of the footage's picture wherever a file has them; the camera's stamp and "AXON BODY 3" always kept.`);
+  expect(kept.split("\n")[0]).toBe(`Take their subtitles and their labels and other text out of the footage's picture wherever a file has them, by itself as footage is cut; the camera's stamp and "AXON BODY 3" always kept.`);
   expect(removal.parse(kept)).toEqual(lesson);
+  // When each part runs, said in the first line: by itself after import, or only when someone asks.
+  const timed = removal.changed(lesson, { watermarks: true }, [], false, { watermarks: "asked" });
+  expect(removal.summary(timed)).toBe(`Take their subtitles and their labels and other text out of the footage's picture wherever a file has them, by itself as footage is cut; their watermarks out only when someone asks; the camera's stamp and "AXON BODY 3" always kept.`);
+  expect(removal.summary(removal.changed(null, { watermarks: true }, [], false, { watermarks: "asked" }))).toBe("Take their watermarks out of the footage's picture only when someone asks; the camera's stamp always kept.");
+  expect(removal.parse(removal.write(timed))!.when).toEqual({ subtitles: "automatic", watermarks: "asked", text: "automatic" });
+  // A lesson kept before timings read back: every part by itself, as it ran.
+  expect(removal.parse(`x\n<removal>{"remove":{"subtitles":true},"examples":[]}</removal>`)!.when).toEqual({ subtitles: "automatic", watermarks: "automatic", text: "automatic" });
   // Hand-written words, or broken data, are no lesson: nothing is taken out.
   expect(removal.parse("Take their subtitles out")).toBeNull();
   expect(removal.parse("x <removal>{oops</removal>")).toBeNull();
@@ -594,6 +603,85 @@ test("what's sent follows the lesson: untaught nothing, subtitles alone not thei
     expect(calls).toEqual([`learn ${JSON.stringify([0.3, 0.6, 0.7, 0.85])}`, "remove 0-8"]);
     expect(log).toEqual([]);
     expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(1);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test("a part taught to run only when asked does nothing until the agent starts it on what the person pointed to; then it's counted, checked and waited for as any", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-asked");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true, watermarks: true }, [], { text: "asked", watermarks: "asked" });
+  const log: string[] = [];
+  let open = () => {};
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  tr.useProvider(standIn(log, () => null, "vmake-web", gate));
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const calls: string[] = [];
+  wm.useEngine(engine(calls));
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  const call = async (args: Record<string, unknown>) =>
+    ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "start_removal", arguments: { project_id: id, ...args } } }, null)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
+  let id = "";
+  try {
+    const file = await labelledFootage(dir, 8);
+    id = await labelledProject(app, file, 8);
+    // Taught, not asked: no file looked at, nothing sent, nothing said, nothing for an export to wait for.
+    await removalSchedule.ensure(app, id);
+    await tr.settled(id);
+    await wm.settled();
+    expect([log, calls]).toEqual([[], []]);
+    expect((await tr.plan(app, store.get(id)!.project)).files).toEqual([]);
+    expect(await removalSchedule.statusOf(app, id)).toEqual({ line: null, action: null, running: null });
+    await removalSchedule.waitForPieces(app, id, 200);
+    // Asked with nowhere said: the agent is told what to give.
+    expect((await call({})).content[0]!.text).toContain("say where");
+    // The person points at the footage: both parts waiting for an ask start on it.
+    const said = await call({ media: ["m"] });
+    expect(said.isError).toBe(false);
+    expect(said.content[0]!.text).toContain("Taking their watermarks, their labels and other text out of tape");
+    while (removalSchedule.progressOf(id).out === 0 || log.length === 0) await Bun.sleep(20);
+    expect((await removalSchedule.statusOf(app, id)).line).toMatch(/^Removing their text · \d of \d pieces$/u);
+    expect(await removalSchedule.waitForPieces(app, id, 200).catch((error: unknown) => String(error))).toContain("still rendering");
+    const waited = removalSchedule.waitForPieces(app, id, 60_000);
+    open();
+    await waited;
+    await tr.settled(id);
+    await wm.settled();
+    expect(calls).toEqual(["learn null", "remove 0-8"]);
+    expect(log.filter((one) => one.startsWith("remove")).length).toBe(1);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).map((media) => media.cleans!.what ?? "text").sort()).toEqual(["text", "watermark"]);
+    // Kept across a restart of the server: what was asked still covers this footage.
+    asks.reset();
+    expect(asks.scope(removal.lessonOf(store.get(id)!.project), app.store.home, id, "text", "m", [[0, 8]])).toEqual([[0, 8]]);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test("asked for a stretch of the timeline, only those seconds of the footage there; a part never taught can be asked for too", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-asked-span");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });
+  v2cloud.useSkillsForTests([]);
+  const log: string[] = [];
+  tr.useProvider(standIn(log, () => null, "vmake-web"));
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  try {
+    const file = await labelledFootage(dir, 30);
+    const id = await labelledProject(app, file, 30);
+    // The timeline's 2–6 s are the footage's 2–6 s.
+    const project = store.get(id)!.project;
+    expect([...removalSchedule.shownBetween(project, 2, 6)]).toEqual([["m", [[2, 6]]]]);
+    // Untaught: nothing until asked; asked for their text from 2 to 6 s: that stretch (with its handle) alone.
+    await removalSchedule.ensure(app, id);
+    await tr.settled(id);
+    expect(log).toEqual([]);
+    const said = (await dispatch(app, { id: 1, method: "tools/call", params: { name: "start_removal", arguments: { project_id: id, kinds: ["text"], from: 2, to: 6 } } }, null)) as { result: { isError: boolean } };
+    expect(said.result.isError).toBe(false);
+    await tr.settled(id);
+    expect(log).toEqual(["remove 6"]);
+    const strips = store.get(id)!.project.media.filter((media) => media.cleans != null);
+    expect(strips.map((media) => [media.cleans!.from, media.cleans!.to])).toEqual([[1, 7]]);
   } finally {
     cleanup();
   }
