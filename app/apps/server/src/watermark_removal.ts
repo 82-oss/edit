@@ -41,7 +41,6 @@ import { native, type Box, type WatermarkPiece, type WatermarkRemoved } from "./
 import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
 import { freshId } from "./project.ts";
-import * as asks from "./removal_asks.ts";
 import * as seams from "./seams.ts";
 import { folderOf, PREFIX, shownSeconds, sourceOf, stampOf } from "./text_removal.ts";
 
@@ -395,7 +394,7 @@ export async function plan(app: App, project: Project, hints: Hints = NO_HINTS):
  */
 export async function ensure(app: App, id: string, hints: Hints = hintsFor.project(app, id)): Promise<void> {
   const live = app.store.get(id);
-  if (live === null || engine() === null || asks.isStopped(app.store.home, id)) return;
+  if (live === null || engine() === null) return;
   const { cells, unknown } = await plan(app, live.project, hints);
   for (const { media, source } of unknown) {
     const waiting = looking.get(source);

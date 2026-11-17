@@ -2380,7 +2380,7 @@ function removalContext(app: App, p: Project): Args {
       taught: lesson === null ? "Nothing is taught; what was asked for here is being taken out." : removalLesson.summary(lesson),
       ...(asked.length > 0 ? { when_asked: `${asked.join(", ")}: only when someone asks in the chat; then start_removal on what they point to (media, from/to, or whole: true)` } : {}),
       pieces: `${done} done, ${out} still being done${failed > 0 ? `, ${failed} not clean` : ""}`,
-      ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "The person stopped it (the chat's Stop): nothing more is taken out until they ask again; then start_removal." } : {}),
+      ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "The person stopped it (the chat's Stop): what ran by itself doesn't now; only what's asked with start_removal (from/to, media, or whole) is taken out." } : {}),
       note:
         (removalLesson.KINDS.some((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "automatic")
           ? "Edit takes the parts that run by themselves out of the footage as it's cut, in the background (only the seconds the timeline shows; a re-cut sends only what's new). "

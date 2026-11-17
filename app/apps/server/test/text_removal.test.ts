@@ -975,6 +975,78 @@ test("a finished result from before is used only when it's this piece's footage:
   }
 }, 60_000);
 
+test("stopped, then asked for a stretch: only that stretch is cleaned, what ran by itself stays stopped (Sphe, Nov 17: just the intro and the first case's start)", async () => {
+  const { app, dir, cleanup } = fixtureHome("removal-stop-ask");
+  reading(Object.fromEntries(Array.from({ length: 15 }, (_, at) => [at * 2 + 1, [LABEL]])));
+  teach({ text: true });
+  const log: string[] = [];
+  tr.useProvider(standIn(log, () => null, "vmake-web"));
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  try {
+    const file = await labelledFootage(dir, 30);
+    const id = await labelledProject(app, file, 30);
+    removalSchedule.stop(app, id);
+    await removalSchedule.ensure(app, id);
+    await tr.settled(id);
+    expect(log).toEqual([]);
+    await Bun.sleep(5);
+    const said = (await dispatch(app, { id: 1, method: "tools/call", params: { name: "start_removal", arguments: { project_id: id, kinds: ["text"], from: 2, to: 6 } } }, null)) as { result: { isError: boolean } };
+    expect(said.result.isError).toBe(false);
+    await tr.settled(id);
+    expect(log).toEqual(["remove 6"]);
+    // An edit later, a restart: still only that stretch.
+    await removalSchedule.ensure(app, id);
+    await tr.settled(id);
+    expect(await removalSchedule.resume(app)).toBe(1);
+    await tr.settled(id);
+    expect(log).toEqual(["remove 6"]);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test("finished results from before (named by length) are matched to the whole video's windows, used once they're the footage, and a stretch asked for then sends nothing for them; another footage's result is never used", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-legacy");
+  reading(Object.fromEntries(Array.from({ length: 15 }, (_, at) => [at * 2 + 1, [LABEL]])));
+  teach({ text: true });
+  const log: string[] = [];
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const file = await labelledFootage(dir, 30);
+  // vmake.ai's result of the window nightly-81 planned for the whole file (0–30 s), and another footage's as long.
+  const mine = join(dir, "mine.mp4");
+  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", file, "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", mine]);
+  const theirs = join(dir, "theirs.mp4");
+  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=30", "-c:v", "libx264", "-qp", "0", theirs]);
+  const server = Bun.serve({ port: 0, fetch: (request) => new Response(Bun.file(new URL(request.url).pathname === "/mine.mp4" ? mine : theirs)) });
+  const provider = (cards: string[]): tr.Provider => ({ ...standIn(log, () => null, "vmake-web"), legacy: async () => cards.map((name) => ({ name: "piece-30s.mp4", seconds: 30, url: `http://127.0.0.1:${server.port}/${name}` })) });
+  const ask = (id: string) => dispatch(app, { id: 1, method: "tools/call", params: { name: "start_removal", arguments: { project_id: id, kinds: ["text"], from: 2, to: 6 } } }, null);
+  try {
+    // Another footage's result, as long: not used; the stretch's piece is sent.
+    tr.useProvider(provider(["theirs.mp4"]));
+    const other = await labelledProject(app, file, 30, "q");
+    removalSchedule.stop(app, other);
+    await Bun.sleep(5);
+    await ask(other);
+    await tr.settled(other);
+    expect(log).toEqual(["remove 6"]);
+    // Its own result: kept for 0–30 s; the stretch's seconds are laid from it, nothing sent.
+    log.length = 0;
+    tr.reset();
+    tr.useShelf(tr.shelfIn(join(dir, "shelf2"), () => false));
+    tr.useProvider(provider(["theirs.mp4", "mine.mp4"]));
+    const id = await labelledProject(app, file, 30, "p");
+    removalSchedule.stop(app, id);
+    await Bun.sleep(5);
+    await ask(id);
+    await tr.settled(id);
+    expect(log).toEqual([]);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).map((media) => [media.cleans!.from, media.cleans!.to])).toEqual([[0, 30]]);
+  } finally {
+    void server.stop(true);
+    cleanup();
+  }
+}, 180_000);
+
 test("removal starts by itself as soon as edits rest (no button on the website's plan); a longer clip sends only its new seconds", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });

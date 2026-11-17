@@ -52,9 +52,20 @@ function keep(file: string, value: unknown): void {
   }
 }
 
-/** Whether the person stopped project `id`'s removal (the chat's Stop): nothing more is sent until someone asks again. */
+/**
+ * Whether the person stopped project `id`'s removal (the chat's Stop): what
+ * runs by itself doesn't any more, and what was asked before it is done
+ * with; an ask after it runs on just what it names (Sphe, Nov 17: stop the
+ * whole video, then clean only the intro and the first case's start).
+ */
 export function isStopped(home: string, id: string): boolean {
   return loaded(home).stopped[id] !== undefined;
+}
+
+/** The asks that count: those since the person's Stop, if any. */
+function liveAsks(home: string, id: string): Ask[] {
+  const stopped = loaded(home).stopped[id];
+  return asksOf(home, id).filter((ask) => stopped === undefined || ask.at > stopped);
 }
 
 /** The chat's Stop, kept across restarts; `false`: going again (an ask). */
@@ -80,12 +91,12 @@ export function add(home: string, id: string, ask: Ask): void {
 
 /** The parts asked for in project `id`. */
 export function askedKinds(home: string, id: string): removal.Kind[] {
-  return removal.KINDS.filter((kind) => asksOf(home, id).some((ask) => ask.kinds.includes(kind)));
+  return removal.KINDS.filter((kind) => liveAsks(home, id).some((ask) => ask.kinds.includes(kind)));
 }
 
-/** The lesson as it applies to project `id` now: the parts running by themselves, and those asked for. */
+/** The lesson as it applies to project `id` now: the parts running by themselves (unless stopped), and those asked for. */
 export function inForce(lesson: removal.Lesson | null, home: string, id: string): removal.Lesson | null {
-  return removal.inForce(lesson, askedKinds(home, id));
+  return removal.inForce(isStopped(home, id) ? null : lesson, askedKinds(home, id), lesson);
 }
 
 const intersect = (a: Spans, b: Spans): Spans => a.flatMap(([x, y]) => b.flatMap(([u, v]): Spans => (Math.min(y, v) > Math.max(x, u) ? [[Math.max(x, u), Math.min(y, v)]] : [])));
@@ -106,9 +117,9 @@ function merged(spans: Spans): Spans {
  * itself, else only what was asked for.
  */
 export function scope(lesson: removal.Lesson | null, home: string, id: string, kind: removal.Kind, media: string, shown: Spans): Spans {
-  if (lesson?.remove[kind] === true && lesson.when[kind] === "automatic") return shown;
+  if (lesson?.remove[kind] === true && lesson.when[kind] === "automatic" && !isStopped(home, id)) return shown;
   const out: Spans = [];
-  for (const ask of asksOf(home, id)) {
+  for (const ask of liveAsks(home, id)) {
     if (!ask.kinds.includes(kind)) continue;
     const given = ask.media === "all" ? "all" : ask.media[media];
     if (given === undefined) continue;

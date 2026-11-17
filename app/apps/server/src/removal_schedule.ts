@@ -78,8 +78,6 @@ export async function ensure(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
   if (live === null) return;
   await removal.refresh();
-  // Stopped by the person (the chat's Stop): nothing more until someone asks again.
-  if (asks.isStopped(app.store.home, id)) return;
   // The parts that run by themselves, and those asked for here (a part taught to wait for an ask does nothing until then).
   const lesson = asks.inForce(removal.lessonOf(live.project), app.store.home, id);
   if (lesson?.remove.watermarks === true) await watermarkRemoval.ensure(app, id);
@@ -268,8 +266,6 @@ async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content
   else throw new Error("say where: whole: true (the whole project, as it grows), media (footage files), or from/to (timeline seconds)");
   if (scope !== "all" && Object.keys(scope).length === 0) throw new Error("no footage is on the timeline there");
   asks.add(app.store.home, projectId, { at: Date.now(), kinds, media: scope });
-  // Asked again after the person's Stop: going again.
-  asks.setStopped(app.store.home, projectId, false);
   await ensure(app, projectId);
   const names = scope === "all" ? "the whole project" : Object.keys(scope).map((id) => project.media.find((m) => m.id === id)?.name ?? id).join(", ");
   const words: Record<removal.Kind, string> = { subtitles: "their subtitles", watermarks: "their watermarks", text: "their labels and other text" };
@@ -414,7 +410,8 @@ async function tick(): Promise<void> {
     run.quietSince ??= Date.now();
     if (Date.now() - run.quietSince < timing.watchMs) continue;
     active.delete(id);
-    if (!asks.isStopped(app.store.home, id)) finished(app, id, run);
+    // A run the person stopped was let go then (`stop`): one after an ask is told as any.
+    finished(app, id, run);
   }
   if (active.size === 0 && watcher !== null) {
     clearInterval(watcher);

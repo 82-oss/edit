@@ -195,10 +195,11 @@ export function changed(before: Lesson | null, remove: Partial<Record<Kind, bool
  * wait for an ask, or not taught at all: the person asked). Null when
  * nothing applies.
  */
-export function inForce(lesson: Lesson | null, asked: Kind[]): Lesson | null {
+export function inForce(lesson: Lesson | null, asked: Kind[], taught: Lesson | null = lesson): Lesson | null {
   const remove = Object.fromEntries(KINDS.map((kind) => [kind, (lesson?.remove[kind] === true && lesson.when[kind] === "automatic") || asked.includes(kind)])) as Record<Kind, boolean>;
   if (!KINDS.some((kind) => remove[kind])) return null;
-  return { remove, when: lesson?.when ?? AUTOMATIC, examples: lesson?.examples ?? [] };
+  // The examples are the channel's whatever runs (a stopped lesson's still say what's theirs and what's kept).
+  return { remove, when: taught?.when ?? AUTOMATIC, examples: taught?.examples ?? [] };
 }
 
 /** The lesson with only `kinds` taken out (what one file's pieces paste back). */

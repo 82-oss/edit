@@ -427,6 +427,37 @@ async function drawCards(page: Page): Promise<void> {
   await page.evaluate(`(() => { ${CARDS}[0]?.scrollIntoView({ block: "center" }); return 1; })()`).catch(() => 0);
 }
 
+/** A finished result on the account's list from before pieces had names of their own (`piece-<s>s.mp4`): its name, length and address. */
+export interface Legacy {
+  name: string;
+  seconds: number;
+  url: string;
+}
+
+/** The account's finished cards named as pieces were before Nov 17's evening, each with its result's address. */
+export async function legacyCards(page: Page, site = SITE): Promise<Legacy[]> {
+  await go(page, `${site}${REMOVER}`);
+  if (!(await waitFor<boolean>(page, `${CARDS}.length > 0`, 15_000, "the job cards", 500).catch(() => false))) return [];
+  await drawCards(page);
+  const found = await page.evaluate<{ at: number; name: string; seconds: number }[]>(`(() => {
+    const length = (text) => { const m = /\\/\\s*(?:(\\d+):)?(\\d+):(\\d+(?:\\.\\d+)?)/.exec(text); return m ? Number(m[1] || 0) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null; };
+    return ${CARDS}.map((el, at) => {
+      const text = el.innerText;
+      const name = /piece-\\d+s\\.mp4/.exec(text)?.[0] ?? null;
+      const download = [...el.querySelectorAll('button')].find((b) => /download/i.test(b.innerText));
+      const seconds = length(text);
+      return name && download && !download.disabled && !/uploading|to be processed|processing|failed/i.test(text) && seconds !== null ? { at, name, seconds } : null;
+    }).filter(Boolean);
+  })()`).catch(() => []);
+  const out: Legacy[] = [];
+  for (const one of found) {
+    const url = await downloadOf(page, one.at);
+    if (url !== null && /^https?:/u.test(url)) out.push({ name: one.name, seconds: one.seconds, url });
+  }
+  said(`vmake.ai: ${out.length} finished result(s) from before on the account (${out.map((one) => `${one.name} ${one.seconds.toFixed(1)} s`).join(", ")})`);
+  return out;
+}
+
 /** The full video's address as a download of card `at` (in the list) starts (null when none starts). */
 async function downloadOf(page: Page, at: number): Promise<string | null> {
   await page.call("Page.setDownloadBehavior", { behavior: "deny" }).catch(() => {});
@@ -804,6 +835,24 @@ export class Driver {
     this.writer = null;
     this.extras = [];
     await Promise.all(all.map(async (one) => (await one.open.catch(() => null))?.stop()));
+  }
+
+  /** The account's finished results from before (`legacyCards`), in a browser of the Driver's. */
+  async legacy(): Promise<Legacy[]> {
+    await this.slot();
+    let got: { held: Held; session: Session } | null = null;
+    try {
+      got = await this.browser();
+      const page = await got.session.remote.tab();
+      try {
+        return await legacyCards(page, this.site);
+      } finally {
+        page.close();
+      }
+    } finally {
+      if (got !== null) got.held.busy = false;
+      this.release();
+    }
   }
 
   /** One piece (at `pieceUrl`) cleaned: the result's URL. */

@@ -563,6 +563,8 @@ export interface Provider {
   check(): Promise<void>;
   /** Pieces it takes at once (PARALLEL when it doesn't say). */
   atOnce?(): number;
+  /** Finished results from before pieces had names of their own (the website's), to be used, never sent again. */
+  legacy?(): Promise<web.Legacy[]>;
 }
 
 /** What the person reads when the account can't be used. */
@@ -683,6 +685,13 @@ export function websiteProvider(home: string, browsers: web.Browsers, site = web
   return {
     id: "vmake-web",
     atOnce,
+    legacy: (() => {
+      let listed: { at: number; cards: Promise<web.Legacy[]> } | null = null;
+      return () => {
+        if (listed === null || Date.now() - listed.at > 20 * 60_000) listed = { at: Date.now(), cards: driver.legacy().catch(() => []) };
+        return listed.cards;
+      };
+    })(),
     wholeFiles: true,
     pieceQuality: { crf: 20, rate: 6_000_000 },
     price(seconds, count) {
@@ -1134,7 +1143,7 @@ const minutes = (seconds: number) => (seconds < 90 ? `${Math.max(1, Math.round(s
  */
 export async function ensure(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
-  if (live === null || asks.isStopped(app.store.home, id) || removal.kinds(inForceOf(app, live.project)).vmake.length === 0) return;
+  if (live === null || removal.kinds(inForceOf(app, live.project)).vmake.length === 0) return;
   const running = runs.get(id);
   if (running !== undefined && !running.over) {
     running.again = true;
@@ -1147,6 +1156,14 @@ export async function ensure(app: App, id: string): Promise<void> {
     prune(id, new Set());
     return;
   }
+  // Finished results from before on the account (the website's): kept for their seconds first, so only what's missing goes.
+  if (files.some((file) => file.send.length > 0) && provider.legacy !== undefined && !harvested.has(id)) {
+    harvested.add(id);
+    if ((await harvest(app, live.project, provider).catch((error: unknown) => (diag.warn("removal", `${id}: results from before: ${diag.messageOf(error)}`), 0))) > 0) {
+      listings.clear();
+      return ensure(app, id);
+    }
+  }
   const paid = files.some((file) => file.send.length > 0);
   if (paid && provider.id === "vmake-api" && !confirmed.has(id)) {
     // Only what's kept already goes now; what costs waits for the person's yes.
@@ -1155,6 +1172,63 @@ export async function ensure(app: App, id: string): Promise<void> {
     return;
   }
   start(app, id, provider, files);
+}
+
+/** Projects whose results from before were looked for in this run of the server. */
+const harvested = new Set<string>();
+
+/**
+ * Finished results on the account from before pieces had names of their own
+ * (Nov 17: nightly-81 gave up on pieces vmake.ai went on to finish): each
+ * matched to the window the whole video's plan gives (as that build planned
+ * it: every taught part, the timeline's seconds, packed), by length, and used
+ * only once its picture is that window's footage; kept on the shelf for those
+ * seconds like any cleaned piece, so a later plan (a stretch asked for, the
+ * rest) uses it and sends only what's missing. The count kept.
+ */
+async function harvest(app: App, project: Project, provider: Provider): Promise<number> {
+  const cards = await provider.legacy!();
+  if (cards.length === 0) return 0;
+  const lesson = lessonOf(project);
+  const kinds = removal.kinds(lesson).vmake;
+  if (lesson === null || kinds.length === 0) return 0;
+  const used = new Set<string>();
+  const dir = join(app.store.cacheDir(), "cleaned", "work");
+  fs.mkdirSync(dir, { recursive: true });
+  let kept = 0;
+  for (const [id, shown] of shownSeconds(project)) {
+    const media = project.media.find((one) => one.id === id)!;
+    const spans = textOf(media, cameraFromReads(media, null), removal.only(lesson, kinds));
+    if (spans === undefined) continue;
+    const wanted = merged(spans.flatMap(([a, b]) => shown.flatMap(([x, y]): [number, number][] => (Math.min(b, y) > Math.max(a, x) ? [[Math.max(a, x), Math.min(b, y)]] : []))));
+    if (wanted.length === 0) continue;
+    const source = await sourceOf(media);
+    const cached = await listed(app, source);
+    const { send } = piecesFor(wanted, media.duration ?? 0, media.fps || fpsOf(project), cached, true);
+    for (const [from, to] of send) {
+      const candidates = cards.filter((one) => !used.has(one.url) && Math.abs(one.seconds - (to - from)) <= 0.25);
+      if (candidates.length === 0) continue;
+      const stem = join(dir, `legacy-${folderOf(source).slice(0, 8)}-${Math.round(from * 1000)}`);
+      try {
+        const input = await cloudMedia.originalInput(app.store.cacheDir(), media);
+        await cutPiece(input, from, to, `${stem}.original.mp4`);
+        // Each card as long as the window, until one is its footage.
+        for (const card of candidates) {
+          await web.fetchResult(card.url, `${stem}.result.mp4`);
+          if (!(await sameFootage(`${stem}.original.mp4`, `${stem}.result.mp4`))) continue;
+          used.add(card.url);
+          await shelfOf(app).keep(source, `${stem}.result.mp4`, from, to, provider.id);
+          listings.delete(source);
+          kept += 1;
+          diag.info("removal", `${media.name} ${Math.round(from)}–${Math.round(to)} s: ${card.name}, finished before on vmake.ai, used (nothing sent)`);
+          break;
+        }
+      } finally {
+        for (const end of [".original.mp4", ".result.mp4"]) fs.rmSync(`${stem}${end}`, { force: true });
+      }
+    }
+  }
+  return kept;
 }
 
 /** The line for project `id`: a quiet state while pieces are out, the account's trouble plainly, the API's price to say yes to. */
@@ -1235,6 +1309,7 @@ export async function settled(id: string): Promise<void> {
 
 /** For tests: nothing remembered. */
 export function reset(): void {
+  harvested.clear();
   textPieces.clear();
   runs.clear();
   confirmed.clear();
