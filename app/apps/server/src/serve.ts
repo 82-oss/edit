@@ -34,6 +34,7 @@ import { registerEffectTools } from "./effect_tools.ts";
 import { registerChannelTools } from "./channel_tools.ts";
 import * as changes from "./changes.ts";
 import * as effects from "./effects.ts";
+import { prepareShell } from "./chrome_devtools.ts";
 import { messageContext, registerMediaTools } from "./media_tools.ts";
 import { allowedHosts } from "./http/host.ts";
 import { initNative, native } from "./native/index.ts";
@@ -340,6 +341,9 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     registerMediaTools();
     registerEffectTools();
     registerChannelTools();
+    // The Chrome effects, thumbnails and pages are drawn in, out of the Dock: on a Mac, Edit's own headless shell, fetched
+    // in the background the first time and brought up to Chrome's stable release daily (chrome_devtools.ts).
+    prepareShell(store.home);
     // Coded effects (Edit V2): rendered as their code settles, and those left undone when Edit last closed.
     effects.start(app);
     changes.start(app);

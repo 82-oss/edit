@@ -12,6 +12,7 @@
 // which tests replace).
 
 import { publicUrl, safeFetch } from "./net_guard.ts";
+import { headlessBinary, headlessCommand } from "./chrome_devtools.ts";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -334,27 +335,23 @@ export function articleBody(page: string): string | null {
 
 /** Chrome on this machine, headless: the page once it's rendered. */
 async function chromeDump(url: string, waitMs = 6000): Promise<string> {
-  const browser = seams.broll.chrome();
-  if (browser === null) throw new Error("research needs Google Chrome (or Chromium) installed");
+  if (headlessBinary() === null) throw new Error("research needs Google Chrome (or Chromium) installed");
   const profile = join(os.tmpdir(), `edit-research-${process.pid}-${process.hrtime.bigint()}`);
   let child: Bun.Subprocess<"ignore", "pipe", "ignore">;
   try {
-    child = Bun.spawn(
-      [
-        browser,
-        "--headless=new",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--mute-audio",
-        "--disable-extensions",
-        `--virtual-time-budget=${waitMs}`,
-        `--user-agent=${USER_AGENT}`,
-        `--user-data-dir=${profile}`,
-        "--dump-dom",
-        url,
-      ],
-      { stdin: "ignore", stdout: "pipe", stderr: "ignore" },
-    );
+    const command = headlessCommand([
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--mute-audio",
+      "--disable-extensions",
+      `--virtual-time-budget=${waitMs}`,
+      `--user-agent=${USER_AGENT}`,
+      `--user-data-dir=${profile}`,
+      "--dump-dom",
+      url,
+    ]);
+    if (command === null) throw new Error("no Chrome");
+    child = Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
   } catch (error) {
     throw new Error(`chrome: ${diag.messageOf(error)}`);
   }

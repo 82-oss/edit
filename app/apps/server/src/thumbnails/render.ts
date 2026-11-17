@@ -12,8 +12,7 @@ import { rendererSource } from "./renderer_source.ts" with { type: "macro" };
 
 import * as diag from "../diag.ts";
 import { join } from "../paths.ts";
-import { devToolsPort } from "../chrome_devtools.ts";
-import * as seams from "../seams.ts";
+import { chromeFonts, devToolsPort, headlessCommand } from "../chrome_devtools.ts";
 
 let transpiled: string | null = null;
 
@@ -180,15 +179,18 @@ process.on("exit", () => {
 });
 
 async function launch(origin: string): Promise<Browser> {
-  const binary = seams.broll.chrome();
-  if (binary === null) throw new Error("Drawing a thumbnail needs Chrome installed.");
   sweepOrphans();
   const profile = fs.mkdtempSync(join(os.tmpdir(), PROFILE));
-  const child = Bun.spawn([binary, "--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--mute-audio", "--hide-scrollbars", "--window-size=1400,900", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  const command = headlessCommand(["--no-first-run", "--no-default-browser-check", "--disable-extensions", "--mute-audio", "--hide-scrollbars", "--window-size=1400,900", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"]);
+  if (command === null) {
+    fs.rmSync(profile, { recursive: true, force: true });
+    throw new Error("Drawing a thumbnail needs Chrome installed.");
+  }
+  const child = Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
   started.add(child);
   void child.exited.then(() => started.delete(child));
   try {
-    return await connect(child, profile, origin);
+    return await connect(child, command[0]!, profile, origin);
   } catch (error) {
     // A Chrome that never got as far as drawing goes, with its profile: none is left running.
     child.kill();
@@ -197,7 +199,7 @@ async function launch(origin: string): Promise<Browser> {
   }
 }
 
-async function connect(child: Browser["child"], profile: string, origin: string): Promise<Browser> {
+async function connect(child: Browser["child"], binary: string, profile: string, origin: string): Promise<Browser> {
   const port = await devToolsPort(profile);
   if (port === null) throw new Error("Chrome didn't start for the thumbnail.");
   const tabs = (await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(5000) })).json()) as { type: string; webSocketDebuggerUrl: string }[];
@@ -250,6 +252,7 @@ async function connect(child: Browser["child"], profile: string, origin: string)
       socket.send(JSON.stringify({ id, method, params }));
     });
   await call("Page.enable");
+  await chromeFonts(binary, call);
   await call("Page.navigate", { url: `${origin}/api/thumbnails/renderer` });
   const ready = Date.now() + 15_000;
   for (;;) {

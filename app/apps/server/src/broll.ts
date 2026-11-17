@@ -20,6 +20,7 @@ import { fingerprint } from "./hash.ts";
 import { importPaths } from "./import.ts";
 import { probe as probeFile, Semaphore } from "./media.ts";
 import type { Clip, Media, Probe, Project, VideoClip } from "./model.ts";
+import { headlessBinary, headlessCommand } from "./chrome_devtools.ts";
 import { canonical, fileName, fileStem, isFile, join, withExtension } from "./paths.ts";
 import * as progress from "./progress.ts";
 import { measuredTrack, repinPlaceLabels } from "./graphics.ts";
@@ -1065,8 +1066,7 @@ async function renderMap(
   frames: string,
   ready: Once<Json> | null,
 ): Promise<[Uint8Array, Json]> {
-  const browser = chrome();
-  if (browser === null) throw new Error("map views need Google Chrome (or Chromium) installed");
+  if (headlessBinary() === null) throw new Error("map views need Google Chrome (or Chromium) installed");
   // The page fetches its tiles from Edit's own server, which passes them on
   // with this Edit's sign-in; the config the map's key is made of keeps the
   // relay's own address, so maps rendered before stay cached.
@@ -1080,10 +1080,9 @@ async function renderMap(
   let answer: MapShot;
   let child: Bun.Subprocess | null = null;
   try {
-    child = Bun.spawn(
+    // Headless, on the graphics card for the map's WebGL (`headlessCommand`).
+    const command = headlessCommand(
       [
-        browser,
-        "--headless=new",
         "--hide-scrollbars",
         "--no-first-run",
         "--no-default-browser-check",
@@ -1092,13 +1091,12 @@ async function renderMap(
         // to the browser's own frame.
         `--window-size=${width + 64},${height + 200}`,
         `--user-data-dir=${profile}`,
-        // The GPU for the map's WebGL: Metal on a Mac, Vulkan on Linux (headless
-        // Chrome there draws on SwiftShader, the CPU, unless told: Nov 7).
-        ...(process.platform === "darwin" ? ["--use-angle=metal"] : process.platform === "linux" ? ["--use-angle=vulkan"] : []),
         `http://${pageHost(app)}/api/maps/${token}`,
       ],
-      { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+      { gpu: true },
     );
+    if (command === null) throw new Error("no Chrome");
+    child = Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
   } catch (error) {
     answer = { error: `chrome: ${diag.messageOf(error)}` };
   }

@@ -3,8 +3,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "./paths.ts";
-import { devToolsPort } from "./chrome_devtools.ts";
-import * as seams from "./seams.ts";
+import { chromeFonts, devToolsPort, headlessCommand } from "./chrome_devtools.ts";
 
 export interface Rect { x: number; y: number; width: number; height: number; }
 /** A capture; `lines`: each line of the phrase's words, in the picture's pixels (what highlight_evidence takes). */
@@ -327,9 +326,10 @@ export async function capture(url: string, path: string, phrase = "", selector =
   if (open !== null) url = await waybackCapture(open, waybackNear(url));
   const parsed = new URL(url);
   if (parsed.protocol !== "https:" || parsed.username || parsed.password) throw new Error("capture needs a public https source URL");
-  const browser = seams.broll.chrome(); if (browser === null) throw new Error("evidence capture needs Chrome installed");
   const profile = fs.mkdtempSync(join(os.tmpdir(), "edit-evidence-"));
-  const child = Bun.spawn([browser, "--headless=new", "--no-first-run", "--no-default-browser-check", "--disable-extensions", "--mute-audio", "--hide-scrollbars", "--window-size=1920,1400", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  const command = headlessCommand(["--no-first-run", "--no-default-browser-check", "--disable-extensions", "--mute-audio", "--hide-scrollbars", "--window-size=1920,1400", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"]);
+  if (command === null) { fs.rmSync(profile, { recursive: true, force: true }); throw new Error("evidence capture needs Chrome installed"); }
+  const child = Bun.spawn(command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
   let socket: WebSocket | null = null;
   let next = 0;
   let pageLoaded: (() => void) | null = null;
@@ -365,10 +365,12 @@ export async function capture(url: string, path: string, phrase = "", selector =
       pending.set(id, { resolve, reject, timer }); socket!.send(JSON.stringify({ id, method, params }));
     });
     await call("Page.enable");
+    await chromeFonts(command[0]!, call);
     // Chrome's own user agent, without "Headless": X answers a HeadlessChrome one with a 403, so a linked post never
-    // came through (Nov 6, the study the horror script linked as a comment).
+    // came through (Nov 6, the study the horror script linked as a comment). Its version as Google Chrome gives it
+    // ("Chrome/157.0.0.0"), the headless shell's whole one (157.0.8103.78) being a mark no browser carries.
     const version = await call("Browser.getVersion");
-    if (typeof version.userAgent === "string") await call("Network.setUserAgentOverride", { userAgent: version.userAgent.replace("HeadlessChrome", "Chrome") });
+    if (typeof version.userAgent === "string") await call("Network.setUserAgentOverride", { userAgent: version.userAgent.replace(/HeadlessChrome\/(\d+)[\d.]*/, "Chrome/$1.0.0.0") });
     await call("Emulation.setDeviceMetricsOverride", { width: 1920, height: 1400, deviceScaleFactor: 1, mobile: false });
     // A PDF: its page drawn by pdf.js in this Chrome (a headless Chrome shows a PDF to no one, so the phrase was
     // never found: the horror Doc of Nov 8 asks for eight highlights on pages of a court's Statement of Decision).
