@@ -200,7 +200,7 @@ const measures = new Map<string, Measure>();
 /**
  * How long the speed is read over: blocks land 2 MiB at a time, several together, so over 8 s a steady half a MB a
  * second read anywhere from 12 kB/s to 1.2 MB/s from one ask to the next, and "about" went from 34 min to 17 h and back
- * (kenobi at 32 and 100 Mbit/s, Nov 17).
+ * (kenobi at 8 Mbit/s, Nov 17).
  */
 const WINDOW_MS = 30_000;
 
