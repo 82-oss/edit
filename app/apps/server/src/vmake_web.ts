@@ -52,11 +52,12 @@ const MODE = "smart pro";
 export const AT_ONCE = 3;
 /**
  * Files a day Edit sends at most, the team's: Pro's table says 50 for the
- * remover, its FAQ 30 a feature (Sphe, Nov 17: 50; past Vmake's real limit,
- * if it's 30, the plan's credits are spent, no money). The first file past
- * FAQ_FILES a day has the credits pill read before and after, to learn the rule.
+ * remover, and the team uses the same account by hand too (its other jobs on
+ * the list, which Edit's count doesn't see), so 40, leaving them about ten
+ * (Nov 17). Vmake's own refusal is the real stop (`dailyLimit`). The first
+ * file past FAQ_FILES a day has the credits pill read before and after.
  */
-export const DAILY_FILES = 50;
+export const DAILY_FILES = 40;
 export const FAQ_FILES = 30;
 /** A job's longest wait for Vmake (a 60 s piece took 2.5 min; 300 s of 1080p far longer at busy hours). */
 const JOB_MS = 2 * 3_600_000;
@@ -154,9 +155,30 @@ const ACCOUNT_SCRIPT = `(() => {
   return { said, signedOut };
 })()`;
 
+/**
+ * Whether vmake.ai's words say the day's allowance is used (its limit
+ * reached, come back tomorrow), never a file's own trouble (too long, too
+ * big, its format): the account's stop for the day, whatever Edit's count
+ * says (the team uploads by hand too). The first such words are logged as
+ * they're put, to learn Vmake's own wording.
+ */
+export function dailyLimit(said: string): VmakeError | null {
+  const words = said.toLowerCase();
+  const daily = classify(said, false).reason === "daily_limit" || (/\b(limit|limits|maximum|allowance|quota)\b/u.test(words) && /\b(reached|tomorrow|used up|exceeded|hit)\b/u.test(words));
+  if (!daily || /\b(duration|length|size|minutes?|seconds?|mb|gb|resolution|format|too long|too large|file type)\b/u.test(words)) return null;
+  if (!limitSaid) {
+    limitSaid = true;
+    diag.info("removal", `vmake.ai said the day's allowance is used, in its words: "${said.slice(0, 300)}"`);
+  }
+  return new VmakeError(`vmake.ai: ${said.slice(0, 160)}`, "account", "daily_limit");
+}
+let limitSaid = false;
+
 async function accountProblem(page: Page): Promise<VmakeError | null> {
   const seen = await page.evaluate<{ said: string; signedOut: boolean }>(ACCOUNT_SCRIPT, 15_000);
   if (seen.signedOut) return new VmakeError("vmake.ai shows Edit's browser signed out", "account", "signed_out");
+  const limit = seen.said === "" ? null : dailyLimit(seen.said);
+  if (limit !== null) return limit;
   if (seen.said !== "") {
     const whose = classify(seen.said, false);
     if (whose.scope === "account") return new VmakeError(`vmake.ai: ${seen.said.slice(0, 160)}`, "account", whose.reason);
@@ -354,7 +376,8 @@ const cardState = (name: string) => `(() => {
     smartPro: smartPro ? smartPro.className : null,
     ready: !!apply && !apply.disabled && /to be processed|click apply/i.test(text),
     percent: percent ? Number(percent[1]) : null,
-    failed: /download failed|failed to process|processing failed/i.test(text),
+    failed: /download failed|upload failed|failed to process|processing failed/i.test(text),
+    text: text.replace(/\s+/g, ' ').slice(0, 300),
     done: !!download && !download.disabled && !busy,
     videos,
   };
@@ -542,7 +565,11 @@ export async function removeOnPage(page: Page, remote: Remote, piece: string | (
     if (card) {
       // Uploaded to Vmake from the browser (the card says how far), then waiting on Apply: Smart pro chosen first.
       step("its card");
-      await waitFor(page, `(() => { const s = ${cardState(name)}; return !!s && (s.ready || s.percent !== null || s.done); })()`, 30 * 60_000, "the piece's upload to vmake.ai", 2000);
+      await waitFor(page, `(() => { const s = ${cardState(name)}; return !!s && (s.ready || s.percent !== null || s.done || s.failed || /limit|allowance|tomorrow|quota|today|maximum/i.test(s.text)); })()`, 30 * 60_000, "the piece's upload to vmake.ai", 2000);
+      const after = await page.evaluate<{ text: string; failed: boolean } | null>(cardState(name)).catch(() => null);
+      const refused = dailyLimit(after?.text ?? "");
+      if (refused !== null) throw refused;
+      if (after?.failed === true) throw new VmakeError(`vmake.ai didn't take the piece: ${after.text.slice(0, 120)}`, "piece");
       const state = await page.evaluate<{ smartPro: string | null; ready: boolean } | null>(cardState(name));
       step(`uploaded: ${JSON.stringify(state)}`);
       if (state?.smartPro == null || /disabled--/u.test(state.smartPro)) throw new VmakeError("vmake.ai doesn't offer Smart pro for the piece", "piece");
@@ -562,7 +589,10 @@ export async function removeOnPage(page: Page, remote: Remote, piece: string | (
   for (;;) {
     await Bun.sleep(3000 + Math.random() * 2000);
     if (card) {
-      const state = await page.evaluate<{ percent: number | null; done: boolean; videos: string[] } | null>(cardState(name), 15_000).catch(() => null);
+      const state = await page.evaluate<{ percent: number | null; done: boolean; videos: string[]; text: string } | null>(cardState(name), 15_000).catch(() => null);
+      // The card refused for the day (its own words): the account's stop, whatever Edit's count says.
+      const refused = state === null ? null : dailyLimit(state.text);
+      if (refused !== null) throw refused;
       if (state !== null && state.percent !== null && state.percent !== last) {
         onProgress((last = state.percent));
         moved = Date.now();

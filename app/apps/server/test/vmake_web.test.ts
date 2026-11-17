@@ -25,7 +25,8 @@ const seen = { mode: "", bytes: 0, uploads: 0, others: 0 };
 /** `noModes`: a fresh page as it showed on Nov 17 afternoon: no modes until a file goes in, then its card (waiting on Apply). */
 /** `stall`: a job that sits at one percent for `slowMs` (as vmake.ai's did for minutes, Nov 17), then finishes. */
 /** `legacy`: a finished card from before named as pieces were (piece-8s.mp4, 8 s long); `existing`: a finished card of this name. */
-const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, slowMs: 0, noModes: false, legacy: false, existing: "" };
+/** `cardLimit`: the piece's own card refuses it for the day (as a by-hand upload of the team's could have used the allowance). */
+const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, slowMs: 0, noModes: false, legacy: false, existing: "", cardLimit: false };
 const PIECE = new Uint8Array(3_000_000).map((_, at) => at % 251);
 
 const PAGE = () => `<!doctype html><html><body>
@@ -60,6 +61,7 @@ document.querySelector('input:not([multiple])').addEventListener('change', async
       li.classList.add('active--z');
     }));
     setTimeout(() => {
+      if (${site.cardLimit}) { card.querySelector('i').textContent = "Upload failed. You've reached the maximum number of uploads for today."; return; }
       card.querySelector('i').textContent = 'To be processed Click Apply to begin';
       const apply = document.createElement('button');
       apply.textContent = 'Apply';
@@ -348,6 +350,36 @@ test.skipIf(CHROME === undefined)("each piece in a browser of its own (its uploa
     web.pacing.wait = wait;
   }
 }, 120_000);
+
+test("vmake.ai's own words that the day's allowance is used are the account's stop for the day; a file's own limits never are", () => {
+  const said = (words: string) => web.dailyLimit(words)?.reason ?? null;
+  expect(said("You have reached the usage limit. Please come back tomorrow.")).toBe("daily_limit");
+  expect(said("Daily limit reached")).toBe("daily_limit");
+  expect(said("You've used up today's allowance")).toBe("daily_limit");
+  expect(said("Upload failed. You've reached the maximum number of uploads for today.")).toBe("daily_limit");
+  expect(said("The video exceeds the maximum duration of 5 minutes")).toBeNull();
+  expect(said("File size limit exceeded (2 GB max)")).toBeNull();
+  expect(said("Upgrade to Pro to download the full video")).toBeNull();
+  expect(web.DAILY_FILES).toBe(40);
+});
+
+test.skipIf(CHROME === undefined)("the piece's card refused for the day (the team's by-hand uploads used it): the account's daily stop at once, whatever Edit's own count says", async () => {
+  site.cards = true;
+  site.cardLimit = true;
+  const session = await browsers.open();
+  try {
+    const page = await session.remote.tab();
+    const error = await web.removeOnPage(page, session.remote, piece(), web.pieceName(8, "drive:abc|0|8|1"), `http://localhost:${vmake.port}`).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(VmakeError);
+    expect([(error as VmakeError).scope, (error as VmakeError).reason]).toEqual(["account", "daily_limit"]);
+    expect(tr.accountLine("daily_limit")).toBe("Taking their text out is paused: the day's Vmake allowance is used up; it carries on tomorrow.");
+    page.close();
+  } finally {
+    site.cards = false;
+    site.cardLimit = false;
+    await session.stop();
+  }
+}, 60_000);
 
 test("Browser Use's own refusals, said by the relay, are the team account's (Nov 17: $0.08 left, every browser refused with 402)", async () => {
   const refused = (said: string) => web.teamBrowsers("kenobi", async () => Promise.reject(new Error(said))).open().then(() => new VmakeError("lent", "piece"), (thrown: unknown) => thrown as VmakeError);
