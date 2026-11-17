@@ -19,6 +19,7 @@ import { AgentPanel } from "./AgentPanel";
 import { ChatDock } from "./ChatDock";
 import { CloudBanner } from "./CloudBanner";
 import { ImportProblems, MissingBanner } from "./MissingBanner";
+import { TextRemovalLine } from "./TextRemovalLine";
 import { FootageBack } from "./FootageBack";
 import { Timeline } from "./Timeline";
 import { TopBar } from "./TopBar";
@@ -150,6 +151,7 @@ export function Editor({ id }: { id: string }) {
       <CloudBanner />
       <MissingBanner />
       <ImportProblems />
+      <TextRemovalLine />
       {/* No padding on the right: the chat's edge sits there, at the window's very edge while the chat is closed. */}
       <div className="flex min-h-0 flex-1 pb-2 pl-2">
         <div className="flex min-w-0 flex-1 flex-col">

@@ -28,6 +28,7 @@ import * as fs from "node:fs";
 
 import * as diag from "./diag.ts";
 import { fillsFrame } from "./frames_fill.ts";
+import { strippedFrames } from "./clean_strips.ts";
 import * as markBlurs from "./mark_blurs.ts";
 import { mediaHooks } from "./media.ts";
 import * as playing from "./playing.ts";
@@ -72,8 +73,13 @@ const HEARD_FROM = 3;
 const NEAR = 5;
 /** Share of a line's words the transcript says for the line to count as heard. */
 const SAID = 0.5;
-/** What to do with ours where footage has its own: none over theirs (the default), or theirs blurred and ours on it (only when taught). */
-export type BurnedIn = "leave_off" | "cover";
+/**
+ * What to do with ours where footage has its own: none over theirs (the
+ * default), theirs blurred and ours on it, or theirs taken out of the picture
+ * and ours on it ("remove", subtitle_removal.ts: blurred like "cover" until
+ * it's done, and where it can't be). Either of the last two only when taught.
+ */
+export type BurnedIn = "leave_off" | "cover" | "remove";
 /** How long a subtitling tool waits for the footage it subtitles to be read (ms). */
 export const WAIT_MS = 60_000;
 /** How long the agent's first get_edit_context of a project waits for the footage on its timeline to be read (ms). */
@@ -82,6 +88,8 @@ export const CONTEXT_WAIT_MS = 8_000;
 const STEP = 25;
 /** The name of every blur `cover` lays; a re-run replaces them. */
 export const COVER = "Burned-in cover";
+/** A cover laid for "remove": standing in until their subtitles are taken out (subtitle_removal.ts finds what's wanted by it). */
+export const UNTIL_REMOVED = `${COVER} · until removed`;
 
 /** A box as shares of the picture from its top left: x0, y0, x1, y1. */
 export type Band = [number, number, number, number];
@@ -355,7 +363,7 @@ async function inputOf(reader: Reader, path: string): Promise<string> {
 export function warm(reader: Reader, media: Footage): Promise<void> {
   const busy = reading.get(media.path);
   if (busy !== undefined) return busy;
-  if (!isReal() || media.kind !== "video" || (media.duration ?? 0) < 2) return Promise.resolve();
+  if (!isReal() || media.kind !== "video" || (media.duration ?? 0) < 2 || (media as { cleans?: unknown }).cleans != null) return Promise.resolve();
   const state = load(media.path);
   if (state !== null) {
     // Judged again from what's read once a transcript comes (no new OCR).
@@ -420,6 +428,13 @@ function rejudge(reader: Reader, media: Footage, state: State): void {
   save(media.path, { ...state, transcript: true, found: judge(texts, state.read, media.duration ?? 0, words) });
 }
 
+/** The words read off a file's frames to find its subtitles (second → lines), once it's read: what subtitle_removal.ts looks for other burned-in text in. */
+export function readsOf(media: Pick<Media, "path">): { seconds: number[]; texts: Record<number, ScreenText[]> } | null {
+  const state = load(media.path);
+  if (state === null || !isReal()) return null;
+  return { seconds: state.read, texts: native().screenTextCached(state.input) ?? {} };
+}
+
 /** A file's burned-in subtitles: what was found (null: none), or undefined while it isn't read yet. */
 export function of(media: Pick<Media, "path">): Burned | null | undefined {
   const state = load(media.path);
@@ -432,7 +447,7 @@ export function of(media: Pick<Media, "path">): Burned | null | undefined {
  * before, it's at once.
  */
 export async function ready<T extends Footage>(reader: Reader, media: T[], ms: number): Promise<T[]> {
-  const unread = media.filter((one) => of(one) === undefined);
+  const unread = media.filter((one) => of(one) === undefined && (one as { cleans?: unknown }).cleans == null);
   for (const one of unread) waited.set(one.path, (waited.get(one.path) ?? 0) + 1);
   try {
     next();
@@ -449,7 +464,7 @@ export async function ready<T extends Footage>(reader: Reader, media: T[], ms: n
       else waited.delete(one.path);
     }
   }
-  return media.filter((one) => one.kind === "video" && (one.duration ?? 0) >= 2 && of(one) === undefined && isReal());
+  return media.filter((one) => one.kind === "video" && (one.duration ?? 0) >= 2 && of(one) === undefined && (one as { cleans?: unknown }).cleans == null && isReal());
 }
 
 /** "12–340s, 400–800s": the spans as the agent reads them. */
@@ -527,10 +542,13 @@ function offFrame(project: Project, clip: VideoClip, media: Media, band: Band, f
  * Where on the timeline (within frames [from, to)) footage shows its own
  * burned-in subtitles: each visible clip's stretch of a file that has them,
  * less where a picture filling the frame above hides it and where they're
- * blurred or framed off. `reading`: files used there not read yet.
+ * blurred, cleaned (clean_strips.ts) or framed off. `reading`: files used
+ * there not read yet. `evenCovered`: blurred and cleaned stretches count as
+ * shown (what subtitle_removal.ts cleans).
  */
-export function onTimeline(project: Project, from = 0, to = Number.MAX_SAFE_INTEGER): { shown: Shown[]; reading: Media[] } {
+export function onTimeline(project: Project, from = 0, to = Number.MAX_SAFE_INTEGER, evenCovered = false): { shown: Shown[]; reading: Media[] } {
   const fps = fpsOf(project);
+  const stripped = evenCovered ? new Map<string, [number, number][]>() : strippedFrames(project);
   const ours = reusedMedia(project);
   const index = (track: string) => project.tracks.findIndex((one) => one.id === track);
   const shown: Shown[] = [];
@@ -539,8 +557,8 @@ export function onTimeline(project: Project, from = 0, to = Number.MAX_SAFE_INTE
     if (clip.type !== "video" || trackOf(project, clip.track)?.hidden === true) continue;
     if (clip.start >= to || clipEnd(clip) <= from) continue;
     const media = mediaOf(project, clip.media);
-    // A finished video of ours has our own subtitles burned in: never doubled (they're skipped already).
-    if (media === undefined || media.kind !== "video" || ours.has(media.id)) continue;
+    // A finished video of ours has our own subtitles burned in: never doubled (they're skipped already). A cleaned strip has none.
+    if (media === undefined || media.kind !== "video" || ours.has(media.id) || media.cleans != null) continue;
     const found = of(media);
     if (found === undefined) {
       if (isReal() && (media.duration ?? 0) >= 2) reading.set(media.id, media);
@@ -555,10 +573,10 @@ export function onTimeline(project: Project, from = 0, to = Number.MAX_SAFE_INTE
     const above = project.clips
       .filter((other) => other.id !== clip.id && index(other.track) > index(clip.track) && trackOf(project, other.track)?.hidden !== true && fillsFrame(project, other) && other.start < clipEnd(clip) && clipEnd(other) > clip.start)
       .map((other): [number, number] => [other.start, clipEnd(other)]);
-    pieces = minus(pieces, above);
+    pieces = minus(minus(pieces, above), stripped.get(clip.id) ?? []);
     for (const [start, end] of pieces) {
       const frames = [start, Math.floor((start + end) / 2), end - 1];
-      const hidden = frames.every((frame) => offFrame(project, clip, media, found.band, frame - clip.start) || blurredAt(project, bandBox(project, clip, media, found.band, frame - clip.start), frame));
+      const hidden = frames.every((frame) => offFrame(project, clip, media, found.band, frame - clip.start) || (!evenCovered && blurredAt(project, bandBox(project, clip, media, found.band, frame - clip.start), frame)));
       if (!hidden) shown.push({ clip: clip.id, media: media.name, start, end, band: found.band });
     }
   }
@@ -620,9 +638,10 @@ function trimmed(keys: Keyframe[], cut: number, length: number): Keyframe[] {
 /**
  * Covers each of `shown` with a blur over the band, stuck to its clip (it
  * follows a push-in and fades with a dissolve: mark_blurs' way), named
- * COVER. The covers laid before over the same frames go first. Returns how many.
+ * COVER (UNTIL_REMOVED for "remove"). The covers laid before over the same
+ * frames go first. Returns how many.
  */
-export function cover(project: Project, shown: Shown[]): number {
+export function cover(project: Project, shown: Shown[], removing = false): number {
   project.clips = project.clips.filter((clip) => !((clip.name ?? "").startsWith(COVER) && shown.some((one) => clip.start < one.end && one.start < clipEnd(clip))));
   const made: AdjustmentClip[] = [];
   for (const one of shown) {
@@ -636,7 +655,7 @@ export function cover(project: Project, shown: Shown[]): number {
       const cut = start - blur.start;
       const keyframes: Record<string, Keyframe[]> = {};
       for (const [param, keys] of Object.entries(blur.keyframes ?? {})) if (keys.length > 0) keyframes[param] = trimmed(keys, cut, end - start);
-      made.push({ ...blur, start, duration: end - start, name: `${COVER} · ${clip.id}`, ...(Object.keys(keyframes).length > 0 ? { keyframes } : { keyframes: undefined }) } as AdjustmentClip);
+      made.push({ ...blur, start, duration: end - start, name: `${removing ? UNTIL_REMOVED : COVER} · ${clip.id}`, ...(Object.keys(keyframes).length > 0 ? { keyframes } : { keyframes: undefined }) } as AdjustmentClip);
     }
   }
   for (const blur of made) {

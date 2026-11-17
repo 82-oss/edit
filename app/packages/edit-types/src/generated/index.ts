@@ -3,6 +3,7 @@ export type * from "./BlendMode";
 export type * from "./Blur";
 export type * from "./BlurShape";
 export type * from "./Chapter";
+export type * from "./Cleans";
 export type * from "./Clip";
 export type * from "./ClipColor";
 export type * from "./ClipContent";

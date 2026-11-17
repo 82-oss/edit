@@ -72,6 +72,7 @@ import * as devProjects from "./dev_projects.ts";
 import * as channelMarks from "./channel_marks.ts";
 import * as beta from "./beta.ts";
 import * as effects from "./effects.ts";
+import * as textRemoval from "./text_removal.ts";
 import * as effectCloud from "./effect_cloud.ts";
 import { BUILD, VERSION } from "./version.ts";
 import { jsonForSerde } from "./rust.ts";
@@ -128,6 +129,7 @@ export function buildRouter(): Router<App> {
   channelMarks.routes(router);
   beta.routes(router);
   effects.routes(router);
+  textRemoval.routes(router);
   archive.routes(router);
   avatars.routes(router);
   router

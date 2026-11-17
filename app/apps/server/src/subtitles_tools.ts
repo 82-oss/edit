@@ -46,7 +46,8 @@ function span(args: Record<string, unknown>, fps: number, from: number, to: numb
 function burnedIn(args: Record<string, unknown>): BurnedIn {
   const given = args.burned_in;
   if (given === undefined || given === null) return "leave_off";
-  if (given !== "leave_off" && given !== "cover") throw new Error('burned_in is "leave_off" (the default: none of ours over theirs) or "cover" (theirs blurred, ours on it)');
+  if (given !== "leave_off" && given !== "cover" && given !== "remove")
+    throw new Error('burned_in is "leave_off" (the default: none of ours over theirs), "cover" (theirs blurred, ours on it) or "remove" (theirs taken out of the picture, ours on it)');
   return given;
 }
 

@@ -168,6 +168,12 @@ function originalFor(cache: string, key: string): Promise<string> {
   return here !== null ? Promise.resolve(here) : getUrl(key, 6 * HOUR);
 }
 
+/** Where `media`'s full-quality picture is read from here: its original on this Mac, else R2's (a presigned URL), else its own file. */
+export function originalInput(cache: string, media: Pick<Media, "path" | "cloud">): Promise<string> {
+  const key = media.cloud?.original;
+  return key !== undefined && key !== "" && cloud.validKey(key) ? originalFor(cache, key) : Promise.resolve(media.path);
+}
+
 /** This Mac's pieced proxies' context (where pieces are kept, how they're made): for native_preview.ts. */
 export function piecesHere(cache: string): pieces.Context {
   return piecesContext(cache);

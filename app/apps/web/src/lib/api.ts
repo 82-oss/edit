@@ -200,6 +200,13 @@ export interface ExportActivity {
  */
 export const byPerson = (): { person?: true } => (navigator.webdriver ? {} : { person: true });
 
+/** The line about taking their text out of the footage, its one button, and a run's progress. */
+export interface TextRemoval {
+  line: string | null;
+  action: "remove" | "retry" | "sign_in" | null;
+  running: { done: number; total: number } | null;
+}
+
 export const api = {
   projects: () => request<{ projects: ProjectSummary[] }>("GET", "/api/projects"),
   /** Home's New project: a person's (`byPerson`). */
@@ -226,6 +233,11 @@ export const api = {
   scriptChanges: (id: string) => request<ScriptChanges>("GET", `/api/projects/${id}/script/pull`),
   /** Takes the Doc's changed ranges and cuts their clips again; the rest is left for the agent. */
   pullScript: (id: string) => request<ScriptChanges>("POST", `/api/projects/${id}/script/pull`, { apply: true }),
+  /** Taking what re-uploaders burned into the footage out of its picture (text_removal.ts): the editor's one line. */
+  textRemoval: (id: string) => request<TextRemoval>("GET", `/api/projects/${id}/text-removal`),
+  removeText: (id: string, retry = false) => request<TextRemoval>("POST", `/api/projects/${id}/text-removal`, { retry }),
+  /** Vmake's sign-in in this Mac's cloud browser: the live view to open. */
+  vmakeSignIn: () => request<{ open: string }>("POST", "/api/text-removal/sign-in"),
   /** The footage the timeline plays that isn't on this machine and can't be fetched. */
   missingFootage: (id: string) =>
     request<{ used: number; missing: { id: string; name: string; path: string }[] }>("GET", `/api/projects/${id}/missing`),

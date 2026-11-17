@@ -107,4 +107,11 @@ channel?: string,
  * Whether it's a compilation (several cases), when it isn't what its
  * channel's videos usually are; None: as its channel says.
  */
-compilation?: boolean, };
+compilation?: boolean, 
+/**
+ * What a re-uploader burned into the footage's picture (their subtitles,
+ * their labels and text) is to be taken out of it, the camera's own stamp
+ * kept: set when the agent lays subtitles with burned_in "remove" (a
+ * channel taught so); the server's `text_removal.ts` does it.
+ */
+remove_burned?: boolean, };

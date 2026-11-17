@@ -102,6 +102,12 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub compilation: Option<bool>,
+    /// What a re-uploader burned into the footage's picture (their subtitles,
+    /// their labels and text) is to be taken out of it, the camera's own stamp
+    /// kept: set when the agent lays subtitles with burned_in "remove" (a
+    /// channel taught so); the server's `text_removal.ts` does it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remove_burned: bool,
 }
 
 /// The account that started a project (accounts.spheceo.com).
@@ -478,6 +484,28 @@ pub struct Media {
     /// as any H.264 does. `width`×`height` stay the picture's own.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stacked_alpha: bool,
+    /// A strip of another media's picture with the subtitles burned into it
+    /// taken out (the server's `subtitle_removal.ts`): what it covers there.
+    /// Stacked (see-through outside a feathered box), laid by Edit over every
+    /// clip of that media it covers, stuck to the clip.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub cleans: Option<Cleans>,
+}
+
+/// What a cleaned strip ([`Media::cleans`]) stands in for.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+pub struct Cleans {
+    /// The footage it was made from (a media id of the project).
+    pub media: String,
+    /// Seconds of that footage at the strip's first frame, and where it ends.
+    pub from: f64,
+    pub to: f64,
+    /// Its picture's box on the footage's picture, as shares from the top
+    /// left: x0, y0, x1, y1.
+    #[serde(rename = "box")]
+    pub region: [f32; 4],
 }
 
 /// Which half of the team's sound library a sound is from.
@@ -1938,6 +1966,7 @@ impl Project {
             hq: false,
             channel: None,
             compilation: None,
+            remove_burned: false,
         };
         for kind in [
             TrackKind::Video,

@@ -1,5 +1,5 @@
-// The macOS Keychain, for the one secret Edit keeps: the refresh token from
-// accounts.spheceo.com. Through `security`, with the secret on its stdin
+// The macOS Keychain, for the secrets Edit keeps: the refresh token from
+// accounts.spheceo.com, and Vmake's keys on a Mac that removes subtitles. Through `security`, with the secret on its stdin
 // (`security -i` reads commands there), never in a process's arguments,
 // where `ps` would show it. Each Edit home keeps its own item (the account
 // is a hash of the home), so the dev server and Edit.app on one Mac are
@@ -28,6 +28,12 @@ import { native } from "./native/index.ts";
 import { EDIT_TEAM, teamOf } from "./update.ts";
 
 const SERVICE = "Edit (accounts.spheceo.com)";
+
+/** Another secret this home keeps beside the sign-in (Vmake's keys, subtitle_removal.ts): its own item, named for what it's for. */
+export type Item = "vmake" | "browser-use";
+
+const serviceOf = (item?: Item) => (item === undefined ? SERVICE : `Edit (${item})`);
+const keyOf = (home: string, item?: Item) => (item === undefined ? account(home) : `${account(home)}:${item}`);
 
 /** What a stored secret may hold: the opaque token characters, nothing `security -i` would read as more. */
 const SAFE = /^[A-Za-z0-9._~+/=-]{8,4096}$/u;
@@ -99,41 +105,41 @@ export function ownItems(): boolean {
   return own;
 }
 
-async function toolGet(home: string): Promise<string | null> {
-  const { code, out } = await run(["find-generic-password", "-s", SERVICE, "-a", account(home), "-w"], null);
+async function toolGet(home: string, item?: Item): Promise<string | null> {
+  const { code, out } = await run(["find-generic-password", "-s", serviceOf(item), "-a", account(home), "-w"], null);
   const value = out.trim();
   return code === 0 && value !== "" ? value : null;
 }
 
-async function toolSet(home: string, value: string): Promise<void> {
+async function toolSet(home: string, value: string, item?: Item): Promise<void> {
   // One command on stdin: `-U` updates the item if it's there.
-  const { code } = await run(["-i"], `add-generic-password -U -s "${SERVICE}" -a "${account(home)}" -w "${value}"\n`);
+  const { code } = await run(["-i"], `add-generic-password -U -s "${serviceOf(item)}" -a "${account(home)}" -w "${value}"\n`);
   if (code !== 0) throw new Error("the Keychain refused to keep the sign-in");
 }
 
-async function toolRemove(home: string): Promise<void> {
-  await run(["delete-generic-password", "-s", SERVICE, "-a", account(home)], null);
+async function toolRemove(home: string, item?: Item): Promise<void> {
+  await run(["delete-generic-password", "-s", serviceOf(item), "-a", account(home)], null);
 }
 
 /**
  * Keeps `value` as Edit's own item. One the tool made is removed first: an
  * update over it keeps its old access, which trusts the tool.
  */
-async function ownSet(home: string, value: string): Promise<void> {
-  if (notOurs(native().keychainGet(SERVICE, account(home)).status)) await toolRemove(home);
-  const status = native().keychainSet(SERVICE, account(home), value);
+async function ownSet(home: string, value: string, item?: Item): Promise<void> {
+  if (notOurs(native().keychainGet(serviceOf(item), account(home)).status)) await toolRemove(home, item);
+  const status = native().keychainSet(serviceOf(item), account(home), value);
   if (status !== 0) {
     diag.warn("accounts", `the Keychain refused Edit's own item (${status}); kept through the security tool`);
-    await toolSet(home, value);
+    await toolSet(home, value, item);
   }
 }
 
-/** This home's stored secret, or null. */
-export async function get(home: string): Promise<string | null> {
+/** This home's stored secret (its sign-in, else `item`), or null. */
+export async function get(home: string, item?: Item): Promise<string | null> {
   const store = file(home);
-  if (store !== null) return readFileStore(store)[account(home)] ?? null;
+  if (store !== null) return readFileStore(store)[keyOf(home, item)] ?? null;
   if (ownItems()) {
-    const answer = native().keychainGet(SERVICE, account(home));
+    const answer = native().keychainGet(serviceOf(item), account(home));
     if (answer.status === 0) return answer.value ?? null;
     // Never the tool on an item of Edit's own: it would ask the user. Only one the tool made.
     if (!notOurs(answer.status)) {
@@ -141,34 +147,34 @@ export async function get(home: string): Promise<string | null> {
       return null;
     }
     // An item from before: read through the tool once, then kept as Edit's own.
-    const old = await toolGet(home);
-    if (old !== null) await ownSet(home, old);
+    const old = await toolGet(home, item);
+    if (old !== null) await ownSet(home, old, item);
     return old;
   }
-  return toolGet(home);
+  return toolGet(home, item);
 }
 
 /** Keeps this home's secret (replacing what was there). */
-export async function set(home: string, value: string): Promise<void> {
-  if (!SAFE.test(value)) throw new Error("the sign-in token has characters the Keychain can't be given safely");
+export async function set(home: string, value: string, item?: Item): Promise<void> {
+  if (!SAFE.test(value)) throw new Error("the secret has characters the Keychain can't be given safely");
   const store = file(home);
   if (store !== null) {
-    writeFileStore(store, { ...readFileStore(store), [account(home)]: value });
+    writeFileStore(store, { ...readFileStore(store), [keyOf(home, item)]: value });
     return;
   }
-  if (ownItems()) await ownSet(home, value);
-  else await toolSet(home, value);
+  if (ownItems()) await ownSet(home, value, item);
+  else await toolSet(home, value, item);
 }
 
 /** Forgets this home's secret. */
-export async function remove(home: string): Promise<void> {
+export async function remove(home: string, item?: Item): Promise<void> {
   const store = file(home);
   if (store !== null) {
     const values = readFileStore(store);
-    delete values[account(home)];
+    delete values[keyOf(home, item)];
     writeFileStore(store, values);
     return;
   }
   // Edit's own item, else one the tool made.
-  if (!ownItems() || notOurs(native().keychainDelete(SERVICE, account(home)))) await toolRemove(home);
+  if (!ownItems() || notOurs(native().keychainDelete(serviceOf(item), account(home)))) await toolRemove(home, item);
 }

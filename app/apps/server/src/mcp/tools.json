@@ -2322,10 +2322,11 @@
     "inputSchema": {
       "properties": {
         "burned_in": {
-          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours: only for a channel whose taught style says so.",
+          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours. \"remove\" lays ours the same way, their band blurred until Edit takes their subtitles out of the picture (the person starts that once the edit is done; you do nothing more). Either only for a channel whose taught style says so.",
           "enum": [
             "leave_off",
-            "cover"
+            "cover",
+            "remove"
           ],
           "type": "string"
         },
@@ -2512,10 +2513,11 @@
     "inputSchema": {
       "properties": {
         "burned_in": {
-          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours: only for a channel whose taught style says so.",
+          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours. \"remove\" lays ours the same way, their band blurred until Edit takes their subtitles out of the picture (the person starts that once the edit is done; you do nothing more). Either only for a channel whose taught style says so.",
           "enum": [
             "leave_off",
-            "cover"
+            "cover",
+            "remove"
           ],
           "type": "string"
         },

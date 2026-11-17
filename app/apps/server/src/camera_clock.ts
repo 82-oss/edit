@@ -732,6 +732,19 @@ export async function find(reader: Reader, media: Footage[], times: string[]): P
   return answer;
 }
 
+/**
+ * Where `media`'s clock shows (shares of the picture, the date and a wider
+ * time taken in: `regionOf`), found once and kept with it; null when it shows
+ * none (subtitle_removal.ts keeps the camera's own stamp as it was).
+ */
+export async function clockRegion(reader: Reader, media: Footage): Promise<Box | null> {
+  return withFile(media.path, async () => {
+    const state: State = load(media) ?? { fps: media.fps, anchors: null, region: null, reads: {}, coarse: false };
+    if (state.anchors === null && state.region === null) await locate(new File(media, await reader.analysisInput(media.path), state, { left: READ_MOST }));
+    return state.region;
+  });
+}
+
 /** `media`'s state, its clock found and its coarse pass read. */
 async function opened(reader: Reader, media: Footage, budget: { left: number }): Promise<File> {
   return withFile(media.path, async () => {

@@ -21,6 +21,7 @@ import * as diag from "./diag.ts";
 import * as folderAccess from "./folder_access.ts";
 import * as kinds from "./kinds.ts";
 import { enforceOneLine } from "./one_line.ts";
+import { enforceCleanStrips } from "./clean_strips.ts";
 import { enforcePointers } from "./pointers.ts";
 import { enforceSoundRoom, type Words } from "./sound_room.ts";
 import { copyFile, ioMessage, nextFileId, nowMs, writeAtomic } from "./files.ts";
@@ -162,8 +163,14 @@ export class Store {
     this.words = read;
   }
 
-  /** Each footage sound's crossfade room from its file's words, as the house rules are kept: on every save. */
+  /** Edit's own upkeep of every save, after the checks: each footage sound's crossfade room from its file's words, and the cleaned strips laid. */
   private enforceRoom(before: Project | null, project: Project): void {
+    // Footage cleaned of another channel's subtitles shows its cleaned strips wherever it's cut in (clean_strips.ts).
+    try {
+      enforceCleanStrips(before, project);
+    } catch (error) {
+      diag.warn("store", `${project.id}: laying the cleaned strips: ${diag.messageOf(error)}`);
+    }
     const read = this.words;
     if (read === null) return;
     try {

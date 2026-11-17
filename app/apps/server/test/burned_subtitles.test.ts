@@ -225,7 +225,17 @@ test("the agent is told which footage has subtitles burned in; ours are left off
     expect(repacked.text).toContain('"left_to_the_burned_in_subtitles":');
     expect((await call(app, "repack_subtitles", { project_id: id, faces: false, burned_in: "cover" })).text).toContain('"burned_in_subtitles_covered":1');
     // A wrong choice says the right ones.
-    expect((await call(app, "add_subtitles", { project_id: id, burned_in: "hide" })).text).toBe('burned_in is "leave_off" (the default: none of ours over theirs) or "cover" (theirs blurred, ours on it)');
+    expect((await call(app, "add_subtitles", { project_id: id, burned_in: "hide" })).text).toBe(
+      'burned_in is "leave_off" (the default: none of ours over theirs), "cover" (theirs blurred, ours on it) or "remove" (theirs taken out of the picture, ours on it)',
+    );
+    // A channel taught to take theirs out: blurred the same until it's done, and the project marked for it (text_removal.ts).
+    expect(store.get(id)!.project.remove_burned).toBeUndefined();
+    await store.update(id, "test", (p) => {
+      p.clips = p.clips.filter((clip) => !(clip.name ?? "").startsWith(burned.COVER));
+    });
+    expect((await call(app, "add_subtitles", { project_id: id, start: 0, burned_in: "remove" })).text).toContain('"burned_in_subtitles_covered":1');
+    expect(store.get(id)!.project.clips.filter((clip) => (clip.name ?? "").startsWith(burned.COVER)).map((clip) => clip.name)).toEqual([`${burned.UNTIL_REMOVED} · f`]);
+    expect(store.get(id)!.project.remove_burned).toBe(true);
   } finally {
     cleanup();
   }
