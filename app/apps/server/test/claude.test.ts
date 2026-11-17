@@ -2,6 +2,7 @@
 // messages (shaped as a real Opus 5.5 turn sent them) mapped onto the chat,
 // with a stand-in query (no Claude Code is started).
 
+import { EDIT_EVENT } from "../src/edit_event.ts";
 import { expect, spyOn, test } from "bun:test";
 
 import * as fs from "node:fs";
@@ -829,6 +830,23 @@ test("a resumed session is told once what changed in the tools; a fresh one isn'
     await agents.send(project, "And the outro", null, null);
     expect(asked[2]!.prompt).toBe("And the outro");
     expect(toolChanges.changes(now, now)).toBe("");
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("a turn Edit starts on a background event (a removal finished) is marked as Edit's own, kept so across a restart; the person's aren't", async () => {
+  const home = fixtureHome("claude-edit-event");
+  try {
+    const project = home.store.create("Event test", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const { agents } = agentsWith(home);
+    await agents.send(project, `${EDIT_EVENT} Taking their watermarks out of the footage is done: 3 pieces cleaned.`, null, null);
+    const users = () => agents.withChat(project).entries.filter((item) => item.kind === "user");
+    expect(users().map((item) => item.by)).toEqual(["edit"]);
+    const saved = JSON.parse(JSON.stringify(agents.chat(project))) as { entries: { by?: string }[] };
+    expect(saved.entries[0]!.by).toBe("edit");
+    const kept = JSON.parse(fs.readFileSync(home.store.chatPath(project), "utf8")) as { entries: { kind: string; by?: string }[] };
+    expect(kept.entries.find((item) => item.kind === "user")?.by).toBe("edit");
   } finally {
     home.cleanup();
   }

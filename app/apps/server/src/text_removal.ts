@@ -1065,6 +1065,8 @@ export interface Status {
   /** remove: say yes to the API's price; retry: the account looked at again; sign_in: Vmake's sign-in opened. */
   action: "remove" | "retry" | "sign_in" | null;
   running: { done: number; total: number } | null;
+  /** Removal under way in the background (the chat's waiting row, removal_schedule.ts): what, how far, since when, about how long left. */
+  background?: { label: string; done: number; total: number; started_at: number; left_s: number | null } | null;
 }
 
 const minutes = (seconds: number) => (seconds < 90 ? `${Math.max(1, Math.round(seconds))} s` : `${Math.round(seconds / 60)} min`);
@@ -1077,7 +1079,7 @@ const minutes = (seconds: number) => (seconds < 90 ? `${Math.max(1, Math.round(s
  */
 export async function ensure(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
-  if (live === null || removal.kinds(inForceOf(app, live.project)).vmake.length === 0) return;
+  if (live === null || asks.isStopped(app.store.home, id) || removal.kinds(inForceOf(app, live.project)).vmake.length === 0) return;
   const running = runs.get(id);
   if (running !== undefined && !running.over) {
     running.again = true;
@@ -1164,6 +1166,12 @@ export const schedule = { ensure: (app: App, id: string): Promise<void> => ensur
 
 /** Projects whose run just ended and is planning what changed meanwhile (a run of it may follow). */
 const chaining = new Set<string>();
+
+/** The person's Stop (the chat's waiting row): nothing more is sent; a piece already at Vmake comes back and is kept, pieces cleaned stay. */
+export function stop(id: string): void {
+  runs.get(id)?.stop.abort();
+  prune(id, new Set());
+}
 
 /** For tests: the run of `id` once it's over (and any run it started again). */
 export async function settled(id: string): Promise<void> {

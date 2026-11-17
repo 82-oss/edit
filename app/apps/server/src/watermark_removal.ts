@@ -40,6 +40,7 @@ import { native, type Box, type WatermarkPiece, type WatermarkRemoved } from "./
 import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
 import { freshId } from "./project.ts";
+import * as asks from "./removal_asks.ts";
 import * as seams from "./seams.ts";
 import { folderOf, PREFIX, shownSeconds, sourceOf, stampOf } from "./text_removal.ts";
 
@@ -377,7 +378,7 @@ export async function plan(app: App, project: Project, hints: Hints = NO_HINTS):
  */
 export async function ensure(app: App, id: string, hints: Hints = hintsFor.project(app, id)): Promise<void> {
   const live = app.store.get(id);
-  if (live === null || engine() === null) return;
+  if (live === null || engine() === null || asks.isStopped(app.store.home, id)) return;
   const { cells, unknown } = await plan(app, live.project, hints);
   for (const { media, source } of unknown) {
     const waiting = looking.get(source);
@@ -555,6 +556,18 @@ export async function reject(app: App, id: string, key: string, why: string): Pr
 /** The project's cleaned pieces and how each came out (a check reads `left`: what of the mark is still found). */
 export function piecesOf(id: string): Piece[] {
   return [...(pieces.get(id)?.values() ?? [])].sort((a, b) => a.media.localeCompare(b.media) || a.from - b.from);
+}
+
+/** The person's Stop: nothing more of `id` is done (the cell under way finishes and is kept); cleaned cells stay. */
+export function stop(id: string): void {
+  for (let at = queue.length - 1; at >= 0; at--) if (queue[at]!.project === id) queue.splice(at, 1);
+  for (let at = looks.length - 1; at >= 0; at--) if (looks[at]!.project === id) looks.splice(at, 1);
+  for (const [source, waiting] of looking) {
+    waiting.delete(id);
+    if (waiting.size === 0 && !looks.some((one) => one.source === source)) looking.delete(source);
+  }
+  const mine = pieces.get(id);
+  for (const [key, piece] of mine ?? []) if (piece.state === "queued") mine!.delete(key);
 }
 
 /** For tests: every queued piece done. */

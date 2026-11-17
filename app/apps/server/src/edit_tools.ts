@@ -25,6 +25,7 @@ import * as framing from "./framing.ts";
 import * as tools from "./tools.ts";
 import * as onscreen from "./onscreen.ts";
 import * as burned from "./burned_subtitles.ts";
+import * as removalAsks from "./removal_asks.ts";
 import * as removalLesson from "./removal_lesson.ts";
 import * as removalSchedule from "./removal_schedule.ts";
 import * as textRemoval from "./text_removal.ts";
@@ -2245,7 +2246,7 @@ export function editContext(app: App, found: Live, args: Args): Args {
     })(),
     ...(isEssay(p.style) ? { chapters: commentaryAudit.outline(p) } : {}),
     ...burnedContext(p, from ?? 0, to ?? Number.MAX_SAFE_INTEGER),
-    ...removalContext(p),
+    ...removalContext(app, p),
     speaker_line_counts: speakers,
     subtitles_in_span: subtitles,
     ...(comments.length > 0 ? { script_comments: comments.sort((a, b) => Number((a as Args).at ?? 0) - Number((b as Args).at ?? 0)) } : {}),
@@ -2366,7 +2367,7 @@ function burnedContext(p: Project, from: number, to: number): Args {
  * (removal_schedule.ts): pieces back for the agent to look at with
  * check_removal. Nothing for a channel taught nothing.
  */
-function removalContext(p: Project): Args {
+function removalContext(app: App, p: Project): Args {
   const lesson = removalLesson.lessonOf(p);
   const asked = removalLesson.KINDS.filter((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "asked");
   if (!removalLesson.takesOut(lesson) && watermarkRemoval.piecesOf(p.id).length === 0 && textRemoval.piecesOf(p.id).length === 0) return {};
@@ -2379,6 +2380,7 @@ function removalContext(p: Project): Args {
       taught: lesson === null ? "Nothing is taught; what was asked for here is being taken out." : removalLesson.summary(lesson),
       ...(asked.length > 0 ? { when_asked: `${asked.join(", ")}: only when someone asks in the chat; then start_removal on what they point to (media, from/to, or whole: true)` } : {}),
       pieces: `${done} done, ${out} still being done${failed > 0 ? `, ${failed} not clean` : ""}`,
+      ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "The person stopped it (the chat's Stop): nothing more is taken out until they ask again; then start_removal." } : {}),
       note:
         (removalLesson.KINDS.some((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "automatic")
           ? "Edit takes the parts that run by themselves out of the footage as it's cut, in the background (only the seconds the timeline shows; a re-cut sends only what's new). "

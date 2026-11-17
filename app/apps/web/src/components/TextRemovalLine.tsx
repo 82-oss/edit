@@ -41,7 +41,8 @@ export function TextRemovalLine() {
     const timer = setInterval(() => setTick((value) => value + 1), said?.running ? 3000 : 20000);
     return () => clearInterval(timer);
   }, [marked, said?.running]);
-  if (!marked || said === null || said.line === null) return null;
+  // Under way: the chat's waiting row says it (RemovalRow.tsx); this line keeps the account's trouble and the API's price.
+  if (!marked || said === null || said.line === null || (said.background ?? null) !== null) return null;
   const act = async () => {
     setBusy(true);
     try {

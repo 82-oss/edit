@@ -211,6 +211,29 @@ export interface TextRemoval {
   line: string | null;
   action: "remove" | "retry" | "sign_in" | null;
   running: { done: number; total: number } | null;
+  /** Under way in the background: the chat's waiting row (RemovalRow.tsx) says it, not the line at the top. */
+  background?: RemovalRun | null;
+}
+
+/** A removal under way (the server's removal_schedule.ts `backgroundOf`). */
+export interface RemovalRun {
+  label: string;
+  done: number;
+  total: number;
+  started_at: number;
+  left_s: number | null;
+}
+
+/** One piece of a removal, as the waiting row's Details lists it (removal_schedule.ts `PieceRow`). */
+export interface RemovalPiece {
+  key: string;
+  what: "text" | "watermark";
+  media: string;
+  name: string;
+  from: number;
+  to: number;
+  state: string;
+  why?: string;
 }
 
 export const api = {
@@ -242,6 +265,9 @@ export const api = {
   /** Taking what re-uploaders burned into the footage out of its picture (text_removal.ts): the editor's one line. */
   textRemoval: (id: string) => request<TextRemoval>("GET", `/api/projects/${id}/text-removal`),
   removeText: (id: string, retry = false) => request<TextRemoval>("POST", `/api/projects/${id}/text-removal`, { retry }),
+  /** The chat's waiting row: every piece and how it came out; Stop sends nothing more (cleaned pieces stay). */
+  removal: (id: string) => request<{ pieces: RemovalPiece[]; background: RemovalRun | null; stopped: boolean }>("GET", `/api/projects/${id}/removal`),
+  stopRemoval: (id: string) => request<TextRemoval>("POST", `/api/projects/${id}/removal/stop`),
   /** Vmake's sign-in in this Mac's cloud browser: the live view to open. */
   vmakeSignIn: () => request<{ open: string }>("POST", "/api/text-removal/sign-in"),
   /** The footage the timeline plays that isn't on this machine and can't be fetched. */

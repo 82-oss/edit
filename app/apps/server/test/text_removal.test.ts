@@ -21,6 +21,7 @@ import { join } from "../src/paths.ts";
 import * as tr from "../src/text_removal.ts";
 import * as tools from "../src/tools.ts";
 import * as removal from "../src/removal_lesson.ts";
+import { EDIT_EVENT } from "../src/edit_event.ts";
 import * as asks from "../src/removal_asks.ts";
 import * as removalSchedule from "../src/removal_schedule.ts";
 import * as cloudMedia from "../src/cloud_media.ts";
@@ -39,6 +40,7 @@ afterEach(() => {
   tr.useShelf(null);
   tr.reset();
   asks.reset();
+  removalSchedule.reset();
   removalSchedule.reset();
   wm.useEngine(null);
   wm.useShelf(null);
@@ -641,7 +643,7 @@ test("a part taught to run only when asked does nothing until the agent starts i
     expect(said.isError).toBe(false);
     expect(said.content[0]!.text).toContain("Taking their watermarks, their labels and other text out of tape");
     while (removalSchedule.progressOf(id).out === 0 || log.length === 0) await Bun.sleep(20);
-    expect((await removalSchedule.statusOf(app, id)).line).toMatch(/^Removing their text · \d of \d pieces$/u);
+    expect((await removalSchedule.statusOf(app, id)).background?.label).toMatch(/^Removing their (text|watermarks)/u);
     expect(await removalSchedule.waitForPieces(app, id, 200).catch((error: unknown) => String(error))).toContain("still rendering");
     const waited = removalSchedule.waitForPieces(app, id, 60_000);
     open();
@@ -745,6 +747,67 @@ test("after a restart the work resumes by itself, with no edit (Nov 17, Sphe's M
   }
 }, 120_000);
 
+test("a run in the background: the chat row's numbers while it's out, then the agent woken with what it did once any turn under way ends, as Edit's own event; Stop sends nothing more", async () => {
+  const { app, dir, cleanup } = fixtureHome("removal-row");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  const log: string[] = [];
+  let open = () => {};
+  let gate = new Promise<void>((resolve) => (open = resolve));
+  tr.useProvider({ ...standIn(log, () => null, "vmake-web"), remove: async (...args) => (await gate, standIn(log, () => null, "vmake-web").remove(...args)) });
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const sent: string[] = [];
+  let running = true;
+  (app as unknown as { agents: unknown }).agents = { chat: () => ({ running }), send: async (_project: string, text: string) => void sent.push(text) };
+  const before = { ...removalSchedule.timing };
+  removalSchedule.timing.watchMs = 40;
+  removalSchedule.timing.wakeEveryMs = 40;
+  try {
+    const file = await labelledFootage(dir, 8);
+    const id = await labelledProject(app, file, 8);
+    await removalSchedule.ensure(app, id);
+    while (removalSchedule.progressOf(id).out === 0) await Bun.sleep(20);
+    // The row's numbers, its Details, no line at the top.
+    const said = await removalSchedule.statusOf(app, id);
+    expect(said.line).toBeNull();
+    expect(said.background).toMatchObject({ label: "Removing their text", done: 0, total: 1, left_s: null });
+    expect(removalSchedule.pieceRows(id)).toEqual([expect.objectContaining({ key: "text:m@0", what: "text", name: "tape", from: 0, to: 8 })]);
+    open();
+    await tr.settled(id);
+    // Done while the agent's turn runs: it waits for the turn to end, then one turn of Edit's own.
+    await Bun.sleep(300);
+    expect(sent).toEqual([]);
+    running = false;
+    const until = Date.now() + 10_000;
+    while (sent.length === 0 && Date.now() < until) await Bun.sleep(20);
+    expect(sent.length).toBe(1);
+    expect(sent[0]).toStartWith(`${EDIT_EVENT} Taking their text out of the footage is done: 1 piece cleaned.`);
+    expect(sent[0]).toContain("- tape: text 0–8 s");
+    expect(sent[0]).toContain("lay OUR subtitles");
+    await Bun.sleep(200);
+    expect(sent.length).toBe(1);
+    // Stopped mid-run (another project): the piece under way comes back and stays, nothing more goes, nobody is woken.
+    gate = new Promise<void>((resolve) => (open = resolve));
+    fs.mkdirSync(join(dir, "b"), { recursive: true });
+    const other = await labelledProject(app, await labelledFootage(join(dir, "b"), 9), 9, "q");
+    await removalSchedule.ensure(app, other);
+    while (removalSchedule.progressOf(other).out === 0) await Bun.sleep(20);
+    removalSchedule.stop(app, other);
+    expect(asks.isStopped(app.store.home, other)).toBe(true);
+    open();
+    await tr.settled(other);
+    await removalSchedule.ensure(app, other);
+    await tr.settled(other);
+    await Bun.sleep(300);
+    expect(sent.length).toBe(1);
+    expect(removalSchedule.progressOf(other).out).toBe(0);
+    expect((await removalSchedule.statusOf(app, other)).background).toBeUndefined();
+  } finally {
+    Object.assign(removalSchedule.timing, before);
+    cleanup();
+  }
+}, 120_000);
+
 test("removal starts by itself as soon as edits rest (no button on the website's plan); a longer clip sends only its new seconds", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });
@@ -801,7 +864,7 @@ test("the agent looks at each piece and rejects one that isn't clean: done once 
     await removalSchedule.ensure(app, id);
     // While the piece is out: the line counts it, a quick export look says "still rendering", the export's step says how far.
     while (removalSchedule.progressOf(id).out === 0) await Bun.sleep(20);
-    expect(await removalSchedule.statusOf(app, id)).toEqual({ line: "Removing their text · 0 of 1 pieces", action: null, running: { done: 0, total: 1 } });
+    expect(await removalSchedule.statusOf(app, id)).toEqual({ line: null, action: null, running: { done: 0, total: 1 }, background: { label: "Removing their text", done: 0, total: 1, started_at: expect.any(Number), left_s: null } });
     expect(removalSchedule.exportLine(id)).toBe("Removing their text · 0 of 1 pieces");
     expect(await removalSchedule.waitForPieces(app, id, 200).catch((error: unknown) => String(error))).toContain("still rendering");
     const waited = removalSchedule.waitForPieces(app, id, 60_000);

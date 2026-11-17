@@ -1,5 +1,5 @@
 import { explain } from "@edit/types/problems";
-import { ArrowLeft, AudioLines, Check, ChevronRight, CircleSlash, Eye, FileInput, Image, ImageDown, FileText, FolderOpen, LayoutGrid, ListChecks, MousePointerClick, Music, RotateCcw, ScrollText, Scissors, Share, SlidersHorizontal, Spline, Square, SquarePlus, Star, Trash2, Type, Wrench, ScanEye, Pencil, type LucideIcon, Copy, Quote, SquareTerminal, FilePen, Search, Globe, BookOpen, ImagePlus, Hourglass, Minimize2, ArrowRight, Clapperboard } from "lucide-react";
+import { Sparkles, ArrowLeft, AudioLines, Check, ChevronRight, CircleSlash, Eye, FileInput, Image, ImageDown, FileText, FolderOpen, LayoutGrid, ListChecks, MousePointerClick, Music, RotateCcw, ScrollText, Scissors, Share, SlidersHorizontal, Spline, Square, SquarePlus, Star, Trash2, Type, Wrench, ScanEye, Pencil, type LucideIcon, Copy, Quote, SquareTerminal, FilePen, Search, Globe, BookOpen, ImagePlus, Hourglass, Minimize2, ArrowRight, Clapperboard } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -25,6 +25,7 @@ import { buildTurns, callTitle, formatWorked, groupSummary, isWorking, keepUncha
 import { argsOf, groupKind, shortTokens, stepKind, type StepKind } from "../lib/steps";
 import { cancelSent, editSent, retrySent, useSentNow } from "../lib/sentNow";
 import { useNow } from "../lib/now";
+import { eventLine } from "../lib/removal";
 import { api, mediaUrl } from "../lib/api";
 import { copyImage, pngOf, saveFile } from "../lib/files";
 import { queued, useNotes } from "../lib/notes";
@@ -43,6 +44,7 @@ import { UserWords } from "./Quotes";
 import { NoteQueue } from "./NoteQueue";
 import { ProblemView } from "./ProblemView";
 import { Button, cx, Modal } from "./ui";
+import { RemovalRow } from "./RemovalRow";
 import { ClaudeSetupCard } from "./ClaudeSetupCard";
 import { ClaudeMark } from "./ClaudeMark";
 import { MOD, THIS_MACHINE } from "../lib/platform";
@@ -180,6 +182,8 @@ function MainAgentPanel() {
   const loaded = useAgent((state) => state.loaded);
   const failed = useAgent((state) => state.failed);
   const waiting = useAgent((state) => state.queue);
+  // A channel's project: what its lesson takes out of the footage runs in the background (RemovalRow).
+  const channel = useEditor((state) => typeof state.project?.channel === "string" && state.project.channel !== "");
   const reload = () => projectId !== undefined && void openAgent(projectId);
   // The message just sent shows at once (sendToAgent holds it), until the chat (or its queue) has it by its id.
   const { entries } = useSentNow(projectId ?? "", chat, waiting);
@@ -227,6 +231,8 @@ function MainAgentPanel() {
       ) : (
         <EditTimes>
           <ChatTurns turns={turns} known={known} />
+          {/* Removal under way in the background: pinned at the end, between turns. */}
+          {projectId !== undefined && <RemovalRow projectId={projectId} marked={channel} running={running} />}
         </EditTimes>
       )}
     </ChatShell>
@@ -364,7 +370,16 @@ const TurnView = memo(function TurnView({ turn, known, thinking: said }: { turn:
           <SentFiles files={turn.user.attachments.map((one) => ({ name: one.name, kind: one.kind, url: one.url ?? (one.kind === "image" && one.media !== undefined && project !== undefined ? mediaUrl(project, one.media, "proxy") : null) }))} />
         </motion.div>
       )}
-      {turn.user && (
+      {turn.user?.by === "edit" ? (
+        // Edit's own event (a removal finished), not the person's message: a quiet line, its whole text on hover.
+        <motion.div {...appear(fresh(turn.user.id))} className="mb-1 flex items-center gap-1.5 px-1.5 text-[12px] text-muted" title={turn.user.text} data-testid="edit-event">
+          <Sparkles size={12} className="shrink-0 text-faint" aria-hidden />
+          <span className="min-w-0 truncate">
+            <span className="text-faint">Edit · </span>
+            {eventLine(turn.user.text)}
+          </span>
+        </motion.div>
+      ) : turn.user && (
         <motion.div
           {...appear(fresh(turn.user.id) && !turn.user.id.startsWith("user-"))}
           className="mb-1 ml-8 max-w-[calc(100%-2rem)] self-end rounded-2xl bg-raised px-3 py-2 text-[13px] whitespace-pre-wrap text-fg ring-1 ring-line [overflow-wrap:anywhere]"

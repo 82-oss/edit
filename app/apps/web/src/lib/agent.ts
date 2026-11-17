@@ -28,6 +28,8 @@ export interface AgentEntry {
   attachments?: { name: string; kind: FileKind; media?: string; file?: string; url?: string | null }[];
   /** A person's message: the id this page sent it with (`sendToAgent`). */
   send_id?: string;
+  /** "edit": a turn Edit started on a background event (a removal finished), shown as Edit's own line, not a bubble of the person's. */
+  by?: "edit";
   /** A message on screen before the chat has it (sentNow.ts): on its way, or it didn't go (`failure` why; `offline`, no answer). */
   pending?: "sending" | "failed";
   failure?: string;

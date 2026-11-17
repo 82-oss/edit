@@ -26,18 +26,44 @@ export interface Ask {
 }
 
 const fileOf = (home: string) => join(home, "removal-asks.json");
-let kept: { home: string; asks: Record<string, Ask[]> } | null = null;
+const stopFileOf = (home: string) => join(home, "removal-stopped.json");
+let kept: { home: string; asks: Record<string, Ask[]>; stopped: Record<string, number> } | null = null;
 
-function all(home: string): Record<string, Ask[]> {
-  if (kept?.home === home) return kept.asks;
-  let asks: Record<string, Ask[]> = {};
+function read<T>(file: string): T | null {
   try {
-    asks = JSON.parse(fs.readFileSync(fileOf(home), "utf8")) as Record<string, Ask[]>;
+    return JSON.parse(fs.readFileSync(file, "utf8")) as T;
   } catch {
-    /* None asked yet. */
+    return null;
   }
-  kept = { home, asks };
-  return asks;
+}
+
+function loaded(home: string): NonNullable<typeof kept> {
+  if (kept?.home !== home) kept = { home, asks: read<Record<string, Ask[]>>(fileOf(home)) ?? {}, stopped: read<Record<string, number>>(stopFileOf(home)) ?? {} };
+  return kept;
+}
+
+const all = (home: string) => loaded(home).asks;
+
+function keep(file: string, value: unknown): void {
+  try {
+    writeAtomic(file, JSON.stringify(value));
+  } catch (error) {
+    diag.warn("removal", `keeping what was asked: ${diag.messageOf(error)}`);
+  }
+}
+
+/** Whether the person stopped project `id`'s removal (the chat's Stop): nothing more is sent until someone asks again. */
+export function isStopped(home: string, id: string): boolean {
+  return loaded(home).stopped[id] !== undefined;
+}
+
+/** The chat's Stop, kept across restarts; `false`: going again (an ask). */
+export function setStopped(home: string, id: string, stopped: boolean): void {
+  const state = loaded(home).stopped;
+  if (stopped) state[id] = Date.now();
+  else if (state[id] === undefined) return;
+  else delete state[id];
+  keep(stopFileOf(home), state);
 }
 
 /** What's been asked for in project `id`. */
@@ -49,11 +75,7 @@ export function asksOf(home: string, id: string): Ask[] {
 export function add(home: string, id: string, ask: Ask): void {
   const asks = all(home);
   asks[id] = [...(asks[id] ?? []), ask].slice(-50);
-  try {
-    writeAtomic(fileOf(home), JSON.stringify(asks));
-  } catch (error) {
-    diag.warn("removal", `keeping what was asked: ${diag.messageOf(error)}`);
-  }
+  keep(fileOf(home), asks);
 }
 
 /** The parts asked for in project `id`. */

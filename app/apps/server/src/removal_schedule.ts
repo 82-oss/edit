@@ -34,13 +34,15 @@ import type { Clip, Media, Project } from "./model.ts";
 import { clipEnd, fps as fpsOf } from "./project.ts";
 import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
+import { EDIT_EVENT } from "./edit_event.ts";
+import * as seams from "./seams.ts";
 import * as textRemoval from "./text_removal.ts";
 import * as tools from "./tools.ts";
 import * as v2cloud from "./v2_cloud.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
 
 /** How long an export waits for pieces still out (Vmake's site takes minutes a piece, three at once); how soon after the server starts its work resumes. */
-export const timing = { exportWaitMs: 3 * 3_600_000, restMs: 2000, resumeMs: 15_000 };
+export const timing = { exportWaitMs: 3 * 3_600_000, restMs: 2000, resumeMs: 15_000, watchMs: 2000, wakeEveryMs: 3000 };
 
 /** Projects whose work resumes when the server starts: those changed within this. */
 const RESUME_WITHIN_MS = 14 * 86_400_000;
@@ -77,10 +79,13 @@ export async function ensure(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
   if (live === null) return;
   await v2cloud.refreshSkills();
+  // Stopped by the person (the chat's Stop): nothing more until someone asks again.
+  if (asks.isStopped(app.store.home, id)) return;
   // The parts that run by themselves, and those asked for here (a part taught to wait for an ask does nothing until then).
   const lesson = asks.inForce(removal.lessonOf(live.project), app.store.home, id);
   if (lesson?.remove.watermarks === true) await watermarkRemoval.ensure(app, id);
   if (removal.kinds(lesson).vmake.length > 0) await textRemoval.ensure(app, id);
+  noteRun(app, id);
 }
 
 /**
@@ -264,6 +269,8 @@ async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content
   else throw new Error("say where: whole: true (the whole project, as it grows), media (footage files), or from/to (timeline seconds)");
   if (scope !== "all" && Object.keys(scope).length === 0) throw new Error("no footage is on the timeline there");
   asks.add(app.store.home, projectId, { at: Date.now(), kinds, media: scope });
+  // Asked again after the person's Stop: going again.
+  asks.setStopped(app.store.home, projectId, false);
   await ensure(app, projectId);
   const names = scope === "all" ? "the whole project" : Object.keys(scope).map((id) => project.media.find((m) => m.id === id)?.name ?? id).join(", ");
   const words: Record<removal.Kind, string> = { subtitles: "their subtitles", watermarks: "their watermarks", text: "their labels and other text" };
@@ -291,12 +298,169 @@ const resting = new Map<string, ReturnType<typeof setTimeout>>();
 export async function statusOf(app: App, id: string): Promise<textRemoval.Status> {
   if (app.store.get(id) === null) throw new ApiError(404, "no such project");
   const { done, out } = progressOf(id);
-  if (out > 0) return { line: `Removing their text · ${done} of ${done + out} pieces`, action: null, running: { done, total: done + out } };
+  // Under way: the chat's waiting row says it (no line at the top, which keeps the account's trouble).
+  if (out > 0) return { line: null, action: null, running: { done, total: done + out }, background: backgroundOf(id) };
   return textRemoval.status(app, id);
 }
 
 export function routes(router: Router<App>): void {
   router.get("/api/projects/{id}/text-removal", ({ app, params }) => statusOf(app, params.id ?? "").then((answer) => json(answer)));
+  // The chat's waiting row: its Details (every piece, its seconds, how it came out and the check) and its Stop.
+  router.get("/api/projects/{id}/removal", ({ app, params }) => {
+    const id = params.id ?? "";
+    if (app.store.get(id) === null) throw new ApiError(404, "no such project");
+    return json({ pieces: pieceRows(id), background: backgroundOf(id), stopped: asks.isStopped(app.store.home, id) });
+  });
+  router.post("/api/projects/{id}/removal/stop", async ({ app, params }) => {
+    const id = params.id ?? "";
+    if (app.store.get(id) === null) throw new ApiError(404, "no such project");
+    stop(app, id);
+    return json(await statusOf(app, id));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// A project's run in the background: the chat's waiting row, and the agent told when it's done
+
+/** One piece of either worker, as the waiting row's Details lists it. */
+export interface PieceRow {
+  key: string;
+  what: "text" | "watermark";
+  media: string;
+  name: string;
+  from: number;
+  to: number;
+  /** queued, running, held (the account), check (back, waiting for the agent's look), done, none (no mark there), failed (given up or done again). */
+  state: string;
+  why?: string;
+}
+
+export function pieceRows(id: string): PieceRow[] {
+  return [
+    ...textRemoval.piecesOf(id).map((one): PieceRow => ({ key: one.key, what: "text", media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, ...(one.why ? { why: one.why } : {}) })),
+    ...watermarkRemoval.piecesOf(id).map((one): PieceRow => ({ key: `watermark:${one.media}@${Math.round(one.from * 1000)}`, what: "watermark", media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, ...(one.error ? { why: one.error } : {}) })),
+  ];
+}
+
+interface Run {
+  app: App;
+  startedAt: number;
+  /** Each piece's state when it started: what changed since is this run's. */
+  before: Map<string, string>;
+  /** When nothing was out since (a run ends only once it stays so: one worker hands over to the other). */
+  quietSince: number | null;
+}
+
+const active = new Map<string, Run>();
+let watcher: ReturnType<typeof setInterval> | null = null;
+
+/** Notes a project's run when pieces are out and none was noted; watched until nothing is. */
+function noteRun(app: App, id: string): void {
+  if (active.has(id) || progressOf(id).out === 0) return;
+  active.set(id, { app, startedAt: Date.now(), before: new Map(pieceRows(id).map((row) => [row.key, row.state])), quietSince: null });
+  if (watcher === null) {
+    watcher = setInterval(() => void tick(), timing.watchMs);
+    watcher.unref?.();
+  }
+}
+
+/** What's being taken out, as the row says it. */
+function labelOf(rows: PieceRow[]): string {
+  const text = rows.some((row) => row.what === "text");
+  const marks = rows.some((row) => row.what === "watermark");
+  return text && marks ? "Removing their text and watermarks" : marks ? "Removing their watermarks" : "Removing their text";
+}
+
+/** The waiting row's numbers: what, how far, since when, about how long left (from this run's pace). */
+export function backgroundOf(id: string): NonNullable<textRemoval.Status["background"]> | null {
+  const { done, out } = progressOf(id);
+  if (out === 0) return null;
+  const run = active.get(id);
+  const rows = pieceRows(id);
+  const startedAt = run?.startedAt ?? Date.now();
+  const mine = run === undefined ? [] : rows.filter((row) => run.before.get(row.key) !== row.state && (row.state === "done" || row.state === "check" || row.state === "none" || row.state === "failed"));
+  const elapsed = (Date.now() - startedAt) / 1000;
+  const left = mine.length > 0 ? Math.round((elapsed / mine.length) * out) : null;
+  return { label: labelOf(rows.filter((row) => row.state === "queued" || row.state === "running" || run?.before.get(row.key) !== row.state)), done, total: done + out, started_at: startedAt, left_s: left };
+}
+
+/** The person's Stop: nothing more sent or done (what's under way comes back and is kept); kept across restarts until someone asks again. */
+export function stop(app: App, id: string): void {
+  asks.setStopped(app.store.home, id, true);
+  textRemoval.stop(id);
+  watermarkRemoval.stop(id);
+  active.delete(id);
+  diag.info("removal", `${id}: stopped by the person`);
+}
+
+async function tick(): Promise<void> {
+  for (const [id, run] of active) {
+    const app = run.app;
+    if (progressOf(id).out > 0) {
+      run.quietSince = null;
+      continue;
+    }
+    run.quietSince ??= Date.now();
+    if (Date.now() - run.quietSince < timing.watchMs) continue;
+    active.delete(id);
+    if (!asks.isStopped(app.store.home, id)) finished(app, id, run);
+  }
+  if (active.size === 0 && watcher !== null) {
+    clearInterval(watcher);
+    watcher = null;
+  }
+}
+
+const seconds = (row: PieceRow) => `${Math.round(row.from)}–${Math.round(row.to)} s`;
+
+/** What a run did, by file: "tape A (0–30 s, 30–60 s)". */
+function byFile(rows: PieceRow[], withWhy = false): string {
+  const files = new Map<string, PieceRow[]>();
+  for (const row of rows) files.set(row.name, [...(files.get(row.name) ?? []), row]);
+  return [...files].map(([name, mine]) => `- ${name}: ${mine.map((row) => `${row.what === "watermark" ? "watermark" : "text"} ${seconds(row)}${withWhy && row.why ? ` (${row.why})` : ""}`).join(", ")}`).join("\n");
+}
+
+/** The agent's turn when a run is done: what was cleaned and what wasn't, and what to do now. */
+export function wakeText(rows: PieceRow[]): string {
+  const cleaned = rows.filter((row) => row.state === "done" || row.state === "check");
+  const left = rows.filter((row) => row.state === "failed");
+  const held = rows.filter((row) => row.state === "held");
+  const what = labelOf(rows).replace(/^Removing/u, "Taking");
+  return (
+    `${EDIT_EVENT} ${what} out of the footage is done: ${cleaned.length} piece${cleaned.length === 1 ? "" : "s"} cleaned${left.length > 0 ? `, ${left.length} not clean (their blur laid back, a watermark left)` : ""}.\n\n` +
+    (cleaned.length > 0 ? `Cleaned:\n${byFile(cleaned.slice(0, 60))}\n\n` : "") +
+    (left.length > 0 ? `Not clean, and why:\n${byFile(left.slice(0, 30), true)}\n\n` : "") +
+    (held.length > 0 ? `${held.length} piece${held.length === 1 ? " waits" : "s wait"} for the Vmake account (the line at the top of the editor says why); they go once it can be used, their blur on until then.\n\n` : "") +
+    "Now lay OUR subtitles, and the intro's titles and captions, wherever they're missing over the cleaned footage (add_subtitles with missing_only; the intro's as its lesson says), and look at your work (check_removal for any piece you haven't seen; a frame of ours over a cleaned stretch). " +
+    "Then tell the person in one plain message: what was cleaned, what was blurred or left and why, and that our subtitles are on. If there's nothing to add, just say what was cleaned."
+  );
+}
+
+/** A run done: the agent is woken with what it did, once any turn under way ends (Edit's own event, not the person's message). */
+function finished(app: App, id: string, run: Run): void {
+  const rows = pieceRows(id).filter((row) => run.before.get(row.key) !== row.state && row.state !== "none" && row.state !== "queued");
+  if (!rows.some((row) => row.state === "done" || row.state === "check" || row.state === "failed")) return;
+  diag.info("removal", `${id}: done in ${Math.round((Date.now() - run.startedAt) / 1000)} s; the agent is told`);
+  void wake(app, id, wakeText(rows));
+}
+
+/** Starts the agent's turn on `text` once no turn is under way (a person's message meanwhile goes first; this waits behind it). */
+async function wake(app: App, id: string, text: string): Promise<void> {
+  const until = Date.now() + 12 * 3_600_000;
+  while (Date.now() < until) {
+    const panel = seams.agentPanel(app);
+    const running = (panel.turn?.(id) ?? (panel.chat(id) as { running?: boolean })).running === true;
+    if (!running) {
+      try {
+        await app.store.mayWrite(id);
+        await panel.send(id, text, null, null);
+        return;
+      } catch (error) {
+        diag.warn("removal", `${id}: telling the agent removal is done: ${diag.messageOf(error)}; trying again`);
+      }
+    }
+    await Bun.sleep(timing.wakeEveryMs);
+  }
 }
 
 /** Every project of a channel taught to take theirs out is brought up to date as soon as its edits rest, and again when the server starts (`resume`), here (not a save pulled from another Mac); every export waits for its pieces still out. */
@@ -320,4 +484,7 @@ export function start(app: App): void {
 /** For tests. */
 export function reset(): void {
   looked.clear();
+  active.clear();
+  if (watcher !== null) clearInterval(watcher);
+  watcher = null;
 }
