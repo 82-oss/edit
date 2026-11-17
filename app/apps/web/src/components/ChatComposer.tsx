@@ -19,6 +19,7 @@ import { inlineQuote, parseQuoted, quoteLabel, quotedMessage, removeQuote, resto
 import { CHIP, MARK } from "./Quotes";
 import { attachFiles, detachFile, restoreFiles, takeFiles, uploading, useFilesOf, type Accept, type ChatFile, type FileKind, type Uploader } from "../lib/chatFiles";
 import { useSettled } from "../lib/settled";
+import { usePinChat } from "../lib/chatScroll";
 import { formatBytes } from "../lib/time";
 import { useEditor } from "../lib/store";
 import { ClaudeMark } from "./ClaudeMark";
@@ -322,8 +323,11 @@ export function ChatComposer({
   const waiting = uploading(attached);
   const ready = attached.some((one) => one.state === "done");
   const canSend = (allowEmpty || text.trim() !== "" || quotes.length > 0 || ready) && !waiting && !disabled;
+  // The chat this composer sits under goes to its bottom as you send, to show what follows your message.
+  const pinChat = usePinChat();
   const send = () => {
     if (!canSend) return;
+    pinChat?.();
     // The words with each quote where it was put (a quote whose chip is gone from the box goes in front, as before).
     const box = input.current;
     const placed = box === null ? "" : read(box, quotes, true).trim();

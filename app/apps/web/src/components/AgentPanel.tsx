@@ -37,6 +37,7 @@ import { addQuote, parseQuoted } from "../lib/chatQuotes";
 import { QuoteSelection } from "./QuoteSelection";
 import { openMenu, type MenuItem } from "./ContextMenu";
 import { ChatComposer, QueueIsland, SentFiles } from "./ChatComposer";
+import { PinChat, useStickToBottom } from "../lib/chatScroll";
 import { UserWords } from "./Quotes";
 import { NoteQueue } from "./NoteQueue";
 import { ProblemView } from "./ProblemView";
@@ -83,37 +84,25 @@ export function ChatShell({
   className?: string;
   label?: string;
 }) {
-  const list = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
-  // Stay pinned to the newest message unless you've scrolled up; jump before
-  // paint so streaming text never lurches.
-  useLayoutEffect(() => {
-    const node = list.current;
-    if (node && stick.current) node.scrollTop = node.scrollHeight;
-  });
-  useLayoutEffect(() => {
-    stick.current = true;
-  }, [resetKey]);
+  // Pinned to the newest line as anything below grows, unless you've scrolled up; sending pins it again (lib/chatScroll.ts).
+  const { scroller, content, pin, onScroll, onWheel } = useStickToBottom(resetKey);
   return (
-    <section
-      aria-label={label}
-      // repack-chat: the script pages' base styles leave the chat's own alone (writer.css).
-      className={cx("repack-chat flex h-full min-h-0 flex-1 flex-col overflow-hidden", !bare && "rounded-xl border border-line bg-panel", className)}
-    >
-      {header}
-      <div
-        ref={list}
-        onScroll={(event) => {
-          const node = event.currentTarget;
-          stick.current = node.scrollHeight - node.scrollTop - node.clientHeight < 48;
-        }}
-        className="min-h-0 flex-1 overflow-y-auto px-3 py-3"
+    <PinChat.Provider value={pin}>
+      <section
+        aria-label={label}
+        // repack-chat: the script pages' base styles leave the chat's own alone (writer.css).
+        className={cx("repack-chat flex h-full min-h-0 flex-1 flex-col overflow-hidden", !bare && "rounded-xl border border-line bg-panel", className)}
       >
-        {/* The scroller stays a plain block. A flex item that is also a flex column can refuse to shrink and clip the composer. This inner column is at least as tall as the scroller, so an empty chat centers, and a long transcript still grows and scrolls. */}
-        <div className="flex min-h-full flex-col gap-4">{loading ? <ChatLoading /> : children}</div>
-      </div>
-      {footer ? <div className="shrink-0">{footer}</div> : null}
-    </section>
+        {header}
+        <div ref={scroller} onScroll={onScroll} onWheel={onWheel} className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+          {/* The scroller stays a plain block. A flex item that is also a flex column can refuse to shrink and clip the composer. This inner column is at least as tall as the scroller, so an empty chat centers, and a long transcript still grows and scrolls. */}
+          <div ref={content} className="flex min-h-full flex-col gap-4">
+            {loading ? <ChatLoading /> : children}
+          </div>
+        </div>
+        {footer ? <div className="shrink-0">{footer}</div> : null}
+      </section>
+    </PinChat.Provider>
   );
 }
 
