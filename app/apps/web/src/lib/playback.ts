@@ -358,6 +358,8 @@ class Preview {
   private nativeQuiet: Promise<unknown> = Promise.resolve();
   /** When the window was last asked where it is (`followNative`), for a spinner while it doesn't answer. */
   private nativeAskedAt = 0;
+  /** The whole frame the playhead last told its listeners of while the window played. */
+  private nativeShown = -1;
   /** Frames the window passed over lately while playing, with when it said so (the last second's: `SKIP_HOLD`). */
   private windowSkips: [number, number][] = [];
   /** Whether the server was last told a play is on (`api.warmPlayback`'s `playing`), and the timer saying so again. */
@@ -1298,6 +1300,7 @@ class Preview {
 
   /** Once an animation frame while the window plays: where it is, into the playhead; the end stops here. */
   private followNative(generation: number) {
+    this.nativeShown = -1;
     const tick = () => {
       this.loop = 0;
       if (!playhead.playing || generation !== this.nativePlay || !this.native) return;
@@ -1383,7 +1386,13 @@ class Preview {
     this.setBuffering(false);
     if (now - this.warmedAt > WARM_PLAYING_MS) this.warmFrom(at.frame);
     if (now - this.persistedAt >= 1000) this.remember();
-    playhead.emit();
+    // Listeners (the timeline's redraw, the time shown) hear of a new frame, not of each fraction of one: told at
+    // every answer, once an animation frame, a 120 Hz screen redrew the timeline four times a frame of a 30 fps edit.
+    const shown = Math.floor(at.frame);
+    if (shown !== this.nativeShown) {
+      this.nativeShown = shown;
+      playhead.emit();
+    }
   }
 
   /**

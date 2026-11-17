@@ -724,6 +724,25 @@ describe("preview seeks and lifetime", () => {
     expect(sent("preview_pause").length).toBeGreaterThanOrEqual(1);
   });
 
+  it("tells the playhead's listeners once a frame of the edit while the window plays, not once an animation frame", async () => {
+    await inWindow();
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    preview.seek(10); draw(); await settle();
+    preview.play(); await settle();
+    let heard = 0;
+    const off = playhead.subscribe(() => { heard++; });
+    // A 120 Hz screen's four answers within one frame of a 30 fps edit: the timeline redraws once.
+    for (const at of [12.1, 12.35, 12.6, 12.85]) {
+      windowClock.frame = at; draw(); await settle();
+    }
+    expect(playhead.frame).toBe(12.85);
+    expect(heard).toBe(1);
+    windowClock.frame = 13.1; draw(); await settle();
+    expect(heard).toBe(2);
+    off();
+    preview.pause(); await settle();
+  });
+
   it("writes one line to the log for each play in the window: how it went, a warning when it stuttered", async () => {
     const { playLine } = await import("./nativePreview");
     const run = { from: 30 * 75, fps: 30, shown: 1379, skipped: 0, slow: 2, longest: 53, starved: 0 };
