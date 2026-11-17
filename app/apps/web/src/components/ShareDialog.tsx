@@ -1,10 +1,13 @@
 import { Check, Copy, Download, ExternalLink, FolderSearch, HardDriveDownload, Link2, MessageSquareText, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import type { ExportSteps as Steps } from "@edit/types/export_steps";
+
 import { api, type RangesBatch, type RangesMode, type Review } from "../lib/api";
 import { projectDuration } from "../lib/edit";
 import { marked as markedStretches } from "../lib/inOut";
 import { shareStatus, shownPath } from "../lib/export-face";
+import { aboutLeft } from "../lib/export-steps";
 import { chaptersInSpan, DEFAULTS, scriptChapters, type ExportOptions } from "../lib/exporting";
 import { onThisMac, showInFinder } from "../lib/files";
 import { FILE_MANAGER, THIS_MACHINE } from "../lib/platform";
@@ -14,6 +17,7 @@ import { flushSave, useEditor } from "../lib/store";
 import { rate } from "../lib/types";
 import { useGrants } from "../writer/can";
 import { askExportFolder } from "./ExportFolder";
+import { ExportSteps } from "./ExportSteps";
 import { ProblemView } from "./ProblemView";
 import { Button, cx, Modal, Select } from "./ui";
 
@@ -156,6 +160,33 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
       clearInterval(timer);
     };
   }, [open, id, sharing, starting]);
+
+  // While it runs, its steps: the same row of the Exports queue the sidebar's card reads (the server's export_steps.ts).
+  const [steps, setSteps] = useState<Steps | null>(null);
+  const going = starting || sharing !== null || exportState?.state === "queued" || exportState?.state === "running";
+  useEffect(() => {
+    if (!open || !id || !going) {
+      setSteps(null);
+      return;
+    }
+    let live = true;
+    const look = () =>
+      void api.exportActivity().then(
+        (rows) => {
+          if (!live) return;
+          const row = rows.find((one) => one.id === id && (one.kind ?? "edit") === "edit" && (one.state === "queued" || one.state === "running"));
+          setSteps(row?.steps ?? null);
+        },
+        // The next look asks again.
+        () => {},
+      );
+    look();
+    const timer = setInterval(look, 1000);
+    return () => {
+      live = false;
+      clearInterval(timer);
+    };
+  }, [open, id, going]);
 
   // A share under way (begun here, or by Ready for changes) is what the dialog says, not an Export before it.
   useEffect(() => {
@@ -300,6 +331,9 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   // happened (the server leaves out one an export came after; a share's is said here): yesterday's stood in for today's share.
   const batchLast = batch !== null && (!batch.finished || (sharing === null && review !== null && (lastShare === null || lastShare.at <= (batch.finished_ms ?? 0))));
   const showBatch = batchShown && batch !== null && batchLast;
+  // The steps in place of the progress line, while this edit's export or share runs (not the marked stretches').
+  const running = busy || exporting || batchRunning;
+  const stepsShown = steps !== null && !showBatch && (exporting || sharing !== null) && !problem;
   const ended = !showBatch && !busy && !exporting && (status.kind === "share-failed" || status.kind === "export-failed" || status.kind === "cancelled");
   const retry = async () => {
     if (busy || retrying) return;
@@ -390,6 +424,8 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
               ))}
           </div>
         )}
+
+        {stepsShown && <ExportSteps steps={steps.steps} className="mt-4" />}
 
         {link && (
           <div className="mt-4 flex flex-col rounded-[10px] border border-line bg-panel">
@@ -530,7 +566,7 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
               </>
             )}
             {showBatch ? null : <>
-            {status.kind === "progress" && <span className="text-muted tabular">{status.text}</span>}
+            {status.kind === "progress" && (stepsShown ? <span className="text-muted tabular">{aboutLeft(steps.left_s)}</span> : <span className="text-muted tabular">{status.text}</span>)}
             {status.kind !== "progress" && problem && <ProblemView error={problem} doing="share it" />}
             {!problem && status.kind === "share-failed" && <ProblemView error={status.error} doing="share it" />}
             {!problem && status.kind === "export-failed" && (status.error ? <ProblemView error={status.error} doing="export it" /> : <span className="text-muted">Export failed</span>)}
@@ -546,7 +582,7 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
           </div>
           {(exporting || sharing !== null || batchRunning) && (
             <Button variant="ghost" disabled={stopping || sharing === "cancelling"} onClick={() => void stop()}>
-              {stopping || sharing === "cancelling" ? "Stopping…" : "Cancel"}
+              {stopping || sharing === "cancelling" ? "Stopping…" : "Cancel export"}
             </Button>
           )}
           {ended && (
@@ -557,9 +593,12 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
           <Button variant="ghost" onClick={onClose}>
             Close
           </Button>
-          <Button variant="primary" disabled={unable} onClick={go}>
-            Export
-          </Button>
+          {/* While one runs, Cancel export and Close; Export again once it's over. */}
+          {!running && (
+            <Button variant="primary" disabled={unable} onClick={go}>
+              Export
+            </Button>
+          )}
         </div>
       </div>
     </Modal>

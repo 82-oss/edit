@@ -62,6 +62,7 @@ import * as diag from "./diag.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as effectCloud from "./effect_cloud.ts";
 import { diskFull, outOfSpace } from "./export_prep.ts";
+import * as speeds from "./export_speeds.ts";
 import * as effectMap from "./effect_map.ts";
 import runtimeText from "./effect_runtime.html" with { type: "text" };
 import watchText from "./effect_watch.html" with { type: "text" };
@@ -1488,6 +1489,11 @@ interface Render {
   drawn: number;
   frames: number;
   done: Promise<void>;
+  /** A map's page (edit-map): far slower to draw, so timed apart. */
+  map?: boolean;
+  /** When this run began drawing, and the frames it had then (a render cut short goes on from them): its own speed. */
+  began?: number;
+  from?: number;
 }
 
 const renders = new Map<string, Render>();
@@ -1507,6 +1513,82 @@ export function renderingLine(project: string): string | null {
   if (now !== drawing && ahead !== null) return ahead.project === project ? `waiting behind the ${ahead.name} effect's render` : `waiting behind ${ahead.title}'s render`;
   const more = own.length > 1 ? ` (then ${own.length - 1} more)` : "";
   return now.frames > 0 ? `rendering the ${now.name} effect · ${now.drawn} of ${now.frames} frames${more}` : `rendering the ${now.name} effect${more}`;
+}
+
+/**
+ * The effects an export waits on, by project: those that weren't rendered
+ * from their code as it is when the export was asked for (`noteWait`), so
+ * its steps say "Graphic 3 of 5", and never count the ones that were ready.
+ */
+const waitedOn = new Map<string, string[]>();
+
+/** An export of `project` is asked for: what it waits on is what isn't rendered now (nothing: none). */
+export function noteWait(app: App, project: string): void {
+  const names = needed(app.store, project)
+    .filter((effect) => !effect.fresh)
+    .map((effect) => effect.name);
+  if (names.length === 0) waitedOn.delete(project);
+  else waitedOn.set(project, names);
+}
+
+/** One graphic an export waits on, as its steps say it. */
+export interface Graphic {
+  name: string;
+  /** Its first frame on the timeline, and the edit's frames a second. */
+  at: number;
+  fps: number;
+  map: boolean;
+  sound: boolean;
+  state: "done" | "current" | "waiting";
+  frames: number;
+  drawn: number;
+  /** This render's own frames a second, once it has drawn a few seconds' worth. */
+  rate: number | null;
+}
+
+/** What's needed of a project's effects changes only with its code or timeline: read again at most every few seconds by the steps, which are asked every second. */
+const neededLately = new Map<string, { at: number; effects: ReturnType<typeof needed>; maps: Set<string> }>();
+
+/**
+ * The graphics an export of `project` waits on (`noteWait`), in the order
+ * they're done: rendered, the one drawing, then the rest by their place on
+ * the timeline. Empty when it waits on none.
+ */
+export function graphicsOf(app: App, project: string, now = Date.now()): Graphic[] {
+  const names = waitedOn.get(project);
+  const live = app.store.get(project);
+  if (names === undefined || live === null) return [];
+  let known = neededLately.get(project);
+  if (known === undefined || now - known.at > 3000) {
+    const effects = needed(app.store, project);
+    const maps = new Set<string>();
+    for (const effect of effects) {
+      try {
+        if (fs.readFileSync(join(folder(app.store, project, effect.name), ENTRY), "utf8").includes("edit-map/map.js")) maps.add(effect.name);
+      } catch {
+        // Not on this computer: a page, as far as anyone knows.
+      }
+    }
+    known = { at: now, effects, maps };
+    neededLately.set(project, known);
+  }
+  const fps = rateOf(live.project);
+  const out: Graphic[] = [];
+  for (const name of names) {
+    const effect = known.effects.find((one) => one.name === name);
+    // Taken off the timeline since: nothing waits on it.
+    if (effect === undefined) continue;
+    const clip = live.project.clips.filter((one) => (one.type === "video" || one.type === "audio") && one.media === effect.media.id).sort((a, b) => a.start - b.start)[0];
+    const running = [...renders.values()].find((render) => render.project === project && render.name === name);
+    const current = running !== undefined && running === drawing;
+    const frames = running !== undefined && running.frames > 0 ? running.frames : Math.max(1, Math.round(effect.media.duration * fps));
+    const drawn = running?.drawn ?? 0;
+    const ran = current && running.began !== undefined ? (now - running.began) / 1000 : 0;
+    const rate = current && ran >= 3 && drawn - (running.from ?? 0) >= 3 ? (drawn - (running.from ?? 0)) / ran : null;
+    out.push({ name, at: clip?.start ?? 0, fps, map: known.maps.has(name) || running?.map === true, sound: effect.media.kind === "audio", state: effect.fresh ? "done" : current ? "current" : "waiting", frames, drawn: Math.min(drawn, frames), rate });
+  }
+  const rank = { done: 0, current: 1, waiting: 2 } as const;
+  return out.sort((a, b) => rank[a.state] - rank[b.state] || a.at - b.at);
 }
 
 /** Why a render failed, by what can be done about it. */
@@ -1668,6 +1750,8 @@ export function renderNow(app: App, project: string, name: string): Promise<void
       drawing = render;
       try {
         await draw(app, render);
+        // Its speed here, frames drawn and joined a second: the next renders' times.
+        if (render.began !== undefined && render.from !== undefined) speeds.noteGraphic(app.store.home, render.map === true, render.frames - render.from, (Date.now() - render.began) / 1000);
       } finally {
         drawing = null;
       }
@@ -1983,6 +2067,7 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
       // them at once with the viewer's and the agent's looks beside them ran an 8 GB card out, and their maps went black
       // (Nov 13: call-map-a failed at the same second every try, where its camera rose).
       const map = fs.readFileSync(join(folder(app.store, id, name), ENTRY), "utf8").includes("edit-map/map.js");
+      render.map = map;
       for (let at = 0; at < (map ? MAP_CHROMES : CHROMES); at++) opened.push(await devtools.open({ profile: RENDER_PROFILE, width: frame.width, height: frame.height, gpu: true, what: "Rendering an effect", below: true }));
       // Nothing behind the page: what it leaves unpainted is see-through.
       await Promise.all(opened.map((page) => page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } })));
@@ -2013,6 +2098,8 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
           else toDraw += 1;
         }
       }
+      render.began = Date.now();
+      render.from = render.drawn;
       // Room for what it holds at once (two chunks' frames, its chunks and the video joined from them), asked before it
       // draws, beside every other write under way (storage.ts claims), the disk's floor kept; the cleaner asked once.
       need = renderBytes(frame, toDraw, duration);

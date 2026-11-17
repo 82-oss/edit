@@ -72,6 +72,7 @@ import * as devProjects from "./dev_projects.ts";
 import * as channelMarks from "./channel_marks.ts";
 import * as beta from "./beta.ts";
 import * as effects from "./effects.ts";
+import * as exportSteps from "./export_steps.ts";
 import * as textRemoval from "./text_removal.ts";
 import * as effectCloud from "./effect_cloud.ts";
 import { BUILD, VERSION } from "./version.ts";
@@ -211,15 +212,8 @@ export function buildRouter(): Router<App> {
   router
     .get("/api/exports/activity", ({ app }) => {
       const visible = new Set(app.store.visible().map(project => project.id));
-      // A share's export is the share's: while the share goes on past it (the review copy, the upload, the publish) it's
-      // shown going, with the share's own line, and a share that failed after it shows why; never "done" before it's up.
-      const edits = (app.exports.activity?.() ?? []).filter(job => visible.has(job.id)).map((job) => {
-        if (job.state !== "done") return job;
-        const { line, share } = reviews.shareNow(app.store.home, job.id);
-        if (line !== null) return { ...job, state: "running" as const, phase: `Sharing: ${line}` };
-        if (share?.state === "failed" && share.at >= job.updated_ms) return { ...job, state: "failed" as const, error: share.error ?? "the share failed" };
-        return job;
-      });
+      // Every export from the moment it's asked for (one waiting for its graphics too), each going one with its steps.
+      const edits = exportSteps.activity(app, visible);
       // Script shares join the same queue. Only the ones running: a share has no file, and a settled one is not kept (it would linger in this process and show up in the activity check).
       const shares = writerReviews.shareQueue().filter(share => writer.seesScript(writer.dataOf(app), share.id)).map(share => ({
         id: share.id,
@@ -1102,6 +1096,10 @@ const READY_QUICK_MS = 5000;
  * waits), and `started` when it went on waiting.
  */
 async function whenReady(app: App, id: string, expected: string, go: () => Promise<string>): Promise<Response> {
+  // What it waits on is what isn't rendered now: its steps count those (export_steps.ts).
+  effects.noteWait(app, id);
+  // In the Exports queue from now, with its graphics' steps, until it starts.
+  const held = exportSteps.waitBegins(id, expected);
   const wait = (limit: number) =>
     seams.broll.waitForMaps(app, id, limit).catch((error: unknown) => {
       if (!seams.isUnavailable(error)) throw error;
@@ -1111,14 +1109,21 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
     await wait(READY_QUICK_MS);
   } catch (error) {
     // Only what's still being made is waited for; a render that failed says why at once.
-    if (!/still rendering|waiting behind/.test(diag.messageOf(error))) throw bad(diag.messageOf(error));
+    if (!/still rendering|waiting behind/.test(diag.messageOf(error))) {
+      exportSteps.waitEnds(id, held);
+      throw bad(diag.messageOf(error));
+    }
     waiting = true;
   }
   if (!waiting) {
     try {
+      // Cancelled in its first seconds: nothing to start.
+      if (held.cancelled) return json({ path: expected, cancelled: true });
       return json({ path: await go() });
     } catch (error) {
       throw bad(diag.messageOf(error));
+    } finally {
+      exportSteps.waitEnds(id, held);
     }
   }
   const row = (state: "queued" | "failed", extra: Record<string, unknown>) => app.store.emit({ type: "export", id, state, progress: 0, path: expected, ...extra });
@@ -1129,14 +1134,25 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
     if (line !== said) row("queued", { waiting: (said = line) });
   };
   tell();
-  const ticking = setInterval(tell, 1000);
+  const ticking = setInterval(() => {
+    if (held.cancelled) {
+      clearInterval(ticking);
+      return;
+    }
+    tell();
+  }, 1000);
   void (async () => {
     try {
       await wait(READY_WAIT_MS);
       clearInterval(ticking);
+      // Cancelled while it waited: nothing to start.
+      if (held.cancelled) return;
       await go();
+      exportSteps.waitEnds(id, held);
     } catch (error) {
       clearInterval(ticking);
+      exportSteps.waitEnds(id, held);
+      if (held.cancelled) return;
       const said = diag.messageOf(error);
       diag.warn("export", `${id}: ${said}`);
       row("failed", { error: said });
@@ -1146,7 +1162,13 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
 }
 
 function cancelExport({ app, params }: Context): Response {
-  return json({ cancelled: app.exports.cancel(params.id!) });
+  const id = params.id!;
+  // Still waiting for its graphics: it never starts (the renders go on: the edit plays them).
+  if (exportSteps.cancelWait(id)) {
+    app.store.emit({ type: "export", id, state: "cancelled", progress: 0 });
+    return json({ cancelled: true });
+  }
+  return json({ cancelled: app.exports.cancel(id) });
 }
 
 /** Runs a failed or cancelled export again, the way it was started. A share's export is shared again. */

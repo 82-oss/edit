@@ -1,4 +1,7 @@
+import { overall, type ExportSteps } from "@edit/types/export_steps";
 import { explain } from "@edit/types/problems";
+
+import { currentWords, leftWords, onGraphics } from "./export-steps";
 
 /** What the card and the share chip read. A script share keeps its own stage. */
 export interface FaceJob {
@@ -10,6 +13,8 @@ export interface FaceJob {
   phase?: string;
   stage?: string;
   error?: string;
+  /** Its steps and their times, while it's queued or running (the server's export_steps.ts). */
+  steps?: ExportSteps;
 }
 
 export function capitalize(text: string): string {
@@ -47,13 +52,27 @@ export interface CardFace {
   /** The hover: the edit's name plus the stage, when the stage took the subtitle. */
   title: string;
   attention: boolean;
+  /** On its graphics: the fill shimmers. */
+  graphics?: boolean;
 }
 
-/** The card's one number: the average of what's still going (a queued edit counts as 0). Done fills the card; a failure doesn't. */
+/**
+ * The card's one number: everything queued and running as one, each job
+ * weighed by its whole time (`overall`; a queued edit counts as 0), and under
+ * it what the one under way is on and the queue's time left (Sphe, Nov 17:
+ * "Graphics 4 of 27 · ~9 min left"). Done fills the card; a failure doesn't.
+ */
 export function cardFace(jobs: FaceJob[]): CardFace {
   const going = jobs.filter((job) => job.state === "queued" || job.state === "running");
   if (going.length > 0) {
-    const ratio = going.reduce((sum, job) => sum + (job.state === "queued" ? 0 : job.progress), 0) / going.length;
+    const whole = overall(going);
+    const ratio = whole.progress;
+    const lead = going.find((job) => job.steps !== undefined && !job.steps.queued) ?? going.find((job) => job.steps !== undefined);
+    if (lead?.steps !== undefined) {
+      const left = leftWords(whole.left_s);
+      const subtitle = [going.length > 1 ? `${going.length} exports` : "", currentWords(lead.steps), left === null ? "" : left === "a moment" ? "almost done" : `${left} left`].filter(Boolean).join(" · ");
+      return { percent: Math.round(ratio * 100), subtitle, title: going.length === 1 ? `${lead.name}: ${subtitle}` : subtitle, attention: false, graphics: onGraphics(lead.steps) };
+    }
     const rendering = going.filter((job) => job.state === "running").length;
     const queued = going.filter((job) => job.state === "queued").length;
     const line = going.length === 1 ? activityLine(going[0]!) : null;

@@ -13,6 +13,7 @@ import * as diag from "./diag.ts";
 import * as folderAccess from "./folder_access.ts";
 import * as capacity from "./export_capacity.ts";
 import { diskFull, freeOn, outOfSpace, shownProgress } from "./export_prep.ts";
+import * as speeds from "./export_speeds.ts";
 import { runPromise } from "./effect/runtime.ts";
 import * as jobs from "./jobs.ts";
 import { ioMessage, nowMs, writeAtomic } from "./files.ts";
@@ -117,6 +118,9 @@ interface Running {
   /** About how big its file is (`exportBytes`), and a share's review copy beside it: what the disks are asked for again as it starts. */
   bytes?: number;
   review?: number;
+  /** How long the video is, and when it was asked for: its steps (export_steps.ts). */
+  seconds?: number;
+  started_ms?: number;
 }
 
 /** Export jobs across projects, including the recent outcomes. Local jobs
@@ -139,6 +143,10 @@ export interface ExportActivity {
   onDisk?: boolean;
   /** Where that file is, with home as `~` (`~/Movies/Edit/Name.mp4`). Set only while `onDisk`. */
   saved?: string;
+  /** How long the video is, when it was asked for, and whether it's a share's: its steps (export_steps.ts). */
+  seconds?: number;
+  started_ms?: number;
+  share?: boolean;
 }
 
 /**
@@ -853,7 +861,7 @@ export class ExportRegistry implements seams.Exports {
     const waiting = state === "queued" && typeof running.waiting === "string" && running.waiting !== "" ? running.waiting : undefined;
     const rest = { ...extra };
     delete rest.phase;
-    this.recent.set(project.id, { id: project.id, name: project.name, path: running.output, state, progress, updated_ms: nowMs(), ...(typeof extra.error === "string" ? { error: extra.error } : {}), ...(running.note === undefined ? {} : { note: running.note }), ...(waiting !== undefined ? { waiting } : {}), ...(phase !== undefined ? { phase } : {}) });
+    this.recent.set(project.id, { id: project.id, name: project.name, path: running.output, state, progress, updated_ms: nowMs(), ...(typeof extra.error === "string" ? { error: extra.error } : {}), ...(running.note === undefined ? {} : { note: running.note }), ...(waiting !== undefined ? { waiting } : {}), ...(phase !== undefined ? { phase } : {}), ...(running.seconds === undefined ? {} : { seconds: running.seconds }), ...(running.started_ms === undefined ? {} : { started_ms: running.started_ms }), ...(running.share === true ? { share: true } : {}) });
     // Keep every active job and only the latest completed outcomes.
     const ended = [...this.recent.values()].filter(one => one.state !== "queued" && one.state !== "running").sort((a, b) => b.updated_ms - a.updated_ms);
     for (const old of ended.slice(20)) {
@@ -1046,7 +1054,7 @@ export class ExportRegistry implements seams.Exports {
     project = structuredClone(project);
     options = structuredClone(options);
     const review = extra.share === true ? reviewBytes(Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1)) : 0;
-    const running: Running = { output: path, key, cancelled: false, job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review };
+    const running: Running = { output: path, key, cancelled: false, job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review, seconds: Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1), started_ms: nowMs() };
     this.jobs.set(project.id, running);
     let upload = false;
     try {
@@ -1284,6 +1292,8 @@ export class ExportRegistry implements seams.Exports {
         `${project.name} exported ${frames} frames in ${diag.human(took)} (${fixed(frames / Math.max(took / 1000, 1e-3), 1)} frames/s) to ${output}`,
       );
       diag.record("export", "export", took, null);
+      // This computer's pace, for the next export's time (export_speeds.ts).
+      if (this.home !== null && running.stretch !== true) speeds.noteExport(this.home, frames, took / 1000);
       let bytes: number | null = null;
       try {
         bytes = fs.statSync(output).size;

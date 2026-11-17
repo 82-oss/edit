@@ -69,3 +69,53 @@ describe("ShareDialog's watermark (Sphe, Nov 16: only when the channel has one)"
     expect(row!.querySelector("button")?.textContent).toContain("Sam's Interrogations");
   });
 });
+
+describe("ShareDialog's steps while it runs (Sphe, Nov 17: design B)", () => {
+  const STEPS = {
+    where: "here" as const,
+    queued: false,
+    elapsed_s: 60,
+    left_s: 240,
+    progress: 0.2,
+    steps: [
+      { kind: "graphic" as const, state: "done" as const, label: "0:12", progress: null, left_s: 0 },
+      { kind: "graphic" as const, state: "done" as const, label: "5:40", progress: null, left_s: 0 },
+      { kind: "graphic" as const, state: "current" as const, label: "41:12", what: "map" as const, progress: 0.92, left_s: 4 },
+      { kind: "graphic" as const, state: "waiting" as const, label: "50:02", progress: null, left_s: 15 },
+      { kind: "graphic" as const, state: "waiting" as const, label: "1:02:10", progress: null, left_s: 25 },
+      { kind: "video" as const, state: "waiting" as const, label: "1:48:29", progress: null, left_s: 180 },
+      { kind: "save" as const, state: "waiting" as const, label: "~/Downloads/Edit", progress: null, left_s: 0 },
+    ],
+  };
+  const buttons = () => [...document.querySelectorAll("button")].map((one) => one.textContent?.trim());
+
+  it("waiting on graphics: the steps under the options, the time left, Cancel export and Close, no Export", async () => {
+    vi.spyOn(api, "exportActivity").mockResolvedValue([{ id: "p1", name: "Case", path: "/x.mp4", state: "running", progress: 0, updated_ms: 1, waiting: "rendering the cutfx-21 effect", steps: STEPS }]);
+    await open(project(), { channel: null, channels: PICTURES });
+    act(() => useEditor.setState({ exportState: { state: "queued", progress: 0, path: "/x.mp4", waiting: "rendering the cutfx-21 effect · 405 of 439 frames" } as never }));
+    await settle();
+    const rows = [...document.querySelectorAll('ol[aria-label="Export steps"] > li')].map((row) => row.textContent);
+    expect(rows).toEqual(["Graphics 1–2done", "Graphic 3 of 5 · the map at 41:1292%", "Graphics 4–5~40 s", "Video · 1:48:29~3 min", "Save to ~/Downloads/Edita moment"]);
+    expect(document.querySelector('[data-state="current"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("About 4 min left");
+    expect(document.body.textContent).not.toContain("cutfx");
+    expect(buttons()).toContain("Cancel export");
+    expect(buttons()).toContain("Close");
+    expect(buttons()).not.toContain("Export");
+  });
+
+  it("exporting the video, then done: the steps go, the file is said, and Export is back", async () => {
+    const video = { ...STEPS, left_s: 100, steps: [{ ...STEPS.steps[0]!, label: "0:12" }, { kind: "video" as const, state: "current" as const, label: "1:48:29", progress: 0.4, left_s: 100 }, STEPS.steps[6]!] };
+    const rows = vi.spyOn(api, "exportActivity").mockResolvedValue([{ id: "p1", name: "Case", path: "/home/me/Downloads/Edit/Case.mp4", state: "running", progress: 0.4, updated_ms: 1, steps: video }]);
+    await open(project(), { channel: null, channels: PICTURES });
+    act(() => useEditor.setState({ exportState: { state: "running", progress: 0.4, path: "/home/me/Downloads/Edit/Case.mp4" } as never }));
+    await settle();
+    expect(document.body.textContent).toContain("Video · 1:48:2940%");
+    expect(document.body.textContent).toContain("About 2 min left");
+    rows.mockResolvedValue([]);
+    act(() => useEditor.setState({ exportState: { state: "done", progress: 1, path: "/home/me/Downloads/Edit/Case.mp4" } as never }));
+    await settle();
+    expect(document.querySelector('ol[aria-label="Export steps"]')).toBeNull();
+    expect(buttons()).toContain("Export");
+  });
+});

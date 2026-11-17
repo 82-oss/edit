@@ -1,13 +1,15 @@
-import { Copy, Download, FileText, Film, FolderSearch, X } from "lucide-react";
+import { ChevronRight, Copy, Download, FileText, Film, FolderSearch, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { api, type ExportActivity as Activity } from "../lib/api";
 import { cardFace, exportLabel } from "../lib/export-face";
+import { leftWords, onGraphics, whereLine } from "../lib/export-steps";
 import { onThisMac, showInFinder } from "../lib/files";
 import { cancelScriptShare } from "../writer/api";
 import { useAccount } from "../lib/account";
 import { navigate } from "../lib/route";
 import { useEditor } from "../lib/store";
+import { ExportSteps } from "./ExportSteps";
 import { FolderPicker } from "./FolderBrowser";
 import { ProblemView } from "./ProblemView";
 import { Button, cx, DialogTitle, IconButton, Modal } from "./ui";
@@ -106,6 +108,8 @@ export function ExportActivity() {
   const [hidden, setHidden] = useState<Record<string, number>>({});
   const [stopping, setStopping] = useState<string | null>(null);
   const [retrying, setRetrying] = useState<string | null>(null);
+  // Folded or unfolded by hand, by job; the one under way is unfolded until then.
+  const [folded, setFolded] = useState<Record<string, boolean>>({});
   const allowed = useAccount((state) => state.account === null || state.account.signed_in || !state.account.required);
   useEffect(() => {
     if (!allowed) {
@@ -160,6 +164,12 @@ export function ExportActivity() {
   };
   if (!visible.length) return null;
   const face = cardFace(visible);
+  // Under way first, then those in line in the order they were asked for, then what's ended.
+  const rank = (job: Activity) => (!exportActive(job) ? 2 : job.steps?.queued === true || job.state === "queued" ? 1 : 0);
+  const ordered = [...visible].sort((a, b) => rank(a) - rank(b) || (rank(a) === 1 ? (a.started_ms ?? a.updated_ms) - (b.started_ms ?? b.updated_ms) : 0));
+  const lead = ordered.find((job) => exportActive(job) && job.steps !== undefined && !job.steps.queued);
+  const leadKey = lead === undefined ? null : jobKey(lead);
+  const firstInLine = ordered.find((job) => exportActive(job) && job.steps?.queued === true);
   // Looked at in the queue and nothing new since: grey, not red, until another export starts or ends (Sphe, Nov 16).
   const allSeen = visible.every((job) => !exportActive(job) && seen[jobKey(job)] === job.updated_ms);
   const look = () => {
@@ -185,7 +195,7 @@ export function ExportActivity() {
         className="relative mb-1 w-full min-w-0 overflow-hidden rounded-xl border border-line bg-panel text-left transition-colors hover:bg-hover"
       >
         {face.percent !== null && face.percent > 0 && (
-          <span aria-hidden className={cx("pointer-events-none absolute inset-y-0 left-0 transition-[width,background-color] duration-300 ease-out", allSeen ? "bg-active" : "bg-primary")} style={{ width: `${face.percent}%` }} />
+          <span aria-hidden className={cx("pointer-events-none absolute inset-y-0 left-0 transition-[width,background-color] duration-300 ease-out", allSeen ? "bg-active" : face.graphics ? "fill-shimmer bg-primary" : "bg-primary")} style={{ width: `${face.percent}%` }} />
         )}
         <QueueFace subtitle={face.subtitle} percent={face.percent} attention={face.attention} seen={allSeen} />
       </button>
@@ -193,33 +203,54 @@ export function ExportActivity() {
         <div className="px-6 pt-6">
           <DialogTitle title="Exports" detail="Edits and scripts share this queue. They keep going if you close this or leave the project." />
         </div>
-        <div className="mt-3 max-h-[55vh] overflow-y-auto border-t border-line">
-          {visible.map((job) => {
+        <div className="mt-3 max-h-[60vh] overflow-y-auto border-t border-line">
+          {ordered.map((job) => {
             const script = job.kind === "script";
+            const key = jobKey(job);
+            const steps = exportActive(job) ? job.steps : undefined;
+            const inLine = steps?.queued === true;
+            const unfolds = steps !== undefined && !inLine;
+            const open = unfolds && (folded[key] ?? key !== leadKey) === false;
+            const percent = steps === undefined ? null : Math.round(steps.progress * 100);
+            const left = leftWords(steps?.left_s);
+            const openProject = () => {
+              setOpen(false);
+              navigate(script ? `/scripts/${job.id}` : `/p/${job.id}`);
+            };
+            const cancel = (
+              <Button size="sm" variant="ghost" disabled={stopping === key || job.stage === "cancelling"} onClick={() => void stop(job)}>
+                {stopping === key || job.stage === "cancelling" ? "Stopping…" : steps !== undefined ? "Cancel export" : "Cancel"}
+              </Button>
+            );
             return (
-              <div key={jobKey(job)} className="border-b border-line px-6 py-3 last:border-b-0">
+              <div key={key} className="border-b border-line px-6 py-3 last:border-b-0">
                 <div className="flex items-center gap-2">
-                  {script ? <FileText size={14} className="shrink-0 text-muted" /> : <Film size={14} className="shrink-0 text-muted" />}
-                  <button
-                    type="button"
-                    className="min-w-0 flex-1 truncate text-left text-[13px] font-medium hover:underline"
-                    title={`Open ${job.name}`}
-                    onClick={() => {
-                      setOpen(false);
-                      navigate(script ? `/scripts/${job.id}` : `/p/${job.id}`);
-                    }}
-                  >
+                  {unfolds ? (
+                    <button type="button" aria-expanded={open} aria-label={open ? `Fold ${job.name}'s steps` : `Show ${job.name}'s steps`} className="-m-1 rounded p-1 text-faint transition-colors hover:text-fg" onClick={() => setFolded((was) => ({ ...was, [key]: open }))}>
+                      <ChevronRight size={14} className={cx("transition-transform duration-200", open && "rotate-90")} />
+                    </button>
+                  ) : script ? (
+                    <FileText size={14} className="shrink-0 text-muted" />
+                  ) : (
+                    <Film size={14} className="shrink-0 text-muted" />
+                  )}
+                  <button type="button" className={cx("min-w-0 flex-1 truncate text-left text-[13px] font-medium hover:underline", job.state === "done" && "text-secondary")} title={`Open ${job.name}`} onClick={openProject}>
                     {job.name}
                   </button>
-                  {exportActive(job) ? (
-                    <Button size="sm" variant="ghost" disabled={stopping === jobKey(job) || job.stage === "cancelling"} onClick={() => void stop(job)}>
-                      {stopping === jobKey(job) || job.stage === "cancelling" ? "Stopping…" : "Cancel"}
-                    </Button>
+                  {inLine ? (
+                    <span className={cx("shrink-0 rounded-full px-[7px] py-0.5 text-[10.5px] font-semibold tracking-[0.02em]", job === firstInLine ? "bg-warning-soft text-warning" : "bg-active text-secondary")}>
+                      {job === firstInLine ? "Next" : "Queued"}
+                    </span>
+                  ) : steps !== undefined ? (
+                    <span className="shrink-0 text-[12px] text-muted tabular">{[`${percent}%`, left].filter(Boolean).join(" · ")}</span>
+                  ) : exportActive(job) ? (
+                    cancel
                   ) : (
                     <>
+                      {!script && job.state === "done" && job.onDisk === true && <span className="shrink-0 text-[12px] text-success">Saved</span>}
                       {!script && (job.state === "failed" || job.state === "cancelled") && (
-                        <Button size="sm" variant="ghost" disabled={retrying === jobKey(job)} onClick={() => void again(job)}>
-                          {retrying === jobKey(job) ? "Retrying…" : "Retry"}
+                        <Button size="sm" variant="ghost" disabled={retrying === key} onClick={() => void again(job)}>
+                          {retrying === key ? "Retrying…" : "Retry"}
                         </Button>
                       )}
                       <IconButton label={`Dismiss ${job.name}'s export`} onClick={() => dismiss(job)}>
@@ -231,13 +262,28 @@ export function ExportActivity() {
                 {job.note && <div className="mt-1 pl-[22px] text-[12px] text-muted">{job.note}</div>}
                 {job.state === "failed" && job.error ? (
                   <ProblemView error={job.error} doing="export it" className="mt-1.5" />
+                ) : steps !== undefined ? (
+                  <div className="mt-[3px] truncate pl-[22px] text-[12px] text-muted">
+                    {inLine ? [steps.where === "here" ? `Save to ${THIS_MACHINE}` : "Send for feedback", ordered.indexOf(job) > 0 ? "starts after the one above" : job.waiting, left === null ? null : `${left} once it does`].filter(Boolean).join(" · ") : whereLine(steps)}
+                  </div>
                 ) : (
                   <div className="mt-1 pl-[22px] text-[12px] text-muted">{script ? `Script · ${exportLabel(job)}` : exportLabel(job)}</div>
                 )}
-                {exportActive(job) && (
+                {exportActive(job) && !inLine && (
                   <div className="mt-2 ml-[22px] h-1 overflow-hidden rounded-full bg-active" aria-hidden>
-                    <div className="h-full bg-primary transition-[width] duration-300 ease-out" style={{ width: `${Math.round(job.progress * 100)}%` }} />
+                    <div className={cx("h-full rounded-full transition-[width] duration-300 ease-out", onGraphics(steps) ? "fill-shimmer bg-primary" : "bg-primary")} style={{ width: `${Math.round((steps?.progress ?? job.progress) * 100)}%` }} />
                   </div>
+                )}
+                {open && steps !== undefined && (
+                  <>
+                    <ExportSteps steps={steps.steps} small className="mt-2.5 mb-0.5 ml-[22px]" />
+                    <div className="mt-2 ml-[22px] flex gap-1.5">
+                      <Button size="sm" variant="subtle" onClick={openProject}>
+                        Open project
+                      </Button>
+                      {cancel}
+                    </div>
+                  </>
                 )}
                 {!script && job.state === "done" && job.path !== "" && <Finished job={job} />}
               </div>

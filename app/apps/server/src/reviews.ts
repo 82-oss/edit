@@ -39,6 +39,8 @@ import { readJson, type Router } from "./http/router.ts";
 import * as busy from "./busy.ts";
 import { chunkFolder, clipMap, deleteExport, heldByReview, lastChunks, listExports, mapFile, optionsKey, timelineHash, withExport, withWatermarkKey } from "./exports.ts";
 import { shareLine } from "./export_prep.ts";
+import * as speeds from "./export_speeds.ts";
+import * as effects from "./effects.ts";
 import { readState, writeAtomic } from "./files.ts";
 import { registerTool, text, type ToolCall } from "./mcp/registry.ts";
 import type { Clip, ExportOptions, Project, ScriptJob } from "./model.ts";
@@ -238,6 +240,8 @@ interface ShareArgs {
 /** How a project's share stands, for the UI: running (its step), done (published), or failed (why). */
 export interface ShareView {
   state: "running" | "done" | "failed";
+  /** When it was asked for. */
+  started?: number;
   step: string | null;
   at: number;
   version?: number;
@@ -251,6 +255,11 @@ export interface ShareView {
  */
 const sharing = new Map<string, string>();
 const shareFollowed = new WeakSet<object>();
+
+/** The projects being shared in this run now. */
+export function sharesGoing(): string[] {
+  return [...sharing.keys()];
+}
 
 export function shareKey(projectId: string): string {
   return jobs.keyOf("share", projectId);
@@ -290,6 +299,7 @@ export function shareNow(home: string, projectId: string): { line: string | null
       state: going ? "running" : job.state === "done" ? "done" : "failed",
       step: job.step ?? null,
       at: job.updated_ms,
+      started: job.started_ms,
       ...(published === undefined ? {} : { version: published.version, url: published.url }),
       ...(!going && job.state !== "done" && error !== undefined ? { error } : {}),
     },
@@ -691,6 +701,7 @@ async function runShare(app: App, projectId: string): Promise<{ url: string; ver
   } finally {
     if (ticker !== null) clearInterval(ticker);
     sharing.delete(projectId);
+    speeds.uploadEnds(projectId);
     dropShare(projectId);
     if (!shareGoing(home, projectId)) fs.rmSync(join(home, "jobs", `share-${projectId}.json`), { force: true });
   }
@@ -710,6 +721,12 @@ async function exportStep(app: App, projectId: string, args: ShareArgs): Promise
     for (let tries = 0; taken === null; tries++) {
       // A map shot still rendering would export as its first frame. Waited for as long as slowed shots are: a
       // minute failed a Ready for changes share whose map had just been started again (Nov 6, Female Police Captain).
+      // What it waits on is what isn't rendered now: its steps count those (export_steps.ts).
+      try {
+        effects.noteWait(app, projectId);
+      } catch (error) {
+        diag.warn("review", `${projectId}: what its share waits on: ${diag.messageOf(error)}`);
+      }
       sharing.set(projectId, "waiting for map shots");
       await seams.broll.waitForMaps(app, projectId, 20 * 60_000).catch((error: unknown) => {
         if (!seams.isUnavailable(error)) throw error;
@@ -800,6 +817,7 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
     const seconds = chosen.frames / fps;
     const made = fs.existsSync(copy) && fs.existsSync(poster);
     if (!(args.checked === true && made)) {
+      const copying = Date.now();
       sharing.set(projectId, "making the review copy");
       jobs.step(home, key, "review copy", { checked: false, uploaded: false });
       if (!fs.existsSync(chosen.path)) {
@@ -834,6 +852,8 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
         }
       }
       await tools.run([tools.ffmpeg(), "-v", "error", "-nostdin", "-y", "-ss", fixed(posterSecond(live.project, seconds), 2), "-i", chosen.path, "-frames:v", "1", "-vf", "scale=1280:-2", poster]);
+      // How long a copy takes here, for the next share's time.
+      speeds.noteCopy(home, seconds, (Date.now() - copying) / 1000);
       haltShare(projectId);
       jobs.step(home, key, "uploading", { checked: true });
     }
@@ -843,7 +863,10 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       haltShare(projectId);
       // Carried on after a restart: what's already up isn't sent again (never for a replace, whose keys hold the version it replaces).
       // Kept at through a network that comes and goes, for minutes, each try from the parts already up (cloud.ts).
-      if (!(resumed && !replace && (await alreadyUp(`${prefix}/video.mp4`, copy)))) await cloud.uploadFileKeptAt(copy, `${prefix}/video.mp4`, tick("uploading"), signal);
+      if (!(resumed && !replace && (await alreadyUp(`${prefix}/video.mp4`, copy)))) await cloud.uploadFileKeptAt(copy, `${prefix}/video.mp4`, (done, total) => {
+        tick("uploading")(done, total);
+        speeds.uploadTick(home, projectId, done, total);
+      }, signal);
       haltShare(projectId);
       if (!(resumed && !replace && (await alreadyUp(`${prefix}/poster.jpg`, poster)))) await cloud.uploadFileKeptAt(poster, `${prefix}/poster.jpg`, () => haltShare(projectId), signal);
       haltShare(projectId);

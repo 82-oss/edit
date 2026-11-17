@@ -17,6 +17,7 @@
     "./crossfades": "./src/crossfades.ts",
     "./marks": "./src/marks.ts",
     "./watermark": "./src/watermark.ts",
+    "./export_steps": "./src/export_steps.ts",
     "./models": "./src/models.ts"
   },
   "scripts": {

@@ -1,3 +1,4 @@
+import type { ExportSteps } from "@edit/types/export_steps";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 
@@ -191,6 +192,10 @@ export interface ExportActivity {
   onDisk?: boolean;
   /** Where that file is, with home as `~` (`~/Movies/Edit/Name.mp4`). Set only while `onDisk`. */
   saved?: string;
+  /** When it was asked for. */
+  started_ms?: number;
+  /** Queued or running: its steps and their times (the server's export_steps.ts), what the Export dialog and the queue show. */
+  steps?: ExportSteps;
 }
 
 /**

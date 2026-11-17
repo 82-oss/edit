@@ -216,6 +216,23 @@ html.native-preview .editor-root {
   }
 }
 
+/* An export's red fill while it waits on its graphics: a light sweep across it (the Exports card, its bars). */
+.fill-shimmer {
+  background: linear-gradient(90deg, var(--color-primary) 0%, var(--color-primary) 35%, #ff4d6a 50%, var(--color-primary) 65%, var(--color-primary) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+/* An export step under way: a red ring turning. */
+@keyframes step-spin {
+  to { transform: rotate(360deg); }
+}
+.step-spin { animation: step-spin 0.9s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fill-shimmer { animation: none; }
+  .step-spin { animation-duration: 2.4s; }
+}
+
 /* Home's rows as the list changes under them: a new one slides in, a renamed one flashes once. */
 @keyframes row-in {
   from { opacity: 0; transform: translateY(-4px); }
