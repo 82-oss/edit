@@ -48,7 +48,7 @@ const REMOVER = "/video-watermark-remover/upload";
 /** The mode to choose. */
 const MODE = "smart pro";
 /** Pieces at once when the relay doesn't say (its AT_ONCE: one a browser). */
-export const AT_ONCE = 6;
+export const AT_ONCE = 3;
 /**
  * Files a day Edit sends at most, the team's: Pro's table says 50 for the
  * remover, its FAQ 30 a feature (Sphe, Nov 17: 50; past Vmake's real limit,

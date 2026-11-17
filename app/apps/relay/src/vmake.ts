@@ -59,15 +59,18 @@ const BROWSER_MINUTES = 60;
 export const LEASE_MS = (BROWSER_MINUTES + 5) * 60_000;
 /**
  * Pieces at once, the team's (Sphe, Nov 17: "3 hours for a 1 hour video is
- * insane"; vmake.ai ran four of the account's jobs at once that evening, each
- * a little slower than alone). One a browser, so each piece's upload is in a
+ * insane"). vmake.ai runs several of the account's jobs at once, but that
+ * evening each slowed about as much as there were (four at once: two 15 s
+ * test pieces 18 min each against 4 alone that morning, the M4's 227 s 12 min
+ * against 7): it looks like one budget for the account, shared. So three:
+ * uploads and downloads overlap the processing, no more. One a browser, so each piece's upload is in a
  * tab in front (Chrome slows a tab behind another) and each has a machine of
  * its own: the lease's holder gets its browser on the team's profile and up to
  * AT_ONCE − 1 more that start with NO profile, its vmake.ai sign-in (cookies
  * and the site's local storage) copied in by the Mac, never written back
  * anywhere: only the profile's own browser ever saves it.
  */
-export const AT_ONCE = 6;
+export const AT_ONCE = 3;
 
 function json(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
