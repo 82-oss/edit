@@ -2940,7 +2940,6 @@ fn native_options(
         key_interval: options.key_interval(f64::from(project.settings.fps)),
         finished: true,
         faststart: alone,
-        #[cfg(not(target_os = "macos"))]
         yuv420: false,
     }))
 }
@@ -3111,9 +3110,9 @@ impl Sink {
     }
 
     /// Takes its frames as the GPU's 4:2:0 (`Renderer::copy_output_yuv420_to`)
-    /// when it can: FFmpeg's chunks of a `width`×`height` render off a Mac.
+    /// when it can: the chunks of a `width`×`height` render, FFmpeg's off a
+    /// Mac and AVAssetWriter's (as 420v) on one.
     fn take_yuv420(&mut self, width: u32, height: u32) -> bool {
-        #[cfg(not(target_os = "macos"))]
         if let Sink::Chunks(chunks) = self {
             chunks.settings.yuv420 =
                 chunks.size == (width, height) && Renderer::yuv420_fits(width, height);

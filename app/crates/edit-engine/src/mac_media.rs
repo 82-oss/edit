@@ -801,6 +801,8 @@ pub struct WriterOptions {
     pub finished: bool,
     /// The index at the front of the file; only when nothing remuxes it after.
     pub faststart: bool,
+    /// Frames come as the GPU's 4:2:0 planes (I420), not RGBA.
+    pub yuv420: bool,
 }
 
 pub struct Writer {
@@ -830,7 +832,9 @@ impl Writer {
                 i32::from(options.hevc),
                 options.bitrate,
                 options.key_interval,
-                i32::from(options.finished) | (i32::from(options.faststart) << 1),
+                i32::from(options.finished)
+                    | (i32::from(options.faststart) << 1)
+                    | (i32::from(options.yuv420) << 2),
                 error.as_mut_ptr(),
                 error.len(),
             )

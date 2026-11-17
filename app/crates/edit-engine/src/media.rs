@@ -1135,6 +1135,7 @@ pub fn native_proxy(
                 key_interval: (fps / 2.0).round().max(1.0) as i32,
                 finished: false,
                 faststart: true,
+                yuv420: false,
             },
         )?;
         let frames = (probe.duration * fps).ceil().max(1.0) as i64;

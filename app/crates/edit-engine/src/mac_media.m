@@ -1026,6 +1026,10 @@ void edit_sound_writer_close(void *handle) {
 @property uint32_t width;
 @property uint32_t height;
 @property double fps;
+// Frames come as the GPU's BT.709 TV-range 4:2:0 (I420, the same conversion as
+// FFmpeg's), into 420v buffers: VideoToolbox converts nothing, and a frame is
+// 1.5 bytes a pixel to read back and copy, not 4 swizzled from RGBA.
+@property BOOL planar;
 @end
 @implementation EditWriter
 - (void)dealloc {
@@ -1049,6 +1053,7 @@ static void *edit_writer_open_unguarded(const char *path, uint32_t width, uint32
         w.writer = [[AVAssetWriter alloc] initWithURL:url fileType:AVFileTypeMPEG4 error:&problem];
         w.writer.movieTimeScale = 600000;
         w.width = width; w.height = height; w.fps = fps;
+        w.planar = (flags & 4) != 0;
         NSMutableDictionary *compression = [@{
             AVVideoAverageBitRateKey: @(bitrate), AVVideoExpectedSourceFrameRateKey: @(fps),
             AVVideoMaxKeyFrameIntervalKey: @(key_interval),
@@ -1068,7 +1073,7 @@ static void *edit_writer_open_unguarded(const char *path, uint32_t width, uint32
         w.input.mediaTimeScale = 600000;
         w.adaptor = [AVAssetWriterInputPixelBufferAdaptor assetWriterInputPixelBufferAdaptorWithAssetWriterInput:w.input
             sourcePixelBufferAttributes:@{
-                (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+                (id)kCVPixelBufferPixelFormatTypeKey: @(w.planar ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange : kCVPixelFormatType_32BGRA),
                 (id)kCVPixelBufferWidthKey: @(width), (id)kCVPixelBufferHeightKey: @(height),
                 (id)kCVPixelBufferIOSurfacePropertiesKey: @{}
             }];
@@ -1098,7 +1103,8 @@ static int edit_writer_frame_unguarded(void *handle, int64_t frame, const uint8_
                       size_t stride, int rgba, char *error, size_t capacity) {
     @autoreleasepool {
         EditWriter *w = (__bridge EditWriter *)handle;
-        if (stride < (size_t)w.width * 4 || length < stride * (w.height - 1) + (size_t)w.width * 4) {
+        if (w.planar ? length < (size_t)w.width * w.height * 3 / 2
+                     : (stride < (size_t)w.width * 4 || length < stride * (w.height - 1) + (size_t)w.width * 4)) {
             fail(error, capacity, [NSString stringWithFormat:@"Frame of %zu bytes (rows %zu apart) is too small for the %ux%u encoder",
                                    length, stride, w.width, w.height]);
             return 0;
@@ -1124,6 +1130,32 @@ static int edit_writer_frame_unguarded(void *handle, int64_t frame, const uint8_
         }
         CVReturn locked = CVPixelBufferLockBaseAddress(pixel, 0);
         if (locked != kCVReturnSuccess) { CFRelease(pixel); fail(error, capacity, @"Cannot lock encoder pixel buffer"); return 0; }
+        if (w.planar) {
+            // Y's rows as they are; U and V interleaved into the CbCr plane.
+            size_t width = w.width, height = w.height;
+            uint8_t *y = CVPixelBufferGetBaseAddressOfPlane(pixel, 0);
+            size_t y_row = CVPixelBufferGetBytesPerRowOfPlane(pixel, 0);
+            for (size_t row = 0; row < height; row++) memcpy(y + row * y_row, pixels + row * width, width);
+            uint8_t *uv = CVPixelBufferGetBaseAddressOfPlane(pixel, 1);
+            size_t uv_row = CVPixelBufferGetBytesPerRowOfPlane(pixel, 1);
+            const uint8_t *u = pixels + width * height, *v = u + (width / 2) * (height / 2);
+            for (size_t row = 0; row < height / 2; row++) {
+                uint8_t *pairs = uv + row * uv_row;
+                const uint8_t *u_row = u + row * (width / 2), *v_row = v + row * (width / 2);
+                for (size_t i = 0; i < width / 2; i++) {
+                    pairs[2 * i] = u_row[i];
+                    pairs[2 * i + 1] = v_row[i];
+                }
+            }
+            CVPixelBufferUnlockBaseAddress(pixel, 0);
+            CVBufferSetAttachment(pixel, kCVImageBufferYCbCrMatrixKey, kCVImageBufferYCbCrMatrix_ITU_R_709_2, kCVAttachmentMode_ShouldPropagate);
+            CVBufferSetAttachment(pixel, kCVImageBufferColorPrimariesKey, kCVImageBufferColorPrimaries_ITU_R_709_2, kCVAttachmentMode_ShouldPropagate);
+            CVBufferSetAttachment(pixel, kCVImageBufferTransferFunctionKey, kCVImageBufferTransferFunction_ITU_R_709_2, kCVAttachmentMode_ShouldPropagate);
+            BOOL ok = [w.adaptor appendPixelBuffer:pixel withPresentationTime:frame_time(frame, w.fps)];
+            CFRelease(pixel);
+            if (!ok) fail(error, capacity, w.writer.error.localizedDescription ?: @"Native encoder rejected frame");
+            return ok;
+        }
         vImage_Buffer source = {(void *)pixels, w.height, w.width, stride};
         vImage_Buffer dest = {CVPixelBufferGetBaseAddress(pixel), w.height, w.width, CVPixelBufferGetBytesPerRow(pixel)};
         vImage_Error converted = kvImageNoError;
