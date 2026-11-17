@@ -13,6 +13,8 @@ export interface FootageStep {
   state: FootageStepState;
   /** Seconds it has left; null with no measured speed yet. */
   left_s: number | null;
+  /** Over, but some of it can't come here (the disk's room, a fetch failing): that part plays from the cloud. */
+  streams?: boolean;
 }
 
 export interface FootageReady {

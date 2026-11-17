@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../lib/api";
-import { FootageCard, FootageDialog, timing, useFootage } from "./FootageReady";
+import { FootageCard, FootageDialog, rowsOf, timing, useFootage } from "./FootageReady";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 delete (Element.prototype as { animate?: unknown }).animate;
@@ -147,5 +147,10 @@ describe("FootageReady", () => {
     done = true;
     await wait(60);
     expect(cardOn()).toBe(false);
+  });
+
+  it("a step whose footage can't all come here isn't ticked ready: it says it plays from the cloud", () => {
+    const rows = rowsOf(answer({ steps: [{ kind: "start", state: "done", left_s: 0 }, { kind: "rest", state: "done", left_s: 0, streams: true }] }));
+    expect(rows.map((row) => [row.state, row.right])).toEqual([["done", "ready"], ["waiting", "from the cloud"]]);
   });
 });

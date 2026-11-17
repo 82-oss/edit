@@ -165,7 +165,7 @@ test("a project's readiness from what's here: a whole copy, blocks of a file, no
     const second = await readiness(app, project.id, false);
     expect(second.speed_bps).toBeCloseTo((5 * BLOCK) / 2, 0);
     expect(second.ready).toBe(true);
-    // With a speed, the first step is the first minute (a's, here already); once said it only grows, never flickers shorter.
+    // With a speed, the first step comes down from the whole edit to the first minute (a's, here already).
     expect(second.head_s).toBe(60);
     expect(second.steps[0]!.state).toBe("done");
     expect(second.ready_in_s).toBe(0);
@@ -326,6 +326,11 @@ test("the disk's floors hold: footage that can't all fit is said so plainly, and
     const short = await readiness(app, project.id, false);
     expect(short.room).toBe("Only 1.0 of the 4.2 GB fits on this Mac. The start of the edit comes first; the rest plays from the cloud.");
     expect(short.ready).toBe(false);
+    // Its whole copy asked for and refused for want of room: "The rest of the footage" is over but not ready, it streams.
+    localPreviews.hooks.fetch = async () => {};
+    localPreviews.fetchWhole(key, localPath(cache, key), 2000 * BLOCK);
+    const streaming = await readiness(app, project.id, false);
+    expect(streaming.steps.find((step) => step.kind === "rest")).toMatchObject({ state: "done", streams: true });
     // At the work's floor nothing read is kept: nothing to wait for.
     storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES;
     const full = await readiness(app, project.id, false);

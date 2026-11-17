@@ -221,8 +221,6 @@ function measure(home: string, id: string, bytes: number, now: number): number |
   return one.bps ?? speeds.read(home).download_bps ?? null;
 }
 
-/** The first step's seconds for each project, once said: it only grows, so its words don't flicker. */
-const heads = new Map<string, number>();
 /** Each project's walk through its first minutes' blocks, while one runs. */
 const walking = new Map<string, Promise<void>>();
 
@@ -245,8 +243,9 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
   const bps = measure(app.store.home, id, hooks.received(), now);
   const needs = await needsOf(cache, project, root, files);
   // Kept once there's a speed to work it out by (before, it's the whole edit's needs).
-  const head_s = bps === null ? headFor(needs, bps, length_s) : Math.max(heads.get(id) ?? 0, headFor(needs, bps, length_s));
-  if (bps !== null) heads.set(id, head_s);
+  // Worked out again at each ask: the speed is read over half a minute, so it doesn't flicker, and a slow start that
+  // made it "The whole edit" comes down once the link picks up (kenobi, Nov 17: it only grew, and stayed so).
+  const head_s = headFor(needs, bps, length_s);
   const fps = projectFps(project);
   // The disk: blocks keep to the work's floor, whole copies to the cache's.
   let room: string | null = null;
@@ -266,8 +265,11 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
   const graphics = files.filter((file) => file.graphic);
   const restLeft = (some: FileState[]) => some.filter((file) => !file.here && !file.stuck).reduce((sum, file) => sum + (file.size - file.done), 0);
   const steps: FootageStep[] = [{ kind: "start", state: headNeeds.length === 0 || !keeping ? "done" : "waiting", left_s: headNeeds.length === 0 ? 0 : time(headBytes) }];
-  if (footage.length > 0) steps.push({ kind: "rest", state: doneOf(footage) ? "done" : "waiting", left_s: time(restLeft(footage)) });
-  if (graphics.length > 0) steps.push({ kind: "graphics", state: doneOf(graphics) ? "done" : "waiting", left_s: time(restLeft(graphics)) });
+  // A step whose files can't all come (no room, a fetch failing) is over, but not "ready": what's missing streams.
+  const streams = (some: FileState[]) => some.some((file) => !file.here && file.stuck);
+  const stepOf = (kind: "rest" | "graphics", some: FileState[]): FootageStep => ({ kind, state: doneOf(some) ? "done" : "waiting", left_s: time(restLeft(some)), ...(doneOf(some) && streams(some) ? { streams: true } : {}) });
+  if (footage.length > 0) steps.push(stepOf("rest", footage));
+  if (graphics.length > 0) steps.push(stepOf("graphics", graphics));
   const current = steps.find((step) => step.state !== "done");
   if (current !== undefined) current.state = "current";
   const done = doneOf(files);
@@ -369,7 +371,6 @@ async function walkHead(app: App, id: string): Promise<void> {
 /** For tests. */
 export function reset(): void {
   measures.clear();
-  heads.clear();
   walking.clear();
   cloudMedia.preparing.clear();
 }

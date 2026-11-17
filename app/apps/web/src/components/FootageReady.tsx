@@ -151,10 +151,11 @@ export function startWords(answer: Ready): string {
 export function rowsOf(answer: Ready): StepRow[] {
   return answer.steps.map((step) => ({
     key: step.kind,
-    state: step.state,
+    // Some of it can't come here: no tick, said plainly.
+    state: step.streams === true ? "waiting" : step.state,
     text: step.kind === "start" ? startWords(answer) : step.kind === "rest" ? "The rest of the footage" : "The graphics",
     progress: null,
-    right: step.state === "done" ? "ready" : leftWords(step.left_s),
+    right: step.streams === true ? "from the cloud" : step.state === "done" ? "ready" : leftWords(step.left_s),
   }));
 }
 
