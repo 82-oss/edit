@@ -639,16 +639,19 @@ pub fn encoders() -> Encoders {
     })
 }
 
-/// NVENC at `rate` bits a second: the rate VideoToolbox gets, at NVENC's
-/// high-quality preset, with adaptive quantisation in space and time, a
-/// lookahead and B-frames (an RTX 4060 runs p5 at several times real time for
-/// 1080p, Nov 7). Exports and a chunked export's chunks (`pipe_writer`) alike.
+/// NVENC at `rate` bits a second: the rate VideoToolbox gets, at NVENC's p3
+/// tuned for quality, with adaptive quantisation in space and time, a
+/// lookahead and B-frames. Exports and a chunked export's chunks
+/// (`pipe_writer`) alike. p3, not p5 (Nov 17, a real minute of 1080p at 9
+/// Mbit/s on mandalorian's RTX 4060): 570 fps against 257, SSIM 0.98547
+/// against 0.98561 and PSNR the same to 0.01 dB, the file 0.1% smaller; at p5
+/// the encoder took 3.7 ms a frame, the export's slowest stage.
 pub fn nvenc_args(hevc: bool, rate: u64) -> Vec<String> {
     let mut args: Vec<String> = [
         "-c:v",
         if hevc { "hevc_nvenc" } else { "h264_nvenc" },
         "-preset",
-        "p5",
+        "p3",
         "-tune",
         "hq",
         "-rc",
