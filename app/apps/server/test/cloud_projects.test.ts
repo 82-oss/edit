@@ -27,7 +27,11 @@ import {
   creatorOf,
   cloudShape,
   hooks as cloudHooks,
+  guardsTeamProjects,
+  GUARDED,
+  readOnly,
 } from "../src/cloud_projects.ts";
+import { DEFAULT_RELAY } from "../src/relay.ts";
 import { baseRouter, respond } from "../src/http/server.ts";
 import type { Project } from "../src/model.ts";
 import { newProject } from "../src/project.ts";
@@ -327,6 +331,41 @@ test("a new project takes the lock on its first push, which lands as rev 1 with 
   } finally {
     cleanup();
   }
+});
+
+test("what's pushed is the project as the cloud is sent it (`hooks.outgoing`), and that push is known as this machine's own", async () => {
+  const { app, store, projects, cleanup } = setup("cloud-outgoing");
+  const before = cloudHooks.outgoing;
+  try {
+    const id = store.create("Case", SETTINGS_1080).project.id;
+    // A clear still here, its render in the cloud (effects.ts `forCloud`).
+    cloudHooks.outgoing = (_app, _id, project) => ({ ...project, name: `${project.name} (as sent)` });
+    await runStep(app, projects, id, "Acquire");
+    await runStep(app, projects, id, "Push");
+    expect(mock.cloud.convex.body(id)!.name).toBe("Case (as sent)");
+    expect(store.get(id)!.project.name).toBe("Case");
+    expect(projects.status(id)).toMatchObject({ sync: "synced", rev: 1, dirty: false });
+    await runStep(app, projects, id, "Release");
+  } finally {
+    cloudHooks.outgoing = before;
+    cleanup();
+  }
+});
+
+test("a test Edit talking to the team's relay keeps off the team's projects unless told to (Nov 17: kenobi's test server pushed 16 revisions of Cops Found 3 Bodies)", () => {
+  const home = `${process.env.HOME}/.edit`;
+  // The team's installs: a release in ~/.edit.
+  expect(guardsTeamProjects({}, true)).toBe(false);
+  expect(guardsTeamProjects({ EDIT_HOME: home }, true)).toBe(false);
+  // A build from the checkout, or a release in a test home, against the team's relay.
+  expect(guardsTeamProjects({}, false)).toBe(true);
+  expect(guardsTeamProjects({ EDIT_RELAY_URL: DEFAULT_RELAY }, false)).toBe(true);
+  expect(guardsTeamProjects({ EDIT_HOME: "/Users/someone/.cache/edit-fr/home" }, true)).toBe(true);
+  // Dev's relay, a local one or the tests': its own cloud, nothing of the team's.
+  expect(guardsTeamProjects({ EDIT_RELAY_URL: "https://edit-relay-dev.sphe-g-personal.workers.dev" }, false)).toBe(false);
+  // On purpose.
+  expect(guardsTeamProjects({ EDIT_PROD_LOCKS: "1" }, false)).toBe(false);
+  expect(readOnly(GUARDED)).toBe("This Edit is a test build talking to the team's cloud, so the team's projects are read-only here.");
 });
 
 test("a write to a project someone else holds is refused, saying who; one nobody holds takes the lock first", async () => {

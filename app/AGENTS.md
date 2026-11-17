@@ -30,6 +30,7 @@ Environment flags (`EDIT_*`; add one only when a constant won't do, and list it 
 - `EDIT_ADOPT_SHELL_ENV=1` — set by the window helper when Finder starts `edit serve`: take the login shell's PATH.
 - `EDIT_HOSTS` — more Host names the server answers to, comma-separated.
 - `EDIT_CLOUD_HOLDER` — the name teammates see for this machine on a cloud lock (tests; the setting otherwise).
+- `EDIT_PROD_LOCKS=1` — lets a build that isn't a release, or a release in a data folder other than `~/.edit`, take the locks of the team's projects on prod's relay and push over them; without it such an Edit opens them read-only (`cloud_projects.ts` `guardsTeamProjects`; Nov 17, kenobi's test server re-rendered and blanked Cops Found 3 Bodies' effects).
 - `EDIT_TRIALS=1` — the trial server: kept out of the team's work.
 - `EDIT_LOCAL_EXPORTS` — exports at once on this Mac, in place of the chip's count (tests).
 - `EDIT_FFMPEG`, `EDIT_FFPROBE`, `EDIT_QJS`, `EDIT_YTDLP` — the tools' paths (tests; else bundled or on PATH).
