@@ -11,6 +11,7 @@ import * as clock from "../src/camera_clock.ts";
 import type { ScreenText } from "../src/native/index.ts";
 import { findAddon, native, useNative, wrap, type Native } from "../src/native/index.ts";
 import { join } from "../src/paths.ts";
+import * as tools from "../src/tools.ts";
 import { scratch } from "./helpers/home.ts";
 
 const hooks = { ...clock.hooks };
@@ -39,10 +40,17 @@ test("a clock is read in the forms cameras show it, OCR's slips and all", () => 
     ["2019-07-3000:23:33", day("2019-07-30"), at(0, 23, 33)],
     ["2023-05-14 T14:3O:O5 Z", day("2023-05-14"), at(14, 30, 5)],
     ["14;32;05", null, at(14, 32, 5)],
+    // Apple Vision's reads of a drawn Axon clock on kenobi (Nov 17): colons as ".." or "'.", T as "Ttr", the date its own box.
+    ["T14..32..02", null, at(14, 32, 2)],
+    ["Ttr14..32..00", null, at(14, 32, 0)],
+    ["Ttr14..32..06 Z", null, at(14, 32, 6)],
+    ["T14'.32.'00", null, at(14, 32, 0)],
+    ["2023.05.14 T14..32..04", day("2023-05-14"), at(14, 32, 4)],
+    ["12023-05-14 T14'.32.'04", day("2023-05-14"), at(14, 32, 4)],
   ];
   for (const [text, wantDay, second] of cases) expect(clock.parseClock(text), text).toEqual({ day: wantDay, second, seconds: true });
   // Not clocks: no seconds, out of range, words.
-  for (const text of ["at 12:30 we left", "25:61:00", "AXON BODY 3 X81234567", "D:oo:os:24", ""]) expect(clock.parseClock(text), text).toBeNull();
+  for (const text of ["at 12:30 we left", "25:61:00", "AXON BODY 3 X81234567", "D:oo:os:24", "2023.05.14", "X81.234567", "05.14.2023", ""]) expect(clock.parseClock(text), text).toBeNull();
   // An asked time may stop at the minute.
   expect(clock.parseClock("2:32 PM", true)).toEqual({ day: null, second: at(14, 32, 0), seconds: false });
   expect(clock.clockText({ day: day("2023-05-14"), second: at(14, 32, 5), seconds: true })).toBe("2023-05-14 14:32:05");
@@ -118,6 +126,33 @@ test("a camera time is the frame its second begins on, in the stretch that holds
   expect(count.reads).toBe(reads);
 });
 
+test("a clock too small for the 960-wide read is found at the file's own size", async () => {
+  stand({ "/cam.mp4": bodycam });
+  // The finding read sees no words at all (Vision's fast level on a small stamp).
+  clock.hooks.detect = async (_input, _size, seconds) => Object.fromEntries(seconds.map((second) => [second, []]));
+  const found = await clock.find(reader, [media("m1", "/cam.mp4")], ["14:32:05"]);
+  expect(found.no_clock).toEqual([]);
+  expect(found.results[0]!.found.map((hit) => hit.at)).toEqual([4.6]);
+});
+
+test("Vision's reads, the date and the time in boxes side by side and no colons, find the same frames", async () => {
+  const vision = (frame: number): ScreenText[] =>
+    bodycam(frame).flatMap((line): ScreenText[] => {
+      const parts = /^(\d{4})-(\d{2})-(\d{2}) T(\d{2}):(\d{2}):(\d{2}) Z$/u.exec(line.t);
+      if (parts === null) return line.t.startsWith("AXON") ? [{ t: "X81.234567", b: [0.914, 0.056, 0.983, 0.074] }] : [line];
+      return [
+        { t: `${parts[1]}.${parts[2]}.${parts[3]}`, b: [0.831, 0.022, 0.902, 0.041] },
+        { t: `Ttr${parts[4]}..${parts[5]}..${parts[6]}`, b: [0.906, 0.022, 0.971, 0.041] },
+      ];
+    });
+  stand({ "/cam.mp4": vision });
+  const found = await clock.find(reader, [media("m1", "/cam.mp4")], ["2023-05-14 14:32:05", "14:50:20"]);
+  expect(found.results.map((result) => result.found.map((hit) => [hit.at, hit.until, hit.clock]))).toEqual([
+    [[4.6, 5.6, "2023.05.14 Ttr14..32..05"]],
+    [[49.267, 50.267, "2023.05.14 Ttr14..50..20"]],
+  ]);
+});
+
 test("stretches split at a jump in the clock, and a lone misread is dropped", () => {
   const read = (frame: number, second: number): clock.Read => ({ frame, clock: { day: 1, second, seconds: true }, text: "" });
   const reads = [read(0, 100), read(90, 103), read(180, 999), read(270, 109), read(360, 500), read(450, 503)];
@@ -136,7 +171,12 @@ test("an asked time that isn't one is refused in a line", async () => {
 // ---------------------------------------------------------------------------
 // Real frames
 
-const ffmpeg = Bun.which("ffmpeg");
+// Edit's own FFmpeg (a Homebrew one may have no drawtext: kenobi's 8.1.2 hasn't).
+const ffmpeg = (() => {
+  const path = tools.ffmpeg();
+  const filters = Bun.spawnSync([path, "-hide_banner", "-filters"]);
+  return filters.exitCode === 0 && filters.stdout.toString().includes(" drawtext ") ? path : null;
+})();
 const addon = findAddon();
 test.skipIf(ffmpeg === null || addon === null)("on real frames drawn with a ticking Axon clock and a cut, the answer is the frame itself", async () => {
   before = useNative(wrap(require(addon!) as Native));

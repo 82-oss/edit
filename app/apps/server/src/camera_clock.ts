@@ -33,6 +33,11 @@ import * as tools from "./tools.ts";
 const FILE = "camera-clock-v1.json";
 /** Seconds of a file looked at to find its clock (shares of its length). */
 const LOCATE_AT = [0.1, 0.3, 0.5, 0.7, 0.9];
+/** Where a clock the 960-wide read missed is looked for: the picture's top and bottom. */
+const BANDS: Box[] = [
+  [0, 0, 1, 0.2],
+  [0, 0.8, 1, 1],
+];
 /** The coarse pass: at most this many frames, at least this many seconds apart. */
 const COARSE_MOST = 60;
 const COARSE_LEAST_STEP = 3;
@@ -123,7 +128,11 @@ function dateIn(text: string): number | null {
  */
 export function parseClock(text: string, minutes = false): Clock | null {
   const clean = cleaned(text);
-  const time = /(\d{1,2})\s?:\s?(\d{2})(?:\s?:\s?(\d{2}))?(?:\s*([AP])\.?\s?M\b\.?)?/u.exec(clean);
+  // Colons first (a date glued to the time, "2019-07-3000:23:33", still reads); then what Vision makes of a
+  // colon ("T14..32..02", "T14'.32.'00"), standing alone so a dotted date ("2023.05.14") isn't taken for a time.
+  const time =
+    /(\d{1,2})\s?:\s?(\d{2})(?:\s?:\s?(\d{2}))?(?:\s*([AP])\.?\s?M\b\.?)?/u.exec(clean) ??
+    /(?<![\d.'’])(\d{1,2})\s?[.'’,:]{1,2}\s?(\d{2})\s?[.'’,:]{1,2}\s?(\d{2})(?![\d.'’]?\d)(?:\s*([AP])\.?\s?M\b\.?)?/u.exec(clean);
   if (time === null) return null;
   if (time[3] === undefined && !minutes) return null;
   let hour = Number(time[1]);
@@ -180,10 +189,13 @@ export function anchorsOf(frames: ScreenText[][]): Anchor[] {
         const [gx, gy] = centre(group.boxes[0]!);
         return Math.abs(gx - x) < 0.06 && Math.abs(gy - y) < 0.04;
       });
-      const dated = clock.day !== null || lines.some((other) => other !== line && besides(other.b, line.b) && dateIn(cleaned(other.t)) !== null);
-      if (near === undefined) groups.push({ boxes: [line.b], dated: dated ? 1 : 0 });
+      // A date in a box of its own beside the time (Vision reads "2023-05-14" and "T14..32..04" apart): read with it.
+      const date = clock.day === null ? lines.find((other) => other !== line && besides(other.b, line.b) && dateIn(cleaned(other.t)) !== null) : undefined;
+      const dated = clock.day !== null || date !== undefined;
+      const boxes = date === undefined ? [line.b] : [line.b, date.b];
+      if (near === undefined) groups.push({ boxes, dated: dated ? 1 : 0 });
       else {
-        near.boxes.push(line.b);
+        near.boxes.push(...boxes);
         near.dated += dated ? 1 : 0;
       }
     }
@@ -393,7 +405,14 @@ async function locate(file: File): Promise<void> {
     const read = await hooks.detect(file.input, file.size, seconds);
     frames = [...frames, ...Object.values(read)];
   }
-  const anchors = anchorsOf(frames);
+  let anchors = anchorsOf(frames);
+  if (anchors.length === 0 && duration > 0) {
+    // Too small for the 960-wide read (a stamp a dozen pixels high there, under Vision's least text height, a
+    // 32nd of the picture's): the picture's top and bottom bands, where cameras put their clocks, at the file's own size.
+    const times = [0.2, 0.5, 0.8].map((share) => Math.floor(duration * share * file.fps) / file.fps);
+    const bands = await Promise.all(BANDS.map((band) => hooks.readAt(file.input, file.size, file.fps, band, times)));
+    anchors = anchorsOf(times.map((_, index) => bands.flatMap((band) => band[index] ?? [])));
+  }
   state.anchors = anchors;
   state.region = anchors.length === 0 ? null : regionOf(anchors);
   save(media, state);
