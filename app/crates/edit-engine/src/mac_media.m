@@ -9,6 +9,15 @@
 #import <VideoToolbox/VideoToolbox.h>
 #import <Security/Security.h>
 
+// Frame `index`'s time at `fps` on a 600000 timescale, exactly: every common rate
+// (24, 25, 30, 60 and their NTSC 1000/1001) is a whole number of ticks a frame.
+// CMTimeMakeWithSeconds(index / fps) landed a tick either side on about one
+// frame in ten (kenobi, Nov 17), and FFmpeg's comparisons, which pair frames
+// by time, paired those with their neighbours.
+static CMTime frame_time(int64_t index, double fps) {
+    return CMTimeMake((int64_t)llround((double)index * (600000.0 / fps)), 600000);
+}
+
 static void fail(char *error, size_t capacity, NSString *message) {
     if (capacity) snprintf(error, capacity, "%s", message.UTF8String ?: "AVFoundation failed");
 }
@@ -1087,7 +1096,7 @@ static int edit_writer_frame_unguarded(void *handle, int64_t frame, const uint8_
             }
         }
         CVPixelBufferUnlockBaseAddress(pixel, 0);
-        BOOL ok = converted == kvImageNoError && [w.adaptor appendPixelBuffer:pixel withPresentationTime:CMTimeMakeWithSeconds(frame / w.fps, 600000)];
+        BOOL ok = converted == kvImageNoError && [w.adaptor appendPixelBuffer:pixel withPresentationTime:frame_time(frame, w.fps)];
         CFRelease(pixel);
         if (!ok) fail(error, capacity, w.writer.error.localizedDescription ?: @"Native encoder rejected frame");
         return ok;
@@ -1107,7 +1116,7 @@ static int edit_writer_finish_unguarded(void *handle, int64_t frames, char *erro
             fail(error, capacity, w.writer.error.localizedDescription ?: [NSString stringWithFormat:@"Native encoder isn't writing (status %ld)", (long)w.writer.status]);
             return 0;
         }
-        [w.writer endSessionAtSourceTime:CMTimeMakeWithSeconds(frames / w.fps, 600000)];
+        [w.writer endSessionAtSourceTime:frame_time(frames, w.fps)];
         [w.input markAsFinished];
         dispatch_semaphore_t done = dispatch_semaphore_create(0);
         [w.writer finishWritingWithCompletionHandler:^{ dispatch_semaphore_signal(done); }];
@@ -1339,7 +1348,7 @@ static int smooth_inner(const char *path, double start, double length, double sp
                 else picture = (ended || phase < 0.5) ? before : after;
                 NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:30];
                 while (!input.readyForMoreMediaData && writer.status == AVAssetWriterStatusWriting && deadline.timeIntervalSinceNow > 0) usleep(1000);
-                if (writer.status != AVAssetWriterStatusWriting || ![adaptor appendPixelBuffer:picture withPresentationTime:CMTimeMakeWithSeconds((double)(first + (int64_t)i) / fps, 600000)]) {
+                if (writer.status != AVAssetWriterStatusWriting || ![adaptor appendPixelBuffer:picture withPresentationTime:frame_time(first + (int64_t)i, fps)]) {
                     ok = NO; why = writer.error.localizedDescription ?: @"Encoder stalled";
                 }
             }

@@ -67,12 +67,17 @@ struct Resample {
 struct BlurParams {
     width: u32,
     height: u32,
-    _pad: [u32; 2],
+    full: [u32; 2],
     nu: [f32; 4],
     ends: [f32; 4],
     post: [f32; 4],
     shift: [f32; 4],
+    step: u32,
+    _tail: [u32; 3],
 }
+
+/// How much smaller the Blur fill's background is blurred (`fill_blur.wgsl`).
+const BLUR_STEP: u32 = 4;
 
 /// What FFmpeg's graph for a shape added to the picture, in RGB: it went
 /// through BT.601 4:2:0 (the blur's, the eq's and the overlay's format) and
@@ -493,12 +498,15 @@ fn blur(build: &mut Build, back: &wgpu::TextureView, out: &wgpu::TextureView, si
         bind_group_layouts: &[Some(&layout)],
         immediate_size: 0,
     });
-    let (nu_y, ends_y, post_y) = gblur(40.0);
-    let (nu_c, ends_c, post_c) = gblur(80.0);
+    let step = BLUR_STEP;
+    let full = size;
+    let size = (size.0.div_ceil(step), size.1.div_ceil(step));
+    let (nu_y, ends_y, post_y) = gblur(40.0 / f64::from(step));
+    let (nu_c, ends_c, post_c) = gblur(80.0 / f64::from(step));
     let params = build.uniform(&BlurParams {
         width: size.0,
         height: size.1,
-        _pad: [0; 2],
+        full: [full.0, full.1],
         nu: [nu_y, nu_c, nu_c, 0.0],
         ends: [ends_y, ends_c, ends_c, 1.0],
         post: [
@@ -508,6 +516,8 @@ fn blur(build: &mut Build, back: &wgpu::TextureView, out: &wgpu::TextureView, si
             1.0,
         ],
         shift: build.shift,
+        step,
+        _tail: [0; 3],
     });
     let lines = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("edit fill blur lines"),
@@ -541,7 +551,7 @@ fn blur(build: &mut Build, back: &wgpu::TextureView, out: &wgpu::TextureView, si
         ("load", (size.0.div_ceil(8), size.1.div_ceil(8))),
         ("rows", (size.1.div_ceil(64), 1)),
         ("columns", (size.0.div_ceil(64), 1)),
-        ("compose", (size.0.div_ceil(8), size.1.div_ceil(8))),
+        ("compose", (full.0.div_ceil(8), full.1.div_ceil(8))),
     ] {
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("edit fill blur"),
