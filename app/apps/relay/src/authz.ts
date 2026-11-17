@@ -154,6 +154,8 @@ export const WRITABLE = [
   "edit/transcribe/",
   // Edit V2's cloud: the library's files (effects' and templates'), each by its content (library.ts).
   "edit/library/",
+  // Footage with a re-uploader's text taken out (text_removal.ts), by file and seconds: never paid for twice.
+  "edit/cleaned/",
   REPORTS, IDEAS, THUMBNAILS, CHANNELS,
 ];
 
