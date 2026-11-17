@@ -808,6 +808,52 @@ test("a run in the background: the chat row's numbers while it's out, then the a
   }
 }, 120_000);
 
+test("two runs done while the person's turn runs: one turn of Edit's own once it ends, telling of both", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-wake-once");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });
+  teach({ text: true });
+  const log: string[] = [];
+  tr.useProvider(standIn(log, () => null, "vmake-web"));
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const sent: string[] = [];
+  let running = true;
+  (app as unknown as { agents: unknown }).agents = { chat: () => ({ running }), send: async (_project: string, text: string) => void sent.push(text) };
+  const before = { ...removalSchedule.timing };
+  removalSchedule.timing.watchMs = 30;
+  removalSchedule.timing.wakeEveryMs = 30;
+  try {
+    const file = await labelledFootage(dir, 30);
+    const id = await labelledProject(app, file, 30);
+    await store.update(id, "test", (p) => {
+      (p.clips[0] as VideoClip).duration = 240;
+    });
+    const done = async (count: number) => {
+      const until = Date.now() + 20_000;
+      while (log.length < count && Date.now() < until) await Bun.sleep(20);
+      await tr.settled(id);
+      await Bun.sleep(200);
+    };
+    await removalSchedule.ensure(app, id);
+    await done(1);
+    // The clip grows: a second run, done while the turn still runs.
+    await store.update(id, "agent", (p) => {
+      (p.clips[0] as VideoClip).duration = 360;
+    });
+    await removalSchedule.ensure(app, id);
+    await done(2);
+    expect(sent).toEqual([]);
+    running = false;
+    const until = Date.now() + 10_000;
+    while (sent.length === 0 && Date.now() < until) await Bun.sleep(20);
+    await Bun.sleep(200);
+    expect(sent.length).toBe(1);
+    expect(sent[0]).toContain("2 pieces cleaned");
+  } finally {
+    Object.assign(removalSchedule.timing, before);
+    cleanup();
+  }
+}, 120_000);
+
 test("removal starts by itself as soon as edits rest (no button on the website's plan); a longer clip sends only its new seconds", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });

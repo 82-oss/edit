@@ -432,7 +432,7 @@ export function wakeText(rows: PieceRow[]): string {
     (left.length > 0 ? `Not clean, and why:\n${byFile(left.slice(0, 30), true)}\n\n` : "") +
     (held.length > 0 ? `${held.length} piece${held.length === 1 ? " waits" : "s wait"} for the Vmake account (the line at the top of the editor says why); they go once it can be used, their blur on until then.\n\n` : "") +
     "Now lay OUR subtitles, and the intro's titles and captions, wherever they're missing over the cleaned footage (add_subtitles with missing_only; the intro's as its lesson says), and look at your work (check_removal for any piece you haven't seen; a frame of ours over a cleaned stretch). " +
-    "Then tell the person in one plain message: what was cleaned, what was blurred or left and why, and that our subtitles are on. If there's nothing to add, just say what was cleaned."
+    "Only then tell the person in one plain message: what was cleaned, what was blurred or left and why, and that our subtitles are on. If there's nothing to add, just say what was cleaned."
   );
 }
 
@@ -441,26 +441,47 @@ function finished(app: App, id: string, run: Run): void {
   const rows = pieceRows(id).filter((row) => run.before.get(row.key) !== row.state && row.state !== "none" && row.state !== "queued");
   if (!rows.some((row) => row.state === "done" || row.state === "check" || row.state === "failed")) return;
   diag.info("removal", `${id}: done in ${Math.round((Date.now() - run.startedAt) / 1000)} s; the agent is told`);
-  void wake(app, id, wakeText(rows));
+  // One wake-up a project: a run done while an earlier one's still waits for a turn to end joins it (one turn, not two).
+  const waiting = wakes.get(id);
+  if (waiting !== undefined) {
+    for (const row of rows) waiting.set(row.key, row);
+    return;
+  }
+  wakes.set(id, new Map(rows.map((row) => [row.key, row])));
+  void wake(app, id);
 }
 
-/** Starts the agent's turn on `text` once no turn is under way (a person's message meanwhile goes first; this waits behind it). */
-async function wake(app: App, id: string, text: string): Promise<void> {
+/** Pieces each project's waiting wake-up will tell of. */
+const wakes = new Map<string, Map<string, PieceRow>>();
+
+/** Starts the agent's turn on what's done once no turn is under way (a person's message meanwhile goes first; this waits behind it). */
+async function wake(app: App, id: string): Promise<void> {
   const until = Date.now() + 12 * 3_600_000;
   while (Date.now() < until) {
     const panel = seams.agentPanel(app);
     const running = (panel.turn?.(id) ?? (panel.chat(id) as { running?: boolean })).running === true;
     if (!running) {
+      // Taken as it goes: a run done after this joins a wake-up of its own.
+      const rows = wakes.get(id) ?? new Map<string, PieceRow>();
+      wakes.delete(id);
       try {
         await app.store.mayWrite(id);
-        await panel.send(id, text, null, null);
+        await panel.send(id, wakeText([...rows.values()]), null, null);
         return;
       } catch (error) {
         diag.warn("removal", `${id}: telling the agent removal is done: ${diag.messageOf(error)}; trying again`);
+        // Not sent: what it would have told goes with the next try (and whatever joined meanwhile).
+        const joined = wakes.get(id);
+        if (joined !== undefined) {
+          for (const [key, row] of rows) if (!joined.has(key)) joined.set(key, row);
+          return;
+        }
+        wakes.set(id, rows);
       }
     }
     await Bun.sleep(timing.wakeEveryMs);
   }
+  wakes.delete(id);
 }
 
 /** Every project of a channel taught to take theirs out is brought up to date as soon as its edits rest, and again when the server starts (`resume`), here (not a save pulled from another Mac); every export waits for its pieces still out. */
@@ -485,6 +506,7 @@ export function start(app: App): void {
 export function reset(): void {
   looked.clear();
   active.clear();
+  wakes.clear();
   if (watcher !== null) clearInterval(watcher);
   watcher = null;
 }
