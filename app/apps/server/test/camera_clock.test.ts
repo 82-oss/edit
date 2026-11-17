@@ -140,10 +140,10 @@ test("Vision's reads, the date and the time in boxes side by side and no colons,
     bodycam(frame).flatMap((line): ScreenText[] => {
       const parts = /^(\d{4})-(\d{2})-(\d{2}) T(\d{2}):(\d{2}):(\d{2}) Z$/u.exec(line.t);
       if (parts === null) return line.t.startsWith("AXON") ? [{ t: "X81.234567", b: [0.914, 0.056, 0.983, 0.074] }] : [line];
-      return [
-        { t: `${parts[1]}.${parts[2]}.${parts[3]}`, b: [0.831, 0.022, 0.902, 0.041] },
-        { t: `Ttr${parts[4]}..${parts[5]}..${parts[6]}`, b: [0.906, 0.022, 0.971, 0.041] },
-      ];
+      const time: ScreenText = { t: `Ttr${parts[4]}..${parts[5]}..${parts[6]}`, b: [0.906, 0.022, 0.971, 0.041] };
+      // The date box now and then not read at all.
+      if (frame % 7 === 3) return [time];
+      return [{ t: `${parts[1]}.${parts[2]}.${parts[3]}`, b: [0.831, 0.022, 0.902, 0.041] }, time];
     });
   stand({ "/cam.mp4": vision });
   const found = await clock.find(reader, [media("m1", "/cam.mp4")], ["2023-05-14 14:32:05", "14:50:20"]);
@@ -201,10 +201,18 @@ test.skipIf(ffmpeg === null || addon === null)("on real frames drawn with a tick
     const path = join(dir, "axon.mp4");
     expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", path]).exitCode).toBe(0);
     expect(typeof native().screenTextAt).toBe("function");
+    // What the reader saw, said with a failure (Vision on CI's Macs reads differently from PaddleOCR here).
+    const seen: string[] = [];
+    clock.hooks.readAt = async (input, size, fps, region, times) => {
+      const lines = await hooks.readAt(input, size, fps, region, times);
+      times.forEach((time, index) => seen.push(`${time.toFixed(3)} ${JSON.stringify((lines[index] ?? []).map((line) => line.t))}`));
+      return lines;
+    };
     const cam: clock.Footage = { id: "m1", name: "axon.mp4", path, kind: "video", duration: 16, width: 1280, height: 720, fps: 30 };
     const found = await clock.find(reader, [cam], ["14:32:05", "14:40:13", "14:40:10", "14:35:00"]);
     // 14:32:05 begins 5.37 s in (frame 162, as 161 is 5.367 s, still :04); 14:40:13 at 13 s (frame 390); 14:40:10 at the cut, 10 s.
-    expect(found.results.map((result) => result.found.map((hit) => [hit.at, hit.until, hit.within]))).toEqual([[[5.4, 6.4, 0]], [[13, 14, 0]], [[10, 11, 0]], []]);
+    const said = () => [...seen].sort().join("\n");
+    expect(found.results.map((result) => result.found.map((hit) => [hit.at, hit.until, hit.within])), said()).toEqual([[[5.4, 6.4, 0]], [[13, 14, 0]], [[10, 11, 0]], []]);
     expect(found.results[0]!.found[0]!.clock).toContain("14:32:05");
     expect(found.results[3]!.nearest!.length).toBe(2);
   } finally {

@@ -86,7 +86,7 @@ const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "
 function cleaned(text: string): string {
   let out = text.toUpperCase().replaceAll(";", ":");
   for (let pass = 0; pass < 2; pass++) {
-    out = out.replace(/(?<=[\d:])O|O(?=[\d:])/gu, "0").replace(/(?<=[\d:])[LI|]|[LI|](?=[\d:]\d)/gu, "1");
+    out = out.replace(/(?<=[\d:])O|O(?=[\d:])/gu, "0").replace(/(?<=[\d:])[LI|]|(?<=\d[.'’])[LI|](?=\d)|[LI|](?=[\d:]\d)/gu, "1");
   }
   return out;
 }
@@ -259,13 +259,13 @@ export interface Read {
   text: string;
 }
 
-/** clock − source in seconds: the middle of the second a read shows, less where it was read. */
-function offsetOf(read: Read, fps: number): number {
-  return (read.clock.day ?? 0) * 86_400 + read.clock.second + 0.5 - read.frame / fps;
-}
-
+/**
+ * Two reads are one stretch when their clocks are as far apart as the frames are (a read is ±0.5 s, and a little
+ * drift). By the date when both show one, else by the time of day: a date the reader missed on one frame (Vision
+ * reads it as a box of its own, now and then not at all) doesn't split a stretch.
+ */
 export function sameStretch(a: Read, b: Read, fps: number): boolean {
-  return (a.clock.day === null) === (b.clock.day === null) && Math.abs(offsetOf(a, fps) - offsetOf(b, fps)) <= SAME;
+  return Math.abs(between(a.clock, b.clock) - (b.frame - a.frame) / fps) <= SAME;
 }
 
 /** The reads (in frame order) as continuous stretches of the clock; a lone read out of step with both neighbours that agree is a misread, dropped. */
