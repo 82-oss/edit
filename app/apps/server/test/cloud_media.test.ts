@@ -624,6 +624,43 @@ test("an effect's render goes up as the project's own file, its cache copy is th
   }
 });
 
+// Sphe's M4, Nov 17 (nightly-78): the export planned cutfx-10's render at effect-renders/, the backfill put it up 5 s
+// later and deleted that file (its copy now the cache's), and 9 minutes in the export failed on it: "Edit can't read
+// that video … download it again".
+test("an effect's render an export is reading stays where the export planned it when it goes up, and the sweep takes it after", async () => {
+  const fixture = home("cloud-render-held");
+  const { store, app, cleanup } = fixture;
+  try {
+    const id = store.create("Case", SETTINGS).project.id;
+    testCloud(fixture.home, [[id, null]]).attach(store);
+    const renders = join(store.uploadsDir(id), "effect-renders");
+    fs.mkdirSync(renders, { recursive: true });
+    const file = join(renders, "cutfx-10-a1caed560fbc.mp4");
+    fs.writeFileSync(file, "render");
+    await store.update(id, "test", (project) => {
+      project.media = [media("m1", file, { name: "cutfx-10", effect: "cutfx-10", effect_key: "a1caed560fbc" })];
+      project.clips.push({ id: "c1", track: "v1", start: 0, duration: 30, type: "video", media: "m1", source_in: 0, speed: 1 } as Project["clips"][number]);
+    });
+    // The export takes the edit as it is: the render's own file, not up yet.
+    const [out, originals] = await cloudMedia.forExport(structuredClone(store.get(id)!.project), 0, 30, store.cacheDir());
+    expect(out.media[0]!.path).toBe(file);
+    expect(pinned(file)).toBe(true);
+    // It goes up meanwhile: the edit reads the cache's copy from now on, and the export's file is still there.
+    expect((await cloudMedia.backfill(app, id)).uploaded).toEqual([{ media: "m1", name: "cutfx-10" }]);
+    const saved = store.get(id)!.project.media[0]!;
+    expect(saved.path).not.toBe(file);
+    expect(fs.readFileSync(file, "utf8")).toBe("render");
+    // Once the export is done with it, the renders' sweep takes it (an hour on, as any render the edit no longer plays).
+    originals.release();
+    expect(pinned(file)).toBe(false);
+    expect(effectCloud.sweepRenders(store.home, Date.now() + 2 * 3600_000)).toMatchObject({ files: 1 });
+    expect(fs.existsSync(file)).toBe(false);
+    expect(fs.readFileSync(cloudMedia.localPath(store.cacheDir(), saved.cloud!.original), "utf8")).toBe("render");
+  } finally {
+    cleanup();
+  }
+});
+
 test("a Drive file streams to R2 with nothing on this disk, the registry remembers it, and a short download stores nothing", async () => {
   const fixture = home("cloud-drive");
   const { store, cleanup } = fixture;

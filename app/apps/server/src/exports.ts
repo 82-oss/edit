@@ -10,6 +10,8 @@ import { Effect } from "effect";
 
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
+import { cachePath } from "./effect_cloud.ts";
+import * as filePins from "./file_pins.ts";
 import * as folderAccess from "./folder_access.ts";
 import * as capacity from "./export_capacity.ts";
 import { diskFull, freeOn, outOfSpace, shownProgress } from "./export_prep.ts";
@@ -121,6 +123,10 @@ interface Running {
   /** How long the video is, and when it was asked for: its steps (export_steps.ts). */
   seconds?: number;
   started_ms?: number;
+  /** Lets go of the files it holds (`holdFiles`), once its render has ended or it never starts. */
+  unpin?: () => void;
+  /** Lets go of only the export it copies unchanged chunks from: the room it needs comes first. */
+  letReuseGo?: () => void;
 }
 
 /** Export jobs across projects, including the recent outcomes. Local jobs
@@ -516,6 +522,70 @@ const KEEP_LISTED = 30;
 const KEEP_PARTS = 200;
 
 /**
+ * Holds what an export of `project` reads against everything that deletes
+ * Edit's own files (file_pins.ts), from the moment it's asked for until its
+ * render ends: its files here (an effect's render before it goes up, footage
+ * added here), the cache's copies of its renders, and the file its unchanged
+ * chunks are copied out of (the export made ahead, the last export; the
+ * engine's manifest names it). Sphe's M4, Nov 17: the render the export had
+ * planned was deleted 5 s in by the swap into the cache once it went up, and
+ * Retry's room-making took the 7.3 GB export made ahead it would have copied
+ * every chunk from. `reuse` lets go of only the latter (when there's no room
+ * for both, the room comes first).
+ */
+export function holdFiles(cache: string, project: Project): { media: () => void; reuse: () => void; reusable: boolean } {
+  const paths: string[] = [];
+  for (const media of project.media) {
+    if (!media.path.includes("://")) paths.push(media.path);
+    const cloud = media.cloud;
+    if (cloud !== undefined && cloud !== null && cloud.proxy === cloud.original) paths.push(cachePath(cache, cloud.original));
+  }
+  const ahead = aheadFile(cache, project.id);
+  const last = lastChunks(cache, project.id)?.output;
+  const reused = [ahead, ...(last === undefined ? [] : [last])];
+  return { media: filePins.pin(paths), reuse: filePins.pin([...reused, `${ahead}.json`]), reusable: reused.some((path) => isFile(path)) };
+}
+
+/**
+ * The edit an export was taken of, with each effect's render whose file has
+ * gone since (swapped into the cache once it went up, an older snapshot carried
+ * on after a restart) read from where the edit has that same render now: the
+ * same effect at the same key, or one made again for this export (`remade`).
+ * The edit itself is unchanged: only where its renders are read from.
+ */
+export function located(snapshot: Project, live: Project | null, remade: ReadonlySet<string> = new Set(), here: (path: string) => boolean = isFile): Project {
+  if (live === null) return snapshot;
+  let out: Project | null = null;
+  snapshot.media.forEach((media, index) => {
+    const name = media.effect;
+    if (typeof name !== "string" || typeof media.effect_key !== "string") return;
+    const cloud = media.cloud !== undefined && media.cloud !== null;
+    if (!remade.has(name) && (cloud || here(media.path))) return;
+    const now = live.media.find((one) => one.id === media.id && one.effect === name && (remade.has(name) || one.effect_key === media.effect_key));
+    if (now === undefined || typeof now.effect_key !== "string") return;
+    out ??= structuredClone(snapshot);
+    const into = out.media[index]!;
+    into.path = now.path;
+    into.effect_key = now.effect_key;
+    if (now.cloud !== undefined && now.cloud !== null) into.cloud = structuredClone(now.cloud);
+    else delete into.cloud;
+  });
+  return out ?? snapshot;
+}
+
+/** The effect whose render (as the engine was handed it, `exported`) an export's error names, and whether its file is there (unreadable) or gone. */
+export function effectIn(error: string, exported: Project): { name: string; key: string; path: string; unreadable: boolean } | null {
+  for (const media of exported.media) {
+    if (typeof media.effect !== "string" || typeof media.effect_key !== "string" || media.path === "" || !error.includes(media.path)) continue;
+    return { name: media.effect, key: media.effect_key, path: media.path, unreadable: isFile(media.path) };
+  }
+  return null;
+}
+
+/** Effects' renders an export makes again or fetches again for itself before it gives up (each once). */
+const REMAKES = 3;
+
+/**
  * The project as an export running for it was asked for, kept while it runs
  * so an export a restart cut short carries on with that timeline, not edits
  * made since (`resumeSnapshot`).
@@ -784,10 +854,15 @@ export class ExportRegistry implements seams.Exports {
     if (roomFor(exportBytes(options, plan, options.fps ?? fps), store.cacheDir(), folder) !== null) return false;
     const edit = structuredClone(project);
     let finish!: () => void;
+    const reads = holdFiles(store.cacheDir(), edit);
+    const unpin = () => {
+      reads.media();
+      reads.reuse();
+    };
     const running: Running = {
       output, key: "", cancelled: false, job: null, snapshot: null, timeline: timelineHash(edit),
       options: withWatermarkKey(optionsKey(options), watermark), keepLocal: true, queued: false, ahead: true,
-      ended: new Promise<void>((resolve) => { finish = resolve; }),
+      ended: new Promise<void>((resolve) => { finish = resolve; }), unpin, ...(reads.reusable ? { letReuseGo: reads.reuse } : {}),
     };
     this.jobs.set(project.id, running);
     this.localActive++;
@@ -809,6 +884,7 @@ export class ExportRegistry implements seams.Exports {
         if (this.jobs.get(project.id) === running) this.jobs.delete(project.id);
       })
       .finally(() => {
+        unpin();
         release();
         finish();
       });
@@ -964,6 +1040,34 @@ export class ExportRegistry implements seams.Exports {
       if (!seams.isUnavailable(error)) throw error;
     }
     if (notReady !== null) throw new Error(notReady);
+    // Held from here (before any room is made for it) until its render ends: nothing deletes what it reads meanwhile.
+    const held = holdFiles(store.cacheDir(), project);
+    const unpin = () => {
+      held.media();
+      held.reuse();
+    };
+    try {
+      return await this.begin(store, library, project, options, output, extra, plan, fps, unpin, held.reusable ? held.reuse : null);
+    } catch (error) {
+      unpin();
+      throw error;
+    }
+  }
+
+  /** `start`'s work once what the export reads is held (`unpin` lets go of it, `letReuseGo` of the export it'd copy from, when there is one). */
+  private async begin(
+    store: Store,
+    library: seams.Library,
+    project: Project,
+    options: ExportOptions,
+    output: string,
+    extra: StartExtra,
+    plan: Plan,
+    fps: number,
+    unpin: () => void,
+    letReuseGo: (() => void) | null,
+  ): Promise<string> {
+    const addon = native();
     // The edit as it is, before a watermark goes over it: what this export is of (its hash and clip map).
     const edit = project;
     if (extra.watermark !== undefined) project = await seams.channelMarks.addWatermark({ library }, store.cacheDir(), project, plan, extra.watermark);
@@ -999,13 +1103,21 @@ export class ExportRegistry implements seams.Exports {
     // Short of room: what Edit's own cache holds can be fetched again, so its least recently used copies go
     // first, and it's refused only if that isn't enough (JJ's Mac, Nov 10: a share refused twice for 3 GB,
     // until he cleared the disk by hand).
-    if (short !== null && room.make !== null) {
+    // The export made ahead it copies its chunks from is kept while anything else can go; taken last, when it's that or
+    // no export (Sphe's M4, Nov 17: Retry's room took it, 7.3 GB, and all 88 chunks were rendered again).
+    const make = () => {
+      if (room.make === null) return;
       try {
         room.make(roomWanted(size, store.cacheDir(), folder));
       } catch (error) {
         diag.warn("export", `making room for ${project.name}'s export: ${diag.messageOf(error)}`);
       }
       short = roomFor(size, store.cacheDir(), folder);
+    };
+    if (short !== null) make();
+    if (short !== null && room.make !== null && letReuseGo !== null) {
+      letReuseGo();
+      make();
     }
     if (short !== null) throw new Error(short);
     const whole = ["h264", "hevc", "prores"].includes(options.format) && plan.start === 0 && plan.end >= duration(project) && plan.end > 0;
@@ -1054,7 +1166,7 @@ export class ExportRegistry implements seams.Exports {
     project = structuredClone(project);
     options = structuredClone(options);
     const review = extra.share === true ? reviewBytes(Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1)) : 0;
-    const running: Running = { output: path, key, cancelled: false, job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review, seconds: Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1), started_ms: nowMs() };
+    const running: Running = { output: path, key, cancelled: false, job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review, seconds: Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1), started_ms: nowMs(), unpin, ...(letReuseGo === null ? {} : { letReuseGo }) };
     this.jobs.set(project.id, running);
     let upload = false;
     try {
@@ -1068,6 +1180,7 @@ export class ExportRegistry implements seams.Exports {
       }
     }
     running.cancelQueued = () => {
+      unpin();
       this.localQueue = this.localQueue.filter(one => one.running !== running);
       this.publish(store, project, running, "cancelled", 0);
       this.jobs.delete(project.id);
@@ -1093,7 +1206,7 @@ export class ExportRegistry implements seams.Exports {
         diag.error("export", `${project.name}: ${diag.messageOf(error)}`);
         if (this.jobs.get(project.id) === running) this.jobs.delete(project.id);
         jobs.end(this.home, running.key);
-      });
+      }).finally(unpin);
     }, notify: () => {
       if (running.queued && !running.cancelled) this.publish(store, project, running, "queued", 0);
     } });
@@ -1142,14 +1255,22 @@ export class ExportRegistry implements seams.Exports {
     /** Room for it now, as it starts (it may have waited in line a long while since it was asked for), and once the excerpts it reads are cut. */
     const roomNow = () => {
       if (quiet || running.bytes === undefined) return;
-      let short = roomShort(running.bytes, running.review ?? 0, store.cacheDir(), folder);
-      if (short > 0 && room.make !== null) {
+      const bytes = running.bytes;
+      let short = roomShort(bytes, running.review ?? 0, store.cacheDir(), folder);
+      const make = () => {
+        if (room.make === null) return;
         try {
-          room.make(roomWanted(running.bytes, store.cacheDir(), folder) + (running.review ?? 0));
+          room.make(roomWanted(bytes, store.cacheDir(), folder) + (running.review ?? 0));
         } catch (error) {
           diag.warn("export", `making room for ${project.name}'s export: ${diag.messageOf(error)}`);
         }
-        short = roomShort(running.bytes, running.review ?? 0, store.cacheDir(), folder);
+        short = roomShort(bytes, running.review ?? 0, store.cacheDir(), folder);
+      };
+      if (short > 0) make();
+      // The export it copies from goes last, as at its start.
+      if (short > 0 && room.make !== null && running.letReuseGo !== undefined) {
+        running.letReuseGo();
+        make();
       }
       if (short > 0) throw new Error(diskFull(short));
     };
@@ -1162,19 +1283,46 @@ export class ExportRegistry implements seams.Exports {
         let restored: string | null = null;
         roomNow();
         try {
+          // Effects' renders made again (or fetched again) for this export: Edit's own files, never the person's to fix.
+          const remade = new Set<string>();
+          let remakes = 0;
+          const remake = async (effect: { name: string; key: string; path: string; unreadable: boolean }) => {
+            if (remakes >= REMAKES || seams.broll.remakeEffect === undefined) throw new Error(`the ${effect.name} effect's render couldn't be read, even after Edit made it again`);
+            remakes += 1;
+            fresh = false;
+            diag.warn("export", `${project.name}: the ${effect.name} effect's render ${effect.unreadable ? "couldn't be read" : "isn't there"} (${effect.path}); making it again and carrying on from the chunks made`);
+            await seams.broll.remakeEffect(id, effect.name, effect.key, effect.unreadable);
+            remade.add(effect.name);
+          };
+          // Its first start of the engine: room asked for again and the last export fetched back, once.
+          let begun = false;
           // A stalled render (a read from the cloud that never answers: card 1's
           // export sat at 28% for seven minutes, Oct 29) is stopped and started
           // again by itself; the chunks it made are kept, so it carries on.
-          for (let attempt = 1; ; attempt++) {
+          let attempt = 0;
+          for (;;) {
             let stalled = false;
+            // Its renders read from where the edit has them now, should one have moved since it was taken (file_pins.ts
+            // holds them from then on; a snapshot carried on after a restart, an export waiting in line).
+            const reading = located(project, store.get(id)?.project ?? null, remade);
             // Cloud footage: the originals, not the proxies (read from R2 for the export), signed afresh each try.
-            let exported = project;
+            let exported = reading;
             let originals: seams.Originals | null = null;
             try {
-              [exported, originals] = await seams.cloudMedia.forExport(project, plan.start, plan.end, store.cacheDir(), () => running.cancelled, onPrep);
+              [exported, originals] = await seams.cloudMedia.forExport(reading, plan.start, plan.end, store.cacheDir(), () => running.cancelled, onPrep);
             } catch (error) {
               if (!seams.isUnavailable(error)) throw error;
             }
+            // A render it shows that isn't here any more: made again (or brought back) before the engine starts, never found
+            // missing minutes in.
+            const shown = new Set(exported.clips.map((clip) => (clip as { media?: unknown }).media).filter((media): media is string => typeof media === "string"));
+            const gone = exported.media.find((media) => shown.has(media.id) && typeof media.effect === "string" && typeof media.effect_key === "string" && !media.path.includes("://") && !isFile(media.path));
+            if (gone !== undefined) {
+              originals?.release();
+              await remake({ name: gone.effect!, key: gone.effect_key!, path: gone.path, unreadable: false });
+              continue;
+            }
+            let unread: ReturnType<typeof effectIn> = null;
             try {
               let pending: string[] = [];
               try {
@@ -1189,8 +1337,9 @@ export class ExportRegistry implements seams.Exports {
                 );
               }
               if (running.cancelled) throw new Error("cancelled");
-              if (attempt === 1) roomNow();
-              if (attempt === 1) {
+              if (!begun) roomNow();
+              if (!begun) {
+                begun = true;
                 let fetched = -1;
                 restored = this.home === null ? null : await restorePrevious(store.cacheDir(), this.home, project.id, (key, dest) => cloud.download(key, dest, (got, size) => {
                   const ratio = size > 0 ? Math.min(1, Math.max(0, got / size)) : 0;
@@ -1234,16 +1383,26 @@ export class ExportRegistry implements seams.Exports {
               try {
                 await job.wait();
               } catch (error) {
-                if (!stalled || running.cancelled) throw error;
+                if (running.cancelled) throw error;
+                if (!stalled) {
+                  // An effect's render it couldn't read is Edit's own file: made again, and the export carries on.
+                  unread = effectIn(diag.messageOf(error), exported);
+                  if (unread === null) throw error;
+                }
               } finally {
                 clearInterval(watch);
               }
               if (running.cancelled) throw new Error("cancelled");
-              if (!stalled) break;
+              if (!stalled && unread === null) break;
             } finally {
               originals?.release();
             }
+            if (unread !== null) {
+              await remake(unread);
+              continue;
+            }
             fresh = false;
+            attempt += 1;
             if (attempt >= stall.tries) throw new Error(`the export stopped moving ${stall.tries} times (nothing new for ${Math.round(stall.ms / 60_000)} minutes each)`);
             diag.warn("export", `${project.name}: nothing new for ${Math.round(stall.ms / 60_000)} minutes; starting it again (the chunks made are kept)`);
           }
@@ -1262,7 +1421,8 @@ export class ExportRegistry implements seams.Exports {
       const short = (running.bytes ?? 0) + (running.review ?? 0) - freeOn(store.cacheDir());
       result = { ok: false, error: outOfSpace(error) && !running.cancelled && !diag.messageOf(error).startsWith("Your disk is full") ? diskFull(short) : diag.messageOf(error) };
     } finally {
-      // Archiving/uploading a completed file doesn't occupy the renderer.
+      // Archiving/uploading a completed file doesn't occupy the renderer, nor hold what it read.
+      running.unpin?.();
       releaseLocal?.();
     }
     const frames = Math.max(plan.end - plan.start, 0);

@@ -221,6 +221,13 @@ const RULES: Rule[] = [
     title: "The preview couldn't show this frame",
     fix: "Move the playhead or press play to try again. If it stays, quit Edit and open it again.",
   })],
+  // An effect's render is Edit's own file, never the person's footage to download again (Sphe's M4, Nov 17: "Edit
+  // can't read that video … import it again" for cutfx-10's render). An export makes one it can't read again itself
+  // (exports.ts `remake`); only what's left after that, or a raw decode error naming one, reaches here.
+  [/effect's render couldn't be read|^(?=[\s\S]*(?:could not decode|No (?:native )?video track|failed to fill whole buffer))(?=[\s\S]*(?:\/effect-renders\/|\/exports\/[^/\s]+\/effect-))/i, () => ({
+    title: "One of the edit's effects couldn't be read",
+    fix: "It's Edit's own file, not your footage. Export again; if it happens again, quit Edit and open it again first.",
+  })],
   [/\bNo (native )?video track/i, () => ({
     title: "That file has no picture",
     fix: "It's sound only. Use it as audio, or choose the video file instead.",

@@ -61,6 +61,7 @@ import * as devtools from "./chrome_devtools.ts";
 import * as diag from "./diag.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as effectCloud from "./effect_cloud.ts";
+import * as filePins from "./file_pins.ts";
 import { diskFull, outOfSpace } from "./export_prep.ts";
 import * as speeds from "./export_speeds.ts";
 import * as effectMap from "./effect_map.ts";
@@ -2016,7 +2017,8 @@ function prune(store: Store, project: string, name: string, kept: string): void 
     .filter((entry) => own(entry) && entry.endsWith(".mp4") && !entry.endsWith(".partial.mp4") && join(dir, entry) !== kept)
     .map((entry) => ({ entry, at: fs.statSync(join(dir, entry)).mtimeMs }))
     .sort((a, b) => b.at - a.at);
-  for (const { entry } of videos.slice(1)) fs.rmSync(join(dir, entry), { force: true });
+  // One an export is reading stays (file_pins.ts): the renders' sweep takes it later.
+  for (const { entry } of videos.slice(1)) if (!filePins.pinned(join(dir, entry))) fs.rmSync(join(dir, entry), { force: true });
   for (const entry of entries) {
     if (!own(entry) || !entry.endsWith(".frames") || running.has(entry.slice(name.length + 1, name.length + 13))) continue;
     fs.rmSync(join(dir, entry), { recursive: true, force: true });
@@ -2462,6 +2464,45 @@ export function notReady(store: Store, project: Project, start = 0, end = Number
   return null;
 }
 
+/** The Edit the effects run in (`start`): an export reaches the renders through it (`remake`). */
+let appHere: App | null = null;
+
+/**
+ * An effect's render an export of `project` found gone, or couldn't read
+ * (`unreadable`): Edit's own file, so it's made again here (or brought back
+ * from this computer's copy of it) and the export carries on from the chunks
+ * it made, never sending the person to download it again (Sphe's M4, Nov 17:
+ * "Edit can't read that video … import it again" for cutfx-10's render, 9
+ * minutes into an export). Only a render of the code here: code changed
+ * since is a new render, which the export says it waits for.
+ */
+export async function remake(project: string, name: string, key: string, unreadable: boolean): Promise<void> {
+  const app = appHere;
+  if (app === null) throw new Error(`the ${name} effect's render can't be made on this computer now`);
+  const live = app.store.get(project);
+  if (live === null) throw new Error("the project is gone");
+  const media = live.project.media.find((one) => one.effect === name);
+  if (media === undefined) throw new Error(`the ${name} effect isn't in the edit any more: export again`);
+  const file = `${name}-${key}.mp4`;
+  const out = join(rendersDir(app.store, project), file);
+  const cached = effectCloud.cachePath(app.store.cacheDir(), effectCloud.keyOf(project, file));
+  if (unreadable) {
+    // Whichever copy it read: the same file linked in both places, or one of them. Drawn again from the code below.
+    diag.warn("effects", `${project}: ${name}'s render ${file} couldn't be read by an export; drawing it again`);
+    fs.rmSync(out, { force: true });
+    fs.rmSync(cached, { force: true });
+  } else if (media.effect_key === key) {
+    // Here after all, where the edit has it now: the export reads it from there.
+    if (fs.existsSync(media.path)) return;
+    // The cache's copy of it: linked back where the edit reads it.
+    if (media.path === out && effectCloud.bringBack(app.store.cacheDir(), project, file, out)) return;
+  }
+  const current = list(app.store, project).find((one) => one.name === name) ?? null;
+  if (current === null) throw new Error(`the ${name} effect's render isn't on this computer and its code isn't either: open the project where it was made`);
+  if (!sameCode(project, name, key, current)) throw new Error(`The ${name} effect is still rendering: export again in a minute or two.`);
+  await renderNow(app, project, name);
+}
+
 /** Whether a file of a project's renders (`<name>-<key>.frames`, `.partial.mp4`) is a render's under way or waiting to go on (effect_cloud.ts's sweep leaves it). */
 function rendering(project: string, file: string): boolean {
   for (const render of renders.values()) if (render.project === project && file.startsWith(`${render.name}-${render.key}.`)) return true;
@@ -2475,6 +2516,7 @@ effectCloud.renderingNow.is = rendering;
  * ones left undone when Edit last closed are made.
  */
 export function start(app: App): void {
+  appHere = app;
   changed = (project) => renderSoon(app, project);
   // A project opened again here, nothing changed in it: what wasn't drawn while another computer (or nobody) held it is
   // drawn now (Nov 16, the M4: an effect brought down after its project was closed again never rendered on reopening).

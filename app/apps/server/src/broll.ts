@@ -13,7 +13,7 @@ import type { App } from "./app.ts";
 import { parseTranscript } from "./captions_core.ts";
 import * as diag from "./diag.ts";
 import * as jobs from "./jobs.ts";
-import { notReady as effectsNotReady, waitForRenders as waitForEffectRenders } from "./effects.ts";
+import { notReady as effectsNotReady, remake as remakeEffectRender, waitForRenders as waitForEffectRenders } from "./effects.ts";
 import { copyFile, ioMessage } from "./files.ts";
 import { isBug } from "./guard.ts";
 import { fingerprint } from "./hash.ts";
@@ -1182,6 +1182,11 @@ export function exportReady(store: Store, project: Project, start: number, end: 
   const shown = new Set(project.clips.filter((clip) => clip.start < end && clip.start + clip.duration > start).map(clipMedia).filter((id): id is string => id !== null));
   if (project.media.some((media) => shown.has(media.id) && isMapStandIn(media.path))) return "A map view is still rendering: export again in a minute.";
   return null;
+}
+
+/** An effect's render an export found gone or couldn't read, made again or brought back (effects.ts `remake`). */
+export function remakeEffect(projectId: string, name: string, key: string, unreadable: boolean): Promise<void> {
+  return remakeEffectRender(projectId, name, key, unreadable);
 }
 
 /**

@@ -62,6 +62,7 @@ import * as localPreviews from "./local_previews.ts";
 import * as playing from "./playing.ts";
 import * as storage from "./storage.ts";
 import * as exportExcerpts from "./export_excerpts.ts";
+import * as filePins from "./file_pins.ts";
 import { prepLine } from "./export_prep.ts";
 import * as pieces from "./proxy_pieces.ts";
 import * as cloud from "./cloud.ts";
@@ -2259,16 +2260,22 @@ async function prepareForExport(
   // made on another machine that hasn't uploaded it: say so.
   const cloudEdit = project.media.some((media) => media.cloud !== undefined && media.cloud !== null);
   const strandedNames: string[] = [];
+  // Files of this computer's own it reads as they are (an effect's render not up yet, footage added here): held too.
+  const ownFiles: string[] = [];
   for (const mediaId of usedMedia(project, start, end)) {
     const media = mediaOf(project, mediaId);
     if (media === undefined) continue;
     const where = media.cloud;
     if (where === undefined || where === null) {
-      if (cloudEdit && !isFile(media.path)) strandedNames.push(media.name);
+      if (isFile(media.path)) ownFiles.push(media.path);
+      else if (cloudEdit) strandedNames.push(media.name);
       continue;
     }
     const own = where.proxy === where.original;
-    if (own && isFile(media.path)) continue;
+    if (own && isFile(media.path)) {
+      ownFiles.push(media.path);
+      continue;
+    }
     // Its own preview, whole on this computer already (an effect's render, a map, one the window fetched): read from there.
     if (own && isFile(localPath(cache, where.original))) {
       onDisk.set(mediaId, localPath(cache, where.original));
@@ -2290,8 +2297,9 @@ async function prepareForExport(
     const media = out.media.find((item) => item.id === mediaId);
     if (media !== undefined) media.path = path;
   }
-  // The cache's copies it reads (an effect's render, a whole preview, an original fetched before): the cleaner leaves them while it runs.
-  originals.hold([...onDisk.values()]);
+  // The cache's copies it reads (an effect's render, a whole preview, an original fetched before), and its own files: nothing
+  // deletes them while it runs (file_pins.ts).
+  originals.hold([...onDisk.values(), ...ownFiles]);
   if (onDisk.size > 0) diag.info("export", `${project.id}: reading ${onDisk.size} cloud originals from this machine's copies`);
   if (needed.length === 0) return [out, originals];
   if (!cloud.enabled()) throw new Error("this edit's footage is in the cloud: exporting it needs the cloud: sign in to Edit");
@@ -2802,8 +2810,11 @@ async function backfillNow(app: App, id: string, retryFailed: boolean): Promise<
     if (saved === true) {
       if (made.path !== path) app.media.ensure(made.path, probe, render !== null);
       // The render's own file goes once the cache has it (linked): one copy, the cache's to keep within its budget.
+      // Never while an export holds it (file_pins.ts): one planned from the edit before this save reads that path
+      // (Sphe's M4, Nov 17: cutfx-10's went 5 s into an export, which failed on it 9 minutes later); the renders'
+      // sweep takes it once nothing does.
       if (render !== null && made.cloud !== null) {
-        if (isFile(effectCloud.cachePath(cache, made.cloud.original))) fs.rmSync(path, { force: true });
+        if (isFile(effectCloud.cachePath(cache, made.cloud.original)) && !filePins.pinned(path)) fs.rmSync(path, { force: true });
         await effectCloud.inUse(app, id, render, made.cloud.original).catch((error: unknown) => diag.warn("cloud", `${id}: ${render}'s old renders: ${diag.messageOf(error)}`));
       }
       uploaded.push({ media: mediaId, name });

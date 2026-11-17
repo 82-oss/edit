@@ -946,6 +946,8 @@ export interface BrollSeam {
   isMapStandIn(path: string): boolean;
   /** Why an export of this edit (frames `start` to `end`) can't go out yet (an effect not rendered, a map shot still its first frame), or null. */
   exportReady?(store: Store, project: Project, start: number, end: number): string | null;
+  /** An effect's render (`<name>` at `key`) an export found gone or couldn't read (`unreadable`), made again or brought back (effects.ts `remake`). */
+  remakeEffect?(projectId: string, name: string, key: string, unreadable: boolean): Promise<void>;
   /** A place for a coded effect's map: where it is, its address and its building's outline. */
   findPlace(app: App, place: string): Promise<{ lat: number; lon: number; address: string; outline: [number, number][] | null }>;
   mapView(app: App, projectId: string, args: Json): Promise<Json>;

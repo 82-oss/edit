@@ -191,28 +191,8 @@ export async function cut(url: string, from: number, to: number, out: string, si
   );
 }
 
-/** Excerpts an export is reading (path → how many): the cache's cleaner leaves them (cache_cleanup.ts). */
-const reading = new Map<string, number>();
-
-/** Whether an export is reading `path` now. */
-export function pinned(path: string): boolean {
-  return (reading.get(path) ?? 0) > 0;
-}
-
-/** Holds `paths` against the cleaner until the returned function is called (once the export is done with them). */
-export function pin(paths: string[]): () => void {
-  for (const path of paths) reading.set(path, (reading.get(path) ?? 0) + 1);
-  let done = false;
-  return () => {
-    if (done) return;
-    done = true;
-    for (const path of paths) {
-      const left = (reading.get(path) ?? 1) - 1;
-      if (left > 0) reading.set(path, left);
-      else reading.delete(path);
-    }
-  };
-}
+/** Excerpts an export is reading: the cache's cleaner leaves them (cache_cleanup.ts); one registry for every file an export holds (file_pins.ts). */
+export { pin, pinned } from "./file_pins.ts";
 
 /** One cell as a local file and the seconds it holds: this Mac's copy, or cut now from `url`. Null when it can't be had. */
 async function cellFile(cache: string, key: string, url: string, cell: Cell, signal: AbortSignal): Promise<{ path: string; seconds: number; how: "here" | "cut" } | null> {

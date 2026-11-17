@@ -46,7 +46,7 @@ import * as reviews from "./reviews.ts";
 import { carryAnalysis, localPath, readLocalOriginals, uploadingNow, writeLocalOriginals } from "./cloud_media.ts";
 import { createHash } from "node:crypto";
 
-import { pinned } from "./export_excerpts.ts";
+import { pinned } from "./file_pins.ts";
 import { evicted as nativeEvicted } from "./native_preview.ts";
 import { openedTimes } from "./opened.ts";
 import { join } from "./paths.ts";
@@ -436,6 +436,9 @@ export function cleanCache(
   const times = inUse === null ? new Map<string, number>() : lastUsed(app, inUse, done);
   const report: CleanReport = { folders: 0, files: 0, bytes: 0, removed: [] };
   const remove = (path: string) => {
+    // An export reading it, or about to (its footage, an effect's render, the export made ahead it copies its chunks
+    // from: file_pins.ts): left for the next pass.
+    if (pinned(path)) return;
     const bytes = size(path);
     if (!dryRun) {
       try {

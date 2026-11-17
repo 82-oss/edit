@@ -498,6 +498,28 @@ test("exports made ahead: the two made last stay under three days old; older or 
   }
 });
 
+// Sphe's M4, Nov 17: Retry's room-making ("freed 7.31 GB for work that needs 15.6 GB free") took the export made ahead
+// that it would have copied all 88 chunks from, and rendered every one again.
+test("the export made ahead an export is about to copy from stays through room-making, and goes once it's let go", () => {
+  const { app, store, cleanup } = fixtureHome("cache-ahead-held");
+  try {
+    const cache = store.cacheDir();
+    fs.mkdirSync(`${cache}/ahead`, { recursive: true });
+    const file = `${cache}/ahead/p1.mp4`;
+    for (const path of [file, `${file}.json`]) fs.writeFileSync(path, "x".repeat(1000));
+    const release = pin([file, `${file}.json`]);
+    // Over budget, as an export short of room asks it to be.
+    cleanCache(app, false, Date.now(), { cacheBytes: 0, freeBytes: 0, free: 1e12 });
+    expect(fs.existsSync(file)).toBe(true);
+    expect(fs.existsSync(`${file}.json`)).toBe(true);
+    release();
+    cleanCache(app, false, Date.now(), { cacheBytes: 0, freeBytes: 0, free: 1e12 });
+    expect(fs.existsSync(file)).toBe(false);
+  } finally {
+    cleanup();
+  }
+});
+
 // Nov 16 audit: past a fixed 100 MB the cleaner took whole projects' history folders, all 30 saves of each (a
 // reset's "edit before" among them).
 test("project history past its share of the budget loses the oldest saves across projects, each project keeping its newest three", () => {

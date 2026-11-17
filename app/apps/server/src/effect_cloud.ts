@@ -25,6 +25,7 @@ import fs from "node:fs";
 import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
+import { pinned } from "./file_pins.ts";
 import { writeAtomic } from "./files.ts";
 import { join, parent } from "./paths.ts";
 
@@ -119,7 +120,8 @@ async function retire(app: App, project: string, keys: string[]): Promise<void> 
     return;
   }
   const cache = app.store.cacheDir();
-  for (const key of ours) fs.rmSync(cachePath(cache, key), { force: true });
+  // One an export is reading stays here (file_pins.ts); the cache's cleaner takes it once nobody uses it.
+  for (const key of ours) if (!pinned(cachePath(cache, key))) fs.rmSync(cachePath(cache, key), { force: true });
   const known = read(app.store.home);
   for (const [name, list] of Object.entries(known[project] ?? {})) {
     const left = list.filter((key) => !ours.includes(key));
@@ -247,7 +249,8 @@ export function sweepRenders(home: string, now = Date.now(), dryRun = false): { 
       const effect = RENDER_FILE.exec(name)?.[1];
       if (effect === undefined) continue;
       const path = join(dir, name);
-      if (playing.has(path)) continue;
+      // Played from, or read by an export under way (planned from the edit before its render went up: file_pins.ts).
+      if (playing.has(path) || pinned(path)) continue;
       let stat: fs.Stats;
       try {
         stat = fs.statSync(path);
