@@ -2274,8 +2274,7 @@ fn export_chunked(
     // Focused (smooth playback, played as each chunk lands): the chunks
     // around the first minute from the playhead are rendered before the
     // sound's mix, the rest after it. The mix first held a 26-minute edit's
-    // first chunk back 2 minutes (Nov 2); never beside the picture's
-    // decoders, where AVFoundation's sound reads and theirs contend.
+    // first chunk back 2 minutes (Nov 2).
     let (first, rest): (Vec<&chunks::Chunk>, Vec<&chunks::Chunk>) = match plan.focus {
         Some(_) if mixing => {
             let mut frames = 0;
@@ -2339,10 +2338,10 @@ fn export_chunked(
             progress,
         )
     };
-    if mixing && !cfg!(target_os = "macos") {
-        // Off a Mac the mix (FFmpeg's and the engine's own reads, no
-        // AVFoundation) runs beside the picture: on mandalorian it was 2.9 s
-        // of a 13 s minute's export, all of it before the first frame.
+    if mixing {
+        // The mix runs beside the picture: on mandalorian it was 2.9 s of a
+        // 13 s minute's export, all of it before the first frame, and about 1
+        // s of 10.8 on kenobi (M1, Nov 17).
         let background = crate::media::is_background();
         // The sound's share done, as f32 bits: the picture's thread reports both.
         let heard = std::sync::atomic::AtomicU32::new(0);
