@@ -27,6 +27,7 @@ import * as diag from "./diag.ts";
 import { aheadFile, type ExportRegistry, listExports, optionsKey, timelineHash, withWatermarkKey } from "./exports.ts";
 import type { ExportOptions, Project } from "./model.ts";
 import { native } from "./native/index.ts";
+import * as playing from "./playing.ts";
 import { duration } from "./project.ts";
 import { read as reviewState } from "./reviews.ts";
 import * as seams from "./seams.ts";
@@ -97,6 +98,8 @@ export function tryNow(app: App, id: string): string | null {
     if (!seams.isUnavailable(error)) throw error;
   }
   if (pending.length > 0) return "slowed shots still smoothing";
+  // It reads every original from R2: not while a play or footage someone waits on has the link (playing.ts).
+  if (!playing.isIdle()) return "the link is the person's";
   const { options, watermark: kept } = nextShare(app.store.home, id);
   // As the share will (reviews.exportAndShare): a channel's project its channel's logo, or none.
   const watermark = channels.watermarkFor(project, kept);
@@ -110,6 +113,24 @@ export function tryNow(app: App, id: string): string | null {
   }
   if (other !== null) return other === id ? "already making it" : "making another's";
   return registry.startAhead(app.store, app.library, project, options, aheadFile(app.store.cacheDir(), id), watermark) ? null : `${THE_MACHINE} is busy`;
+}
+
+/**
+ * Footage someone waits on to open a project (footage_ready.ts): an export being made ahead stops, as it does when its
+ * edit changes (what it made is kept, and reused), and is looked at again after another rest.
+ */
+export function giveWay(app: App): void {
+  const registry = app.exports as Partial<Ahead> | undefined;
+  let making: string | null = null;
+  try {
+    making = registry?.aheadFor?.() ?? null;
+  } catch (error) {
+    if (!seams.isUnavailable(error)) throw error;
+  }
+  if (making === null) return;
+  diag.info("export", `${making}: making its export ahead stops while footage is waited on`);
+  void registry?.stopAhead?.(making);
+  changed(app, making);
 }
 
 /** Projects whose edits are resting, each with its timer. */
@@ -135,7 +156,7 @@ function changed(app: App, id: string): void {
       }
       if (why === null) diag.info("export", `${app.store.get(id)?.project.name ?? id}: making its export ahead, for the next export or share`);
       // Busy, smoothing or making another's: looked at again after another rest.
-      else if (why === `${THE_MACHINE} is busy` || why === "slowed shots still smoothing" || why === "making another's" || why === "an agent is working") wait();
+      else if (why === `${THE_MACHINE} is busy` || why === "slowed shots still smoothing" || why === "making another's" || why === "an agent is working" || why === "the link is the person's") wait();
     }, hooks.restMs);
     later.unref?.();
     resting.set(id, later);

@@ -31,6 +31,8 @@ export function useFootage(id: string, loaded: boolean) {
   const [phase, setPhase] = useState<Phase>("checking");
   const [answer, setAnswer] = useState<Ready | null>(null);
   const [card, setCard] = useState(false);
+  // Open now pressed: the person goes on without the footage, so the link is no longer kept for it (footage_ready.ts).
+  const [pressed, setPressed] = useState(false);
   const phaseRef = useRef(phase);
   phaseRef.current = phase;
 
@@ -38,6 +40,7 @@ export function useFootage(id: string, loaded: boolean) {
     setPhase("checking");
     setAnswer(null);
     setCard(false);
+    setPressed(false);
   }, [id]);
 
   useEffect(() => {
@@ -65,7 +68,8 @@ export function useFootage(id: string, loaded: boolean) {
       if (!alive) return;
       if (first === null || first.ready) {
         if (first !== null) setAnswer(first);
-        // Ready, but the disk can't keep it all: said once, in the corner.
+        // Ready, but the disk can't keep it all: said once, in the corner (nothing waited on: the link isn't held).
+        setPressed(true);
         open(first?.room != null);
         return;
       }
@@ -76,6 +80,7 @@ export function useFootage(id: string, loaded: boolean) {
       if (!alive) return;
       if (second === null || second.ready) {
         if (second !== null) setAnswer(second);
+        setPressed(true);
         open(second?.room != null);
         return;
       }
@@ -97,7 +102,8 @@ export function useFootage(id: string, loaded: boolean) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const shownAt = Date.now();
     const tick = async () => {
-      const now = await api.footageReady(id, false).catch(() => null);
+      // Opened by itself, the rest is still waited on (background work gives way); after Open now it isn't.
+      const now = await api.footageReady(id, !pressed).catch(() => null);
       if (!alive) return;
       if (now !== null) setAnswer(now);
       const over = now !== null && now.done && (now.room === null || Date.now() - shownAt >= timing.roomMs);
@@ -109,7 +115,7 @@ export function useFootage(id: string, loaded: boolean) {
       alive = false;
       clearTimeout(timer);
     };
-  }, [id, phase, card]);
+  }, [id, phase, card, pressed]);
 
   return {
     phase,
@@ -118,6 +124,9 @@ export function useFootage(id: string, loaded: boolean) {
     openNow: () => {
       setPhase("open");
       setCard(true);
+      setPressed(true);
+      // Said at once: what gave way to the footage carries on.
+      void api.footageReady(id, false).catch(() => null);
     },
   };
 }
@@ -162,7 +171,8 @@ export function rowsOf(answer: Ready): StepRow[] {
 /** The dialog over a project not ready to play smoothly yet. */
 export function FootageDialog({ answer, onOpen }: { answer: Ready; onOpen: () => void }) {
   const share = answer.bytes_total > 0 ? Math.min(1, answer.bytes_done / answer.bytes_total) : 0;
-  const time = aboutWords(answer.ready_in_s);
+  // It can't become smooth here: said instead of a time that won't come true.
+  const time = answer.cant ? null : aboutWords(answer.ready_in_s);
   const speed = speedWords(answer.speed_bps);
   return (
     <Modal open onClose={onOpen} width={440}>
@@ -181,7 +191,7 @@ export function FootageDialog({ answer, onOpen }: { answer: Ready; onOpen: () =>
         <div className="mt-[7px] h-1.5 overflow-hidden rounded-full bg-active" role="progressbar" aria-valuenow={Math.round(share * 100)} aria-valuemin={0} aria-valuemax={100}>
           <div className="fill-shimmer h-full rounded-full bg-primary transition-[width] duration-500 ease-out" style={{ width: `${Math.round(share * 100)}%` }} />
         </div>
-        {answer.room && <p className="mt-3 text-[12px] leading-normal text-muted">{answer.room}</p>}
+        {(answer.cant ?? answer.room) && <p className="mt-3 text-[12px] leading-normal text-muted">{answer.cant ?? answer.room}</p>}
         <StepList label="Footage steps" rows={rowsOf(answer)} className="mt-3.5" small />
         <div className="mt-4 flex items-center gap-2">
           <span className="flex-1 text-[11.5px] leading-snug text-muted">{speed ? `Downloading at ${speed}` : ""}</span>

@@ -38,6 +38,7 @@ import * as cloudBlocks from "./cloud_blocks.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as diag from "./diag.ts";
+import * as exportAhead from "./export_ahead.ts";
 import * as speeds from "./export_speeds.ts";
 import { json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
@@ -45,9 +46,11 @@ import * as localPreviews from "./local_previews.ts";
 import type { Media, Project } from "./model.ts";
 import { isFile } from "./paths.ts";
 import * as playbackReady from "./playback_ready.ts";
+import * as playing from "./playing.ts";
 import { duration as projectDuration, fps as projectFps } from "./project.ts";
 import * as pieces from "./proxy_pieces.ts";
 import * as storage from "./storage.ts";
+import { THIS_MACHINE } from "./machine.ts";
 import * as fs from "node:fs";
 
 /**
@@ -115,7 +118,13 @@ function guessBytes(media: Media, key: string): number {
 }
 
 /** Seams for tests: the clock, where blocks are kept, and the bytes read from the cloud so far (the speed's measure). */
-export const hooks = { now: () => Date.now(), root: () => cloudMedia.blocksRoot(), received: () => cloudBlocks.receivedBytes() };
+export const hooks = {
+  now: () => Date.now(),
+  root: () => cloudMedia.blocksRoot(),
+  received: () => cloudBlocks.receivedBytes(),
+  /** Bringing the first minutes first (the queue's order and their blocks): tests stand in for it. */
+  prepare: (app: App, id: string, head: number, now: number): void => prepare(app, id, head, now),
+};
 
 /** The files of `project` a play reads from the cloud, with how much of each is here. */
 async function filesOf(cache: string, project: Project, root: string | null): Promise<FileState[]> {
@@ -225,6 +234,8 @@ function measure(home: string, id: string, bytes: number, now: number): number |
 const walking = new Map<string, Promise<void>>();
 
 const GB = (bytes: number) => (bytes / 1e9).toFixed(1);
+/** "This Mac", at the start of a sentence. */
+const HERE = `${THIS_MACHINE.charAt(0).toUpperCase()}${THIS_MACHINE.slice(1)}`;
 
 /** Where project `id`'s footage stands on this Mac (see the top); `waiting`: its dialog is up, so its first minutes come first. */
 export async function readiness(app: App, id: string, waiting: boolean): Promise<FootageReady> {
@@ -233,11 +244,17 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
   const now = hooks.now();
   const project = live?.project;
   const length_s = project === undefined ? 0 : projectDuration(project) / projectFps(project);
-  const empty: FootageReady = { ready: true, done: true, made_on: null, head_s: 0, length_s, bytes_done: 0, bytes_total: 0, files_done: 0, files_total: 0, speed_bps: null, ready_in_s: 0, left_s: 0, steps: [], room: null };
-  if (project === undefined || root === null || !cloud.enabled() || length_s <= 0) return empty;
+  const empty: FootageReady = { ready: true, done: true, made_on: null, head_s: 0, length_s, bytes_done: 0, bytes_total: 0, files_done: 0, files_total: 0, speed_bps: null, ready_in_s: 0, left_s: 0, steps: [], room: null, cant: null };
+  if (project === undefined || root === null || !cloud.enabled() || length_s <= 0) {
+    playing.releaseLink(id);
+    return empty;
+  }
   const cache = app.store.cacheDir();
   const files = await filesOf(cache, project, root);
-  if (files.length === 0) return empty;
+  if (files.length === 0) {
+    playing.releaseLink(id);
+    return empty;
+  }
   const bytes_total = files.reduce((sum, file) => sum + file.size, 0);
   const bytes_done = files.reduce((sum, file) => sum + file.done, 0);
   const bps = measure(app.store.home, id, hooks.received(), now);
@@ -274,7 +291,24 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
   if (current !== undefined) current.state = "current";
   const done = doneOf(files);
 
-  if (waiting && !ready) prepare(app, id, Math.round(head_s * fps), now);
+  // Can't become smooth: what a play from the start needs here before it starts (the link too slow to stream it as it
+  // plays) is more than the disk keeps (blocks, to the work's floor). Said, not waited on for ever (kenobi, Nov 17).
+  const blockRoom = storage.spare(root, 0, storage.WORK_FLOOR_BYTES);
+  let cant: string | null = null;
+  if (!ready && keeping && bps !== null && headBytes > blockRoom) {
+    const startHere = !needs.some((need) => need.at_s < 60);
+    cant = startHere
+      ? `${HERE} can't hold all of it and the connection is too slow to stream the rest smoothly. Open now plays the start smoothly; later parts may pause.`
+      : `${HERE} can't hold all of it and the connection is too slow to stream it smoothly. Open now plays it as it comes; it may pause.`;
+  }
+
+  if (waiting && !ready) hooks.prepare(app, id, Math.round(head_s * fps), now);
+  // The link is the person's while they wait on this footage (the dialog, then its card): background work gives way
+  // (playing.ts), an export being made ahead stops; Open now (asked without `waiting`), or all of it here, lets go.
+  if (waiting && !done) {
+    if (!playing.linkHeld()) exportAhead.giveWay(app);
+    playing.holdLink(id, HOLD_MS);
+  } else playing.releaseLink(id);
   return {
     ready,
     done,
@@ -289,9 +323,13 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
     ready_in_s: ready ? 0 : time(headBytes),
     left_s: done ? 0 : time(restLeft(files)),
     steps,
-    room,
+    room: cant === null ? room : null,
+    cant,
   };
 }
+
+/** How long a page's ask holds the link for the person (the card asks every 3 s, the dialog every second). */
+const HOLD_MS = 8_000;
 
 /** How long a dialog's ask keeps the first minutes first (it asks every second). */
 const PREPARING_MS = 5_000;

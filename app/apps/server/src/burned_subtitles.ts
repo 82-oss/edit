@@ -174,16 +174,15 @@ function next(): void {
   if (busy) return;
   let at = line.findIndex((one) => urgent(one.path));
   if (at < 0) {
-    if (line.length === 0 || playing.isPlaying()) return;
+    // A read nobody waits on: after a play, and after footage someone waits on to open a project (playing.ts).
+    if (line.length === 0 || !playing.isIdle()) return;
     at = 0;
   }
   busy = true;
   line.splice(at, 1)[0]!.go();
 }
 
-playing.onChange((now) => {
-  if (!now) next();
-});
+playing.onIdle(next);
 
 /** Between two steps of a read nobody waits on: until nothing plays (or someone waits on it, or on one behind it). */
 async function giveWay(path: string): Promise<void> {

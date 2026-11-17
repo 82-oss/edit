@@ -1893,7 +1893,7 @@ export function fillPieces(app: App, id: string, from = 0): void {
   // take the disk under the cache's floor (storage.ts), as whole copies do.
   void (async () => {
     for (;;) {
-      if (!(await cloudBlocks.waitForViewerRest(stop)) || !(await playing.whenIdle(stop))) return;
+      if (!(await cloudBlocks.waitForViewerRest(stop)) || !(await playing.whenNotPlaying(stop))) return;
       let paused = false;
       let full = false;
       await fillHooks.fill(piecesContext(cache), wants, () => {
@@ -2782,6 +2782,8 @@ async function backfillNow(app: App, id: string, retryFailed: boolean): Promise<
   const uploaded: Record<string, unknown>[] = [];
   const failed: Record<string, unknown>[] = [];
   for (const [mediaId, path, probe, name, render] of todo) {
+    // An upload nobody waits on: after a play, and after footage someone waits on to open a project (playing.ts).
+    await playing.whenIdle();
     let made: Made;
     try {
       made = await diag.timeOnAsync("cloud", "cloud: backfill", path, () => (render !== null ? uploadRender(cache, id, path, probe, name) : uploadMade(cache, path, probe, name)));

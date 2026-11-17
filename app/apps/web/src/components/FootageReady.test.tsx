@@ -42,6 +42,7 @@ const answer = (fields: Partial<Ready> = {}): Ready => ({
     { kind: "graphics", state: "waiting", left_s: 5 },
   ],
   room: null,
+  cant: null,
   ...fields,
 });
 
@@ -152,5 +153,45 @@ describe("FootageReady", () => {
   it("a step whose footage can't all come here isn't ticked ready: it says it plays from the cloud", () => {
     const rows = rowsOf(answer({ steps: [{ kind: "start", state: "done", left_s: 0 }, { kind: "rest", state: "done", left_s: 0, streams: true }] }));
     expect(rows.map((row) => [row.state, row.right])).toEqual([["done", "ready"], ["waiting", "from the cloud"]]);
+  });
+
+  it("after it opened by itself the rest is still waited on; Open now lets the link go at once", async () => {
+    let now = answer();
+    const asked: boolean[] = [];
+    vi.spyOn(api, "footageReady").mockImplementation(async (_id, waiting) => {
+      asked.push(waiting);
+      return now;
+    });
+    mount();
+    await wait(60);
+    now = answer({ ready: true });
+    await wait(40);
+    // The card's asks after an open by itself keep waiting on the footage.
+    expect(cardOn()).toBe(true);
+    expect(asked.slice(-2)).toEqual([true, true]);
+    act(() => root!.unmount());
+    root = null;
+    document.body.innerHTML = "";
+    asked.length = 0;
+    now = answer();
+    mount();
+    await wait(60);
+    const open = [...document.querySelectorAll("button")].find((button) => button.textContent === "Open now")!;
+    act(() => open.click());
+    await wait(30);
+    // Said at once, and every card ask after it, without waiting.
+    const after = asked.slice(asked.lastIndexOf(true) + 1);
+    expect(after.length).toBeGreaterThan(0);
+    expect(after.every((one) => !one)).toBe(true);
+  });
+
+  it("one that can't become smooth says so instead of a time, Open now still the way on", async () => {
+    const cant = "This Mac can't hold all of it and the connection is too slow to stream the rest smoothly. Open now plays the start smoothly; later parts may pause.";
+    vi.spyOn(api, "footageReady").mockResolvedValue(answer({ cant, ready_in_s: 99_999 }));
+    mount();
+    await wait(60);
+    expect(dialog()?.textContent).toContain(cant);
+    expect(dialog()?.textContent).not.toContain("about");
+    expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Open now")).toBe(true);
   });
 });

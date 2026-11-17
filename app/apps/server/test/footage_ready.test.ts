@@ -8,6 +8,8 @@ import { BLOCK } from "../src/cloud_blocks.ts";
 import { localPath } from "../src/cloud_media.ts";
 import * as footageReady from "../src/footage_ready.ts";
 import * as localPreviews from "../src/local_previews.ts";
+import * as playing from "../src/playing.ts";
+import { THIS_MACHINE } from "../src/machine.ts";
 import type { Project } from "../src/model.ts";
 import * as storage from "../src/storage.ts";
 import { scratch } from "./helpers/home.ts";
@@ -20,6 +22,7 @@ const realFree = storage.diskHooks.free;
 const realRoot = footageReady.hooks.root;
 const realNow = footageReady.hooks.now;
 const realReceived = footageReady.hooks.received;
+const realPrepare = footageReady.hooks.prepare;
 const realFetch = localPreviews.hooks.fetch;
 let token: string | undefined;
 beforeEach(() => {
@@ -35,6 +38,8 @@ afterEach(() => {
   footageReady.hooks.root = realRoot;
   footageReady.hooks.now = realNow;
   footageReady.hooks.received = realReceived;
+  footageReady.hooks.prepare = realPrepare;
+  playing.reset();
   localPreviews.hooks.fetch = realFetch;
   localPreviews.reset();
   footageReady.reset();
@@ -361,3 +366,77 @@ function guessOf(project: Project, id: string): number {
   const one = project.media.find((media) => media.id === id)!;
   return localPreviews.previewBytes(one, one.cloud!.proxy!);
 }
+
+/** "This Mac" ("This computer" off a Mac). */
+const here = () => `${THIS_MACHINE.charAt(0).toUpperCase()}${THIS_MACHINE.slice(1)}`;
+
+/** A ten-minute project of one streamed file (`blocks` of it, `here` read), its speed measured at 1 MB/s. */
+async function slowProject(cache: string, blocks: number, here: number[]) {
+  const root = path.join(cache, "cloud", "blocks");
+  footageReady.hooks.root = () => root;
+  let now = 1_000_000;
+  footageReady.hooks.now = () => now;
+  let received = 0;
+  footageReady.hooks.received = () => received;
+  const prepared: number[] = [];
+  footageReady.hooks.prepare = (_app, _id, head) => void prepared.push(head);
+  const key = "edit/proxies/drive/long.mp4";
+  const project = newProject();
+  project.settings.fps = 30;
+  project.media.push(media({ id: "a", name: "a", path: stream(key), kind: "video", duration: 600, cloud: { proxy: key } } as never));
+  project.clips.push(clip("ca", "a", 0, 18000));
+  keep(root, key, blocks, here);
+  const app = appOf(cache, project);
+  await readiness(app, project.id, false);
+  received += 2_000_000;
+  now += 2_000;
+  return { app, project, prepared };
+}
+
+test("while its dialog or card waits on the footage the link is the person's: background work gives way, and it's let go once all is here or Open now asks without waiting", async () => {
+  const home = scratch("footage-ready-hold");
+  try {
+    const { app, project, prepared } = await slowProject(home.dir, 1000, [0]);
+    const waited = await readiness(app, project.id, true);
+    expect(waited.ready).toBe(false);
+    expect(prepared.length).toBe(1);
+    expect(playing.linkHeld()).toBe(true);
+    expect(playing.isIdle()).toBe(false);
+    // Nothing plays: the footage's own fetches go on; everything else waits.
+    expect(playing.isPlaying()).toBe(false);
+    let idle = false;
+    void playing.whenIdle().then(() => (idle = true));
+    expect(await playing.whenNotPlaying()).toBe(true);
+    await Bun.sleep(5);
+    expect(idle).toBe(false);
+    // Open now: asked without waiting, the link goes back at once.
+    await readiness(app, project.id, false);
+    expect(playing.linkHeld()).toBe(false);
+    await Bun.sleep(playing.hooks.pollMs + 20);
+    expect(idle).toBe(true);
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("one that can't become smooth here (it doesn't fit and the link can't stream it) says so plainly instead of waiting", async () => {
+  const home = scratch("footage-ready-cant");
+  try {
+    // 4.2 GB over ten minutes at 1 MB/s, and room for 300 MB of blocks: never smooth.
+    storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES + 300_000_000;
+    const { app, project } = await slowProject(home.dir, 2000, [0]);
+    const cant = await readiness(app, project.id, true);
+    expect(cant.ready).toBe(false);
+    expect(cant.cant).toBe(`${here()} can't hold all of it and the connection is too slow to stream it smoothly. Open now plays it as it comes; it may pause.`);
+    expect(cant.room).toBeNull();
+    // Its first minute and more here: the start plays smoothly, later parts may pause.
+    const start = await slowProject(home.dir, 2000, Array.from({ length: 250 }, (_, n) => n));
+    const later = await readiness(start.app, start.project.id, true);
+    expect(later.cant).toBe(`${here()} can't hold all of it and the connection is too slow to stream the rest smoothly. Open now plays the start smoothly; later parts may pause.`);
+    // Room enough: no such line, it just takes a while.
+    storage.diskHooks.free = () => 500 * 1e9;
+    expect((await readiness(start.app, start.project.id, true)).cant).toBeNull();
+  } finally {
+    home.cleanup();
+  }
+});

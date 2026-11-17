@@ -41,4 +41,6 @@ export interface FootageReady {
   steps: FootageStep[];
   /** Said plainly when the disk can't hold it all ("Only 4.2 of the 9.4 GB fits on this Mac…"); null when it can. */
   room: string | null;
+  /** Said plainly when it can't become smooth here (it doesn't fit, and the link is too slow to stream it): Open now is the way on. */
+  cant: string | null;
 }
