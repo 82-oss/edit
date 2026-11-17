@@ -2322,7 +2322,7 @@ fn export_chunked(
         })
     };
     render_these(&first, 0.0, rendered, &mut *progress)?;
-    if mixing {
+    let mix = |progress: &mut dyn FnMut(f32)| {
         mix_sound(
             project,
             options,
@@ -2331,15 +2331,47 @@ fn export_chunked(
             &sound_file.0,
             Some(&dir.join("sound")),
             cancel,
-            &mut |done| progress(rendered + done * sound_share),
+            progress,
+        )
+    };
+    if mixing && !cfg!(target_os = "macos") {
+        // Off a Mac the mix (FFmpeg's and the engine's own reads, no
+        // AVFoundation) runs beside the picture: on mandalorian it was 2.9 s
+        // of a 13 s minute's export, all of it before the first frame.
+        let background = crate::media::is_background();
+        // The sound's share done, as f32 bits: the picture's thread reports both.
+        let heard = std::sync::atomic::AtomicU32::new(0);
+        let (sound, picture) = std::thread::scope(|scope| {
+            let sound = scope.spawn(|| {
+                let run = || mix(&mut |done| heard.store(done.to_bits(), Ordering::Release));
+                if background {
+                    crate::media::as_background(run)
+                } else {
+                    run()
+                }
+            });
+            let picture = render_these(&rest, 0.0, 1.0, &mut |done| {
+                let sound = f32::from_bits(heard.load(Ordering::Acquire));
+                progress(rendered + sound * sound_share + done * (picture_share - rendered));
+            });
+            let sound = sound
+                .join()
+                .unwrap_or_else(|_| Err("the sound's mix stopped".to_owned()));
+            (sound, picture)
+        });
+        picture?;
+        sound?;
+    } else {
+        if mixing {
+            mix(&mut |done| progress(rendered + done * sound_share))?;
+        }
+        render_these(
+            &rest,
+            rendered + sound_share,
+            picture_share - rendered,
+            &mut *progress,
         )?;
     }
-    render_these(
-        &rest,
-        rendered + sound_share,
-        picture_share - rendered,
-        &mut *progress,
-    )?;
     if cancel.load(Ordering::Acquire) {
         return Err("cancelled".to_owned());
     }
