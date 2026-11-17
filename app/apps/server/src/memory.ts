@@ -247,6 +247,8 @@ export function routes(router: Router<App>): void {
     // Read as the pages ask (each every 10 s), at most once in READ_EVERY_MS however many ask: on a timer of its
     // own from the first ask on, a Mac's server ran sysctl every 5 s for good, a page open or not.
     if (Date.now() - readAt >= READ_EVERY_MS) {
+      // Unread a while (no page asking): what was judged then is stale, and the holds start again from now.
+      if (readAt !== 0 && Date.now() - readAt > 6 * READ_EVERY_MS) state = calm;
       readAt = Date.now();
       await read();
     }

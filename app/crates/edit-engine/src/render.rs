@@ -2219,7 +2219,7 @@ pub fn export_file(
     }
     std::fs::rename(&temporary.0, output).map_err(|error| error.to_string())?;
     if let Some((chunks, sound)) = made {
-        let dir = crate::chunks::folder(cache, &project.id);
+        let dir = chunk_folder(cache, project, options, plan);
         // Its chunks are in the file now, which the next export copies them out of.
         crate::chunks::tidy(&dir, &[], options.format.extension());
         if let Err(error) =
@@ -2256,7 +2256,7 @@ fn export_chunked(
     let fps = project.fps();
     let seconds = plan.seconds(fps);
     let extension = options.format.extension();
-    let dir = chunks::folder(cache, &project.id);
+    let dir = chunk_folder(cache, project, options, plan);
     std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let framed = framing(project, options, plan);
     let mut key = format!(
@@ -2429,10 +2429,20 @@ fn export_chunked(
                     run()
                 }
             });
-            let picture = render_these(&rest, 0.0, 1.0, &mut |done| {
+            let mut picture_done = 0.0_f32;
+            let mut tell = |picture: f32| {
                 let sound = f32::from_bits(heard.load(Ordering::Acquire));
-                progress(rendered + sound * sound_share + done * (picture_share - rendered));
+                progress(rendered + sound * sound_share + picture * (picture_share - rendered));
+            };
+            let picture = render_these(&rest, 0.0, 1.0, &mut |done| {
+                picture_done = done;
+                tell(done);
             });
+            // The picture done first (all of it copied, a change heard alone): the bar follows the mix.
+            while !sound.is_finished() {
+                std::thread::sleep(Duration::from_millis(200));
+                tell(if picture.is_ok() { 1.0 } else { picture_done });
+            }
             let sound = sound
                 .join()
                 .unwrap_or_else(|_| Err("the sound's mix stopped".to_owned()));
@@ -3017,6 +3027,23 @@ fn native_options(
     }))
 }
 
+/// Where an export's chunks and its manifest go (`chunks::folder`): the
+/// project's own at its shape and size; a folder of its own for each other
+/// shape and size, so a Vertical export neither tidies away nor takes the
+/// place of the record the next full-size re-export copies its chunks from.
+fn chunk_folder(cache: &Path, project: &Project, options: &ExportOptions, plan: &Plan) -> PathBuf {
+    match framing(project, options, plan) {
+        None => crate::chunks::folder(cache, &project.id),
+        Some(framed) => crate::chunks::folder(
+            cache,
+            &format!(
+                "{}.{}x{}-{:?}",
+                project.id, framed.width, framed.height, framed.fill
+            ),
+        ),
+    }
+}
+
 /// An export's other shape or size, framed on the GPU (`edit_render::frame`)
 /// for the native encoders, where FFmpeg's graph (`export::video_graph`) did
 /// it on the CPU: none at the project's own shape and size.
@@ -3295,6 +3322,8 @@ fn staging(device: &wgpu::Device, recycled: &mut Vec<wgpu::Buffer>, bytes: u64) 
     if let Some(at) = recycled.iter().position(|buffer| buffer.size() == bytes) {
         return recycled.swap_remove(at);
     }
+    // Another size now (the next clip's): the last one's buffers go, not kept to the export's end.
+    recycled.retain(|buffer| buffer.size() == bytes);
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("edit decoded frame"),
         size: bytes,
@@ -4606,6 +4635,49 @@ mod tests {
         assert!(!is_native_encoder_error(
             "No video frame at the requested source time"
         ));
+    }
+
+    #[test]
+    fn a_vertical_export_keeps_the_full_size_ones_chunks_for_the_next() {
+        // A Vertical export is chunked too now (framed on the GPU): in a folder of its own, it
+        // left the record the next full-size re-export copies its chunks from as it was.
+        let dir = temp_dir("vertical-chunks");
+        let red = source(&dir, "red.mp4", "red", 0.5);
+        let blue = source(&dir, "blue.mp4", "blue", 1.0);
+        let cache = dir.join("cache");
+        let project = cuts(&red, &blue, &[], 0);
+        let run = |options: &ExportOptions, name: &str| {
+            let plan = export_plan(&project, options).unwrap();
+            let output = dir.join(name);
+            export_file(
+                &project,
+                options,
+                &plan,
+                &output,
+                &cache,
+                &HashMap::new(),
+                &AtomicBool::new(false),
+                |_| {},
+            )
+            .unwrap();
+            output
+        };
+        let full = run(&ExportOptions::default(), "full.mp4");
+        let made = manifest(&cache);
+        assert_eq!(made.output, full);
+        let vertical = ExportOptions {
+            shape: crate::export::Shape::Vertical,
+            size: Some(180),
+            ..ExportOptions::default()
+        };
+        run(&vertical, "vertical.mp4");
+        let kept = manifest(&cache);
+        assert_eq!(
+            kept.output, full,
+            "the full-size record is the full-size export's still"
+        );
+        assert_eq!(kept.chunks.len(), made.chunks.len());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// A chunked re-export copies what didn't change out of the last export
