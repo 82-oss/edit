@@ -42,3 +42,4 @@ pub mod tempo;
 pub mod text_model;
 pub mod track;
 pub mod util;
+pub mod watermark;
