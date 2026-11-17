@@ -506,6 +506,29 @@ pub struct Cleans {
     /// left: x0, y0, x1, y1.
     #[serde(rename = "box")]
     pub region: [f32; 4],
+    /// What it took out: a re-uploader's text (Vmake's, the default) or
+    /// their see-through watermark (Edit's own arithmetic, the server's
+    /// `watermark_removal.ts`). A watermark's strip lies under a text strip
+    /// of the same seconds, and only a text strip ends the blur over their
+    /// subtitles.
+    #[serde(default, skip_serializing_if = "CleanKind::is_text")]
+    pub what: CleanKind,
+}
+
+/// What a cleaned strip took out of its footage.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum CleanKind {
+    #[default]
+    Text,
+    Watermark,
+}
+
+impl CleanKind {
+    pub fn is_text(&self) -> bool {
+        *self == CleanKind::Text
+    }
 }
 
 /// Which half of the team's sound library a sound is from.

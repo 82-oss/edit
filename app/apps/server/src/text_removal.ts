@@ -715,8 +715,8 @@ export interface Shelf {
   keep(source: string, file: string, from: number, to: number, provider: ProviderId): Promise<Cached>;
 }
 
-const PREFIX = "edit/cleaned";
-const folderOf = (source: string) => createHash("sha256").update(source).digest("hex").slice(0, 32);
+export const PREFIX = "edit/cleaned";
+export const folderOf = (source: string) => createHash("sha256").update(source).digest("hex").slice(0, 32);
 const nameOf = (from: number, to: number, provider: ProviderId) => `${Math.round(from * 1000)}-${Math.round(to * 1000)}.${provider}.mp4`;
 
 export function parseName(key: string): Omit<Cached, "key"> | null {
@@ -772,7 +772,7 @@ export function useShelf(shelf: Shelf | null): void {
 const shelfOf = (app: App) => shelfOverride ?? shelfIn(join(app.store.cacheDir(), "cleaned"));
 
 /** What identifies a file across projects: its cloud source, else its bytes' hash. */
-async function sourceOf(media: Media): Promise<string> {
+export async function sourceOf(media: Media): Promise<string> {
   if (media.cloud?.source) return media.cloud.source;
   return `sha256:${await cloudMedia.sha256File(media.path)}`;
 }
@@ -797,7 +797,7 @@ function cameraFromReads(media: Media, bar: Bar | null): Box[] {
 }
 
 /** The file's stamp bar and the camera's text, found once a run (from its original's frames and the reads). */
-async function stampOf(app: App, media: Media, input: string): Promise<Box[]> {
+export async function stampOf(app: App, media: Media, input: string): Promise<Box[]> {
   const [w, h] = [Math.min(480, media.width || 480), Math.round((Math.min(480, media.width || 480) * (media.height || 270)) / (media.width || 480))];
   const bar = findBar(await greyFrames(input, w, h, media.duration ?? 0).catch(() => []), w, h);
   const boxes = cameraFromReads(media, bar);

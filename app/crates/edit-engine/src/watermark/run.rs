@@ -84,8 +84,20 @@ impl Decoder {
         if let Some(seconds) = seconds {
             command.args(["-t", &format!("{seconds:.6}")]);
         }
+        // One frame out for each in: after a seek FFmpeg's raw output otherwise repeats the first frame, putting every
+        // frame after it one late (Tulsa, Nov 17: strips a frame off their footage).
         command.args([
-            "-map", "0:v:0", "-vf", filters, "-f", "rawvideo", "-pix_fmt", pix_fmt, "pipe:1",
+            "-map",
+            "0:v:0",
+            "-vf",
+            filters,
+            "-fps_mode",
+            "passthrough",
+            "-f",
+            "rawvideo",
+            "-pix_fmt",
+            pix_fmt,
+            "pipe:1",
         ]);
         let mut child = command
             .stdin(Stdio::null())
@@ -916,8 +928,11 @@ pub fn remove(
     decoder.finish()?;
     let places = tracker.places();
     let n = places.len();
-    let k0 = (((from - start) * fps).round() as usize).min(n);
-    let k1 = (((to - start) * fps).round() as usize).min(n);
+    // Frames by index on the file's own grid: the read starts at the first frame at or after `start`, and the strip's
+    // first frame is the first at or after `from` (as a seek to `from` and the timeline's reading of the strip have it).
+    let first = |seconds: f64| (seconds * fps - 1e-6).ceil().max(0.0) as usize;
+    let k0 = first(from).saturating_sub(first(start)).min(n);
+    let k1 = first(to).saturating_sub(first(start)).min(n);
     if k1 <= k0 {
         return Ok(None);
     }
