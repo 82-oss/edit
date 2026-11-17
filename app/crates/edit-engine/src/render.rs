@@ -1195,10 +1195,12 @@ pub struct RgbaImage {
 }
 
 /// Readers left open this long with nothing to render are closed, and the
-/// renderer (its GPU device, its textures) let go with them: kept, a burst of
-/// the agent's frames left the server 440 MB bigger for good (mandalorian,
-/// Nov 17: 181 MB, 1.2 GB after 4 frames and 2 looks, 618 MB 90 s on). The
-/// next frame after a quiet spell makes one again (about 0.1 s).
+/// renderer with them (off a Mac; on one it lets go of its textures,
+/// `Renderer::release`): kept, a burst of the agent's frames left the server
+/// 440 MB bigger for good (mandalorian, Nov 17: 181 MB, 1.2 GB after 4 frames
+/// and 2 looks, 618 MB 90 s on; 498 MB let go). On a Mac each renderer has its
+/// own Metal device, and let go and made again it kept 124 MB more, not less
+/// (kenobi, Nov 17), so there the renderer and its device stay.
 const IDLE: Duration = Duration::from_secs(20);
 
 impl FrameRenderer {
@@ -1212,6 +1214,8 @@ impl FrameRenderer {
         let jobs = Arc::clone(&queue);
         std::thread::spawn(move || {
             let mut renderer: Option<Renderer> = None;
+            // Whether the renderer has let go of the last job's textures since it rendered.
+            let mut released = true;
             let mut last_project = String::new();
             let mut pool = ReaderPool::new(6, 2);
             loop {
@@ -1232,11 +1236,21 @@ impl FrameRenderer {
                         if jobs.ready.wait_for(&mut queues, IDLE).timed_out()
                             && queues.agent.is_empty()
                             && queues.ui.is_empty()
-                            && (renderer.is_some() || !pool.readers.is_empty())
+                            && (!pool.readers.is_empty() || !released)
                         {
                             pool.clear();
-                            renderer = None;
-                            last_project.clear();
+                            // Off a Mac the device is shared (`gpu`): the renderer goes, made
+                            // again on the shared device at the next frame. On a Mac it would
+                            // take its own Metal device with it, made again each time.
+                            if cfg!(target_os = "macos") {
+                                if let Some(renderer) = renderer.as_mut() {
+                                    renderer.release();
+                                }
+                            } else {
+                                renderer = None;
+                                last_project.clear();
+                            }
+                            released = true;
                             crate::util::give_back_memory();
                         }
                     }
@@ -1245,6 +1259,7 @@ impl FrameRenderer {
                     continue;
                 }
                 let rendering = Instant::now();
+                released = false;
                 let caught = crate::util::catch("rendering a frame", || {
                     let settings = job.project.settings;
                     let renderer = match &mut renderer {

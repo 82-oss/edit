@@ -939,6 +939,24 @@ impl Renderer {
         self.peaks.clear();
     }
 
+    /// Lets go of what a render leaves behind (videos' textures and planes,
+    /// texts and their glows, the blur's scratch, readbacks, sound levels),
+    /// keeping the device and the frame's own targets: a renderer kept waiting
+    /// for the next frame holds no more than an empty one. Made again as drawn.
+    pub fn release(&mut self) {
+        self.videos.clear();
+        self.video_planes.clear();
+        self.texts.clear();
+        self.peaks.clear();
+        self.blur_scratch = None;
+        self.binds.borrow_mut().clear();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.readback = None;
+            self.yuv420 = None;
+        }
+    }
+
     pub fn has_video(&self, media: &str) -> bool {
         self.videos.contains_key(media)
     }
