@@ -1020,9 +1020,6 @@ static void *edit_writer_open_unguarded(const char *path, uint32_t width, uint32
             // Previews decode each frame as it arrives; finished files can reorder.
             AVVideoAllowFrameReorderingKey: @((flags & 1) != 0)} mutableCopy];
         if ((flags & 1) && !hevc) compression[AVVideoProfileLevelKey] = AVVideoProfileLevelH264HighAutoLevel;
-        // The media engine at its speed rather than its slowest quality passes (VideoToolbox's own key; an
-        // export on an M1 waited on the encoder half its time, kenobi, Nov 17).
-        compression[(__bridge NSString *)kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality] = @YES;
         w.input = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:@{
             AVVideoCodecKey: hevc ? AVVideoCodecTypeHEVC : AVVideoCodecTypeH264,
             AVVideoWidthKey: @(width), AVVideoHeightKey: @(height),
