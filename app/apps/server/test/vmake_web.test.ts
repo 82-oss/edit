@@ -267,6 +267,43 @@ test.skipIf(CHROME === undefined)("the account's troubles on the page are the ac
   }
 }, 90_000);
 
+test.skipIf(CHROME === undefined)("each piece in a browser of its own (its upload in a tab in front): the profile's, then extra ones with no profile, its sign-in copied in; all stopped once nothing's left", async () => {
+  const opened: string[] = [];
+  const stopped: string[] = [];
+  const team: web.Browsers = {
+    async open(_signIn, extra) {
+      const one = await remote(cdp, "the stand-in browser");
+      const id = `${extra === true ? "extra" : "profile"}-${opened.length}`;
+      opened.push(id);
+      return { id, liveUrl: null, remote: one, stop: async () => void (stopped.push(id), one.close()) };
+    },
+  };
+  // The profile's sign-in: a cookie of the site's.
+  const cookies = await remote(cdp, "the sign-in");
+  await cookies.call("Storage.setCookies", { cookies: [{ name: "vmake_auth_token", value: "t", domain: "localhost", path: "/" }] });
+  expect(await web.copySignIn(cookies, cookies, `http://localhost:${vmake.port}`)).toBe(1);
+  cookies.close();
+  const wait = web.pacing.wait;
+  web.pacing.wait = async () => {};
+  try {
+    const driver = new web.Driver(team, `http://localhost:${vmake.port}`, () => 3);
+    const urls = await Promise.all([0, 1, 2].map((n) => driver.run(piece(), `piece-at-once-${n}.mp4`)));
+    expect(urls.every((url) => url === `http://localhost:${vmake.port}/result.mp4?full=1`)).toBe(true);
+    expect(opened).toEqual(["profile-0", "extra-1", "extra-2"]);
+    await Bun.sleep(200);
+    expect(stopped.sort()).toEqual(["extra-1", "extra-2", "profile-0"]);
+    // The relay had no more: the pieces share the browsers there are, one at a time each.
+    opened.length = 0;
+    stopped.length = 0;
+    const few: web.Browsers = { open: async (signIn, extra) => (extra === true ? Promise.reject(new web.ExtraRefused("full")) : team.open(signIn, extra)) };
+    const alone = new web.Driver(few, `http://localhost:${vmake.port}`, () => 3);
+    expect((await Promise.all([0, 1].map((n) => alone.run(piece(), `piece-few-${n}.mp4`)))).length).toBe(2);
+    expect(opened).toEqual(["profile-0"]);
+  } finally {
+    web.pacing.wait = wait;
+  }
+}, 120_000);
+
 test("Browser Use's own refusals, said by the relay, are the team account's (Nov 17: $0.08 left, every browser refused with 402)", async () => {
   const refused = (said: string) => web.teamBrowsers("kenobi", async () => Promise.reject(new Error(said))).open().then(() => new VmakeError("lent", "piece"), (thrown: unknown) => thrown as VmakeError);
   const credits = await refused("the team's Vmake account: browser_credits (402)");
@@ -322,7 +359,7 @@ test.skipIf(CHROME === undefined)("the website's provider counts the day's files
       staged.push(key);
       return { url: piece(), drop: async () => void staged.push(`dropped ${key}`) };
     });
-    expect(provider.price(94 * 60, 19)).toBe("19 files on your Vmake plan, ≈ $1.77 of cloud browser");
+    expect(provider.price(94 * 60, 19)).toBe("19 files on your Vmake plan, ≈ $1.93 of cloud browser");
     const out = join(dir, "out.mp4");
     expect(await provider.remove(input, out, 8)).toEqual({ credits: null });
     expect([...fs.readFileSync(out)]).toEqual([1, 2, 3, 9]);

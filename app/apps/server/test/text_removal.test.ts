@@ -32,6 +32,9 @@ import * as v2cloud from "../src/v2_cloud.ts";
 import { classify, signOss, signSdk, VmakeError } from "../src/vmake_api.ts";
 import { fixtureHome, scratch } from "./helpers/home.ts";
 
+// One cell at a time unless a test says (the Mac's memory would decide: watermark_removal.ts `limits`).
+wm.limits.cells = 1;
+
 let before: Native | null = null;
 afterEach(() => {
   if (before !== null) useNative(before);

@@ -47,10 +47,16 @@ function said(line: string): void {
 const REMOVER = "/video-watermark-remover/upload";
 /** The mode to choose. */
 const MODE = "smart pro";
-/** Tabs working at once (one job a tab) within a session. */
-export const TABS = 3;
-/** Files a day Edit sends at most: Pro's is 30–50 (pricing says 50, the FAQ 30). */
-export const DAILY_FILES = 30;
+/** Pieces at once when the relay doesn't say (its AT_ONCE: one a browser). */
+export const AT_ONCE = 6;
+/**
+ * Files a day Edit sends at most, the team's: Pro's table says 50 for the
+ * remover, its FAQ 30 a feature (Sphe, Nov 17: 50; past Vmake's real limit,
+ * if it's 30, the plan's credits are spent, no money). The first file past
+ * FAQ_FILES a day has the credits pill read before and after, to learn the rule.
+ */
+export const DAILY_FILES = 50;
+export const FAQ_FILES = 30;
 /** A job's longest wait for Vmake (a 60 s piece took 2.5 min; 300 s of 1080p far longer at busy hours). */
 const JOB_MS = 2 * 3_600_000;
 /** Browser Use's price (Nov 17), and a session's longest life. */
@@ -73,15 +79,19 @@ export interface Session {
 
 /** What starts browsers on the team's profile: the relay's, or a stand-in in tests. */
 export interface Browsers {
-  /** A browser on the team's profile; `signIn`: with its live view, for an admin. Waits while another Mac has the profile. */
-  open(signIn?: boolean): Promise<Session>;
+  /**
+   * A browser on the team's profile; `signIn`: with its live view, for an
+   * admin. Waits while another Mac has the profile. `extra`: one more browser
+   * with NO profile for the lease's holder (ExtraRefused when there's none).
+   */
+  open(signIn?: boolean, extra?: boolean): Promise<Session>;
 }
 
 /** How long a Mac waits its turn on the team's profile before a piece gives up for now, and between asks. */
 export const turns = { waitMs: 3 * 3_600_000, everyMs: 45_000 };
 
 /** The relay's answer to asking for a browser. */
-type Lent = { id?: string; cdpUrl?: string; liveUrl?: string; busy?: string };
+type Lent = { id?: string; cdpUrl?: string; liveUrl?: string; busy?: string; full?: boolean };
 
 /**
  * The team's Vmake account through Edit's relay (relay/src/vmake.ts): the
@@ -102,13 +112,14 @@ export function teamBrowsers(holder: string, ask: (method: string, route: string
     }
   };
   return {
-    async open(signIn = false) {
+    async open(signIn = false, extra = false) {
       const until = Date.now() + turns.waitMs;
       for (;;) {
-        const lent = await call("/v1/vmake/browser", { holder, signIn });
+        const lent = await call("/v1/vmake/browser", { holder, signIn, ...(extra ? { extra: true } : {}) });
+        if (extra && (lent.full === true || lent.busy !== undefined)) throw new ExtraRefused(lent.full === true ? "the team's browsers at once are all out" : `${lent.busy} has the team's browser`);
         if (lent.busy === undefined && typeof lent.id === "string" && typeof lent.cdpUrl === "string") {
           const id = lent.id;
-          const stop = () => call(`/v1/vmake/browser/${id}/stop`, { holder }).then(() => undefined, () => undefined);
+          const stop = () => call(`/v1/vmake/browser/${id}/stop`, { holder, ...(extra ? { extra: true } : {}) }).then(() => undefined, () => undefined);
           try {
             const remote = await devtools.remote(lent.cdpUrl, "Vmake's browser");
             return { id, liveUrl: lent.liveUrl ?? null, remote, stop: async () => (remote.close(), await stop()) };
@@ -353,12 +364,19 @@ const cardState = (name: string) => `(() => {
 export const pieceName = (seconds: number): string => `edit-${Math.random().toString(36).slice(2, 8)}-${Math.round(seconds)}s.mp4`;
 
 /** `onBegun`: vmake.ai took the piece and is processing it (the account worked for it: the run's other pieces may go now). */
-export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string, name: string, site = SITE, onProgress: (percent: number) => void = () => {}, onBegun: () => void = () => {}): Promise<string> {
+/** The account's credits as the page's pill shows them (null when it shows none). */
+export async function creditsPill(page: Page): Promise<string | null> {
+  return page.evaluate<string | null>(`[...document.querySelectorAll('[class*=credit], [class*=Credit], [class*=point]')].filter((el) => el.getClientRects().length > 0).map((el) => el.innerText.trim()).find((t) => /^[0-9,]+$/.test(t)) ?? null`).catch(() => null);
+}
+
+/** `credits`: the pill read as the piece goes in and once it's done, and said (the first file past FAQ_FILES a day). */
+export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string, name: string, site = SITE, onProgress: (percent: number) => void = () => {}, onBegun: () => void = () => {}, credits = false): Promise<string> {
   await go(page, `${site}${REMOVER}`);
   await waitFor(page, `!!document.querySelector('.ant-upload-btn input[type=file][name=file]:not([multiple])')`, 60_000, "the remover's page");
   await pacing.wait();
   const problem = await accountProblem(page);
   if (problem !== null) throw problem;
+  const creditsBefore = credits ? await creditsPill(page) : null;
   // A fresh page showing the modes: the mode first, since the upload starts processing by itself.
   // The account's job cards come a moment after the page (its task list): looked for a few seconds first.
   // A fresh page with no modes shown (Nov 17 afternoon: only Upload and Batch upload until a file goes in) chooses Smart pro on the piece's card, as a page with cards does.
@@ -458,6 +476,11 @@ export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string,
   const refused = await accountProblem(page).catch(() => null);
   if (refused !== null) throw refused;
   if (url === null || !/^https?:/u.test(url)) throw new VmakeError("vmake.ai gave no video to download", "piece");
+  if (credits) {
+    // To learn Pro's real daily rule (30 or 50 files): what the first file past 30 cost, if anything.
+    const after = await creditsPill(page);
+    diag.info("removal", `vmake.ai ${name}: the day's file past ${FAQ_FILES}: credits ${creditsBefore ?? "not shown"} before, ${after ?? "not shown"} after`);
+  }
   return url;
 }
 
@@ -493,24 +516,73 @@ export interface Day {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+/** The relay had no more browsers for this Mac now (AT_ONCE in all, or the lease another Mac's): its pieces use the ones it has. */
+export class ExtraRefused extends Error {}
+
 /**
- * One Browser Use session at a time for the account (two at once on one
- * profile isn't documented), up to TABS jobs in it, renewed past
- * SESSION_RENEW_MS between jobs, stopped when nothing's left.
+ * The profile's browser's sign-in to `site` copied into another browser,
+ * which never had the profile: its cookies, and the site's local storage
+ * (vmake.ai keeps its sign-in there too: with the cookies alone, Nov 17, a
+ * piece's upload never finished and its card went). The count copied.
+ */
+export async function copySignIn(from: Remote, to: Remote, site = SITE): Promise<number> {
+  const host = new URL(site).hostname.replace(/^www\./u, "");
+  const all = ((await from.call("Storage.getCookies")) as { cookies?: Record<string, unknown>[] }).cookies ?? [];
+  const cookies = all
+    .filter((one) => typeof one.domain === "string" && one.domain.replace(/^\./u, "").endsWith(host))
+    .map(({ name, value, domain, path, expires, httpOnly, secure, sameSite }) => ({ name, value, domain, path, expires, httpOnly, secure, ...(sameSite ? { sameSite } : {}) }));
+  if (cookies.length > 0) await to.call("Storage.setCookies", { cookies });
+  const read = await from.tab();
+  let storage: Record<string, string> = {};
+  try {
+    await go(read, site);
+    storage = JSON.parse(await read.evaluate<string>(`JSON.stringify(Object.fromEntries(Object.entries(localStorage)))`)) as Record<string, string>;
+  } finally {
+    read.close();
+  }
+  const write = await to.tab();
+  try {
+    await go(write, site);
+    await write.evaluate(`(() => { const given = ${JSON.stringify(storage)}; for (const [key, value] of Object.entries(given)) localStorage.setItem(key, value); })()`);
+  } finally {
+    write.close();
+  }
+  return cookies.length + Object.keys(storage).length;
+}
+
+/** A browser the Driver holds: the profile's, or an extra one; a piece in it at a time. */
+interface Held {
+  open: Promise<Session>;
+  at: number;
+  busy: boolean;
+  extra: boolean;
+}
+
+/**
+ * The team's browsers for this Mac's pieces, one piece a browser (its upload
+ * in a tab in front: Chrome slows a tab behind another; a machine each):
+ * the profile's browser (the relay's lease), then
+ * up to `atOnce` − 1 more with no profile, its vmake.ai sign-in copied into
+ * each (none of them ever writes the profile). Renewed past SESSION_RENEW_MS
+ * between pieces, all stopped when nothing's left.
  */
 export class Driver {
-  private session: { at: number; open: Promise<Session> } | null = null;
-  private busy = 0;
+  private writer: Held | null = null;
+  private extras: Held[] = [];
+  private pieces = 0;
   private waiting: (() => void)[] = [];
+  /** Until when no more extra browsers are asked for (the relay had none; or one wasn't signed in: never again here). */
+  private noMore = 0;
 
   constructor(
     private readonly browsers: Browsers,
     private readonly site = SITE,
+    private readonly atOnce: () => number = () => AT_ONCE,
   ) {}
 
   private async slot(): Promise<void> {
-    if (this.busy < TABS) {
-      this.busy++;
+    if (this.pieces < this.atOnce()) {
+      this.pieces++;
       return;
     }
     await new Promise<void>((resolve) => this.waiting.push(resolve));
@@ -519,68 +591,138 @@ export class Driver {
   private release(): void {
     const next = this.waiting.shift();
     if (next !== undefined) return next();
-    this.busy--;
-    if (this.busy === 0) void this.close();
+    this.pieces--;
+    if (this.pieces === 0) void this.close();
   }
 
-  private async current(): Promise<Session> {
-    if (this.session !== null && Date.now() - this.session.at > SESSION_RENEW_MS && this.busy <= 1) await this.close();
-    // Each browser looks at the plan once, on its first tab, before any piece is sent.
-    if (this.session === null) {
-      this.session = {
-        at: Date.now(),
-        open: this.browsers.open().then(async (session) => {
+  /** The profile's browser: it looks at the plan once, on its first tab, before any piece is sent. */
+  private openWriter(): Held {
+    return {
+      at: Date.now(),
+      busy: false,
+      extra: false,
+      open: this.browsers.open().then(async (session) => {
+        const page = await session.remote.tab();
+        try {
+          await plan(page, this.site);
+        } catch (error) {
+          await session.stop();
+          throw error;
+        } finally {
+          page.close();
+        }
+        return session;
+      }),
+    };
+  }
+
+  /** An extra browser: the profile's sign-in copied in, and looked at once (one that shows signed out is never used: no extra ones here after). */
+  private openExtra(writer: Held): Held {
+    return {
+      at: Date.now(),
+      busy: true,
+      extra: true,
+      open: this.browsers.open(false, true).then(async (session) => {
+        try {
+          const copied = await copySignIn((await writer.open).remote, session.remote, this.site);
           const page = await session.remote.tab();
           try {
-            await plan(page, this.site);
-          } catch (error) {
-            await session.stop();
-            throw error;
+            if (copied === 0 || !(await signedIn(page, this.site))) {
+              this.noMore = Infinity;
+              throw new ExtraRefused("the profile's sign-in didn't carry into another browser");
+            }
           } finally {
             page.close();
           }
           return session;
-        }),
-      };
+        } catch (error) {
+          await session.stop();
+          throw error;
+        }
+      }),
+    };
+  }
+
+  private async drop(held: Held): Promise<void> {
+    if (this.writer === held) this.writer = null;
+    this.extras = this.extras.filter((one) => one !== held);
+    await (await held.open.catch(() => null))?.stop();
+  }
+
+  /** A browser of its own for one piece: the profile's when it's free, else a free extra one, else a new one, else wait for one. */
+  private async browser(): Promise<{ held: Held; session: Session }> {
+    for (;;) {
+      for (const one of [this.writer, ...this.extras]) if (one !== null && !one.busy && Date.now() - one.at > SESSION_RENEW_MS) await this.drop(one);
+      if (this.writer === null) this.writer = this.openWriter();
+      const writer = this.writer;
+      if (!writer.busy) {
+        writer.busy = true;
+        const session = await writer.open.catch((error: unknown) => {
+          writer.busy = false;
+          if (this.writer === writer) this.writer = null;
+          throw error;
+        });
+        if (!session.remote.closed) return { held: writer, session };
+        await this.drop(writer);
+        continue;
+      }
+      const idle = this.extras.find((one) => !one.busy);
+      if (idle !== undefined) {
+        idle.busy = true;
+        const session = await idle.open.catch(() => null);
+        if (session !== null && !session.remote.closed) return { held: idle, session };
+        await this.drop(idle);
+        continue;
+      }
+      if (Date.now() > this.noMore) {
+        const held = this.openExtra(writer);
+        this.extras.push(held);
+        try {
+          return { held, session: await held.open };
+        } catch (error) {
+          this.extras = this.extras.filter((one) => one !== held);
+          if (!(error instanceof ExtraRefused)) throw error;
+          if (this.noMore !== Infinity) this.noMore = Date.now() + 60_000;
+          said(`vmake.ai: no more browsers now (${error.message}); this piece waits for one of the ${1 + this.extras.length} there`);
+          continue;
+        }
+      }
+      // Every browser busy and no more to be had: the first to free goes to this piece.
+      await Bun.sleep(3000);
     }
-    const session = await this.session.open.catch((error: unknown) => {
-      this.session = null;
-      throw error;
-    });
-    if (session.remote.closed) {
-      this.session = null;
-      return this.current();
-    }
-    return session;
   }
 
   async close(): Promise<void> {
-    const was = this.session;
-    this.session = null;
-    if (was !== null) await (await was.open.catch(() => null))?.stop();
+    const all = [this.writer, ...this.extras].filter((one): one is Held => one !== null);
+    this.writer = null;
+    this.extras = [];
+    await Promise.all(all.map(async (one) => (await one.open.catch(() => null))?.stop()));
   }
 
   /** One piece (at `pieceUrl`) cleaned: the result's URL. */
-  async run(pieceUrl: string, name: string, onProgress?: (percent: number) => void, onBegun?: () => void): Promise<string> {
+  async run(pieceUrl: string, name: string, onProgress?: (percent: number) => void, onBegun?: () => void, credits = false): Promise<string> {
     await this.slot();
+    let got: { held: Held; session: Session } | null = null;
     try {
-      // Tabs started a little apart, as a person would.
-      if (this.busy > 1) await pacing.wait(5_000 + Math.random() * 10_000);
-      for (let browser = 1; ; browser++) {
-        const session = await this.current();
-        const page = await session.remote.tab();
+      // Pieces started a little apart, as a person would.
+      if (this.pieces > 1) await pacing.wait(3_000 + Math.random() * 5_000);
+      for (let attempt = 1; ; attempt++) {
+        got = await this.browser();
+        const page = await got.session.remote.tab();
         try {
-          return await removeOnPage(page, session.remote, pieceUrl, name, this.site, onProgress, onBegun);
+          return await removeOnPage(page, got.session.remote, pieceUrl, name, this.site, onProgress, onBegun, credits);
         } catch (error) {
-          // A browser whose way out is down: another (alone, so no other tab's job goes with it).
-          if (!(error instanceof ProxyDown) || browser >= 3 || this.busy > 1) throw error;
+          // A browser whose way out is down: another.
+          if (!(error instanceof ProxyDown) || attempt >= 3) throw error;
           diag.warn("removal", `vmake.ai: the cloud browser's proxy is down; another browser`);
-          await this.close();
+          await this.drop(got.held);
+          got = null;
         } finally {
           page.close();
         }
       }
     } finally {
+      if (got !== null) got.held.busy = false;
       this.release();
     }
   }

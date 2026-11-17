@@ -79,7 +79,7 @@ const API_DOLLARS_A_SECOND = 0.027;
 const API_CREDITS_A_SECOND = 4;
 /** An account's refusal is looked at again after this. */
 export const RECHECK_MS = 3_600_000;
-/** Pieces in flight at once (the website's: one a tab of the one leased browser, vmake_web.ts TABS). */
+/** Pieces in flight at once, unless the provider says (the website's: the relay's AT_ONCE, one a browser). */
 const PARALLEL = 3;
 /** The mask (at 720 lines; scaled with the picture): luma difference that counts, growth over the glow, feather. */
 const THRESHOLD = 40;
@@ -542,6 +542,8 @@ export interface Provider {
   remove(input: string, out: string, seconds: number, signal?: AbortSignal, whole?: { key: string }, begun?: () => void): Promise<{ credits: number | null }>;
   /** Whether the account can be used, nothing spent. Throws VmakeError. */
   check(): Promise<void>;
+  /** Pieces it takes at once (PARALLEL when it doesn't say). */
+  atOnce?(): number;
 }
 
 /** What the person reads when the account can't be used. */
@@ -639,10 +641,17 @@ function countFile(home: string): void {
 /** The day's files sent to vmake.ai: the team's (counted on Edit's relay), or this home's in tests. */
 export interface Files {
   left(): number;
-  count(): Promise<void>;
+  /** Counts a file sent today: the day's count after it. */
+  count(): Promise<number>;
 }
 
-const homeFiles = (home: string): Files => ({ left: () => filesLeft(home), count: async () => countFile(home) });
+const homeFiles = (home: string): Files => ({
+  left: () => filesLeft(home),
+  count: async () => {
+    countFile(home);
+    return web.DAILY_FILES - filesLeft(home);
+  },
+});
 
 /**
  * vmake.ai's website on the team's plan, in a browser on the team's Browser
@@ -650,16 +659,17 @@ const homeFiles = (home: string): Files => ({ left: () => filesLeft(home), count
  * Paid by the file (DAILY_FILES a day, the team's), plus Browser Use's
  * minutes and bytes on the team's account.
  */
-export function websiteProvider(home: string, browsers: web.Browsers, site = web.SITE, put = web.stage, files: Files = homeFiles(home)): Provider {
-  const driver = new web.Driver(browsers, site);
+export function websiteProvider(home: string, browsers: web.Browsers, site = web.SITE, put = web.stage, files: Files = homeFiles(home), atOnce: () => number = () => web.AT_ONCE): Provider {
+  const driver = new web.Driver(browsers, site, atOnce);
   return {
     id: "vmake-web",
+    atOnce,
     wholeFiles: true,
     pieceQuality: { crf: 20, rate: 6_000_000 },
     price(seconds, count) {
       const left = files.left();
       // About 2.5 minutes of browser a minute of footage, three at once; the piece in and out (≤0.75 MB a second each way).
-      const dollars = ((seconds * 2.5) / 3600 / web.TABS) * web.DOLLARS_AN_HOUR + ((seconds * 1.5) / 1000) * web.DOLLARS_A_GB;
+      const dollars = ((seconds * 2.5) / 3600) * web.DOLLARS_AN_HOUR + ((seconds * 1.5) / 1000) * web.DOLLARS_A_GB;
       const browser = dollars < 0.5 ? "under $0.50" : `≈ $${dollars.toFixed(2)}`;
       return `${count} ${count === 1 ? "file" : "files"} on your Vmake plan${count > left ? ` (${Math.max(0, left)} today, the rest tomorrow)` : ""}, ${browser} of cloud browser`;
     },
@@ -667,8 +677,8 @@ export function websiteProvider(home: string, browsers: web.Browsers, site = web
       if (files.left() <= 0) throw new VmakeError("today's files on the Vmake plan are used", "account", "daily_limit");
       const staged = whole !== undefined ? { url: await cloud.presign(whole.key, "GET", 3 * 3600), drop: async () => {} } : await put(input, `${PREFIX}/send/${Date.now()}-${Math.round(Math.random() * 1e9)}.mp4`);
       try {
-        await files.count();
-        const url = await driver.run(staged.url, web.pieceName(seconds), undefined, begun);
+        const today = await files.count();
+        const url = await driver.run(staged.url, web.pieceName(seconds), undefined, begun, today === web.FAQ_FILES + 1);
         await web.fetchResult(url, out);
       } finally {
         await staged.drop();
@@ -694,7 +704,7 @@ export const website = {
 };
 
 /** The team's account on the relay as last asked (a minute ago at most): whether it's set up there, and the day's files. */
-const team = { ready: false, filesToday: 0, at: 0 };
+const team = { ready: false, filesToday: 0, atOnce: web.AT_ONCE, at: 0 };
 
 /** Forgets what the relay said (tests). */
 export function forgetTeam(): void {
@@ -704,9 +714,12 @@ export function forgetTeam(): void {
 async function teamState(): Promise<typeof team> {
   if (Date.now() - team.at < 60_000) return team;
   try {
-    const said = (await website.ask("GET", "/v1/vmake", undefined)) as { ready?: unknown; filesToday?: unknown };
+    const said = (await website.ask("GET", "/v1/vmake", undefined)) as { ready?: unknown; filesToday?: unknown; atOnce?: unknown };
     team.ready = said.ready === true;
     team.filesToday = typeof said.filesToday === "number" ? said.filesToday : 0;
+    // The team's pieces at once, the relay's. A relay from before it said doesn't know extra browsers (it would open
+    // another on the profile itself): one piece at a time there.
+    team.atOnce = typeof said.atOnce === "number" && said.atOnce >= 1 ? Math.min(12, Math.round(said.atOnce)) : 1;
   } catch {
     team.ready = false;
   }
@@ -727,9 +740,10 @@ async function websiteHere(app: App): Promise<Provider | null> {
     count: async () => {
       const said = (await website.ask("POST", "/v1/vmake/file", { holder: holderOf(app) })) as { filesToday?: unknown };
       if (typeof said.filesToday === "number") team.filesToday = said.filesToday;
+      return team.filesToday;
     },
   };
-  return websiteProvider(app.store.home, teamBrowsers(app), website.site, web.stage, files);
+  return websiteProvider(app.store.home, teamBrowsers(app), website.site, web.stage, files, () => team.atOnce);
 }
 
 /** The sign-in under way: its live view. */
@@ -1373,7 +1387,7 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
     const started = Date.now();
     const pool = (queue: typeof jobs) =>
       Promise.all(
-        Array.from({ length: Math.min(PARALLEL, queue.length) }, async () => {
+        Array.from({ length: Math.min(provider.atOnce?.() ?? PARALLEL, queue.length) }, async () => {
           for (let job = queue.shift(); job !== undefined; job = queue.shift()) await work(job);
         }),
       );
@@ -1393,7 +1407,7 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
       await Promise.race([alone, taken]);
       // The first piece's worker carries on with the rest once it's done.
       const first = alone.then(drain);
-      await Promise.all([first, ...Array.from({ length: Math.min(PARALLEL - 1, rest.length) }, drain)]);
+      await Promise.all([first, ...Array.from({ length: Math.min((provider.atOnce?.() ?? PARALLEL) - 1, rest.length) }, drain)]);
     }
     const kept = readKept(app.store.home);
     kept.runs.push({

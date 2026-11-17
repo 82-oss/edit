@@ -381,9 +381,18 @@ export function backgroundOf(id: string): NonNullable<textRemoval.Status["backgr
   const run = active.get(id);
   const rows = pieceRows(id);
   const startedAt = run?.startedAt ?? Date.now();
-  const mine = run === undefined ? [] : rows.filter((row) => run.before.get(row.key) !== row.state && (row.state === "done" || row.state === "check" || row.state === "none" || row.state === "failed"));
+  // Each worker at its own pace in this run (Vmake's pieces minutes each, several at once; the engine's cells beside
+  // them): what each has finished since it began, over the time, for what it still has out; the slower one says it.
   const elapsed = (Date.now() - startedAt) / 1000;
-  const left = mine.length > 0 ? Math.round((elapsed / mine.length) * out) : null;
+  const finished = (row: PieceRow) => run !== undefined && run.before.get(row.key) !== row.state && (row.state === "done" || row.state === "check" || row.state === "none" || row.state === "failed");
+  const lefts = (["text", "watermark"] as const).map((what) => {
+    const mine = rows.filter((row) => row.what === what);
+    const pending = mine.filter((row) => row.state === "queued" || row.state === "running").length + (what === "watermark" ? watermarkRemoval.lookingAt(id) : 0);
+    if (pending === 0) return 0;
+    const done = mine.filter(finished).length;
+    return done === 0 ? null : (elapsed / done) * pending;
+  });
+  const left = lefts.some((one) => one === null) ? null : Math.round(Math.max(...(lefts as number[])));
   return { label: labelOf(rows.filter((row) => row.state === "queued" || row.state === "running" || run?.before.get(row.key) !== row.state)), done, total: done + out, started_at: startedAt, left_s: left };
 }
 

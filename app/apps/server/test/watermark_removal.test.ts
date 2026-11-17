@@ -20,6 +20,9 @@ import * as tools from "../src/tools.ts";
 import * as wm from "../src/watermark_removal.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
+// One cell at a time unless a test says (the Mac's memory would decide: watermark_removal.ts `limits`).
+wm.limits.cells = 1;
+
 // The footage's own seconds, whatever lesson another file's import set up (removal_schedule.ts's hints read the channel's).
 const neutral = wm.hintsFor.project;
 beforeEach(() => {
@@ -212,6 +215,53 @@ test("a file looked at with no mark found is looked at again once the team shows
     expect(learned.length).toBe(2);
     expect(calls).toEqual([]);
   } finally {
+    cleanup();
+  }
+}, 60_000);
+
+test("cells run several at once by the Mac's memory (8 GB: one; 16 GB: three), a file looked at for its mark one at a time beside them", async () => {
+  // The M4 (17.2 GB): three.
+  expect([8, 11, 12, 16, 17.2, 32].map((gb) => wm.cellsAtOnceFor(gb * 2 ** 30))).toEqual([1, 1, 2, 3, 3, 3]);
+  const { app, dir, cleanup } = fixtureHome("watermark-parallel");
+  let active = 0;
+  let most = 0;
+  const base = standIn([]);
+  wm.useEngine({
+    ...base,
+    remove: async (piece, progress) => {
+      active += 1;
+      most = Math.max(most, active);
+      await Bun.sleep(150);
+      const done = await base.remove(piece, progress);
+      active -= 1;
+      return done;
+    },
+  });
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  const before = wm.limits.cells;
+  try {
+    const file = join(dir, "marked.mp4");
+    fs.writeFileSync(file, "a long stand-in tape with a mark");
+    const id = await project(app, [file], 70);
+    wm.limits.cells = 3;
+    await wm.ensure(app, id);
+    await wm.settled();
+    expect(most).toBe(3);
+    expect(wm.piecesOf(id).map((piece) => piece.state)).toEqual(["done", "done", "done"]);
+    // One at a time where memory says so.
+    wm.reset();
+    most = 0;
+    const other = await project(app, [file], 70, "q");
+    await app.store.update(other, "test", (p) => {
+      p.media = p.media.filter((one) => one.cleans == null);
+    });
+    wm.limits.cells = 1;
+    wm.useShelf(wm.shelfIn(join(dir, "shelf2"), () => false));
+    await wm.ensure(app, other);
+    await wm.settled();
+    expect(most).toBe(1);
+  } finally {
+    wm.limits.cells = before;
     cleanup();
   }
 }, 60_000);

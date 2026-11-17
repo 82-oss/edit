@@ -7,7 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 
 import { readCutOffsWith, useKeys } from "../../../relay/src/auth";
 import relay, { TranscriptionBudget, type Env } from "../../../relay/src/index";
-import { LEASE_MS, VMAKE_PROFILE } from "../../../relay/src/vmake";
+import { AT_ONCE, LEASE_MS, VMAKE_PROFILE } from "../../../relay/src/vmake";
 
 const ISSUER = "https://accounts.example.test";
 let privateKey: CryptoKey;
@@ -90,11 +90,11 @@ describe("the team's Vmake account on the relay", () => {
   it("lends one Mac at a time a browser on the team's profile, the key never leaving the relay", async () => {
     const e = env();
     const calls = browserUse();
-    expect((await ask(e, "/v1/vmake")).body).toEqual({ ready: true, filesToday: 0 });
+    expect((await ask(e, "/v1/vmake")).body).toEqual({ ready: true, filesToday: 0, atOnce: AT_ONCE });
     // The day's files are the team's: counted here whichever Mac sends one.
     expect((await ask(e, "/v1/vmake/file", { holder: "m4" })).body).toEqual({ filesToday: 1 });
     expect((await ask(e, "/v1/vmake/file", { holder: "kenobi" })).body).toEqual({ filesToday: 2 });
-    expect((await ask(e, "/v1/vmake")).body).toEqual({ ready: true, filesToday: 2 });
+    expect((await ask(e, "/v1/vmake")).body).toEqual({ ready: true, filesToday: 2, atOnce: AT_ONCE });
     const lent = await ask(e, "/v1/vmake/browser", { holder: "kenobi" });
     expect(lent.status).toBe(200);
     expect(lent.body).toEqual({ id: expect.any(String), cdpUrl: "https://cdp.example.test/x" });
@@ -107,6 +107,27 @@ describe("the team's Vmake account on the relay", () => {
     expect((await ask(e, `/v1/vmake/browser/${id}/stop`, { holder: "kenobi" })).body).toEqual({ stopped: true });
     expect(calls.some((one) => one.method === "PATCH" && one.url.endsWith(`/browsers/${id}`))).toBe(true);
     expect((await ask(e, "/v1/vmake/browser", { holder: "m4" })).body.cdpUrl).toBe("https://cdp.example.test/x");
+  });
+
+  it("the lease's holder gets more browsers, with no profile, up to AT_ONCE in all; an extra one's stop leaves the lease", async () => {
+    const e = env();
+    const calls = browserUse();
+    // Not the holder: none.
+    expect((await ask(e, "/v1/vmake/browser", { holder: "kenobi", extra: true })).body).toEqual({ busy: "another Mac" });
+    await ask(e, "/v1/vmake/browser", { holder: "kenobi" });
+    const extras = [];
+    for (let n = 1; n < AT_ONCE; n++) extras.push(await ask(e, "/v1/vmake/browser", { holder: "kenobi", extra: true }));
+    expect(extras.every((one) => one.body.extra === true && typeof one.body.cdpUrl === "string")).toBe(true);
+    // Never on the team's profile.
+    expect(calls.filter((one) => one.method === "POST" && one.url.endsWith("/browsers")).map((one) => (one.body as { profileId: unknown }).profileId)).toEqual([VMAKE_PROFILE, ...extras.map(() => null)]);
+    // Full: AT_ONCE browsers in all.
+    expect((await ask(e, "/v1/vmake/browser", { holder: "kenobi", extra: true })).body).toEqual({ full: true });
+    // Another Mac: none, the lease is kenobi's.
+    expect((await ask(e, "/v1/vmake/browser", { holder: "m4", extra: true })).body).toEqual({ busy: "kenobi" });
+    // An extra one stopped: room for one more, and the lease still kenobi's.
+    expect((await ask(e, `/v1/vmake/browser/${String(extras[0]!.body.id)}/stop`, { holder: "kenobi", extra: true })).body).toEqual({ stopped: true });
+    expect((await ask(e, "/v1/vmake/browser", { holder: "m4" })).body).toEqual({ busy: "kenobi" });
+    expect((await ask(e, "/v1/vmake/browser", { holder: "kenobi", extra: true })).body.extra).toBe(true);
   });
 
   it("a Mac that died holding the lease loses it once it runs out", async () => {
@@ -130,7 +151,7 @@ describe("the team's Vmake account on the relay", () => {
     browserUse(402);
     expect(await ask(poor, "/v1/vmake/browser", { holder: "kenobi" })).toEqual({ status: 402, body: { error: "browser_credits" } });
     const unset = env({ BROWSER_USE_API_KEY: undefined });
-    expect((await ask(unset, "/v1/vmake")).body).toEqual({ ready: false, filesToday: 0 });
+    expect((await ask(unset, "/v1/vmake")).body).toEqual({ ready: false, filesToday: 0, atOnce: AT_ONCE });
     expect((await ask(unset, "/v1/vmake/browser", { holder: "kenobi" })).status).toBe(503);
   });
 
@@ -140,7 +161,7 @@ describe("the team's Vmake account on the relay", () => {
     const passed: string[] = [];
     const dev = env({ BROWSER_USE_API_KEY: undefined, CHANNELS_UPSTREAM: "https://live.relay.test", LIVE_RELAY: { fetch: async (request: Request) => (passed.push(`${request.method} ${new URL(request.url).pathname}`), relay.fetch(request, live)) } });
     expect((await ask(live, "/v1/vmake/browser", { holder: "m4" })).body.cdpUrl).toBe("https://cdp.example.test/x");
-    expect((await ask(dev, "/v1/vmake")).body).toEqual({ ready: true, filesToday: 0 });
+    expect((await ask(dev, "/v1/vmake")).body).toEqual({ ready: true, filesToday: 0, atOnce: AT_ONCE });
     expect((await ask(dev, "/v1/vmake/browser", { holder: "mandalorian" })).body).toEqual({ busy: "m4" });
     expect(passed).toEqual(["GET /v1/vmake", "POST /v1/vmake/browser"]);
     expect(calls.filter((one) => one.method === "POST").length).toBe(1);

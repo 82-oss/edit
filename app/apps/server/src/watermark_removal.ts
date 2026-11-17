@@ -26,6 +26,7 @@
 
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import * as os from "node:os";
 
 import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
@@ -305,7 +306,23 @@ const looks: Look[] = [];
 const looking = new Map<string, Set<string>>();
 /** When looking at a source last failed (tried again after half an hour). */
 const lookFailed = new Map<string, number>();
-let busy = false;
+/** Cells being cleaned now, and whether a file is being looked at for its mark (one at a time). */
+let running = 0;
+let lookingNow = false;
+
+/**
+ * Cells at once: each takes about 1.7 GB, so one on a Mac under 12 GB, up to
+ * three with room for the rest of Edit and the person's apps (Sphe, Nov 17:
+ * "8 GB Macs 1, ≥16 GB up to 3"). Every cell's work is at background
+ * priority (the engine's threads: utility QoS and nice 10; its FFmpeg niced).
+ */
+export function cellsAtOnceFor(totalBytes: number): number {
+  const gb = totalBytes / 2 ** 30;
+  // 1.7 GB a cell, with headroom: 12 GB two, 16 GB and up three.
+  return gb < 12 ? 1 : Math.max(1, Math.min(3, Math.floor((gb - 6) / 2.5)));
+}
+
+export const limits = { cells: cellsAtOnceFor(os.totalmem()) };
 const pieceKey = (media: string, from: number) => `${media}@${Math.round(from * 1000)}`;
 
 function note(project: string, piece: Piece): void {
@@ -409,7 +426,7 @@ export async function ensure(app: App, id: string, hints: Hints = hintsFor.proje
     note(id, { media: cell.media.id, name: cell.media.name, from: cell.from, to: cell.to, state: "queued", tries: known?.tries ?? 0 });
     queue.push({ project: id, media: cell.media, source: cell.source, from: cell.from, to: cell.to, model: cell.model });
   }
-  void drain(app);
+  drain(app);
 }
 
 /** Files of `id` being looked at for their mark now or queued to be (an export waits for them as for pieces). */
@@ -419,23 +436,28 @@ export function lookingAt(id: string): number {
   return count;
 }
 
-/** The queue, one thing at a time: a file's cells first (its mark known), then the next file to look at. */
-async function drain(app: App): Promise<void> {
-  if (busy) return;
-  busy = true;
-  try {
-    for (;;) {
-      const job = queue.shift();
-      if (job !== undefined) {
-        await work(app, job);
-        continue;
-      }
-      const look = looks.shift();
-      if (look === undefined) break;
-      await lookAt(app, look);
+/** The queue: up to `limits.cells` at once, a file's cells first (its mark known), the next file to look at beside them (one at a time). */
+function drain(app: App): void {
+  while (running < limits.cells) {
+    const job = queue.shift();
+    if (job !== undefined) {
+      running += 1;
+      void work(app, job).finally(() => {
+        running -= 1;
+        drain(app);
+      });
+      continue;
     }
-  } finally {
-    busy = false;
+    if (lookingNow) break;
+    const look = looks.shift();
+    if (look === undefined) break;
+    running += 1;
+    lookingNow = true;
+    void lookAt(app, look).finally(() => {
+      running -= 1;
+      lookingNow = false;
+      drain(app);
+    });
   }
 }
 
@@ -572,7 +594,7 @@ export function stop(id: string): void {
 
 /** For tests: every queued piece done. */
 export async function settled(): Promise<void> {
-  while (busy || queue.length > 0 || looks.length > 0) await Bun.sleep(20);
+  while (running > 0 || queue.length > 0 || looks.length > 0) await Bun.sleep(20);
 }
 
 /** For tests: nothing remembered. */
@@ -584,7 +606,8 @@ export function reset(): void {
   looking.clear();
   lookFailed.clear();
   // A fresh server's queue: what was under way is gone with the one that stopped.
-  busy = false;
+  running = 0;
+  lookingNow = false;
 }
 
 export function routes(router: Router<App>): void {

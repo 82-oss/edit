@@ -529,6 +529,8 @@ export interface Remote {
   tab(): Promise<Page>;
   /** A tab already open whose address `match` takes (one a page opened), once it's there (null after `waitMs`). */
   attach(match: (url: string) => boolean, waitMs?: number): Promise<Page | null>;
+  /** A browser-wide DevTools command (Storage.getCookies, Storage.setCookies: the browser's, not a tab's). */
+  call(method: string, params?: Record<string, unknown>, waitMs?: number): Promise<Record<string, unknown>>;
   readonly closed: boolean;
   /** Lets go of the browser (it's stopped by whoever started it). */
   close(): void;
@@ -565,6 +567,7 @@ export async function remote(cdpUrl: string, what: string): Promise<Remote> {
         await Bun.sleep(250);
       }
     },
+    call: (method, params = {}, waitMs = 30_000) => socket.call(method, params, null, waitMs) as Promise<Record<string, unknown>>,
     get closed() {
       return socket.closed;
     },
