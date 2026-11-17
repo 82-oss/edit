@@ -757,6 +757,62 @@ impl Renderer {
         );
     }
 
+    /// Whether a `width`-wide RGBA or BGRA frame can be uploaded from a
+    /// staging buffer (`upload_video_staged`): its rows a whole multiple of
+    /// wgpu's copy alignment (256 bytes: 1920 and 1280 wide, not 1080).
+    pub fn staged_fits(width: u32) -> bool {
+        (width * 4).is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+    }
+
+    /// `upload_video` from a buffer a decoder wrote the frame into while it
+    /// was mapped (MAP_WRITE | COPY_SRC, rows `width * 4` bytes, unmapped
+    /// now): copied into the video's texture on the GPU. `write_texture` copied
+    /// each frame on the CPU first, a third of a Mac export's busy time
+    /// (kenobi, M1, Nov 17: `_platform_memmove` under `Queue::write_texture`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn upload_video_staged(
+        &mut self,
+        media: &str,
+        width: u32,
+        height: u32,
+        buffer: &wgpu::Buffer,
+        bgra: bool,
+    ) -> wgpu::SubmissionIndex {
+        let format = if bgra {
+            wgpu::TextureFormat::Bgra8Unorm
+        } else {
+            SOURCE_FORMAT
+        };
+        let texture = self.video_texture_in(media, width, height, format).clone();
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("edit staged upload"),
+            });
+        encoder.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()])
+    }
+
     /// `upload_video` for a frame as BT.709 TV-range 4:2:0 planes (Y, U, V,
     /// tight; an even `width` and `height`): turned into the video's RGBA on
     /// the GPU (`shaders/yuv420_in.wgsl`) as FFmpeg would have on the CPU, so

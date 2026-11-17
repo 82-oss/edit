@@ -3225,7 +3225,30 @@ struct Decoded {
     height: u32,
     order: Order,
     /// None: the same picture as this clip's last.
-    pixels: Option<Vec<u8>>,
+    pixels: Option<Pixels>,
+}
+
+/// A decoded picture: in memory, or written by the decoder straight into a
+/// GPU staging buffer (RGBA or BGRA rows that fit `Renderer::staged_fits`),
+/// which the compositor copies into the video's texture on the GPU
+/// (`Renderer::upload_video_staged`), not through `write_texture`'s copy.
+enum Pixels {
+    Bytes(Vec<u8>),
+    Staged(wgpu::Buffer),
+}
+
+/// A staging buffer for `bytes` a decoder writes into: one the compositor
+/// gave back (mapped again once the GPU copied it), else a new one mapped.
+fn staging(device: &wgpu::Device, recycled: &mut Vec<wgpu::Buffer>, bytes: u64) -> wgpu::Buffer {
+    if let Some(at) = recycled.iter().position(|buffer| buffer.size() == bytes) {
+        return recycled.swap_remove(at);
+    }
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("edit decoded frame"),
+        size: bytes,
+        usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: true,
+    })
 }
 
 /// One decoder thread: decodes its jobs in order, recycling pixel buffers.
@@ -3235,10 +3258,12 @@ struct Decoded {
 fn decoder(
     jobs: mpsc::Receiver<DecodeJob>,
     out: mpsc::SyncSender<Result<Decoded, String>>,
-    recycle: mpsc::Receiver<Vec<u8>>,
+    recycle: mpsc::Receiver<Pixels>,
+    device: wgpu::Device,
 ) {
     let mut current: Option<(String, VideoReader)> = None;
     let mut spare: Vec<Vec<u8>> = Vec::new();
+    let mut staged: Vec<wgpu::Buffer> = Vec::new();
     for job in jobs {
         if job.first || current.as_ref().is_none_or(|(clip, _)| *clip != job.clip) {
             let reader = match current.take() {
@@ -3250,29 +3275,62 @@ fn decoder(
         let Some((_, reader)) = current.as_mut() else {
             break;
         };
-        let mut buffer = spare
-            .pop()
-            .or_else(|| recycle.try_recv().ok())
-            .unwrap_or_default();
-        buffer.resize(job.source.bytes(), 0);
-        let result = reader
-            .frame_into(job.time, &mut buffer, !job.first)
-            .map(|changed| {
-                let pixels = if changed {
-                    Some(buffer)
-                } else {
-                    spare.push(buffer);
-                    None
-                };
-                Decoded {
-                    frame: job.frame,
-                    clip: job.clip,
-                    width: job.source.key.width,
-                    height: job.source.key.height,
-                    order: job.source.key.order,
-                    pixels,
+        for given in recycle.try_iter() {
+            match given {
+                Pixels::Bytes(buffer) => spare.push(buffer),
+                Pixels::Staged(buffer) => staged.push(buffer),
+            }
+        }
+        let key = &job.source.key;
+        let stage = key.order != Order::Yuv420 && Renderer::staged_fits(key.width);
+        let decoded = if stage {
+            let buffer = staging(&device, &mut staged, job.source.bytes() as u64);
+            let changed = match buffer.slice(..).get_mapped_range_mut() {
+                Ok(mut view) => {
+                    let length = view.len();
+                    let mut whole = view.slice(..);
+                    // SAFETY: the mapped range is `length` bytes, initialised (wgpu zeroes
+                    // new buffers) and ours alone until `view` drops below; the readers
+                    // only write into the frame they're given, never read it back
+                    // (wgpu's WriteOnly is for memory that's slow to read, not unsound).
+                    let frame = unsafe {
+                        std::slice::from_raw_parts_mut(whole.as_raw_element_ptr().as_ptr(), length)
+                    };
+                    reader.frame_into(job.time, frame, !job.first)
                 }
-            });
+                Err(error) => Err(format!("a decoded frame's buffer: {error}")),
+            };
+            changed.map(|changed| {
+                if changed {
+                    buffer.unmap();
+                    Some(Pixels::Staged(buffer))
+                } else {
+                    staged.push(buffer);
+                    None
+                }
+            })
+        } else {
+            let mut buffer = spare.pop().unwrap_or_default();
+            buffer.resize(job.source.bytes(), 0);
+            reader
+                .frame_into(job.time, &mut buffer, !job.first)
+                .map(|changed| {
+                    if changed {
+                        Some(Pixels::Bytes(buffer))
+                    } else {
+                        spare.push(buffer);
+                        None
+                    }
+                })
+        };
+        let result = decoded.map(|pixels| Decoded {
+            frame: job.frame,
+            clip: job.clip,
+            width: job.source.key.width,
+            height: job.source.key.height,
+            order: job.source.key.order,
+            pixels,
+        });
         let failed = result.is_err();
         if out.send(result).is_err() || failed {
             break;
@@ -3477,10 +3535,11 @@ fn render_frames_watched(
         for _ in 0..DECODERS {
             let (job_tx, job_rx) = mpsc::channel::<DecodeJob>();
             let (out_tx, out_rx) = mpsc::sync_channel(2);
-            let (recycle_tx, recycle_rx) = mpsc::channel::<Vec<u8>>();
+            let (recycle_tx, recycle_rx) = mpsc::channel::<Pixels>();
             let decoders = crate::util::decoders();
+            let device = device.clone();
             scope.spawn(move || {
-                crate::util::with_decoders(decoders, || decoder(job_rx, out_tx, recycle_rx))
+                crate::util::with_decoders(decoders, || decoder(job_rx, out_tx, recycle_rx, device))
             });
             job_senders.push(job_tx);
             outputs.push(out_rx);
@@ -3564,18 +3623,42 @@ fn render_frames_watched(
                             if decoded.frame != planned.frame || decoded.clip != *clip {
                                 return Err("decoding fell out of step".to_owned());
                             }
-                            if let Some(pixels) = decoded.pixels {
-                                upload(
-                                    &mut renderer,
-                                    clip,
-                                    decoded.width,
-                                    decoded.height,
-                                    &pixels,
-                                    decoded.order,
-                                );
-                                if let Some(recycle) = recyclers.get(*index) {
-                                    let _ = recycle.send(pixels);
+                            match decoded.pixels {
+                                Some(Pixels::Bytes(pixels)) => {
+                                    upload(
+                                        &mut renderer,
+                                        clip,
+                                        decoded.width,
+                                        decoded.height,
+                                        &pixels,
+                                        decoded.order,
+                                    );
+                                    if let Some(recycle) = recyclers.get(*index) {
+                                        let _ = recycle.send(Pixels::Bytes(pixels));
+                                    }
                                 }
+                                Some(Pixels::Staged(buffer)) => {
+                                    renderer.upload_video_staged(
+                                        clip,
+                                        decoded.width,
+                                        decoded.height,
+                                        &buffer,
+                                        decoded.order == Order::Bgra,
+                                    );
+                                    // Mapped again once the GPU has copied it: back to its decoder.
+                                    if let Some(recycle) = recyclers.get(*index).cloned() {
+                                        let back = buffer.clone();
+                                        buffer.slice(..).map_async(
+                                            wgpu::MapMode::Write,
+                                            move |mapped| {
+                                                if mapped.is_ok() {
+                                                    let _ = recycle.send(Pixels::Staged(back));
+                                                }
+                                            },
+                                        );
+                                    }
+                                }
+                                None => {}
                             }
                         }
                         Decode::Inline(source, time) => {
