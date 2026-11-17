@@ -107,9 +107,9 @@ test("a camera time is the frame its second begins on, in the stretch that holds
   const found = await clock.find(reader, [media("m1", "/cam.mp4"), media("m2", "/map.mp4")], ["14:32:05", "2:50:20 PM", "2023-05-14 14:50:10", "14:32:35", "2023-05-15 14:32:05", "14:32"]);
   const [first, second, opening, cutOut, otherDay, minute] = found.results;
   // 14:32:05 begins 4.59 s in: frame 138 (frame 137 still shows :04), until 14:32:06 at frame 168.
-  expect(first!.found).toEqual([{ media: "m1", name: "m1.mp4", at: 4.6, until: 5.6, clock: "2023-05-14 T14:32:05 Z", within: 0 }]);
+  expect(first!.found).toEqual([{ media: "m1", name: "m1.mp4", at: 4.6, until: 5.6, clock: "2023-05-14 14:32:05", within: 0 }]);
   // After the title card: 14:50:20 at frame 1478.
-  expect(second!.found).toEqual([{ media: "m1", name: "m1.mp4", at: 49.267, until: 50.267, clock: "2023-05-14 T14:50:20 Z", within: 0 }]);
+  expect(second!.found).toEqual([{ media: "m1", name: "m1.mp4", at: 49.267, until: 50.267, clock: "2023-05-14 14:50:20", within: 0 }]);
   // A second the stretch opens inside: its first frame.
   expect(opening!.found.map((hit) => [hit.at, hit.until])).toEqual([[40, 40.267]]);
   // 14:32:35 was cut (the stretch ends at :30): not found, with the stretches either side.
@@ -155,9 +155,9 @@ test("Vision's reads, the date and the time in boxes side by side and no colons,
   stand({ "/cam.mp4": vision });
   const found = await clock.find(reader, [media("m1", "/cam.mp4")], ["2023-05-14 14:32:05", "14:50:20", "14:50:17"]);
   expect(found.results.map((result) => result.found.map((hit) => [hit.at, hit.until, hit.clock]))).toEqual([
-    [[4.6, 5.6, "2023.05.14 Ttr14..32..05"]],
-    [[49.267, 50.267, "2023.05.14 Ttr14..50..20"]],
-    [[46.267, 47.267, "2023.05.14 Ttr14..50..1.7"]],
+    [[4.6, 5.6, "2023-05-14 14:32:05"]],
+    [[49.267, 50.267, "2023-05-14 14:50:20"]],
+    [[46.267, 47.267, "2023-05-14 14:50:17"]],
   ]);
 });
 
@@ -221,7 +221,7 @@ test.skipIf(ffmpeg === null || addon === null)("on real frames drawn with a tick
     // 14:32:05 begins 5.37 s in (frame 162, as 161 is 5.367 s, still :04); 14:40:13 at 13 s (frame 390); 14:40:10 at the cut, 10 s.
     const said = () => [...seen].sort().join("\n");
     expect(found.results.map((result) => result.found.map((hit) => [hit.at, hit.until, hit.within])), said()).toEqual([[[5.4, 6.4, 0]], [[13, 14, 0]], [[10, 11, 0]], []]);
-    expect(found.results[0]!.found[0]!.clock).toContain("14:32:05");
+    expect(found.results[0]!.found[0]!.clock).toBe("2023-05-14 14:32:05");
     expect(found.results[3]!.nearest!.length).toBe(2);
   } finally {
     cleanup();

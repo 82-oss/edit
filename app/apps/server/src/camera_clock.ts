@@ -463,7 +463,7 @@ export interface Hit {
   /** Source seconds of the first frame showing it, and of the first showing the next second (null: the shot ends or can't be read). */
   at: number;
   until: number | null;
-  /** The clock as read there. */
+  /** The clock read there, written plainly ("2023-05-14 14:32:05"; the reader's own text has Vision's dots for colons). */
   clock: string;
   /** Frames either side the answer may be off by (0: exact). */
   within: number;
@@ -610,7 +610,7 @@ async function search(file: File, asked: Clock): Promise<{ hits: Hit[]; spans: S
       if (found === null || hits.some((hit) => Math.abs(hit.at * fps - found.frame) < fps)) continue;
       const read = file.clockAt(found.frame)!;
       const end = await untilNext(file, read, asked, found.frame);
-      hits.push({ media: media.id, name: media.name, at: round3(found.frame / fps), until: end === null ? null : round3(end / fps), clock: read.text, within: found.within });
+      hits.push({ media: media.id, name: media.name, at: round3(found.frame / fps), until: end === null ? null : round3(end / fps), clock: clockText(read.clock), within: found.within });
     }
     const spans = () => stretchesOf(file.reads(), fps).map((stretch) => spanOf(file, stretch, asked));
     if (hits.length > 0 || pass >= FILL_ROUNDS || file.budget.left <= 0) return { hits, spans: spans() };
