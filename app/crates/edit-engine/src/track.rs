@@ -923,7 +923,7 @@ fn decode_native(
     let parts = (count / 150).clamp(1, 3);
     let read_part = |part: usize| -> Result<Vec<u8>, String> {
         let (first, last) = (count * part / parts, count * (part + 1) / parts);
-        let open = || crate::mac_media::Reader::open(path, width as u32, height as u32, false);
+        let open = || crate::mac_media::Reader::open(path, width as u32, height as u32);
         let mut reader = open()?;
         // The reader holds its last picture for any later time, so the span
         // stops where the pictures do (as FFmpeg's does), and a failure
