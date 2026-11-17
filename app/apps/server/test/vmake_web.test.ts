@@ -20,8 +20,9 @@ import { scratch } from "./helpers/home.ts";
 const CHROME = ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"].find((path) => fs.existsSync(path));
 
 /** What the stand-in page saw, and how it behaves. */
-const seen = { mode: "", bytes: 0, uploads: 0 };
-const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false };
+const seen = { mode: "", bytes: 0, uploads: 0, others: 0 };
+/** `cards`: the page as Sphe's account showed it (Nov 17): a stack of job cards, a teammate's long file among them. */
+const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false };
 const PIECE = new Uint8Array(3_000_000).map((_, at) => at % 251);
 
 const PAGE = () => `<!doctype html><html><body>
@@ -31,8 +32,9 @@ const PAGE = () => `<!doctype html><html><body>
 <ul class="radio--q7">${["Smart", "Smart pro", "Subtitle", "Watermark", "Passerby"].map((mode, at) => `<li class="item--a ${at === 0 ? "active--z" : ""} ${mode === "Smart pro" && site.noSmartPro ? "disabled--d" : ""}">${mode}</li>`).join("")}</ul>
 <span class="ant-upload-btn"><input type="file" name="file" accept=".mp4,.mov"></span>
 <span class="ant-upload-btn"><input type="file" name="file" multiple></span>
-<div id="work"></div>
+<div id="work">${site.cards ? `<div class="viewport-task-card--o5h" id="other"><span>v3p2.mp4</span> 40% <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul><button>Download</button></div>` : ""}</div>
 <script>
+document.getElementById('other')?.addEventListener('click', () => fetch('/record-other', { method: 'POST' }));
 document.querySelectorAll('ul[class*=radio] li').forEach((li) => li.addEventListener('click', () => {
   if (/disabled--/.test(li.className)) return;
   document.querySelectorAll('ul[class*=radio] li').forEach((one) => one.classList.remove('active--z'));
@@ -40,9 +42,48 @@ document.querySelectorAll('ul[class*=radio] li').forEach((li) => li.addEventList
 }));
 document.querySelector('input:not([multiple])').addEventListener('change', async (event) => {
   const file = event.target.files[0];
-  const mode = document.querySelector('li.active--z').innerText;
-  await fetch('/record', { method: 'POST', body: JSON.stringify({ mode, bytes: file.size }) });
+  // A fresh page starts at once in the mode chosen (the cards' page waits on Apply).
+  if (!${site.cards}) await fetch('/record', { method: 'POST', body: JSON.stringify({ mode: document.querySelector('li.active--z').innerText, bytes: file.size }) });
   const work = document.getElementById('work');
+  if (${site.cards}) {
+    // A card of its own, as Sphe's Pro account shows it: uploading, then waiting on Apply (Smart first), processing, Download.
+    const card = document.createElement('div');
+    card.className = 'viewport-task-card--o5h';
+    card.innerHTML = '<i>Uploading... 0%</i> 00:00.00 / 00:08.00 40% <span>' + file.name + '</span> <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a">Smart pro</li><li class="item--a">Subtitle</li></ul><button>40%</button>';
+    work.prepend(card);
+    card.querySelectorAll('li').forEach((li) => li.addEventListener('click', () => {
+      if (/Uploading/.test(card.innerText)) return;
+      card.querySelectorAll('li').forEach((one) => one.classList.remove('active--z'));
+      li.classList.add('active--z');
+    }));
+    setTimeout(() => {
+      card.querySelector('i').textContent = 'To be processed Click Apply to begin';
+      const apply = document.createElement('button');
+      apply.textContent = 'Apply';
+      card.append(apply);
+      // The first press is lost, as Sphe's account lost the driver's (Nov 17); a stalled job never moves.
+      let pressed = 0;
+      apply.addEventListener('click', () => {
+        if (++pressed === 1) return;
+        if (${site.stall}) { card.querySelector('i').textContent = 'Processing… 0%'; return; }
+        fetch('/record', { method: 'POST', body: JSON.stringify({ mode: card.querySelector('li.active--z').innerText, bytes: file.size }) });
+        apply.remove();
+        let percent = 0;
+        const tick = setInterval(() => {
+          percent += 25;
+          card.querySelector('i').textContent = percent < 100 ? 'Processing… ' + percent + '%, Est. 1 min' : '';
+          if (percent >= 100) {
+            clearInterval(tick);
+            const button = document.createElement('button');
+            button.textContent = 'Download';
+            button.addEventListener('click', () => (location.href = '/result.mp4?full=1'));
+            card.append(button);
+          }
+        }, 150);
+      });
+    }, 600);
+    return;
+  }
   if (${site.dailyLimit}) { work.innerHTML = '<div class="ant-modal">You have reached today\\'s limit for this feature. Upgrade or come back tomorrow.</div>'; return; }
   let percent = 0;
   const tick = setInterval(() => {
@@ -76,12 +117,27 @@ beforeAll(async () => {
         seen.uploads += 1;
         return new Response("ok");
       }
+      if (url.pathname === "/record-other") {
+        seen.others += 1;
+        return new Response("ok");
+      }
       if (url.pathname === "/result.mp4") return new Response(new Uint8Array([1, 2, 3, url.searchParams.has("full") ? 9 : 5]), { headers: { "content-type": "video/mp4", "content-disposition": "attachment; filename=result.mp4" } });
       return new Response("no", { status: 404 });
     },
   });
   // R2's stand-in: another origin, no CORS headers (the page never sees it).
-  r2 = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response(PIECE, { headers: { "content-type": "video/mp4" } }) });
+  r2 = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    // Ranges, as R2 answers them (the browser reads a piece in ranges: Browser Use cuts off a big response).
+    fetch(request) {
+      const range = /bytes=(\d+)-(\d*)/.exec(request.headers.get("range") ?? "");
+      if (range === null) return new Response(PIECE, { headers: { "content-type": "video/mp4" } });
+      const from = Number(range[1]);
+      const to = range[2] === "" ? PIECE.length - 1 : Math.min(PIECE.length - 1, Number(range[2]));
+      return new Response(PIECE.slice(from, to + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${from}-${to}/${PIECE.length}` } });
+    },
+  });
   if (CHROME === undefined) return;
   profile = fs.mkdtempSync(join(os.tmpdir(), "edit-vmake-web-"));
   chrome = Bun.spawn([CHROME, "--headless=new", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"], { stdout: "ignore", stderr: "ignore" });
@@ -113,8 +169,8 @@ test.skipIf(CHROME === undefined)("a piece goes through the stand-in remover: Sm
   try {
     const page = await session.remote.tab();
     const progress: number[] = [];
-    const url = await web.removeOnPage(page, piece(), "piece-8s.mp4", `http://localhost:${vmake.port}`, (percent) => progress.push(percent));
-    expect(seen).toEqual({ mode: "Smart pro", bytes: PIECE.length, uploads: 1 });
+    const url = await web.removeOnPage(page, session.remote, piece(), "piece-8s.mp4", `http://localhost:${vmake.port}`, (percent) => progress.push(percent));
+    expect(seen).toEqual({ mode: "Smart pro", bytes: PIECE.length, uploads: 1, others: 0 });
     expect(url).toBe(`http://localhost:${vmake.port}/result.mp4?full=1`);
     // The stand-in is done before the first look (3–5 s, a person's pace), so its percent may never be seen.
     expect(progress.every((percent) => percent >= 0 && percent <= 100)).toBe(true);
@@ -124,12 +180,51 @@ test.skipIf(CHROME === undefined)("a piece goes through the stand-in remover: Sm
   }
 }, 60_000);
 
+test.skipIf(CHROME === undefined)("on a page of job cards (a teammate's among them), the piece's own card gets Smart pro and the download; nobody else's is touched", async () => {
+  site.cards = true;
+  const session = await browsers.open(null);
+  try {
+    const page = await session.remote.tab();
+    const uploads = seen.uploads;
+    const url = await web.removeOnPage(page, session.remote, piece(), "piece-card.mp4", `http://localhost:${vmake.port}`);
+    expect(url).toBe(`http://localhost:${vmake.port}/result.mp4?full=1`);
+    // Applied once, in Smart pro chosen on its own card.
+    expect(seen.uploads - uploads).toBe(1);
+    expect(seen.mode).toBe("Smart pro");
+    expect(seen.others).toBe(0);
+    page.close();
+  } finally {
+    site.cards = false;
+    await session.stop();
+  }
+}, 60_000);
+
+test.skipIf(CHROME === undefined)("a piece that shows no progress after Apply is given up on, not waited on for hours", async () => {
+  site.cards = true;
+  site.stall = true;
+  web.timing.stallMs = 4_000;
+  const session = await browsers.open(null);
+  try {
+    const page = await session.remote.tab();
+    const error = await web.removeOnPage(page, session.remote, piece(), "piece-stall.mp4", `http://localhost:${vmake.port}`).catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(VmakeError);
+    expect((error as VmakeError).scope).toBe("piece");
+    expect((error as VmakeError).message).toContain("no progress");
+    page.close();
+  } finally {
+    site.cards = false;
+    site.stall = false;
+    web.timing.stallMs = 3 * 60_000;
+    await session.stop();
+  }
+}, 60_000);
+
 test.skipIf(CHROME === undefined)("the account's troubles on the page are the account's: signed out, no Smart pro, the day's files used", async () => {
   const session = await browsers.open(null);
   const whose = async () => {
     const page = await session.remote.tab();
     try {
-      await web.removeOnPage(page, piece(), "piece.mp4", `http://localhost:${vmake.port}`);
+      await web.removeOnPage(page, session.remote, piece(), "piece.mp4", `http://localhost:${vmake.port}`);
       return "done";
     } catch (error) {
       return error instanceof VmakeError ? `${error.scope}:${error.reason}` : String(error);
@@ -179,7 +274,7 @@ test.skipIf(CHROME === undefined)("the website's provider counts the day's files
       staged.push(key);
       return { url: piece(), drop: async () => void staged.push(`dropped ${key}`) };
     });
-    expect(provider.price(94 * 60, 19)).toBe("19 files on your Vmake plan, ≈ $42.38 of cloud browser");
+    expect(provider.price(94 * 60, 19)).toBe("19 files on your Vmake plan, ≈ $1.77 of cloud browser");
     const out = join(dir, "out.mp4");
     expect(await provider.remove(input, out, 8)).toEqual({ credits: null });
     expect([...fs.readFileSync(out)]).toEqual([1, 2, 3, 9]);
@@ -199,7 +294,7 @@ test.skipIf(CHROME === undefined)("the website's provider counts the day's files
     expect(error).toBeInstanceOf(VmakeError);
     expect((error as VmakeError).reason).toBe("daily_limit");
     expect(seen.uploads).toBe(uploads);
-    expect(provider.price(600, 3)).toBe("3 files on your Vmake plan (0 today, the rest tomorrow), ≈ $4.51 of cloud browser");
+    expect(provider.price(600, 3)).toBe("3 files on your Vmake plan (0 today, the rest tomorrow), under $0.50 of cloud browser");
   } finally {
     cleanup();
   }

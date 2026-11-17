@@ -527,6 +527,8 @@ function pageOn(socket: Client, session: string | null, close: () => void): Page
 export interface Remote {
   /** A new tab. */
   tab(): Promise<Page>;
+  /** A tab already open whose address `match` takes (one a page opened), once it's there (null after `waitMs`). */
+  attach(match: (url: string) => boolean, waitMs?: number): Promise<Page | null>;
   readonly closed: boolean;
   /** Lets go of the browser (it's stopped by whoever started it). */
   close(): void;
@@ -549,6 +551,19 @@ export async function remote(cdpUrl: string, what: string): Promise<Remote> {
       const page = pageOn(socket, sessionId, () => void socket.call("Target.closeTarget", { targetId }, null, 10_000).catch(() => {}));
       await page.call("Page.enable");
       return page;
+    },
+    async attach(match, waitMs = 30_000) {
+      const until = Date.now() + waitMs;
+      for (;;) {
+        const { targetInfos } = (await socket.call("Target.getTargets", {}, null, 30_000)) as { targetInfos: { targetId: string; type: string; url: string }[] };
+        const found = targetInfos.find((one) => one.type === "page" && match(one.url));
+        if (found !== undefined) {
+          const { sessionId } = (await socket.call("Target.attachToTarget", { targetId: found.targetId, flatten: true }, null, 30_000)) as { sessionId: string };
+          return pageOn(socket, sessionId, () => void socket.call("Target.closeTarget", { targetId: found.targetId }, null, 10_000).catch(() => {}));
+        }
+        if (Date.now() > until) return null;
+        await Bun.sleep(250);
+      }
     },
     get closed() {
       return socket.closed;
