@@ -153,19 +153,18 @@ afterAll(() => {
   if (profile !== "") fs.rmSync(profile, { recursive: true, force: true });
 });
 
-/** Browser Use's stand-in: the local Chrome, a "session" a connection to it. */
+/** The relay's lent browser's stand-in: the local Chrome, a "session" a connection to it. */
 const browsers: web.Browsers = {
   async open() {
     const one = await remote(cdp, "the stand-in browser");
     return { id: "local", liveUrl: "https://live.example/abc", remote: one, stop: async () => one.close() };
   },
-  profile: async () => "profile-1",
 };
 
 const piece = () => `http://127.0.0.1:${r2.port}/edit/cleaned/send/piece.mp4?X-Amz-Signature=x`;
 
 test.skipIf(CHROME === undefined)("a piece goes through the stand-in remover: Smart pro first, the file from R2 in the page, the full video's address", async () => {
-  const session = await browsers.open(null);
+  const session = await browsers.open();
   try {
     const page = await session.remote.tab();
     const progress: number[] = [];
@@ -182,7 +181,7 @@ test.skipIf(CHROME === undefined)("a piece goes through the stand-in remover: Sm
 
 test.skipIf(CHROME === undefined)("on a page of job cards (a teammate's among them), the piece's own card gets Smart pro and the download; nobody else's is touched", async () => {
   site.cards = true;
-  const session = await browsers.open(null);
+  const session = await browsers.open();
   try {
     const page = await session.remote.tab();
     const uploads = seen.uploads;
@@ -203,7 +202,7 @@ test.skipIf(CHROME === undefined)("a piece that shows no progress after Apply is
   site.cards = true;
   site.stall = true;
   web.timing.stallMs = 4_000;
-  const session = await browsers.open(null);
+  const session = await browsers.open();
   try {
     const page = await session.remote.tab();
     const error = await web.removeOnPage(page, session.remote, piece(), "piece-stall.mp4", `http://localhost:${vmake.port}`).catch((thrown: unknown) => thrown);
@@ -220,7 +219,7 @@ test.skipIf(CHROME === undefined)("a piece that shows no progress after Apply is
 }, 60_000);
 
 test.skipIf(CHROME === undefined)("the account's troubles on the page are the account's: signed out, no Smart pro, the day's files used", async () => {
-  const session = await browsers.open(null);
+  const session = await browsers.open();
   const whose = async () => {
     const page = await session.remote.tab();
     try {
@@ -250,17 +249,48 @@ test.skipIf(CHROME === undefined)("the account's troubles on the page are the ac
   }
 }, 90_000);
 
-test("Browser Use's own refusals are its account's, said as Browser Use's (Nov 17: $0.08 left, every browser refused with 402)", async () => {
-  const server = Bun.serve({ port: 0, fetch: () => new Response('{"detail":"You need at least $0.01 in credits to start a browser session."}', { status: 402 }) });
-  try {
-    const error = await web.browserUse("key", `http://127.0.0.1:${server.port}`).open("profile-1").catch((thrown: unknown) => thrown);
-    expect(error).toBeInstanceOf(VmakeError);
-    expect([(error as VmakeError).scope, (error as VmakeError).reason]).toEqual(["account", "browser_credits"]);
-    expect(tr.accountLine("browser_credits")).toBe("Taking their text out is off: the cloud browser's account (Browser Use) is out of credits. Their subtitles stay blurred until it's sorted.");
-  } finally {
-    void server.stop(true);
-  }
+test("Browser Use's own refusals, said by the relay, are the team account's (Nov 17: $0.08 left, every browser refused with 402)", async () => {
+  const refused = (said: string) => web.teamBrowsers("kenobi", async () => Promise.reject(new Error(said))).open().then(() => new VmakeError("lent", "piece"), (thrown: unknown) => thrown as VmakeError);
+  const credits = await refused("the team's Vmake account: browser_credits (402)");
+  expect(credits).toBeInstanceOf(VmakeError);
+  expect([credits.scope, credits.reason]).toEqual(["account", "browser_credits"]);
+  expect((await refused("the team's Vmake account: browser_key (502)")).reason).toBe("browser_key");
+  // The relay down is a piece's trouble (tried again), not the account's.
+  expect((await refused("could not reach Edit's relay")).scope).toBe("piece");
+  expect(tr.accountLine("browser_credits")).toBe("Taking their text out is off: the cloud browser's account (Browser Use) is out of credits. Their subtitles stay blurred until it's sorted.");
 });
+
+test.skipIf(CHROME === undefined)("one Mac at a time on the team's profile: busy, this Mac waits its turn; lent, it drives the browser and stopping lets the lease go; a sign-in never waits", async () => {
+  const calls: { route: string; body: unknown }[] = [];
+  let busy = 2;
+  const ask = async (_method: string, route: string, body: unknown) => {
+    calls.push({ route, body });
+    if (route === "/v1/vmake/browser") return busy-- > 0 ? { busy: "m4" } : { id: "b1", cdpUrl: cdp };
+    return { stopped: true };
+  };
+  const before = { ...web.turns };
+  web.turns.everyMs = 20;
+  try {
+    const session = await web.teamBrowsers("kenobi", ask).open();
+    expect(calls.filter((one) => one.route === "/v1/vmake/browser").length).toBe(3);
+    expect(session.liveUrl).toBeNull();
+    const page = await session.remote.tab();
+    expect(await page.evaluate<number>("1 + 1")).toBe(2);
+    page.close();
+    await session.stop();
+    expect(calls.at(-1)).toEqual({ route: "/v1/vmake/browser/b1/stop", body: { holder: "kenobi" } });
+    busy = 1;
+    const signIn = await web.teamBrowsers("kenobi", ask).open(true).then(() => new VmakeError("lent", "piece"), (thrown: unknown) => thrown as VmakeError);
+    expect(signIn.message).toContain("m4 is using the team's Vmake account now");
+    // Waited past its time: given up on for now, the piece's.
+    busy = 99;
+    web.turns.waitMs = 30;
+    const long = await web.teamBrowsers("kenobi", ask).open().then(() => new VmakeError("lent", "piece"), (thrown: unknown) => thrown as VmakeError);
+    expect([long.scope, long.message]).toEqual(["piece", "m4 kept the team's Vmake account for hours"]);
+  } finally {
+    Object.assign(web.turns, before);
+  }
+}, 30_000);
 
 test.skipIf(CHROME === undefined)("the website's provider counts the day's files, prices by the file, and stops at the day's allowance without sending", async () => {
   const { dir, cleanup } = scratch("vmake-web");
@@ -270,7 +300,7 @@ test.skipIf(CHROME === undefined)("the website's provider counts the day's files
     const input = join(dir, "piece.mp4");
     fs.writeFileSync(input, PIECE);
     const staged: string[] = [];
-    const provider = tr.websiteProvider(home, browsers, "profile-1", `http://localhost:${vmake.port}`, async (_file, key) => {
+    const provider = tr.websiteProvider(home, browsers, `http://localhost:${vmake.port}`, async (_file, key) => {
       staged.push(key);
       return { url: piece(), drop: async () => void staged.push(`dropped ${key}`) };
     });
@@ -283,7 +313,7 @@ test.skipIf(CHROME === undefined)("the website's provider counts the day's files
     // A plan that isn't paid, read off /pricing as each browser opens: the account's, nothing sent.
     site.free = true;
     const sent = seen.uploads;
-    const lapsed = await tr.websiteProvider(home, browsers, "profile-1", `http://localhost:${vmake.port}`, async () => ({ url: piece(), drop: async () => {} })).remove(input, out, 8).catch((thrown: unknown) => thrown);
+    const lapsed = await tr.websiteProvider(home, browsers, `http://localhost:${vmake.port}`, async () => ({ url: piece(), drop: async () => {} })).remove(input, out, 8).catch((thrown: unknown) => thrown);
     expect((lapsed as VmakeError).reason).toBe("lapsed");
     expect(seen.uploads).toBe(sent);
     site.free = false;

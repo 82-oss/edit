@@ -36,6 +36,7 @@
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 
+import * as accounts from "./accounts.ts";
 import type { App } from "./app.ts";
 import * as burned from "./burned_subtitles.ts";
 import { parseClock, clockRegion } from "./camera_clock.ts";
@@ -55,8 +56,10 @@ import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
 import { clipEnd, fps as fpsOf, freshId, reusedMedia, trackOf } from "./project.ts";
 import * as seams from "./seams.ts";
-import * as tools from "./tools.ts";
+import * as relay from "./relay.ts";
 import * as removal from "./removal_lesson.ts";
+import { holderFor } from "./sync_core.ts";
+import * as tools from "./tools.ts";
 import * as v2cloud from "./v2_cloud.ts";
 import * as vmake from "./vmake_api.ts";
 import * as web from "./vmake_web.ts";
@@ -528,13 +531,13 @@ export interface Provider {
 export function accountLine(reason: AccountReason, said = ""): string {
   const why: Record<AccountReason, string> = {
     closed: "Vmake says this account is closed",
-    signed_out: "Edit's Vmake sign-in has run out",
+    signed_out: "the team's Vmake account is signed out",
     lapsed: "the Vmake plan has lapsed",
     out_of_credits: "the Vmake account is out of credits",
     daily_limit: "the day's Vmake allowance is used up; it carries on tomorrow",
     keys_refused: "Vmake refused this Mac's keys",
     browser_credits: "the cloud browser's account (Browser Use) is out of credits",
-    browser_key: "Browser Use refused this Mac's key",
+    browser_key: "Browser Use refused the team's key on Edit's relay",
     refused: `Vmake refused the account${said !== "" ? ` (${said.replace(/^Vmake's [a-z -]+: /u, "")})` : ""}`,
   };
   return reason === "daily_limit" ? `Taking their text out is paused: ${why[reason]}.` : `Taking their text out is off: ${why[reason]}. Their subtitles stay blurred until it's sorted.`;
@@ -549,9 +552,7 @@ interface AccountState {
 
 interface Kept {
   accounts: Partial<Record<ProviderId, AccountState>>;
-  /** The Browser Use profile holding this Mac's Vmake sign-in. */
-  profile?: string;
-  /** Files sent to vmake.ai today. */
+  /** Files sent to vmake.ai today (tests: the team's are counted on the relay). */
   day?: web.Day;
   /** Each run: what it sent and what it spent. */
   runs: { at: number; project: string; provider: ProviderId; seconds: number; pieces: number; failed: number; credits: number | null; estimate: number | null }[];
@@ -618,29 +619,38 @@ function countFile(home: string): void {
   writeKept(home, kept);
 }
 
+/** The day's files sent to vmake.ai: the team's (counted on Edit's relay), or this home's in tests. */
+export interface Files {
+  left(): number;
+  count(): Promise<void>;
+}
+
+const homeFiles = (home: string): Files => ({ left: () => filesLeft(home), count: async () => countFile(home) });
+
 /**
- * vmake.ai's website on the team's plan, in a Browser Use browser signed in
- * once through its live view (vmake_web.ts). Paid by the file (DAILY_FILES a
- * day), plus Browser Use's minutes and bytes.
+ * vmake.ai's website on the team's plan, in a browser on the team's Browser
+ * Use profile that Edit's relay lends this Mac (vmake_web.ts `teamBrowsers`).
+ * Paid by the file (DAILY_FILES a day, the team's), plus Browser Use's
+ * minutes and bytes on the team's account.
  */
-export function websiteProvider(home: string, browsers: web.Browsers, profile: string, site = web.SITE, put = web.stage): Provider {
-  const driver = new web.Driver(browsers, profile, site);
+export function websiteProvider(home: string, browsers: web.Browsers, site = web.SITE, put = web.stage, files: Files = homeFiles(home)): Provider {
+  const driver = new web.Driver(browsers, site);
   return {
     id: "vmake-web",
     wholeFiles: true,
     pieceQuality: { crf: 20, rate: 6_000_000 },
-    price(seconds, files) {
-      const left = filesLeft(home);
-      // About 2.5 minutes of browser a minute of footage, three at once; the piece in and out through the proxy (≤0.75 MB a second each way).
+    price(seconds, count) {
+      const left = files.left();
+      // About 2.5 minutes of browser a minute of footage, three at once; the piece in and out (≤0.75 MB a second each way).
       const dollars = ((seconds * 2.5) / 3600 / web.TABS) * web.DOLLARS_AN_HOUR + ((seconds * 1.5) / 1000) * web.DOLLARS_A_GB;
       const browser = dollars < 0.5 ? "under $0.50" : `≈ $${dollars.toFixed(2)}`;
-      return `${files} ${files === 1 ? "file" : "files"} on your Vmake plan${files > left ? ` (${Math.max(0, left)} today, the rest tomorrow)` : ""}, ${browser} of cloud browser`;
+      return `${count} ${count === 1 ? "file" : "files"} on your Vmake plan${count > left ? ` (${Math.max(0, left)} today, the rest tomorrow)` : ""}, ${browser} of cloud browser`;
     },
     async remove(input, out, seconds, _signal, whole) {
-      if (filesLeft(home) <= 0) throw new VmakeError("today's files on the Vmake plan are used", "account", "daily_limit");
+      if (files.left() <= 0) throw new VmakeError("today's files on the Vmake plan are used", "account", "daily_limit");
       const staged = whole !== undefined ? { url: await cloud.presign(whole.key, "GET", 3 * 3600), drop: async () => {} } : await put(input, `${PREFIX}/send/${Date.now()}-${Math.round(Math.random() * 1e9)}.mp4`);
       try {
-        countFile(home);
+        await files.count();
         const url = await driver.run(staged.url, `piece-${Math.round(seconds)}s.mp4`);
         await web.fetchResult(url, out);
       } finally {
@@ -649,10 +659,10 @@ export function websiteProvider(home: string, browsers: web.Browsers, profile: s
       return { credits: null };
     },
     async check() {
-      const session = await browsers.open(profile);
+      const session = await browsers.open();
       try {
         const page = await session.remote.tab();
-        if (!(await web.signedIn(page, site))) throw new VmakeError("vmake.ai shows Edit's browser signed out", "account", "signed_out");
+        if (!(await web.signedIn(page, site))) throw new VmakeError("vmake.ai shows the team's browser signed out", "account", "signed_out");
       } finally {
         await session.stop();
       }
@@ -660,37 +670,67 @@ export function websiteProvider(home: string, browsers: web.Browsers, profile: s
   };
 }
 
-/** Where browsers come from and which site they open (tests put stand-ins here). */
-export const website = { browsers: (key: string): web.Browsers => web.browserUse(key), site: web.SITE };
+/** How Edit asks its relay for the team's account, and which site the browsers open (tests put stand-ins here). */
+export const website = {
+  ask: (method: string, route: string, body: unknown): Promise<unknown> => relay.json(method, route, body, "the team's Vmake account", 90),
+  site: web.SITE,
+};
 
-/** The website's provider when this Mac has a Browser Use key and a Vmake profile, else null. */
-async function websiteHere(app: App): Promise<Provider | null> {
-  const key = await keychain.get(app.store.home, "browser-use").catch(() => null);
-  const profile = readKept(app.store.home).profile;
-  if (key === null || profile === undefined) return null;
-  return websiteProvider(app.store.home, website.browsers(key), profile, website.site);
+/** The team's account on the relay as last asked (a minute ago at most): whether it's set up there, and the day's files. */
+const team = { ready: false, filesToday: 0, at: 0 };
+
+/** Forgets what the relay said (tests). */
+export function forgetTeam(): void {
+  team.at = 0;
 }
 
-/** The sign-in under way on this Mac: its live view. */
+async function teamState(): Promise<typeof team> {
+  if (Date.now() - team.at < 60_000) return team;
+  try {
+    const said = (await website.ask("GET", "/v1/vmake", undefined)) as { ready?: unknown; filesToday?: unknown };
+    team.ready = said.ready === true;
+    team.filesToday = typeof said.filesToday === "number" ? said.filesToday : 0;
+  } catch {
+    team.ready = false;
+  }
+  team.at = Date.now();
+  return team;
+}
+
+/** This Mac to the relay (its cloud holder): whose turn the team's browser is. */
+const holderOf = (app: App) => holderFor(app.store.home, app.machine);
+
+const teamBrowsers = (app: App) => web.teamBrowsers(holderOf(app), website.ask);
+
+/** The website's provider when Edit's relay has the team's Vmake account (every signed-in Mac then has it), else null. */
+async function websiteHere(app: App): Promise<Provider | null> {
+  if (!relay.cloudEnabled() || !(await teamState()).ready) return null;
+  const files: Files = {
+    left: () => web.DAILY_FILES - team.filesToday,
+    count: async () => {
+      const said = (await website.ask("POST", "/v1/vmake/file", { holder: holderOf(app) })) as { filesToday?: unknown };
+      if (typeof said.filesToday === "number") team.filesToday = said.filesToday;
+    },
+  };
+  return websiteProvider(app.store.home, teamBrowsers(app), website.site, web.stage, files);
+}
+
+/** The sign-in under way: its live view. */
 let signing: { url: string; done: Promise<void> } | null = null;
 
+/** Whether the person signed in here is an admin (signing the team's Vmake account in is theirs alone). */
+const isAdmin = () => accounts.status().admin === true;
+
 /**
- * Opens a browser on this Mac's Vmake profile for the person to sign in to
- * (its live view's address, which the editor opens), and keeps watching it:
- * signed in, it's stopped (the profile saved then) and the account's
- * sign-in trouble cleared. The profile is made the first time.
+ * Opens a browser on the team's profile for an admin to sign in to (its live
+ * view's address, which the editor opens), and keeps watching it: signed in,
+ * it's stopped (the sign-in saved into the profile) and the account's sign-in
+ * trouble cleared here.
  */
 export async function signIn(app: App): Promise<string> {
+  if (!isAdmin()) throw new ApiError(403, "Only an admin signs the team's Vmake account in.");
   if (signing !== null) return signing.url;
-  const key = await keychain.get(app.store.home, "browser-use").catch(() => null);
-  if (key === null) throw new ApiError(409, "Browser Use isn't set up on this Mac.");
-  const browsers = website.browsers(key);
-  const kept = readKept(app.store.home);
-  if (kept.profile === undefined) {
-    kept.profile = await browsers.profile(`Edit · ${app.machine}`);
-    writeKept(app.store.home, kept);
-  }
-  const session = await browsers.open(kept.profile);
+  const session = await teamBrowsers(app).open(true);
   const page = await session.remote.tab();
   await page.call("Page.navigate", { url: `${website.site}/video-watermark-remover/upload` });
   const url = session.liveUrl ?? "";
@@ -703,7 +743,7 @@ export async function signIn(app: App): Promise<string> {
         if (signed) {
           await Bun.sleep(5000);
           unblock(app.store.home, "vmake-web");
-          diag.info("removal", "signed in to vmake.ai");
+          diag.info("removal", "the team's Vmake account signed in");
           return;
         }
       }
@@ -1035,13 +1075,13 @@ export async function status(app: App, id: string): Promise<Status> {
     return { line: `Removing their text · ${done} of ${done + out} pieces`, action: null, running: { done, total: done + out } };
   }
   const provider = await providerHere(app);
-  if (provider === null) {
-    // A Browser Use key and no sign-in yet: the person signs in once.
-    if ((await keychain.get(app.store.home, "browser-use").catch(() => null)) !== null) return { line: "Sign in to Vmake to take their text out.", action: "sign_in", running: null };
-    return { line: "Their text stays blurred: Vmake isn't set up on this Mac.", action: null, running: null };
-  }
+  if (provider === null) return { line: "Their text stays blurred: the team's Vmake account isn't set up yet.", action: null, running: null };
   const stopped = blocked(app.store.home, provider.id);
-  if (stopped !== null) return { line: accountLine(stopped.reason, stopped.said), action: stopped.reason === "signed_out" && provider.id === "vmake-web" ? "sign_in" : "retry", running: null };
+  if (stopped !== null) {
+    // The team's profile signed out: an admin signs it in again (the button is theirs alone).
+    if (stopped.reason === "signed_out" && provider.id === "vmake-web") return isAdmin() ? { line: accountLine(stopped.reason, stopped.said), action: "sign_in", running: null } : { line: `${accountLine(stopped.reason, stopped.said)} An admin signs it in again.`, action: null, running: null };
+    return { line: accountLine(stopped.reason, stopped.said), action: "retry", running: null };
+  }
   const failed = pieces.filter((one) => one.state === "failed").length;
   if (provider.id === "vmake-api" && !confirmed.has(id)) {
     const { files } = await plan(app, live.project, provider);
@@ -1401,18 +1441,9 @@ export function routes(router: Router<App>): void {
     const body = (await readJson(context).catch(() => ({}))) as { retry?: unknown };
     return json(await begin(context.app, context.params.id ?? "", body.retry === true));
   });
-  // This Mac's Vmake API keys (kept in its Keychain once Vmake takes them; never sent back).
-  // Vmake's sign-in in this Mac's cloud browser profile: the live view to open.
+  // An admin's sign-in of the team's Vmake account: the live view of a browser on the team's profile.
   router.post("/api/text-removal/sign-in", async ({ app }) => json({ open: await signIn(app) }));
-  // This Mac's Browser Use key (kept in its Keychain once Browser Use takes it; never sent back).
-  router.post("/api/text-removal/browser-use-key", async (context) => {
-    const body = (await readJson(context)) as { key?: unknown };
-    if (typeof body.key !== "string" || body.key.trim() === "") throw new ApiError(400, "key");
-    const answer = await fetch("https://api.browser-use.com/api/v4/profiles", { headers: { "X-Browser-Use-API-Key": body.key.trim() }, signal: AbortSignal.timeout(30_000) }).catch(() => null);
-    if (answer === null || answer.status === 401 || answer.status === 403) throw new ApiError(400, "Browser Use refused the key.");
-    await keychain.set(context.app.store.home, body.key.trim(), "browser-use");
-    return json({ kept: true });
-  });
+  // This Mac's Vmake API keys (kept in its Keychain once Vmake takes them; never sent back).
   router.post("/api/text-removal/keys", async (context) => {
     const { app } = context;
     const body = (await readJson(context)) as { ak?: unknown; sk?: unknown };

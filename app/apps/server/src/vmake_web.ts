@@ -24,7 +24,9 @@
 // Browser Use (Nov 17): $0.06 a browser-hour by the minute, $0.20 a GB with
 // its proxy off (vmake.ai shows no bot check), sessions of at most 240
 // minutes, 10 at once on pay-as-you-go; a profile keeps cookies and storage,
-// saved when its browser stops.
+// saved when its browser stops. The account, its key and its one profile are
+// the team's, on Edit's relay (relay/src/vmake.ts), which lends a Mac a
+// browser one at a time: no Mac holds a key or a sign-in.
 
 import * as fs from "node:fs";
 
@@ -32,7 +34,7 @@ import * as cloud from "./cloud.ts";
 import type { Page, Remote } from "./chrome_devtools.ts";
 import * as devtools from "./chrome_devtools.ts";
 import * as diag from "./diag.ts";
-import { classify, textOf, VmakeError } from "./vmake_api.ts";
+import { classify, VmakeError } from "./vmake_api.ts";
 
 export const SITE = "https://vmake.ai";
 
@@ -54,68 +56,73 @@ const JOB_MS = 2 * 3_600_000;
 /** Browser Use's price (Nov 17), and a session's longest life. */
 export const DOLLARS_AN_HOUR = 0.06;
 export const DOLLARS_A_GB = 0.2;
-/** Browser Use takes a browser's whole time up front (the rest given back when it's stopped): an hour at a time, not its 240-minute most. */
-const SESSION_MINUTES = 60;
-/**
- * Browser Use's proxy: off (Sphe, Nov 17). The browser goes out from its
- * datacenter, $0.20 a GB, where its US home proxy was $5 a GB (and the piece
- * crosses it twice) and refused connections now and then. vmake.ai shows no
- * bot check; the sign-in was made through the home proxy, and a session it
- * signs out is said as the account's ("signed_out").
- */
-const PROXY = null;
 /** A session's age after which it's let go once its tabs are done (another takes over). */
 const SESSION_RENEW_MS = 45 * 60_000;
 
 // ---------------------------------------------------------------------------
-// Browser Use
-
-const API = "https://api.browser-use.com/api/v4";
+// The team's browsers, lent by Edit's relay
 
 export interface Session {
   id: string;
-  /** Where a person can see and use it (a credential: anyone with it can). */
+  /** Where a person can see and use it (a credential: anyone with it can); an admin's sign-in only. */
   liveUrl: string | null;
   remote: Remote;
-  /** Stops it (its profile is saved then). */
+  /** Stops it (its sign-in saved into the team's profile, the relay's lease let go). */
   stop(): Promise<void>;
 }
 
-/** What starts browsers: Browser Use's, or a stand-in in tests. */
+/** What starts browsers on the team's profile: the relay's, or a stand-in in tests. */
 export interface Browsers {
-  open(profile: string | null): Promise<Session>;
-  profile(name: string): Promise<string>;
+  /** A browser on the team's profile; `signIn`: with its live view, for an admin. Waits while another Mac has the profile. */
+  open(signIn?: boolean): Promise<Session>;
 }
 
-export function browserUse(key: string, api = API): Browsers {
-  const call = async (method: string, path: string, body?: unknown): Promise<Record<string, unknown>> => {
-    let response: Response;
+/** How long a Mac waits its turn on the team's profile before a piece gives up for now, and between asks. */
+export const turns = { waitMs: 3 * 3_600_000, everyMs: 45_000 };
+
+/** The relay's answer to asking for a browser. */
+type Lent = { id?: string; cdpUrl?: string; liveUrl?: string; busy?: string };
+
+/**
+ * The team's Vmake account through Edit's relay (relay/src/vmake.ts): the
+ * relay holds the Browser Use key and the team's profile and lends this Mac
+ * (`holder`, its cloud holder) one browser at a time, the others waiting
+ * their turn. `ask` is the relay's JSON call (a stand-in in tests).
+ */
+export function teamBrowsers(holder: string, ask: (method: string, route: string, body: unknown) => Promise<unknown>): Browsers {
+  const call = async (route: string, body: unknown): Promise<Lent> => {
     try {
-      response = await fetch(`${api}${path}`, { method, headers: { "X-Browser-Use-API-Key": key, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(60_000) });
+      return (await ask("POST", route, body)) as Lent;
     } catch (error) {
-      throw new VmakeError(`Browser Use didn't answer: ${diag.messageOf(error)}`, "piece");
+      const said = diag.messageOf(error);
+      if (/browser_credits/u.test(said)) throw new VmakeError("Browser Use refused: the team's account is out of credits", "account", "browser_credits");
+      if (/browser_key/u.test(said)) throw new VmakeError("Browser Use refused the team's key", "account", "browser_key");
+      if (/\(403\)/u.test(said)) throw new VmakeError(said, "account", "refused");
+      throw new VmakeError(`Edit's relay: ${said}`, "piece");
     }
-    const text = await response.text();
-    if (response.status === 401 || response.status === 403 || response.status === 402) throw new VmakeError(`Browser Use refused (${response.status}): ${text.slice(0, 160)}`, "account", response.status === 402 ? "browser_credits" : "browser_key");
-    if (response.status === 429) throw new VmakeError("Browser Use has no browser free (too many at once)", "piece");
-    if (!response.ok) throw new VmakeError(`Browser Use: ${response.status} ${text.slice(0, 160)}`, "piece");
-    return text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
   };
   return {
-    async open(profile) {
-      const made = await call("POST", "/browsers", { proxyCountryCode: PROXY, timeout: SESSION_MINUTES, ...(profile !== null ? { profileId: profile } : {}) });
-      const id = textOf(made.id);
-      const stop = () => call("PATCH", `/browsers/${id}`, { action: "stop" }).then(() => undefined, () => undefined);
-      try {
-        const remote = await devtools.remote(textOf(made.cdpUrl), "Vmake's browser");
-        return { id, liveUrl: typeof made.liveUrl === "string" ? made.liveUrl : null, remote, stop: async () => (remote.close(), await stop()) };
-      } catch (error) {
-        await stop();
-        throw new VmakeError(`Browser Use's browser didn't connect: ${diag.messageOf(error)}`, "piece");
+    async open(signIn = false) {
+      const until = Date.now() + turns.waitMs;
+      for (;;) {
+        const lent = await call("/v1/vmake/browser", { holder, signIn });
+        if (lent.busy === undefined && typeof lent.id === "string" && typeof lent.cdpUrl === "string") {
+          const id = lent.id;
+          const stop = () => call(`/v1/vmake/browser/${id}/stop`, { holder }).then(() => undefined, () => undefined);
+          try {
+            const remote = await devtools.remote(lent.cdpUrl, "Vmake's browser");
+            return { id, liveUrl: lent.liveUrl ?? null, remote, stop: async () => (remote.close(), await stop()) };
+          } catch (error) {
+            await stop();
+            throw new VmakeError(`the team's browser didn't connect: ${diag.messageOf(error)}`, "piece");
+          }
+        }
+        // Another Mac has the team's profile: this one waits its turn (a sign-in never waits).
+        if (signIn) throw new VmakeError(`${lent.busy ?? "Another Mac"} is using the team's Vmake account now; sign it in once that's done`, "piece");
+        if (Date.now() > until) throw new VmakeError(`${lent.busy ?? "another Mac"} kept the team's Vmake account for hours`, "piece");
+        said(`vmake.ai: ${lent.busy ?? "another Mac"} has the team's browser; waiting`);
+        await Bun.sleep(turns.everyMs);
       }
-    },
-    async profile(name) {
-      return textOf((await call("POST", "/profiles", { name })).id);
     },
   };
 }
@@ -487,7 +494,6 @@ export class Driver {
 
   constructor(
     private readonly browsers: Browsers,
-    private readonly profile: string | null,
     private readonly site = SITE,
   ) {}
 
@@ -512,7 +518,7 @@ export class Driver {
     if (this.session === null) {
       this.session = {
         at: Date.now(),
-        open: this.browsers.open(this.profile).then(async (session) => {
+        open: this.browsers.open().then(async (session) => {
           const page = await session.remote.tab();
           try {
             await plan(page, this.site);

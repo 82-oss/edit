@@ -7,6 +7,8 @@ import { media, type EdgeCache } from "./media";
 import { ideasRoute, mayIdeas, NO_IDEAS } from "./ideas";
 import { channelsRoute } from "./channels";
 import { fromOtherRelay, openartReady, openartRoute, openartToken, type OpenArtEnv } from "./openart";
+import { channelsLive } from "./live_channels";
+import { liveVmake, vmakeLease, vmakeReady, vmakeRoute, type VmakeEnv } from "./vmake";
 import { MAX_JOB_BYTES, transcribeJobs, type JobsEnv } from "./transcribe_jobs";
 import { diarizeJobs, diarizeOn, voicesOf, type DiarizeEnv } from "./diarize_jobs";
 import { google, mayUseDrive } from "./google";
@@ -49,7 +51,7 @@ declare const FixedLengthStream:{ new(size: number): { readable: ReadableStream<
  * Worker never buffers or parses either (keeps CPU tiny on any plan).
  */
 
-export interface Env extends CloudEnv, AuthEnv, JobsEnv, OpenArtEnv, DiarizeEnv {
+export interface Env extends CloudEnv, AuthEnv, JobsEnv, OpenArtEnv, DiarizeEnv, VmakeEnv {
   /** Transcription and the existing house voice. */
   ELEVENLABS_MAIN_KEY?: string;
   /** Only the voices named in ELEVENLABS_VOICES_IDS use this account. */
@@ -123,7 +125,7 @@ export default {
     if (url.pathname === "/.well-known/spheceo-app.json" && request.method === "GET") {
       return new Response(JSON.stringify(manifest()), { headers: { "content-type": "application/json; charset=utf-8", "access-control-allow-origin": "*", "cache-control": "public, max-age=3600" } });
     }
-    if (url.pathname === "/health") return json(200, { ok: true, transcription: Boolean(mainKey(env)), jobs: Boolean(mainKey(env) && env.ELEVENLABS_WEBHOOK_ID && env.R2_BUCKET), diarize: diarizeOn(env), voices: voicesOf(env), speech: Boolean(speechKey(env) || (extraVoiceIds(env).size && env.ELEVENLABS_VOICES_KEY)), maps: Boolean(env.GOOGLE_MAPS_KEY), cloud: Boolean(env.R2_BUCKET && env.CONVEX_URL), google: Boolean(env.GOOGLE_DOCS_REFRESH_TOKEN), proxy: Boolean(env.PROXY_URL), trello: Boolean(env.TRELLO_API_KEY && env.TRELLO_TOKEN), youtube: Boolean(env.YOUTUBE_API_KEY), openart: openartReady(env) });
+    if (url.pathname === "/health") return json(200, { ok: true, transcription: Boolean(mainKey(env)), jobs: Boolean(mainKey(env) && env.ELEVENLABS_WEBHOOK_ID && env.R2_BUCKET), diarize: diarizeOn(env), voices: voicesOf(env), speech: Boolean(speechKey(env) || (extraVoiceIds(env).size && env.ELEVENLABS_VOICES_KEY)), maps: Boolean(env.GOOGLE_MAPS_KEY), cloud: Boolean(env.R2_BUCKET && env.CONVEX_URL), google: Boolean(env.GOOGLE_DOCS_REFRESH_TOKEN), proxy: Boolean(env.PROXY_URL), trello: Boolean(env.TRELLO_API_KEY && env.TRELLO_TOKEN), youtube: Boolean(env.YOUTUBE_API_KEY), openart: openartReady(env), vmake: vmakeReady(env) });
     if (url.pathname.startsWith("/v1/cloud/")) return cloud(request, url, env);
     // The team's Google Drive, with its sign-in kept here (google.ts): only the calls Edit makes.
     if (url.pathname.startsWith("/v1/google/")) return google(request, url, env);
@@ -151,6 +153,17 @@ export default {
         return json(403, { error: "Your account can't import from Trello: an admin can give you an editing or scripts permission at accounts.spheceo.com." });
       }
       return url.pathname === "/v1/trello/card" ? trelloCard(url.searchParams.get("card") ?? "", env) : trelloCards(url.searchParams.get("list") ?? "", env);
+    }
+    // The team's Vmake account in a Browser Use browser (vmake.ts): people who edit, one Mac at a time; its sign-in an admin's.
+    if (url.pathname === "/v1/vmake" || url.pathname.startsWith("/v1/vmake/")) {
+      const found = await allow(request, env, "use", "vmake");
+      if (found instanceof Response) return found;
+      // The dev relay sends it to the live one with the caller's own sign-in: one key, one lease, one day's files for every Mac, dev's and prod's.
+      if (channelsLive(env)) return liveVmake(request, url, env);
+      if (found.kind === "person" && !found.admin && !found.perms.some((perm) => perm.startsWith("edit.") || perm.startsWith("video."))) {
+        return json(403, { error: "Your account can't take text out of footage: an admin can give you an editing permission at accounts.spheceo.com." });
+      }
+      return vmakeRoute(request, url, env, found.kind === "person" && found.admin);
     }
     // Channels (channels.ts): a link read into its YouTube channel, for anyone signed in to Edit (adding one is a
     // teacher's, which mamagi checks when it's saved).
@@ -521,6 +534,7 @@ export class TranscriptionBudget {
   constructor(private state: BudgetState, private env: Env) {}
   async fetch(request: Request): Promise<Response> {
     if (new URL(request.url).pathname === "/openart") return openartToken(request, this.state.storage, this.env);
+    if (new URL(request.url).pathname === "/vmake-lease") return vmakeLease(request, this.state.storage as never);
     if (new URL(request.url).pathname === "/maps") return this.mapSession(request);
     if (new URL(request.url).pathname === "/lookups") return this.lookup(request);
     if (new URL(request.url).pathname === "/owner") return this.owner(request);
