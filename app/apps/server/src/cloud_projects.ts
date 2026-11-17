@@ -822,6 +822,8 @@ interface Meta {
   createdBy: Creator | null;
   /** What its commits keep beside the body (`summary`): its kind of video. */
   summary: unknown;
+  /** The holder whose save it is now (the computer it was last edited on), when Convex says. */
+  updatedBy?: string | null;
 }
 
 /** Convex's `createdBy` as a project's `created_by`; null when it isn't one. */
@@ -874,6 +876,7 @@ export const remote = {
       holder: liveHolder(field(answer, "lock")),
       createdBy: creatorOf(field(answer, "createdBy")),
       summary: field(answer, "summary"),
+      updatedBy: typeof field(answer, "updatedBy") === "string" ? (field(answer, "updatedBy") as string) : null,
     };
   },
 
@@ -1209,8 +1212,9 @@ async function pull(app: App, cloudProjects: Cloud, id: string): Promise<void> {
     entry.wantPull = false;
   });
   let fetched: [Project, number] | null;
+  let meta: Meta | null = null;
   try {
-    const meta = await remote.get(id);
+    meta = await remote.get(id);
     if (meta === null) {
       fetched = null;
     } else {
@@ -1537,8 +1541,9 @@ async function download(app: App, cloudProjects: Cloud, id: string): Promise<voi
   if (!validId(id)) throw new Error("no such project");
   if (!cloudProjects.projects.has(id)) cloudProjects.projects.set(id, new Entry({ rev: 0, dirty: false }));
   let fetched: [Project, number] | null;
+  let meta: Meta | null = null;
   try {
-    const meta = await remote.get(id);
+    meta = await remote.get(id);
     // Not brought here for someone who can't work on its kind of video.
     if (meta !== null && !kinds.mayWork(cloudShape(meta.summary))) {
       cloudProjects.forget(id);
@@ -1555,6 +1560,7 @@ async function download(app: App, cloudProjects: Cloud, id: string): Promise<voi
     throw new Error("no such project");
   }
   const [project, rev] = fetched;
+  madeOnKnown.set(id, madeOnName(meta?.updatedBy ?? null));
   cloudProjects.take(id, project, rev);
   diag.info("cloud", `${id} downloaded from the cloud (rev ${rev})`);
   // The editor opens now; the footage follows in the background, and the research another Mac did.
@@ -1568,6 +1574,37 @@ async function download(app: App, cloudProjects: Cloud, id: string): Promise<voi
   void chatSync.pull(app.store, id, (app.agents as { chatLoaded?: (project: string) => boolean }).chatLoaded?.(id) ?? false).catch((error: unknown) => {
     diag.warn("cloud", `fetching ${id}'s chat: ${diag.messageOf(error)}`);
   });
+}
+
+/** Whose Mac each project was last edited on, by id, as people see it (null: not said). */
+const madeOnKnown = new Map<string, string | null>();
+
+/** "Lauana's MacBook Pro#3f2a" → "Lauana's Mac"; a computer named otherwise as it is. */
+export function madeOnName(holder: string | null): string | null {
+  if (holder === null) return null;
+  const name = displayName(holder).trim();
+  if (name === "") return null;
+  const owner = /^(.+?)['’]s\b/.exec(name);
+  return owner === null ? name : `${owner[1]}'s Mac`;
+}
+
+/**
+ * The computer project `id` was last edited on (footage_ready.ts: "This edit was made on Lauana's Mac"): said by
+ * the cloud when it was downloaded, else asked once in the background (null until it answers); null when it's
+ * this one or nobody says.
+ */
+export function madeOn(app: App, id: string): string | null {
+  const cloudProjects = cloudOf(app);
+  const mine = cloudProjects === null ? null : madeOnName(cloudProjects.holder());
+  const known = madeOnKnown.get(id);
+  if (known !== undefined) return known === mine ? null : known;
+  if (cloudProjects === null || !cloudProjects.on()) return null;
+  madeOnKnown.set(id, null);
+  void remote
+    .get(id)
+    .then((meta) => madeOnKnown.set(id, madeOnName(meta?.updatedBy ?? null)))
+    .catch(() => madeOnKnown.delete(id));
+  return null;
 }
 
 /** Takes the lock from whoever has it and shows their latest version. */

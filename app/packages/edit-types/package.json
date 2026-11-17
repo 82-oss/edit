@@ -18,6 +18,7 @@
     "./marks": "./src/marks.ts",
     "./watermark": "./src/watermark.ts",
     "./export_steps": "./src/export_steps.ts",
+    "./footage_ready": "./src/footage_ready.ts",
     "./models": "./src/models.ts"
   },
   "scripts": {

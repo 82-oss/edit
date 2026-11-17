@@ -1,0 +1,273 @@
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
+
+import type { App } from "../src/app.ts";
+import { BLOCK } from "../src/cloud_blocks.ts";
+import { localPath } from "../src/cloud_media.ts";
+import * as footageReady from "../src/footage_ready.ts";
+import * as localPreviews from "../src/local_previews.ts";
+import type { Project } from "../src/model.ts";
+import * as storage from "../src/storage.ts";
+import { scratch } from "./helpers/home.ts";
+import { media, project as newProject } from "./helpers/model.ts";
+
+const { headFor, readiness, RULE, smooth } = footageReady;
+const MB = 1_000_000;
+
+const realFree = storage.diskHooks.free;
+const realRoot = footageReady.hooks.root;
+const realNow = footageReady.hooks.now;
+const realFetch = localPreviews.hooks.fetch;
+let token: string | undefined;
+beforeEach(() => {
+  token = process.env.EDIT_RELAY_TOKEN;
+  process.env.EDIT_RELAY_TOKEN = "cloud-token";
+  storage.diskHooks.free = () => 500 * 1e9;
+});
+afterEach(() => {
+  if (token === undefined) delete process.env.EDIT_RELAY_TOKEN;
+  else process.env.EDIT_RELAY_TOKEN = token;
+  storage.diskHooks.free = realFree;
+  storage.resetRoom();
+  footageReady.hooks.root = realRoot;
+  footageReady.hooks.now = realNow;
+  localPreviews.hooks.fetch = realFetch;
+  localPreviews.reset();
+  footageReady.reset();
+});
+
+test("a play from the start is smooth when every stretch not here can come before it plays, read no further ahead than a play reads, at a share of the speed", () => {
+  // Nothing missing: smooth whatever the speed.
+  expect(smooth([], null)).toBe(true);
+  // Something missing and no speed measured: not yet.
+  expect(smooth([{ at_s: 30, bytes: MB, fresh: true }], null)).toBe(false);
+  // The very start missing: 10 MB at 100 MB/s (60 of it a play's) is 0.17 s and a round trip, inside a start's grace.
+  expect(smooth([{ at_s: 0, bytes: 10 * MB, fresh: true }], 100 * MB)).toBe(true);
+  // At 10 MB/s it's 1.67 s and the round trip: past the grace.
+  expect(smooth([{ at_s: 0, bytes: 10 * MB, fresh: true }], 10 * MB)).toBe(false);
+  // Later stretches are read only `lead_s` ahead of their moment: 45 MB at 5 minutes on a 4 MB/s link takes 18.75 s, past
+  // the 15 s it may start ahead and the grace, however long the play before it.
+  expect(smooth([{ at_s: 300, bytes: 45 * MB, fresh: false }], 4 * MB)).toBe(false);
+  expect(smooth([{ at_s: 300, bytes: 30 * MB, fresh: false }], 4 * MB)).toBe(true);
+  // One late read holds up the next: each starts once the one before it is in.
+  const tight = (RULE.lead_s + RULE.grace_s) * 0.6 * 4 * MB * 0.9;
+  expect(smooth([{ at_s: 300, bytes: tight, fresh: false }], 4 * MB)).toBe(true);
+  expect(smooth([{ at_s: 300, bytes: tight, fresh: false }, { at_s: 301, bytes: tight, fresh: false }], 4 * MB)).toBe(false);
+});
+
+test("the first step is the shortest start, in whole minutes, after which a play from the start is smooth", () => {
+  // A heavy first two minutes (cut-ins of many files), light after: two minutes first.
+  const needs = [
+    { at_s: 5, bytes: 50 * MB, fresh: true },
+    { at_s: 70, bytes: 50 * MB, fresh: true },
+    { at_s: 200, bytes: 2 * MB, fresh: false },
+    { at_s: 400, bytes: 2 * MB, fresh: false },
+  ];
+  expect(headFor(needs, 4 * MB, 600)).toBe(120);
+  // A fast link: one minute (never less).
+  expect(headFor(needs, 500 * MB, 600)).toBe(60);
+  // No speed measured: as far as anything's missing (the last need, at 400 s), until one is.
+  expect(headFor(needs, null, 600)).toBe(420);
+  // An edit shorter than its minutes: all of it.
+  expect(headFor([{ at_s: 5, bytes: 50 * MB, fresh: true }], 1 * MB, 45)).toBe(45);
+});
+
+test("getting a project ready brings its first minutes' files first in the timeline's order, then the rest of the footage, then the graphics", async () => {
+  const home = scratch("footage-ready-order");
+  try {
+    const started: string[] = [];
+    // Each fetch never ends: what starts is what's first in the queue, four at once.
+    localPreviews.hooks.fetch = (key) => new Promise<void>(() => started.push(key));
+    const project = newProject();
+    const keys: string[] = ["a", "b", "c", "d", "e", "f"].map((name) => `edit/originals/sha256/${name}/clip.mp4`);
+    keys.forEach((key, n) =>
+      project.media.push(media({ id: `m${n}`, name: `m${n}`, path: stream(key), kind: "video", duration: 60, cloud: { proxy: key }, ...(n === 1 || n === 4 ? { effect: `cutfx-${n}` } : {}) } as never)),
+    );
+    // The first minute (1800 frames): m0, then the graphic m1. After it: m2, the graphic m4, m3, m5.
+    project.clips.push(clip("c0", "m0", 0, 1800), clip("c1", "m1", 300, 90, "v2"), clip("c2", "m2", 1800, 900), clip("c3", "m4", 2000, 90, "v2"), clip("c4", "m3", 2700, 900), clip("c5", "m5", 3600, 900));
+    expect(localPreviews.fetchInPlayheadOrder(home.dir, project, 0, [], 1800)).toBe(6);
+    await Bun.sleep(5);
+    expect(started).toEqual(keys.slice(0, 4));
+    // Without a first minute (an open as before): the playhead's order, the graphics where they play.
+    localPreviews.reset();
+    started.length = 0;
+    expect(localPreviews.fetchInPlayheadOrder(home.dir, project, 0)).toBe(6);
+    await Bun.sleep(5);
+    expect(started).toEqual([keys[0]!, keys[1]!, keys[2]!, keys[4]!]);
+  } finally {
+    home.cleanup();
+  }
+});
+
+const stream = (key: string) => `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(key)}`;
+const clip = (id: string, mediaId: string, start: number, duration: number, track = "v1") => ({ type: "video", id, track, media: mediaId, start, duration, source_in: 0, speed: 1 }) as never;
+
+/** Blocks `indices` of a `blocks`-block object `key` kept under `root`, as cloud_blocks.ts keeps them. */
+function keep(root: string, key: string, blocks: number, indices: number[]) {
+  const folder = path.join(root, createHash("sha1").update(key).digest("hex"));
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, "meta.json"), JSON.stringify({ size: blocks * BLOCK, type: "video/mp4", key }));
+  for (const index of indices) fs.writeFileSync(path.join(folder, `${index}`), "");
+}
+
+/** Its whole copy here, `bytes` long. */
+function whole(cache: string, key: string, bytes: number) {
+  const local = localPath(cache, key);
+  fs.mkdirSync(path.dirname(local), { recursive: true });
+  fs.writeFileSync(local, new Uint8Array(bytes));
+}
+
+/** An app with only what readiness reads: the project, the cache and the home. */
+function appOf(dir: string, project: Project): App {
+  return { store: { get: (id: string) => (id === project.id ? { project } : null), cacheDir: () => dir, home: dir, cloud: () => null } } as unknown as App;
+}
+
+test("a project's readiness from what's here: a whole copy, blocks of a file, nothing of another; the speed measured as they come; ready once the rest would come in time", async () => {
+  const home = scratch("footage-ready");
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    footageReady.hooks.root = () => root;
+    let now = 1_000_000;
+    footageReady.hooks.now = () => now;
+    const [a, b, c] = ["a", "b", "c"].map((name) => `edit/proxies/drive/${name}.mp4`) as [string, string, string];
+    const project = newProject();
+    project.settings.fps = 30;
+    for (const [id, key] of [["a", a], ["b", b], ["c", c]] as const) project.media.push(media({ id, name: id, path: stream(key), kind: "video", duration: 60, cloud: { proxy: key } } as never));
+    project.clips.push(clip("ca", "a", 0, 1800), clip("cb", "b", 1800, 1800), clip("cc", "c", 3600, 1800));
+    // a here whole; b's first three of ten blocks (its first 15 s); none of c.
+    whole(cache, a, 10 * BLOCK);
+    keep(root, b, 10, [0, 1, 2]);
+    const app = appOf(cache, project);
+
+    const first = await readiness(app, project.id, false);
+    expect(first.ready).toBe(false);
+    expect(first.done).toBe(false);
+    expect([first.files_done, first.files_total]).toEqual([1, 3]);
+    expect(first.bytes_total).toBe(10 * BLOCK + 10 * BLOCK + guessOf(project, "c"));
+    expect(first.bytes_done).toBe(13 * BLOCK);
+    // No speed yet: no times, and the first step is the whole edit until there is one.
+    expect(first.speed_bps).toBeNull();
+    expect(first.ready_in_s).toBeNull();
+    expect(first.head_s).toBe(180);
+    expect(first.steps.map((step) => [step.kind, step.state])).toEqual([["start", "current"], ["rest", "waiting"]]);
+
+    // Two seconds on, half of c has come (5 blocks, ~10.5 MB: ~5 MB/s): the rest would come in time.
+    keep(root, c, 10, [0, 1, 2, 3, 4]);
+    now += 2_000;
+    const second = await readiness(app, project.id, false);
+    expect(second.speed_bps).toBeCloseTo((5 * BLOCK) / 2, 0);
+    expect(second.ready).toBe(true);
+    // With a speed, the first step is the first minute (a's, here already); once said it only grows, never flickers shorter.
+    expect(second.head_s).toBe(60);
+    expect(second.steps[0]!.state).toBe("done");
+    expect(second.ready_in_s).toBe(0);
+    expect(second.left_s).toBeCloseTo((7 * BLOCK + 5 * BLOCK) / ((5 * BLOCK) / 2), 1);
+
+    // Everything here whole: done, every step ticked.
+    whole(cache, b, 10 * BLOCK);
+    whole(cache, c, 10 * BLOCK);
+    now += 2_000;
+    const third = await readiness(app, project.id, false);
+    expect([third.ready, third.done]).toEqual([true, true]);
+    expect([third.files_done, third.files_total]).toEqual([3, 3]);
+    expect(third.steps.every((step) => step.state === "done")).toBe(true);
+    expect(third.room).toBeNull();
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("a slow link: not ready until the first minutes are here, and the graphics are a step of their own", async () => {
+  const home = scratch("footage-ready-slow");
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    footageReady.hooks.root = () => root;
+    let now = 1_000_000;
+    footageReady.hooks.now = () => now;
+    const keys = ["a", "b", "g"].map((name) => `edit/proxies/drive/${name}.mp4`) as [string, string, string];
+    const project = newProject();
+    project.settings.fps = 30;
+    project.media.push(
+      media({ id: "a", name: "a", path: stream(keys[0]), kind: "video", duration: 60, cloud: { proxy: keys[0] } } as never),
+      media({ id: "b", name: "b", path: stream(keys[1]), kind: "video", duration: 600, cloud: { proxy: keys[1] } } as never),
+      media({ id: "g", name: "g", path: stream(keys[2]), kind: "video", duration: 5, cloud: { proxy: keys[2] }, effect: "cutfx-1" } as never),
+    );
+    // A minute of a (100 blocks: 3.5 MB a second of it), then ten minutes of b (100 blocks: 0.35 MB a second), the graphic over b.
+    project.clips.push(clip("ca", "a", 0, 1800), clip("cb", "b", 1800, 18000), clip("cg", "g", 6000, 150, "v2"));
+    keep(root, keys[0], 100, [0]);
+    keep(root, keys[1], 100, [0]);
+    keep(root, keys[2], 5, [0]);
+    const app = appOf(cache, project);
+    await readiness(app, project.id, false);
+    // 2 MB/s measured: two blocks in 2.1 s.
+    keep(root, keys[0], 100, [0, 1, 2]);
+    now += 2_097.152;
+    const slow = await readiness(app, project.id, false);
+    expect(Math.round(slow.speed_bps! / 1e5)).toBe(20);
+    expect(slow.ready).toBe(false);
+    expect(slow.steps.map((step) => [step.kind, step.state])).toEqual([["start", "current"], ["rest", "waiting"], ["graphics", "waiting"]]);
+    // a whole and b's first minutes here: what's left of b reads ahead of the play at its pace.
+    whole(cache, keys[0], 100 * BLOCK);
+    keep(root, keys[1], 100, Array.from({ length: 20 }, (_, n) => n));
+    now += 60_000;
+    const later = await readiness(app, project.id, false);
+    expect(later.ready).toBe(true);
+    expect(later.steps[0]!.state).toBe("done");
+    expect(later.done).toBe(false);
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("the disk's floors hold: footage that can't all fit is said so plainly, and at the floor nothing waits (it plays from the cloud)", async () => {
+  const home = scratch("footage-ready-room");
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    footageReady.hooks.root = () => root;
+    const key = "edit/proxies/drive/big.mp4";
+    const project = newProject();
+    project.settings.fps = 30;
+    project.media.push(media({ id: "a", name: "a", path: stream(key), kind: "video", duration: 600, cloud: { proxy: key } } as never));
+    project.clips.push(clip("ca", "a", 0, 18000));
+    keep(root, key, 2000, [0]);
+    const app = appOf(cache, project);
+    // Room for a gigabyte over the cache's floor, of a 4.2 GB file.
+    storage.diskHooks.free = () => storage.CACHE_FLOOR_BYTES + 1e9;
+    const short = await readiness(app, project.id, false);
+    expect(short.room).toBe("Only 1.0 of the 4.2 GB fits on this Mac. The start of the edit comes first; the rest plays from the cloud.");
+    expect(short.ready).toBe(false);
+    // At the work's floor nothing read is kept: nothing to wait for.
+    storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES;
+    const full = await readiness(app, project.id, false);
+    expect(full.ready).toBe(true);
+    expect(full.room).toBe("This Mac's disk is too full to keep the footage, so it plays from the cloud.");
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("a project with nothing in the cloud, or whose footage is all here, is ready at once: no dialog", async () => {
+  const home = scratch("footage-ready-here");
+  try {
+    const cache = home.dir;
+    footageReady.hooks.root = () => path.join(cache, "cloud", "blocks");
+    const project = newProject();
+    project.media.push(media({ id: "a", name: "a", path: path.join(cache, "own.mp4"), kind: "video", duration: 60 }));
+    fs.writeFileSync(path.join(cache, "own.mp4"), "mp4");
+    project.clips.push(clip("ca", "a", 0, 1800));
+    const answer = await readiness(appOf(cache, project), project.id, false);
+    expect([answer.ready, answer.done, answer.files_total]).toEqual([true, true, 0]);
+  } finally {
+    home.cleanup();
+  }
+});
+
+function guessOf(project: Project, id: string): number {
+  const one = project.media.find((media) => media.id === id)!;
+  return localPreviews.previewBytes(one, one.cloud!.proxy!);
+}

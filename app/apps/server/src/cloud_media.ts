@@ -1912,6 +1912,12 @@ export function fillPieces(app: App, id: string, from = 0): void {
     });
 }
 
+/**
+ * Projects being got ready to open on this Mac (footage_ready.ts, while its dialog is up): the frames its first step
+ * brings (`head`), until when that holds (the dialog asks again every second; one closed lets it lapse).
+ */
+export const preparing = new Map<string, { head: number; until: number }>();
+
 /** Where each project's viewer last was (a frame: playback_ready.ts `warm`), so an open's prefetch orders from there. */
 const viewerAt = new Map<string, number>();
 /** How many files each project's last prefetch said were queued. */
@@ -1945,7 +1951,10 @@ export async function prefetchProject(app: App, id: string, from?: number): Prom
   fillPieces(app, id, at);
   const live = app.store.get(id);
   if (live === null) return 0;
-  const queued = localPreviews.fetchInPlayheadOrder(app.store.cacheDir(), live.project, at, partStarts(live.project));
+  // Being got ready to open (footage_ready.ts): its first minutes first, in the timeline's order, the graphics last.
+  const getting = preparing.get(id);
+  const head = getting !== undefined && getting.until > Date.now() ? getting.head : undefined;
+  const queued = localPreviews.fetchInPlayheadOrder(app.store.cacheDir(), live.project, at, head === undefined ? partStarts(live.project) : [], head);
   // Said when it changes, not at every warm (every 5 s of a play).
   if (queued > 0 && queuedSaid.get(id) !== queued) {
     queuedSaid.set(id, queued);

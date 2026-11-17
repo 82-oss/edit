@@ -40,6 +40,14 @@ const sizes = new Map<string, number>();
 /** Files waiting that the disk has no room for now, already said in the log (said again once they've come). */
 const short = new Set<string>();
 
+/**
+ * Whether `local`'s whole copy won't come for now: no room for it on the disk (it streams on), or its fetch failed
+ * lately. What the footage's readiness counts as not coming (footage_ready.ts).
+ */
+export function wontCome(local: string): boolean {
+  return short.has(local) || Date.now() - (failed.get(local) ?? 0) < RETRY_MS;
+}
+
 /** Seams for tests. */
 export const hooks = {
   // In 2 MiB blocks behind every read a person waits on (cloud_blocks.ts `fetchWhole`); `room` is told what's left to write.
@@ -262,12 +270,19 @@ const PART_SECONDS = 15;
  * `fillPieces`). Asked again from another frame (a jump), the files from there
  * move to the front.
  */
-export function fetchInPlayheadOrder(cache: string, project: Project, from: number, starts: number[] = []): number {
+export function fetchInPlayheadOrder(cache: string, project: Project, from: number, starts: number[] = [], head?: number): number {
   const fps = project.settings.fps > 0 ? project.settings.fps : 30;
   const overlaps = (clip: { start: number; duration: number }, at: number, seconds: number) => clip.start < at + seconds * fps && clip.start + clip.duration > at;
   const ranked: { media: string; rank: number; start: number }[] = [];
+  const graphic = new Set(project.media.filter((media) => typeof media.effect === "string" && media.effect !== "").map((media) => media.id));
   for (const clip of project.clips) {
     if (clip.type !== "video" && clip.type !== "audio") continue;
+    // Getting a project ready to open (footage_ready.ts, `head` frames): what its first minutes play, in the
+    // timeline's order, then the rest of the footage, then the graphics.
+    if (head !== undefined) {
+      ranked.push({ media: clip.media, rank: clip.start < head ? 0 : graphic.has(clip.media) ? 2 : 1, start: clip.start });
+      continue;
+    }
     const rank = overlaps(clip, from, NEXT_SECONDS)
       ? 0
       : overlaps(clip, 0, START_SECONDS)

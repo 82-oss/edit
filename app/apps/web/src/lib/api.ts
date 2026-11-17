@@ -1,4 +1,5 @@
 import type { ExportSteps } from "@edit/types/export_steps";
+import type { FootageReady } from "@edit/types/footage_ready";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 
@@ -316,6 +317,11 @@ export const api = {
    * can keep footage at all (`keeping` false: its disk is at Edit's floor, so a play waits for nothing).
    */
   playbackReady: (id: string) => request<{ ready: [number, number][]; keeping?: boolean }>("GET", `/api/projects/${id}/playback/ready`),
+  /**
+   * Whether the project's footage is here enough to play smoothly from the start, and how far its coming here has
+   * got (footage_ready.ts). `waiting`: its dialog is up, so the edit's first minutes come first.
+   */
+  footageReady: (id: string, waiting: boolean) => request<FootageReady>("GET", `/api/projects/${id}/footage/ready${waiting ? "?waiting=1" : ""}`),
   /** `frame`: the playhead, whose chunk is rendered first. */
   renderPlayback: (id: string, frame?: number) => request<PlaybackStatus>("POST", `/api/projects/${id}/playback`, frame === undefined ? undefined : { frame }),
   /** Reads a Google Doc script (on the server, as its public link) without importing it. */

@@ -42,7 +42,7 @@ const FIRST_SECONDS = 4;
 type Spans = [number, number][];
 
 /** The clips a play shows or sounds: video on shown tracks, sound on tracks not muted. */
-function played(project: Project) {
+export function played(project: Project) {
   const tracks = new Map(project.tracks.map((track) => [track.id, track]));
   return project.clips.filter((clip) => {
     const track = tracks.get(clip.track);
@@ -56,7 +56,7 @@ function played(project: Project) {
 const secondsMemo = new Map<string, { index: mp4.Mp4Index; signature: string; spans: Spans }>();
 
 /** Seconds of `media` that are here to play from: "all", or stretches of it (sorted). */
-async function hereOf(cache: string, root: string | null, media: Media): Promise<"all" | Spans> {
+export async function hereOf(cache: string, root: string | null, media: Media): Promise<"all" | Spans> {
   const key = cloudMedia.streamKey(media.cloud, "proxy");
   if (key === null || isFile(media.path)) return "all";
   if (isFile(cloudMedia.localPath(cache, key))) return "all";
@@ -142,12 +142,25 @@ function without(spans: Spans, gaps: Spans): Spans {
  * from on this Mac: the edit's length less each clip's stretch whose footage isn't.
  */
 export async function readyStretches(cache: string, project: Project, root = cloudMedia.blocksRoot()): Promise<Spans> {
-  const fps = projectFps(project);
   const length = projectDuration(project);
   if (length <= 0) return [];
+  const missing = (await missingOf(cache, project, root)).map((one) => one.frames);
+  return without([[0, length]], missing).map(([a, b]) => [Math.ceil(a), Math.floor(b)] as [number, number]).filter(([a, b]) => b > a);
+}
+
+/** A stretch of a played clip whose footage isn't here: the media, its frames on the timeline and its seconds of the file. */
+export interface Missing {
+  media: Media;
+  frames: [number, number];
+  seconds: [number, number];
+}
+
+/** Every stretch of `project`'s timeline whose footage isn't here to play from (readyStretches' gaps), clip by clip. */
+export async function missingOf(cache: string, project: Project, root = cloudMedia.blocksRoot()): Promise<Missing[]> {
+  const fps = projectFps(project);
   const media = new Map(project.media.map((one) => [one.id, one]));
   const here = new Map<string, "all" | Spans>();
-  const missing: Spans = [];
+  const missing: Missing[] = [];
   for (const clip of played(project)) {
     const one = media.get(clip.media);
     if (one === undefined) continue;
@@ -159,10 +172,10 @@ export async function readyStretches(cache: string, project: Project, root = clo
     const to = from + (clip.duration / fps) * speed;
     // What of the clip's stretch of its file isn't here, onto the timeline.
     for (const [a, b] of without([[from, to]], has)) {
-      missing.push([clip.start + ((a - from) / speed) * fps, clip.start + ((b - from) / speed) * fps]);
+      missing.push({ media: one, frames: [clip.start + ((a - from) / speed) * fps, clip.start + ((b - from) / speed) * fps], seconds: [a, b] });
     }
   }
-  return without([[0, length]], missing).map(([a, b]) => [Math.ceil(a), Math.floor(b)] as [number, number]).filter(([a, b]) => b > a);
+  return missing;
 }
 
 /**
