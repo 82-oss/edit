@@ -47,6 +47,11 @@ test("a clock is read in the forms cameras show it, OCR's slips and all", () => 
     ["T14'.32.'00", null, at(14, 32, 0)],
     ["2023.05.14 T14..32..04", day("2023-05-14"), at(14, 32, 4)],
     ["12023-05-14 T14'.32.'04", day("2023-05-14"), at(14, 32, 4)],
+    // CI's macOS runner (Nov 17): a dot inside the seconds, and a comma before the date.
+    ["T14.'40:.1.2", null, at(14, 40, 12)],
+    [",'2023-05-14 T14.'40:.10", day("2023-05-14"), at(14, 40, 10)],
+    ["2:32:05 PM", null, at(14, 32, 5)],
+    ["2..32..05 PM", null, at(14, 32, 5)],
   ];
   for (const [text, wantDay, second] of cases) expect(clock.parseClock(text), text).toEqual({ day: wantDay, second, seconds: true });
   // Not clocks: no seconds, out of range, words.
@@ -140,16 +145,19 @@ test("Vision's reads, the date and the time in boxes side by side and no colons,
     bodycam(frame).flatMap((line): ScreenText[] => {
       const parts = /^(\d{4})-(\d{2})-(\d{2}) T(\d{2}):(\d{2}):(\d{2}) Z$/u.exec(line.t);
       if (parts === null) return line.t.startsWith("AXON") ? [{ t: "X81.234567", b: [0.914, 0.056, 0.983, 0.074] }] : [line];
-      const time: ScreenText = { t: `Ttr${parts[4]}..${parts[5]}..${parts[6]}`, b: [0.906, 0.022, 0.971, 0.041] };
+      // Seconds in the teens with a dot inside, as CI's Mac read "T14.'40:.1.2".
+      const seconds = parts[6]!.startsWith("1") ? `${parts[6]![0]}.${parts[6]![1]}` : parts[6];
+      const time: ScreenText = { t: `Ttr${parts[4]}..${parts[5]}..${seconds}`, b: [0.906, 0.022, 0.971, 0.041] };
       // The date box now and then not read at all.
       if (frame % 7 === 3) return [time];
       return [{ t: `${parts[1]}.${parts[2]}.${parts[3]}`, b: [0.831, 0.022, 0.902, 0.041] }, time];
     });
   stand({ "/cam.mp4": vision });
-  const found = await clock.find(reader, [media("m1", "/cam.mp4")], ["2023-05-14 14:32:05", "14:50:20"]);
+  const found = await clock.find(reader, [media("m1", "/cam.mp4")], ["2023-05-14 14:32:05", "14:50:20", "14:50:17"]);
   expect(found.results.map((result) => result.found.map((hit) => [hit.at, hit.until, hit.clock]))).toEqual([
     [[4.6, 5.6, "2023.05.14 Ttr14..32..05"]],
     [[49.267, 50.267, "2023.05.14 Ttr14..50..20"]],
+    [[46.267, 47.267, "2023.05.14 Ttr14..50..1.7"]],
   ]);
 });
 

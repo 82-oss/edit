@@ -128,23 +128,47 @@ function dateIn(text: string): number | null {
  */
 export function parseClock(text: string, minutes = false): Clock | null {
   const clean = cleaned(text);
-  // Colons first (a date glued to the time, "2019-07-3000:23:33", still reads); then what Vision makes of a
-  // colon ("T14..32..02", "T14'.32.'00"), standing alone so a dotted date ("2023.05.14") isn't taken for a time.
-  const time =
-    /(\d{1,2})\s?:\s?(\d{2})(?:\s?:\s?(\d{2}))?(?:\s*([AP])\.?\s?M\b\.?)?/u.exec(clean) ??
-    /(?<![\d.'’])(\d{1,2})\s?[.'’,:]{1,2}\s?(\d{2})\s?[.'’,:]{1,2}\s?(\d{2})(?![\d.'’]?\d)(?:\s*([AP])\.?\s?M\b\.?)?/u.exec(clean);
+  // Colons first (a date glued to the time, "2019-07-3000:23:33", still reads); then what Vision makes of a clock
+  // with no colon read as one ("T14..32..02", "T14'.32.'00", "T14.'40:.1.2").
+  const strict = /(\d{1,2})\s?:\s?(\d{2})(?:\s?:\s?(\d{2}))?(?:\s*([AP])\.?\s?M\b\.?)?/u.exec(clean);
+  const time = strict === null ? looseTime(clean) : { at: strict.index, length: strict[0].length, parts: [strict[1], strict[2], strict[3], strict[4]] };
   if (time === null) return null;
-  if (time[3] === undefined && !minutes) return null;
-  let hour = Number(time[1]);
-  const minute = Number(time[2]);
-  const second = time[3] === undefined ? 0 : Number(time[3]);
-  if (time[4] !== undefined) {
+  const [hours, minutes_, seconds_, half] = time.parts;
+  if (seconds_ === undefined && !minutes) return null;
+  let hour = Number(hours);
+  const minute = Number(minutes_);
+  const second = seconds_ === undefined ? 0 : Number(seconds_);
+  if (half !== undefined) {
     if (hour < 1 || hour > 12) return null;
-    hour = (hour % 12) + (time[4] === "P" ? 12 : 0);
+    hour = (hour % 12) + (half === "P" ? 12 : 0);
   }
   if (hour > 23 || minute > 59 || second > 59) return null;
-  const rest = clean.slice(0, time.index) + " " + clean.slice(time.index + time[0].length);
-  return { day: dateIn(rest), second: hour * 3600 + minute * 60 + second, seconds: time[3] !== undefined };
+  const rest = clean.slice(0, time.at) + " " + clean.slice(time.at + time.length);
+  return { day: dateIn(rest), second: hour * 3600 + minute * 60 + second, seconds: seconds_ !== undefined };
+}
+
+/**
+ * A clock whose colons the reader didn't see as colons: a run of digits and the marks it read in their place
+ * (. ' , :), two or more of them, holding five or six digits (H:MM:SS, HH:MM:SS). A dotted date
+ * ("2023.05.14", eight digits) or a serial ("X81.234567") isn't one.
+ */
+function looseTime(clean: string): { at: number; length: number; parts: (string | undefined)[] } | null {
+  for (const run of clean.matchAll(/[\d.'’,:]+/gu)) {
+    const trimmed = run[0].replace(/^\D+/u, "");
+    const body = trimmed.replace(/\D+$/u, "");
+    const digits = body.replace(/\D/gu, "");
+    const marks = body.split(/\d+/u).filter((mark) => mark !== "").length;
+    if (marks < 2 || (digits.length !== 5 && digits.length !== 6)) continue;
+    const at = run.index + run[0].length - trimmed.length;
+    const half = /^\s*([AP])\.?\s?M\b\.?/u.exec(clean.slice(at + body.length));
+    const split = digits.length - 4;
+    return {
+      at,
+      length: body.length + (half?.[0].length ?? 0),
+      parts: [digits.slice(0, split), digits.slice(split, split + 2), digits.slice(split + 2), half?.[1]],
+    };
+  }
+  return null;
 }
 
 /** A clock as the agent reads it: "2023-05-14 14:32:05", or "14:32:05" with no date. */
