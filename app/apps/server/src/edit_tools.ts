@@ -2351,7 +2351,7 @@ function burnedContext(p: Project, from: number, to: number): Args {
         seconds: [fixed(one.start / fps, 1), fixed(one.end / fps, 1)].join("–"),
         ...(ours.some((clip) => clip.start < one.end && one.start < clipEnd(clip)) ? { ours_over_them: true } : {}),
       })),
-      note: "This footage already has subtitles burned into its picture there: they are the subtitles, and ours stay off them (add_subtitles and repack_subtitles leave ours off there by themselves; a subtitle of ours laid over them is refused). Only a channel taught to cover theirs and place ours passes burned_in \"cover\" (a blur over their band, stuck to each clip). Never ask about it.",
+      note: "This footage already has subtitles burned into its picture there: they are the subtitles, and ours stay off them (add_subtitles and repack_subtitles leave ours off there by themselves; a subtitle of ours laid over them is refused). Only a channel taught to cover theirs and place ours passes burned_in \"cover\" (a blur over their band, stuck to each clip), or \"remove\" when it's taught to take theirs out (blurred the same until Edit does; nothing more of yours). Never ask about it.",
     },
   };
 }
