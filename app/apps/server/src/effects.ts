@@ -136,6 +136,13 @@ const FACES = FONTS.map((font) => `@font-face { font-family: "${font.family}"; f
 const RUNTIME = runtimeText as unknown as string;
 /** What Edit watches while a page gets ready (effect_watch.html): no part of a render's key, as it changes no picture. */
 const WATCH = watchText as unknown as string;
+/**
+ * What of Edit's own is in every render's key (`codeKey`): its runtime and its
+ * faces. A change to either draws every effect of every project again, on
+ * every computer that opens one; effects.test.ts pins it so that's never by
+ * accident. What changes no picture goes in effect_watch.html instead.
+ */
+export const RENDERER = fingerprint([RUNTIME, FACES]);
 /** What the runtime says of a CSS animation running, which it checks at a page's first seek alone (a kept page says it again: `look`). */
 export const ANIMATION = /problem\("(A CSS animation[^"]*)"\)/.exec(RUNTIME)?.[1] ?? "";
 
@@ -1089,6 +1096,7 @@ async function standIn(app: App, project: string): Promise<void> {
   if (stale.length === 0 || !editingHere(app, project)) return;
   const paths = new Map(stale.map((effect) => [effect.name, clearStill(app.store, project, effect.name)]));
   const gone: [string, string][] = [];
+  const kept = readKept(app.store.home);
   await app.store.update(project, "effects", (edited) => {
     let changed = false;
     for (const media of edited.media) {
@@ -1096,6 +1104,8 @@ async function standIn(app: App, project: string): Promise<void> {
       if (path === undefined || typeof media.effect_key !== "string") continue;
       // The render it stands in for, when it went up as the project's own: kept as the one before the next (effect_cloud.ts).
       if (effectCloud.isRender(project, media.cloud?.original)) gone.push([media.effect!, media.cloud!.original]);
+      // And what the cloud keeps showing everyone until the new one is made (`forCloud`).
+      if (media.cloud !== undefined && media.cloud !== null) (kept[project] ??= {})[media.id] = keptOf(media);
       media.path = path;
       media.kind = "image";
       media.width = edited.settings.width;
@@ -1107,8 +1117,76 @@ async function standIn(app: App, project: string): Promise<void> {
     }
     return changed;
   });
+  writeKept(app.store.home, kept);
   for (const [name, key] of gone) effectCloud.replaced(app.store.home, project, name, key);
 }
+
+// ---------------------------------------------------------------------------
+// What the team sees while a render is made again
+//
+// The clear still is this computer's alone: it stands in for a render only
+// while this computer's code is newer than it, so the page playing live here
+// isn't drawn over its old render. Until Nov 17 it went to the cloud like any
+// change, so everyone else saw nothing where the effect was until the new
+// render was made and pushed, and a render that never came (kenobi's disk
+// full: Cops Found 3 Bodies, five map graphics blank for the team, exports
+// included) left it blank for good. Now the render it stands in for is kept
+// (`<home>/cloud/effect-standins.json`) and the cloud is sent that render in
+// its place (`forCloud`, cloud_projects.ts' `hooks.outgoing`) until a new one
+// is placed (`draw`).
+
+/** A render's reference, as its media had it before the clear still took its place. */
+type StoodFor = Pick<Media, "path" | "kind" | "duration" | "width" | "height" | "fps" | "has_audio" | "effect_key" | "stacked_alpha" | "cloud"> & { effect: string };
+
+const keptFile = (home: string) => join(home, "cloud", "effect-standins.json");
+
+function keptOf(media: Media): StoodFor {
+  const kept: StoodFor = { effect: media.effect!, path: media.path, kind: media.kind, duration: media.duration, width: media.width, height: media.height, fps: media.fps, has_audio: media.has_audio, effect_key: media.effect_key, cloud: media.cloud };
+  if (media.stacked_alpha === true) kept.stacked_alpha = true;
+  return kept;
+}
+
+/** The renders kept, by project and media id. */
+function readKept(home: string): Record<string, Record<string, StoodFor>> {
+  try {
+    const value = JSON.parse(fs.readFileSync(keptFile(home), "utf8")) as unknown;
+    return value !== null && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, Record<string, StoodFor>>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeKept(home: string, kept: Record<string, Record<string, StoodFor>>): void {
+  for (const [project, media] of Object.entries(kept)) if (Object.keys(media).length === 0) delete kept[project];
+  fs.mkdirSync(join(home, "cloud"), { recursive: true });
+  writeAtomic(keptFile(home), JSON.stringify(kept));
+}
+
+/**
+ * `project` as the cloud is sent it: each effect whose clear still stands in
+ * for a render here goes as that render (one the clip would play past the end
+ * of stays the still: nothing new rather than a broken edit).
+ */
+export function forCloud(home: string, id: string, project: Project): Project {
+  const kept = readKept(home)[id];
+  if (kept === undefined) return project;
+  const media = [...project.media];
+  let swapped = false;
+  for (let at = 0; at < media.length; at++) {
+    const here = media[at]!;
+    const render = kept[here.id];
+    if (render === undefined || here.effect !== render.effect || typeof here.effect_key === "string") continue;
+    if (render.duration + 1e-3 < here.duration) continue;
+    const { effect: _effect, ...fields } = render;
+    const replaced: Media = { ...here, ...fields };
+    if (fields.stacked_alpha !== true) delete replaced.stacked_alpha;
+    media[at] = replaced;
+    swapped = true;
+  }
+  return swapped ? { ...project, media } : project;
+}
+
+cloudProjects.hooks.outgoing = (app, id, project) => forCloud(app.store.home, id, project);
 
 /**
  * A picture of the project's put into an effect's folder, where its page can
@@ -1685,6 +1763,27 @@ function sameCode(project: string, name: string, key: string | null | undefined,
   return key === current.key || key === current.old || alike.get(`${project}/${name}/${key}`) === current.key;
 }
 
+/** Whether a version's files (V2's cloud) are the code here: what Edit makes again from the timeline is neither's. */
+function sameFiles(files: v2cloud.File[], code: { path: string; sha256: string }[]): boolean {
+  const theirs = files.filter((file) => isCode(file.path)).sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0));
+  return theirs.length === code.length && theirs.every((file, at) => file.path === code[at]!.path && file.sha256 === code[at]!.sha256);
+}
+
+/** The folder here was just fetched as the version render `rendered` was made of: that render is of this code (`alike`). */
+function sameFilesHere(store: Store, project: string, name: string, rendered: string, frame: { width: number; height: number; fps: number }): void {
+  const dir = folder(store, project, name);
+  alike.set(`${project}/${name}/${rendered}`, codeKey(codeIn(dir), frame, fontsUsed(store, project, dir)));
+}
+
+/**
+ * Whether effect `name`'s render on the timeline is of its code here (what's
+ * beneath it is then taken as what it was drawn over: effect_inputs.ts).
+ */
+export function rendersItsCode(store: Store, project: string, name: string): boolean {
+  const effect = needed(store, project).find((one) => one.name === name);
+  return effect !== undefined && effect.current !== null && effect.fresh;
+}
+
 /**
  * Whether this computer is the one editing `project`: its own project (not
  * the cloud's, or signed out), or the cloud's with its lock here. Another
@@ -1881,6 +1980,12 @@ async function draw(app: App, render: Render): Promise<void> {
     return placed;
   });
   if (!placed) return;
+  const kept = readKept(app.store.home);
+  const mine = kept[project];
+  if (mine !== undefined) {
+    for (const [media, render] of Object.entries(mine)) if (render.effect === name) delete mine[media];
+    writeKept(app.store.home, kept);
+  }
   if (before !== null) effectCloud.replaced(app.store.home, project, name, before);
   prune(app.store, project, name, out);
   // Its own preview: no copy of it made to seek in (see the encode above).
@@ -1965,8 +2070,14 @@ async function bringDownNow(app: App, project: string): Promise<string[]> {
         if (lookedFor.has(asked)) continue;
         const versions = rendered === null ? [] : await v2cloud.versions(item);
         const its = versions.find((one) => one.source === rendered && one.files !== null);
-        if ((await v2cloud.fetchInto(item, its?.n ?? null, dir)) !== null) brought.push(name);
-        else lookedFor.add(asked);
+        if ((await v2cloud.fetchInto(item, its?.n ?? null, dir)) !== null) {
+          brought.push(name);
+          // The render's own version came down: its files are the code the render was made of, whatever key that
+          // computer gave it (before Nov 16 a key had the files' times, which no fetch keeps). Said at once, before the
+          // clear still is judged (`standIn`): kenobi, Nov 17, swapped five such renders of Cops Found 3 Bodies for
+          // clear stills on its first open, for the whole team.
+          if (its !== undefined && rendered !== null) sameFilesHere(app.store, project, name, rendered, frame);
+        } else lookedFor.add(asked);
         continue;
       }
       if (rendered === null || !fs.existsSync(join(dir, ENTRY))) continue;
@@ -1981,7 +2092,7 @@ async function bringDownNow(app: App, project: string): Promise<string[]> {
       lookedFor.add(asked);
       const its = versions.find((one) => one.source === rendered && one.files !== null);
       if (its === undefined) continue;
-      const same = (files: v2cloud.File[]) => files.length === code.length && [...files].sort((x, y) => (x.path < y.path ? -1 : x.path > y.path ? 1 : 0)).every((file, at) => file.path === code[at]!.path && file.sha256 === code[at]!.sha256);
+      const same = (files: v2cloud.File[]) => sameFiles(files, code);
       // The same files under another computer's key: the render is of this code.
       if (same(its.files!)) {
         alike.set(`${project}/${name}/${rendered}`, here.key);
@@ -1989,7 +2100,10 @@ async function bringDownNow(app: App, project: string): Promise<string[]> {
       }
       // An older version of it here: the render's comes in its place. Code that's no version kept is work not rendered yet.
       if (!versions.some((one) => one.files !== null && same(one.files))) continue;
-      if ((await v2cloud.fetchInto(item, its.n, dir)) !== null) brought.push(name);
+      if ((await v2cloud.fetchInto(item, its.n, dir)) !== null) {
+        brought.push(name);
+        sameFilesHere(app.store, project, name, rendered, frame);
+      }
     } catch (error) {
       diag.warn("effects", `${project}: ${name} couldn't come down from V2's cloud: ${diag.messageOf(error)}`);
     }

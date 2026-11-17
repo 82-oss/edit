@@ -1,4 +1,4 @@
-import { afterAll, expect, test } from "bun:test";
+import { afterAll, expect, spyOn, test } from "bun:test";
 import fs from "node:fs";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
@@ -17,6 +17,9 @@ import * as tools from "../src/tools.ts";
 import { respond } from "../src/http/server.ts";
 import { buildRouter } from "../src/routes.ts";
 import * as seams from "../src/seams.ts";
+import * as cloudProjects from "../src/cloud_projects.ts";
+import * as relay from "../src/relay.ts";
+import * as v2cloud from "../src/v2_cloud.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
 registerEffectTools();
@@ -220,6 +223,95 @@ test("a render saved under the key from before Nov 16 (the files' times) is take
     const media = app.store.get(id)!.project.media.find((one) => one.id === "m1")!;
     expect(media.effect_key).toBe(effects.list(app.store, id)[0]!.key);
     expect(media.path.endsWith("bar-render.mp4")).toBe(true);
+  } finally {
+    cleanup();
+  }
+});
+
+test("what of Edit's own every render's key has (its runtime and faces) is pinned: a change to it draws every effect of every project again", () => {
+  // Changing effect_runtime.html or Edit's faces changes every effect's key, so every computer that opens a V2 project
+  // draws all its effects again (Nov 17: a different build's keys did that to Cops Found 3 Bodies). Do it only when
+  // the picture an effect draws changes, then put the new value here; what changes no picture goes in
+  // effect_watch.html, which is no part of a key.
+  expect(effects.RENDERER).toBe("c5cddc666fd4");
+});
+
+test("a render made on another computer whose code comes down on a first open is its code's, whatever key that computer gave it: never swapped for the clear still (kenobi, Nov 17)", async () => {
+  const { app, cleanup, id } = hq("effects-first-open");
+  const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
+  // A key of another computer's (before Nov 16 a key had the files' times): nothing here can make it again.
+  const theirs = "0123456789ab";
+  const item = v2cloud.effectKey(id, "bar");
+  const version = { key: item, n: 3, files: [{ path: "scene.html", sha256: sha(GOOD), size: GOOD.length }], reason: "rendered", from: null, source: theirs, at: 0, by: null };
+  const spies = [
+    spyOn(relay, "cloudEnabled").mockReturnValue(true),
+    spyOn(v2cloud, "versions").mockResolvedValue([version]),
+    spyOn(v2cloud, "fetchInto").mockImplementation(async (_key, n, dir) => {
+      expect(n).toBe(3);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(join(dir, "scene.html"), GOOD);
+      return version;
+    }),
+  ];
+  try {
+    const render = join(app.store.uploadsDir(id), "bar-render.mp4");
+    fs.mkdirSync(join(render, ".."), { recursive: true });
+    fs.writeFileSync(render, "the render");
+    const cloud = { source: "sha256:feed", original: `edit/exports/${id}/effect-bar-${theirs}.mp4`, proxy: `edit/exports/${id}/effect-bar-${theirs}.mp4`, size: 10 };
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      project.media.push({ id: "m1", name: "bar", path: render, kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "bar", effect_key: theirs, cloud } as (typeof project.media)[number]);
+      project.tracks.push({ id: "t1", kind: "video", name: "V1" } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: "m1", source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    expect(fs.existsSync(effects.folder(app.store, id, "bar"))).toBe(false);
+    await effects.bringUpToDate(app, id);
+    expect(fs.readFileSync(join(effects.folder(app.store, id, "bar"), "scene.html"), "utf8")).toBe(GOOD);
+    const media = app.store.get(id)!.project.media.find((one) => one.id === "m1")!;
+    expect(media.kind).toBe("video");
+    expect(media.path).toBe(render);
+    expect(media.cloud).toEqual(cloud);
+    // Its key written as this computer's, nothing drawn again.
+    expect(media.effect_key).toBe(effects.list(app.store, id)[0]!.key);
+    expect(effects.notReady(app.store, app.store.get(id)!.project)).toBeNull();
+  } finally {
+    for (const spy of spies) spy.mockRestore();
+    cleanup();
+  }
+});
+
+test("while an effect's new code renders, the cloud keeps its last render: the clear still is this computer's alone, and the team never sees the effect blank (Nov 17)", async () => {
+  const { app, cleanup, id } = hq("effects-kept-render");
+  try {
+    write(app, id, "bar", { "scene.html": GOOD });
+    const render = join(app.store.uploadsDir(id), "bar-render.mp4");
+    fs.mkdirSync(join(render, ".."), { recursive: true });
+    fs.writeFileSync(render, "the render");
+    const cloud = { source: "sha256:feed", original: `edit/exports/${id}/effect-bar-aaaaaaaaaaaa.mp4`, proxy: `edit/exports/${id}/effect-bar-aaaaaaaaaaaa.mp4`, size: 10 };
+    // Its render is of code since changed here (the key of older code).
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      project.media.push({ id: "m1", name: "bar", path: render, kind: "video", duration: 2, width: 1920, height: 1080, fps: 30, has_audio: false, effect: "bar", effect_key: "aaaaaaaaaaaa", stacked_alpha: true, cloud } as (typeof project.media)[number]);
+      project.tracks.push({ id: "t1", kind: "video", name: "V1" } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: "m1", source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    await effects.bringUpToDate(app, id);
+    const project = app.store.get(id)!.project;
+    const here = project.media.find((one) => one.id === "m1")!;
+    // Here, the clear still, so the page playing live isn't drawn over its old render.
+    expect(here.path.endsWith("bar.clear.png")).toBe(true);
+    expect(here.effect_key).toBeUndefined();
+    // What every push sends: the render, as it was.
+    const sent = cloudProjects.hooks.outgoing(app, id, project).media.find((one) => one.id === "m1")!;
+    expect(sent).toMatchObject({ path: render, kind: "video", width: 1920, height: 1080, fps: 30, effect_key: "aaaaaaaaaaaa", stacked_alpha: true, cloud });
+    // The project here is as it was: only what's sent differs.
+    expect(app.store.get(id)!.project.media.find((one) => one.id === "m1")!.path.endsWith("bar.clear.png")).toBe(true);
+    // An effect made longer than its old render goes as the still: nothing new rather than a clip past its media's end.
+    await app.store.update(id, "test", (edited) => {
+      edited.media.find((one) => one.id === "m1")!.duration = 5;
+    });
+    const longer = app.store.get(id)!.project;
+    expect(cloudProjects.hooks.outgoing(app, id, longer).media.find((one) => one.id === "m1")!.path.endsWith("bar.clear.png")).toBe(true);
   } finally {
     cleanup();
   }

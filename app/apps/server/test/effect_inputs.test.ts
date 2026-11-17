@@ -138,3 +138,67 @@ test.skipIf(addon === null)("the picture beneath an effect is rendered into its 
     cleanup();
   }
 }, 120_000);
+
+test.skipIf(addon === null)("what's beneath an effect, opened on another computer (its own paths, its own port), isn't made again over its mark: the effect's code and its render stay as they were (kenobi, Nov 17)", async () => {
+  const { app, cleanup, id } = hq("effect-beneath-elsewhere");
+  try {
+    const scratchDir = fs.mkdtempSync(join(os.tmpdir(), "edit-beneath-"));
+    const still = (name: string) => {
+      const out = join(scratchDir, name);
+      const made = Bun.spawnSync([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=blue:s=1280x720:d=1", "-frames:v", "1", out]);
+      if (made.exitCode !== 0) throw new Error(made.stderr.toString());
+      return out;
+    };
+    const cloud = { source: "sha256:0b1e", original: "edit/originals/sha256/0b1e/blue.png", proxy: "edit/originals/sha256/0b1e/blue.png", size: 100 };
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      project.media.push({ id: "m1", name: "blue", path: still("here.png"), kind: "image", duration: 3, width: 1280, height: 720, fps: 0, has_audio: false, cloud } as (typeof project.media)[number]);
+      project.media.push({ id: "m2", name: "glass", path: "/nowhere/glass.png", kind: "image", duration: 1, width: 1280, height: 720, fps: 0, has_audio: false, effect: "glass" });
+      project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.tracks.push({ id: "t2", kind: "video", name: "V2", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c0", type: "video", track: "t1", start: 0, duration: 90, media: "m1", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 } } as unknown as (typeof project.clips)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t2", start: 30, duration: 30, media: "m2", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 } } as unknown as (typeof project.clips)[number]);
+    });
+    const dir = effects.folder(app.store, id, "glass");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(join(dir, "scene.html"), "<p>glass</p>");
+    expect((await call(app, id, "effect_beneath", { name: "glass" })).isError).toBe(false);
+    const mark = fs.readFileSync(join(dir, ".beneath.json"), "utf8");
+    const key = effects.list(app.store, id)[0]!.key;
+    // Rendered from that code: its media says so, as the cloud's copy would.
+    await app.store.update(id, "test", (project) => {
+      project.media.find((one) => one.id === "m2")!.effect_key = key;
+    });
+    // Another computer: the same footage under a path of its own (cloud_media's resolver gives each its own), and no
+    // video beneath (it's never kept in the cloud).
+    await app.store.update(id, "test", (project) => {
+      project.media.find((one) => one.id === "m1")!.path = still("there.png");
+    });
+    fs.rmSync(join(dir, "beneath.mp4"));
+    await call(app, id, "effect_beneath", { name: "glass" });
+    expect(fs.existsSync(join(dir, "beneath.mp4"))).toBe(true);
+    expect(fs.readFileSync(join(dir, ".beneath.json"), "utf8")).toBe(mark);
+    expect(effects.list(app.store, id)[0]!.key).toBe(key);
+
+    // A mark worded by an older Edit on another computer (its key of that computer's paths), its render of this code:
+    // taken as what's beneath now, nothing changed.
+    const foreign = JSON.stringify({ key: "0f0f0f0f0f0f0f0f" });
+    fs.writeFileSync(join(dir, ".beneath.json"), foreign);
+    const foreignKey = effects.list(app.store, id)[0]!.key;
+    await app.store.update(id, "test", (project) => {
+      project.media.find((one) => one.id === "m2")!.effect_key = foreignKey;
+    });
+    expect((await call(app, id, "effect_beneath", { name: "glass" })).content[0]!.text).toContain("already of what's there now");
+    expect(fs.readFileSync(join(dir, ".beneath.json"), "utf8")).toBe(foreign);
+    expect(effects.list(app.store, id)[0]!.key).toBe(foreignKey);
+    // What's beneath really changes: made again, and its mark with it (a new render follows).
+    await app.store.update(id, "test", (project) => {
+      (project.clips.find((one) => one.id === "c0") as unknown as { speed: number }).speed = 0.5;
+    });
+    await call(app, id, "effect_beneath", { name: "glass" });
+    expect(fs.readFileSync(join(dir, ".beneath.json"), "utf8")).not.toBe(foreign);
+    expect(effects.list(app.store, id)[0]!.key).not.toBe(foreignKey);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
