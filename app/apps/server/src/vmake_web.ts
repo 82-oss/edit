@@ -351,11 +351,13 @@ export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string,
   await pacing.wait();
   const problem = await accountProblem(page);
   if (problem !== null) throw problem;
-  // A fresh page: the mode first, since the upload starts processing by itself.
+  // A fresh page showing the modes: the mode first, since the upload starts processing by itself.
   // The account's job cards come a moment after the page (its task list): looked for a few seconds first.
-  const fresh = !(await waitFor<boolean>(page, `${CARDS}.length > 0`, 8_000, "the job cards", 500).catch(() => false));
-  if (fresh) {
-    const mode = await waitFor<string>(page, `(() => { const li = ${MODE_ITEM}; return li ? li.className : null; })()`, 30_000, "Smart pro");
+  // A fresh page with no modes shown (Nov 17 afternoon: only Upload and Batch upload until a file goes in) chooses Smart pro on the piece's card, as a page with cards does.
+  const cards = await waitFor<boolean>(page, `${CARDS}.length > 0`, 8_000, "the job cards", 500).catch(() => false);
+  const mode = cards ? null : await waitFor<string>(page, `(() => { const li = ${MODE_ITEM}; return li ? li.className : null; })()`, 30_000, "Smart pro").catch(() => null);
+  const fresh = mode !== null;
+  if (mode !== null) {
     if (/disabled--/u.test(mode)) throw new VmakeError("vmake.ai doesn't offer Smart pro on the remover's page now", "piece");
     if (!/active--/u.test(mode)) {
       await click(page, MODE_ITEM);

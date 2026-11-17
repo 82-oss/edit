@@ -22,14 +22,15 @@ const CHROME = ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/App
 /** What the stand-in page saw, and how it behaves. */
 const seen = { mode: "", bytes: 0, uploads: 0, others: 0 };
 /** `cards`: the page as Sphe's account showed it (Nov 17): a stack of job cards, a teammate's long file among them. */
-const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false };
+/** `noModes`: a fresh page as it showed on Nov 17 afternoon: no modes until a file goes in, then its card (waiting on Apply). */
+const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, noModes: false };
 const PIECE = new Uint8Array(3_000_000).map((_, at) => at % 251);
 
 const PAGE = () => `<!doctype html><html><body>
 <header>${site.signedOut ? '<button>Log in</button>' : '<div class="user-avatar--x1">S</div>'}</header>
 <div class="ant-segmented" aria-label="segmented control"><div>Auto</div><div>Manual</div></div>
-<div style="display:none"><ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul></div>
-<ul class="radio--q7">${["Smart", "Smart pro", "Subtitle", "Watermark", "Passerby"].map((mode, at) => `<li class="item--a ${at === 0 ? "active--z" : ""} ${mode === "Smart pro" && site.noSmartPro ? "disabled--d" : ""}">${mode}</li>`).join("")}</ul>
+${site.noModes ? "" : `<div style="display:none"><ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul></div>
+<ul class="radio--q7">${["Smart", "Smart pro", "Subtitle", "Watermark", "Passerby"].map((mode, at) => `<li class="item--a ${at === 0 ? "active--z" : ""} ${mode === "Smart pro" && site.noSmartPro ? "disabled--d" : ""}">${mode}</li>`).join("")}</ul>`}
 <span class="ant-upload-btn"><input type="file" name="file" accept=".mp4,.mov"></span>
 <span class="ant-upload-btn"><input type="file" name="file" multiple></span>
 <div id="work">${site.cards ? `<div class="viewport-task-card--o5h" id="other"><span>v3p2.mp4</span> 40% <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul><button>Download</button></div>` : ""}</div>
@@ -43,9 +44,9 @@ document.querySelectorAll('ul[class*=radio] li').forEach((li) => li.addEventList
 document.querySelector('input:not([multiple])').addEventListener('change', async (event) => {
   const file = event.target.files[0];
   // A fresh page starts at once in the mode chosen (the cards' page waits on Apply).
-  if (!${site.cards}) await fetch('/record', { method: 'POST', body: JSON.stringify({ mode: document.querySelector('li.active--z').innerText, bytes: file.size }) });
+  if (!${site.cards || site.noModes}) await fetch('/record', { method: 'POST', body: JSON.stringify({ mode: document.querySelector('li.active--z').innerText, bytes: file.size }) });
   const work = document.getElementById('work');
-  if (${site.cards}) {
+  if (${site.cards || site.noModes}) {
     // A card of its own, as Sphe's Pro account shows it: uploading, then waiting on Apply (Smart first), processing, Download.
     const card = document.createElement('div');
     card.className = 'viewport-task-card--o5h';
@@ -197,6 +198,23 @@ test.skipIf(CHROME === undefined)("on a page of job cards (a teammate's among th
     await session.stop();
   }
 }, 60_000);
+
+test.skipIf(CHROME === undefined)("a fresh page that shows no modes until a file goes in: Smart pro chosen on the piece's card, then Apply", async () => {
+  site.noModes = true;
+  const session = await browsers.open();
+  try {
+    const page = await session.remote.tab();
+    const uploads = seen.uploads;
+    const url = await web.removeOnPage(page, session.remote, piece(), "piece-nomodes.mp4", `http://localhost:${vmake.port}`);
+    expect(url).toBe(`http://localhost:${vmake.port}/result.mp4?full=1`);
+    expect(seen.uploads - uploads).toBe(1);
+    expect(seen.mode).toBe("Smart pro");
+    page.close();
+  } finally {
+    site.noModes = false;
+    await session.stop();
+  }
+}, 90_000);
 
 test.skipIf(CHROME === undefined)("a piece that shows no progress after Apply is given up on, not waited on for hours", async () => {
   site.cards = true;
