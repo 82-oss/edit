@@ -1,5 +1,6 @@
-// watermark_removal.ts and clean_strips.ts: a channel's see-through
-// watermark taken out of its footage on the timeline by the engine, free: the
+// watermark_removal.ts and clean_strips.ts: each footage file's own
+// see-through watermark (looked for once, kept by its source; none for most)
+// taken out of it on the timeline by the engine, free: the
 // cells of each file the timeline shows (fixed 30 s, so a clip extended later
 // only does its new cells), each kept and never made twice (another project on
 // the same footage reuses them), strips laid under a text strip of the same
@@ -11,6 +12,7 @@ import * as fs from "node:fs";
 
 import type { App } from "../src/app.ts";
 import { enforceCleanStrips, NAME, strippedFrames, WATERMARK_NAME } from "../src/clean_strips.ts";
+import * as cloudMedia from "../src/cloud_media.ts";
 import type { Media, Project, VideoClip } from "../src/model.ts";
 import type { WatermarkPiece, WatermarkRemoved } from "../src/native/index.ts";
 import { join } from "../src/paths.ts";
@@ -92,11 +94,13 @@ test("a watermark strip lies under a text strip of the same frames, both stuck t
   expect(alone.clips.filter((clip) => (clip.name ?? "").startsWith(`${WATERMARK_NAME} · `)).length).toBe(1);
 });
 
-/** A stand-in engine: each piece a small stacked strip as long as the piece, or nothing where `absent` says. */
-function standIn(calls: WatermarkPiece[], absent: (from: number) => boolean = () => false): wm.Engine {
+/** A stand-in engine: a mark learned from any file but one named "plain" (none there); each piece a small stacked strip as long as the piece, or nothing where `absent` says. */
+function standIn(calls: WatermarkPiece[], absent: (from: number) => boolean = () => false, learned: string[] = []): wm.Engine {
   return {
-    async learn() {
-      return JSON.stringify({ version: 1, stand: "in" });
+    async learn(source, _size, _duration, hint) {
+      learned.push(`${source.slice(source.lastIndexOf("/") + 1)} ${JSON.stringify(hint)}`);
+      if (source.includes("plain")) throw new Error("no see-through watermark that stays put was found in the footage");
+      return JSON.stringify({ version: 1, of: source.slice(source.lastIndexOf("/") + 1) });
     },
     async remove(piece): Promise<WatermarkRemoved | null> {
       calls.push(piece);
@@ -107,44 +111,52 @@ function standIn(calls: WatermarkPiece[], absent: (from: number) => boolean = ()
   };
 }
 
-/** A project of `channel` with `file` on its timeline from 0 for `seconds`. */
-async function project(app: App, file: string, seconds: number, channel: string | undefined, name = "p"): Promise<string> {
+const clipOf = (id: string, media: string, start: number, seconds: number): VideoClip => ({ id, track: "v1", start, duration: Math.round(seconds * 30), color: "blue", fade_in: 0, fade_out: 0, type: "video", media, source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 });
+
+/** A project with each of `files` on the timeline one after another, `seconds` of each from its start. */
+async function project(app: App, files: string[], seconds: number, name = "p"): Promise<string> {
   const live = app.store.create(name, { width: 1920, height: 1080, fps: 30 });
   const project = structuredClone(live.project) as Project;
-  project.media = [{ id: "m", name: "tape", path: file, kind: "video", duration: 70, width: 1280, height: 720, fps: 30, has_audio: false }];
-  project.clips = [{ id: "f", track: "v1", start: 0, duration: Math.round(seconds * 30), color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 }];
-  if (channel !== undefined) project.channel = channel;
+  project.media = files.map((file, at): Media => ({ id: `m${at}`, name: `tape ${at}`, path: file, kind: "video", duration: 70, width: 1280, height: 720, fps: 30, has_audio: false }));
+  project.clips = files.map((_, at) => clipOf(`f${at}`, `m${at}`, at * Math.round(seconds * 30), seconds));
+  project.channel = "ch";
   await app.store.replace(project.id, null, project, "test");
   return project.id;
 }
 
-test("a taught channel's footage is cleaned cell by cell: once, the new cells only when a clip grows, reused by another project, nothing where it isn't", async () => {
+test("every footage file is looked at once for a mark of its own, kept by its source: cleaned where there's one, cell by cell; nothing where there's none; reused by another project", async () => {
   const { app, dir, store, cleanup } = fixtureHome("watermark-run");
   const calls: WatermarkPiece[] = [];
-  wm.useEngine(standIn(calls, (from) => from === 60));
+  const learned: string[] = [];
+  wm.useEngine(standIn(calls, (from) => from === 60, learned));
   wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
   try {
-    const file = join(dir, "tape.mp4");
-    fs.writeFileSync(file, "a stand-in tape");
-    fs.mkdirSync(join(app.store.cacheDir(), "watermarks"), { recursive: true });
-    fs.writeFileSync(join(app.store.cacheDir(), "watermarks", "ch.json"), JSON.stringify({ version: 1, matte: "…" }));
-    const id = await project(app, file, 40, "ch");
+    // A compilation: one re-uploader's tape with their mark, another's with none.
+    const marked = join(dir, "marked.mp4");
+    const plain = join(dir, "plain.mp4");
+    fs.writeFileSync(marked, "a stand-in tape with a mark");
+    fs.writeFileSync(plain, "a stand-in tape with none");
+    const id = await project(app, [marked, plain], 40);
     await wm.ensure(app, id);
     await wm.settled();
-    expect(calls.map((piece) => [piece.from, piece.to])).toEqual([[0, 30], [30, 60]]);
-    expect(calls[0]).toMatchObject({ size: [1280, 720], fps: 30, model: JSON.stringify({ version: 1, matte: "…" }) });
+    expect(learned).toEqual(["marked.mp4 null", "plain.mp4 null"]);
+    // Only the marked tape's cells, by its own mark.
+    expect(calls.map((piece) => [piece.source.endsWith("marked.mp4"), piece.from, piece.to])).toEqual([[true, 0, 30], [true, 30, 60]]);
+    expect(calls[0]).toMatchObject({ size: [1280, 720], fps: 30, model: JSON.stringify({ version: 1, of: "marked.mp4" }) });
     const strips = store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark");
-    expect(strips.map((media) => [media.cleans!.from, media.cleans!.to])).toEqual([[0, 30], [30, 60]]);
-    expect(strips[0]).toMatchObject({ stacked_alpha: true, has_audio: false, cleans: { media: "m", box: [0.37, 0.61, 0.63, 0.84] } });
+    expect(strips.map((media) => [media.cleans!.media, media.cleans!.from, media.cleans!.to])).toEqual([["m0", 0, 30], ["m0", 30, 60]]);
+    expect(strips[0]).toMatchObject({ stacked_alpha: true, has_audio: false, cleans: { media: "m0", box: [0.37, 0.61, 0.63, 0.84] } });
     expect(store.get(id)!.project.clips.filter((clip) => (clip.name ?? "").startsWith(`${WATERMARK_NAME} · `)).length).toBe(2);
     expect(wm.piecesOf(id).map((piece) => [piece.from, piece.state, piece.left])).toEqual([[0, "done", 0.08], [30, "done", 0.08]]);
-    // Again: nothing new.
+    expect(wm.isNone(await wm.markOf(app, `sha256:${await cloudMedia.sha256File(plain)}`))).toBe(true);
+    // Again: nothing new, nothing looked at again.
     await wm.ensure(app, id);
     await wm.settled();
-    expect(calls.length).toBe(2);
-    // The clip grows to 70 s: only the new cell, where the mark isn't (kept as nothing, never asked again).
+    expect([calls.length, learned.length]).toEqual([2, 2]);
+    // The marked clip grows to 70 s: only the new cell, where the mark isn't (kept as nothing, never asked again).
     const grown = structuredClone(store.get(id)!.project);
-    (grown.clips.find((clip) => clip.id === "f") as VideoClip).duration = 70 * 30;
+    (grown.clips.find((clip) => clip.id === "f0") as VideoClip).duration = 70 * 30;
+    (grown.clips.find((clip) => clip.id === "f1") as VideoClip).start = 70 * 30;
     await app.store.replace(id, null, grown, "test");
     await wm.ensure(app, id);
     await wm.settled();
@@ -152,17 +164,46 @@ test("a taught channel's footage is cleaned cell by cell: once, the new cells on
     await wm.ensure(app, id);
     await wm.settled();
     expect(calls.length).toBe(3);
-    // Another project on the same footage: the kept cells, nothing made.
-    const other = await project(app, file, 70, "ch", "q");
+    // Another project (any channel's) on the same footage: the kept marks and cells, nothing looked at or made.
+    const other = await project(app, [plain, marked], 70, "q");
     await wm.ensure(app, other);
     await wm.settled();
-    expect(calls.length).toBe(3);
-    expect(store.get(other)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(2);
-    // A channel taught no mark, or no channel: nothing.
-    await wm.ensure(app, await project(app, file, 70, "other", "r"));
-    await wm.ensure(app, await project(app, file, 70, undefined, "s"));
+    expect([calls.length, learned.length]).toEqual([3, 2]);
+    expect(store.get(other)!.project.media.filter((media) => media.cleans?.what === "watermark").map((media) => media.cleans!.media)).toEqual(["m1", "m1"]);
+  } finally {
+    cleanup();
+  }
+}, 60_000);
+
+test("a file looked at with no mark found is looked at again once the team shows where theirs is; a file still being looked at keeps an export waiting", async () => {
+  const { app, dir, cleanup } = fixtureHome("watermark-hint");
+  const calls: WatermarkPiece[] = [];
+  const learned: string[] = [];
+  let open = () => {};
+  const gate = new Promise<void>((resolve) => (open = resolve));
+  const engine = standIn(calls, () => false, learned);
+  wm.useEngine({ ...engine, learn: async (...args) => (await gate, engine.learn(...args)) });
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  try {
+    const plain = join(dir, "plain.mp4");
+    fs.writeFileSync(plain, "a faint mark the search missed");
+    const id = await project(app, [plain], 10);
+    await wm.ensure(app, id);
+    expect(wm.lookingAt(id)).toBe(1);
+    open();
     await wm.settled();
-    expect(calls.length).toBe(3);
+    expect(wm.lookingAt(id)).toBe(0);
+    expect(learned).toEqual(["plain.mp4 null"]);
+    const source = `sha256:${await cloudMedia.sha256File(plain)}`;
+    const hints: wm.Hints = { hint: (one) => (one === source ? [0.3, 0.6, 0.7, 0.85] : null), keep: [] };
+    await wm.ensure(app, id, hints);
+    await wm.settled();
+    expect(learned).toEqual(["plain.mp4 null", `plain.mp4 ${JSON.stringify([0.3, 0.6, 0.7, 0.85])}`]);
+    // Looked at with that hint and still none: not again for the same hint.
+    await wm.ensure(app, id, hints);
+    await wm.settled();
+    expect(learned.length).toBe(2);
+    expect(calls).toEqual([]);
   } finally {
     cleanup();
   }
@@ -191,7 +232,8 @@ test.skipIf(process.env.EDIT_WATERMARK_REAL === undefined)("real footage: the ma
     project.channel = "real-test";
     await app.store.replace(project.id, null, project, "test");
     let started = Date.now();
-    const model = await wm.learn(app, "real-test", media, null);
+    const model = await wm.learn(app, media, null);
+    if (wm.isNone(model)) throw new Error("no mark found in that footage");
     const learned = JSON.parse(model.json) as { gamma: number; white: number; strength: number; at: number[] };
     console.log(`learned in ${((Date.now() - started) / 1000).toFixed(1)} s: gamma ${learned.gamma} white ${learned.white.toFixed(3)} strength ${learned.strength.toFixed(3)} at ${learned.at}`);
     started = Date.now();

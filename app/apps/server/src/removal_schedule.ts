@@ -8,9 +8,10 @@
 //     agent's cut-ins and graphics; whenever clips change, only the newly
 //     needed seconds go (each worker keeps its pieces by file and seconds, so
 //     nothing is done or paid for twice);
-//   - two workers: their watermark taken out here by the engine
-//     (watermark_removal.ts, free; its mark learned once from the lesson's
-//     example), their subtitles and text by Vmake (text_removal.ts, the team's
+//   - two workers: their watermarks taken out here by the engine
+//     (watermark_removal.ts, free; every footage file looked at once for a
+//     mark of its own, kept by source; nothing done where there's none),
+//     their subtitles and text by Vmake (text_removal.ts, the team's
 //     plan on its website by default; the API only after the person's yes to
 //     its price);
 //   - every piece checked: automatically as it comes back (Vmake's: their
@@ -39,10 +40,6 @@ import * as watermarkRemoval from "./watermark_removal.ts";
 /** How long an export waits for pieces still out (Vmake's site takes minutes a piece, three at once). */
 export const timing = { exportWaitMs: 3 * 3_600_000, restMs: 2000 };
 
-/** Channels whose mark is being learned now, and when a learning last failed (tried again after half an hour). */
-const learning = new Map<string, Promise<void>>();
-const learnFailed = new Map<string, number>();
-
 /**
  * Brings `id`'s removal up to date with its channel's lesson: each part taught
  * started on what the timeline newly shows. Nothing for a channel taught
@@ -53,45 +50,22 @@ export async function ensure(app: App, id: string): Promise<void> {
   if (live === null) return;
   await v2cloud.refreshSkills();
   const lesson = removal.lessonOf(live.project);
-  // A mark learned before lessons (POST …/footage-watermark) still counts while the channel has no lesson.
-  if (lesson === null || lesson.remove.watermarks) {
-    if (lesson !== null) await markOf(app, live.project.channel ?? "", lesson, live.project.media);
-    await watermarkRemoval.ensure(app, id);
-  }
+  if (lesson?.remove.watermarks === true) await watermarkRemoval.ensure(app, id, hintsOf(lesson));
   if (removal.kinds(lesson).vmake.length > 0) await textRemoval.ensure(app, id);
 }
 
-/** The channel's mark: learned once from the lesson's example of it (its footage and box) when it isn't yet. */
-async function markOf(app: App, channel: string, lesson: removal.Lesson, media: Media[]): Promise<void> {
-  if (channel === "" || (await watermarkRemoval.modelOf(app, channel)) !== null) return;
-  const busy = learning.get(channel);
-  if (busy !== undefined) return busy;
-  if (Date.now() - (learnFailed.get(channel) ?? 0) < 30 * 60_000) return;
-  const example = lesson.examples.find((one) => one.kind === "watermarks" && one.action === "remove");
-  // Footage carrying it: the example's own file when it's in this project, else the longest footage here.
-  let footage: Media | undefined;
-  for (const one of media.filter((m) => m.kind === "video" && m.cleans == null)) {
-    if (example?.from !== undefined && (await textRemoval.sourceOf(one).catch(() => "")) === example.from.source) footage = one;
-  }
-  footage ??= media.filter((m) => m.kind === "video" && m.cleans == null && m.effect == null).sort((a, b) => (b.duration ?? 0) - (a.duration ?? 0))[0];
-  if (footage === undefined) return;
-  const work = watermarkRemoval
-    .learn(app, channel, footage, example?.box ?? null)
-    .then(() => undefined)
-    .catch((error: unknown) => {
-      learnFailed.set(channel, Date.now());
-      diag.warn("removal", `${channel}: learning its watermark from ${footage.name}: ${diag.messageOf(error)}`);
-    })
-    .finally(() => learning.delete(channel));
-  learning.set(channel, work);
-  return work;
+/** What the lesson's examples say of marks: where a source's is (its example's box), and what's kept (never a mark). */
+function hintsOf(lesson: removal.Lesson): watermarkRemoval.Hints {
+  const shown = lesson.examples.filter((one) => one.kind === "watermarks" && one.action === "remove" && one.box !== undefined && one.from !== undefined);
+  return { hint: (source) => shown.find((one) => one.from!.source === source)?.box ?? null, keep: removal.keepBoxes(lesson) };
 }
 
 /** Pieces out (queued or being done) and done, of both workers, for the line and the export's step. */
 export function progressOf(id: string): { done: number; out: number } {
   const text = textRemoval.piecesOf(id);
   const marks = watermarkRemoval.piecesOf(id);
-  const out = text.filter((one) => one.state === "queued" || one.state === "running").length + marks.filter((one) => one.state === "queued" || one.state === "running").length;
+  // A file still being looked at for its mark counts as out: its pieces aren't known yet.
+  const out = text.filter((one) => one.state === "queued" || one.state === "running").length + marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id);
   const done = text.filter((one) => one.state === "check" || one.state === "done").length + marks.filter((one) => one.state === "done" || one.state === "none").length;
   return { done, out };
 }
@@ -238,6 +212,4 @@ export function start(app: App): void {
 /** For tests. */
 export function reset(): void {
   looked.clear();
-  learning.clear();
-  learnFailed.clear();
 }

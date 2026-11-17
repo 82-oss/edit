@@ -500,7 +500,8 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
 
 /**
  * `teach_removal`: what this channel takes out of its footage's picture
- * (removal_lesson.ts), kept as its `removal` lesson, with examples. Each part
+ * (removal_lesson.ts), kept as its `removal` lesson (its group's by default),
+ * with examples that only help. Each part
  * given is set, the others stay as they were; examples are added (the same
  * frame's replaced). A teacher's to do.
  */
@@ -549,6 +550,8 @@ async function teachRemoval({ app, args, projectId }: ToolCall): Promise<Content
   const lesson = removal.changed(before === undefined ? null : removal.parse(before.text), parts, examples, args.clear_examples === true);
   const key = v2cloud.ownKey("skill", where.place, removal.SKILL);
   const saved = await v2cloud.saveSkill(removal.SKILL, removal.write(lesson), args.reason.trim(), removal.NOTE, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
+  // Kept for the group while this channel has its own: the channel's still wins here.
+  const shadowed = places !== null && where.place !== places[0] && v2cloud.ownPlaceOf(before?.key ?? "") === places[0];
   v2cloud.forgetSkills();
   // Started at once on this project's footage (its mark learned first when watermarks are taught).
   void removalSchedule.ensure(app, projectId).catch(() => {});
@@ -556,7 +559,8 @@ async function teachRemoval({ app, args, projectId }: ToolCall): Promise<Content
   return text(
     `${removal.summary(lesson)} Kept as ${removal.SKILL} (version ${saved.n}) in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}.` +
       (read.length > 0 ? ` Examples: ${read.join("; ")}.` : "") +
-      " Edit takes it out by itself as footage is cut, in the background (their subtitles blurred until then); look at pieces as they come back with check_removal.",
+      " Edit looks at every footage file itself as it's cut, in the background, and takes out what each one actually has (nothing where a file has none; their subtitles blurred until then); look at pieces as they come back with check_removal." +
+      (shadowed ? ` This channel's own ${removal.SKILL} still wins here: change that one (for: "channel") to change it for this channel.` : ""),
   );
 }
 

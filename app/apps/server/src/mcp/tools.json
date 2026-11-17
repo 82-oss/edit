@@ -4258,7 +4258,7 @@
     "name": "remember"
   },
   {
-    "description": "Teach what this channel takes out of its footage's picture, when the person says so (\"we only want their subtitles removed\", \"only the watermark\", \"subtitles and the 'Actual case footage' labels, keep the camera stamp\"): one lesson of the channel's edit style (its group's unless for says this channel alone). Each part given is set, the others stay; the camera's own stamp is always kept. Give an example when the person shows one: a second of a footage file (media and at) or a picture from the chat (picture: its file), with what to take out or keep there and where (box, shares of the picture); its words are read there. Untaught, nothing is taken out (theirs are left, ours stay off them). Edit does the rest itself once the edit is done. A teacher's to do.",
+    "description": "Teach what this channel takes out of its footage's picture, when the person says so (\"we only want their subtitles removed\", \"only the watermarks\", \"subtitles and the 'Actual case footage' labels, keep the camera stamp\"): one lesson of the channel's edit style, kept for its group (every channel in it) unless for says this channel alone. A part on means theirs out wherever a footage file actually has it: Edit looks at every file on the timeline itself (their subtitles and text read off it, each file's own see-through mark found without an example; a compilation's files come from many re-uploaders, most with none) and does nothing to a file without. Each part given is set, the others stay; the camera's own stamp is never taken out. Examples are optional and only help: give one when the person shows one, a second of a footage file (media and at) or a picture from the chat (picture: its file), with what to take out or keep there and where (box, shares of the picture); its words are read there, a watermark's box is a hint for that file. Untaught, nothing is taken out (theirs are left, ours stay off them). Edit does the rest itself as footage is cut. A teacher's to do.",
     "inputSchema": {
       "properties": {
         "clear_examples": {
@@ -4345,7 +4345,7 @@
           "type": "boolean"
         },
         "watermarks": {
-          "description": "Their see-through marks (a channel's name or logo laid faintly over the picture)",
+          "description": "Their see-through marks (a channel's name or logo laid faintly over the picture), each file's own, wherever one has one",
           "type": "boolean"
         }
       },

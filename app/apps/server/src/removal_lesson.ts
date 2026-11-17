@@ -4,9 +4,16 @@
 // "only watermarks", "subtitles and the 'Actual case footage' labels, keep the
 // camera stamp". The camera's own stamp is always kept, whatever is taught.
 //
+// A part taught means "theirs out wherever the footage actually has it": a
+// compilation pulls footage from many re-uploaders, so each file is looked at
+// for itself (their subtitles and text read off it, a watermark of its own
+// looked for: watermark_removal.ts) and nothing is done to a file with none.
+// Examples only help (a hint for that file, words to match); none is needed.
+//
 // It's a lesson like any other of the channel's edit style (Edit V2's cloud,
-// the channel's own or its group's, nearest wins), named `removal`, kept by
-// the agent's `teach_removal`: a line the person can read, then its data:
+// the group's by default, a channel's own when the person says it's for that
+// one; nearest wins), named `removal`, kept by the agent's `teach_removal`: a
+// line the person can read, then its data:
 //   - what's taken out: subtitles (theirs, burned in), watermarks (see-through
 //     marks), text (labels and other text laid over the picture); each on or off;
 //   - examples: a frame of footage (a file's second) or a picture from the
@@ -15,9 +22,10 @@
 //
 // What it decides (`kinds`): an untaught channel takes nothing out (theirs
 // left, ours off there, today's default; "cover" still blurs for a channel
-// taught so). Subtitles and text go to Vmake (text_removal.ts, its strip
-// pasted back only where taught); watermarks go to the local watermark step
-// (`localSteps`) alone, so a channel taught only watermarks never pays Vmake.
+// taught so). Subtitles and text go to Vmake (text_removal.ts, only the
+// seconds that show them, its strip pasted back only where taught);
+// watermarks go to the engine here alone (watermark_removal.ts), so a channel
+// taught only watermarks never pays Vmake.
 
 import * as channels from "./channels.ts";
 import type { Project } from "./model.ts";
@@ -59,7 +67,7 @@ const WORDS: Record<Kind, string> = { subtitles: "their subtitles", watermarks: 
 /** The line the person reads: what's taken out, and that the camera's stamp stays. */
 export function summary(lesson: Lesson): string {
   const out = KINDS.filter((kind) => lesson.remove[kind]).map((kind) => WORDS[kind]);
-  const said = out.length === 0 ? "Nothing is taken out of the footage's picture" : `Take ${out.length === 1 ? out[0] : `${out.slice(0, -1).join(", ")} and ${out.at(-1)}`} out of the footage's picture`;
+  const said = out.length === 0 ? "Nothing is taken out of the footage's picture" : `Take ${out.length === 1 ? out[0] : `${out.slice(0, -1).join(", ")} and ${out.at(-1)}`} out of the footage's picture wherever a file has them`;
   const kept = lesson.examples.filter((one) => one.action === "keep" && one.text).map((one) => `"${one.text}"`);
   return `${said}; the camera's stamp${kept.length > 0 ? ` and ${kept.join(", ")}` : ""} always kept.`;
 }

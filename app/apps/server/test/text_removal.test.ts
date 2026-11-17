@@ -489,7 +489,7 @@ test("a removal lesson reads back as kept, changes part by part, and says where 
   const stamp: removal.Example = { kind: "stamp", action: "keep", text: "AXON BODY 3", box: [0.66, 0.01, 0.97, 0.09] };
   const lesson = removal.changed(null, { subtitles: true, text: true }, [actual, stamp]);
   const kept = removal.write(lesson);
-  expect(kept.split("\n")[0]).toBe(`Take their subtitles and their labels and other text out of the footage's picture; the camera's stamp and "AXON BODY 3" always kept.`);
+  expect(kept.split("\n")[0]).toBe(`Take their subtitles and their labels and other text out of the footage's picture wherever a file has them; the camera's stamp and "AXON BODY 3" always kept.`);
   expect(removal.parse(kept)).toEqual(lesson);
   // Hand-written words, or broken data, are no lesson: nothing is taken out.
   expect(removal.parse("Take their subtitles out")).toBeNull();
