@@ -364,12 +364,15 @@ function noteRun(app: App, id: string): void {
   }
 }
 
-/** What's being taken out, as the row says it. */
-function labelOf(rows: PieceRow[]): string {
+/** What's being taken out, in words: "their text and watermarks". */
+function whatOf(rows: PieceRow[]): string {
   const text = rows.some((row) => row.what === "text");
   const marks = rows.some((row) => row.what === "watermark");
-  return text && marks ? "Removing their text and watermarks" : marks ? "Removing their watermarks" : "Removing their text";
+  return text && marks ? "their text and watermarks" : marks ? "their watermarks" : "their text";
 }
+
+/** The row's label, short enough for the chat panel (Sphe, Nov 17: "Waiting · Removi…" was cut): their text (any of it), or their watermarks alone. */
+const labelOf = (rows: PieceRow[]) => (rows.some((row) => row.what === "text") ? "Removing their text" : "Removing their watermarks");
 
 /** The waiting row's numbers: what, how far, since when, about how long left (from this run's pace). */
 export function backgroundOf(id: string): NonNullable<textRemoval.Status["background"]> | null {
@@ -425,7 +428,7 @@ export function wakeText(rows: PieceRow[]): string {
   const cleaned = rows.filter((row) => row.state === "done" || row.state === "check");
   const left = rows.filter((row) => row.state === "failed");
   const held = rows.filter((row) => row.state === "held");
-  const what = labelOf(rows).replace(/^Removing/u, "Taking");
+  const what = `Taking ${whatOf(rows)}`;
   return (
     `${EDIT_EVENT} ${what} out of the footage is done: ${cleaned.length} piece${cleaned.length === 1 ? "" : "s"} cleaned${left.length > 0 ? `, ${left.length} not clean (their blur laid back, a watermark left)` : ""}.\n\n` +
     (cleaned.length > 0 ? `Cleaned:\n${byFile(cleaned.slice(0, 60))}\n\n` : "") +

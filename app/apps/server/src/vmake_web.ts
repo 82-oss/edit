@@ -345,7 +345,15 @@ const cardState = (name: string) => `(() => {
  * chosen before the file goes in; with cards, on our own card (found by its
  * file's name) as it comes. Nobody else's card is ever touched.
  */
-export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string, name: string, site = SITE, onProgress: (percent: number) => void = () => {}): Promise<string> {
+/**
+ * A piece's file name on vmake.ai: its own, never another's (the page finds a
+ * piece's job card by it, among every card the account has; Nov 17, packed
+ * pieces are mostly 300 s: "piece-300s.mp4" was many cards at once).
+ */
+export const pieceName = (seconds: number): string => `edit-${Math.random().toString(36).slice(2, 8)}-${Math.round(seconds)}s.mp4`;
+
+/** `onBegun`: vmake.ai took the piece and is processing it (the account worked for it: the run's other pieces may go now). */
+export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string, name: string, site = SITE, onProgress: (percent: number) => void = () => {}, onBegun: () => void = () => {}): Promise<string> {
   await go(page, `${site}${REMOVER}`);
   await waitFor(page, `!!document.querySelector('.ant-upload-btn input[type=file][name=file]:not([multiple])')`, 60_000, "the remover's page");
   await pacing.wait();
@@ -389,6 +397,7 @@ export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string,
       await apply(page, name, step);
     } else if (!/active--/u.test(state.smartPro)) throw new VmakeError("vmake.ai began the piece in another mode than Smart pro", "piece");
   }
+  onBegun();
   // Processing: the result, or the account's or the file's trouble said on the page.
   const until = Date.now() + JOB_MS;
   let last = -1;
@@ -552,7 +561,7 @@ export class Driver {
   }
 
   /** One piece (at `pieceUrl`) cleaned: the result's URL. */
-  async run(pieceUrl: string, name: string, onProgress?: (percent: number) => void): Promise<string> {
+  async run(pieceUrl: string, name: string, onProgress?: (percent: number) => void, onBegun?: () => void): Promise<string> {
     await this.slot();
     try {
       // Tabs started a little apart, as a person would.
@@ -561,7 +570,7 @@ export class Driver {
         const session = await this.current();
         const page = await session.remote.tab();
         try {
-          return await removeOnPage(page, session.remote, pieceUrl, name, this.site, onProgress);
+          return await removeOnPage(page, session.remote, pieceUrl, name, this.site, onProgress, onBegun);
         } catch (error) {
           // A browser whose way out is down: another (alone, so no other tab's job goes with it).
           if (!(error instanceof ProxyDown) || browser >= 3 || this.busy > 1) throw error;

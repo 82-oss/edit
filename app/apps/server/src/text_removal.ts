@@ -539,7 +539,7 @@ export interface Provider {
   /** The price of sending `seconds` of footage in `files` pieces, as the line says it. */
   price(seconds: number, files: number): string;
   /** Takes the text out of the piece at `input` into `out`. Throws VmakeError (its `scope` says whose the failure is). */
-  remove(input: string, out: string, seconds: number, signal?: AbortSignal, whole?: { key: string }): Promise<{ credits: number | null }>;
+  remove(input: string, out: string, seconds: number, signal?: AbortSignal, whole?: { key: string }, begun?: () => void): Promise<{ credits: number | null }>;
   /** Whether the account can be used, nothing spent. Throws VmakeError. */
   check(): Promise<void>;
 }
@@ -663,12 +663,12 @@ export function websiteProvider(home: string, browsers: web.Browsers, site = web
       const browser = dollars < 0.5 ? "under $0.50" : `≈ $${dollars.toFixed(2)}`;
       return `${count} ${count === 1 ? "file" : "files"} on your Vmake plan${count > left ? ` (${Math.max(0, left)} today, the rest tomorrow)` : ""}, ${browser} of cloud browser`;
     },
-    async remove(input, out, seconds, _signal, whole) {
+    async remove(input, out, seconds, _signal, whole, begun) {
       if (files.left() <= 0) throw new VmakeError("today's files on the Vmake plan are used", "account", "daily_limit");
       const staged = whole !== undefined ? { url: await cloud.presign(whole.key, "GET", 3 * 3600), drop: async () => {} } : await put(input, `${PREFIX}/send/${Date.now()}-${Math.round(Math.random() * 1e9)}.mp4`);
       try {
         await files.count();
-        const url = await driver.run(staged.url, `piece-${Math.round(seconds)}s.mp4`);
+        const url = await driver.run(staged.url, web.pieceName(seconds), undefined, begun);
         await web.fetchResult(url, out);
       } finally {
         await staged.drop();
@@ -1293,7 +1293,8 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
   }
   const sent = { seconds: 0, credits: 0, creditsSaid: false };
   const stamps = new Map<string, Promise<Box[]>>();
-  const work = async (job: (typeof jobs)[number]) => {
+  /** `begun`: Vmake took the piece (the account works): what waits behind it goes. */
+  const work = async (job: (typeof jobs)[number], begun: () => void = () => {}) => {
     if (run.stop.signal.aborted) return;
     const { file, range } = job;
     const [from, to] = range;
@@ -1319,7 +1320,7 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
         const fileKey = file.media.cloud?.original;
         const whole = fileKey && from <= 0.05 && to >= (file.media.duration ?? 0) - 0.05 && (file.media.cloud?.size ?? Infinity) <= 300_000_000 ? { key: fileKey } : undefined;
         piece = notePiece(id, { ...piece, tries: piece.tries + 1 });
-        const spent = await provider.remove(original, out, to - from, run.stop.signal, whole);
+        const spent = await provider.remove(original, out, to - from, run.stop.signal, whole, begun);
         sent.seconds += to - from;
         if (spent.credits !== null) {
           sent.credits += spent.credits;
@@ -1376,11 +1377,24 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
           for (let job = queue.shift(); job !== undefined; job = queue.shift()) await work(job);
         }),
       );
-    // Kept pieces first (free); then one piece sent alone, so an account that can't be used is told once, never twice at once.
+    // Kept pieces first (free); then one piece sent alone until Vmake has taken it (so an account that can't be used is
+    // told once, never three times at once), then the rest, PARALLEL at once (Nov 17, Sphe's M4: the first piece was
+    // waited on to its end, ~7 min, before any other went).
     await pool(jobs.filter((job) => job.cached !== null));
     const paid = jobs.filter((job) => job.cached === null);
-    if (paid.length > 0) await work(paid[0]!);
-    await pool(paid.slice(1));
+    if (paid.length > 0) {
+      const rest = paid.slice(1);
+      const drain = async () => {
+        for (let job = rest.shift(); job !== undefined; job = rest.shift()) await work(job);
+      };
+      let begun = () => {};
+      const taken = new Promise<void>((resolve) => (begun = resolve));
+      const alone = work(paid[0]!, begun);
+      await Promise.race([alone, taken]);
+      // The first piece's worker carries on with the rest once it's done.
+      const first = alone.then(drain);
+      await Promise.all([first, ...Array.from({ length: Math.min(PARALLEL - 1, rest.length) }, drain)]);
+    }
     const kept = readKept(app.store.home);
     kept.runs.push({
       at: started,

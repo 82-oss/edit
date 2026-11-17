@@ -854,6 +854,70 @@ test("two runs done while the person's turn runs: one turn of Edit's own once it
   }
 }, 120_000);
 
+test("the website's pieces go three at once once Vmake has taken the first (Nov 17, Sphe's M4: the first was waited on to its end, ~7 min, alone); a provider that never says it began keeps the first alone to its end", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-parallel");
+  // A label on screen the whole 800 s: three pieces of at most 300 s.
+  reading(Object.fromEntries(Array.from({ length: 400 }, (_, at) => [at * 2 + 1, [LABEL]])));
+  teach({ text: true });
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const file = join(dir, "long.mp4");
+  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x7f7f7f:size=160x90:rate=10:duration=800,format=yuv420p,drawbox=x=5:y=20:w=40:h=12:color=white:t=fill", "-c:v", "libx264", "-preset", "ultrafast", file]);
+  const timeline = (says: boolean) => {
+    const seen: number[] = [];
+    let active = 0;
+    let first = true;
+    const provider: tr.Provider = {
+      id: "vmake-web",
+      price: () => "",
+      async remove(input, out, _seconds, _signal, _whole, begun) {
+        active += 1;
+        seen.push(active);
+        const mine = first;
+        first = false;
+        // Uploaded and applied a moment in; processing takes a while longer.
+        await Bun.sleep(150);
+        if (says) begun?.();
+        await Bun.sleep(mine ? 600 : 300);
+        fs.copyFileSync(input, out);
+        active -= 1;
+        return { credits: null };
+      },
+      async check() {},
+    };
+    return { provider, seen };
+  };
+  try {
+    const live = app.store.create("p", { width: 1920, height: 1080, fps: 30 });
+    const project = structuredClone(live.project) as Project;
+    const media: Media = { id: "m", name: "long", path: file, kind: "video", duration: 800, width: 160, height: 90, fps: 10, has_audio: false };
+    project.media = [media];
+    project.clips = [{ id: "f", track: "v1", start: 0, duration: 800 * 30, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as VideoClip];
+    project.channel = "ch-taught";
+    await app.store.replace(project.id, null, project, "test");
+    await burned.warm(app.media, media);
+    expect((await tr.plan(app, store.get(project.id)!.project)).files[0]!.send.length).toBe(3);
+    // The website: the first alone until it's taken, then the other two beside it (three at once).
+    const site = timeline(true);
+    tr.useProvider(site.provider);
+    await tr.ensure(app, project.id);
+    await tr.settled(project.id);
+    expect(site.seen).toEqual([1, 2, 3]);
+    // Never said: the first to its end, then the rest.
+    tr.reset();
+    tr.useShelf(tr.shelfIn(join(dir, "shelf2"), () => false));
+    await app.store.update(project.id, "test", (p) => {
+      p.media = p.media.filter((one) => one.cleans == null);
+    });
+    const api = timeline(false);
+    tr.useProvider(api.provider);
+    await tr.ensure(app, project.id);
+    await tr.settled(project.id);
+    expect(api.seen).toEqual([1, 1, 2]);
+  } finally {
+    cleanup();
+  }
+}, 180_000);
+
 test("removal starts by itself as soon as edits rest (no button on the website's plan); a longer clip sends only its new seconds", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });

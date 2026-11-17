@@ -224,17 +224,6 @@ export interface RemovalRun {
   left_s: number | null;
 }
 
-/** One piece of a removal, as the waiting row's Details lists it (removal_schedule.ts `PieceRow`). */
-export interface RemovalPiece {
-  key: string;
-  what: "text" | "watermark";
-  media: string;
-  name: string;
-  from: number;
-  to: number;
-  state: string;
-  why?: string;
-}
 
 export const api = {
   projects: () => request<{ projects: ProjectSummary[] }>("GET", "/api/projects"),
@@ -265,8 +254,7 @@ export const api = {
   /** Taking what re-uploaders burned into the footage out of its picture (text_removal.ts): the editor's one line. */
   textRemoval: (id: string) => request<TextRemoval>("GET", `/api/projects/${id}/text-removal`),
   removeText: (id: string, retry = false) => request<TextRemoval>("POST", `/api/projects/${id}/text-removal`, { retry }),
-  /** The chat's waiting row: every piece and how it came out; Stop sends nothing more (cleaned pieces stay). */
-  removal: (id: string) => request<{ pieces: RemovalPiece[]; background: RemovalRun | null; stopped: boolean }>("GET", `/api/projects/${id}/removal`),
+  /** The chat's waiting row's Stop: nothing more is sent (cleaned pieces stay). */
   stopRemoval: (id: string) => request<TextRemoval>("POST", `/api/projects/${id}/removal/stop`),
   /** Vmake's sign-in in this Mac's cloud browser: the live view to open. */
   vmakeSignIn: () => request<{ open: string }>("POST", "/api/text-removal/sign-in"),
