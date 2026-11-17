@@ -20,6 +20,7 @@ import { CHIP, MARK } from "./Quotes";
 import { attachFiles, detachFile, restoreFiles, takeFiles, uploading, useFilesOf, type Accept, type ChatFile, type FileKind, type Uploader } from "../lib/chatFiles";
 import { useSettled } from "../lib/settled";
 import { usePinChat } from "../lib/chatScroll";
+import { takeReturned, useReturnedOf } from "../lib/sentNow";
 import { formatBytes } from "../lib/time";
 import { useEditor } from "../lib/store";
 import { ClaudeMark } from "./ClaudeMark";
@@ -234,6 +235,19 @@ export function ChatComposer({
   };
   const settleNow = useRef(settle);
   settleNow.current = settle;
+  // Edit on a message that didn't go, or on a queued one (sentNow.ts): its words, files and quotes back in the box.
+  const returned = useReturnedOf(chat);
+  useEffect(() => {
+    if (returned === undefined || returned.length === 0) return;
+    const given = takeReturned(chat);
+    putBack(
+      { chat, draft },
+      given.map((one) => one.words).filter((words) => words !== "").join("\n"),
+      given.flatMap((one) => one.files),
+      given.flatMap((one) => one.quotes),
+    );
+    input.current?.focus();
+  }, [returned, chat]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (draft === undefined) return;
     // The words alone: a chip's quote lives in the chat's quotes, not the draft.
@@ -359,8 +373,15 @@ export function ChatComposer({
   const hasFiles = (event: DragEvent) => files !== undefined && event.dataTransfer.types.includes("Files");
   const showStop = running && !canSend;
   const unqueue = (id: string | number) => useQueue.setState(({ chats }) => ({ chats: { ...chats, [chat]: (chats[chat] ?? []).filter((one) => one.id !== id) } }));
+  const editQueued = (id: string | number) => {
+    const one = queue.find((each) => each.id === id);
+    if (one === undefined) return;
+    unqueue(id);
+    putBack({ chat, draft }, one.words, one.files, one.quotes);
+    input.current?.focus();
+  };
   const islands = [
-    queue.length > 0 && <QueueIsland key="queue" rows={queue.map((one) => ({ id: one.id, text: one.text, files: one.files.length, quotes: one.quotes.length }))} onRemove={unqueue} />,
+    queue.length > 0 && <QueueIsland key="queue" rows={queue.map((one) => ({ id: one.id, text: one.text, files: one.files.length, quotes: one.quotes.length }))} onRemove={unqueue} onEdit={editQueued} />,
     tray,
   ].filter((one) => one !== false && one !== null && one !== undefined);
 
@@ -560,33 +581,78 @@ export interface QueueRow {
   text: string;
   files: number;
   quotes: number;
+  /** Still on its way to the server's queue, or it didn't get there (`failure` why). */
+  pending?: "sending" | "failed";
+  failure?: string;
 }
 
 /**
- * Messages waiting for the turn to end: each its words, × to take it back,
- * and, where the chat can (`onSteer`: Edit V2's, queued on the server),
- * Steer, which stops the turn and sends it now.
+ * Messages waiting for the turn to end: each its words (a click takes it back
+ * into the box to change: `onEdit`), × to take it back, and, where the chat
+ * can (`onSteer`: Edit V2's, queued on the server), Steer, which stops the
+ * turn and sends it now. One that didn't reach the queue says so, with Retry.
  */
-export function QueueIsland({ rows, onRemove, onSteer }: { rows: QueueRow[]; onRemove: (id: QueueRow["id"]) => void; onSteer?: (id: QueueRow["id"]) => void }) {
+export function QueueIsland({
+  rows,
+  onRemove,
+  onSteer,
+  onEdit,
+  onRetry,
+}: {
+  rows: QueueRow[];
+  onRemove: (id: QueueRow["id"]) => void;
+  onSteer?: (id: QueueRow["id"]) => void;
+  onEdit?: (id: QueueRow["id"]) => void;
+  onRetry?: (id: QueueRow["id"]) => void;
+}) {
   return (
     <div role="list" aria-label="Queued messages" className="px-3 pt-2 pb-1.5">
       <div className="pb-1 text-[10.5px] font-medium tracking-wide text-faint uppercase">Queued · {rows.length}</div>
       {rows.map((one) => (
         <div key={one.id} role="listitem" className="group flex min-h-7 items-center gap-2">
-          <span className="line-clamp-2 min-w-0 flex-1 text-[12.5px] leading-[18px] text-secondary" title={one.text}>
-            {parseQuoted(one.text).words}
-          </span>
-          {one.quotes > 0 && <span className="shrink-0 text-[11px] text-faint">{one.quotes === 1 ? "1 quote" : `${one.quotes} quotes`}</span>}
-          {one.files > 0 && <span className="shrink-0 text-[11px] text-faint">{one.files === 1 ? "1 file" : `${one.files} files`}</span>}
-          {onSteer !== undefined && (
+          {onEdit !== undefined ? (
             <button
               type="button"
-              title="Stop the agent and send this now"
-              onClick={() => onSteer(one.id)}
-              className="flex h-6 shrink-0 items-center rounded-md px-1.5 text-[11.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg"
+              title="Edit"
+              onClick={() => onEdit(one.id)}
+              className="line-clamp-2 min-w-0 flex-1 cursor-text text-left text-[12.5px] leading-[18px] text-secondary transition-colors hover:text-fg"
             >
-              Steer
+              {parseQuoted(one.text).words}
             </button>
+          ) : (
+            <span className="line-clamp-2 min-w-0 flex-1 text-[12.5px] leading-[18px] text-secondary" title={one.text}>
+              {parseQuoted(one.text).words}
+            </span>
+          )}
+          {one.quotes > 0 && <span className="shrink-0 text-[11px] text-faint">{one.quotes === 1 ? "1 quote" : `${one.quotes} quotes`}</span>}
+          {one.files > 0 && <span className="shrink-0 text-[11px] text-faint">{one.files === 1 ? "1 file" : `${one.files} files`}</span>}
+          {one.pending === "failed" ? (
+            <>
+              <span className="shrink-0 text-[11px] text-danger" title={one.failure}>
+                Didn't send
+              </span>
+              {onRetry !== undefined && (
+                <button
+                  type="button"
+                  onClick={() => onRetry(one.id)}
+                  className="flex h-6 shrink-0 items-center rounded-md px-1.5 text-[11.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg"
+                >
+                  Retry
+                </button>
+              )}
+            </>
+          ) : (
+            onSteer !== undefined && (
+              <button
+                type="button"
+                title="Stop the agent and send this now"
+                disabled={one.pending === "sending"}
+                onClick={() => onSteer(one.id)}
+                className="flex h-6 shrink-0 items-center rounded-md px-1.5 text-[11.5px] font-medium text-muted transition-colors hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
+              >
+                Steer
+              </button>
+            )
           )}
           <button
             type="button"

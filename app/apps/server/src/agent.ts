@@ -1002,6 +1002,10 @@ export class Agents implements seams.AgentPanel {
     if (live === null) throw new Error("no such project");
     // Its cloud previews come down whole while the agent reads the project, so its frames read files here (local_previews.ts).
     localPreviews.fetchAll(this.store.cacheDir(), live.project);
+    // Queued at once while a turn runs (Sphe, Nov 17: a message sent while the agent worked took seconds to show in
+    // the queue): it never waits for the slot below, which a turn holds through its start (the cloud's comments and
+    // skills, starting Claude Code), as nothing in that start changes where it goes.
+    if (this.queueing(project, generation, replay, queue, live.project.hq === true)) return this.enqueue(project, queue!);
     let sending = this.sending.get(project);
     if (sending === undefined) {
       sending = new Lock();
@@ -1014,13 +1018,7 @@ export class Agents implements seams.AgentPanel {
       const chat = this.withChat(project);
       if (generation !== null && (chat.generation !== generation || chat.halted)) return null;
       if (chat.running) {
-        if (queue !== null && generation === null && !replay && live.project.hq === true) {
-          if (queue.front) chat.queue.unshift(queue.item);
-          else chat.queue.push(queue.item);
-          this.save(project);
-          this.emitQueue(project);
-          return queue.item;
-        }
+        if (this.queueing(project, generation, replay, queue, live.project.hq === true)) return this.enqueue(project, queue!);
         throw new Error("the agent is still working; stop it or wait");
       }
       if (generation === null) {
@@ -1064,6 +1062,21 @@ export class Agents implements seams.AgentPanel {
     } finally {
       release();
     }
+  }
+
+  /** Whether this send is the person's message to an Edit V2 chat whose turn is running: it waits in the queue. */
+  private queueing(project: string, generation: number | null, replay: boolean, queue: { front: boolean; item: Queued } | null, hq: boolean): boolean {
+    return queue !== null && generation === null && !replay && hq && this.withChat(project).running;
+  }
+
+  /** Into the chat's queue (first for one taken out of it), saved and shown everywhere. */
+  private enqueue(project: string, queue: { front: boolean; item: Queued }): Queued {
+    const chat = this.withChat(project);
+    if (queue.front) chat.queue.unshift(queue.item);
+    else chat.queue.push(queue.item);
+    this.save(project);
+    this.emitQueue(project);
+    return queue.item;
   }
 
   private async prepareTurn(

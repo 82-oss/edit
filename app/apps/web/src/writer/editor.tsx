@@ -165,6 +165,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const [chat, setChat] = useState<ChatTurn[]>([]);
   // What was just asked, shown until the conversation on disk has it.
   const [sent, setSent] = useState<string | null>(null);
+  // A message sent whose answer hasn't come: it shows before the job does.
+  const [asking, setAsking] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [research, setResearch] = useState<Research | null>(null);
   const [note, setNote] = useChatDraft(script.id);
@@ -473,14 +475,19 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const build = async (request: string) => {
     setError(null);
     setStage("Starting");
+    // Shown the moment it's sent, not once the server answers.
+    setSent(request.trim() ? `Build the script. ${request.trim()}` : "Build the script.");
+    setAsking(true);
     try {
       const job = await startBuild(script.id, request);
-      setSent(request.trim() ? `Build the script. ${request.trim()}` : "Build the script.");
       follow(job.startedAt);
       return true;
     } catch (cause) {
+      setSent(null);
       setError(message(cause));
       return false;
+    } finally {
+      setAsking(false);
     }
   };
 
@@ -493,18 +500,22 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     const clips = quotes.flatMap((one) => (one.clip !== undefined ? [one.clip] : []));
     setError(null);
     setStage("Editing the script");
+    setSent(request);
+    setAsking(true);
     try {
       const job = await startRevision(script.id, request, {
         selected: clips.length > 0 ? clips : selected,
         picked: picked ? [picked.startMs, picked.endMs] : null,
         playheadMs: Math.round(playhead.ms),
       });
-      setSent(request);
       follow(job.startedAt);
       return true;
     } catch (cause) {
+      setSent(null);
       setError(message(cause));
       return false;
+    } finally {
+      setAsking(false);
     }
   };
 
@@ -589,7 +600,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const ready = script.words.length > 0;
   // The chat as the editor's chat shows it: same turns, same composer,
   // only the script's tools and send behind them.
-  const chatEntries = scriptEntries(chat, working ? liveTurn : null, working ? sent : null);
+  const chatEntries = scriptEntries(chat, working ? liveTurn : null, working || asking ? sent : null);
   const chatTurns = buildTurns(chatEntries, working);
   const chatKnown = savedEntryIds(chat);
   const resetTurn = chat.find((turn) => turn.reset === "pending");

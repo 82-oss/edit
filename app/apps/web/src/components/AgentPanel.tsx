@@ -9,6 +9,7 @@ import remarkGfm from "remark-gfm";
 import {
   cancelQueued,
   closeSub,
+  editQueued,
   openAgent,
   openSub,
   sendToAgent,
@@ -22,7 +23,7 @@ import {
 } from "../lib/agent";
 import { buildTurns, callTitle, formatWorked, groupSummary, isWorking, keepUnchanged, shortSpan, thinkingWord, type Turn, type TurnPart } from "../lib/agentTurns";
 import { argsOf, groupKind, shortTokens, stepKind, type StepKind } from "../lib/steps";
-import { useSentNow } from "../lib/sentNow";
+import { cancelSent, editSent, retrySent, useSentNow } from "../lib/sentNow";
 import { useNow } from "../lib/now";
 import { api, mediaUrl } from "../lib/api";
 import { copyImage, pngOf, saveFile } from "../lib/files";
@@ -37,7 +38,7 @@ import { addQuote, parseQuoted } from "../lib/chatQuotes";
 import { QuoteSelection } from "./QuoteSelection";
 import { openMenu, type MenuItem } from "./ContextMenu";
 import { ChatComposer, QueueIsland, SentFiles } from "./ChatComposer";
-import { PinChat, useStickToBottom } from "../lib/chatScroll";
+import { PinChat, usePinChat, useStickToBottom } from "../lib/chatScroll";
 import { UserWords } from "./Quotes";
 import { NoteQueue } from "./NoteQueue";
 import { ProblemView } from "./ProblemView";
@@ -178,9 +179,10 @@ function MainAgentPanel() {
   const running = useAgent((state) => state.running);
   const loaded = useAgent((state) => state.loaded);
   const failed = useAgent((state) => state.failed);
+  const waiting = useAgent((state) => state.queue);
   const reload = () => projectId !== undefined && void openAgent(projectId);
-  // The message just sent shows at once (sendToAgent holds it).
-  const { entries } = useSentNow(projectId ?? "", chat);
+  // The message just sent shows at once (sendToAgent holds it), until the chat (or its queue) has it by its id.
+  const { entries } = useSentNow(projectId ?? "", chat, waiting);
   // Entries already there when the chat loaded don’t animate in.
   const { turns, known } = useChatTurns(loaded ? projectId : "loading", entries, running);
   // Not ready, with the conversation already on screen: the setup card used
@@ -305,6 +307,51 @@ export function ChatTurns({ turns, known, thinking }: { turns: Turn[]; known: Se
   );
 }
 
+/** How long a message is on its way before it says so (most land well within it). */
+const SLOW_SEND_MS = 1000;
+
+/**
+ * Under a message the chat doesn't have yet: nothing at first, "Sending…" once
+ * it's taken a moment, and, when it didn't go, why, with Retry and Edit (its
+ * words back in the box).
+ */
+function SendState({ entry }: { entry: AgentEntry }) {
+  const [slow, setSlow] = useState(false);
+  const pinChat = usePinChat();
+  const id = entry.send_id!;
+  useEffect(() => {
+    if (entry.pending !== "sending") return;
+    setSlow(false);
+    const timer = setTimeout(() => setSlow(true), SLOW_SEND_MS);
+    return () => clearTimeout(timer);
+  }, [entry.pending]);
+  if (entry.pending === "sending") return slow ? <div className="-mt-1 mr-1 self-end text-[11px] text-faint">Sending…</div> : null;
+  const link = "font-medium text-muted transition-colors hover:text-fg";
+  // The server's refusal, said plainly ("Marc is editing this project"), when it says something a person can use.
+  const why = entry.failure === undefined ? "" : explain(entry.failure).title.replace(/\.$/u, "");
+  const said = entry.offline ? "Not sent yet. It goes when Edit's back." : why === "" || why === "Something went wrong" ? "Didn't send." : `Didn't send: ${why}.`;
+  return (
+    <div role="status" className="-mt-1 mr-1 flex max-w-[calc(100%-2rem)] items-center gap-2 self-end text-[11px]">
+      <span className="min-w-0 truncate text-danger" title={entry.failure}>
+        {said}
+      </span>
+      <button
+        type="button"
+        className={link}
+        onClick={() => {
+          pinChat?.();
+          retrySent(id);
+        }}
+      >
+        Retry
+      </button>
+      <button type="button" className={link} onClick={() => editSent(id)}>
+        Edit
+      </button>
+    </div>
+  );
+}
+
 /** One exchange: your message, the work (folds away when done), the answer. */
 const TurnView = memo(function TurnView({ turn, known, thinking: said }: { turn: Turn; known: Set<string>; thinking?: string }) {
   const [open, setOpen] = useState(false);
@@ -328,6 +375,7 @@ const TurnView = memo(function TurnView({ turn, known, thinking: said }: { turn:
           <UserWords text={turn.user.text} />
         </motion.div>
       )}
+      {turn.user?.pending !== undefined && turn.user.send_id !== undefined && <SendState entry={turn.user} />}
       {turn.live ? (
         // Live: everything in the order it happens. A tool group stays live while one of its calls is still running, even after the model has said something.
         turn.parts.map((part) =>
@@ -1081,11 +1129,28 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
   // Edit V2: its own model menu, every model at any time, and messages sent while it works queue on the server.
   const hq = useEditor((state) => state.project?.hq === true);
   const waiting = useAgent((state) => state.queue);
+  const entries = useAgent((state) => state.entries);
   const toastError = useEditor((state) => state.toastError);
   const notes = useNotes((state) => queued(state.notes).length);
   const resetAsked = useEditor((state) => state.resetAsked);
   const upload = useMemo(() => (projectId === undefined ? undefined : { upload: projectUploader(projectId) }), [projectId]);
-  const rows = useMemo(() => waiting.map((one) => ({ id: one.id, text: one.text, files: one.attachments?.length ?? 0, quotes: parseQuoted(one.text).quotes.length })), [waiting]);
+  // The server's queue, then what was queued here and hasn't reached it yet (sentNow.ts), shown the moment it's sent.
+  const sent = useSentNow(projectId ?? "", entries, waiting).queued;
+  const rows = useMemo(
+    () => [
+      ...waiting.map((one) => ({ id: one.id, text: one.text, files: one.attachments?.length ?? 0, quotes: parseQuoted(one.text).quotes.length })),
+      ...sent.map((one) => ({
+        id: `sent-${one.id}`,
+        text: one.text,
+        files: one.files.length,
+        quotes: parseQuoted(one.text).quotes.length,
+        ...(one.state === "sent" ? {} : { pending: one.state }),
+        ...(one.failure === undefined ? {} : { failure: one.failure }),
+      })),
+    ],
+    [waiting, sent],
+  );
+  const local = (id: string | number) => (String(id).startsWith("sent-") ? String(id).slice(5) : null);
   // On the composer's top edge: the agent asking to reset, the messages queued on the server, then the team's queued notes.
   const untaught = useUntaughtChannel();
   const tray = [
@@ -1094,8 +1159,21 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
       <QueueIsland
         key="queue"
         rows={rows}
-        onRemove={(id) => void cancelQueued(String(id)).catch((error: unknown) => toastError(error, "take the message out"))}
-        onSteer={(id) => void steerQueued(String(id)).catch((error: unknown) => toastError(error, "steer the agent"))}
+        onRemove={(id) => {
+          const mine = local(id);
+          if (mine !== null) cancelSent(mine);
+          else void cancelQueued(String(id)).catch((error: unknown) => toastError(error, "take the message out"));
+        }}
+        onSteer={(id) => local(id) === null && void steerQueued(String(id)).catch((error: unknown) => toastError(error, "steer the agent"))}
+        onEdit={(id) => {
+          const mine = local(id);
+          if (mine !== null) editSent(mine);
+          else void editQueued(String(id)).catch((error: unknown) => toastError(error, "take the message out"));
+        }}
+        onRetry={(id) => {
+          const mine = local(id);
+          if (mine !== null) retrySent(mine);
+        }}
       />
     ),
     // Edit V2's are pinned on the picture and the progress bar instead.
@@ -1117,7 +1195,7 @@ function Composer({ disabled, projectId }: { disabled: boolean; projectId: strin
       // A channel with no edit style yet says so here, not in a notice of its own (Sphe, Nov 15: "this is horrible"); it isn't edited until it has one.
       placeholder={untaught !== null ? `Tell the agent how ${untaught}’s videos should look…` : "Start the editing workflow, or ask for a change…"}
       // Where the playhead is goes with it: the agent starts there (the server reads it what's under it).
-      onSend={(message, files) => sendToAgent(message, playhead.frame, files, hq)}
+      onSend={(message, files, quotes) => sendToAgent(message, playhead.frame, files, hq, quotes)}
       onStop={() => void stopAgent().catch((error: unknown) => useEditor.getState().toastError(error, "stop the agent"))}
     />
   );

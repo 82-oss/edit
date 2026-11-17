@@ -1,23 +1,35 @@
 import { describe, expect, it } from "vitest";
 
 import type { AgentEntry } from "./agent";
-import { sentLanded } from "./agentTurns";
+import { landedIds, type Pending } from "./sentNow";
 
-const you = (n: number, at: number): AgentEntry => ({ id: `turn-${n}`, kind: "user", text: `message ${n}`, at }) as AgentEntry;
-const claude = (n: number, at: number): AgentEntry => ({ id: `turn-${n}`, kind: "assistant", text: "done", at }) as AgentEntry;
+const pending = (id: string, text: string, newest: number, state: Pending["state"] = "sending", resends = false): Pending =>
+  ({ id, chat: "idea:1", composer: "idea:1", text, at: 0, files: [], quotes: [], queued: false, state, offline: false, cancelled: false, newest, resends, deliver: async () => {} }) as Pending;
+const user = (id: string, text: string, at: number, send_id?: string): AgentEntry => ({ id, kind: "user", text, at, ...(send_id === undefined ? {} : { send_id }) });
 
-describe("a message held on screen as it's sent", () => {
-  it("goes once it's in the chat", () => {
-    const before = [you(0, 1), claude(1, 2)];
-    expect(sentLanded(before, { asked: 1, newest: 1 })).toBe(false);
-    expect(sentLanded([...before, you(2, 3)], { asked: 1, newest: 1 })).toBe(true);
+describe("which messages sent here a chat has", () => {
+  it("knows the editor's by its id alone, in the conversation or the queue", () => {
+    const sent = [pending("a", "same words", 5, "sent", true), pending("b", "same words", 5, "sent", true)];
+    expect(landedIds(sent, [user("u1", "same words", 9)])).toEqual(new Set());
+    expect(landedIds(sent, [user("u1", "same words", 9, "b")], [{ send_id: "a" }])).toEqual(new Set(["a", "b"]));
   });
 
-  it("goes once it's in a chat kept to its last turns, which dropped its oldest for it", () => {
-    // Nov 5, a thumbnail's 80 turns: the new message in, the oldest out, as many of the person's as before.
-    const full = [you(0, 1), claude(1, 2), you(2, 3), claude(3, 4)];
-    const after = [claude(1, 2), you(2, 3), claude(3, 4), you(4, 5)];
-    expect(sentLanded(after, { asked: 2, newest: 3 })).toBe(true);
-    expect(sentLanded(full, { asked: 2, newest: 3 })).toBe(false);
+  it("knows an idea's or a thumbnail's (no ids) by its words in a newer message, each message claimed once", () => {
+    const sent = [pending("a", "again", 5), pending("b", "again", 5)];
+    // An older message with the same words isn't it; one newer is the first's, a second the second's.
+    expect(landedIds(sent, [user("t0", "again", 5)])).toEqual(new Set());
+    expect(landedIds(sent, [user("t0", "again", 5), user("t1", "again", 6)])).toEqual(new Set(["a"]));
+    expect(landedIds(sent, [user("t1", "again", 6), user("t2", "again", 7)])).toEqual(new Set(["a", "b"]));
+  });
+
+  it("knows one in a chat kept to its last turns, which dropped its oldest for it (Nov 5, a thumbnail's 80)", () => {
+    const after = [user("turn-2", "message 2", 3), user("turn-4", "message 4", 5)];
+    expect(landedIds([pending("a", "message 4", 3)], after)).toEqual(new Set(["a"]));
+    expect(landedIds([pending("a", "message 4", 3)], after.slice(0, 1))).toEqual(new Set());
+  });
+
+  it("takes a newer message with other words as it only once the server has answered (it may say it its own way)", () => {
+    expect(landedIds([pending("a", "make it pop", 5)], [user("t1", "Make it pop.", 6)])).toEqual(new Set());
+    expect(landedIds([pending("a", "make it pop", 5, "sent")], [user("t1", "Make it pop.", 6)])).toEqual(new Set(["a"]));
   });
 });

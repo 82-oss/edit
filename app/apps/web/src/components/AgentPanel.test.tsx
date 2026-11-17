@@ -192,3 +192,120 @@ describe("a picture in a reply", () => {
     expect(labels()).toEqual(["Copy image", "Save image"]);
   });
 });
+
+describe("a message as it's sent (Sphe, Nov 17: optimistic, never vanishing or doubling)", () => {
+  let root: Root;
+  /** The POSTs of messages, each answered when the test says. */
+  let posts: { body: { text: string; send_id: string }; answer: (value: Response) => void }[];
+
+  beforeEach(() => {
+    vi.resetModules();
+    posts = [];
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST" && url === "/api/projects/p1/agent") return new Promise<Response>((answer) => posts.push({ body: JSON.parse(String(init.body)), answer }));
+      if (url === "/api/agent") return response({ ready: true, provider: "claude" });
+      if (url === "/api/agent/models") return response({ models: [] });
+      if (url.endsWith("/agent")) return new Promise(() => {}); // the chat as the page already has it
+      return response({});
+    });
+  });
+  afterEach(() => {
+    act(() => root?.unmount());
+    vi.unstubAllGlobals();
+  });
+
+  const done = [
+    { id: "u0", kind: "user", text: "Make the board", at: 1, updated: 1 },
+    { id: "a0", kind: "assistant", text: "Done.", at: 2, updated: 2 },
+  ];
+
+  async function open(hq = false, running = false) {
+    const { useAgent, applyAgentEvent, flushAgentEvents, sendToAgent } = await import("../lib/agent");
+    const { useEditor } = await import("../lib/store");
+    const { AgentPanel } = await import("./AgentPanel");
+    useEditor.setState({ project: { id: "p1", hq, clips: [], media: [], tracks: [], settings: { fps: 30 } } as never });
+    useAgent.setState({ project: "p1", loaded: true, running, entries: done as never, status: { ready: true }, queue: [] });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() => root.render(<AgentPanel />));
+    const event = (value: Record<string, unknown>) =>
+      act(() => {
+        applyAgentEvent({ project: "p1", ...value } as never);
+        flushAgentEvents();
+      });
+    const bubbles = (text: string) => [...container.querySelectorAll('[data-quote="my earlier message"]')].filter((node) => node.textContent === text).length;
+    const queued = () => [...container.querySelectorAll('[aria-label="Queued messages"] [role="listitem"]')].map((row) => row.textContent);
+    const send = (text: string) => act(() => void sendToAgent(text, 0, [], hq));
+    return { container, event, bubbles, queued, send, useAgent };
+  }
+
+  const settle = () => act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+
+  it("shows at once, says Sending… only when it takes a while, and is replaced in place by the server's copy, never twice", async () => {
+    const { container, event, bubbles, send } = await open();
+    send("make it brighter");
+    expect(bubbles("make it brighter")).toBe(1);
+    expect(container.textContent).not.toContain("Sending…");
+    await act(async () => await new Promise((resolve) => setTimeout(resolve, 1100)));
+    expect(container.textContent).toContain("Sending…");
+    const [post] = posts;
+    // The server's copy by its event, then the answer: the one message, in its place.
+    event({ event: "entry", entry: { id: "user-1", kind: "user", text: "make it brighter", at: 3, updated: 3, send_id: post!.body.send_id } });
+    expect(bubbles("make it brighter")).toBe(1);
+    await act(async () => post!.answer(response({ ok: true })));
+    await settle();
+    expect(bubbles("make it brighter")).toBe(1);
+    expect(container.textContent).not.toContain("Sending…");
+    expect(posts).toHaveLength(1);
+  });
+
+  it("queued while an Edit V2 turn runs, shows in the queue at once and stays one row as the server's queue comes", async () => {
+    const { event, bubbles, queued, send } = await open(true, true);
+    send("make it red");
+    expect(queued()).toEqual([expect.stringContaining("make it red")]);
+    expect(bubbles("make it red")).toBe(0);
+    const [post] = posts;
+    const item = { id: "queued-1", text: "make it red", at: 3, playhead: 0, send_id: post!.body.send_id };
+    // The queue's event before the answer, then the answer: one row throughout.
+    event({ event: "queue", queue: [item] });
+    expect(queued()).toHaveLength(1);
+    await act(async () => post!.answer(response({ ok: true, queued: item })));
+    await settle();
+    expect(queued()).toHaveLength(1);
+    expect(bubbles("make it red")).toBe(0);
+  });
+
+  it("that's refused stays where it was saying why, and Retry sends it again with the same id", async () => {
+    const { container, event, bubbles, send } = await open();
+    send("make it brighter");
+    await act(async () => posts[0]!.answer(new Response(JSON.stringify({ error: "Marc is editing this project" }), { status: 423 })));
+    await settle();
+    expect(bubbles("make it brighter")).toBe(1);
+    expect(container.textContent).toContain("Didn't send");
+    expect(container.textContent).toContain("Marc is editing this project");
+    const retry = [...container.querySelectorAll("button")].find((button) => button.textContent === "Retry")!;
+    act(() => retry.click());
+    expect(container.textContent).not.toContain("Didn't send");
+    expect(posts).toHaveLength(2);
+    expect(posts[1]!.body.send_id).toBe(posts[0]!.body.send_id);
+    event({ event: "entry", entry: { id: "user-1", kind: "user", text: "make it brighter", at: 3, updated: 3, send_id: posts[1]!.body.send_id } });
+    await act(async () => posts[1]!.answer(response({ ok: true })));
+    await settle();
+    expect(bubbles("make it brighter")).toBe(1);
+    expect(container.textContent).not.toContain("Didn't send");
+  });
+
+  it("that's refused goes back in the box on Edit, out of the chat", async () => {
+    const { container, bubbles, send } = await open();
+    send("make it brighter");
+    await act(async () => posts[0]!.answer(new Response(JSON.stringify({ error: "the agent is still working; stop it or wait" }), { status: 409 })));
+    await settle();
+    const edit = [...container.querySelectorAll("button")].find((button) => button.textContent === "Edit")!;
+    act(() => edit.click());
+    await settle();
+    expect(bubbles("make it brighter")).toBe(0);
+    expect(container.querySelector('[role="textbox"]')!.textContent).toBe("make it brighter");
+  });
+});

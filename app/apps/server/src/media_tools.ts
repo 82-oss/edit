@@ -572,7 +572,8 @@ async function takeMessage(context: RouteContext<App>, said: string, given: Reco
   const playhead = Number.isFinite(frame) ? frame : null;
   // With the team's queued notes, but not while the turn still runs: send refuses, or (Edit V2) the message queues and takes them as it goes.
   const running = (seams.agentPanel(app).chat(id) as { running?: boolean }).running === true;
-  const read = await messageContext(app, id, playhead, !running);
+  // One that will queue (Edit V2, a turn running) reads its context when it goes (agent.ts sendQueuedNow), not now.
+  const read = running && app.store.get(id)?.project.hq === true ? "" : await messageContext(app, id, playhead, !running);
   const panel = seams.agentPanel(app);
   try {
     if (panel.message !== undefined) {

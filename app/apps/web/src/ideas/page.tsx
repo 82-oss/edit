@@ -915,20 +915,17 @@ function Chat({ id, idea, onAsked }: { id: string; idea: Idea; onAsked: () => vo
           draft={`ideas.chat-draft.${id}`}
           chat={`idea:${id}`}
           files={files}
-          onSend={(message, attached) => {
-            sent.hold(message, attached.map((one) => ({ name: one.name, kind: one.kind, url: one.preview })));
-            // Not asked: the words go back in the composer.
-            return ideasApi.chat(id, message, attached.map((one) => one.landed as IdeaImage)).then(
-              () => {
-                onAsked();
-                return true;
-              },
-              (error: unknown) => {
-                sent.drop();
-                toastError(error, "ask Claude");
-                return false;
-              },
-            );
+          onSend={(message, attached, quotes) => {
+            // Shown now and kept: one that doesn't go says so on itself, with Retry and Edit (sentNow.ts).
+            sent.send({
+              text: message,
+              composer: `idea:${id}`,
+              attachments: attached.map((one) => ({ name: one.name, kind: one.kind, url: one.preview })),
+              files: attached,
+              quotes,
+              deliver: () => ideasApi.chat(id, message, attached.map((one) => one.landed as IdeaImage)).then(() => onAsked()),
+            });
+            return true;
           }}
           onStop={() => void ideasApi.stop(id).then(onAsked, (error: unknown) => toastError(error, "stop it"))}
         />

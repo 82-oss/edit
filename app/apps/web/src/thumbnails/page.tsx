@@ -909,21 +909,18 @@ function Chat({ id, thumb, upload, viewing, onSending, onAsked }: { id: string; 
           draft={`thumbnails.chat-draft.${id}`}
           chat={`thumb:${id}`}
           files={{ upload, accept: picturesOnly }}
-          onSend={(message, files) => {
-            sent.hold(message, files.map((one) => ({ name: one.name, kind: one.kind, url: one.preview })));
+          onSend={(message, files, quotes) => {
             onSending();
-            // Not asked: the words go back in the composer.
-            return thumbnailsApi.chat(id, message, files.map((one) => one.landed as string), viewing).then(
-              () => {
-                onAsked();
-                return true;
-              },
-              (error: unknown) => {
-                sent.drop();
-                toastError(error, "ask Claude");
-                return false;
-              },
-            );
+            // Shown now and kept: one that doesn't go says so on itself, with Retry and Edit (sentNow.ts).
+            sent.send({
+              text: message,
+              composer: `thumb:${id}`,
+              attachments: files.map((one) => ({ name: one.name, kind: one.kind, url: one.preview })),
+              files,
+              quotes,
+              deliver: () => thumbnailsApi.chat(id, message, files.map((one) => one.landed as string), viewing).then(() => onAsked()),
+            });
+            return true;
           }}
           onStop={() => void thumbnailsApi.stop(id).then(onAsked, (error: unknown) => toastError(error, "stop it"))}
         />

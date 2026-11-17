@@ -5,7 +5,8 @@ import { create } from "zustand";
 import { fetchRetrying } from "./api";
 import type { ChatFile, FileKind } from "./chatFiles";
 import { perFrame } from "./frame";
-import { dropSent, holdSent, sending } from "./sentNow";
+import { addQuote, parseQuoted, type ChatQuote } from "./chatQuotes";
+import { forgetSent, pendingOf, returnToComposer, sendNow, sending, settleSent, Unanswered } from "./sentNow";
 import type { ProjectFile } from "./upload";
 import { readSetting, writeSetting } from "./storage";
 
@@ -26,6 +27,10 @@ export interface AgentEntry {
   attachments?: { name: string; kind: FileKind; media?: string; file?: string; url?: string | null }[];
   /** A person's message: the id this page sent it with (`sendToAgent`). */
   send_id?: string;
+  /** A message on screen before the chat has it (sentNow.ts): on its way, or it didn't go (`failure` why; `offline`, no answer). */
+  pending?: "sending" | "failed";
+  failure?: string;
+  offline?: boolean;
 }
 
 /** A message sent while an Edit V2 turn runs, waiting on the server for it to end (the server's agent.ts `Queued`): Steer or Cancel. */
@@ -273,38 +278,65 @@ export async function openAgent(project: string) {
     running: chat.running || sending(project, chat.entries),
     chatModel: chat.model_name ?? null,
     revising: chat.revising === true,
-    queue: chat.queue ?? [],
+    queue: staying(chat.queue ?? []),
     failed: null,
   });
+  settleSent(project, chat.entries, chat.queue ?? []);
   if (status.ready) loadModelName().catch(() => {});
 }
 
 /**
- * The ids of messages whose send got no answer, by project and words: the
- * words go back in the composer, and sent again they go with the same id, so
- * the server takes them once even if the first send did reach it.
- */
-const unanswered = new Map<string, string>();
-
-/**
- * Whether the message sent with `sendId` is in the project's chat after all
+ * Where the message sent with `sendId` is in the project's chat after all
  * (its answer lost to the connection, not the server refusing it): the chat
- * read again, once the server answers (a restart waited out), and shown.
- * Null when the server still doesn't answer.
+ * read again and shown. "missing" when it isn't there, null when the server
+ * doesn't answer that either.
  */
-async function landed(project: string, sendId: string): Promise<boolean | null> {
-  const chat = await fetchRetrying(`/api/projects/${project}/agent`)
+async function landed(project: string, sendId: string): Promise<"queued" | "chat" | "missing" | null> {
+  const chat = await fetchRetrying(`/api/projects/${project}/agent`, undefined, 5_000)
     .then((response) => json<{ entries: AgentEntry[]; queue?: QueuedMessage[] }>(response))
     .catch(() => null);
   if (chat === null) return null;
   const queued = (chat.queue ?? []).some((one) => one.send_id === sendId);
-  if (!queued && !chat.entries.some((one) => one.send_id === sendId)) return false;
-  if (useAgent.getState().project === project) {
-    // Queued: shown in the queue, not the conversation.
-    if (queued) dropSent(project);
-    await openAgent(project);
+  if (!queued && !chat.entries.some((one) => one.send_id === sendId)) return "missing";
+  if (useAgent.getState().project === project) await openAgent(project);
+  return queued ? "queued" : "chat";
+}
+
+/** How long after the server takes a message its copy has come by its event (it's sent before the answer). */
+const LANDS_WITHIN_MS = 3_000;
+/** How long a send that gets no answer (Edit restarting, the connection gone) keeps trying before it says so. */
+const SEND_PATIENCE_MS = 15_000;
+/** Answers that mean Edit's server is restarting, not refusing. */
+const RESTARTING = new Set([502, 503, 504]);
+
+/**
+ * The message `sendId` to the server, sent again (with the same id: the
+ * server takes it once) while it gets no answer, up to SEND_PATIENCE_MS.
+ * Answers whether it was queued; a refusal is thrown with the server's words,
+ * no answer as `Unanswered`.
+ */
+async function postMessage(project: string, sendId: string, body: Record<string, string>): Promise<{ queued: boolean; item?: QueuedMessage }> {
+  const started = Date.now();
+  for (let attempt = 0; ; attempt++) {
+    let response: Response | null = null;
+    try {
+      response = await fetchRetrying(`/api/projects/${project}/agent`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...body, send_id: sendId }),
+      });
+    } catch {
+      // No answer: the server may have taken it before the connection went. The chat says.
+      const there = await landed(project, sendId);
+      if (there === "queued" || there === "chat") return { queued: there === "queued" };
+    }
+    if (response !== null && !RESTARTING.has(response.status)) {
+      const answer = await json<{ queued?: QueuedMessage }>(response);
+      return answer.queued === undefined ? { queued: false } : { queued: true, item: answer.queued };
+    }
+    if (Date.now() - started > SEND_PATIENCE_MS) throw new Unanswered("Edit's server isn't answering. It goes when it's back.");
+    await new Promise((resolve) => setTimeout(resolve, Math.min(2000, 250 * 2 ** attempt)));
   }
-  return true;
 }
 
 /**
@@ -312,10 +344,12 @@ async function landed(project: string, sendId: string): Promise<boolean | null> 
  * starts there. `files`: what's attached, already in the project (the chat's
  * uploader); pictures reach the model as pictures. `queues`: an Edit V2 chat,
  * where a message sent while the turn runs waits in the server's queue (shown
- * above the composer, not in the conversation) until it ends. Answers whether
- * it went: false puts the words and files back in the composer (ChatComposer).
+ * above the composer, not in the conversation) until it ends. The message
+ * shows at once, in the conversation or the queue (sentNow.ts), and stays: the
+ * server's copy takes its place by its id, and a send that fails says so on
+ * it, with Retry and Edit. Answers whether it was shown (false: no chat open).
  */
-export async function sendToAgent(text: string, playhead?: number, files: ChatFile[] = [], queues = false): Promise<boolean> {
+export async function sendToAgent(text: string, playhead?: number, files: ChatFile[] = [], queues = false, quotes: ChatQuote[] = []): Promise<boolean> {
   const state = useAgent.getState();
   if (!state.project) return false;
   const project = state.project;
@@ -326,50 +360,49 @@ export async function sendToAgent(text: string, playhead?: number, files: ChatFi
   events.flush();
   const shown = files.map((one, index) => ({ ...attachments[index]!, url: one.kind === "image" ? one.preview : null }));
   const queueing = queues && useAgent.getState().running;
-  const words = `${project}\n${text}`;
-  const sendId = unanswered.get(words) ?? Array.from(crypto.getRandomValues(new Uint8Array(12)), (byte) => byte.toString(16).padStart(2, "0")).join("");
-  unanswered.delete(words);
-  // Show the message now (sentNow.ts); the server's copy takes its place when it arrives. A queued one shows in the queue instead.
-  if (!queueing) {
-    holdSent(project, useAgent.getState().entries, text, shown);
-    useAgent.setState({ running: true, activityAt: Date.now() });
-  }
-  try {
-    const response = await fetchRetrying(`/api/projects/${project}/agent`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        text,
-        ...(playhead === undefined ? {} : { playhead: String(Math.round(playhead)) }),
-        ...(attachments.length === 0 ? {} : { attachments: JSON.stringify(attachments) }),
-        send_id: sendId,
-      }),
-    }).catch(async () => {
-      // No answer: the server may have taken it before the connection went. The chat says.
-      const there = await landed(project, sendId);
-      if (there === true) return null;
-      unanswered.set(words, sendId);
-      throw new Error(there === null ? "Can't reach Edit's server. Send your message again once it's back." : "Your message didn't reach Edit's server. Send it again.");
-    });
-    if (response === null) return true;
-    const answer = await json<{ queued?: QueuedMessage }>(response);
-    const queued = answer.queued;
-    // Queued after all (the turn was still running), or before its event: shown in the queue, never twice.
-    if (queued !== undefined) {
-      dropSent(project);
-      useAgent.setState((current) => (current.project !== project || current.queue.some((one) => one.id === queued.id) ? {} : { queue: [...current.queue, queued], running: true }));
-    }
-    return true;
-  } catch (error) {
-    // Refused or the server down: the words go back in the composer (the caller's), and the chat says why (a turn
-    // still running goes on). Never a copy of the message only this page holds: reading the chat again would lose it.
-    const now = Date.now();
-    dropSent(project);
-    useAgent.setState((current) =>
-      current.project !== project ? {} : { running: queueing && current.running, entries: [...current.entries, { id: `local-${now}`, kind: "error", text: (error as Error).message }] },
-    );
-    return false;
-  }
+  const body: Record<string, string> = {
+    text,
+    ...(playhead === undefined ? {} : { playhead: String(Math.round(playhead)) }),
+    ...(attachments.length === 0 ? {} : { attachments: JSON.stringify(attachments) }),
+  };
+  sendNow(project, useAgent.getState().entries, {
+    text,
+    composer: `project:${project}`,
+    attachments: shown,
+    files,
+    quotes,
+    queued: queueing,
+    resends: true,
+    deliver: async (sendId) => {
+      // Shown as a turn about to start (one queued waits for the turn already running).
+      const inQueue = pendingOf(project).find((one) => one.id === sendId)?.queued === true;
+      if (!inQueue && useAgent.getState().project === project) useAgent.setState({ running: true, activityAt: Date.now() });
+      try {
+        const answer = await postMessage(project, sendId, body);
+        // Queued (the turn was still running): into the queue as the server has it, before its event, never twice.
+        // Known by its id whatever the answer said, so it's never shown both as sent here and as the server's.
+        const item = answer.item === undefined ? undefined : { ...answer.item, send_id: answer.item.send_id ?? sendId };
+        if (item !== undefined) useAgent.setState((current) => (current.project !== project || current.queue.some((one) => one.id === item.id) ? {} : { queue: [...current.queue, item], running: true }));
+        settleSent(project, useAgent.getState().entries, useAgent.getState().queue);
+        // Taken, but its copy hasn't come (the events socket dropped meanwhile): the chat read again; the server's is what shows.
+        setTimeout(() => {
+          if (useAgent.getState().project !== project || !pendingOf(project).some((one) => one.id === sendId && one.state === "sent")) return;
+          void openAgent(project).then(() => forgetSent(sendId));
+        }, LANDS_WITHIN_MS);
+        return { queued: answer.queued };
+      } catch (error) {
+        // Didn't go: a turn shown as starting for it isn't, unless another message is on its way (one running goes on: its events say).
+        const others = pendingOf(project).some((one) => one.id !== sendId && !one.queued && one.state !== "failed");
+        if (!inQueue && !others) useAgent.setState((current) => (current.project !== project ? {} : { running: false }));
+        throw error;
+      }
+    },
+    cancel: (sendId) => {
+      const item = useAgent.getState().queue.find((one) => one.send_id === sendId);
+      if (item !== undefined) void cancelQueued(item.id).catch(() => {});
+    },
+  });
+  return true;
 }
 
 /** Stops this project's turn (awaited: a refusal throws, the chat read again either way). */
@@ -388,13 +421,43 @@ export async function steerQueued(id: string): Promise<void> {
   await leaveQueue(id, "steer");
 }
 
+/** Edit on a queued message: out of the queue (as Cancel), its words, files and quotes back in the composer. */
+export async function editQueued(id: string): Promise<void> {
+  const { project, queue } = useAgent.getState();
+  const item = queue.find((one) => one.id === id);
+  if (!project || item === undefined) return;
+  const composer = `project:${project}`;
+  const quoted = parseQuoted(item.text);
+  for (const quote of quoted.quotes) addQuote(composer, quote);
+  // Its files, already in the project, go back on it as they are.
+  const files: ChatFile[] = (item.attachments ?? []).map((one, index) => ({
+    id: -(Date.now() * 100 + index),
+    name: one.name,
+    size: 0,
+    kind: one.kind,
+    preview: null,
+    state: "done",
+    loaded: 0,
+    landed: { ...(one.media === undefined ? {} : { media: one.media }), ...(one.file === undefined ? {} : { file: one.file }) },
+  }));
+  returnToComposer(composer, { words: quoted.words, files, quotes: [] });
+  await leaveQueue(id, "cancel");
+}
+
+/** Queued messages taken out here whose answer hasn't come: kept out of the queue the server's events show meanwhile. */
+const leaving = new Set<string>();
+const staying = (queue: QueuedMessage[]) => (leaving.size === 0 ? queue : queue.filter((one) => !leaving.has(one.id)));
+
 async function leaveQueue(id: string, how: "cancel" | "steer"): Promise<void> {
   const { project, queue } = useAgent.getState();
   if (!project) return;
+  leaving.add(id);
   useAgent.setState({ queue: queue.filter((one) => one.id !== id) });
   try {
     await json(await fetchRetrying(`/api/projects/${project}/agent/queue/${encodeURIComponent(id)}/${how}`, { method: "POST" }));
+    leaving.delete(id);
   } catch (error) {
+    leaving.delete(id);
     // The server's queue as it is: the event said so already, or the chat is read again.
     if (useAgent.getState().project === project) void openAgent(project);
     throw error;
@@ -434,7 +497,7 @@ function reduce(state: AgentState, event: AgentEvent, now: number): AgentState {
     case "reset":
       return { ...state, entries: [], running: false, queue: [] };
     case "queue":
-      return { ...state, queue: Array.isArray(event.queue) ? (event.queue as QueuedMessage[]) : [] };
+      return { ...state, queue: Array.isArray(event.queue) ? staying(event.queue as QueuedMessage[]) : [] };
     case "model":
       return { ...state, chatModel: typeof event.model_name === "string" ? event.model_name : null, revising: event.revising === true };
   }
@@ -452,6 +515,8 @@ const events = perFrame(() => {
   const after = batch.reduce((state, event) => reduce(state, event, now), before);
   if (after === before) return;
   useAgent.setState(after, true);
+  // What was sent here and now came back (by its id) stops showing as sent here.
+  if (after.project !== null) settleSent(after.project, after.entries, after.queue);
   if (after.project !== null) chats.set(after.project, { entries: after.entries, running: after.running, chatModel: after.chatModel, revising: after.revising, queue: after.queue });
 });
 

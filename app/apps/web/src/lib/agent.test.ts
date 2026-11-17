@@ -36,24 +36,42 @@ describe("the chat's live events", () => {
     expect(useAgent.getState().running).toBe(false);
   });
 
-  it("shows a message as it's sent until the chat has it, and says why when it's refused (its words go back in the composer)", async () => {
+  it("shows a message as it's sent until the chat has it by its id, and keeps one that's refused, saying why, to retry", async () => {
+    vi.useRealTimers();
     const { sendToAgent, applyAgentEvent, flushAgentEvents, useAgent } = await import("./agent");
-    const { sending } = await import("./sentNow");
+    const { pendingOf, retrySent, sending } = await import("./sentNow");
     fetchRetrying.mockReset();
     let refuse = false;
     fetchRetrying.mockImplementation(async () => (refuse ? new Response(JSON.stringify({ error: "the agent is still working" }), { status: 409 }) : new Response(JSON.stringify({ ok: true }), { headers: { "content-type": "application/json" } })));
     useAgent.setState({ project: "p1", loaded: true, running: false, entries: [] });
     expect(await sendToAgent("make it shorter")).toBe(true);
+    // On screen before any answer, and the turn shown as starting.
     expect(sending("p1", useAgent.getState().entries)).toBe(true);
     expect(useAgent.getState().running).toBe(true);
-    applyAgentEvent({ project: "p1", event: "entry", entry: { id: "user-1", kind: "user", text: "make it shorter", at: Date.now() } });
+    const id = pendingOf("p1")[0]!.id;
+    await vi.waitFor(() => expect(pendingOf("p1")[0]?.state).toBe("sent"));
+    // Another of the person's messages (another Mac's) isn't this one: it stays until its own id comes back.
+    applyAgentEvent({ project: "p1", event: "entry", entry: { id: "user-0", kind: "user", text: "make it shorter", at: Date.now(), send_id: "elsewhere" } });
+    flushAgentEvents();
+    expect(sending("p1", useAgent.getState().entries)).toBe(true);
+    applyAgentEvent({ project: "p1", event: "entry", entry: { id: "user-1", kind: "user", text: "make it shorter", at: Date.now(), send_id: id } });
     flushAgentEvents();
     expect(sending("p1", useAgent.getState().entries)).toBe(false);
+    expect(pendingOf("p1")).toEqual([]);
     refuse = true;
-    expect(await sendToAgent("and louder")).toBe(false);
-    expect(sending("p1", useAgent.getState().entries)).toBe(false);
-    expect(useAgent.getState().entries.map((entry) => [entry.kind, entry.text])).toEqual([["user", "make it shorter"], ["error", "the agent is still working"]]);
+    useAgent.setState({ running: false });
+    expect(await sendToAgent("and louder")).toBe(true);
+    await vi.waitFor(() => expect(pendingOf("p1")[0]?.state).toBe("failed"));
+    // Kept where it was with why, nothing added to the conversation, the turn not shown as starting.
+    expect(pendingOf("p1")[0]).toMatchObject({ text: "and louder", failure: "the agent is still working", offline: false });
+    expect(useAgent.getState().entries.map((entry) => entry.text)).toEqual(["make it shorter", "make it shorter"]);
     expect(useAgent.getState().running).toBe(false);
+    // Retry: the same id again.
+    refuse = false;
+    const failed = pendingOf("p1")[0]!.id;
+    retrySent(failed);
+    await vi.waitFor(() => expect(pendingOf("p1")[0]?.state).toBe("sent"));
+    expect(JSON.parse(String(fetchRetrying.mock.calls.at(-1)![1]!.body)).send_id).toBe(failed);
   });
 });
 
@@ -93,16 +111,18 @@ describe("a chat that can't be read", () => {
 
 describe("a send whose answer is lost", () => {
   const response = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
-  const sentWith = (call: number) => JSON.parse(String(fetchRetrying.mock.calls[call]![1]!.body)).send_id as string;
+  const posts = () => fetchRetrying.mock.calls.filter((call) => call[1]?.method === "POST").map((call) => JSON.parse(String(call[1]!.body)).send_id as string);
 
   beforeEach(() => {
     vi.resetModules();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
     fetchRetrying.mockReset();
   });
 
-  it("is taken as sent when the chat read again has it, so its words don't go back to be sent twice", async () => {
+  it("is taken as sent when the chat read again has it, so it isn't sent twice", async () => {
     const { sendToAgent, useAgent } = await import("./agent");
-    const { sending } = await import("./sentNow");
+    const { pendingOf } = await import("./sentNow");
     let chat: { entries: unknown[]; running: boolean; queue: unknown[] } = { entries: [], running: false, queue: [] };
     fetchRetrying.mockImplementation(async (url: string, init?: RequestInit) => {
       if (init?.method === "POST") {
@@ -111,35 +131,52 @@ describe("a send whose answer is lost", () => {
         throw new TypeError("Failed to fetch");
       }
       if (url === "/api/agent") return response({ ready: true, provider: "claude" });
+      if (url === "/api/agent/models") return response({ models: [] });
       return response(chat);
     });
     useAgent.setState({ project: "p1", loaded: true, running: false, entries: [] });
     expect(await sendToAgent("make it shorter")).toBe(true);
+    await vi.waitFor(() => expect(pendingOf("p1")).toEqual([]));
     expect(useAgent.getState().entries.map((entry) => [entry.kind, entry.text])).toEqual([["user", "make it shorter"]]);
-    expect(sending("p1", useAgent.getState().entries)).toBe(false);
+    expect(posts()).toHaveLength(1);
     expect(useAgent.getState().running).toBe(true);
   });
 
-  it("goes back in the composer when the chat hasn't it, and sent again goes with the same id (the server takes it once)", async () => {
+  it("goes again with the same id while there's no answer, says so when it's still none, and goes by itself once Edit's back", async () => {
+    vi.useFakeTimers();
+    const target = new EventTarget();
+    vi.stubGlobal("window", target);
     const { sendToAgent, useAgent } = await import("./agent");
-    let lose = true;
-    fetchRetrying.mockImplementation(async (_url: string, init?: RequestInit) => {
+    const { pendingOf } = await import("./sentNow");
+    let down = true;
+    let taken: string[] = [];
+    fetchRetrying.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (down) throw new TypeError("Failed to fetch");
       if (init?.method === "POST") {
-        if (lose) throw new TypeError("Failed to fetch");
+        const id = JSON.parse(String(init.body)).send_id as string;
+        // The server takes each id once (media_tools.ts `sending`, `sentBefore`).
+        if (!taken.includes(id)) taken = [...taken, id];
         return response({ ok: true });
       }
-      return response({ entries: [], running: false, queue: [] });
+      if (url === "/api/agent") return response({ ready: true, provider: "claude" });
+      if (url === "/api/agent/models") return response({ models: [] });
+      return response({ entries: taken.map((id, index) => ({ id: `user-${index}`, kind: "user", text: "make it shorter", send_id: id, at: index + 1 })), running: true, queue: [] });
     });
     useAgent.setState({ project: "p1", loaded: true, running: false, entries: [] });
-    expect(await sendToAgent("make it shorter")).toBe(false);
-    expect(useAgent.getState().entries.map((entry) => entry.text)).toEqual(["Your message didn't reach Edit's server. Send it again."]);
-    lose = false;
-    const posts = () => fetchRetrying.mock.calls.flatMap((call, index) => (call[1]?.method === "POST" ? [index] : []));
     expect(await sendToAgent("make it shorter")).toBe(true);
-    expect(sentWith(posts()[1]!)).toBe(sentWith(posts()[0]!));
-    // A new message (or one the server answered) gets its own.
-    expect(await sendToAgent("make it shorter")).toBe(true);
-    expect(sentWith(posts()[2]!)).not.toBe(sentWith(posts()[1]!));
+    const id = pendingOf("p1")[0]!.id;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(pendingOf("p1")[0]).toMatchObject({ state: "failed", offline: true });
+    // Every try was the same message.
+    expect(new Set(posts())).toEqual(new Set([id]));
+    // Back: the socket's open (store.ts) sends it again by itself, once.
+    down = false;
+    target.dispatchEvent(new Event("edit:connected"));
+    target.dispatchEvent(new Event("edit:connected"));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(pendingOf("p1")[0]?.state).toBe("sent");
+    expect(taken).toEqual([id]);
+    vi.unstubAllGlobals();
   });
 });
 
@@ -155,13 +192,19 @@ describe("an Edit V2 chat's queue, kept on the server", () => {
   it("a message sent while the turn runs shows in the queue, not the conversation, and the turn goes on", async () => {
     const { sendToAgent, useAgent } = await import("./agent");
     const { sending } = await import("./sentNow");
-    fetchRetrying.mockImplementation(async () => response({ ok: true, queued: waiting }));
+    let answer: () => void = () => {};
+    fetchRetrying.mockImplementation(() => new Promise((resolve) => (answer = () => resolve(response({ ok: true, queued: waiting })))));
     useAgent.setState({ project: "p1", loaded: true, running: true, entries: [{ id: "u", kind: "user", text: "make the board" }], queue: [] });
     await sendToAgent("make it red", 120, [], true);
+    // In the queue at once, before the server answers.
+    const { pendingOf } = await import("./sentNow");
+    expect(pendingOf("p1").map((one) => [one.text, one.queued])).toEqual([["make it red", true]]);
+    answer();
+    await vi.waitFor(() => expect(useAgent.getState().queue).toMatchObject([waiting]));
+    expect(pendingOf("p1")).toEqual([]);
     expect(JSON.parse(String(fetchRetrying.mock.calls[0]![1]!.body))).toEqual({ text: "make it red", playhead: "120", send_id: expect.stringMatching(/^[0-9a-f]{24}$/) });
     expect(sending("p1", useAgent.getState().entries)).toBe(false);
     expect(useAgent.getState().entries.map((entry) => entry.text)).toEqual(["make the board"]);
-    expect(useAgent.getState().queue).toEqual([waiting]);
     expect(useAgent.getState().running).toBe(true);
   });
 

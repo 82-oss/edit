@@ -1229,6 +1229,34 @@ test("a turn a crash left that isn't carried on (away too long, or cut short too
   }
 });
 
+test("a message sent while an Edit V2 turn is still starting queues at once, not behind the start (Sphe, Nov 17)", async () => {
+  const { home, project, agents, asked, queries } = await hqProject("claude-hq-queue-starting");
+  const before = agentHooks.beforeTurn;
+  let started!: () => void;
+  const starting = new Promise<void>((resolve) => { started = resolve; });
+  // The turn's start held (the cloud's comments caught up first, serve.ts).
+  agentHooks.beforeTurn = async () => starting;
+  try {
+    const first = agents.send(project, "Make the evidence board", null, null);
+    await settle();
+    expect(agents.withChat(project).running).toBe(true);
+    const next = await Promise.race([agents.message(project, "Make it red", null, null, "", [], null, "s2"), Bun.sleep(500).then(() => "held" as const)]);
+    expect(next).not.toBe("held");
+    expect((next as Queued).text).toBe("Make it red");
+    expect(agents.withChat(project).queue.map((one) => one.sendId)).toEqual(["s2"]);
+    started();
+    await first;
+    ends(queries[0]!);
+    await askedCount(asked, 2);
+    expect(String(asked[1]!.prompt)).toStartWith("Make it red");
+  } finally {
+    started();
+    agentHooks.beforeTurn = before;
+    agents.shutdown();
+    home.cleanup();
+  }
+});
+
 test("a message sent during a sign-in in progress doesn't hold the chat: its turn shows, and the next one queues at once", async () => {
   const { home, project, agents, asked, queries } = await hqProject("claude-hq-setup-busy");
   let finish!: () => void;
