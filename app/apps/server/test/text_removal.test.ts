@@ -774,7 +774,7 @@ test("a run in the background: the chat row's numbers while it's out, then the a
     // The row's numbers, its Details, no line at the top.
     const said = await removalSchedule.statusOf(app, id);
     expect(said.line).toBeNull();
-    expect(said.background).toMatchObject({ label: "Removing their text", done: 0, total: 1, left_s: null });
+    expect(said.background).toMatchObject({ label: "Removing their text", done: 0, total: 1 });
     expect(removalSchedule.pieceRows(id)).toEqual([expect.objectContaining({ key: "text:m@0", what: "text", name: "tape", from: 0, to: 8 })]);
     open();
     await tr.settled(id);
@@ -1103,7 +1103,7 @@ test("the agent looks at each piece and rejects one that isn't clean: done once 
     await removalSchedule.ensure(app, id);
     // While the piece is out: the line counts it, a quick export look says "still rendering", the export's step says how far.
     while (removalSchedule.progressOf(id).out === 0) await Bun.sleep(20);
-    expect(await removalSchedule.statusOf(app, id)).toEqual({ line: null, action: null, running: { done: 0, total: 1 }, background: { label: "Removing their text", done: 0, total: 1, started_at: expect.any(Number), left_s: null } });
+    expect(await removalSchedule.statusOf(app, id)).toEqual({ line: null, action: null, running: { done: 0, total: 1 }, background: { label: "Removing their text", done: 0, total: 1, started_at: expect.any(Number) } });
     expect(removalSchedule.exportLine(id)).toBe("Removing their text · 0 of 1 pieces");
     expect(await removalSchedule.waitForPieces(app, id, 200).catch((error: unknown) => String(error))).toContain("still rendering");
     const waited = removalSchedule.waitForPieces(app, id, 60_000);

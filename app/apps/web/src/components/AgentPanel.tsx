@@ -25,7 +25,6 @@ import { buildTurns, callTitle, formatWorked, groupSummary, isWorking, keepUncha
 import { argsOf, groupKind, shortTokens, stepKind, type StepKind } from "../lib/steps";
 import { cancelSent, editSent, retrySent, useSentNow } from "../lib/sentNow";
 import { useNow } from "../lib/now";
-import { eventLine } from "../lib/removal";
 import { api, mediaUrl } from "../lib/api";
 import { copyImage, pngOf, saveFile } from "../lib/files";
 import { queued, useNotes } from "../lib/notes";
@@ -370,13 +369,8 @@ const TurnView = memo(function TurnView({ turn, known, thinking: said }: { turn:
           <SentFiles files={turn.user.attachments.map((one) => ({ name: one.name, kind: one.kind, url: one.url ?? (one.kind === "image" && one.media !== undefined && project !== undefined ? mediaUrl(project, one.media, "proxy") : null) }))} />
         </motion.div>
       )}
-      {turn.user?.by === "edit" ? (
-        // Edit's own event (a removal finished), not the person's message: a quiet line, its whole text on hover.
-        <motion.div {...appear(fresh(turn.user.id))} className="mb-1 flex items-start gap-2 px-0.5 text-[12px] leading-5 text-muted" title={turn.user.text} data-testid="edit-event">
-          <span className="mt-[7px] size-1.5 shrink-0 rounded-full bg-success" aria-hidden />
-          <span className="min-w-0 [overflow-wrap:anywhere]">Edit · {eventLine(turn.user.text)}</span>
-        </motion.div>
-      ) : turn.user && (
+      {/* A turn Edit started itself (a removal finished) shows only the agent's work and answer: never as the person's message. */}
+      {turn.user && turn.user.by !== "edit" && (
         <motion.div
           {...appear(fresh(turn.user.id) && !turn.user.id.startsWith("user-"))}
           className="mb-1 ml-8 max-w-[calc(100%-2rem)] self-end rounded-2xl bg-raised px-3 py-2 text-[13px] whitespace-pre-wrap text-fg ring-1 ring-line [overflow-wrap:anywhere]"

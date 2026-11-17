@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api, type TextRemoval } from "../lib/api";
-import { eventLine, leftLine, runLine } from "../lib/removal";
+import { runLine } from "../lib/removal";
 import { RemovalRow } from "./RemovalRow";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -23,7 +23,7 @@ const settle = () =>
     for (let n = 0; n < 5; n++) await Promise.resolve();
   });
 
-const RUN: TextRemoval = { line: null, action: null, running: { done: 12, total: 81 }, background: { label: "Removing their text", done: 12, total: 81, started_at: Date.now() - 92_000, left_s: 300 } };
+const RUN: TextRemoval = { line: null, action: null, running: { done: 12, total: 81 }, background: { label: "Removing their text and watermarks", done: 12, total: 25, started_at: Date.now() - 1_084_000 } };
 
 function mount(running: boolean): HTMLElement {
   const container = document.createElement("div");
@@ -34,16 +34,16 @@ function mount(running: boolean): HTMLElement {
 }
 
 describe("the chat's waiting row for a removal in the background", () => {
-  it("a dashed ring, what, how far and about how long left, never cut (it wraps), a thin line of how far; one button, Stop, and the row goes", async () => {
+  it("a dashed ring, what, how far and how long, never cut (it wraps), a thin line of how far; one button, Stop, and the row goes", async () => {
     vi.spyOn(api, "textRemoval").mockResolvedValue(RUN);
     const stop = vi.spyOn(api, "stopRemoval").mockResolvedValue({ line: null, action: null, running: null });
     const container = mount(false);
     await settle();
     const row = container.querySelector("[data-testid=removal-row]")!;
-    expect(row.textContent).toContain("Waiting · Removing their text · 12 of 81 pieces · about 5 min left");
+    expect(row.textContent).toContain("Waiting · Removing their text and watermarks · 12 of 25 pieces · 18m 4s");
     expect(row.querySelector(".wait-ring")).not.toBeNull();
-    // How far: 12 of 81.
-    expect((row.querySelector(".bg-primary") as HTMLElement).style.width).toBe("15%");
+    // How far: 12 of 25.
+    expect((row.querySelector(".bg-primary") as HTMLElement).style.width).toBe("48%");
     // Nothing truncates its words.
     expect(row.querySelector(".truncate")).toBeNull();
     expect([...row.querySelectorAll("button")].map((one) => one.textContent)).toEqual(["Stop"]);
@@ -68,9 +68,7 @@ describe("the chat's waiting row for a removal in the background", () => {
     expect(container.querySelector("[data-testid=removal-row]")).toBeNull();
   });
 
-  it("its words, and a turn of Edit's own read as Edit's line", () => {
-    expect(runLine(RUN.background!)).toBe("Removing their text · 12 of 81 pieces");
-    expect([leftLine(null), leftLine(40), leftLine(600), leftLine(3 * 3600)]).toEqual([null, "under a minute left", "about 10 min left", "about 3 h left"]);
-    expect(eventLine("(Edit, background) Their text and watermarks are out of the footage (24 pieces, 1 blurred).\n\nCleaned:\n- tape")).toBe("Their text and watermarks are out of the footage (24 pieces, 1 blurred).");
+  it("its words", () => {
+    expect(runLine(RUN.background!)).toBe("Removing their text and watermarks · 12 of 25 pieces");
   });
 });

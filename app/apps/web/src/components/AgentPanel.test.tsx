@@ -45,7 +45,7 @@ describe("the editor's chat as a turn ends", () => {
     vi.unstubAllGlobals();
   });
 
-  it("a turn Edit started on a background event reads as Edit's own line, not the person's bubble", async () => {
+  it("a turn Edit started on a background event shows only the agent's work and answer, never as the person's message", async () => {
     const { useAgent } = await import("../lib/agent");
     const { useEditor } = await import("../lib/store");
     const { AgentPanel } = await import("./AgentPanel");
@@ -62,8 +62,9 @@ describe("the editor's chat as a turn ends", () => {
     root = createRoot(container, { onUncaughtError: (error) => errors.push(error) });
     act(() => root.render(<AgentPanel />));
     await act(async () => void (await new Promise((done) => setTimeout(done, 50))));
-    const event = container.querySelector("[data-testid=edit-event]");
-    expect(event?.textContent).toBe("Edit · Their text and watermarks are out of the footage (24 pieces, 1 blurred).");
+    expect(container.textContent).not.toContain("(Edit, background)");
+    expect(container.textContent).not.toContain("out of the footage (24 pieces");
+    expect(container.textContent).toContain("Their watermarks are out of all 23 pieces.");
     expect(container.querySelector('[data-quote="my earlier message"]')?.textContent).toBe("Cut the case");
     expect(container.querySelectorAll('[data-quote="my earlier message"]').length).toBe(1);
     expect(errors).toEqual([]);

@@ -221,7 +221,6 @@ export interface RemovalRun {
   done: number;
   total: number;
   started_at: number;
-  left_s: number | null;
 }
 
 

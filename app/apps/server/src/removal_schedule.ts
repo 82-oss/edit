@@ -366,29 +366,16 @@ function whatOf(rows: PieceRow[]): string {
   return text && marks ? "their text and watermarks" : marks ? "their watermarks" : "their text";
 }
 
-/** The row's label, short enough for the chat panel (Sphe, Nov 17: "Waiting · Removi…" was cut): their text (any of it), or their watermarks alone. */
-const labelOf = (rows: PieceRow[]) => (rows.some((row) => row.what === "text") ? "Removing their text" : "Removing their watermarks");
+/** The row's label: "Removing their text and watermarks" (it wraps in the chat, never cut). */
+const labelOf = (rows: PieceRow[]) => `Removing ${whatOf(rows)}`;
 
-/** The waiting row's numbers: what, how far, since when, about how long left (from this run's pace). */
+/** The waiting row's numbers: what, how far, since when. */
 export function backgroundOf(id: string): NonNullable<textRemoval.Status["background"]> | null {
   const { done, out } = progressOf(id);
   if (out === 0) return null;
   const run = active.get(id);
   const rows = pieceRows(id);
-  const startedAt = run?.startedAt ?? Date.now();
-  // Each worker at its own pace in this run (Vmake's pieces minutes each, several at once; the engine's cells beside
-  // them): what each has finished since it began, over the time, for what it still has out; the slower one says it.
-  const elapsed = (Date.now() - startedAt) / 1000;
-  const finished = (row: PieceRow) => run !== undefined && run.before.get(row.key) !== row.state && (row.state === "done" || row.state === "check" || row.state === "none" || row.state === "failed");
-  const lefts = (["text", "watermark"] as const).map((what) => {
-    const mine = rows.filter((row) => row.what === what);
-    const pending = mine.filter((row) => row.state === "queued" || row.state === "running").length + (what === "watermark" ? watermarkRemoval.lookingAt(id) : 0);
-    if (pending === 0) return 0;
-    const done = mine.filter(finished).length;
-    return done === 0 ? null : (elapsed / done) * pending;
-  });
-  const left = lefts.some((one) => one === null) ? null : Math.round(Math.max(...(lefts as number[])));
-  return { label: labelOf(rows.filter((row) => row.state === "queued" || row.state === "running" || run?.before.get(row.key) !== row.state)), done, total: done + out, started_at: startedAt, left_s: left };
+  return { label: labelOf(rows.filter((row) => row.state === "queued" || row.state === "running" || run?.before.get(row.key) !== row.state)), done, total: done + out, started_at: run?.startedAt ?? Date.now() };
 }
 
 /** The person's Stop: nothing more sent or done (what's under way comes back and is kept); kept across restarts until someone asks again. */

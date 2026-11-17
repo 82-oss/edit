@@ -1129,8 +1129,8 @@ export interface Status {
   /** remove: say yes to the API's price; retry: the account looked at again; sign_in: Vmake's sign-in opened. */
   action: "remove" | "retry" | "sign_in" | null;
   running: { done: number; total: number } | null;
-  /** Removal under way in the background (the chat's waiting row, removal_schedule.ts): what, how far, since when, about how long left. */
-  background?: { label: string; done: number; total: number; started_at: number; left_s: number | null } | null;
+  /** Removal under way in the background (the chat's waiting row, removal_schedule.ts): what, how far, since when. */
+  background?: { label: string; done: number; total: number; started_at: number } | null;
 }
 
 const minutes = (seconds: number) => (seconds < 90 ? `${Math.max(1, Math.round(seconds))} s` : `${Math.round(seconds / 60)} min`);

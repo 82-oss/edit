@@ -1,10 +1,11 @@
 // Removal under way in the background, at the end of the agent's chat (Sphe,
 // Nov 17, like T3's background task; ~/.cache/mockups/background-wait.html):
-// a dashed ring turning, "Waiting · Removing their text · 12 of 81 · 18m 04s",
-// Stop (nothing more is sent; what's cleaned stays), a thin red line of how
-// far under it. Only between turns: a turn's own work shows while it runs,
-// and the row comes back below it when it ends. Its words are never cut: they
-// wrap. When the run is done, Edit tells the agent itself and the row goes.
+// a dashed ring turning, "Waiting · Removing their text and watermarks · 12 of
+// 25 pieces · 18m 04s", Stop (nothing more is sent; what's cleaned stays), a
+// thin red line of how far under it. Only between turns: a turn's own work
+// shows while it runs, and the row comes back below it when it ends. Its
+// words are never cut: they wrap. When the run is done the row goes, and Edit
+// wakes the agent itself: its turn and its answer are all that shows.
 
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useState } from "react";
@@ -12,7 +13,7 @@ import { useEffect, useState } from "react";
 import { api, type TextRemoval } from "../lib/api";
 import { shortSpan } from "../lib/agentTurns";
 import { useNow } from "../lib/now";
-import { leftLine, runLine } from "../lib/removal";
+import { runLine } from "../lib/removal";
 
 export function RemovalRow({ projectId, marked, running }: { projectId: string; marked: boolean; running: boolean }) {
   const [said, setSaid] = useState<TextRemoval | null>(null);
@@ -45,7 +46,6 @@ export function RemovalRow({ projectId, marked, running }: { projectId: string; 
       setStopping(false);
     }
   };
-  const left = run === null ? null : leftLine(run.left_s);
   return (
     <AnimatePresence initial={false}>
       {run !== null && !running && (
@@ -64,7 +64,7 @@ export function RemovalRow({ projectId, marked, running }: { projectId: string; 
               Waiting · <span className="text-secondary">{runLine(run)}</span>
               <span className="tabular">
                 {" · "}
-                {left ?? shortSpan(Math.max(0, now - run.started_at))}
+                {shortSpan(Math.max(0, now - run.started_at))}
               </span>
             </span>
             <button type="button" disabled={stopping} onClick={() => void stop()} className="shrink-0 leading-5 font-medium text-fg transition-colors hover:text-primary disabled:opacity-45">
