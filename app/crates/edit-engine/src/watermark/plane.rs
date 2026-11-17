@@ -35,14 +35,6 @@ impl Plane {
         }
     }
 
-    /// From bytes, `w × h` of them (missing ones read as 0).
-    #[cfg(test)]
-    pub fn from_bytes(w: usize, h: usize, bytes: &[u8]) -> Self {
-        let mut data: Vec<f32> = bytes.iter().take(w * h).map(|&b| f32::from(b)).collect();
-        data.resize(w * h, 0.0);
-        Self { w, h, data }
-    }
-
     /// A `w × h` window of `bytes` (a plane `stride` wide) from (x0, y0), clamped at its edges.
     pub fn from_window(
         bytes: &[u8],
