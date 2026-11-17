@@ -115,7 +115,9 @@ export async function serve(app: App, request: Request, parts: string[]): Promis
     try {
       return json(await seams.broll.findPlace(app, asked));
     } catch (error) {
-      return json({ error: diag.messageOf(error) }, 422);
+      // The network's (the relay unreachable or slow) is a 502, as a tile's is: the page's wait says it for what it is.
+      const said = diag.messageOf(error);
+      return json({ error: said }, said.startsWith(relay.UNREACHABLE) ? 502 : 422);
     }
   }
   return null;

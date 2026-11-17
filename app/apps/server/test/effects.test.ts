@@ -472,6 +472,11 @@ test("a render's failure is the computer's at that moment (tried again at once),
   expect(effects.failureKind(new Error("its frames didn't join into a video: No space left on device"))).toBe("disk");
   expect(effects.failureKind(new Error("its page threw at 1.20 s: TypeError: x is undefined"))).toBe("code");
   expect(effects.failureKind(new Error("its page has no window.duration"))).toBe("code");
+  // The network's (Sphe's M4, Nov 17): the relay unreachable, the map helper's tiles asked for and never answered.
+  expect(effects.failureKind(new effects.NetworkDown("date-tulsa's page got nowhere for 15 s waiting on the network"))).toBe("network");
+  expect(effects.failureKind(new Error("its window.ready was rejected: the map's tiles stopped coming: none came in 15 s, 3 asked for and unanswered (Edit's server or its relay isn't answering)"))).toBe("network");
+  expect(effects.failureKind(new Error("its window.ready was rejected: could not reach Edit's relay: getaddrinfo ETIMEOUT"))).toBe("network");
+  expect(effects.failureKind(new Error("its window.ready was rejected: the map's tiles were refused: today's maps are used up"))).toBe("code");
   // What a render holds at once, asked of the disk before it draws: two chunks of its frames (two seconds each at
   // 1080p, in whole half-second keyframe intervals) and its video twice (its chunks, and the video joined from them).
   const hd = { width: 1920, height: 1080, fps: 30 };

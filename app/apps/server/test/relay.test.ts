@@ -79,7 +79,12 @@ test("an unreachable relay says so", async () => {
   const before = process.env.EDIT_RELAY_URL;
   process.env.EDIT_RELAY_URL = "http://127.0.0.1:9";
   try {
+    const since = Date.now();
     await expect(relay.json("GET", "/v1/x", null, "x", 5)).rejects.toThrow(/^could not reach Edit's relay: /);
+    // Noted, for what failed meanwhile to be taken as the network's (effects.ts `networkTrouble`).
+    expect(relay.reach.failedAt).toBeGreaterThanOrEqual(since);
+    expect(relay.reach.failed).toStartWith("could not reach Edit's relay: ");
+    expect(await relay.answers(2_000)).toBe(false);
   } finally {
     process.env.EDIT_RELAY_URL = before;
   }

@@ -31,6 +31,40 @@ export function url(): string {
  */
 export const UNREACHABLE = "could not reach Edit's relay";
 
+/**
+ * How Edit's relay has been answering (Nov 17, Sphe's M4 on nightly-78: from
+ * 03:03 to 03:04 "getaddrinfo ETIMEOUT" and calls that didn't answer within
+ * 15 s, and two map effects' renders taken for their code's fault): when a
+ * request last couldn't reach it (offline, timed out) and what was said, and
+ * when one last got an answer of any kind. Every request through `ask`,
+ * the map's tiles and its root say how they went.
+ */
+export const reach = { failedAt: 0, failed: "", answeredAt: 0 };
+
+/** A request that couldn't reach the relay. */
+export function noteUnreachable(said: string): void {
+  reach.failedAt = Date.now();
+  reach.failed = said;
+}
+
+/** A request the relay answered (any status). */
+export function noteAnswered(): void {
+  reach.answeredAt = Date.now();
+}
+
+/** Whether the relay answers now (its `/health`, no sign-in needed), within `timeoutMs`; said in `reach`. */
+export async function answers(timeoutMs = 10_000): Promise<boolean> {
+  try {
+    const answer = await fetch(`${url()}/health`, { signal: AbortSignal.timeout(timeoutMs) });
+    await answer.arrayBuffer().catch(() => {});
+    noteAnswered();
+    return answer.ok;
+  } catch (error) {
+    noteUnreachable(`${UNREACHABLE}: ${messageOf(error)}`);
+    return false;
+  }
+}
+
 /** The signed-in person's access token (accounts.ts), else `EDIT_RELAY_TOKEN` (tests, a local relay), else none. */
 export function token(): string | null {
   return accounts.accessToken() ?? envToken();
@@ -153,7 +187,16 @@ async function askTile(request: Request, from: URL): Promise<Response> {
   return fetch(`${url()}${from.pathname}${from.search}`, {
     headers: { ...authHeaders(used), accept: request.headers.get("accept") ?? "*/*" },
     signal: AbortSignal.timeout(60_000),
-  });
+  }).then(
+    (answer) => {
+      noteAnswered();
+      return answer;
+    },
+    (error: unknown) => {
+      noteUnreachable(`${UNREACHABLE}: ${messageOf(error)}`);
+      throw error;
+    },
+  );
 }
 
 /** A tile's answer passed on to the page, its headers Google's. */
@@ -202,7 +245,9 @@ async function sharedRoot(request: Request, from: URL): Promise<Response> {
     let got: Response;
     try {
       got = await fetch(`${url()}${from.pathname}${from.search}`, { headers: { ...authHeaders(), accept: "application/json" }, signal: AbortSignal.timeout(60_000) });
+      noteAnswered();
     } catch (error) {
+      noteUnreachable(`${UNREACHABLE}: ${messageOf(error)}`);
       return { status: 502, type: "application/json", body: new TextEncoder().encode(JSON.stringify({ error: `${UNREACHABLE}: ${messageOf(error)}` })) };
     }
     const body = new Uint8Array(await got.arrayBuffer());
@@ -273,6 +318,8 @@ export const ask = Effect.fn("relay.ask")(function* (method: string, route: stri
           ? new service.ServiceUnreachable({ service: SERVICE, message: `${UNREACHABLE}: ${error.message.replace(/^could not reach Edit's relay: /, "")}` })
           : new service.ServiceTimedOut({ service: SERVICE, afterMs: error.afterMs, message: `${UNREACHABLE}: it didn't answer within ${Math.round(error.afterMs / 1000)} s` }),
       ),
+      Effect.tapError((error) => Effect.sync(() => noteUnreachable(error.message))),
+      Effect.tap(() => Effect.sync(noteAnswered)),
     );
     // Refused with a person's token: renewed once (a cut-off refuses tokens made before it).
     if (answer.status === 401 && !again && used !== null && used !== envToken() && (yield* Effect.promise(() => accounts.renewRefused(used)))) continue;

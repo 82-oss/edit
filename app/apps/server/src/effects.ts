@@ -409,6 +409,75 @@ function missed(project: string, name: string, path: string): void {
   misses.set(key, list.slice(-12));
 }
 
+/**
+ * What an effect's page asked of the network through Edit (its map's tiles,
+ * its place, the map's library), by `project/name`: the requests not answered
+ * yet, and the last that failed (Edit's relay unreachable or timing out, a
+ * 5xx). A page that gets nowhere while these hang or fail is waiting on the
+ * network, not stuck in its code (Nov 17, Sphe's M4 on nightly-78: the relay
+ * unreachable from 03:03 to 03:04, the tiles answered 502 after 17–61 s, and
+ * date-tulsa's render was failed as "waiting on something that never comes",
+ * the code's to fix, and never tried again).
+ */
+const reaching = new Map<string, { pending: Set<{ path: string; at: number }>; failure: { at: number; said: string } | null; askedAt: number }>();
+
+function reachOf(project: string, name: string) {
+  const key = `${project}/${name}`;
+  let found = reaching.get(key);
+  if (found === undefined) {
+    found = { pending: new Set(), failure: null, askedAt: 0 };
+    reaching.set(key, found);
+  }
+  return found;
+}
+
+/** One of the map's files (effect_map.ts), its asking and answer noted in `reaching`. */
+async function reachOut(app: App, request: Request, project: string, name: string, parts: string[]): Promise<Response | null> {
+  const reach = reachOf(project, name);
+  const asking = { path: parts.join("/"), at: Date.now() };
+  reach.pending.add(asking);
+  reach.askedAt = asking.at;
+  let answer: Response | null;
+  try {
+    answer = await effectMap.serve(app, request, parts);
+  } catch (error) {
+    reach.failure = { at: Date.now(), said: diag.messageOf(error) };
+    throw error;
+  } finally {
+    reach.pending.delete(asking);
+  }
+  if (answer !== null && answer.status >= 500) {
+    let said = `${asking.path.startsWith("v1/3dtiles/") ? "a map tile" : asking.path} answered ${answer.status}`;
+    try {
+      const error = (JSON.parse(await answer.clone().text()) as { error?: unknown }).error;
+      if (typeof error === "string") said = error;
+    } catch {
+      // Not the relay's JSON: its status says it.
+    }
+    reach.failure = { at: Date.now(), said };
+  }
+  return answer;
+}
+
+/**
+ * What was wrong with the network for `project/name`'s page since `since`, in
+ * a line, or null when nothing was: its requests through Edit unanswered for a
+ * while, one failing, or the relay unreachable while it asked.
+ */
+export function networkTrouble(project: string, name: string, since: number, now = Date.now()): string | null {
+  const reach = reaching.get(`${project}/${name}`);
+  const hanging = [...(reach?.pending ?? [])].filter((one) => now - one.at >= Math.min(5_000, waits.quietMs / 2));
+  if (hanging.length > 0) {
+    const longest = Math.round((now - Math.min(...hanging.map((one) => one.at))) / 1000);
+    const tiles = hanging.every((one) => one.path.startsWith("edit-map/v1/3dtiles/"));
+    return `${hanging.length} of its ${tiles ? "map's tiles" : "requests through Edit"} unanswered after ${longest} s (Edit's relay wasn't answering)`;
+  }
+  if (reach?.failure !== null && reach?.failure !== undefined && reach.failure.at >= since) return `its requests through Edit's relay failing (${reach.failure.said.replace(/[.\s]+$/u, "")})`;
+  // The relay unreachable meanwhile counts only for a page that asked something of the network then.
+  if (reach !== undefined && reach.askedAt >= since && relay.reach.failedAt >= since) return `Edit's relay unreachable (${relay.reach.failed.replace(/[.\s]+$/u, "")})`;
+  return null;
+}
+
 /** The page with Edit's runtime and faces ahead of its own code. */
 function withRuntime(page: string, more = ""): string {
   const ahead = `<style>\n${FACES}${more === "" ? "" : `\n${more}`}\n</style>\n${RUNTIME}\n${WATCH}`;
@@ -433,7 +502,7 @@ async function file(context: RouteContext<App>): Promise<Response> {
   if (parts.some((part) => part === "" || part === "." || part === ".." || /[/\\\0]/.test(part))) throw notFound("no such file");
   const headers = { "content-security-policy": policy(ownSource(request, project, params.name!)), "cache-control": "no-store" };
   // The map (effect_map.ts), as if it were in the folder (a file of the effect's own by that name is never shadowed).
-  const map = parts[0] === "edit-map" && !fs.existsSync(join(dir, ...parts)) ? await effectMap.serve(app, request, parts) : null;
+  const map = parts[0] === "edit-map" && !fs.existsSync(join(dir, ...parts)) ? await reachOut(app, request, project, params.name!, parts) : null;
   if (map !== null) {
     for (const [name, value] of Object.entries(headers)) if (name !== "cache-control" || !map.headers.has(name)) map.headers.set(name, value);
     map.headers.set("access-control-allow-origin", "null");
@@ -782,7 +851,7 @@ interface Waiting<T> {
  * worker answering. Refused with what it was waiting on once nothing has
  * happened for `waits.quietMs`, or after `waits.workingMostMs` in all.
  */
-async function settle<T>(page: devtools.Page, poll: string, said: { stuck: (errors: string[]) => string; endless: string; unloaded: string }): Promise<{ value: T; ms: number }> {
+async function settle<T>(page: devtools.Page, poll: string, said: { stuck: (errors: string[]) => string | Error; endless: string; unloaded: string }): Promise<{ value: T; ms: number }> {
   const started = Date.now();
   await page.call("Performance.enable").catch(() => {});
   let working = started;
@@ -820,7 +889,11 @@ async function settle<T>(page: devtools.Page, poll: string, said: { stuck: (erro
       if (state.done !== null) return { value: state.done, ms: now - started };
       working = Math.max(working, state.unheard > 0 ? now : now - state.quiet);
     }
-    if (now - working > waits.quietMs) throw new Error(seen ? said.stuck(errors) : said.unloaded);
+    if (now - working > waits.quietMs) {
+      if (!seen) throw new Error(said.unloaded);
+      const stuck = said.stuck(errors);
+      throw stuck instanceof Error ? stuck : new Error(stuck);
+    }
     if (now - started > waits.workingMostMs) throw new Error(said.endless);
     await Bun.sleep(250);
   }
@@ -843,6 +916,8 @@ async function load(page: devtools.Page, url: string, token: string, project: st
     `(() => { if (!location.search.includes(${JSON.stringify(token)}) || !window.__edit) return null; const now = window.__edit.waiting(); return { ...now, done: now.loaded }; })()`,
     {
       stuck: (errors) => {
+        const trouble = networkTrouble(project, name, since);
+        if (trouble !== null) return new NetworkDown(`${name}'s page got nowhere for ${waits.quietMs / 1000} s waiting on the network, with ${trouble}: nothing in its code to fix, it goes once the connection is back`);
         const asked = (misses.get(`${project}/${name}`) ?? []).filter((one) => one.at >= since).map((one) => `"${one.path}"`);
         const parts = [`${name}'s window.ready never resolved: its page got nowhere for ${waits.quietMs / 1000} s (no code running, nothing loading), waiting on something that never comes`];
         parts.push(asked.length > 0 ? `it asked for ${asked.join(", ")}, not in its folder` : "a picture, font or video whose load it waits for and whose error it never hears, or a Promise nothing resolves");
@@ -1422,7 +1497,10 @@ export function renderingLine(project: string): string | null {
 }
 
 /** Why a render failed, by what can be done about it. */
-type Failure = "code" | "passing" | "disk";
+type Failure = "code" | "passing" | "network" | "disk";
+
+/** A page held up by the network, not its code: Edit's relay unreachable, its requests through Edit hanging or failing. */
+export class NetworkDown extends Error {}
 
 /**
  * Renders that failed, by project, effect and code version: not tried again
@@ -1431,11 +1509,11 @@ type Failure = "code" | "passing" | "disk";
  * export shouldn't stop on that failure until Edit restarts). `said` is what
  * went wrong (the agent's and the log's), `told` what a person is told.
  */
-const failed = new Map<string, { said: string; told: string; at: number }>();
+const failed = new Map<string, { said: string; told: string; at: number; kind: Failure }>();
 const FAILED_RETRY_MS = 5 * 60_000;
 
 /** Why a render failed, while that still stands. */
-function failureOf(render: string): { said: string; told: string } | undefined {
+function failureOf(render: string): { said: string; told: string; kind: Failure } | undefined {
   const found = failed.get(render);
   if (found === undefined) return undefined;
   if (Date.now() - found.at < FAILED_RETRY_MS) return found;
@@ -1465,7 +1543,10 @@ class DiskShort extends Error {}
  */
 export function failureKind(error: unknown): Failure {
   if (error instanceof DiskShort || outOfSpace(error)) return "disk";
+  if (error instanceof NetworkDown) return "network";
   const said = diag.messageOf(error);
+  // The map helper's own words for tiles that hang or fail (effect_map.html), and the relay's when it can't be reached.
+  if (/could not reach Edit's relay|asked for and unanswered|Edit's server didn't answer/.test(said)) return "network";
   if (/Chrome didn't start|Chrome has no page|Chrome's connection|Chrome closed|timed out|lost its drawing|didn't load in Chrome|Chrome drew nothing|needs Google Chrome/.test(said)) return "passing";
   return "code";
 }
@@ -1474,6 +1555,7 @@ export function failureKind(error: unknown): Failure {
 function toldOf(name: string, kind: Failure, error: unknown): string {
   if (kind === "disk") return error instanceof DiskShort ? error.message : diskFull(0);
   if (kind === "passing") return `The ${name} effect couldn't render just now: press Retry.`;
+  if (kind === "network") return `The ${name} effect couldn't render while the connection was down. It renders again by itself once it's back.`;
   return `The ${name} effect didn't render: ask the agent to fix the ${name} effect.`;
 }
 
@@ -1567,6 +1649,7 @@ export function renderNow(app: App, project: string, name: string): Promise<void
   const failure = failureOf(id(project, name, key));
   if (failure !== undefined) return Promise.reject(new Error(failure.told));
   const render: Render = { project, title: live.project.name, name, key, drawn: 0, frames: 0, done: Promise.resolve() };
+  const since = Date.now();
   const once = () =>
     renderSlot.with(async () => {
       drawing = render;
@@ -1586,24 +1669,74 @@ export function renderNow(app: App, project: string, name: string): Promise<void
       // The code changed under it: started again once the code has settled, never at once (Nov 11, on kenobi: renders
       // restarted every 60 frames for as long as the agent kept saving, and left 4.6 GB of frames behind).
       if (error instanceof Outdated) return settled(app, project, name).then(() => renderNow(app, project, name));
-      const said = diag.messageOf(error);
-      const kind = failureKind(error);
+      let said = diag.messageOf(error);
+      let kind = failureKind(error);
+      // What breaks while the network is down (a tile that never came, a place not found) is the network's, not the code's.
+      const trouble = kind === "code" ? networkTrouble(project, name, since) : null;
+      if (trouble !== null) {
+        kind = "network";
+        said = `${said.replace(/[.\s]+$/u, "")} (with ${trouble})`;
+      }
       const told = toldOf(name, kind, error);
-      failed.set(id(project, name, key), { said, told, at: Date.now() });
+      failed.set(id(project, name, key), { said, told, at: Date.now(), kind });
       if (kind === "code") untold.set(id(project, name, key), said);
+      // The network's: started again once the relay answers, or in five minutes at most.
+      if (kind === "network") retryWhenBack(app, project, id(project, name, key));
       // What isn't the code's may go the next time: started again once the failure stops standing.
-      if (kind !== "code") {
+      else if (kind !== "code") {
         const again = setTimeout(() => renderSoon(app, project), FAILED_RETRY_MS + 1_000);
         again.unref?.();
       }
       diag.warn("effects", `${project}: ${name} didn't render: ${said}`);
       throw new Error(told);
     })
+    .then(() => {
+      strikes.delete(id(project, name, key));
+    })
     .finally(() => renders.delete(id(project, name, key)));
   renders.set(id(project, name, key), render);
   // Its error goes to whoever waits on it; one nobody waits on is in the log.
   render.done.catch(() => {});
   return render.done;
+}
+
+/** How often a render failed by the network is checked for the relay's being back (`retryWhenBack`), the first time. */
+export const networkRetry = { probeMs: 30_000 };
+/** Renders failed by the network one after another, by render: each waits twice as long for the relay as the one before. */
+const strikes = new Map<string, number>();
+/** Projects whose network-failed renders wait for the relay. */
+const probing = new Set<string>();
+
+/**
+ * Starts a project's renders failed by the network again once Edit's relay
+ * answers (asked every `networkRetry.probeMs`, twice as long after each
+ * failure in a row), or after `FAILED_RETRY_MS` at most: a render goes on as
+ * soon as the connection is back, and a network that keeps failing isn't
+ * hammered.
+ */
+function retryWhenBack(app: App, project: string, render: string): void {
+  const strike = (strikes.get(render) ?? 0) + 1;
+  strikes.set(render, strike);
+  if (probing.has(project)) return;
+  probing.add(project);
+  const began = Date.now();
+  const wait = Math.min(FAILED_RETRY_MS, networkRetry.probeMs * 2 ** (strike - 1));
+  const again = (back: boolean) => {
+    probing.delete(project);
+    for (const [one, failure] of failed) if (one.startsWith(`${project}/`) && failure.kind === "network") failed.delete(one);
+    diag.info("effects", `${project}: rendering its effects the network held up again, ${back ? "Edit's relay answering" : `${FAILED_RETRY_MS / 60_000} minutes on`}`);
+    renderSoon(app, project);
+  };
+  const check = () => {
+    const timer = setTimeout(() => {
+      void relay.answers().then((back) => {
+        if (back || Date.now() - began >= FAILED_RETRY_MS) again(back);
+        else check();
+      });
+    }, Math.min(wait, Math.max(0, FAILED_RETRY_MS - (Date.now() - began))));
+    timer.unref?.();
+  };
+  check();
 }
 
 async function draw(app: App, render: Render): Promise<void> {
@@ -2158,6 +2291,7 @@ export function renderState(project: string, name: string, key: string): string 
     return "rendering";
   }
   const failure = failureOf(id(project, name, key));
+  if (failure?.kind === "network") return `not made yet: the connection dropped while it rendered (${failure.said.replace(/[.\s]+$/u, "")}); nothing in its code to fix, it renders again by itself once Edit's relay answers`;
   return failure === undefined ? null : `its render failed: ${failure.said}`;
 }
 

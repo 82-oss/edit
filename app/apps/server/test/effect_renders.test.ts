@@ -547,3 +547,83 @@ test.skipIf(chrome === null)("a render Chrome let down (it didn't start) is trie
     cleanup();
   }
 }, 240_000);
+
+test.skipIf(chrome === null)("a page held up by the network (the relay unreachable, its tiles hanging) is the network's, not its code's: the agent isn't told to fix it, and it renders again once the relay answers (Sphe's M4, Nov 17, nightly-78)", async () => {
+  // A stand-in relay that's down: its health 503, its tiles held unanswered until it's back.
+  let up = false;
+  const held: (() => void)[] = [];
+  const stand = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    idleTimeout: 200,
+    fetch: async (request) => {
+      const path = new URL(request.url).pathname;
+      if (path === "/health") return new Response(up ? "ok" : "down", { status: up ? 200 : 503 });
+      // Its other calls (V2's cloud's fonts) refused at once: only the tiles hang.
+      if (!path.startsWith("/v1/3dtiles/")) return Response.json({ error: "not here" }, { status: 404 });
+      if (!up) await new Promise<void>((done) => held.push(done));
+      return new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "application/octet-stream", "cache-control": "private, max-age=60" } });
+    },
+  });
+  const relayBefore = process.env.EDIT_RELAY_URL;
+  const tokenBefore = process.env.EDIT_RELAY_TOKEN;
+  process.env.EDIT_RELAY_URL = `http://127.0.0.1:${stand.port}`;
+  // Signed out, no cloud: the tiles go to the relay all the same (a person's token when there is one).
+  delete process.env.EDIT_RELAY_TOKEN;
+  const { app, cleanup, id } = hq("effects-network", { width: 640, height: 360 });
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  effects.waits.quietMs = 1_500;
+  effects.networkRetry.probeMs = 500;
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    // Ready once its one tile has come, as a map's find() is.
+    const page = (ready: string) => `<!doctype html><body style="margin:0;background:#123"><script>
+window.duration = 1;
+window.ready = ${ready};
+window.seek = () => {};
+</script></body>`;
+    const tile = (name: string) => `fetch("edit-map/v1/3dtiles/datasets/x/files/${name}.glb?session=s1").then((answer) => answer.arrayBuffer())`;
+    // A look while it's down: the network's, said so, not "a Promise nothing resolves".
+    write(app, id, "looked", { "scene.html": page(tile("a")) });
+    const look = effects.look(app, id, "looked", [0.5]);
+    await expect(look).rejects.toThrow("looked's page got nowhere for 1.5 s waiting on the network, with 1 of its map's tiles unanswered");
+    await expect(look).rejects.toThrow("nothing in its code to fix");
+    // One whose render alone asks for a tile, so it's added while the relay is down.
+    write(app, id, "tiles", { "scene.html": page(`location.search.includes("render=") ? ${tile("b")} : Promise.resolve()`) });
+    const { media } = await effects.add(app, id, "tiles");
+    await app.store.update(id, "test", (project) => {
+      project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 30, media, source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    await expect(seams.broll.waitForMaps(app, id, 90_000)).rejects.toThrow("The tiles effect couldn't render while the connection was down. It renders again by itself once it's back.");
+    // Not the code's: the agent isn't asked to fix it, and what it reads says so.
+    expect(await messageContext(app, id, null, true)).toBe("");
+    expect(effects.renderLine(app, id, "tiles")).toContain("nothing in its code to fix, it renders again by itself once Edit's relay answers");
+    // The relay back: the held tiles answer, and the render goes by itself, well inside the five minutes.
+    up = true;
+    for (const done of held.splice(0)) done();
+    const key = effects.list(app.store, id).find((one) => one.name === "tiles")!.key;
+    const until = Date.now() + 60_000;
+    while (app.store.get(id)!.project.media.find((one) => one.id === media)!.effect_key !== key) {
+      if (Date.now() > until) throw new Error(`not rendered again: ${effects.renderLine(app, id, "tiles")}`);
+      await Bun.sleep(250);
+    }
+    expect(await messageContext(app, id, null, true)).toBe("");
+  } finally {
+    up = true;
+    for (const done of held.splice(0)) done();
+    effects.waits.quietMs = 15_000;
+    effects.networkRetry.probeMs = 30_000;
+    if (relayBefore === undefined) delete process.env.EDIT_RELAY_URL;
+    else process.env.EDIT_RELAY_URL = relayBefore;
+    if (tokenBefore === undefined) delete process.env.EDIT_RELAY_TOKEN;
+    else process.env.EDIT_RELAY_TOKEN = tokenBefore;
+    await server.stop(true);
+    await stand.stop(true);
+    cleanup();
+  }
+}, 180_000);
