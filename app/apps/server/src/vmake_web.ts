@@ -46,10 +46,17 @@ export const DAILY_FILES = 30;
 const JOB_MS = 2 * 3_600_000;
 /** Browser Use's price (Nov 17), and a session's longest life. */
 export const DOLLARS_AN_HOUR = 0.06;
-export const DOLLARS_A_GB = 0.2;
-const SESSION_MINUTES = 240;
+export const DOLLARS_A_GB = 5;
+/** Browser Use takes a browser's whole time up front (the rest given back when it's stopped): an hour at a time, not its 240-minute most. */
+const SESSION_MINUTES = 60;
+/**
+ * Where the browser's traffic goes out: a US home address, as the account was
+ * signed in from (Nov 17), so vmake.ai never sees the account move between a
+ * home and a datacenter (never risk the account). $5 a GB through it.
+ */
+const PROXY = "us";
 /** A session's age after which it's let go once its tabs are done (another takes over). */
-const SESSION_RENEW_MS = 180 * 60_000;
+const SESSION_RENEW_MS = 45 * 60_000;
 
 // ---------------------------------------------------------------------------
 // Browser Use
@@ -80,14 +87,14 @@ export function browserUse(key: string, api = API): Browsers {
       throw new VmakeError(`Browser Use didn't answer: ${diag.messageOf(error)}`, "piece");
     }
     const text = await response.text();
-    if (response.status === 401 || response.status === 403 || response.status === 402) throw new VmakeError(`Browser Use refused (${response.status}): ${text.slice(0, 160)}`, "account", response.status === 402 ? "out_of_credits" : "keys_refused");
+    if (response.status === 401 || response.status === 403 || response.status === 402) throw new VmakeError(`Browser Use refused (${response.status}): ${text.slice(0, 160)}`, "account", response.status === 402 ? "browser_credits" : "browser_key");
     if (response.status === 429) throw new VmakeError("Browser Use has no browser free (too many at once)", "piece");
     if (!response.ok) throw new VmakeError(`Browser Use: ${response.status} ${text.slice(0, 160)}`, "piece");
     return text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
   };
   return {
     async open(profile) {
-      const made = await call("POST", "/browsers", { proxyCountryCode: null, timeout: SESSION_MINUTES, ...(profile !== null ? { profileId: profile } : {}) });
+      const made = await call("POST", "/browsers", { proxyCountryCode: PROXY, timeout: SESSION_MINUTES, ...(profile !== null ? { profileId: profile } : {}) });
       const id = textOf(made.id);
       const stop = () => call("PATCH", `/browsers/${id}`, { action: "stop" }).then(() => undefined, () => undefined);
       try {
@@ -115,7 +122,7 @@ const ACCOUNT_SCRIPT = `(() => {
   const shown = (el) => !!el && el.getClientRects().length > 0 && getComputedStyle(el).visibility !== 'hidden';
   const said = [...document.querySelectorAll('.ant-modal, .ant-message, .ant-notification, [role=dialog], [role=alert]')].filter(shown).map((el) => el.innerText.trim()).filter(Boolean).join(' | ');
   const buttons = [...document.querySelectorAll('button, a')].filter(shown).map((el) => el.innerText.trim().toLowerCase());
-  const signedOut = buttons.some((text) => /^(log ?in|sign ?in|sign up|log in \\/ sign up)$/.test(text)) && !document.querySelector('[class*=avatar]');
+  const signedOut = buttons.some((text) => /^(log ?in|sign ?in|sign up|get started|log in \\/ sign up)$/.test(text)) && ![...document.querySelectorAll('[class*=avatar]')].some(shown);
   return { said, signedOut };
 })()`;
 
@@ -139,15 +146,34 @@ async function waitFor<T>(page: Page, expression: string, ms: number, what: stri
   }
 }
 
-async function go(page: Page, url: string): Promise<void> {
-  const loaded = new Promise<void>((resolve) => {
-    const stop = page.on("Page.loadEventFired", () => {
-      stop();
-      resolve();
+/** The browser's proxy refuses every connection: that browser is let go and another started (its own way out). */
+export class ProxyDown extends VmakeError {
+  constructor() {
+    super("vmake.ai couldn't be reached through the cloud browser's proxy", "piece");
+  }
+}
+
+/**
+ * Opens `url` in the tab, tried again when the page is Chrome's own error
+ * (Browser Use's home proxy now and then refuses connections: Nov 17,
+ * ERR_SOCKS_CONNECTION_FAILED, in some browsers on every try; then
+ * ProxyDown, and the Driver starts another browser).
+ */
+export async function go(page: Page, url: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    const loaded = new Promise<void>((resolve) => {
+      const stop = page.on("Page.loadEventFired", () => {
+        stop();
+        resolve();
+      });
     });
-  });
-  await page.call("Page.navigate", { url });
-  await Promise.race([loaded, Bun.sleep(45_000)]);
+    await page.call("Page.navigate", { url });
+    await Promise.race([loaded, Bun.sleep(45_000)]);
+    const at = await page.evaluate<string>("location.href").catch(() => "");
+    if (!at.startsWith("chrome-error:")) return;
+    if (attempt >= 3) throw new ProxyDown();
+    await Bun.sleep(3000 * attempt);
+  }
 }
 
 /** A click as a person's: the element's middle, pressed and let go. */
@@ -160,7 +186,8 @@ async function click(page: Page, selectorScript: string): Promise<void> {
   await page.call("Input.dispatchMouseEvent", { type: "mouseReleased", x: at.x, y: at.y, button: "left", clickCount: 1 });
 }
 
-const MODE_ITEM = `[...document.querySelectorAll('ul[class*=radio] li')].find((li) => li.innerText.trim().toLowerCase() === '${MODE}')`;
+/** The shown "Smart pro" (the page keeps the list five times over, Nov 17; only one is on screen). */
+const MODE_ITEM = `[...document.querySelectorAll('ul[class*=radio] li')].find((li) => li.getClientRects().length > 0 && li.innerText.trim().toLowerCase() === '${MODE}')`;
 const DOWNLOAD_FULL = `[...document.querySelectorAll('button, a')].find((el) => /download full video/i.test(el.innerText))`;
 /** The page's state while it works: the result's URL once it's there, the percent while processing. */
 const PROGRESS_SCRIPT = `(() => {
@@ -183,7 +210,8 @@ export async function removeOnPage(page: Page, pieceUrl: string, name: string, s
   if (problem !== null) throw problem;
   // The mode first: the upload starts processing by itself.
   const mode = await waitFor<string>(page, `(() => { const li = ${MODE_ITEM}; return li ? li.className : null; })()`, 30_000, "Smart pro");
-  if (/disabled--/u.test(mode)) throw new VmakeError("vmake.ai offers this account no Smart pro (its plan)", "account", "lapsed");
+  // Off for the job on the page (Nov 17: off on a Pro account in the editor a job came back to): the plan's said by /pricing (`plan`).
+  if (/disabled--/u.test(mode)) throw new VmakeError("vmake.ai doesn't offer Smart pro on the remover's page now", "piece");
   if (!/active--/u.test(mode)) {
     await click(page, MODE_ITEM);
     await waitFor(page, `(() => { const li = ${MODE_ITEM}; return !!li && /active--/.test(li.className); })()`, 15_000, "Smart pro chosen");
@@ -247,6 +275,20 @@ export async function removeOnPage(page: Page, pieceUrl: string, name: string, s
   return url;
 }
 
+/**
+ * The account's plan as /pricing says it ("Current plan: Pro"): an account
+ * problem when it's signed out or on no paid plan (Smart pro and the daily
+ * files are Pro's and Plus's).
+ */
+export async function plan(page: Page, site = SITE): Promise<string> {
+  await go(page, `${site}/pricing`);
+  const said = await waitFor<string>(page, `(() => { const m = /Current plan:\\s*([A-Za-z]+)/.exec(document.body.innerText); return m ? m[1] : null; })()`, 30_000, "the plan").catch(() => null);
+  const problem = await accountProblem(page);
+  if (problem !== null) throw problem;
+  if (said === null || !/^(pro|plus|business|team|enterprise)$/iu.test(said)) throw new VmakeError(`vmake.ai says the plan is ${said ?? "none"}`, "account", "lapsed");
+  return said;
+}
+
 /** Whether the profile's browser is signed in to vmake.ai (the remover's page shows no sign-in). */
 export async function signedIn(page: Page, site = SITE): Promise<boolean> {
   await go(page, `${site}${REMOVER}`);
@@ -298,7 +340,24 @@ export class Driver {
 
   private async current(): Promise<Session> {
     if (this.session !== null && Date.now() - this.session.at > SESSION_RENEW_MS && this.busy <= 1) await this.close();
-    if (this.session === null) this.session = { at: Date.now(), open: this.browsers.open(this.profile) };
+    // Each browser looks at the plan once, on its first tab, before any piece is sent.
+    if (this.session === null) {
+      this.session = {
+        at: Date.now(),
+        open: this.browsers.open(this.profile).then(async (session) => {
+          const page = await session.remote.tab();
+          try {
+            await plan(page, this.site);
+          } catch (error) {
+            await session.stop();
+            throw error;
+          } finally {
+            page.close();
+          }
+          return session;
+        }),
+      };
+    }
     const session = await this.session.open.catch((error: unknown) => {
       this.session = null;
       throw error;
@@ -322,12 +381,19 @@ export class Driver {
     try {
       // Tabs started a little apart, as a person would.
       if (this.busy > 1) await pacing.wait(5_000 + Math.random() * 10_000);
-      const session = await this.current();
-      const page = await session.remote.tab();
-      try {
-        return await removeOnPage(page, pieceUrl, name, this.site, onProgress);
-      } finally {
-        page.close();
+      for (let browser = 1; ; browser++) {
+        const session = await this.current();
+        const page = await session.remote.tab();
+        try {
+          return await removeOnPage(page, pieceUrl, name, this.site, onProgress);
+        } catch (error) {
+          // A browser whose way out is down: another (alone, so no other tab's job goes with it).
+          if (!(error instanceof ProxyDown) || browser >= 3 || this.busy > 1) throw error;
+          diag.warn("removal", `vmake.ai: the cloud browser's proxy is down; another browser`);
+          await this.close();
+        } finally {
+          page.close();
+        }
       }
     } finally {
       this.release();

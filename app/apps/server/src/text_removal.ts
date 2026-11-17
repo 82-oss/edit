@@ -435,16 +435,16 @@ export async function makeStrip(original: string, cleaned: string, info: { width
 }
 
 /** The stretch [from, to) of `input` at full quality, as a file Vmake takes (≤ `maxBytes`), no sound. */
-export async function cutPiece(input: string, from: number, to: number, out: string, maxBytes = 300_000_000): Promise<void> {
+export async function cutPiece(input: string, from: number, to: number, out: string, maxBytes = 300_000_000, quality: { crf: number; rate: number } = { crf: 14, rate: 20_000_000 }): Promise<void> {
   const seconds = to - from;
-  // Under the size cap whatever the footage: the bitrate it leaves, at most 20 Mb/s.
-  const rate = Math.min(20_000_000, Math.floor((maxBytes * 0.9 * 8) / Math.max(1, seconds)));
+  // Under the size cap whatever the footage: the bitrate it leaves, at most the quality's.
+  const rate = Math.min(quality.rate, Math.floor((maxBytes * 0.9 * 8) / Math.max(1, seconds)));
   const partial = `${out}.partial.mp4`;
   await playing.whenIdle();
   await tools.run(
     [
       tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...tools.urlArgs(input), "-ss", String(from), "-i", input, "-t", String(seconds),
-      "-map", "0:v:0", "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "14", "-maxrate", String(rate), "-bufsize", String(rate * 2), "-pix_fmt", "yuv420p", "-movflags", "+faststart", partial,
+      "-map", "0:v:0", "-an", "-c:v", "libx264", "-preset", "medium", "-crf", String(quality.crf), "-maxrate", String(rate), "-bufsize", String(rate * 2), "-pix_fmt", "yuv420p", "-movflags", "+faststart", partial,
     ],
     { background: true },
   );
@@ -471,6 +471,12 @@ export interface Provider {
   id: ProviderId;
   /** Paid by the file, not the second: a file of PIECE_SECONDS or less goes whole (straight from R2 when it's there). */
   wholeFiles?: boolean;
+  /**
+   * How a piece is encoded for it: the website's go through a paid home proxy
+   * twice ($5 a GB), and Vmake's fill is all that's kept of them (the mask
+   * compares like with like), so they go lighter.
+   */
+  pieceQuality?: { crf: number; rate: number };
   /** The price of sending `seconds` of footage in `files` pieces, as the line says it. */
   price(seconds: number, files: number): string;
   /** Takes the text out of the piece at `input` into `out`. Throws VmakeError (its `scope` says whose the failure is). */
@@ -488,6 +494,8 @@ export function accountLine(reason: AccountReason, said = ""): string {
     out_of_credits: "the Vmake account is out of credits",
     daily_limit: "the day's Vmake allowance is used up; it carries on tomorrow",
     keys_refused: "Vmake refused this Mac's keys",
+    browser_credits: "the cloud browser's account (Browser Use) is out of credits",
+    browser_key: "Browser Use refused this Mac's key",
     refused: `Vmake refused the account${said !== "" ? ` (${said.replace(/^Vmake's [a-z -]+: /u, "")})` : ""}`,
   };
   return reason === "daily_limit" ? `Taking their text out is paused: ${why[reason]}.` : `Taking their text out is off: ${why[reason]}. Their subtitles stay blurred until it's sorted.`;
@@ -581,10 +589,11 @@ export function websiteProvider(home: string, browsers: web.Browsers, profile: s
   return {
     id: "vmake-web",
     wholeFiles: true,
+    pieceQuality: { crf: 20, rate: 6_000_000 },
     price(seconds, files) {
       const left = filesLeft(home);
-      // About 2.5 minutes of browser a minute of footage, three at once; the piece in and out (≈1 MB a second each way).
-      const dollars = ((seconds * 2.5) / 3600 / web.TABS) * web.DOLLARS_AN_HOUR + ((seconds * 2) / 1000) * web.DOLLARS_A_GB;
+      // About 2.5 minutes of browser a minute of footage, three at once; the piece in and out through the proxy (≤0.75 MB a second each way).
+      const dollars = ((seconds * 2.5) / 3600 / web.TABS) * web.DOLLARS_AN_HOUR + ((seconds * 1.5) / 1000) * web.DOLLARS_A_GB;
       const browser = dollars < 0.5 ? "under $0.50" : `≈ $${dollars.toFixed(2)}`;
       return `${files} ${files === 1 ? "file" : "files"} on your Vmake plan${files > left ? ` (${Math.max(0, left)} today, the rest tomorrow)` : ""}, ${browser} of cloud browser`;
     },
@@ -949,7 +958,7 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
       const input = await cloudMedia.originalInput(app.store.cacheDir(), file.media);
       if (!stamps.has(file.media.id)) stamps.set(file.media.id, stampOf(app, file.media, input));
       const original = `${stem}.original.mp4`;
-      await cutPiece(input, from, to, original);
+      await cutPiece(input, from, to, original, 300_000_000, provider.pieceQuality);
       let cleaned: string;
       let cached = job.cached;
       if (cached === null) {

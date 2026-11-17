@@ -35,7 +35,7 @@ export interface Keys {
 }
 
 /** Why the account can't be used: each one says so plainly (subtitle_removal.ts). */
-export type AccountReason = "closed" | "signed_out" | "lapsed" | "out_of_credits" | "daily_limit" | "keys_refused" | "refused";
+export type AccountReason = "closed" | "signed_out" | "lapsed" | "out_of_credits" | "daily_limit" | "keys_refused" | "refused" | "browser_credits" | "browser_key";
 
 /** A failure of Vmake's: the account's (stop sending) or this piece's (try again, else blur). */
 export class VmakeError extends Error {

@@ -21,12 +21,13 @@ const CHROME = ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/App
 
 /** What the stand-in page saw, and how it behaves. */
 const seen = { mode: "", bytes: 0, uploads: 0 };
-const site = { signedOut: false, noSmartPro: false, dailyLimit: false };
+const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false };
 const PIECE = new Uint8Array(3_000_000).map((_, at) => at % 251);
 
 const PAGE = () => `<!doctype html><html><body>
 <header>${site.signedOut ? '<button>Log in</button>' : '<div class="user-avatar--x1">S</div>'}</header>
 <div class="ant-segmented" aria-label="segmented control"><div>Auto</div><div>Manual</div></div>
+<div style="display:none"><ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul></div>
 <ul class="radio--q7">${["Smart", "Smart pro", "Subtitle", "Watermark", "Passerby"].map((mode, at) => `<li class="item--a ${at === 0 ? "active--z" : ""} ${mode === "Smart pro" && site.noSmartPro ? "disabled--d" : ""}">${mode}</li>`).join("")}</ul>
 <span class="ant-upload-btn"><input type="file" name="file" accept=".mp4,.mov"></span>
 <span class="ant-upload-btn"><input type="file" name="file" multiple></span>
@@ -66,6 +67,7 @@ beforeAll(async () => {
     port: 0,
     async fetch(request) {
       const url = new URL(request.url);
+      if (url.pathname === "/pricing") return new Response(`<html><body>${site.signedOut ? "<button>Get Started</button>" : '<div class="ant-avatar avatar--x">S</div><button>Workspace</button>'}<p>Current plan: ${site.free ? "Free" : "Pro"}</p></body></html>`, { headers: { "content-type": "text/html" } });
       if (url.pathname === "/video-watermark-remover/upload") return new Response(PAGE(), { headers: { "content-type": "text/html" } });
       if (url.pathname === "/record") {
         const said = (await request.json()) as { mode: string; bytes: number };
@@ -141,7 +143,7 @@ test.skipIf(CHROME === undefined)("the account's troubles on the page are the ac
     site.signedOut = false;
     site.noSmartPro = true;
     const before = seen.uploads;
-    expect(await whose()).toBe("account:lapsed");
+    expect(await whose()).toBe("piece:null");
     // Nothing was sent: the mode is chosen before the file.
     expect(seen.uploads).toBe(before);
     site.noSmartPro = false;
@@ -152,6 +154,18 @@ test.skipIf(CHROME === undefined)("the account's troubles on the page are the ac
     await session.stop();
   }
 }, 90_000);
+
+test("Browser Use's own refusals are its account's, said as Browser Use's (Nov 17: $0.08 left, every browser refused with 402)", async () => {
+  const server = Bun.serve({ port: 0, fetch: () => new Response('{"detail":"You need at least $0.01 in credits to start a browser session."}', { status: 402 }) });
+  try {
+    const error = await web.browserUse("key", `http://127.0.0.1:${server.port}`).open("profile-1").catch((thrown: unknown) => thrown);
+    expect(error).toBeInstanceOf(VmakeError);
+    expect([(error as VmakeError).scope, (error as VmakeError).reason]).toEqual(["account", "browser_credits"]);
+    expect(tr.accountLine("browser_credits")).toBe("Taking their text out is off: the cloud browser's account (Browser Use) is out of credits. Their subtitles stay blurred until it's sorted.");
+  } finally {
+    void server.stop(true);
+  }
+});
 
 test.skipIf(CHROME === undefined)("the website's provider counts the day's files, prices by the file, and stops at the day's allowance without sending", async () => {
   const { dir, cleanup } = scratch("vmake-web");
@@ -165,12 +179,19 @@ test.skipIf(CHROME === undefined)("the website's provider counts the day's files
       staged.push(key);
       return { url: piece(), drop: async () => void staged.push(`dropped ${key}`) };
     });
-    expect(provider.price(94 * 60, 19)).toBe("19 files on your Vmake plan, ≈ $2.33 of cloud browser");
+    expect(provider.price(94 * 60, 19)).toBe("19 files on your Vmake plan, ≈ $42.38 of cloud browser");
     const out = join(dir, "out.mp4");
     expect(await provider.remove(input, out, 8)).toEqual({ credits: null });
     expect([...fs.readFileSync(out)]).toEqual([1, 2, 3, 9]);
     expect(staged.length).toBe(2);
     expect(staged[1]).toStartWith("dropped edit/cleaned/send/");
+    // A plan that isn't paid, read off /pricing as each browser opens: the account's, nothing sent.
+    site.free = true;
+    const sent = seen.uploads;
+    const lapsed = await tr.websiteProvider(home, browsers, "profile-1", `http://localhost:${vmake.port}`, async () => ({ url: piece(), drop: async () => {} })).remove(input, out, 8).catch((thrown: unknown) => thrown);
+    expect((lapsed as VmakeError).reason).toBe("lapsed");
+    expect(seen.uploads).toBe(sent);
+    site.free = false;
     // The day's files used (as kept in the home): the account's, nothing sent.
     fs.writeFileSync(join(home, "text-removal.json"), JSON.stringify({ accounts: {}, runs: [], day: { date: web.today(), files: web.DAILY_FILES } }));
     const uploads = seen.uploads;
@@ -178,7 +199,7 @@ test.skipIf(CHROME === undefined)("the website's provider counts the day's files
     expect(error).toBeInstanceOf(VmakeError);
     expect((error as VmakeError).reason).toBe("daily_limit");
     expect(seen.uploads).toBe(uploads);
-    expect(provider.price(600, 3)).toBe("3 files on your Vmake plan (0 today, the rest tomorrow), under $0.50 of cloud browser");
+    expect(provider.price(600, 3)).toBe("3 files on your Vmake plan (0 today, the rest tomorrow), ≈ $4.51 of cloud browser");
   } finally {
     cleanup();
   }
