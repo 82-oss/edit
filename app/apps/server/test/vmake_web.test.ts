@@ -332,9 +332,10 @@ test.skipIf(CHROME === undefined)("each piece in a browser of its own (its uploa
   const stopped: string[] = [];
   const team: web.Browsers = {
     async open(_signIn, extra) {
-      const one = await remote(cdp, "the stand-in browser");
+      // Named as it's asked for (connecting takes longer on some machines than others).
       const id = `${extra === true ? "extra" : "profile"}-${opened.length}`;
       opened.push(id);
+      const one = await remote(cdp, "the stand-in browser");
       return { id, liveUrl: null, remote: one, stop: async () => void (stopped.push(id), one.close()) };
     },
   };
