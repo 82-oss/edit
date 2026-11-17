@@ -207,7 +207,7 @@ window.Cesium = (() => {
 
 /** The page: a map opened and a place found, as a map date title does. */
 const PAGE = `<!doctype html><html><body>
-<script src="edit-map/map.js?stall=2000"></script>
+<script src="edit-map/map.js?stall=5000"></script>
 <script>
 window.result = (async () => {
   const started = performance.now();
@@ -243,19 +243,19 @@ function servePages(): ReturnType<typeof Bun.serve> {
         if (mode === "google-key" && level === 2) return Response.json({ error: { code: 403, message: "API key not valid. Please pass a valid API key.", status: "PERMISSION_DENIED" } }, { status: 403, headers: cors });
         if (mode === "stuck" && level === 2) return new Promise<Response>(() => {});
         if (mode === "trickle" && level === 2) {
-          // One tile coming over 3.5 s, past the 2 s stall, its bytes arriving all the while.
+          // One tile coming over 7 s, past the 5 s stall, its bytes arriving all the while.
           let sent = 0;
           const body = new ReadableStream<Uint8Array>({
             async pull(controller) {
-              await Bun.sleep(500);
-              controller.enqueue(new Uint8Array(4096).fill(sent));
+              await Bun.sleep(1000);
+              controller.enqueue(new Uint8Array(65536).fill(sent));
               if (++sent === 7) controller.close();
             },
           });
           return new Response(body, { headers: { ...cors, "content-type": "model/gltf-binary" } });
         }
-        // Each level 0.9 s: the place's heights take 5.4 s in all, well past the 2 s stall.
-        await Bun.sleep(900);
+        // Each level 1.5 s: the place's heights take 9 s in all, well past the 5 s stall (CI's Macs need the room).
+        await Bun.sleep(1500);
         return new Response(new Uint8Array(64), { headers: { ...cors, "content-type": "model/gltf-binary" } });
       }
       const parts = url.pathname.split("/").filter(Boolean);
@@ -286,7 +286,7 @@ test.skipIf(chrome === null)("a place's heights wait as long as their tiles keep
   const slow = await findPlace();
   expect(slow.error).toBeUndefined();
   expect(slow.ground).toBe(12);
-  expect(slow.ms).toBeGreaterThan(5000);
+  expect(slow.ms).toBeGreaterThan(8000);
 
   // A tile whose bytes take longer than the stall to arrive is still coming.
   mode = "trickle";
@@ -298,8 +298,8 @@ test.skipIf(chrome === null)("a place's heights wait as long as their tiles keep
 test.skipIf(chrome === null)("tiles that stop coming are given up on after the stall, saying so", async () => {
   mode = "stuck";
   const stuck = await findPlace();
-  expect(stuck.error).toBe("the map's tiles stopped coming: none came in 2 s, 1 asked for and unanswered (Edit's server or its relay isn't answering)");
-  expect(stuck.ms).toBeLessThan(10_000);
+  expect(stuck.error).toBe("the map's tiles stopped coming: none came in 5 s, 1 asked for and unanswered (Edit's server or its relay isn't answering)");
+  expect(stuck.ms).toBeLessThan(20_000);
 }, 60_000);
 
 test.skipIf(chrome === null)("a refusal says what it is, at once, never as a timeout", async () => {
@@ -310,6 +310,6 @@ test.skipIf(chrome === null)("a refusal says what it is, at once, never as a tim
   mode = "google-key";
   const key = await findPlace();
   expect(key.error).toBe("Google refused the map's key (Google: API key not valid. Please pass a valid API key.)");
-  // Refused as it came (two levels in), not after the stall.
-  expect(key.ms).toBeLessThan(2000 + 2 * 900 + 1000);
+  // Refused as it came (two levels in), not after a stall.
+  expect(key.ms).toBeLessThan(2 * 1500 + 5000);
 }, 60_000);
