@@ -1196,7 +1196,11 @@ pub struct RgbaImage {
     pub pixels: Vec<u8>,
 }
 
-/// Readers left open this long with nothing to render are closed.
+/// Readers left open this long with nothing to render are closed, and the
+/// renderer (its GPU device, its textures) let go with them: kept, a burst of
+/// the agent's frames left the server 440 MB bigger for good (mandalorian,
+/// Nov 17: 181 MB, 1.2 GB after 4 frames and 2 looks, 618 MB 90 s on). The
+/// next frame after a quiet spell makes one again (about 0.1 s).
 const IDLE: Duration = Duration::from_secs(20);
 
 impl FrameRenderer {
@@ -1230,8 +1234,12 @@ impl FrameRenderer {
                         if jobs.ready.wait_for(&mut queues, IDLE).timed_out()
                             && queues.agent.is_empty()
                             && queues.ui.is_empty()
+                            && (renderer.is_some() || !pool.readers.is_empty())
                         {
                             pool.clear();
+                            renderer = None;
+                            last_project.clear();
+                            crate::util::give_back_memory();
                         }
                     }
                 };

@@ -373,6 +373,17 @@ pub fn with_decoders<T>(decoders: Option<std::sync::Arc<Decoders>>, work: impl F
     work()
 }
 
+/// Hands freed memory back to the system: glibc keeps what's freed in its
+/// arenas (a let-go renderer's buffers stayed in the server's RSS); a Mac's
+/// allocator gives it back by itself.
+pub fn give_back_memory() {
+    #[cfg(target_os = "linux")]
+    // SAFETY: malloc_trim only walks glibc's own heaps.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
 /// Runs `work` (an export), killing the decoders it starts once `cancel` is
 /// set, or once it panics. The watch ends however `work` does: ended only
 /// after it returned, a panic (a GPU validation error, Nov 17) left it watching
