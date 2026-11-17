@@ -71,7 +71,15 @@ describe("preview seeks and lifetime", () => {
   let storage: Map<string, string>;
   let preview: typeof import("./playback").preview;
   let playhead: typeof import("./playback").playhead;
-  const draw = () => { const callbacks = [...frames.values()]; frames.clear(); for (const callback of callbacks) callback(performance.now()); };
+  /** In the window's tests, the page's clock: an animation frame later is 40 ms later (`inWindow`). */
+  let windowTime: number | null = null;
+  /** How far apart animation frames are on the window's screen (ms). */
+  let windowStep = 40;
+  let windowNow: { mockRestore: () => void } | null = null;
+  const draw = () => {
+    if (windowTime !== null) windowTime += windowStep;
+    const callbacks = [...frames.values()]; frames.clear(); for (const callback of callbacks) callback(performance.now());
+  };
 
   beforeEach(async () => {
     vi.resetModules(); vi.clearAllMocks(); decoding.near = undefined; decoding.frames.clear(); decoding.sound.clear(); frames = new Map(); storage = new Map(); clock = new AudioClock();
@@ -87,7 +95,7 @@ describe("preview seeks and lifetime", () => {
     engine.sources.mockImplementation((frame = 0) => JSON.stringify(frame < 90 ? [{ clip: "c1", media: "m1", time: 2 + frame / 30 }] : []));
     await preview.attach({ width: 320, height: 180 } as HTMLCanvasElement);
   });
-  afterEach(() => { preview.detach(); vi.unstubAllGlobals(); });
+  afterEach(() => { preview.detach(); vi.unstubAllGlobals(); windowNow?.mockRestore(); windowNow = null; windowTime = null; windowStep = 40; });
 
   it("shows a project whose people's colours the page's own rule doubts (the server and engine police them)", () => {
     // Judge EXPLODES: the page's copy of the rule lacked the courtroom's white subtitles and showed nothing.
@@ -624,6 +632,8 @@ describe("preview seeks and lifetime", () => {
       return null;
     });
     (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = { invoke };
+    windowTime = performance.now();
+    windowNow = vi.spyOn(performance, "now").mockImplementation(() => windowTime!);
     vi.stubGlobal("navigator", { gpu: {}, platform: "MacIntel" });
     preview.detach();
     await preview.attach({ width: 320, height: 180 } as HTMLCanvasElement);
@@ -722,6 +732,21 @@ describe("preview seeks and lifetime", () => {
     expect(playhead.playing).toBe(false);
     expect(playhead.frame).toBe(89);
     expect(sent("preview_pause").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("asks the window where it is once a frame of the edit while it plays, not once an animation frame", async () => {
+    const sent = await inWindow();
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    preview.seek(10); draw(); await settle();
+    preview.play(); await settle();
+    // A 120 Hz screen: 30 animation frames are a quarter of a second, seven or eight frames of a 30 fps edit.
+    windowStep = 1000 / 120;
+    const before = sent("preview_position").length;
+    for (let n = 0; n < 30; n++) { windowClock.frame = 10 + n / 4; draw(); await settle(); }
+    const asked = sent("preview_position").length - before;
+    expect(asked).toBeGreaterThanOrEqual(6);
+    expect(asked).toBeLessThanOrEqual(9);
+    preview.pause(); await settle();
   });
 
   it("tells the playhead's listeners once a frame of the edit while the window plays, not once an animation frame", async () => {

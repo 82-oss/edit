@@ -635,6 +635,8 @@ impl Drop for SoundReader {
 /// (`crate::player`). Short of sound it plays silence and the clock holds.
 pub struct Speaker {
     handle: NonNull<c_void>,
+    /// The output's latency and when it was read (`latency`).
+    latency: parking_lot::Mutex<Option<(f64, std::time::Instant)>>,
 }
 
 // The ring's ends are atomics and AVAudioEngine's calls are thread-safe; one
@@ -661,6 +663,7 @@ impl Speaker {
         let handle = unsafe { edit_speaker_open(capacity, error.as_mut_ptr(), error.len()) };
         Ok(Self {
             handle: NonNull::new(handle).ok_or_else(|| message(&error))?,
+            latency: parking_lot::Mutex::new(None),
         })
     }
 
@@ -711,10 +714,22 @@ impl Speaker {
         state
     }
 
-    /// Seconds between a frame leaving the ring and the speaker.
+    /// Seconds between a frame leaving the ring and the speaker: read from
+    /// the device at most once a second (a route that changes, headphones in,
+    /// is heard within one). Read at every tick and every ask of where the
+    /// play is, it was a HAL property read each time (kenobi, Nov 17: 87 of a
+    /// play's 8 s of samples on the preview's thread).
     pub fn latency(&self) -> f64 {
+        let mut kept = self.latency.lock();
+        if let Some((seconds, read)) = *kept {
+            if read.elapsed() < std::time::Duration::from_secs(1) {
+                return seconds;
+            }
+        }
         // Reads the engine's output node.
-        unsafe { edit_speaker_latency(self.handle.as_ptr()) }
+        let seconds = unsafe { edit_speaker_latency(self.handle.as_ptr()) };
+        *kept = Some((seconds, std::time::Instant::now()));
+        seconds
     }
 }
 
