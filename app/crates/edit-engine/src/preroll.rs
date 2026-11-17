@@ -19,7 +19,7 @@
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -276,7 +276,7 @@ fn read(shared: &Shared, index: usize) {
         }
     };
     let length = (stretch.to - stretch.from).max(0.0);
-    let spawned = Command::new(crate::util::ffmpeg())
+    let spawned = crate::util::ffmpeg_command()
         .args(["-hide_banner", "-loglevel", "error", "-nostdin"])
         .args(["-protocol_whitelist", crate::util::protocols(&stretch.path)])
         .args(crate::util::url_args(&stretch.path))
@@ -378,7 +378,7 @@ mod tests {
     /// `seconds` of 30 fps H.264 with a tone.
     fn video(dir: &Path, seconds: u32) -> PathBuf {
         let path = dir.join("v.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg(format!("testsrc2=size=320x180:rate=30:duration={seconds}"))
             .args(["-f", "lavfi", "-i"])

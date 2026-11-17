@@ -25,7 +25,7 @@ use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -998,7 +998,7 @@ fn decode_ffmpeg(
     height: usize,
     rate: f64,
 ) -> Result<Frames, String> {
-    let mut command = Command::new(crate::util::ffmpeg());
+    let mut command = crate::util::ffmpeg_command();
     command.args(["-hide_banner", "-loglevel", "error"]);
     if cfg!(target_os = "macos") {
         // Hardware decoding where it can (FFmpeg falls back by itself).
@@ -1957,7 +1957,7 @@ mod tests {
     fn square_video(dir: &Path) -> PathBuf {
         std::fs::create_dir_all(dir).unwrap();
         let path = dir.join("square.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-hide_banner", "-loglevel", "error", "-y", "-filter_complex"])
             .arg("color=c=0x404040:s=1280x720:r=30:d=4[bg];color=white:s=120x120:r=30:d=4,drawbox=x=30:y=30:w=60:h=60:color=black:t=fill[sq];[bg][sq]overlay=x='100+200*t':y=300,noise=alls=12:allf=t")
             .args(["-pix_fmt", "yuv420p", "-c:v", "libx264", "-preset", "ultrafast"])

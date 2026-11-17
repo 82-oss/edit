@@ -616,7 +616,7 @@ pub struct Encoders {
 pub fn encoders() -> Encoders {
     static FOUND: OnceLock<Encoders> = OnceLock::new();
     *FOUND.get_or_init(|| {
-        let listing = std::process::Command::new(crate::util::ffmpeg())
+        let listing = crate::util::ffmpeg_command()
             .args(["-hide_banner", "-encoders"])
             .output()
             .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
@@ -686,7 +686,7 @@ pub fn nvenc_args(hevc: bool, rate: u64) -> Vec<String> {
 /// Whether NVENC encodes a frame: the driver loads and the card takes a session.
 fn nvenc_answers() -> bool {
     ["h264_nvenc", "hevc_nvenc"].iter().all(|codec| {
-        std::process::Command::new(crate::util::ffmpeg())
+        crate::util::ffmpeg_command()
             .args([
                 "-hide_banner",
                 "-v",

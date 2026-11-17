@@ -964,7 +964,6 @@ pub fn keychain_delete(service: &str, account: &str) -> Result<(), i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -1068,7 +1067,7 @@ mod tests {
         assert!(reader.frame(10.0, &mut pixels, Order::Rgba, false).unwrap());
 
         let rotated = dir.join("rotated.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-display_rotation", "90", "-i"])
             .arg(&path)
             .args(["-c", "copy"])
@@ -1080,7 +1079,7 @@ mod tests {
         assert_eq!((info.width, info.height), (32, 64));
         let mut reader = Reader::open(&rotated, 32, 64).unwrap();
         reader.frame(0.0, &mut pixels, Order::Rgba, false).unwrap();
-        let reference = Command::new(crate::util::ffmpeg())
+        let reference = crate::util::ffmpeg_command()
             .args(["-v", "error", "-threads", "1", "-i"])
             .arg(&rotated)
             .args([
@@ -1114,7 +1113,7 @@ mod tests {
     fn reads_past_the_video_track_when_the_sound_is_longer() {
         let dir = temp_dir("longer-sound");
         let path = dir.join("short-video.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg("testsrc2=size=64x32:rate=30:duration=1")
             .args(["-f", "lavfi", "-i", "sine=duration=3:sample_rate=48000"])
@@ -1140,7 +1139,7 @@ mod tests {
     fn a_leading_empty_edit_shows_the_first_picture_not_black() {
         let dir = temp_dir("empty-edit");
         let path = dir.join("late-start.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg("testsrc2=size=64x32:rate=30:duration=1")
             .args(["-vf", "setpts=PTS+0.1/TB", "-c:v", "libx264"])
@@ -1168,7 +1167,7 @@ mod tests {
         let dir = temp_dir("sound");
         let path = dir.join("clicks.m4a");
         // A click every 0.25 s on the left, silence on the right.
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg("aevalsrc='if(lt(mod(n\\,12000)\\,24)\\,0.8\\,0)|0':s=48000:d=3")
             .args(["-c:a", "aac", "-b:a", "256k"])
@@ -1304,7 +1303,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("edit-smooth-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let source = dir.join("moving.mp4");
-        let made = std::process::Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             // A phone's tall frame, tagged Rec. 709 (decoded with those tags, the processor's frames came out dark).
             .args([
                 "-v",
@@ -1342,7 +1341,7 @@ mod tests {
             std::fs::remove_dir_all(dir).ok();
             return;
         }
-        let raw = std::process::Command::new(crate::util::ffmpeg())
+        let raw = crate::util::ffmpeg_command()
             .args(["-v", "error", "-i"])
             .arg(&out)
             .args(["-vf", "scale=32:24,format=gray", "-f", "rawvideo", "-"])

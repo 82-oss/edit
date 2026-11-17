@@ -740,7 +740,10 @@ export class Processor {
    * once it's come down (the copy the players read: `mediaHooks.censorInput`), never through the stream: read
    * whole through the loopback, every frame of it, while an import filled the link, it failed again and again
    * with "Error opening input files: Input/output error" (the M4, Nov 16), FFmpeg's word for an answer that
-   * ended short. A copy that doesn't come reads the stream, as before (its blocks now tried again on a failure).
+   * ended short. A copy that can't come (no room for it, its fetch failing) isn't read at all, said in a line,
+   * and is asked for again at the agent's next look (`warmForAgent`). A pieced proxy is read from its original
+   * (`input`), on R2 over HTTPS when it isn't here (the engine gives every FFmpeg the system's certificates:
+   * util.rs `ffmpeg_command`; until Nov 17 its own children had none, and on Sphe's M4 three failed at once).
    */
   private censorLater(source: string, input: string): void {
     const read = input === source ? null : input;
@@ -749,12 +752,13 @@ export class Processor {
       native().censorWarm(source, read);
       return;
     }
-    void local
-      .catch((error: unknown) => {
-        diag.warn("media", `${diag.scrub(source)}: its whole copy for the censor check didn't come (${diag.messageOf(error)}); reading the stream`);
-        return null;
-      })
-      .then((path) => native().censorWarm(source, path));
+    void local.then(
+      (path) => native().censorWarm(source, path),
+      (error: unknown) => {
+        this.warmed.delete(source);
+        diag.info("media", `${diag.scrub(source)}: censor check waits for its whole copy here (${diag.messageOf(error)}); not read from the stream`);
+      },
+    );
   }
 
   /** What a file's analyses read: a pieced proxy's original, else the file itself. */

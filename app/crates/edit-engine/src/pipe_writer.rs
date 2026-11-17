@@ -8,7 +8,7 @@
 
 use std::io::{BufWriter, Read, Write};
 use std::path::Path;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 
 use crate::render::Order;
 
@@ -54,7 +54,7 @@ impl Writer {
         options: WriterOptions,
     ) -> Result<Self, String> {
         let encoders = crate::export::encoders();
-        let mut command = Command::new(crate::util::ffmpeg());
+        let mut command = crate::util::ffmpeg_command();
         command
             .args([
                 "-hide_banner",

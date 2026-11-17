@@ -29,6 +29,47 @@ pub fn ffprobe() -> &'static OsString {
     PATH.get_or_init(|| chosen(1).unwrap_or_else(|| find("ffprobe", "EDIT_FFPROBE")))
 }
 
+/// FFmpeg as a command to run, with the system's certificates (below). Every
+/// FFmpeg the engine starts is made here.
+pub fn ffmpeg_command() -> std::process::Command {
+    tool_command(ffmpeg())
+}
+
+/// ffprobe as a command to run, with the system's certificates.
+pub fn ffprobe_command() -> std::process::Command {
+    tool_command(ffprobe())
+}
+
+/// A tool's command with `SSL_CERT_FILE` set to the system's certificates
+/// where the environment has none: the shipped static FFmpeg's OpenSSL
+/// doesn't know where macOS keeps them, so an HTTPS read without them fails
+/// verification. The server sets it for its own children (tools.ts
+/// `shareCertificates`), but Bun's `process.env` never reaches this
+/// process's own environment, so the engine's children went without: the
+/// censor check of a pieced proxy's original on R2 failed in under half a
+/// second with "Error opening input files: Input/output error" (Sphe's M4,
+/// Nov 17, nightly-78, three at the agent's first look).
+fn tool_command(path: &OsString) -> std::process::Command {
+    let mut command = std::process::Command::new(path);
+    if std::env::var_os("SSL_CERT_FILE").is_none_or(|value| value.is_empty()) {
+        if let Some(file) = certificates() {
+            command.env("SSL_CERT_FILE", file);
+        }
+    }
+    command
+}
+
+/// The system's certificates: macOS's, then Debian's and Ubuntu's, then Fedora's.
+pub fn certificates() -> Option<&'static str> {
+    const SYSTEMS: [&str; 3] = [
+        "/etc/ssl/cert.pem",
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+    ];
+    static FOUND: OnceLock<Option<&'static str>> = OnceLock::new();
+    *FOUND.get_or_init(|| SYSTEMS.into_iter().find(|file| Path::new(file).is_file()))
+}
+
 /// FFmpeg and ffprobe as the host found them. Only the first call counts,
 /// and only before [`ffmpeg`] / [`ffprobe`] are first asked.
 pub fn use_tools(ffmpeg: OsString, ffprobe: OsString) {
@@ -150,12 +191,6 @@ pub fn protocols(path: &Path) -> &'static str {
 /// are where Debian and Fedora keep them), and picking a long read from R2
 /// back up when the connection drops.
 pub fn url_args(path: &Path) -> &'static [&'static str] {
-    /// macOS's, then Debian's and Ubuntu's, then Fedora's.
-    const SYSTEMS: [&str; 3] = [
-        "/etc/ssl/cert.pem",
-        "/etc/ssl/certs/ca-certificates.crt",
-        "/etc/pki/tls/certs/ca-bundle.crt",
-    ];
     // A read that gets nothing for 30 s fails (and reconnects) rather than
     // waiting forever on a connection that went quiet.
     const RECONNECT: [&str; 8] = [
@@ -177,8 +212,8 @@ pub fn url_args(path: &Path) -> &'static [&'static str] {
     {
         SECURE.get_or_init(|| {
             let mut args = Vec::new();
-            if let Some(file) = SYSTEMS.iter().find(|file| Path::new(file).is_file()) {
-                args.extend(["-ca_file", *file]);
+            if let Some(file) = certificates() {
+                args.extend(["-ca_file", file]);
             }
             args.extend(RECONNECT);
             args
@@ -499,6 +534,26 @@ pub fn interactive_thread() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_tool_command_carries_the_systems_certificates() {
+        // Bun's process.env never reaches this process's environment (Sphe's M4, Nov 17): each command says it itself.
+        for command in [ffmpeg_command(), ffprobe_command()] {
+            let given = command
+                .get_envs()
+                .find(|(name, _)| *name == "SSL_CERT_FILE")
+                .and_then(|(_, value)| value.map(|value| value.to_os_string()));
+            match (
+                std::env::var_os("SSL_CERT_FILE").filter(|value| !value.is_empty()),
+                certificates(),
+            ) {
+                // Set already: inherited as it is.
+                (Some(_), _) => assert_eq!(given, None),
+                (None, Some(file)) => assert_eq!(given, Some(OsString::from(file))),
+                (None, None) => assert_eq!(given, None),
+            }
+        }
+    }
 
     #[test]
     fn each_writer_has_its_own_partial_file() {

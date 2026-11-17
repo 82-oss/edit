@@ -506,7 +506,6 @@ mod tests {
     use super::*;
     use crate::render::Order;
     use std::path::{Path, PathBuf};
-    use std::process::Command;
     use std::time::Instant;
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -522,7 +521,7 @@ mod tests {
     /// `seconds` of 30 fps H.264 at `width`×`height`, a keyframe every `gop` frames, every frame different.
     fn video(dir: &Path, width: u32, height: u32, seconds: u32, gop: u32) -> PathBuf {
         let path = dir.join(format!("{width}x{height}-g{gop}.mp4"));
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg(format!(
                 "testsrc2=size={width}x{height}:rate=30:duration={seconds}"

@@ -259,7 +259,7 @@ test.skipIf(ffmpeg === null)("a pieced proxy's thumbnails, waveform, censor chec
   }
 });
 
-test.skipIf(ffmpeg === null)("a streamed preview's censor check reads its whole copy here once it's come, not the stream (the M4, Nov 16: \"Input/output error\" during an import)", async () => {
+test.skipIf(ffmpeg === null)("a streamed preview's censor check reads its whole copy here once it's come, never the stream, even when the copy can't come (the M4, Nov 16 and 17: \"Input/output error\")", async () => {
   const { dir, app, store, cleanup } = fixtureHome("media-censor-copy");
   const { mediaHooks } = await import("../src/media.ts");
   const { native } = await import("../src/native/index.ts");
@@ -283,6 +283,24 @@ test.skipIf(ffmpeg === null)("a streamed preview's censor check reads its whole 
     expect(warmed).toEqual([]);
     land(`${dir}/whole.mp4`);
     await Bun.sleep(10);
+    expect(warmed).toEqual([[source, `${dir}/whole.mp4`]]);
+    // A copy that can't come (no room for it, its fetch failing): never read from the stream instead (Sphe's M4,
+    // Nov 17), and asked for again at the agent's next look.
+    const short = `${dir}/short.mp4`;
+    fs.copyFileSync(source, short);
+    let asked = 0;
+    mediaHooks.censorInput = (path) => {
+      if (path !== short) return null;
+      asked += 1;
+      return Promise.reject(new Error("the disk too full to keep it whole"));
+    };
+    app.media.warmForAgent([{ path: short, name: "short.mp4", ...probe }]);
+    await Bun.sleep(30);
+    expect(asked).toBe(1);
+    expect(warmed).toEqual([[source, `${dir}/whole.mp4`]]);
+    app.media.warmForAgent([{ path: short, name: "short.mp4", ...probe }]);
+    await Bun.sleep(30);
+    expect(asked).toBe(2);
     expect(warmed).toEqual([[source, `${dir}/whole.mp4`]]);
   } finally {
     mediaHooks.censorInput = was;

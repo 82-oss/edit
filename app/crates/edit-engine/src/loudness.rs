@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::f64::consts::PI;
 use std::io::{BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -396,7 +396,7 @@ impl Analyser {
 fn analyse(path: &Path) -> Result<Blocks, String> {
     let input = crate::media::analysis_input(path);
     let path = input.as_path();
-    let mut child = Command::new(crate::util::ffmpeg())
+    let mut child = crate::util::ffmpeg_command()
         .args([
             "-hide_banner",
             "-loglevel",
@@ -648,7 +648,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("edit-loudness-noisy-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let clean = dir.join("clean.mp3");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=200"])
             .args(["-c:a", "libmp3lame", "-b:a", "128k"])
             .arg(&clean)
@@ -706,7 +706,7 @@ mod tests {
         ];
         for (name, filter) in sounds {
             let path = dir.join(name);
-            let made = Command::new(crate::util::ffmpeg())
+            let made = crate::util::ffmpeg_command()
                 .args([
                     "-hide_banner",
                     "-loglevel",
@@ -781,7 +781,7 @@ mod tests {
 
     /// FFmpeg's measurement as `library::levels` used to make it.
     fn ebur128(path: &Path, from: f64, seconds: f64) -> (f64, f64) {
-        let output = Command::new(crate::util::ffmpeg())
+        let output = crate::util::ffmpeg_command()
             .args(["-hide_banner", "-nostats"])
             .args(["-ss", &format!("{from:.3}"), "-t", &format!("{seconds:.3}")])
             .arg("-i")

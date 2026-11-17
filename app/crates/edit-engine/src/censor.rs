@@ -12,7 +12,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::{Arc, OnceLock};
 
 use edit_core::{ClipContent, MediaKind, Project, TrackKind};
@@ -178,12 +177,14 @@ fn censored_seconds(frames: &[u8]) -> Vec<u8> {
 /// watched here (Pause::ForPlays: kenobi, Nov 17, 46 of them at 155–245% CPU
 /// beside a cold play).
 fn grey_seconds(file: &Path, keyframes: bool) -> Result<Vec<u8>, String> {
-    let mut command = Command::new(crate::util::ffmpeg());
+    let mut command = crate::util::ffmpeg_command();
     crate::util::background_command(&mut command);
     command.args(["-hide_banner", "-loglevel", "error"]);
     if keyframes {
         command.args(["-skip_frame", "nokey"]);
     }
+    // Over HTTPS (a pieced proxy's original on R2): the system's certificates, and a dropped read picked back up.
+    command.args(crate::util::url_args(file));
     command.arg("-i").arg(file).args([
         "-map",
         "0:v:0",

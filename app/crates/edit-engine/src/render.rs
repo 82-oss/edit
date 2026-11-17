@@ -13,7 +13,7 @@ use parking_lot::{Condvar, Mutex};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{ChildStdin, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
@@ -166,7 +166,7 @@ fn yuv420_source(path: &Path) -> bool {
         Some(path.to_path_buf())
     };
     let fits = file.is_some_and(|file| {
-        Command::new(crate::util::ffprobe())
+        crate::util::ffprobe_command()
             .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
             .args([
                 "stream=pix_fmt,color_space,color_range",
@@ -538,7 +538,7 @@ impl VideoReader {
         let first = self.nearest(time);
         let fps = self.source.fps;
         let time = ((first as f64 - 0.5) / fps).max(0.0);
-        let mut child = Command::new(crate::util::ffmpeg())
+        let mut child = crate::util::ffmpeg_command()
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -626,7 +626,7 @@ impl VideoReader {
     fn decode_still_ffmpeg(&mut self) -> Result<(), String> {
         self.stop();
         let path = &self.source.key.path;
-        let output = Command::new(crate::util::ffmpeg())
+        let output = crate::util::ffmpeg_command()
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -1797,7 +1797,7 @@ pub fn save_still(media: &Media, time: f64, out: &Path) -> Result<(), String> {
             ),
         }
     }
-    let mut command = Command::new(crate::util::ffmpeg());
+    let mut command = crate::util::ffmpeg_command();
     command.args(["-hide_banner", "-loglevel", "error", "-y"]);
     // A photo is its one frame, read with no seek: FFmpeg 8 gives no picture
     // at all for a JPEG or PNG asked from -ss 0, and says nothing (Killer
@@ -2399,7 +2399,7 @@ fn join_chunks(
     chapters: Option<&Path>,
     output: &Path,
 ) -> Result<(), String> {
-    let mut command = Command::new(crate::util::ffmpeg());
+    let mut command = crate::util::ffmpeg_command();
     command
         .args([
             "-hide_banner",
@@ -2694,7 +2694,7 @@ fn join(
     chapters: Option<&Path>,
     output: &Path,
 ) -> Result<(), String> {
-    let mut command = Command::new(crate::util::ffmpeg());
+    let mut command = crate::util::ffmpeg_command();
     command
         .args(["-hide_banner", "-loglevel", "error", "-y", "-i"])
         .arg(picture);
@@ -2777,7 +2777,7 @@ fn render_picture(
     }
     let settings = project.settings;
     let (width, height) = (settings.width, settings.height);
-    let mut command = Command::new(crate::util::ffmpeg());
+    let mut command = crate::util::ffmpeg_command();
     command
         .args([
             "-hide_banner",
@@ -3612,7 +3612,7 @@ mod tests {
     fn two_layers_keep_their_readers_from_frame_to_frame() {
         let dir = temp_dir("two-layers");
         let video = dir.join("bars.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg("testsrc2=size=320x180:rate=30:duration=2")
             .args(["-c:v", "libx264", "-g", "15", "-pix_fmt", "yuv420p"])
@@ -3643,7 +3643,7 @@ mod tests {
     fn a_photos_still_is_taken() {
         let dir = temp_dir("still");
         let photo = dir.join("photo.png");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args([
                 "-v",
                 "error",
@@ -3682,7 +3682,7 @@ mod tests {
     /// A 2 s 320×180 source of one flat colour, its sound a 0.8 click at `click` s.
     fn source(dir: &Path, name: &str, color: &str, click: f64) -> PathBuf {
         let path = dir.join(name);
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg(format!("color=c={color}:size=320x180:rate=30:duration=2"))
             .args(["-f", "lavfi", "-i"])
@@ -3700,7 +3700,7 @@ mod tests {
     }
 
     fn decode_video(path: &Path) -> Vec<u8> {
-        let output = Command::new(crate::util::ffmpeg())
+        let output = crate::util::ffmpeg_command()
             .args(["-v", "error", "-i"])
             .arg(path)
             .args([
@@ -3719,7 +3719,7 @@ mod tests {
     }
 
     fn decode_sound(path: &Path) -> Vec<f32> {
-        let output = Command::new(crate::util::ffmpeg())
+        let output = crate::util::ffmpeg_command()
             .args(["-v", "error", "-i"])
             .arg(path)
             .args([
@@ -3738,7 +3738,7 @@ mod tests {
     }
 
     fn duration(path: &Path, stream: &str) -> f64 {
-        let output = Command::new(crate::util::ffprobe())
+        let output = crate::util::ffprobe_command()
             .args([
                 "-v",
                 "error",
@@ -3859,7 +3859,7 @@ mod tests {
         let dir = temp_dir("decode420");
         let make = |name: &str, size: &str, vf: &str| {
             let path = dir.join(name);
-            let made = Command::new(crate::util::ffmpeg())
+            let made = crate::util::ffmpeg_command()
                 .args(["-v", "error", "-f", "lavfi", "-i"])
                 .arg(format!("testsrc2=size={size}:rate=30:duration=1"))
                 .args(["-vf", vf, "-c:v", "libx264", "-crf", "12"])
@@ -3967,7 +3967,7 @@ mod tests {
     fn the_gpus_420_is_ffmpegs() {
         let dir = temp_dir("yuv420");
         let bars = dir.join("bars.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg("testsrc2=size=320x180:rate=30:duration=1")
             .args(["-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv444p"])
@@ -4006,7 +4006,7 @@ mod tests {
         .unwrap();
         export(&project, &options, &plan, &ffmpeg, &dir, &cancel, |_| {}).unwrap();
         let probe = |path: &Path| {
-            let output = Command::new(crate::util::ffprobe())
+            let output = crate::util::ffprobe_command()
                 .args(["-v", "error", "-select_streams", "v:0", "-show_entries"])
                 .args(["stream=pix_fmt,color_space,color_range,color_primaries,color_transfer"])
                 .args(["-of", "csv=p=0"])
@@ -4017,7 +4017,7 @@ mod tests {
         };
         assert_eq!(probe(&gpu), "yuv420p,tv,bt709,bt709,bt709");
         assert_eq!(probe(&gpu), probe(&ffmpeg));
-        let compared = Command::new(crate::util::ffmpeg())
+        let compared = crate::util::ffmpeg_command()
             .args(["-hide_banner", "-i"])
             .arg(&gpu)
             .arg("-i")
@@ -4337,7 +4337,7 @@ mod tests {
             |frame| (frame / 30) % 2 == 1 || frame / 30 == 96,
             3000,
         );
-        let first_frame = Command::new(crate::util::ffprobe())
+        let first_frame = crate::util::ffprobe_command()
             .args([
                 "-v",
                 "error",
@@ -4458,7 +4458,7 @@ mod tests {
             |_| {},
         )
         .unwrap();
-        let probe = Command::new(crate::util::ffprobe())
+        let probe = crate::util::ffprobe_command()
             .args([
                 "-v",
                 "error",
@@ -4529,7 +4529,7 @@ mod tests {
     /// so every decoded picture says which frame it is.
     fn frame_counter(dir: &Path) -> PathBuf {
         let path = dir.join("counter.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg("color=c=black:size=64x36:rate=30:duration=2,format=yuv420p,geq=lum='16+3*N':cb=128:cr=128")
             .args(["-c:v", "libx264", "-qp", "4", "-g", "10", "-bf", "0"])
@@ -4572,7 +4572,7 @@ mod tests {
     fn readers_read_a_cloud_original_from_its_local_excerpt() {
         let dir = temp_dir("excerpt");
         let path = dir.join("counter-b.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg("color=c=black:size=64x36:rate=30:duration=2,format=yuv420p,geq=lum='16+3*N':cb=128:cr=128")
             .args(["-c:v", "libx264", "-qp", "4", "-g", "12", "-bf", "3"])
@@ -4582,7 +4582,7 @@ mod tests {
         assert!(made.success());
         // Frame 21 (0.7 s) is no keyframe: the copy starts at 12's and hides 12–20.
         let excerpt = dir.join("excerpt.mp4");
-        let cut = Command::new(crate::util::ffmpeg())
+        let cut = crate::util::ffmpeg_command()
             .args(["-v", "error", "-ss", "0.7", "-i"])
             .arg(&path)
             .args(["-t", "0.8", "-map", "0:v:0", "-c:v", "copy", "-an"])
@@ -4634,7 +4634,7 @@ mod tests {
     fn a_reader_open_before_an_excerpt_was_cut_reads_it_after() {
         let dir = temp_dir("excerpt-late");
         let path = dir.join("counter-late.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg("color=c=black:size=64x36:rate=30:duration=2,format=yuv420p,geq=lum='16+3*N':cb=128:cr=128")
             .args(["-c:v", "libx264", "-qp", "4", "-g", "15"])
@@ -4644,7 +4644,7 @@ mod tests {
         assert!(made.success());
         let cut = |from: &str, name: &str| {
             let out = dir.join(name);
-            let done = Command::new(crate::util::ffmpeg())
+            let done = crate::util::ffmpeg_command()
                 .args(["-v", "error", "-ss", from, "-i"])
                 .arg(&path)
                 .args(["-t", "0.5", "-map", "0:v:0", "-c:v", "copy", "-an"])
@@ -4708,7 +4708,7 @@ mod tests {
     fn a_time_nearest_the_next_pieces_first_frame_reads_it() {
         let dir = temp_dir("excerpt-edge");
         let path = dir.join("counter-edge.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg("color=c=black:size=64x36:rate=30:duration=2,format=yuv420p,geq=lum='16+3*N':cb=128:cr=128")
             .args(["-c:v", "libx264", "-qp", "4", "-g", "15"])
@@ -4718,7 +4718,7 @@ mod tests {
         assert!(made.success());
         let cut = |from: &str, name: &str| {
             let out = dir.join(name);
-            let done = Command::new(crate::util::ffmpeg())
+            let done = crate::util::ffmpeg_command()
                 .args(["-v", "error", "-ss", from, "-i"])
                 .arg(&path)
                 .args(["-frames:v", "15", "-map", "0:v:0", "-c:v", "copy", "-an"])
@@ -4778,7 +4778,7 @@ mod tests {
     fn a_file_starting_after_frames_to_discard_starts_on_its_own_first_frame() {
         let dir = temp_dir("discarded-start");
         let path = dir.join("counter.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg("color=c=black:size=64x36:rate=30:duration=2,format=yuv420p,geq=lum='16+3*N':cb=128:cr=128")
             .args(["-c:v", "libx264", "-qp", "4", "-g", "15", "-bf", "0", "-video_track_timescale", "90000"])
@@ -4787,7 +4787,7 @@ mod tests {
             .unwrap();
         assert!(made.success());
         let cut = dir.join("cut.mp4");
-        let done = Command::new(crate::util::ffmpeg())
+        let done = crate::util::ffmpeg_command()
             .args(["-v", "error", "-ss", "0.99999", "-i"])
             .arg(&path)
             .args(["-t", "0.5", "-map", "0:v:0", "-c:v", "copy", "-an"])
@@ -4820,7 +4820,7 @@ mod tests {
     fn excerpts_of_long_gops_at_ntsc_rates_read_as_the_original() {
         let dir = temp_dir("excerpt-ntsc");
         let path = dir.join("long-gop.mp4");
-        let made = Command::new(crate::util::ffmpeg())
+        let made = crate::util::ffmpeg_command()
             .args(["-v", "error", "-f", "lavfi", "-i"])
             .arg("testsrc2=size=96x54:rate=30000/1001:duration=40")
             .args([
@@ -4834,7 +4834,7 @@ mod tests {
         // Cell 1: frame ⌊30 × 29.97⌋ = 899 on; the only keyframe before it is frame 0.
         let from = (30.0_f64 * fps + 1e-6).floor() / fps;
         let excerpt = dir.join("cell-1.mp4");
-        let cut = Command::new(crate::util::ffmpeg())
+        let cut = crate::util::ffmpeg_command()
             .args(["-v", "error", "-ss", &format!("{from:.6}"), "-i"])
             .arg(&path)
             .args([
@@ -4953,7 +4953,7 @@ mod tests {
         let dir = temp_dir("photo");
         for name in ["photo.jpg", "photo.png"] {
             let path = dir.join(name);
-            let made = Command::new(crate::util::ffmpeg())
+            let made = crate::util::ffmpeg_command()
                 .args([
                     "-hide_banner",
                     "-loglevel",
@@ -5033,7 +5033,7 @@ mod tests {
         let dir = temp_dir("covered");
         let make = |name: &str, pattern: &str| {
             let path = dir.join(name);
-            let made = Command::new(crate::util::ffmpeg())
+            let made = crate::util::ffmpeg_command()
                 .args(["-v", "error", "-f", "lavfi", "-i"])
                 .arg(format!("{pattern}=size=1920x1080:rate=30:duration=20"))
                 .args([

@@ -139,7 +139,7 @@ pub fn probe(path: &Path) -> Result<Probe, String> {
             has_audio: false,
         });
     }
-    let output = Command::new(crate::util::ffprobe())
+    let output = crate::util::ffprobe_command()
         .args([
             "-v",
             "error",
@@ -488,7 +488,7 @@ pub fn make_light(source: &Path, paths: &CachePaths, probe: &Probe) -> Result<()
         return std::fs::rename(&partial, &paths.light).map_err(|error| error.to_string());
     }
     let gop = (probe.fps / 2.0).round().max(1.0).to_string();
-    let output = Command::new(crate::util::ffmpeg())
+    let output = crate::util::ffmpeg_command()
         .args([
             "-hide_banner",
             "-loglevel",
@@ -630,7 +630,7 @@ pub fn make_proxy(
         std::fs::rename(&video_tmp, &paths.proxy).map_err(|error| error.to_string())?;
         return std::fs::write(&paths.proxy_done, b"").map_err(|error| error.to_string());
     }
-    let mut command = Command::new(crate::util::ffmpeg());
+    let mut command = crate::util::ffmpeg_command();
     command
         .args([
             "-hide_banner",
@@ -833,7 +833,7 @@ pub fn make_cloud_proxy(source: &Path, probe: &Probe, out: &Path) -> Result<(), 
         );
     #[cfg(not(target_os = "macos"))]
     let native = false;
-    let mut command = Command::new(crate::util::ffmpeg());
+    let mut command = crate::util::ffmpeg_command();
     command.args([
         "-hide_banner",
         "-loglevel",
@@ -923,7 +923,7 @@ pub fn preview_from_cloud_proxy(
             std::fs::copy(source, &video_tmp).map_err(|error| error.to_string())?;
         }
         if probe.has_audio {
-            run(Command::new(crate::util::ffmpeg())
+            run(crate::util::ffmpeg_command()
                 .args([
                     "-hide_banner",
                     "-loglevel",
@@ -1001,7 +1001,7 @@ fn hardware_video(
     let rate = format!("{}k", bitrate / 1000);
     let ceiling = format!("{}k", bitrate * 5 / 4 / 1000);
     let buffer = format!("{}k", bitrate * 2 / 1000);
-    let mut command = Command::new(crate::util::ffmpeg());
+    let mut command = crate::util::ffmpeg_command();
     command
         .args([
             "-hide_banner",
@@ -1175,7 +1175,7 @@ pub fn make_image_thumbs(source: &Path, paths: &CachePaths) -> Result<u32, Strin
     #[cfg(target_os = "macos")]
     let result = crate::mac_media::image_thumbnail(source, &partial);
     #[cfg(not(target_os = "macos"))]
-    let result = run(Command::new(crate::util::ffmpeg())
+    let result = run(crate::util::ffmpeg_command()
         .args(["-v", "error", "-y", "-threads", "1", "-i"])
         .arg(source)
         .args([
@@ -1203,7 +1203,7 @@ pub fn make_peaks(source: &Path, out: &Path) -> Result<(), String> {
     let rate = PEAKS_PER_SECOND * 40;
     let tmp = out.with_extension("partial");
     // Background work beside the player: below what a person watches.
-    let mut child = crate::util::background_command(&mut Command::new(crate::util::ffmpeg()))
+    let mut child = crate::util::background_command(&mut crate::util::ffmpeg_command())
         .args([
             "-hide_banner",
             "-loglevel",

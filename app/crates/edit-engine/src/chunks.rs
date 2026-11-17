@@ -23,7 +23,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use edit_core::{evaluate_seen, Layer, Project, Scene};
 use serde::{Deserialize, Serialize};
@@ -354,7 +354,7 @@ pub struct OldFile {
 
 /// Reads `file`'s picture packets (not decoded) for [`OldFile`].
 pub fn old_file(file: &Path) -> Result<OldFile, String> {
-    let output = Command::new(crate::util::ffprobe())
+    let output = crate::util::ffprobe_command()
         .args([
             "-v",
             "error",
@@ -437,7 +437,7 @@ pub fn concat_list(pieces: &[(Piece, i64)], fps: f64, old: &OldFile) -> Result<S
 
 /// The video packets in `file`'s first picture stream (read, not decoded).
 pub fn frames_in(file: &Path) -> Result<i64, String> {
-    let output = Command::new(crate::util::ffprobe())
+    let output = crate::util::ffprobe_command()
         .args([
             "-v",
             "error",
@@ -462,7 +462,7 @@ pub fn frames_in(file: &Path) -> Result<i64, String> {
 /// The picture's codec setup (SPS/PPS) in `file`, hashed: chunks joined
 /// without re-encoding must all have the same.
 pub fn setup_hash(file: &Path) -> Result<String, String> {
-    let output = Command::new(crate::util::ffprobe())
+    let output = crate::util::ffprobe_command()
         .args([
             "-v",
             "error",
