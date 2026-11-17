@@ -362,14 +362,31 @@ pub fn decoders() -> Option<std::sync::Arc<Decoders>> {
 
 /// Runs `work` with the decoders it starts listed in `decoders`.
 pub fn with_decoders<T>(decoders: Option<std::sync::Arc<Decoders>>, work: impl FnOnce() -> T) -> T {
-    let before = DECODERS.with(|current| current.replace(decoders));
-    let result = work();
-    DECODERS.with(|current| current.replace(before));
-    result
+    struct Restore(Option<Option<std::sync::Arc<Decoders>>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let before = self.0.take().flatten();
+            DECODERS.with(|current| current.replace(before));
+        }
+    }
+    let _restore = Restore(Some(DECODERS.with(|current| current.replace(decoders))));
+    work()
 }
 
-/// Runs `work` (an export), killing the decoders it starts once `cancel` is set.
+/// Runs `work` (an export), killing the decoders it starts once `cancel` is
+/// set, or once it panics. The watch ends however `work` does: ended only
+/// after it returned, a panic (a GPU validation error, Nov 17) left it watching
+/// and the export hung for good instead of failing.
 pub fn killed_on_cancel<T>(cancel: &std::sync::atomic::AtomicBool, work: impl FnOnce() -> T) -> T {
+    struct Done<'a>(&'a std::sync::atomic::AtomicBool, &'a Decoders);
+    impl Drop for Done<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                self.1.kill_all();
+            }
+            self.0.store(true, Ordering::Release);
+        }
+    }
     let decoders = std::sync::Arc::new(Decoders::default());
     let done = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|scope| {
@@ -381,9 +398,8 @@ pub fn killed_on_cancel<T>(cancel: &std::sync::atomic::AtomicBool, work: impl Fn
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         });
-        let result = with_decoders(Some(std::sync::Arc::clone(&decoders)), work);
-        done.store(true, Ordering::Release);
-        result
+        let _done = Done(&done, &decoders);
+        with_decoders(Some(std::sync::Arc::clone(&decoders)), work)
     })
 }
 
@@ -533,6 +549,22 @@ pub fn interactive_thread() {
 
 #[cfg(test)]
 mod tests {
+
+    /// An export that panics fails (the panic comes back to `catch`) rather than hanging.
+    #[test]
+    fn a_panicking_export_fails_rather_than_hangs() {
+        let (sent, came) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let result = catch("the export", || {
+                killed_on_cancel(&cancel, || -> u32 { panic!("a validation error") })
+            });
+            let _ = sent.send(result.is_err());
+        });
+        let failed = came.recv_timeout(std::time::Duration::from_secs(10));
+        assert_eq!(failed, Ok(true), "the export hung");
+    }
+
     use super::*;
 
     #[test]

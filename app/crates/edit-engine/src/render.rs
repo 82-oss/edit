@@ -4128,6 +4128,101 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// A shape or size other than the project's is framed on the GPU for a
+    /// chunked export (`edit_render::frame`), as FFmpeg's graph frames a whole
+    /// one: the same picture in the same place, as bright, for every fill.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_gpus_framing_is_ffmpegs() {
+        use crate::export::{Fill, Shape};
+        let dir = temp_dir("framing");
+        let bars = dir.join("bars.mp4");
+        let made = crate::util::ffmpeg_command()
+            .args(["-v", "error", "-f", "lavfi", "-i"])
+            .arg("testsrc2=size=640x360:rate=30:duration=1")
+            .args(["-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv444p"])
+            .arg(&bars)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let project: Project = serde_json::from_value(json!({
+            "version": 1, "id": "p", "name": "t",
+            "settings": {"width": 640, "height": 360, "fps": 30},
+            "media": [{"id": "m", "name": "bars", "path": bars, "kind": "video", "duration": 1.0,
+                "width": 640, "height": 360, "fps": 30, "has_audio": false}],
+            "tracks": [{"id": "v", "kind": "video"}],
+            "clips": [{"id": "c", "track": "v", "type": "video", "media": "m",
+                "source_in": 0.0, "start": 0, "duration": 15}],
+        }))
+        .unwrap();
+        for (shape, fill, size) in [
+            (Shape::Vertical, Fill::Blur, 360),
+            (Shape::Square, Fill::Crop, 360),
+            (Shape::Portrait, Fill::Black, 360),
+            (Shape::Square, Fill::Blur, 360),
+            (Shape::Original, Fill::Blur, 180),
+        ] {
+            let options = ExportOptions {
+                shape,
+                fill,
+                size: Some(size),
+                quality: crate::export::Quality::High,
+                audio: false,
+                ..ExportOptions::default()
+            };
+            let plan = export_plan(&project, &options).unwrap();
+            let (gpu, ffmpeg) = (dir.join("gpu.mp4"), dir.join("ffmpeg.mp4"));
+            let cancel = AtomicBool::new(false);
+            let cache = dir.join("cache");
+            export_file(
+                &project,
+                &options,
+                &plan,
+                &gpu,
+                &cache,
+                &HashMap::new(),
+                &cancel,
+                |_| {},
+            )
+            .unwrap();
+            export(&project, &options, &plan, &ffmpeg, &dir, &cancel, |_| {}).unwrap();
+            let compared = crate::util::ffmpeg_command()
+                .args(["-hide_banner", "-i"])
+                .arg(&gpu)
+                .arg("-i")
+                .arg(&ffmpeg)
+                .args([
+                    "-lavfi",
+                    "[0:v]split[a][c];[1:v]split[b][d];[a][b]psnr;[c]signalstats,metadata=print:key=lavfi.signalstats.YAVG[e];[d]signalstats,metadata=print:key=lavfi.signalstats.YAVG[f];[e][f]hstack",
+                    "-f",
+                    "null",
+                    "-",
+                ])
+                .output()
+                .unwrap();
+            let said = String::from_utf8_lossy(&compared.stderr);
+            let psnr: f64 = said
+                .split(" y:")
+                .nth(1)
+                .and_then(|rest| rest.split_whitespace().next())
+                .and_then(|value| value.parse().ok())
+                .unwrap_or_else(|| panic!("no PSNR in {said}"));
+            let means: Vec<f64> = said
+                .split("lavfi.signalstats.YAVG=")
+                .skip(1)
+                .filter_map(|rest| rest.split_whitespace().next()?.parse().ok())
+                .collect();
+            let (gpu_mean, ffmpeg_mean) = means
+                .chunks(2)
+                .fold((0.0, 0.0), |(a, b), pair| (a + pair[0], b + pair[1]));
+            let drift = (gpu_mean - ffmpeg_mean) / (means.len() / 2).max(1) as f64;
+            eprintln!("{shape:?} {fill:?} at {size}: Y {psnr} dB, {drift:+.2} levels brighter");
+            assert!(psnr > 36.0, "{shape:?} {fill:?}: {said}");
+            assert!(drift.abs() < 0.75, "{shape:?} {fill:?}: {drift:+.2} levels");
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
     /// 100 one-second cuts alternating red and blue (`blue_at` makes those
     /// clips blue instead), each with its sound.
     fn cuts(red: &Path, blue: &Path, blue_at: &[i64], skip_first: i64) -> Project {
