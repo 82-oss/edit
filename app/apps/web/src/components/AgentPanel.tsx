@@ -1,5 +1,5 @@
 import { explain } from "@edit/types/problems";
-import { ArrowLeft, AudioLines, Check, ChevronRight, CircleSlash, Eye, FileInput, Image, FileText, FolderOpen, LayoutGrid, ListChecks, MousePointerClick, Music, RotateCcw, ScrollText, Scissors, Share, SlidersHorizontal, Spline, Square, SquarePlus, Star, Trash2, Type, Wrench, ScanEye, Pencil, type LucideIcon, Copy, Quote, SquareTerminal, FilePen, Search, Globe, BookOpen, ImagePlus, Hourglass, Minimize2, ArrowRight, Clapperboard } from "lucide-react";
+import { ArrowLeft, AudioLines, Check, ChevronRight, CircleSlash, Eye, FileInput, Image, ImageDown, FileText, FolderOpen, LayoutGrid, ListChecks, MousePointerClick, Music, RotateCcw, ScrollText, Scissors, Share, SlidersHorizontal, Spline, Square, SquarePlus, Star, Trash2, Type, Wrench, ScanEye, Pencil, type LucideIcon, Copy, Quote, SquareTerminal, FilePen, Search, Globe, BookOpen, ImagePlus, Hourglass, Minimize2, ArrowRight, Clapperboard } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -25,6 +25,7 @@ import { argsOf, groupKind, shortTokens, stepKind, type StepKind } from "../lib/
 import { useSentNow } from "../lib/sentNow";
 import { useNow } from "../lib/now";
 import { api, mediaUrl } from "../lib/api";
+import { copyImage, pngOf, saveFile } from "../lib/files";
 import { queued, useNotes } from "../lib/notes";
 import { playhead, preview } from "../lib/playback";
 import { projectUploader } from "../lib/upload";
@@ -34,7 +35,7 @@ import { rate, type Project } from "../lib/types";
 import { useWatching } from "../lib/watching";
 import { addQuote, parseQuoted } from "../lib/chatQuotes";
 import { QuoteSelection } from "./QuoteSelection";
-import { openMenu } from "./ContextMenu";
+import { openMenu, type MenuItem } from "./ContextMenu";
 import { ChatComposer, QueueIsland, SentFiles } from "./ChatComposer";
 import { UserWords } from "./Quotes";
 import { NoteQueue } from "./NoteQueue";
@@ -783,7 +784,7 @@ function pressMenu(event: React.PointerEvent<HTMLElement>) {
  * page and have the context menu to copy it or quote it"): what's selected in
  * it, or the whole message, copied, or quoted into the next one.
  */
-function quoteMenu(event: React.MouseEvent<HTMLElement>, from: string, whole: string) {
+function quoteMenu(event: React.MouseEvent<HTMLElement>, from: string, whole: string, picture: MenuItem[] = []) {
   const selection = window.getSelection();
   // What was selected as the button went down: a Mac's WebKit (and Chrome) selects the word under the pointer just before the menu.
   const held = pressed?.on === event.currentTarget ? pressed.selected : null;
@@ -793,19 +794,50 @@ function quoteMenu(event: React.MouseEvent<HTMLElement>, from: string, whole: st
   if (!inside && held === false) selection?.removeAllRanges();
   const text = (inside && selection !== null ? selection.toString() : whole).trim();
   const projectId = useEditor.getState().project?.id;
-  if (text === "" || projectId === undefined) return;
-  openMenu(event, [
-    { label: inside ? "Copy" : "Copy message", icon: <Copy size={14} />, onSelect: () => void navigator.clipboard.writeText(text).catch(() => {}) },
-    {
-      label: inside ? "Quote" : "Quote message",
-      icon: <Quote size={14} />,
-      onSelect: () => {
-        addQuote(`project:${projectId}`, { from, text });
-        window.getSelection()?.removeAllRanges();
-      },
-    },
-  ]);
+  const message: MenuItem[] =
+    text === "" || projectId === undefined
+      ? []
+      : [
+          { label: inside ? "Copy" : "Copy message", icon: <Copy size={14} />, onSelect: () => void navigator.clipboard.writeText(text).catch(() => {}) },
+          {
+            label: inside ? "Quote" : "Quote message",
+            icon: <Quote size={14} />,
+            onSelect: () => {
+              addQuote(`project:${projectId}`, { from, text });
+              window.getSelection()?.removeAllRanges();
+            },
+          },
+        ];
+  // On a picture, its own actions first, as a browser's menu has them.
+  const items = picture.length > 0 && message.length > 0 ? [...picture, { separator: true } as const, ...message] : [...picture, ...message];
+  if (items.length === 0) return;
+  openMenu(event, items);
 }
+
+/** A right click on a picture in a reply, handed to its message's menu with the picture's actions (none outside a reply: the picture's own menu then). */
+const MessageMenu = createContext<((event: React.MouseEvent<HTMLElement>, picture: MenuItem[]) => void) | null>(null);
+
+/** A chat picture's file name: its words, else "Picture", and its kind. */
+const pictureName = (src: string, words: string) => `${words.replace(/[^\w -]+/g, "").trim().slice(0, 80).trim() || "Picture"}.${/\.(png|jpg|webp|gif)$/.exec(src)?.[1] ?? "png"}`;
+
+async function pictureBlob(src: string): Promise<Blob> {
+  const answer = await fetch(src);
+  if (!answer.ok) throw new Error(`the picture didn't load (${answer.status})`);
+  return answer.blob();
+}
+
+/** What a right click on a chat picture offers (Sphe, Nov 17: the window's menu had only the message's). */
+const pictureItems = (src: string, words: string): MenuItem[] => [
+  { label: "Copy image", icon: <Copy size={14} />, onSelect: () => copyImage(pictureBlob(src).then(pngOf)) },
+  {
+    label: "Save image",
+    icon: <ImageDown size={14} />,
+    onSelect: () =>
+      void pictureBlob(src)
+        .then((blob) => saveFile(pictureName(src, words), blob))
+        .catch((error: unknown) => useEditor.getState().toastError(error, "save the image")),
+  },
+];
 
 function EntryView({ entry, muted, fresh }: { entry: AgentEntry; muted?: boolean; fresh?: boolean }) {
   if (entry.kind === "subagent") return <SubAgentCard entry={entry} />;
@@ -832,17 +864,19 @@ function EntryView({ entry, muted, fresh }: { entry: AgentEntry; muted?: boolean
   }
   if (!entry.text) return null;
   return (
-    <motion.div
-      initial={fresh ? { opacity: 0 } : false}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.18 }}
-      className={cx("px-1.5 leading-relaxed", muted ? "text-[12px] text-muted" : "text-[13px] text-fg/90")}
-      data-quote="your earlier reply"
-      onPointerDown={pressMenu}
-      onContextMenu={(event) => quoteMenu(event, "your earlier reply", entry.text)}
-    >
-      <Markdown text={entry.text} />
-    </motion.div>
+    <MessageMenu.Provider value={(event, picture) => quoteMenu(event, "your earlier reply", entry.text, picture)}>
+      <motion.div
+        initial={fresh ? { opacity: 0 } : false}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.18 }}
+        className={cx("px-1.5 leading-relaxed", muted ? "text-[12px] text-muted" : "text-[13px] text-fg/90")}
+        data-quote="your earlier reply"
+        onPointerDown={pressMenu}
+        onContextMenu={(event) => quoteMenu(event, "your earlier reply", entry.text)}
+      >
+        <Markdown text={entry.text} />
+      </motion.div>
+    </MessageMenu.Provider>
   );
 }
 
@@ -859,6 +893,7 @@ function EntryView({ entry, muted, fresh }: { entry: AgentEntry; muted?: boolean
 function ChatPicture({ src, alt }: { src?: string; alt?: string }) {
   const [open, setOpen] = useState(false);
   const [failed, setFailed] = useState(false);
+  const messageMenu = useContext(MessageMenu);
   const words = alt?.trim() || "Picture";
   if (src === undefined || !src.startsWith("/api/") || failed) {
     return (
@@ -869,11 +904,31 @@ function ChatPicture({ src, alt }: { src?: string; alt?: string }) {
   }
   return (
     <>
-      <button type="button" onClick={() => setOpen(true)} title={words} className="my-2 block w-full overflow-hidden rounded-lg bg-black ring-1 ring-line transition-shadow hover:ring-line-strong">
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        onContextMenu={(event) => {
+          event.stopPropagation();
+          if (messageMenu !== null) messageMenu(event, pictureItems(src, words));
+          else openMenu(event, pictureItems(src, words));
+        }}
+        title={words}
+        className="my-2 block w-full overflow-hidden rounded-lg bg-black ring-1 ring-line transition-shadow hover:ring-line-strong"
+      >
         <img src={src} alt={words} loading="lazy" onError={() => setFailed(true)} className="block max-h-72 w-full object-contain" />
       </button>
       <Modal open={open} onClose={() => setOpen(false)} width={Math.min(1400, window.innerWidth - 64)}>
-        <button type="button" onClick={() => setOpen(false)} className="block w-full bg-black" aria-label="Close">
+        {/* The big view's menu is the picture's alone (it's written inside the message, so its clicks would reach the message's). */}
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          onContextMenu={(event) => {
+            event.stopPropagation();
+            openMenu(event, pictureItems(src, words));
+          }}
+          className="block w-full bg-black"
+          aria-label="Close"
+        >
           <img src={src} alt={words} className="block max-h-[calc(100vh-96px)] w-full object-contain" />
         </button>
       </Modal>

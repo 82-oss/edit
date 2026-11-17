@@ -20,7 +20,7 @@ import { openMenu, toggleMenu, type MenuItem } from "../components/ContextMenu";
 import { Draft, Pin, PIN_CURSOR } from "../components/CommentPins";
 import { Button, cx, IconButton, spring } from "../components/ui";
 import { conversationEntries, thumbActivity } from "../lib/agentTurns";
-import { saveFile } from "../lib/files";
+import { copyImage, saveFile } from "../lib/files";
 import { useAccount } from "../lib/account";
 import { navigate } from "../lib/route";
 import { useEditor } from "../lib/store";
@@ -336,7 +336,7 @@ export function ThumbnailScreen({ id }: { id: string }) {
   const named = (thumb?.title || "thumbnail").replace(/[^\w -]+/g, "").trim() || "thumbnail";
   /** What a right click on the thumbnail (or a version's tile) offers, in place of the window's own menu. */
   const imageMenu = (image: Picture): MenuItem[] => [
-    { label: "Copy image", icon: <Copy size={14} />, onSelect: () => copyImage(image.drawing) },
+    { label: "Copy image", icon: <Copy size={14} />, onSelect: () => copyImage(blobOf(image.drawing, "image/png")) },
     {
       label: "Export",
       icon: <Download size={14} />,
@@ -424,14 +424,6 @@ function exportImage(image: Picture, type: Format): void {
   blobOf(image.drawing, type).then(
     (blob) => saveFile(`${image.name}.${type === "image/png" ? "png" : "jpg"}`, blob),
     (error: unknown) => useEditor.getState().toastError(error, "export it"),
-  );
-}
-
-/** Onto the clipboard as a PNG (what macOS pastes as a picture); the blob is handed over as a promise so the click still counts as the person's. */
-function copyImage(drawing: HTMLCanvasElement): void {
-  navigator.clipboard.write([new ClipboardItem({ "image/png": blobOf(drawing, "image/png") })]).then(
-    () => useEditor.getState().toast("Copied the image"),
-    (error: unknown) => useEditor.getState().toastError(error, "copy the image"),
   );
 }
 

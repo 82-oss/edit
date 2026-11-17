@@ -128,3 +128,67 @@ describe("times in a chat", () => {
     expect([...container.querySelectorAll("button")].some((button) => /\d:\d/.test(button.textContent ?? ""))).toBe(false);
   });
 });
+
+describe("a picture in a reply", () => {
+  let root: Root;
+  const written: ClipboardItem[] = [];
+  beforeEach(() => {
+    vi.resetModules();
+    written.length = 0;
+    (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    vi.stubGlobal("fetch", async (url: string) => {
+      if (url.includes("/chat-pictures/")) return new Response(new Blob(["png"], { type: "image/png" }));
+      if (url.endsWith("/agent")) return new Promise(() => {}); // the chat as the page already has it
+      return response({});
+    });
+    vi.stubGlobal("ClipboardItem", class {
+      constructor(readonly items: Record<string, Promise<Blob>>) {}
+    });
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write: async (items: ClipboardItem[]) => void written.push(...items), writeText: async () => {} } });
+  });
+  afterEach(() => {
+    act(() => root?.unmount());
+    vi.unstubAllGlobals();
+  });
+
+  const reply = [
+    { id: "u", kind: "user", text: "Show me", at: 1, updated: 1 },
+    { id: "a", kind: "assistant", text: "Here it is:\n\n![The opening frame](/api/projects/p1/chat-pictures/0123456789abcdef.png)", at: 2, updated: 2 },
+  ];
+
+  const labels = () => [...document.querySelectorAll("[role=menu] button, .fixed.z-\\[70\\] button")].map((button) => button.textContent?.trim());
+  const rightClick = (node: Element) => act(() => void node.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 })));
+
+  it("offers the image's own actions, then the message's, and the big view only the image's", async () => {
+    const { useAgent } = await import("../lib/agent");
+    const { useEditor } = await import("../lib/store");
+    const { AgentPanel } = await import("./AgentPanel");
+    const { ContextMenuHost } = await import("./ContextMenu");
+    useEditor.setState({ project: { id: "p1", clips: [], media: [], tracks: [], settings: { fps: 30 } } as never });
+    useAgent.setState({ project: "p1", loaded: true, running: false, entries: reply as never, status: { ready: true } });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    act(() =>
+      root.render(
+        <>
+          <AgentPanel />
+          <ContextMenuHost />
+        </>,
+      ),
+    );
+    const picture = container.querySelector('img[alt="The opening frame"]')!;
+    rightClick(picture);
+    expect(labels()).toEqual(["Copy image", "Save image", "Copy message", "Quote message"]);
+
+    act(() => (document.querySelector(".fixed.z-\\[70\\] button") as HTMLButtonElement).click());
+    await new Promise((done) => setTimeout(done, 0));
+    expect(written).toHaveLength(1);
+    expect(Object.keys((written[0] as unknown as { items: object }).items)).toEqual(["image/png"]);
+
+    act(() => (picture.closest("button") as HTMLButtonElement).click());
+    const big = [...document.querySelectorAll('img[alt="The opening frame"]')].find((image) => !container.contains(image))!;
+    rightClick(big);
+    expect(labels()).toEqual(["Copy image", "Save image"]);
+  });
+});

@@ -36,3 +36,33 @@ export async function saveFile(name: string, blob: Blob): Promise<void> {
     useEditor.getState().toastError(error, `save ${name}`);
   }
 }
+
+/** `picture` as a PNG, the one kind every clipboard takes as a picture (a JPEG or WebP is drawn again). */
+export async function pngOf(picture: Blob): Promise<Blob> {
+  if (picture.type === "image/png") return picture;
+  const bitmap = await createImageBitmap(picture);
+  const canvas = document.createElement("canvas");
+  canvas.width = bitmap.width;
+  canvas.height = bitmap.height;
+  canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  return new Promise((resolve, reject) => canvas.toBlob((png) => (png === null ? reject(new Error("the picture couldn't be made")) : resolve(png)), "image/png"));
+}
+
+/**
+ * Onto the clipboard as a picture, so it pastes into Slack, Finder or a Doc.
+ * `png` is handed over as a promise so the click still counts as the
+ * person's: WebKit (Edit's window) and Chrome both allow that.
+ */
+export function copyImage(png: Promise<Blob>): void {
+  const { toast, toastError } = useEditor.getState();
+  if (typeof ClipboardItem === "undefined" || navigator.clipboard?.write === undefined) {
+    png.catch(() => {});
+    toastError(new Error("this page can't copy pictures (it needs Edit's window, or Edit's own address in a browser)"), "copy the image");
+    return;
+  }
+  navigator.clipboard.write([new ClipboardItem({ "image/png": png })]).then(
+    () => toast("Copied the image"),
+    (error: unknown) => toastError(error, "copy the image"),
+  );
+}
