@@ -666,6 +666,35 @@ export function cover(project: Project, shown: Shown[], removing = false): numbe
   return made.length;
 }
 
+/**
+ * A blur over `box` (shares of `media`'s picture) on `clip` where it plays
+ * the file's seconds [from, to), stuck to it as `cover`'s are, named
+ * UNTIL_REMOVED: their label blurred where it couldn't be taken out
+ * (text_removal.ts). How many were laid.
+ */
+export function coverBox(project: Project, clip: VideoClip, media: Media, box: Band, from: number, to: number): number {
+  const fps = fpsOf(project);
+  const at = (seconds: number) => clip.start + Math.round(((seconds - clip.source_in) / clip.speed) * fps);
+  const start = Math.max(clip.start, at(from));
+  const end = Math.min(clipEnd(clip), at(to));
+  if (end - start < 2) return 0;
+  let laid = 0;
+  for (const blur of markBlurs.blursFor(project, clip, media, { text: "their label", box })) {
+    const a = Math.max(blur.start, start);
+    const b = Math.min(clipEnd(blur), end);
+    if (b - a < 2) continue;
+    const keyframes: Record<string, Keyframe[]> = {};
+    for (const [param, keys] of Object.entries(blur.keyframes ?? {})) if (keys.length > 0) keyframes[param] = trimmed(keys, a - blur.start, b - a);
+    const made = { ...blur, start: a, duration: b - a, name: `${UNTIL_REMOVED} · ${clip.id}`, ...(Object.keys(keyframes).length > 0 ? { keyframes } : {}) } as AdjustmentClip;
+    if (Object.keys(keyframes).length === 0) delete made.keyframes;
+    made.id = freshId(project, "c");
+    made.track = markBlurs.laneFor(project, made.start, clipEnd(made), COVER);
+    project.clips.push(made);
+    laid += 1;
+  }
+  return laid;
+}
+
 /** The band of `media` as a face-like box on the frame for a caption to keep off, while it shows in source seconds [from, to); null when it doesn't. */
 export function obstacle(media: Media, from: number, to: number): Band | null {
   const found = of(media);

@@ -2322,11 +2322,10 @@
     "inputSchema": {
       "properties": {
         "burned_in": {
-          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours. \"remove\" lays ours the same way, their band blurred until Edit takes their subtitles out of the picture (the person starts that once the edit is done; you do nothing more). Either only for a channel whose taught style says so.",
+          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours: only for a channel whose taught style says so. A channel taught to take theirs out (its removal lesson, teach_removal) has them blurred and ours laid by itself, until Edit takes theirs out.",
           "enum": [
             "leave_off",
-            "cover",
-            "remove"
+            "cover"
           ],
           "type": "string"
         },
@@ -2513,11 +2512,10 @@
     "inputSchema": {
       "properties": {
         "burned_in": {
-          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours. \"remove\" lays ours the same way, their band blurred until Edit takes their subtitles out of the picture (the person starts that once the edit is done; you do nothing more). Either only for a channel whose taught style says so.",
+          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours: only for a channel whose taught style says so. A channel taught to take theirs out (its removal lesson, teach_removal) has them blurred and ours laid by itself, until Edit takes theirs out.",
           "enum": [
             "leave_off",
-            "cover",
-            "remove"
+            "cover"
           ],
           "type": "string"
         },
@@ -4258,6 +4256,138 @@
       "type": "object"
     },
     "name": "remember"
+  },
+  {
+    "description": "Teach what this channel takes out of its footage's picture, when the person says so (\"we only want their subtitles removed\", \"only the watermark\", \"subtitles and the 'Actual case footage' labels, keep the camera stamp\"): one lesson of the channel's edit style (its group's unless for says this channel alone). Each part given is set, the others stay; the camera's own stamp is always kept. Give an example when the person shows one: a second of a footage file (media and at) or a picture from the chat (picture: its file), with what to take out or keep there and where (box, shares of the picture); its words are read there. Untaught, nothing is taken out (theirs are left, ours stay off them). Edit does the rest itself once the edit is done. A teacher's to do.",
+    "inputSchema": {
+      "properties": {
+        "clear_examples": {
+          "description": "Forget the examples kept before (the person said they no longer hold)",
+          "type": "boolean"
+        },
+        "examples": {
+          "description": "At most 6: what the person showed",
+          "items": {
+            "properties": {
+              "action": {
+                "enum": [
+                  "remove",
+                  "keep"
+                ],
+                "type": "string"
+              },
+              "at": {
+                "description": "Seconds into that file",
+                "type": "number"
+              },
+              "box": {
+                "description": "Where: x0, y0, x1, y1 as shares of the picture from its top left",
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "enum": [
+                  "subtitles",
+                  "watermarks",
+                  "text",
+                  "stamp"
+                ],
+                "type": "string"
+              },
+              "media": {
+                "description": "A footage file of this project (its media id)",
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "picture": {
+                "description": "Or a picture from the chat: its file",
+                "type": "string"
+              },
+              "text": {
+                "description": "Its words, when they're words",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "for": {
+          "description": "In a grouped channel: \"group\" (the default) keeps it for every channel in the group; \"channel\" for this channel alone, when the person says it's for this one.",
+          "enum": [
+            "group",
+            "channel"
+          ],
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "What the person said, quoted",
+          "type": "string"
+        },
+        "subtitles": {
+          "description": "Their subtitles burned into the footage: taken out (true) or left (false)",
+          "type": "boolean"
+        },
+        "text": {
+          "description": "Their labels and other text laid over the picture (\"Actual case footage\", \"OFFICER 11\"), never the camera's own stamp",
+          "type": "boolean"
+        },
+        "watermarks": {
+          "description": "Their see-through marks (a channel's name or logo laid faintly over the picture)",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "teach_removal"
+  },
+  {
+    "description": "The pieces back from taking a channel's taught overlays out of its footage (their subtitles, text, watermark: see get_edit_context's removal), each listed, and the newest ones you haven't seen shown before (left) and after (right). Look at each: their text or mark gone, the camera's stamp the same, no ghost or smear. Reject any that isn't clean (reject: [{piece, why}]): it's done once more, then blurred (a watermark left) and said to the person. Nothing to do for clean ones.",
+    "inputSchema": {
+      "properties": {
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        },
+        "reject": {
+          "description": "Pieces that aren't clean, by the names listed",
+          "items": {
+            "properties": {
+              "piece": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string",
+                "description": "What's wrong, in a few words"
+              }
+            },
+            "required": [
+              "piece",
+              "why"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "name": "check_removal"
   },
   {
     "description": "Read one of your skills in V2's cloud: the part of the edit it covers, as the team does it (Edit V2). Read it before working on that part, once per conversation; your instructions list them with when each fits.",

@@ -17,6 +17,7 @@ import type { ExportStep, ExportSteps } from "@edit/types/export_steps";
 
 import type { App } from "./app.ts";
 import * as effects from "./effects.ts";
+import * as removalSchedule from "./removal_schedule.ts";
 import * as speeds from "./export_speeds.ts";
 import { reviewBytes, type ExportActivity } from "./exports.ts";
 import { homePath, parent } from "./paths.ts";
@@ -184,6 +185,13 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
     steps.push(step);
   }
 
+  // Their text and watermark still being taken out of the footage (removal_schedule.ts): waited for before the video.
+  const removing = stage === 1 ? removalSchedule.progressOf(id) : { done: 0, out: 0 };
+  if (removing.out > 0) {
+    const total = removing.done + removing.out;
+    steps.push({ kind: "removal", state: graphics.some((one) => one.state === "current") ? "waiting" : "current", label: `${removing.done} of ${total} pieces`, progress: removing.done / total, left_s: null });
+  }
+
   // The video.
   const p = exporting && job.state === "running" ? Math.min(1, Math.max(0, job.progress)) : 0;
   if (stage === 2 && p > 0 && run.video === null) run.video = [now, p];
@@ -204,7 +212,7 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
   // What it waits on before its first frame: the encoder, another export, slowed shots, map shots that aren't graphics.
   const before = job?.state === "queued" ? job.waiting : stage === 1 && graphics.length === 0 ? "waiting for the map shots" : line === "waiting for slowed shots" ? "waiting for the slowed shots" : line === "waiting for this project's other export" ? "waiting for its other export" : undefined;
   if (before !== undefined && (video.state === "current" || queued)) video.note = before;
-  else if (stage === 1 && graphics.length === 0) {
+  else if (stage === 1 && graphics.length === 0 && removing.out === 0) {
     // Nothing to render but map shots: the video is what it's on.
     video.state = "current";
     video.progress = 0;

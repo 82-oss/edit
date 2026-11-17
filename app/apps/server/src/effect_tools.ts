@@ -16,6 +16,9 @@ import * as fonts from "./fonts.ts";
 import { handlerFor, image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
 import { fixed } from "./rust.ts";
 import * as tools from "./tools.ts";
+import * as removal from "./removal_lesson.ts";
+import * as removalSchedule from "./removal_schedule.ts";
+import * as textRemoval from "./text_removal.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
 /** An effect's name from a call, in a project made the new way. */
@@ -495,6 +498,68 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
   return text(`Remembered as ${skill} (version ${saved.n}) in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}`);
 }
 
+/**
+ * `teach_removal`: what this channel takes out of its footage's picture
+ * (removal_lesson.ts), kept as its `removal` lesson, with examples. Each part
+ * given is set, the others stay as they were; examples are added (the same
+ * frame's replaced). A teacher's to do.
+ */
+async function teachRemoval({ app, args, projectId }: ToolCall): Promise<Content[]> {
+  named(app, projectId, { name: "-" });
+  cloudOn();
+  teacherOnly("Teaching what this channel takes out of its footage");
+  if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");
+  const places = await placeHere(app, projectId);
+  const where = keptIn(app, projectId, args.for);
+  const project = app.store.get(projectId)!.project;
+  const parts: Partial<Record<removal.Kind, boolean>> = {};
+  for (const kind of removal.KINDS) {
+    if (args[kind] === undefined) continue;
+    if (typeof args[kind] !== "boolean") throw new Error(`${kind} is true (take theirs out) or false (leave them)`);
+    parts[kind] = args[kind] as boolean;
+  }
+  const given = Array.isArray(args.examples) ? (args.examples as Record<string, unknown>[]) : [];
+  if (given.length > 6) throw new Error("at most 6 examples at a time");
+  const examples: removal.Example[] = [];
+  for (const one of given) {
+    const kind = one.kind;
+    if (kind !== "stamp" && !removal.KINDS.includes(kind as removal.Kind)) throw new Error('an example\'s kind is "subtitles", "watermarks", "text" or "stamp"');
+    if (one.action !== "remove" && one.action !== "keep") throw new Error('an example\'s action is "remove" or "keep"');
+    const box = Array.isArray(one.box) && one.box.length === 4 && one.box.every((value) => typeof value === "number") ? (one.box as [number, number, number, number]) : undefined;
+    examples.push(
+      await textRemoval.takeExample(
+        app,
+        project,
+        project.channel!,
+        {
+          kind: kind as removal.Example["kind"],
+          action: one.action,
+          ...(typeof one.media === "string" ? { media: one.media } : {}),
+          ...(typeof one.at === "number" ? { at: one.at } : {}),
+          ...(typeof one.picture === "string" ? { picture: one.picture } : {}),
+          ...(box !== undefined ? { box } : {}),
+          ...(typeof one.text === "string" ? { text: one.text } : {}),
+          ...(typeof one.note === "string" ? { note: one.note } : {}),
+        },
+        [app.store.uploadsDir(projectId), app.store.cacheDir()],
+      ),
+    );
+  }
+  const before = v2cloud.skill(removal.SKILL, places);
+  const lesson = removal.changed(before === undefined ? null : removal.parse(before.text), parts, examples, args.clear_examples === true);
+  const key = v2cloud.ownKey("skill", where.place, removal.SKILL);
+  const saved = await v2cloud.saveSkill(removal.SKILL, removal.write(lesson), args.reason.trim(), removal.NOTE, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
+  v2cloud.forgetSkills();
+  // Started at once on this project's footage (its mark learned first when watermarks are taught).
+  void removalSchedule.ensure(app, projectId).catch(() => {});
+  const read = examples.map((one) => `${one.action} ${one.kind}${one.text ? ` "${one.text}"` : ""}${one.box ? ` at ${one.box.join(" ")}` : " (no box: say where on the picture, box, to place it)"}`);
+  return text(
+    `${removal.summary(lesson)} Kept as ${removal.SKILL} (version ${saved.n}) in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}.` +
+      (read.length > 0 ? ` Examples: ${read.join("; ")}.` : "") +
+      " Edit takes it out by itself as footage is cut, in the background (their subtitles blurred until then); look at pieces as they come back with check_removal.",
+  );
+}
+
 async function readSkill({ app, args, projectId }: ToolCall): Promise<Content[]> {
   named(app, projectId, { name: "-" });
   const name = libraryName(args.name, "name");
@@ -554,6 +619,7 @@ const TOOLS: [string, (call: ToolCall) => Promise<Content[]>][] = [
   ["save_to_library", saveToLibrary],
   ["archive_in_library", archiveInLibrary],
   ["remember", remember],
+  ["teach_removal", teachRemoval],
   ["read_skill", readSkill],
   ["make_sound", makeSound],
   ["effect_footage", effectFootage],

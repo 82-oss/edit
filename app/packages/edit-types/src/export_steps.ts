@@ -8,9 +8,9 @@
 export type StepState = "done" | "current" | "waiting";
 
 export interface ExportStep {
-  kind: "graphic" | "video" | "copy" | "upload" | "save";
+  kind: "graphic" | "removal" | "video" | "copy" | "upload" | "save";
   state: StepState;
-  /** A graphic's place on the timeline ("41:12"), the video's length ("1:48:29"), the folder it's saved to ("~/Movies/Edit"); else "". */
+  /** A graphic's place on the timeline ("41:12"), removal's pieces ("3 of 19 pieces"), the video's length ("1:48:29"), the folder it's saved to ("~/Movies/Edit"); else "". */
   label: string;
   /** A graphic that's more than a picture: a map, a sound. */
   what?: "map" | "sound";

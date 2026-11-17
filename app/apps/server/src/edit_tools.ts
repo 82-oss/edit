@@ -25,6 +25,10 @@ import * as framing from "./framing.ts";
 import * as tools from "./tools.ts";
 import * as onscreen from "./onscreen.ts";
 import * as burned from "./burned_subtitles.ts";
+import * as removalLesson from "./removal_lesson.ts";
+import * as removalSchedule from "./removal_schedule.ts";
+import * as textRemoval from "./text_removal.ts";
+import * as watermarkRemoval from "./watermark_removal.ts";
 import * as markBlurs from "./mark_blurs.ts";
 import { twoLineSubtitles } from "./one_line.ts";
 import { firstCut, pointerIssues } from "./pointers.ts";
@@ -2241,6 +2245,7 @@ export function editContext(app: App, found: Live, args: Args): Args {
     })(),
     ...(isEssay(p.style) ? { chapters: commentaryAudit.outline(p) } : {}),
     ...burnedContext(p, from ?? 0, to ?? Number.MAX_SAFE_INTEGER),
+    ...removalContext(p),
     speaker_line_counts: speakers,
     subtitles_in_span: subtitles,
     ...(comments.length > 0 ? { script_comments: comments.sort((a, b) => Number((a as Args).at ?? 0) - Number((b as Args).at ?? 0)) } : {}),
@@ -2351,7 +2356,31 @@ function burnedContext(p: Project, from: number, to: number): Args {
         seconds: [fixed(one.start / fps, 1), fixed(one.end / fps, 1)].join("–"),
         ...(ours.some((clip) => clip.start < one.end && one.start < clipEnd(clip)) ? { ours_over_them: true } : {}),
       })),
-      note: "This footage already has subtitles burned into its picture there: they are the subtitles, and ours stay off them (add_subtitles and repack_subtitles leave ours off there by themselves; a subtitle of ours laid over them is refused). Only a channel taught to cover theirs and place ours passes burned_in \"cover\" (a blur over their band, stuck to each clip), or \"remove\" when it's taught to take theirs out (blurred the same until Edit does; nothing more of yours). Never ask about it.",
+      note: "This footage already has subtitles burned into its picture there: they are the subtitles, and ours stay off them (add_subtitles and repack_subtitles leave ours off there by themselves; a subtitle of ours laid over them is refused). Only a channel taught to cover theirs and place ours passes burned_in \"cover\" (a blur over their band, stuck to each clip); one taught to take theirs out (its removal lesson) has them blurred and ours laid by itself, until Edit takes theirs out. Never ask about it.",
+    },
+  };
+}
+
+/**
+ * What the channel's lesson takes out of the footage, and how its pieces stand
+ * (removal_schedule.ts): pieces back for the agent to look at with
+ * check_removal. Nothing for a channel taught nothing.
+ */
+function removalContext(p: Project): Args {
+  const lesson = removalLesson.lessonOf(p);
+  if (!removalLesson.takesOut(lesson)) return {};
+  const pieces = [...textRemoval.piecesOf(p.id), ...watermarkRemoval.piecesOf(p.id)];
+  const back = textRemoval.piecesOf(p.id).filter((one) => one.state === "check").length + watermarkRemoval.piecesOf(p.id).filter((one) => one.state === "done").length;
+  const { done, out } = removalSchedule.progressOf(p.id);
+  const failed = pieces.filter((one) => one.state === "failed").length;
+  return {
+    removal: {
+      taught: removalLesson.summary(lesson!),
+      pieces: `${done} done, ${out} still being done${failed > 0 ? `, ${failed} not clean` : ""}`,
+      note:
+        "Edit takes this out of the footage by itself as it's cut, in the background (only the seconds the timeline shows; a re-cut sends only what's new). " +
+        (back > 0 ? `${back} piece${back === 1 ? " is" : "s are"} back: look at them with check_removal and reject any that isn't clean. ` : "Look at pieces with check_removal as they come back. ") +
+        "Their subtitles stay blurred until theirs are out; lay ours as usual. Exports wait for pieces still being done.",
     },
   };
 }

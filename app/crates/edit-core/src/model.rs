@@ -102,12 +102,6 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub compilation: Option<bool>,
-    /// What a re-uploader burned into the footage's picture (their subtitles,
-    /// their labels and text) is to be taken out of it, the camera's own stamp
-    /// kept: set when the agent lays subtitles with burned_in "remove" (a
-    /// channel taught so); the server's `text_removal.ts` does it.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub remove_burned: bool,
 }
 
 /// The account that started a project (accounts.spheceo.com).
@@ -1989,7 +1983,6 @@ impl Project {
             hq: false,
             channel: None,
             compilation: None,
-            remove_burned: false,
         };
         for kind in [
             TrackKind::Video,

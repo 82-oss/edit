@@ -24,6 +24,7 @@ type Of = { hq?: boolean | null; channel?: string | null };
 export const WHILE_UNTAUGHT: ReadonlySet<string> = new Set([
   // Teaching.
   "remember",
+  "teach_removal",
   "save_to_library",
   "archive_in_library",
   "other_channels",

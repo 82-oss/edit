@@ -167,6 +167,8 @@ export interface Shelf {
   list(source: string, hash: string): Promise<Done[]>;
   bring(source: string, done: Done): Promise<string>;
   keep(source: string, file: string | null, done: Omit<Done, "key">, hash: string): Promise<Done>;
+  /** A kept cell that wasn't clean: gone here and on R2, so it's done again. */
+  forget(source: string, done: Omit<Done, "key">, hash: string): Promise<void>;
 }
 
 export function shelfIn(dir: string, useCloud: () => boolean = () => cloud.enabled()): Shelf {
@@ -205,6 +207,11 @@ export function shelfIn(dir: string, useCloud: () => boolean = () => cloud.enabl
       if (useCloud()) await cloud.uploadFile(local, key).catch((error: unknown) => diag.warn("watermark", `keeping ${name} in the cloud: ${diag.messageOf(error)}`));
       return { ...done, key: done.box === null ? null : key };
     },
+    async forget(source, done, hash) {
+      const name = cellName(done.from, done.to, hash, done.box);
+      fs.rmSync(here(source, name), { force: true });
+      if (useCloud()) await cloud.remove([`${PREFIX}/${folderOf(source)}/${name}`]).catch((error: unknown) => diag.warn("watermark", `forgetting ${name}: ${diag.messageOf(error)}`));
+    },
   };
 }
 
@@ -230,7 +237,14 @@ export interface Piece {
   filled?: number;
   seconds?: number;
   error?: string;
+  /** Times it was done (a second after it wasn't clean). */
+  tries?: number;
+  /** Given up on after its second try: never queued again here. */
+  gaveUp?: boolean;
 }
+
+/** A piece with more of the mark than this still found isn't clean: done once more, then left. */
+export const LEFT_MAX = 0.35;
 
 interface Job {
   project: string;
@@ -277,6 +291,7 @@ export async function ensure(app: App, id: string): Promise<void> {
   for (const cell of await plan(app, live.project, model)) {
     const key = pieceKey(cell.media.id, cell.from);
     const known = pieces.get(id)?.get(key);
+    if (known?.gaveUp === true) continue;
     if (known !== undefined && known.state !== "failed") {
       if (known.state === "done" && cell.done === null) continue;
       if (known.state === "queued" || known.state === "running" || known.state === "none") continue;
@@ -289,7 +304,7 @@ export async function ensure(app: App, id: string): Promise<void> {
       }
       continue;
     }
-    note(id, { media: cell.media.id, name: cell.media.name, from: cell.from, to: cell.to, state: "queued" });
+    note(id, { media: cell.media.id, name: cell.media.name, from: cell.from, to: cell.to, state: "queued", tries: known?.tries ?? 0 });
     queue.push({ project: id, media: cell.media, source: cell.source, from: cell.from, to: cell.to, model });
   }
   void drain(app);
@@ -308,7 +323,8 @@ async function drain(app: App): Promise<void> {
 async function work(app: App, job: Job): Promise<void> {
   const run = engine();
   const label = `${job.media.name} ${job.from}–${job.to} s`;
-  const piece: Piece = { media: job.media.id, name: job.media.name, from: job.from, to: job.to, state: "running" };
+  const tries = (pieces.get(job.project)?.get(pieceKey(job.media.id, job.from))?.tries ?? 0) + 1;
+  const piece: Piece = { media: job.media.id, name: job.media.name, from: job.from, to: job.to, state: "running", tries };
   note(job.project, piece);
   const dir = join(app.store.cacheDir(), "cleaned", "work");
   fs.mkdirSync(dir, { recursive: true });
@@ -334,6 +350,8 @@ async function work(app: App, job: Job): Promise<void> {
     const file = await shelfOf(app).bring(job.source, done);
     await place(app, job.project, job.media, job.from, done.box, file);
     piece.state = "done";
+    // The automatic look: too much of the mark still found is no clean piece.
+    if (removed.left > LEFT_MAX) await reject(app, job.project, `watermark:${job.media.id}@${Math.round(job.from * 1000)}`, `${Math.round(removed.left * 100)}% of the mark still found`);
     diag.info("watermark", `${job.project}: ${label} in ${piece.seconds} s (${Math.round(removed.filled * 100)}% rebuilt from its neighbours, ${Math.round(removed.left * 100)}% of the mark left)`);
   } catch (error) {
     piece.state = "failed";
@@ -375,6 +393,32 @@ async function place(app: App, id: string, footage: Media, from: number, box: Bo
   }
 }
 
+/**
+ * A piece that isn't clean (the automatic look, or the agent's: removal_schedule.ts
+ * `check_removal`): its strip out of the project and its kept cell forgotten;
+ * done once more, else given up on, the watermark left there, said in `error`.
+ */
+export async function reject(app: App, id: string, key: string, why: string): Promise<string> {
+  const match = /^watermark:(.+)@(\d+)$/u.exec(key);
+  const piece = match === null ? undefined : pieces.get(id)?.get(pieceKey(match[1]!, Number(match[2]) / 1000));
+  if (piece === undefined) throw new Error(`no piece ${key}`);
+  const live = app.store.get(id);
+  const media = live?.project.media.find((one) => one.id === piece.media);
+  const model = live?.project.channel ? await modelOf(app, live.project.channel) : null;
+  if (media !== undefined && model !== null) {
+    const source = await sourceOf(media);
+    for (const kept of (await shelfOf(app).list(source, model.hash)).filter((one) => Math.abs(one.from - piece.from) < 0.01)) await shelfOf(app).forget(source, kept, model.hash);
+  }
+  await app.store.update(id, "watermark removal", (project) => {
+    project.media = project.media.filter((one) => !(one.cleans?.media === piece.media && one.cleans.what === "watermark" && Math.abs(one.cleans.from - piece.from) < 0.01));
+  });
+  const again = (piece.tries ?? 1) < 2;
+  note(id, { ...piece, state: "failed", error: why, ...(again ? {} : { gaveUp: true }) });
+  diag.warn("watermark", `${id}: ${piece.name} ${piece.from}–${piece.to} s not clean (${why}): ${again ? "done again" : "left as it was"}`);
+  if (again) void ensure(app, id);
+  return again ? "done once more" : "given up on: their watermark stays there";
+}
+
 /** The project's cleaned pieces and how each came out (a check reads `left`: what of the mark is still found). */
 export function piecesOf(id: string): Piece[] {
   return [...(pieces.get(id)?.values() ?? [])].sort((a, b) => a.media.localeCompare(b.media) || a.from - b.from);
@@ -390,26 +434,6 @@ export function reset(): void {
   pieces.clear();
   models.clear();
   queue.length = 0;
-}
-
-// ---------------------------------------------------------------------------
-// Watching edits
-
-const resting = new Map<string, ReturnType<typeof setTimeout>>();
-
-/** Footage on a timeline gets its watermark taken out as soon as its edits rest a moment (2 s), here (not a project pulled from another Mac's save). */
-export function start(app: App): void {
-  app.store.subscribe((event) => {
-    if (event.type !== "project" || typeof event.id !== "string" || event.origin === "cloud") return;
-    const id = event.id;
-    clearTimeout(resting.get(id));
-    const later = setTimeout(() => {
-      resting.delete(id);
-      ensure(app, id).catch((error: unknown) => diag.warn("watermark", `${id}: ${diag.messageOf(error)}`));
-    }, 2000);
-    later.unref?.();
-    resting.set(id, later);
-  });
 }
 
 export function routes(router: Router<App>): void {

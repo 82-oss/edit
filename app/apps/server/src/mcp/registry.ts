@@ -49,6 +49,8 @@ export const HQ_TOOLS: readonly string[] = [
   "save_to_library",
   "archive_in_library",
   "remember",
+  "teach_removal",
+  "check_removal",
   "read_skill",
   "other_channels",
   "make_sound",

@@ -10,6 +10,8 @@ import * as fs from "node:fs";
 
 import type { App } from "../src/app.ts";
 import * as burned from "../src/burned_subtitles.ts";
+import * as removal from "../src/removal_lesson.ts";
+import * as v2cloud from "../src/v2_cloud.ts";
 import { registerEditingTools } from "../src/edit_tools.ts";
 import "../src/subtitles_tools.ts";
 import { dispatch } from "../src/mcp/index.ts";
@@ -225,17 +227,19 @@ test("the agent is told which footage has subtitles burned in; ours are left off
     expect(repacked.text).toContain('"left_to_the_burned_in_subtitles":');
     expect((await call(app, "repack_subtitles", { project_id: id, faces: false, burned_in: "cover" })).text).toContain('"burned_in_subtitles_covered":1');
     // A wrong choice says the right ones.
-    expect((await call(app, "add_subtitles", { project_id: id, burned_in: "hide" })).text).toBe(
-      'burned_in is "leave_off" (the default: none of ours over theirs), "cover" (theirs blurred, ours on it) or "remove" (theirs taken out of the picture, ours on it)',
-    );
-    // A channel taught to take theirs out: blurred the same until it's done, and the project marked for it (text_removal.ts).
-    expect(store.get(id)!.project.remove_burned).toBeUndefined();
+    expect((await call(app, "add_subtitles", { project_id: id, burned_in: "hide" })).text).toBe('burned_in is "leave_off" (the default: none of ours over theirs) or "cover" (theirs blurred, ours on it)');
+    // A channel taught to take theirs out (its removal lesson): blurred the same until it's done, by itself (text_removal.ts).
     await store.update(id, "test", (p) => {
       p.clips = p.clips.filter((clip) => !(clip.name ?? "").startsWith(burned.COVER));
+      p.channel = "ch-taught";
     });
-    expect((await call(app, "add_subtitles", { project_id: id, start: 0, burned_in: "remove" })).text).toContain('"burned_in_subtitles_covered":1');
-    expect(store.get(id)!.project.clips.filter((clip) => (clip.name ?? "").startsWith(burned.COVER)).map((clip) => clip.name)).toEqual([`${burned.UNTIL_REMOVED} · f`]);
-    expect(store.get(id)!.project.remove_burned).toBe(true);
+    v2cloud.useSkillsForTests([{ name: removal.SKILL, key: v2cloud.ownKey("skill", "ch-taught--edit", removal.SKILL), text: removal.write({ remove: { subtitles: true, watermarks: false, text: false }, examples: [] }) }]);
+    try {
+      expect((await call(app, "add_subtitles", { project_id: id, start: 0 })).text).toContain('"burned_in_subtitles_covered":1');
+      expect(store.get(id)!.project.clips.filter((clip) => (clip.name ?? "").startsWith(burned.COVER)).map((clip) => clip.name)).toEqual([`${burned.UNTIL_REMOVED} · f`]);
+    } finally {
+      v2cloud.useSkillsForTests([]);
+    }
   } finally {
     cleanup();
   }

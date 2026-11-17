@@ -50,12 +50,14 @@ import { readJson, type Router } from "./http/router.ts";
 import * as keychain from "./keychain.ts";
 import { probe } from "./media.ts";
 import type { Media, Probe, Project } from "./model.ts";
-import type { Box, ScreenText } from "./native/index.ts";
+import { native, type Box, type ScreenText } from "./native/index.ts";
 import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
 import { clipEnd, fps as fpsOf, freshId, reusedMedia, trackOf } from "./project.ts";
 import * as seams from "./seams.ts";
 import * as tools from "./tools.ts";
+import * as removal from "./removal_lesson.ts";
+import * as v2cloud from "./v2_cloud.ts";
 import * as vmake from "./vmake_api.ts";
 import * as web from "./vmake_web.ts";
 import { VmakeError, type AccountReason } from "./vmake_api.ts";
@@ -216,16 +218,26 @@ function runsOf(hits: number[], seconds: number[], duration: number): [number, n
 /**
  * Where a file shows a re-uploader's label (source seconds): words that stay
  * put, the same at one place in three samples or a quarter of them, that
- * aren't the camera's own text (`camera`).
+ * aren't the camera's own text (`camera`); a line of words a channel's lesson
+ * gave as theirs (`taught.remove`) wherever it's read, once is enough, and
+ * none it gave to keep (`taught.keep`).
  */
-export function labelSpans(texts: Record<number, ScreenText[]>, seconds: number[], duration: number, camera: Box[]): [number, number][] {
+export function labelSpans(texts: Record<number, ScreenText[]>, seconds: number[], duration: number, camera: Box[], taught: { remove: string[]; keep: string[] } = { remove: [], keep: [] }): [number, number][] {
+  const removeWords = taught.remove.map(tokens);
+  const keepWords = taught.keep.map(tokens);
   const read = seconds.filter((second) => Object.hasOwn(texts, second));
   type Group = { words: Set<string>; at: [number, number]; seconds: number[] };
   const groups: Group[] = [];
+  const taughtHits: number[] = [];
   for (const second of read) {
     for (const line of texts[second] ?? []) {
       if (!wordy(line.t) || parseClock(line.t) !== null || camera.some((box) => overlapShare(box, line.b) > 0.5)) continue;
       const words = tokens(line.t);
+      if (keepWords.some((kept) => alike(kept, words))) continue;
+      if (removeWords.some((theirs) => alike(theirs, words))) {
+        taughtHits.push(second);
+        continue;
+      }
       const at = centre(line.b);
       const same = groups.find((group) => Math.abs(group.at[0] - at[0]) < 0.03 && Math.abs(group.at[1] - at[1]) < 0.03 && alike(group.words, words));
       if (same === undefined) groups.push({ words, at, seconds: [second] });
@@ -233,8 +245,34 @@ export function labelSpans(texts: Record<number, ScreenText[]>, seconds: number[
     }
   }
   const least = Math.max(3, Math.ceil(read.length / 4));
-  const hits = groups.filter((group) => group.seconds.length >= least).flatMap((group) => group.seconds);
+  const hits = [...groups.filter((group) => group.seconds.length >= least).flatMap((group) => group.seconds), ...taughtHits];
   return hits.length === 0 ? [] : runsOf(hits, read, duration);
+}
+
+/** The boxes (shares) of a file's labels as `labelSpans` finds them, each grown a little: what's blurred when Vmake can't take one out. */
+export function labelBoxes(texts: Record<number, ScreenText[]>, seconds: number[], camera: Box[], taught: { remove: string[]; keep: string[] } = { remove: [], keep: [] }): Box[] {
+  const read = seconds.filter((second) => Object.hasOwn(texts, second));
+  const removeWords = taught.remove.map(tokens);
+  const keepWords = taught.keep.map(tokens);
+  type Group = { words: Set<string>; at: [number, number]; box: Box; seen: number; taught: boolean };
+  const groups: Group[] = [];
+  for (const second of read) {
+    for (const line of texts[second] ?? []) {
+      if (!wordy(line.t) || parseClock(line.t) !== null || camera.some((box) => overlapShare(box, line.b) > 0.5)) continue;
+      const words = tokens(line.t);
+      if (keepWords.some((kept) => alike(kept, words))) continue;
+      const at = centre(line.b);
+      const same = groups.find((group) => Math.abs(group.at[0] - at[0]) < 0.03 && Math.abs(group.at[1] - at[1]) < 0.03 && alike(group.words, words));
+      const isTaught = removeWords.some((theirs) => alike(theirs, words));
+      if (same === undefined) groups.push({ words, at, box: line.b, seen: 1, taught: isTaught });
+      else {
+        same.box = [Math.min(same.box[0], line.b[0]), Math.min(same.box[1], line.b[1]), Math.max(same.box[2], line.b[2]), Math.max(same.box[3], line.b[3])];
+        same.seen += 1;
+      }
+    }
+  }
+  const least = Math.max(3, Math.ceil(read.length / 4));
+  return groups.filter((group) => group.taught || group.seen >= least).map((group) => grown(group.box, 0.01));
 }
 
 /** [a, b) spans merged. */
@@ -335,6 +373,20 @@ function pixels(box: Box, width: number, height: number): [number, number, numbe
   return [x, y, Math.max(2, w), Math.max(2, h)];
 }
 
+/** The picture outside `box`, as boxes (what a mask allowed only inside it is kept from). */
+export function outside(box: Box): Box[] {
+  const [x0, y0, x1, y1] = box;
+  const out: Box[] = [];
+  if (y0 > 0) out.push([0, 0, 1, y0]);
+  if (y1 < 1) out.push([0, y1, 1, 1]);
+  if (x0 > 0) out.push([0, y0, x0, y1]);
+  if (x1 < 1) out.push([x1, y0, 1, y1]);
+  return out;
+}
+
+/** A box grown by `by` each way, kept on the picture. */
+const grown = (box: Box, by: number): Box => [Math.max(0, box[0] - by), Math.max(0, box[1] - by), Math.min(1, box[2] + by), Math.min(1, box[3] + by)];
+
 /**
  * FFmpeg's filter for the mask (grey, 255 = Vmake's picture) from the original
  * (input 0) and Vmake's (input 1, at the original's size): where they differ
@@ -385,19 +437,6 @@ function matrixOf(info: { height: number }): string {
   return info.height >= 720 ? "bt709" : "bt601";
 }
 
-/**
- * A step run on this computer before a piece is pasted back (Sphe, Nov 17: a
- * see-through watermark Vmake leaves, "daily dose of crime", may come off by
- * inverse alpha blending): given the original piece and Vmake's, it writes
- * `out` (Vmake's with its own work on top) and the boxes (shares) where its
- * work must show whatever the difference says, or null when it has nothing
- * to do. None yet.
- */
-export interface LocalStep {
-  name: string;
-  run(piece: { original: string; cleaned: string; media: Pick<Media, "id" | "name" | "path">; from: number; to: number }, out: string): Promise<{ boxes: Box[] } | null>;
-}
-export const localSteps: LocalStep[] = [];
 
 /**
  * The strip from a piece (`original`, the file's seconds the piece covers, and
@@ -713,6 +752,8 @@ export interface Shelf {
   /** The piece as a file here. */
   bring(source: string, cached: Cached): Promise<string>;
   keep(source: string, file: string, from: number, to: number, provider: ProviderId): Promise<Cached>;
+  /** A kept piece that wasn't clean: gone here and on R2, so it's sent again. */
+  forget(source: string, cached: Cached): Promise<void>;
 }
 
 export const PREFIX = "edit/cleaned";
@@ -760,6 +801,10 @@ export function shelfIn(dir: string, useCloud: () => boolean = () => cloud.enabl
       if (useCloud()) await cloud.uploadFile(here, key).catch((error: unknown) => diag.warn("removal", `keeping ${name} in the cloud: ${diag.messageOf(error)}`));
       return { from, to, provider, key };
     },
+    async forget(source, cached) {
+      fs.rmSync(local(source, cached.key.slice(cached.key.lastIndexOf("/") + 1)), { force: true });
+      if (useCloud()) await cloud.remove([cached.key]).catch((error: unknown) => diag.warn("removal", `forgetting ${cached.key}: ${diag.messageOf(error)}`));
+    },
   };
 }
 
@@ -780,13 +825,31 @@ export async function sourceOf(media: Media): Promise<string> {
 // ---------------------------------------------------------------------------
 // One project's plan and run
 
-/** What a file shows of their text (source seconds), or undefined while it isn't read yet. */
-export function textOf(media: Media, camera: Box[]): [number, number][] | undefined {
+/** What a file shows of what `lesson` takes out to Vmake (source seconds: their subtitles, their labels and text), or undefined while it isn't read yet. */
+export function textOf(media: Media, camera: Box[], lesson: removal.Lesson | null): [number, number][] | undefined {
   const subtitles = burned.of(media);
   if (subtitles === undefined) return undefined;
   const reads = burned.readsOf(media);
-  const labels = reads === null ? [] : labelSpans(reads.texts, reads.seconds, media.duration ?? 0, camera);
-  return merged([...(subtitles?.spans ?? []), ...labels]);
+  const labels = reads === null || lesson?.remove.text !== true ? [] : labelSpans(reads.texts, reads.seconds, media.duration ?? 0, [...camera, ...removal.keepBoxes(lesson)], removal.exampleWords(lesson));
+  return merged([...(lesson?.remove.subtitles === true ? (subtitles?.spans ?? []) : []), ...labels]);
+}
+
+export const lessonOf = removal.lessonOf;
+
+/**
+ * Where on a file's picture what's pasted back may be, beyond the camera's
+ * text (always kept): only their subtitles' band when subtitles alone are
+ * taught, everywhere but it when only their text is; the lesson's keep boxes
+ * kept too. Boxes to keep the original's pixels in.
+ */
+export function keptFor(lesson: removal.Lesson | null, band: burned.Band | null): Box[] {
+  const keep = removal.keepBoxes(lesson);
+  const kinds = removal.kinds(lesson).vmake;
+  if (band === null) return keep;
+  const near = grown(band as Box, 0.03);
+  if (kinds.length === 1 && kinds[0] === "subtitles") return [...keep, ...outside(near)];
+  if (kinds.length === 1 && kinds[0] === "text") return [...keep, near];
+  return keep;
 }
 
 /** The camera's own text in a file, from the words read off it (no new reads; a bar needs its frames: `stampOf`). */
@@ -816,13 +879,15 @@ export interface FilePlan {
   use: Cached[];
 }
 
-/** Every file of `project` to clean, or the files still being read. */
+/** Every file of `project` to send to Vmake (what its channel's lesson takes out there: their subtitles, their text), or the files still being read. */
 export async function plan(app: App, project: Project, provider: Provider | null = null): Promise<{ files: FilePlan[]; reading: string[] }> {
   const files: FilePlan[] = [];
   const reading: string[] = [];
+  const lesson = lessonOf(project);
+  if (removal.kinds(lesson).vmake.length === 0) return { files, reading };
   for (const [id, shown] of shownSeconds(project)) {
     const media = project.media.find((one) => one.id === id)!;
-    const spans = textOf(media, cameraFromReads(media, null));
+    const spans = textOf(media, cameraFromReads(media, null), lesson);
     if (spans === undefined) {
       reading.push(media.name);
       void burned.warm(app.media, media);
@@ -831,13 +896,15 @@ export async function plan(app: App, project: Project, provider: Provider | null
     const wanted = merged(spans.flatMap(([a, b]) => shown.flatMap(([x, y]): [number, number][] => (Math.min(b, y) > Math.max(a, x) ? [[Math.max(a, x), Math.min(b, y)]] : []))));
     if (wanted.length === 0) continue;
     const source = await sourceOf(media);
-    const cached = await listed(app, source);
+    // A piece given up on (twice not clean) stays blurred: never sent again in this project.
+    const given = [...(textPieces.get(project.id)?.values() ?? [])].filter((one) => one.media === media.id && one.state === "failed").map((one): Cached => ({ from: one.from, to: one.to, provider: "vmake-api", key: "" }));
+    const cached = [...(await listed(app, source)), ...given];
     // Paid by the file: a short one goes whole (one file either way).
     const whole = provider?.wholeFiles === true && (media.duration ?? 0) <= PIECE_SECONDS;
     const { send, use } = piecesFor(whole ? [[HANDLE, Math.max(HANDLE, (media.duration ?? 0) - HANDLE)]] : wanted, media.duration ?? 0, media.fps || fpsOf(project), cached);
-    // Pieces already in the project as strips need nothing.
-    const have = project.media.filter((one) => one.cleans?.media === media.id);
-    const used = use.filter((one) => !have.some((strip) => Math.abs(strip.cleans!.from - one.from) < 0.01 && Math.abs(strip.cleans!.to - one.to) < 0.05));
+    // Pieces already in the project as strips (or given up on) need nothing.
+    const have = project.media.filter((one) => one.cleans?.media === media.id && (one.cleans.what ?? "text") === "text");
+    const used = use.filter((one) => one.key !== "" && !have.some((strip) => Math.abs(strip.cleans!.from - one.from) < 0.01 && Math.abs(strip.cleans!.to - one.to) < 0.05));
     if (send.length > 0 || used.length > 0) files.push({ media, source, send, use: used });
   }
   return { files, reading };
@@ -853,42 +920,120 @@ function listed(app: App, source: string): Promise<Cached[]> {
   return cached;
 }
 
+/**
+ * One piece of a project's footage on its way through Vmake, and how it came
+ * out: `check` laid and waiting for the agent's look (removal.ts
+ * `check_removal`), `done` looked at (or nobody objected), `failed` given up
+ * on after a second try (its blur laid back, said in `why`).
+ */
+export interface TextPiece {
+  key: string;
+  media: string;
+  name: string;
+  from: number;
+  to: number;
+  /** held: Vmake's account can't be used now (said in the line); picked up again once it can. */
+  state: "queued" | "running" | "held" | "check" | "done" | "failed";
+  /** Sends so far (a second one after a piece wasn't clean). */
+  tries: number;
+  /** What the automatic look found (their words still read), or why it failed. */
+  why?: string;
+  /** The strip's media id once laid. */
+  strip?: string;
+}
+
+const textPieces = new Map<string, Map<string, TextPiece>>();
+const pieceKeyOf = (media: string, from: number) => `text:${media}@${Math.round(from * 1000)}`;
+
+/** The project's pieces through Vmake (removal.ts reads them for its line, its check and the export's wait). */
+export function piecesOf(id: string): TextPiece[] {
+  return [...(textPieces.get(id)?.values() ?? [])].sort((a, b) => a.media.localeCompare(b.media) || a.from - b.from);
+}
+
+/** Drops `id`'s pieces waiting (or held) that aren't in `keep`. */
+function prune(id: string, keep: Set<string>): void {
+  const mine = textPieces.get(id);
+  if (mine === undefined) return;
+  for (const [key, one] of mine) if ((one.state === "queued" || one.state === "held") && !keep.has(key)) mine.delete(key);
+}
+
+function notePiece(id: string, piece: TextPiece): TextPiece {
+  let mine = textPieces.get(id);
+  if (mine === undefined) textPieces.set(id, (mine = new Map()));
+  const was = mine.get(piece.key);
+  const next = { ...piece, tries: Math.max(piece.tries, was?.tries ?? 0) };
+  mine.set(piece.key, next);
+  return next;
+}
+
 interface Run {
   provider: ProviderId;
   total: number;
   done: number;
-  failed: string[];
   account: AccountReason | null;
   over: boolean;
+  /** The project changed while it ran: planned again when it ends (only what's new is sent). */
+  again: boolean;
   stop: AbortController;
 }
 const runs = new Map<string, Run>();
+/** Projects whose person said yes to the API's price (the website's plan needs no yes). */
+const confirmed = new Set<string>();
 
-/** What the editor shows: one line, its one button, and how far a run has got. */
+/** What the editor shows: one line, its one button, and how far it's got. */
 export interface Status {
   line: string | null;
-  /** remove: the run; retry: the account looked at again and the run; sign_in: Vmake's sign-in opened (its address answered as `open`). */
+  /** remove: say yes to the API's price; retry: the account looked at again; sign_in: Vmake's sign-in opened. */
   action: "remove" | "retry" | "sign_in" | null;
   running: { done: number; total: number } | null;
 }
 
 const minutes = (seconds: number) => (seconds < 90 ? `${Math.max(1, Math.round(seconds))} s` : `${Math.round(seconds / 60)} min`);
 
-function agentBusy(app: App, id: string): boolean {
-  try {
-    return seams.agentPanel(app).turn?.(id)?.running === true;
-  } catch {
-    return false;
+/**
+ * Sends what `id`'s timeline newly shows of their text to Vmake, in the
+ * background (removal.ts calls it as soon as edits rest): kept pieces laid at
+ * once, the rest sent; on the API's paid route only once the person said yes
+ * to its price. A run under way picks up what changed when it ends.
+ */
+export async function ensure(app: App, id: string): Promise<void> {
+  const live = app.store.get(id);
+  if (live === null || removal.kinds(lessonOf(live.project)).vmake.length === 0) return;
+  const running = runs.get(id);
+  if (running !== undefined && !running.over) {
+    running.again = true;
+    return;
   }
+  const provider = await providerHere(app);
+  if (provider === null || blocked(app.store.home, provider.id) !== null) return;
+  const { files } = await plan(app, live.project, provider);
+  if (files.length === 0) {
+    prune(id, new Set());
+    return;
+  }
+  const paid = files.some((file) => file.send.length > 0);
+  if (paid && provider.id === "vmake-api" && !confirmed.has(id)) {
+    // Only what's kept already goes now; what costs waits for the person's yes.
+    const free = files.filter((file) => file.use.length > 0).map((file) => ({ ...file, send: [] }));
+    if (free.length > 0) start(app, id, provider, free);
+    return;
+  }
+  start(app, id, provider, files);
 }
 
-/** The line for project `id` (and a free run started when all it needs is kept already). */
+/** The line for project `id`: a quiet state while pieces are out, the account's trouble plainly, the API's price to say yes to. */
 export async function status(app: App, id: string): Promise<Status> {
   const live = app.store.get(id);
   if (live === null) throw new ApiError(404, "no such project");
-  const run = runs.get(id);
-  if (run !== undefined && !run.over) return { line: `Taking their text out: ${run.done} of ${run.total} pieces`, action: null, running: { done: run.done, total: run.total } };
-  if (live.project.remove_burned !== true || agentBusy(app, id)) return { line: null, action: null, running: null };
+  await v2cloud.refreshSkills();
+  const lesson = lessonOf(live.project);
+  if (removal.kinds(lesson).vmake.length === 0) return { line: null, action: null, running: null };
+  const pieces = piecesOf(id);
+  const out = pieces.filter((one) => one.state === "queued" || one.state === "running").length;
+  if (out > 0) {
+    const done = pieces.filter((one) => one.state === "check" || one.state === "done").length;
+    return { line: `Removing their text · ${done} of ${done + out} pieces`, action: null, running: { done, total: done + out } };
+  }
   const provider = await providerHere(app);
   if (provider === null) {
     // A Browser Use key and no sign-in yet: the person signs in once.
@@ -897,24 +1042,22 @@ export async function status(app: App, id: string): Promise<Status> {
   }
   const stopped = blocked(app.store.home, provider.id);
   if (stopped !== null) return { line: accountLine(stopped.reason, stopped.said), action: stopped.reason === "signed_out" && provider.id === "vmake-web" ? "sign_in" : "retry", running: null };
-  const { files } = await plan(app, live.project, provider);
-  const seconds = files.reduce((sum, file) => sum + file.send.reduce((all, [a, b]) => all + b - a, 0), 0);
-  const pieces = files.reduce((sum, file) => sum + file.send.length, 0);
-  if (pieces === 0 && files.some((file) => file.use.length > 0)) {
-    start(app, id, provider, files);
-    return { line: "Taking their text out", action: null, running: { done: 0, total: files.reduce((sum, file) => sum + file.use.length, 0) } };
+  const failed = pieces.filter((one) => one.state === "failed").length;
+  if (provider.id === "vmake-api" && !confirmed.has(id)) {
+    const { files } = await plan(app, live.project, provider);
+    const seconds = files.reduce((sum, file) => sum + file.send.reduce((all, [a, b]) => all + b - a, 0), 0);
+    const count = files.reduce((sum, file) => sum + file.send.length, 0);
+    if (count > 0) return { line: `Take their text out of ${minutes(seconds)} of footage: ${provider.price(seconds, count)}`, action: "remove", running: null };
   }
-  if (pieces === 0) return { line: null, action: null, running: null };
-  const failed = run?.failed.length ?? 0;
-  if (failed > 0) return { line: `Vmake couldn't clean ${failed === 1 ? "one piece" : `${failed} pieces`}; their text stays blurred there.`, action: "retry", running: null };
-  return { line: `Take their text out of ${minutes(seconds)} of footage: ${provider.price(seconds, pieces)}`, action: "remove", running: null };
+  if (failed > 0) return { line: `Vmake couldn't clean ${failed === 1 ? "one piece" : `${failed} pieces`}; their text stays blurred there.`, action: null, running: null };
+  return { line: null, action: null, running: null };
 }
 
-/** Starts the run for `id` (the person's button); refused during an agent's turn. */
+/** The person's yes (the API's price), or a retry of an account Vmake refused. */
 export async function begin(app: App, id: string, retry = false): Promise<Status> {
   const live = app.store.get(id);
   if (live === null) throw new ApiError(404, "no such project");
-  if (agentBusy(app, id)) throw new ApiError(409, "Once the agent's turn is done.");
+  await v2cloud.refreshSkills();
   const provider = await providerHere(app);
   if (provider === null) throw new ApiError(409, "Vmake isn't set up on this Mac.");
   if (retry && readKept(app.store.home).accounts[provider.id] !== undefined) {
@@ -926,30 +1069,114 @@ export async function begin(app: App, id: string, retry = false): Promise<Status
       else unblock(app.store.home, provider.id);
     }
   }
-  if (blocked(app.store.home, provider.id) === null) {
-    listings.clear();
-    const { files } = await plan(app, live.project, provider);
-    if (files.length > 0) start(app, id, provider, files);
-  }
+  confirmed.add(id);
+  listings.clear();
+  await ensure(app, id);
   return status(app, id);
 }
 
-/** For tests: the run of `id` once it's over. */
+/** Projects whose run just ended and is planning what changed meanwhile (a run of it may follow). */
+const chaining = new Set<string>();
+
+/** For tests: the run of `id` once it's over (and any run it started again). */
 export async function settled(id: string): Promise<void> {
-  while (runs.get(id)?.over === false) await Bun.sleep(20);
+  while (runs.get(id)?.over === false || chaining.has(id)) await Bun.sleep(20);
+}
+
+/** For tests: nothing remembered. */
+export function reset(): void {
+  textPieces.clear();
+  runs.clear();
+  confirmed.clear();
+  listings.clear();
+}
+
+/**
+ * What Vmake's piece still shows of their words: each line of theirs read in
+ * the original piece (a few frames, not the camera's or what the lesson keeps,
+ * in the reach the lesson gives) looked for in Vmake's at the same frames.
+ * Null when none still reads.
+ */
+export async function stillShows(original: string, cleaned: string, size: [number, number], seconds: number, keep: Box[]): Promise<string | null> {
+  const at = [...new Set([0.2, 0.5, 0.8].map((share) => Math.floor(seconds * share)))].filter((second) => second >= 0 && second < seconds);
+  const [before, after] = await Promise.all([native().screenTextDetect(original, size, at), native().screenTextDetect(cleaned, size, at)]);
+  for (const second of at) {
+    const theirs = (before[second] ?? []).filter((line) => wordy(line.t) && parseClock(line.t) === null && !keep.some((box) => overlapShare(box, line.b) > 0.5));
+    for (const line of theirs) {
+      const words = tokens(line.t);
+      const still = (after[second] ?? []).find((other) => Math.abs(centre(other.b)[0] - centre(line.b)[0]) < 0.05 && Math.abs(centre(other.b)[1] - centre(line.b)[1]) < 0.05 && alike(words, tokens(other.t)));
+      if (still !== undefined) return `"${line.t.trim()}" still reads at ${second} s`;
+    }
+  }
+  return null;
+}
+
+/**
+ * A piece that isn't clean (the automatic look, or the agent's): its strip
+ * taken out of the project and its kept copy forgotten; sent once more, else
+ * given up on, their blur laid back over it and said.
+ */
+export async function reject(app: App, id: string, key: string, why: string): Promise<string> {
+  const piece = textPieces.get(id)?.get(key);
+  if (piece === undefined) throw new Error(`no piece ${key}`);
+  const live = app.store.get(id);
+  const media = live?.project.media.find((one) => one.id === piece.media);
+  if (live === null || media === undefined) throw new Error("its footage is gone");
+  const source = await sourceOf(media);
+  const kept = (await shelfOf(app).list(source)).filter((one) => Math.abs(one.from - piece.from) < 0.01);
+  for (const one of kept) await shelfOf(app).forget(source, one);
+  listings.delete(source);
+  const second = piece.tries < 2;
+  await app.store.update(id, "text removal", (project) => {
+    project.media = project.media.filter((one) => !(one.cleans?.media === piece.media && (one.cleans.what ?? "text") === "text" && Math.abs(one.cleans.from - piece.from) < 0.01));
+    if (!second) coverAgain(project, media, piece.from, piece.to);
+  });
+  notePiece(id, { ...piece, state: second ? "queued" : "failed", why, strip: undefined });
+  diag.warn("removal", `${id}: ${piece.name} ${Math.round(piece.from)}–${Math.round(piece.to)} s not clean (${why}): ${second ? "sent again" : "given up on, blurred"}`);
+  if (second) await ensure(app, id);
+  return second ? "sent to Vmake again" : "given up on: their text there is blurred";
+}
+
+/** Their blur laid back over a piece given up on: their subtitles' band and their labels, stuck to each clip of the footage there. */
+function coverAgain(project: Project, media: Media, from: number, to: number): void {
+  const fps = fpsOf(project);
+  const shown = burned.onTimeline(project, 0, Number.MAX_SAFE_INTEGER, true).shown.filter((one) => {
+    const clip = project.clips.find((own) => own.id === one.clip);
+    if (clip === undefined || clip.type !== "video" || clip.media !== media.id) return false;
+    const at = (frame: number) => clip.source_in + ((frame - clip.start) / fps) * clip.speed;
+    return at(one.start) < to && at(one.end) > from;
+  });
+  if (shown.length > 0) burned.cover(project, shown, true);
+  const reads = burned.readsOf(media);
+  if (reads === null) return;
+  for (const box of labelBoxes(reads.texts, reads.seconds, cameraFromReads(media, null), removal.exampleWords(lessonOf(project)))) {
+    for (const clip of project.clips) {
+      if (clip.type !== "video" || clip.media !== media.id) continue;
+      burned.coverBox(project, clip, media, box, from, to);
+    }
+  }
 }
 
 function start(app: App, id: string, provider: Provider, files: FilePlan[]): void {
   if (runs.get(id)?.over === false) return;
   const jobs = files.flatMap((file) => [...file.use.map((cached) => ({ file, cached, range: [cached.from, cached.to] as [number, number] })), ...file.send.map((range) => ({ file, cached: null as Cached | null, range }))]);
-  const run: Run = { provider: provider.id, total: jobs.length, done: 0, failed: [], account: null, over: false, stop: new AbortController() };
+  const run: Run = { provider: provider.id, total: jobs.length, done: 0, account: null, over: false, again: false, stop: new AbortController() };
+  // Pieces waiting (or held by the account) the plan no longer has (a re-cut took their footage off): gone, never waited for.
+  prune(id, new Set(jobs.map((job) => pieceKeyOf(job.file.media.id, job.range[0]))));
+  const lesson = lessonOf(app.store.get(id)?.project ?? {});
   runs.set(id, run);
+  for (const job of jobs) {
+    const known = textPieces.get(id)?.get(pieceKeyOf(job.file.media.id, job.range[0]));
+    notePiece(id, { key: pieceKeyOf(job.file.media.id, job.range[0]), media: job.file.media.id, name: job.file.media.name, from: job.range[0], to: job.range[1], state: "queued", tries: known?.tries ?? 0 });
+  }
   const sent = { seconds: 0, credits: 0, creditsSaid: false };
   const stamps = new Map<string, Promise<Box[]>>();
   const work = async (job: (typeof jobs)[number]) => {
     if (run.stop.signal.aborted) return;
     const { file, range } = job;
     const [from, to] = range;
+    const key = pieceKeyOf(file.media.id, from);
+    let piece = notePiece(id, { ...textPieces.get(id)!.get(key)!, state: "running" });
     const label = `${file.media.name} ${Math.round(from)}–${Math.round(to)} s`;
     const dir = join(app.store.cacheDir(), "cleaned", "work");
     fs.mkdirSync(dir, { recursive: true });
@@ -959,14 +1186,17 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
       if (!stamps.has(file.media.id)) stamps.set(file.media.id, stampOf(app, file.media, input));
       const original = `${stem}.original.mp4`;
       await cutPiece(input, from, to, original, 300_000_000, provider.pieceQuality);
-      let cleaned: string;
       let cached = job.cached;
       if (cached === null) {
-        if (blocked(app.store.home, provider.id) !== null) return;
+        if (blocked(app.store.home, provider.id) !== null) {
+          piece = notePiece(id, { ...piece, state: "held" });
+          return;
+        }
         const out = `${stem}.vmake.mp4`;
         // A whole file already on R2 goes from there (a cloud browser fetches it at a datacenter's speed).
-        const key = file.media.cloud?.original;
-        const whole = key && from <= 0.05 && to >= (file.media.duration ?? 0) - 0.05 && (file.media.cloud?.size ?? Infinity) <= 300_000_000 ? { key } : undefined;
+        const fileKey = file.media.cloud?.original;
+        const whole = fileKey && from <= 0.05 && to >= (file.media.duration ?? 0) - 0.05 && (file.media.cloud?.size ?? Infinity) <= 300_000_000 ? { key: fileKey } : undefined;
+        piece = notePiece(id, { ...piece, tries: piece.tries + 1 });
         const spent = await provider.remove(original, out, to - from, run.stop.signal, whole);
         sent.seconds += to - from;
         if (spent.credits !== null) {
@@ -976,38 +1206,40 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
         cached = await shelfOf(app).keep(file.source, out, from, to, provider.id);
         listings.delete(file.source);
       }
-      cleaned = await shelfOf(app).bring(file.source, cached);
+      const cleaned = await shelfOf(app).bring(file.source, cached);
       const info = await probe(original);
-      let force: Box[] = [];
-      for (const step of localSteps) {
-        const stepped = `${stem}.${step.name}.mp4`;
-        const done = await step.run({ original, cleaned, media: file.media, from, to }, stepped).catch((error: unknown) => {
-          diag.warn("removal", `${label}: ${step.name}: ${diag.messageOf(error)}`);
-          return null;
-        });
-        if (done !== null) {
-          cleaned = stepped;
-          force = [...force, ...done.boxes];
-        }
-      }
-      const keep = await stamps.get(file.media.id)!;
+      // The camera's text, and what the lesson keeps out of reach (only the subtitles' band when that's all it takes out).
+      const keep = [...(await stamps.get(file.media.id)!), ...keptFor(lesson, burned.of(file.media)?.band ?? null)];
       const out = join(app.store.cacheDir(), "cleaned", `${id}-${file.media.id}-${Math.round(cached.from * 1000)}-${Math.round(cached.to * 1000)}.${cached.provider}.strip.mp4`);
-      const made = await makeStrip(original, cleaned, { width: info.width, height: info.height, fps: info.fps }, keep, out, force);
+      const made = await makeStrip(original, cleaned, { width: info.width, height: info.height, fps: info.fps }, keep, out);
+      // The automatic look: their words read again in what Vmake gave back.
+      const still = await stillShows(original, cleaned, [info.width, info.height], info.duration, keep).catch(() => null);
       fs.rmSync(original, { force: true });
       if (made === null) {
-        diag.info("removal", `${label}: Vmake took nothing out`);
+        piece = notePiece(id, { ...piece, state: still === null ? "done" : "failed", ...(still !== null ? { why: still } : {}) });
+        diag.info("removal", `${label}: nothing was taken out`);
         return;
       }
-      await place(app, id, file.media, { from: cached.from, to: Math.min(cached.to, cached.from + info.duration) }, made.box, out);
+      // Its examples of this footage, as a check: what it says to take out lies in what was.
+      for (const example of lesson?.examples ?? []) {
+        if (example.action !== "remove" || example.box === undefined || example.from?.source !== file.source || example.from.at < from || example.from.at > to) continue;
+        if (overlapShare(example.box, made.box) < 0.5) diag.warn("removal", `${label}: the lesson's example "${example.text ?? example.kind}" isn't in what was taken out (box ${made.box.join(" ")})`);
+      }
+      const strip = await place(app, id, file.media, { from: cached.from, to: Math.min(cached.to, cached.from + info.duration) }, made.box, out);
+      piece = notePiece(id, { ...piece, state: "check", ...(strip !== null ? { strip } : {}) });
+      if (still !== null) await reject(app, id, key, still);
     } catch (error) {
       if (error instanceof VmakeError && error.scope === "account") {
         run.account = error.reason;
         block(app.store.home, provider.id, error);
         run.stop.abort();
+        notePiece(id, { ...piece, state: "held" });
         return;
       }
-      run.failed.push(label);
-      diag.warn("removal", `${id}: ${label} wasn't cleaned (it stays blurred): ${diag.messageOf(error)}`);
+      const why = diag.messageOf(error);
+      diag.warn("removal", `${id}: ${label} wasn't cleaned: ${why}`);
+      // Sent once more, else given up on (blurred, said).
+      await reject(app, id, key, why).catch((failed: unknown) => diag.warn("removal", `${id}: ${label}: ${diag.messageOf(failed)}`));
     } finally {
       for (const name of fs.readdirSync(dir).filter((one) => one.startsWith(`${id}-${file.media.id}-${Math.round(from * 1000)}.`))) fs.rmSync(join(dir, name), { force: true });
       run.done += 1;
@@ -1032,24 +1264,113 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
       project: id,
       provider: provider.id,
       seconds: Math.round(sent.seconds * 100) / 100,
-      pieces: jobs.filter((job) => job.cached === null).length,
-      failed: run.failed.length,
+      pieces: paid.length,
+      failed: piecesOf(id).filter((one) => one.state === "failed").length,
       credits: sent.creditsSaid ? sent.credits : null,
       estimate: provider.id === "vmake-api" ? Math.round(sent.seconds * API_CREDITS_A_SECOND) : null,
     });
     writeKept(app.store.home, kept);
-    diag.info("removal", `${id}: ${jobs.length} pieces in ${Math.round((Date.now() - started) / 1000)} s (${sent.seconds.toFixed(1)} s sent, ${run.failed.length} failed${run.account !== null ? `, stopped: ${run.account}` : ""})`);
+    diag.info("removal", `${id}: ${jobs.length} pieces in ${Math.round((Date.now() - started) / 1000)} s (${sent.seconds.toFixed(1)} s sent${run.account !== null ? `, stopped: ${run.account}` : ""})`);
+    // Stopped by the account: what never went is held (not out), until it can be used again.
+    if (run.account !== null) for (const one of piecesOf(id)) if (one.state === "queued") notePiece(id, { ...one, state: "held" });
+    // What changed meanwhile, and pieces sent again, go now.
+    const again = run.again || piecesOf(id).some((one) => one.state === "queued");
+    if (again) chaining.add(id);
     run.over = true;
+    if (again) await ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: ${diag.messageOf(error)}`)).finally(() => chaining.delete(id));
   })();
 }
 
+// ---------------------------------------------------------------------------
+// A lesson's examples
+
+/** What the agent gives for an example: a second of a footage file of the project, or a picture from the chat. */
+export interface GivenExample {
+  kind: removal.Example["kind"];
+  action: removal.Example["action"];
+  media?: string;
+  at?: number;
+  picture?: string;
+  box?: Box;
+  text?: string;
+  note?: string;
+}
+
+/**
+ * An example made ready to keep: its frame (the footage's second, at full
+ * quality, or the chat's picture), its words read there (the lines in its box,
+ * or its box from the words given), its crop kept in Edit's cloud under the
+ * channel (`edit/channels/<channel>/removal/<sha256>.jpg`). `pictures`: where a
+ * chat picture may be read from (the project's uploads, Edit's cache).
+ */
+export async function takeExample(app: App, project: Project, channel: string, given: GivenExample, pictures: string[]): Promise<removal.Example> {
+  const dir = join(app.store.cacheDir(), "cleaned", "examples");
+  fs.mkdirSync(dir, { recursive: true });
+  const stem = join(dir, `${Date.now()}-${Math.round(Math.random() * 1e9)}`);
+  const frame = `${stem}.png`;
+  let from: removal.Example["from"];
+  try {
+    if (given.media !== undefined) {
+      const media = project.media.find((one) => one.id === given.media);
+      if (media === undefined || media.kind !== "video") throw new Error(`no footage ${given.media} in this project`);
+      const at = Math.min(Math.max(0, given.at ?? 0), Math.max(0, (media.duration ?? 0) - 0.05));
+      const input = await cloudMedia.originalInput(app.store.cacheDir(), media);
+      await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...tools.urlArgs(input), "-ss", String(at), "-i", input, "-frames:v", "1", frame]);
+      from = { source: await sourceOf(media), at: Math.round(at * 100) / 100 };
+    } else if (given.picture !== undefined) {
+      const real = fs.realpathSync(given.picture);
+      if (!pictures.some((root) => real.startsWith(fs.realpathSync(root) + "/")) || !/\.(png|jpe?g|webp)$/iu.test(real)) throw new Error("picture is a picture from this chat (its file), or give media and at");
+      await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", real, "-frames:v", "1", frame]);
+    } else throw new Error("an example is a footage file's second (media, at) or a picture from the chat");
+    // Its words, as Edit reads the footage's (screen_text.rs, on a second of the frame held).
+    const held = `${stem}.mp4`;
+    await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-loop", "1", "-i", frame, "-t", "2", "-r", "5", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p", held]);
+    const info = await probe(held);
+    const lines = given.kind === "watermarks" ? [] : ((await native().screenTextDetect(held, [info.width, info.height], [1]))[1] ?? []);
+    let box = given.box;
+    let words = given.text;
+    if (box !== undefined && words === undefined) {
+      const inside = lines.filter((line) => overlapShare(box!, line.b) > 0.5);
+      if (inside.length > 0) words = inside.map((line) => line.t.trim()).join(" ");
+    }
+    if (box === undefined && words !== undefined) {
+      const said = tokens(words);
+      const found = lines.filter((line) => alike(said, tokens(line.t)));
+      if (found.length > 0) box = [Math.min(...found.map((one) => one.b[0])), Math.min(...found.map((one) => one.b[1])), Math.max(...found.map((one) => one.b[2])), Math.max(...found.map((one) => one.b[3]))];
+    }
+    // The crop: the box with a margin (the whole frame, small, without one).
+    const crop = `${stem}.jpg`;
+    const area = box === undefined ? "scale=640:-2" : (() => {
+      const [x0, y0, x1, y1] = grown(box, 0.02);
+      return `crop=iw*${(x1 - x0).toFixed(4)}:ih*${(y1 - y0).toFixed(4)}:iw*${x0.toFixed(4)}:ih*${y0.toFixed(4)}`;
+    })();
+    await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", frame, "-vf", area, "-q:v", "3", crop]);
+    const sha = createHash("sha256").update(fs.readFileSync(crop)).digest("hex");
+    const key = `edit/channels/${channel}/removal/${sha}.jpg`;
+    if (cloud.enabled()) await cloud.uploadFile(crop, key);
+    const round = (value: number) => Math.round(value * 1000) / 1000;
+    return {
+      kind: given.kind,
+      action: given.action,
+      ...(words !== undefined && words.trim() !== "" ? { text: words.trim().slice(0, 120) } : {}),
+      ...(box !== undefined ? { box: box.map(round) as Box } : {}),
+      ...(cloud.enabled() ? { picture: key } : {}),
+      ...(from !== undefined ? { from } : {}),
+      ...(given.note !== undefined && given.note.trim() !== "" ? { note: given.note.trim().slice(0, 160) } : {}),
+    };
+  } finally {
+    for (const name of fs.readdirSync(dir).filter((one) => one.startsWith(stem.slice(dir.length + 1)))) fs.rmSync(join(dir, name), { force: true });
+  }
+}
+
 /** Puts a strip in the project (clean_strips.ts lays it over the clips on the save). */
-async function place(app: App, id: string, footage: Media, range: { from: number; to: number }, box: Box, file: string): Promise<void> {
+async function place(app: App, id: string, footage: Media, range: { from: number; to: number }, box: Box, file: string): Promise<string | null> {
   const probed: Probe = await probe(file);
   await playing.whenIdle();
+  let made: string | null = null;
   await app.store.update(id, "text removal", (project) => {
     if (!project.media.some((one) => one.id === footage.id)) return;
-    project.media = project.media.filter((one) => !(one.cleans?.media === footage.id && Math.abs(one.cleans.from - range.from) < 0.01 && Math.abs(one.cleans.to - range.to) < 0.05));
+    project.media = project.media.filter((one) => !(one.cleans?.media === footage.id && (one.cleans.what ?? "text") === "text" && Math.abs(one.cleans.from - range.from) < 0.01 && Math.abs(one.cleans.to - range.to) < 0.05));
     const strip: Media = {
       id: freshId(project, "m"),
       name: `${footage.name} · their text out ${Math.round(range.from)}–${Math.round(range.to)} s`,
@@ -1061,9 +1382,10 @@ async function place(app: App, id: string, footage: Media, range: { from: number
       fps: probed.fps,
       has_audio: false,
       stacked_alpha: true,
-      cleans: { media: footage.id, from: range.from, to: range.to, box: box.map((value) => Math.round(value * 1e4) / 1e4) as [number, number, number, number] },
+      cleans: { media: footage.id, from: range.from, to: range.to, box: box.map((value) => Math.round(value * 1e4) / 1e4) as [number, number, number, number], what: "text" },
     };
     project.media.push(strip);
+    made = strip.id;
   });
   app.media.ensure(file, probed, true);
   try {
@@ -1071,10 +1393,10 @@ async function place(app: App, id: string, footage: Media, range: { from: number
   } catch (error) {
     diag.warn("cloud", `backfill ${id}: ${diag.messageOf(error)}`);
   }
+  return made;
 }
 
 export function routes(router: Router<App>): void {
-  router.get("/api/projects/{id}/text-removal", ({ app, params }) => status(app, params.id ?? "").then((answer) => json(answer)));
   router.post("/api/projects/{id}/text-removal", async (context) => {
     const body = (await readJson(context).catch(() => ({}))) as { retry?: unknown };
     return json(await begin(context.app, context.params.id ?? "", body.retry === true));

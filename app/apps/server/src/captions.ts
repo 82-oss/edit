@@ -1042,8 +1042,6 @@ export async function subtitles(app: App, projectId: string, from: number, to: n
     // Their band blurred on each clip where it shows, so ours read over it.
     const shownNow = clashing.length > 0 ? burned.onTimeline(project).shown : [];
     if (burnedIn !== "leave_off" && shownNow.length > 0) covers = burned.cover(project, shownNow, burnedIn === "remove");
-    // The channel takes what re-uploaders burned in out of the picture (text_removal.ts): asked once the edit is done.
-    if (burnedIn === "remove") project.remove_burned = true;
     const preserved = missingOnly ? new Map(project.clips.map((clip) => [clip.id, JSON.stringify(clip)])) : null;
     // Who each transcript voice was made out to be (a relabel: "Mother" →
     // "Tabitha:") and their colour: a re-run keeps them.
