@@ -306,7 +306,7 @@ test("at the disk's floor a block read is answered from memory and not kept, a w
   const realFree = storage.diskHooks.free;
   try {
     const floorRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-floor-"));
-    storage.diskHooks.free = () => storage.FREE_FLOOR_BYTES + BLOCK / 2;
+    storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES + BLOCK / 2;
     expect(keeping(floorRoot)).toBe(false);
     const key = "edit/proxies/floor.mp4";
     const read = await serve(floorRoot, key, `bytes=0-99`, url);
@@ -430,7 +430,7 @@ test("where nothing can be kept, blocks read are held in memory a while, at most
   const realFree = storage.diskHooks.free;
   try {
     const heldRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-held-"));
-    storage.diskHooks.free = () => storage.FREE_FLOOR_BYTES;
+    storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES;
     const key = "edit/proxies/held.mp4";
     // The window's read-ahead then its decoder: the same block twice, R2 once.
     expect(await bytes(await serve(heldRoot, key, `bytes=0-99`, r2big.url))).toEqual(big.subarray(0, 100));

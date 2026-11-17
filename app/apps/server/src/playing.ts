@@ -10,6 +10,8 @@
 // few seconds while it plays, and at a pause. A play nobody has spoken of for
 // `STALE_MS` is over (a page closed mid-play never says it paused).
 
+import * as diag from "./diag.ts";
+
 /** A play last heard of this long ago is over (the page says so every 5 s while it plays). */
 export const hooks = { staleMs: 12_000, pollMs: 250, now: () => Date.now() };
 
@@ -50,6 +52,8 @@ function changed(): void {
   }
   if (now === was) return;
   was = now;
+  // Said in the log, so what gave way to a play can be checked against it.
+  diag.info("playback", now ? "a play started: background work gives way" : "the play stopped: background work carries on");
   for (const listener of listeners) listener(now);
 }
 

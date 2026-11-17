@@ -20,7 +20,7 @@ import { writeAtomic } from "./files.ts";
 import * as mp4 from "./mp4_index.ts";
 import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
-import { FREE_FLOOR_BYTES, freeBytes } from "./storage.ts";
+import { WORK_FLOOR_BYTES, freeBytes } from "./storage.ts";
 
 export const BLOCK = 2 * 1024 * 1024;
 /** Blocks read ahead past the last one asked for: a bounded read's (the page's), and a read to the end's (FFmpeg reading on: Edit.app's window, its sound, the censor check). */
@@ -164,11 +164,11 @@ function metaOf(folder: string): Meta | null {
 }
 
 /**
- * Blocks are kept only while the disk keeps its floor free after them (storage.ts `FREE_FLOOR_BYTES`): below it a
+ * Blocks are kept only while the disk keeps the work's floor free after them (storage.ts `WORK_FLOOR_BYTES`): below it a
  * block read is answered from memory and not kept (kenobi, Nov 17: blocks and whole copies wrote until ENOSPC).
  */
 function keepable(root: string): boolean {
-  return freeBytes(root) - BLOCK >= FREE_FLOOR_BYTES;
+  return freeBytes(root) - BLOCK >= WORK_FLOOR_BYTES;
 }
 
 /** How much over the floor the disk must have for the page to be told blocks are kept (a play's next seconds of every file). */
@@ -179,7 +179,7 @@ const KEEPING_MARGIN = 256 * 1024 * 1024;
  * blocks to land waits for nothing (playback_ready.ts `keeping`: the page plays from the stream instead).
  */
 export function keeping(root: string): boolean {
-  return freeBytes(root) >= FREE_FLOOR_BYTES + KEEPING_MARGIN;
+  return freeBytes(root) >= WORK_FLOOR_BYTES + KEEPING_MARGIN;
 }
 
 /**

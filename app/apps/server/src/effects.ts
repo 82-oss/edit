@@ -79,7 +79,8 @@ import { fps as rateOf } from "./project.ts";
 import * as relay from "./relay.ts";
 import * as seams from "./seams.ts";
 import * as storage from "./storage.ts";
-import { FREE_FLOOR_BYTES } from "./storage.ts";
+import { WORK_FLOOR_BYTES } from "./storage.ts";
+import * as playing from "./playing.ts";
 import type { Store } from "./store.ts";
 import * as tools from "./tools.ts";
 import * as v2cloud from "./v2_cloud.ts";
@@ -1866,8 +1867,8 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
       // Room for what it holds at once (two chunks' frames, its chunks and the video joined from them), asked before it
       // draws, beside every other write under way (storage.ts claims), the disk's floor kept; the cleaner asked once.
       need = renderBytes(frame, toDraw, duration);
-      let left = storage.spare(dir, need, FREE_FLOOR_BYTES);
-      if (left < 0 && storage.askForRoom(storage.freeBytes(dir) - left) > 0) left = storage.spare(dir, need, FREE_FLOOR_BYTES);
+      let left = storage.spare(dir, need, WORK_FLOOR_BYTES);
+      if (left < 0 && storage.askForRoom(storage.freeBytes(dir) - left) > 0) left = storage.spare(dir, need, WORK_FLOOR_BYTES);
       if (left < 0) throw new DiskShort(diskFull(-left));
       claim.bytes = need;
       const pixels = frame.width * frame.height;
@@ -1879,7 +1880,7 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
         for (let index = first; index < end; index++) if (!fs.existsSync(join(frames, frameName(index)))) wanted.push(index);
         // Something else took the disk to its floor meanwhile: refused here, never written into ENOSPC.
         const free = storage.freeBytes(dir);
-        if (wanted.length > 0 && free - wanted.length * pixels * PNG_BYTES_A_PIXEL < FREE_FLOOR_BYTES) throw new DiskShort(diskFull(FREE_FLOOR_BYTES + wanted.length * pixels * PNG_BYTES_A_PIXEL - free));
+        if (wanted.length > 0 && free - wanted.length * pixels * PNG_BYTES_A_PIXEL < WORK_FLOOR_BYTES) throw new DiskShort(diskFull(WORK_FLOOR_BYTES + wanted.length * pixels * PNG_BYTES_A_PIXEL - free));
         let next = 0;
         await Promise.all(
           opened.map(async (page) => {
@@ -1922,7 +1923,7 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
             }
           }
           const partial = join(frames, `chunk-${String(n).padStart(5, "0")}.partial.mp4`);
-          await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...input, ...limit, ...encodeArgs(frame, stacked), "-an", partial]);
+          await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...input, ...limit, ...encodeArgs(frame, stacked), "-an", partial], { background: true });
           fs.renameSync(partial, chunkPath(n, stacked));
           let freed = 0;
           for (let index = first; index < end; index++) {
@@ -1948,6 +1949,9 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
           if (queue.length === 0) break;
         }
         const n = queue.shift()!;
+        // A play on this Mac comes first: the next chunk waits for it to stop (kenobi, Nov 17: a render's FFmpeg at
+        // 160–400% CPU beside a cold play of Cops Found 3 Bodies).
+        await playing.whenIdle();
         await drawChunk(n);
         await encoding;
         encoding = encodeChunk(n);
@@ -2041,7 +2045,7 @@ function even(value: number): number {
 
 /** Whether any of the frames (`input`: FFmpeg's arguments for them, `limit` how many) has a pixel less than opaque. */
 async function seeThrough(input: string[], limit: string[] = []): Promise<boolean> {
-  const out = new TextDecoder().decode(await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", ...input, ...limit, "-vf", "format=rgba,alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YMIN:file=-", "-f", "null", "-"]));
+  const out = new TextDecoder().decode(await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", ...input, ...limit, "-vf", "format=rgba,alphaextract,signalstats,metadata=print:key=lavfi.signalstats.YMIN:file=-", "-f", "null", "-"], { background: true }));
   return [...out.matchAll(/YMIN=(\d+)/g)].some((match) => Number(match[1]) < 255);
 }
 

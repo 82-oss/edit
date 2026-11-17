@@ -52,6 +52,7 @@ import * as exportExcerpts from "./export_excerpts.ts";
 import * as playbackStream from "./playback_stream.ts";
 import { playbackKey } from "./cloud_playback.ts";
 import * as player from "./player.ts";
+import * as playing from "./playing.ts";
 import * as seams from "./seams.ts";
 import { createHash } from "node:crypto";
 
@@ -377,8 +378,11 @@ async function next(app: App): Promise<void> {
       current.resting = true;
       publish(app, id);
       const rested = await hooks.waitForRest(() => current.cancelled);
+      // Nor while a play is on, the page's or Edit.app's window's (kenobi, Nov 17: two of its chunks ran through a
+      // cold play's first 30 s).
+      const idle = rested && (await playing.whenIdle(() => current.cancelled));
       current.resting = false;
-      if (!rested || current.cancelled) return;
+      if (!idle || current.cancelled) return;
       publish(app, id);
       // Its place among the exports, then the render; given back however it ends.
       const release = await turn(app, current);

@@ -62,9 +62,9 @@ test("the timeline's ready stretches: a file here or its whole copy throughout, 
 test("the page is told whether what's read is kept here: not at the disk's floor, where a play waiting for its next seconds would wait for nothing (kenobi, Nov 17: 30 s every play)", () => {
   const realFree = storage.diskHooks.free;
   try {
-    storage.diskHooks.free = () => storage.FREE_FLOOR_BYTES + 10_000_000;
+    storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES + 10_000_000;
     expect(keeping("/cache/cloud/blocks")).toBe(false);
-    storage.diskHooks.free = () => storage.FREE_FLOOR_BYTES + 2_000_000_000;
+    storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES + 2_000_000_000;
     expect(keeping("/cache/cloud/blocks")).toBe(true);
     // Playback not configured: nothing is read into blocks, as before.
     storage.diskHooks.free = () => 0;

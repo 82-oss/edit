@@ -2,6 +2,7 @@
 // Script mode's storage.ts keep to it).
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 
 /**
  * The smallest local cache, and what it was until Nov 2. Sized for a Mac that
@@ -39,10 +40,20 @@ export function localBudgetBytes(disk?: { freeBytes: number; cacheBytes: number 
 // free space less every claim and its own need stays over its floor (`spare`).
 
 /**
- * What copies kept only to play sooner (whole previews, a long video's pieces) leave free: the floor and a
- * gigabyte more, for the work that can't stream (an effect's render, an export), which keeps to the floor alone.
+ * Room left for macOS's own swap files over the floor: it adds one a gigabyte at a time, and an 8 GB Mac swaps
+ * hard while Edit plays (kenobi, Nov 17: free space fell from 1.94 GB to 1.02 GB in 40 s, none of it Edit's, as
+ * `swapfile4` came; 4.1 of 5.1 GB of swap in use). Two gigabytes on a Mac of 8 GB or less, one above.
  */
-export const CACHE_FLOOR_BYTES = FREE_FLOOR_BYTES + 1_000_000_000;
+export const SWAP_ROOM_BYTES = os.totalmem() <= 8 * 2 ** 30 ? 2_000_000_000 : 1_000_000_000;
+
+/** What the work that fills the disk as it goes (blocks read for a play, an effect's render) leaves free: the floor and the swap's room. */
+export const WORK_FLOOR_BYTES = FREE_FLOOR_BYTES + SWAP_ROOM_BYTES;
+
+/**
+ * What copies kept only to play sooner (whole previews, a long video's pieces) leave free: the work's floor and a
+ * gigabyte more, for the work that can't stream (an effect's render, an export).
+ */
+export const CACHE_FLOOR_BYTES = WORK_FLOOR_BYTES + 1_000_000_000;
 
 /** Seams for tests: the disk's free space, and the cleaner asked to make room (cache_cleanup.ts `makeRoom`, set at the server's start). */
 export const diskHooks = {

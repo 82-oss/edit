@@ -470,7 +470,7 @@ test.skipIf(chrome === null)("a render with no room on the disk for what it hold
       project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
     });
     // The floor and 100 MB: a 2 s board holds ~0.2 GB at once.
-    storage.diskHooks.free = () => storage.FREE_FLOOR_BYTES + 100_000_000;
+    storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES + 100_000_000;
     await expect(effects.renderNow(app, id, "bar")).rejects.toThrow("Your disk is full: free about 1 GB, then press Retry.");
     expect(fs.readdirSync(join(app.store.uploadsDir(id), "effect-renders")).filter((name) => name.endsWith(".frames")).flatMap((name) => fs.readdirSync(join(app.store.uploadsDir(id), "effect-renders", name)))).toEqual([]);
   } finally {

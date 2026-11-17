@@ -28,8 +28,12 @@ test("the disk's room: what's free less every write's claim and a new one's need
     expect(storage.claimedBytes()).toBe(0.1 * GB);
     one.release();
     expect(storage.claimedBytes()).toBe(0);
-    // Copies kept only to play sooner leave a gigabyte more for work that can't stream.
-    expect(storage.spare("/x", 1 * GB, storage.CACHE_FLOOR_BYTES)).toBe(0);
+    // Work that fills the disk as it goes leaves room for macOS's swap files too, and copies kept only to play
+    // sooner a gigabyte more again, for work that can't stream (kenobi, Nov 17: a swap file took 0.9 GB at once).
+    expect(storage.WORK_FLOOR_BYTES).toBe(storage.FREE_FLOOR_BYTES + storage.SWAP_ROOM_BYTES);
+    expect(storage.CACHE_FLOOR_BYTES).toBe(storage.WORK_FLOOR_BYTES + 1 * GB);
+    expect(storage.SWAP_ROOM_BYTES).toBeGreaterThanOrEqual(1 * GB);
+    expect(storage.spare("/x", 1 * GB, storage.CACHE_FLOOR_BYTES)).toBe(3 * GB - 1 * GB - storage.CACHE_FLOOR_BYTES);
     const asked: number[] = [];
     storage.diskHooks.makeRoom = (wanted) => {
       asked.push(wanted);
