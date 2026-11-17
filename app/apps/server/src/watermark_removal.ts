@@ -570,6 +570,8 @@ export function reset(): void {
   looks.length = 0;
   looking.clear();
   lookFailed.clear();
+  // A fresh server's queue: what was under way is gone with the one that stopped.
+  busy = false;
 }
 
 export function routes(router: Router<App>): void {

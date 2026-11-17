@@ -39,8 +39,34 @@ import * as tools from "./tools.ts";
 import * as v2cloud from "./v2_cloud.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
 
-/** How long an export waits for pieces still out (Vmake's site takes minutes a piece, three at once). */
-export const timing = { exportWaitMs: 3 * 3_600_000, restMs: 2000 };
+/** How long an export waits for pieces still out (Vmake's site takes minutes a piece, three at once); how soon after the server starts its work resumes. */
+export const timing = { exportWaitMs: 3 * 3_600_000, restMs: 2000, resumeMs: 15_000 };
+
+/** Projects whose work resumes when the server starts: those changed within this. */
+const RESUME_WITHIN_MS = 14 * 86_400_000;
+
+/**
+ * Picks the work up again after the server starts (a restart, an update):
+ * every recent project whose channel's lesson (or what was asked there) takes
+ * something out is brought up to date, one after another, as an edit would.
+ * Pieces cut short by the stop were never kept, so they're done again; kept
+ * ones are laid from the shelf, never made twice (Nov 17, Sphe's M4: after a
+ * restart at 15:26 nothing resumed until an edit).
+ */
+export async function resume(app: App): Promise<number> {
+  await v2cloud.refreshSkills().catch(() => {});
+  const since = Date.now() - RESUME_WITHIN_MS;
+  let count = 0;
+  for (const summary of app.store.list()) {
+    if (summary.problem !== undefined || summary.modified_ms < since || summary.clips === 0) continue;
+    const project = app.store.get(summary.id)?.project;
+    if (project === undefined || !project.channel || asks.inForce(removal.lessonOf(project), app.store.home, summary.id) === null) continue;
+    count += 1;
+    await ensure(app, summary.id).catch((error: unknown) => diag.warn("removal", `${summary.id}: resuming: ${diag.messageOf(error)}`));
+  }
+  if (count > 0) diag.info("removal", `resumed ${count} project(s) taught to take theirs out`);
+  return count;
+}
 
 /**
  * Brings `id`'s removal up to date with its channel's lesson: each part taught
@@ -75,6 +101,7 @@ function hintsOf(app: App, id: string): watermarkRemoval.Hints {
 }
 
 watermarkRemoval.hintsFor.project = hintsOf;
+textRemoval.schedule.ensure = (app, id) => ensure(app, id);
 
 /** Pieces out (queued or being done) and done, of both workers, for the line and the export's step. */
 export function progressOf(id: string): { done: number; out: number } {
@@ -272,9 +299,11 @@ export function routes(router: Router<App>): void {
   router.get("/api/projects/{id}/text-removal", ({ app, params }) => statusOf(app, params.id ?? "").then((answer) => json(answer)));
 }
 
-/** Every project of a channel taught to take theirs out is brought up to date as soon as its edits rest, here (not a save pulled from another Mac); every export waits for its pieces still out. */
+/** Every project of a channel taught to take theirs out is brought up to date as soon as its edits rest, and again when the server starts (`resume`), here (not a save pulled from another Mac); every export waits for its pieces still out. */
 export function start(app: App): void {
   readyWaits.push((ready, id, limitMs) => waitForPieces(ready, id, limitMs));
+  const later = setTimeout(() => void resume(app).catch((error: unknown) => diag.warn("removal", `resuming: ${diag.messageOf(error)}`)), timing.resumeMs);
+  later.unref?.();
   app.store.subscribe((event) => {
     if (event.type !== "project" || typeof event.id !== "string" || event.origin === "cloud") return;
     const id = event.id;

@@ -1138,7 +1138,12 @@ export async function begin(app: App, id: string, retry = false): Promise<Status
   if (live === null) throw new ApiError(404, "no such project");
   await v2cloud.refreshSkills();
   const provider = await providerHere(app);
-  if (provider === null) throw new ApiError(409, "Vmake isn't set up on this Mac.");
+  if (provider === null) {
+    // Their watermarks alone need no Vmake: the engine's work goes on (removal_schedule.ts).
+    if (removal.kinds(inForceOf(app, live.project)).vmake.length > 0) throw new ApiError(409, "Vmake isn't set up on this Mac.");
+    await schedule.ensure(app, id);
+    return status(app, id);
+  }
   if (retry && readKept(app.store.home).accounts[provider.id] !== undefined) {
     try {
       await provider.check();
@@ -1150,9 +1155,12 @@ export async function begin(app: App, id: string, retry = false): Promise<Status
   }
   confirmed.add(id);
   listings.clear();
-  await ensure(app, id);
+  await schedule.ensure(app, id);
   return status(app, id);
 }
+
+/** Both workers brought up to date (removal_schedule.ts sets it: a yes or a retry starts their watermarks' work too, not only Vmake's). */
+export const schedule = { ensure: (app: App, id: string): Promise<void> => ensure(app, id) };
 
 /** Projects whose run just ended and is planning what changed meanwhile (a run of it may follow). */
 const chaining = new Set<string>();

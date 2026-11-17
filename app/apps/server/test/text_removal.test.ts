@@ -687,6 +687,64 @@ test("asked for a stretch of the timeline, only those seconds of the footage the
   }
 }, 120_000);
 
+test("after a restart the work resumes by itself, with no edit (Nov 17, Sphe's M4): a cell cut short by the stop is done again, kept ones never twice; a retry runs their watermarks' work too", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-resume");
+  reading({});
+  const calls: string[] = [];
+  let stopping = true;
+  const base = engine(calls);
+  // The server stopping mid-cell: FFmpeg killed under it, and nothing more done before it's gone.
+  wm.useEngine({
+    ...base,
+    remove: async (piece, progress) => {
+      if (!stopping) return base.remove(piece, progress);
+      calls.push(`remove ${piece.from}-${piece.to}`);
+      await Bun.sleep(1e9);
+      return null;
+    },
+  });
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
+  tr.useProvider(null);
+  try {
+    const file = await labelledFootage(dir, 40);
+    const id = await labelledProject(app, file, 40);
+    teach({ watermarks: true });
+    await removalSchedule.ensure(app, id);
+    while (calls.length < 2) await Bun.sleep(20);
+    expect(calls).toEqual(["learn null", "remove 0-30"]);
+    // The restart: nothing in memory (the stopped server's queue gone), nothing edited since.
+    stopping = false;
+    wm.reset();
+    v2cloud.forgetSkills();
+    teach({ watermarks: true });
+    expect(await removalSchedule.resume(app)).toBe(1);
+    await wm.settled();
+    // Its mark was kept by the file (not looked for again); both cells done now.
+    expect(calls).toEqual(["learn null", "remove 0-30", "remove 0-30", "remove 30-40"]);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(2);
+    // Another restart: the kept cells are laid already, nothing is made again.
+    wm.reset();
+    await removalSchedule.resume(app);
+    await wm.settled();
+    expect(calls.length).toBe(4);
+    // The line's retry (or a yes) with their watermarks alone taught and no Vmake here: the engine's work, not a refusal.
+    wm.reset();
+    const strips = store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").map((media) => media.id);
+    await store.update(id, "test", (p) => {
+      p.media = p.media.filter((media) => !strips.includes(media.id));
+    });
+    expect(await tr.begin(app, id, true)).toEqual({ line: null, action: null, running: null });
+    await wm.settled();
+    expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(2);
+    expect(calls.length).toBe(4);
+    // Untaught, or an old project: nothing resumes.
+    v2cloud.useSkillsForTests([]);
+    expect(await removalSchedule.resume(app)).toBe(0);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
 test("removal starts by itself as soon as edits rest (no button on the website's plan); a longer clip sends only its new seconds", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });
