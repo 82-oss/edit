@@ -78,8 +78,8 @@ const API_DOLLARS_A_SECOND = 0.027;
 const API_CREDITS_A_SECOND = 4;
 /** An account's refusal is looked at again after this. */
 export const RECHECK_MS = 3_600_000;
-/** Pieces in flight at once. */
-const PARALLEL = 2;
+/** Pieces in flight at once (the website's: one a tab of the one leased browser, vmake_web.ts TABS). */
+const PARALLEL = 3;
 /** The mask (at 720 lines; scaled with the picture): luma difference that counts, growth over the glow, feather. */
 const THRESHOLD = 40;
 const GROW_AT_720 = 6;
@@ -331,9 +331,13 @@ export interface Cached {
  * What to clean of one file: `wanted` (source seconds showing their text, on
  * the timeline) with HANDLE each side, less what `cached` covers, in pieces
  * of at most PIECE_SECONDS, each starting on a frame of `fps`; and the cached
- * pieces it uses.
+ * pieces it uses. `pack` (paid by the file, not the second: the website's
+ * plan, so many files a day) puts nearby stretches into one piece with the
+ * seconds between them, as few pieces as fit (Nov 17: a compilation's 89
+ * small files, three days of the plan, are about 20), never across a piece
+ * already cleaned (that's reused, never sent again).
  */
-export function piecesFor(wanted: [number, number][], duration: number, fps: number, cached: Cached[]): { send: [number, number][]; use: Cached[] } {
+export function piecesFor(wanted: [number, number][], duration: number, fps: number, cached: Cached[], pack = false): { send: [number, number][]; use: Cached[] } {
   const padded = merged(wanted.map(([a, b]): [number, number] => [Math.max(0, a - HANDLE), Math.min(duration, b + HANDLE)]).filter(([a, b]) => b > a));
   const use = cached.filter((one) => padded.some(([a, b]) => one.from < b && a < one.to));
   const left = minus(
@@ -356,7 +360,19 @@ export function piecesFor(wanted: [number, number][], duration: number, fps: num
       send.push([Math.round(from * 1000) / 1000, Math.round(to * 1000) / 1000]);
     }
   }
-  return { send, use };
+  return { send: pack ? packed(send, cached) : send, use };
+}
+
+/** Pieces joined into as few of at most PIECE_SECONDS as fit, the seconds between them sent too, never across a cached piece. */
+export function packed(pieces: [number, number][], cached: Cached[]): [number, number][] {
+  const out: [number, number][] = [];
+  for (const [a, b] of [...pieces].sort((x, y) => x[0] - y[0])) {
+    const last = out.at(-1);
+    const between = last !== undefined && cached.some((one) => one.from < a && one.to > last[1]);
+    if (last !== undefined && !between && b - last[0] <= PIECE_SECONDS + 1e-6) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -941,7 +957,7 @@ export async function plan(app: App, project: Project, provider: Provider | null
     const cached = [...(await listed(app, source)), ...given];
     // Paid by the file: a short one goes whole (one file either way).
     const whole = provider?.wholeFiles === true && (media.duration ?? 0) <= PIECE_SECONDS;
-    const { send, use } = piecesFor(whole ? [[HANDLE, Math.max(HANDLE, (media.duration ?? 0) - HANDLE)]] : wanted, media.duration ?? 0, media.fps || fpsOf(project), cached);
+    const { send, use } = piecesFor(whole ? [[HANDLE, Math.max(HANDLE, (media.duration ?? 0) - HANDLE)]] : wanted, media.duration ?? 0, media.fps || fpsOf(project), cached, provider?.wholeFiles === true);
     // Pieces already in the project as strips (or given up on) need nothing.
     const have = project.media.filter((one) => one.cleans?.media === media.id && (one.cleans.what ?? "text") === "text");
     const used = use.filter((one) => one.key !== "" && !have.some((strip) => Math.abs(strip.cleans!.from - one.from) < 0.01 && Math.abs(strip.cleans!.to - one.to) < 0.05));

@@ -69,6 +69,23 @@ test("what's sent: their seconds on the timeline, a second's handle each side, i
   expect(tr.parseName("edit/cleaned/ab/9000-31000.vmake-web.mp4")).toEqual({ from: 9, to: 31, provider: "vmake-web" });
 });
 
+test("paid by the file (the website's plan): nearby stretches go as one piece with the seconds between, as few of at most 300 s as fit, never across what's cleaned already", () => {
+  // A compilation's file: 12 short stretches of their text over 20 minutes, 12 files apart; packed, 4.
+  const stretches = Array.from({ length: 12 }, (_, at): [number, number] => [at * 100 + 10, at * 100 + 18]);
+  expect(tr.piecesFor(stretches, 1300, 30, []).send.length).toBe(12);
+  const packed = tr.piecesFor(stretches, 1300, 30, [], true).send;
+  expect(packed).toEqual([[9, 219], [309, 519], [609, 819], [909, 1119]]);
+  expect(packed.every(([a, b]) => b - a <= tr.PIECE_SECONDS)).toBe(true);
+  // A long stretch stays in pieces of at most 300 s.
+  expect(tr.piecesFor([[0, 700]], 900, 30, [], true).send.every(([a, b]) => b - a <= tr.PIECE_SECONDS)).toBe(true);
+  // What another Mac cleaned already is reused, and a piece never reaches across it (it'd clean those seconds twice).
+  const kept: tr.Cached = { from: 109, to: 119, provider: "vmake-web", key: "edit/cleaned/x/109000-119000.vmake-web.mp4" };
+  const around = tr.piecesFor([[10, 18], [110, 118], [210, 218]], 1300, 30, [kept], true);
+  expect(around).toEqual({ send: [[9, 19], [209, 219]], use: [kept] });
+  // The API is paid by the second: never packed.
+  expect(tr.piecesFor([[10, 18], [110, 118]], 1300, 30, []).send).toEqual([[9, 19], [109, 119]]);
+});
+
 // ---------------------------------------------------------------------------
 // The camera's own text, on real reads
 
