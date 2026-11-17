@@ -655,7 +655,7 @@ function open(slot: Kept, width: number, height: number): void {
   slot.width = width;
   slot.height = height;
   slot.interval = 0;
-  slot.page = devtools.open({ profile: PROFILE, width, height, gpu: true, what: "Looking at an effect" }).then(async (page) => {
+  slot.page = devtools.open({ profile: PROFILE, width, height, gpu: true, what: "Looking at an effect", below: true }).then(async (page) => {
     // The screen's own interval there, with nothing to draw: what a frame's cost is held against.
     slot.interval = await page.evaluate<number>(
       "new Promise((resolve) => { const gaps = []; let last = 0; const tick = (now) => { if (last) gaps.push(now - last); last = now; if (gaps.length === 12) resolve(gaps.sort((a, b) => a - b)[6]); else requestAnimationFrame(tick); }; requestAnimationFrame(tick); })",
@@ -813,6 +813,12 @@ export interface Look {
   errors: string[];
   /** How its page got ready, when this look loaded it (null: kept from a look before): how long it took and the longest its code ran without a break (ms). */
   ready: { ms: number; longest: number } | null;
+  /**
+   * Whether a frame's cost was measured: not when the look didn't ask, or when a play was watched on this computer
+   * while it looked (its Chrome then runs below the player, `playing.keepBelow`, and a cost would be the play's, not
+   * its code's).
+   */
+  measured: boolean;
 }
 
 /** The size an effect is drawn at, and its frames a second: the project's. */
@@ -955,6 +961,11 @@ export async function look(app: App, projectId: string, name: string, times: num
   const version = `${host} ${keyOf(app.store, projectId, dir, frame)}`;
   const map = fs.readFileSync(join(dir, ENTRY), "utf8").includes("edit-map/map.js");
   const started = Date.now();
+  // A look never waits for a play to stop (the agent works on through a long watch); it only doesn't measure beside one.
+  let played = playing.isPlaying();
+  const stopListening = playing.onChange((now) => {
+    if (now) played = true;
+  });
   try {
     return await inChrome(width, height, { owner: `${projectId}/${name}`, map }, async (page, interval, held) => {
       let warm = held !== null && held.version === version ? held : null;
@@ -979,7 +990,7 @@ export async function look(app: App, projectId: string, name: string, times: num
         for (const time of wanted) {
           // Unmeasured, the cost's same five seeks one after another, not a refresh apart (five refreshes a still, 4 s of a
           // stretch's 48 frames): what they throw is said as before, and the still is drawn after the same seeks.
-          const cost = measure
+          const cost = measure && !played
             ? await page.evaluate<number>(`window.__edit.cost(${time}, ${1 / fps})`)
             : (await page.evaluate(`(() => { for (let drawn = 0; drawn < 5; drawn++) window.__edit.seek(${time} + drawn * ${1 / fps}); })()`), 0);
           await page.evaluate(`window.__edit.seek(${time})`);
@@ -1001,9 +1012,11 @@ export async function look(app: App, projectId: string, name: string, times: num
       }
       const said = await page.evaluate<{ problems: string[]; errors: string[] }>("({ problems: window.__edit.problems, errors: window.__edit.errors })");
       if (warm.animation === null) warm.animation = said.problems.find((problem) => problem === ANIMATION) ?? null;
-      return { value: { duration: warm.duration, stills, interval, problems: said.problems, errors: said.errors, ready: readied }, warm };
+      const measured = measure && !played && stills.length > 0;
+      return { value: { duration: warm.duration, stills: measured ? stills : stills.map((still) => ({ ...still, cost: 0 })), interval, problems: said.problems, errors: said.errors, ready: readied, measured }, warm };
     });
   } finally {
+    stopListening();
     diag.record("effects", "look", Date.now() - started);
   }
 }
@@ -1176,7 +1189,7 @@ export async function giveFootage(app: App, projectId: string, name: string, med
     video = `${stem}.mp4`;
     const partial = join(dir, `${stem}.partial.mp4`);
     // Keyframes every third of a second, so a seek anywhere is quick in the page (and in the render, which seeks every frame).
-    await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...range, "-an", "-vf", `scale='min(${width},iw)':-2`, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-g", "10", "-pix_fmt", "yuv420p", "-movflags", "+faststart", partial]);
+    await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...range, "-an", "-vf", `scale='min(${width},iw)':-2`, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-g", "10", "-pix_fmt", "yuv420p", "-movflags", "+faststart", partial], { background: true });
     fs.renameSync(partial, join(dir, video));
   }
   let levels: string | null = null;
@@ -1184,7 +1197,7 @@ export async function giveFootage(app: App, projectId: string, name: string, med
   if (media.kind === "audio" || media.has_audio) {
     // A script, not JSON: the page has no network, so it can't fetch data; a script from its own folder it can load.
     levels = `${stem}.levels.js`;
-    const pcm = await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", ...range, "-vn", "-ac", "1", "-ar", "24000", "-f", "f32le", "-"]);
+    const pcm = await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", ...range, "-vn", "-ac", "1", "-ar", "24000", "-f", "f32le", "-"], { background: true });
     const data = JSON.stringify(levelsOf(new Float32Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 4)), 24000, fps));
     writeAtomic(join(dir, levels), `(window.levels = window.levels || {})[${JSON.stringify(stem)}] = ${data};\n`);
     wave = `${stem}.wave.js`;
@@ -1755,6 +1768,9 @@ async function draw(app: App, render: Render): Promise<void> {
   if (probe.kind !== "video" || !(probe.duration > 0)) throw new Error("its render isn't a video Edit can read");
   // A stacked render is twice as tall as the frame is for its width (whatever size it was kept at).
   const stacked = probe.width > 0 && Math.abs(probe.height / probe.width - (2 * frame.height) / frame.width) < 0.01;
+  // Put in once nobody's watching: swapped in under a play, the page playing it live gave way to a video still opening,
+  // a blink in the picture (Sphe, Nov 17: the agent's work goes on "as if it's not even happening").
+  await playing.whenIdle();
   // Code changed while the video was made: the next render takes over.
   if (keyOf(app.store, project, folder(app.store, project, name), frame) !== key) throw new Outdated();
   let placed = false;
@@ -1967,7 +1983,7 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
       // them at once with the viewer's and the agent's looks beside them ran an 8 GB card out, and their maps went black
       // (Nov 13: call-map-a failed at the same second every try, where its camera rose).
       const map = fs.readFileSync(join(folder(app.store, id, name), ENTRY), "utf8").includes("edit-map/map.js");
-      for (let at = 0; at < (map ? MAP_CHROMES : CHROMES); at++) opened.push(await devtools.open({ profile: RENDER_PROFILE, width: frame.width, height: frame.height, gpu: true, what: "Rendering an effect" }));
+      for (let at = 0; at < (map ? MAP_CHROMES : CHROMES); at++) opened.push(await devtools.open({ profile: RENDER_PROFILE, width: frame.width, height: frame.height, gpu: true, what: "Rendering an effect", below: true }));
       // Nothing behind the page: what it leaves unpainted is see-through.
       await Promise.all(opened.map((page) => page.call("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } })));
       const loaded = await Promise.all(opened.map((page, at) => load(page, `${url}${key}-${at}`, `${key}-${at}`, id, name)));

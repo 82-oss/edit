@@ -8,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
 import * as diag from "./diag.ts";
+import * as playing from "./playing.ts";
 import * as seams from "./seams.ts";
 
 export interface Page {
@@ -31,6 +32,11 @@ export interface Opening {
   gpu?: boolean;
   /** What it's for, in an error's words: "Looking at an effect". */
   what: string;
+  /**
+   * The agent's previews (an effect's looks and renders): started below the person's own work and kept below a play
+   * while one is watched here (`playing.belowCommand`, `keepBelow`), so the player plays as if it weren't there.
+   */
+  below?: boolean;
 }
 
 /** Whether `gpu` asks draw on the graphics card at all: tests on CI's virtual Macs turn it off (test/setup.ts). */
@@ -89,27 +95,29 @@ export async function open(opening: Opening): Promise<Page> {
   sweepOrphans(opening.profile);
   const profile = fs.mkdtempSync(join(os.tmpdir(), opening.profile));
   const gpu = opening.gpu !== true || !drawing.gpu ? [] : process.platform === "darwin" ? ["--use-angle=metal"] : process.platform === "linux" ? ["--use-angle=vulkan"] : [];
-  const child = Bun.spawn(
-    [
-      binary,
-      "--headless=new",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-extensions",
-      "--mute-audio",
-      "--hide-scrollbars",
-      "--force-color-profile=srgb",
-      // Room for the page at full size: a headless window loses some height to the browser's own frame.
-      `--window-size=${opening.width + 64},${opening.height + 200}`,
-      "--remote-debugging-port=0",
-      `--user-data-dir=${profile}`,
-      ...gpu,
-      "about:blank",
-    ],
-    { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
-  );
+  const command = [
+    binary,
+    "--headless=new",
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--disable-extensions",
+    "--mute-audio",
+    "--hide-scrollbars",
+    "--force-color-profile=srgb",
+    // Room for the page at full size: a headless window loses some height to the browser's own frame.
+    `--window-size=${opening.width + 64},${opening.height + 200}`,
+    "--remote-debugging-port=0",
+    `--user-data-dir=${profile}`,
+    ...gpu,
+    "about:blank",
+  ];
+  const child = Bun.spawn(opening.below === true ? playing.belowCommand(command) : command, { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
   started.add(child);
-  void child.exited.then(() => started.delete(child));
+  const release = opening.below === true ? playing.keepBelow(child.pid) : () => {};
+  void child.exited.then(() => {
+    started.delete(child);
+    release();
+  });
   // The profile goes once Chrome has gone: removed while it was still closing, Chrome wrote parts of it back and
   // they were left (Nov 11, on kenobi: 169 profiles, 619 MB, from renders started and stopped).
   const stop = () => {

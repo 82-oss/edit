@@ -37,7 +37,7 @@ export function regionOf(value: unknown, width: number, height: number): Region 
 
 /** Frames `count` of `path` from `start` (seconds), at `fps`, as full-size PNGs `<prefix>NNN.png` in `dir` (a reference's moments, matched to the project's frames). */
 export async function framesOf(path: string, start: number, count: number, fps: number, width: number, height: number, dir: string, prefix: string): Promise<string[]> {
-  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-ss", String(Math.max(0, start)), "-i", path, "-an", "-vf", `fps=${fps},scale=${width}:${height}`, "-frames:v", String(count), join(dir, `${prefix}%03d.png`)], { timeoutMs: 5 * 60_000 });
+  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-ss", String(Math.max(0, start)), "-i", path, "-an", "-vf", `fps=${fps},scale=${width}:${height}`, "-frames:v", String(count), join(dir, `${prefix}%03d.png`)], { timeoutMs: 5 * 60_000, background: true });
   return fs.readdirSync(dir).filter((name) => name.startsWith(prefix) && name.endsWith(".png")).sort().map((name) => join(dir, name));
 }
 
@@ -100,7 +100,7 @@ export async function gridImage(width: number, height: number, dir: string, font
       labels.push(`drawtext=${font}:text='${String.fromCharCode(65 + column)}${row + 1}':x=${Math.round((column * width) / GRID_COLUMNS) + line + 3}:y=${Math.round((row * height) / rows) + line + 3}:fontsize=${size}:fontcolor=yellow:box=1:boxcolor=black@0.55:boxborderw=2`);
   const file = join(dir, "grid.png");
   const graph = `[1]${mask.join(",")},format=gray[m];[0][m]alphamerge,${labels.join(",")}`;
-  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `color=c=yellow:s=${width}x${height},format=rgba`, "-f", "lavfi", "-i", `color=c=black:s=${width}x${height}`, "-filter_complex", graph, "-frames:v", "1", file]);
+  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `color=c=yellow:s=${width}x${height},format=rgba`, "-f", "lavfi", "-i", `color=c=black:s=${width}x${height}`, "-filter_complex", graph, "-frames:v", "1", file], { background: true });
   return file;
 }
 
@@ -119,7 +119,7 @@ export async function sheets(cells: Cell[], zoom: Region | null, size: number, a
     const lines = grid === null ? "" : `[${cell.files.length}]split=${cell.files.length}${cell.files.map((_, n) => `[g${n}]`).join("")};`;
     const each = cell.files.map((_, n) => `${grid === null ? `[${n}]` : `[${n}][g${n}]overlay=0:0,`}${zoom === null ? "" : `crop=${zoom.width}:${zoom.height}:${zoom.x}:${zoom.y},`}scale=${size}:-2,drawtext=${font}:text='${drawn(cell.labels[n] ?? "")}':x=6:y=${grid === null ? "6" : "h-th-6"}:fontsize=${Math.max(14, Math.round(size / 24))}:fontcolor=yellow:box=1:boxcolor=black@0.75[p${n}]`);
     const joined = lines + (cell.files.length > 1 ? `${each.join(";")};${cell.files.map((_, n) => `[p${n}]`).join("")}hstack=inputs=${cell.files.length}:shortest=1,pad=iw+6:ih:0:0:black` : each[0]!.replace(/\[p0\]$/u, ""));
-    await tools.run([tools.ffmpeg(), "-v", "error", "-y", ...inputs, "-filter_complex", joined, "-frames:v", "1", "-q:v", "3", piece]);
+    await tools.run([tools.ffmpeg(), "-v", "error", "-y", ...inputs, "-filter_complex", joined, "-frames:v", "1", "-q:v", "3", piece], { background: true });
     pieces.push(piece);
   }
   const per = across * rows;
@@ -128,7 +128,7 @@ export async function sheets(cells: Cell[], zoom: Region | null, size: number, a
     const list = join(dir, `sheet${at}.txt`);
     fs.writeFileSync(list, part.map((file) => `file '${file}'\nduration 1\n`).join(""));
     const sheet = join(dir, `sheet${at}.jpg`);
-    await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-vf", `tile=${Math.min(across, part.length)}x${Math.ceil(part.length / across)}:padding=6:color=black`, "-frames:v", "1", "-q:v", "3", sheet]);
+    await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-vf", `tile=${Math.min(across, part.length)}x${Math.ceil(part.length / across)}:padding=6:color=black`, "-frames:v", "1", "-q:v", "3", sheet], { background: true });
     out.push(new Uint8Array(fs.readFileSync(sheet)));
   }
   return out;

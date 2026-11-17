@@ -12,6 +12,8 @@ import { registerEffectTools } from "../src/effect_tools.ts";
 import { registerEditingTools } from "../src/edit_tools.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import { HQ_TOOLS, NOT_IN_HQ, toolsFor, TOOLS } from "../src/mcp/registry.ts";
+import * as playing from "../src/playing.ts";
+import * as tools from "../src/tools.ts";
 import { respond } from "../src/http/server.ts";
 import { buildRouter } from "../src/routes.ts";
 import * as seams from "../src/seams.ts";
@@ -386,6 +388,84 @@ test.skipIf(chrome === null)("look draws the page in Chrome: its length, the sti
     cleanup();
   }
 }, 120_000);
+
+test.skipIf(chrome === null)("a look goes on through a play, below it: its Chrome and everything under it started below the person's work and put in the background while the play lasts, nothing waited for, and no frame's cost measured beside it (Sphe, Nov 17)", async () => {
+  const { app, cleanup, id } = hq("effects-below");
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  const background = playing.belowHooks.background;
+  const stale = playing.hooks.staleMs;
+  const set: [number, boolean][] = [];
+  playing.reset();
+  playing.belowHooks.background = async (pid, on) => {
+    set.push([pid, on]);
+  };
+  playing.hooks.staleMs = 600_000;
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    write(app, id, "bar", { "scene.html": GOOD });
+    effects.closeChrome();
+    const before = await effects.look(app, id, "bar", [1]);
+    expect(before.measured).toBe(true);
+    expect(before.stills[0]!.cost).toBeGreaterThan(1);
+    // This test's own Chrome (another file's may be running beside it), and everything under it.
+    const rows = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,ni=,command="]).stdout.toString().split("\n").map((line) => /^\s*(\d+)\s+(\d+)\s+(-?\d+)\s+(.*)$/.exec(line)).filter((match) => match !== null).map((match) => ({ pid: Number(match![1]), ppid: Number(match![2]), nice: Number(match![3]), command: match![4]! }));
+    const root = rows.find((row) => row.ppid === process.pid && row.command.includes("edit-effect-"))!.pid;
+    const tree = playing.treesOf([root], new Map(rows.map((row) => [row.pid, row.ppid])));
+    expect(tree.length).toBeGreaterThan(1);
+    // On Linux the tree runs at background work's nice, children too.
+    if (process.platform === "linux") for (const pid of tree) expect(rows.find((row) => row.pid === pid)!.nice).toBe(tools.BACKGROUND_NICE);
+    // A play: the whole tree goes below it.
+    playing.note("p", true);
+    await playing.belowSettled();
+    const lowered = set.filter(([, on]) => on).map(([pid]) => pid);
+    expect(lowered).toContain(root);
+    expect(lowered.length).toBeGreaterThan(1);
+    // A look meanwhile isn't held up, and says its cost wasn't measured rather than the play's.
+    const during = await effects.look(app, id, "bar", [1]);
+    expect(during.measured).toBe(false);
+    expect(during.stills[0]!.cost).toBe(0);
+    expect(Buffer.from(during.stills[0]!.picture).equals(Buffer.from(before.stills[0]!.picture))).toBe(true);
+    const tool = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "look_at_effect", arguments: { name: "bar", times: [1] } } }, id)) as { result: { content: { type: string; text?: string }[] } }).result;
+    const said = tool.content.map((part) => part.text ?? "").join("\n");
+    expect(said).toContain("wasn't measured: someone was watching a play on this computer");
+    expect(said).not.toContain("WON'T PLAY LIVE");
+    // The play stops: back at full speed, and measured again.
+    set.length = 0;
+    playing.note("p", false);
+    await playing.belowSettled();
+    expect(set.filter(([, on]) => !on).map(([pid]) => pid)).toContain(root);
+    expect(set.some(([, on]) => on)).toBe(false);
+    expect((await effects.look(app, id, "bar", [1])).measured).toBe(true);
+  } finally {
+    playing.belowHooks.background = background;
+    playing.hooks.staleMs = stale;
+    playing.reset();
+    effects.closeChrome();
+    void server.stop(true);
+    cleanup();
+  }
+});
+
+test("the processes kept below a play are each tree under them, its root first", () => {
+  const listed = new Map([
+    [10, 1],
+    [11, 10],
+    [12, 10],
+    [13, 12],
+    [20, 1],
+    [21, 20],
+  ]);
+  expect(playing.treesOf([10], listed).sort()).toEqual([10, 11, 12, 13]);
+  // One gone is nothing.
+  expect(playing.treesOf([10, 99], listed).sort()).toEqual([10, 11, 12, 13]);
+  expect(playing.treesOf([], listed)).toEqual([]);
+  // Started niced on Linux; on a Mac as it is, below only while a play is watched.
+  expect(playing.belowCommand(["/bin/true"])).toEqual(process.platform === "darwin" ? ["/bin/true"] : ["/usr/bin/nice", "-n", String(tools.BACKGROUND_NICE), "/bin/true"]);
+});
 
 test("a sound's levels: how loud each frame is, and in which band", () => {
   const rate = 24000;

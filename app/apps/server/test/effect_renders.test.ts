@@ -12,6 +12,7 @@ import * as tools from "../src/tools.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import { respond } from "../src/http/server.ts";
 import { buildRouter } from "../src/routes.ts";
+import * as playing from "../src/playing.ts";
 import * as seams from "../src/seams.ts";
 import * as storage from "../src/storage.ts";
 import { messageContext } from "../src/media_tools.ts";
@@ -448,6 +449,47 @@ test.skipIf(chrome === null)("a render is made in chunks of its frames, joined b
     expect(blue[0]).toBeLessThan(40);
   } finally {
     effects.chunkHooks.bytes = bytes;
+    await server.stop(true);
+    cleanup();
+  }
+}, 240_000);
+
+test.skipIf(chrome === null)("a render made while someone watches is put in once the play stops, never under it (Sphe, Nov 17: the agent's work goes on as if it weren't happening)", async () => {
+  const { app, cleanup, id } = hq("effects-render-play");
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  const stale = playing.hooks.staleMs;
+  playing.reset();
+  playing.hooks.staleMs = 600_000;
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    write(app, id, "bar", { "scene.html": GOOD });
+    const added = await effects.add(app, id, "bar");
+    await app.store.update(id, "test", (project) => {
+      project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    const going = seams.broll.waitForMaps(app, id, 120_000);
+    let done = false;
+    void going.finally(() => (done = true));
+    // Its frames under way, a play starts.
+    while (!done && !/ of 60 frames$/.test(effects.renderingLine(id) ?? "")) await Bun.sleep(10);
+    playing.note("p", true);
+    const media = () => app.store.get(id)!.project.media.find((one) => one.id === added.media)!;
+    await Bun.sleep(4_000);
+    expect(done).toBe(false);
+    expect(media().kind).toBe("image");
+    expect(media().effect_key).toBeUndefined();
+    playing.note("p", false);
+    await going;
+    expect(media().kind).toBe("video");
+    expect(media().effect_key).toBe(effects.list(app.store, id)[0]!.key);
+  } finally {
+    playing.hooks.staleMs = stale;
+    playing.reset();
     await server.stop(true);
     cleanup();
   }

@@ -11,6 +11,7 @@
 // `STALE_MS` is over (a page closed mid-play never says it paused).
 
 import * as diag from "./diag.ts";
+import * as tools from "./tools.ts";
 
 /** A play last heard of this long ago is over (the page says so every 5 s while it plays). */
 export const hooks = { staleMs: 12_000, pollMs: 250, now: () => Date.now() };
@@ -54,6 +55,7 @@ function changed(): void {
   was = now;
   // Said in the log, so what gave way to a play can be checked against it.
   diag.info("playback", now ? "a play started: background work gives way" : "the play stopped: background work carries on");
+  settleBelow();
   for (const listener of listeners) listener(now);
 }
 
@@ -66,9 +68,121 @@ export async function whenIdle(stop: () => boolean = () => false): Promise<boole
   return !stop();
 }
 
+// ---------------------------------------------------------------------------
+// Kept below a play
+
+/**
+ * Processes whose work goes on through a play, below it (Sphe, Nov 17: the
+ * agent previews its work "while we watch the video smoothly, as if it's not
+ * even happening"): the effects' Chromes, the agent's looks and the renders.
+ * On a Mac the whole of each one's tree is put in macOS's background state
+ * while a play is watched (efficiency cores only, its disk and network behind
+ * everything else; `taskpolicy -b -p`) and taken out of it when the play stops
+ * (`-B`), so it runs at full speed when nobody's watching: a utility QoS clamp
+ * held all the time cost a WebGL page 60 frames a second down to 14 on an idle
+ * M1 (Nov 17), the background state 6. On Linux each is started niced
+ * (`belowCommand`), which costs nothing while nothing else wants the CPU.
+ * Nothing waits: a look goes on through a long watch.
+ */
+const below = new Set<number>();
+/** The state last set on the trees (true: in the background), and the work setting it. */
+let belowSet = false;
+let belowLine: Promise<void> = Promise.resolve();
+
+export const belowHooks = {
+  /** Puts one process in the background state, or takes it out; null where there's no such state (Linux: nice alone, at the start). */
+  background: process.platform === "darwin" ? darwinBackground : (null as ((pid: number, on: boolean) => Promise<void>) | null),
+  /** Every process and its parent, as `ps` lists them. */
+  list: listProcesses,
+};
+
+/**
+ * `command` started below the person's own work: on Linux at
+ * `tools.BACKGROUND_NICE` (`tools.lowPriority`), which every process it starts
+ * inherits; on a Mac as it is (it goes below only while a play is watched).
+ */
+export function belowCommand(command: readonly string[]): string[] {
+  return process.platform === "darwin" ? [...command] : tools.lowPriority(command);
+}
+
+const TASKPOLICY = "/usr/sbin/taskpolicy";
+
+/**
+ * Keeps process `pid` and everything it starts below a play from now on
+ * (into the background state at once when one plays); the answer lets it go.
+ */
+export function keepBelow(pid: number): () => void {
+  below.add(pid);
+  if (belowSet) settleBelow(true);
+  return () => {
+    below.delete(pid);
+  };
+}
+
+/** Sets every tree kept below to the state a play asks for now (`fresh`: the trees are set again even if the state stands). */
+function settleBelow(fresh = false): void {
+  const background = belowHooks.background;
+  if (background === null || (below.size === 0 && !belowSet)) return;
+  if (was === belowSet && !fresh) return;
+  belowLine = belowLine.then(async () => {
+    const on = was;
+    const roots = [...below];
+    belowSet = on;
+    if (roots.length === 0) return;
+    try {
+      const pids = treesOf(roots, await belowHooks.list());
+      await Promise.all(pids.map((pid) => background(pid, on).catch(() => {})));
+      diag.info("playback", `${pids.length} process${pids.length === 1 ? "" : "es"} of the agent's previews ${on ? "put below the play" : "back at full speed"}`);
+    } catch (error) {
+      diag.warn("playback", `putting the agent's previews ${on ? "below the play" : "back"}: ${diag.messageOf(error)}`);
+    }
+  });
+}
+
+/** `roots` and every process under them, from `listed` (pid → parent). */
+export function treesOf(roots: readonly number[], listed: ReadonlyMap<number, number>): number[] {
+  const children = new Map<number, number[]>();
+  for (const [pid, parent] of listed) children.set(parent, [...(children.get(parent) ?? []), pid]);
+  const out: number[] = [];
+  const seen = new Set<number>();
+  const next = roots.filter((root) => listed.has(root));
+  while (next.length > 0) {
+    const pid = next.pop()!;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
+    next.push(...(children.get(pid) ?? []));
+  }
+  return out;
+}
+
+async function listProcesses(): Promise<Map<number, number>> {
+  const child = Bun.spawn(["ps", "-axo", "pid=,ppid="], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+  const text = await new Response(child.stdout).text();
+  await child.exited;
+  const out = new Map<number, number>();
+  for (const line of text.split("\n")) {
+    const match = /^\s*(\d+)\s+(\d+)/.exec(line);
+    if (match !== null) out.set(Number(match[1]), Number(match[2]));
+  }
+  return out;
+}
+
+async function darwinBackground(pid: number, on: boolean): Promise<void> {
+  const child = Bun.spawn([TASKPOLICY, on ? "-b" : "-B", "-p", String(pid)], { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  await child.exited;
+}
+
 /** For tests. */
 export function reset(): void {
   plays.clear();
   clearTimeout(timer);
   was = false;
+  below.clear();
+  belowSet = false;
+}
+
+/** For tests: once the trees kept below are set as a play asks. */
+export function belowSettled(): Promise<void> {
+  return belowLine;
 }

@@ -111,7 +111,7 @@ export async function grayOf(source: string, start: number, end: number): Promis
   const remote = tools.isUrl(input) ? ["-protocol_whitelist", tools.protocols(input), ...tools.urlArgs(input)] : [];
   const command = [tools.ffmpeg(), "-hide_banner", "-loglevel", "error", ...remote, "-ss", fixed(start, 3), "-t", fixed(Math.max(end - start, 0.5), 3), "-i", input, "-map", "0:v:0", "-vf", `fps=${FPS},scale=${WIDE}:${HIGH},format=gray`, "-f", "rawvideo", "pipe:1"];
   try {
-    const child = Bun.spawn(command, { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const child = Bun.spawn(tools.lowPriority(command), { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const [out, err, code] = await Promise.all([new Response(child.stdout).arrayBuffer(), new Response(child.stderr).text(), child.exited]);
     if (code !== 0) throw new Error(`couldn't read the footage's frames: ${err.trim()}`);
     return new Uint8Array(out);

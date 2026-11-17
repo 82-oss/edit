@@ -31,6 +31,7 @@ function costLine(look: effects.Look, fps: number): string {
   // The cost is counted in the screen's refreshes, so one over the frame time by less than half a refresh still fits it.
   const slow = look.stills.filter((still) => still.cost > frame + look.interval / 2);
   if (look.stills.length === 0) return "";
+  if (!look.measured) return "What a frame costs to play wasn't measured: someone was watching a play on this computer meanwhile, which a look runs below. Look again to measure it.";
   if (slow.length === 0) return `It plays live on this computer: a frame took ${fixed(Math.max(...look.stills.map((still) => still.cost)), 0)} ms at most to draw from the moments looked at, and the video's frames are ${fixed(frame, 0)} ms apart.`;
   return `IT WON'T PLAY LIVE at ${slow.map((still) => `${fixed(still.time, 2)} s (${fixed(still.cost, 0)} ms a frame, about ${fixed(1000 / still.cost, 0)} a second)`).join(", ")} on this computer: the video's frames are ${fixed(frame, 0)} ms apart. Make those moments lighter (whole-frame blurs and filters, big blurred shadows and thousands of things redrawn each frame are what cost).`;
 }
@@ -79,7 +80,7 @@ async function lookAtStretch(app: ToolCall["app"], projectId: string, name: stri
       part.forEach((still, index) => fs.writeFileSync(join(dir, `f${String(index).padStart(3, "0")}.jpg`), still.picture));
       const sheet = join(dir, `sheet-${at}.jpg`);
       const label = `drawtext=${frameCompare.labelFont(app.store.cacheDir())}:text='%{eif\\:n+${first + at}\\:d}':x=8:y=8:fontsize=22:fontcolor=yellow:box=1:boxcolor=black@0.7`;
-      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-framerate", "1", "-i", join(dir, "f%03d.jpg"), "-frames:v", "1", "-vf", `${label},tile=4x${Math.ceil(part.length / 4)}:padding=4`, "-q:v", "3", sheet]);
+      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-framerate", "1", "-i", join(dir, "f%03d.jpg"), "-frames:v", "1", "-vf", `${label},tile=4x${Math.ceil(part.length / 4)}:padding=4`, "-q:v", "3", sheet], { background: true });
       const from = first + at;
       sheets.push({ data: new Uint8Array(fs.readFileSync(sheet)), caption: `${name}: every frame, ${from}–${from + part.length - 1} (${fixed(from / fps, 2)}–${fixed((from + part.length - 1) / fps, 2)} s), left-to-right then down, numbered by frame` });
       for (const file of fs.readdirSync(dir)) fs.rmSync(join(dir, file), { force: true });
@@ -168,7 +169,7 @@ async function lookCompared(app: ToolCall["app"], projectId: string, name: strin
     }
     // Past the reference's end, black of the same size: every pair is as wide as the others on a sheet.
     const black = join(dir, "black.png");
-    if (reference && ours.some((_, index) => (refs[index] ?? "") === "")) await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `color=black:s=${width}x${height}`, "-frames:v", "1", black]);
+    if (reference && ours.some((_, index) => (refs[index] ?? "") === "")) await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `color=black:s=${width}x${height}`, "-frames:v", "1", black], { background: true });
     const cells = ours.map((file, index) => {
       const frame = Math.round(times[index]! * fps);
       const said = `yours ${fixed(times[index]!, 2)}s f${frame}`;
