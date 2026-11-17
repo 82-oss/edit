@@ -136,10 +136,6 @@ type Drag =
   | { kind: "pending"; clip: Clip; additive: boolean }
   | { kind: "marquee"; x0: number; y0: number; x: number; y: number; base: string[] };
 
-
-/** How far either side of its line the playhead's drawing reaches (its head is 7 px each way), in CSS px. */
-const PLAYHEAD_REACH = 9;
-
 export function Timeline() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -164,8 +160,6 @@ export function Timeline() {
   const queued = useRef(0);
   /** The lanes and ruler as last drawn, and what they were drawn from (see draw). */
   const layer = useRef<{ canvas: HTMLCanvasElement; key: unknown[] } | null>(null);
-  /** The last full draw's lanes layer and where it drew the playhead: a move of the playhead alone redraws two strips. */
-  const painted = useRef<{ key: unknown[]; px: number } | null>(null);
   /** Counts thumbnails, waveforms and fonts arriving, each of which redraws the lanes. */
   const assets = useRef(0);
 
@@ -693,28 +687,6 @@ export function Timeline() {
       layer.current = { canvas: lanes, key };
     }
     const ctx = canvas.getContext("2d")!;
-    // Only the playhead moved (a play, a step), over lanes drawn as they were and nothing else on top: the strips
-    // where it was and where it is come back from the lanes' layer, not the whole canvas copied again each frame.
-    const px = Math.round(frameToX(playhead.frame)) + 0.5;
-    const overlaid = (state.tool === "razor" && hover.current !== null) || drag.current?.kind === "marquee" || state.gap !== null
-      || snapLine.current !== null || (!project.clips.length && !drop.current);
-    const last = painted.current;
-    if (!overlaid && last !== null && last.key === layer.current!.key && canvas.width && canvas.height) {
-      if (last.px === px) return;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      for (const at of [last.px, px]) {
-        const x0 = Math.max(0, Math.floor((at - PLAYHEAD_REACH) * dpr));
-        const x1 = Math.min(canvas.width, Math.ceil((at + PLAYHEAD_REACH) * dpr));
-        if (x1 <= x0) continue;
-        ctx.clearRect(x0, 0, x1 - x0, canvas.height);
-        ctx.drawImage(layer.current!.canvas, x0, 0, x1 - x0, canvas.height, x0, 0, x1 - x0, canvas.height);
-      }
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      if (px >= -10 && px <= width + 10) drawPlayhead(ctx, px, height);
-      painted.current = { key: last.key, px };
-      return;
-    }
-    painted.current = overlaid ? null : { key: layer.current!.key, px };
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     // (A canvas with no size can’t be drawn from.)
@@ -770,6 +742,7 @@ export function Timeline() {
     ctx.restore();
 
     // Playhead.
+    const px = Math.round(frameToX(playhead.frame)) + 0.5;
     if (px >= -10 && px <= width + 10) drawPlayhead(ctx, px, height);
 
     if (!project.clips.length && !drop.current) {
