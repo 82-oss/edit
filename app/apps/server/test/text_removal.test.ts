@@ -160,6 +160,14 @@ test("Axon's stamp and its logo are kept, Tulsa's 'Actual case footage' isn't, a
 // ---------------------------------------------------------------------------
 // Vmake's API: signatures and whose a failure is
 
+test("the engine's learned mark is a box the automatic look leaves alone (Vmake leaves a see-through watermark to the engine)", () => {
+  const model = JSON.stringify({ version: 1, width: 1280, height: 720, gamma: 2.2, white: 1, at: [495, 470], matte_width: 290, matte_height: 120, matte: "", strength: 0.3, frames: 2000 });
+  const box = tr.markBox(model)!;
+  [0.3867, 0.6528, 0.6133, 0.8194].forEach((share, at) => expect(box[at]).toBeCloseTo(share, 3));
+  expect(tr.markBox("{}")).toBeNull();
+  expect(tr.markBox("not json")).toBeNull();
+});
+
 test("Vmake's signatures match its Python SDK's, and a refusal is the account's or the piece's", () => {
   const at = new Date(Date.UTC(2026, 10, 17, 8, 0, 0));
   // Worked out by the SDK's own sign.py and alibabacloud_oss_v2's v4.py with these inputs (Nov 17).

@@ -1137,6 +1137,32 @@ export function reset(): void {
  * in the reach the lesson gives) looked for in Vmake's at the same frames.
  * Null when none still reads.
  */
+/** Where the engine's learned mark sits (its model's JSON, watermark_removal.ts), in shares of the picture; null when it can't say. */
+export function markBox(model: string): Box | null {
+  try {
+    const read = JSON.parse(model) as { width?: unknown; height?: unknown; at?: unknown; matte_width?: unknown; matte_height?: unknown };
+    const [w, h, mw, mh] = [read.width, read.height, read.matte_width, read.matte_height].map(Number);
+    const at = Array.isArray(read.at) ? read.at.map(Number) : [];
+    if (!(w! > 0 && h! > 0 && mw! > 0 && mh! > 0) || at.length !== 2 || !at.every(Number.isFinite)) return null;
+    return [at[0]! / w!, at[1]! / h!, (at[0]! + mw!) / w!, (at[1]! + mh!) / h!];
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A file's see-through watermark, as learned for its source: the automatic
+ * look leaves its words alone (Nov 17, the team route's first live piece:
+ * Vmake took Tulsa's subtitles and label out and left "daily dose of crime",
+ * which the engine takes out, and the look read "dose" as left).
+ */
+async function markBoxesOf(app: App, source: string): Promise<Box[]> {
+  // Imported when asked: watermark_removal.ts imports this file.
+  const mark = await (await import("./watermark_removal.ts")).markOf(app, source).catch(() => null);
+  const box = mark === null || "none" in mark ? null : markBox(mark.json);
+  return box === null ? [] : [box];
+}
+
 export async function stillShows(original: string, cleaned: string, size: [number, number], seconds: number, keep: Box[]): Promise<string | null> {
   const at = [...new Set([0.2, 0.5, 0.8].map((share) => Math.floor(seconds * share)))].filter((second) => second >= 0 && second < seconds);
   const [before, after] = await Promise.all([native().screenTextDetect(original, size, at), native().screenTextDetect(cleaned, size, at)]);
@@ -1252,8 +1278,9 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
       const keep = [...(await stamps.get(file.media.id)!), ...keptFor(lesson, burned.of(file.media)?.band ?? null)];
       const out = join(app.store.cacheDir(), "cleaned", `${id}-${file.media.id}-${Math.round(cached.from * 1000)}-${Math.round(cached.to * 1000)}.${cached.provider}.strip.mp4`);
       const made = await makeStrip(original, cleaned, { width: info.width, height: info.height, fps: info.fps }, keep, out);
-      // The automatic look: their words read again in what Vmake gave back.
-      const still = await stillShows(original, cleaned, [info.width, info.height], info.duration, keep).catch(() => null);
+      // The automatic look: their words read again in what Vmake gave back (never their see-through watermark's: the engine's, Vmake leaves it).
+      const marked = [...(await markBoxesOf(app, file.source)), ...(lesson?.examples ?? []).filter((one) => one.kind === "watermarks" && one.box !== undefined).map((one) => one.box!)];
+      const still = await stillShows(original, cleaned, [info.width, info.height], info.duration, [...keep, ...marked]).catch(() => null);
       fs.rmSync(original, { force: true });
       if (made === null) {
         piece = notePiece(id, { ...piece, state: still === null ? "done" : "failed", ...(still !== null ? { why: still } : {}) });
