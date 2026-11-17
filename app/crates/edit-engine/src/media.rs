@@ -1121,7 +1121,7 @@ pub fn native_proxy(
         } else {
             30.0
         };
-        let mut reader = crate::mac_media::Reader::open(source, width, height)?;
+        let mut reader = crate::mac_media::Reader::open(source, width, height, false)?;
         // Every frame a keyframe or decodable as it arrives (no reordering);
         // the writer replaces a stale partial file from an interrupted run.
         let mut writer = crate::mac_media::Writer::open(

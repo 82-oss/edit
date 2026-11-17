@@ -88,6 +88,7 @@ unsafe extern "C" {
         path: *const c_char,
         width: u32,
         height: u32,
+        planar: i32,
         error: *mut c_char,
         capacity: usize,
     ) -> *mut c_void;
@@ -481,7 +482,9 @@ pub struct Reader {
 unsafe impl Send for Reader {}
 
 impl Reader {
-    pub fn open(path: &Path, width: u32, height: u32) -> Result<Self, String> {
+    /// A reader of `path` at `width`×`height`; `planar`, its frames as the
+    /// decoder's 4:2:0 (I420), refused for a rotated or odd-sized track.
+    pub fn open(path: &Path, width: u32, height: u32, planar: bool) -> Result<Self, String> {
         let path = path_string(path)?;
         let mut error = [0; 1024];
         // The bridge retains the handle until Drop; the path is copied during open.
@@ -490,6 +493,7 @@ impl Reader {
                 path.as_ptr(),
                 width,
                 height,
+                i32::from(planar),
                 error.as_mut_ptr(),
                 error.len(),
             )
@@ -1040,7 +1044,7 @@ mod tests {
             info.duration
         );
 
-        let mut reader = Reader::open(&path, 64, 32).unwrap();
+        let mut reader = Reader::open(&path, 64, 32, false).unwrap();
         let mut pixels = vec![0; 64 * 32 * 4];
         for frame in [0, 15, 30, 3, 59, 0] {
             reader
@@ -1077,7 +1081,7 @@ mod tests {
         assert!(made.success());
         let info = crate::media::probe(&rotated).unwrap();
         assert_eq!((info.width, info.height), (32, 64));
-        let mut reader = Reader::open(&rotated, 32, 64).unwrap();
+        let mut reader = Reader::open(&rotated, 32, 64, false).unwrap();
         reader.frame(0.0, &mut pixels, Order::Rgba, false).unwrap();
         let reference = crate::util::ffmpeg_command()
             .args(["-v", "error", "-threads", "1", "-i"])
@@ -1122,7 +1126,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(made.success());
-        let mut reader = Reader::open(&path, 64, 32).unwrap();
+        let mut reader = Reader::open(&path, 64, 32, false).unwrap();
         let mut pixels = vec![0; 64 * 32 * 4];
         for time in [2.5, 0.5, 1.5, 2.9] {
             reader
@@ -1148,10 +1152,10 @@ mod tests {
             .status()
             .unwrap();
         assert!(made.success());
-        let mut reader = Reader::open(&path, 64, 32).unwrap();
+        let mut reader = Reader::open(&path, 64, 32, false).unwrap();
         let mut first = vec![0; 64 * 32 * 4];
         reader.frame(0.1, &mut first, Order::Rgba, false).unwrap();
-        let mut reader = Reader::open(&path, 64, 32).unwrap();
+        let mut reader = Reader::open(&path, 64, 32, false).unwrap();
         for time in [0.0, 0.05] {
             let mut pixels = vec![0; 64 * 32 * 4];
             reader.frame(time, &mut pixels, Order::Rgba, false).unwrap();
@@ -1238,7 +1242,7 @@ mod tests {
         for (w, h) in [(1920, 1080), (640, 360)] {
             for time in [60.0, 61.0, 90.0] {
                 let t = Instant::now();
-                let mut reader = Reader::open(&path, w, h).unwrap();
+                let mut reader = Reader::open(&path, w, h, false).unwrap();
                 let opened = t.elapsed();
                 let mut px = vec![0u8; w as usize * h as usize * 4];
                 reader.frame(time, &mut px, Order::Bgra, false).unwrap();
@@ -1261,7 +1265,7 @@ mod tests {
                 for chunk in times.chunks(12 / threads) {
                     let path = path.clone();
                     scope.spawn(move || {
-                        let mut reader = Reader::open(&path, 640, 360).unwrap();
+                        let mut reader = Reader::open(&path, 640, 360, false).unwrap();
                         let mut px = vec![0u8; 640 * 360 * 4];
                         for time in chunk {
                             reader.frame(*time, &mut px, Order::Bgra, false).unwrap();

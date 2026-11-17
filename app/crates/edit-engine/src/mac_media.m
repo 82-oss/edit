@@ -313,6 +313,10 @@ int edit_scale(const uint8_t *source, uint32_t sw, uint32_t sh, size_t sstride,
 @property uint32_t height;
 @property unsigned rotation;
 @property NSMutableData *rotated;
+// Frames handed over as the decoder's own 4:2:0 (I420: Y, then U, then V), not
+// BGRA: 1.5 bytes a pixel to copy and to upload, not 4, the GPU converting them
+// (render.rs `yuv420_source`). Only unrotated, at the track's own size.
+@property BOOL planar;
 // The track's empty edits (movie seconds): AVFoundation fills each with a
 // made-up black picture (alpha 0) that no frame of the source shows. FFmpeg
 // writes one at the start of a file whose first picture isn't at 0, as our
@@ -339,9 +343,10 @@ int edit_scale(const uint8_t *source, uint32_t sw, uint32_t sh, size_t sstride,
     if (!_reader) return NO;
     // Decode at the required size, avoiding a 4K copy for a 1080p export. BGRA
     // is the decoder's own order: the renderer samples it without a swizzle.
+    // Planar: the 4:2:0 as decoded, video range.
     BOOL quarter = _rotation % 2;
     NSDictionary *settings = @{
-        (id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA),
+        (id)kCVPixelBufferPixelFormatTypeKey: @(_planar ? kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange : kCVPixelFormatType_32BGRA),
         (id)kCVPixelBufferWidthKey: @(quarter ? _height : _width),
         (id)kCVPixelBufferHeightKey: @(quarter ? _width : _height),
         (id)kCVPixelBufferIOSurfacePropertiesKey: @{}
@@ -383,7 +388,7 @@ int edit_scale(const uint8_t *source, uint32_t sw, uint32_t sh, size_t sstride,
 }
 @end
 
-static void *edit_reader_open_unguarded(const char *path, uint32_t width, uint32_t height,
+static void *edit_reader_open_unguarded(const char *path, uint32_t width, uint32_t height, int planar,
                        char *error, size_t capacity) {
     @autoreleasepool {
         EditReader *r = [EditReader new];
@@ -414,12 +419,17 @@ static void *edit_reader_open_unguarded(const char *path, uint32_t width, uint32
             fail(error, capacity, @"Mirrored track requires the compatibility decoder");
             return NULL;
         }
+        if (planar && (r.rotation || (width % 2) || (height % 2))) {
+            fail(error, capacity, @"A rotated or odd-sized track is read as BGRA, not 4:2:0");
+            return NULL;
+        }
+        r.planar = planar != 0;
         return (__bridge_retained void *)r;
     }
 }
-void *edit_reader_open(const char *path, uint32_t width, uint32_t height,
+void *edit_reader_open(const char *path, uint32_t width, uint32_t height, int planar,
                        char *error, size_t capacity) {
-    @try { return edit_reader_open_unguarded(path, width, height, error, capacity); } @catch (NSException *exception) { caught(exception, "edit_reader_open", error, capacity); return NULL; }
+    @try { return edit_reader_open_unguarded(path, width, height, planar, error, capacity); } @catch (NSException *exception) { caught(exception, "edit_reader_open", error, capacity); return NULL; }
 }
 
 // Copies the frame nearest `time` into `out` (BGRA, or RGBA with `rgba`).
@@ -429,7 +439,7 @@ static int edit_reader_frame_unguarded(void *handle, double time, uint8_t *out, 
                       int if_changed, char *error, size_t capacity) {
     @autoreleasepool {
         EditReader *r = (__bridge EditReader *)handle;
-        if (length != (size_t)r.width * r.height * 4) {
+        if (length != (r.planar ? (size_t)r.width * r.height * 3 / 2 : (size_t)r.width * r.height * 4)) {
             fail(error, capacity, [NSString stringWithFormat:@"Frame buffer of %zu bytes doesn't fit the %ux%u reader",
                                    length, r.width, r.height]);
             return 0;
@@ -482,6 +492,36 @@ static int edit_reader_frame_unguarded(void *handle, double time, uint8_t *out, 
         CVPixelBufferRef pixel = CMSampleBufferGetImageBuffer(chosen);
         if (!pixel || CVPixelBufferLockBaseAddress(pixel, kCVPixelBufferLock_ReadOnly) != kCVReturnSuccess) {
             fail(error, capacity, @"Cannot lock decoded pixel buffer"); return 0;
+        }
+        if (r.planar) {
+            // Y's rows as they are; the interleaved CbCr pairs split into U and V.
+            size_t w = r.width, h = r.height;
+            if (CVPixelBufferGetPlaneCount(pixel) != 2 || CVPixelBufferGetWidthOfPlane(pixel, 0) != w
+                || CVPixelBufferGetHeightOfPlane(pixel, 0) != h || CVPixelBufferGetWidthOfPlane(pixel, 1) != w / 2
+                || CVPixelBufferGetHeightOfPlane(pixel, 1) != h / 2) {
+                CVPixelBufferUnlockBaseAddress(pixel, kCVPixelBufferLock_ReadOnly);
+                fail(error, capacity, @"Decoded 4:2:0 picture isn't the reader's size"); return 0;
+            }
+            const uint8_t *y = CVPixelBufferGetBaseAddressOfPlane(pixel, 0);
+            size_t y_row = CVPixelBufferGetBytesPerRowOfPlane(pixel, 0);
+            for (size_t row = 0; row < h; row++) memcpy(out + row * w, y + row * y_row, w);
+            const uint8_t *uv = CVPixelBufferGetBaseAddressOfPlane(pixel, 1);
+            size_t uv_row = CVPixelBufferGetBytesPerRowOfPlane(pixel, 1);
+            uint8_t *u = out + w * h, *v = u + (w / 2) * (h / 2);
+            for (size_t row = 0; row < h / 2; row++) {
+                const uint8_t *pairs = uv + row * uv_row;
+                uint8_t *u_row = u + row * (w / 2), *v_row = v + row * (w / 2);
+                for (size_t i = 0; i < w / 2; i++) {
+                    u_row[i] = pairs[2 * i];
+                    v_row[i] = pairs[2 * i + 1];
+                }
+            }
+            CVPixelBufferUnlockBaseAddress(pixel, kCVPixelBufferLock_ReadOnly);
+            if (r.shown != chosen) {
+                if (r.shown) CFRelease(r.shown);
+                r.shown = (CMSampleBufferRef)CFRetain(chosen);
+            }
+            return 1;
         }
         vImage_Buffer source = {CVPixelBufferGetBaseAddress(pixel), CVPixelBufferGetHeight(pixel),
             CVPixelBufferGetWidth(pixel), CVPixelBufferGetBytesPerRow(pixel)};

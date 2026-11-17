@@ -137,22 +137,23 @@ pub enum Order {
     /// (the renderer samples a BGRA texture the same as an RGBA one).
     Bgra,
     /// BT.709 TV-range 4:2:0 planes, as the source holds them: an export's
-    /// decoder off a Mac, for footage already in it (`yuv420_source`), turned
-    /// into RGBA on the GPU (`Renderer::upload_video_yuv420`).
+    /// decoder (FFmpeg, or a Mac's VideoToolbox), for footage already in it
+    /// (`yuv420_source`), turned into RGBA on the GPU
+    /// (`Renderer::upload_video_yuv420`).
     Yuv420,
 }
 
 /// Whether an export's decoder can hand over `path`'s frames as the 4:2:0
-/// they are (`Order::Yuv420`): off a Mac, video that is 8-bit 4:2:0 BT.709 TV
-/// range already, so FFmpeg converts nothing and the GPU's RGBA is what its
-/// own was. Anything else (BT.601 or untagged, full range, 10-bit or HDR)
+/// they are (`Order::Yuv420`): video that is 8-bit 4:2:0 BT.709 TV range
+/// already, so the decoder (FFmpeg, or a Mac's VideoToolbox as 420v) converts
+/// nothing and the GPU's RGBA is what FFmpeg's own was. On a Mac it was BGRA
+/// from VideoToolbox: copying those 4 bytes a pixel, twice (out of the
+/// decoder, then into wgpu's upload), was half the export's CPU on kenobi
+/// (M1, Nov 17), and 1.5 bytes now. Anything else (BT.601 or untagged, full range, 10-bit or HDR)
 /// stays FFmpeg's to convert, as before: brought to BT.709 first it came out
 /// 34-50 dB from that. A cloud original is probed by its first excerpt (a
 /// stream copy of it); one with none isn't probed. Once per file.
 fn yuv420_source(path: &Path) -> bool {
-    if cfg!(target_os = "macos") {
-        return false;
-    }
     static PROBED: std::sync::OnceLock<Mutex<HashMap<PathBuf, bool>>> = std::sync::OnceLock::new();
     let probed = PROBED.get_or_init(Default::default);
     if let Some(known) = probed.lock().get(path) {
@@ -799,6 +800,7 @@ impl VideoReader {
                     &self.source.key.path,
                     self.width,
                     self.height,
+                    self.source.key.order == Order::Yuv420,
                 )?);
                 stats::add(&stats::OPENS, &stats::OPEN_NS, started);
                 self.forward = false;
@@ -5111,7 +5113,7 @@ mod tests {
         // The native reader picks the same frames.
         #[cfg(target_os = "macos")]
         {
-            let mut native = crate::mac_media::Reader::open(&path, 64, 36).unwrap();
+            let mut native = crate::mac_media::Reader::open(&path, 64, 36, false).unwrap();
             let mut frame = vec![0_u8; 64 * 36 * 4];
             for n in [0_i64, 7, 8, 9, 31, 44] {
                 for offset in [-0.3, 0.3] {
