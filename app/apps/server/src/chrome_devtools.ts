@@ -276,8 +276,11 @@ export function headlessCommand(switches: readonly string[], options: { gpu?: bo
  * The fonts Google Chrome on a Mac gives CSS's generic families (its
  * locale_settings_mac.grd): the shell has no settings of its own, so a page
  * asking for `serif` or `monospace` gets these there as in Google Chrome.
+ * `monospace` is Menlo, not the .grd's Courier (kenobi, Chrome 157, Nov 17:
+ * Google Chrome's monospace measured as Menlo to the hundredth of a pixel, and
+ * with Menlo every generic family drew the same pixels in both).
  */
-const CHROME_FONTS = { standard: "Times", fixed: "Courier", serif: "Times", sansSerif: "Helvetica", cursive: "Apple Chancery", fantasy: "Papyrus" };
+const CHROME_FONTS = { standard: "Times", fixed: "Menlo", serif: "Times", sansSerif: "Helvetica", cursive: "Apple Chancery", fantasy: "Papyrus" };
 
 /** Gives a page of the shell Google Chrome's generic fonts (`call`: the page's DevTools); nothing in Google Chrome. */
 export async function chromeFonts(binary: string, call: (method: string, params: Record<string, unknown>) => Promise<unknown>): Promise<void> {
