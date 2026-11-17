@@ -21,6 +21,15 @@ export function shortDuration(seconds: number) {
   return h ? `${h}:${two(m)}:${two(s)}` : `${m}:${two(s)}`;
 }
 
+/** A length as the Export dialog says it: 0:31, 4:12, 1:48:29 (the server's export_steps `clockOf`). */
+export function clock(seconds: number) {
+  const whole = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  const two = (n: number) => String(n).padStart(2, "0");
+  return h > 0 ? `${h}:${two(m)}:${two(whole % 60)}` : `${m}:${two(whole % 60)}`;
+}
+
 export function ago(ms: number) {
   const seconds = (Date.now() - ms) / 1000;
   if (seconds < 60) return "just now";

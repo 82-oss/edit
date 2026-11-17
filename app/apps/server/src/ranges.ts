@@ -225,10 +225,10 @@ async function withSound(parts: string[]): Promise<string[]> {
 export function exportRanges(app: App, given: Project, options: ExportOptions, mode: Mode, watermark: string | null): Batch {
   let project = given;
   const running = batches.get(project.id);
-  if (running !== undefined && !running.finished) throw new Error("its marked stretches are already being exported");
+  if (running !== undefined && !running.finished) throw new Error("its marked parts are already being exported");
   // What's left of them in the edit as it is now: one past an end shortened since it was marked was refused, and stopped the batch.
   let ranges = marked(project);
-  if (ranges.length === 0) throw new Error("no stretches are marked: set in and out points (I / O), or ask the agent to mark them");
+  if (ranges.length === 0) throw new Error("no parts are marked: set in and out points (I / O), or ask the agent to mark them");
   if ((app.exports.runningFor?.(project.id) ?? null) !== null) throw new Error("an export of this edit is running: wait for it, or cancel it");
   const batch: Batch = { mode, total: ranges.length, done: 0, current: null, outputs: [], error: null, cancelled: false, finished: false, finished_ms: null };
   batches.set(project.id, batch);

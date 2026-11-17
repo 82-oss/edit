@@ -14,6 +14,7 @@ import { FILE_MANAGER, THIS_MACHINE } from "../lib/platform";
 import { preview } from "../lib/playback";
 import { readSetting, writeSetting } from "../lib/storage";
 import { flushSave, useEditor } from "../lib/store";
+import { clock } from "../lib/time";
 import { rate } from "../lib/types";
 import { useGrants } from "../writer/can";
 import { askExportFolder } from "./ExportFolder";
@@ -43,7 +44,10 @@ import { Button, cx, Modal, Select } from "./ui";
  * Nov 12: "these two things should more be options and not buttons"). When
  * the agent has marked stretches (set_ranges, "set all the in and out points
  * for me"), saving here offers a video of each or one of them joined, beside
- * the whole edit ("i should be able to pick between those two options").
+ * the whole edit ("i should be able to pick between those two options"), as
+ * three cards, each with a picture of what comes out (Sphe, Nov 17: "7 videos,
+ * one a stret…" didn't say whether it was seven files or one): the person
+ * sees "parts", never "stretches".
  */
 type Where = "here" | "feedback";
 type What = "whole" | RangesMode;
@@ -396,34 +400,7 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
           />
         </div>
 
-        {choosing && (
-          <div className="mt-3 grid grid-cols-3 gap-1 rounded-[10px] border border-line bg-panel p-1" role="radiogroup" aria-label="What it exports">
-            {(
-              [
-                ["whole", "Whole edit"],
-                ["each", ranges.length === 1 ? "The marked stretch" : `${ranges.length} videos, one a stretch`],
-                ["joined", `${ranges.length} stretches joined`],
-              ] as const
-            )
-              .filter(([value]) => ranges.length > 1 || value !== "joined")
-              .map(([value, label]) => (
-                <button
-                  key={value}
-                  type="button"
-                  role="radio"
-                  aria-checked={picked === value}
-                  onClick={() => setWhat(value)}
-                  title={value === "whole" ? undefined : ranges.map((one) => one.name).join(", ")}
-                  className={cx(
-                    "min-w-0 truncate rounded-[7px] px-2 py-1.5 text-[12px] font-medium transition-colors",
-                    picked === value ? "bg-bg text-fg shadow-sm ring-1 ring-line-strong" : "text-muted hover:text-fg",
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-          </div>
-        )}
+        {choosing && <Scope ranges={ranges} edit={projectDuration(project) / rate(project.settings)} fps={rate(project.settings)} picked={picked} onPick={setWhat} />}
 
         {stepsShown && <ExportSteps steps={steps.steps} className="mt-4" />}
 
@@ -562,7 +539,7 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
                   </span>
                 )}
                 {batch.finished && batch.cancelled && <span className="text-muted">Cancelled</span>}
-                {batch.finished && !batch.cancelled && batch.error && <ProblemView error={batch.error} doing="export the marked stretches" />}
+                {batch.finished && !batch.cancelled && batch.error && <ProblemView error={batch.error} doing="export the marked parts" />}
               </>
             )}
             {showBatch ? null : <>
@@ -625,5 +602,99 @@ function Choice({ icon, title, detail, note, selected, onClick }: { icon: React.
       <span className="text-[12px] leading-snug text-muted">{detail}</span>
       {note && <span className="text-[12px] leading-snug text-secondary">{note}</span>}
     </button>
+  );
+}
+
+/** The pictogram's blocks: at most this many, each 5–15 px by its length (one alone, 32), shrunk alike to fit the card. */
+const MOST_BLOCKS = 30;
+
+/**
+ * What the save holds, when parts are marked: the whole edit, each part its own video, or the parts as one, three cards
+ * side by side, each a picture of what comes out (one bar, the blocks apart, the blocks butted), then what it is in words.
+ */
+function Scope({ ranges, edit, fps, picked, onPick }: { ranges: { start: number; end: number }[]; edit: number; fps: number; picked: What; onPick: (what: What) => void }) {
+  const lengths = ranges.map((one) => (one.end - one.start) / fps);
+  const total = lengths.reduce((sum, one) => sum + one, 0);
+  const many = ranges.length > 1;
+  const options: { value: What; title: string; detail: string }[] = many
+    ? [
+        { value: "whole", title: "The whole edit", detail: `1 video · ${clock(edit)}` },
+        { value: "each", title: "Each part on its own", detail: `${ranges.length} videos · one per marked part` },
+        { value: "joined", title: "The parts as one", detail: `1 video · ${ranges.length} parts back to back · ${clock(total)}` },
+      ]
+    : [
+        { value: "whole", title: "The whole edit", detail: `1 video · ${clock(edit)}` },
+        { value: "each", title: "The marked part", detail: `1 video · ${clock(total)}` },
+      ];
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const move = (from: number, by: number) => {
+    const to = (from + by + options.length) % options.length;
+    onPick(options[to]!.value);
+    refs.current[to]?.focus();
+  };
+  return (
+    <div className={cx("mt-3 grid gap-2.5", many ? "grid-cols-3" : "grid-cols-2")} role="radiogroup" aria-label="What it exports">
+      {options.map((option, index) => {
+        const selected = picked === option.value;
+        return (
+          <button
+            key={option.value}
+            ref={(button) => {
+              refs.current[index] = button;
+            }}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            tabIndex={selected ? 0 : -1}
+            onClick={() => onPick(option.value)}
+            onKeyDown={(event) => {
+              const by = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+              if (by === 0) return;
+              event.preventDefault();
+              move(index, by);
+            }}
+            className={cx(
+              "flex min-w-0 flex-col items-stretch rounded-[10px] border px-3 pt-3 pb-3 text-left transition-colors",
+              selected ? "border-primary/60 bg-primary/10" : "border-line bg-panel hover:bg-hover",
+            )}
+          >
+            <Pictogram shape={option.value} lengths={lengths} selected={selected} />
+            <span className="mt-2.5 text-[13.5px] leading-snug font-semibold text-fg">{option.title}</span>
+            <span className="mt-0.5 text-[12px] leading-snug text-muted tabular">{option.detail}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/** One full bar for the whole edit; the parts' blocks apart for each its own, butted into one bar for them joined. */
+function Pictogram({ shape, lengths, selected }: { shape: What; lengths: number[]; selected: boolean }) {
+  const fill = selected ? "bg-primary" : "bg-line-strong";
+  if (shape === "whole") {
+    return (
+      <span className="flex h-[30px] items-center" aria-hidden>
+        <i className={cx("block h-[18px] flex-1 rounded-[3px] transition-colors", fill)} />
+      </span>
+    );
+  }
+  const shown = lengths.slice(0, MOST_BLOCKS);
+  const longest = Math.max(...shown, 1e-9);
+  const apart = shape === "each" && shown.length > 1;
+  // Butted, a hairline between them, so the one bar still reads as its parts.
+  const gap = !apart ? (shown.length > 1 ? 1 : 0) : shown.length <= 8 ? 6 : shown.length <= 16 ? 3 : 2;
+  return (
+    <span className="flex h-[30px] min-w-0 items-center overflow-hidden" style={{ gap }} aria-hidden>
+      {shown.map((length, index) => (
+        <i
+          key={index}
+          className={cx("block h-[18px] min-w-[2px] shrink transition-colors", fill)}
+          style={{
+            width: shown.length === 1 ? 32 : 5 + 10 * (length / longest),
+            borderRadius: apart || shown.length === 1 ? 3 : index === 0 ? "3px 0 0 3px" : index === shown.length - 1 ? "0 3px 3px 0" : 0,
+          }}
+        />
+      ))}
+    </span>
   );
 }

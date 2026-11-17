@@ -119,3 +119,72 @@ describe("ShareDialog's steps while it runs (Sphe, Nov 17: design B)", () => {
     expect(buttons()).toContain("Export");
   });
 });
+
+describe("ShareDialog's marked parts (Sphe, Nov 17: three cards, each a picture of what comes out)", () => {
+  const FPS = 30;
+  const EDIT = 6509; // 1:48:29
+  // 31 + 44 + 52 + 25 + 40 + 30 + 30 = 252 s, 4:12.
+  const LENGTHS = [31, 44, 52, 25, 40, 30, 30];
+  const marked = (lengths: number[]): Project => {
+    let at = 60;
+    const ranges = lengths.map((length, index) => {
+      const range = { start: at * FPS, end: (at + length) * FPS, name: `Part ${index + 1}` };
+      at += length + 600;
+      return range;
+    });
+    return { ...project(), clips: [{ id: "c1", track: "v1", start: 0, duration: EDIT * FPS }], ranges } as unknown as Project;
+  };
+  const cards = () => [...document.querySelectorAll<HTMLButtonElement>('[role="radiogroup"][aria-label="What it exports"] [role="radio"]')];
+  const said = () => cards().map((card) => card.textContent);
+  const checked = () => cards().map((card) => card.getAttribute("aria-checked"));
+  const press = (card: number, key: string) => {
+    act(() => {
+      cards()[card]!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    });
+  };
+
+  it("seven parts: the whole edit, each on its own, the parts as one, with their counts and lengths, and never “stretch”", async () => {
+    await open(marked(LENGTHS), { channel: null, channels: PICTURES });
+    expect(said()).toEqual(["The whole edit1 video · 1:48:29", "Each part on its own7 videos · one per marked part", "The parts as one1 video · 7 parts back to back · 4:12"]);
+    expect(checked()).toEqual(["true", "false", "false"]);
+    // The pictures: one bar, seven blocks apart, seven blocks butted.
+    expect(cards().map((card) => card.querySelectorAll("i").length)).toEqual([1, 7, 7]);
+    expect(document.body.textContent?.toLowerCase()).not.toContain("stretch");
+  });
+
+  it("picked by a click or the arrow keys, and the pick is what Export sends", async () => {
+    await open(marked(LENGTHS), { channel: null, channels: PICTURES });
+    act(() => cards()[1]!.click());
+    expect(checked()).toEqual(["false", "true", "false"]);
+    expect(cards().map((card) => card.tabIndex)).toEqual([-1, 0, -1]);
+    press(1, "ArrowRight");
+    expect(checked()).toEqual(["false", "false", "true"]);
+    expect(document.activeElement).toBe(cards()[2]);
+    press(2, "ArrowRight");
+    expect(checked()).toEqual(["true", "false", "false"]);
+    press(0, "ArrowLeft");
+    expect(checked()).toEqual(["false", "false", "true"]);
+
+    vi.spyOn(api, "exportFolder").mockResolvedValue({ shown: "~/Movies/Edit", home: "/home/me", chosen: true } as never);
+    const sent = vi.spyOn(api, "exportRanges").mockResolvedValue({ mode: "joined", total: 1, done: 0, current: null, finished: false, outputs: [] } as never);
+    const exportButton = [...document.querySelectorAll("button")].find((one) => one.textContent?.trim() === "Export")!;
+    act(() => exportButton.click());
+    await settle();
+    expect(sent).toHaveBeenCalledWith("p1", "joined", expect.anything(), null);
+  });
+
+  it("one part: the whole edit and the marked part, a video of its length, nothing to join", async () => {
+    localStorage.setItem("edit.export.what", "joined");
+    await open(marked([95]), { channel: null, channels: PICTURES });
+    expect(said()).toEqual(["The whole edit1 video · 1:48:29", "The marked part1 video · 1:35"]);
+    // Joined was kept from before: with one part it's that part's video.
+    expect(checked()).toEqual(["false", "true"]);
+    expect(document.body.textContent?.toLowerCase()).not.toContain("stretch");
+  });
+
+  it("sending for feedback: no cards, the link is the whole edit's", async () => {
+    localStorage.setItem("edit.export.where", "feedback");
+    await open(marked(LENGTHS), { channel: null, channels: PICTURES });
+    expect(cards()).toEqual([]);
+  });
+});
