@@ -84,6 +84,8 @@ export interface Limits {
   cacheBytes: number;
   freeBytes: number;
   free?: number;
+  /** The cache's size, when the caller has just measured it (it isn't walked again). */
+  used?: number;
 }
 
 export interface CleanReport {
@@ -431,7 +433,10 @@ export function cleanCache(
   // A home that isn't one (EDIT_HOME="") cleans nothing: its cache would be "/cache".
   if (app.store.home.trim() === "" || app.store.home === "/") return { folders: 0, files: 0, bytes: 0, removed: [] };
   const cache = app.store.cacheDir();
-  const limits: Limits = given ?? { cacheBytes: localBudgetBytes({ freeBytes: freeSpace(cache), cacheBytes: size(cache) }), freeBytes: FREE_FLOOR };
+  // The whole cache is walked once a pass, synchronously on the server's thread (Astra's audit, Nov 18: four walks of
+  // it a pass, and on demand when the disk is short, the worst moment to stall); what's taken off is counted from it.
+  const total = given?.used ?? size(cache);
+  const limits: Limits = given ?? { cacheBytes: localBudgetBytes({ freeBytes: freeSpace(cache), cacheBytes: total }), freeBytes: FREE_FLOOR };
   const inUse = used(app);
   const times = inUse === null ? new Map<string, number>() : lastUsed(app, inUse, done);
   const report: CleanReport = { folders: 0, files: 0, bytes: 0, removed: [] };
@@ -600,7 +605,7 @@ export function cleanCache(
   if (inUse !== null) {
     const freed = report.bytes;
     const free = limits.free !== undefined ? limits.free + freed : freeSpace(cache) + (dryRun ? freed : 0);
-    let over = Math.max(size(cache) - (dryRun ? freed : 0) - limits.cacheBytes, limits.freeBytes - free);
+    let over = Math.max(total - freed - limits.cacheBytes, limits.freeBytes - free);
     // By when their projects were last worked on here (a key several use: the latest), none in an edit in progress.
     const worked = (key: string) => Math.max(...[...(inUse.keyProjects.get(key) ?? [])].map((id) => times.get(id) ?? 0), 0);
     const oldest = [...inUse.saved]
@@ -636,7 +641,7 @@ export function cleanCache(
     const fresh = exporting ? RECENT : COPY_RECENT;
     const free = limits.free !== undefined ? limits.free + report.bytes : freeSpace(cache) + (dryRun ? report.bytes : 0);
     const full = limits.freeBytes - free > 0;
-    let over = Math.max(size(cache) - (dryRun ? report.bytes : 0) - limits.cacheBytes, limits.freeBytes - free);
+    let over = Math.max(total - report.bytes - limits.cacheBytes, limits.freeBytes - free);
     if (over > 0) {
       const candidates: { path: string; at: number; bytes: number; worked: number }[] = [];
       // A proxy made here whose upload hasn't landed is the only copy (a failed one is tried again at the next start).
@@ -780,7 +785,8 @@ export function cleanExports(app: App, dryRun: boolean, now = Date.now()): { fil
  */
 export function makeRoom(app: App, wanted: number): number {
   const cache = app.store.cacheDir();
-  const report = cleanCache(app, false, Date.now(), { cacheBytes: localBudgetBytes({ freeBytes: freeSpace(cache), cacheBytes: size(cache) }), freeBytes: wanted });
+  const used = size(cache);
+  const report = cleanCache(app, false, Date.now(), { cacheBytes: localBudgetBytes({ freeBytes: freeSpace(cache), cacheBytes: used }), freeBytes: wanted, used });
   if (report.bytes > 0) diag.info("cache", `freed ${(report.bytes / 1e9).toFixed(2)} GB for work that needs ${(wanted / 1e9).toFixed(1)} GB free`);
   return report.bytes;
 }
