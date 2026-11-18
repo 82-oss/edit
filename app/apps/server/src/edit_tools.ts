@@ -27,7 +27,6 @@ import * as onscreen from "./onscreen.ts";
 import * as burned from "./burned_subtitles.ts";
 import * as removalAsks from "./removal_asks.ts";
 import * as removalLesson from "./removal_lesson.ts";
-import * as removalModes from "./removal_modes.ts";
 import * as removalSchedule from "./removal_schedule.ts";
 import * as textRemoval from "./text_removal.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
@@ -2380,9 +2379,7 @@ function removalContext(app: App, p: Project): Args {
   return {
     removal: {
       taught: lesson === null ? "Nothing is taught; what was asked for here is being taken out." : removalLesson.summary(lesson),
-      ...(asked.length > 0 ? { when_asked: `${asked.join(", ")}: only when someone asks in the chat; then start_removal on what they point to (media, case, intro, from/to, or whole: true)` } : {}),
-      // Which Vmake mode each section gets, by itself (Sphe and JJ, Nov 18), and the one call that changes it.
-      ...(removalLesson.kinds(lesson).vmake.length > 0 ? { vmake: removalModes.outline(p, app.store.home) } : {}),
+      ...(asked.length > 0 ? { when_asked: `${asked.join(", ")}: only when someone asks in the chat; then start_removal on what they point to (media, from/to, or whole: true)` } : {}),
       pieces: `${done} done, ${out} still being done${waiting > 0 ? `, ${waiting} sent and waiting on vmake.ai (Edit looks again by itself)` : ""}${failed > 0 ? `, ${failed} not clean` : ""}`,
       ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "The person stopped it (the chat's Stop): what ran by itself doesn't now; only what's asked with start_removal (from/to, media, or whole) is taken out." } : {}),
       note:

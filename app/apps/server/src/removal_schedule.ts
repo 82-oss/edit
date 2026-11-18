@@ -30,10 +30,10 @@ import type { Router } from "./http/router.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import { image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
-import type { Media } from "./model.ts";
+import type { Clip, Media, Project } from "./model.ts";
+import { clipEnd, fps as fpsOf } from "./project.ts";
 import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
-import * as modes from "./removal_modes.ts";
 import { EDIT_EVENT } from "./edit_event.ts";
 import * as seams from "./seams.ts";
 import * as textRemoval from "./text_removal.ts";
@@ -192,11 +192,11 @@ async function checkRemoval({ app, args, projectId }: ToolCall): Promise<Content
   const rows: string[] = [];
   let shown = 0;
   const pieces = [
-    ...textRemoval.piecesOf(projectId).map((one) => ({ key: one.key, media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, why: one.why, what: "text" as const, mode: one.mode })),
+    ...textRemoval.piecesOf(projectId).map((one) => ({ key: one.key, media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, why: one.why, what: "text" as const })),
     ...watermarkRemoval.piecesOf(projectId).map((one) => ({ key: `watermark:${one.media}@${Math.round(one.from * 1000)}`, media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, why: one.error, what: "watermark" as const })),
   ];
   for (const piece of pieces) {
-    rows.push(`${piece.key} · ${piece.name} ${Math.round(piece.from)}–${Math.round(piece.to)} s · ${piece.what}${"mode" in piece ? ` (${modes.WORDS[piece.mode]})` : ""} · ${piece.state}${piece.why ? ` (${piece.why})` : ""}`);
+    rows.push(`${piece.key} · ${piece.name} ${Math.round(piece.from)}–${Math.round(piece.to)} s · ${piece.what} · ${piece.state}${piece.why ? ` (${piece.why})` : ""}`);
     if (shown >= 4) continue;
     const strip = strips.find((one) => one.cleans!.media === piece.media && (one.cleans!.what ?? "text") === piece.what && Math.abs(one.cleans!.from - piece.from) < 0.01);
     const footage = project.media.find((one) => one.id === piece.media);
@@ -222,16 +222,26 @@ async function checkRemoval({ app, args, projectId }: ToolCall): Promise<Content
 registerTool("check_removal", checkRemoval);
 
 /** The source seconds of each footage file the timeline shows between `from` and `to` (timeline seconds). */
-export const shownBetween = textRemoval.shownBetween;
+export function shownBetween(project: Project, from: number, to: number): Map<string, [number, number][]> {
+  const fps = fpsOf(project);
+  const [a, b] = [Math.round(from * fps), Math.round(to * fps)];
+  const trimmed = structuredClone(project);
+  trimmed.clips = trimmed.clips.flatMap((clip): Clip[] => {
+    if (clip.type !== "video") return [clip];
+    const start = Math.max(clip.start, a);
+    const end = Math.min(clipEnd(clip), b);
+    if (end <= start) return [];
+    return [{ ...clip, start, duration: end - start, source_in: clip.source_in + ((start - clip.start) / fps) * clip.speed }];
+  });
+  return textRemoval.shownSeconds(trimmed);
+}
 
 /**
  * `start_removal`: what the person asked to have taken out, now (a part the
  * lesson says runs only when asked, or one not taught at all): the whole
- * project, some footage files, a case, the intro, or a stretch of the
- * timeline; with `mode`, the Vmake mode the person asked for there over its
- * section's default ("use Smart on case 3 too", "Smart Pro on case 1":
- * removal_modes.ts). Kept (removal_asks.ts) and started at once; its pieces
- * come back, are checked and counted as any others.
+ * project, some footage files, or a stretch of the timeline. Kept
+ * (removal_asks.ts) and started at once; its pieces come back, are checked
+ * and counted as any others.
  */
 async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content[]> {
   const live = app.store.get(projectId);
@@ -239,49 +249,34 @@ async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content
   const project = live.project;
   await removal.refresh();
   const lesson = removal.lessonOf(project);
-  const mode = args.mode === undefined || args.mode === null ? null : modes.modeOfAsked(args.mode);
-  if (args.mode !== undefined && args.mode !== null && mode === null) throw new Error('mode is "smart" or "smart_pro"');
   const given = Array.isArray(args.kinds) ? (args.kinds as unknown[]) : [];
   if (given.some((kind) => !removal.KINDS.includes(kind as removal.Kind))) throw new Error('kinds are "subtitles", "watermarks" and "text"');
-  // What the person didn't name: with a mode, the parts Vmake takes out; else the parts taught to wait for an ask, else every part taught.
+  // What the person didn't name: the parts taught to wait for an ask, else every part taught.
   const waiting = removal.KINDS.filter((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "asked");
-  const taught = removal.KINDS.filter((kind) => lesson?.remove[kind] === true);
-  const kinds = given.length > 0 ? (given as removal.Kind[]) : mode !== null ? removal.kinds(lesson).vmake : waiting.length > 0 ? waiting : taught;
-  if (kinds.length === 0) throw new Error(`say what to take out: kinds [${mode !== null ? '"subtitles", "text"' : '"subtitles", "watermarks", "text"'}] (nothing${mode !== null ? " of theirs for Vmake" : ""} is taught for this channel)`);
-  if (mode !== null && !kinds.some((kind) => kind !== "watermarks")) throw new Error("a mode is Vmake's, for their subtitles and text: their watermarks come out here, free, whatever the mode");
+  const kinds = given.length > 0 ? (given as removal.Kind[]) : waiting.length > 0 ? waiting : removal.KINDS.filter((kind) => lesson?.remove[kind] === true);
+  if (kinds.length === 0) throw new Error('say what to take out: kinds ["subtitles", "watermarks", "text"] (nothing is taught for this channel)');
   const ids = Array.isArray(args.media) ? (args.media as unknown[]).filter((one): one is string => typeof one === "string") : [];
   for (const one of ids) {
     const media = project.media.find((m) => m.id === one);
     if (media === undefined || media.kind !== "video" || media.cleans != null || media.effect != null) throw new Error(`${one} isn't a footage file of this project`);
   }
-  // A case or the intro: its stretch of the timeline, as removal_modes finds the edit's sections.
-  const number = typeof args.case === "number" && Number.isInteger(args.case) && args.case >= 1 ? args.case : null;
-  if (args.case !== undefined && args.case !== null && number === null) throw new Error("case is the case's number, from 1");
-  let stretch: [number, number] | null = null;
-  let said: string | undefined;
-  if (number !== null || args.intro === true) {
-    stretch = modes.stretchOf(project, number ?? "intro");
-    const cases = modes.parts(project).filter((part) => part.case !== null).length;
-    if (stretch === null) throw new Error(number === null ? "this edit has no intro it can tell (no script on the timeline): say from/to" : `this edit has no case ${number}: it has ${cases === 1 ? "one" : cases} (get_edit_context's removal lists them)`);
-    said = number === null ? "the intro" : modes.isCompilation(project) ? `case ${number}` : "the case";
-  }
-  const from = stretch?.[0] ?? (typeof args.from === "number" ? args.from : null);
-  const to = stretch?.[1] ?? (typeof args.to === "number" ? args.to : null);
+  const from = typeof args.from === "number" ? args.from : null;
+  const to = typeof args.to === "number" ? args.to : null;
   let scope: asks.Ask["media"];
   if (args.whole === true) scope = "all";
   else if (from !== null || to !== null) {
     const between = shownBetween(project, from ?? 0, to ?? Number.MAX_SAFE_INTEGER / 1e6);
     scope = Object.fromEntries([...between].filter(([id]) => ids.length === 0 || ids.includes(id)));
   } else if (ids.length > 0) scope = Object.fromEntries(ids.map((id) => [id, "all" as const]));
-  else throw new Error("say where: whole: true (the whole project, as it grows), case (its number), intro: true, media (footage files), or from/to (timeline seconds)");
+  else throw new Error("say where: whole: true (the whole project, as it grows), media (footage files), or from/to (timeline seconds)");
   if (scope !== "all" && Object.keys(scope).length === 0) throw new Error("no footage is on the timeline there");
-  const names = scope === "all" ? "the whole project" : (said ?? Object.keys(scope).map((id) => project.media.find((m) => m.id === id)?.name ?? id).join(", "));
-  asks.add(app.store.home, projectId, { at: Date.now(), kinds, media: scope, ...(mode !== null ? { mode, said: said ?? (scope === "all" ? "the whole video" : names) } : {}) });
+  asks.add(app.store.home, projectId, { at: Date.now(), kinds, media: scope });
   await ensure(app, projectId);
+  const names = scope === "all" ? "the whole project" : Object.keys(scope).map((id) => project.media.find((m) => m.id === id)?.name ?? id).join(", ");
   const words: Record<removal.Kind, string> = { subtitles: "their subtitles", watermarks: "their watermarks", text: "their labels and other text" };
   const { done, out } = progressOf(projectId);
   return text(
-    `Taking ${kinds.map((kind) => words[kind]).join(", ")} out of ${names}${mode !== null ? ` in Vmake's ${modes.WORDS[mode]}` : ""}, in the background, wherever the footage has them (the camera's stamp kept)${out > 0 ? `: ${out} piece${out === 1 ? "" : "s"} out${done > 0 ? `, ${done} done` : ""}` : ""}. ` +
+    `Taking ${kinds.map((kind) => words[kind]).join(", ")} out of ${names}, in the background, wherever the footage has them (the camera's stamp kept)${out > 0 ? `: ${out} piece${out === 1 ? "" : "s"} out${done > 0 ? `, ${done} done` : ""}` : ""}. ` +
       "Look at pieces with check_removal as they come back; exports wait for them." +
       (kinds.includes("subtitles") ? " Their subtitles are blurred until theirs are out: lay ours with add_subtitles over them as usual." : ""),
   );

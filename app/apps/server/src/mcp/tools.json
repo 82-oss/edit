@@ -4437,7 +4437,7 @@
     "name": "check_removal"
   },
   {
-    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"), or Vmake's mode on a section when the person asks for another than its own (by itself: Smart Pro on the intro, Smart on the first two cases, nothing from the third on; \"use Smart on case 3 too\" is {case: 3, mode: \"smart\"}, \"Smart Pro on case 1\" is {case: 1, mode: \"smart_pro\"}). Say where: whole (the whole project, and footage cut in later), case (its number), intro, media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask (with a mode, the parts Vmake takes out). It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal as they come back; exports wait for them.",
+    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"). Say where: whole (the whole project, and footage cut in later), media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask. It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal as they come back; exports wait for them.",
     "inputSchema": {
       "properties": {
         "project_id": {
@@ -4474,22 +4474,6 @@
         "to": {
           "description": "Timeline seconds: to",
           "type": "number"
-        },
-        "case": {
-          "description": "A case of the edit, by its number from 1 (get_edit_context's removal lists them): its stretch of the timeline",
-          "type": "integer"
-        },
-        "intro": {
-          "description": "The intro: the opening before the first case",
-          "type": "boolean"
-        },
-        "mode": {
-          "description": "Vmake's mode there, only when the person asks for one: \"smart\" or \"smart_pro\"; it stands over the section's own from then on",
-          "enum": [
-            "smart",
-            "smart_pro"
-          ],
-          "type": "string"
         }
       },
       "type": "object"

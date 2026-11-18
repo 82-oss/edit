@@ -28,15 +28,14 @@ const seen = { mode: "", bytes: 0, uploads: 0, others: 0 };
 /** `cardLimit`: the piece's own card refuses it for the day (as a by-hand upload of the team's could have used the allowance). */
 /** `remain`/`balance`: the account's day as the page's own purchase_config says it; `spend`: a "use credits?" prompt before the job starts. */
 /** `failed`: a card of this name vmake.ai gave up on ("Download failed, credits returned"). */
-/** `startOn`: the mode the page (and a new card) starts on: Smart, as vmake.ai's does; another to see a mode chosen. */
-const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, slowMs: 0, noModes: false, legacy: false, existing: "", failed: "", cardLimit: false, remain: 37, balance: 4110, spend: false, startOn: "Smart" };
+const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, slowMs: 0, noModes: false, legacy: false, existing: "", failed: "", cardLimit: false, remain: 37, balance: 4110, spend: false };
 const PIECE = new Uint8Array(3_000_000).map((_, at) => at % 251);
 
 const PAGE = () => `<!doctype html><html><body>
 <header>${site.signedOut ? '<button>Log in</button>' : '<div class="user-avatar--x1">S</div>'}</header>
 <div class="ant-segmented" aria-label="segmented control"><div>Auto</div><div>Manual</div></div>
-${site.noModes ? "" : `<div style="display:none"><ul class="radio--q7"><li class="item--a ${site.startOn === "Smart" ? "active--z" : ""}">Smart</li><li class="item--a disabled--d">Smart pro</li></ul></div>
-<ul class="radio--q7">${["Smart", "Smart pro", "Subtitle", "Watermark", "Passerby"].map((mode) => `<li class="item--a ${mode === site.startOn ? "active--z" : ""} ${mode === "Smart pro" && site.noSmartPro ? "disabled--d" : ""}">${mode}</li>`).join("")}</ul>`}
+${site.noModes ? "" : `<div style="display:none"><ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul></div>
+<ul class="radio--q7">${["Smart", "Smart pro", "Subtitle", "Watermark", "Passerby"].map((mode, at) => `<li class="item--a ${at === 0 ? "active--z" : ""} ${mode === "Smart pro" && site.noSmartPro ? "disabled--d" : ""}">${mode}</li>`).join("")}</ul>`}
 <span class="ant-upload-btn"><input type="file" name="file" accept=".mp4,.mov"></span>
 <span class="ant-upload-btn"><input type="file" name="file" multiple></span>
 <div id="work">${site.cards ? `<div class="viewport-task-card--o5h" id="other"><span>v3p2.mp4</span> 40% <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul><button>Download</button></div>` : ""}${[site.legacy ? "piece-8s.mp4" : "", site.existing].filter(Boolean).map((name) => `<div class="viewport-task-card--o5h"><span>${name}</span> 00:00.04 / 00:08.00 60% <button onclick="location.href='/result.mp4?full=1'">Download</button></div>`).join("")}${site.failed ? `<div class="viewport-task-card--o5h"><span>${site.failed}</span> 00:00.00 / 00:08.00 Download failed, credits returned <button disabled>Download</button></div>` : ""}</div>
@@ -57,7 +56,7 @@ document.querySelector('input:not([multiple])').addEventListener('change', async
     // A card of its own, as Sphe's Pro account shows it: uploading, then waiting on Apply (Smart first), processing, Download.
     const card = document.createElement('div');
     card.className = 'viewport-task-card--o5h';
-    card.innerHTML = '<i>Uploading... 0%</i> 00:00.00 / 00:08.00 40% <span>' + file.name + '</span> <ul class="radio--q7">' + ['Smart', 'Smart pro', 'Subtitle'].map((mode) => '<li class="item--a' + (mode === ${JSON.stringify(site.startOn)} ? ' active--z' : '') + '">' + mode + '</li>').join('') + '</ul><button>40%</button>';
+    card.innerHTML = '<i>Uploading... 0%</i> 00:00.00 / 00:08.00 40% <span>' + file.name + '</span> <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a">Smart pro</li><li class="item--a">Subtitle</li></ul><button>40%</button>';
     work.prepend(card);
     card.querySelectorAll('li').forEach((li) => li.addEventListener('click', () => {
       if (/Uploading/.test(card.innerText)) return;
@@ -239,33 +238,6 @@ test.skipIf(CHROME === undefined)("a fresh page that shows no modes until a file
     await session.stop();
   }
 }, 90_000);
-
-test.skipIf(CHROME === undefined)("Smart is chosen when a piece asks for it, on a fresh page and on its own card, never Smart pro (its own words, not a part of them); Smart pro stays the default", async () => {
-  site.startOn = "Subtitle";
-  const session = await browsers.open();
-  try {
-    const page = await session.remote.tab();
-    const site_ = `http://localhost:${vmake.port}`;
-    let uploads = seen.uploads;
-    // A fresh page: the mode before the file.
-    expect(await web.removeOnPage(page, session.remote, piece(), "piece-smart.mp4", site_, { mode: "smart" })).toBe(`${site_}/result.mp4?full=1`);
-    expect([seen.mode, seen.uploads - uploads]).toEqual(["Smart", 1]);
-    uploads = seen.uploads;
-    // A page of job cards: on the piece's own card, then Apply.
-    site.cards = true;
-    expect(await web.removeOnPage(page, session.remote, piece(), "piece-smart-card.mp4", site_, { mode: "smart" })).toBe(`${site_}/result.mp4?full=1`);
-    expect([seen.mode, seen.uploads - uploads, seen.others]).toEqual(["Smart", 1, 0]);
-    uploads = seen.uploads;
-    // No mode said: Smart pro, as every piece before Nov 18.
-    expect(await web.removeOnPage(page, session.remote, piece(), "piece-pro-card.mp4", site_)).toBe(`${site_}/result.mp4?full=1`);
-    expect([seen.mode, seen.uploads - uploads]).toEqual(["Smart pro", 1]);
-    page.close();
-  } finally {
-    site.startOn = "Smart";
-    site.cards = false;
-    await session.stop();
-  }
-}, 120_000);
 
 test.skipIf(CHROME === undefined)("a piece whose card sits at one percent for longer than the stall time is waited on, never given up or sent again (Nov 17, Sphe's M4: every piece was)", async () => {
   site.cards = true;
