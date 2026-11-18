@@ -313,30 +313,39 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
   const brought: string[] = [];
   const kept: string[] = [];
   // A lesson brought in that contradicts this channel's is said first, as a kept one is (teaching_conflicts.ts).
-  const settled = typeof args.settled === "string" && args.settled.trim() !== "";
-  const here = v2cloud.memories(channels.placesOf(mine, lane));
+  // An answer on which holds settles the one lesson it was about, so it counts only when one is brought by its name:
+  // a whole style brought again is checked again, and the person is asked about each that clashes.
+  const settled = typeof args.settled === "string" && args.settled.trim() !== "" && args.bring.trim() !== "all";
+  // What's taught here, and each lesson as it comes in, so two brought together that clash are caught too.
+  const here = [...v2cloud.memories(channels.placesOf(mine, lane))];
   const clashing: teachingConflicts.Conflict[] = [];
+  const unchecked: string[] = [];
   for (const item of wanted) {
     // What this channel has of its own already stays: bringing never writes over it.
     if (mineNow.has(`${item.kind}:${item.name}`)) {
       kept.push(item.name);
       continue;
     }
-    if (item.kind === "skill" && !settled) {
-      const text = (await v2cloud.version(item.key))?.version.text;
-      const found = typeof text === "string" ? await teachingConflicts.conflicts(item.name, text, here) : [];
-      if (found !== null && found.length > 0) {
+    const text = item.kind === "skill" ? (await v2cloud.version(item.key))?.version.text : undefined;
+    if (typeof text === "string" && !settled) {
+      const found = await teachingConflicts.conflicts(item.name, text, here);
+      if (found === null) unchecked.push(item.name);
+      else if (found.length > 0) {
         clashing.push(...found.map((one) => ({ ...one, why: `${item.name}: ${one.why}` })));
         continue;
       }
     }
-    if (await v2cloud.copyItem(item, v2cloud.ownKey(item.kind as (typeof STYLE_KINDS)[number], place, item.name), `brought from ${from.title}'s ${word} style`)) brought.push(`${kindWord(item.kind)} ${item.name}`);
+    if (await v2cloud.copyItem(item, v2cloud.ownKey(item.kind as (typeof STYLE_KINDS)[number], place, item.name), `brought from ${from.title}'s ${word} style`)) {
+      brought.push(`${kindWord(item.kind)} ${item.name}`);
+      if (typeof text === "string") here.push({ name: item.name, text, ...(item.note ? { note: item.note } : {}) });
+    }
   }
   v2cloud.forgetSkills();
   return (
     (brought.length === 0 ? "Nothing new brought." : `Brought into this channel's own ${word} style${words === "" ? "" : ` (${words})`}, to change here: ${brought.join(", ")}.`) +
     (kept.length > 0 ? ` This channel has its own ${kept.join(", ")} already, kept as they are.` : "") +
-    (clashing.length > 0 ? `\n${teachingConflicts.refusal(clashing)} (Here: bring them again with settled.)` : "")
+    (unchecked.length > 0 ? `\n${unchecked.join(", ")} couldn't be checked against what's taught here just now: if one might clash with a lesson here, say so to the person.` : "") +
+    (clashing.length > 0 ? `\n${teachingConflicts.refusal(clashing)} (Here: bring each again by its name with settled.)` : "")
   );
 }
 

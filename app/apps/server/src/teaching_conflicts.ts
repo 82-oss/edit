@@ -64,16 +64,38 @@ export async function conflicts(name: string, text: string, known: readonly Skil
   try {
     const answer = await hooks.ask(prompt);
     const listed = Array.isArray(answer.conflicts) ? (answer.conflicts as Record<string, unknown>[]) : [];
-    const names = new Set(others.map((one) => one.name));
-    return listed.flatMap((one) =>
-      typeof one.skill === "string" && names.has(one.skill) && typeof one.line === "string" && one.line.trim() !== ""
+    const byName = new Map(others.map((one) => [one.name, one.text]));
+    const found = listed.flatMap((one) =>
+      typeof one.skill === "string" && byName.has(one.skill) && typeof one.line === "string" && one.line.trim() !== ""
         ? [{ skill: one.skill, line: one.line.trim(), why: typeof one.why === "string" ? one.why.trim() : "" }]
         : [],
     );
+    // A clash is only said with the line it clashes with as that lesson has it: one the
+    // model wrote itself (or put in the wrong lesson) isn't shown to the person as quoted.
+    const quoted = found.filter((one) => quotes(byName.get(one.skill) ?? "", one.line));
+    if (quoted.length < found.length) diag.warn("teaching", `checking ${name}: ${found.length - quoted.length} clash(es) quoted a line its lesson doesn't have`);
+    // Every clash it named misquoted: what it saw can't be shown, so it counts as unchecked.
+    if (found.length > 0 && quoted.length === 0) return null;
+    return quoted;
   } catch (error) {
     diag.warn("teaching", `checking ${name} against what's taught: ${diag.messageOf(error)}`);
     return null;
   }
+}
+
+/** Whether `line` is in `text` as it's written, give or take case, spacing, quote marks and markdown, and an elision ("…") between its parts. */
+export function quotes(text: string, line: string): boolean {
+  const plain = (words: string) => words.toLowerCase().replace(/[*_`"'\u2018\u2019\u201c\u201d]/g, "").replace(/\s+/g, " ").trim();
+  const whole = plain(text);
+  const parts = line.split(/\.\.\.|\u2026/).map(plain).filter((part) => part !== "");
+  if (parts.length === 0) return false;
+  let from = 0;
+  for (const part of parts) {
+    const at = whole.indexOf(part, from);
+    if (at < 0) return false;
+    from = at + part.length;
+  }
+  return true;
 }
 
 /** A lesson not kept for what it contradicts: its message is what the agent is told (`refusal`). */
