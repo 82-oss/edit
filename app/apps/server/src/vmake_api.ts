@@ -25,6 +25,8 @@ const USER_AGENT = `action-api-sdk-${VERSION}`;
 const REGION = "cn-north-4";
 /** Smart Pro, video smart removal: 4 credits a second, ≤600 s, ≤300 MB a file. */
 export const SMART_PRO = "SKM0005";
+/** Smart, video smart removal: 2 credits a second, the same limits (the developers page, Nov 14). */
+export const SMART = "SKM0003";
 /** How long a task may take once submitted (15 s of footage took 187 s, Nov 17; a 5-minute piece is far longer). */
 const TASK_MS = 3 * 3_600_000;
 const CALL_MS = 30_000;

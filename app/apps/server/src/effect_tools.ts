@@ -580,6 +580,7 @@ async function teachRemoval({ app, args, projectId }: ToolCall): Promise<Content
       (removal.KINDS.some((kind) => lesson.remove[kind] && lesson.when[kind] === "automatic")
         ? " Edit looks at every footage file itself as it's cut, in the background, and takes out what each one actually has (nothing where a file has none; their subtitles blurred until then); look at pieces as they come back with check_removal."
         : "") +
+      (removal.kinds(lesson).vmake.length > 0 ? " Vmake's mode is by section, by itself: Smart Pro on the intro, Smart on the first two cases, nothing from the third case on (their watermarks come out of the whole video, free); an exception the person asks for is one start_removal with mode." : "") +
       (removal.KINDS.some((kind) => lesson.remove[kind] && lesson.when[kind] === "asked") ? " What runs only when asked waits until someone asks: then start_removal on what they point to." : "") +
       (shadowed ? ` This channel's own ${removal.SKILL} still wins here: change that one (for: "channel") to change it for this channel.` : ""),
   );

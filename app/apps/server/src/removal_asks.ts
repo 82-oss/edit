@@ -15,6 +15,7 @@ import * as diag from "./diag.ts";
 import { writeAtomic } from "./files.ts";
 import { join } from "./paths.ts";
 import * as removal from "./removal_lesson.ts";
+import type { Mode } from "./vmake_web.ts";
 
 export type Spans = [number, number][];
 
@@ -23,6 +24,10 @@ export interface Ask {
   kinds: removal.Kind[];
   /** "all": the whole project, as it grows; else each footage file's source seconds, or "all" it shows. */
   media: "all" | Record<string, Spans | "all">;
+  /** The Vmake mode the person asked for there, over the section's default (removal_modes.ts): "Smart on case 3 too". */
+  mode?: Mode;
+  /** Where, as the person said it ("case 3", "the intro"), for the agent's context. */
+  said?: string;
 }
 
 const fileOf = (home: string) => join(home, "removal-asks.json");
@@ -63,7 +68,7 @@ export function isStopped(home: string, id: string): boolean {
 }
 
 /** The asks that count: those since the person's Stop, if any. */
-function liveAsks(home: string, id: string): Ask[] {
+export function liveAsks(home: string, id: string): Ask[] {
   const stopped = loaded(home).stopped[id];
   return asksOf(home, id).filter((ask) => stopped === undefined || ask.at > stopped);
 }

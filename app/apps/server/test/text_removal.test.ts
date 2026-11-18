@@ -70,13 +70,13 @@ test("what's sent: their seconds on the timeline, a second's handle each side, i
   expect(long[2]![1]).toBe(701);
   for (const [a] of long) expect(Math.abs(a * 29.97 - Math.round(a * 29.97))).toBeLessThan(0.05);
   // Kept already: used, not sent; what's left beside it is sent, at least 2 s; a sliver is the kept one's handle.
-  const kept: tr.Cached = { from: 9, to: 31, provider: "vmake-api", key: "edit/cleaned/x/9000-31000.vmake-api.mp4" };
+  const kept: tr.Cached = { from: 9, to: 31, provider: "vmake-api", mode: "pro", key: "edit/cleaned/x/9000-31000.vmake-api.mp4" };
   expect(tr.piecesFor([[10, 30]], 600, 30, [kept])).toEqual({ send: [], use: [kept] });
   expect(tr.piecesFor([[10, 40]], 600, 30, [kept]).send).toEqual([[31, 41]]);
   expect(tr.piecesFor([[10, 30.8]], 600, 30, [kept]).send).toEqual([[31, 33]]);
   expect(tr.piecesFor([[10, 30.3]], 600, 30, [kept]).send).toEqual([]);
   // Another file's piece names parse back.
-  expect(tr.parseName("edit/cleaned/ab/9000-31000.vmake-web.mp4")).toEqual({ from: 9, to: 31, provider: "vmake-web" });
+  expect(tr.parseName("edit/cleaned/ab/9000-31000.vmake-web.mp4")).toEqual({ from: 9, to: 31, provider: "vmake-web", mode: "pro" });
 });
 
 test("paid by the file (the website's plan): nearby stretches go as one piece with the seconds between, as few of at most 300 s as fit, never across what's cleaned already", () => {
@@ -89,7 +89,7 @@ test("paid by the file (the website's plan): nearby stretches go as one piece wi
   // A long stretch stays in pieces of at most 300 s.
   expect(tr.piecesFor([[0, 700]], 900, 30, [], true).send.every(([a, b]) => b - a <= tr.PIECE_SECONDS)).toBe(true);
   // What another Mac cleaned already is reused, and a piece never reaches across it (it'd clean those seconds twice).
-  const kept: tr.Cached = { from: 109, to: 119, provider: "vmake-web", key: "edit/cleaned/x/109000-119000.vmake-web.mp4" };
+  const kept: tr.Cached = { from: 109, to: 119, provider: "vmake-web", mode: "pro", key: "edit/cleaned/x/109000-119000.vmake-web.mp4" };
   const around = tr.piecesFor([[10, 18], [110, 118], [210, 218]], 1300, 30, [kept], true);
   expect(around).toEqual({ send: [[9, 19], [209, 219]], use: [kept] });
   // The API is paid by the second: never packed.
@@ -522,7 +522,7 @@ test("a run takes the label out through the provider, lays the strip, keeps the 
     const file = await labelledFootage(dir, 8);
     const id = await labelledProject(app, file, 8);
     const offered = await tr.status(app, id);
-    expect(offered).toEqual({ line: "Take their text out of 8 s of footage: ≈ $0", action: "remove", running: null });
+    expect(offered).toEqual({ line: "Take their text out of 8 s of footage, Smart on the case: ≈ $0", action: "remove", running: null });
     await tr.begin(app, id);
     await tr.settled(id);
     expect(log).toEqual(["remove 8"]);
@@ -541,6 +541,51 @@ test("a run takes the label out through the provider, lays the strip, keeps the 
     await tr.settled(other);
     expect(log).toEqual(["remove 8"]);
     expect(store.get(other)!.project.media.some((media) => media.cleans != null)).toBe(true);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test("each result is kept with its mode: a Smart one never stands in for Smart Pro, Smart Pro's (every result from before) does for Smart; a run sends each piece in its own", async () => {
+  const { app, dir, home, store, cleanup } = fixtureHome("removal-modes-shelf");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  const sent: string[] = [];
+  const log: string[] = [];
+  const base = standIn(log, () => null, "vmake-web");
+  tr.useProvider({ ...base, remove: (input, out, seconds, signal, whole, begun, label, look, mode) => (sent.push(mode ?? "pro"), base.remove(input, out, seconds, signal, whole, begun, label, look, mode)) });
+  const shelf = tr.shelfIn(join(dir, "shelf"), () => false);
+  tr.useShelf(shelf);
+  try {
+    // The names: Smart's marked, every other Smart Pro's (all kept before Nov 18).
+    expect(tr.parseName("edit/cleaned/ab/0-8000.vmake-web.smart.mp4")).toEqual({ from: 0, to: 8, provider: "vmake-web", mode: "smart" });
+    expect(tr.parseName("edit/cleaned/ab/0-8000.vmake-api.mp4")?.mode).toBe("pro");
+    expect([tr.serves({ mode: "pro" }, "smart"), tr.serves({ mode: "pro" }, "pro"), tr.serves({ mode: "smart" }, "smart"), tr.serves({ mode: "smart" }, "pro")]).toEqual([true, true, true, false]);
+    const file = await labelledFootage(dir, 8);
+    const id = await labelledProject(app, file, 8);
+    const source = await tr.sourceOf(store.get(id)!.project.media[0]!);
+    // A video of one case with no intro to tell: Smart. A Smart result on the shelf is used, nothing sent.
+    fs.copyFileSync(file, join(dir, "smart.mp4"));
+    const smart = await shelf.keep(source, join(dir, "smart.mp4"), 0, 8, "vmake-web", "smart");
+    expect(smart.key.endsWith("0-8000.vmake-web.smart.mp4")).toBe(true);
+    const plan = async () => (await tr.plan(app, store.get(id)!.project)).files.map((one) => ({ mode: one.mode, send: one.send, use: one.use.map((kept) => kept.mode) }));
+    expect(await plan()).toEqual([{ mode: "smart", send: [], use: ["smart"] }]);
+    // Smart Pro asked for there ("Smart Pro on this case"): the Smart result can't stand in, so the seconds go again in Smart Pro.
+    asks.add(home, id, { at: Date.now(), kinds: ["text"], media: "all", mode: "pro", said: "the whole video" });
+    tr.reset();
+    expect(await plan()).toEqual([{ mode: "pro", send: [[0, 8]], use: [] }]);
+    await tr.ensure(app, id);
+    await tr.settled(id);
+    expect(sent).toEqual(["pro"]);
+    const kept = await shelf.list(source);
+    expect(kept.map((one) => one.mode).sort()).toEqual(["pro", "smart"]);
+    // Laid as Smart Pro's strip, the Smart one's gone from the project.
+    expect(store.get(id)!.project.media.filter((one) => one.cleans != null).map((one) => tr.stripMode(one))).toEqual(["pro"]);
+    // Another project of the same footage, Smart by its section: Smart Pro's result stands in (the Smart one of the same seconds adds nothing), nothing sent.
+    const other = await labelledProject(app, file, 8, "q");
+    tr.reset();
+    expect((await tr.plan(app, store.get(other)!.project)).files.map((one) => [one.mode, one.send, one.use.map((kept) => kept.mode)])).toEqual([["smart", [], ["pro"]]]);
+    expect(sent).toEqual(["pro"]);
   } finally {
     cleanup();
   }
@@ -1427,7 +1472,7 @@ test("the agent looks at each piece and rejects one that isn't clean: done once 
       ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "check_removal", arguments: { project_id: id, ...args } } }, null)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
     const looked = await call({});
     expect(looked.isError).toBe(false);
-    expect(looked.content[0]!.text).toContain("text:m@0 · tape 0–8 s · text · check");
+    expect(looked.content[0]!.text).toContain("text:m@0 · tape 0–8 s · text (Smart) · check");
     expect(looked.content.some((one) => one.type === "image")).toBe(true);
     // Looked at once: not shown again.
     expect((await call({})).content.some((one) => one.type === "image")).toBe(false);
