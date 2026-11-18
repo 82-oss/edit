@@ -157,6 +157,8 @@ export type Script = {
   createdAt: number;
   updatedAt: number;
   proxyPath: string | null;
+  /** Made on another Mac whose preview hasn't reached the cloud yet (its words go first): the server's, never saved. */
+  footageComing?: boolean;
 };
 
 /** A script archived from Repack's page to free space: footage deleted, the script and its words kept. */

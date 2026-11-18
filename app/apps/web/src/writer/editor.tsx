@@ -179,7 +179,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
 
   // The footage's length in the address: a reused case joined onto it is a new file at the same path.
   // Played from this Mac or straight from the cloud, never waiting on a download (stream.rs).
-  const src = script.proxyPath || script.status === "ready" ? previewSrc(script.id, script.durationMs) : "";
+  // Its words came before its footage (another computer is still sending it): nothing to play yet, and said so.
+  const src = !script.footageComing && (script.proxyPath || script.status === "ready") ? previewSrc(script.id, script.durationMs) : "";
   // One playhead per player, made together, so a reload of the code keeps them paired.
   const [{ player, playhead }] = useState(() => {
     const playhead = new Playhead();
@@ -732,6 +733,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
             expanded={expanded}
             onExpand={view === "video" ? setExpanded : undefined}
             onVideo={onVideo}
+            empty={script.footageComing ? "The footage is still on its way." : undefined}
           />
           <section className="panel bin" aria-label="Media">
             <header className="panel-head">

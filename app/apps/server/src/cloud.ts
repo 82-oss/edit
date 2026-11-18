@@ -11,7 +11,9 @@
 // there's a sign-in.
 //
 // Keys are R2 object keys, always under `edit/` ([`validKey`]); the bucket is
-// shared with Repack, and the relay refuses anything else.
+// shared with Repack, and the relay refuses anything else. An upload may also
+// go to Script mode's `writer/` keys (writer/cloud.ts's footage), through the
+// relay's writer routes, so both resume the same way.
 //
 // Big uploads are multipart: fixed-size parts (R2 wants every part but the
 // last the same size), a few in flight at once, each retried with a fresh
@@ -109,6 +111,14 @@ export function validKey(key: string): boolean {
 function checkKey(key: string): void {
   if (!validKey(key)) throw new Error(`not a cloud key Edit may use: ${debugStr(key)}`);
 }
+
+/** A key an upload may go to: Edit's (`edit/`), or Script mode's (`writer/`, through the relay's writer routes), by the same rule. */
+function checkUploadKey(key: string): void {
+  if (!validKey(key) && !(key.startsWith("writer/") && validKey(`edit/${key.slice("writer/".length)}`))) throw new Error(`not a cloud key Edit may use: ${debugStr(key)}`);
+}
+
+/** The relay's R2 route for `key`: Script mode's keys go through its writer routes (apps/relay/src/writer_cloud.ts), which answer alike. */
+const r2 = (key: string, route: string): string => `${key.startsWith("writer/") ? "writer/" : ""}r2/${route}`;
 
 /** What a presigned URL lets its holder do. */
 export type Method = "GET" | "PUT" | "HEAD";
@@ -304,7 +314,7 @@ async function lineFree(signal?: AbortSignal): Promise<void> {
  * cancelled). `behind`: nobody waits for it, so it gives the line to what someone does (`first`), a part at a time.
  */
 export async function uploadFile(path: string, key: string, progress: Report = () => {}, signal?: AbortSignal, behind = false): Promise<void> {
-  checkKey(key);
+  checkUploadKey(key);
   if (signal?.aborted) throw new Error("the share was cancelled");
   await diag.timeOnAsync("cloud", "cloud: upload file", `${path} → ${key}`, async () => {
     let fd: number;
@@ -436,7 +446,7 @@ export function forgetUpload(key: string): void {
 }
 
 function abortUpload(key: string, uploadId: string): void {
-  void relayJson("r2/multipart/abort", { key, uploadId }).catch((error: unknown) => diag.warn("cloud", `couldn't abort the upload of ${key}: ${diag.messageOf(error)}`));
+  void relayJson(r2(key, "multipart/abort"), { key, uploadId }).catch((error: unknown) => diag.warn("cloud", `couldn't abort the upload of ${key}: ${diag.messageOf(error)}`));
 }
 
 /**
@@ -458,7 +468,7 @@ async function resumable(fd: number, journal: string, file: Omit<Journal, "uploa
       state = saved;
       diag.info("cloud", `resuming the upload of ${file.key}: ${Object.keys(state.parts).length} of ${Math.ceil(file.size / file.part)} parts are up`);
     } else {
-      const created = await relayJson("r2/multipart/create", { key: file.key, contentType: contentType(file.key) });
+      const created = await relayJson(r2(file.key, "multipart/create"), { key: file.key, contentType: contentType(file.key) });
       if (typeof created.uploadId !== "string") throw lacking("the relay gave no upload id");
       state = { ...file, uploadId: created.uploadId, parts: {} };
       fs.mkdirSync(parent(journal)!, { recursive: true });
@@ -528,7 +538,7 @@ async function sendParts(fd: number, journal: string, state: Journal, report: Re
   const parts = Object.entries(state.parts)
     .map(([n, etag]) => ({ partNumber: Number(n), etag }))
     .sort((a, b) => a.partNumber - b.partNumber);
-  const done = await relayJson("r2/multipart/complete", { key: state.key, uploadId: state.uploadId, parts });
+  const done = await relayJson(r2(state.key, "multipart/complete"), { key: state.key, uploadId: state.uploadId, parts });
   const stored = asU64(done.size);
   if (stored !== null && stored !== state.size) throw new TransferMismatch({ message: `${state.key} came out ${stored} bytes in the cloud, not ${state.size}` });
 }
@@ -668,15 +678,16 @@ async function upload(
   if (first.length < part) {
     // It all fits in one request.
     await retry(`upload of ${key}`, async () => {
-      const url = await presign(key, "PUT");
-      await put(url, first, kind, progress, signal);
+      const answer = key.startsWith("writer/") ? await relayJson(r2(key, "url"), { key, method: "PUT" }) : { url: await presign(key, "PUT") };
+      if (typeof answer.url !== "string") throw lacking("the relay gave no URL");
+      await put(answer.url, first, kind, progress, signal);
     });
     const size = first.length;
     report(size, total ?? size);
     return size;
   }
   if (signal?.aborted) throw new Error("the share was cancelled");
-  const created = await relayJson("r2/multipart/create", { key, contentType: kind });
+  const created = await relayJson(r2(key, "multipart/create"), { key, contentType: kind });
   if (typeof created.uploadId !== "string") throw lacking("the relay gave no upload id");
   const uploadId = created.uploadId;
   try {
@@ -685,7 +696,7 @@ async function upload(
     return size;
   } catch (error) {
     try {
-      await relayJson("r2/multipart/abort", { key, uploadId });
+      await relayJson(r2(key, "multipart/abort"), { key, uploadId });
     } catch (abort) {
       diag.warn("cloud", `couldn't abort the upload of ${key}: ${diag.messageOf(abort)}`);
     }
@@ -759,7 +770,7 @@ async function multipart(
   if (error !== null) throw error;
   etags.sort((a, b) => a[0] - b[0]);
   const parts = etags.map(([partNumber, etag]) => ({ partNumber, etag }));
-  const done = await relayJson("r2/multipart/complete", { key, uploadId, parts });
+  const done = await relayJson(r2(key, "multipart/complete"), { key, uploadId, parts });
   const stored = asU64(done.size);
   if (stored !== null && stored !== size) throw new TransferMismatch({ message: `${key} came out ${stored} bytes in the cloud, not ${size}` });
   return size;
@@ -768,7 +779,7 @@ async function multipart(
 /** One part, retried with a fresh URL; its ETag. */
 function putPart(key: string, uploadId: string, number: number, data: Uint8Array, progress: Progress, signal?: AbortSignal): Promise<string> {
   return retry(`part ${number} of ${key}`, async () => {
-    const answer = await relayJson("r2/multipart/urls", { key, uploadId, parts: [number] });
+    const answer = await relayJson(r2(key, "multipart/urls"), { key, uploadId, parts: [number] });
     const urls = answer.urls as Record<string, unknown> | undefined;
     const url = urls !== undefined && urls !== null && typeof urls === "object" ? urls[String(number)] : undefined;
     if (typeof url !== "string") throw lacking("the relay gave no part URL");

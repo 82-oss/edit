@@ -62,6 +62,8 @@ export function detail(data: string, script: Script): Script {
   // Archived on Repack's page: its footage freed, read-only until restored.
   const archived = archive.state(data, script.id);
   if (archived !== null) out.archive = archived;
+  // Made on another Mac whose preview is still going up after its words (writer/cloud.ts footageFirst): said, not played as a broken file.
+  if (out.proxyPath === null && script.status === "ready" && !script.commentary && archived === null && cloud.revOf(data, script.id) !== null && cloud.fileKey(data, script.id, "proxy.mp4") === null) out.footageComing = true;
   return Object.assign(out, reviews.shareState(script.id));
 }
 

@@ -351,7 +351,8 @@ async function previewInCloud(data: string, id: string, dir: string, script: Scr
     } catch (error) {
       throw new Error(`Couldn't verify its preview in the cloud (${diag.messageOf(error)}). Check the connection, then share again.`);
     }
-    if (found !== kept.size) throw new Error("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.");
+    // The cloud's can be an earlier preview while this Mac's new one goes up beside the words (writer/cloud.ts footageFirst).
+    if (found !== kept.size || !cloud.sameAsHere(data, id, "proxy.mp4")) throw new Error("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.");
   } else if (isFile(store.proxyPath(dir))) throw new Error("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.");
 }
 

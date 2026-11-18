@@ -6,7 +6,9 @@
 //
 // Saves land on disk as always. A loop pushes what changed a few seconds
 // later (the changed files, then a new body, then a commit naming the rev it
-// began from) and pulls what other Macs pushed. A file the cloud already
+// began from) and pulls what other Macs pushed. Footage goes up beside the
+// loop, never inside it, and is named once it's there ("Footage, beside the
+// rounds" below). A file the cloud already
 // holds and this Mac doesn't (the preview, once it was left to the cloud) is
 // named again: leaving it out of the commit deletes it for every Mac. A
 // commit another Mac overtook is refused; then the cloud's is taken and this
@@ -32,6 +34,7 @@ import type { Script } from "@edit/types/writer";
 import * as diag from "../diag.ts";
 import { idle, inArea, runtime } from "../effect/runtime.ts";
 import * as service from "../effect/service.ts";
+import * as editCloud from "../cloud.ts";
 import { ConvexAnswer, readable } from "../cloud.ts";
 import * as cloudBlocks from "../cloud_blocks.ts";
 import * as archive from "./archive.ts";
@@ -59,17 +62,6 @@ export const settleForTests = (ms: number | null): void => {
   settleMs = ms ?? SETTLE_MS;
 };
 const PREFIX = "writer/scripts";
-/** Files bigger than this go up in parts of PART_SIZE. */
-const MULTIPART_OVER = 100_000_000;
-const PART_SIZE = 64 * 1024 * 1024;
-/**
- * Parts whose links are asked for at once, just before they go up: a link
- * lasts an hour (the relay's writer_cloud.ts). Asked 100 at a time (6.7 GB),
- * on JJ's 8 Mbit/s line they ran out by the 55th part (an hour at 1 MB/s), so a
- * preview over ~3.5 GB (a 26-hour case's is 11.9 GB) failed there and began
- * again from part 1 every sync. Four go up in ~4 minutes there.
- */
-const LINKS_AT_ONCE = 4;
 /** The least a slow line moves (bytes a millisecond, 400 kbit/s): what a script.json is given to go up or come down. */
 const SLOW_BYTES_PER_MS = 50;
 const BACKOFF_FIRST = 30_000;
@@ -110,7 +102,9 @@ export interface Status {
 }
 
 const status: Status = { enabled: false, state: "off", pending: 0, transfer: null, lastSync: null, error: null, scripts: 0 };
-export const statusNow = (): Status => ({ ...status });
+/** A file going up now (a round's, or the footage lane's, which runs beside the rounds): shown while no round is bringing one down. */
+let sending: Status["transfer"] = null;
+export const statusNow = (): Status => ({ ...status, transfer: status.transfer ?? sending });
 /** The scripts the cloud last listed as not deleted (null until it has listed them since Edit started). */
 let live: ReadonlySet<string> | null = null;
 export const liveInCloud = (): ReadonlySet<string> | null => live;
@@ -263,6 +257,14 @@ export function deleted(data: string, id: string): void {
 /** The cloud's rev of this script, as this Mac last saw it; null if it never reached the cloud. */
 export const revOf = (data: string, id: string): number | null => ledgerNow(data).scripts[id]?.rev ?? null;
 
+/** Whether the cloud's copy of a script's file is this Mac's: no file here, or one whose size and time are as last synced (a new one may still be going up). */
+export function sameAsHere(data: string, id: string, name: string): boolean {
+  const kept = fileKey(data, id, name);
+  const path = inside(store.scriptDir(data, id), name);
+  if (path === null || !isFile(path)) return kept !== null;
+  return kept !== null && kept.key !== "" && kept.size === fs.statSync(path).size && kept.mtime === mtime(path);
+}
+
 /** A script file's key and size in the cloud, as this Mac last synced it. */
 export const fileKey = (data: string, id: string, name: string): Kept | null => ledgerNow(data).scripts[id]?.files[name] ?? null;
 
@@ -381,47 +383,39 @@ function fileBody(path: string, size: number, onProgress: (done: number) => void
   );
 }
 
-/** Uploads a file, its progress shown as it goes: in parts past MULTIPART_OVER. `onProgress` is told bytes as they go, including a file under that size. */
-async function upload(script: string, name: string, path: string, key: string, onProgress?: (done: number, total: number) => void): Promise<number> {
+/**
+ * Uploads a file, its progress shown as it goes. One past cloud.ts's
+ * resumable size goes up as Edit's own footage does (`editCloud.uploadFile`):
+ * in parts, eight at a time, each part's link asked for just before it goes,
+ * and each part kept in a journal as it's up, so a line that drops or an Edit
+ * that restarts carries on from the parts already sent (JJ, Nov 18: a 2.6 GB
+ * preview at 0.47 GB when his line dropped began again from nothing, 44
+ * minutes on his 8 Mbit/s line). `onProgress` is told bytes as they go.
+ * `behind`: nobody waits on it, so a share's upload has the line first.
+ */
+async function upload(script: string, name: string, path: string, key: string, onProgress?: (done: number, total: number) => void, behind = false): Promise<number> {
   const size = fs.statSync(path).size;
   const shown = (done: number) => {
-    status.transfer = { script, name, up: true, done, total: size };
+    sending = { script, name, up: true, done: Math.min(done, size), total: size };
     onProgress?.(Math.min(done, size), size);
   };
-  if (size <= MULTIPART_OVER) {
-    const answer = await fetch(await presign(key, "PUT"), { method: "PUT", body: onProgress ? fileBody(path, size, shown) : Bun.file(path), headers: { "content-length": String(size) }, signal: AbortSignal.timeout(600_000), ...(onProgress ? { duplex: "half" } : {}) } as RequestInit).catch((error: unknown) => {
-      throw transferProblem(error, name);
-    });
-    if (!answer.ok) throw new Problem(`The cloud refused ${name} (${answer.status}).`);
+  try {
+    if (size < editCloud.timing.resumableFrom) {
+      const answer = await fetch(await presign(key, "PUT"), { method: "PUT", body: onProgress ? fileBody(path, size, shown) : Bun.file(path), headers: { "content-length": String(size) }, signal: AbortSignal.timeout(600_000), ...(onProgress ? { duplex: "half" } : {}) } as RequestInit).catch((error: unknown) => {
+        throw transferProblem(error, name);
+      });
+      if (!answer.ok) throw new Problem(`The cloud refused ${name} (${answer.status}).`);
+    } else {
+      await editCloud.uploadFile(path, key, (done) => shown(done), undefined, behind).catch((error: unknown) => {
+        const temporary = service.isTemporary(error);
+        throw new Problem(`${name} didn't get through (${diag.messageOf(error)}).`, temporary, temporary);
+      });
+    }
     shown(size);
     return size;
+  } finally {
+    sending = null;
   }
-  const created = await call("r2/multipart/create", { key });
-  const uploadId = String(created.uploadId ?? "");
-  if (uploadId === "") throw new Problem("The cloud gave no upload id.");
-  const count = Math.ceil(size / PART_SIZE);
-  const parts: { partNumber: number; etag: string }[] = [];
-  try {
-    for (let first = 1; first <= count; first += LINKS_AT_ONCE) {
-      const numbers = Array.from({ length: Math.min(LINKS_AT_ONCE, count - first + 1) }, (_, k) => first + k);
-      const urls = (await call("r2/multipart/urls", { key, uploadId, parts: numbers })).urls as Record<string, string>;
-      for (const number of numbers) {
-        const from = (number - 1) * PART_SIZE;
-        const chunk = Bun.file(path).slice(from, Math.min(from + PART_SIZE, size));
-        const answer = await fetch(urls[String(number)]!, { method: "PUT", body: chunk, signal: AbortSignal.timeout(600_000) }).catch((error: unknown) => {
-          throw transferProblem(error, name);
-        });
-        if (!answer.ok) throw new Problem(`The cloud refused ${name} (${answer.status}).`);
-        parts.push({ partNumber: number, etag: answer.headers.get("etag") ?? "" });
-        shown(Math.min(number * PART_SIZE, size));
-      }
-    }
-    await call("r2/multipart/complete", { key, uploadId, parts });
-  } catch (error) {
-    await call("r2/multipart/abort", { key, uploadId }).catch(() => undefined);
-    throw error;
-  }
-  return size;
 }
 
 async function uploadBytes(key: string, bytes: Uint8Array | string): Promise<void> {
@@ -760,6 +754,215 @@ function parsed(body: Uint8Array | null): Script | null {
   }
 }
 
+// ---- Footage, beside the rounds ----
+//
+// A script's words reach the cloud, and so the other Macs, before its footage
+// does (Sphe, Nov 18: JJ's 2.6 GB preview took 44 minutes or more on his
+// 8 Mbit/s line, and a round sent a script's files before its body and the
+// next script waited behind it). A round commits a script naming the footage
+// the cloud already has: the file its last revision named, or none yet (a new
+// script, a recording just added). Its new footage goes up here meanwhile, one
+// file at a time, to a key kept on disk (`footage.json`) with its size and
+// time, so a cut line or a restart carries on from the parts already up
+// (cloud.ts's journal); once it's all there the next round commits it.
+// Nothing here commits, so no revision is ever made or lost here; a key no
+// commit names is deleted when its file changes, goes or is taken over.
+
+/** A footage file on its way up: the key it goes to, the file it is (size, time in ms), and whether it's all there. */
+interface Sending {
+  key: string;
+  size: number;
+  mtime: number;
+  done: boolean;
+}
+
+const footagePath = (data: string) => join(data, "cloud", "footage.json");
+let footageIn: { data: string; slots: Record<string, Sending> } | null = null;
+
+/** The footage on its way up from this data folder, by `<script id>/<name>`. */
+function footageOf(data: string): Record<string, Sending> {
+  if (footageIn?.data !== data) footageIn = { data, slots: readJson<Record<string, Sending>>(footagePath(data), {}) };
+  return footageIn.slots;
+}
+
+const saveFootage = (data: string) => writeJson(footagePath(data), footageOf(data));
+
+const slotOf = (id: string, name: string) => `${id}/${name}`;
+const nameOf = (slot: string): [string, string] => [slot.slice(0, slot.indexOf("/")), slot.slice(slot.indexOf("/") + 1)];
+
+/** What goes up beside the rounds rather than in one: footage, and any file big enough to hold a round up. */
+const goesBeside = (name: string, size: number): boolean => storage.isFootage(name) || size >= editCloud.timing.resumableFrom;
+
+/** Waits after a failure, by slot. */
+const footageWait = new Map<string, { until: number; wait: number }>();
+/** The slot going up now. */
+let footageNow: string | null = null;
+let footageLane: Promise<void> | null = null;
+
+/** Footage still to go up from here: how many files. */
+const footageLeft = (data: string): number => Object.values(footageOf(data)).filter((entry) => !entry.done).length;
+
+/** Whether `key` is named by a revision this Mac committed, or one it sent whose answer hasn't come: then it's the script's, never deleted from here. */
+function committed(data: string, id: string, key: string): boolean {
+  const ledger = loadLedger(data);
+  const named = (files: Record<string, Kept> | undefined) => Object.values(files ?? {}).some((file) => file.key === key);
+  return named(ledger.scripts[id]?.files) || named(ledger.attempts?.[id]?.known.files);
+}
+
+/** Lets go of a slot: its parts or its object in the cloud too, unless a commit names it. */
+function retire(data: string, slot: string): void {
+  const slots = footageOf(data);
+  const entry = slots[slot];
+  if (entry === undefined) return;
+  delete slots[slot];
+  saveFootage(data);
+  footageWait.delete(slot);
+  const [id] = nameOf(slot);
+  if (committed(data, id, entry.key)) return;
+  if (entry.done) void remove([entry.key]);
+  else editCloud.forgetUpload(entry.key);
+}
+
+/**
+ * A script's files as a round commits them now: its footage that changed here
+ * and isn't all up yet is queued to go up beside the rounds, and named as the
+ * cloud has it meanwhile (its last revision's, or not at all); footage that's
+ * up is named at its key. `files` is changed in place.
+ */
+function footageFirst(data: string, id: string, files: Record<string, Kept>, known: Known | undefined): void {
+  const slots = footageOf(data);
+  let changed = false;
+  const here = new Set<string>();
+  for (const [name, local] of Object.entries(files)) {
+    if (local.key !== "" || !goesBeside(name, local.size)) continue;
+    const slot = slotOf(id, name);
+    here.add(slot);
+    const previous = known?.files[name];
+    let entry = slots[slot];
+    // Unchanged since the cloud's revision: nothing to send.
+    if (previous !== undefined && previous.key !== "" && previous.size === local.size && previous.mtime === local.mtime) {
+      if (entry !== undefined && slot !== footageNow) retire(data, slot);
+      continue;
+    }
+    const same = entry !== undefined && entry.size === local.size && entry.mtime === local.mtime;
+    if (entry !== undefined && !same && slot !== footageNow) {
+      retire(data, slot);
+      entry = undefined;
+    }
+    if (entry !== undefined && same && entry.done) {
+      files[name] = { key: entry.key, size: local.size, mtime: local.mtime };
+      continue;
+    }
+    if (entry === undefined) {
+      slots[slot] = { key: `${PREFIX}/${id}/files/u-${crypto.randomUUID().replaceAll("-", "").slice(0, 10)}/${name}`, size: local.size, mtime: local.mtime, done: false };
+      changed = true;
+    }
+    if (previous !== undefined && previous.key !== "") files[name] = previous;
+    else delete files[name];
+  }
+  // A file no longer here (deleted, or replaced by a pull) has nothing to go up.
+  for (const slot of Object.keys(slots)) if (slot.startsWith(`${id}/`) && !here.has(slot) && slot !== footageNow) retire(data, slot);
+  if (changed) saveFootage(data);
+}
+
+/** A slot's file as it is now, or null when it's gone. */
+function fileNow(data: string, slot: string): { path: string; size: number; mtime: number } | null {
+  const [id, name] = nameOf(slot);
+  const path = inside(store.scriptDir(data, id), name);
+  if (path === null || !isFile(path)) return null;
+  return { path, size: fs.statSync(path).size, mtime: mtime(path) };
+}
+
+/** Starts the footage lane when it isn't running and something is ready to go. */
+function sendFootage(data: string): void {
+  if (footageLane !== null) return;
+  footageLane = footageRun(data).finally(() => {
+    footageLane = null;
+  });
+}
+
+/** The footage lane's run: each file ready to go, one at a time, until none is. */
+async function footageRun(data: string): Promise<void> {
+  for (;;) {
+    if (!relay.cloudEnabled()) return;
+    const slots = footageOf(data);
+    const slot = Object.keys(slots).find((one) => !slots[one]!.done && (footageWait.get(one)?.until ?? 0) <= Date.now());
+    if (slot === undefined) return;
+    await footageOne(data, slot, slots[slot]!);
+  }
+}
+
+/** Sends one slot's file: done, waiting after a failure, or let go when the file changed or went. */
+async function footageOne(data: string, slot: string, entry: Sending): Promise<void> {
+  const [id, name] = nameOf(slot);
+  const file = fileNow(data, slot);
+  if (file === null || file.size !== entry.size || file.mtime !== entry.mtime || !store.idOk(id) || archive.archived(data, id)) {
+    retire(data, slot);
+    return;
+  }
+  const failed = (problem: string, temporary: boolean) => {
+    const first = temporary ? BACKOFF_FIRST : BACKOFF_FIRST * 4;
+    const wait = Math.min(footageWait.has(slot) ? footageWait.get(slot)!.wait * 2 : first, temporary ? 600_000 : BACKOFF_MAX);
+    footageWait.set(slot, { until: Date.now() + wait, wait });
+    diag.warn("writer", `${jobs.named(id, "")}: ${name} didn't get to the cloud (${problem}); trying again in ${Math.round(wait / 1000)} s, from the parts already up`);
+  };
+  // Someone else's (another computer holds its lock): its footage waits with its words.
+  const allowed = await locks.mayPush(id, lockHolder).catch(() => false);
+  if (!allowed) {
+    footageWait.set(slot, { until: Date.now() + BACKOFF_FIRST, wait: BACKOFF_FIRST });
+    return;
+  }
+  footageNow = slot;
+  const began = Date.now();
+  try {
+    await upload(id, name, file.path, entry.key, undefined, true);
+  } catch (error) {
+    const problem = error instanceof Problem ? error : new Problem(diag.messageOf(error));
+    if (footageOf(data)[slot] === entry) failed(problem.message, problem.temporary);
+    return;
+  } finally {
+    footageNow = null;
+  }
+  const after = fileNow(data, slot);
+  // Let go while it went up, or changed under it: what went up isn't this file.
+  if (footageOf(data)[slot] !== entry || after === null || after.size !== entry.size || after.mtime !== entry.mtime) {
+    if (footageOf(data)[slot] === entry) retire(data, slot);
+    else if (!committed(data, id, entry.key)) void remove([entry.key]);
+    return;
+  }
+  entry.done = true;
+  footageWait.delete(slot);
+  saveFootage(data);
+  diag.info("writer", `${jobs.named(id, "")}: ${name} (${Math.round(entry.size / 1e6)} MB) is in the cloud in ${Math.round((Date.now() - began) / 1000)} s; its next save names it`);
+  syncSoon();
+}
+
+/** A commit landed: the footage it names is the script's now, no longer on its way. */
+function footageCommitted(data: string, id: string, files: Record<string, Kept>): void {
+  const slots = footageOf(data);
+  let changed = false;
+  for (const [name, file] of Object.entries(files)) {
+    const slot = slotOf(id, name);
+    if (slots[slot]?.done === true && slots[slot]!.key === file.key) {
+      delete slots[slot];
+      changed = true;
+    }
+  }
+  if (changed) saveFootage(data);
+}
+
+/** The footage lane's run to its end (tests: a round queues it, this sends it). */
+export async function footageForTests(data: string): Promise<void> {
+  sendFootage(data);
+  while (footageLane !== null) await footageLane;
+}
+
+/** Forgets the lane's waits and what it read (tests, between data folders). */
+export function resetFootageForTests(): void {
+  footageIn = null;
+  footageWait.clear();
+}
+
 /** One round: deletions, then what came from other Macs, then what changed here. Answers how many scripts still wait. */
 async function tick(data: string, pull: boolean): Promise<number> {
   const ledger = loadLedger(data);
@@ -806,7 +1009,11 @@ async function tick(data: string, pull: boolean): Promise<number> {
   }
   // What changed here, found first so the count of what's left can be shown.
   const changed: [string, string, Script, Uint8Array, Known | undefined, Record<string, Kept>][] = [];
-  for (const id of store.ids(data).sort()) {
+  const ids = store.ids(data).sort();
+  // Footage of a script no longer here has nothing to go up.
+  const present = new Set(ids);
+  for (const slot of Object.keys(footageOf(data))) if (!present.has(nameOf(slot)[0]) && slot !== footageNow) retire(data, slot);
+  for (const id of ids) {
     const until = backoff.get(id)?.until ?? 0;
     // Worked on here: its lock is taken and kept meanwhile; pushed once done.
     if (busy(id)) locks.touch(id);
@@ -830,6 +1037,8 @@ async function tick(data: string, pull: boolean): Promise<number> {
     // read again at the push: a ledger from an older Edit can be at the cloud's
     // rev and still be missing the preview (Nov 3, Predator Dad).
     carryCloudFiles(dir, files, known?.files ?? {}, new Set(purgedNames(data, id)));
+    // Its words go now; footage that changed goes up beside the rounds and is named once it's there.
+    footageFirst(data, id, files, known);
     if (known !== undefined && known.body === hash(body) && sameFiles(known.files, files) && (known.summary ?? 0) >= SUMMARY_VERSION) continue;
     changed.push([id, dir, script, body, known, files]);
   }
@@ -860,6 +1069,7 @@ async function tick(data: string, pull: boolean): Promise<number> {
         refusals.delete(id);
         ledger.scripts[id] = pushed;
         save();
+        footageCommitted(data, id, pushed.files);
         unpushed.delete(id);
         locks.pushed(id);
       }
@@ -885,8 +1095,13 @@ async function tick(data: string, pull: boolean): Promise<number> {
     left--;
   }
   if (pull) await syncLessons(data);
+  // Footage still going up keeps the sync "syncing"; its lane runs beside the rounds, never inside one.
+  waiting += footageLeft(data);
+  sendFootage(data);
   // The locks: taken for what's open or worked on here, renewed, let go once nobody here needs them.
-  await locks.round(lockHolder, (id) => unpushed.has(id));
+  // Footage on its way up is a change not pushed yet: the lock is kept until it's named.
+  const coming = new Set(Object.keys(footageOf(data)).map((slot) => nameOf(slot)[0]));
+  await locks.round(lockHolder, (id) => unpushed.has(id) || coming.has(id));
   if (refusal !== null) throw refusal;
   return waiting;
 }
@@ -1252,9 +1467,10 @@ async function push(data: string, id: string, dir: string, script: Script, body:
       continue;
     }
     const path = inside(dir, name);
-    // Carried from the cloud's list (no copy here). Naming that key again is
-    // what keeps it; there is nothing on disk to upload in its place.
-    if ((path === null || !isFile(path)) && local.key !== "") {
+    // Carried from the cloud's list (no copy here), or footage already up
+    // beside the rounds (`footageFirst`). Naming that key is what keeps it;
+    // there is nothing to upload in its place.
+    if (local.key !== "") {
       kept[name] = local;
       continue;
     }
