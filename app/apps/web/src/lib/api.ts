@@ -316,13 +316,13 @@ export const api = {
   /** The project's exports on the machine running Edit, newest first. */
   exports: (id: string) => request<ExportRecord[]>("GET", `/api/projects/${id}/exports`),
   exportActivity: () => request<ExportActivity[]>("GET", "/api/exports/activity"),
-  youtubeSignIn: () => request<YoutubeSignIn>("GET", "/api/youtube/sign-in"),
-  checkYoutubeSignIn: () => request<YoutubeSignIn>("POST", "/api/youtube/sign-in/check"),
-  /** Deletes one of them (its file too); the list after. */
   /** Every export on this computer whose file is still here, newest first, and when its Exports view was last opened (exports_view.ts). */
   exportsHere: () => request<{ viewed_ms: number; exports: Exported[] }>("GET", "/api/exports/list"),
   /** The Exports view opened (or left): what finished before isn't new any more. */
   exportsViewed: () => request<{ viewed_ms: number }>("POST", "/api/exports/viewed"),
+  youtubeSignIn: () => request<YoutubeSignIn>("GET", "/api/youtube/sign-in"),
+  checkYoutubeSignIn: () => request<YoutubeSignIn>("POST", "/api/youtube/sign-in/check"),
+  /** Deletes one of them (its file too); the list after. */
   deleteExport: (id: string, path: string) => request<ExportRecord[]>("POST", `/api/projects/${id}/exports/delete`, { path }),
   cancelExport: (id: string) => request<{ cancelled: boolean }>("POST", `/api/projects/${id}/export/cancel`),
   /** Exports the edit's marked stretches (the agent's set_ranges) to this computer: a video each, or one of them joined (ranges.ts). */
@@ -449,11 +449,11 @@ export interface WriterScriptRow {
   clips: number;
   durationMs: number;
   built: boolean;
+  /** When its first build was saved (Home's New; absent on scripts built before Nov 18). */
+  builtAt?: number;
   /** Its kind of video, when Writer says. */
   style: Style | null;
   /** The channel it's for. */
-  /** When its first build was saved (Home's New; absent on scripts built before Nov 18). */
-  builtAt?: number;
   channel?: string;
   /** Written over several videos (from this Mac's copy until the server's list says). */
   compilation?: boolean;
@@ -482,13 +482,13 @@ export interface ProjectStatus {
   sharing: string | null;
   /** How far its footage has got coming down to this machine, while it does (optional: statuses Home kept from before lack it). */
   footage?: FootageComing | null;
-}
-
-/** A box drawn on the picture, as fractions of the frame from its top left. */
   /** When its import got to done here (Home's New; null: none known here). */
   imported_ms?: number | null;
   /** A whole export finished here since the Exports view was last opened: "Exported" on its row. */
   exported_new?: boolean;
+}
+
+/** A box drawn on the picture, as fractions of the frame from its top left. */
 export interface NoteBox {
   x: number;
   y: number;

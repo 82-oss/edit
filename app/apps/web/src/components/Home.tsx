@@ -1477,7 +1477,6 @@ const goOnWithout = (issue: ScriptIssueRow) => (issue.decision?.kind === "failed
  */
 function ScriptIssue({ issue, onOpen }: { issue: ScriptIssueRow; onOpen: (id: string) => void }) {
   const { items: own, dialogs } = useIssueDialogs(issue);
-      <Category text="" />
   const marked = useDoneRow(doneKey("script", issue.id), issue.title);
   const items = withDone(own, marked.items);
   return (
@@ -1505,6 +1504,7 @@ function ScriptIssue({ issue, onOpen }: { issue: ScriptIssueRow; onOpen: (id: st
           </span>
         )}
       </StatusCell>
+      <Category text="" />
       <CreatorCell by={issue.createdBy} />
       <LengthCell />
       <Updated at={issue.createdAt ?? 0} />
@@ -1644,8 +1644,6 @@ export function ImportDialog({ id, writing, issues, onClose }: { id: string | nu
                 <IssueActions issue={stopped} />
               ) : (
                 done &&
-          // The person's own change from Home: not Changed for them.
-          markSeen(`edit:${project.id}`);
                 id !== null && (
                   <Button variant="primary" onClick={() => navigate(`/scripts/${id}`)}>
                     Open the script
@@ -1673,6 +1671,8 @@ function TableRow({ subtitled, script = null, fresh, ...props }: CardProps & { s
       : async (text) => {
           const live = await api.project(project.id);
           await api.saveProject(project.id, live.rev, { ...live.project, note: text === "" ? undefined : text }, clientId);
+          // The person's own change from Home: not Changed for them.
+          markSeen(`edit:${project.id}`);
           onChanged();
         },
   );
@@ -1687,7 +1687,6 @@ function TableRow({ subtitled, script = null, fresh, ...props }: CardProps & { s
       >
         <div role="cell" className="flex min-w-0 items-center gap-2.5">
           <KindMark kind={project.subtitles ? "subtitles" : "edit"} />
-        <Category style={project.style} compilation={script?.compilation} channel={project.channel} />
           {card.nameInput ?? (
             <span className={NAME} title={project.problem ?? project.name}>
               {project.name}
@@ -1715,12 +1714,12 @@ function TableRow({ subtitled, script = null, fresh, ...props }: CardProps & { s
             </>
           )}
         </StatusCell>
+        <Category style={project.style} compilation={script?.compilation} channel={project.channel} />
         <CreatorCell by={remote?.created_by ?? project.created_by} projectId={project.id} />
         <LengthCell>{project.problem ? "" : shortDuration(project.duration_frames / project.fps)}</LengthCell>
         <Updated at={project.modified_ms} />
         <RowButtons extra={marked.button} items={items} width={190} />
       </div>
-      changedHere();
       {card.dialogs}
       {note.dialog}
     </>
@@ -1743,12 +1742,12 @@ function ScriptTableRow({ script, importing, writing, sharing, here, fresh, onCh
   const grants = useGrants();
   const current = kindOfStyle(script.style);
   const kinds = script.compilation ? grants.compilationKinds : grants.singleKinds;
-          changedHere();
   const recategorize = async (kind: Kind) => {
     if (kind === current) return;
     try {
       const writer = await import("../writer/api");
       await writer.setScriptKind(script.id, kind);
+      changedHere();
       onChanged();
     } catch (error) {
       useEditor.getState().toastError(error, `change the category of “${script.title}”`);
@@ -1771,7 +1770,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, fresh, onCh
       ? async (text) => {
           const writer = await import("../writer/api");
           await writer.setScriptNote(script.id, text);
-      changedHere();
+          changedHere();
           onChanged();
         }
       : null,
@@ -1799,6 +1798,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, fresh, onCh
     try {
       const writer = await import("../writer/api");
       await writer.renameScript(script.id, title);
+      changedHere();
       onChanged();
     } catch (error) {
       useEditor.getState().toastError(error, `rename “${script.title}”`);
@@ -1878,7 +1878,6 @@ function ScriptTableRow({ script, importing, writing, sharing, here, fresh, onCh
         ) : importing ? (
           <span className={cx(CHIP, "tabular", importing.stopped ? "text-warning" : "text-info")}>
             {importing.stopped ? <TriangleAlert size={12} className="shrink-0" /> : <Pulse size={12} />}
-      <Category style={script.style} compilation={script.compilation} channel={script.channel} />
             <span className="truncate">{importing.word}</span>
           </span>
         ) : writing ? (
@@ -1906,6 +1905,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, fresh, onCh
           </button>
         )}
       </StatusCell>
+      <Category style={script.style} compilation={script.compilation} channel={script.channel} />
       <CreatorCell by={script.createdBy ?? undefined} />
       <LengthCell>{script.durationMs > 0 ? shortDuration(script.durationMs / 1000) : ""}</LengthCell>
       <Updated at={script.updatedAt} title={script.updatedBy ? `by ${script.updatedBy}` : undefined} />
@@ -1967,7 +1967,6 @@ function CloudTableRow({ project, script = null, fresh, onChanged }: { project: 
     ],
     marked.items,
   );
-        <Category style={summary.style} compilation={script?.compilation} channel={summary.channel} />
   return (
     <>
       <div
@@ -1995,6 +1994,7 @@ function CloudTableRow({ project, script = null, fresh, onChanged }: { project: 
             </>
           )}
         </StatusCell>
+        <Category style={summary.style} compilation={script?.compilation} channel={summary.channel} />
         <CreatorCell by={project.created_by} projectId={project.id} />
         <LengthCell>{seconds !== null ? shortDuration(seconds) : ""}</LengthCell>
         <Updated at={project.updated_ms} title={`by ${project.updated_by}`} />

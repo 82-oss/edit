@@ -93,6 +93,8 @@ export type Script = {
   dismissedAt?: number;
   /** Built as soon as its import is ready, with this note (New project's first message): set when it's made, gone once the build starts. */
   firstBuild?: { note: string };
+  /** When its first build was saved (ms): Home's New is a script written since its person last opened it. */
+  builtAt?: number;
   speakerCheck?: { total: number; checked: number; failed: string[]; at: number; needsApply?: boolean };
   id: string;
   title: string;
@@ -106,8 +108,6 @@ export type Script = {
   /** The build its import stopped on, when that failure is one the same build meets again however often it's asked (a 413, an unreadable file): Retry waits for an update. */
   stuckOn?: string;
   durationMs: number;
-  /** When its first build was saved (ms): Home's New is a script written since its person last opened it. */
-  builtAt?: number;
   words: Word[];
   clips: Clip[];
   overview: number[];
@@ -173,6 +173,8 @@ export type Summary = {
   retryHelps?: false;
   /** Its first prompt (New project's first message) still to start: it's still importing. */
   firstBuild?: boolean;
+  /** When its first build was saved (`Script.builtAt`). */
+  builtAt?: number;
   dismissedAt?: number;
   archive?: Archive;
   /** Being shared for review now (it runs on its own: the dialog can close, other scripts can share meanwhile). `stage` is how far it is. */
@@ -188,8 +190,6 @@ export type Summary = {
   shown?: boolean;
   /** Footage a commentary was written from: that commentary's title. The list keeps it inside it. */
   inCommentary?: string;
-  /** When its first build was saved (`Script.builtAt`). */
-  builtAt?: number;
   /** The cloud refused its last save: what it said. Shown as "Not in the cloud". */
   cloudRefused?: string;
   /** Interrogation, FOIA or Courtroom. */
@@ -489,6 +489,8 @@ export type ChatTurn = {
   partial?: boolean;
   /** Claude asked to start the script over: pending until the producer answers. */
   reset?: "pending" | "accepted" | "declined";
+  /** The producer's: the footage files attached to the message, by name. */
+  files?: string[];
 };
 
 /** What the producer is looking at as they ask for a change. */
@@ -506,8 +508,6 @@ export type Snapshot = { clips: Clip[]; corrections: Record<string, string>; hea
 export type TrelloCard = {
   id: string;
   name: string;
-  /** The producer's: the footage files attached to the message, by name. */
-  files?: string[];
   url: string;
   labels: string[];
   activity: string | null;

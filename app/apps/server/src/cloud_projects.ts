@@ -180,11 +180,6 @@ export function heldBy(message: string): string | null {
 /** Something to tell the user about a project. */
 export type Note = { kind: "error"; message: string };
 
-/** Whether an error is the relay refusing the sign-in ("Sign in to Edit … (401)"). */
-export function signInRefused(message: string): boolean {
-  return /\(401\)\s*$/u.test(message) || message.includes("Sign in to Edit");
-}
-
 const since = (now: number, at: number) => Math.max(now - at, 0);
 
 /** A cloud project's state on this machine. */
@@ -352,9 +347,6 @@ export class Entry {
     this.offline = false;
     this.failures = 0;
     this.retryAt = null;
-    // A refused sign-in is over once a call works again (Marc's Mac, Nov 18: "Sign in to Edit" kept under Needs
-    // attention after a renewal, while he was signed in); other errors stay until what failed is done.
-    if (this.note !== null && signInRefused(this.note.message)) this.note = null;
   }
 
   /** The cloud couldn't be reached: carry on locally and try again later. */
@@ -1770,6 +1762,8 @@ export async function list(app: App): Promise<Record<string, unknown>> {
       rev: field(item, "rev"),
       summary: field(item, "summary"),
       updated_by: typeof field(item, "updatedBy") === "string" ? displayName(field(item, "updatedBy") as string) : field(item, "updatedBy"),
+      // Its last commit was this computer's (Home's Changed counts this computer's work by its own file's writes).
+      updated_here: field(item, "updatedBy") === holder,
       updated_ms: field(item, "updatedAt"),
     };
   });
@@ -1778,8 +1772,6 @@ export async function list(app: App): Promise<Record<string, unknown>> {
 
 /**
  * The cloud's projects, each one's id, name and rev, of every kind (unlike
-      // Its last commit was this computer's (Home's Changed counts this computer's work by its own file's writes).
-      updated_here: field(item, "updatedBy") === holder,
  * `list`, which is Home's): null with the cloud off; thrown when it can't be
  * read. What old_copies.ts looks an old copy's original up in.
  */

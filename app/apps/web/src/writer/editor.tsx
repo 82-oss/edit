@@ -168,16 +168,16 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const [chatLoaded, setChatLoaded] = useState(false);
   // What was just asked, shown until the conversation on disk has it.
   const [sent, setSent] = useState<string | null>(null);
-  // A message sent whose answer hasn't come: it shows before the job does.
   // The footage files it carried, shown on it.
   const [sentFiles, setSentFiles] = useState<string[]>([]);
+  // A message sent whose answer hasn't come: it shows before the job does.
   const [asking, setAsking] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [research, setResearch] = useState<Research | null>(null);
   const [note, setNote] = useChatDraft(script.id);
   const chatKey = `script:${script.id}`;
-  const quoted = useQuotesOf(chatKey).length > 0;
   const chatFiles = useMemo(() => ({ upload: footageUploader(script.id), accept: footageOnly }), [script.id]);
+  const quoted = useQuotesOf(chatKey).length > 0;
   const [resolving, setResolving] = useState(false);
   const split = useSplit();
 
@@ -491,8 +491,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     setStage(uploads.length > 0 ? "Adding the footage" : "Starting");
     // Shown the moment it's sent, not once the server answers: the message, and Claude at work on it.
     setSent(request.trim() ? `Build the script. ${request.trim()}` : "Build the script.");
-    setAsking(true);
     setSentFiles(files.map((one) => one.name));
+    setAsking(true);
     setStarted(Date.now());
     try {
       const job = uploads.length > 0 ? await startBuild(script.id, request, undefined, uploads) : await startBuild(script.id, request);
@@ -515,12 +515,12 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     const request = given.trim();
     if (!request) return false;
     const clips = quotes.flatMap((one) => (one.clip !== undefined ? [one.clip] : []));
-    setError(null);
     const uploads = uploadsOf(files);
+    setError(null);
     setStage(uploads.length > 0 ? "Adding the footage" : "Editing the script");
     setSent(request);
-    setAsking(true);
     setSentFiles(files.map((one) => one.name));
+    setAsking(true);
     setStarted(Date.now());
     try {
       const focus = {

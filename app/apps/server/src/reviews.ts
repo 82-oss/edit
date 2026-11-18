@@ -467,8 +467,6 @@ export const fullUpload = { waitMs: (attempt: number): number => Math.min(attemp
 export function fullBehind(home: string, projectId: string, name: string, path: string, key: string, version?: number): Promise<void> {
   const job = jobs.begin(home, "full", projectId, { name, path, key, ...(version === undefined ? {} : { version }) }, key);
   let moved = false;
-  // Out of tries with its file still here (offline for hours, signed out): put off and tried again by itself, not dropped.
-  let putOff: string | null = null;
   // How it's going, on the review page where its Download button will be (Sphe, Nov 8: "we need a way to see progress of
   // when we'll get the full quality download"): sent of total bytes, when, and this run's start, for the page's time left.
   // Said now and then (a version's meta, which the page follows live), and the version never waits on it.
@@ -519,17 +517,13 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
         if (attempt >= fullUpload.tries) {
           diag.warn("review", `${name}: the full-quality file didn't go up after ${attempt} tries: ${diag.messageOf(error)}`);
           await tell({ fullUpload: { ...last, at: Date.now(), failed: diag.messageOf(error).slice(0, 300) } }).catch(() => undefined);
-          if (fs.existsSync(path)) putOff = `the full-quality file didn't go up after ${attempt} tries: ${diag.messageOf(error)}`;
           return;
         }
         diag.warn("review", `${name}: the full-quality file (try ${attempt}): ${diag.messageOf(error)}; trying again`);
         await new Promise((resolve) => setTimeout(resolve, fullUpload.waitMs(attempt)));
       }
     }
-  }).finally(() => {
-    if (putOff === null) jobs.end(home, job);
-    else jobs.putOff(home, job, putOff);
-  });
+  }).finally(() => jobs.end(home, job));
 }
 
 
@@ -2688,16 +2682,16 @@ type Status = {
   feedback: number; complete: boolean; exported: boolean; approved: number | null; archived: { restoring: boolean; error: string | null } | null;
   importing: { state: string; ready: number; files: number; share: number | null; error: string | null } | null; working: boolean; sharing: string | null;
   footage: FootageComing | null;
+  /** When its import got to done here (null: none known here), for Home's New. */
+  imported_ms: number | null;
+  /** A whole export of it finished here since this computer's Exports view was last opened (exports_view.ts). */
+  exported_new: boolean;
 };
 
 /** An import as Home shows it: null once it's done. */
 function importing(job: ScriptJob | null): Status["importing"] {
   if (job === null || job.state === "done") return null;
   const sized = job.files.filter((file) => (file.total ?? 0) > 0);
-  /** When its import got to done here (null: none known here), for Home's New. */
-  imported_ms: number | null;
-  /** A whole export of it finished here since this computer's Exports view was last opened (exports_view.ts). */
-  exported_new: boolean;
   const total = sized.reduce((sum, file) => sum + file.total!, 0);
   const share = total > 0 ? sized.reduce((sum, file) => sum + (file.state === "done" ? file.total! : Math.min(file.bytes, file.total!)), 0) / total : null;
   return { state: job.state, ready: job.files.filter((file) => file.state === "done").length, files: job.files.length, share, error: job.error ?? null };
@@ -2708,13 +2702,13 @@ export async function projectStatus(app: App): Promise<Record<string, Status>> {
   const open = openCounts(home);
   const shared = read(home).shared;
   const here = archive.archived(home);
+  const exportedNew = exportsView.exportedSince(app);
   const out: Record<string, Status> = {};
   for (const summary of app.store.visible()) {
     if (summary.problem !== undefined) continue;
     const live = app.store.get(summary.id);
     if (live === null) continue;
     const listed = listExports(home, summary.id).filter((one) => one.whole && !one.missing);
-  const exportedNew = exportsView.exportedSince(app);
     const newest = listed[0]?.finished_ms ?? 0;
     let cached = statusCache.get(summary.id);
     if (cached === undefined || cached.rev !== live.rev || cached.exportsAt !== newest) {
@@ -2726,14 +2720,14 @@ export async function projectStatus(app: App): Promise<Record<string, Status>> {
       archived: here[summary.id] === undefined ? null : { restoring: here[summary.id]!.restoring === true, error: here[summary.id]!.error ?? null },
       importing: importing(app.scripts.get(summary.id)), working: working(app, summary.id), sharing: shareNow(app.store.home, summary.id).line,
       footage: await footageReady.coming(app, summary.id),
+      imported_ms: app.scripts.get(summary.id)?.done_at ?? null,
+      exported_new: exportedNew.has(summary.id),
     };
   }
   return out;
 }
 
 /** A project's turn as the agent panel keeps it: cheaply where it can (`turn`), else from its chat. */
-      imported_ms: app.scripts.get(summary.id)?.done_at ?? null,
-      exported_new: exportedNew.has(summary.id),
 function turnOf(app: App, project: string): { running?: boolean; entries?: readonly { kind?: string; tool?: string; text?: string }[] } {
   const panel = seams.agentPanel(app);
   return panel.turn !== undefined ? panel.turn(project) : (panel.chat(project) as { running?: boolean; entries?: { kind?: string; tool?: string; text?: string }[] });

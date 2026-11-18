@@ -143,7 +143,6 @@ const titles = (app: App): string[] => store.list(dataOf(app)).map((row) => row.
 
 const NO_FOCUS: Focus = { selected: [], picked: null, playheadMs: null };
 
-/** Refused while Claude works on the script: `what` says what waits. */
 /**
  * The footage a message brings: the YouTube and Drive links (or any page with a video) in its words, and the files
  * attached to it; null when it brings none. A commentary's videos are its sources, never footage.
@@ -157,6 +156,7 @@ function footageOf(data: string, script: Script, text: string, files: unknown): 
   return { urls, ...(attached.length > 0 ? { files: attached } : {}) };
 }
 
+/** Refused while Claude works on the script: `what` says what waits. */
 function notWhileWriting(scriptId: string, what = "Claude is still working on this script."): void {
   if (jobs.running(scriptId)) throw bad(what);
 }
@@ -665,10 +665,10 @@ export function routes(router: Router<App>): void {
         const waits = await scripting.needsTeaching(script, note);
         if (waits !== null) throw new Error(waits);
         const review = scripting.scriptFreshEyes(given.review);
-        return startJob(context.app, id(context), { kind: "build", note, ...(given.kind ? { format: given.kind } : {}), review });
         // Footage the note links or the message carries comes in first, and the first draft is written with it (links.ts).
         const adding = footageOf(dataOf(context.app), script, note, given.files);
         if (adding !== null) return startJob(context.app, id(context), { kind: "link", ...adding, build: true, request: note, focus: NO_FOCUS });
+        return startJob(context.app, id(context), { kind: "build", note, ...(given.kind ? { format: given.kind } : {}), review });
       });
     })
     .post("/api/writer/scripts/{id}/revise", async (context) => {
@@ -683,7 +683,6 @@ export function routes(router: Router<App>): void {
         return startJob(context.app, id(context), adding !== null ? { kind: "link", ...adding, request, focus } : { kind: "revise", request, focus });
       });
     })
-    .get("/api/writer/scripts/{id}/research", (context) =>
     // A file attached to a message in the script's chat, streamed here until the message adds it to the footage (links.ts).
     .post(
       "/api/writer/scripts/{id}/upload",
@@ -698,6 +697,7 @@ export function routes(router: Router<App>): void {
         }),
       { bodyLimit: null },
     )
+    .get("/api/writer/scripts/{id}/research", (context) =>
       answer(() => {
         const data = dataOf(context.app);
         checkFor(data, id(context));

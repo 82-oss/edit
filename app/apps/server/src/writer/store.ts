@@ -128,8 +128,8 @@ export function summary(script: Script, dir?: string): Summary {
     ...(script.decision ? { decision: script.decision } : {}),
     ...(script.dismissedAt ? { dismissedAt: script.dismissedAt } : {}),
     ...(script.firstBuild ? { firstBuild: true } : {}),
-    ...(script.status === "error" && script.stuckOn === BUILD ? { retryHelps: false as const } : {}),
     ...(script.builtAt !== undefined ? { builtAt: script.builtAt } : {}),
+    ...(script.status === "error" && script.stuckOn === BUILD ? { retryHelps: false as const } : {}),
     draftWords: script.commentary?.draft ? draftWords(script.commentary.draft) : 0,
     compilation: script.compilation ?? false,
     // Said either way once the folder's read (null: its last run finished), so the cloud's row shows it was looked at.
