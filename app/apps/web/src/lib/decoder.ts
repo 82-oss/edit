@@ -50,8 +50,31 @@ export class Decoder {
   /** Each worker's media reads so far (bytes, time waiting): preview.diagnostics. */
   readonly network: Partial<Record<"video" | "audio", NetworkStats>> = {};
 
+  /**
+   * Looks for a hung worker every few seconds while work waits. checkHung ran
+   * only when the player asked again, so a paused player with a silent worker
+   * stayed black until someone touched it (Sphe, Nov 18: Script mode's preview,
+   * "now it's just stuck"; the log said the decoder hadn't answered for 33 s).
+   */
+  private watchdog: ReturnType<typeof setInterval> | undefined;
+
   /** `key`: the file that failed, when it's one file's. */
   constructor(private changed: () => void, private failed: (error: string, key?: string) => void) {}
+
+  private watch() {
+    this.watchdog ??= setInterval(() => {
+      if (![...this.flights.values()].some((flight) => flight.sent !== undefined)) {
+        clearInterval(this.watchdog);
+        this.watchdog = undefined;
+        return;
+      }
+      const before = [this.video, this.audio];
+      this.checkHung("video");
+      this.checkHung("audio");
+      // A worker replaced: the player asks again, of the fresh one.
+      if (this.video !== before[0] || this.audio !== before[1]) this.changed();
+    }, HUNG_MS / 2);
+  }
 
   private worker(kind: "video" | "audio") {
     let worker = this[kind];
@@ -204,6 +227,7 @@ export class Decoder {
     const id = ++this.serial;
     this.files.add(key);
     this.flights.set(lane, { id, kind: "video", key, values: new Set(), rough: at, sent: performance.now() });
+    this.watch();
     this.stats.videoRequests++;
     this.worker("video")?.postMessage({ type: "video", id, key, url, lane, times: [at], playing: false, rough: true } satisfies DecodeRequest);
   }
@@ -235,6 +259,7 @@ export class Decoder {
     const id = ++this.serial;
     this.files.add(key);
     this.flights.set(lane, { id, kind: "video", key, values: new Set(times.map((t) => frameKey(key, t))), sent: performance.now() });
+    this.watch();
     this.stats.videoRequests++;
     this.worker("video")?.postMessage({ type: "video", id, key, url, lane, times, playing } satisfies DecodeRequest);
   }
@@ -256,6 +281,7 @@ export class Decoder {
     const id = ++this.serial;
     this.files.add(key);
     this.flights.set(lane, { id, kind: "audio", key, values: new Set(chunks.map((chunk) => audioKey(key, chunk, speed))), sent: performance.now() });
+    this.watch();
     this.stats.audioRequests++;
     this.worker("audio")?.postMessage({ type: "audio", id, key, url, lane, chunks, speed } satisfies DecodeRequest);
   }
@@ -284,6 +310,8 @@ export class Decoder {
   }
 
   dispose() {
+    clearInterval(this.watchdog);
+    this.watchdog = undefined;
     this.generation++;
     this.video?.terminate(); this.audio?.terminate();
     this.video = null; this.audio = null;

@@ -434,7 +434,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
       }
       void getResearch(script.id).then(setResearch).catch(() => {});
     };
-    window.setTimeout(poll, 3000);
+    // At once: the live turn (its thinking, its first tools) shows as soon as the job has it.
+    window.setTimeout(poll, 300);
   };
 
   const loadChat = () =>
@@ -478,14 +479,16 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const build = async (request: string) => {
     setError(null);
     setStage("Starting");
-    // Shown the moment it's sent, not once the server answers.
+    // Shown the moment it's sent, not once the server answers: the message, and Claude at work on it.
     setSent(request.trim() ? `Build the script. ${request.trim()}` : "Build the script.");
     setAsking(true);
+    setStarted(Date.now());
     try {
       const job = await startBuild(script.id, request);
       follow(job.startedAt);
       return true;
     } catch (cause) {
+      setStarted(null);
       setSent(null);
       setError(message(cause));
       return false;
@@ -505,6 +508,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     setStage("Editing the script");
     setSent(request);
     setAsking(true);
+    setStarted(Date.now());
     try {
       const job = await startRevision(script.id, request, {
         selected: clips.length > 0 ? clips : selected,
@@ -514,6 +518,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
       follow(job.startedAt);
       return true;
     } catch (cause) {
+      setStarted(null);
       setSent(null);
       setError(message(cause));
       return false;
@@ -603,7 +608,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const ready = script.words.length > 0;
   // The chat as the editor's chat shows it: same turns, same composer,
   // only the script's tools and send behind them.
-  const chatEntries = scriptEntries(chat, working ? liveTurn : null, working || asking ? sent : null);
+  const chatEntries = scriptEntries(chat, working ? liveTurn : null, working || asking ? sent : null, started ?? undefined);
   const chatTurns = buildTurns(chatEntries, working);
   const chatKnown = savedEntryIds(chat);
   const resetTurn = chat.find((turn) => turn.reset === "pending");
@@ -625,12 +630,6 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
         <div className="top-actions">
           <StatusChips />
           <UpdateButton />
-          {working && (
-            <span className="agent-working">
-              <span className="dot live" />
-              {/reused|^Adding the footage/i.test(stage) ? "Importing footage" : "Claude writing"}
-            </span>
-          )}
           <ViewTabs view={view} onChange={(next) => (setExpanded(false), setView(next))} />
           <button type="button" className="icon-tool" aria-label="Undo" title={`Undo (${MOD}Z)`} disabled={!past.current.length || busy} onClick={undo}>
             <Icon name="undo" />

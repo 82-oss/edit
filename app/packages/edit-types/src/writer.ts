@@ -258,8 +258,8 @@ export type BuildStatus = {
   report: string | null;
   costUsd: number | null;
   error: string | null;
-  /** While it runs: what Claude has said so far and the tools it ran, for the chat's live turn. */
-  turn?: { text: string; trace: ToolGroup[] };
+  /** While it runs: what Claude has said so far and the tools it ran, for the chat's live turn; `parts`: its words, reasoning and tools in the order they happened. */
+  turn?: { text: string; trace: ToolGroup[]; parts?: ({ kind: "thinking"; text: string; active: boolean } | { kind: "text"; text: string } | { kind: "tools"; calls: ToolGroup["calls"] })[] };
 };
 
 /** A moment a commentary brief needs, as the clip search planned it. */

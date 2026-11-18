@@ -4,10 +4,10 @@
 // script tool's label is its entry text, named by toolLabel.
 
 import type { AgentEntry } from "../../lib/agent";
-import type { ChatTurn } from "../types";
+import type { BuildStatus, ChatTurn } from "../types";
 import { toolLabel, turnParts } from "./turn";
 
-type LiveTurn = { text: string; trace?: ChatTurn["trace"] };
+type LiveTurn = { text: string; trace?: ChatTurn["trace"]; parts?: NonNullable<BuildStatus["turn"]>["parts"] };
 
 function assistantEntries(prefix: string, text: string, trace: ChatTurn["trace"], at: number, failed?: boolean, workedMs?: number): AgentEntry[] {
   if (failed) return [...assistantEntries(prefix, "", trace, at, false, workedMs), { id: `${prefix}-error`, kind: "error", text, at }];
@@ -39,7 +39,7 @@ function assistantEntries(prefix: string, text: string, trace: ChatTurn["trace"]
  * as `sent`), in the editor chat's shape. Reset asks are left out: the
  * caller shows them in the composer's tray, as the editor does.
  */
-export function scriptEntries(chat: ChatTurn[], live?: LiveTurn | null, sent?: string | null): AgentEntry[] {
+export function scriptEntries(chat: ChatTurn[], live?: LiveTurn | null, sent?: string | null, since = Date.now()): AgentEntry[] {
   const entries: AgentEntry[] = [];
   chat.forEach((turn, index) => {
     if (turn.reset) return;
@@ -49,9 +49,28 @@ export function scriptEntries(chat: ChatTurn[], live?: LiveTurn | null, sent?: s
       entries.push(...assistantEntries(`saved-${index}`, turn.text, turn.trace, turn.at, turn.failed, turn.workedMs));
     }
   });
-  if (sent) entries.push({ id: "live-user", kind: "user", text: sent, at: Date.now() });
-  if (live) entries.push(...assistantEntries("live", live.text, live.trace, Date.now()));
+  // Stamped when it was sent, not on every render, so its time and the thinking words keep counting.
+  if (sent) entries.push({ id: "live-user", kind: "user", text: sent, at: since });
+  if (live?.parts !== undefined) entries.push(...liveParts(live.parts, since));
+  else if (live) entries.push(...assistantEntries("live", live.text, live.trace, since));
   return entries;
+}
+
+/** The live turn's words, reasoning and tools in the order they happened (the server's live.partsOf): its thinking shows as it comes. */
+function liveParts(parts: NonNullable<LiveTurn["parts"]>, at: number): AgentEntry[] {
+  return parts.flatMap((part, index): AgentEntry[] => {
+    if (part.kind === "text") return [{ id: `live-text-${index}`, kind: "assistant", text: part.text, at }];
+    if (part.kind === "thinking") return [{ id: `live-think-${index}`, kind: "thinking", text: part.text, status: part.active ? "running" : "done", at }];
+    return part.calls.map((call) => ({
+      id: `live-tool-${call.id}`,
+      kind: "tool" as const,
+      tool: call.tool,
+      text: call.label || toolLabel(call.tool ?? "", call.state !== "running"),
+      detail: call.detail,
+      status: call.state === "error" ? ("failed" as const) : call.state === "running" ? ("running" as const) : ("done" as const),
+      at,
+    }));
+  });
 }
 
 /** The ids already on disk, so only a live turn animates in. */

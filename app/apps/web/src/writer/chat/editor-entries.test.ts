@@ -36,4 +36,17 @@ describe("scriptEntries", () => {
     expect(entries.map((entry) => entry.kind)).toEqual(["tool", "error"]);
     expect(entries[0]).toMatchObject({ status: "failed" });
   });
+
+  it("shows the live turn's reasoning, words and tools in the order they happened, stamped when it was sent (Sphe, Nov 18: the thinking showed late)", () => {
+    const parts = [
+      { kind: "thinking" as const, text: "The intro should open on the call.", active: false },
+      { kind: "tools" as const, calls: [{ id: "c1", tool: "add_section", label: "Writing the intro", state: "done" as const }] },
+      { kind: "text" as const, text: "Here's the opening." },
+      { kind: "thinking" as const, text: "Now the body", active: true },
+    ];
+    const entries = scriptEntries([], { text: "Here's the opening.", trace: [], parts }, "Build the script.", 1_000);
+    expect(entries.map((entry) => entry.kind)).toEqual(["user", "thinking", "tool", "assistant", "thinking"]);
+    expect(entries.every((entry) => entry.at === 1_000)).toBe(true);
+    expect(entries.at(-1)).toMatchObject({ kind: "thinking", status: "running" });
+  });
 });

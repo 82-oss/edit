@@ -187,8 +187,9 @@ function interrupted(job: BuildStatus): BuildStatus {
 
 /** The latest job of a script, running or finished: this run's, else the one kept on disk. */
 export function status(data: string, id: string): BuildStatus | null {
-  const live = jobs.get(id);
-  if (live !== undefined) return live;
+  const running = jobs.get(id);
+  // Its words, reasoning and tools in the order they happened, for the chat's live turn (its thinking showed nowhere before).
+  if (running !== undefined) return running.turn !== undefined ? { ...running, turn: { ...running.turn, parts: live.partsOf(running.turn as live.Turn) } } : running;
   const path = file(data, id);
   if (path === null) return null;
   try {

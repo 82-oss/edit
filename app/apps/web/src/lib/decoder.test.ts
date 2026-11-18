@@ -47,6 +47,21 @@ describe("worker decoder client", () => {
     expect(WorkerStub.workers[1]!.job.type).toBe("video");
   });
 
+  it("a silent worker is replaced on its own while the player is paused, and the player is told to ask again (Sphe, Nov 18: a script's preview stayed black)", () => {
+    vi.useFakeTimers({ toFake: ["performance", "setInterval", "clearInterval"] });
+    try {
+      decoder.requestVideo("file", "/file", "v:c1", videoTime(2, 30, 10), 30, 10);
+      const first = WorkerStub.workers[0]!;
+      changed.mockClear();
+      // Nobody asks again: the watchdog finds it hung and has the player ask the fresh worker.
+      vi.advanceTimersByTime(15_000);
+      expect(first.terminate).toHaveBeenCalled();
+      expect(changed).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a worker that goes silent with a request waiting is replaced, and the ask goes to a fresh one", () => {
     vi.useFakeTimers({ toFake: ["performance"] });
     try {
