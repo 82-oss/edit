@@ -271,7 +271,7 @@ function creatorOf(value: unknown): Creator | null {
 /** Writer's scripts in the cloud, newest first (deleted ones left out), each with the Edit project made from it here. */
 export async function list(
   app: App,
-): Promise<{ id: string; title: string; rev: number; updatedAt: number; updatedBy: string | null; createdBy: Creator | null; project: string | null; handoff: { at: number; by: string | null; changed: boolean } | null; clips: number; durationMs: number; built: boolean; style: Style | null; compilation: boolean; runFailed: { at: number; error: string } | null; note?: string; test?: boolean; shown?: boolean; channel?: string }[]> {
+): Promise<{ id: string; title: string; rev: number; updatedAt: number; updatedBy: string | null; createdBy: Creator | null; project: string | null; handoff: { at: number; by: string | null; changed: boolean } | null; clips: number; durationMs: number; built: boolean; builtAt?: number; style: Style | null; compilation: boolean; runFailed: { at: number; error: string } | null; note?: string; test?: boolean; shown?: boolean; channel?: string }[]> {
   const made = imports(app.store.home);
   if (!cloud.enabled()) throw new Error("Writer's scripts need Edit's cloud (the relay token)");
   const rows = (await cloud.query("writer:listScripts", {})) as Record<string, unknown>[];
@@ -305,7 +305,7 @@ export async function list(
       createdBy: creatorOf(row.createdBy),
       // From Writer's library row: a built script has its footage cut into clips (a source being researched is one whole clip, or none).
       ...(() => {
-        const summary = (row.summary ?? {}) as { clipCount?: unknown; durationMs?: unknown; status?: unknown; kind?: unknown; sourceKind?: unknown; compilation?: unknown; runFailed?: unknown; note?: unknown; test?: unknown; shown?: unknown; channel?: unknown };
+        const summary = (row.summary ?? {}) as { clipCount?: unknown; durationMs?: unknown; status?: unknown; kind?: unknown; sourceKind?: unknown; compilation?: unknown; runFailed?: unknown; note?: unknown; test?: unknown; shown?: unknown; channel?: unknown; builtAt?: unknown };
         const clips = typeof summary.clipCount === "number" ? summary.clipCount : 0;
         // Its kind of video, once Writer's row says it (as its script's `kind`): this Mac's, when its copy is newer.
         // A category changed here showed the old one until the push landed, ~8 s later (JJ, Nov 6: "it doesn't change when I click it").
@@ -321,7 +321,8 @@ export async function list(
         const test = mine?.test ?? summary.test === true;
         const shown = test && (mine?.shown ?? summary.shown === true);
         const channel = mine?.channel ?? (typeof summary.channel === "string" && summary.channel !== "" ? summary.channel : undefined);
-        return { clips, durationMs: typeof summary.durationMs === "number" ? summary.durationMs : 0, built: clips > 1 || (style === "commentary" && summary.status === "ready"), style, compilation: summary.compilation === true, runFailed, ...(note !== "" ? { note } : {}), ...(test ? { test: true, ...(shown ? { shown: true } : {}) } : {}), ...(channel ? { channel } : {}) };
+        // When its first build was saved (Home's New), on whichever Mac wrote it.
+        return { clips, durationMs: typeof summary.durationMs === "number" ? summary.durationMs : 0, built: clips > 1 || (style === "commentary" && summary.status === "ready"), ...(typeof summary.builtAt === "number" ? { builtAt: summary.builtAt } : {}), style, compilation: summary.compilation === true, runFailed, ...(note !== "" ? { note } : {}), ...(test ? { test: true, ...(shown ? { shown: true } : {}) } : {}), ...(channel ? { channel } : {}) };
       })(),
       // Sent to Edit from Writer ("Send to Edit"), and whether it changed since.
       handoff: (() => {

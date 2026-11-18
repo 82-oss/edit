@@ -230,6 +230,8 @@ export type IdeaSummary = {
   source?: string;
   /** Its channel's key. */
   channel?: string;
+  /** When its last repackaging finished, while that's its last run (Home's New). */
+  repackagedAt?: number;
 };
 
 /** An idea as Home lists it. */

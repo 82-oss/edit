@@ -1770,6 +1770,8 @@ export async function list(app: App): Promise<Record<string, unknown>> {
 
 /**
  * The cloud's projects, each one's id, name and rev, of every kind (unlike
+      // Its last commit was this computer's (Home's Changed counts this computer's work by its own file's writes).
+      updated_here: field(item, "updatedBy") === holder,
  * `list`, which is Home's): null with the cloud off; thrown when it can't be
  * read. What old_copies.ts looks an old copy's original up in.
  */

@@ -40,19 +40,6 @@ export function ago(ms: number) {
   return new Date(ms).toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
-/** When something set aside comes back, in a few words: "today", "tomorrow", "Thu", "Nov 12". */
-export function whenBack(until: number, now = Date.now()): string {
-  const day = (at: number) => {
-    const date = new Date(at);
-    return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
-  };
-  const days = Math.round((day(until) - day(now)) / 86_400_000);
-  if (days <= 0) return "today";
-  if (days === 1) return "tomorrow";
-  if (days < 7) return new Date(until).toLocaleDateString("en-US", { weekday: "short" });
-  return new Date(until).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-}
-
 /** A file's size as people say it: "1.2 GB", "340 MB", "12 KB". */
 export function formatBytes(bytes: number) {
   if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;

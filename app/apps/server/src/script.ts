@@ -1455,6 +1455,7 @@ function shownJob(job: ScriptJob): ScriptJob {
   if (job.error !== undefined) out.error = job.error;
   if (job.retry_at !== undefined) out.retry_at = job.retry_at;
   if (job.after !== undefined && job.after.length > 0) out.after = job.after.map((one) => ({ ...one }));
+  if (job.done_at !== undefined) out.done_at = job.done_at;
   return out;
 }
 
@@ -1555,6 +1556,9 @@ export class Jobs {
       this.jobs.set(project, job);
     }
     edit(job);
+    // When it got there, once (Home's New); a sweep's footage coming back isn't the work done again.
+    if (job.state === "done" && job.done_at === undefined && job.back !== true) job.done_at = Date.now();
+    else if (job.state !== "done" && job.back !== true) delete job.done_at;
     app.store.emit({ type: "script", id: project, job: shownJob(job) });
     this.keep(project);
   }

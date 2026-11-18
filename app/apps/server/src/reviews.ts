@@ -22,6 +22,7 @@ import type { FootageComing } from "@edit/types/footage_ready";
 import { Deferred, Effect, Exit } from "effect";
 
 import type { App } from "./app.ts";
+import * as exportsView from "./exports_view.ts";
 import * as archive from "./archive.ts";
 import * as channels from "./channels.ts";
 import * as cloud from "./cloud.ts";
@@ -2687,6 +2688,10 @@ type Status = {
 function importing(job: ScriptJob | null): Status["importing"] {
   if (job === null || job.state === "done") return null;
   const sized = job.files.filter((file) => (file.total ?? 0) > 0);
+  /** When its import got to done here (null: none known here), for Home's New. */
+  imported_ms: number | null;
+  /** A whole export of it finished here since this computer's Exports view was last opened (exports_view.ts). */
+  exported_new: boolean;
   const total = sized.reduce((sum, file) => sum + file.total!, 0);
   const share = total > 0 ? sized.reduce((sum, file) => sum + (file.state === "done" ? file.total! : Math.min(file.bytes, file.total!)), 0) / total : null;
   return { state: job.state, ready: job.files.filter((file) => file.state === "done").length, files: job.files.length, share, error: job.error ?? null };
@@ -2703,6 +2708,7 @@ export async function projectStatus(app: App): Promise<Record<string, Status>> {
     const live = app.store.get(summary.id);
     if (live === null) continue;
     const listed = listExports(home, summary.id).filter((one) => one.whole && !one.missing);
+  const exportedNew = exportsView.exportedSince(app);
     const newest = listed[0]?.finished_ms ?? 0;
     let cached = statusCache.get(summary.id);
     if (cached === undefined || cached.rev !== live.rev || cached.exportsAt !== newest) {
@@ -2720,6 +2726,8 @@ export async function projectStatus(app: App): Promise<Record<string, Status>> {
 }
 
 /** A project's turn as the agent panel keeps it: cheaply where it can (`turn`), else from its chat. */
+      imported_ms: app.scripts.get(summary.id)?.done_at ?? null,
+      exported_new: exportedNew.has(summary.id),
 function turnOf(app: App, project: string): { running?: boolean; entries?: readonly { kind?: string; tool?: string; text?: string }[] } {
   const panel = seams.agentPanel(app);
   return panel.turn !== undefined ? panel.turn(project) : (panel.chat(project) as { running?: boolean; entries?: { kind?: string; tool?: string; text?: string }[] });

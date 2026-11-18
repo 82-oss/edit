@@ -62,6 +62,8 @@ import * as ideas from "./ideas/routes.ts";
 import * as thumbnails from "./thumbnails/routes.ts";
 import * as later from "./later.ts";
 import * as editNotes from "./edit_notes.ts";
+import * as seen from "./seen.ts";
+import * as exportsView from "./exports_view.ts";
 import * as localFiles from "./local_files.ts";
 import * as lessonInbox from "./lesson_inbox.ts";
 import * as memory from "./memory.ts";
@@ -127,6 +129,8 @@ export function buildRouter(): Router<App> {
   thumbnails.routes(router);
   later.routes(router);
   lessonInbox.routes(router);
+  seen.routes(router);
+  exportsView.routes(router);
   presence.routes(router);
   memory.routes(router);
   devProjects.routes(router);

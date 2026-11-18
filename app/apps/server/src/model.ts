@@ -137,6 +137,8 @@ export interface ScriptJob {
   /** What follows the layout, each its own line: the voice-over, the team's recording placed, the research, the words. Never fails the import. */
   after?: ImportAfter[];  /** Footage the footage sweep cleared, being brought back (archive.ts): shown over the picture as an import is. */
   back?: boolean;
+  /** When it got to `done` (ms): Home's New is work done since its person last opened it. */
+  done_at?: number;
 }
 
 export type ImportWhy = "passing" | "person" | "quota" | "encoder" | "limit";

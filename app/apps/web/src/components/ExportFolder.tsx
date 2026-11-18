@@ -16,8 +16,8 @@ const LATER = "edit.exportFolder.later";
 
 interface Prompt {
   open: boolean;
-  /** Ask: an export, and no folder is saved yet. Settings: they came to change it. */
-  from: "ask" | "settings" | null;
+  /** Ask: an export, and no folder is saved yet. Settings or Home's Exports: they came to change it. */
+  from: "ask" | "settings" | "home" | null;
   folder: FolderChoice | null;
 }
 
@@ -87,7 +87,7 @@ export async function askExportFolder(): Promise<void> {
   });
 }
 
-export function openExportFolder(from: "ask" | "settings"): void {
+export function openExportFolder(from: "ask" | "settings" | "home"): void {
   if (from === "settings") closeDialog();
   useExportFolder.setState({ open: true, from });
 }

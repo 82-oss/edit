@@ -20,10 +20,11 @@ const CHANNEL = 160;
 
 /**
  * The most the table can show at `width` (px) and still leave a name its room:
- * name, channel, status, by, length, updated (the row's buttons sit over its
- * right end on hover, no column of their own). Channel and Status are as wide
- * as what's in them, up to their room (fit-content), so what they don't use
- * goes to the name and the rest sits to the right (Sphe, Nov 14).
+ * name, then status, channel, by, length and updated together on the right
+ * (Sphe, Nov 18: status pushed right beside the channel), the row's buttons
+ * over its right end on hover, no column of their own. Status and Channel are
+ * as wide as what's in them, up to their room (fit-content), so what they
+ * don't use goes to the name (Sphe, Nov 14).
  */
 export function layoutFor(width: number, solo: boolean): Layout {
   const steps = [
@@ -37,8 +38,8 @@ export function layoutFor(width: number, solo: boolean): Layout {
   ];
   // Each column's room, and whether it's as wide as what it holds (up to that) or fixed.
   const tracksOf = (step: (typeof steps)[number]) => [
-    ...(step.slim ? [] : [{ px: CHANNEL, fit: true }]),
     { px: step.status, fit: true },
+    ...(step.slim ? [] : [{ px: CHANNEL, fit: true }]),
     ...(solo ? [] : [{ px: step.faces ? 36 : 120, fit: false }]),
     ...(step.compact ? [] : [{ px: 64, fit: false }]),
     { px: 76, fit: false },

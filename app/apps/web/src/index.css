@@ -54,6 +54,11 @@
   --color-warning-soft: #f5a05a1a;
   --color-info: #b4bcf0;
   --color-info-soft: #b4bcf01c;
+  /* Home's New (done since you last opened it) and Changed (changed since, by someone else). */
+  --color-fresh: #6ea8ff;
+  --color-fresh-soft: #6ea8ff1f;
+  --color-changed: #f2c94c;
+  --color-changed-soft: #f2c94c1a;
   --color-menu-hover: #1f1f1f;
 
   --color-avatar-1: #8fbaf0;

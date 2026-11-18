@@ -10,11 +10,12 @@ import { ArrowUpRight, CircleAlert, ExternalLink, Eye, Lightbulb, MessageSquare,
 import { useCallback, useEffect, useState } from "react";
 
 import { Button, cx, Pulse, Switch, Tabs } from "../components/ui";
-import { AsideStatus, BackMark, Category, CHIP, COLUMNS, contextMenu, CreatorCell, KindMark, LengthCell, NAME, ROW, RowButtons, StatusCell, Updated, useAside, withAside } from "../components/HomeTable";
+import { Category, CHIP, COLUMNS, contextMenu, CreatorCell, DoneStatus, FreshMark, KindMark, LengthCell, NAME, ROW, RowButtons, StatusCell, Updated, useDoneRow, withDone } from "../components/HomeTable";
 import { WORKSPACE_NAMES, type Workspace } from "@edit/types/ideas";
 import { ideasApi, NICHE, viewsLabel, type ChangeCard, type IdeaRow, type IdeasHome } from "../lib/ideas";
 import { useKept } from "../lib/kept";
-import { laterKey } from "../lib/later";
+import { doneKey } from "../lib/done";
+import type { Fresh } from "../lib/seen-status";
 import { navigate } from "../lib/route";
 import { useEditor } from "../lib/store";
 
@@ -93,26 +94,31 @@ function Status({ row }: { row: IdeaRow }) {
   return <span className={cx(CHIP, summary.status === "ready" ? "text-success" : "text-muted")}>{summary.status === "ready" ? "Ready" : "Draft"}</span>;
 }
 
-/** An idea in Home's table: its main title, niche, where it stands, who started it, the video's views. */
-export function IdeaTableRow({ row }: { row: IdeaRow }) {
+/** An idea in Home's table: its main title, where it stands (New or Changed for you first), its kind, who started it, the video's views. */
+export function IdeaTableRow({ row, fresh = null }: { row: IdeaRow; fresh?: Fresh }) {
   const { summary } = row;
-  const aside = useAside(laterKey("idea", row.id), summary.title);
-  const open = () => {
-    aside.seen();
-    navigate(`/ideas/${row.id}`);
-  };
-  const items = withAside([{ label: "Open", icon: <ArrowUpRight size={14} />, onSelect: open }], aside.items);
+  const marked = useDoneRow(doneKey("idea", row.id), summary.title);
+  const open = () => navigate(`/ideas/${row.id}`);
+  const items = withDone([{ label: "Open", icon: <ArrowUpRight size={14} />, onSelect: open }], marked.items);
   const details = [summary.source, summary.outlier && summary.outlier !== "unknown" ? `${summary.outlier} outlier` : "", summary.sources > 1 ? `${summary.sources} sources` : ""].filter(Boolean).join(" · ");
   return (
     <div role="row" onClick={open} onContextMenu={contextMenu(items)} className={cx(COLUMNS, ROW)}>
       <div role="cell" className="flex min-w-0 items-center gap-2.5" title={details || undefined}>
         <KindMark kind="idea" />
-        {aside.woke && <BackMark entry={aside.woke} />}
         <span className={NAME}>{summary.title}</span>
       </div>
+      <StatusCell>
+        {marked.entry ? (
+          <DoneStatus entry={marked.entry} />
+        ) : (
+          <>
+            <FreshMark fresh={fresh} />
+            <Status row={row} />
+          </>
+        )}
+      </StatusCell>
       {/* Its kind (Interrogation or Bodycam); a niche an older run gave beside it. */}
       <Category channel={summary.channel} text={[WORKSPACE_NAMES[row.workspace ?? "interrogation"], summary.niche ? NICHE[summary.niche].label : ""].filter(Boolean).join(" · ")} />
-      <StatusCell>{aside.entry ? <AsideStatus entry={aside.entry} /> : <Status row={row} />}</StatusCell>
       <CreatorCell by={row.createdBy === null ? null : { sub: row.createdBy.sub, name: row.createdBy.name, ...(row.createdBy.picture !== null ? { picture: row.createdBy.picture } : {}) }} />
       <LengthCell title={summary.views !== null ? `${summary.views.toLocaleString()} views` : undefined}>
         {summary.views !== null && (
@@ -123,7 +129,7 @@ export function IdeaTableRow({ row }: { row: IdeaRow }) {
         )}
       </LengthCell>
       <Updated at={row.updatedAt} title={row.updatedBy ? `by ${row.updatedBy}` : undefined} />
-      <RowButtons aside={aside.button} items={items} />
+      <RowButtons extra={marked.button} items={items} />
     </div>
   );
 }
@@ -132,9 +138,8 @@ export function IdeaTableRow({ row }: { row: IdeaRow }) {
 export function CardTableRow({ card, onOpened }: { card: ChangeCard; onOpened?: () => void }) {
   const [opening, setOpening] = useState(false);
   const last = card.comments.at(-1);
-  const aside = useAside(laterKey("card", card.id), card.name);
+  const marked = useDoneRow(doneKey("card", card.id), card.name);
   const open = () => {
-    aside.seen();
     setOpening(true);
     ideasApi
       .fromCard(card.id, card.workspace)
@@ -145,34 +150,33 @@ export function CardTableRow({ card, onOpened }: { card: ChangeCard; onOpened?: 
       .catch((failure: unknown) => useEditor.getState().toastError(failure, "open that card"))
       .finally(() => setOpening(false));
   };
-  const items = withAside(
+  const items = withDone(
     [
       { label: "Open as an idea", icon: <ArrowUpRight size={14} />, onSelect: open },
       { label: "Open on Trello", icon: <ExternalLink size={14} />, onSelect: () => window.open(card.url, "_blank", "noopener") },
     ],
-    aside.items,
+    marked.items,
   );
   return (
     <div role="row" onClick={open} onContextMenu={contextMenu(items)} className={cx(COLUMNS, ROW)}>
       <div role="cell" className="flex min-w-0 items-center gap-2.5" title={last ? `${last.author}: ${last.text}` : card.list}>
         <KindMark kind="idea" />
-        {aside.woke && <BackMark entry={aside.woke} />}
         <span className={NAME}>{card.name}</span>
       </div>
-      <Category text={card.list} />
       <StatusCell>
-        {aside.entry ? (
-          <AsideStatus entry={aside.entry} />
+        {marked.entry ? (
+          <DoneStatus entry={marked.entry} />
         ) : (
           <span className={cx(CHIP, "text-warning")} title={last ? `${last.author}: ${last.text}` : card.list}>
             {opening ? <Pulse size={12} /> : <MessageSquare size={12} />} Changes requested
           </span>
         )}
       </StatusCell>
+      <Category text={card.list} />
       <CreatorCell by={null} />
       <LengthCell />
       <span role="cell" />
-      <RowButtons aside={aside.button} items={items} />
+      <RowButtons extra={marked.button} items={items} />
     </div>
   );
 }

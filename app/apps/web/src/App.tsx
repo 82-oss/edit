@@ -15,6 +15,7 @@ import { RemoteHelp } from "./components/RemoteHelp";
 import { useConnection } from "./lib/api";
 import { watchPresence } from "./lib/presence";
 import { watchNotices } from "./lib/notices";
+import { watchSeen } from "./lib/seen";
 import { connectEvents } from "./lib/store";
 import { useAccount, writesScripts } from "./lib/account";
 import { makesIdeas } from "./lib/ideas";
@@ -25,6 +26,8 @@ export function App() {
   const account = useAccount((state) => state.account);
   // How long the window has been idle, for diagnostics (lib/presence.ts).
   useEffect(() => watchPresence(), []);
+  // What this person opens, and when, for Home's New and Changed (lib/seen.ts).
+  useEffect(() => watchSeen(), []);
   // Told when work left running is done, on every screen (lib/notices.ts).
   useEffect(() => {
     connectEvents();

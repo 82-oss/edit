@@ -185,6 +185,7 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   if (muted > 0) report = `${report}\n\nMute notes for the editor on ${muted} footage clip${muted === 1 ? "" : "s"} (sex and rape-type words).`;
   save(dir, before, now);
   chat.add(dir, "editor", report, built.costUsd);
+  now.builtAt ??= Date.now();
   return [report, built.costUsd];
 }
 
@@ -290,6 +291,7 @@ async function buildCommentary(data: string, dir: string, script: Script, note: 
  * A script built before its rough footage was heard exactly (or whose
  * hearing waited for the plan's credit), heard and cut again: the same words
  * and narration, read back from its clips, with the producer's clip notes
+  now.builtAt ??= Date.now();
  * kept. POST /api/scripts/{id}/exact; also tried by itself every 30 minutes
  * while the credit is out (exact_after.ts `afterCredit`).
  */

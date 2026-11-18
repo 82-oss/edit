@@ -4,16 +4,16 @@
 // Edit's own kit, as the rest of the app (then: "make the theming and colors
 // of home and font sizes match the rest of the app"): the kit's list rows (56
 // px, a hairline between them), 14 px names and 13 px details, its filled
-// status pills, the row's buttons on hover, a right click for its menu. And
-// Later: a clock on every row sets it aside (Tomorrow, Monday, a week, until
-// it's brought back), the Later list's rows bring it back sooner, and on its
-// day a row is marked Back until someone opens it.
+// status pills, the row's buttons on hover, a right click for its menu. Its
+// status says only what needs you (Sphe, Nov 18): what's going on, review
+// comments, and New or Changed since you last opened it (lib/seen-status.ts).
 
-import { AlarmClock, Captions, Check, CircleCheck, Clock, Ellipsis, FileText, Film, Lightbulb, StickyNote, Undo2 } from "lucide-react";
+import { Captions, CircleCheck, Check, Ellipsis, FileText, Film, Lightbulb, Pencil, StickyNote, Undo2 } from "lucide-react";
 import { createContext, useContext, useState, type ReactNode } from "react";
 
-import { asideChoices, asleep, backLabel, type Later, type LaterEntry, type LaterKey } from "../lib/later";
+import type { Done, DoneEntry, DoneKey } from "../lib/done";
 export { layoutFor } from "../lib/home-layout";
+import type { Fresh } from "../lib/seen-status";
 import { ago } from "../lib/time";
 import { useBeta } from "../lib/beta";
 import { useChannels } from "../lib/channels";
@@ -44,8 +44,8 @@ export const CHIP = `${CHIP_SHAPE} bg-active`;
 /** How the table is laid out now: `cross` (rows of every kind: each says what it is). */
 export const TableShape = createContext<{ cross: boolean }>({ cross: false });
 
-/** Later, as Home has it, for every row. */
-export const LaterContext = createContext<Later | null>(null);
+/** Done, as Home has it, for every row. */
+export const DoneContext = createContext<Done | null>(null);
 
 /**
  * Columns the table can do without, hidden (out of the grid) by the table's
@@ -62,10 +62,10 @@ export const LENGTH = "group-data-[compact]/table:hidden";
 export const CATEGORY = "group-data-[slim]/table:hidden";
 const BY_NAME = "group-data-[faces]/table:hidden";
 
-/** A row's status: its pills, onto a second line rather than into the next column. */
+/** A row's status: its pills against the right, beside the channel, onto a second line rather than into the next column. */
 export function StatusCell({ children }: { children: ReactNode }) {
   return (
-    <div role="cell" className="flex min-w-0 flex-wrap items-center gap-1.5 py-0.5">
+    <div role="cell" className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 py-0.5">
       {children}
     </div>
   );
@@ -80,7 +80,7 @@ export function LengthCell({ children, title }: { children?: ReactNode; title?: 
   );
 }
 
-/** What a row is, before its name where the list mixes kinds (Needs you, Later, Done, a search). */
+/** What a row is, before its name where the list mixes kinds (Done, a search). */
 export function KindMark({ kind }: { kind: "edit" | "subtitles" | "script" | "idea" }) {
   const { cross } = useContext(TableShape);
   if (!cross) return null;
@@ -143,102 +143,73 @@ export function Updated({ at, title }: { at: number; title?: string }) {
   );
 }
 
-/** In Later: when it comes back, and who set it aside when; in Done, who marked it done. */
-export function AsideStatus({ entry }: { entry: LaterEntry }) {
+/** In Done: who marked it done, and when. */
+export function DoneStatus({ entry }: { entry: DoneEntry }) {
   const who = entry.by?.name.split(/\s+/u)[0] ?? "Someone";
-  if (entry.done === true)
-    return (
-      <span className={cx(CHIP_SHAPE, "bg-success-soft text-success")} title={`${who} marked it done ${ago(entry.at)}`}>
-        <Check size={12} />
-        Done
-      </span>
-    );
   return (
-    <span className={cx(CHIP, "text-secondary")} title={`Set aside by ${who} ${ago(entry.at)}${entry.until === null ? ", until someone brings it back" : `, until ${backLabel(entry.until)}`}`}>
-      <Clock size={12} />
-      {entry.until === null ? "No date" : `Back ${backLabel(entry.until)}`}
-    </span>
-  );
-}
-
-/** Back from Later: before its name, until someone opens it (the user, Oct 31: "comes back clearly formatted showing like this was awoken"). */
-export function BackMark({ entry }: { entry: LaterEntry }) {
-  const who = entry.by?.name.split(/\s+/u)[0] ?? "Someone";
-  const day = (ms: number) => new Date(ms).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
-  const midnight = new Date().setHours(0, 0, 0, 0);
-  const since = entry.until! >= midnight ? "today" : entry.until! >= midnight - 86_400_000 ? "yesterday" : `since ${new Date(entry.until!).toLocaleDateString(undefined, { weekday: "short" })}`;
-  return (
-    <span className={cx(CHIP_SHAPE, "bg-info-soft text-info")} title={`${who} set it aside on ${day(entry.at)}; it's been back since ${day(entry.until!)}. Opening it clears this.`}>
-      <AlarmClock size={12} />
-      Back {since}
+    <span className={cx(CHIP_SHAPE, "bg-success-soft text-success")} title={`${who} marked it done ${ago(entry.at)}`}>
+      <Check size={12} />
+      Done
     </span>
   );
 }
 
 /**
- * A row's Later: whether it's set aside (`entry`) or back and not opened yet
- * (`woke`), its menu items, its hover button, and `seen` for its click (once
- * back, opening it clears the Back mark).
+ * New (done since you last opened it: a soft blue pill with a dot) or Changed
+ * (changed since, by someone or something else: yellow, a pencil); opening it
+ * clears either, for you alone (Sphe, Nov 18).
  */
-export function useAside(key: LaterKey | null, title: string) {
-  const later = useContext(LaterContext);
-  const found = key !== null && later !== null ? (later.entries.get(key) ?? null) : null;
-  const done = found?.done === true;
-  // Set aside, or marked done: its status says so.
-  const entry = found !== null && (done || asleep(found)) ? found : null;
-  const woke = found !== null && entry === null ? found : null;
-  const usable = key !== null && later !== null && later.on;
-  const choices = (): MenuItem[] => asideChoices().map((choice) => ({ label: choice.label, ...(choice.day ? { detail: choice.day } : {}), onSelect: () => later!.set(key!, choice.until, title) }));
-  // Done by hand (the user, Oct 31: "how do i move content to done"): its menu marks it, Done's moves it back.
-  const markDone: MenuItem[] = [{ label: "Mark as done", icon: <CircleCheck size={14} />, onSelect: () => later!.done(key!, title) }];
-  const items: MenuItem[] = !usable
-    ? []
-    : done
-      ? [{ label: "Move back", icon: <Undo2 size={14} />, onSelect: () => later.moveBack(key, title) }]
-      : entry !== null
-        ? [{ label: "Bring back now", icon: <Undo2 size={14} />, onSelect: () => later.back(key, title) }, ...markDone]
-        : [
-            { label: woke !== null ? "Set aside again" : "Set aside", icon: <Clock size={14} />, submenu: choices() },
-            ...(woke !== null ? [{ label: "Clear the Back mark", icon: <Check size={14} />, onSelect: () => later.seen(key) }] : []),
-            ...markDone,
-          ];
-  const button = !usable ? null : entry !== null ? (
-    <button
-      title={done ? "Move back" : "Bring back now"}
-      aria-label={done ? `Move “${title}” back` : `Bring “${title}” back now`}
-      onClick={(event) => {
-        event.stopPropagation();
-        if (done) later.moveBack(key, title);
-        else later.back(key, title);
-      }}
-      className={cx("flex size-7 shrink-0 items-center justify-center rounded-md text-muted transition-[opacity,color] hover:bg-active hover:text-fg", HOVER_BUTTON)}
-    >
-      <Undo2 size={14} />
-    </button>
+export function FreshMark({ fresh }: { fresh: Fresh }) {
+  if (fresh === null) return null;
+  return fresh === "new" ? (
+    <span className={cx(CHIP_SHAPE, "bg-fresh-soft text-fresh")} title="Done since you last opened it">
+      <span className="size-1.5 shrink-0 rounded-full bg-fresh" />
+      New
+    </span>
   ) : (
-    <button
-      title="Set aside"
-      aria-label={`Set “${title}” aside`}
-      onClick={(event) => {
-        event.stopPropagation();
-        toggleMenu(event.currentTarget, [{ heading: "Set aside until" }, ...choices()], { width: 230 });
-      }}
-      className={cx("flex size-7 shrink-0 items-center justify-center rounded-md text-muted transition-[opacity,color] hover:bg-active hover:text-fg", HOVER_BUTTON)}
-    >
-      <Clock size={14} />
-    </button>
+    <span className={cx(CHIP_SHAPE, "bg-changed-soft text-changed")} title="Changed since you last opened it">
+      <Pencil size={12} className="shrink-0" />
+      Changed
+    </span>
   );
-  const seen = () => {
-    if (woke !== null && later !== null) later.seen(key!);
-  };
-  return { entry, woke, items, button, seen };
 }
 
-/** A row's own menu items with Later's before its last part (Delete, after its separator). */
-export function withAside(own: MenuItem[], aside: MenuItem[]): MenuItem[] {
-  if (aside.length === 0) return own;
+/**
+ * A row's Done: whether it's marked done (`entry`), its menu item (Mark as
+ * done, or Move back), and in Done its hover button to move it back.
+ */
+export function useDoneRow(key: DoneKey | null, title: string) {
+  const done = useContext(DoneContext);
+  const entry = key !== null && done !== null ? (done.entries.get(key) ?? null) : null;
+  const usable = key !== null && done !== null && done.on;
+  // Done by hand (the user, Oct 31: "how do i move content to done"): its menu marks it, Done's moves it back.
+  const items: MenuItem[] = !usable
+    ? []
+    : entry !== null
+      ? [{ label: "Move back", icon: <Undo2 size={14} />, onSelect: () => done.moveBack(key, title) }]
+      : [{ label: "Mark as done", icon: <CircleCheck size={14} />, onSelect: () => done.mark(key, title) }];
+  const button =
+    !usable || entry === null ? null : (
+      <button
+        title="Move back"
+        aria-label={`Move “${title}” back`}
+        onClick={(event) => {
+          event.stopPropagation();
+          done.moveBack(key, title);
+        }}
+        className={cx("flex size-7 shrink-0 items-center justify-center rounded-md text-muted transition-[opacity,color] hover:bg-active hover:text-fg", HOVER_BUTTON)}
+      >
+        <Undo2 size={14} />
+      </button>
+    );
+  return { entry, items, button };
+}
+
+/** A row's own menu items with Done's before its last part (Delete, after its separator). */
+export function withDone(own: MenuItem[], done: MenuItem[]): MenuItem[] {
+  if (done.length === 0) return own;
   const cut = own.findLastIndex((item) => "separator" in item);
-  return cut < 0 ? [...own, { separator: true }, ...aside] : [...own.slice(0, cut), { separator: true }, ...aside, ...own.slice(cut)];
+  return cut < 0 ? [...own, { separator: true }, ...done] : [...own.slice(0, cut), { separator: true }, ...done, ...own.slice(cut)];
 }
 
 /** The row's menu where it was right-clicked. */
@@ -250,17 +221,16 @@ export function contextMenu(items: MenuItem[], width = 200) {
   };
 }
 
-/** A row's buttons, shown on hover: Later's clock (or Bring back), then its ⋯. */
 /**
- * A row's buttons (Later, ⋯), shown on hover only: over the row's right end
- * rather than a column of their own, which stood empty the rest of the time
- * (Sphe, Nov 14: "we have so much space that we're not using"); the row's
- * hover grey behind them, so Updated goes under them.
+ * A row's buttons (Done's Move back in Done, ⋯), shown on hover only: over
+ * the row's right end rather than a column of their own, which stood empty the
+ * rest of the time (Sphe, Nov 14: "we have so much space that we're not
+ * using"); the row's hover grey behind them, so Updated goes under them.
  */
-export function RowButtons({ aside, items, width = 200 }: { aside: ReactNode; items: MenuItem[]; width?: number }) {
+export function RowButtons({ extra, items, width = 200 }: { extra?: ReactNode; items: MenuItem[]; width?: number }) {
   return (
     <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center justify-end gap-0.5 bg-gradient-to-l from-hover from-75% to-transparent pr-3 pl-12 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 [@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100 group-data-[menu-open]:pointer-events-auto group-data-[menu-open]:opacity-100 group-has-[[data-menu-open]]:pointer-events-auto group-has-[[data-menu-open]]:opacity-100">
-      {aside}
+      {extra}
       <button
         title="More"
         onClick={(event) => {

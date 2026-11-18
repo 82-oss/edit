@@ -9,7 +9,9 @@ import { hasImportLinks, importPaste } from "../lib/import-input";
 import { loadBeta, useBeta } from "../lib/beta";
 import { cloudApi, type CloudList, type CloudProject, type CloudStatus } from "../lib/cloud";
 import { copyDriveLink, openDrive, useDriveLink } from "../lib/drive";
-import { asleep, laterKey, useLater, type LaterKey } from "../lib/later";
+import { doneKey, useDone, type DoneKey } from "../lib/done";
+import { loadSeen, markSeen, useSeen } from "../lib/seen";
+import { editWork, ideaWork, newOrChanged, scriptWork, type Fresh } from "../lib/seen-status";
 import { navigate } from "../lib/route";
 import { clientId, connectEvents, useEditor } from "../lib/store";
 import { ago, shortDuration } from "../lib/time";
@@ -30,7 +32,8 @@ import { ChannelsActions, ChannelsTitle, ChannelsView, useChannelsNav, type Chan
 import { AREA, Aside, ChannelField, FIELD, Field, More, NewShell, useChannelNeeded } from "./NewWork";
 import { loadChannels, useChannels } from "../lib/channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
-import { AsideStatus, BackMark, BY, Category, CATEGORY, CHIP, COLUMNS, contextMenu, CreatorCell, KindMark, LaterContext, LENGTH, LengthCell, layoutFor, NAME, NoteMark, PILL, ROW, RowButtons, StatusCell, TableShape, Updated, useAside, useNote, withAside } from "./HomeTable";
+import { BY, Category, CATEGORY, CHIP, COLUMNS, contextMenu, CreatorCell, DoneContext, DoneStatus, FreshMark, KindMark, LENGTH, LengthCell, layoutFor, NAME, NoteMark, PILL, ROW, RowButtons, StatusCell, TableShape, Updated, useDoneRow, useNote, withDone } from "./HomeTable";
+import { ExportsView, useWatchExports } from "./ExportsView";
 import { HomeSidebar, nameOf, OpenSidebar, placeOf, placeOfSection, PLACES, useSidebarOpen, type Place as Spot, type Section, type Where } from "./HomeSidebar";
 import { ThumbnailGrid } from "../thumbnails/list";
 import { NewThumbnail } from "../thumbnails/new";
@@ -63,8 +66,8 @@ const DONE_SHOWN = 40;
  */
 interface Item {
   id: string;
-  /** Its name in Later (null: it can't be set aside). */
-  key: LaterKey | null;
+  /** Its name in Done (null: it can't be marked done). */
+  key: DoneKey | null;
   section: Section;
   stage: string;
   at: number;
@@ -83,7 +86,7 @@ interface Item {
 /**
  * Home (Oct 31 2026, a beta until Nov 3, when it became everyone's: Sphe,
  * "moving forward, we want to use the new home"): a sidebar of ideas, thumbnails,
- * scripts and edits by stage, Later and Done, and one short list at a time
+ * scripts and edits by stage, Exports and Done, and one short list at a time
  * beside it, the study portal's look (the user, Oct 31: "We have ideas,
  * scripts, and edits ... complaints from the teams about having to scroll
  * through a long, tedious" list, "and we also need to be able to have ways to
@@ -162,6 +165,8 @@ export function Home() {
   // One place at a time, remembered on this browser; /ideas is Home on its Ideas (the idea page's way back).
   // /thumbnails is Home on its Thumbnails (a thumbnail's way back), as /ideas is on its Ideas.
   const [where, setWhere] = useState<Where>(() => (window.location.pathname === "/ideas" ? "ideas" : window.location.pathname === "/thumbnails" ? "thumbnails" : window.location.pathname === "/channels" ? "channels" : savedWhere()));
+  // This computer's exports: the sidebar's card and the Exports view.
+  useWatchExports();
   const shownWhere: Where = (placeOf(where).place !== null && !places.includes(placeOf(where).place!)) || (where === "thumbnails" && !ideasAllowed) || (where === "channels" && !v2) ? (places[0] ?? "edits") : where;
   // Each section's New is its own kind (Sphe, Nov 14: no switching between them); elsewhere, an edit for someone who makes them.
   const newWork: "edit" | "script" | null = placeOf(shownWhere).place === "scripts" ? (writesScripts(account) ? "script" : null) : makes ? "edit" : writesScripts(account) ? "script" : null;
@@ -171,7 +176,7 @@ export function Home() {
   const mine = mineOnly && account?.person != null;
   // One kind of video only (Sphe, Nov 2: Mine/Everyone "turned into like a dropdown with filters like category"), remembered on this browser.
   const [kind, setKind] = useState<Style | null>(() => (STYLES.some((one) => one.value === localStorage.getItem(KIND)) ? (localStorage.getItem(KIND) as Style) : null));
-  const later = useLater();
+  const done = useDone();
   // One channel only (Sphe, Nov 14: the kind filter as a channel filter), remembered on this browser; V2's.
   const channelList = useChannels((state) => state.channels);
   const [channelPick, setChannelPick] = useState<string | null>(() => localStorage.getItem(CHANNEL));
@@ -227,6 +232,8 @@ export function Home() {
       .then(setStatuses)
       // As above: noted by api.ts, the last statuses stay.
       .catch(() => {});
+    // When this person last opened each (New and Changed); none while they can't be read.
+    void loadSeen();
     return api
       .projects()
       .then(({ projects }) => setProjects(projects))
@@ -279,6 +286,7 @@ export function Home() {
     durationMs: "durationMs" in one ? (one.durationMs ?? 0) : 0,
     // As the cloud's list says it (writer_handoff.ts): written once it has more than its one source clip.
     built: "clipCount" in one && (one.clipCount ?? 0) > 1,
+    ...("builtAt" in one && typeof one.builtAt === "number" ? { builtAt: one.builtAt } : {}),
     style: null,
     ...("channel" in one && one.channel ? { channel: one.channel } : {}),
     ...("runFailed" in one && one.runFailed ? { runFailed: one.runFailed } : {}),
@@ -343,6 +351,10 @@ export function Home() {
     state: statuses[project.id],
   });
 
+  // New and Changed (Sphe, Nov 18): from when this person last opened each (lib/seen.ts), none while the marks can't be read.
+  const marks = useSeen();
+  const freshOf = (key: string, work: Parameters<typeof newOrChanged>[0]): Fresh => newOrChanged(work, marks.seen[key] ?? null, marks.on);
+
   // Everything Home lists, each where it is.
   const items: Item[] = [];
   for (const row of [...projectRows, ...subtitledRows]) {
@@ -350,9 +362,10 @@ export function Home() {
     const id = row.local?.id ?? row.cloud?.id ?? null;
     if (row.local === null && row.cloud === null) {
       const script = row.script;
+      const status = freshOf(`script:${script.id}`, scriptWork({ mine: isMe(script.createdBy), built: script.built, builtAt: script.builtAt, updatedAt: script.updatedAt, busy: row.importing !== undefined || row.writing === true }));
       items.push({
         id: `script-${script.id}`,
-        key: laterKey("script", script.id),
+        key: doneKey("script", script.id),
         section: "scripts",
         stage: stageOf(row, undefined),
         at: row.at,
@@ -361,16 +374,17 @@ export function Home() {
         fresh: fresh(row),
         kind: script.style,
         channel: script.channel ?? null,
-        row: () => <ScriptTableRow script={script} importing={row.importing} writing={row.writing === true} sharing={row.sharing === true} here={row.here === true} onChanged={refresh} onImport={row.importing ? () => setWatching(script.id) : undefined} />,
+        row: () => <ScriptTableRow script={script} importing={row.importing} writing={row.writing === true} sharing={row.sharing === true} here={row.here === true} fresh={status} onChanged={refresh} onImport={row.importing ? () => setWatching(script.id) : undefined} />,
       });
       continue;
     }
     const stage = stageOf(row, statuses[id!]);
     // Test projects aren't listed unless brought forth (TestProjects.tsx); this machine's copy says, else the cloud's.
     if (!isListed(row.local ?? row.cloud?.summary)) continue;
+    const status = freshOf(`edit:${id!}`, editWork({ id: id!, mine: isMe(starter(row)), modifiedMs: row.local?.modified_ms ?? null, cloud: row.cloud ?? remote.get(id!) ?? null, status: statuses[id!] }));
     items.push({
       id: id!,
-      key: laterKey("edit", id!),
+      key: doneKey("edit", id!),
       section: "edits",
       stage: stage === "done" ? "done" : subtitled ? "subtitled" : stage === "review" ? "review" : "editing",
       at: row.at,
@@ -379,46 +393,35 @@ export function Home() {
       fresh: fresh(row),
       kind: row.local?.style ?? row.cloud?.summary?.style ?? row.script?.style ?? null,
       channel: row.local?.channel ?? row.cloud?.summary?.channel ?? null,
-      row: () => (row.local !== null ? <TableRow {...cardProps(row.local)} subtitled={subtitled} script={row.script} /> : <CloudTableRow project={row.cloud!} script={row.script} onChanged={refresh} />),
+      row: () => (row.local !== null ? <TableRow {...cardProps(row.local)} subtitled={subtitled} script={row.script} fresh={status} /> : <CloudTableRow project={row.cloud!} script={row.script} fresh={status} onChanged={refresh} />),
     });
   }
   // Script imports that stopped: each waits on someone's answer, under Importing.
   for (const issue of issues.filter((one) => !writing.some((going) => going.id === one.id))) {
-    items.push({ id: `issue-${issue.id}`, key: laterKey("script", issue.id), section: "scripts", stage: "importing", at: issue.createdAt ?? 0, title: issue.title, mine: isMe(issue.createdBy), row: () => <ScriptIssue issue={issue} onOpen={setWatching} /> });
+    items.push({ id: `issue-${issue.id}`, key: doneKey("script", issue.id), section: "scripts", stage: "importing", at: issue.createdAt ?? 0, title: issue.title, mine: isMe(issue.createdBy), row: () => <ScriptIssue issue={issue} onOpen={setWatching} /> });
   }
   if (ideasAllowed && ideasHome !== null) {
     for (const row of ideasHome.ideas) {
-      items.push({ id: `idea-${row.id}`, key: laterKey("idea", row.id), section: "ideas", stage: ideaStage(row), at: row.updatedAt, title: row.summary.title, mine: isMe(row.createdBy), kind: row.workspace ?? "interrogation", channel: row.summary.channel ?? null, row: () => <IdeaTableRow row={row} /> });
+      const status = freshOf(`idea:${row.id}`, ideaWork({ mine: isMe(row.createdBy), run: row.summary.run, repackagedAt: row.summary.repackagedAt, updatedAt: row.updatedAt }));
+      items.push({ id: `idea-${row.id}`, key: doneKey("idea", row.id), section: "ideas", stage: ideaStage(row), at: row.updatedAt, title: row.summary.title, mine: isMe(row.createdBy), kind: row.workspace ?? "interrogation", channel: row.summary.channel ?? null, row: () => <IdeaTableRow row={row} fresh={status} /> });
     }
     // A card waiting on changes with no idea yet is the ideas team's, on the board.
     for (const card of ideasHome.changes) {
-      items.push({ id: `card-${card.id}`, key: laterKey("card", card.id), section: "ideas", stage: "board", at: Number.MAX_SAFE_INTEGER, title: card.name, mine: true, row: () => <CardTableRow card={card} onOpened={refreshIdeas} /> });
+      items.push({ id: `card-${card.id}`, key: doneKey("card", card.id), section: "ideas", stage: "board", at: Number.MAX_SAFE_INTEGER, title: card.name, mine: true, row: () => <CardTableRow card={card} onOpened={refreshIdeas} /> });
     }
   }
 
-  // Set aside still (in Later), or back on its day and not opened yet (marked Back, first in its list).
-  const entryOf = (item: Item) => (item.key === null ? undefined : later.entries.get(item.key));
-  const aside = (item: Item) => {
-    const entry = entryOf(item);
-    return entry !== undefined && asleep(entry);
-  };
-  const backAt = (item: Item) => {
-    const entry = entryOf(item);
-    return entry !== undefined && entry.done !== true && !asleep(entry) ? entry.until! : null;
-  };
   // Marked done by hand: in Done, wherever it was.
-  const markedDone = (item: Item) => entryOf(item)?.done === true;
+  const markedDone = (item: Item) => item.key !== null && done.entries.has(item.key);
   const isIn = (item: Item, place: Where): boolean => {
-    if (place === "later") return aside(item);
-    if (aside(item)) return false;
     if (markedDone(item)) return place === "done";
     if (place === "done") return item.stage === "done";
     const { place: at, stage } = placeOf(place);
     return at !== null && placeOfSection(item.section) === at && (stage === null ? item.stage !== "done" : item.stage === stage);
   };
-  // In the period: changed since its start. What's set aside, or back from Later, is in it whenever it changed.
+  // In the period: changed since its start.
   const since = periodStart(period);
-  const recent = (item: Item) => item.at >= since || aside(item) || backAt(item) !== null;
+  const recent = (item: Item) => item.at >= since;
   const ofChannel = (item: Item) => channelFilter === null || item.channel === channelFilter;
   const ours = items.filter((item) => (!mine || item.mine) && (kind === null || item.kind === kind) && ofChannel(item) && recent(item));
   const countOf = (place: Where) => ours.filter((item) => isIn(item, place)).length;
@@ -428,13 +431,6 @@ export function Home() {
     const [kind, open] = item.section === "ideas" ? (["idea", () => navigate(`/ideas/${item.id.slice(5)}`)] as const) : item.section === "scripts" ? (["script", () => navigate(`/scripts/${item.id.slice(7)}`)] as const) : (["edit", () => navigate(`/p/${item.id}`)] as const);
     return [{ id: item.id, title: item.title, kind, channel: item.channel, open }];
   });
-  // The foot's Later: how many are set aside, and the next to come back.
-  const setAside = ours.filter((item) => isIn(item, "later"));
-  const nextBack = setAside
-    .map((item) => ({ title: item.title, until: entryOf(item)?.until }))
-    .filter((one): one is { title: string; until: number } => typeof one.until === "number")
-    .sort((a, b) => a.until - b.until)[0];
-  const laterSummary = { count: setAside.length, next: nextBack ?? null };
   // A search looks through everything, everyone's, wherever it is.
   const words = query.trim().toLowerCase();
   const searching = words !== "";
@@ -442,28 +438,22 @@ export function Home() {
   let groups: { key: string; label: string | null; items: Item[] }[];
   if (searching) {
     const found = items.filter((item) => item.title.toLowerCase().includes(words)).sort(newest);
-    const placeName = (item: Item) => (aside(item) ? "later" : item.stage === "done" || markedDone(item) ? "done" : placeOfSection(item.section));
-    groups = [...PLACES.map((place) => place.key), "later", "done"].map((key) => ({ key, label: key === "later" ? "Later" : key === "done" ? "Done" : PLACES.find((one) => one.key === key)!.label, items: found.filter((item) => placeName(item) === key) })).filter((group) => group.items.length > 0);
+    const placeName = (item: Item) => (item.stage === "done" || markedDone(item) ? "done" : placeOfSection(item.section));
+    groups = [...PLACES.map((place) => place.key), "done"].map((key) => ({ key, label: key === "done" ? "Done" : PLACES.find((one) => one.key === key)!.label, items: found.filter((item) => placeName(item) === key) })).filter((group) => group.items.length > 0);
   } else {
     const here = ours.filter((item) => isIn(item, shownWhere));
     const { place, stage } = placeOf(shownWhere);
     if (place !== null && stage === null) {
       // What you just started first, under New (the user, Oct 30: "it's confusing to add a new project and not have it right in front of you"), then by stage.
       const stages = PLACES.find((one) => one.key === place)!.stages;
-      // And above that what's back from Later, the latest back on top: Needs you's one job left (Sphe, Nov 2: "let's remove needs you").
-      const isBack = (item: Item) => backAt(item) !== null;
-      const isFresh = (item: Item) => !isBack(item) && item.fresh === true && item.mine;
+      const isFresh = (item: Item) => item.fresh === true && item.mine;
       groups = [
-        { key: "back", label: "Back from Later", items: here.filter(isBack).sort((a, b) => backAt(b)! - backAt(a)!) },
         { key: "new", label: "New", items: here.filter(isFresh).sort(newest) },
-        ...stages.map((one) => ({ key: one.key, label: one.label, items: here.filter((item) => !isBack(item) && !isFresh(item) && item.stage === one.key).sort(newest) })),
+        ...stages.map((one) => ({ key: one.key, label: one.label, items: here.filter((item) => !isFresh(item) && item.stage === one.key).sort(newest) })),
       ].filter((group) => group.items.length > 0);
-    } else if (shownWhere === "later") {
-      const until = (item: Item) => later.entries.get(item.key!)?.until ?? Number.MAX_SAFE_INTEGER;
-      groups = [{ key: "later", label: null, items: here.sort((a, b) => until(a) - until(b)) }];
     } else if (shownWhere === "done") {
       // The latest done first: marked by hand when it was marked, else when it last changed.
-      const doneAt = (item: Item) => (markedDone(item) ? entryOf(item)!.at : item.at);
+      const doneAt = (item: Item) => (item.key !== null ? (done.entries.get(item.key)?.at ?? item.at) : item.at);
       const sorted = here.sort((a, b) => doneAt(b) - doneAt(a));
       groups = [{ key: "done", label: null, items: allDone ? sorted : sorted.slice(0, DONE_SHOWN) }];
     } else {
@@ -472,12 +462,13 @@ export function Home() {
   }
   const listed = groups.reduce((total, group) => total + group.items.length, 0);
   const total = searching ? listed : countOf(shownWhere);
-  const cross = searching || shownWhere === "later" || shownWhere === "done";
+  const cross = searching || shownWhere === "done";
   const solo = mine && !searching;
   const title = searching ? { parent: null, name: "Search" } : nameOf(shownWhere);
   const inIdeas = !searching && placeOf(shownWhere).place === "ideas";
   const inThumbnails = !searching && shownWhere === "thumbnails";
   const inChannels = !searching && shownWhere === "channels";
+  const inExports = !searching && shownWhere === "exports";
   // The open place's stages, steps over its list (empty ones greyed, so the order still reads).
   const shownPlace = searching ? null : placeOf(shownWhere).place;
   const steps = shownPlace === null ? [] : PLACES.find((one) => one.key === shownPlace)!.stages.map((one) => ({ ...one, count: countOf(`${shownPlace}:${one.key}`) }));
@@ -525,9 +516,7 @@ export function Home() {
   const periodName = PERIODS.find((one) => one.value === period)!.label.toLowerCase();
   const empty = searching
     ? { title: "Nothing matches", text: `Nothing anywhere is called “${query.trim()}”.` }
-    : shownWhere === "later"
-        ? { title: "Nothing set aside", text: "Press the clock on any row to set it aside until a day, or until you bring it back. On its day it’s back, at the top of its list." }
-        : kind !== null && otherKinds > 0
+    : kind !== null && otherKinds > 0
           ? { title: `No ${STYLES.find((one) => one.value === kind)!.label.toLowerCase()} here`, text: `${otherKinds} of other kinds: the filter shows them all again.` }
           : mine && others > 0
           ? { title: "Nothing of yours here", text: `Everyone shows the team’s ${others}.` }
@@ -536,9 +525,9 @@ export function Home() {
           : { title: "Nothing here", text: shownWhere === "done" ? "Approved edits and ideas move here by themselves, and anything marked done from its ⋯ menu." : "Nothing is at this stage now." };
 
   return (
-    <LaterContext.Provider value={later}>
+    <DoneContext.Provider value={done}>
       <div className="flex h-full bg-black p-2">
-        <HomeSidebar places={places} thumbnails={ideasAllowed} channels={v2} later={laterSummary} done={countOf("done")} where={searching ? ("" as Where) : shownWhere} onChoose={choose} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+        <HomeSidebar places={places} thumbnails={ideasAllowed} channels={v2} done={countOf("done")} where={searching ? ("" as Where) : shownWhere} onChoose={choose} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
         <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line bg-panel">
           <header className="flex h-[52px] shrink-0 items-center gap-3 border-b border-line px-5">
             {!sidebarOpen && <OpenSidebar onOpen={() => setSidebarOpen(true)} />}
@@ -553,7 +542,7 @@ export function Home() {
                 </>
               )}
               <span className="truncate">{title.name}</span>
-              {!loading && !inThumbnails && <span className="ml-1 text-[13px] font-normal text-faint tabular">{total}</span>}
+              {!loading && !inThumbnails && !inExports && <span className="ml-1 text-[13px] font-normal text-faint tabular">{total}</span>}
             </h1>
             )}
             <div className="ml-auto flex items-center gap-1.5">
@@ -566,7 +555,7 @@ export function Home() {
                 </Button>
               ) : inChannels ? (
                 <ChannelsActions />
-              ) : inThumbnails ? (
+              ) : inExports ? null : inThumbnails ? (
                 <Button variant="light" onClick={() => setThumbOpen(true)}>
                   <Plus size={15} strokeWidth={2.2} /> New thumbnail
                 </Button>
@@ -582,6 +571,9 @@ export function Home() {
             {/* Thumbnails in the panel (Sphe, Nov 2: they "should sort of happen on that right hand side"), not a page of their own. */}
             {inChannels ? (
               <ChannelsView work={channelWork} />
+            ) : inExports ? (
+              // Opening it clears "Exported" on the rows: their statuses again at once.
+              <ExportsView channelOf={(id) => (projects ?? []).find((one) => one.id === id)?.channel ?? remote.get(id)?.summary?.channel ?? null} onViewed={() => void api.projectStatus().then(setStatuses).catch(() => {})} />
             ) : inThumbnails ? (
               <div className="-mx-4 -mt-3">
                 <ThumbnailGrid onMake={() => setThumbOpen(true)} />
@@ -661,7 +653,7 @@ export function Home() {
       <NewProject work={work} open={creating} onClose={() => { setCreating(false); setStart(null); }} start={start} />
       {ideasAllowed && <NewThumbnail open={thumbOpen} onClose={() => setThumbOpen(false)} />}
       {ideasAllowed && <NewIdea open={ideaOpen} onClose={() => setIdeaOpen(false)} onMade={refreshIdeas} />}
-    </LaterContext.Provider>
+    </DoneContext.Provider>
   );
 }
 
@@ -761,7 +753,8 @@ function savedWhere(): Where {
   const saved = localStorage.getItem(VIEW) ?? "";
   if (saved === "subtitled") return "edits:subtitled";
   // Needs you went on Nov 2 ("let's remove needs you"): Home opens on Edits.
-  if (saved === "later" || saved === "done" || saved === "thumbnails" || saved === "channels") return saved;
+  // Later went on Nov 18: Home opens on Edits from it.
+  if (saved === "done" || saved === "exports" || saved === "thumbnails" || saved === "channels") return saved;
   // Videos (Scripts and Edits together) for an evening on Nov 2: its stage says which it was.
   const [first, stage] = saved.split(":") as [string, string | undefined];
   const fromVideos: Spot = stage !== undefined && PLACES.find((one) => one.key === "scripts")!.stages.some((one) => one.key === stage) ? "scripts" : "edits";
@@ -845,10 +838,12 @@ function HomeList({ groups, solo, cross, lengthLabel }: { groups: { key: string;
       >
         <div role="row" className={cx(COLUMNS, "px-3 pb-2 text-[12px] font-medium text-muted")}>
           <span role="columnheader">Name</span>
+          <span role="columnheader" className="text-right">
+            Status
+          </span>
           <span role="columnheader" className={CATEGORY}>
             {v2 ? "Channel" : "Niche"}
           </span>
-          <span role="columnheader">Status</span>
           <span role="columnheader" className={BY}>
             By
           </span>
@@ -999,6 +994,7 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
     try {
       const live = await api.project(project.id);
       await api.saveProject(project.id, live.rev, { ...live.project, style }, clientId);
+      markSeen(`edit:${project.id}`);
       onChanged();
     } catch (error) {
       useEditor.getState().toastError(error, `change the category of “${project.name}”`);
@@ -1010,6 +1006,8 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
     try {
       const live = await api.project(project.id);
       await api.saveProject(project.id, live.rev, { ...live.project, name }, clientId);
+      // The person's own change from Home: not Changed for them.
+      markSeen(`edit:${project.id}`);
       onChanged();
     } catch (error) {
       useEditor.getState().toastError(error, "rename it");
@@ -1039,7 +1037,7 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
     if (project.problem) useEditor.getState().toastError(project.problem, `open “${project.name}”`);
     else navigate(`/p/${project.id}`);
   };
-  // Its ⋯ (and right click): Later's are added by the row.
+  // Its ⋯ (and right click): Done's is added by the row.
   const items: MenuItem[] = [
     // Made from a script: that script, its other mode.
     ...(script !== null ? [{ label: "Open its script", icon: <FileText size={14} />, onSelect: () => navigate(`/scripts/${script}`) }] : []),
@@ -1201,6 +1199,13 @@ function StateChips({ state, projectId, onChanged, editor = null }: { state?: Pr
           <span className="min-w-0 truncate">{shareChip(state.sharing)}</span>
         </span>
       ),
+    // Its export finished here since the Exports view was last opened (Sphe, Nov 18): until it's opened, not the project.
+    state.exported_new === true && (
+        <span key="exported" title="Exported since you last opened Exports" className={cx(CHIP, "text-success")}>
+          <Check size={12} className="shrink-0" />
+          Exported
+        </span>
+      ),
     state.approved !== null && (
         <span key="approved" title={`Version ${state.approved} was approved on its review`} className={cx(CHIP, "text-success")}>
           <Check size={12} />
@@ -1222,18 +1227,7 @@ function StateChips({ state, projectId, onChanged, editor = null }: { state?: Pr
           Not exported
         </span>
       ),
-    // Nothing pressing: still where it stands, so no row's status is blank (the user, Oct 30: "7 comments. or No comments").
-    state.complete && state.exported ? (
-      <span key="quiet" title="Exported and on its review, with no open comments" className={cx(CHIP, "text-muted")}>
-        <MessageSquare size={12} />
-        No comments
-      </span>
-    ) : (
-      <span key="quiet" title="Still being edited" className={cx(CHIP, "text-muted")}>
-        <Pencil size={12} />
-        In progress
-      </span>
-    ),
+    // Nothing pressing says nothing (Sphe, Nov 18: status "shows only what needs you"; "In progress" and "No comments" went).
   ].find(Boolean);
   return first || null;
 }
@@ -1275,6 +1269,8 @@ export type ScriptIssueRow = {
   dismissedAt?: number;
   /** Its first prompt still to start. */
   firstBuild?: boolean;
+  /** When its first build was saved (Home's New). */
+  builtAt?: number;
   /** A test script (TestProjects.tsx): not listed unless `shown`. */
   test?: boolean;
   shown?: boolean;
@@ -1481,30 +1477,26 @@ const goOnWithout = (issue: ScriptIssueRow) => (issue.decision?.kind === "failed
  */
 function ScriptIssue({ issue, onOpen }: { issue: ScriptIssueRow; onOpen: (id: string) => void }) {
   const { items: own, dialogs } = useIssueDialogs(issue);
-  const aside = useAside(laterKey("script", issue.id), issue.title);
-  const items = withAside(own, aside.items);
+      <Category text="" />
+  const marked = useDoneRow(doneKey("script", issue.id), issue.title);
+  const items = withDone(own, marked.items);
   return (
     <div
       role="row"
-      onClick={() => {
-        aside.seen();
-        onOpen(issue.id);
-      }}
+      onClick={() => onOpen(issue.id)}
       onContextMenu={contextMenu(items, 220)}
       className={cx(COLUMNS, ROW)}
     >
       <div role="cell" className="flex min-w-0 items-center gap-2.5">
         <KindMark kind="script" />
-        {aside.woke && <BackMark entry={aside.woke} />}
         <TriangleAlert size={14} className="shrink-0 text-warning" />
         <span className={NAME} title={issue.title}>
           {issue.title}
         </span>
       </div>
-      <Category text="" />
       <StatusCell>
-        {aside.entry ? (
-          <AsideStatus entry={aside.entry} />
+        {marked.entry ? (
+          <DoneStatus entry={marked.entry} />
         ) : (
           // Where it stopped, so it's plain what's being fixed.
           <span title={`Stopped ${stageWords(issue.stage)}: ${explain(issue.decision?.summary ?? issue.error ?? "", "finish the import").title}`} className={cx(CHIP, "text-warning")}>
@@ -1516,7 +1508,7 @@ function ScriptIssue({ issue, onOpen }: { issue: ScriptIssueRow; onOpen: (id: st
       <CreatorCell by={issue.createdBy} />
       <LengthCell />
       <Updated at={issue.createdAt ?? 0} />
-      <RowButtons aside={aside.button} items={items} width={220} />
+      <RowButtons extra={marked.button} items={items} width={220} />
       {/* Its dialogs open over Home; clicks inside them aren't the row's. */}
       <div className="contents" onClick={(event) => event.stopPropagation()}>
         {dialogs}
@@ -1652,6 +1644,8 @@ export function ImportDialog({ id, writing, issues, onClose }: { id: string | nu
                 <IssueActions issue={stopped} />
               ) : (
                 done &&
+          // The person's own change from Home: not Changed for them.
+          markSeen(`edit:${project.id}`);
                 id !== null && (
                   <Button variant="primary" onClick={() => navigate(`/scripts/${id}`)}>
                     Open the script
@@ -1667,10 +1661,10 @@ export function ImportDialog({ id, writing, issues, onClose }: { id: string | nu
 }
 
 /** A project on this Mac: its name, what's worth a word about it, and its ⋯. */
-function TableRow({ subtitled, script = null, ...props }: CardProps & { subtitled: boolean; script?: WriterScriptRow | null }) {
+function TableRow({ subtitled, script = null, fresh, ...props }: CardProps & { subtitled: boolean; script?: WriterScriptRow | null; fresh: Fresh }) {
   const { project, onChanged, remote, state } = props;
   const card = useProject(project, onChanged, props.cloudOn, props.status, remote, script?.id ?? null);
-  const aside = useAside(laterKey("edit", project.id), project.name);
+  const marked = useDoneRow(doneKey("edit", project.id), project.name);
   const note = useNote(
     project.note,
     project.name,
@@ -1682,21 +1676,18 @@ function TableRow({ subtitled, script = null, ...props }: CardProps & { subtitle
           onChanged();
         },
   );
-  const items = withAside(withNote(card.items, note.items), aside.items);
+  const items = withDone(withNote(card.items, note.items), marked.items);
   return (
     <>
       <div
         role="row"
-        onClick={() => {
-          aside.seen();
-          card.open();
-        }}
+        onClick={() => card.open()}
         onContextMenu={contextMenu(items, 190)}
         className={cx(COLUMNS, ROW)}
       >
         <div role="cell" className="flex min-w-0 items-center gap-2.5">
           <KindMark kind={project.subtitles ? "subtitles" : "edit"} />
-          {aside.woke && <BackMark entry={aside.woke} />}
+        <Category style={project.style} compilation={script?.compilation} channel={project.channel} />
           {card.nameInput ?? (
             <span className={NAME} title={project.problem ?? project.name}>
               {project.name}
@@ -1705,13 +1696,13 @@ function TableRow({ subtitled, script = null, ...props }: CardProps & { subtitle
           {project.dev === true && <TestBadge />}
           {card.nameInput === null && note.mark}
         </div>
-        <Category style={project.style} compilation={script?.compilation} channel={project.channel} />
         <StatusCell>
-          {aside.entry ? (
-            <AsideStatus entry={aside.entry} />
+          {marked.entry ? (
+            <DoneStatus entry={marked.entry} />
           ) : (
             <>
-              {/* Where its files are when that's news, then its one status: what's wrong with it, else where it stands. */}
+              {/* New or Changed for this person, where its files are when that's news, then its one status: what's wrong with it, else what's going on. */}
+              <FreshMark fresh={fresh} />
               <Place sync={card.cloudNews ? card.status : undefined} />
               {card.notice ? <Notice {...card.notice} /> : <StateChips state={state} projectId={project.id} onChanged={onChanged} editor={card.editor} />}
               {card.drive ? (
@@ -1727,8 +1718,9 @@ function TableRow({ subtitled, script = null, ...props }: CardProps & { subtitle
         <CreatorCell by={remote?.created_by ?? project.created_by} projectId={project.id} />
         <LengthCell>{project.problem ? "" : shortDuration(project.duration_frames / project.fps)}</LengthCell>
         <Updated at={project.modified_ms} />
-        <RowButtons aside={aside.button} items={items} width={190} />
+        <RowButtons extra={marked.button} items={items} width={190} />
       </div>
+      changedHere();
       {card.dialogs}
       {note.dialog}
     </>
@@ -1742,7 +1734,7 @@ const KIND_LABEL: Record<Kind, string> = { interrogation: "Interrogation", foia:
 const kindOfStyle = (style: Style | null): Kind | null => (style === "bodycam" ? "foia" : style === "interrogation" || style === "courtroom" ? style : null);
 
 /** A script with no edit yet: opening it opens the script; once written, Start the edit makes its video project. */
-function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, onImport }: { script: WriterScriptRow; importing?: Importing; writing: boolean; sharing: boolean; here: boolean; onChanged: () => void; onImport?: () => void }) {
+function ScriptTableRow({ script, importing, writing, sharing, here, fresh, onChanged, onImport }: { script: WriterScriptRow; importing?: Importing; writing: boolean; sharing: boolean; here: boolean; fresh: Fresh; onChanged: () => void; onImport?: () => void }) {
   const [starting, setStarting] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -1751,6 +1743,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
   const grants = useGrants();
   const current = kindOfStyle(script.style);
   const kinds = script.compilation ? grants.compilationKinds : grants.singleKinds;
+          changedHere();
   const recategorize = async (kind: Kind) => {
     if (kind === current) return;
     try {
@@ -1766,8 +1759,10 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
     current !== null && kinds.length > 1 && !script.channel
       ? [{ label: "Category", icon: <Tag size={14} />, submenu: kinds.map((kind) => ({ label: KIND_LABEL[kind], checked: kind === current, onSelect: () => void recategorize(kind) })) }]
       : [];
-  // Its ⋯ (and right click), as an edit's: open it, and (when this Mac has it) rename or delete it; Later's too.
-  const aside = useAside(laterKey("script", script.id), script.title || "Untitled script");
+  // Its ⋯ (and right click), as an edit's: open it, and (when this Mac has it) rename or delete it; Done's too.
+  const marked = useDoneRow(doneKey("script", script.id), script.title || "Untitled script");
+  // The person's own change from Home: not Changed for them.
+  const changedHere = () => markSeen(`script:${script.id}`);
   // Its note, left from here when this Mac has the script (even while it imports).
   const note = useNote(
     script.note,
@@ -1776,11 +1771,12 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
       ? async (text) => {
           const writer = await import("../writer/api");
           await writer.setScriptNote(script.id, text);
+      changedHere();
           onChanged();
         }
       : null,
   );
-  const items = withAside(
+  const items = withDone(
     [
       { label: "Open script", icon: <FileText size={14} />, onSelect: () => navigate(`/scripts/${script.id}`) },
       ...(failed !== null ? ([{ label: "Run again", icon: <RotateCw size={14} />, onSelect: () => void write() }] satisfies MenuItem[]) : []),
@@ -1794,7 +1790,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
           ] satisfies MenuItem[])
         : []),
     ],
-    aside.items,
+    marked.items,
   );
   const rename = async () => {
     const title = renaming?.trim() ?? "";
@@ -1853,7 +1849,6 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
       role="row"
       onMouseEnter={() => !onImport && prefetchScript(script.id)}
       onClick={() => {
-        aside.seen();
         if (onImport) onImport();
         else navigate(`/scripts/${script.id}`);
       }}
@@ -1862,17 +1857,16 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
     >
       <div role="cell" className="flex min-w-0 items-center gap-2.5">
         <KindMark kind="script" />
-        {aside.woke && <BackMark entry={aside.woke} />}
         <span className={NAME} title={script.title}>
           {script.title || "Untitled script"}
         </span>
         {script.test === true && <TestBadge />}
         {note.mark}
       </div>
-      <Category style={script.style} compilation={script.compilation} channel={script.channel} />
       <StatusCell>
-        {aside.entry ? (
-          <AsideStatus entry={aside.entry} />
+        {!marked.entry && <FreshMark fresh={fresh} />}
+        {marked.entry ? (
+          <DoneStatus entry={marked.entry} />
         ) : importing && !importing.stopped && importing.percent !== undefined ? (
           // Importing: how far (the step in its tooltip; its row opens the import).
           <span className={cx(CHIP, "w-32 text-info tabular")} title={importing.step}>
@@ -1884,6 +1878,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
         ) : importing ? (
           <span className={cx(CHIP, "tabular", importing.stopped ? "text-warning" : "text-info")}>
             {importing.stopped ? <TriangleAlert size={12} className="shrink-0" /> : <Pulse size={12} />}
+      <Category style={script.style} compilation={script.compilation} channel={script.channel} />
             <span className="truncate">{importing.word}</span>
           </span>
         ) : writing ? (
@@ -1914,7 +1909,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
       <CreatorCell by={script.createdBy ?? undefined} />
       <LengthCell>{script.durationMs > 0 ? shortDuration(script.durationMs / 1000) : ""}</LengthCell>
       <Updated at={script.updatedAt} title={script.updatedBy ? `by ${script.updatedBy}` : undefined} />
-      <RowButtons aside={aside.button} items={items} width={180} />
+      <RowButtons extra={marked.button} items={items} width={180} />
     </div>
       {note.dialog}
       <Modal open={renaming !== null} onClose={() => setRenaming(null)} width={420}>
@@ -1950,7 +1945,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
 }
 
 /** A project only in the cloud: opening it downloads it to this Mac. */
-function CloudTableRow({ project, script = null, onChanged }: { project: CloudProject; script?: WriterScriptRow | null; onChanged: () => void }) {
+function CloudTableRow({ project, script = null, fresh, onChanged }: { project: CloudProject; script?: WriterScriptRow | null; fresh: Fresh; onChanged: () => void }) {
   const [deleting, setDeleting] = useState(false);
   const summary = project.summary ?? {};
   const seconds = summary.durationFrames && summary.fps ? summary.durationFrames / summary.fps : null;
@@ -1963,52 +1958,47 @@ function CloudTableRow({ project, script = null, onChanged }: { project: CloudPr
     }
     onChanged();
   };
-  const aside = useAside(laterKey("edit", project.id), project.name);
-  const items = withAside(
+  const marked = useDoneRow(doneKey("edit", project.id), project.name);
+  const items = withDone(
     [
       ...(script !== null ? ([{ label: "Open its script", icon: <FileText size={14} />, onSelect: () => navigate(`/scripts/${script.id}`) }] satisfies MenuItem[]) : []),
       { separator: true },
       { label: "Delete…", icon: <Trash2 size={14} />, danger: true, onSelect: () => setDeleting(true) },
     ],
-    aside.items,
+    marked.items,
   );
+        <Category style={summary.style} compilation={script?.compilation} channel={summary.channel} />
   return (
     <>
       <div
         role="row"
-        onClick={() => {
-          aside.seen();
-          navigate(`/p/${project.id}`);
-        }}
+        onClick={() => navigate(`/p/${project.id}`)}
         onContextMenu={contextMenu(items, 180)}
         className={cx(COLUMNS, ROW)}
       >
         <div role="cell" className="flex min-w-0 items-center gap-2.5">
           <KindMark kind={summary.subtitles ? "subtitles" : "edit"} />
-          {aside.woke && <BackMark entry={aside.woke} />}
           <span className={NAME} title={project.name}>
             {project.name}
           </span>
           {summary.dev === true && <TestBadge />}
           <NoteMark note={summary.note} />
         </div>
-        <Category style={summary.style} compilation={script?.compilation} channel={summary.channel} />
         <StatusCell>
-          {aside.entry ? (
-            <AsideStatus entry={aside.entry} />
-          ) : project.holder ? (
-            <StateChips editor={project.holder} />
+          {/* Only what needs you (Sphe, Nov 18): not being here yet isn't news, opening it brings it. */}
+          {marked.entry ? (
+            <DoneStatus entry={marked.entry} />
           ) : (
-            <span title={`Not on ${THIS_MACHINE} yet: opening it downloads it`} className={cx(CHIP, "text-muted")}>
-              <CloudDownload size={12} />
-              Cloud only
-            </span>
+            <>
+              <FreshMark fresh={fresh} />
+              {project.holder && <StateChips editor={project.holder} />}
+            </>
           )}
         </StatusCell>
         <CreatorCell by={project.created_by} projectId={project.id} />
         <LengthCell>{seconds !== null ? shortDuration(seconds) : ""}</LengthCell>
         <Updated at={project.updated_ms} title={`by ${project.updated_by}`} />
-        <RowButtons aside={aside.button} items={items} width={180} />
+        <RowButtons extra={marked.button} items={items} width={180} />
       </div>
       <ConfirmDialog
         open={deleting}

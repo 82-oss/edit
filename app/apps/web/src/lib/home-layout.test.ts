@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { layoutFor } from "./home-layout";
-import { asideChoices, backLabel } from "./later-days";
 
 // Home's table at every width Edit's window can be (960 px at the least: the
 // table is then about 700 px), Mine and Everyone: a name always keeps its
@@ -23,23 +22,11 @@ describe("Home's table at every width", () => {
       }
     });
   }
-  it("goes without Length first, then Channel, then By's names; Channel and Status as wide as what they hold", () => {
-    expect(layoutFor(1400, true).columns).toBe("minmax(0,1fr) fit-content(160px) fit-content(236px) 64px 76px");
+  it("goes without Length first, then Channel, then By's names; Status (beside Channel) and Channel as wide as what they hold", () => {
+    expect(layoutFor(1400, true).columns).toBe("minmax(0,1fr) fit-content(236px) fit-content(160px) 64px 76px");
     expect(layoutFor(1400, false)).toMatchObject({ compact: false, slim: false, faces: false });
     expect(layoutFor(1000, false)).toMatchObject({ compact: true, slim: false, faces: false });
     expect(layoutFor(900, false)).toMatchObject({ compact: true, slim: true, faces: false });
     expect(layoutFor(750, false)).toMatchObject({ compact: true, slim: true, faces: true });
-  });
-});
-
-describe("Later's days", () => {
-  it("offers tomorrow, Monday unless that's tomorrow, a week, and no date", () => {
-    const saturday = new Date(2026, 9, 31, 11, 0);
-    expect(asideChoices(saturday).map((one) => one.label)).toEqual(["Tomorrow", "Monday", "In a week", "Until I bring it back"]);
-    const sunday = new Date(2026, 10, 1, 11, 0);
-    expect(asideChoices(sunday).map((one) => one.label)).toEqual(["Tomorrow", "In a week", "Until I bring it back"]);
-    expect(asideChoices(saturday)[1]!.until).toBe(new Date(2026, 10, 2).getTime());
-    expect(backLabel(null)).toBe("No date");
-    expect(backLabel(new Date(2026, 10, 1).getTime(), saturday)).toBe("Tomorrow");
   });
 });

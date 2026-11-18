@@ -320,6 +320,9 @@ export class ConvexMock {
   readonly files = new Map<string, { data: Uint8Array; contentType: string }>();
   /** Home's Later (mamagi's editLater), by key. */
   readonly later = new Map<string, { key: string; until?: number; done?: boolean; at: number; by: { sub: string; name: string; picture?: string } }>();
+  /** Home's seen marks (mamagi's editSeen), by person then key; `seenGone`: a mamagi from before them, which doesn't have the functions. */
+  readonly seen = new Map<string, Map<string, number>>();
+  seenGone = false;
   /** Edit V2's cloud (mamagi's editLibrary and editLibraryVersions), as accounts' convex/edit.ts keeps them. */
   /** mamagi's channels (channels.ts), as listChannels shows them. */
   channels: Record<string, unknown>[] = [];
@@ -513,6 +516,22 @@ export class ConvexMock {
       }
       case "clearLater":
         return { cleared: this.later.delete(String(args.key ?? "")) };
+      case "listSeen":
+      case "markSeen": {
+        if (this.seenGone) throw new Error(`Could not find public function for 'edit:${name}'`);
+        // The relay names the person (caller); the mock's calls come as one.
+        const sub = String((args.caller as { sub?: string } | undefined)?.sub ?? "mock-person");
+        const mine = this.seen.get(sub) ?? new Map<string, number>();
+        this.seen.set(sub, mine);
+        if (name === "listSeen") {
+          return [...mine.entries()].map(([key, at]) => ({ key, at })).sort((a, b) => b.at - a.at);
+        }
+        const key = String(args.key ?? "");
+        if (!/^(edit|script|idea):[A-Za-z0-9_-]{1,120}$/.test(key)) throw new Fail("invalid", "key must be edit:, script: or idea: and an id.");
+        const at = Math.min(typeof args.at === "number" ? args.at : this.now(), this.now());
+        mine.set(key, Math.max(at, mine.get(key) ?? 0));
+        return { key, at: mine.get(key) };
+      }
       case "listLessons": {
         const rows = [...this.lessons.values()];
         return args.all === true ? rows.reverse() : rows.filter((row) => row.status === "open");

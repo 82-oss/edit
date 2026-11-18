@@ -106,6 +106,8 @@ export type Script = {
   /** The build its import stopped on, when that failure is one the same build meets again however often it's asked (a 413, an unreadable file): Retry waits for an update. */
   stuckOn?: string;
   durationMs: number;
+  /** When its first build was saved (ms): Home's New is a script written since its person last opened it. */
+  builtAt?: number;
   words: Word[];
   clips: Clip[];
   overview: number[];
@@ -186,6 +188,8 @@ export type Summary = {
   shown?: boolean;
   /** Footage a commentary was written from: that commentary's title. The list keeps it inside it. */
   inCommentary?: string;
+  /** When its first build was saved (`Script.builtAt`). */
+  builtAt?: number;
   /** The cloud refused its last save: what it said. Shown as "Not in the cloud". */
   cloudRefused?: string;
   /** Interrogation, FOIA or Courtroom. */
@@ -502,12 +506,12 @@ export type Snapshot = { clips: Clip[]; corrections: Record<string, string>; hea
 export type TrelloCard = {
   id: string;
   name: string;
+  /** The producer's: the footage files attached to the message, by name. */
+  files?: string[];
   url: string;
   labels: string[];
   activity: string | null;
   kind: "case" | "compilation" | "video";
-  /** The producer's: the footage files attached to the message, by name. */
-  files?: string[];
   footage: string | null;
   article: string | null;
   lines: string[];

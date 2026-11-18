@@ -107,6 +107,8 @@ export function summarize(idea: Idea): IdeaSummary {
     niche: idea.niche,
     source: first?.title ?? "",
     ...(idea.channel ? { channel: idea.channel } : {}),
+    // Repackaged: Home's New until its person opens it (a chat run after it is them, or a teammate, working on it).
+    ...(idea.run?.what === "repackage" && idea.run.state === "done" && typeof idea.run.endedAt === "number" ? { repackagedAt: idea.run.endedAt } : {}),
   };
 }
 

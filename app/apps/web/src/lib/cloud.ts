@@ -31,6 +31,8 @@ export interface CloudProject {
   rev: number;
   updated_ms: number;
   updated_by: string;
+  /** Its last commit was this computer's (absent from an older server: taken as not). */
+  updated_here?: boolean;
   summary: {
     style?: Style;
     durationFrames?: number;
