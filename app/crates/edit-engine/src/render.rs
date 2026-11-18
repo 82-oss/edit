@@ -4546,7 +4546,7 @@ mod tests {
             // Square Blur's V 33.9 dB on these bars here (Nov 18); swapped
             // planes fall far under this, and far off in their means. A Mac's
             // chunks are VideoToolbox's, not FFmpeg's: its colour on these
-            // bars at 360p is 31–38 dB for every fill, Crop and Black too (the
+            // bars at 360p is 28–38 dB for every fill, Crop and Black too (the
             // M1, Nov 18), the encoders' difference, so it's held to the means.
             if !cfg!(target_os = "macos") {
                 for plane in ["u", "v"] {
