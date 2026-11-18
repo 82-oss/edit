@@ -474,7 +474,12 @@ export function restart(app: App): string {
   const running = busyWith(app);
   if (running.length > 0) throw new Error(`Not restarted: ${running.join(", ")} would be cut off. Try again when it's done, or unstick first.`);
   diag.info("remote", "restarting, as an admin asked");
-  setTimeout(() => void restartSelf(), 3_000).unref?.();
+  // Looked at again as it goes: work that started in the 3 s isn't cut off either.
+  setTimeout(() => {
+    const started = busyWith(app);
+    if (started.length > 0) diag.warn("remote", `not restarted after all: ${started.join(", ")} started meanwhile`);
+    else void restartSelf();
+  }, 3_000).unref?.();
   return "restarting in 3 s";
 }
 
