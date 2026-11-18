@@ -72,7 +72,9 @@ export function start(app: App, data: string): void {
     } catch {
       continue;
     }
-    if (script.status === "needs_choice" && script.decision?.kind === "failed_recordings") older.push(id);
+    // Only an import this computer ran, which keeps its preview pieces (they never sync): a teammate's script paused on
+    // its own Mac is synced here too, and carrying it on took over their import (Sphe's Linux Edit, Nov 18: two of JJ's).
+    if (script.status === "needs_choice" && script.decision?.kind === "failed_recordings" && ranHere(store.scriptDir(data, id))) older.push(id);
     else if ((script.missing ?? []).length > 0 && hasList(store.scriptDir(data, id), script)) schedule(id, Math.min(...script.missing!.map((one) => one.nextAt)));
   }
   wake();
@@ -89,6 +91,11 @@ const HERE = ".missing-here";
 export function markHere(dir: string, missing: boolean): void {
   if (missing) fs.writeFileSync(join(dir, HERE), "");
   else fs.rmSync(join(dir, HERE), { force: true });
+}
+
+/** Whether this computer ran the script's import: its preview pieces are here (the sync leaves them out, cloud.ts). */
+function ranHere(dir: string): boolean {
+  return fs.existsSync(join(dir, "pieces"));
 }
 
 function hasList(dir: string, script: Script): boolean {

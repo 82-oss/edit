@@ -204,6 +204,8 @@ test.skipIf(ffmpeg === null)("an import an older Edit stopped on failed recordin
       decision: { kind: "failed_recordings", summary: "CH01.mp4 couldn't be imported; the other 2 are ready. Go on without it, try it again, or cancel.", failed: [{ id: ids[0]!, title: "CH01.mp4", error: "no" }], total: 3 },
     } as Script);
     refused.add(0);
+    // Its import ran here: its preview pieces are here (a teammate's synced copy has none, below).
+    fs.mkdirSync(join(dir, "pieces"), { recursive: true });
     missing.start(app, data);
     const carried = await until(data, id, (script) => script.status === "ready");
     expect(carried.decision).toBeUndefined();
@@ -213,6 +215,30 @@ test.skipIf(ffmpeg === null)("an import an older Edit stopped on failed recordin
     cleanup();
   }
 }, 120_000);
+
+test("a teammate's script paused on failed recordings, synced here, is left to their computer (Sphe's Linux Edit took over two of JJ's imports, Nov 18)", async () => {
+  const { app, cleanup } = fixtureHome("missing-theirs");
+  try {
+    const data = store.dataDir(app.store.home);
+    const id = crypto.randomUUID();
+    const dir = store.scriptDir(data, id);
+    fs.mkdirSync(dir, { recursive: true });
+    parts.writeManifest(dir, { recordings: names.map((name, n) => ({ id: ids[n]!, name, size: bytes[n]!.length, audio: false, claimedMs: (2 + n) * 1000, md5: null })), skipped: [] });
+    const now = Date.now();
+    // As the sync brings it: the script and its list, no pieces (its import ran on the teammate's Mac).
+    store.write(dir, {
+      id, title: "Their case", sourceKind: "drive", sourceUrl: URL_, originalPath: "", status: "needs_choice", stage: "waiting", progress: 38, error: null,
+      durationMs: 0, words: [], clips: [], overview: [], parts: [], notes: [], kind: "interrogation", revision: 1, createdAt: now, updatedAt: now, proxyPath: null,
+      decision: { kind: "failed_recordings", summary: "CH01.mp4 couldn't be imported; the other 2 are ready.", failed: [{ id: ids[0]!, title: "CH01.mp4", error: "no" }], total: 3 },
+    } as Script);
+    missing.start(app, data);
+    await Bun.sleep(500);
+    expect(imports.importing(id)).toBe(false);
+    expect(store.read(dir).status).toBe("needs_choice");
+  } finally {
+    cleanup();
+  }
+});
 
 test("the tries back off: 1, 5 and 15 minutes, then hourly", () => {
   expect([0, 1, 2, 3, 9].map(missing.delayAfter)).toEqual([60_000, 300_000, 900_000, 3_600_000, 3_600_000]);
