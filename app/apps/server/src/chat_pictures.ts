@@ -9,7 +9,10 @@
 
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+
+import * as cloud from "./cloud.ts";
+import * as diag from "./diag.ts";
 
 /** A picture written as Markdown: its words and where it is. */
 const PICTURE = /!\[([^\]\n]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"\n]*")?\s*\)/g;
@@ -80,12 +83,15 @@ export const CHAT_PICTURES = "chat-pictures";
 
 const KEPT = /^[0-9a-f]{16}\.(png|jpg|webp|gif)$/;
 
+/** The name a picture's bytes are kept under: its content's. */
+const nameOf = (bytes: Uint8Array, extension: string): string => `${createHash("sha1").update(bytes).digest("hex").slice(0, 16)}.${extension}`;
+
 /** A picture's file extension from its type. */
 export const extensionOf = (mimeType: string): string => (mimeType === "image/jpeg" ? "jpg" : mimeType === "image/webp" ? "webp" : mimeType === "image/gif" ? "gif" : "png");
 
 /** Keeps `bytes` in `folder` under its content's name (written once): the file. */
 export function keepPicture(folder: string, bytes: Uint8Array, extension: string): string {
-  const out = join(folder, `${createHash("sha1").update(bytes).digest("hex").slice(0, 16)}.${extension}`);
+  const out = join(folder, nameOf(bytes, extension));
   if (fs.existsSync(out)) return out;
   fs.mkdirSync(folder, { recursive: true });
   const partial = `${out}.${process.pid}.partial`;
@@ -161,5 +167,72 @@ export function chatPictureAddress(project: string, folder: string, file: string
   if (found === null) return null;
   const extension = (found.split(".").pop() ?? "png").toLowerCase().replace("jpeg", "jpg");
   const kept = fs.existsSync(folder) && found.startsWith(`${fs.realpathSync(folder)}/`) && KEPT.test(found.split("/").pop()!) ? found : keepPicture(folder, new Uint8Array(fs.readFileSync(found)), extension);
+  void sharePicture(project, kept);
   return `/api/projects/${encodeURIComponent(project)}/chat-pictures/${kept.split("/").pop()}`;
+}
+
+// The chat itself goes to the cloud (chat_sync.ts), so its pictures go too: a
+// project opened on another computer (or brought back to this one) showed its
+// answers' pictures as broken (Sphe, Nov 18, the second time).
+
+/** A kept picture's cloud key: its project's and its content's, so it's put once and never changes. */
+export const pictureKey = (project: string, name: string): string => `edit/chat-pictures/${project}/${name}`;
+
+/** Keys this server has seen in the cloud, or is putting there: each is looked up once. */
+const shared = new Set<string>();
+
+/** Puts a kept picture `file` of `project` in the cloud, unless it's there. Never throws: a failure is said, and the next keep or chat push tries again. */
+export async function sharePicture(project: string, file: string): Promise<void> {
+  if (!cloud.enabled() || !KEPT.test(basename(file))) return;
+  const key = pictureKey(project, basename(file));
+  if (shared.has(key)) return;
+  shared.add(key);
+  try {
+    if (!(await cloud.has(key))) await cloud.uploadFile(file, key);
+  } catch (error) {
+    shared.delete(key);
+    diag.warn("agent", `a chat picture to the cloud (${key}): ${diag.messageOf(error)}`);
+  }
+}
+
+/** The names of `project`'s kept pictures shown in a chat's text (a project's id is letters, digits, `_` and `-`). */
+export function picturesIn(project: string, text: string): string[] {
+  if (!/^[\w-]+$/.test(project)) return [];
+  const address = new RegExp(`/api/projects/${project}/chat-pictures/([0-9a-f]{16}\\.(?:png|jpg|webp|gif))`, "g");
+  return [...new Set([...text.matchAll(address)].map((match) => match[1]!))];
+}
+
+const fetching = new Map<string, Promise<string | null>>();
+
+/**
+ * A kept picture another computer's chat showed, brought into `folder` from
+ * the cloud: its file, or null when the cloud hasn't it either (or can't be
+ * reached). Its bytes must match its name, since the page keeps it for good.
+ */
+export function fetchPicture(project: string, folder: string, name: string): Promise<string | null> {
+  if (!KEPT.test(name) || !cloud.enabled()) return Promise.resolve(null);
+  const key = pictureKey(project, name);
+  const waiting = fetching.get(key);
+  if (waiting !== undefined) return waiting;
+  const work = (async () => {
+    const dest = join(folder, name);
+    try {
+      if (!(await cloud.has(key))) return null;
+      await cloud.download(key, dest);
+      if (nameOf(new Uint8Array(fs.readFileSync(dest)), name.split(".").pop()!) !== name) {
+        fs.rmSync(dest, { force: true });
+        diag.warn("agent", `a chat picture from the cloud (${key}) isn't the one its name says`);
+        return null;
+      }
+      shared.add(key);
+      return dest;
+    } catch (error) {
+      diag.warn("agent", `a chat picture from the cloud (${key}): ${diag.messageOf(error)}`);
+      return null;
+    } finally {
+      fetching.delete(key);
+    }
+  })();
+  fetching.set(key, work);
+  return work;
 }

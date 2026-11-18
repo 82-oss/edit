@@ -7,7 +7,7 @@
 import type { App } from "./app.ts";
 import * as broll from "./broll.ts";
 import { readAttached, type Attached } from "./chat_attachments.ts";
-import { CHAT_PICTURES, keptPicture } from "./chat_pictures.ts";
+import { CHAT_PICTURES, fetchPicture, keptPicture } from "./chat_pictures.ts";
 import { subKey } from "./agent.ts";
 import * as archive from "./archive.ts";
 import * as diag from "./diag.ts";
@@ -690,10 +690,12 @@ async function mapFrameRoute(context: RouteContext<App>): Promise<Response> {
   return new Response(null, { status: broll.mapFrame(context.params.token ?? "", index, bytes) });
 }
 
-/** A picture in Edit's chat (chat_pictures.ts): kept by content, so it never changes. */
-function chatPictureRoute({ app, params }: RouteContext<App>): Response {
+/** A picture in Edit's chat (chat_pictures.ts): kept by content, so it never changes; one shown on another computer comes from the cloud. */
+async function chatPictureRoute({ app, params }: RouteContext<App>): Promise<Response> {
   const id = params.id ?? "";
-  const file = /^[\w-]+$/.test(id) ? keptPicture(join(app.store.uploadsDir(id), CHAT_PICTURES), params.name ?? "") : null;
+  const name = params.name ?? "";
+  const folder = /^[\w-]+$/.test(id) ? join(app.store.uploadsDir(id), CHAT_PICTURES) : null;
+  const file = folder === null ? null : (keptPicture(folder, name) ?? (await fetchPicture(id, folder, name)));
   if (file === null) throw notFound("No such picture.");
   return new Response(Bun.file(file), { headers: { "cache-control": "private, max-age=31536000, immutable" } });
 }

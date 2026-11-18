@@ -8,7 +8,9 @@
 
 import * as fs from "node:fs";
 
+import { CHAT_PICTURES, picturesIn, sharePicture } from "./chat_pictures.ts";
 import * as cloud from "./cloud.ts";
+import { join } from "./paths.ts";
 import { validId, type Store } from "./store.ts";
 
 /** The chat's cloud key for a project (or a sub-agent's chat of it). */
@@ -43,6 +45,16 @@ export function schedulePush(store: Store, project: string): void {
       void cloud.uploadFile(path, chatKey(project)).catch(() => {
         // Offline or signed out: the next save tries again.
       });
+      // Its pictures with it, those this computer has (a chat from before they were shared, one that failed to go up).
+      const owner = project.replace(/~.*$/, "");
+      const folder = join(store.uploadsDir(owner), CHAT_PICTURES);
+      try {
+        for (const name of picturesIn(owner, fs.readFileSync(path, "utf8"))) {
+          if (fs.existsSync(join(folder, name))) void sharePicture(owner, join(folder, name));
+        }
+      } catch {
+        // Gone as it was read: the next save tries again.
+      }
     }, 1500),
   );
 }
