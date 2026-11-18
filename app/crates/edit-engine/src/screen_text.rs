@@ -100,7 +100,7 @@ fn look(source: &Path, (width, height): (u32, u32), indexes: &[i64]) -> Result<T
             let time = index as f64 / RATE;
             let bgra = reader.frame_at(time)?;
             #[cfg(target_os = "macos")]
-            let lines = crate::mac_media::text(bgra, wide, high)?;
+            let lines = crate::mac_media::text(bgra, wide, high, false)?;
             #[cfg(not(target_os = "macos"))]
             let lines = crate::text_model::text(bgra, wide, high)?;
             let seen = lines
@@ -149,7 +149,9 @@ const AT_MOST_WIDE: u32 = 1920;
 /// `fps`, its rate) of `source` (`size` its picture size), read at the file's
 /// own size up to 1920 wide: small text a 960-wide frame loses, a bodycam's
 /// clock in its corner (the server's camera_clock.ts, which keeps what it
-/// reads). Boxes are shares of the whole picture, in `times`' order.
+/// reads). Boxes are shares of the whole picture, in `times`' order. On a
+/// Mac, at Vision's accurate level: a box the blur follows must hold every
+/// letter (`mac_media::text`).
 /// Blocking: call from spawn_blocking.
 pub fn read_at(
     source: &Path,
@@ -195,7 +197,7 @@ pub fn read_at(
                 line.copy_from_slice(pixels);
             }
             #[cfg(target_os = "macos")]
-            let lines = crate::mac_media::text(&crop, crop_w as u32, crop_h as u32)?;
+            let lines = crate::mac_media::text(&crop, crop_w as u32, crop_h as u32, true)?;
             #[cfg(not(target_os = "macos"))]
             let lines = crate::text_model::text(&crop, crop_w as u32, crop_h as u32)?;
             let to_frame = |value: f32, from: usize, across: usize, whole: u32| {

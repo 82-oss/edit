@@ -74,7 +74,13 @@ unsafe extern "C" {
         dh: u32,
         dstride: usize,
     ) -> i32;
-    fn edit_text(bgra: *const u8, width: u32, height: u32, stride: usize) -> *mut c_void;
+    fn edit_text(
+        bgra: *const u8,
+        width: u32,
+        height: u32,
+        stride: usize,
+        accurate: i32,
+    ) -> *mut c_void;
     fn edit_faces(
         bgra: *const u8,
         width: u32,
@@ -296,17 +302,27 @@ pub fn encode_image(
     Ok(bytes)
 }
 
-/// Words in a packed BGRA picture (Apple's Vision, the fast level): each piece
-/// of text with its box, x0, y0, x1, y1 (0..1 from the top left), and the
-/// recogniser's confidence.
-pub fn text(bgra: &[u8], width: u32, height: u32) -> Result<Vec<([f32; 4], f32, String)>, String> {
+/// Words in a packed BGRA picture (Apple's Vision): each piece of text with
+/// its box, x0, y0, x1, y1 (0..1 from the top left), and the recogniser's
+/// confidence. The fast level finds where text is; `accurate` is for a box
+/// that must cover every letter (the tracked blur, `screen_text::read_at`):
+/// over a busy picture the fast level reads an outlined subtitle in pieces,
+/// "@ 8U8PECf" boxed over half of "THE SUSPECT RAN", where the accurate one
+/// reads the whole line, at ~50 ms a band on an M1 against ~15 (kenobi, Nov 18:
+/// CI's Mac left the words sharp).
+pub fn text(
+    bgra: &[u8],
+    width: u32,
+    height: u32,
+    accurate: bool,
+) -> Result<Vec<([f32; 4], f32, String)>, String> {
     let stride = width as usize * 4;
     if width == 0 || height == 0 || bgra.len() < stride * height as usize {
         return Err("text picture doesn't match its size".to_owned());
     }
     // The bridge reads the pixels during the call only; the CFData it hands
     // back is read, copied and released exactly once below.
-    let data = unsafe { edit_text(bgra.as_ptr(), width, height, stride) };
+    let data = unsafe { edit_text(bgra.as_ptr(), width, height, stride, i32::from(accurate)) };
     if data.is_null() {
         return Err("Vision couldn't look for text".to_owned());
     }

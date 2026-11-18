@@ -250,12 +250,13 @@ int edit_subject_cutout(const char *input, const char *output, double x, double 
     @try { return edit_subject_cutout_unguarded(input, output, x, y, bounds, error, capacity); } @catch (NSException *exception) { caught(exception, "edit_subject_cutout", error, capacity); return 0; }
 }
 
-// Words in a BGRA picture (Vision's text recognition, the fast level, no
-// language correction: channel buttons and logos aren't sentences): one line
+// Words in a BGRA picture (Vision's text recognition, no language correction:
+// channel buttons and logos aren't sentences; the fast level, or with
+// `accurate` the accurate one, see mac_media.rs `text`): one line
 // per piece of text, "x0 y0 x1 y1 confidence<TAB>text" (0..1 from the top
 // left), as CFData the caller releases; NULL when Vision fails. The pixels
 // are only read during the call.
-static void *edit_text_unguarded(const uint8_t *bgra, uint32_t width, uint32_t height, size_t stride) {
+static void *edit_text_unguarded(const uint8_t *bgra, uint32_t width, uint32_t height, size_t stride, int accurate) {
     @autoreleasepool {
         if (!width || !height || stride < (size_t)width * 4) return NULL;
         CVPixelBufferRef pixel = NULL;
@@ -264,7 +265,7 @@ static void *edit_text_unguarded(const uint8_t *bgra, uint32_t width, uint32_t h
             return NULL;
         }
         VNRecognizeTextRequest *request = [VNRecognizeTextRequest new];
-        request.recognitionLevel = VNRequestTextRecognitionLevelFast;
+        request.recognitionLevel = accurate ? VNRequestTextRecognitionLevelAccurate : VNRequestTextRecognitionLevelFast;
         request.usesLanguageCorrection = NO;
         VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:pixel options:@{}];
         NSError *problem = nil;
@@ -284,8 +285,8 @@ static void *edit_text_unguarded(const uint8_t *bgra, uint32_t width, uint32_t h
         return (void *)CFBridgingRetain([lines dataUsingEncoding:NSUTF8StringEncoding]);
     }
 }
-void *edit_text(const uint8_t *bgra, uint32_t width, uint32_t height, size_t stride) {
-    @try { return edit_text_unguarded(bgra, width, height, stride); } @catch (NSException *exception) { caught(exception, "edit_text", NULL, 0); return NULL; }
+void *edit_text(const uint8_t *bgra, uint32_t width, uint32_t height, size_t stride, int accurate) {
+    @try { return edit_text_unguarded(bgra, width, height, stride, accurate); } @catch (NSException *exception) { caught(exception, "edit_text", NULL, 0); return NULL; }
 }
 
 // High-quality resample of a 4-channel 8-bit picture (any channel order).
