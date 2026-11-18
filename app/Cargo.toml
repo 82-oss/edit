@@ -59,7 +59,10 @@ opt-level = 3
 
 [profile.release]
 lto = "thin"
-strip = true
+# Function names kept, debug info dropped: a crash report from a Mac then says
+# which function failed (Nov 18: the M4's abort and kenobi's at shutdown gave
+# only addresses). The addon is ~3 MB bigger (15.1 to 18.4 MB).
+strip = "debuginfo"
 
 # The dev server's addon (`just serve-build`): release speed where it matters,
 # minutes less to link. No LTO and many codegen units with incremental
