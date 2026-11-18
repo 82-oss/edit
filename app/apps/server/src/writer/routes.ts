@@ -862,6 +862,13 @@ const firstBuild = (build: unknown): { note: string } | null => (typeof build ==
 
 // A script made with a first build is built once its import is ready, as the Build button would.
 imports.hooks.build = (app, id, note) => {
+  // A first message that asks for more of the case's footage finds it first, then writes, as the Build button's does
+  // (Nov 18: a card imported with "find more courtroom and bodycam footage, then write" was written without looking).
+  const script = readFor(dataOf(app), id);
+  if (!script.commentary && finder.mayAsk(note)) {
+    startJob(app, id, { kind: "hunt", request: note, focus: NO_FOCUS, build: true });
+    return;
+  }
   startJob(app, id, { kind: "build", note, review: scripting.scriptFreshEyes(undefined) });
 };
 
