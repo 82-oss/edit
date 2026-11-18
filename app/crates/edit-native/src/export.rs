@@ -33,6 +33,9 @@ pub struct ExportPlan {
     #[napi(ts_type = "Plan")]
     pub plan: serde_json::Value,
     pub fps: f64,
+    /// The name of its chunk folder when it isn't the project's own (a
+    /// Vertical, Square… or resized export's): `chunks::folder`.
+    pub chunks: Option<String>,
 }
 
 /// What exporting `project` as `options` ask will cover, or why it can't:
@@ -50,6 +53,7 @@ pub fn export_plan(
         Ok(ExportPlan {
             plan: json(&plan)?,
             fps: project.fps(),
+            chunks: edit_engine::render::chunk_name(&project, &options, &plan),
         })
     })
 }

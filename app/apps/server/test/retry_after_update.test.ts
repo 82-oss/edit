@@ -78,12 +78,19 @@ test("a new build tries again, once and one at a time, the share that failed aft
   try {
     expect(retry.noteBuild(app, "nightly-48").map((one) => `${one.kind} ${one.project}`)).toEqual([`share ${mom}`, `export ${cops}`]);
     // A stale chunk cache goes before it's tried, so it renders fresh.
-    fs.mkdirSync(chunkFolder(app.store.cacheDir(), cops), { recursive: true });
-    fs.writeFileSync(`${chunkFolder(app.store.cacheDir(), cops)}/manifest-v1.json`, "{}");
+    // A Vertical export's (its own folder, render.rs chunk_name) goes too; smooth playback's stays.
+    const vertical = chunkFolder(app.store.cacheDir(), `${cops}.1080x1920-Blur`);
+    const playback = chunkFolder(app.store.cacheDir(), `${cops}.playback`);
+    for (const folder of [chunkFolder(app.store.cacheDir(), cops), vertical, playback]) {
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(`${folder}/manifest-v1.json`, "{}");
+    }
     const { done, actions } = recorder();
     expect(await retry.step(app, actions)).toBe("shared");
     expect(await retry.step(app, actions)).toBe("exported");
     expect(fs.existsSync(chunkFolder(app.store.cacheDir(), cops))).toBe(false);
+    expect(fs.existsSync(vertical)).toBe(false);
+    expect(fs.existsSync(playback)).toBe(true);
     expect(done).toEqual([`share ${mom}`, `export ${cops} /out/${cops}.mp4`]);
     // Each was taken once: nothing's left, and starting again on the same build queues nothing.
     expect(await retry.step(app, actions)).toBeNull();

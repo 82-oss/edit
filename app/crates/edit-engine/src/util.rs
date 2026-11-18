@@ -414,6 +414,30 @@ pub fn killed_on_cancel<T>(cancel: &std::sync::atomic::AtomicBool, work: impl Fn
     })
 }
 
+/// Kills this thread's export's decoders if dropped by a panic. Made inside a
+/// `std::thread::scope` whose threads read from decoders: the scope joins them
+/// before the panic gets out of it, and one blocked on a stalled read would
+/// keep it, and the export, there for good (`killed_on_cancel`'s own watch is
+/// outside the scope, so it never got the chance).
+pub struct KillOnPanic(Option<std::sync::Arc<Decoders>>);
+
+impl KillOnPanic {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self(decoders())
+    }
+}
+
+impl Drop for KillOnPanic {
+    fn drop(&mut self) {
+        if let Some(decoders) = &self.0 {
+            if std::thread::panicking() {
+                decoders.kill_all();
+            }
+        }
+    }
+}
+
 /// A decoder child listed with this thread's export (if any) until it's reaped.
 pub struct Watched {
     pub child: std::process::Child,
@@ -569,6 +593,46 @@ mod tests {
             let cancel = std::sync::atomic::AtomicBool::new(false);
             let result = catch("the export", || {
                 killed_on_cancel(&cancel, || -> u32 { panic!("a validation error") })
+            });
+            let _ = sent.send(result.is_err());
+        });
+        let failed = came.recv_timeout(std::time::Duration::from_secs(10));
+        assert_eq!(failed, Ok(true), "the export hung");
+    }
+
+    /// A panic while a decoder's read is blocked (a stalled file or download)
+    /// fails the export too: the decoder is killed before the scope that
+    /// started its reader waits for it.
+    #[test]
+    fn a_panic_beside_a_blocked_decoder_fails_rather_than_hangs() {
+        use std::io::Read;
+        let (sent, came) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let result = catch("the export", || {
+                killed_on_cancel(&cancel, || {
+                    std::thread::scope(|scope| {
+                        let _kill = KillOnPanic::new();
+                        let (started, reading) = std::sync::mpsc::channel();
+                        let decoders = decoders();
+                        scope.spawn(move || {
+                            with_decoders(decoders, || {
+                                let child = std::process::Command::new("sleep")
+                                    .arg("600")
+                                    .stdout(std::process::Stdio::piped())
+                                    .spawn()
+                                    .unwrap();
+                                let mut decoder = Watched::new(child);
+                                let mut out = decoder.child.stdout.take().unwrap();
+                                started.send(()).unwrap();
+                                let _ = out.read_to_end(&mut Vec::new());
+                            });
+                        });
+                        reading.recv().unwrap();
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        panic!("a validation error");
+                    })
+                })
             });
             let _ = sent.send(result.is_err());
         });

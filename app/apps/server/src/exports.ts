@@ -92,6 +92,8 @@ export function failedExports(home: string): Record<string, ExportFailure> {
 
 interface Running {
   output: string;
+  /** Its chunk folder's name when it isn't the project's own (a framed export's: `exportPlan`'s `chunks`). */
+  chunks?: string;
   /** Its entry in the jobs a restart resumes. */
   key: string;
   cancelled: boolean;
@@ -393,9 +395,22 @@ export function aheadSpent(cache: string, id: string, output: string): void {
   fs.rmSync(`${file}.json`, { force: true });
 }
 
-/** The chunk folder of a project's exports (the engine's chunks::folder). */
+/** The chunk folder of a project's exports (the engine's chunks::folder), or of the ones named `project` (`exportPlan`'s `chunks`). */
 export function chunkFolder(cache: string, project: string): string {
   return join(cache, "export-chunks", project.replace(/[^A-Za-z0-9_-]/g, "_"));
+}
+
+/** Every chunk folder of `project`'s exports: its own and each framed export's (`<id>.<w>x<h>-<fill>`, render.rs `chunk_name`). */
+export function chunkFolders(cache: string, project: string): string[] {
+  const own = chunkFolder(cache, project);
+  const framed = new RegExp(`^${own.slice(own.lastIndexOf("/") + 1)}_\\d+x\\d+-[A-Za-z]+$`);
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(join(cache, "export-chunks"));
+  } catch {
+    // None yet.
+  }
+  return [own, ...names.filter((name) => framed.test(name)).map((name) => join(cache, "export-chunks", name))];
 }
 
 /**
@@ -533,7 +548,7 @@ const KEEP_PARTS = 200;
  * every chunk from. `reuse` lets go of only the latter (when there's no room
  * for both, the room comes first).
  */
-export function holdFiles(cache: string, project: Project): { media: () => void; reuse: () => void; reusable: boolean } {
+export function holdFiles(cache: string, project: Project, chunks: string = project.id): { media: () => void; reuse: () => void; reusable: boolean } {
   const paths: string[] = [];
   for (const media of project.media) {
     if (!media.path.includes("://")) paths.push(media.path);
@@ -541,7 +556,7 @@ export function holdFiles(cache: string, project: Project): { media: () => void;
     if (cloud !== undefined && cloud !== null && cloud.proxy === cloud.original) paths.push(cachePath(cache, cloud.original));
   }
   const ahead = aheadFile(cache, project.id);
-  const last = lastChunks(cache, project.id)?.output;
+  const last = lastChunks(cache, chunks)?.output;
   const reused = [ahead, ...(last === undefined ? [] : [last])];
   return { media: filePins.pin(paths), reuse: filePins.pin([...reused, `${ahead}.json`]), reusable: reused.some((path) => isFile(path)) };
 }
@@ -843,7 +858,7 @@ export class ExportRegistry implements seams.Exports {
     if (this.jobs.size > 0 || this.localQueue.length > 0 || this.ahead.length > 0) return false;
     if (capacity.noRoom(this.localActive) !== null) return false;
     const addon = native();
-    const { plan, fps } = addon.exportPlan({ json: jsonForSerde(project) }, options);
+    const { plan, fps, chunks } = addon.exportPlan({ json: jsonForSerde(project) }, options);
     if (plan.end <= plan.start) return false;
     const folder = parent(output) ?? ".";
     try {
@@ -854,13 +869,13 @@ export class ExportRegistry implements seams.Exports {
     if (roomFor(exportBytes(options, plan, options.fps ?? fps), store.cacheDir(), folder) !== null) return false;
     const edit = structuredClone(project);
     let finish!: () => void;
-    const reads = holdFiles(store.cacheDir(), edit);
+    const reads = holdFiles(store.cacheDir(), edit, chunks ?? edit.id);
     const unpin = () => {
       reads.media();
       reads.reuse();
     };
     const running: Running = {
-      output, key: "", cancelled: false, job: null, snapshot: null, timeline: timelineHash(edit),
+      output, ...(chunks ? { chunks } : {}), key: "", cancelled: false, job: null, snapshot: null, timeline: timelineHash(edit),
       options: withWatermarkKey(optionsKey(options), watermark), keepLocal: true, queued: false, ahead: true,
       ended: new Promise<void>((resolve) => { finish = resolve; }), unpin, ...(reads.reusable ? { letReuseGo: reads.reuse } : {}),
     };
@@ -1030,7 +1045,7 @@ export class ExportRegistry implements seams.Exports {
     // This project's export made ahead stops first (it writes the same chunk folder); what it made is reused.
     await this.stopAhead(project.id);
     const addon = native();
-    const { plan, fps } = addon.exportPlan({ json: jsonForSerde(project) }, options);
+    const { plan, fps, chunks } = addon.exportPlan({ json: jsonForSerde(project) }, options);
     // The edit it's handed, whoever asked: a coded effect not rendered from its code, or a map shot still its first
     // frame, would go out as its stand-in (a Retry, a retry after an update and a stretch never waited for them).
     let notReady: string | null = null;
@@ -1041,13 +1056,13 @@ export class ExportRegistry implements seams.Exports {
     }
     if (notReady !== null) throw new Error(notReady);
     // Held from here (before any room is made for it) until its render ends: nothing deletes what it reads meanwhile.
-    const held = holdFiles(store.cacheDir(), project);
+    const held = holdFiles(store.cacheDir(), project, chunks ?? project.id);
     const unpin = () => {
       held.media();
       held.reuse();
     };
     try {
-      return await this.begin(store, library, project, options, output, extra, plan, fps, unpin, held.reusable ? held.reuse : null);
+      return await this.begin(store, library, project, options, output, extra, plan, fps, chunks ?? null, unpin, held.reusable ? held.reuse : null);
     } catch (error) {
       unpin();
       throw error;
@@ -1064,6 +1079,7 @@ export class ExportRegistry implements seams.Exports {
     extra: StartExtra,
     plan: Plan,
     fps: number,
+    chunks: string | null,
     unpin: () => void,
     letReuseGo: (() => void) | null,
   ): Promise<string> {
@@ -1166,7 +1182,7 @@ export class ExportRegistry implements seams.Exports {
     project = structuredClone(project);
     options = structuredClone(options);
     const review = extra.share === true ? reviewBytes(Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1)) : 0;
-    const running: Running = { output: path, key, cancelled: false, job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review, seconds: Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1), started_ms: nowMs(), unpin, ...(letReuseGo === null ? {} : { letReuseGo }) };
+    const running: Running = { output: path, ...(chunks ? { chunks } : {}), key, cancelled: false, job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review, seconds: Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1), started_ms: nowMs(), unpin, ...(letReuseGo === null ? {} : { letReuseGo }) };
     this.jobs.set(project.id, running);
     let upload = false;
     try {
@@ -1275,7 +1291,7 @@ export class ExportRegistry implements seams.Exports {
       if (short > 0) throw new Error(diskFull(short));
     };
     // A speed sample (`fresh_fps`): rendered here from the start, every frame new, never restarted.
-    let fresh = !quiet && options.format === "h264" && nothingToReuse(store.cacheDir(), id);
+    let fresh = !quiet && options.format === "h264" && nothingToReuse(store.cacheDir(), running.chunks ?? id);
     let result: { ok: true } | { ok: false; error: string };
     try {
       await catchBugsAsync("the export", async () => {
@@ -1341,7 +1357,7 @@ export class ExportRegistry implements seams.Exports {
               if (!begun) {
                 begun = true;
                 let fetched = -1;
-                restored = this.home === null ? null : await restorePrevious(store.cacheDir(), this.home, project.id, (key, dest) => cloud.download(key, dest, (got, size) => {
+                restored = this.home === null ? null : await restorePrevious(store.cacheDir(), this.home, running.chunks ?? project.id, (key, dest) => cloud.download(key, dest, (got, size) => {
                   const ratio = size > 0 ? Math.min(1, Math.max(0, got / size)) : 0;
                   const pct = Math.round(ratio * 100);
                   if (pct === fetched) return;

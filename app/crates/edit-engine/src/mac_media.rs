@@ -508,14 +508,34 @@ impl Reader {
         order: Order,
         if_changed: bool,
     ) -> Result<bool, String> {
+        self.frame_to(
+            time,
+            edit_render::wgpu::WriteOnly::from_mut(out),
+            order,
+            if_changed,
+        )
+    }
+
+    /// `frame` into memory that's only written (a mapped GPU buffer): C only
+    /// writes it, but for `Order::Rgba` it turns BGRA into RGBA in place, a
+    /// read back, so mapped memory is given BGRA only (render.rs `decoder`).
+    pub fn frame_to(
+        &mut self,
+        time: f64,
+        mut out: edit_render::wgpu::WriteOnly<'_, [u8]>,
+        order: Order,
+        if_changed: bool,
+    ) -> Result<bool, String> {
         let mut error = [0; 1024];
-        // Exclusive handle and output access; C checks the exact output length.
+        let length = out.len();
+        // Exclusive handle and output access (the WriteOnly's, for its
+        // lifetime); C checks the exact output length.
         let result = unsafe {
             edit_reader_frame(
                 self.handle.as_ptr(),
                 time,
-                out.as_mut_ptr(),
-                out.len(),
+                out.as_raw_element_ptr().as_ptr(),
+                length,
                 i32::from(order == Order::Rgba),
                 i32::from(if_changed),
                 error.as_mut_ptr(),
