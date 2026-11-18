@@ -404,6 +404,17 @@ describe("relay cloud endpoints", () => {
     expect((await call("convex", { kind: "query", path: "edit:setLater" }, { token: NAMED })).status).toBe(403);
   });
 
+  it("Home's seen marks: whose they are comes from the token, never the caller", async () => {
+    const upstream = vi.fn(async () => Response.json({ status: "success", value: { since: null, rows: [] } })); vi.stubGlobal("fetch", upstream);
+    const sent = () => JSON.parse(String((upstream.mock.calls.at(-1) as unknown as [string, RequestInit])[1].body));
+    const on = { ...env, CONVEX_CALLER: "1" } as Env;
+    await call("convex", { kind: "mutation", path: "edit:markSeen", args: { key: "edit:p1", caller: { sub: "someone-else", admin: true, perms: [] } } }, { token: SUBS, env: on });
+    expect(sent()).toEqual({ path: "edit:markSeen", args: { key: "edit:p1", caller: { sub: "person-s", admin: false, perms: ["use", "video.subtitles"] }, token: "service-token" }, format: "json" });
+    await call("convex", { kind: "query", path: "edit:listSeen", args: {} }, { token: SUBS, env: on });
+    expect(sent()).toMatchObject({ path: "edit:listSeen", args: { caller: { sub: "person-s" } } });
+    expect((await call("convex", { kind: "query", path: "edit:markSeen", args: { key: "edit:p1" } }, { token: SUBS, env: on })).status).toBe(403);
+  });
+
   it("the lessons inbox: who noted or closed a lesson comes from the token, never the caller", async () => {
     const upstream = vi.fn(async () => Response.json({ status: "success", value: { id: "l1" } })); vi.stubGlobal("fetch", upstream);
     const sent = () => JSON.parse(String((upstream.mock.calls.at(-1) as unknown as [string, RequestInit])[1].body));

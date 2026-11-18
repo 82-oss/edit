@@ -70,6 +70,8 @@ export const EDIT_CALLS = new Map<string, string>([
   ["edit:clearRestore", "mutation"], ["edit:getMedia", "query"], ["edit:listMedia", "query"], ["edit:putMedia", "mutation"],
   // Home's Later: what someone set aside, the team's (who set it aside comes from the token).
   ["edit:listLater", "query"], ["edit:setLater", "mutation"], ["edit:clearLater", "mutation"],
+  // Home's New and Changed: when each person last opened an edit, a script or an idea (whose marks they are comes from the token).
+  ["edit:listSeen", "query"], ["edit:markSeen", "mutation"],
   // The lessons inbox: the team's lasting feedback, noted by the agents, closed by a teaching round (who comes from the token).
   ["edit:listLessons", "query"], ["edit:noteLesson", "mutation"], ["edit:closeLesson", "mutation"],
   // The team's own notes on an edit, left in Edit at the playhead for the agent (who left one comes from the token).
