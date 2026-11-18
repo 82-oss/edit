@@ -278,13 +278,10 @@ function AllExports({ open, onClose, files }: { open: boolean; onClose: () => vo
 export function ExportsView({ channelOf, onViewed }: { channelOf: (project: string) => string | null; onViewed: () => void }) {
   const jobs = useExports((state) => state.jobs);
   const files = useExports((state) => state.files);
-  const folder = useExportFolder((state) => state.folder);
   const [since, setSince] = useState<number | null>(null);
-  const [all, setAll] = useState(false);
   const viewed = useRef(onViewed);
   viewed.current = onViewed;
   useEffect(() => {
-    void loadExportFolder();
     let live = true;
     const mark = () =>
       api
@@ -313,26 +310,9 @@ export function ExportsView({ channelOf, onViewed }: { channelOf: (project: stri
   const lead = going.find((job) => job.state === "running" && job.steps?.queued !== true);
   const firstInLine = going.find((job) => job !== lead && exportGoing(job));
   const fresh = exportedSince(files ?? [], since);
+  const older = (files?.length ?? 0) - fresh.length;
   return (
     <div className="-mx-4 -mt-3 flex flex-col">
-      <div className="flex items-center gap-2 px-4 pt-1 pb-3 text-[12.5px] text-muted">
-        {folder !== null && (
-          <>
-            <span className="min-w-0 truncate">
-              Saved to <span className="font-medium text-secondary">{folder.shown}</span>
-            </span>
-            <Button size="sm" variant="subtle" onClick={() => openExportFolder("home")}>
-              Change
-            </Button>
-          </>
-        )}
-        <span className="flex-1" />
-        {(files?.length ?? 0) > 0 && (
-          <Button size="sm" variant="subtle" onClick={() => setAll(true)}>
-            All exports
-          </Button>
-        )}
-      </div>
       {going.length > 0 && (
         <section>
           <div className="flex items-center gap-1.5 border-t border-line px-4 pt-4 pb-2 text-[13px] font-medium text-muted">
@@ -353,10 +333,44 @@ export function ExportsView({ channelOf, onViewed }: { channelOf: (project: stri
           ))}
         </section>
       )}
+      {/* Home's own empty state (Sphe, Nov 18: "horrible empty ui"): what shows here, and where the rest are. */}
       {going.length === 0 && fresh.length === 0 && since !== null && (
-        <div className="mt-16 text-center text-[14px] font-medium">Nothing new</div>
+        <div className="mt-16 text-center">
+          <div className="text-[14px] font-medium">{older > 0 ? "No new exports" : "No exports yet"}</div>
+          <p className="mx-auto mt-1.5 max-w-[420px] text-[13px] text-muted">
+            {older > 0 ? `What you export on this computer shows here while it runs and once it's done. The ${older} from before ${older === 1 ? "is" : "are"} under All exports.` : "What you export on this computer shows here while it runs and once it's done."}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The view's actions, in Home's header (Sphe, Nov 18: the folder line sat loose
+ * over an empty page): where exports are saved, and All exports when there are any.
+ */
+export function ExportsActions() {
+  const files = useExports((state) => state.files);
+  const folder = useExportFolder((state) => state.folder);
+  const [all, setAll] = useState(false);
+  useEffect(() => void loadExportFolder(), []);
+  return (
+    <>
+      {folder !== null && (
+        <button type="button" onClick={() => openExportFolder("home")} title="Change where exports are saved" className="flex h-8 min-w-0 items-center gap-1.5 rounded-lg px-2.5 text-[12.5px] text-muted transition-colors hover:bg-hover hover:text-fg">
+          <FolderSearch size={14} className="shrink-0" />
+          <span className="truncate">
+            Saved to <span className="font-medium text-secondary">{folder.shown}</span>
+          </span>
+        </button>
+      )}
+      {(files?.length ?? 0) > 0 && (
+        <Button variant="subtle" onClick={() => setAll(true)}>
+          All exports
+        </Button>
       )}
       <AllExports open={all} onClose={() => setAll(false)} files={files ?? []} />
-    </div>
+    </>
   );
 }

@@ -8,7 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { api, type ExportActivity as Activity, type Exported } from "../lib/api";
-import { cardWords, exportedSince, exporting, ExportsView, useExports } from "./ExportsView";
+import { cardWords, exportedSince, exporting, ExportsActions, ExportsView, useExports } from "./ExportsView";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 delete (Element.prototype as { animate?: unknown }).animate;
@@ -59,12 +59,21 @@ describe("the view", () => {
     const container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
-    await act(async () => root!.render(<ExportsView channelOf={() => null} onViewed={onViewed} />));
+    await act(async () =>
+      root!.render(
+        <>
+          <ExportsActions />
+          <ExportsView channelOf={() => null} onViewed={onViewed} />
+        </>,
+      ),
+    );
     await act(async () => {
       for (let n = 0; n < 5; n++) await Promise.resolve();
     });
     const text = container.textContent ?? "";
+    // The folder and All exports are the header's (Home puts ExportsActions there).
     expect(text).toContain("Saved to ~/Videos/Edit");
+    expect(text).toContain("All exports");
     expect(text).toContain("Exporting 2");
     expect(text).toContain("62% · Video · 2:05:58 · about 4 min left");
     expect(text).toContain("Next · waiting for the encoder");
@@ -80,5 +89,20 @@ describe("the view", () => {
     act(() => root!.unmount());
     root = null;
     expect(viewed).toHaveBeenCalledTimes(2);
+  });
+
+  it("says plainly what will show when nothing is new, and where the older ones are (Sphe, Nov 18: \"horrible empty ui\")", async () => {
+    vi.spyOn(api, "exportFolder").mockResolvedValue({ path: "/home/me/Videos/Edit", shown: "~/Videos/Edit", chosen: true, suggested: "", suggestedShown: "", home: "/home/me" });
+    vi.spyOn(api, "exportsHere").mockResolvedValue({ viewed_ms: 500, exports: [file("Killer Pastor", 100)] });
+    vi.spyOn(api, "exportsViewed").mockResolvedValue({ viewed_ms: 600 });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    await act(async () => root!.render(<ExportsView channelOf={() => null} onViewed={() => {}} />));
+    await act(async () => {
+      for (let n = 0; n < 5; n++) await Promise.resolve();
+    });
+    expect(container.textContent).toContain("No new exports");
+    expect(container.textContent).toContain("The 1 from before is under All exports.");
   });
 });

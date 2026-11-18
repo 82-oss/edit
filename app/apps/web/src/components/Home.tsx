@@ -33,7 +33,7 @@ import { AREA, Aside, ChannelField, FIELD, Field, More, NewShell, useChannelNeed
 import { loadChannels, useChannels } from "../lib/channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { BY, Category, CATEGORY, CHIP, COLUMNS, contextMenu, CreatorCell, DoneContext, DoneStatus, FreshMark, KindMark, LENGTH, LengthCell, layoutFor, NAME, NoteMark, PILL, ROW, RowButtons, StatusCell, TableShape, Updated, useDoneRow, useNote, withDone } from "./HomeTable";
-import { ExportsView, useWatchExports } from "./ExportsView";
+import { ExportsActions, ExportsView, useWatchExports } from "./ExportsView";
 import { HomeSidebar, nameOf, OpenSidebar, placeOf, placeOfSection, PLACES, useSidebarOpen, type Place as Spot, type Section, type Where } from "./HomeSidebar";
 import { ThumbnailGrid } from "../thumbnails/list";
 import { NewThumbnail } from "../thumbnails/new";
@@ -555,7 +555,9 @@ export function Home() {
                 </Button>
               ) : inChannels ? (
                 <ChannelsActions />
-              ) : inExports ? null : inThumbnails ? (
+              ) : inExports ? (
+                <ExportsActions />
+              ) : inThumbnails ? (
                 <Button variant="light" onClick={() => setThumbOpen(true)}>
                   <Plus size={15} strokeWidth={2.2} /> New thumbnail
                 </Button>
