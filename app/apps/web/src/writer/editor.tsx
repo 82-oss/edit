@@ -1,12 +1,11 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { scriptBuilt } from "@edit/types/models";
 import { chatDraftKey, useChatDraft } from "./agent";
-import { ChatShell, ChatTurns, Empty, ResetAsk } from "../components/AgentPanel";
-import { ChatComposer } from "../components/ChatComposer";
+import { AgentChat, Empty, ResetAsk, type ChatTimes } from "../components/AgentPanel";
+import { ChatDock } from "../components/ChatDock";
 import { useUntaughtLane } from "../components/Untaught";
-import { buildTurns } from "../lib/agentTurns";
 import { addQuote, useQuotesOf, type ChatQuote } from "../lib/chatQuotes";
-import { savedEntryIds, scriptEntries } from "./chat/editor-entries";
+import { scriptEntries } from "./chat/editor-entries";
 import { buildStatus, completeTranscription, correctWord, editProject, getChat, getResearch, getScript, importReuses, message, previewSrc, resetScript, resolveProposals, restoreVersion, retrySpeakers, saveClips, setHeading, startBuild, startEdit, startRevision, stopJob } from "./api";
 import { navigate } from "../lib/route";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
@@ -20,7 +19,7 @@ import { scriptText } from "./doc-export";
 import { FootageDoc } from "./footage-doc";
 import { ReusedCases } from "./reused-cases";
 import { Monitor } from "./monitor";
-import { clipStarts, editedPosition, Playhead } from "./playback";
+import { clipStarts, editedAtSource, editedPosition, Playhead } from "./playback";
 import { newPlayer } from "./player";
 import { Timeline } from "./timeline";
 import { type Picked, ResearchList, Transcript, useSpeakers } from "./transcript";
@@ -164,6 +163,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   // What Claude has said and the tools it ran so far, for the live turn (Repack's chat).
   const [liveTurn, setLiveTurn] = useState<NonNullable<BuildStatus["turn"]> | null>(null);
   const [chat, setChat] = useState<ChatTurn[]>([]);
+  // The conversation read from disk once: until then the chat shows its loading shape, and what was there doesn't animate in.
+  const [chatLoaded, setChatLoaded] = useState(false);
   // What was just asked, shown until the conversation on disk has it.
   const [sent, setSent] = useState<string | null>(null);
   // A message sent whose answer hasn't come: it shows before the job does.
@@ -441,7 +442,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const loadChat = () =>
     getChat(script.id)
       .then(setChat)
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setChatLoaded(true));
 
   useEffect(() => {
     alive.current = true;
@@ -609,8 +611,22 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   // The chat as the editor's chat shows it: same turns, same composer,
   // only the script's tools and send behind them.
   const chatEntries = scriptEntries(chat, working ? liveTurn : null, working || asking ? sent : null, started ?? undefined);
-  const chatTurns = buildTurns(chatEntries, working);
-  const chatKnown = savedEntryIds(chat);
+  // A time Claude gives is a footage time ([m:ss], as the transcript and CURRENT SCRIPT show the footage: the server's
+  // writer/revise.ts): the cut plays from there when it keeps that moment, else the footage plays there as the transcript's
+  // Play does. A range plays on from its start (this player has no stop at an end).
+  const chatTimes = useMemo<ChatTimes>(
+    () => ({
+      length: script.durationMs > 0 ? script.durationMs / 1000 : null,
+      go: (start) => {
+        const sourceMs = Math.round(start * 1000);
+        const at = editedAtSource(latest.current, sourceMs);
+        if (view === "script") setView("video");
+        if (at === null) player.audition(sourceMs);
+        else void player.play(at);
+      },
+    }),
+    [script.durationMs, player, view, setView],
+  );
   const resetTurn = chat.find((turn) => turn.reset === "pending");
   const lastTurn = chat.at(-1);
   const retryTurn = !busy && lastTurn?.role === "producer" ? lastTurn : !busy && chat.at(-2)?.role === "producer" && !!chat.at(-1)?.failed ? chat.at(-2) : undefined;
@@ -671,261 +687,268 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           <button type="button" className="ghost sm" onClick={() => setError(null)}>Dismiss</button>
         </div>
       )}
-      <div
-        className="editor-grid"
-        data-view={view}
-        data-expanded={expanded || undefined}
-        data-agent={agentShown || undefined}
-        data-resizing={split.resizing || undefined}
-        style={split.style}
-      >
-        {view !== "video" && (
-          <FootageDoc
-            key={view}
-            script={script}
+      <div className="flex min-h-0 flex-1">
+        <div
+          className="editor-grid"
+          data-view={view}
+          data-expanded={expanded || undefined}
+          // The chat is the shared dock beside the grid, not one of its columns (writer.css).
+          data-docked={agentShown || undefined}
+          data-resizing={split.resizing || undefined}
+          style={split.style}
+        >
+          {view !== "video" && (
+            <FootageDoc
+              key={view}
+              script={script}
+              clips={clips}
+              playhead={playhead}
+              follow={view === "split"}
+              zoomKey={view}
+              disabled={busy}
+              onPreview={(index) => view === "script" ? player.seek(clipStarts(clips)[index] ?? 0) : preview(index)}
+              onNarration={(id, text) => void persist(clips.map((item) => (item.id === id ? { ...item, narration: text } : item)))}
+              onHeading={(text) => void change(() => setHeading(script.id, revision.current, text))}
+              onResolve={(ids, accept) => void reviewChanges(ids, accept)}
+              onChat={(picked) => {
+                // A stretch across paragraphs (or the whole script) belongs to no one narration.
+                addQuote(chatKey, picked.id === "" ? { from: "the script", text: picked.quote } : { from: `narration ${picked.narrationNumber}`, where: `clip ${picked.id}, characters ${picked.start}–${picked.end}`, clip: picked.id, text: picked.quote });
+                setAgentShown(true);
+              }}
+              onNotes={(id, notes) => void persist(clips.map((item) => (item.id === id ? { ...item, notes: notes.length ? notes : undefined } : item)))}
+              bands={bands}
+            />
+          )}
+          {view === "split" && split.gutter("video")}
+          <Monitor
+            src={src}
             clips={clips}
+            labels={labels}
             playhead={playhead}
-            follow={view === "split"}
-            zoomKey={view}
-            disabled={busy}
-            onPreview={(index) => view === "script" ? player.seek(clipStarts(clips)[index] ?? 0) : preview(index)}
-            onNarration={(id, text) => void persist(clips.map((item) => (item.id === id ? { ...item, narration: text } : item)))}
-            onHeading={(text) => void change(() => setHeading(script.id, revision.current, text))}
-            onResolve={(ids, accept) => void reviewChanges(ids, accept)}
-            onChat={(picked) => {
-              // A stretch across paragraphs (or the whole script) belongs to no one narration.
-              addQuote(chatKey, picked.id === "" ? { from: "the script", text: picked.quote } : { from: `narration ${picked.narrationNumber}`, where: `clip ${picked.id}, characters ${picked.start}–${picked.end}`, clip: picked.id, text: picked.quote });
-              setAgentShown(true);
-            }}
-            onNotes={(id, notes) => void persist(clips.map((item) => (item.id === id ? { ...item, notes: notes.length ? notes : undefined } : item)))}
-            bands={bands}
+            player={player}
+            words={script.words}
+            corrections={script.corrections}
+            seekBar={view === "split"}
+            expanded={expanded}
+            onExpand={view === "video" ? setExpanded : undefined}
+            onVideo={onVideo}
           />
-        )}
-        {view === "split" && (
-          <>
-            {split.gutter("video")}
-            {agentShown && split.gutter("agent")}
-          </>
-        )}
-        <Monitor
-          src={src}
-          clips={clips}
-          labels={labels}
-          playhead={playhead}
-          player={player}
-          words={script.words}
-          corrections={script.corrections}
-          seekBar={view === "split"}
-          expanded={expanded}
-          onExpand={view === "video" ? setExpanded : undefined}
-          onVideo={onVideo}
-        />
-        <section className="panel bin" aria-label="Media">
-          <header className="panel-head">
-            <div className="panel-tabs" role="tablist">
-              <button type="button" role="tab" aria-selected={tab === "transcript"} onClick={() => setTab("transcript")}>
-                Transcript
-              </button>
-              <button type="button" role="tab" aria-selected={tab === "research"} onClick={() => setTab("research")}>
-                Research {research?.articles.length ? <small>{research.articles.length}</small> : null}
-              </button>
-            </div>
-          </header>
-          {tab === "transcript" ? (
-            <>
-              {script.words.length === 0 && !script.noSpeech ? (
-                <div className="empty">
-                  <p>No transcript yet.</p>
-                  <button type="button" style={{ marginTop: 12 }} disabled={busy || saving === "saving"} onClick={() => void retry()}>
-                    Transcribe
-                  </button>
-                </div>
-              ) : (
-                <Transcript
-                  words={script.words}
-                  clips={clips}
-                  parts={script.parts}
-                  speakers={speakers}
-                  playhead={playhead}
-                  player={player}
-                  noSpeech={script.noSpeech}
-                  corrections={script.corrections}
-                  onPick={setPicked}
-                />
-              )}
-              {picked && (
-                <div className="selection">
-                  <span>
-                    {picked.count} {picked.count === 1 ? "word" : "words"} <span className="mono faint">{clock(picked.endMs - picked.startMs)}</span>
-                  </span>
-                  <span className="spacer" />
-                  <button type="button" className="tool" onClick={() => player.audition(picked.startMs)}>
-                    <Icon name="play" size={11} />
-                    Play
-                  </button>
-                  <button type="button" className="tool" disabled={busy} title="Insert these words at the playhead, as an insert edit" onClick={() => insertPicked()}>
-                    <Icon name="plus" size={12} />
-                    Insert
-                  </button>
-                  <button type="button" className="tool" disabled={busy} title="Insert these words at the very start" onClick={() => insertPicked(0)}>
-                    At start
-                  </button>
-                  {picked.count === 1 && !busy && (
-                    <button type="button" className="tool" title="Fix how this word is spelled; its timing stays" onClick={() => setSpelling(script.corrections?.[picked.first.id] ?? picked.first.text)}>
-                      Fix spelling
-                    </button>
-                  )}
-                  <button type="button" className="tool danger-text" disabled={busy || !picked.inCut} title={picked.inCut ? "Take these words out of every clip in the cut" : "None of these words are in the cut"} onClick={liftPicked}>
-                    Remove
-                  </button>
-                </div>
-              )}
-              {picked && spelling !== null && !busy && (
-                <form
-                  className="selection"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    const word = picked.first;
-                    void change(() => correctWord(script.id, revision.current, word.id, spelling));
-                    setSpelling(null);
-                  }}
-                >
-                  <input
-                    // biome-ignore lint/a11y/noAutofocus: opened by the button beside it
-                    autoFocus
-                    value={spelling}
-                    maxLength={200}
-                    aria-label="Spelling"
-                    onChange={(event) => setSpelling(event.target.value.replace(/\s/g, ""))}
-                    onKeyDown={(event) => event.key === "Escape" && setSpelling(null)}
-                  />
-                  <button type="submit" className="tool">Save</button>
-                  {script.corrections?.[picked.first.id] && (
-                    <button type="button" className="tool" title={`Back to "${picked.first.text}"`} onClick={() => (void change(() => correctWord(script.id, revision.current, picked.first.id, "")), setSpelling(null))}>
-                      Undo fix
-                    </button>
-                  )}
-                </form>
-              )}
-            </>
-          ) : (
-            <ResearchList id={script.id} research={research} onChange={setResearch} />
-          )}
-        </section>
-        <Timeline
-          clips={clips}
-          words={script.words}
-          overview={script.overview}
-          durationMs={script.durationMs}
-          preview={src}
-          parts={script.parts}
-          labels={labels}
-          playhead={playhead}
-          player={player}
-          selected={selected}
-          disabled={busy}
-          onSelect={setSelected}
-          onEdit={(next) => void persist(next)}
-        />
-        <ChatShell
-      bare
-      className="agent"
-      label="Claude"
-      footer={
-        <ChatComposer
-          chat={chatKey}
-          draft={chatDraftKey(script.id)}
-          value={note}
-          onValueChange={setNote}
-          allowEmpty={!cueCount && untaught === null}
-          running={working}
-          disabled={busy || !ready}
-          revising={scriptBuilt({ clips })}
-          hint={!ready ? "Transcribe the footage first" : undefined}
-          tray={
-            resetTurn ? (
-              <ResetAsk
-                title="Reset the script?"
-                detail="Every clip and cut-in goes, and the script is laid out again as the import left it. The transcript, speakers, sources and research stay. The script before is kept in Versions."
-                busy={busy}
-                onAnswer={(accept) => void resetScript(script.id, accept).then((fresh) => { remember(shown.current); onChange(fresh); setClips(fresh.clips); shown.current = fresh.clips; revision.current = fresh.revision; void getChat(script.id).then(setChat, () => {}); }, (cause) => setError(message(cause)))}
-              />
-            ) : undefined
-          }
-          placeholder={
-            archived
-              ? "The footage is archived: restore it to change the script"
-              : quoted
-                  ? "What should we do with this passage?"
-                  : cueCount
-                    ? "Ask for a change, e.g. tighten the intro, rewrite cut-in 4 shorter, fix the edges…"
-                    : untaught !== null
-                      ? `Tell the agent how to write ${untaught}'s script…`
-                      : "Notes for the build (optional), e.g. aim for 30 minutes…"
-          }
-          onSend={(text, _files, quotes) => (cueCount ? revise(text, quotes) : build(text))}
-          onStop={() => void stopJob(script.id).catch((cause) => setError(message(cause)))}
-        />
-      }
-    >
-      {!cueCount && !busy && !chat.length && (
-            <Empty
-              title={untaught !== null ? "Not taught yet" : "Write the script"}
-              detail={
-                untaught !== null
-                  ? `${untaught}'s scripts haven't been taught yet. Say how this one should be written, and what you teach carries to its next.`
-                  : script.channel
-                    ? "Claude Opus reads the whole transcript with what this channel was taught, picks every clip and writes each cut-in. It takes a few minutes."
-                    : "Claude Opus reads the whole transcript with Repack's cut-in guide, picks every clip and writes each cut-in. It takes a few minutes."
-              }
-            >
-              {script.noSpeech && <p className="mx-auto mt-2 max-w-[270px] text-center text-[12px] leading-relaxed text-muted">No words were heard in this footage, so it has no transcript. Cut it by time on the timeline.</p>}
-            </Empty>
-          )}
-          <ReusedCases
-            script={script}
-            busy={busy}
-            onImport={(urls) => void bringReuses(urls)}
-            onPlay={(moment: Highlight) => player.audition(moment.startMs)}
-            onInsert={insertMoment}
-          />
-          {notesShown && !!script.notes?.length && (
-            <div className="rounded-lg border border-line px-3 py-2 text-[12.5px] leading-relaxed text-muted">
-              <ul className="list-disc space-y-1 pl-4">
-                {script.notes.map((text) => (
-                  <li key={text}>{text}</li>
-                ))}
-              </ul>
-              {unfinishedSpeakers && <button type="button" className="mt-2 text-fg underline underline-offset-2" disabled={busy} onClick={() => void retrySpeakers(script.id).then((job) => follow(job.startedAt), (cause) => setError(message(cause)))}>Retry unfinished speaker checks</button>}
-              <button type="button" className="mt-2 block text-faint hover:text-fg" onClick={() => setNotesShown(false)}>
-                Dismiss
-              </button>
-            </div>
-          )}
-          {chatTurns.length > 0 && <ChatTurns turns={chatTurns} known={chatKnown} thinking={working ? stage || undefined : undefined} />}
-          {retryTurn && (
-            <button type="button" className="h-7 w-fit rounded-md px-2 text-[12px] text-faint hover:bg-hover hover:text-fg" onClick={() => void (cueCount ? revise(retryTurn.text) : build(retryTurn.text.replace(/^Build the script\.?\s*/i, "")))}>
-              Retry that message
-            </button>
-          )}
-          {cueCount > 0 && !busy && !chat.length && (
-            <p className="px-1.5 text-[13px] leading-relaxed text-muted">
-              {clock(keptMs(clips))} cut · {cueCount} cut-ins. Ask for a change below: Claude edits the script where it needs to, and undo brings back what it changed.
-            </p>
-          )}
-          {!!script.proposals?.length && !busy && (
-            <div className="rounded-lg border border-line px-3 py-2 text-[12.5px] leading-relaxed text-muted">
-              <span>
-                {script.proposals.length === 1 ? "A rewrite is" : `${script.proposals.length} rewrites are`} waiting for your review beside the narration.
-              </span>
-              {view === "video" && (
-                <button type="button" className="block text-fg underline underline-offset-2" onClick={() => setView("script")}>
-                  Review in Script view
+          <section className="panel bin" aria-label="Media">
+            <header className="panel-head">
+              <div className="panel-tabs" role="tablist">
+                <button type="button" role="tab" aria-selected={tab === "transcript"} onClick={() => setTab("transcript")}>
+                  Transcript
                 </button>
-              )}
+                <button type="button" role="tab" aria-selected={tab === "research"} onClick={() => setTab("research")}>
+                  Research {research?.articles.length ? <small>{research.articles.length}</small> : null}
+                </button>
+              </div>
+            </header>
+            {tab === "transcript" ? (
+              <>
+                {script.words.length === 0 && !script.noSpeech ? (
+                  <div className="empty">
+                    <p>No transcript yet.</p>
+                    <button type="button" style={{ marginTop: 12 }} disabled={busy || saving === "saving"} onClick={() => void retry()}>
+                      Transcribe
+                    </button>
+                  </div>
+                ) : (
+                  <Transcript
+                    words={script.words}
+                    clips={clips}
+                    parts={script.parts}
+                    speakers={speakers}
+                    playhead={playhead}
+                    player={player}
+                    noSpeech={script.noSpeech}
+                    corrections={script.corrections}
+                    onPick={setPicked}
+                  />
+                )}
+                {picked && (
+                  <div className="selection">
+                    <span>
+                      {picked.count} {picked.count === 1 ? "word" : "words"} <span className="mono faint">{clock(picked.endMs - picked.startMs)}</span>
+                    </span>
+                    <span className="spacer" />
+                    <button type="button" className="tool" onClick={() => player.audition(picked.startMs)}>
+                      <Icon name="play" size={11} />
+                      Play
+                    </button>
+                    <button type="button" className="tool" disabled={busy} title="Insert these words at the playhead, as an insert edit" onClick={() => insertPicked()}>
+                      <Icon name="plus" size={12} />
+                      Insert
+                    </button>
+                    <button type="button" className="tool" disabled={busy} title="Insert these words at the very start" onClick={() => insertPicked(0)}>
+                      At start
+                    </button>
+                    {picked.count === 1 && !busy && (
+                      <button type="button" className="tool" title="Fix how this word is spelled; its timing stays" onClick={() => setSpelling(script.corrections?.[picked.first.id] ?? picked.first.text)}>
+                        Fix spelling
+                      </button>
+                    )}
+                    <button type="button" className="tool danger-text" disabled={busy || !picked.inCut} title={picked.inCut ? "Take these words out of every clip in the cut" : "None of these words are in the cut"} onClick={liftPicked}>
+                      Remove
+                    </button>
+                  </div>
+                )}
+                {picked && spelling !== null && !busy && (
+                  <form
+                    className="selection"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const word = picked.first;
+                      void change(() => correctWord(script.id, revision.current, word.id, spelling));
+                      setSpelling(null);
+                    }}
+                  >
+                    <input
+                      // biome-ignore lint/a11y/noAutofocus: opened by the button beside it
+                      autoFocus
+                      value={spelling}
+                      maxLength={200}
+                      aria-label="Spelling"
+                      onChange={(event) => setSpelling(event.target.value.replace(/\s/g, ""))}
+                      onKeyDown={(event) => event.key === "Escape" && setSpelling(null)}
+                    />
+                    <button type="submit" className="tool">Save</button>
+                    {script.corrections?.[picked.first.id] && (
+                      <button type="button" className="tool" title={`Back to "${picked.first.text}"`} onClick={() => (void change(() => correctWord(script.id, revision.current, picked.first.id, "")), setSpelling(null))}>
+                        Undo fix
+                      </button>
+                    )}
+                  </form>
+                )}
+              </>
+            ) : (
+              <ResearchList id={script.id} research={research} onChange={setResearch} />
+            )}
+          </section>
+          <Timeline
+            clips={clips}
+            words={script.words}
+            overview={script.overview}
+            durationMs={script.durationMs}
+            preview={src}
+            parts={script.parts}
+            labels={labels}
+            playhead={playhead}
+            player={player}
+            selected={selected}
+            disabled={busy}
+            onSelect={setSelected}
+            onEdit={(next) => void persist(next)}
+          />
+        </div>
+        {agentShown && (
+          // The chat every screen has (Sphe, Nov 18: "the composer looks quite different to what we have for Edit V2"), docked beside the grid.
+          <ChatDock>
+            <div className="flex min-h-0 flex-1 flex-col py-1.5">
+              <AgentChat
+                adapter={{
+                  key: chatKey,
+                  composer: chatKey,
+                  source: { entries: chatEntries, running: working, loaded: chatLoaded },
+                  // Each answers whether it started: a message that didn't (the server restarting or out of reach) goes back in the composer.
+                  // One sent while Claude works waits in the composer's queue and goes when the job ends (the server runs one job at a time).
+                  send: (text, _files, quotes) => (cueCount ? revise(text, quotes) : build(text)),
+                  stop: () => void stopJob(script.id).catch((cause) => setError(message(cause))),
+                  times: chatTimes,
+                  model: { revising: scriptBuilt({ clips }) },
+                  draft: chatDraftKey(script.id),
+                  value: note,
+                  onValueChange: setNote,
+                  // A first build takes notes or none; while one runs, an empty box is Stop, never a second build queued.
+                  allowEmpty: !cueCount && untaught === null && !working,
+                  disabled: archived || resolving || !ready,
+                  hint: !ready ? "Transcribe the footage first" : undefined,
+                  thinking: working ? stage || undefined : undefined,
+                  label: "Claude",
+                  ask: resetTurn ? (
+                    <ResetAsk
+                      title="Reset the script?"
+                      detail="Every clip and cut-in goes, and the script is laid out again as the import left it. The transcript, speakers, sources and research stay. The script before is kept in Versions."
+                      busy={busy}
+                      onAnswer={(accept) => void resetScript(script.id, accept).then((fresh) => { remember(shown.current); onChange(fresh); setClips(fresh.clips); shown.current = fresh.clips; revision.current = fresh.revision; void getChat(script.id).then(setChat, () => {}); }, (cause) => setError(message(cause)))}
+                    />
+                  ) : undefined,
+                  placeholder: archived
+                    ? "The footage is archived: restore it to change the script"
+                    : quoted
+                      ? "What should we do with this passage?"
+                      : cueCount
+                        ? "Ask for a change, e.g. tighten the intro, rewrite cut-in 4 shorter, fix the edges…"
+                        : untaught !== null
+                          ? `Tell the agent how to write ${untaught}'s script…`
+                          : "Notes for the build (optional), e.g. aim for 30 minutes…",
+                  empty:
+                    !cueCount && !busy ? (
+                      <Empty
+                        title={untaught !== null ? "Not taught yet" : "Write the script"}
+                        detail={
+                          untaught !== null
+                            ? `${untaught}'s scripts haven't been taught yet. Say how this one should be written, and what you teach carries to its next.`
+                            : script.channel
+                              ? "Claude Opus reads the whole transcript with what this channel was taught, picks every clip and writes each cut-in. It takes a few minutes."
+                              : "Claude Opus reads the whole transcript with Repack's cut-in guide, picks every clip and writes each cut-in. It takes a few minutes."
+                        }
+                      >
+                        {script.noSpeech && <p className="mx-auto mt-2 max-w-[270px] text-center text-[12px] leading-relaxed text-muted">No words were heard in this footage, so it has no transcript. Cut it by time on the timeline.</p>}
+                      </Empty>
+                    ) : undefined,
+                }}
+                above={
+                  <>
+                    <ReusedCases
+                      script={script}
+                      busy={busy}
+                      onImport={(urls) => void bringReuses(urls)}
+                      onPlay={(moment: Highlight) => player.audition(moment.startMs)}
+                      onInsert={insertMoment}
+                    />
+                    {notesShown && !!script.notes?.length && (
+                      <div className="rounded-lg border border-line px-3 py-2 text-[12.5px] leading-relaxed text-muted">
+                        <ul className="list-disc space-y-1 pl-4">
+                          {script.notes.map((text) => (
+                            <li key={text}>{text}</li>
+                          ))}
+                        </ul>
+                        {unfinishedSpeakers && <button type="button" className="mt-2 text-fg underline underline-offset-2" disabled={busy} onClick={() => void retrySpeakers(script.id).then((job) => follow(job.startedAt), (cause) => setError(message(cause)))}>Retry unfinished speaker checks</button>}
+                        <button type="button" className="mt-2 block text-faint hover:text-fg" onClick={() => setNotesShown(false)}>
+                          Dismiss
+                        </button>
+                      </div>
+                    )}
+                  </>
+                }
+              >
+                {retryTurn && (
+                  <button type="button" className="h-7 w-fit rounded-md px-2 text-[12px] text-faint hover:bg-hover hover:text-fg" onClick={() => void (cueCount ? revise(retryTurn.text) : build(retryTurn.text.replace(/^Build the script\.?\s*/i, "")))}>
+                    Retry that message
+                  </button>
+                )}
+                {cueCount > 0 && !busy && !chat.length && (
+                  <p className="px-1.5 text-[13px] leading-relaxed text-muted">
+                    {clock(keptMs(clips))} cut · {cueCount} cut-ins. Ask for a change below: Claude edits the script where it needs to, and undo brings back what it changed.
+                  </p>
+                )}
+                {!!script.proposals?.length && !busy && (
+                  <div className="rounded-lg border border-line px-3 py-2 text-[12.5px] leading-relaxed text-muted">
+                    <span>
+                      {script.proposals.length === 1 ? "A rewrite is" : `${script.proposals.length} rewrites are`} waiting for your review beside the narration.
+                    </span>
+                    {view === "video" && (
+                      <button type="button" className="block text-fg underline underline-offset-2" onClick={() => setView("script")}>
+                        Review in Script view
+                      </button>
+                    )}
+                  </div>
+                )}
+              </AgentChat>
             </div>
-          )}
-        </ChatShell>
+          </ChatDock>
+        )}
       </div>
       <VersionsDialog
         open={versionsOpen}

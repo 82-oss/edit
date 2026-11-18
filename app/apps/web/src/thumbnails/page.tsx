@@ -10,9 +10,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, Check, ChevronDown, Copy, Download, Image as ImageIcon, MessageSquare } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { ChatShell, ChatTurns, Empty, useChatTurns } from "../components/AgentPanel";
-import { useSentNow } from "../lib/sentNow";
-import { ChatComposer } from "../components/ChatComposer";
+import { AgentChat, ChatShell, Empty } from "../components/AgentPanel";
 import { ChatDock } from "../components/ChatDock";
 import { attachFiles, picturesOnly, postFile, type Uploader } from "../lib/chatFiles";
 import { AppMenu } from "../components/AppMenu";
@@ -893,44 +891,28 @@ function Chat({ id, thumb, upload, viewing, onSending, onAsked }: { id: string; 
   const toastError = useEditor((state) => state.toastError);
   const running = working(thumb);
   const entries = conversationEntries(thumb.chat, thumb.createdAt, running ? thumb.run : null, (turn) => (turn.images ?? []).map((image) => ({ name: thumb.images.find((one) => one.id === image)?.name ?? "picture", kind: "image" as const, url: sourceUrl(thumb.id, image) })));
-  // A message shows the moment it's sent.
-  const sent = useSentNow(`thumbnail:${id}`, entries);
-  const { turns, known } = useChatTurns(id, sent.entries, running || sent.sending);
   const quiet = running && thumb.run !== null && thumb.run.trace === undefined && thumb.run.tools === undefined && thumb.run.said === undefined;
+  const files = useMemo(() => ({ upload, accept: picturesOnly }), [upload]);
   return (
-    <ChatShell
-      resetKey={id}
-      footer={
-        <ChatComposer
-          running={running}
-          disabled={false}
-          modelName="Opus 5.5"
-          placeholder="Ask for a thumbnail, or a change…"
-          draft={`thumbnails.chat-draft.${id}`}
-          chat={`thumb:${id}`}
-          files={{ upload, accept: picturesOnly }}
-          onSend={(message, files, quotes) => {
-            onSending();
-            // Shown now and kept: one that doesn't go says so on itself, with Retry and Edit (sentNow.ts).
-            sent.send({
-              text: message,
-              composer: `thumb:${id}`,
-              attachments: files.map((one) => ({ name: one.name, kind: one.kind, url: one.preview })),
-              files,
-              quotes,
-              deliver: () => thumbnailsApi.chat(id, message, files.map((one) => one.landed as string), viewing).then(() => onAsked()),
-            });
-            return true;
-          }}
-          onStop={() => void thumbnailsApi.stop(id).then(onAsked, (error: unknown) => toastError(error, "stop it"))}
-        />
-      }
-    >
-      {sent.entries.length === 0 ? (
-        <Empty title="Make a thumbnail with Claude" detail="Drop in a frame or a thumbnail and say what you want: “clean this base and put the REC overlay on”, “three versions of the mom at the door”, “add ‘he abused me’ in a black box”, “a touch brighter”." />
-      ) : (
-        <ChatTurns turns={turns} known={known} thinking={quiet ? `On ${thumb.run?.holder}` : undefined} />
-      )}
-    </ChatShell>
+    <AgentChat
+      adapter={{
+        key: `thumbnail:${id}`,
+        composer: `thumb:${id}`,
+        source: { entries, running, loaded: true },
+        deliver: (message, attached) => {
+          onSending();
+          return thumbnailsApi.chat(id, message, attached.map((one) => one.landed as string), viewing).then(() => onAsked());
+        },
+        stop: () => void thumbnailsApi.stop(id).then(onAsked, (error: unknown) => toastError(error, "stop it")),
+        // A picture has no timeline: times the agent gives are marked, and clicking them does nothing (Sphe, Nov 18).
+        times: "inert",
+        files,
+        model: { name: "Opus 5.5" },
+        placeholder: "Ask for a thumbnail, or a change…",
+        draft: `thumbnails.chat-draft.${id}`,
+        thinking: quiet ? `On ${thumb.run?.holder}` : undefined,
+        empty: <Empty title="Make a thumbnail with Claude" detail="Drop in a frame or a thumbnail and say what you want: “clean this base and put the REC overlay on”, “three versions of the mom at the door”, “add ‘he abused me’ in a black box”, “a touch brighter”." />,
+      }}
+    />
   );
 }

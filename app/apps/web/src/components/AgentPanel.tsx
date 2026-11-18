@@ -1,7 +1,7 @@
 import { explain } from "@edit/types/problems";
 import { ArrowLeft, AudioLines, Check, ChevronRight, CircleSlash, Eye, FileInput, Image, ImageDown, FileText, FolderOpen, LayoutGrid, ListChecks, MousePointerClick, Music, RotateCcw, ScrollText, Scissors, Share, SlidersHorizontal, Spline, Square, SquarePlus, Star, Trash2, Type, Wrench, ScanEye, Pencil, type LucideIcon, Copy, Quote, SquareTerminal, FilePen, Search, Globe, BookOpen, ImagePlus, Hourglass, Minimize2, ArrowRight, Clapperboard } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
-import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, Fragment, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { inEdit, remarkTimes, timeOf } from "../lib/chatTimes";
 import remarkGfm from "remark-gfm";
@@ -20,6 +20,7 @@ import {
   useAgent,
   watchClaudeSupport,
   type AgentEntry,
+  type QueuedMessage,
 } from "../lib/agent";
 import { buildTurns, callTitle, formatWorked, groupSummary, isWorking, keepUnchanged, shortSpan, thinkingWord, type Turn, type TurnPart } from "../lib/agentTurns";
 import { argsOf, groupKind, shortTokens, stepKind, type StepKind } from "../lib/steps";
@@ -37,7 +38,9 @@ import { useWatching } from "../lib/watching";
 import { addQuote, parseQuoted } from "../lib/chatQuotes";
 import { QuoteSelection } from "./QuoteSelection";
 import { openMenu, type MenuItem } from "./ContextMenu";
-import { ChatComposer, QueueIsland, SentFiles } from "./ChatComposer";
+import { ChatComposer, QueueIsland, SentFiles, type SendResult } from "./ChatComposer";
+import type { Accept, ChatFile, Uploader } from "../lib/chatFiles";
+import type { ChatQuote } from "../lib/chatQuotes";
 import { PinChat, usePinChat, useStickToBottom } from "../lib/chatScroll";
 import { UserWords } from "./Quotes";
 import { NoteQueue } from "./NoteQueue";
@@ -60,8 +63,9 @@ export function AgentPanel() {
  * The right-hand chat, one shell for every surface (the editor, a script, an
  * idea, a thumbnail): the panel's card, a scroll that keeps to the newest
  * entry unless you've scrolled up, and the composer or whatever sits under
- * it — so what a chat gains lands in all of them at once. `bare` drops the
- * card for a chat inside another panel (a script's grid draws its own).
+ * it — so what a chat gains lands in all of them at once (AgentChat builds on
+ * it). `bare` drops the card for a chat inside another panel (a commentary's
+ * Claude tab draws its own).
  */
 export function ChatShell({
   children,
@@ -125,6 +129,8 @@ export function useChatTurns(key: unknown, entries: AgentEntry[], running: boole
 function SubAgentPanel() {
   const sub = useAgent((state) => state.sub)!;
   const { turns, known } = useChatTurns(sub.title, sub.entries, sub.running);
+  const times = useEditTimes();
+  const projectId = useEditor((state) => state.project?.id);
   return (
     <ChatShell
       loading={!sub.loaded}
@@ -145,9 +151,11 @@ function SubAgentPanel() {
       {sub.entries.length === 0 ? (
         <Empty title="Starting" detail="A new agent is opening the edit to watch it through." />
       ) : (
-        <EditTimes>
-          <ChatTurns turns={turns} known={known} />
-        </EditTimes>
+        <Times.Provider value={times}>
+          <QuoteChat.Provider value={projectId === undefined ? null : `project:${projectId}`}>
+            <ChatTurns turns={turns} known={known} />
+          </QuoteChat.Provider>
+        </Times.Provider>
       )}
     </ChatShell>
   );
@@ -173,6 +181,207 @@ function SubAgentCard({ entry }: { entry: AgentEntry }) {
   );
 }
 
+/**
+ * How a chat's times behave (lib/chatTimes.ts, Sphe, Nov 18): links that go
+ * there (`go`, while the time is under `length` seconds), links that look the
+ * same and go nowhere ("inert": an idea's or a thumbnail's chat has nothing to
+ * play), or plain text (null: a chat outside AgentChat).
+ */
+export type ChatTimes = { length: number | null; go: (start: number, end: number | null) => void } | "inert" | null;
+const Times = createContext<ChatTimes>(null);
+/** The composer a message's Quote goes to (its chat's own); none, no Quote. */
+const QuoteChat = createContext<string | null>(null);
+/** When the chat last streamed or changed, where it isn't the editor's agent (LiveStatus reads that one's itself). */
+const Activity = createContext<number | null>(null);
+
+/** A chat as its surface has it: the conversation, whether a turn runs, and the server's queue where it keeps one (Edit V2's). */
+export interface ChatSource {
+  entries: AgentEntry[];
+  running: boolean;
+  loaded: boolean;
+  queue?: readonly QueuedMessage[];
+  activityAt?: number;
+}
+
+/**
+ * One surface's chat (the editor's, a script's, an idea's, a thumbnail's)
+ * as AgentChat draws it: what it says, how a message goes, and what its
+ * times, quotes, files and model are. Everything else is the same chat.
+ */
+export type ChatAdapter = {
+  /** The conversation's key for messages shown before it has them (sentNow.ts): a project's id, `idea:<id>`, `thumbnail:<id>`. */
+  key: string;
+  /** The composer's key: its files, quotes and local queue. */
+  composer: string;
+  source: ChatSource;
+  stop: () => void;
+  /** The server's queue (source.queue): taking one out, Steer, Edit. Without it, the composer queues by itself and sends when the turn ends. */
+  queued?: { cancel: (id: string) => Promise<void>; steer: (id: string) => Promise<void>; edit: (id: string) => Promise<void> };
+  times?: ChatTimes;
+  /** Where Quote and "Add to chat" put the words: the composer's, unless null (none). */
+  quoteChat?: string | null;
+  files?: { upload: Uploader; accept?: Accept } | null;
+  /** The model pill or menu (ChatComposer): `revising` gives the menu, `hq` Edit V2's, else the pill with `name`. */
+  model: { name?: string; revising?: boolean; hq?: boolean; project?: string };
+  /** The agent asking something of the person (a reset), first on the composer's top edge. */
+  ask?: ReactNode;
+  /** On the composer's top edge after the queue: the team's notes, the untaught line. */
+  tray?: ReactNode[];
+  placeholder: string;
+  /** Shown while there's no conversation. */
+  empty?: ReactNode;
+  allowEmpty?: boolean;
+  hint?: string;
+  draft?: string;
+  value?: string;
+  onValueChange?: (value: string) => void;
+  disabled?: boolean;
+  /** What to say while the live turn has no tool running (a run's own step). */
+  thinking?: string;
+  /** Above the composer (why it's waiting, the chat that didn't load). */
+  notice?: ReactNode;
+  /** No composer at all (Claude isn't set up and there's nothing to read). */
+  composerHidden?: boolean;
+  label?: string;
+} & (
+  | {
+      /** Posts a message under this page's id for it: it shows at once (sentNow.ts) and stays until the chat has it. */
+      deliver: (text: string, files: ChatFile[], quotes: ChatQuote[], sendId: string) => Promise<unknown>;
+      send?: never;
+    }
+  | {
+      /** Sends a message that the chat shows itself (the editor's sendToAgent, a script's job), answering whether it went. */
+      send: (text: string, files: ChatFile[], quotes: ChatQuote[]) => SendResult;
+      deliver?: never;
+    }
+);
+
+/**
+ * Every chat on the right, one component (Sphe, Nov 18: "all of the chats
+ * would essentially be one massive component"): the editor's turns, the
+ * message shown the moment it's sent, the composer with its queue (the
+ * server's, with Steer, where there is one), times, quotes and pictures.
+ * `above` goes before the turns, `children` after them.
+ */
+export function AgentChat({ adapter, above, children }: { adapter: ChatAdapter; above?: ReactNode; children?: ReactNode }) {
+  const { key, source, composer } = adapter;
+  const toastError = useEditor((state) => state.toastError);
+  const sent = useSentNow(key, source.entries, source.queue);
+  // Built and pinned again for a new chat; what was there as it loaded doesn't animate in.
+  const resetKey = source.loaded ? key : "loading";
+  const { turns, known } = useChatTurns(resetKey, sent.entries, source.running || sent.sending);
+  const quoteChat = adapter.quoteChat === undefined ? composer : adapter.quoteChat;
+  const queued = adapter.queued;
+  // The server's queue, then what was queued here and hasn't reached it yet (sentNow.ts), shown the moment it's sent.
+  const rows = useMemo(
+    () =>
+      queued === undefined
+        ? []
+        : [
+            ...(source.queue ?? []).map((one) => ({ id: one.id, text: one.text, files: one.attachments?.length ?? 0, quotes: parseQuoted(one.text).quotes.length })),
+            ...sent.queued.map((one) => ({
+              id: `sent-${one.id}`,
+              text: one.text,
+              files: one.files.length,
+              quotes: parseQuoted(one.text).quotes.length,
+              ...(one.state === "sent" ? {} : { pending: one.state }),
+              ...(one.failure === undefined ? {} : { failure: one.failure }),
+            })),
+          ],
+    [queued, source.queue, sent.queued],
+  );
+  const local = (id: string | number) => (String(id).startsWith("sent-") ? String(id).slice(5) : null);
+  const island =
+    queued !== undefined && rows.length > 0 ? (
+      <QueueIsland
+        key="queue"
+        rows={rows}
+        onRemove={(id) => {
+          const mine = local(id);
+          if (mine !== null) cancelSent(mine);
+          else void queued.cancel(String(id)).catch((error: unknown) => toastError(error, "take the message out"));
+        }}
+        onSteer={(id) => local(id) === null && void queued.steer(String(id)).catch((error: unknown) => toastError(error, "steer the agent"))}
+        onEdit={(id) => {
+          const mine = local(id);
+          if (mine !== null) editSent(mine);
+          else void queued.edit(String(id)).catch((error: unknown) => toastError(error, "take the message out"));
+        }}
+        onRetry={(id) => {
+          const mine = local(id);
+          if (mine !== null) retrySent(mine);
+        }}
+      />
+    ) : null;
+  const shown = (node: ReactNode) => node !== false && node !== null && node !== undefined;
+  const tray = [
+    shown(adapter.ask) && <Fragment key="ask">{adapter.ask}</Fragment>,
+    island,
+    ...(adapter.tray ?? []).filter(shown).map((node, index) => <Fragment key={`tray-${index}`}>{node}</Fragment>),
+  ].filter(shown);
+  const onSend = (text: string, files: ChatFile[], quotes: ChatQuote[]): SendResult => {
+    if (adapter.send !== undefined) return adapter.send(text, files, quotes);
+    const deliver = adapter.deliver;
+    // Shown now and kept: one that doesn't go says so on itself, with Retry and Edit (sentNow.ts).
+    sent.send({
+      text,
+      composer,
+      attachments: files.map((one) => ({ name: one.name, kind: one.kind, url: one.preview })),
+      files,
+      quotes,
+      deliver: async (sendId) => void (await deliver(text, files, quotes, sendId)),
+    });
+    return true;
+  };
+  return (
+    <ChatShell
+      loading={!source.loaded}
+      resetKey={resetKey}
+      label={adapter.label}
+      footer={
+        adapter.composerHidden ? undefined : (
+          <>
+            {adapter.notice}
+            <ChatComposer
+              chat={composer}
+              draft={adapter.draft}
+              value={adapter.value}
+              onValueChange={adapter.onValueChange}
+              files={adapter.files ?? undefined}
+              tray={tray.length > 0 ? tray : undefined}
+              running={source.running}
+              disabled={adapter.disabled === true}
+              allowEmpty={adapter.allowEmpty}
+              hint={adapter.hint}
+              modelName={adapter.model.name}
+              revising={adapter.model.revising}
+              hq={adapter.model.hq}
+              project={adapter.model.project}
+              placeholder={adapter.placeholder}
+              onSend={onSend}
+              onStop={adapter.stop}
+            />
+            {/* Words selected in the chat or on the page: "Add to chat" over them. */}
+            {quoteChat !== null && <QuoteSelection chat={quoteChat} />}
+          </>
+        )
+      }
+    >
+      <Times.Provider value={adapter.times ?? null}>
+        <QuoteChat.Provider value={quoteChat}>
+          <Activity.Provider value={source.activityAt ?? null}>
+            {sent.entries.length === 0 && adapter.empty}
+            {above}
+            {sent.entries.length > 0 && <ChatTurns turns={turns} known={known} thinking={adapter.thinking} />}
+            {children}
+          </Activity.Provider>
+        </QuoteChat.Provider>
+      </Times.Provider>
+    </ChatShell>
+  );
+}
+
+/** The editor's chat, the first AgentChat: its queue on the server with Steer, times that play the edit, the reset card, notes. */
 function MainAgentPanel() {
   const projectId = useEditor((state) => state.project?.id);
   const status = useAgent((state) => state.status);
@@ -181,13 +390,20 @@ function MainAgentPanel() {
   const loaded = useAgent((state) => state.loaded);
   const failed = useAgent((state) => state.failed);
   const waiting = useAgent((state) => state.queue);
+  const modelName = useAgent((state) => state.chatModel ?? state.modelName);
+  const revising = useAgent((state) => state.revising);
+  // Edit V2: its own model menu, every model at any time, and messages sent while it works queue on the server.
+  const hq = useEditor((state) => state.project?.hq === true);
+  const notes = useNotes((state) => queued(state.notes).length);
+  const resetAsked = useEditor((state) => state.resetAsked);
   // A channel's project: what its lesson takes out of the footage runs in the background (RemovalRow).
   const channel = useEditor((state) => typeof state.project?.channel === "string" && state.project.channel !== "");
+  const untaught = useUntaughtChannel();
+  const times = useEditTimes();
+  const upload = useMemo(() => (projectId === undefined ? undefined : { upload: projectUploader(projectId) }), [projectId]);
   const reload = () => projectId !== undefined && void openAgent(projectId);
-  // The message just sent shows at once (sendToAgent holds it), until the chat (or its queue) has it by its id.
+  // What's on screen, the message just sent with it (sendToAgent holds it until the chat has it by its id).
   const { entries } = useSentNow(projectId ?? "", chat, waiting);
-  // Entries already there when the chat loaded don’t animate in.
-  const { turns, known } = useChatTurns(loaded ? projectId : "loading", entries, running);
   // Not ready, with the conversation already on screen: the setup card used
   // to stand in for an empty chat only, so this hid the composer and never
   // asked again (a project opened while Claude was still being checked).
@@ -203,50 +419,59 @@ function MainAgentPanel() {
   }, [blocked]);
 
   return (
-    <ChatShell
-      loading={!loaded}
-      resetKey={loaded ? projectId : "loading"}
-      footer={
-        entries.length > 0 || !blocked ? (
+    <AgentChat
+      adapter={{
+        key: projectId ?? "",
+        composer: `project:${projectId ?? ""}`,
+        source: { entries: chat, running, loaded, queue: waiting },
+        // Where the playhead is goes with it: the agent starts there (the server reads it what's under it).
+        send: (message, files, quotes) => sendToAgent(message, playhead.frame, files, hq, quotes),
+        stop: () => void stopAgent().catch((error: unknown) => useEditor.getState().toastError(error, "stop the agent")),
+        ...(hq ? { queued: { cancel: cancelQueued, steer: steerQueued, edit: editQueued } } : {}),
+        times,
+        quoteChat: projectId === undefined ? null : `project:${projectId}`,
+        files: upload,
+        model: { name: modelName ?? undefined, revising, hq, project: projectId },
+        ask: projectId !== undefined && resetAsked && <ResetCard projectId={projectId} />,
+        tray: [
+          // Edit V2's are pinned on the picture and the progress bar instead.
+          notes > 0 && !hq && <NoteQueue key="notes" />,
+          // Its agent doesn't edit, and its first message waits, until the channel is taught (Sphe, Nov 16).
+          untaught !== null && <UntaughtLine key="untaught" />,
+        ],
+        disabled: !status?.ready,
+        // A channel with no edit style yet says so here, not in a notice of its own (Sphe, Nov 15: "this is horrible"); it isn't edited until it has one.
+        placeholder: untaught !== null ? `Tell the agent how ${untaught}’s videos should look…` : "Start the editing workflow, or ask for a change…",
+        composerHidden: entries.length === 0 && blocked,
+        notice: (
           <>
             {blocked && <NotReadyNote />}
             {/* The chat couldn't be read again: what's on screen may be older, so it says so, with Try again. */}
             {failed !== null && entries.length > 0 && <ProblemView error={failed} doing="load the chat" onReload={reload} className="px-4 pt-1" />}
-            <Composer disabled={!status?.ready} projectId={projectId} />
-            {/* Words selected in the chat: "Add to chat" over them, as on the idea page. */}
-            {projectId !== undefined && <QuoteSelection chat={`project:${projectId}`} />}
           </>
-        ) : undefined
-      }
+        ),
+        empty:
+          failed !== null ? (
+            <div className="flex flex-1 flex-col justify-center px-2">
+              <ProblemView error={failed} doing="load the chat" onReload={reload} className="mx-auto max-w-[280px]" />
+            </div>
+          ) : status && !status.ready ? (
+            <SetupClaude />
+          ) : (
+            <Empty title="Ask for an edit" detail={`Ask for captions, cuts, B-roll, grades. Changes land on your timeline live and undo with ${MOD}Z.`} />
+          ),
+      }}
     >
-      {!entries.length && failed !== null ? (
-        <div className="flex flex-1 flex-col justify-center px-2">
-          <ProblemView error={failed} doing="load the chat" onReload={reload} className="mx-auto max-w-[280px]" />
-        </div>
-      ) : !entries.length && status && !status.ready ? (
-        <SetupClaude />
-      ) : !entries.length ? (
-        <Empty title="Ask for an edit" detail={`Ask for captions, cuts, B-roll, grades. Changes land on your timeline live and undo with ${MOD}Z.`} />
-      ) : (
-        <EditTimes>
-          <ChatTurns turns={turns} known={known} />
-          {/* Removal under way in the background: pinned at the end, between turns. */}
-          {projectId !== undefined && <RemovalRow projectId={projectId} marked={channel} running={running} />}
-        </EditTimes>
-      )}
-    </ChatShell>
+      {/* Removal under way in the background: pinned at the end, between turns. */}
+      {entries.length > 0 && projectId !== undefined && <RemovalRow projectId={projectId} marked={channel} running={running} />}
+    </AgentChat>
   );
 }
 
-/**
- * How long the edit on screen is (s): the version pinned while the agent works
- * (lib/watching.ts), else the edit. Only the editor's chat gives it, so times
- * are links only where there's an edit to jump in (a script's, an idea's or a
- * thumbnail's chat leaves them text).
- */
-const EditLength = createContext<number | null>(null);
-
 const lengthOf = (project: Project | null | undefined) => (project ? projectDuration(project) / rate(project.settings) : null);
+// To the minute above: every message is read again when the length changes, and an agent's cuts change it many
+// times a turn. A click checks the length itself (goToTime).
+const minuteUp = (seconds: number | null) => (seconds === null ? null : Math.ceil(seconds / 60) * 60);
 
 /** The edit on screen: a version of this project pinned (not one left from another), else the edit as it is. */
 function viewed(): Project | null {
@@ -255,14 +480,16 @@ function viewed(): Project | null {
   return live !== null && pinned?.id === live.id ? pinned : live;
 }
 
-function EditTimes({ children }: { children: ReactNode }) {
-  const pinned = useWatching((state) => state.pinned?.project);
-  const live = useEditor((state) => lengthOf(state.project));
+/**
+ * The editor chat's times: links into the edit on screen, as long as it is
+ * (the version pinned while the agent works, lib/watching.ts, else the edit).
+ */
+function useEditTimes(): ChatTimes {
   const id = useEditor((state) => state.project?.id);
-  const length = live !== null && pinned?.id === id ? lengthOf(pinned) : live;
-  // To the minute above: every message is read again when this changes, and an agent's cuts change the length many
-  // times a turn. A click checks the length itself (goToTime).
-  return <EditLength.Provider value={length === null ? null : Math.ceil(length / 60) * 60}>{children}</EditLength.Provider>;
+  const live = useEditor((state) => minuteUp(lengthOf(state.project)));
+  const pinned = useWatching((state) => (state.pinned !== null && state.pinned.project.id === id ? minuteUp(lengthOf(state.pinned.project)) : undefined));
+  const length = live !== null && pinned !== undefined ? pinned : live;
+  return useMemo(() => ({ length, go: goToTime }), [length]);
 }
 
 /** Why the composer is waiting, above it: the sign-in card when someone has to act, otherwise one line while Edit finishes checking. */
@@ -362,6 +589,7 @@ const TurnView = memo(function TurnView({ turn, known, thinking: said }: { turn:
   const [open, setOpen] = useState(false);
   const fresh = (id: string) => !known.has(id);
   const project = useEditor((state) => state.project?.id);
+  const quoteChat = useContext(QuoteChat);
   return (
     <div className="flex flex-col gap-1.5">
       {turn.user?.attachments !== undefined && turn.user.attachments.length > 0 && (
@@ -376,7 +604,7 @@ const TurnView = memo(function TurnView({ turn, known, thinking: said }: { turn:
           className="mb-1 ml-8 max-w-[calc(100%-2rem)] self-end rounded-2xl bg-raised px-3 py-2 text-[13px] whitespace-pre-wrap text-fg ring-1 ring-line [overflow-wrap:anywhere]"
           data-quote="my earlier message"
           onPointerDown={pressMenu}
-          onContextMenu={(event) => quoteMenu(event, "my earlier message", parseQuoted(turn.user!.text).words)}
+          onContextMenu={(event) => quoteMenu(event, quoteChat, "my earlier message", parseQuoted(turn.user!.text).words)}
         >
           <UserWords text={turn.user.text} />
         </motion.div>
@@ -444,7 +672,9 @@ const TurnView = memo(function TurnView({ turn, known, thinking: said }: { turn:
  * every streamed word, so only it re-renders for them (Nov 8 audit, item G).
  */
 function LiveStatus({ parts, startedAt, said }: { parts: TurnPart[]; startedAt: number; said?: string }) {
-  const activityAt = useAgent((state) => state.activityAt);
+  // The editor's agent's own, read here so only this line re-renders as words stream; another chat's comes with it.
+  const agentAt = useAgent((state) => state.activityAt);
+  const activityAt = useContext(Activity) ?? agentAt;
   const quiet = useQuiet(activityAt, 450);
   const usedTools = parts.some((part) => part.kind === "group");
   const toolRunning = parts.some((part) => part.kind === "group" && part.calls.some((call) => call.status === "running"));
@@ -827,7 +1057,7 @@ function pressMenu(event: React.PointerEvent<HTMLElement>) {
  * page and have the context menu to copy it or quote it"): what's selected in
  * it, or the whole message, copied, or quoted into the next one.
  */
-function quoteMenu(event: React.MouseEvent<HTMLElement>, from: string, whole: string, picture: MenuItem[] = []) {
+function quoteMenu(event: React.MouseEvent<HTMLElement>, chat: string | null, from: string, whole: string, picture: MenuItem[] = []) {
   const selection = window.getSelection();
   // What was selected as the button went down: a Mac's WebKit (and Chrome) selects the word under the pointer just before the menu.
   const held = pressed?.on === event.currentTarget ? pressed.selected : null;
@@ -836,20 +1066,24 @@ function quoteMenu(event: React.MouseEvent<HTMLElement>, from: string, whole: st
   // The whole message: the word the browser just selected goes, so no "Add to chat" shows over it.
   if (!inside && held === false) selection?.removeAllRanges();
   const text = (inside && selection !== null ? selection.toString() : whole).trim();
-  const projectId = useEditor.getState().project?.id;
+  // Quoted into this chat's own composer (AgentChat's quoteChat); a chat with none only copies.
   const message: MenuItem[] =
-    text === "" || projectId === undefined
+    text === ""
       ? []
       : [
           { label: inside ? "Copy" : "Copy message", icon: <Copy size={14} />, onSelect: () => void navigator.clipboard.writeText(text).catch(() => {}) },
-          {
-            label: inside ? "Quote" : "Quote message",
-            icon: <Quote size={14} />,
-            onSelect: () => {
-              addQuote(`project:${projectId}`, { from, text });
-              window.getSelection()?.removeAllRanges();
-            },
-          },
+          ...(chat === null
+            ? []
+            : [
+                {
+                  label: inside ? "Quote" : "Quote message",
+                  icon: <Quote size={14} />,
+                  onSelect: () => {
+                    addQuote(chat, { from, text });
+                    window.getSelection()?.removeAllRanges();
+                  },
+                },
+              ]),
         ];
   // On a picture, its own actions first, as a browser's menu has them.
   const items = picture.length > 0 && message.length > 0 ? [...picture, { separator: true } as const, ...message] : [...picture, ...message];
@@ -908,8 +1142,14 @@ function EntryView({ entry, muted, fresh }: { entry: AgentEntry; muted?: boolean
     );
   }
   if (!entry.text) return null;
+  return <AnswerView entry={entry} muted={muted} fresh={fresh} />;
+}
+
+/** The agent's words, as Markdown, with the message's menu (Copy, Quote) on a right click. */
+function AnswerView({ entry, muted, fresh }: { entry: AgentEntry; muted?: boolean; fresh?: boolean }) {
+  const quoteChat = useContext(QuoteChat);
   return (
-    <MessageMenu.Provider value={(event, picture) => quoteMenu(event, "your earlier reply", entry.text, picture)}>
+    <MessageMenu.Provider value={(event, picture) => quoteMenu(event, quoteChat, "your earlier reply", entry.text, picture)}>
       <motion.div
         initial={fresh ? { opacity: 0 } : false}
         animate={{ opacity: 1 }}
@@ -917,7 +1157,7 @@ function EntryView({ entry, muted, fresh }: { entry: AgentEntry; muted?: boolean
         className={cx("px-1.5 leading-relaxed", muted ? "text-[12px] text-muted" : "text-[13px] text-fg/90")}
         data-quote="your earlier reply"
         onPointerDown={pressMenu}
-        onContextMenu={(event) => quoteMenu(event, "your earlier reply", entry.text)}
+        onContextMenu={(event) => quoteMenu(event, quoteChat, "your earlier reply", entry.text)}
       >
         <Markdown text={entry.text} />
       </motion.div>
@@ -990,18 +1230,7 @@ const MARKDOWN: Components = {
   a: ({ children, href }) => {
     // A time or a range the agent gave: to the player (lib/chatTimes.ts).
     const time = timeOf(href);
-    if (time !== null) {
-      return (
-        <button
-          type="button"
-          title={time.end === null ? "Go there" : "Play this stretch"}
-          onClick={() => goToTime(time.start, time.end)}
-          className="rounded-[4px] bg-playhead/15 px-1 font-medium text-playhead tabular transition-colors hover:bg-playhead/25"
-        >
-          {children}
-        </button>
-      );
-    }
+    if (time !== null) return <TimeLink time={time}>{children}</TimeLink>;
     return (
       <a href={href} target="_blank" rel="noreferrer" className="text-fg underline decoration-white/30 underline-offset-2 hover:decoration-white">
         {children}
@@ -1121,91 +1350,26 @@ function goToTime(start: number, end: number | null) {
   }
 }
 
+/** A time the agent gave: to that point where the chat has somewhere to go; where it hasn't, it looks the same and stays put. */
+function TimeLink({ time, children }: { time: { start: number; end: number | null }; children: ReactNode }) {
+  const times = useContext(Times);
+  const look = "rounded-[4px] bg-playhead/15 px-1 font-medium text-playhead tabular";
+  if (times === null || times === "inert") return <span className={look}>{children}</span>;
+  return (
+    <button type="button" title={time.end === null ? "Go there" : "Play this stretch"} onClick={() => times.go(time.start, time.end)} className={cx(look, "transition-colors hover:bg-playhead/25")}>
+      {children}
+    </button>
+  );
+}
+
 function Markdown({ text }: { text: string }) {
-  const edit = useContext(EditLength);
+  const times = useContext(Times);
+  // Inert: every time is styled, none is past an end (there's nothing it plays in).
+  const edit = times === null ? null : times === "inert" ? Infinity : times.length;
   return (
     <ReactMarkdown remarkPlugins={edit === null ? [remarkGfm] : [remarkGfm, [remarkTimes, { edit }]]} components={MARKDOWN} skipHtml>
       {text}
     </ReactMarkdown>
-  );
-}
-
-function Composer({ disabled, projectId }: { disabled: boolean; projectId: string | undefined }) {
-  const running = useAgent((state) => state.running);
-  const modelName = useAgent((state) => state.chatModel ?? state.modelName);
-  const revising = useAgent((state) => state.revising);
-  // Edit V2: its own model menu, every model at any time, and messages sent while it works queue on the server.
-  const hq = useEditor((state) => state.project?.hq === true);
-  const waiting = useAgent((state) => state.queue);
-  const entries = useAgent((state) => state.entries);
-  const toastError = useEditor((state) => state.toastError);
-  const notes = useNotes((state) => queued(state.notes).length);
-  const resetAsked = useEditor((state) => state.resetAsked);
-  const upload = useMemo(() => (projectId === undefined ? undefined : { upload: projectUploader(projectId) }), [projectId]);
-  // The server's queue, then what was queued here and hasn't reached it yet (sentNow.ts), shown the moment it's sent.
-  const sent = useSentNow(projectId ?? "", entries, waiting).queued;
-  const rows = useMemo(
-    () => [
-      ...waiting.map((one) => ({ id: one.id, text: one.text, files: one.attachments?.length ?? 0, quotes: parseQuoted(one.text).quotes.length })),
-      ...sent.map((one) => ({
-        id: `sent-${one.id}`,
-        text: one.text,
-        files: one.files.length,
-        quotes: parseQuoted(one.text).quotes.length,
-        ...(one.state === "sent" ? {} : { pending: one.state }),
-        ...(one.failure === undefined ? {} : { failure: one.failure }),
-      })),
-    ],
-    [waiting, sent],
-  );
-  const local = (id: string | number) => (String(id).startsWith("sent-") ? String(id).slice(5) : null);
-  // On the composer's top edge: the agent asking to reset, the messages queued on the server, then the team's queued notes.
-  const untaught = useUntaughtChannel();
-  const tray = [
-    projectId !== undefined && resetAsked && <ResetCard key="reset" projectId={projectId} />,
-    hq && rows.length > 0 && (
-      <QueueIsland
-        key="queue"
-        rows={rows}
-        onRemove={(id) => {
-          const mine = local(id);
-          if (mine !== null) cancelSent(mine);
-          else void cancelQueued(String(id)).catch((error: unknown) => toastError(error, "take the message out"));
-        }}
-        onSteer={(id) => local(id) === null && void steerQueued(String(id)).catch((error: unknown) => toastError(error, "steer the agent"))}
-        onEdit={(id) => {
-          const mine = local(id);
-          if (mine !== null) editSent(mine);
-          else void editQueued(String(id)).catch((error: unknown) => toastError(error, "take the message out"));
-        }}
-        onRetry={(id) => {
-          const mine = local(id);
-          if (mine !== null) retrySent(mine);
-        }}
-      />
-    ),
-    // Edit V2's are pinned on the picture and the progress bar instead.
-    notes > 0 && !hq && <NoteQueue key="notes" />,
-    // Its agent doesn't edit, and its first message waits, until the channel is taught (Sphe, Nov 16).
-    untaught !== null && <UntaughtLine key="untaught" />,
-  ].filter(Boolean);
-  return (
-    <ChatComposer
-      chat={`project:${projectId ?? ""}`}
-      files={upload}
-      tray={tray.length > 0 ? tray : undefined}
-      running={running}
-      disabled={disabled}
-      modelName={modelName ?? undefined}
-      revising={revising}
-      hq={hq}
-      project={projectId ?? undefined}
-      // A channel with no edit style yet says so here, not in a notice of its own (Sphe, Nov 15: "this is horrible"); it isn't edited until it has one.
-      placeholder={untaught !== null ? `Tell the agent how ${untaught}’s videos should look…` : "Start the editing workflow, or ask for a change…"}
-      // Where the playhead is goes with it: the agent starts there (the server reads it what's under it).
-      onSend={(message, files, quotes) => sendToAgent(message, playhead.frame, files, hq, quotes)}
-      onStop={() => void stopAgent().catch((error: unknown) => useEditor.getState().toastError(error, "stop the agent"))}
-    />
   );
 }
 

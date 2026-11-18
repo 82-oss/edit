@@ -1,4 +1,4 @@
-// The chat column at a screen's right: the editor's, an idea's and a thumbnail's.
+// The chat column at a screen's right: the editor's, a script's, an idea's and a thumbnail's.
 
 import { motion } from "motion/react";
 import { useRef, useState, type ReactNode } from "react";
@@ -12,11 +12,11 @@ import { cx, spring } from "./ui";
  * it for the screen's own width again. Always open (Sphe, Nov 12: closing it
  * by a click on its edge "I don't think we'll ever need"). No button: a line.
  * One width for every screen's chat once dragged, remembered on this browser;
- * until then each screen's own (`defaultWidth`: Edit V2's is wider).
+ * until then Edit V2's (Sphe, Nov 18: every chat its size), the old editor's narrower.
  *
  * The screen leaves no padding on its right: the edge sits there.
  */
-export function ChatDock({ defaultWidth = 340, children }: { working?: boolean; defaultWidth?: number; children: ReactNode }) {
+export function ChatDock({ defaultWidth = 440, children }: { working?: boolean; defaultWidth?: number; children: ReactNode }) {
   const width = useEditor((state) => state.agentWidth) ?? defaultWidth;
   const [dragging, setDragging] = useState(false);
   const drag = useRef<{ x: number; width: number; moved: boolean } | null>(null);

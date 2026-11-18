@@ -11,11 +11,8 @@ import { ideaBuilt } from "@edit/types/models";
 import { ArrowDown, ArrowLeft, ArrowUp, Check, Copy, ExternalLink, FileText, FolderOpen, Image as ImageIcon, MoreHorizontal, Plus, RotateCw, Send, Trash2, SquarePlay, TriangleAlert, X } from "lucide-react";
 import { type DragEvent, type KeyboardEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ChatShell, ChatTurns, Empty, useChatTurns } from "../components/AgentPanel";
-import { useSentNow } from "../lib/sentNow";
-import { ChatComposer } from "../components/ChatComposer";
+import { AgentChat, ChatShell, Empty } from "../components/AgentPanel";
 import { ChatDock } from "../components/ChatDock";
-import { QuoteSelection } from "../components/QuoteSelection";
 import { picturesOnly, postFile } from "../lib/chatFiles";
 import { AppMenu } from "../components/AppMenu";
 import { StartedBy } from "../components/StartedBy";
@@ -157,8 +154,6 @@ export function IdeaScreen({ id }: { id: string }) {
           <div className="flex min-h-0 flex-1 flex-col pt-2">{page === null ? <ChatShell loading /> : <Chat id={id} idea={page.idea} untaught={page.untaught === true} onAsked={() => void load()} />}</div>
         </ChatDock>
       </div>
-      {/* Words selected in the title, titles, summary or guide can be quoted into the chat. */}
-      <QuoteSelection chat={`idea:${id}`} />
       {page !== null && <SendDialog open={sending} idea={page.idea} board={page.board ?? null} onClose={() => setSending(false)} onSent={() => void load()} />}
     </div>
   );
@@ -894,9 +889,6 @@ function Chat({ id, idea, untaught = false, onAsked }: { id: string; idea: Idea;
   const toastError = useEditor((state) => state.toastError);
   const running = working(idea);
   const entries = conversationEntries(idea.chat, idea.createdAt, running ? idea.run : null, (turn) => (turn.images ?? []).map((image) => ({ name: image.name, kind: "image" as const, url: chatImageUrl(idea.id, image.id) })));
-  // A message shows the moment it's sent; what was there when the page opened doesn't animate in.
-  const sent = useSentNow(`idea:${id}`, entries);
-  const { turns, known } = useChatTurns(id, sent.entries, running || sent.sending);
   // Its own steps say what it's at ("Reading the video's words"); a plain "Claude is working" is left to the chat's thinking words.
   const step = idea.run?.step !== undefined && !/^(Claude is working|Waiting for a turn)$/.test(idea.run.step) ? idea.run.step : undefined;
   const other = running && idea.run !== null && idea.run.tools === undefined && idea.run.said === undefined ? `On ${idea.run.holder}` : undefined;
@@ -910,39 +902,23 @@ function Chat({ id, idea, untaught = false, onAsked }: { id: string; idea: Idea;
     [id],
   );
   return (
-    <ChatShell
-      resetKey={id}
-      footer={
-        <ChatComposer
-          running={running}
-          disabled={false}
-          revising={ideaBuilt(idea)}
-          placeholder={untaught ? "Tell the agent how this channel's ideas should be written…" : "Ask for another angle, or a change…"}
-          draft={`ideas.chat-draft.${id}`}
-          chat={`idea:${id}`}
-          files={files}
-          onSend={(message, attached, quotes) => {
-            // Shown now and kept: one that doesn't go says so on itself, with Retry and Edit (sentNow.ts).
-            sent.send({
-              text: message,
-              composer: `idea:${id}`,
-              attachments: attached.map((one) => ({ name: one.name, kind: one.kind, url: one.preview })),
-              files: attached,
-              quotes,
-              deliver: () => ideasApi.chat(id, message, attached.map((one) => one.landed as IdeaImage)).then(() => onAsked()),
-            });
-            return true;
-          }}
-          onStop={() => void ideasApi.stop(id).then(onAsked, (error: unknown) => toastError(error, "stop it"))}
-        />
-      }
-    >
-      {sent.entries.length === 0 ? (
-        <Empty title="Ask for a change" detail="Another angle, punchier titles, one more title, a different place in the thumbnail. Claude changes the idea as you watch." />
-      ) : (
-        <ChatTurns turns={turns} known={known} thinking={running ? (step ?? other) : undefined} />
-      )}
-    </ChatShell>
+    <AgentChat
+      adapter={{
+        key: `idea:${id}`,
+        composer: `idea:${id}`,
+        source: { entries, running, loaded: true },
+        deliver: (message, attached) => ideasApi.chat(id, message, attached.map((one) => one.landed as IdeaImage)).then(() => onAsked()),
+        stop: () => void ideasApi.stop(id).then(onAsked, (error: unknown) => toastError(error, "stop it")),
+        // The idea page has no video or transcript to go to: its times are marked, and stay put.
+        times: "inert",
+        files,
+        model: { revising: ideaBuilt(idea) },
+        placeholder: untaught ? "Tell the agent how this channel's ideas should be written…" : "Ask for another angle, or a change…",
+        draft: `ideas.chat-draft.${id}`,
+        thinking: running ? (step ?? other) : undefined,
+        empty: <Empty title="Ask for a change" detail="Another angle, punchier titles, one more title, a different place in the thumbnail. Claude changes the idea as you watch." />,
+      }}
+    />
   );
 }
 

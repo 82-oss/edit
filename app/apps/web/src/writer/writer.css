@@ -377,6 +377,7 @@
   --agent-width: clamp(260px, 24%, 360px);
   flex: 1;
   min-height: 0;
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) clamp(300px, 28%, 420px) var(--agent-width);
   grid-template-rows: minmax(0, 1fr) 196px;
@@ -409,6 +410,10 @@
 .writer-root .editor-grid[data-view="split"] > .monitor { grid-column: 1; }
 .writer-root .editor-grid[data-view="split"] > .document { grid-column: 3; }
 .writer-root .editor-grid[data-view="split"] > .agent { grid-column: 5; }
+/* A footage script's chat is the shared dock beside the grid (editor.tsx's ChatDock), not a column of it: the dock's edge is the gutter on the right. */
+.writer-root .editor-grid[data-docked] { padding-right: 0; grid-template-columns: minmax(0, 1fr) clamp(300px, 32%, 460px); }
+.writer-root .editor-grid[data-docked][data-view="script"] { grid-template-columns: minmax(0, 1fr); }
+.writer-root .editor-grid[data-docked][data-view="split"] { grid-template-columns: minmax(0, var(--split-video, 1fr)) 6px minmax(0, 1fr); }
 .writer-root .editor-grid[data-resizing] { cursor: col-resize; user-select: none; }
 .writer-root .editor-grid[data-resizing] video { pointer-events: none; }
 .writer-root .gutter { position: relative; z-index: 2; grid-row: 1 / -1; cursor: col-resize; touch-action: none; }

@@ -72,8 +72,3 @@ function liveParts(parts: NonNullable<LiveTurn["parts"]>, at: number): AgentEntr
     }));
   });
 }
-
-/** The ids already on disk, so only a live turn animates in. */
-export function savedEntryIds(chat: ChatTurn[]): Set<string> {
-  return new Set(scriptEntries(chat).map((entry) => entry.id));
-}

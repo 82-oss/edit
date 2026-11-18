@@ -152,6 +152,52 @@ describe("times in a chat", () => {
     expect(container.textContent).toContain("4:25 in the edit");
     expect([...container.querySelectorAll("button")].some((button) => /\d:\d/.test(button.textContent ?? ""))).toBe(false);
   });
+
+  /** A chat on AgentChat with its times as given, its quotes into `idea:i1`. */
+  async function idea(times: import("./AgentPanel").ChatTimes) {
+    const { AgentChat } = await import("./AgentPanel");
+    return render(async () => (
+      <AgentChat adapter={{ key: "idea:i1", composer: "idea:i1", source: { entries: reply as never, running: false, loaded: true }, deliver: async () => {}, stop: () => {}, times, model: { name: "Opus 5.5" }, placeholder: "Ask" }} />
+    ));
+  }
+
+  it("are marked but go nowhere in a chat whose times are inert (an idea's, a thumbnail's)", async () => {
+    const container = await idea("inert");
+    expect([...container.querySelectorAll("span.text-playhead")].map((span) => span.textContent)).toEqual(["1:44:00", "4:25", "9:50 - 12:00"]);
+    expect([...container.querySelectorAll("button")].some((button) => /\d:\d/.test(button.textContent ?? ""))).toBe(false);
+  });
+
+  it("go where the chat says, up to its length (a script's footage)", async () => {
+    const went: [number, number | null][] = [];
+    const container = await idea({ length: 700, go: (start, end) => void went.push([start, end]) });
+    const links = [...container.querySelectorAll("button")].filter((button) => /\d:\d/.test(button.textContent ?? ""));
+    expect(links.map((button) => button.textContent)).toEqual(["4:25", "9:50 - 12:00"]);
+    act(() => links[1]!.click());
+    // As written: the chat's own go holds an end to its length (goToTime's inEdit).
+    expect(went).toEqual([[590, 720]]);
+  });
+
+  it("quote into the chat's own composer, not the editor's", async () => {
+    const { ContextMenuHost } = await import("./ContextMenu");
+    const { useQuotesOf } = await import("../lib/chatQuotes");
+    const container = await idea("inert");
+    const menu = document.createElement("div");
+    document.body.append(menu);
+    const host = createRoot(menu);
+    act(() => host.render(<ContextMenuHost />));
+    const answer = container.querySelector('[data-quote="your earlier reply"]')!;
+    act(() => void answer.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 })));
+    const quote = [...document.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Quote message")!;
+    act(() => quote.click());
+    let quotes: unknown[] = [];
+    function Read() {
+      quotes = useQuotesOf("idea:i1");
+      return null;
+    }
+    act(() => host.render(<Read />));
+    expect(quotes).toEqual([expect.objectContaining({ from: "your earlier reply", text: reply[1]!.text })]);
+    act(() => host.unmount());
+  });
 });
 
 describe("a picture in a reply", () => {
