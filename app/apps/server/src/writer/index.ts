@@ -26,6 +26,7 @@ import * as jobs from "./jobs.ts";
 import * as missing from "./missing.ts";
 import * as storage from "./storage.ts";
 import * as store from "./store.ts";
+import * as streamed from "./streamed.ts";
 
 /** Background work Script mode's parts start with the server (the cloud, review polling…). */
 export const starters: ((app: App) => void)[] = [];
@@ -48,6 +49,7 @@ export function start(app: App, options: { trials?: boolean } = {}): void {
   if (options.trials === true) {
     carryOn(app, data, store.markInterrupted(data));
     for (const id of store.ids(data)) jobs.markInterrupted(data, id);
+    streamed.start(app);
     missing.start(app, data);
     cloud.start(data, holderFor(app.store.home, readSettings(app.store.home).holder ?? machine.name()));
     storage.start(data, join(app.store.home, "projects"), app.store.cacheDir());
@@ -56,6 +58,8 @@ export function start(app: App, options: { trials?: boolean } = {}): void {
   }
   carryOn(app, data, store.markInterrupted(data));
   for (const id of store.ids(data)) jobs.markInterrupted(data, id);
+  // Originals an import kept here going up behind it (streamed.ts), carried on.
+  streamed.start(app);
   // Footage that didn't come in, tried again by itself (and imports an older Edit paused on it, carried on).
   missing.start(app, data);
   cloud.start(data, holderFor(app.store.home, readSettings(app.store.home).holder ?? machine.name()));

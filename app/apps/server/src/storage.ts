@@ -200,6 +200,19 @@ export function admit(dir: string, bytes: number, what: string, then?: string): 
   return roomLine(what, bytes + WORK_FLOOR_BYTES, has, then);
 }
 
+/**
+ * Whether `bytes` more fit on the disk holding `dir` with what Edit keeps free still free after them (`keepFreeBytes`),
+ * the cleaner asked first as `admit` asks it. For work that can do without the room and is only faster with it (an
+ * import's originals kept here until they're in the cloud, writer/streamed.ts): short, it does without, never refused.
+ */
+export function roomFor(dir: string, bytes: number): boolean {
+  if (!Number.isFinite(freeBytes(dir))) return true;
+  const free = () => freeBytes(dir) - claimedBytes();
+  const target = Math.max(0, bytes) + keepFreeBytes(dir);
+  if (free() < target) makeRoomNow(freeBytes(dir) + target - free());
+  return free() >= target;
+}
+
 /** For tests. */
 export function resetRoom(): void {
   claims.clear();

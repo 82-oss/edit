@@ -1009,11 +1009,15 @@ async function fetchYoutube(app: App, dir: string, script: Script): Promise<Fetc
     }
     const began = Date.now();
     const stop = sayWhileParked(script, script.sourceUrl);
-    const inCloud = await streamed.fromYoutube(app, dir, script.sourceUrl, (bytes) => say(script, `Streaming from YouTube to the cloud: ${Math.round(bytes / 1e6)} MB.`, "downloading", 10)).finally(stop);
-    diag.info("writer", `${jobs.named(script.id, script.title)}: YouTube video streamed to the cloud in ${Math.round((Date.now() - began) / 1000)} s`);
+    const inCloud = await streamed.fromYoutube(app, dir, script.sourceUrl, (bytes) => say(script, `Downloading from YouTube: ${Math.round(bytes / 1e6)} MB.`, "downloading", 10)).finally(stop);
+    diag.info("writer", `${jobs.named(script.id, script.title)}: YouTube video downloaded in ${Math.round((Date.now() - began) / 1000)} s`);
     say(script, "Making the preview.", "downloading", 15);
-    await encodePiece(dir, inCloud.url, jobs.named(script.id, script.title));
-    return { joined: await joinPreview(dir, script, [[script.title, inCloud.url, script.sourceUrl]], "video") };
+    try {
+      await encodePiece(dir, inCloud.here ?? inCloud.url, jobs.named(script.id, script.title), inCloud.url);
+      return { joined: await joinPreview(dir, script, [[script.title, inCloud.url, script.sourceUrl]], "video") };
+    } finally {
+      streamed.done(dir, inCloud);
+    }
   }
   const began = Date.now();
   const shared = await youtube.fetch(app, script.sourceUrl, (percent) => say(script, `Downloading from YouTube: ${Math.floor(percent)}%.`, "downloading", 5 + Math.floor((percent * 14) / 100)));
@@ -1157,7 +1161,14 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
   // What a run cut short already made of the preview (pieces, stretches) is counted as there.
   // Streamed, an AVI still comes down to be read here, one a lane at a time (`streamed.readHere`).
   const readHere = wanted.map(([, recording]) => (media.isAvi(recording.name) ? recording.size : 0)).sort((a, b) => b - a).slice(0, DOWNLOADS).reduce((sum, size) => sum + size, 0);
-  checkSpace(dir, (stream ? readHere : needed) + Math.max(previewRoom(wanted.map(([, recording]) => recording)) - bytesIn(join(dir, "pieces")), 0) + 1_000_000_000);
+  const previewNeeds = Math.max(previewRoom(wanted.map(([, recording]) => recording)) - bytesIn(join(dir, "pieces")), 0) + 1_000_000_000;
+  checkSpace(dir, (stream ? readHere : needed) + previewNeeds);
+  // Streamed, each recording comes down here first when it fits beside the copies kept already, with what Edit keeps
+  // free still free (streamed.ts): its piece is made from that copy and it goes up behind the import. One that doesn't
+  // fit goes to the cloud first and is read back from there, as before. The preview's room is claimed meanwhile, so the
+  // copies never take it.
+  const reserved = stream ? room.claim(previewNeeds) : null;
+  let cameHere = 0;
   // Each recording's original in the cloud, by its place among the wanted (streamed).
   const inCloud: (string | null)[] = wanted.map(() => null);
   // Three recordings come down at once; the progress shown is their sum.
@@ -1172,10 +1183,16 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
   const failed: [number, { id: string; title: string; error: string }][] = [];
   await lanes(wanted, DOWNLOADS, async ([index, recording], step) => {
     const began = Date.now();
+    // Its piece made already (a run a restart cut off), its copy here is read again if it's kept: nothing comes down.
+    const made = pieceMade(dir, recording);
+    const here = stream && (made || room.roomFor(dir, recording.size));
+    // Claimed while it comes down, so the lanes beside it don't count the same room.
+    const coming = here && !made ? room.claim(recording.size) : null;
+    if (here) cameHere++;
     const got = await fetchRecording(dir, script, folder, index, recording, stream, wanted.length > 1, (bytes) => {
       pulled[step] = Math.min(bytes, recording.size);
       report();
-    });
+    }, here).finally(() => coming?.release());
     inCloud[step] = got.inCloud;
     pulled[step] = recording.size;
     finished++;
@@ -1185,7 +1202,8 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
       failed.push([step, { id: recording.id, title: recording.name, error: got.problem }]);
     }
     report();
-  });
+  }).finally(() => reserved?.release());
+  if (stream) diag.info("writer", `${jobs.named(script.id, script.title)}: ${cameHere} of ${wanted.length} recordings came down here first, their originals going up behind the import${cameHere < wanted.length ? `; ${wanted.length - cameHere} went to the cloud first, with no room to keep them here` : ""}`);
   // What didn't come in is left out of the case for now and tried again by itself (missing.ts); the import carries on with the rest.
   if (failed.length === wanted.length) throw new Error(`None of the recordings came through. ${failed[0]![1].title}: ${failed[0]![1].error}`);
   const gone = new Set(failed.map(([step]) => step));
@@ -1210,27 +1228,39 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
  * when it went there. The import's lanes run it for each recording, and
  * missing.ts for one that didn't come in.
  */
-export async function fetchRecording(dir: string, script: Script, folder: string, index: number, recording: drive.Recording, stream: boolean, many: boolean, onBytes: (bytes: number) => void = () => {}): Promise<{ problem: string | null; inCloud: string | null }> {
+export async function fetchRecording(dir: string, script: Script, folder: string, index: number, recording: drive.Recording, stream: boolean, many: boolean, onBytes: (bytes: number) => void = () => {}, here = false): Promise<{ problem: string | null; inCloud: string | null }> {
   const dest = parts.driveFile(folder, index, recording);
   let problem: string | null = null;
   let inCloud: string | null = null;
   if (stream && !(await downloaded(dest, recording))) {
     try {
-      const put = await streamed.drive(dir, recording, onBytes);
+      // `here`: room to keep it on this Mac until it's up, so it comes down first and its piece is made from that copy (streamed.ts).
+      const put = await streamed.drive(dir, recording, onBytes, here);
       const label = `${jobs.named(script.id, script.title)} · ${recording.name}`;
-      // Looked at in the cloud; read here when that fails (never dropped for it), and an AVI's piece made here (`streamed.readHere`).
-      let found = await media.streams(put.url).catch((error: unknown) => {
-        diag.warn("writer", `${label}: didn't read from the cloud (${diag.messageOf(error)}), so it's read here`);
-        return null;
-      });
-      if (found !== null && !fits(found)) diag.warn("writer", `${label}: no length, picture or sound read from the cloud, so it's read here`);
-      let source = put.url;
-      if (!fits(found) || (media.isAvi(recording.name) && !(await previewFits(piecePath(dir, put.url), found.durationMs)))) {
-        source = await streamed.readHere(dir, put);
+      let source = put.here ?? put.url;
+      let found: media.Streams | null;
+      let readHere = false;
+      if (put.here !== null) {
         found = await media.streams(source).catch((error: unknown) => {
-          diag.warn("writer", `${label}: didn't read here either: ${diag.messageOf(error)}`);
+          diag.warn("writer", `${label}: didn't read: ${diag.messageOf(error)}`);
           return null;
         });
+      } else {
+        // Looked at in the cloud; read here when that fails (never dropped for it), and an AVI's piece made here (`streamed.readHere`).
+        found = await media.streams(put.url).catch((error: unknown) => {
+          diag.warn("writer", `${label}: didn't read from the cloud (${diag.messageOf(error)}), so it's read here`);
+          return null;
+        });
+        if (found !== null && !fits(found)) diag.warn("writer", `${label}: no length, picture or sound read from the cloud, so it's read here`);
+        // In the cloud already (an earlier run's, or another import's) and its piece still to make: brought here first when there's room, as a new one comes down.
+        if (!fits(found) || ((here || media.isAvi(recording.name)) && !(await previewFits(piecePath(dir, put.url), found.durationMs)))) {
+          readHere = true;
+          source = await streamed.readHere(dir, put);
+          found = await media.streams(source).catch((error: unknown) => {
+            diag.warn("writer", `${label}: didn't read here either: ${diag.messageOf(error)}`);
+            return null;
+          });
+        }
       }
       try {
         if (!fits(found)) problem = "Couldn't be read as video or audio, so it was dropped.";
@@ -1239,7 +1269,8 @@ export async function fetchRecording(dir: string, script: Script, folder: string
           await encodePiece(dir, source, label, put.url);
         }
       } finally {
-        if (source !== put.url) fs.rmSync(source, { force: true });
+        if (readHere) fs.rmSync(source, { force: true });
+        streamed.done(dir, put);
       }
     } catch (error) {
       problem = diag.scrub(diag.messageOf(error));
@@ -1323,8 +1354,9 @@ export async function fetchMissing(app: App, dir: string, script: Script, id: st
   const recording = manifest?.recordings[index];
   if (recording === undefined) throw new Error("It's no longer in this folder's list.");
   const stream = streamed.on();
-  checkSpace(dir, (stream ? (media.isAvi(recording.name) ? recording.size : 0) : recording.size) + previewRoom([recording]) + 1_000_000_000);
-  const got = await fetchRecording(dir, script, join(dir, "drive"), index, recording, stream, true);
+  const here = stream && room.roomFor(dir, recording.size + previewRoom([recording]) + 1_000_000_000);
+  if (!here) checkSpace(dir, (stream ? (media.isAvi(recording.name) ? recording.size : 0) : recording.size) + previewRoom([recording]) + 1_000_000_000);
+  const got = await fetchRecording(dir, script, join(dir, "drive"), index, recording, stream, true, () => {}, here);
   if (got.problem !== null) throw new Error(got.problem);
 }
 
@@ -1415,6 +1447,15 @@ const fits = (found: media.Streams | null): found is media.Streams => found !== 
 const piecePath = (dir: string, source: string): string =>
   join(dir, "pieces", isUrl(source) ? new URL(source).pathname.split("/").slice(-2).map(decodeURIComponent).join("-").replace(/[^\w. -]+/g, "_") : (source.split("/").pop() ?? "piece.mp4"));
 
+/** Whether a Drive recording's piece of the preview is made (named by its original's key, `<file id>-<name>`, as `piecePath` names it). */
+function pieceMade(dir: string, recording: drive.Recording): boolean {
+  try {
+    return fs.readdirSync(join(dir, "pieces")).some((name) => name.startsWith(`${recording.id}-`) && name.endsWith(".mp4") && !name.includes(".partial") && !name.includes(".stretches-"));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Encodes one recording's piece as `joinPreview` would encode it in the whole; a piece that fails is only logged, and the preview is then encoded whole.
  * `named`: the footage it's the piece of, when it's read from elsewhere (a cloud original's copy here), so the join finds it.
@@ -1482,7 +1523,9 @@ async function joinPreview(dir: string, script: Script, items: [string, string, 
   const made: NonNullable<Script["parts"]> = [];
   const toJoin: media.JoinPart[] = [];
   let startMs = 0;
-  for (const [title, path, url] of items) {
+  for (const [title, named, url] of items) {
+    // A cloud original still on its way up is read from its copy here (streamed.ts).
+    const path = (isUrl(named) ? streamed.localOf(dir, named) : null) ?? named;
     const found = await media.streams(path).catch(() => {
       throw new Error(`Could not read ${title}.`);
     });
@@ -1658,10 +1701,19 @@ export async function fetchCompilationVideo(app: App, dir: string, script: Scrip
   const link = url.includes("drive.google.com") ? drive.parse(url) : null;
   if (streamed.on() && !(await media.readable(dest)) && (link === null || link.kind === "file")) {
     const stop = link === null ? sayWhileParked(script, url) : () => {};
-    const put = await (link !== null ? streamed.drive(dir, (await drive.recordings(await drive.hooks.accessToken(), link))[1][0]!, () => onPercent(0, null)) : streamed.fromYoutube(app, dir, url, () => onPercent(0, null))).finally(stop);
-    if (!(await media.readable(put.url))) throw new Error("Couldn't be read as video, so it was dropped.");
-    onPercent(100, null);
-    await encodePiece(dir, put.url, `${jobs.named(script.id, script.title)} · video ${index + 1}`);
+    const fromDrive = async (): Promise<streamed.InCloud> => {
+      const recording = (await drive.recordings(await drive.hooks.accessToken(), link!))[1][0]!;
+      // Down here first when there's room to keep it until it's up (streamed.ts), as a folder case's recordings are.
+      return streamed.drive(dir, recording, () => onPercent(0, null), room.roomFor(dir, recording.size + previewRoom([recording]) + 1_000_000_000));
+    };
+    const put = await (link !== null ? fromDrive() : streamed.fromYoutube(app, dir, url, () => onPercent(0, null))).finally(stop);
+    try {
+      if (!(await media.readable(put.here ?? put.url))) throw new Error("Couldn't be read as video, so it was dropped.");
+      onPercent(100, null);
+      await encodePiece(dir, put.here ?? put.url, `${jobs.named(script.id, script.title)} · video ${index + 1}`, put.url);
+    } finally {
+      streamed.done(dir, put);
+    }
     return put.url;
   }
   await fetchVideo(app, url, dest, onPercent);

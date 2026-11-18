@@ -998,6 +998,9 @@ export async function driveOriginal(
     progress(size, size, record.name);
     return { file, source, key: ready, name: record.name, size };
   }
+  // On its way up from a script's import here (writer/streamed.ts): waited for, not copied again beside it.
+  const behind = await waitGoingUp(source, progress);
+  if (behind !== null) return behind;
   const [url, head] = await scriptParts.resolve(file, join(scratch, `.probe-${file}`));
   const name = scriptParts.safeName(head.name ?? `${file}.mp4`);
   const key = record !== null && cloud.validKey(record.originalKey) ? record.originalKey : `edit/originals/drive/${file}/${segment(name)}`;
@@ -1018,6 +1021,50 @@ export async function driveOriginal(
   if (duration !== null) done.duration = duration;
   await putRecord(done);
   return { file, source, key, name, size };
+}
+
+// ---------------------------------------------------------------------------
+// Originals going up behind a script's import (writer/streamed.ts, Nov 18):
+// the import reads its copy here at once, and the original reaches R2 by the
+// relay's copy or this Mac's upload while the import goes on. Edit mode on
+// this Mac waits for one rather than copying it a second time beside it.
+
+/** Originals on their way up from this Mac's imports, by source: each resolves once the registry has it ready. */
+const goingUp = new Map<string, Promise<Original>>();
+
+/** Notes that `source`'s original is on its way up from here: `done` resolves once the registry has it ready. */
+export function goingUpBehind(source: string, done: Promise<Original>): void {
+  goingUp.set(source, done);
+  const forget = () => {
+    if (goingUp.get(source) === done) goingUp.delete(source);
+  };
+  done.then(forget, forget);
+}
+
+/** The original of `source` once its upload from here is done (null: none going, or it failed, so the caller copies it as before). */
+async function waitGoingUp(source: string, progress: (bytes: number, total: number | null, name: string) => void): Promise<Original | null> {
+  const pending = goingUp.get(source);
+  if (pending === undefined) return null;
+  diag.info("cloud", `${source}: waiting for its original, on its way up from a script's import on ${THIS_MACHINE}`);
+  try {
+    const one = await pending;
+    progress(one.size, one.size, one.name);
+    return one;
+  } catch {
+    return null;
+  }
+}
+
+/** Drive file `file` copied to `key` by the relay, without this Mac: its size, or null when the relay can't or stopped (`driveInTheCloud`). */
+export function copyInTheCloud(file: string, key: string, total: number | null): Promise<number | null> {
+  return driveInTheCloud(file, key, () => {}, total);
+}
+
+/** The registry told `source`'s original is whole at its key. */
+export async function originalIsReady(source: string, size: number, duration: number | null): Promise<void> {
+  const done: Record<string, unknown> = { source, originalReady: true, size };
+  if (duration !== null) done.duration = duration;
+  await putRecord(done);
 }
 
 /**
@@ -1042,6 +1089,8 @@ export async function youtubeOriginal(
     progress(size, size, record.name);
     return [{ file, source, key: ready, name: record.name, size }, null];
   }
+  const behind = await waitGoingUp(source, progress);
+  if (behind !== null) return [behind, null];
   const dir = join(scratch, `youtube-${id}`);
   const got = await youtube.download(home, id, dir, progress);
   const name = scriptParts.safeName(got.name);
