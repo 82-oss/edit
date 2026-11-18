@@ -3,6 +3,7 @@ import { scriptBuilt } from "@edit/types/models";
 import { chatDraftKey, useChatDraft } from "./agent";
 import { ChatShell, ChatTurns, Empty, ResetAsk } from "../components/AgentPanel";
 import { ChatComposer } from "../components/ChatComposer";
+import { useUntaughtLane } from "../components/Untaught";
 import { buildTurns } from "../lib/agentTurns";
 import { addQuote, useQuotesOf, type ChatQuote } from "../lib/chatQuotes";
 import { savedEntryIds, scriptEntries } from "./chat/editor-entries";
@@ -205,6 +206,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const cueCount = clips.filter(isCutIn).length;
   // Claude (or a restore) is at work; an archived script is read-only as well.
   const working = started !== null;
+  // A channel's script writes only from what the channel was taught (the server's formats.ts `taught`): until then it waits to be told.
+  const untaught = useUntaughtLane(script.channel ?? null, "script", working);
   const archived = !!script.archive;
   const busy = working || archived || resolving;
   const unfinishedSpeakers = !!(script.speakerCheck && (script.speakerCheck.failed.length || script.speakerCheck.needsApply))
@@ -835,7 +838,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           draft={chatDraftKey(script.id)}
           value={note}
           onValueChange={setNote}
-          allowEmpty={!cueCount}
+          allowEmpty={!cueCount && untaught === null}
           running={working}
           disabled={busy || !ready}
           revising={scriptBuilt({ clips })}
@@ -857,7 +860,9 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                   ? "What should we do with this passage?"
                   : cueCount
                     ? "Ask for a change, e.g. tighten the intro, rewrite cut-in 4 shorter, fix the edges…"
-                    : "Notes for the build (optional), e.g. aim for 30 minutes…"
+                    : untaught !== null
+                      ? `Tell the agent how to write ${untaught}'s script…`
+                      : "Notes for the build (optional), e.g. aim for 30 minutes…"
           }
           onSend={(text, _files, quotes) => (cueCount ? revise(text, quotes) : build(text))}
           onStop={() => void stopJob(script.id).catch((cause) => setError(message(cause)))}
@@ -865,7 +870,16 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
       }
     >
       {!cueCount && !busy && !chat.length && (
-            <Empty title="Write the script" detail="Claude Opus reads the whole transcript with Repack's cut-in guide, picks every clip and writes each cut-in. It takes a few minutes.">
+            <Empty
+              title={untaught !== null ? "Not taught yet" : "Write the script"}
+              detail={
+                untaught !== null
+                  ? `${untaught}'s scripts haven't been taught yet. Say how this one should be written, and what you teach carries to its next.`
+                  : script.channel
+                    ? "Claude Opus reads the whole transcript with what this channel was taught, picks every clip and writes each cut-in. It takes a few minutes."
+                    : "Claude Opus reads the whole transcript with Repack's cut-in guide, picks every clip and writes each cut-in. It takes a few minutes."
+              }
+            >
               {script.noSpeech && <p className="mx-auto mt-2 max-w-[270px] text-center text-[12px] leading-relaxed text-muted">No words were heard in this footage, so it has no transcript. Cut it by time on the timeline.</p>}
             </Empty>
           )}

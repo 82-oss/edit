@@ -36,4 +36,11 @@ describe("what several videos in New project make", () => {
     expect(shapeOf({ kind: "courtroom", reused: false, title: "When Judges Snap", picked: "compilation", may: { single: true, compilation: false } })).toEqual({ shape: "case", fixed: "Your account writes Courtroom cases, not compilations." });
     expect(shapeOf({ kind: "courtroom", reused: false, title: "Judge Snaps", picked: "case", may: { single: false, compilation: true } })).toEqual({ shape: "compilation", fixed: "Your account writes Courtroom compilations, not single cases." });
   });
+
+  it("a channel's videos are one case or a compilation as the channel makes them, whatever its kind or title (Edit V2)", () => {
+    const may = { single: true, compilation: true };
+    expect(shapeOf({ kind: undefined, reused: false, title: "When cops", picked: null, may, channel: { compilation: false } }).shape).toBe("case");
+    expect(shapeOf({ kind: undefined, reused: false, title: "A case", picked: "case", may, channel: { compilation: true } }).shape).toBe("compilation");
+    expect(shapeOf({ kind: undefined, reused: true, title: "A case", picked: null, may, channel: { compilation: false } }).shape).toBe("compilation");
+  });
 });

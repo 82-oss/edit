@@ -23,10 +23,17 @@ export interface Format {
   kind: Kind;
   compilation: boolean;
   style: Style;
+  /**
+   * A channel's script (Edit V2): written only from what the channel was
+   * taught (lanes.ts), none of the house's guides or checks (Sphe, Nov 18: "if
+   * you haven't taught the scripting agents… it should just be empty"). Its
+   * kind is the plain one, never picked from the channel's narration.
+   */
+  taught: boolean;
 }
 
-export function formatOf(kind: Kind, compilation: boolean, title: string): Format {
-  return { kind, compilation, style: style(title) };
+export function formatOf(kind: Kind, compilation: boolean, title: string, taught = false): Format {
+  return { kind: taught ? "interrogation" : kind, compilation, style: style(title), taught };
 }
 
 export const isFoia = (format: Format): boolean => format.kind === "foia" && !format.compilation;

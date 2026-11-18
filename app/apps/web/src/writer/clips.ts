@@ -89,13 +89,14 @@ function replayed(clip: Clip, later: Clip[]) {
  * A FOIA opening is read from the layout: two-split when the second block's
  * clips all play again later.
  */
-export function purposes(script: Pick<Script, "clips" | "kind" | "compilation" | "title">): string[] {
+export function purposes(script: Pick<Script, "clips" | "kind" | "compilation" | "title" | "channel">): string[] {
   const parts = blocks(script.clips);
   const cues = parts.filter((block) => block.cue);
   const bare = cues.map((block) => block.clips.length === 0);
   const count = cues.length;
   const when = /^\s*["“'‘]?when\b/i.test(script.title);
-  const kind = script.kind ?? "interrogation";
+  // A channel's script has no kind (the server's formats.ts `taught`): it opens either way, read from its layout as a FOIA one is.
+  const kind = script.channel ? "foia" : (script.kind ?? "interrogation");
   const twoSplit =
     kind === "foia" &&
     parts.length >= 3 &&
@@ -122,15 +123,16 @@ export function purposes(script: Pick<Script, "clips" | "kind" | "compilation" |
 }
 
 /** The script's title line, as Repack heads its Docs: the producer's own wording when they rewrote it. */
-export function heading(script: Pick<Script, "kind" | "title" | "suspects" | "compilation" | "heading">) {
+export function heading(script: Pick<Script, "kind" | "title" | "suspects" | "compilation" | "heading" | "channel">) {
   return script.heading?.trim() || generatedHeading(script);
 }
 
 /** The title line built from what is known: the series, who is interrogated, then the title. */
-export function generatedHeading(script: Pick<Script, "kind" | "title" | "suspects" | "compilation">) {
-  const series = script.kind === "foia" ? "FOIA" : script.kind === "courtroom" ? "COURT" : "INTERRO";
+export function generatedHeading(script: Pick<Script, "kind" | "title" | "suspects" | "compilation" | "channel">) {
+  // A channel's script has no house series in front (the server's pages.ts heading).
+  const series = script.channel ? "" : `${script.kind === "foia" ? "FOIA" : script.kind === "courtroom" ? "COURT" : "INTERRO"} `;
   const suspects = script.compilation ? [] : (script.suspects ?? []);
-  return suspects.length ? `${series} ${suspects.join(" & ")} - ${script.title}` : `${series} ${script.title}`;
+  return suspects.length ? `${series}${suspects.join(" & ")} - ${script.title}` : `${series}${script.title}`;
 }
 
 /** Which recording of a joined case a moment is in, or -1 for a single recording. */

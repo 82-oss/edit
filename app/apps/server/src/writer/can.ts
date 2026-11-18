@@ -34,8 +34,19 @@ export function workOf(script: Pick<Script | Summary, "sourceKind" | "compilatio
   return kind === "foia" ? FOIA : kind === "courtroom" ? COURTROOM : INTERROGATION;
 }
 
+/** A channel's footage script: it has no kind of its own (formats.ts `taught`), so whoever writes scripts of its shape and may use the channel may write it. */
+export const isChannelScript = (script: Pick<Script | Summary, "sourceKind" | "channel">): boolean => typeof script.channel === "string" && script.channel !== "" && script.sourceKind !== "commentary";
+
+const writesShape = (compilation: boolean | undefined, given: Set<string> | null): boolean => (compilation ? compilationKinds(given) : singleKinds(given)).length > 0;
+
 /** May see and write this script. */
-export const sees = (script: Pick<Script | Summary, "sourceKind" | "compilation" | "kind" | "channel">, given: Set<string> | null = granted()): boolean => mayChannel(script.channel, given) && has(workOf(script), given);
+export const sees = (script: Pick<Script | Summary, "sourceKind" | "compilation" | "kind" | "channel">, given: Set<string> | null = granted()): boolean =>
+  mayChannel(script.channel, given) && (isChannelScript(script) ? writesShape(script.compilation, given) : has(workOf(script), given));
+
+/** Making a channel's script of this shape: refused when the person writes no scripts of it. */
+export function requireShape(compilation: boolean | undefined): void {
+  if (!writesShape(compilation, granted())) throw new Error(refusal(compilation ? INTERROGATION_COMPILATION : INTERROGATION));
+}
 
 /** The one-case formats this person may write, in the editor's order. */
 export function singleKinds(given: Set<string> | null = granted()): Kind[] {

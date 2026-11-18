@@ -17,8 +17,10 @@ export type Shape = "case" | "compilation";
  * Courtroom videos are one case, unless the title starts with "When", which
  * is how Repack names a standard compilation.
  */
-export function shapeOf({ kind, reused, title, picked, may }: { kind: Kind | undefined; reused: boolean; title: string; picked: Shape | null; may: { single: boolean; compilation: boolean } }): { shape: Shape; fixed: string | null } {
+export function shapeOf({ kind, reused, title, picked, may, channel = null }: { kind: Kind | undefined; reused: boolean; title: string; picked: Shape | null; may: { single: boolean; compilation: boolean }; channel?: { compilation: boolean } | null }): { shape: Shape; fixed: string | null } {
   if (reused) return { shape: "compilation", fixed: "A case the channel already covered belongs in a compilation." };
+  // A channel's videos are one case or a compilation as the channel makes them (Edit V2): set for the person, never asked.
+  if (channel !== null) return { shape: channel.compilation ? "compilation" : "case", fixed: channel.compilation ? "This channel makes compilations." : "This channel makes one case a video." };
   if (kind !== "courtroom") return { shape: "compilation", fixed: "Separate videos of bodycam or interrogation footage are a compilation. One case's recordings go in as one Drive folder." };
   if (!may.compilation && may.single) return { shape: "case", fixed: "Your account writes Courtroom cases, not compilations." };
   if (!may.single && may.compilation) return { shape: "compilation", fixed: "Your account writes Courtroom compilations, not single cases." };

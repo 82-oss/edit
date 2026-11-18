@@ -19,20 +19,31 @@ export function useUntaughtChannel(): string | null {
   const channel = useEditor((state) => state.project?.channel ?? null);
   const footage = useEditor((state) => (state.project?.media.length ?? 0) > 0);
   const running = useAgent((state) => state.running);
+  const empty = useUntaughtLane(channel, "edit", running);
+  return channel !== null && footage ? empty : null;
+}
+
+/**
+ * The channel's title while one of its lanes (and its group's) is still
+ * empty, read again whenever `busy` settles; null when it's taught, has no
+ * channel, or couldn't be read (never taken for untaught). Script mode's page
+ * says so for its Script lane (the server's writer/scripting.ts needsTeaching).
+ */
+export function useUntaughtLane(channel: string | null, lane: "edit" | "script", busy = false): string | null {
   const [empty, setEmpty] = useState<string | null>(null);
   useEffect(() => {
-    if (channel === null || running) return;
+    if (channel === null || busy) return;
     let alive = true;
     void channelApi.page(channel).then(
       // A grouped channel is taught what its group is, as well as its own.
-      (page) => alive && setEmpty(page.taught.edit.length === 0 && (page.group?.taught.edit.length ?? 0) === 0 ? page.channel.title : null),
+      (page) => alive && setEmpty(page.taught[lane].length === 0 && (page.group?.taught[lane].length ?? 0) === 0 ? page.channel.title : null),
       () => alive && setEmpty(null),
     );
     return () => {
       alive = false;
     };
-  }, [channel, running]);
-  return channel !== null && footage ? empty : null;
+  }, [channel, lane, busy]);
+  return channel === null ? null : empty;
 }
 
 /** The line itself. */

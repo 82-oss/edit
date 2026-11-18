@@ -8,6 +8,7 @@ import type { Clip, Focus, Kind, Research, Script, StampedDate } from "@edit/typ
 
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
+import * as lanes from "../lanes.ts";
 import { join } from "../paths.ts";
 import { probe as probeFile } from "../media.ts";
 import { isFile } from "../paths.ts";
@@ -26,7 +27,7 @@ import { lessonsText } from "./lessons.ts";
 import * as media from "./media.ts";
 import { nameVoices } from "./naming.ts";
 import { clock, ensureIds } from "./paragraphs.ts";
-import { compile, type Plan } from "./plan.ts";
+import { compile, isTaught, type Plan } from "./plan.ts";
 import * as research from "./research.ts";
 import * as reuse from "./reuse.ts";
 import { revise } from "./revise.ts";
@@ -194,12 +195,31 @@ export async function buildOnce(app: App, data: string, id: string, note: string
  * finds, saved narration written straight in. Off for a build asked with
  * review: false.
  */
-export function freshEyesRequest(courtroom: boolean): string {
+export function freshEyesRequest(courtroom: boolean, taught = false): string {
+  // A channel's script is read against what the channel was taught, nothing of the house's (formats.ts `taught`).
+  if (taught) return "Read this script once more with fresh eyes, as the team reviews it before recording, against everything this channel has been taught, and fix what falls short of it. Change only what needs it; keep what already works, and say in a few lines what you changed and why.";
   const blocks = courtroom
     ? "Every footage block: as the courtroom shape paces it (tight early, relaxed later), no cut-in after less than about a minute of footage, no crumbs."
     : "Every footage block: none past about three minutes (break it where the conversation turns, with a cut-in that adds what the footage can't), no cut-in after less than about a minute of footage, no crumbs, no procedure or sound-only stretch holding the picture back.";
   const opening = courtroom ? "The intro clips: the moments the title promises?" : "The very first clip: the title's moment, with picture?";
   return `Read this script once more with fresh eyes, as the team reviews it before recording, and fix what they would flag. ${opening} ${blocks} Every cut-in: does it turn what the viewer just saw rather than describe it again, carry what the footage can't show (the people's life, the motive, what changed), introduce anyone it speaks of? The format's shape and guides hold throughout. Change only what needs it; keep what already works, and say in a few lines what you changed and why.`;
+}
+
+/** Said when a channel's script is asked to build with nothing to go on: it was taught nothing and told nothing. */
+export const UNTAUGHT = "This channel's scripts aren't taught yet. Tell the agent how to write this one.";
+export const UNREAD = "This channel's lessons couldn't be read just now. Try again in a moment.";
+
+/**
+ * Why a channel's script can't build now, or null: a channel's script is
+ * written only from what it was taught (formats.ts `taught`), so with nothing
+ * taught it waits for the person to say what to write (Sphe, Nov 18: "a blank
+ * project that says, 'You haven't taught it yet'"); a note says it, and builds.
+ */
+export async function needsTeaching(script: Script, note: string): Promise<string | null> {
+  if (script.commentary || !isTaught(script)) return null;
+  const state = await lanes.teachingOf(script.channel!, "script");
+  if (state === "unknown") return UNREAD;
+  return state === "untaught" && note.trim() === "" ? UNTAUGHT : null;
 }
 
 // On by default since loop 7 S2–S3 (four builds with and without: fewer flags, less re-telling, crumbs merged, for about two minutes); a build may ask without it (review: false).
@@ -243,8 +263,8 @@ export async function buildAndReview(app: App, data: string, id: string, note: s
   checkStopped(job);
   job.stage("Reading it with fresh eyes");
   try {
-    const courtroom = store.read(store.scriptDir(data, id)).kind === "courtroom";
-    const [again, more] = await reviseWith(data, id, freshEyesRequest(courtroom), "Fresh eyes: the final read.", { selected: [], picked: null, playheadMs: null }, true, job);
+    const built = store.read(store.scriptDir(data, id));
+    const [again, more] = await reviseWith(data, id, freshEyesRequest(built.kind === "courtroom", isTaught(built)), "Fresh eyes: the final read.", { selected: [], picked: null, playheadMs: null }, true, job);
     return [`${report}\n\nFresh eyes: ${again}`, cost + more];
   } catch (error) {
     checkStopped(job);

@@ -81,9 +81,10 @@ function clipRange(clip: Clip, script: Script): string {
 export function heading(script: Script): string {
   const own = script.heading?.trim();
   if (own) return own;
-  const series = script.kind === "foia" ? "FOIA" : script.kind === "courtroom" ? "COURT" : "INTERRO";
+  // A channel's script has no house series in front (formats.ts `taught`): its title, and who's interrogated.
+  const series = script.channel ? "" : `${script.kind === "foia" ? "FOIA" : script.kind === "courtroom" ? "COURT" : "INTERRO"} `;
   const suspects = script.suspects ?? [];
-  return script.compilation || suspects.length === 0 ? `${series} ${script.title}` : `${series} ${suspects.join(" & ")} - ${script.title}`;
+  return script.compilation || suspects.length === 0 ? `${series}${script.title}` : `${series}${suspects.join(" & ")} - ${script.title}`;
 }
 
 /** How many of the script's assets it lists: a compilation's videos, else its one link. */

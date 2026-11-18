@@ -1749,7 +1749,8 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
     }
   };
   const categoryItem: MenuItem[] =
-    current !== null && kinds.length > 1
+    // A channel's script has no category: it's written from what the channel was taught.
+    current !== null && kinds.length > 1 && !script.channel
       ? [{ label: "Category", icon: <Tag size={14} />, submenu: kinds.map((kind) => ({ label: KIND_LABEL[kind], checked: kind === current, onSelect: () => void recategorize(kind) })) }]
       : [];
   // Its ⋯ (and right click), as an edit's: open it, and (when this Mac has it) rename or delete it; Later's too.
@@ -1813,7 +1814,9 @@ function ScriptTableRow({ script, importing, writing, sharing, here, onChanged, 
       await writer.startBuild(script.id, "");
       navigate(`/scripts/${script.id}`);
     } catch (error) {
-      useEditor.getState().toastError(error, `write “${script.title}”`);
+      // A channel taught nothing waits on its page for the person to say what to write (the server's scripting.ts UNTAUGHT).
+      if (script.channel && error instanceof Error && error.message.includes("aren't taught yet")) navigate(`/scripts/${script.id}`);
+      else useEditor.getState().toastError(error, `write “${script.title}”`);
     } finally {
       setStarting(false);
     }
@@ -2242,14 +2245,15 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   const blocked = (sources ?? []).some((one) => one.problem !== null && !one.reuse);
   // Several videos make one case or a compilation (several.ts); one video alone is its case.
   const several = writing && !commentary && sources !== null && sources.length >= 2;
-  // A channel's script is written the way its videos are narrated (the server's madeOf): the editor's recording, an interrogation's; a voice, FOIA's.
-  const writerKind = channel !== null ? (channel.narration?.kind === "recorded" ? "interrogation" : "foia") : WRITER_KIND[kind];
+  // A channel's script has no kind, whoever narrates it (the server's formats.ts `taught`); several videos are one case or a compilation as the channel makes them.
+  const writerKind = channel !== null ? undefined : WRITER_KIND[kind];
   const videos = shapeOf({
     kind: writerKind,
     reused: (sources ?? []).some((one) => one.reuse),
     title,
     picked: shape,
-    may: { single: writerKind !== undefined && grants.singleKinds.includes(writerKind), compilation: writerKind !== undefined && grants.compilationKinds.includes(writerKind) },
+    may: channel !== null ? { single: grants.singleKinds.length > 0, compilation: grants.compilationKinds.length > 0 } : { single: writerKind !== undefined && grants.singleKinds.includes(writerKind), compilation: writerKind !== undefined && grants.compilationKinds.includes(writerKind) },
+    channel,
   });
   const editDoc = !writing && links.some((link) => DOC.test(link));
   // The scripts an edit can start from: built, a person's, of the channel picked (or of none), the words searched.
@@ -2553,7 +2557,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
           <Field label={commentary ? "Sources" : "Footage"} hint={commentary ? "the first is the brief" : "YouTube, Drive or a Trello card"}>
             {pasteBox}
             {footageList}
-            {several && (
+            {several && channel === null && (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {SHAPES.map(([value, name, makes]) => (
                   <button

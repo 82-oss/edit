@@ -643,10 +643,12 @@ export function routes(router: Router<App>): void {
     .get("/api/writer/trello/{list}", (context) => answer(() => trello.cards(context.params.list ?? "", titles(context.app))))
     .post("/api/writer/scripts/{id}/build", async (context) => {
       const given = await body<{ note?: string; kind?: Kind; review?: boolean }>(context);
-      return answer(() => {
+      return answer(async () => {
         const script = readFor(dataOf(context.app), id(context));
         if (given.kind !== undefined) can.requireKind(script, given.kind);
         const note = String(given.note ?? "");
+        const waits = await scripting.needsTeaching(script, note);
+        if (waits !== null) throw new Error(waits);
         const review = scripting.scriptFreshEyes(given.review);
         return startJob(context.app, id(context), { kind: "build", note, ...(given.kind ? { format: given.kind } : {}), review });
       });
@@ -800,7 +802,8 @@ const testOf = (given: { person?: unknown }): boolean => given.person !== true;
  */
 async function madeOf(app: App, given: { person?: unknown; channel?: unknown }): Promise<imports.Made & { kind: Kind | null }> {
   const channel = await channels.channelFor(given.channel, app.store.home);
-  return { test: testOf(given), ...(channel !== null ? { channel: channel.key } : {}), kind: channel === null ? null : channels.styleOf(channel) === "interrogation" ? "interrogation" : "foia" };
+  // A channel's script has no kind, whoever narrates it (formats.ts `taught`): its Script lane is all it's written from.
+  return { test: testOf(given), ...(channel !== null ? { channel: channel.key } : {}), kind: null };
 }
 
 /** A script marked a test one, brought forth, hidden again, or promoted (store.ts TEST_FILE). */

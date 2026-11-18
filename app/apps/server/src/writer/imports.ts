@@ -35,6 +35,7 @@ import * as media from "./media.ts";
 import { caseNames } from "./names.ts";
 import * as parts from "./parts.ts";
 import * as research from "./research.ts";
+import * as scripting from "./scripting.ts";
 import * as reuse from "./reuse.ts";
 import * as storage from "./storage.ts";
 import * as room from "../storage.ts";
@@ -281,7 +282,7 @@ export function linesFor(given: string[], oneCase: boolean): [string[], Reuse[]]
   const [urls, reuses] = linesIn(given);
   if (oneCase && reuses.length > 0) throw new Error("A reused case belongs in a compilation, not one Courtroom case.");
   if (urls.length === 0 || urls.length > 20 || urls.length + reuses.length < 2) {
-    throw new Error(oneCase ? "A Courtroom case across videos takes 2 to 20 links; for one video, use YouTube." : "A compilation takes at least two cases, including at least one new footage source (up to 20 new and 20 reused).");
+    throw new Error(oneCase ? "One case across videos takes 2 to 20 links; for one video, use YouTube." : "A compilation takes at least two cases, including at least one new footage source (up to 20 new and 20 reused).");
   }
   if (reuses.length > 20) throw new Error("A compilation takes at most 20 reused cases.");
   return [urls, reuses];
@@ -418,12 +419,18 @@ export type Made = { test?: boolean; channel?: string };
 async function start(app: App, data: string, script: Script, found: Research | null, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished", made: Made = {}): Promise<Script> {
   if (then !== null) script.firstBuild = then;
   if (made.channel) script.channel = made.channel;
-  // Only kinds of script this person may write, starting as the first format they may.
-  if (script.sourceKind === "compilation" && !script.compilation) {
+  // A channel's script has no kind: it's written from what the channel was taught (formats.ts `taught`), one case or a compilation.
+  if (can.isChannelScript(script)) {
+    delete script.kind;
+    can.requireShape(script.compilation);
+  } else if (script.sourceKind === "compilation" && !script.compilation) {
     if (kind !== null && kind !== "courtroom") throw new Error("Videos of one Courtroom case must use the Courtroom format.");
     script.kind = "courtroom";
-  } else script.kind = kind ?? (script.compilation ? can.firstCompilationKind() : can.firstSingleKind());
-  can.requireKind(script, script.kind);
+    can.requireKind(script, script.kind);
+  } else {
+    script.kind = kind ?? (script.compilation ? can.firstCompilationKind() : can.firstSingleKind());
+    can.requireKind(script, script.kind);
+  }
   const done = busy(script.id);
   let result: Script;
   try {
@@ -463,13 +470,22 @@ export const hooks = { build: (_app: App, _id: string, _note: string): void => {
  */
 function buildWhenReady(app: App, data: string, script: Script): void {
   if (script.status !== "ready" || script.firstBuild === undefined) return;
+  void buildOnceReady(app, data, script, script.firstBuild.note);
+}
+
+async function buildOnceReady(app: App, data: string, script: Script, note: string): Promise<void> {
   const dir = store.scriptDir(data, script.id);
-  const note = script.firstBuild.note;
+  // A channel taught nothing and told nothing waits, ready to script, for the person to say what to write.
+  const waits = await scripting.needsTeaching(script, note).catch(() => scripting.UNREAD);
   try {
     const now = store.read(dir);
     delete now.firstBuild;
     store.write(dir, now);
     delete script.firstBuild;
+    if (waits !== null) {
+      diag.info("writer", `${jobs.named(script.id, script.title)}: its import is ready; no build started (${waits})`);
+      return;
+    }
     hooks.build(app, script.id, note);
     diag.info("writer", `${jobs.named(script.id, script.title)}: its import is ready, so its build started${note ? " with the note given" : ""}`);
   } catch (error) {

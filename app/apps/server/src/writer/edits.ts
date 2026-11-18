@@ -105,6 +105,7 @@ export function setKind(data: string, id: string, kind: unknown): Script {
   if (!KINDS.includes(kind as Kind)) throw new Error("Choose Interrogation, Bodycam or Courtroom.");
   return store.update(store.scriptDir(data, id), (script) => {
     if (script.sourceKind === "commentary" || script.commentary != null) throw new Error("A commentary script's category can't be changed.");
+    if (script.channel) throw new Error("A channel's script is written from what the channel was taught, so it has no category to change.");
     script.kind = kind as Kind;
   });
 }

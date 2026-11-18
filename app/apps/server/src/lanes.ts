@@ -42,6 +42,18 @@ export function lessonsOf(place: Place): v2cloud.Skill[] {
 /** Whether a lesson is the channel's own (not its group's). */
 const ownLesson = (one: v2cloud.Skill, place: Place) => v2cloud.ownPlaceOf(one.key ?? "") === v2cloud.laneKey(place.channel, place.lane);
 
+/**
+ * Whether a channel's lane has been taught anything, read fresh: "unknown"
+ * when its lessons can't be read now, never taken for untaught (as the edit's
+ * teaching_gate.ts). Script mode builds nothing for an untaught channel
+ * unless it's told what to write (writer/scripting.ts `needsTeaching`).
+ */
+export async function teachingOf(channel: string, lane: WorkLane): Promise<"taught" | "untaught" | "unknown"> {
+  await refresh();
+  if (!v2cloud.enabled() || !v2cloud.teachingKnown()) return "unknown";
+  return v2cloud.taughtAnything(channels.placesOf(channel, lane)) ? "taught" : "untaught";
+}
+
 /** Read fresh at a turn's start (at most every 30 s each). */
 export async function refresh(): Promise<void> {
   if (!v2cloud.enabled()) return;
@@ -103,7 +115,9 @@ export function laneText(place: Place, teach: Teach = "tools"): string {
     if (groupWide.length > 0) lines.push(`What the team has taught you for the group's ${MANY[place.lane]} (always):\n${groupWide.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
     if (own.length > 0) lines.push(`For ${channel?.title ?? "this channel"} alone, its exceptions (always; they win over the group's):\n${own.map((one) => `- ${one.name}: ${one.text}`).join("\n")}`);
   }
-  if (parts.length > 0) lines.push(`Read one with read_skill when it fits, once per conversation:\n${parts.map((one) => `- ${one.name}${mineOnly(one)}: ${one.note}`).join("\n")}`);
+  // Script mode's agents have no tools to read a part with (writer/build.ts, revise.ts): theirs come whole.
+  if (parts.length > 0 && place.lane === "script") lines.push(`Its longer parts, each whole; use one where it fits:\n\n${parts.map((one) => `## ${one.name}${mineOnly(one)} (${one.note})\n${one.text}`).join("\n\n")}`);
+  else if (parts.length > 0) lines.push(`Read one with read_skill when it fits, once per conversation:\n${parts.map((one) => `- ${one.name}${mineOnly(one)}: ${one.note}`).join("\n")}`);
   if (!v2cloud.teachingKnown()) lines.push(`THIS CHANNEL'S ${word.toUpperCase()} STYLE COULDN'T BE READ from Edit's cloud just now: do what's asked plainly, tell the person once that its style didn't load and to ask again in a moment, and keep nothing this time.`);
   else if (!v2cloud.taughtAnything(channels.placesOf(place.channel, place.lane))) lines.push(`THIS CHANNEL'S ${word.toUpperCase()} STYLE ISN'T TAUGHT YET: do what's asked plainly, and build the style with the person as they say what it should be.`);
   if (teach === "none") return lines.join("\n\n");
@@ -133,10 +147,12 @@ export function laneText(place: Place, teach: Teach = "tools"): string {
  * The lane's part of an agent's system prompt, after the house's guide: ""
  * for work that isn't a channel's.
  */
-export function section(channel: string | null | undefined, lane: WorkLane, teach: Teach = "tools"): string {
+export function section(channel: string | null | undefined, lane: WorkLane, teach: Teach = "tools", guide = true): string {
   const place = placeOf(channel, lane);
   if (place === null) return "";
-  return `\n\n# This channel's ${MANY[lane]}\nWhat follows is this channel's own, taught by the team: where it differs from the guide above, it wins.\n\n${laneText(place, teach)}`;
+  // `guide`: a house guide comes before it, which the lane outranks; without one (a channel's script, writer/formats.ts `taught`), the lane is all there is.
+  const lead = guide ? "What follows is this channel's own, taught by the team: where it differs from the guide above, it wins." : `What follows is everything this channel's ${MANY[lane]} are made from, taught by the team.`;
+  return `\n\n# This channel's ${MANY[lane]}\n${lead}\n\n${laneText(place, teach)}`;
 }
 
 /** A lesson kept in a lane's style (its group's unless `given` "channel"): a teacher's (refused otherwise, in words for the person). */
@@ -248,6 +264,8 @@ async function remember(args: Record<string, unknown>, place: Place): Promise<st
   const kept = channels.keptIn(place.channel, place.lane, args.for);
   const key = v2cloud.ownKey("skill", kept.place, skill);
   const before = lessonsOf(place).find((one) => one.name === skill && one.key === key) ?? lessonsOf(place).find((one) => one.name === skill);
+  // A guide brought over whole (longer than a part can be) is never written over by a short lesson: what's new is a lesson of its own, which wins where they differ.
+  if (before !== undefined && before.text.length > PART_MOST) throw new Error(`${skill} is a guide brought over whole (${before.text.length} characters): keep this as a lesson of its own, under its own name, and it wins where they differ`);
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
   const most = part ? PART_MOST : MEMORY_MOST;
   if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part short: its rules, not their history" : "a line or two, in the person's words"}`);

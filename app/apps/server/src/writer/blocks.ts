@@ -298,7 +298,8 @@ export const caseCount = (parts: Part[] = []): number => parts.filter((part) => 
 /** The format's length, as its guide sets it: [low, aim, high] ms; null where it sets no runtime. */
 export function targetMs(script: Script): [number, number, number] | null {
   const minutes = (low: number, aim: number, high: number): [number, number, number] => [low * 60_000, aim * 60_000, high * 60_000];
-  if (script.commentary) return null;
+  // A channel's script runs as long as it was taught: no house target (formats.ts `taught`).
+  if (script.commentary || (typeof script.channel === "string" && script.channel !== "")) return null;
   const kind = script.kind ?? "interrogation";
   if (script.compilation) {
     const cases = Math.max(caseCount(script.parts), 1);

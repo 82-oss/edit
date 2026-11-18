@@ -38,7 +38,12 @@ const REVISE_EDGES = "Clip edges decide whether a cut feels finished. Start each
 
 const REVISE_EDITS = "Edits name timeline items by their IDs in CURRENT SCRIPT (i1, i2, …) and words by their transcript IDs (w12). An item an edit adds can be named by later edits as n1, n2, … in the order added. The edits:\n- {\"op\":\"trim\",\"id\":\"i3\",\"edge\":\"in\",\"wordId\":\"w120\"}: move a clip's in-point to just before that word, or (\"edge\":\"out\") its out-point to just after it. For a cut on something seen, not said (the detectives walking up, a door opening), give \"at\":\"0:29\" instead of wordId: that exact moment, on CURRENT SCRIPT's clock, silence or not.\n- {\"op\":\"remove_words\",\"firstWordId\":\"w40\",\"lastWordId\":\"w52\"}: take those words, inclusive, out of every clip that holds them; a clip may split in two.\n- {\"op\":\"insert_words\",\"firstWordId\":\"w300\",\"lastWordId\":\"w340\",\"afterId\":\"i4\"}: a new clip of those words after that item (\"afterId\":\"start\" for the very beginning; leave afterId out for the end). Footage where nobody speaks: \"from\":\"0:29\",\"to\":\"0:45\" instead of the word IDs.\n- {\"op\":\"split\",\"id\":\"i3\",\"wordId\":\"w130\"}: split a clip just before that word; the second half is a new item.\n- {\"op\":\"delete\",\"ids\":[\"i3\",\"i5\"]}: remove items.\n- {\"op\":\"move\",\"ids\":[\"i7\",\"i8\"],\"afterId\":\"i2\"} (or \"beforeId\"): move items, keeping their order, next to another item.\n- {\"op\":\"insert_cut_in\",\"afterId\":\"i4\",\"narration\":\"…\"}: a new cut-in card with its finished paragraph.\n- {\"op\":\"write\",\"id\":\"i6\",\"narration\":\"…\"}: the whole new paragraph for an existing cut-in.\n- {\"op\":\"correct_word\",\"wordId\":\"w55\",\"text\":\"Hernández\"}: fix how a word is spelled; its timing never changes.\n- {\"op\":\"tighten_pauses\"}: cut quiet pauses over 2 s in the kept footage to a beat (two seconds before an answer), as the build does.\n- {\"op\":\"polish_edges\"}: move every clip edge the edge review flags that a small fix can mend.\n- {\"op\":\"note\",\"id\":\"i3\",\"on\":\"a grandmother keeps other people's children\",\"text\":\"edit: the porch footage under these words\"}: a note for the video editor, only when asked for one (\"tell the editor…\", \"add an edit note…\", \"leave a note on this line\"). It goes on the item it's about, a cut-in or a footage clip, and \"on\" is the exact words it's about, copied from that cut-in's narration or from what's said in that clip, so the editor does it at that moment (leave \"on\" out only for a note on the whole item). It starts \"edit:\" and says what to do there; the editor follows it over their usual plan, and the Doc shows it as a comment on those words.\n- {\"op\":\"remove_note\",\"id\":\"i3\",\"note\":1}: take off an item's note by its number in CURRENT SCRIPT, only when asked (to move a note: remove_note, then note where it belongs).\nA clip stays inside one recording. START OVER: only when the producer asks to start the script over, rebuild it from scratch or throw it away, set startOver to true and send no edits. Nothing is cleared until the producer confirms it in the app; the transcript, speakers, sources and research stay. The reply says you have asked them to confirm. Never set it otherwise. The reply is for the producer: one to four short sentences on what you changed or proposed and why, or the answer to their question. Never show milliseconds or word IDs in it; give moments as [m:ss] footage times.";
 
+/** A channel's revision: how edits work, none of the house's taste (formats.ts `taught`); how its scripts read is its Script lane alone. */
+const TAUGHT_HEAD = `${REVISE_HEAD.slice(0, REVISE_HEAD.indexOf("\nEditorial priority:"))}\nHow this channel's scripts are shaped and how they read is what the channel has been taught, below, and nothing else: there is no house style beside it. Where it says nothing, do plainly what the producer asks.`;
+const TAUGHT_EDGES = "Anchor clip edges to exact words; the app adds breathing room. An edge the producer puts on something seen (a walk-up, a door), or at a time they give, goes at that time, words or not. CURRENT SCRIPT lists what the edge review flags on each clip.";
+
 function systemPrompt(script: Script, format: Format): string {
+  if (format.taught) return `${TAUGHT_HEAD}\n${TAUGHT_EDGES}\n${REVISE_EDITS}\n${LESSON_RULE}\nProject title: ${script.title}${lanes.section(script.channel, "script", "lesson", false)}`;
   const cases = format.compilation ? Math.max(caseCount(script.parts), 1) : 1;
   const [shape, length, sequence] = formats.shapeLengthSequence(format, cases);
   let prompt = `${REVISE_HEAD}\n${shape}\n${length}\n${sequence} ${EDITOR_WRITING.replace("{document}", formats.documentOf(format))}\n${REVISE_EDGES}\n${REVISE_EDITS}\n${LESSON_RULE}\nProject title: ${script.title}\n\nPRODUCER'S CUT-IN GUIDE\n${formats.plain(formats.CUT_IN_GUIDE)}\n\nPRODUCER'S JUDGMENT CALLS\n${formats.plain(formats.JUDGMENT_GUIDE)}`;
@@ -99,7 +104,8 @@ function blocksOf(clips: Clip[]): Clip[][] {
 
 /** How a FOIA script opens, read from its layout: two-split when the second block's clips all play again later. */
 export function openingOf(clips: Clip[], format: Format): Opening {
-  if (!formats.isFoia(format)) return "one-run";
+  // A channel's script opens either way: read from its layout too.
+  if (!formats.isFoia(format) && !format.taught) return "one-run";
   const runs = blocksOf(clips);
   if (runs.length < 3 || runs[1]!.length === 0) return "one-run";
   const later = runs.slice(2).flat();
@@ -504,7 +510,8 @@ export function apply(script: Script, edits: Edit[], peaks: ArrayLike<number>, d
 
 /** A compilation's edits keep it inside its 6 to 7 pages (proposals counted as accepted), unless it was already outside them. */
 function keepsLength(script: Script, format: Format, done: [Clip[], Record<string, string>, Proposal[]]): void {
-  if (!format.compilation) return;
+  // A channel's compilation runs as long as it was taught.
+  if (!format.compilation || format.taught) return;
   const [least, most] = COMPILATION_PAGES;
   const before = pageCount(script, script.clips);
   const accepted = done[0].map((clip) => {

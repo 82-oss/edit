@@ -30,7 +30,7 @@ import type { Format } from "./formats.ts";
 import { isFoia } from "./formats.ts";
 import { pageCount } from "./pages.ts";
 import { clock } from "./paragraphs.ts";
-import { cleanupLine, compile, evidence, formatOfScript, itemClip, offTarget, reportOf, systemPrompt, UndatedOpening, wordAt, type Compiled, type Item, type Plan } from "./plan.ts";
+import { cleanupLine, compile, evidence, formatOfScript, isTaught, itemClip, offTarget, reportOf, systemPrompt, UndatedOpening, wordAt, type Compiled, type Item, type Plan } from "./plan.ts";
 
 /** Items one call may add or replace: small replies, whatever the script's length. */
 const MAX_ITEMS_PER_CALL = 40;
@@ -112,12 +112,16 @@ export function stepsSystem(script: Script, format: Format): string {
       "Here there are none and you need none: the complete transcript is in the message, your answer is the build_script plan.",
       "Here you have Writer's own tools instead (below): the complete transcript is in the message, and you write the plan with them.",
     )
-    .replace(' Also give opening: "one-run" or "two-split".', ' Also set the opening (set_opening): "one-run" or "two-split".');
+    .replace(' Also give opening: "one-run" or "two-split".', ' Also set the opening (set_opening): "one-run" or "two-split".')
+    .replace(" Also give opening: ", " Also set the opening (set_opening): ");
   const opening = isFoia(format) ? " Call set_opening once with how this FOIA script opens." : "";
+  // A channel's script is checked for its shape alone: its length and rules are what it was taught.
+  const checks = format.taught ? "its shape" : "its shape, the intro replay, the format's rules and length targets";
+  const offTarget = format.taught ? "" : " If finish says the length is off target, fix it once; calling finish again keeps it as it is.";
   return `${base}
 
 WRITING THE PLAN WITH WRITER'S TOOLS
-Write the plan in timeline order with add_section: one call per footage block and its cut-in, or two, at most ${MAX_ITEMS_PER_CALL} items a call. Each call adds after the last item unless you name \`after\` (an item ID). Each item is checked as it arrives (its word IDs in order, recording boundaries, narration, em dashes, reused cases); if one is refused, the call adds nothing: fix that item and call again.${opening} When the whole plan is in, call review_plan: it checks the whole script as the app will save it (its shape, the intro replay, the format's rules and length targets) and gives the totals. Fix what it reports with replace_items or remove_items, naming items by ID; never send the whole plan again. Then call finish with your report. Only the tools save the plan: don't write it out in a reply. If finish says the length is off target, fix it once; calling finish again keeps it as it is.`;
+Write the plan in timeline order with add_section: one call per footage block and its cut-in, or two, at most ${MAX_ITEMS_PER_CALL} items a call. Each call adds after the last item unless you name \`after\` (an item ID). Each item is checked as it arrives (its word IDs in order, recording boundaries, narration, em dashes, reused cases); if one is refused, the call adds nothing: fix that item and call again.${opening} When the whole plan is in, call review_plan: it checks the whole script as the app will save it (${checks}) and gives the totals. Fix what it reports with replace_items or remove_items, naming items by ID; never send the whole plan again. Then call finish with your report. Only the tools save the plan: don't write it out in a reply.${offTarget}`;
 }
 
 const ITEM = {
@@ -595,9 +599,11 @@ This build goes in three phases, each its own turn with these same tools, and th
 
 const outlineList = (outline: Outline): string => outline.sections.map((section, index) => `${index + 1}. ${section.title} (about ${section.seconds} s of footage): ${section.plan}`).join("\n");
 
-export function outlinePhase(): string {
+export function outlinePhase(taught = false): string {
+  const target = taught ? "the length this channel was taught" : "the format's length targets";
+  const adds = taught ? "the length this channel was taught" : "the format's target";
   return `YOUR PHASE: THE OUTLINE
-Plan the whole script as you would write it: which moments, in what order, the intro, what each cut-in tells, the format's length targets. Then split it, in timeline order, into 2 to ${MAX_SECTIONS} sections of about equal work for writers working at the same time, each seeing only this evidence and your outline: the first holds the opening (the intro clips and the intro cut-in), the last the ending (the outro); a compilation's case is one section, or two when it's long. For each give a title; its plan, specific enough to write from without guessing (the moments it uses as [m:ss] and the word IDs where each clip starts and ends, what each cut-in tells and what the viewer already knows by then, what it must not repeat); and its footage in seconds, so the sections add up to the format's target. Call set_outline once, then end your turn.`;
+Plan the whole script as you would write it: which moments, in what order, the intro, what each cut-in tells, ${target}. Then split it, in timeline order, into 2 to ${MAX_SECTIONS} sections of about equal work for writers working at the same time, each seeing only this evidence and your outline: the first holds the opening (the intro clips and the intro cut-in), the last the ending (the outro); a compilation's case is one section, or two when it's long. For each give a title; its plan, specific enough to write from without guessing (the moments it uses as [m:ss] and the word IDs where each clip starts and ends, what each cut-in tells and what the viewer already knows by then, what it must not repeat); and its footage in seconds, so the sections add up to ${adds}. Call set_outline once, then end your turn.`;
 }
 
 export function sectionPhase(outline: Outline, index: number): string {
@@ -725,7 +731,7 @@ async function buildFastFrom(script: Script, note: string, research: Research | 
   else {
     stage("Outlining the script");
     const outlining = open(newDraft("outline", script, peaks));
-    const [outlined, outlineFailure] = await settle(ask(system_, outlinePhase(), outlining, effort, 12, "Claude opus outlining", signal));
+    const [outlined, outlineFailure] = await settle(ask(system_, outlinePhase(isTaught(script)), outlining, effort, 12, "Claude opus outlining", signal));
     const outlineDraft = close(outlining);
     count(outlined, outlineDraft);
     const given = outlineDraft?.outline ?? null;
