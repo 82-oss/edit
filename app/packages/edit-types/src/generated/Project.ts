@@ -107,4 +107,11 @@ channel?: string,
  * Whether it's a compilation (several cases), when it isn't what its
  * channel's videos usually are; None: as its channel says.
  */
-compilation?: boolean, };
+compilation?: boolean, 
+/**
+ * How its subtitles and intro captions look, as its channel's taught
+ * style asks: "in_video" (white Gabarito Bold, a soft shadow falling
+ * down, no box or label; the intro's words in each speaker's colour).
+ * None: the house look (words in a box, the speaker's label above).
+ */
+subtitle_look?: string, };

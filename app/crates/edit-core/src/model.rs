@@ -102,6 +102,13 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub compilation: Option<bool>,
+    /// How its subtitles and intro captions look, as its channel's taught
+    /// style asks: "in_video" (white Gabarito Bold, a soft shadow falling
+    /// down, no box or label; the intro's words in each speaker's colour).
+    /// None: the house look (words in a box, the speaker's label above).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub subtitle_look: Option<String>,
 }
 
 /// The account that started a project (accounts.spheceo.com).
@@ -1983,6 +1990,7 @@ impl Project {
             hq: false,
             channel: None,
             compilation: None,
+            subtitle_look: None,
         };
         for kind in [
             TrackKind::Video,

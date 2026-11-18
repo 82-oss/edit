@@ -39,7 +39,9 @@ const SYSTEM =
   "A teacher is keeping a new lesson for a video team's AI editor, beside the lessons it has already. " +
   "List each existing lesson line the new one contradicts: where doing both is impossible or they tell the editor opposite things about the same thing " +
   '(e.g. "white words in a black box, with speaker labels" against "all white, no box, no labels"; "music under the footage" against "no music under the footage"). ' +
-  "Not a contradiction: a lesson that adds to another, narrows it with a clear scope (\"only in the intro\", \"for this channel\"), or covers something else. " +
+  "Not a contradiction: a lesson that adds to another, narrows it with a clear scope (\"only in the intro\", \"for this channel\"), or covers something else; " +
+  "a lesson about one part of the edit (the intro and its teasers, the outro, a title card, a 911 call, one effect) governs that part, so a general rule it departs from there is its exception, not a clash. " +
+  "Flag only what an editor couldn't follow both of in the same place. " +
   "Quote the clashing line exactly as the existing lesson has it, name that lesson, and say why in a few words. None: an empty list.";
 
 /** The model's ask, which tests replace. */

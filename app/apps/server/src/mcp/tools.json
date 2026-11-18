@@ -2310,6 +2310,14 @@
         "start": {
           "description": "Seconds on the timeline (default 0).",
           "type": "number"
+        },
+        "look": {
+          "description": "The channel's caption look, as its teaching says: \"house\" (the speaker's colour in a see-through box) or \"in_video\" (Gabarito in the speaker's colour, a soft shadow, no box). Kept on the project: its subtitles follow it too.",
+          "enum": [
+            "house",
+            "in_video"
+          ],
+          "type": "string"
         }
       },
       "required": [],
@@ -2348,6 +2356,14 @@
         "missing_only": {
           "type": "boolean",
           "description": "Add missing lines without replacing existing subtitles or captions (recovery). Default false."
+        },
+        "look": {
+          "description": "The channel's subtitle look, as its teaching says: \"house\" (white words in a box, the speaker's label above in their colour) or \"in_video\" (white Gabarito, a soft shadow, no box or label). Kept on the project: later runs (and the intro's captions) follow it.",
+          "enum": [
+            "house",
+            "in_video"
+          ],
+          "type": "string"
         }
       },
       "required": [],

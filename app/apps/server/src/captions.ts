@@ -330,8 +330,50 @@ function schema(): unknown {
 /** How much of the footage the speaker captions' black box hides. */
 export const CAPTION_BOX_OPACITY = f32(0.45);
 
-/** The house caption look (Repack's subtitle style) at this project's size. */
-export function captionStyle(width: number, height: number): TextStyle {
+/** A project's look for its subtitles and intro captions (Project::subtitle_look): white Gabarito, no box or label. */
+export const IN_VIDEO = "in_video";
+
+/** The looks a project's subtitles can take, as the tools name them: the house's (a box, the label above) or the in-video one. */
+export const LOOKS = ["house", IN_VIDEO] as const;
+
+/**
+ * The in-video look at this project's size, in `color` (Sphe, Nov 18, for
+ * Cuffed & Caught: "no black box, … like in-video subtitles but with speaker
+ * colour changes" in the intro; all white after it): Gabarito Bold at a
+ * ~38 px cap height (56 at 1080p), no box, label or glow, a thin dark edge
+ * and a dense soft shadow falling down (blur 9, 5 px), as wide as 80% of the
+ * frame. Text clips draw it, so the subtitles stay the subtitle step's own
+ * lines and need no render (the in-video-subtitles effect rendered an hour of
+ * them for 80 minutes, and was rebuilt from the transcript).
+ */
+export function inVideoStyle(width: number, height: number, color: Rgba): TextStyle {
+  const k = f32(f32(height) / 1080.0);
+  return {
+    font: "Gabarito",
+    weight: 700,
+    size: round(f32(56.0 * k)),
+    color,
+    tracking: 0.0,
+    line_height: f32(1.15),
+    glow: { enabled: false, color: null, radius: 0.0, strength: 0.0 },
+    max_width: round(f32(f32(width) * f32(0.8))),
+    shadow: { color: [...BLACK], opacity: f32(0.85), distance: f32(5.0 * k), angle: 180.0, size: f32(2.0 * k), blur: f32(9.0 * k) },
+  };
+}
+
+/** Keeps project `id`'s look from a tool's `look`, when given: what its later subtitle and caption runs follow. */
+export async function keepLook(app: App, id: string, given: unknown): Promise<void> {
+  if (given === undefined || given === null) return;
+  if (given !== "house" && given !== IN_VIDEO) throw new Error(`look is "house" (words in a box, the speaker's label above) or "${IN_VIDEO}" (white Gabarito, no box or label; the intro's captions in each speaker's colour), as the channel's teaching says`);
+  await app.store.update(id, "agent", (project) => {
+    if (given === IN_VIDEO) project.subtitle_look = IN_VIDEO;
+    else delete project.subtitle_look;
+  });
+}
+
+/** The house caption look (Repack's subtitle style) at this project's size; `look` "in_video": that one, white (each caption's colour is set per line). */
+export function captionStyle(width: number, height: number, look: string | null = null): TextStyle {
+  if (look === IN_VIDEO) return inVideoStyle(width, height, [...WHITE]);
   const k = f32(f32(height) / 1080.0);
   return {
     font: "Montserrat",
@@ -808,7 +850,8 @@ function own(map: Record<string, string> | undefined, key: string): string | nul
  * a pure black box, no glow, as wide as 80% of the frame, bottom middle; the
  * speaker's name rides above in their colour (set per line).
  */
-export function subtitleStyle(width: number, height: number): TextStyle {
+export function subtitleStyle(width: number, height: number, look: string | null = null): TextStyle {
+  if (look === IN_VIDEO) return inVideoStyle(width, height, [...WHITE]);
   const k = f32(f32(height) / 1080.0);
   const style = captionStyle(width, height);
   const pad = style.background?.pad_x ?? 0.0;
@@ -1030,7 +1073,8 @@ export async function subtitles(app: App, projectId: string, from: number, to: n
   });
   const spans = uncrammed(timed, texts, lines.map((line) => line.doubtful === true)).map(([start, end]) => [(start / 1000.0) * fps, (end / 1000.0) * fps] as [number, number]);
   const { width, height } = project.settings;
-  const style = subtitleStyle(width, height);
+  const inVideo = project.subtitle_look === IN_VIDEO;
+  const style = subtitleStyle(width, height, project.subtitle_look ?? null);
   const transform: Transform = { x: 0, y: subtitleRow([width, height]), scale: 1, rotation: 0 };
   // Lines that would sit over subtitles burned into the footage: left off there, or theirs covered.
   const theirs = burned.onTimeline(project).shown;
@@ -1150,10 +1194,10 @@ export async function subtitles(app: App, projectId: string, from: number, to: n
         `${subtitleName(who)}:`,
         (line.color === null ? null : hex(line.color)) ?? [...WHITE],
       ];
-      const lineStyle: TextStyle = {
-        ...structuredClone(style),
-        label: { text: label, color: [...color] as Rgba, size: round(f32(f32(LABEL_SIZE * f32(height)) / 1080.0)) },
-      };
+      // The in-video look has no label: who said it stays in the clip's name and its person.
+      const lineStyle: TextStyle = inVideo
+        ? structuredClone(style)
+        : { ...structuredClone(style), label: { text: label, color: [...color] as Rgba, size: round(f32(f32(LABEL_SIZE * f32(height)) / 1080.0)) } };
       let lineTransform: Transform = { ...transform };
       let keyframes: Record<string, Keyframe[]> = {};
       const old = carried(moved, start, end);
@@ -1475,7 +1519,7 @@ export async function captionSpeakers(app: App, projectId: string, from: number,
   const colors: ClipColor[] = ["cyan", "orange", "green", "pink", "yellow", "blue"];
   const speakers: string[] = [];
   for (const plan of plans) if (!speakers.includes(plan.who)) speakers.push(plan.who);
-  const style = captionStyle(width, height);
+  const style = captionStyle(width, height, app.store.get(projectId)?.project.subtitle_look ?? null);
   const k = height / 1080.0;
   const [saved, [placed, underFaces, subtitlesRemoved]] = await app.store.update(projectId, "agent", (project) => {
     // A second run replaces the first.

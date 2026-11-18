@@ -240,7 +240,8 @@ export function oneColourPerPerson(project: Project): unknown {
         // Its colour is its name label's. Without one, a Repack-style line's
         // words carry it, but a courtroom video's stay white ("for courtroom
         // videos we have the text for subtitles be white and not change by subject").
-        if (style.label == null && project.style === "courtroom") continue;
+        // The in-video look's subtitles stay white too (Sphe, Nov 18: all white after the intro; its captions take the colour).
+        if (style.label == null && (project.style === "courtroom" || project.subtitle_look === "in_video")) continue;
         [key, onLabel] = [words.key, style.label != null];
         break;
       case "caption":

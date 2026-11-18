@@ -65,6 +65,7 @@ registerTool("add_subtitles", async ({ app, args, projectId }) => {
   const introEnd = seams.captions.intro(project)?.[1] ?? 0;
   const [from, to] = span(args, fps, introEnd, duration(project));
   const neglect = args.neglect === true;
+  await seams.captions.keepLook(app, projectId, args.look);
   const summary = await seams.captions.subtitles(app, projectId, from, to, neglect, args.missing_only === true, burnedIn(app, args, project));
   return text(`subtitled ${fixed(from / fps, 2)}–${fixed(to / fps, 2)}s: ${stableStringify(summary)}`);
 });

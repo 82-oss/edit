@@ -696,7 +696,9 @@ export type Under = { kind: "auto" } | { kind: "bottom" } | { kind: "at"; x: num
 
 export interface CaptionsSeam {
   /** The house caption look (bodycam's speaker captions): Montserrat with a glow in its colour, a see-through box with a wide soft shadow. */
-  captionStyle(width: number, height: number): TextStyle;
+  captionStyle(width: number, height: number, look?: string | null): TextStyle;
+  /** Keeps a project's subtitle look from a tool's `look` ("house" or "in_video"), when given. */
+  keepLook(app: App, id: string, given: unknown): Promise<void>;
   /** A caption's rough size (project pixels): wrapped at the style's width. */
   captionSize(text: string, style: TextStyle): [number, number];
   captionSpeakers(app: App, projectId: string, from: number, to: number): Promise<Json>;

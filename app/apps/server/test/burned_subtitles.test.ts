@@ -226,6 +226,18 @@ test("the agent is told which footage has subtitles burned in; ours are left off
     expect(repacked.isError).toBe(false);
     expect(repacked.text).toContain('"left_to_the_burned_in_subtitles":');
     expect((await call(app, "repack_subtitles", { project_id: id, faces: false, burned_in: "cover" })).text).toContain('"burned_in_subtitles_covered":1');
+    // The in-video look (Sphe, Nov 18): white Gabarito, no label, and the people pass leaves them white.
+    expect((await call(app, "add_subtitles", { project_id: id, start: 0, look: "in_video" })).isError).toBe(false);
+    const ours = store.get(id)!.project.clips.filter((clip): clip is TextClip => clip.type === "text" && (clip.name ?? "").startsWith("Subtitle"));
+    expect(ours.length).toBeGreaterThan(0);
+    expect(ours.every((clip) => clip.style.font === "Gabarito" && (clip.style.label ?? null) === null && (clip.style.background ?? null) === null && clip.style.color.join() === "1,1,1,1")).toBe(true);
+    expect(ours.every((clip) => clip.name !== "Subtitle")).toBe(true);
+    // Kept: a run without look follows it, and "house" brings the box and labels back.
+    expect((await call(app, "add_subtitles", { project_id: id, start: 0 })).isError).toBe(false);
+    expect(store.get(id)!.project.clips.filter((clip): clip is TextClip => clip.type === "text" && (clip.name ?? "").startsWith("Subtitle")).every((clip) => clip.style.font === "Gabarito")).toBe(true);
+    await call(app, "add_subtitles", { project_id: id, start: 0, look: "house" });
+    expect(store.get(id)!.project.subtitle_look).toBeUndefined();
+    expect(store.get(id)!.project.clips.filter((clip): clip is TextClip => clip.type === "text" && (clip.name ?? "").startsWith("Subtitle")).every((clip) => clip.style.label !== undefined && clip.style.label !== null)).toBe(true);
     // A wrong choice says the right ones.
     expect((await call(app, "add_subtitles", { project_id: id, burned_in: "hide" })).text).toBe('burned_in is "leave_off" (the default: none of ours over theirs) or "cover" (theirs blurred, ours on it)');
     // A channel taught to take theirs out (its removal lesson): blurred the same until it's done, by itself (text_removal.ts).
