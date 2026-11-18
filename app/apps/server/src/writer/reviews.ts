@@ -23,6 +23,7 @@ import { creator, email } from "../accounts.ts";
 import * as diag from "../diag.ts";
 import { writeAtomic } from "../files.ts";
 import * as machine from "../machine.ts";
+import * as outages from "../outages.ts";
 import { isFile, join } from "../paths.ts";
 import * as relay from "../relay.ts";
 import { blocksOf, outline, targetMs, type Block, type Range } from "./blocks.ts";
@@ -767,15 +768,16 @@ export function start(app: App, data: string): void {
   setInterval(() => {
     if (busyNow || !relay.cloudEnabled()) return;
     busyNow = true;
+    // Both are background rounds: skipped while the relay is down, but for one probe at a time (outages.ts).
     void (async () => {
       if (pollNow || Date.now() - lastPoll >= POLL_MS) {
         pollNow = false;
         lastPoll = Date.now();
-        await poll(data).catch((error: unknown) => diag.warn("writer", `review notes: ${diag.messageOf(error)}`));
+        await outages.background("relay", () => poll(data)).catch((error: unknown) => diag.warn("writer", `review notes: ${diag.messageOf(error)}`));
       }
       if (Date.now() - lastCheck >= (chosen ? CHECK_IN_CHOSEN_MS : POLL_MS)) {
         lastCheck = Date.now();
-        await checkIn(app, data);
+        await outages.background("relay", () => checkIn(app, data)).catch((error: unknown) => diag.warn("writer", `checking in for fixing: ${diag.messageOf(error)}`));
       }
     })().finally(() => (busyNow = false));
   }, 3_000);
@@ -847,6 +849,8 @@ async function checkIn(app: App, data: string): Promise<void> {
   try {
     answer = await call("mutation", "reviews:checkIn", { machine: machine.id(), name: machine.name(), email: email() });
   } catch (error) {
+    // The relay gone: said once, by outages.ts (the round that called this is quiet then).
+    if (outages.quiet(error, ["relay"])) throw error;
     diag.warn("writer", `checking in for fixing: ${diag.messageOf(error)}`);
     return;
   }

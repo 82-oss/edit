@@ -28,6 +28,7 @@ import { inArea, runPromise } from "./effect/runtime.ts";
 import * as service from "./effect/service.ts";
 import { ioMessage, writeAtomic } from "./files.ts";
 import { isBug } from "./guard.ts";
+import * as outages from "./outages.ts";
 import { extension, join, parent } from "./paths.ts";
 import * as relay from "./relay.ts";
 import { byteLength, debugStr, takeChars } from "./rust.ts";
@@ -914,8 +915,12 @@ async function put(url: string, data: Uint8Array, kind: string | null, progress:
       response = await fetch(url, { method: "PUT", body, headers, signal: stop, duplex: "half" } as RequestInit);
     } catch (error) {
       if (signal?.aborted || diag.messageOf(error).includes("was cancelled")) throw new Error("the share was cancelled");
-      throw unreached(`could not reach R2: ${diag.scrub(stall.why(error))}`, stall.reason !== null);
+      const said = `could not reach R2: ${diag.scrub(stall.why(error))}`;
+      // A part that stalled on a slow line isn't R2 gone: only one that never got through counts (outages.ts).
+      if (stall.reason === null) outages.failed("r2", said);
+      throw unreached(said, stall.reason !== null);
     }
+    outages.answered("r2");
     const text = await response.text().catch(() => "");
     if (response.status !== 200) {
       throw new service.ServiceRefused({ service: "R2", status: response.status, retryAfterMs: service.retryAfterOf(response.headers), message: `R2 refused the upload (${response.status}): ${r2Message(text)}` });
@@ -1061,8 +1066,11 @@ async function fetchRest(key: string, object: Head, partial: string, progress: R
     try {
       response = await fetch(url, { headers, signal: stall.signal });
     } catch (error) {
-      throw unreached(`downloading ${key} (000): ${diag.scrub(stall.why(error))}`, stall.reason !== null);
+      const said = `downloading ${key} (000): ${diag.scrub(stall.why(error))}`;
+      outages.failed("r2", said);
+      throw unreached(said, stall.reason !== null);
     }
+    outages.answered("r2");
     stall.connected();
     const code = String(response.status);
     const etag = (response.headers.get("etag") ?? "").trim();

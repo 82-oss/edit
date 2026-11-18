@@ -38,6 +38,7 @@ import * as jobs from "./jobs.ts";
 import * as planUse from "./plan_use.ts";
 import * as editTime from "./edit_time.ts";
 import * as logShip from "./log_ship.ts";
+import * as outages from "./outages.ts";
 import { join } from "./paths.ts";
 import * as presence from "./presence.ts";
 import * as problemReports from "./problem_reports.ts";
@@ -289,14 +290,18 @@ export function keepLatest(app: App): void {
       sent = needs;
       sentAt = Date.now();
     } catch (error) {
-      diag.warn("reports", `keeping ${THIS_MACHINE}'s latest report: ${diag.messageOf(error)}`);
+      // The cloud gone: said once, by outages.ts.
+      if (!outages.quiet(error)) diag.warn("reports", `keeping ${THIS_MACHINE}'s latest report: ${diag.messageOf(error)}`);
     }
   };
   logShip.start(app);
-  setTimeout(() => void look(), 60_000).unref?.();
+  // Background rounds: skipped while the relay or R2 is down, but for one probe at a time (outages.ts); the log
+  // written meanwhile goes up with the first round after (log_ship.ts keeps its mark).
+  const latest = () => void outages.background(["relay", "r2"], look);
+  setTimeout(latest, 60_000).unref?.();
   setInterval(() => {
-    void logShip.ship();
-    void look();
+    void outages.background(["relay", "r2"], () => logShip.ship());
+    latest();
   }, LATEST_EVERY_MS).unref?.();
 }
 

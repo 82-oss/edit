@@ -22,10 +22,12 @@ standIn.post = standInPost;
 // A lesson is checked against what's taught by a model (teaching_conflicts.ts): none in tests unless one says so.
 import { hooks as teachingConflictHooks } from "../src/teaching_conflicts.ts";
 teachingConflictHooks.ask = async () => ({ conflicts: [] });
+// A relay one test left unreachable pauses no later test's background rounds (outages.ts).
+import { forgetForTests as forgetOutages } from "../src/outages.ts";
 // Every temporary folder a run makes is inside one of its own, removed when the run ends (Nov 13: runs had
 // left 7,600 folders, 4.3 GB, in a /tmp that's memory on the Linux machine). One a killed run left goes the
 // next time, once three hours old.
-import { afterAll } from "bun:test";
+import { afterAll, beforeEach } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import { join } from "node:path";
@@ -44,4 +46,5 @@ process.env.TMPDIR = own;
 // Bun's test runner fires neither "exit" nor "beforeExit" (1.4.0, Nov 18: every run left its folder, 1,522 of them and
 // ~10 GB in a day, until /tmp's quota refused every write): a preload's afterAll runs once the last file's tests end.
 afterAll(() => fs.rmSync(own, { recursive: true, force: true }));
+beforeEach(() => forgetOutages());
 process.on("exit", () => fs.rmSync(own, { recursive: true, force: true }));
