@@ -40,7 +40,8 @@ import { StartedBy } from "./StartedBy";
 import { ChooseRecordings } from "./ChooseRecordings";
 import { StatusChips } from "./MemoryChip";
 import { UpdateButton } from "./UpdateButton";
-import { Button, ConfirmDialog, cx, Modal, Pulse, spring, Switch } from "./ui";
+import { Button, ConfirmDialog, cx, Modal, ProgressRing, Pulse, spring, Switch } from "./ui";
+import { aboutWords, sizeWords } from "./FootageReady";
 import { isListed, promoteItem, TestBadge } from "./TestProjects";
 import { THIS_MACHINE } from "../lib/platform";
 
@@ -197,8 +198,8 @@ export function Home() {
     }
   }, []);
 
-  // Imports, agents and shares under way are followed every few seconds (many projects at once).
-  const busy = Object.values(statuses).some((one) => one.importing !== null || one.working || one.sharing !== null);
+  // Imports, agents, shares and footage coming here are followed every few seconds (many projects at once).
+  const busy = Object.values(statuses).some((one) => one.importing !== null || one.working || one.sharing !== null || Boolean(one.footage));
   useEffect(() => {
     if (!busy) return;
     // A poll that fails is noted by api.ts (in the log) and the next one asks again.
@@ -1181,6 +1182,13 @@ function StateChips({ state, projectId, onChanged, editor = null }: { state?: Pr
           <span className="truncate">{importStuck(state.importing) ? "Import stuck" : `Importing ${importShare(state.importing)}`}</span>
         </span>
       ),
+    // Its footage still coming down here after the editor was left (Sphe, Nov 18): how far, as the top bar's cloud says it.
+    state.footage && (
+        <span key="footage" title={footageTitle(state.footage)} className={cx(CHIP, "tabular text-info")}>
+          <ProgressRing value={state.footage.bytes_total > 0 ? state.footage.bytes_done / state.footage.bytes_total : 0} size={12} />
+          <span className="truncate">Getting footage · {state.footage.files_total - state.footage.files_done} left</span>
+        </span>
+      ),
     state.working && (
         <span key="working" title="Its agent is working on it" className={cx(CHIP, "text-agent")}>
           <span className="size-1.5 animate-pulse rounded-full bg-agent" />
@@ -1228,6 +1236,11 @@ function StateChips({ state, projectId, onChanged, editor = null }: { state?: Pr
     ),
   ].find(Boolean);
   return first || null;
+}
+
+/** "6.1 of 9.4 GB · 21 of 32 files here · about 3 min". */
+function footageTitle(footage: NonNullable<ProjectStatus["footage"]>): string {
+  return [sizeWords(footage.bytes_done, footage.bytes_total), `${footage.files_done} of ${footage.files_total} files here`, aboutWords(footage.left_s)].filter((one) => one !== null).join(" · ");
 }
 
 /** An import waiting on the person (a file it couldn't get) or failed. */

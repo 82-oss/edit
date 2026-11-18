@@ -6,7 +6,8 @@
 // from 0:00 wouldn't be smooth yet, the page shows "Getting the footage ready
 // for this Mac" over the project and asks every second (`waiting`), and the
 // project opens by itself the moment it would be; "Open now" opens it at once
-// and a corner card follows the rest until it's here.
+// and the top bar's cloud follows the rest until it's here. Home's line says
+// how far it's got while it still comes (`coming`).
 //
 // "Smooth" is the players' own rule (playback_ready.ts): a play holds on a
 // spinner until the seconds ahead are ready (a file here, its whole copy, its
@@ -30,7 +31,7 @@
 // whole copies to the cache's. When the footage can't all fit it says so, and
 // the start comes first.
 
-import type { FootageReady, FootageStep } from "@edit/types/footage_ready";
+import type { FootageComing, FootageReady, FootageStep } from "@edit/types/footage_ready";
 
 import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
@@ -306,7 +307,7 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
   }
 
   if (waiting && !ready) hooks.prepare(app, id, Math.round(head_s * fps), now);
-  // The link is the person's while they wait on this footage (the dialog, then its card): background work gives way
+  // The link is the person's while they wait on this footage (the dialog, then the top bar's cloud): background work gives way
   // (playing.ts), an export being made ahead stops; Open now (asked without `waiting`), or all of it here, lets go.
   if (waiting && !done) {
     if (!playing.linkHeld()) exportAhead.giveWay(app);
@@ -331,7 +332,42 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
   };
 }
 
-/** How long a page's ask holds the link for the person (the card asks every 3 s, the dialog every second). */
+/**
+ * How far project `id`'s footage has got coming down to this Mac, for Home's line while it does (Sphe, Nov 18: "when I
+ * go back to the project's overview, I should be able to see that the progress is still continuing there"); null when
+ * none of it is coming (all here, or what's left can't come for now). Only looks, as Home asks it of every project:
+ * no link held, nothing queued or brought first, no speed sample taken (the editor's asks measure it).
+ */
+export async function coming(app: App, id: string): Promise<FootageComing | null> {
+  const root = hooks.root();
+  if (root === null || !cloud.enabled()) return null;
+  const project = app.store.get(id)?.project;
+  if (project === undefined) return null;
+  const cache = app.store.cacheDir();
+  // Coming means in the queue: a whole copy fetched or waiting its turn, or a long video's pieces filling. A cloud
+  // project never opened here isn't (it comes when it opens), and the queue is looked at before any file is.
+  const queued =
+    cloudMedia.filling(id) ||
+    project.media.some((media) => {
+      const key = cloudMedia.streamKey(media.cloud, "proxy");
+      return key !== null && pieces.baseOf(key) === null && !isFile(media.path) && localPreviews.coming(cloudMedia.localPath(cache, key));
+    });
+  if (!queued) return null;
+  const files = await filesOf(cache, project, root);
+  const left = files.filter((file) => !file.here && !file.stuck);
+  if (left.length === 0) return null;
+  const bps = measures.get(id)?.bps ?? speeds.read(app.store.home).download_bps ?? null;
+  const rest = left.reduce((sum, file) => sum + (file.size - file.done), 0);
+  return {
+    files_done: files.filter((file) => file.here).length,
+    files_total: files.length,
+    bytes_done: files.reduce((sum, file) => sum + file.done, 0),
+    bytes_total: files.reduce((sum, file) => sum + file.size, 0),
+    left_s: bps !== null && bps > 0 ? rest / bps : null,
+  };
+}
+
+/** How long a page's ask holds the link for the person (the top bar's cloud asks every 3 s, the dialog every second). */
 const HOLD_MS = 8_000;
 
 /** How long a dialog's ask keeps the first minutes first (it asks every second). */

@@ -2,8 +2,8 @@
 // start, and how far its coming here has got (Sphe, Nov 17: opening a project
 // whose footage is on someone else's Mac must never drop you into stuttering
 // playback without a word). The server works it out (footage_ready.ts); the
-// page shows the dialog over the project while it isn't, and a corner card
-// while the rest still comes (apps/web/src/components/FootageReady.tsx).
+// page shows the dialog over the project while it isn't, and the top bar's
+// cloud while the rest still comes (apps/web/src/components/FootageReady.tsx).
 
 export type FootageStepState = "done" | "current" | "waiting";
 
@@ -43,4 +43,17 @@ export interface FootageReady {
   room: string | null;
   /** Said plainly when it can't become smooth here (it doesn't fit, and the link is too slow to stream it): Open now is the way on. */
   cant: string | null;
+}
+
+/**
+ * How far a project's footage has got coming down to this Mac, on Home's line while it does (Sphe, Nov 18: progress
+ * that carries on after leaving the editor should be seen there too). The server's `footageReady.coming`.
+ */
+export interface FootageComing {
+  files_done: number;
+  files_total: number;
+  bytes_done: number;
+  bytes_total: number;
+  /** Seconds until all of it is here; null with no measured speed. */
+  left_s: number | null;
 }

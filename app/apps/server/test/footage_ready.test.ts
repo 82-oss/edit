@@ -440,3 +440,81 @@ test("one that can't become smooth here (it doesn't fit and the link can't strea
     home.cleanup();
   }
 });
+
+test("Home's line says how far the footage coming here has got, only while it's in the queue, and only looks: no link held, nothing brought first", async () => {
+  const home = scratch("footage-coming");
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    footageReady.hooks.root = () => root;
+    let now = 1_000_000;
+    footageReady.hooks.now = () => now;
+    let received = 0;
+    footageReady.hooks.received = () => received;
+    const prepared: number[] = [];
+    footageReady.hooks.prepare = (_app, _id, head) => void prepared.push(head);
+    // Each fetch never ends: what's queued stays coming.
+    localPreviews.hooks.fetch = () => new Promise<void>(() => {});
+    const [a, b, c] = ["a", "b", "c"].map((name) => `edit/proxies/drive/${name}.mp4`) as [string, string, string];
+    const project = newProject();
+    project.settings.fps = 30;
+    for (const [id, key] of [["a", a], ["b", b], ["c", c]] as const) project.media.push(media({ id, name: id, path: stream(key), kind: "video", duration: 60, cloud: { proxy: key } } as never));
+    project.clips.push(clip("ca", "a", 0, 1800), clip("cb", "b", 1800, 1800), clip("cc", "c", 3600, 1800));
+    // a here whole; b's first three of ten blocks; none of c.
+    whole(cache, a, 10 * BLOCK);
+    keep(root, b, 10, [0, 1, 2]);
+    const app = appOf(cache, project);
+
+    // Not opened here, so nothing of it is coming: nothing to say.
+    expect(await footageReady.coming(app, project.id)).toBeNull();
+    // Opened: b and c queued to come down whole, and the line follows them.
+    expect(localPreviews.fetchInPlayheadOrder(cache, project, 0)).toBe(2);
+    const first = await footageReady.coming(app, project.id);
+    expect(first).toEqual({ files_done: 1, files_total: 3, bytes_done: 13 * BLOCK, bytes_total: 20 * BLOCK + guessOf(project, "c"), left_s: null });
+    expect(prepared).toEqual([]);
+    expect(playing.linkHeld()).toBe(false);
+
+    // The editor's asks measured a speed (~5 MB/s): the line has a time by it, and asking it measures nothing.
+    await readiness(app, project.id, false);
+    received += 5 * BLOCK;
+    now += 2_000;
+    const bps = (await readiness(app, project.id, false)).speed_bps!;
+    received += 50 * BLOCK;
+    now += 2_000;
+    const timed = await footageReady.coming(app, project.id);
+    expect(timed!.left_s).toBeCloseTo((7 * BLOCK + guessOf(project, "c")) / bps, 3);
+
+    // Everything here: nothing coming.
+    whole(cache, b, 10 * BLOCK);
+    whole(cache, c, 10 * BLOCK);
+    expect(await footageReady.coming(app, project.id)).toBeNull();
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("Home's status carries each project's footage coming here, and none for a project whose footage isn't coming", async () => {
+  const { fixtureHome } = await import("./helpers/home.ts");
+  const { projectStatus } = await import("../src/reviews.ts");
+  const { app, cleanup } = fixtureHome("footage-coming-status");
+  try {
+    const root = path.join(app.store.cacheDir(), "cloud", "blocks");
+    footageReady.hooks.root = () => root;
+    localPreviews.hooks.fetch = () => new Promise<void>(() => {});
+    (app as { agents: unknown }).agents = { chat: () => ({ running: false, entries: [] }), turn: () => ({ running: false, entries: [] }) };
+    (app as { exports: unknown }).exports = { running: () => false };
+    const coming = app.store.createAs("Coming", "bodycam", { width: 1920, height: 1080, fps: 30 });
+    const quiet = app.store.createAs("Quiet", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const key = "edit/proxies/drive/coming.mp4";
+    const given = structuredClone(coming.project) as Project;
+    given.media.push(media({ id: "a", name: "a", path: stream(key), kind: "video", duration: 60, cloud: { proxy: key } } as never));
+    given.clips.push(clip("ca", "a", 0, 1800));
+    const saved = await app.store.replace(coming.project.id, coming.rev, given, "test");
+    localPreviews.fetchInPlayheadOrder(app.store.cacheDir(), saved.project, 0);
+    const status = await projectStatus(app);
+    expect(status[coming.project.id]!.footage).toMatchObject({ files_done: 0, files_total: 1, bytes_done: 0 });
+    expect(status[quiet]!.footage).toBeNull();
+  } finally {
+    cleanup();
+  }
+});

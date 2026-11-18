@@ -257,7 +257,7 @@ test("Home's status reads each project's turn without building its chat", async 
         project === a ? { running: true, entries: [] } : { running: false, entries: [{ kind: "tool", tool: "skill", text: "feedback" }] },
     };
     (app as { exports: unknown }).exports = { running: () => false };
-    const status = projectStatus(app);
+    const status = await projectStatus(app);
     expect(status[a]).toMatchObject({ working: true, complete: false });
     expect(status[b]).toMatchObject({ working: false, complete: true });
   } finally {

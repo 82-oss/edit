@@ -1,5 +1,5 @@
 import type { ExportSteps } from "@edit/types/export_steps";
-import type { FootageReady } from "@edit/types/footage_ready";
+import type { FootageComing, FootageReady } from "@edit/types/footage_ready";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 
@@ -460,6 +460,8 @@ export interface ProjectStatus {
   working: boolean;
   /** How its share is going, while it runs. */
   sharing: string | null;
+  /** How far its footage has got coming down to this machine, while it does (optional: statuses Home kept from before lack it). */
+  footage?: FootageComing | null;
 }
 
 /** A box drawn on the picture, as fractions of the frame from its top left. */

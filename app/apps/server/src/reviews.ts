@@ -18,6 +18,7 @@
 
 import * as fs from "node:fs";
 
+import type { FootageComing } from "@edit/types/footage_ready";
 import { Deferred, Effect, Exit } from "effect";
 
 import type { App } from "./app.ts";
@@ -28,6 +29,7 @@ import * as cloudProjects from "./cloud_projects.ts";
 import * as accounts from "./accounts.ts";
 import * as diag from "./diag.ts";
 import * as editNotes from "./edit_notes.ts";
+import * as footageReady from "./footage_ready.ts";
 import * as jobs from "./jobs.ts";
 import { inArea, runPromise } from "./effect/runtime.ts";
 import * as machine from "./machine.ts";
@@ -2642,13 +2644,15 @@ const statusCache = new Map<string, { rev: number; exportsAt: number; exported: 
 /**
  * A project's line on Home. `importing`: its import while it runs (files
  * ready of all, the share of their bytes in, what it's doing); `working`: its
- * agent is on a turn; `sharing`: how its share is going (Home shows many
+ * agent is on a turn; `sharing`: how its share is going; `footage`: how far
+ * its footage has got coming down to this machine, while it does (Home shows many
  * projects' work at once: the user, Oct 30, "five projects all importing at
  * the same time and once they're all done we check them out").
  */
 type Status = {
   feedback: number; complete: boolean; exported: boolean; approved: number | null; archived: { restoring: boolean; error: string | null } | null;
   importing: { state: string; ready: number; files: number; share: number | null; error: string | null } | null; working: boolean; sharing: string | null;
+  footage: FootageComing | null;
 };
 
 /** An import as Home shows it: null once it's done. */
@@ -2660,7 +2664,7 @@ function importing(job: ScriptJob | null): Status["importing"] {
   return { state: job.state, ready: job.files.filter((file) => file.state === "done").length, files: job.files.length, share, error: job.error ?? null };
 }
 
-export function projectStatus(app: App): Record<string, Status> {
+export async function projectStatus(app: App): Promise<Record<string, Status>> {
   const home = app.store.home;
   const open = openCounts(home);
   const shared = read(home).shared;
@@ -2681,6 +2685,7 @@ export function projectStatus(app: App): Record<string, Status> {
     out[summary.id] = { feedback: open[summary.id] ?? 0, complete: finished(app, summary.id), exported: cached.exported, approved: shared[summary.id]?.approved?.version ?? null,
       archived: here[summary.id] === undefined ? null : { restoring: here[summary.id]!.restoring === true, error: here[summary.id]!.error ?? null },
       importing: importing(app.scripts.get(summary.id)), working: working(app, summary.id), sharing: shareNow(app.store.home, summary.id).line,
+      footage: await footageReady.coming(app, summary.id),
     };
   }
   return out;
@@ -2714,7 +2719,7 @@ function finished(app: App, project: string): boolean {
 }
 
 export function routes(router: Router<App>): void {
-  router.get("/api/projects/status", ({ app }) => sorted(projectStatus(app)));
+  router.get("/api/projects/status", async ({ app }) => sorted(await projectStatus(app)));
   router.get("/api/projects/{id}/review", ({ app, params }) => sorted(view(app, params.id ?? "")));
   // Share: export the whole edit, then share it (the link, or its next version).
   router.post("/api/projects/{id}/share/cancel", ({ app, params }) => {

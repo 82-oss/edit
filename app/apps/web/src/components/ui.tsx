@@ -367,17 +367,18 @@ export function Pulse({ className, size = 14 }: { className?: string; size?: num
   );
 }
 
+/** How far something has got, as a ring in the text's colour (the top bar's footage coming, Home's line for it). */
 export function ProgressRing({ value, size = 16 }: { value: number; size?: number }) {
-  const r = size / 2 - 2;
+  const r = size / 2 - 1.5;
   const c = 2 * Math.PI * r;
   return (
-    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="-rotate-90">
-      <circle cx={size / 2} cy={size / 2} r={r} stroke="white" strokeOpacity="0.15" strokeWidth="2" fill="none" />
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0 -rotate-90" aria-hidden>
+      <circle cx={size / 2} cy={size / 2} r={r} stroke="currentColor" strokeOpacity="0.2" strokeWidth="2" fill="none" />
       <circle
         cx={size / 2}
         cy={size / 2}
         r={r}
-        stroke="white"
+        stroke="currentColor"
         strokeWidth="2"
         fill="none"
         strokeDasharray={c}

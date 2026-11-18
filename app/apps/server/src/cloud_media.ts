@@ -1840,6 +1840,11 @@ export async function streamFromCloud(request: Request, cloudMedia: { proxy?: st
 /** The fill of pieces under way per project, and the frame it began from. */
 const fills = new Map<string, { from: number; stopped: boolean }>();
 
+/** Whether project `id`'s long videos' pieces are being brought here now (`fillPieces`). */
+export function filling(id: string): boolean {
+  return fills.has(id);
+}
+
 /** About what a piece of a long video takes on the disk (a minute of a 1080p proxy, with room to spare). */
 const PIECE_ROOM = 150_000_000;
 

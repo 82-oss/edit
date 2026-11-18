@@ -1,4 +1,5 @@
 import type { FootageReady as Ready } from "@edit/types/footage_ready";
+import { CloudDownload } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 
@@ -7,15 +8,16 @@ import { leftWords, type StepRow } from "../lib/export-steps";
 import { THIS_MACHINE } from "../lib/platform";
 import { navigate } from "../lib/route";
 import { StepList } from "./ExportSteps";
-import { Button, Modal } from "./ui";
+import { Button, escapeCloses, IconButton, Modal, ProgressRing } from "./ui";
 
 /**
  * A project whose footage isn't here enough to play smoothly from the start
  * (Sphe, Nov 17: never stuttering playback without a word): "Getting the
  * footage ready for this Mac" over it, which opens it by itself the moment a
- * play from 0:00 would be smooth; "Open now" opens it at once, and a card in
- * the corner follows the rest until it's here. The server says where it
- * stands (footage_ready.ts); nothing shows when it's ready, or nearly.
+ * play from 0:00 would be smooth; "Open now" opens it at once, and the top
+ * bar's cloud follows the rest until it's here (`FootageCloud`). The server
+ * says where it stands (footage_ready.ts); nothing shows when it's ready, or
+ * nearly.
  */
 
 /** How long the first answer may take before the project opens anyway, and how long a project nearly ready is given before the dialog shows. */
@@ -25,7 +27,7 @@ export type Phase = "checking" | "dialog" | "open";
 
 /**
  * Where project `id`'s opening stands, once it's `loaded`: "checking" (the editor waits, at most a couple of seconds),
- * "dialog" (it isn't ready to play smoothly), "open". `card`: the corner card's answer while the rest still comes.
+ * "dialog" (it isn't ready to play smoothly), "open". `card`: the answer the top bar's cloud follows while the rest still comes.
  */
 export function useFootage(id: string, loaded: boolean) {
   const [phase, setPhase] = useState<Phase>("checking");
@@ -68,7 +70,7 @@ export function useFootage(id: string, loaded: boolean) {
       if (!alive) return;
       if (first === null || first.ready) {
         if (first !== null) setAnswer(first);
-        // Ready, but the disk can't keep it all: said once, in the corner (nothing waited on: the link isn't held).
+        // Ready, but the disk can't keep it all: said once, at the top bar's cloud (nothing waited on: the link isn't held).
         setPressed(true);
         open(first?.room != null);
         return;
@@ -95,7 +97,7 @@ export function useFootage(id: string, loaded: boolean) {
     };
   }, [id, loaded]);
 
-  // The corner card: asked every few seconds until everything's here (or, when it can't all be, said for a while).
+  // The top bar's cloud: asked every few seconds until everything's here (or, when it can't all be, said for a while).
   useEffect(() => {
     if (phase !== "open" || !card) return;
     let alive = true;
@@ -207,36 +209,67 @@ export function FootageDialog({ answer, onOpen }: { answer: Ready; onOpen: () =>
   );
 }
 
-/** The corner card while the rest comes, after the project opened. */
-export function FootageCard({ answer }: { answer: Ready | null }) {
-  const share = answer && answer.bytes_total > 0 ? Math.min(1, answer.bytes_done / answer.bytes_total) : 0;
-  const left = answer ? answer.files_total - answer.files_done : 0;
-  const time = answer ? aboutWords(answer.left_s) : null;
-  const short = answer?.room ?? null;
-  const showing = answer !== null && (!answer.done || short !== null);
+/** Whether the top bar's cloud says the footage is coming: the rest still on its way, or it can't all fit here (said for a while). */
+export function footageShowing(answer: Ready | null): answer is Ready {
+  return answer !== null && (!answer.done || answer.room !== null);
+}
+
+/**
+ * The rest coming after the project opened, as the top bar's cloud (Sphe, Nov 18: the corner card covered the
+ * bottom of the agent panel; "it should be somewhat of a dropdown from that, and then we can click away, and it
+ * hides there"): a ring of how far it's got, its words dropped down under it as it opens, hidden by a click
+ * anywhere else or Escape and shown again only from the cloud.
+ */
+export function FootageCloud({ answer }: { answer: Ready }) {
+  const [open, setOpen] = useState(true);
+  const box = useRef<HTMLDivElement>(null);
+  const share = answer.bytes_total > 0 ? Math.min(1, answer.bytes_done / answer.bytes_total) : 0;
+  const left = answer.files_total - answer.files_done;
+  const title = answer.done ? "Not all the footage fits here" : "Getting the rest of the footage";
+  const line = answer.done ? (answer.room ?? "") : [`${left} ${left === 1 ? "file" : "files"} left`, aboutWords(answer.left_s)].filter((one) => one !== null).join(" · ");
+  useEffect(() => {
+    if (!open) return;
+    // A press anywhere else hides it and goes on to what was pressed (a play, a clip): nothing is swallowed.
+    const away = (event: PointerEvent) => {
+      if (!box.current?.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("pointerdown", away, true);
+    const leave = escapeCloses(() => setOpen(false));
+    return () => {
+      window.removeEventListener("pointerdown", away, true);
+      leave();
+    };
+  }, [open]);
   return (
-    <AnimatePresence>
-      {showing && (
-        <motion.div
-          role="status"
-          aria-label="Footage coming"
-          className="fixed bottom-4 right-4 z-40 w-[300px] rounded-xl border border-line-strong bg-panel px-3.5 py-3 text-[12.5px] shadow-[0_10px_30px_#0009]"
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, y: 6 }}
-          transition={{ duration: 0.2, ease: [0.2, 0, 0, 1] }}
-        >
-          <b className="mb-[3px] block text-[13px] font-semibold">{answer.done ? "Not all the footage fits here" : "Getting the rest of the footage"}</b>
-          <span className="tabular text-muted">
-            {answer.done ? short : [`${left} ${left === 1 ? "file" : "files"} left`, time].filter((one) => one !== null).join(" · ")}
-          </span>
-          {!answer.done && (
-            <div className="mt-[9px] h-[3px] overflow-hidden rounded-full bg-active">
-              <div className="h-full bg-primary transition-[width] duration-500 ease-out" style={{ width: `${Math.round(share * 100)}%` }} />
-            </div>
-          )}
-        </motion.div>
-      )}
-    </AnimatePresence>
+    <div ref={box} className="relative">
+      <IconButton label={`${title} · ${line}`} active={open} aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen((was) => !was)}>
+        <span className="relative flex size-[22px] items-center justify-center">
+          <ProgressRing value={share} size={22} />
+          <CloudDownload size={11} strokeWidth={2.2} className="absolute" />
+        </span>
+      </IconButton>
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            role="status"
+            aria-label="Footage coming"
+            // The kit's menu (ContextMenu.tsx), dropped from the cloud's right edge.
+            className="absolute top-full right-0 z-40 mt-1.5 w-[280px] origin-top-right rounded-[10px] border border-line-strong bg-raised px-3.5 py-3 text-[12.5px] shadow-[0_12px_32px_#0009]"
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, transition: { duration: 0.08 } }}
+            transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
+          >
+            <b className="mb-[3px] block text-[13px] font-semibold">{title}</b>
+            <span className="tabular text-muted">{line}</span>
+            {!answer.done && (
+              <div className="mt-[9px] h-[3px] overflow-hidden rounded-full bg-active">
+                <div className="h-full bg-primary transition-[width] duration-500 ease-out" style={{ width: `${Math.round(share * 100)}%` }} />
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
   );
 }

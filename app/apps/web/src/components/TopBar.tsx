@@ -1,3 +1,4 @@
+import type { FootageReady as Ready } from "@edit/types/footage_ready";
 import { ChevronLeft, Cloud, CloudAlert, CloudCheck, CloudOff, CloudSync, CloudUpload, Copy, ExternalLink, FileText, Lock, Redo2, Share, Undo2 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -9,6 +10,7 @@ import { copyDriveLink, openDrive, useDriveLink } from "../lib/drive";
 import { navigate } from "../lib/route";
 import { useEditor } from "../lib/store";
 import { AppMenu } from "./AppMenu";
+import { FootageCloud, footageShowing } from "./FootageReady";
 import { DocChangesButton } from "./DocChangesBar";
 import { toggleMenu } from "./ContextMenu";
 import { Tile } from "./Logo";
@@ -18,7 +20,8 @@ import { UpdateButton } from "./UpdateButton";
 import { Button, cx, IconButton } from "./ui";
 import { MOD, SHIFT_MOD, THIS_MACHINE } from "../lib/platform";
 
-export function TopBar({ onShare }: { onShare: () => void }) {
+/** `footage`: what the editor follows of the footage still coming here (FootageReady.tsx `useFootage`), shown at the cloud. */
+export function TopBar({ onShare, footage = null }: { onShare: () => void; footage?: Ready | null }) {
   const name = useEditor((state) => state.project?.name ?? "");
   const createdBy = useEditor((state) => state.project?.created_by);
   const projectId = useEditor((state) => state.project?.id);
@@ -61,7 +64,7 @@ export function TopBar({ onShare }: { onShare: () => void }) {
         <DriveButton />
         <DocChangesButton />
         <History />
-        <SyncState />
+        <SyncState footage={footage} />
         <Button
           variant="primary"
           className="ml-1.5"
@@ -81,10 +84,14 @@ export function TopBar({ onShare }: { onShare: () => void }) {
   );
 }
 
-/** A cloud project’s sync as an icon only (its words are its tooltip): saved, syncing, offline, read-only, a problem. */
-function SyncState() {
+/**
+ * A cloud project’s sync as an icon only (its words are its tooltip): saved, syncing, offline, read-only, a problem;
+ * while its footage is still coming here, how far that has got instead (`FootageCloud`), back to the sync once it's here.
+ */
+function SyncState({ footage }: { footage: Ready | null }) {
   const cloud = useEditor((state) => state.cloud);
   const label = syncLabel(cloud);
+  if (footageShowing(footage)) return <FootageCloud answer={footage} />;
   if (!label) return null;
   const Icon = { ok: CloudCheck, busy: CloudSync, warn: label.text === "Read-only" ? Lock : CloudOff, bad: CloudAlert }[label.tone];
   const title = cloud?.missing ?? cloud?.message ?? (cloud?.sync === "readonly" ? `${cloud.holder} is editing` : cloud?.sync === "offline" ? `Changes are saved on ${THIS_MACHINE} and go to the cloud when it’s back` : label.text);

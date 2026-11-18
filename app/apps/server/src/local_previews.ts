@@ -48,6 +48,11 @@ export function wontCome(local: string): boolean {
   return short.has(local) || Date.now() - (failed.get(local) ?? 0) < RETRY_MS;
 }
 
+/** Whether `local`'s whole copy is coming down now, or waits its turn with room for it: what Home counts as footage coming (footage_ready.ts `coming`). */
+export function coming(local: string): boolean {
+  return fetching.has(local) || (!short.has(local) && waiting.some((one) => one.local === local));
+}
+
 /** Seams for tests. */
 export const hooks = {
   // In 2 MiB blocks behind every read a person waits on (cloud_blocks.ts `fetchWhole`); `room` is told what's left to write.

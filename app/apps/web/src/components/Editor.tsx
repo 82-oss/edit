@@ -21,7 +21,7 @@ import { CloudBanner } from "./CloudBanner";
 import { ImportProblems, MissingBanner } from "./MissingBanner";
 import { TextRemovalLine } from "./TextRemovalLine";
 import { FootageBack } from "./FootageBack";
-import { FootageCard, FootageDialog, useFootage } from "./FootageReady";
+import { FootageDialog, useFootage } from "./FootageReady";
 import { Timeline } from "./Timeline";
 import { TopBar } from "./TopBar";
 import { PROBLEM_BUTTON, ProblemView } from "./ProblemView";
@@ -150,7 +150,7 @@ export function Editor({ id }: { id: string }) {
   return (
     // `editor-root`: see-through while Edit.app's window draws the viewer's picture under the page (index.css `native-preview`).
     <div className="editor-root flex h-full flex-col bg-black">
-      <TopBar onShare={() => setSharing(true)} />
+      <TopBar onShare={() => setSharing(true)} footage={footage.card} />
       <CloudBanner />
       <MissingBanner />
       <ImportProblems />
@@ -185,7 +185,6 @@ export function Editor({ id }: { id: string }) {
       <ShareDialog open={sharing} onClose={() => setSharing(false)} />
       <FootageBack />
       {footage.phase === "dialog" && footage.answer && <FootageDialog answer={footage.answer} onOpen={footage.openNow} />}
-      <FootageCard answer={footage.card} />
     </div>
   );
 }

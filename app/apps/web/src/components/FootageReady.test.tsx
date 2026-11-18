@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "../lib/api";
-import { FootageCard, FootageDialog, rowsOf, timing, useFootage } from "./FootageReady";
+import { FootageCloud, FootageDialog, footageShowing, rowsOf, timing, useFootage } from "./FootageReady";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 delete (Element.prototype as { animate?: unknown }).animate;
@@ -46,14 +46,14 @@ const answer = (fields: Partial<Ready> = {}): Ready => ({
   ...fields,
 });
 
-/** The editor's part in it (Editor.tsx): the project behind, the dialog over it, the card in the corner. */
+/** The editor's part in it (Editor.tsx, TopBar.tsx): the project behind, the dialog over it, the top bar's cloud. */
 function Harness() {
   const footage = useFootage("p1", true);
   return (
     <>
       {footage.phase === "checking" ? <p>Opening the project…</p> : <p data-card={footage.card ? "on" : "off"}>The project</p>}
       {footage.phase === "dialog" && footage.answer && <FootageDialog answer={footage.answer} onOpen={footage.openNow} />}
-      <FootageCard answer={footage.card} />
+      {footageShowing(footage.card) && <FootageCloud answer={footage.card} />}
     </>
   );
 }
@@ -61,7 +61,10 @@ function Harness() {
 const wait = (ms: number) => act(() => new Promise((resolve) => setTimeout(resolve, ms)));
 const dialog = () => document.querySelector("[role=dialog]");
 const card = () => document.querySelector("[aria-label='Footage coming']");
-/** Whether the card is asked for (happy-dom never ends motion's exit, so a card going stays in the page). */
+/** The top bar's cloud while the footage comes, and whether its words are dropped down. */
+const cloud = () => document.querySelector<HTMLButtonElement>("button[aria-haspopup=dialog]");
+const dropped = () => cloud()?.getAttribute("aria-expanded") === "true";
+/** Whether the card is asked for (happy-dom never ends motion's exit, so words going stay in the page). */
 const cardOn = () => document.querySelector("[data-card]")?.getAttribute("data-card") === "on";
 
 function mount() {
@@ -193,5 +196,36 @@ describe("FootageReady", () => {
     expect(dialog()?.textContent).toContain(cant);
     expect(dialog()?.textContent).not.toContain("about");
     expect([...document.querySelectorAll("button")].some((button) => button.textContent === "Open now")).toBe(true);
+  });
+  it("the rest coming shows at the top bar's cloud, dropped down at first; a press elsewhere or Escape hides it, only the cloud shows it again", async () => {
+    let now = answer();
+    vi.spyOn(api, "footageReady").mockImplementation(async () => now);
+    mount();
+    await wait(60);
+    now = answer({ ready: true, files_done: 23, left_s: 120 });
+    await wait(40);
+    expect(dialog()).toBeNull();
+    expect(dropped()).toBe(true);
+    expect(card()?.textContent).toContain("Getting the rest of the footage");
+    expect(card()?.textContent).toContain("9 files left · about 2 min");
+    // A press inside the words keeps them.
+    act(() => void card()!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    expect(dropped()).toBe(true);
+    // A press anywhere else hides them, and new answers don't bring them back.
+    act(() => void document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })));
+    expect(dropped()).toBe(false);
+    now = answer({ ready: true, files_done: 25, left_s: 60 });
+    await wait(40);
+    expect(dropped()).toBe(false);
+    expect(cloud()?.getAttribute("title")).toContain("7 files left · about 1 min");
+    // The cloud shows them again; Escape hides them.
+    act(() => cloud()!.click());
+    expect(dropped()).toBe(true);
+    act(() => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(dropped()).toBe(false);
+    // Everything here: the cloud is the save state again.
+    now = answer({ ready: true, done: true, files_done: 32 });
+    await wait(60);
+    expect(cloud()).toBeNull();
   });
 });
