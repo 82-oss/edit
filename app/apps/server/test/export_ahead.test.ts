@@ -321,7 +321,8 @@ test.skipIf(ffmpeg === null || ffprobe === null || addon === null)("a Share righ
     expect(lines.some((message) => message.includes("watermark at"))).toBe(true);
     const reused = lines.filter((message) => /chunks \(.*\) already made/.test(message)).at(-1)!;
     const [, copied, all] = /^export: (\d+) of (\d+) chunks/.exec(reused)!;
-    expect(Number(all)).toBeGreaterThanOrEqual(2);
+    // A minute is two chunks on Linux and one on a Mac (CI's Mac, Nov 18): at least one, every one copied.
+    expect(Number(all)).toBeGreaterThanOrEqual(1);
     // Every chunk copied: none drawn again, the sound too, so the share's export is the join alone.
     expect(copied).toBe(all);
     expect(reused).toContain("the sound");
