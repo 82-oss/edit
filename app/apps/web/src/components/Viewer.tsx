@@ -268,20 +268,46 @@ export function Viewer() {
     const opened = performance.now();
     let last = "";
     let frame = 0;
+    let timer = 0;
+    // Where the viewer is, followed once an animation frame for two seconds after anything moved, then four times a
+    // second: once an animation frame for as long as the window drew, it kept the page busy at rest, 60 to 120 times
+    // a second. A resize, a scroll, a press or a transition looks at once and follows closely again.
+    let moved = opened;
     const place = () => {
-      frame = requestAnimationFrame(place);
+      frame = 0;
+      timer = 0;
+      const now = performance.now();
       const box = wrap.getBoundingClientRect();
       // After the screen's 160 ms fade-in, so the picture doesn't show ahead of the page around it.
-      const visible = nativeShown && performance.now() - opened > 200;
+      const visible = nativeShown && now - opened > 200;
       const key = `${box.left},${box.top},${box.width},${box.height},${visible}`;
-      if (key === last) return;
-      last = key;
-      // The viewer's top corners: its box's radius (12 px) inside its 1 px border.
-      void nativePreview.place({ x: box.left, y: box.top, width: box.width, height: box.height }, 11, visible).catch(() => {});
+      if (key !== last) {
+        last = key;
+        moved = now;
+        // The viewer's top corners: its box's radius (12 px) inside its 1 px border.
+        void nativePreview.place({ x: box.left, y: box.top, width: box.width, height: box.height }, 11, visible).catch(() => {});
+      }
+      if (now - moved < 2000) frame = requestAnimationFrame(place);
+      else timer = window.setTimeout(place, 250);
     };
+    const wake = () => {
+      moved = performance.now();
+      if (timer) {
+        window.clearTimeout(timer);
+        place();
+      }
+    };
+    const sizes = new ResizeObserver(wake);
+    sizes.observe(wrap);
+    sizes.observe(root);
+    const events = ["resize", "scroll", "pointerdown", "transitionrun", "transitionend", "animationend"] as const;
+    for (const event of events) window.addEventListener(event, wake, true);
     place();
     return () => {
       cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+      sizes.disconnect();
+      for (const event of events) window.removeEventListener(event, wake, true);
       root.classList.remove("native-preview");
       root.style.setProperty("background", painted);
       void nativePreview.place({ x: 0, y: 0, width: 1, height: 1 }, 0, false).catch(() => {});

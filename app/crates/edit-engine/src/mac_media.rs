@@ -508,14 +508,34 @@ impl Reader {
         order: Order,
         if_changed: bool,
     ) -> Result<bool, String> {
+        self.frame_to(
+            time,
+            edit_render::wgpu::WriteOnly::from_mut(out),
+            order,
+            if_changed,
+        )
+    }
+
+    /// `frame` into memory that's only written (a mapped GPU buffer): C only
+    /// writes it, but for `Order::Rgba` it turns BGRA into RGBA in place, a
+    /// read back, so mapped memory is given BGRA only (render.rs `decoder`).
+    pub fn frame_to(
+        &mut self,
+        time: f64,
+        mut out: edit_render::wgpu::WriteOnly<'_, [u8]>,
+        order: Order,
+        if_changed: bool,
+    ) -> Result<bool, String> {
         let mut error = [0; 1024];
-        // Exclusive handle and output access; C checks the exact output length.
+        let length = out.len();
+        // Exclusive handle and output access (the WriteOnly's, for its
+        // lifetime); C checks the exact output length.
         let result = unsafe {
             edit_reader_frame(
                 self.handle.as_ptr(),
                 time,
-                out.as_mut_ptr(),
-                out.len(),
+                out.as_raw_element_ptr().as_ptr(),
+                length,
                 i32::from(order == Order::Rgba),
                 i32::from(if_changed),
                 error.as_mut_ptr(),
@@ -635,6 +655,8 @@ impl Drop for SoundReader {
 /// (`crate::player`). Short of sound it plays silence and the clock holds.
 pub struct Speaker {
     handle: NonNull<c_void>,
+    /// The output's latency and when it was read (`latency`).
+    latency: parking_lot::Mutex<Option<(f64, std::time::Instant)>>,
 }
 
 // The ring's ends are atomics and AVAudioEngine's calls are thread-safe; one
@@ -661,6 +683,7 @@ impl Speaker {
         let handle = unsafe { edit_speaker_open(capacity, error.as_mut_ptr(), error.len()) };
         Ok(Self {
             handle: NonNull::new(handle).ok_or_else(|| message(&error))?,
+            latency: parking_lot::Mutex::new(None),
         })
     }
 
@@ -711,10 +734,22 @@ impl Speaker {
         state
     }
 
-    /// Seconds between a frame leaving the ring and the speaker.
+    /// Seconds between a frame leaving the ring and the speaker: read from
+    /// the device at most once a second (a route that changes, headphones in,
+    /// is heard within one). Read at every tick and every ask of where the
+    /// play is, it was a HAL property read each time (kenobi, Nov 17: 87 of a
+    /// play's 8 s of samples on the preview's thread).
     pub fn latency(&self) -> f64 {
+        let mut kept = self.latency.lock();
+        if let Some((seconds, read)) = *kept {
+            if read.elapsed() < std::time::Duration::from_secs(1) {
+                return seconds;
+            }
+        }
         // Reads the engine's output node.
-        unsafe { edit_speaker_latency(self.handle.as_ptr()) }
+        let seconds = unsafe { edit_speaker_latency(self.handle.as_ptr()) };
+        *kept = Some((seconds, std::time::Instant::now()));
+        seconds
     }
 }
 
@@ -797,6 +832,8 @@ pub struct WriterOptions {
     pub finished: bool,
     /// The index at the front of the file; only when nothing remuxes it after.
     pub faststart: bool,
+    /// Frames come as the GPU's 4:2:0 planes (I420), not RGBA.
+    pub yuv420: bool,
 }
 
 pub struct Writer {
@@ -826,7 +863,9 @@ impl Writer {
                 i32::from(options.hevc),
                 options.bitrate,
                 options.key_interval,
-                i32::from(options.finished) | (i32::from(options.faststart) << 1),
+                i32::from(options.finished)
+                    | (i32::from(options.faststart) << 1)
+                    | (i32::from(options.yuv420) << 2),
                 error.as_mut_ptr(),
                 error.len(),
             )

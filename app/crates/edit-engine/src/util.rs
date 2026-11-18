@@ -362,14 +362,42 @@ pub fn decoders() -> Option<std::sync::Arc<Decoders>> {
 
 /// Runs `work` with the decoders it starts listed in `decoders`.
 pub fn with_decoders<T>(decoders: Option<std::sync::Arc<Decoders>>, work: impl FnOnce() -> T) -> T {
-    let before = DECODERS.with(|current| current.replace(decoders));
-    let result = work();
-    DECODERS.with(|current| current.replace(before));
-    result
+    struct Restore(Option<Option<std::sync::Arc<Decoders>>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let before = self.0.take().flatten();
+            DECODERS.with(|current| current.replace(before));
+        }
+    }
+    let _restore = Restore(Some(DECODERS.with(|current| current.replace(decoders))));
+    work()
 }
 
-/// Runs `work` (an export), killing the decoders it starts once `cancel` is set.
+/// Hands freed memory back to the system: glibc keeps what's freed in its
+/// arenas (a let-go renderer's buffers stayed in the server's RSS); a Mac's
+/// allocator gives it back by itself.
+pub fn give_back_memory() {
+    #[cfg(target_os = "linux")]
+    // SAFETY: malloc_trim only walks glibc's own heaps.
+    unsafe {
+        libc::malloc_trim(0);
+    }
+}
+
+/// Runs `work` (an export), killing the decoders it starts once `cancel` is
+/// set, or once it panics. The watch ends however `work` does: ended only
+/// after it returned, a panic (a GPU validation error, Nov 17) left it watching
+/// and the export hung for good instead of failing.
 pub fn killed_on_cancel<T>(cancel: &std::sync::atomic::AtomicBool, work: impl FnOnce() -> T) -> T {
+    struct Done<'a>(&'a std::sync::atomic::AtomicBool, &'a Decoders);
+    impl Drop for Done<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                self.1.kill_all();
+            }
+            self.0.store(true, Ordering::Release);
+        }
+    }
     let decoders = std::sync::Arc::new(Decoders::default());
     let done = std::sync::atomic::AtomicBool::new(false);
     std::thread::scope(|scope| {
@@ -381,10 +409,33 @@ pub fn killed_on_cancel<T>(cancel: &std::sync::atomic::AtomicBool, work: impl Fn
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }
         });
-        let result = with_decoders(Some(std::sync::Arc::clone(&decoders)), work);
-        done.store(true, Ordering::Release);
-        result
+        let _done = Done(&done, &decoders);
+        with_decoders(Some(std::sync::Arc::clone(&decoders)), work)
     })
+}
+
+/// Kills this thread's export's decoders if dropped by a panic. Made inside a
+/// `std::thread::scope` whose threads read from decoders: the scope joins them
+/// before the panic gets out of it, and one blocked on a stalled read would
+/// keep it, and the export, there for good (`killed_on_cancel`'s own watch is
+/// outside the scope, so it never got the chance).
+pub struct KillOnPanic(Option<std::sync::Arc<Decoders>>);
+
+impl KillOnPanic {
+    #[allow(clippy::new_without_default)]
+    pub fn new() -> Self {
+        Self(decoders())
+    }
+}
+
+impl Drop for KillOnPanic {
+    fn drop(&mut self) {
+        if let Some(decoders) = &self.0 {
+            if std::thread::panicking() {
+                decoders.kill_all();
+            }
+        }
+    }
 }
 
 /// A decoder child listed with this thread's export (if any) until it's reaped.
@@ -533,6 +584,62 @@ pub fn interactive_thread() {
 
 #[cfg(test)]
 mod tests {
+
+    /// An export that panics fails (the panic comes back to `catch`) rather than hanging.
+    #[test]
+    fn a_panicking_export_fails_rather_than_hangs() {
+        let (sent, came) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let result = catch("the export", || {
+                killed_on_cancel(&cancel, || -> u32 { panic!("a validation error") })
+            });
+            let _ = sent.send(result.is_err());
+        });
+        let failed = came.recv_timeout(std::time::Duration::from_secs(10));
+        assert_eq!(failed, Ok(true), "the export hung");
+    }
+
+    /// A panic while a decoder's read is blocked (a stalled file or download)
+    /// fails the export too: the decoder is killed before the scope that
+    /// started its reader waits for it.
+    #[test]
+    fn a_panic_beside_a_blocked_decoder_fails_rather_than_hangs() {
+        use std::io::Read;
+        let (sent, came) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let result = catch("the export", || {
+                killed_on_cancel(&cancel, || {
+                    std::thread::scope(|scope| {
+                        let _kill = KillOnPanic::new();
+                        let (started, reading) = std::sync::mpsc::channel();
+                        let decoders = decoders();
+                        scope.spawn(move || {
+                            with_decoders(decoders, || {
+                                let child = std::process::Command::new("sleep")
+                                    .arg("600")
+                                    .stdout(std::process::Stdio::piped())
+                                    .spawn()
+                                    .unwrap();
+                                let mut decoder = Watched::new(child);
+                                let mut out = decoder.child.stdout.take().unwrap();
+                                started.send(()).unwrap();
+                                let _ = out.read_to_end(&mut Vec::new());
+                            });
+                        });
+                        reading.recv().unwrap();
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        panic!("a validation error");
+                    })
+                })
+            });
+            let _ = sent.send(result.is_err());
+        });
+        let failed = came.recv_timeout(std::time::Duration::from_secs(10));
+        assert_eq!(failed, Ok(true), "the export hung");
+    }
+
     use super::*;
 
     #[test]

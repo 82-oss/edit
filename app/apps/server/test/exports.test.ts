@@ -267,6 +267,30 @@ test("a re-export fetches the archived last export back, so its unchanged chunks
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test("a Vertical export fetches back the last Vertical export, never the full-size one", async () => {
+  const home = fs.mkdtempSync(`${os.tmpdir()}/restore-framed-`);
+  try {
+    const cache = `${home}/cache`;
+    const full = `${home}/exports/Full.mp4`;
+    const vertical = `${home}/exports/Vertical.mp4`;
+    const write = (name: string, output: string) => {
+      const folder = `${cache}/export-chunks/${name.replace(/[^A-Za-z0-9_-]/g, "_")}`;
+      fs.mkdirSync(folder, { recursive: true });
+      fs.writeFileSync(`${folder}/manifest-v1.json`, JSON.stringify({ output, size: 50, modified_ns: 1, fps: 30, chunks: [] }));
+    };
+    write("p1-2", full);
+    write("p1-2.1080x1920-Blur", vertical);
+    fs.writeFileSync(`${home}/exports.json`, JSON.stringify({ "p1-2": [
+      { path: full, name: "Full.mp4", finished_ms: 1, seconds: 1, bytes: 50, frames: 30, whole: true, start: 0, format: "h264", timeline: "t", cloudKey: "edit/exports/p1-2/Full.mp4" },
+      { path: vertical, name: "Vertical.mp4", finished_ms: 2, seconds: 1, bytes: 50, frames: 30, whole: true, start: 0, format: "h264", timeline: "t", cloudKey: "edit/exports/p1-2/Vertical.mp4" },
+    ] }));
+    const fetched: string[] = [];
+    const fetch = async (key: string, dest: string) => { fetched.push(key); fs.writeFileSync(dest, Buffer.alloc(50)); };
+    expect(await restorePrevious(cache, home, "p1-2.1080x1920-Blur", fetch)).toBe(vertical);
+    expect(fetched).toEqual(["edit/exports/p1-2/Vertical.mp4"]);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test("an export that stops moving is started again by itself", async () => {
   const { dir, home, store, app, native, cleanup } = fixtureHome("stalled-export");
   const registry = new ExportRegistry(home);

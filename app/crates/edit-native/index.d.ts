@@ -145,6 +145,11 @@ export declare function exportPlan(project: ProjectInput, options: ExportOptions
 export interface ExportPlan {
   plan: Plan
   fps: number
+  /**
+   * The name of its chunk folder when it isn't the project's own (a
+   * Vertical, Square… or resized export's): `chunks::folder`.
+   */
+  chunks?: string
 }
 
 export interface ExportProject {

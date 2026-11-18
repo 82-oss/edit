@@ -273,7 +273,7 @@ export interface Native {
 
   // Export
   exportDefaults(): ExportOptions; // S
-  exportPlan(project: ProjectInput, options: ExportOptions): { plan: Plan; fps: number }; // S
+  exportPlan(project: ProjectInput, options: ExportOptions): { plan: Plan; fps: number; chunks?: string | null }; // S
   withExtension(path: string, format: Format): string; // S
   encoders(): Promise<Encoders>; // A
   readonly ExportJob: ExportJobClass; // T

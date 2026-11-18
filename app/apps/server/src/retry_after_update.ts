@@ -29,7 +29,7 @@ import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as diag from "./diag.ts";
-import { chunkFolder, failedExports, type ExportFailure } from "./exports.ts";
+import { chunkFolders, failedExports, type ExportFailure } from "./exports.ts";
 import { writeAtomic } from "./files.ts";
 import * as jobs from "./jobs.ts";
 import { join } from "./paths.ts";
@@ -184,7 +184,7 @@ export async function step(app: App, actions: Actions = real): Promise<string | 
       return `skipped: ${why}`;
     }
     // Rendered fresh, nothing copied out of the export before.
-    fs.rmSync(chunkFolder(app.store.cacheDir(), item.project), { recursive: true, force: true });
+    for (const folder of chunkFolders(app.store.cacheDir(), item.project)) fs.rmSync(folder, { recursive: true, force: true });
     if (item.kind === "share") {
       diag.info("update", `${item.name}: ${NOTE}: sharing the fixes an earlier share failed on`);
       await actions.share(app, item);

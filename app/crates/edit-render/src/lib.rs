@@ -1,6 +1,8 @@
 //! Edit's compositor. One code path renders the browser preview (WebGPU via
 //! WASM) and the export (Metal/Vulkan/DX12 natively), so effects match exactly.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod frame;
 pub mod text;
 
 use std::cell::RefCell;
@@ -219,6 +221,9 @@ pub struct Renderer {
     /// The output as an export's 4:2:0 (made on first use, for this output).
     #[cfg(not(target_arch = "wasm32"))]
     yuv420: Option<Yuv420>,
+    /// An export's other size or shape (`set_framing`): what's read back.
+    #[cfg(not(target_arch = "wasm32"))]
+    framer: Option<frame::Framer>,
     layer_layout: wgpu::BindGroupLayout,
     over_pipeline: wgpu::RenderPipeline,
     multiply_pipeline: wgpu::RenderPipeline,
@@ -529,6 +534,8 @@ impl Renderer {
             readback: None,
             #[cfg(not(target_arch = "wasm32"))]
             yuv420: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            framer: None,
             layer_layout,
             over_pipeline,
             multiply_pipeline,
@@ -612,7 +619,48 @@ impl Renderer {
         {
             self.readback = None;
             self.yuv420 = None;
+            let framing = self.framer.take().map(|framer| framer.framing);
+            self.set_framing(framing);
         }
+    }
+
+    /// Frames each render to an export's other size or shape (`frame.rs`):
+    /// the readbacks (`copy_output_to`, `copy_output_yuv420_to`,
+    /// `read_output`) then give the framed picture, at its size. `None` (or
+    /// the render's own size, stretched) reads the render as it is.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn set_framing(&mut self, framing: Option<frame::Framing>) {
+        self.readback = None;
+        self.yuv420 = None;
+        self.framer = framing
+            .filter(|framing| {
+                framing.fill != frame::Fill::Stretch
+                    || (framing.width, framing.height) != (self.width, self.height)
+            })
+            .map(|framing| {
+                frame::Framer::new(
+                    &self.device,
+                    &self.output.view,
+                    (self.width, self.height),
+                    framing,
+                )
+            });
+    }
+
+    /// What the readbacks read: the framed picture, else the output.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn picture(&self) -> (&wgpu::TextureView, u32, u32) {
+        match &self.framer {
+            Some(framer) => (&framer.view, framer.framing.width, framer.framing.height),
+            None => (&self.output.view, self.width, self.height),
+        }
+    }
+
+    /// The size the readbacks give (`set_framing`'s, else the render's).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn picture_size(&self) -> (u32, u32) {
+        let (_, width, height) = self.picture();
+        (width, height)
     }
 
     /// The texture a media's current frame should be uploaded into, sized
@@ -707,6 +755,62 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
         );
+    }
+
+    /// Whether a `width`-wide RGBA or BGRA frame can be uploaded from a
+    /// staging buffer (`upload_video_staged`): its rows a whole multiple of
+    /// wgpu's copy alignment (256 bytes: 1920 and 1280 wide, not 1080).
+    pub fn staged_fits(width: u32) -> bool {
+        (width * 4).is_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+    }
+
+    /// `upload_video` from a buffer a decoder wrote the frame into while it
+    /// was mapped (MAP_WRITE | COPY_SRC, rows `width * 4` bytes, unmapped
+    /// now): copied into the video's texture on the GPU. `write_texture` copied
+    /// each frame on the CPU first, a third of a Mac export's busy time
+    /// (kenobi, M1, Nov 17: `_platform_memmove` under `Queue::write_texture`).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn upload_video_staged(
+        &mut self,
+        media: &str,
+        width: u32,
+        height: u32,
+        buffer: &wgpu::Buffer,
+        bgra: bool,
+    ) -> wgpu::SubmissionIndex {
+        let format = if bgra {
+            wgpu::TextureFormat::Bgra8Unorm
+        } else {
+            SOURCE_FORMAT
+        };
+        let texture = self.video_texture_in(media, width, height, format).clone();
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("edit staged upload"),
+            });
+        encoder.copy_buffer_to_texture(
+            wgpu::TexelCopyBufferInfo {
+                buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(width * 4),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        self.queue.submit([encoder.finish()])
     }
 
     /// `upload_video` for a frame as BT.709 TV-range 4:2:0 planes (Y, U, V,
@@ -889,6 +993,24 @@ impl Renderer {
     /// Forgets every media's levels (another project's media ids may mean other files).
     pub fn clear_peaks(&mut self) {
         self.peaks.clear();
+    }
+
+    /// Lets go of what a render leaves behind (videos' textures and planes,
+    /// texts and their glows, the blur's scratch, readbacks, sound levels),
+    /// keeping the device and the frame's own targets: a renderer kept waiting
+    /// for the next frame holds no more than an empty one. Made again as drawn.
+    pub fn release(&mut self) {
+        self.videos.clear();
+        self.video_planes.clear();
+        self.texts.clear();
+        self.peaks.clear();
+        self.blur_scratch = None;
+        self.binds.borrow_mut().clear();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.readback = None;
+            self.yuv420 = None;
+        }
     }
 
     pub fn has_video(&self, media: &str) -> bool {
@@ -1619,6 +1741,10 @@ impl Renderer {
             Some(wgpu::Color::BLACK),
         );
         self.queue.submit([encoder.finish()]);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(framer) = &self.framer {
+            framer.run(&self.device, &self.queue);
+        }
 
         let frame = self.frame_counter;
         self.texts
@@ -1680,7 +1806,7 @@ impl Renderer {
     /// (RGBA8 rows padded to wgpu's copy alignment).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn output_row_bytes(&self) -> u32 {
-        (self.width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+        (self.picture_size().0 * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
             * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT
     }
 
@@ -1689,7 +1815,7 @@ impl Renderer {
     pub fn output_buffer(&self) -> wgpu::Buffer {
         self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("edit readback"),
-            size: u64::from(self.output_row_bytes()) * u64::from(self.height),
+            size: u64::from(self.output_row_bytes()) * u64::from(self.picture_size().1),
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         })
@@ -1700,7 +1826,11 @@ impl Renderer {
     /// frames in flight and read each once its submission is done.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn copy_output_to(&self, buffer: &wgpu::Buffer) -> wgpu::SubmissionIndex {
-        let (width, height) = (self.width, self.height);
+        let (width, height) = self.picture_size();
+        let texture = match &self.framer {
+            Some(framer) => framer.pack(&self.device, &self.queue),
+            None => &self.output.texture,
+        };
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1708,7 +1838,7 @@ impl Renderer {
             });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &self.output.texture,
+                texture,
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -1739,7 +1869,11 @@ impl Renderer {
 
     /// Bytes of the output as 4:2:0: Y, then U, then V, tightly packed.
     pub fn yuv420_bytes(&self) -> u64 {
-        u64::from(self.width) * u64::from(self.height) * 3 / 2
+        #[cfg(not(target_arch = "wasm32"))]
+        let (width, height) = self.picture_size();
+        #[cfg(target_arch = "wasm32")]
+        let (width, height) = (self.width, self.height);
+        u64::from(width) * u64::from(height) * 3 / 2
     }
 
     /// A buffer `copy_output_yuv420_to` can fill.
@@ -1762,6 +1896,8 @@ impl Renderer {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn copy_output_yuv420_to(&mut self, buffer: &wgpu::Buffer) -> wgpu::SubmissionIndex {
         let bytes = self.yuv420_bytes();
+        let (picture, width, height) = self.picture();
+        let picture = picture.clone();
         let yuv420 = self.yuv420.get_or_insert_with(|| {
             let module = self
                 .device
@@ -1791,7 +1927,7 @@ impl Renderer {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&self.output.view),
+                        resource: wgpu::BindingResource::TextureView(&picture),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -1817,11 +1953,7 @@ impl Renderer {
             });
             pass.set_pipeline(&yuv420.pipeline);
             pass.set_bind_group(0, &yuv420.group, &[]);
-            pass.dispatch_workgroups(
-                (self.width / 8).div_ceil(8),
-                (self.height / 2).div_ceil(8),
-                1,
-            );
+            pass.dispatch_workgroups((width / 8).div_ceil(8), (height / 2).div_ceil(8), 1);
         }
         encoder.copy_buffer_to_buffer(&yuv420.planes, 0, buffer, 0, bytes);
         self.queue.submit([encoder.finish()])
@@ -1837,7 +1969,7 @@ impl Renderer {
     /// Native path: copy the last rendered frame out as tightly packed RGBA8.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_output(&mut self) -> Result<Vec<u8>, String> {
-        let (width, height) = (self.width, self.height);
+        let (width, height) = self.picture_size();
         let padded = self.output_row_bytes();
         let buffer = match &self.readback {
             Some(buffer) => buffer.clone(),

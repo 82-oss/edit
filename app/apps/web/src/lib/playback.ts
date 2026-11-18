@@ -359,6 +359,8 @@ class Preview {
   private nativeQuiet: Promise<unknown> = Promise.resolve();
   /** When the window was last asked where it is (`followNative`), for a spinner while it doesn't answer. */
   private nativeAskedAt = 0;
+  /** The whole frame the playhead last told its listeners of while playing (`tellFrame`). */
+  private toldFrame = -1;
   /** Frames the window passed over lately while playing, with when it said so (the last second's: `SKIP_HOLD`). */
   private windowSkips: [number, number][] = [];
   /** Whether the server was last told a play is on (`api.warmPlayback`'s `playing`), and the timer saying so again. */
@@ -1299,6 +1301,7 @@ class Preview {
 
   /** Once an animation frame while the window plays: where it is, into the playhead; the end stops here. */
   private followNative(generation: number) {
+    this.toldFrame = -1;
     const tick = () => {
       this.loop = 0;
       if (!playhead.playing || generation !== this.nativePlay || !this.native) return;
@@ -1384,6 +1387,18 @@ class Preview {
     this.setBuffering(false);
     if (now - this.warmedAt > WARM_PLAYING_MS) this.warmFrom(at.frame);
     if (now - this.persistedAt >= 1000) this.remember();
+    this.tellFrame();
+  }
+
+  /**
+   * While playing, the playhead's listeners (the timeline's redraw, the time shown) hear of each new frame, not of each
+   * animation frame: told once an animation frame, a 120 Hz screen redrew the timeline four times a frame of a 30 fps
+   * edit (the window's player, the rendered video and the live picture alike).
+   */
+  private tellFrame() {
+    const frame = Math.floor(playhead.frame);
+    if (frame === this.toldFrame) return;
+    this.toldFrame = frame;
     playhead.emit();
   }
 
@@ -1936,6 +1951,7 @@ class Preview {
     });
     this.resetClock();
     playhead.emit();
+    this.toldFrame = -1;
     this.tellPlaying();
     cancelAnimationFrame(this.queued);
     this.queued = 0;
@@ -2007,9 +2023,10 @@ class Preview {
         if (performance.now() - this.poked >= 1000) { this.poked = performance.now(); this.stream.poke(); }
       }
       if (performance.now() - this.persistedAt >= 1000) this.remember();
-      playhead.emit();
+      this.tellFrame();
       this.loop = requestAnimationFrame(tick);
     };
+    this.toldFrame = -1;
     this.loop = requestAnimationFrame(tick);
   }
 
@@ -2110,7 +2127,7 @@ class Preview {
     } else this.shortSince = undefined;
     if (now - this.warmedAt > WARM_PLAYING_MS) this.warmFrom(frame);
     if (now - this.persistedAt >= 1000) this.remember();
-    playhead.emit();
+    this.tellFrame();
   }
 
   /**

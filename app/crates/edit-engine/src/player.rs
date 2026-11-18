@@ -704,6 +704,7 @@ impl Player {
             self.renderer
                 .upload_video(clip, *width, *height, pixels, true);
         }
+        self.pictures.recycle(pictures);
         feed_peaks(&mut self.renderer, project, &scene, &self.cache);
         times.upload = ms(started);
         let started = Instant::now();

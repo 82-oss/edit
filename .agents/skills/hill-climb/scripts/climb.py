@@ -475,7 +475,10 @@ def cmd_try(args):
         print(f"step {step} broke   {args.idea}\n{error}\nUndone. Full output: {folder / 'last.txt'}")
         return
     row.update(score=score, seconds=round(seconds, 2))
-    held = score >= best if card["direction"] == "max" else score <= best
+    # A fix holds the score within the noise a gain must beat (--min-gain): held only at or under the best, a fix
+    # with no effect on the check was a coin toss (Nov 17: a test-only fix undone twice, 0.7% and 2% off in its pairs).
+    slack = threshold(card["min_gain"], best)
+    held = score >= best - slack if card["direction"] == "max" else score <= best + slack
     if not (better(card, score, best) or args.fix and held):
         undo()
         append(folder, {**row, "result": "undone", "why": "score got worse" if args.fix else "no gain"})

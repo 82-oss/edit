@@ -220,7 +220,7 @@ async function readBiggestApp(): Promise<BigApp | null> {
 let state = calm;
 let app: BigApp | null = null;
 let appAt = 0;
-let timer: ReturnType<typeof setInterval> | null = null;
+let readAt = 0;
 let reading = false;
 
 async function read(): Promise<void> {
@@ -244,10 +244,13 @@ async function read(): Promise<void> {
 export function routes(router: Router<App>): void {
   router.get("/api/memory", async () => {
     if (process.platform !== "darwin" && process.platform !== "linux") return json({ low: false });
-    if (timer === null) {
+    // Read as the pages ask (each every 10 s), at most once in READ_EVERY_MS however many ask: on a timer of its
+    // own from the first ask on, a Mac's server ran sysctl every 5 s for good, a page open or not.
+    if (Date.now() - readAt >= READ_EVERY_MS) {
+      // Unread a while (no page asking): what was judged then is stale, and the holds start again from now.
+      if (readAt !== 0 && Date.now() - readAt > 6 * READ_EVERY_MS) state = calm;
+      readAt = Date.now();
       await read();
-      timer = setInterval(() => void read(), READ_EVERY_MS);
-      timer.unref?.();
     }
     return json(state.low ? { low: true, critical: state.critical, app } : { low: false });
   });
