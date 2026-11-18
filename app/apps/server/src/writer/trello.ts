@@ -121,7 +121,10 @@ export function cardLinks(description: string, more: string[]): Link[] {
       if (!sections.flatMap(([, body]) => linksIn(body)).some((known) => sameVideo(known.url, found.url))) sections.push([null, line(found)]);
     }
   }
-  return sections.flatMap(([, body]) => linksIn(body));
+  // A video the card names twice (its description and a case under it, or two forms of one link) is one source: the
+  // same video, same start, imported twice is the same footage twice (Sphe, Nov 18: one card's 27:35 video listed twice).
+  const all = sections.flatMap(([, body]) => linksIn(body));
+  return all.filter((one, at) => !all.slice(0, at).some((earlier) => earlier.reuse === one.reuse && sameVideo(earlier.url, one.url)));
 }
 
 const leadWord = (given: string): string => given.replace(/^[^\p{L}\p{N}]+/u, "");

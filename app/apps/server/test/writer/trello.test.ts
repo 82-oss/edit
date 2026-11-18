@@ -14,7 +14,8 @@ test("numbered cases and the canonical round trip keep shared recordings and tim
 test("attachment cases fill their numbered slot, and references never become cases", () => {
   const desc = "Case 1: https://youtu.be/aaaaaaaaaaa\nCase 3 (reuse): https://docs.google.com/document/d/1docdocdocdocdoc/edit\nFootage: https://youtu.be/ccccccccccc";
   const more = ["Case 2 <https://youtu.be/aaaaaaaaaaa>", "Case 3 (reuse) <https://docs.google.com/document/d/1docdocdocdocdoc/edit>", "Thumbnail <https://youtu.be/ddddddddddd>", "https://youtu.be/ddddddddddd"];
-  expect(cardLinks(desc, more).map(line)).toEqual(["https://youtu.be/aaaaaaaaaaa", "https://youtu.be/aaaaaaaaaaa", "REUSE https://docs.google.com/document/d/1docdocdocdocdoc/edit"]);
+  // The same video in two cases is one source, imported once (Sphe, Nov 18).
+  expect(cardLinks(desc, more).map(line)).toEqual(["https://youtu.be/aaaaaaaaaaa", "REUSE https://docs.google.com/document/d/1docdocdocdocdoc/edit"]);
   expect(compilationLinks(desc).length).toBe(2);
   expect(compilationLinks("Case 1:\nFootage: https://youtu.be/aaaaaaaaaaa\nCase 2: https://youtu.be/bbbbbbbbbbb").length).toBe(2);
   const duplicate = cardLinks("Case 1: https://youtu.be/aaaaaaaaaaa", ["Case 1 (reuse) <https://youtu.be/aaaaaaaaaaa>"]);
@@ -126,4 +127,11 @@ test("a plain-http YouTube link is taken as https, not refused", () => {
   const [urls] = compilationLines(["http://youtube.com/watch?v=AR3tXqqmlus", "http://youtu.be/0v6XGfUgN1U"]);
   expect(urls).toEqual(["https://youtube.com/watch?v=AR3tXqqmlus", "https://youtu.be/0v6XGfUgN1U"]);
   expect(() => compilationLines(["http://youtube.com.evil.example/watch?v=AR3tXqqmlus", "https://youtu.be/0v6XGfUgN1U"])).toThrow("Unsupported");
+});
+
+test("a card that names one video twice lists it once; the same video from another start stays", () => {
+  const twice = cardLinks("Case 1: https://www.youtube.com/watch?v=aaaaaaaaaaa\nCase 2: https://youtu.be/aaaaaaaaaaa\nCase 3: https://youtu.be/bbbbbbbbbbb", []);
+  expect(twice.map(line)).toEqual(["https://www.youtube.com/watch?v=aaaaaaaaaaa", "https://youtu.be/bbbbbbbbbbb"]);
+  const later = cardLinks("Case 1: https://youtu.be/aaaaaaaaaaa\nCase 2: https://youtu.be/aaaaaaaaaaa?t=600", []);
+  expect(later.length).toBe(2);
 });
