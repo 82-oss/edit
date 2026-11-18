@@ -312,11 +312,13 @@ function share(context: Context, local: string, key: string): void {
  * "gbr" matrix), encoded by VideoToolbox. Off a Mac FFmpeg decodes and
  * scales, and NVENC encodes where there's one, else libx264 (tools.ts).
  */
-export function videoCommand(layout: Layout, n: number, url: string, out: string, bitrate = layout.bitrate, hardware = true): string[] {
+export function videoCommand(layout: Layout, n: number, url: string, out: string, bitrate = layout.bitrate, hardware = true, ownSetup: number | null = null): string[] {
   const [first, end] = framesOf(layout, n);
   const gop = String(Math.max(1, Math.round(layout.fps / 2)));
-  const mac = tools.videoHardware() === "videotoolbox";
+  const mac = tools.videoHardware() === "videotoolbox" && ownSetup === null;
   hardware &&= mac;
+  // Its own decoder setup (`makeVideo`): libx264's, under parameter set ids the head's don't use, before every keyframe.
+  const encoder = ownSetup !== null ? ["-c:v", "libx264", "-preset", "veryfast", "-x264-params", `sps-id=${ownSetup}`, "-bsf:v", "dump_extra=freq=keyframe"] : mac ? ["-c:v", "h264_videotoolbox", "-prio_speed", "1"] : tools.h264();
   return [
     tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-nostdin", "-y", "-threads", hardware ? "2" : "4",
     ...(hardware ? ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"] : []),
@@ -327,7 +329,7 @@ export function videoCommand(layout: Layout, n: number, url: string, out: string
       ? ["-vf", `scale_vt=w=${layout.width}:h=${layout.height}:color_matrix=bt709:color_primaries=bt709:color_transfer=bt709`]
       : ["-vf", `scale=w=${layout.width}:h=${layout.height}:out_color_matrix=bt709:out_range=tv,format=yuv420p`, "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]),
     "-fps_mode", "cfr", "-r", String(layout.fps), "-frames:v", String(end - first),
-    ...(mac ? ["-c:v", "h264_videotoolbox", "-prio_speed", "1"] : tools.h264()),
+    ...encoder,
     "-b:v", `${Math.round(bitrate / 1000)}k`, "-maxrate", `${Math.round((bitrate * 1.25) / 1000)}k`, "-bufsize", `${Math.round((bitrate * 2) / 1000)}k`,
     "-g", gop, "-bf", "0", "-movflags", "+faststart", out,
   ];
@@ -336,22 +338,36 @@ export function videoCommand(layout: Layout, n: number, url: string, out: string
 /**
  * Makes piece `n`'s picture from the original into its fragment file; its
  * sample entry (the decoder's setup: every piece's must be the head's).
+ * `own`: the piece carries a decoder setup of its own instead, kept on this
+ * computer only.
+ *
+ * Off a Mac, a piece of a proxy laid out on a Mac never has the head's setup:
+ * NVENC's or libx264's SPS isn't VideoToolbox's. On Nov 19 the Linux prod Edit
+ * made wo3kZGqURYY's piece 12 (the Mac had made the others) on every read of
+ * its stretch, a minute of 1080p each time, and threw it away every time. Each
+ * effect's "beneath" export reading it failed ("failed to fill whole buffer"),
+ * was tried again whole, and failed again, for as long as the agent rendered.
+ * Such a piece is made again by libx264 with its own SPS and PPS, under ids the
+ * head's don't use, before each of its keyframes. A decoder keeps parameter
+ * sets by id, so the head's still decode the pieces around it. It isn't shared:
+ * a Mac makes its own with the head's setup.
  */
-export async function makeVideo(context: Context, base: string, layout: Layout, n: number, expected: Uint8Array | null, signal?: AbortSignal, from?: { url: string; out: string }): Promise<{ file: string; entry: Uint8Array }> {
+export async function makeVideo(context: Context, base: string, layout: Layout, n: number, expected: Uint8Array | null, signal?: AbortSignal, from?: { url: string; out: string }): Promise<{ file: string; entry: Uint8Array; own: boolean }> {
   const url = from?.url ?? (await context.originalUrl(layout.original));
   const out = from?.out ?? context.local(videoKey(base, n));
   let bitrate = layout.bitrate;
+  let ownSetup: number | null = null;
   for (let attempt = 0; ; attempt++) {
     const encoded = scratch(context, "mp4");
     const partial = `${out}.partial`;
     try {
       const began = performance.now();
-      const hardware = tools.videoHardware() === "videotoolbox" && !softwareScaled.has(base);
+      const hardware = tools.videoHardware() === "videotoolbox" && !softwareScaled.has(base) && ownSetup === null;
       const options = { timeoutMs: 30 * 60_000, ...(signal ? { signal } : {}) };
       // Stopped (the fill's piece giving way): why, not FFmpeg's end.
       const stopped = (error: unknown) => (signal?.aborted ? (signal.reason as Error) : new Error(`piece ${n}'s picture: ${diag.scrub(diag.messageOf(error))}`));
       try {
-        await tools.run(videoCommand(layout, n, url, encoded, bitrate, hardware), options);
+        await tools.run(videoCommand(layout, n, url, encoded, bitrate, hardware, ownSetup), options);
       } catch (error) {
         if (!hardware || signal?.aborted) throw stopped(error);
         diag.warn("pieces", `${base}: VideoToolbox couldn't scale piece ${n} (${diag.scrub(diag.messageOf(error))}); FFmpeg scales it`);
@@ -362,7 +378,16 @@ export async function makeVideo(context: Context, base: string, layout: Layout, 
       }
       const track = fmp4.readMp4(encoded).find((one) => one.handler === "vide");
       if (track === undefined) throw new Error(`piece ${n} came out with no picture`);
-      if (expected !== null && !sameBytes(decoderSetup(track.entry), decoderSetup(expected))) throw new Error(`piece ${n}'s picture was encoded with another decoder setup than the head's`);
+      if (expected !== null && !sameBytes(decoderSetup(track.entry), decoderSetup(expected))) {
+        const unused: number | null = ownSetup === null ? unusedSetupId(expected) : null;
+        if (ownSetup === null && unused !== null && tools.videoHardware() !== "videotoolbox") {
+          diag.warn("pieces", `${base}: piece ${n}'s picture came out with another decoder setup than the head's (another computer's encoder laid it out); made again with its own, kept here`);
+          ownSetup = unused;
+          attempt--;
+          continue;
+        }
+        if (ownSetup === null || !carriesSetup(encoded, track, ownSetup)) throw new Error(`piece ${n}'s picture was encoded with another decoder setup than the head's`);
+      }
       const [first, end] = framesOf(layout, n);
       const samples = track.samples.slice(0, end - first);
       if (samples.length === 0 || !samples[0]!.sync) throw new Error(`piece ${n} doesn't start on a keyframe`);
@@ -389,8 +414,8 @@ export async function makeVideo(context: Context, base: string, layout: Layout, 
         continue;
       }
       fs.renameSync(partial, out);
-      diag.info("pieces", `${base}: picture piece ${n} of ${layout.pieces} (${Math.round((end - first) / layout.fps)} s) made in ${diag.human(performance.now() - began)}, ${Math.round(size / MIB)} MB`);
-      return { file: out, entry: track.entry };
+      diag.info("pieces", `${base}: picture piece ${n} of ${layout.pieces} (${Math.round((end - first) / layout.fps)} s) made in ${diag.human(performance.now() - began)}, ${Math.round(size / MIB)} MB${ownSetup !== null ? ", with its own decoder setup" : ""}`);
+      return { file: out, entry: track.entry, own: ownSetup !== null };
     } finally {
       fs.rmSync(encoded, { force: true });
       fs.rmSync(partial, { force: true });
@@ -415,6 +440,78 @@ export function decoderSetup(entry: Uint8Array): Uint8Array {
 
 function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/** An exp-Golomb reader over an H.264 NAL unit's payload (emulation bytes taken out), from bit `at`. */
+function golomb(nal: Uint8Array, at: number): { value: number; next: number } | null {
+  const bytes: number[] = [];
+  for (let i = 1; i < nal.length; i++) {
+    if (i >= 3 && nal[i] === 3 && nal[i - 1] === 0 && nal[i - 2] === 0) continue;
+    bytes.push(nal[i]!);
+  }
+  const bit = (k: number) => ((bytes[k >> 3] ?? 0) >> (7 - (k & 7))) & 1;
+  let zeros = 0;
+  while (bit(at + zeros) === 0) if (++zeros > 31 || at + zeros >= bytes.length * 8) return null;
+  let value = 0;
+  for (let k = 0; k < zeros; k++) value = value * 2 + bit(at + zeros + 1 + k);
+  return { value: value + 2 ** zeros - 1, next: at + 2 * zeros + 1 };
+}
+
+/** The SPS and PPS ids in an avcC (in an avc1 entry), or null when it can't be read. */
+export function setupIds(entry: Uint8Array): { sps: number[]; pps: number[] } | null {
+  const avcc = decoderSetup(entry);
+  if (avcc.length < 15 || String.fromCharCode(...avcc.subarray(4, 8)) !== "avcC") return null;
+  let at = 14;
+  const sps: number[] = [];
+  const pps: number[] = [];
+  const read = (count: number, into: number[], skip: number) => {
+    for (let k = 0; k < count; k++) {
+      const size = ((avcc[at] ?? 0) << 8) | (avcc[at + 1] ?? 0);
+      const nal = avcc.subarray(at + 2, at + 2 + size);
+      at += 2 + size;
+      // The SPS's id follows profile, constraints and level (24 bits); the PPS's comes first.
+      const id = golomb(nal, skip);
+      if (id === null || nal.length < size) return false;
+      into.push(id.value);
+    }
+    return true;
+  };
+  if (!read((avcc[13] ?? 0) & 0x1f, sps, 24)) return null;
+  const ppsCount = avcc[at] ?? 0;
+  at += 1;
+  if (!read(ppsCount, pps, 0)) return null;
+  return sps.length > 0 && pps.length > 0 ? { sps, pps } : null;
+}
+
+/** An SPS and PPS id the head's setup doesn't use (x264 gives both one number), or null when it can't be read. */
+export function unusedSetupId(head: Uint8Array): number | null {
+  const ids = setupIds(head);
+  if (ids === null) return null;
+  const taken = new Set([...ids.sps, ...ids.pps]);
+  for (let id = 1; id < 32; id++) if (!taken.has(id)) return id;
+  return null;
+}
+
+/** Whether a piece encoded with its own setup (id `id`) carries its SPS and PPS before its first keyframe, as asked. */
+function carriesSetup(file: string, track: fmp4.Track, id: number): boolean {
+  const ids = setupIds(track.entry);
+  if (ids === null || !ids.sps.includes(id) || !ids.pps.includes(id)) return false;
+  const first = track.samples[0];
+  if (first === undefined) return false;
+  const bytes = new Uint8Array(Math.min(first.size, 4096));
+  const fd = fs.openSync(file, "r");
+  try {
+    fs.readSync(fd, bytes, 0, bytes.length, first.offset);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const types = new Set<number>();
+  for (let at = 0; at + 5 <= bytes.length; ) {
+    const size = new DataView(bytes.buffer).getUint32(at);
+    types.add(bytes[at + 4]! & 0x1f);
+    at += 4 + size;
+  }
+  return types.has(7) && types.has(8);
 }
 
 /**
@@ -617,7 +714,8 @@ function makePicture(context: Context, base: string, layout: Layout, n: number, 
         if (background === own) background = null;
       }
     }, urgent);
-    share(context, made.file, key);
+    // One with its own decoder setup decodes only after this computer's head: never put where a Mac would fetch it.
+    if (!made.own) share(context, made.file, key);
     return made.file;
   }).then((file) => {
     if (!had) pictureLanded(base, n);

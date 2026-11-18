@@ -26,6 +26,12 @@ tokio = { version = "1", features = ["rt", "sync"] }
 parking_lot = "0.12"
 libc = "0.2"
 
+# Linux: Rust's memory through mimalloc, not glibc's malloc (src/lib.rs `ALLOCATOR`).
+[target.'cfg(target_os = "linux")'.dependencies]
+# local_dynamic_tls: the addon is a library the server loads at run time.
+mimalloc = { version = "0.1", default-features = false, features = ["local_dynamic_tls"] }
+libmimalloc-sys = { version = "0.1", default-features = false, features = ["extended"] }
+
 [build-dependencies]
 napi-build = "2"
 

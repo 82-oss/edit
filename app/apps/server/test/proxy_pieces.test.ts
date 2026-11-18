@@ -501,6 +501,83 @@ test("FFmpeg reads a pieced proxy's picture and sound together, from its start a
   }
 }, 60_000);
 
+test("the SPS and PPS ids of a head's setup, and one it doesn't use", () => {
+  // An avc1 entry around an avcC with SPS id 0 (profile 100, level 4.0) and PPS id 0, as VideoToolbox's head of wo3kZGqURYY.
+  const avcc = Uint8Array.from(Buffer.from("01640028ffe1001027640028ac5680780227e59a8080808101000428ee3cb0", "hex"));
+  const entry = fmp4.box("avc1", Uint8Array.from([...new Uint8Array(78), ...fmp4.box("avcC", avcc)]));
+  expect(pieces.setupIds(entry)).toEqual({ sps: [0], pps: [0] });
+  expect(pieces.unusedSetupId(entry)).toBe(1);
+  expect(pieces.setupIds(fmp4.box("avc1", new Uint8Array(70)))).toBeNull();
+});
+
+// Off a Mac a piece made here never has a Mac's VideoToolbox setup: it's made with its own instead (a Mac's
+// encoder is the head's: nothing to test there).
+test.skipIf(process.platform === "darwin")("a piece made here with another setup than the head's carries its own, decodes between the head's pieces, and stays here", async () => {
+  // Nov 19, the Linux prod Edit: wo3kZGqURYY's head and pieces were a Mac's, and piece 12 made here was thrown away on every read.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pieces-setup-"));
+  const original = path.join(root, "original.mp4");
+  // The head's encoder: baseline, as no encoder this computer has makes it.
+  const made = Bun.spawnSync([
+    "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30:duration=150",
+    "-c:v", "libx264", "-preset", "veryfast", "-profile:v", "baseline", "-pix_fmt", "yuv420p", "-g", "15", "-force_key_frames", "expr:gte(t,n_forced*60)", original,
+  ]);
+  expect(made.exitCode).toBe(0);
+  const layout = pieces.plan("sha256:setup", "k", 150, 30, 320, 180, false);
+  const base = pieces.baseKey("sha256:setup");
+  const cloudFiles = new Map<string, Uint8Array>();
+  const context = { ...fakeContext(root, cloudFiles), originalUrl: async () => original };
+  const picture = fmp4.readMp4(original).find((track) => track.handler === "vide")!;
+  for (const n of [0, 2]) {
+    const [first, end] = pieces.framesOf(layout, n);
+    const file = context.local(`${base}/video/${n}.m4s`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fmp4.writeFragment(file, layout.pieces + n + 1, [
+      {
+        id: 1,
+        baseTime: pieces.videoTime(layout, first),
+        samples: picture.samples.slice(first, end).map((sample, index) => ({
+          size: sample.size, duration: pieces.videoTime(layout, first + index + 1) - pieces.videoTime(layout, first + index), sync: sample.sync, cts: 0, from: original, offset: sample.offset,
+        })),
+      },
+    ]);
+  }
+  fs.writeFileSync(context.local(`${base}/head.mp4`), pieces.headOf(layout, picture.entry, null));
+  fs.writeFileSync(context.local(`${base}/layout.json`), JSON.stringify(layout));
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: (request) => pieces.serve(context, request, base) });
+  try {
+    const url = `http://127.0.0.1:${server.port}/proxy.mp4`;
+    // FFmpeg runs apart from this process (its server answers while it reads).
+    const run = async (args: string[]) => {
+      const child = Bun.spawn(["ffmpeg", "-v", "error", "-nostdin", ...args], { stdout: "pipe", stderr: "pipe" });
+      const [out, errors] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text()]);
+      expect(errors).toBe("");
+      expect(await child.exited).toBe(0);
+      return out;
+    };
+    // From 50 s to 130 s: piece 0's end, all of piece 1 (made now), piece 2's start, every frame there and decoded.
+    const frames = await run(["-ss", "50", "-i", url, "-t", "80", "-an", "-f", "framemd5", "-"]);
+    expect(frames.split("\n").filter((line) => /^\d/.test(line)).length).toBe(80 * 30);
+    // Read on from piece 1 into piece 2, piece 2's frames are the original's very frames: the head's setup still
+    // decodes it after piece 1's own (a decoder that kept piece 1's for it would make noise of it).
+    const hashes = async (input: string) => (await run(["-ss", "119.5", "-i", input, "-t", "1", "-an", "-f", "framemd5", "-"])).split("\n").filter((line) => /^\d/.test(line)).map((line) => line.split(",").at(-1));
+    const read = await hashes(url);
+    const there = await hashes(original);
+    expect(read.length).toBe(there.length);
+    expect(read.slice(-15)).toEqual(there.slice(-15));
+    // Piece 1's own picture is the original's, encoded again.
+    const psnr = await run(["-ss", "90", "-i", url, "-ss", "90", "-i", original, "-lavfi", "[0:v][1:v]psnr=stats_file=-", "-frames:v", "30", "-f", "null", "-"]);
+    const db = psnr.trim().split("\n").map((line) => Number(/psnr_avg:(\S+)/.exec(line)?.[1]));
+    expect(db.length).toBe(30);
+    expect(Math.min(...db)).toBeGreaterThan(30);
+    expect(fs.existsSync(context.local(`${base}/video/1.m4s`))).toBe(true);
+    // Kept here only: a Mac fetching it would decode it with the head's setup.
+    await Bun.sleep(100);
+    expect([...cloudFiles.keys()].filter((key) => key.includes("/video/"))).toEqual([]);
+  } finally {
+    await server.stop(true);
+  }
+}, 120_000);
+
 test("the fill's piece someone joined is never stopped for another", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pieces-joined-"));
   const original = path.join(root, "original.mp4");
