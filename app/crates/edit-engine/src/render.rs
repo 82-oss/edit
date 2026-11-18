@@ -4433,7 +4433,6 @@ mod tests {
     /// A shape or size other than the project's is framed on the GPU for a
     /// chunked export (`edit_render::frame`), as FFmpeg's graph frames a whole
     /// one: the same picture in the same place, as bright, for every fill.
-    #[cfg(not(target_os = "macos"))]
     #[test]
     fn the_gpus_framing_is_ffmpegs() {
         use crate::export::{Fill, Shape};
@@ -4544,10 +4543,15 @@ mod tests {
             );
             assert!(psnr("y") > 36.0, "{shape:?} {fill:?}: {said}");
             // The blur's colour is the least exact (its quarter-size blur):
-            // Square Blur's V 33.9 dB on these bars (Nov 18); swapped planes
-            // fall far under this, and far off in their means.
-            for plane in ["u", "v"] {
-                assert!(psnr(plane) > 32.0, "{shape:?} {fill:?} {plane}: {said}");
+            // Square Blur's V 33.9 dB on these bars here (Nov 18); swapped
+            // planes fall far under this, and far off in their means. A Mac's
+            // chunks are VideoToolbox's, not FFmpeg's: its colour on these
+            // bars at 360p is 31–38 dB for every fill, Crop and Black too (the
+            // M1, Nov 18), the encoders' difference, so it's held to the means.
+            if !cfg!(target_os = "macos") {
+                for plane in ["u", "v"] {
+                    assert!(psnr(plane) > 32.0, "{shape:?} {fill:?} {plane}: {said}");
+                }
             }
             assert!(
                 drift("Y").abs() < 0.75,
