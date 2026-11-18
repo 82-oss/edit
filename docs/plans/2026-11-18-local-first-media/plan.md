@@ -100,3 +100,7 @@ outages (backoff done, 3e1e8a72), effect render throughput.
 
 ## Log
 - Nov 18: plan written; nightly-86 = today's stability fixes (2a74df1d … df340d53), after kenobi's canary.
+- Nov 18: step 1 landed (6e2fd4b5, 05e2424e): ledger.ts; floor 15 GB / 10% (`keepFreeBytes`, `cacheFloor` for copies);
+  cleaner by project state (in work kept; idle derived→proxies for room, whole, oldest first; done/7-day idle let go,
+  originals only after R2 HEADs their size); `admit` before Drive/local/Script imports and exports; one ahead a Mac;
+  review pieces after 3 days. Not yet: Script mode's footage in the ledger (its own round keeps to the floor).
