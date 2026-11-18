@@ -155,7 +155,7 @@ export async function run(app: App, payload: string, by: string): Promise<string
         ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
         signal: AbortSignal.timeout(120_000),
       });
-      const text = (await answer.text()).slice(0, OUTPUT_MAX);
+      const text = await readAtMost(answer, OUTPUT_MAX);
       return sendAnswer(app, `${method} ${request.path}`, `HTTP ${answer.status}\n\n${text}`, began);
     }
     case "agent": {
@@ -281,4 +281,26 @@ export async function shell(command: string, seconds = 60): Promise<string> {
 export function routes(router: Router<App>): void {
   // The help dialog as it stands, for a page that opens while one is up (then it hears "remote-help").
   router.get("/api/remote-help", ({ app }) => json({ help: helpNow(app.store.home) }));
+}
+
+/**
+ * At most `max` characters of a response's body, read until there and no further (the rest isn't fetched):
+ * a big answer to a GET from afar never sits whole in this server's memory only to be cut down.
+ */
+export async function readAtMost(answer: Response, max: number): Promise<string> {
+  const reader = answer.body?.getReader();
+  if (reader === undefined) return "";
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (text.length < max) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    if (text.length < max) text += decoder.decode();
+  } finally {
+    await reader.cancel().catch(() => undefined);
+  }
+  return text.slice(0, max);
 }

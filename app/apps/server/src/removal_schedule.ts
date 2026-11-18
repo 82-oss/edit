@@ -144,7 +144,10 @@ export async function waitForPieces(app: App, id: string, limitMs = timing.expor
 // ---------------------------------------------------------------------------
 // The agent's look at each piece
 
-/** Pieces the agent has looked at (it says what isn't clean in the same call, or a later one). */
+/**
+ * Pieces the agent has looked at (it says what isn't clean in the same call, or a later one), by project and the
+ * strip each came back as: another project's piece of the same footage, or the same piece done again, is shown too.
+ */
 const looked = new Set<string>();
 
 /**
@@ -194,14 +197,16 @@ async function checkRemoval({ app, args, projectId }: ToolCall): Promise<Content
   ];
   for (const piece of pieces) {
     rows.push(`${piece.key} · ${piece.name} ${Math.round(piece.from)}–${Math.round(piece.to)} s · ${piece.what} · ${piece.state}${piece.why ? ` (${piece.why})` : ""}`);
-    if (looked.has(piece.key) || shown >= 4) continue;
+    if (shown >= 4) continue;
     const strip = strips.find((one) => one.cleans!.media === piece.media && (one.cleans!.what ?? "text") === piece.what && Math.abs(one.cleans!.from - piece.from) < 0.01);
     const footage = project.media.find((one) => one.id === piece.media);
     if (strip === undefined || footage === undefined) continue;
+    const seen = `${projectId}|${piece.key}|${strip.id}`;
+    if (looked.has(seen)) continue;
     const at = Math.min(piece.to - 0.5, piece.from + (piece.to - piece.from) / 2);
     try {
       out.push(...image(await beforeAfter(app, footage, strip, at), `${piece.key} at ${Math.round(at)} s of ${piece.name}: before (left), after (right)`));
-      looked.add(piece.key);
+      looked.add(seen);
       shown += 1;
     } catch (error) {
       diag.warn("removal", `${projectId}: looking at ${piece.key}: ${diag.messageOf(error)}`);

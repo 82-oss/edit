@@ -1167,11 +1167,15 @@ test("the agent looks at each piece and rejects one that isn't clean: done once 
     expect(looked.isError).toBe(false);
     expect(looked.content[0]!.text).toContain("text:m@0 · tape 0–8 s · text · check");
     expect(looked.content.some((one) => one.type === "image")).toBe(true);
+    // Looked at once: not shown again.
+    expect((await call({})).content.some((one) => one.type === "image")).toBe(false);
     // Rejected: sent again; rejected again: given up on, blurred, said.
     const key = tr.piecesOf(id)[0]!.key;
     await call({ reject: [{ piece: key, why: "a ghost of the label" }] });
     await tr.settled(id);
     expect(log).toEqual(["remove 8", "remove 8"]);
+    // What came back the second time is a new strip of the same piece: shown again, to be looked at.
+    expect((await call({})).content.some((one) => one.type === "image")).toBe(true);
     await call({ reject: [{ piece: key, why: "still a ghost" }] });
     await tr.settled(id);
     expect(log.length).toBe(2);

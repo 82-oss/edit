@@ -5,7 +5,7 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 
 import * as jobs from "../src/jobs.ts";
-import { helpNow, kindsOf, run, shell } from "../src/remote_control.ts";
+import { helpNow, kindsOf, readAtMost, run, shell } from "../src/remote_control.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
 test("work is held by name: agents, exports, imports, all, or job kinds; anything else is refused", () => {
@@ -82,4 +82,21 @@ test("a request that isn't JSON, says nothing, or isn't known is refused in word
   } finally {
     cleanup();
   }
+});
+
+test("an answer from afar is read only as far as it's sent: a big body isn't fetched whole to be cut down", async () => {
+  let pulled = 0;
+  const chunk = new TextEncoder().encode("é".repeat(50_000));
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulled += 1;
+      if (pulled > 1_000) controller.close();
+      else controller.enqueue(chunk);
+    },
+  });
+  const text = await readAtMost(new Response(body), 120_000);
+  expect(text.length).toBe(120_000);
+  expect(text).toBe("é".repeat(120_000));
+  expect(pulled).toBeLessThan(10);
+  expect(await readAtMost(new Response("short"), 120_000)).toBe("short");
 });
