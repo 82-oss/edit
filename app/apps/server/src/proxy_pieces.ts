@@ -648,6 +648,15 @@ export function ensurePiece(context: Context, base: string, layout: Layout, n: n
   });
 }
 
+/**
+ * Piece `n`'s picture as two files here that FFmpeg reads as one short video: the pieced proxy's head and the
+ * piece's own fragment (its picture made or fetched already: `pictureHere`). The window's copy of a piece is cut
+ * from them (native_preview.ts).
+ */
+export async function pictureFiles(context: Context, base: string, n: number): Promise<{ head: string; video: string }> {
+  return { head: await ensureHead(context, base), video: context.local(videoKey(base, n)) };
+}
+
 async function ensureHead(context: Context, base: string): Promise<string> {
   const local = context.local(headKey(base));
   if (!isFile(local)) await context.fetch(headKey(base), local);
