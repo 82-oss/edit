@@ -66,8 +66,12 @@ export type Work =
   /** `review`: the fresh-eyes read after it (scripting.ts `scriptFreshEyes`); absent from builds started before it was kept, which had it. */
   | { kind: "build"; note: string; format?: import("@edit/types/writer").Kind; review?: boolean }
   | { kind: "revise"; request: string; focus: import("@edit/types/writer").Focus }
-  /** A revision whose message links videos: each brought in whole first (links.ts). */
-  | { kind: "link"; urls: string[]; request: string; focus: import("@edit/types/writer").Focus }
+  /**
+   * A message that brings footage (links.ts): the videos it links and the files attached to it (`files`, their
+   * upload ids), each added to the footage first, then the revision on its words, or the first build (`build`)
+   * when the script isn't built yet.
+   */
+  | { kind: "link"; urls: string[]; files?: string[]; build?: boolean; request: string; focus: import("@edit/types/writer").Focus }
   | { kind: "reuse"; urls: string[] }
   | { kind: "find" }
   | { kind: "learn"; step: import("@edit/types/writer").LearnStep }
@@ -80,7 +84,7 @@ export type Work =
 const FIRST_STAGE: Record<Work["kind"], string> = {
   build: "Starting",
   revise: "Editing the script",
-  link: "Downloading the linked video",
+  link: "Adding the footage",
   reuse: "Bringing in the reused cases",
   find: "Finding clips",
   learn: "Learning from the feedback",
@@ -99,7 +103,7 @@ function described(work: Work): string {
     case "revise":
       return `revising: "${[...work.request].slice(0, 80).join("")}"`;
     case "link":
-      return `bringing in ${plural(work.urls.length, "linked video", "linked videos")} and revising: "${[...work.request].slice(0, 80).join("")}"`;
+      return `adding ${plural(work.urls.length + (work.files?.length ?? 0), "link or file", "links and files")} to the footage and ${work.build ? "building" : "revising"}: "${[...work.request].slice(0, 80).join("")}"`;
     case "reuse":
       return `bringing in ${plural(work.urls.length, "reused case", "reused cases")}`;
     case "find":
@@ -445,7 +449,7 @@ export function resetForTests(): void {
 const DONE: Partial<Record<Work["kind"], string>> = {
   build: "First draft is ready",
   revise: "Revision is done",
-  link: "The linked video is in",
+  link: "The footage is in",
   review: "Review notes are fixed",
   reuse: "Reused cases are in",
   find: "Clips are found",

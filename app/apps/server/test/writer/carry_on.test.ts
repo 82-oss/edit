@@ -169,6 +169,10 @@ test("the producer's request is said once when a job carries on, and as often as
     chat.asked(dir, "Build the script.", true);
     chat.asked(dir, "Build the script.");
     expect(chat.read(dir).map((turn) => turn.text)).toEqual(["Build the script.", "Built.", "Build the script.", "Build the script."]);
+    // Only what couldn't be done since (footage a message brought, links.ts): the revision it hands on to doesn't say it again.
+    chat.add(dir, "editor", "https://youtu.be/x couldn't be added (It's private.).", null, true);
+    chat.asked(dir, "Build the script.", true);
+    expect(chat.read(dir).filter((turn) => turn.role === "producer")).toHaveLength(3);
   } finally {
     cleanup();
   }

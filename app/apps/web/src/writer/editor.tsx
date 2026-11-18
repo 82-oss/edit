@@ -6,7 +6,8 @@ import { ChatDock } from "../components/ChatDock";
 import { useUntaughtLane } from "../components/Untaught";
 import { addQuote, useQuotesOf, type ChatQuote } from "../lib/chatQuotes";
 import { scriptEntries } from "./chat/editor-entries";
-import { buildStatus, completeTranscription, correctWord, editProject, getChat, getResearch, getScript, importReuses, message, previewSrc, resetScript, resolveProposals, restoreVersion, retrySpeakers, saveClips, setHeading, startBuild, startEdit, startRevision, stopJob } from "./api";
+import { buildStatus, completeTranscription, correctWord, editProject, footageOnly, footageUploader, getChat, getResearch, getScript, importReuses, message, previewSrc, resetScript, resolveProposals, restoreVersion, retrySpeakers, saveClips, setHeading, startBuild, startEdit, startRevision, stopJob, uploadsOf } from "./api";
+import type { ChatFile } from "../lib/chatFiles";
 import { navigate } from "../lib/route";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { Avatar } from "./avatar";
@@ -168,12 +169,15 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   // What was just asked, shown until the conversation on disk has it.
   const [sent, setSent] = useState<string | null>(null);
   // A message sent whose answer hasn't come: it shows before the job does.
+  // The footage files it carried, shown on it.
+  const [sentFiles, setSentFiles] = useState<string[]>([]);
   const [asking, setAsking] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [research, setResearch] = useState<Research | null>(null);
   const [note, setNote] = useChatDraft(script.id);
   const chatKey = `script:${script.id}`;
   const quoted = useQuotesOf(chatKey).length > 0;
+  const chatFiles = useMemo(() => ({ upload: footageUploader(script.id), accept: footageOnly }), [script.id]);
   const [resolving, setResolving] = useState(false);
   const split = useSplit();
 
@@ -479,15 +483,19 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
 
   // Each answers whether it started: a message that didn't (the server restarting or out of reach) goes back in the
   // composer (it cleared the box on sending), so nothing typed is lost.
-  const build = async (request: string) => {
+  // Footage attached to a message (the composer's + / paste / drop) is added to the script first, then the message
+  // is carried out with it (the server's writer/links.ts), as one job: its steps are Claude's turn.
+  const build = async (request: string, files: ChatFile[] = []) => {
+    const uploads = uploadsOf(files);
     setError(null);
-    setStage("Starting");
+    setStage(uploads.length > 0 ? "Adding the footage" : "Starting");
     // Shown the moment it's sent, not once the server answers: the message, and Claude at work on it.
     setSent(request.trim() ? `Build the script. ${request.trim()}` : "Build the script.");
     setAsking(true);
+    setSentFiles(files.map((one) => one.name));
     setStarted(Date.now());
     try {
-      const job = await startBuild(script.id, request);
+      const job = uploads.length > 0 ? await startBuild(script.id, request, undefined, uploads) : await startBuild(script.id, request);
       follow(job.startedAt);
       return true;
     } catch (cause) {
@@ -503,21 +511,24 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   // Once the script is built, a message asks Opus for targeted edits, as
   // Repack's chat does, with what the producer has selected as "this".
   // What's quoted (in front of the words already) points it at those narrations.
-  const revise = async (given: string, quotes: ChatQuote[] = []) => {
+  const revise = async (given: string, quotes: ChatQuote[] = [], files: ChatFile[] = []) => {
     const request = given.trim();
     if (!request) return false;
     const clips = quotes.flatMap((one) => (one.clip !== undefined ? [one.clip] : []));
     setError(null);
-    setStage("Editing the script");
+    const uploads = uploadsOf(files);
+    setStage(uploads.length > 0 ? "Adding the footage" : "Editing the script");
     setSent(request);
     setAsking(true);
+    setSentFiles(files.map((one) => one.name));
     setStarted(Date.now());
     try {
-      const job = await startRevision(script.id, request, {
+      const focus = {
         selected: clips.length > 0 ? clips : selected,
-        picked: picked ? [picked.startMs, picked.endMs] : null,
+        picked: picked ? ([picked.startMs, picked.endMs] as [number, number]) : null,
         playheadMs: Math.round(playhead.ms),
-      });
+      };
+      const job = uploads.length > 0 ? await startRevision(script.id, request, focus, uploads) : await startRevision(script.id, request, focus);
       follow(job.startedAt);
       return true;
     } catch (cause) {
@@ -611,7 +622,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const ready = script.words.length > 0;
   // The chat as the editor's chat shows it: same turns, same composer,
   // only the script's tools and send behind them.
-  const chatEntries = scriptEntries(chat, working ? liveTurn : null, working || asking ? sent : null, started ?? undefined);
+  const chatEntries = scriptEntries(chat, working ? liveTurn : null, working || asking ? sent : null, started ?? undefined, sentFiles);
   // A time Claude gives is a footage time ([m:ss], as the transcript and CURRENT SCRIPT show the footage: the server's
   // writer/revise.ts): the cut plays from there when it keeps that moment, else the footage plays there as the transcript's
   // Play does. A range plays on from its start (this player has no stop at an end).
@@ -854,7 +865,9 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                   source: { entries: chatEntries, running: working, loaded: chatLoaded },
                   // Each answers whether it started: a message that didn't (the server restarting or out of reach) goes back in the composer.
                   // One sent while Claude works waits in the composer's queue and goes when the job ends (the server runs one job at a time).
-                  send: (text, _files, quotes) => (cueCount ? revise(text, quotes) : build(text)),
+                  send: (text, files, quotes) => (cueCount ? revise(text, quotes, files) : build(text, files)),
+                  // A clip to add, the composer's + / paste / drop as Edit V2's: uploaded to the script, added with the message.
+                  files: chatFiles,
                   stop: () => void stopJob(script.id).catch((cause) => setError(message(cause))),
                   times: chatTimes,
                   model: { revising: scriptBuilt({ clips }) },

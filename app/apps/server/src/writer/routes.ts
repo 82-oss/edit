@@ -144,6 +144,19 @@ const titles = (app: App): string[] => store.list(dataOf(app)).map((row) => row.
 const NO_FOCUS: Focus = { selected: [], picked: null, playheadMs: null };
 
 /** Refused while Claude works on the script: `what` says what waits. */
+/**
+ * The footage a message brings: the YouTube and Drive links (or any page with a video) in its words, and the files
+ * attached to it; null when it brings none. A commentary's videos are its sources, never footage.
+ */
+function footageOf(data: string, script: Script, text: string, files: unknown): { urls: string[]; files?: string[] } | null {
+  if (script.commentary) return null;
+  const attached = Array.isArray(files) ? files.map(String) : [];
+  links.checkAttached(store.scriptDir(data, script.id), attached);
+  const urls = links.footageLinks(text);
+  if (urls.length === 0 && attached.length === 0) return null;
+  return { urls, ...(attached.length > 0 ? { files: attached } : {}) };
+}
+
 function notWhileWriting(scriptId: string, what = "Claude is still working on this script."): void {
   if (jobs.running(scriptId)) throw bad(what);
 }
@@ -644,7 +657,7 @@ export function routes(router: Router<App>): void {
     })
     .get("/api/writer/trello/{list}", (context) => answer(() => trello.cards(context.params.list ?? "", titles(context.app))))
     .post("/api/writer/scripts/{id}/build", async (context) => {
-      const given = await body<{ note?: string; kind?: Kind; review?: boolean }>(context);
+      const given = await body<{ note?: string; kind?: Kind; review?: boolean; files?: string[] }>(context);
       return answer(async () => {
         const script = readFor(dataOf(context.app), id(context));
         if (given.kind !== undefined) can.requireKind(script, given.kind);
@@ -653,21 +666,38 @@ export function routes(router: Router<App>): void {
         if (waits !== null) throw new Error(waits);
         const review = scripting.scriptFreshEyes(given.review);
         return startJob(context.app, id(context), { kind: "build", note, ...(given.kind ? { format: given.kind } : {}), review });
+        // Footage the note links or the message carries comes in first, and the first draft is written with it (links.ts).
+        const adding = footageOf(dataOf(context.app), script, note, given.files);
+        if (adding !== null) return startJob(context.app, id(context), { kind: "link", ...adding, build: true, request: note, focus: NO_FOCUS });
       });
     })
     .post("/api/writer/scripts/{id}/revise", async (context) => {
-      const given = await body<{ request?: string; focus?: Focus }>(context);
+      const given = await body<{ request?: string; focus?: Focus; files?: string[] }>(context);
       return answer(() => {
         const request = String(given.request ?? "").trim();
         if (request === "") throw new Error("Say what to change.");
         if ([...request].length > 8_000) throw new Error("Keep the request under 8,000 characters.");
         const focus = given.focus ?? NO_FOCUS;
-        // A video linked in the message comes into the script first, then the revision places it (links.ts).
-        const urls = readFor(dataOf(context.app), id(context)).commentary ? [] : links.videoLinks(request);
-        return startJob(context.app, id(context), urls.length > 0 ? { kind: "link", urls, request, focus } : { kind: "revise", request, focus });
+        // Footage linked in the message, or attached to it, comes into the script first, then the revision places it (links.ts).
+        const adding = footageOf(dataOf(context.app), readFor(dataOf(context.app), id(context)), request, given.files);
+        return startJob(context.app, id(context), adding !== null ? { kind: "link", ...adding, request, focus } : { kind: "revise", request, focus });
       });
     })
     .get("/api/writer/scripts/{id}/research", (context) =>
+    // A file attached to a message in the script's chat, streamed here until the message adds it to the footage (links.ts).
+    .post(
+      "/api/writer/scripts/{id}/upload",
+      (context) =>
+        answer(() => {
+          const data = dataOf(context.app);
+          const script = readFor(data, id(context));
+          if (script.commentary) throw new Error("A commentary takes its videos as sources: add them under Sources.");
+          const size = context.query.get("size");
+          if (size !== null && !/^\d+$/u.test(size)) throw new Error("That upload's size isn't a number.");
+          return links.receiveUpload(store.scriptDir(data, script.id), context.request, context.query.get("name") ?? "", size === null ? null : Number(size));
+        }),
+      { bodyLimit: null },
+    )
       answer(() => {
         const data = dataOf(context.app);
         checkFor(data, id(context));

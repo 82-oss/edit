@@ -293,3 +293,45 @@ registerTool("read_upload", ({ app, args, projectId }) => {
   if (found === undefined) throw new Error(`no uploaded file "${name}" (read_upload with no name lists them)`);
   return words(found.file!).then((said) => text(said.length > 60_000 ? `${said.slice(0, 60_000)}\n… (cut at 60,000 characters of ${said.length})` : said));
 });
+
+/** An upload that sends nothing for this long is abandoned. */
+const UPLOAD_IDLE_MS = 60_000;
+
+/** Writes the request's body to `path` (made new), stopping at the announced size; a minute without data gives up. */
+export async function receive(request: Request, path: string, size: number | null, limit: number): Promise<void> {
+  const file = await fs.promises.open(path, "wx");
+  try {
+    let received = 0;
+    const reader = request.body?.getReader() ?? null;
+    // Stop at the announced size rather than waiting for end-of-body: some
+    // proxies (HTTP/2 → HTTP/1.1) can lose it on large uploads.
+    while (reader !== null && (size === null || received < size)) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const idle = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("no data for a minute")), UPLOAD_IDLE_MS);
+      });
+      let next: Awaited<ReturnType<typeof reader.read>>;
+      try {
+        next = await Promise.race([reader.read(), idle]);
+      } catch (error) {
+        // Give the body up: a pending read otherwise holds the connection.
+        await reader.cancel().catch(() => undefined);
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+      if (next.done) break;
+      received += next.value.byteLength;
+      if (received > limit || (size !== null && received > size)) throw new Error("upload exceeds its size limit");
+      let written = 0;
+      while (written < next.value.byteLength) {
+        written += (await file.write(next.value, written)).bytesWritten;
+      }
+    }
+    if (size !== null && size !== received) throw new Error(`received ${received} of ${size} bytes`);
+    await file.sync();
+  } finally {
+    await file.close();
+  }
+  fs.renameSync(path, path.slice(0, -".uploading".length));
+}

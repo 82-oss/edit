@@ -436,7 +436,8 @@ export async function nameNewVoices(now: Script, dir: string, added: number, fal
     now.speakers = savedSpeakers;
     now.words.slice(prior).forEach((word, index) => {
       if (word.speaker == null) return;
-      const namespaced = `${tags[index]}:${word.speaker}`;
+      // A voice heard with its recording's mark already (links.ts tags each recording's) keeps it, once: the turns pass may leave it as it was.
+      const namespaced = word.speaker.startsWith(`${tags[index]}:`) ? word.speaker : `${tags[index]}:${word.speaker}`;
       const label = assigned[word.speaker];
       if (label !== undefined) now.speakers![namespaced] ??= label;
       word.speaker = namespaced;

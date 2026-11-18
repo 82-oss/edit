@@ -755,9 +755,6 @@ async function importDriveMedia(context: Context): Promise<Response> {
   return json({ rev, added, errors, project: context.app.store.get(id)?.project ?? null });
 }
 
-/** An upload that sends nothing for this long is abandoned. */
-const UPLOAD_IDLE_MS = 60_000;
-
 /** `dir/name`, or `dir/name-2.ext`, `-3`… if taken (made empty, so two uploads never pick one name). */
 export async function reserveUpload(dir: string, name: string): Promise<string> {
   const stem = fileStem(name) ?? "upload";
@@ -810,7 +807,7 @@ async function uploadMedia(context: Context): Promise<Response> {
   let keepTarget = false;
   try {
     try {
-      await receive(context.request, temporary, size, limit);
+      await uploads.receive(context.request, temporary, size, limit);
     } catch (error) {
       fs.rmSync(temporary, { force: true });
       throw bad(`upload of ${name} failed: ${error instanceof Error && "code" in error ? ioMessage(error) : diag.messageOf(error)}`);
@@ -853,45 +850,6 @@ async function uploadMedia(context: Context): Promise<Response> {
   } finally {
     if (!keepTarget) fs.rmSync(target, { force: true });
   }
-}
-
-/** Writes the request's body to `path` (made new), stopping at the announced size; a minute without data gives up. */
-async function receive(request: Request, path: string, size: number | null, limit: number): Promise<void> {
-  const file = await fs.promises.open(path, "wx");
-  try {
-    let received = 0;
-    const reader = request.body?.getReader() ?? null;
-    // Stop at the announced size rather than waiting for end-of-body: some
-    // proxies (HTTP/2 → HTTP/1.1) can lose it on large uploads.
-    while (reader !== null && (size === null || received < size)) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const idle = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("no data for a minute")), UPLOAD_IDLE_MS);
-      });
-      let next: Awaited<ReturnType<typeof reader.read>>;
-      try {
-        next = await Promise.race([reader.read(), idle]);
-      } catch (error) {
-        // Give the body up: a pending read otherwise holds the connection.
-        await reader.cancel().catch(() => undefined);
-        throw error;
-      } finally {
-        clearTimeout(timer);
-      }
-      if (next.done) break;
-      received += next.value.byteLength;
-      if (received > limit || (size !== null && received > size)) throw new Error("upload exceeds its size limit");
-      let written = 0;
-      while (written < next.value.byteLength) {
-        written += (await file.write(next.value, written)).bytesWritten;
-      }
-    }
-    if (size !== null && size !== received) throw new Error(`received ${received} of ${size} bytes`);
-    await file.sync();
-  } finally {
-    await file.close();
-  }
-  fs.renameSync(path, path.slice(0, -".uploading".length));
 }
 
 /** A file's version: its length and modification time (a remade preview is a new stamp). */

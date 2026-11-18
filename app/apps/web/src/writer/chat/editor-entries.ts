@@ -34,23 +34,27 @@ function assistantEntries(prefix: string, text: string, trace: ChatTurn["trace"]
   return entries;
 }
 
+/** The footage files a message carried, shown above its words as the editor's are (sound by its name, the rest as video). */
+const attachments = (names: readonly string[]): Pick<AgentEntry, "attachments"> =>
+  names.length === 0 ? {} : { attachments: names.map((name) => ({ name, kind: /\.(mp3|m4a|wav|aac|ogg|oga|opus|flac|wma|amr)$/iu.test(name) ? ("audio" as const) : ("video" as const), url: null })) };
+
 /**
  * Saved turns, the turn being written (`live`, with what was just asked
  * as `sent`), in the editor chat's shape. Reset asks are left out: the
  * caller shows them in the composer's tray, as the editor does.
  */
-export function scriptEntries(chat: ChatTurn[], live?: LiveTurn | null, sent?: string | null, since = Date.now()): AgentEntry[] {
+export function scriptEntries(chat: ChatTurn[], live?: LiveTurn | null, sent?: string | null, since = Date.now(), sentFiles: readonly string[] = []): AgentEntry[] {
   const entries: AgentEntry[] = [];
   chat.forEach((turn, index) => {
     if (turn.reset) return;
     if (turn.role === "producer") {
-      entries.push({ id: `saved-${index}-user`, kind: "user", text: turn.text, at: turn.at });
+      entries.push({ id: `saved-${index}-user`, kind: "user", text: turn.text, at: turn.at, ...attachments(turn.files ?? []) });
     } else {
       entries.push(...assistantEntries(`saved-${index}`, turn.text, turn.trace, turn.at, turn.failed, turn.workedMs));
     }
   });
   // Stamped when it was sent, not on every render, so its time and the thinking words keep counting.
-  if (sent) entries.push({ id: "live-user", kind: "user", text: sent, at: since });
+  if (sent) entries.push({ id: "live-user", kind: "user", text: sent, at: since, ...attachments(sentFiles) });
   if (live?.parts !== undefined) entries.push(...liveParts(live.parts, since));
   else if (live) entries.push(...assistantEntries("live", live.text, live.trace, since));
   return entries;

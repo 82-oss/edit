@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import { knownAs, labelOf, nameOf } from "../src/hearing_log.ts";
 import { bringIn, bytesSaid, linkOf } from "../src/links.ts";
 import * as progress from "../src/progress.ts";
-import { videoLinks } from "../src/writer/links.ts";
+import { footageLinks } from "../src/writer/links.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
 const ffmpeg = Bun.which("ffmpeg");
@@ -28,10 +28,13 @@ test("a pasted link is read for what it is", () => {
   expect(() => linkOf("ftp://example.com/a.mp4")).toThrow("http");
 });
 
-test("a revision's message names its video links, not its Docs or Edit's own", () => {
+test("a revision's message names its footage links, a Drive folder too, not its Docs or Edit's own", () => {
   const message = "Put this after the intro https://youtu.be/4mqGp1IgqEw and this clip (https://x.com/someone/status/123), see https://docs.google.com/document/d/1AbCdEfGhIjKlMnOp/edit and https://youtu.be/4mqGp1IgqEw again";
-  expect(videoLinks(message)).toEqual(["https://www.youtube.com/watch?v=4mqGp1IgqEw", "https://x.com/someone/status/123"]);
-  expect(videoLinks("Make the opening tighter")).toEqual([]);
+  expect(footageLinks(message)).toEqual(["https://www.youtube.com/watch?v=4mqGp1IgqEw", "https://x.com/someone/status/123"]);
+  expect(footageLinks("Make the opening tighter")).toEqual([]);
+  // A case folder is all its recordings (Sphe, Nov 18: "when I paste in my Google Drive link … we need to add this to the script").
+  expect(footageLinks("We need to add this somehow: https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOp.")).toEqual(["https://drive.google.com/drive/folders/1AbCdEfGhIjKlMnOp"]);
+  expect(footageLinks("and http://youtube.com/watch?v=4mqGp1IgqEw")).toEqual(["https://www.youtube.com/watch?v=4mqGp1IgqEw"]);
 });
 
 test("a file named by its content is heard under the name it came in with", () => {

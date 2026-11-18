@@ -31,7 +31,7 @@ export function runFor(app: App, id: string, work: jobs.Work): (job: jobs.Job) =
     case "revise":
       return (job) => scripting.reviseWith(data, id, work.request, work.request, work.focus, false, job);
     case "link":
-      return (job) => links.bringLinks(app, data, id, work.urls, work.request, work.focus, job);
+      return (job) => links.addFootage(app, data, id, work, job);
     case "reuse":
       return (job) => reuse.importReused(app, data, id, work.urls, job);
     case "find":

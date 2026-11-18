@@ -22,6 +22,14 @@ describe("scriptEntries", () => {
     expect(entries[2]).toMatchObject({ text: "Done. Shorter now." });
   });
 
+  it("shows the footage a message carried above its words, saved or just sent", () => {
+    const chat: ChatTurn[] = [{ role: "producer", text: "Add this after the intro", at: 1000, files: ["bodycam.mp4", "911 call.m4a"] }];
+    expect(scriptEntries(chat)[0]!.attachments).toEqual([{ name: "bodycam.mp4", kind: "video", url: null }, { name: "911 call.m4a", kind: "audio", url: null }]);
+    const live = scriptEntries([], null, "Add it", 2000, ["dashcam.mov"]);
+    expect(live[0]).toMatchObject({ id: "live-user", text: "Add it", attachments: [{ name: "dashcam.mov", kind: "video", url: null }] });
+    expect(scriptEntries([{ role: "producer", text: "Tighten", at: 1 }])[0]!.attachments).toBeUndefined();
+  });
+
   it("keeps a failed turn's tools beside its error", () => {
     const chat: ChatTurn[] = [
       {

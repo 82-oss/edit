@@ -27,9 +27,9 @@ function write(dir: string, turns: ChatTurn[]): void {
   writeAtomic(join(dir, "chat.json"), JSON.stringify(turns.slice(-KEPT), null, 2));
 }
 
-export function add(dir: string, role: ChatTurn["role"], text: string, costUsd: number | null = null, failed = false): void {
+export function add(dir: string, role: ChatTurn["role"], text: string, costUsd: number | null = null, failed = false, files: string[] = []): void {
   const turns = read(dir);
-  turns.push({ role, text: text.trim(), at: Date.now(), ...(costUsd === null ? {} : { costUsd }), ...(failed ? { failed } : {}), ...(role === "editor" ? worked(failed) : {}) });
+  turns.push({ role, text: text.trim(), at: Date.now(), ...(costUsd === null ? {} : { costUsd }), ...(failed ? { failed } : {}), ...(files.length > 0 ? { files } : {}), ...(role === "editor" ? worked(failed) : {}) });
   try {
     write(dir, turns);
   } catch {
@@ -41,12 +41,16 @@ export function add(dir: string, role: ChatTurn["role"], text: string, costUsd: 
  * The producer's request, said once: a job carried on after a restart
  * (`resumed`) said it already when it was cut off, so it isn't said again
  * when it's still the last thing in the chat (Nov 10: updates go through
- * while Claude writes, and its job starts again after).
+ * while Claude writes, and its job starts again after), or only what couldn't
+ * be done came after it (footage a message brought that couldn't be added,
+ * links.ts, before the revision it hands on to asks). An answer after it
+ * settled it: asked again, it's said again. `files`: the footage attached to it.
  */
-export function asked(dir: string, text: string, resumed = false): void {
-  const last = resumed ? read(dir).at(-1) : undefined;
-  if (last?.role === "producer" && last.text === text.trim()) return;
-  add(dir, "producer", text);
+export function asked(dir: string, text: string, resumed = false, files: string[] = []): void {
+  const turns = resumed ? read(dir) : [];
+  const at = turns.findLastIndex((turn) => turn.role === "producer");
+  if (at >= 0 && turns[at]!.text === text.trim() && turns.slice(at + 1).every((turn) => turn.failed === true)) return;
+  add(dir, "producer", text, null, false, files);
 }
 
 /** Claude's answer asking to start the script over, waiting for the producer; an earlier ask still waiting is declined. */

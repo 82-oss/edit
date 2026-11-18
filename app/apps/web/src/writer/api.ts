@@ -1,6 +1,7 @@
 import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Choice, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Snapshot, Summary, Version, VideoCheck, Footage, TrelloCard } from "./types";
 import type { CutSource } from "@edit/types/script_cut";
 import { byPerson } from "../lib/api";
+import { kindOf, postFile, type Accept, type ChatFile, type Uploader } from "../lib/chatFiles";
 
 /** Writer's own replies are JSON. Anything else came from in between (Vite
  * while the app restarts, a dropped tailnet hop), and says so plainly. A
@@ -82,12 +83,32 @@ export const saveClips = (id: string, revision: number, clips: Script["clips"]) 
 export const deleteScript = (id: string) =>
   http<void>(`/api/writer/scripts/${id}`, { method: "DELETE" });
 
-export const startBuild = (id: string, note: string, kind?: Kind) =>
-  http<BuildStatus>(`/api/writer/scripts/${id}/build`, json({ note, kind }));
+export const startBuild = (id: string, note: string, kind?: Kind, files?: string[]) =>
+  http<BuildStatus>(`/api/writer/scripts/${id}/build`, json({ note, kind, files }));
 
-/** Opus revises a built script with targeted edits; followed as a build is. */
-export const startRevision = (id: string, request: string, focus: Focus) =>
-  http<BuildStatus>(`/api/writer/scripts/${id}/revise`, json({ request, focus }));
+/** Opus revises a built script with targeted edits; followed as a build is. `files`: footage attached to the message (`footageUploader`), added first. */
+export const startRevision = (id: string, request: string, focus: Focus, files?: string[]) =>
+  http<BuildStatus>(`/api/writer/scripts/${id}/revise`, json({ request, focus, files }));
+
+/** A file attached to a message in the script's chat, streamed to the script until the message adds it to the footage. */
+export interface AttachedFootage {
+  upload: string;
+  name: string;
+}
+
+/** The chat composer's uploader for a script: its upload id, which the message names it by. */
+export function footageUploader(id: string): Uploader {
+  return async (file, progress, signal) => {
+    const query = new URLSearchParams({ name: file.name, size: String(file.size) });
+    return (await postFile(`/api/writer/scripts/${id}/upload?${query}`, file, progress, signal, { "content-type": "application/octet-stream" })) as AttachedFootage;
+  };
+}
+
+/** Pictures aren't footage; anything else is checked by the server (video and sound only). */
+export const footageOnly: Accept = (file) => (kindOf(file) === "image" ? "only video or sound can be added to the footage" : null);
+
+/** The upload ids of the files a message carries, as the server names them. */
+export const uploadsOf = (files: readonly ChatFile[]): string[] => files.flatMap((one) => (typeof (one.landed as AttachedFootage | undefined)?.upload === "string" ? [(one.landed as AttachedFootage).upload] : []));
 
 /** Brings a compilation's reused cases' videos into its footage for intro clips (all not yet in, by default); followed as a build is. */
 export const importReuses = (id: string, urls: string[] = []) =>

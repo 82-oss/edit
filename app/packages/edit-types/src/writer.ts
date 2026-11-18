@@ -41,6 +41,8 @@ export type Part = {
   originalKey?: string;
   /** Footage of a compilation's reused case, joined after its own videos for intro clips: the reuse link. Never a case. */
   reuse?: string;
+  /** A file attached to a chat message (its upload's id), added after the footage: never added twice when a restart carries the job on. */
+  upload?: string;
   /** A reused case's strongest short moments, picked once. */
   highlights?: Highlight[];
 };
@@ -504,6 +506,8 @@ export type TrelloCard = {
   labels: string[];
   activity: string | null;
   kind: "case" | "compilation" | "video";
+  /** The producer's: the footage files attached to the message, by name. */
+  files?: string[];
   footage: string | null;
   article: string | null;
   lines: string[];
