@@ -1151,7 +1151,9 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
     return sum + Math.max(recording.size - (isFile(path) ? fs.statSync(path).size : 0), 0);
   }, 0);
   // What a run cut short already made of the preview (pieces, stretches) is counted as there.
-  checkSpace(dir, (stream ? 0 : needed) + Math.max(previewRoom(wanted.map(([, recording]) => recording)) - bytesIn(join(dir, "pieces")), 0) + 1_000_000_000);
+  // Streamed, an AVI still comes down to be read here, one a lane at a time (`streamed.readHere`).
+  const readHere = wanted.map(([, recording]) => (media.isAvi(recording.name) ? recording.size : 0)).sort((a, b) => b - a).slice(0, DOWNLOADS).reduce((sum, size) => sum + size, 0);
+  checkSpace(dir, (stream ? readHere : needed) + Math.max(previewRoom(wanted.map(([, recording]) => recording)) - bytesIn(join(dir, "pieces")), 0) + 1_000_000_000);
   // Each recording's original in the cloud, by its place among the wanted (streamed).
   const inCloud: (string | null)[] = wanted.map(() => null);
   // Three recordings come down at once; the progress shown is their sum.
@@ -1174,11 +1176,29 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
           pulled[step] = Math.min(bytes, recording.size);
           report();
         });
-        const found = await media.streams(put.url).catch(() => null);
-        if (found === null || found.durationMs <= 0 || !(found.video || found.audio)) problem = "Couldn't be read as video or audio, so it was dropped.";
-        else {
-          inCloud[step] = put.url;
-          await encodePiece(dir, put.url, `${jobs.named(script.id, script.title)} · ${recording.name}`);
+        const label = `${jobs.named(script.id, script.title)} · ${recording.name}`;
+        // Looked at in the cloud; read here when that fails (never dropped for it), and an AVI's piece made here (`streamed.readHere`).
+        let found = await media.streams(put.url).catch((error: unknown) => {
+          diag.warn("writer", `${label}: didn't read from the cloud (${diag.messageOf(error)}), so it's read here`);
+          return null;
+        });
+        if (found !== null && !fits(found)) diag.warn("writer", `${label}: no length, picture or sound read from the cloud, so it's read here`);
+        let source = put.url;
+        if (!fits(found) || (media.isAvi(recording.name) && !(await previewFits(piecePath(dir, put.url), found.durationMs)))) {
+          source = await streamed.readHere(dir, put);
+          found = await media.streams(source).catch((error: unknown) => {
+            diag.warn("writer", `${label}: didn't read here either: ${diag.messageOf(error)}`);
+            return null;
+          });
+        }
+        try {
+          if (!fits(found)) problem = "Couldn't be read as video or audio, so it was dropped.";
+          else {
+            inCloud[step] = put.url;
+            await encodePiece(dir, source, label, put.url);
+          }
+        } finally {
+          if (source !== put.url) fs.rmSync(source, { force: true });
         }
       } catch (error) {
         problem = diag.scrub(diag.messageOf(error));
@@ -1206,7 +1226,7 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
     }
     if (problem === null && inCloud[step] === null) {
       const found = await media.streams(dest).catch(() => null);
-      if (found === null || found.durationMs <= 0 || !(found.video || found.audio)) {
+      if (!fits(found)) {
         fs.rmSync(dest, { force: true });
         problem = "Couldn't be read as video or audio, so it was dropped.";
       }
@@ -1235,16 +1255,22 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
   return { joined: await joinPreview(dir, script, items, "recordings") };
 }
 
+/** Footage with a length, and picture or sound. */
+const fits = (found: media.Streams | null): found is media.Streams => found !== null && found.durationMs > 0 && (found.video || found.audio);
+
 /** A recording's own 480p piece of the preview, encoded as soon as it lands, so the preview is copied together at the end. */
 const piecePath = (dir: string, source: string): string =>
   join(dir, "pieces", isUrl(source) ? new URL(source).pathname.split("/").slice(-2).map(decodeURIComponent).join("-").replace(/[^\w. -]+/g, "_") : (source.split("/").pop() ?? "piece.mp4"));
 
-/** Encodes one recording's piece as `joinPreview` would encode it in the whole; a piece that fails is only logged, and the preview is then encoded whole. */
-async function encodePiece(dir: string, source: string, label: string): Promise<void> {
+/**
+ * Encodes one recording's piece as `joinPreview` would encode it in the whole; a piece that fails is only logged, and the preview is then encoded whole.
+ * `named`: the footage it's the piece of, when it's read from elsewhere (a cloud original's copy here), so the join finds it.
+ */
+async function encodePiece(dir: string, source: string, label: string, named = source): Promise<void> {
   const found = await media.streams(source).catch(() => null);
   if (found === null) return;
   const held = await media.playableMs(source, found.durationMs);
-  const piece = piecePath(dir, source);
+  const piece = piecePath(dir, named);
   if (await previewFits(piece, held)) return;
   const began = Date.now();
   // A long recording's piece is made in stretches kept in a folder of its own (`media.joinStretched`), so

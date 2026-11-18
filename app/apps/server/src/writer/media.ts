@@ -28,9 +28,26 @@ export interface Streams {
   audio: boolean;
 }
 
-/** What FFmpeg needs before `-i` to read `path`: for a cloud original's address (streamed imports), HTTPS with the Mac's certificates and reconnects. */
-export function input(path: string): string[] {
-  return isUrl(path) ? [...urlArgs(path), "-protocol_whitelist", protocols(path)] : [];
+/**
+ * An AVI, by its name: FFmpeg reads one with both its streams in index order,
+ * and a DVR's (its sound filed seconds from its picture) it calls
+ * non-interleaved and jumps back and forth for every packet. From a link each
+ * jump is a request: ffprobe made 86 of them for 60 frames (29 s from here to
+ * R2), and on JJ's line beside two other downloads it passed the minute and
+ * three CCTV recordings were dropped as unreadable (Nov 18, nightly-86).
+ */
+export const isAvi = (path: string): boolean => /\.avi$/i.test(isUrl(path) ? new URL(path).pathname : path);
+
+/**
+ * What FFmpeg needs before `-i` to read `path`: for a cloud original's address
+ * (streamed imports), HTTPS with the Mac's certificates and reconnects. An AVI
+ * from a link is read in the order it's stored, one request (`-seekable 0`: no
+ * index, so no jumps; its length is in its header), unless the read starts
+ * further in (`seeking`), which needs the index.
+ */
+export function input(path: string, seeking = false): string[] {
+  if (!isUrl(path)) return [];
+  return [...urlArgs(path), ...(isAvi(path) && !seeking ? ["-seekable", "0"] : []), "-protocol_whitelist", protocols(path)];
 }
 
 /** A path fit for a log line: a cloud original's address is a credential. */
@@ -39,7 +56,17 @@ const shown = (path: string): string => (isUrl(path) ? "the footage in the cloud
 export const isRemote = (path: string): boolean => isUrl(path);
 
 export async function streams(path: string): Promise<Streams> {
-  const text = await run(ffprobe(), ["-v", "error", ...input(path), "-show_entries", "stream=codec_type", "-show_entries", "format=duration", "-of", "json", path], { timeoutMs: 60_000 });
+  // An AVI read in order whose header gives no length is read again by its index.
+  if (isUrl(path) && isAvi(path)) {
+    const found = await probe(path, false).catch(() => null);
+    if (found !== null && found.durationMs > 0) return found;
+    return probe(path, true);
+  }
+  return probe(path, false);
+}
+
+async function probe(path: string, seeking: boolean): Promise<Streams> {
+  const text = await run(ffprobe(), ["-v", "error", ...input(path, seeking), "-show_entries", "stream=codec_type", "-show_entries", "format=duration", "-of", "json", path], { timeoutMs: 60_000 });
   let value: { format?: { duration?: string | number }; streams?: { codec_type?: string }[] };
   try {
     value = JSON.parse(text) as typeof value;
@@ -239,9 +266,9 @@ const seconds = (ms: number) => (ms / 1000).toFixed(3);
 export function inputsOf(part: JoinPart, first: number, decode: string[] = [], fromMs = 0): { args: string[]; video: string; audio: string; count: number } {
   // Each opening is sought on its own (a stretch of a long recording), before its `-i`.
   const seek = fromMs > 0 ? ["-ss", seconds(fromMs)] : [];
-  const one = [...decode, ...seek, ...input(part.path), "-i", part.path];
+  const one = [...decode, ...seek, ...input(part.path, fromMs > 0), "-i", part.path];
   if (!isUrl(part.path) || !part.streams.video || !part.streams.audio) return { args: one, video: `${first}:v`, audio: `${first}:a`, count: 1 };
-  return { args: [...one, ...seek, ...input(part.path), "-i", part.path], video: `${first}:v`, audio: `${first + 1}:a`, count: 2 };
+  return { args: [...one, ...seek, ...input(part.path, fromMs > 0), "-i", part.path], video: `${first}:v`, audio: `${first + 1}:a`, count: 2 };
 }
 
 async function joinHardware(part: JoinPart, dest: string, onPercent: (percent: number) => void, signal?: AbortSignal): Promise<void> {

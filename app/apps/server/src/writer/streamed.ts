@@ -51,6 +51,22 @@ export async function drive(dir: string, recording: Recording, onBytes: (bytes: 
 }
 
 /**
+ * A cloud original read on this Mac instead of from its address: an AVI (a
+ * DVR's is read faster whole, once, than by the two openings a piece reads
+ * from a link, each jumping about the file: `media.isAvi`), or one whose
+ * address didn't read, so nothing readable is dropped for how the cloud
+ * serves it. Downloaded once into the script's scratch folder, picking up a
+ * partial a stopped run left; the caller removes it once its piece is made.
+ */
+export async function readHere(dir: string, put: InCloud, onBytes: (bytes: number) => void = () => {}): Promise<string> {
+  const into = join(dir, "scratch", "read-here");
+  fs.mkdirSync(into, { recursive: true });
+  const dest = join(into, put.key.split("/").slice(-2).join("-"));
+  await cloud.download(put.key, dest, (received) => onBytes(received));
+  return dest;
+}
+
+/**
  * A YouTube video's original put in the cloud: downloaded by yt-dlp's own
  * downloader into this script's scratch folder (by the same routes, resuming
  * a stopped try, its bytes retried piece by piece), uploaded, and deleted

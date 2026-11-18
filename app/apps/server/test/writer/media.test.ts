@@ -3,9 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join as joinPath } from "node:path";
 
-import { ffmpeg } from "../../src/tools.ts";
+import { ffmpeg, ffprobe } from "../../src/tools.ts";
 import * as encoder from "../../src/encoder.ts";
-import { append, encodeProxy, inputsOf, join, overview, PACE, peaks, streams } from "../../src/writer/media.ts";
+import { append, encodeProxy, input, inputsOf, join, overview, PACE, peaks, streams } from "../../src/writer/media.ts";
 
 function make(args: string[], out: string) {
   const done = Bun.spawnSync([ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...args, out]);
@@ -86,6 +86,64 @@ test("footage in the cloud is read twice, the picture from one and the sound fro
       expect(Math.abs(found.durationMs - 3_000 * parts.length)).toBeLessThan(300);
     }
     expect(requests).toBeGreaterThan(0);
+  } finally {
+    await server.stop(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}, 120_000);
+
+/** A file served as R2 serves one: any range asked for, each request counted. */
+function ranges(file: string) {
+  const bytes = fs.readFileSync(file);
+  const served = { requests: 0 };
+  const server = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      served.requests++;
+      const at = Number(/bytes=(\d+)-/.exec(request.headers.get("range") ?? "")?.[1] ?? -1);
+      if (at < 0) return new Response(bytes, { headers: { "accept-ranges": "bytes", "content-type": "video/x-msvideo" } });
+      return new Response(bytes.subarray(at), { status: 206, headers: { "accept-ranges": "bytes", "content-range": `bytes ${at}-${bytes.length - 1}/${bytes.length}`, "content-type": "video/x-msvideo" } });
+    },
+  });
+  return { server, served };
+}
+
+// Nov 18, nightly-86: three of a case's CCTV recordings (HEVC and A-law sound in AVI, from a DVR) were dropped
+// from JJ's Drive import as "Couldn't be read as video or audio". FFmpeg reads an AVI by its index and calls one
+// whose sound is filed seconds from its picture non-interleaved, jumping back and forth for every packet: from R2
+// a request a jump, 86 for ffprobe's look (29 s from mandalorian), past streams()'s minute on JJ's busy line.
+test("an AVI in the cloud whose sound is filed apart from its picture is read in one request, and its piece made from it", async () => {
+  const dir = fs.mkdtempSync(joinPath(os.tmpdir(), "writer-avi-"));
+  const file = joinPath(dir, "CH03-2022-03-12-08-57-59_09-35-17.avi");
+  // A DVR's: the sound 3 s behind the picture in the file, in 40 ms chunks, an index (idx1) at the end.
+  const plain = joinPath(dir, "plain.avi");
+  make(["-f", "lavfi", "-i", "testsrc=s=640x360:r=15:d=20", "-f", "lavfi", "-i", "sine=f=440:r=8000:d=20", "-c:v", "mpeg4", "-c:a", "pcm_alaw", "-ac", "1"], plain);
+  make(["-i", plain, "-itsoffset", "3", "-i", plain, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-af", "asetnsamples=n=320", "-c:a", "pcm_alaw"], file);
+  const { server, served } = ranges(file);
+  try {
+    const url = `http://127.0.0.1:${server.port}/edit/originals/drive/x/CH03-2022-03-12-08-57-59_09-35-17.avi?X-Amz-Signature=abc`;
+    // Read by its index, FFmpeg calls it non-interleaved (and jumps about it: from R2, a request a jump).
+    expect(Bun.spawnSync([ffprobe(), "-v", "info", "-hide_banner", file]).stderr.toString()).toContain("non-interleaved AVI");
+    const found = await streams(url);
+    expect(found).toMatchObject({ video: true, audio: true });
+    expect(Math.abs(found.durationMs - 20_000)).toBeLessThan(200);
+    expect(served.requests).toBe(1);
+    // Its piece from the link: each opening one read straight through.
+    served.requests = 0;
+    const out = joinPath(dir, "piece.mp4");
+    await join([{ path: url, streams: found }], out);
+    expect(served.requests).toBe(2);
+    const piece = await streams(out);
+    expect(piece.video && piece.audio).toBe(true);
+    expect(Math.abs(piece.durationMs - 20_000)).toBeLessThan(300);
+    // A-law's sound comes through, heard from the piece.
+    expect(Math.max(...(await peaks(out)).slice(10, 100))).toBeGreaterThan(0.05);
+    // Only an AVI from a link reads in order; a seek (a stretch) needs its index, and another link or a file here is as before.
+    expect(input(url)).toContain("-seekable");
+    expect(input(url, true)).not.toContain("-seekable");
+    expect(input(url.replace(".avi", ".mp4"))).not.toContain("-seekable");
+    expect(input(file)).toEqual([]);
+    expect(inputsOf({ path: url, streams: found }, 0, [], 320_000).args).not.toContain("-seekable");
   } finally {
     await server.stop(true);
     fs.rmSync(dir, { recursive: true, force: true });
