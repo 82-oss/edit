@@ -22,7 +22,9 @@
 //   files not yet in R2 (an upload pending or under way, media Edit made
 //   that hasn't gone up); else, unless it's done, opened here in the last 3
 //   days (or saved: an agent's turn with the editor closed). Everything of
-//   it stays.
+//   it stays, its export made ahead among it: until Nov 18 only the one made
+//   last on a Mac was kept, so a second project's took the first one's, and
+//   its share rendered all 117 chunks again (JJ's Mac, Nov 17).
 // - Idle: its derived copies go first when room is needed (exports made
 //   ahead, export chunks, pieces, excerpts, sound and scrub copies, smooth
 //   playback renders), then its proxies. Whole projects, the one worked on
@@ -81,8 +83,6 @@ const RECENT = 2 * DAY;
 const COPY_RECENT = 6 * 3600 * 1000;
 /** A Drive download (its original in the cloud) not read by an export for this long goes. */
 const DOWNLOADED = 3 * DAY;
-/** Exports made ahead (export_ahead.ts) kept: the one made last (one per Mac: each is about as big as the export). */
-const AHEAD_KEPT = 1;
 /** A project worked on here this lately is in work: all of it stays. */
 export const IN_WORK_MS = 3 * DAY;
 /** A project not worked on here for this long is let go as a done one is: its footage too, its originals once R2 has them. */
@@ -769,31 +769,6 @@ export function cleanCache(
       if (!entry.endsWith(".mp4")) continue;
       const path = join(reviewsDir, project, entry);
       if (age(path, now) >= DOWNLOADED) remove(path);
-    }
-  }
-  // Exports made ahead (export_ahead.ts), each about as big as the export: one
-  // a Mac, the one made last, while it's under three days old; the one being
-  // made is never touched (its `.json` comes only once it's done, so it's not listed).
-  {
-    const aheadDir = join(cache, "ahead");
-    const made = safeList(aheadDir)
-      .filter((name) => name.endsWith(".mp4.json"))
-      .map((name) => {
-        try {
-          return { path: join(aheadDir, name.slice(0, -".json".length)), at: fs.statSync(join(aheadDir, name)).mtimeMs };
-        } catch {
-          return null;
-        }
-      })
-      .filter((one): one is { path: string; at: number } => one !== null)
-      .sort((a, b) => b.at - a.at);
-    // The project whose export is being made again now: it copies its unchanged chunks out of the last one.
-    const making = makingAhead(app);
-    for (const [index, one] of made.entries()) {
-      if (index < AHEAD_KEPT && now - one.at < DOWNLOADED) continue;
-      if (making !== null && one.path === aheadFile(cache, making)) continue;
-      remove(one.path);
-      remove(`${one.path}.json`);
     }
   }
   // Research images no project links any more (research.ts's pool).

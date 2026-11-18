@@ -484,31 +484,38 @@ test("short of room, an excerpt an export is reading stays; it goes once let go"
   } finally { cleanup(); }
 });
 
-test("exports made ahead: one a Mac, the one made last, stays under three days old; older or more go, never the one being made again", () => {
+// JJ's Mac, Nov 17: "Cops Surprise Fellow Officer" was made ahead at 14:13, "Parents Had No Idea" at 14:59, and only the
+// one made last was kept: Cops' share at 15:24 found 0 of its 117 chunks and took 10 min 31 s.
+test("exports made ahead go by their project's state: every project in work keeps its own, an idle one's goes for room, a gone one's at once", async () => {
   const { app, store, cleanup } = fixtureHome("cache-ahead");
   try {
     const cache = store.cacheDir();
-    const day = 24 * 3600 * 1000;
-    const made = (id: string, at: number) => {
+    const hour = 3600 * 1000;
+    const made = (id: string) => {
+      // Made days ago (anything from the last hours stays whatever its project).
+      const at = (Date.now() - 72 * hour) / 1000;
       fs.mkdirSync(`${cache}/ahead`, { recursive: true });
       for (const path of [`${cache}/ahead/${id}.mp4`, `${cache}/ahead/${id}.mp4.json`]) {
-        fs.writeFileSync(path, "x");
-        fs.utimesSync(path, at / 1000, at / 1000);
+        fs.writeFileSync(path, "x".repeat(1000));
+        fs.utimesSync(path, at, at);
       }
+      return () => fs.existsSync(`${cache}/ahead/${id}.mp4`) && fs.existsSync(`${cache}/ahead/${id}.mp4.json`);
     };
-    const now = Date.now();
-    made("newest", now - 1000);
-    made("second", now - 2000);
-    made("third", now - 3000);
-    made("old", now - 4 * day);
-    made("remaking", now - 5 * day);
-    // Being made again: it copies its unchanged chunks out of its last one.
-    (app.exports as unknown as { aheadFor: () => string | null }).aheadFor = () => "remaking";
-    cleanCache(app, false);
-    const left = fs.readdirSync(`${cache}/ahead`).filter((name) => name.endsWith(".mp4")).sort();
-    expect(left).toEqual(["newest.mp4", "remaking.mp4"]);
-    expect(fs.existsSync(`${cache}/ahead/third.mp4.json`)).toBe(false);
+    const cops = await cloudProject(store, "cops", Date.now() - 2 * hour);
+    const parents = await cloudProject(store, "parents", Date.now() - hour);
+    const idle = await cloudProject(store, "idle", Date.now() - 5 * 24 * hour);
+    const copsAhead = made(cops.id);
+    const parentsAhead = made(parents.id);
+    const idleAhead = made(idle.id);
+    const goneAhead = made("deleted-project");
+    // Room enough: both in work keep theirs (the older one too), the idle one keeps its own, a deleted project's goes.
+    cleanCache(app, false, Date.now(), { freeBytes: 0, free: 1e12 });
+    expect([copsAhead(), parentsAhead(), idleAhead(), goneAhead()]).toEqual([true, true, true, false]);
+    // Short of room (over the hard floor): the idle one's goes; those in work stay.
+    cleanCache(app, false, Date.now(), { freeBytes: 9e12, free: 1e12 });
+    expect([copsAhead(), parentsAhead(), idleAhead()]).toEqual([true, true, false]);
   } finally {
+    forget(store.home);
     cleanup();
   }
 });

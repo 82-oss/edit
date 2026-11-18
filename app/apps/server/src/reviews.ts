@@ -136,8 +136,37 @@ interface State {
   notes: Record<string, Note>;
   /** Each project's last Share settings (not its range or chapters), for the share after a Ready for changes. */
   shareOptions?: Record<string, Partial<ExportOptions>>;
-  /** Each project's watermark from its last Share (a channel's picture id, channel_marks.ts), kept for the shares after it; absent, none. */
+  /** Each project's watermark from its last Share (a channel's picture id, channel_marks.ts), kept for the shares after it; "" none; absent, never shared (`nextWatermark`). */
   shareWatermark?: Record<string, string>;
+  /** A project of no channel's last Share's watermark, by its style (V1's kind of video: "bodycam"), for that kind's first share; "" none. */
+  styleWatermark?: Record<string, string>;
+}
+
+/**
+ * The watermark `project`'s next share or export carries unless the person
+ * picks another, as its dialog offers it and its export made ahead is made
+ * with (export_ahead.ts: made without one, all three of JJ's exports on Nov 17
+ * rendered every chunk again, 8–10 minutes each). Shared before: what it was
+ * shared with (a channel's project its channel's own, channels.watermarkFor),
+ * none when it went without one. Never shared: a channel's project its
+ * channel's own; one of no channel the one this person last shared its kind
+ * of video with. Undefined: none.
+ */
+export function nextWatermark(home: string, project: Pick<Project, "id" | "style" | "channel">, state: State = read(home)): string | undefined {
+  const kept = state.shareWatermark?.[project.id];
+  if (kept !== undefined) return kept === "" ? undefined : channels.watermarkFor(project, kept);
+  if (typeof project.channel === "string" && project.channel !== "") {
+    const channel = channels.channelOf(project);
+    return channel === null ? undefined : channels.markFor(channel);
+  }
+  const usual = state.styleWatermark?.[project.style];
+  return usual === undefined || usual === "" ? undefined : usual;
+}
+
+/** `nextWatermark` with a channel's project's channels read again first when they're older than 30 s (an export about to start). */
+async function nextWatermarkOf(home: string, project: Project): Promise<string | undefined> {
+  if (typeof project.channel === "string" && project.channel !== "") await channels.refresh();
+  return nextWatermark(home, project);
 }
 
 function empty(): State {
@@ -557,20 +586,19 @@ export async function exportAndShare(app: App, projectId: string, options: Parti
   // Remembered for the share after a Ready for changes: these settings, not this span or its chapters.
   // Every share is for YouTube, including one from Home that sends no options (Sphe, Nov 3).
   const { range: _range, chapters: _chapters, ...settings } = { ...options, preset: "youtube" as const };
-  // The watermark too (Sphe, Nov 2: a channel's logo on the final export): `null` takes it off, absent keeps the last one.
+  // The watermark too (Sphe, Nov 2: a channel's logo on the final export): `null` takes it off, absent keeps the last
+  // one (or, never shared, what `nextWatermark` gives); a project of no channel's is its kind of video's first one's too.
+  const live = app.store.get(projectId);
   update(home, (state) => {
     state.shareOptions = { ...state.shareOptions, [projectId]: settings };
-    if (watermark === null) {
-      const { [projectId]: _gone, ...rest } = state.shareWatermark ?? {};
-      state.shareWatermark = rest;
-    } else if (watermark !== undefined) {
-      state.shareWatermark = { ...state.shareWatermark, [projectId]: watermark };
-    }
+    if (watermark === undefined) return;
+    const picked = watermark ?? "";
+    state.shareWatermark = { ...state.shareWatermark, [projectId]: picked };
+    const project = live?.project;
+    if (project !== undefined && (typeof project.channel !== "string" || project.channel === "")) state.styleWatermark = { ...state.styleWatermark, [project.style]: picked };
   });
-  // A channel's project carries its channel's own logo, or none (channels.watermarkFor).
-  const live = app.store.get(projectId);
   const kept = read(home).shareWatermark?.[projectId];
-  const mark = live === null ? kept : await channels.watermarkOf(live.project, kept);
+  const mark = live === null ? (kept === "" ? undefined : kept) : await nextWatermarkOf(home, live.project);
   const from = fixes === undefined ? undefined : jobs.keyOf("fix", projectId);
   return startShare(app, projectId, { export: { options, ...(mark === undefined ? {} : { watermark: mark }) }, ...(replace ? { replace } : {}), ...(note === undefined ? {} : { note }), ...(fixes === undefined ? {} : { fixes }) }, from);
 }
@@ -2447,7 +2475,7 @@ export function view(app: App, projectId: string): unknown {
     sharing: now.line,
     share: now.share,
     // The channel whose watermark its shares carry (a picture id in the Watermarks folder), or none.
-    watermark: (live === null ? state.shareWatermark?.[projectId] : channels.watermarkFor(live.project, state.shareWatermark?.[projectId])) ?? null,
+    watermark: (live === null ? state.shareWatermark?.[projectId] || undefined : nextWatermark(app.store.home, live.project, state)) ?? null,
     review: shared === undefined ? null : { url: shared.url, versions: shared.versions.map((one) => ({ n: one.n, path: one.path })), approved: shared.approved ?? null },
     // What the next share makes (the dialog's button says it): the server's own rule, never worked out again on the page.
     next: shared === undefined ? null : nextShare(app.store.home, projectId),

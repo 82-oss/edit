@@ -199,7 +199,8 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
     if (sharing !== null) setOnly(false);
   }, [sharing]);
 
-  // The project's watermark as last shared, until it's changed here.
+  // The watermark its next share carries, until it's changed here: the server's (reviews.nextWatermark: as last shared;
+  // never shared, its channel's own or its kind's last), the one its export made ahead has, so Export copies every chunk.
   const savedMark = review?.watermark ?? null;
   useEffect(() => {
     if (markTouched || review === null) return;

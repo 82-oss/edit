@@ -4,10 +4,11 @@
 // encoder, while re-exporting an edit whose chunks were made took 2 min 47 s
 // (Cops Realize, Nov 6: 31 min 52 s the first time). So once a project's
 // edits rest, its export is made here in the background with the settings its
-// next share uses (reviews' `shareOptions`, the YouTube preset, its channel's
-// watermark) into `<cache>/ahead/<id>.mp4`; its manifest then names that
-// file, and the export or share someone asks for copies every chunk that
-// didn't change out of it and renders only the rest.
+// next share uses (reviews' `shareOptions`, the YouTube preset, and the
+// watermark the dialog will offer: `nextWatermark`, its channel's for a
+// channel's project even before its first share) into `<cache>/ahead/<id>.mp4`;
+// its manifest then names that file, and the export or share someone asks for
+// copies every chunk that didn't change out of it and renders only the rest.
 //
 // It takes the encoder only when nothing else wants it (exports.ts
 // `startAhead`: no export rendering or waiting, room for it now) and gives it
@@ -31,7 +32,7 @@ import { native } from "./native/index.ts";
 import * as playing from "./playing.ts";
 import { duration } from "./project.ts";
 import * as removalSchedule from "./removal_schedule.ts";
-import { read as reviewState } from "./reviews.ts";
+import { nextWatermark, read as reviewState } from "./reviews.ts";
 import * as seams from "./seams.ts";
 import { THE_MACHINE } from "./machine.ts";
 
@@ -40,12 +41,15 @@ export const hooks = { restMs: 2 * 60_000, onBattery: (): boolean => onBattery()
 
 type Ahead = Pick<ExportRegistry, "startAhead" | "aheadFor" | "stopAhead">;
 
-/** The settings `id`'s next share exports with, and its watermark (reviews.exportAndShare). */
-export function nextShare(home: string, id: string): { options: ExportOptions; watermark: string | undefined } {
+/**
+ * The settings `project`'s next share or export exports with (reviews.exportAndShare, the dialog's: the house YouTube
+ * export at the edit's own size and shape), and the watermark it carries (reviews.nextWatermark, the dialog's too).
+ */
+export function nextShare(home: string, project: Pick<Project, "id" | "style" | "channel">): { options: ExportOptions; watermark: string | undefined } {
   const state = reviewState(home);
-  const settings = state.shareOptions?.[id] ?? {};
+  const settings = state.shareOptions?.[project.id] ?? {};
   const options = { ...native().exportDefaults(), ...settings, preset: "youtube", range: null, chapters: [] } as ExportOptions;
-  return { options, watermark: state.shareWatermark?.[id] };
+  return { options, watermark: nextWatermark(home, project, state) };
 }
 
 /** Whether `project`'s export made ahead, or its last export, already shows it as `options` (with `watermark`) would. */
@@ -112,9 +116,12 @@ export function tryNow(app: App, id: string): string | null {
   if (effects.notReady(app.store, project) !== null) return "its effects still rendering";
   // It reads every original from R2: not while a play or footage someone waits on has the link (playing.ts).
   if (!playing.isIdle()) return "the link is the person's";
-  const { options, watermark: kept } = nextShare(app.store.home, id);
-  // As the share will (reviews.exportAndShare): a channel's project its channel's logo, or none.
-  const watermark = channels.watermarkFor(project, kept);
+  // A channel's project whose channel isn't read yet: its watermark isn't known, and one made without it is wasted.
+  if (typeof project.channel === "string" && project.channel !== "" && channels.channelOf(project) === null) {
+    void channels.refresh();
+    return "its channel not read yet";
+  }
+  const { options, watermark } = nextShare(app.store.home, project);
   if (upToDate(app.store.home, app.store.cacheDir(), project, options, watermark)) return "up to date";
   let other: string | null;
   try {
@@ -168,7 +175,7 @@ function changed(app: App, id: string): void {
       }
       if (why === null) diag.info("export", `${app.store.get(id)?.project.name ?? id}: making its export ahead, for the next export or share`);
       // Busy, smoothing or making another's: looked at again after another rest.
-      else if (why === `${THE_MACHINE} is busy` || why === "slowed shots still smoothing" || why === "its footage still being cleaned" || why === "its effects still rendering" || why === "making another's" || why === "an agent is working" || why === "the link is the person's") wait();
+      else if (why === `${THE_MACHINE} is busy` || why === "slowed shots still smoothing" || why === "its footage still being cleaned" || why === "its effects still rendering" || why === "making another's" || why === "an agent is working" || why === "the link is the person's" || why === "its channel not read yet") wait();
     }, hooks.restMs);
     later.unref?.();
     resting.set(id, later);
