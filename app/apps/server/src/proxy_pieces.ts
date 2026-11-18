@@ -580,8 +580,29 @@ export async function ensureVideo(context: Context, base: string, layout: Layout
     });
 }
 
+/** Who hears each picture piece land on this Mac, made here or fetched (native_preview.ts cuts the window's copy then). */
+const pictureListeners = new Set<(base: string, n: number) => void>();
+
+/** Hears each picture piece as it lands (`pictureLanded`); the function returned stops it. */
+export function onPicture(listener: (base: string, n: number) => void): () => void {
+  pictureListeners.add(listener);
+  return () => pictureListeners.delete(listener);
+}
+
+/** Picture piece `n` of `base` is on this Mac now: its listeners hear it. */
+export function pictureLanded(base: string, n: number): void {
+  for (const listener of pictureListeners) {
+    try {
+      listener(base, n);
+    } catch (error) {
+      diag.warn("pieces", `${base}: piece ${n} landed, and a listener failed: ${diag.messageOf(error)}`);
+    }
+  }
+}
+
 function makePicture(context: Context, base: string, layout: Layout, n: number, urgent: boolean): Promise<string> {
   const key = videoKey(base, n);
+  const had = isFile(context.local(key));
   return obtain(context, key, async () => {
     const expected = videoEntryOf(fs.readFileSync(await ensureHead(context, base)));
     if (urgent && background !== null && background.key !== key && !waitedOn.has(background.key)) background.stop.abort(new GaveWay());
@@ -597,6 +618,9 @@ function makePicture(context: Context, base: string, layout: Layout, n: number, 
     }, urgent);
     share(context, made.file, key);
     return made.file;
+  }).then((file) => {
+    if (!had) pictureLanded(base, n);
+    return file;
   });
 }
 

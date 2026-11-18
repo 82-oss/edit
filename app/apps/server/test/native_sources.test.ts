@@ -394,3 +394,50 @@ test("a cut claims what it writes while it runs, and lets it go when it fails", 
     cleanup();
   }
 });
+
+test("a piece the window plays is cut the moment its picture lands, and the page hears each cut at once, not at its next ask", async () => {
+  reset();
+  storage.resetRoom();
+  const free = spyOn(storage.diskHooks, "free").mockReturnValue(100e9);
+  const { store, base, cache, ask, cleanup } = await piecedProject("native-sources-landing");
+  const id = store.visible()[0]!.id;
+  // The clip plays on into piece 2 (1:05 to 2:05), which isn't here yet.
+  await store.update(id, "test", (p) => {
+    p.clips[0]!.duration = 1800;
+  });
+  const cuts: string[] = [];
+  const cutting = spyOn(hooks, "cut").mockImplementation(async (_head, _video, out) => {
+    cuts.push(out);
+    write(out, "cut");
+  });
+  const heard: unknown[] = [];
+  const stop = store.subscribe((event) => heard.push(event));
+  const told = () => heard.filter((event) => (event as { type: string }).type === "native-sources").length;
+  try {
+    expect((await ask()).coming).toBe(true);
+    // Piece 1 was here: cut, and the page told a moment after.
+    await Bun.sleep(450);
+    expect(cuts).toEqual([localPath(cache, `${base}/native2/1.mp4`)]);
+    expect(told()).toBe(1);
+    // Piece 2's picture lands (made or fetched behind the viewer): cut with no ask, and the page told again.
+    write(localPath(cache, `${base}/video/2.m4s`), "x".repeat(26));
+    pieces.pictureLanded(base, 2);
+    await Bun.sleep(450);
+    expect(cuts).toEqual([localPath(cache, `${base}/native2/1.mp4`), localPath(cache, `${base}/native2/2.mp4`)]);
+    expect(told()).toBe(2);
+    const answer = await ask();
+    expect(answer.excerpts.long!.map((one) => one.path)).toEqual([localPath(cache, `${base}/native2/1.mp4`), localPath(cache, `${base}/native2/2.mp4`)]);
+    expect(answer.coming).toBe(false);
+    // Another video's piece landing cuts nothing.
+    pieces.pictureLanded("edit/pieces/v3/drive/other", 2);
+    await Bun.sleep(10);
+    expect(cuts.length).toBe(2);
+  } finally {
+    stop();
+    cutting.mockRestore();
+    free.mockRestore();
+    storage.resetRoom();
+    reset();
+    cleanup();
+  }
+});

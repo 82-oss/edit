@@ -31,8 +31,9 @@
 //
 // Until then a picture is the server's loopback stream: a jump to one moves
 // its whole copy to the front (`local_previews.hurry`), and as each lands the
-// page hears it and asks again (it also asks every 15 s while one the timeline plays is, or a piece it plays isn't cut
-// yet: `coming`; never for media it doesn't play, or a pieced proxy, which stay streamed). And when the cache's cleaner takes a copy handed
+// page hears it and asks again, as it does when a piece it plays is cut (it also asks every 15 s while one the timeline
+// plays is, or a piece it plays isn't cut yet: `coming`; never for media it doesn't play, or a pieced proxy, which stay
+// streamed). And when the cache's cleaner takes a copy handed
 // out here (cache_cleanup.ts), the project's pages hear it (`native-sources`)
 // and ask again, rather than a jump failing on the missing file.
 
@@ -75,24 +76,51 @@ const LANDED_GAP_MS = 300;
 const telling = new Map<string, ReturnType<typeof setTimeout>>();
 let landedApp: App | null = null;
 onLanded((key) => {
-  const app = landedApp;
-  if (app === null) return;
-  for (const [id, keys] of streaming) {
-    if (!keys.delete(key) || telling.has(id)) continue;
-    telling.set(
-      id,
-      setTimeout(() => {
-        telling.delete(id);
-        app.store.emit({ type: "native-sources", id });
-      }, LANDED_GAP_MS),
-    );
-  }
+  for (const [id, keys] of streaming) if (keys.delete(key)) tell(id);
 });
+
+/** Project `id`'s pages hear that something the window reads landed (`native-sources`), at most once in `LANDED_GAP_MS`. */
+function tell(id: string): void {
+  const app = landedApp;
+  if (app === null || telling.has(id)) return;
+  telling.set(
+    id,
+    setTimeout(() => {
+      telling.delete(id);
+      app.store.emit({ type: "native-sources", id });
+    }, LANDED_GAP_MS),
+  );
+}
+
+type Cut = { context: pieces.Context; base: string; n: number; out: string; headBytes: number };
+
+/**
+ * The pieces each window plays and has no copy of yet, by the copy's path, with the projects asking: one is cut the
+ * moment its picture lands (`pieces.onPicture`), and those projects' pages hear it once it's cut, so the window reads
+ * it from then on. Until Nov 18 a piece landing waited for the page's next ask to be cut, and the cut for the one
+ * after that to be read (every 15 s each), so a minute about to play could still be the stream.
+ */
+const awaited = new Map<string, { cut: Cut; projects: Set<string> }>();
+pieces.onPicture((base, n) => {
+  for (const { cut } of awaited.values()) if (cut.base === base && cut.n === n) queueCut(cut);
+});
+
+function queueCut(cut: Cut): void {
+  if (!cutting.has(cut.out) && !cutsWaiting.some((one) => one.out === cut.out)) cutsWaiting.push(cut);
+  cutNext();
+}
+
+/** Piece copy `out` is cut: the projects waiting on it are told. */
+function cutLanded(out: string): void {
+  const waiting = awaited.get(out);
+  awaited.delete(out);
+  for (const id of waiting?.projects ?? []) tell(id);
+}
 
 /** Piece cuts at once, and the ones waiting or failed lately (tried again after `RETRY_MS`). */
 const CUTS_AT_ONCE = 2;
 const RETRY_MS = 10 * 60_000;
-const cutsWaiting: { context: pieces.Context; base: string; n: number; out: string; headBytes: number }[] = [];
+const cutsWaiting: Cut[] = [];
 const cutting = new Set<string>();
 const cutFailed = new Map<string, number>();
 /** Cuts left to the stream for want of room (said once each), looked at again at the page's next ask. */
@@ -272,7 +300,9 @@ function cutNext(): void {
     void pieces
       .pictureFiles(next.context, next.base, next.n)
       .then(({ head, video }) => hooks.cut(head, video, next.out))
+      .then(() => cutLanded(next.out))
       .catch((error: unknown) => {
+        awaited.delete(next.out);
         cutFailed.set(next.out, Date.now());
         diag.warn("preview", `a piece for the window (${next.out}) wasn't cut: ${diag.messageOf(error)}`);
       })
@@ -298,7 +328,7 @@ function cutNext(): void {
  * Only those: a cut piece is a second copy of its minute of the preview (a
  * two-hour interview's, 3.6 GB), and an edit plays a part of it.
  */
-async function pieceExcerpts(cache: string, base: string, played: [number, number][]): Promise<{ here: NativeExcerpt[]; coming: boolean }> {
+async function pieceExcerpts(id: string, cache: string, base: string, played: [number, number][]): Promise<{ here: NativeExcerpt[]; coming: boolean }> {
   const context = cloudMedia.piecesHere(cache);
   let layout: pieces.Layout;
   try {
@@ -330,8 +360,12 @@ async function pieceExcerpts(cache: string, base: string, played: [number, numbe
     const path = file(n);
     if (isFile(path) || Date.now() - (cutFailed.get(path) ?? 0) < RETRY_MS) continue;
     coming = true;
+    const cut: Cut = { context, base, n, out: path, headBytes: layout.head };
+    const waiting = awaited.get(path) ?? { cut, projects: new Set<string>() };
+    waiting.projects.add(id);
+    awaited.set(path, waiting);
     if (!pieces.pictureHere(context, base, n) || cutting.has(path) || cutsWaiting.some((one) => one.out === path)) continue;
-    cutsWaiting.push({ context, base, n, out: path, headBytes: layout.head });
+    cutsWaiting.push(cut);
   }
   cutNext();
   return { here: out, coming };
@@ -353,6 +387,7 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
   // behind this one, and a source it hasn't the media for yet is left out there (playback.ts `nativeSourcesFor`).
   const of: Record<string, string> = {};
   player.markNative(project.id);
+  landedApp = app;
   // A pieced proxy's pieces the timeline plays come down behind the viewer, in its order (one fill a project).
   cloudMedia.fillPieces(app, project.id);
   // Only what the timeline shows comes down (Cops Realize lists 169 own-file videos, 1.5 GB; its clips show 66, 0.7 GB),
@@ -396,7 +431,7 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
             streamed.add(key);
           }
           else if (shown.has(media.id)) {
-            const { here, coming } = await pieceExcerpts(cache, base, played.get(media.id) ?? []);
+            const { here, coming } = await pieceExcerpts(project.id, cache, base, played.get(media.id) ?? []);
             if (here.length > 0) excerpts[media.id] = here;
             if (coming) piecesComing = true;
           }
@@ -413,7 +448,6 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
   }
   const files = new Set<string>([...Object.values(sources), ...Object.values(sounds)].filter((source) => !source.startsWith("http")).concat(Object.values(excerpts).flatMap((list) => list.map((one) => one.path))));
   handed.set(project.id, files);
-  landedApp = app;
   if (streamed.size > 0) streaming.set(project.id, streamed);
   else streaming.delete(project.id);
   // Whether a file named here comes down or is cut yet: the page asks again in 15 s while one is (`coming`).
@@ -442,6 +476,7 @@ export function reset(): void {
   for (const timer of telling.values()) clearTimeout(timer);
   telling.clear();
   cutsWaiting.length = 0;
+  awaited.clear();
   cutting.clear();
   cutFailed.clear();
   cutShort.clear();
