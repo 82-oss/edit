@@ -307,11 +307,11 @@ export class Processor {
     // starting two unbounded extra decoders for every import.
     const slots = probe.kind === "image" ? imageSlots : backgroundSlots;
     // Only thumbnails and a waveform to make (a project opened: a cloud file's are made from its stream): they
-    // start once nothing plays here, file by file, never pulling the link and the CPU from a play someone watches
+    // start once nothing plays here and no footage is waited on (playing.ts), file by file, never pulling the link and the CPU from a play someone watches
     // (kenobi, Nov 17). A preview copy an import needs before it plays at all starts at once.
     const copying = probe.kind === "video" && !whole && this.status(source).proxy !== "ready";
     const start = (): Promise<void> => slots.with(() => this.process(source, probe, paths, whole));
-    void (copying || !playing.isPlaying() ? start() : playing.whenIdle().then(start))
+    void (copying || playing.isIdle() ? start() : playing.whenIdle().then(start))
       .catch((error: unknown) => {
         // A crash mid-way leaves no stage "working" (and the file can be processed again).
         const said = isBug(error) ? crashMessage(error) : diag.messageOf(error);

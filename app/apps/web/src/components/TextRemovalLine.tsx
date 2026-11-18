@@ -2,8 +2,8 @@
 // (their subtitles, labels, text) and taking it out of the picture
 // (text_removal.ts): what it'll do and its price, one button; how far a run
 // has got; or, plainly, why it can't (the Vmake account). Nothing at all when
-// there's nothing to say: a channel not taught to take theirs out, an agent's
-// turn under way, or it's done.
+// there's nothing to say: a channel not taught to take theirs out (its removal
+// lesson), an agent's turn under way, or it's done.
 
 import { useEffect, useState } from "react";
 
@@ -16,7 +16,8 @@ export function TextRemovalLine() {
   // Asked again as the edit changes (a re-cut shows other footage) and as the agent's turn ends.
   const clips = useEditor((state) => state.project?.clips.length ?? 0);
   const media = useEditor((state) => state.project?.media.length ?? 0);
-  const marked = useEditor((state) => state.project?.remove_burned === true);
+  // A channel's project: its lesson says what's taken out (the server answers nothing for an untaught channel).
+  const marked = useEditor((state) => typeof state.project?.channel === "string" && state.project.channel !== "");
   const [said, setSaid] = useState<TextRemoval | null>(null);
   const [busy, setBusy] = useState(false);
   const [tick, setTick] = useState(0);
@@ -40,7 +41,8 @@ export function TextRemovalLine() {
     const timer = setInterval(() => setTick((value) => value + 1), said?.running ? 3000 : 20000);
     return () => clearInterval(timer);
   }, [marked, said?.running]);
-  if (!marked || said === null || said.line === null) return null;
+  // Under way: the chat's waiting row says it (RemovalRow.tsx); this line keeps the account's trouble and the API's price.
+  if (!marked || said === null || said.line === null || (said.background ?? null) !== null) return null;
   const act = async () => {
     setBusy(true);
     try {

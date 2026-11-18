@@ -1,4 +1,5 @@
 import type { ExportSteps } from "@edit/types/export_steps";
+import type { FootageReady } from "@edit/types/footage_ready";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 
@@ -210,7 +211,20 @@ export interface TextRemoval {
   line: string | null;
   action: "remove" | "retry" | "sign_in" | null;
   running: { done: number; total: number } | null;
+  /** Under way in the background: the chat's waiting row (RemovalRow.tsx) says it, not the line at the top. */
+  background?: RemovalRun | null;
 }
+
+/** A removal under way (the server's removal_schedule.ts `backgroundOf`). */
+export interface RemovalRun {
+  label: string;
+  done: number;
+  total: number;
+  started_at: number;
+  /** The day's free Vmake files left, when few are (past them the plan's credits pay). */
+  free_left?: number;
+}
+
 
 export const api = {
   projects: () => request<{ projects: ProjectSummary[] }>("GET", "/api/projects"),
@@ -241,6 +255,8 @@ export const api = {
   /** Taking what re-uploaders burned into the footage out of its picture (text_removal.ts): the editor's one line. */
   textRemoval: (id: string) => request<TextRemoval>("GET", `/api/projects/${id}/text-removal`),
   removeText: (id: string, retry = false) => request<TextRemoval>("POST", `/api/projects/${id}/text-removal`, { retry }),
+  /** The chat's waiting row's Stop: nothing more is sent (cleaned pieces stay). */
+  stopRemoval: (id: string) => request<TextRemoval>("POST", `/api/projects/${id}/removal/stop`),
   /** Vmake's sign-in in this Mac's cloud browser: the live view to open. */
   vmakeSignIn: () => request<{ open: string }>("POST", "/api/text-removal/sign-in"),
   /** The footage the timeline plays that isn't on this machine and can't be fetched. */
@@ -316,6 +332,11 @@ export const api = {
    * can keep footage at all (`keeping` false: its disk is at Edit's floor, so a play waits for nothing).
    */
   playbackReady: (id: string) => request<{ ready: [number, number][]; keeping?: boolean }>("GET", `/api/projects/${id}/playback/ready`),
+  /**
+   * Whether the project's footage is here enough to play smoothly from the start, and how far its coming here has
+   * got (footage_ready.ts). `waiting`: its dialog is up, so the edit's first minutes come first.
+   */
+  footageReady: (id: string, waiting: boolean) => request<FootageReady>("GET", `/api/projects/${id}/footage/ready${waiting ? "?waiting=1" : ""}`),
   /** `frame`: the playhead, whose chunk is rendered first. */
   renderPlayback: (id: string, frame?: number) => request<PlaybackStatus>("POST", `/api/projects/${id}/playback`, frame === undefined ? undefined : { frame }),
   /** Reads a Google Doc script (on the server, as its public link) without importing it. */

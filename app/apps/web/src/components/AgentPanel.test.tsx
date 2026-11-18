@@ -45,6 +45,31 @@ describe("the editor's chat as a turn ends", () => {
     vi.unstubAllGlobals();
   });
 
+  it("a turn Edit started on a background event shows only the agent's work and answer, never as the person's message", async () => {
+    const { useAgent } = await import("../lib/agent");
+    const { useEditor } = await import("../lib/store");
+    const { AgentPanel } = await import("./AgentPanel");
+    useEditor.setState({ project: { id: "p1", clips: [], media: [], tracks: [], settings: { fps: 30 } } as never });
+    const entries = [
+      { id: "u0", kind: "user", text: "Cut the case", at: 1_000, updated: 1_000 },
+      { id: "a0", kind: "assistant", text: "Cut.", at: 1_001, updated: 1_001 },
+      { id: "u1", kind: "user", by: "edit", text: "(Edit, background) Their text and watermarks are out of the footage (24 pieces, 1 blurred).\n\nCleaned:\n- tape: watermark 0–30 s", at: 2_000, updated: 2_000 },
+      { id: "a1", kind: "assistant", text: "Their watermarks are out of all 23 pieces.", at: 2_001, updated: 2_001 },
+    ];
+    useAgent.setState({ project: "p1", loaded: true, running: false, entries: entries as never, status: { ready: true }, activityAt: Date.now() - 5_000 });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container, { onUncaughtError: (error) => errors.push(error) });
+    act(() => root.render(<AgentPanel />));
+    await act(async () => void (await new Promise((done) => setTimeout(done, 50))));
+    expect(container.textContent).not.toContain("(Edit, background)");
+    expect(container.textContent).not.toContain("out of the footage (24 pieces");
+    expect(container.textContent).toContain("Their watermarks are out of all 23 pieces.");
+    expect(container.querySelector('[data-quote="my earlier message"]')?.textContent).toBe("Cut the case");
+    expect(container.querySelectorAll('[data-quote="my earlier message"]').length).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
   it("takes a backlog of streamed words and the turn's end without React giving up (#185)", async () => {
     const { useAgent, applyAgentEvent } = await import("../lib/agent");
     const { useEditor } = await import("../lib/store");

@@ -92,6 +92,32 @@ export interface ScreenText {
   t: string;
 }
 
+/** One stretch of footage to take a watermark out of (edit-native's WatermarkPiece). */
+export interface WatermarkPiece {
+  source: string;
+  size: [number, number];
+  fps: number;
+  /** Source seconds [from, to): the strip's first frame is `from`. */
+  from: number;
+  to: number;
+  /** The channel's model (JSON text, from `watermarkLearn`). */
+  model: string;
+  /** Never touched (shares): the camera's stamp. */
+  keep: Box[];
+  /** The strip (an mp4: the restored box over its alpha). */
+  out: string;
+}
+
+/** What taking a watermark out of a piece did: the strip's box (shares), frames, frames with the mark, the share of its pixels from neighbouring frames, how much of the mark is still found (0 gone, 1 untouched), seconds it took. */
+export interface WatermarkRemoved {
+  region: Box;
+  frames: number;
+  marked: number;
+  filled: number;
+  left: number;
+  took: number;
+}
+
 export interface RenderRequest {
   project: ProjectInput;
   frames: number[];
@@ -270,6 +296,10 @@ export interface Native {
   /** The words in `region` of the frames at `times` (seconds; the file's own frames at `fps`), at the file's own size: a bodycam's clock (camera_clock.ts). Missing from an addon built before it (a dev server's). */
   screenTextAt?(source: string, size: [number, number], fps: number, region: Box, times: number[]): Promise<ScreenText[][]>; // A
   readonly SCREEN_TEXT_RATE: number;
+  /** A channel's see-through watermark learned from footage carrying it (watermark.rs `learn`): the model's JSON. Missing from an addon built before it. */
+  watermarkLearn?(source: string, size: [number, number], duration: number, hint: Box | null, avoid: Box[], onProgress: (progress: number) => void): Promise<string>; // A
+  /** A piece of footage's watermark taken out into a stacked strip at `piece.out` (watermark.rs `remove`); null when the mark isn't there. Missing from an addon built before it. */
+  watermarkRemove?(piece: WatermarkPiece, onProgress: (progress: number) => void): Promise<WatermarkRemoved | null>; // A
   censorIssues(project: ProjectInput, start: boolean): { issues: unknown[]; pending: string[] }; // S (+BG)
   censorWarm(path: string, read?: string | null): void; // BG
   /** Whether a person is watching a play here (playing.ts): background analysis's FFmpeg stops while one is. Missing from an addon built before it (a dev server's). */

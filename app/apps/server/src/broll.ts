@@ -1196,12 +1196,16 @@ export function remakeEffect(projectId: string, name: string, key: string, unrea
  * whose render failed or was cut short (Edit closed): never exported as a
  * still by mistake.
  */
+/** What else an export waits for before it starts, given the same limit (removal_schedule.ts: pieces of their text still being taken out). */
+export const readyWaits: ((app: App, projectId: string, limitMs: number) => Promise<void>)[] = [];
+
 export async function waitForMaps(app: App, projectId: string, limitMs: number): Promise<void> {
   // A coded effect (Edit V2) exports as its render, made from its code as it is: waited for here by every
   // export that can wait (the agent's, the button's, a share's, a retry's); exports.start refuses the edit it's
   // handed while one isn't (`exportReady`), so none goes out with a stand-in whichever way it came.
   const started = timing.now();
   await waitForEffectRenders(app, projectId, limitMs);
+  for (const wait of readyWaits) await wait(app, projectId, limitMs);
   // Each stand-in left without its footage is started again once, here,
   // rather than refused (Oct 21: three exports waited on agents to call
   // map_view again for maps that had stalled or run out of allowance).

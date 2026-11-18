@@ -29,8 +29,8 @@ import { EDIT_TEAM, teamOf } from "./update.ts";
 
 const SERVICE = "Edit (accounts.spheceo.com)";
 
-/** Another secret this home keeps beside the sign-in (Vmake's keys, subtitle_removal.ts): its own item, named for what it's for. */
-export type Item = "vmake" | "browser-use";
+/** Another secret this home keeps beside the sign-in (Vmake's keys, text_removal.ts): its own item, named for what it's for. */
+export type Item = "vmake";
 
 const serviceOf = (item?: Item) => (item === undefined ? SERVICE : `Edit (${item})`);
 const keyOf = (home: string, item?: Item) => (item === undefined ? account(home) : `${account(home)}:${item}`);

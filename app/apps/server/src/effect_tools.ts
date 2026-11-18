@@ -13,9 +13,14 @@ import * as effects from "./effects.ts";
 import * as looker from "./effect_looker.ts";
 import * as frameCompare from "./frame_compare.ts";
 import * as fonts from "./fonts.ts";
+import * as houseWords from "./house_words_pass.ts";
 import { handlerFor, image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
 import { fixed } from "./rust.ts";
 import * as tools from "./tools.ts";
+import * as removal from "./removal_lesson.ts";
+import * as removalSchedule from "./removal_schedule.ts";
+import * as textRemoval from "./text_removal.ts";
+import * as teachingConflicts from "./teaching_conflicts.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
 /** An effect's name from a call, in a project made the new way. */
@@ -220,6 +225,8 @@ async function lookAtEffect({ app, args, projectId }: ToolCall): Promise<Content
   if (look.errors.length > 0) lines.push(`ERRORS its page threw (fix these first):\n${look.errors.map((error) => `- ${error}`).join("\n")}`);
   if (readyLine(look) !== "") lines.push(readyLine(look));
   if (look.problems.length > 0) lines.push(`BREAKS THE EFFECT CONTRACT:\n${look.problems.map((problem) => `- ${problem}`).join("\n")}`);
+  const house = houseWords.effectLine(app.store, projectId, name);
+  if (house !== null) lines.push(house);
   const cost = costLine(look, fps);
   if (cost !== "") lines.push(cost);
   const render = effects.renderLine(app, projectId, name);
@@ -247,7 +254,8 @@ async function addEffect({ app, args, projectId }: ToolCall): Promise<Content[]>
   const name = named(app, projectId, args);
   const added = await effects.add(app, projectId, name);
   const fps = app.store.get(projectId)!.project.settings.fps;
-  return text(`${name} is media ${added.media}: ${fixed(added.duration, 2)} s (${Math.round(added.duration * fps)} frames). Place it like a video (add_clip or apply_edit_plan with media ${added.media}); the viewer plays its page live wherever its clip is, and a change to its code shows there at once. Edit's frames (render_frame, contact_sheet) show it once its render lands, a few seconds after its code stops changing.`);
+  const house = houseWords.effectLine(app.store, projectId, name);
+  return text(`${name} is media ${added.media}: ${fixed(added.duration, 2)} s (${Math.round(added.duration * fps)} frames). Place it like a video (add_clip or apply_edit_plan with media ${added.media}); the viewer plays its page live wherever its clip is, and a change to its code shows there at once. Edit's frames (render_frame, contact_sheet) show it once its render lands, a few seconds after its code stops changing.${house === null ? "" : `\n${house}`}`);
 }
 
 async function effectPicture({ app, args, projectId }: ToolCall): Promise<Content[]> {
@@ -486,13 +494,95 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
   const most = part ? SKILL_MOST : MEMORY_MOST;
   if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part's skill short: its rules, not their history" : "a line or two, in the person's words"}`);
+  // What it contradicts is said first, and kept only once the person says which holds (teaching_conflicts.ts).
+  const settled = typeof args.settled === "string" && args.settled.trim() !== "";
+  const clashes = settled ? [] : await teachingConflicts.conflicts(skill, args.text.trim(), v2cloud.memories(places));
+  if (clashes !== null && clashes.length > 0) throw new teachingConflicts.Clash(clashes);
   // A part keeps its note when it's saved somewhere else (a channel's own changed for its group).
   const key = v2cloud.ownKey("skill", where.place, skill);
-  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
+  const reason = settled ? `${args.reason.trim()} (settled against what was taught: ${String(args.settled).trim()})` : args.reason.trim();
+  const saved = await v2cloud.saveSkill(skill, args.text.trim(), reason, note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
   // Kept for the group while this channel has its own of that name: the channel's still wins here.
   const shadowed = places !== null && where.place !== places[0] && v2cloud.ownPlaceOf(before?.key ?? "") === places[0];
   v2cloud.forgetSkills();
-  return text(`Remembered as ${skill} (version ${saved.n}) in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}`);
+  return text(`Remembered as ${skill} (version ${saved.n}) in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}${clashes === null ? teachingConflicts.UNCHECKED : ""}`);
+}
+
+/**
+ * `teach_removal`: what this channel takes out of its footage's picture
+ * (removal_lesson.ts), kept as its `removal` lesson (its group's by default),
+ * with examples that only help. Each part
+ * given is set, the others stay as they were; examples are added (the same
+ * frame's replaced). A teacher's to do.
+ */
+async function teachRemoval({ app, args, projectId }: ToolCall): Promise<Content[]> {
+  named(app, projectId, { name: "-" });
+  cloudOn();
+  teacherOnly("Teaching what this channel takes out of its footage");
+  if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");
+  const places = await placeHere(app, projectId);
+  const where = keptIn(app, projectId, args.for);
+  const project = app.store.get(projectId)!.project;
+  const parts: Partial<Record<removal.Kind, boolean>> = {};
+  for (const kind of removal.KINDS) {
+    if (args[kind] === undefined) continue;
+    if (typeof args[kind] !== "boolean") throw new Error(`${kind} is true (take theirs out) or false (leave them)`);
+    parts[kind] = args[kind] as boolean;
+  }
+  // When each part runs: by itself as footage is cut, or only once someone asks (start_removal).
+  const when: Partial<Record<removal.Kind, removal.When>> = {};
+  const timing = args.when === undefined || args.when === null ? {} : (args.when as Record<string, unknown>);
+  if (typeof timing !== "object" || Array.isArray(timing)) throw new Error('when is {subtitles?, watermarks?, text?}, each "automatic" or "asked"');
+  for (const [kind, value] of Object.entries(timing)) {
+    if (!removal.KINDS.includes(kind as removal.Kind) || (value !== "automatic" && value !== "asked")) throw new Error(`when.${kind} is "automatic" (by itself after import) or "asked" (only when someone asks)`);
+    when[kind as removal.Kind] = value;
+  }
+  const given = Array.isArray(args.examples) ? (args.examples as Record<string, unknown>[]) : [];
+  if (given.length > 6) throw new Error("at most 6 examples at a time");
+  const examples: removal.Example[] = [];
+  for (const one of given) {
+    const kind = one.kind;
+    if (kind !== "stamp" && !removal.KINDS.includes(kind as removal.Kind)) throw new Error('an example\'s kind is "subtitles", "watermarks", "text" or "stamp"');
+    if (one.action !== "remove" && one.action !== "keep") throw new Error('an example\'s action is "remove" or "keep"');
+    const box = Array.isArray(one.box) && one.box.length === 4 && one.box.every((value) => typeof value === "number") ? (one.box as [number, number, number, number]) : undefined;
+    examples.push(
+      await textRemoval.takeExample(
+        app,
+        project,
+        project.channel!,
+        {
+          kind: kind as removal.Example["kind"],
+          action: one.action,
+          ...(typeof one.media === "string" ? { media: one.media } : {}),
+          ...(typeof one.at === "number" ? { at: one.at } : {}),
+          ...(typeof one.picture === "string" ? { picture: one.picture } : {}),
+          ...(box !== undefined ? { box } : {}),
+          ...(typeof one.text === "string" ? { text: one.text } : {}),
+          ...(typeof one.note === "string" ? { note: one.note } : {}),
+        },
+        [app.store.uploadsDir(projectId), app.store.cacheDir()],
+      ),
+    );
+  }
+  const before = v2cloud.skill(removal.SKILL, places);
+  const lesson = removal.changed(before === undefined ? null : removal.parse(before.text), parts, examples, args.clear_examples === true, when);
+  const key = v2cloud.ownKey("skill", where.place, removal.SKILL);
+  const saved = await v2cloud.saveSkill(removal.SKILL, removal.write(lesson), args.reason.trim(), removal.NOTE, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
+  // Kept for the group while this channel has its own: the channel's still wins here.
+  const shadowed = places !== null && where.place !== places[0] && v2cloud.ownPlaceOf(before?.key ?? "") === places[0];
+  v2cloud.forgetSkills();
+  // Started at once on this project's footage (its mark learned first when watermarks are taught).
+  void removalSchedule.ensure(app, projectId).catch(() => {});
+  const read = examples.map((one) => `${one.action} ${one.kind}${one.text ? ` "${one.text}"` : ""}${one.box ? ` at ${one.box.join(" ")}` : " (no box: say where on the picture, box, to place it)"}`);
+  return text(
+    `${removal.summary(lesson)} Kept as ${removal.SKILL} (version ${saved.n}) in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}.` +
+      (read.length > 0 ? ` Examples: ${read.join("; ")}.` : "") +
+      (removal.KINDS.some((kind) => lesson.remove[kind] && lesson.when[kind] === "automatic")
+        ? " Edit looks at every footage file itself as it's cut, in the background, and takes out what each one actually has (nothing where a file has none; their subtitles blurred until then); look at pieces as they come back with check_removal."
+        : "") +
+      (removal.KINDS.some((kind) => lesson.remove[kind] && lesson.when[kind] === "asked") ? " What runs only when asked waits until someone asks: then start_removal on what they point to." : "") +
+      (shadowed ? ` This channel's own ${removal.SKILL} still wins here: change that one (for: "channel") to change it for this channel.` : ""),
+  );
 }
 
 async function readSkill({ app, args, projectId }: ToolCall): Promise<Content[]> {
@@ -554,6 +644,7 @@ const TOOLS: [string, (call: ToolCall) => Promise<Content[]>][] = [
   ["save_to_library", saveToLibrary],
   ["archive_in_library", archiveInLibrary],
   ["remember", remember],
+  ["teach_removal", teachRemoval],
   ["read_skill", readSkill],
   ["make_sound", makeSound],
   ["effect_footage", effectFootage],

@@ -66,6 +66,9 @@ import { stableStringify } from "./stable.ts";
 import * as kinds from "./kinds.ts";
 import { isSubtitled, nowMs, shapeOf, validId, type CloudHook, type Store } from "./store.ts";
 import * as busy from "./busy.ts";
+import { RELEASE } from "./version.ts";
+import * as os from "node:os";
+import * as nodePath from "node:path";
 import { afterLost, type Attempt, bodyHash, displayName, holderFor, isOwnSave, keepsLock, TIMING } from "./sync_core.ts";
 
 export { afterLost, isOwnSave } from "./sync_core.ts";
@@ -132,7 +135,40 @@ export type Step =
 export type Permission = { kind: "allow" } | { kind: "refuse"; why: string } | { kind: "ask" };
 
 export function readOnly(holder: string): string {
+  if (holder === GUARDED) return "This Edit is a test build talking to the team's cloud, so the team's projects are read-only here.";
   return `${displayName(holder)} is editing this project, so it's read-only here until they close it (or you take over in the editor).`;
+}
+
+// ---------------------------------------------------------------------------
+// A test Edit and the team's projects
+//
+// Nov 17: a server built from main on kenobi, in a home of its own, opened
+// the team's Cops Found 3 Bodies against prod to test a dialog, took its lock
+// as any editor does, and pushed 16 revisions: six effects drawn again and
+// five swapped for clear stills nobody could see past. So a build that isn't
+// a release, or a release in a data folder that isn't `~/.edit`, talking to
+// the team's relay, opens the team's projects read-only: their lock is never
+// asked for (`acquire` answers as if it were held) and nothing is committed
+// over them (`push`). What it makes itself (a project the cloud doesn't have
+// yet, or last saved by this very holder) it may still edit: an agent's
+// hidden test projects. `EDIT_PROD_LOCKS=1` lets it, on purpose.
+
+/** Who a guarded Edit is told holds a team project. */
+export const GUARDED = "A test build of Edit";
+
+/** Whether this Edit keeps off the team's projects (see above); `env` and `release` for tests. */
+export function guardsTeamProjects(env: Record<string, string | undefined> = process.env, release = RELEASE): boolean {
+  if (env.EDIT_PROD_LOCKS === "1") return false;
+  if ((env.EDIT_RELAY_URL ?? relay.DEFAULT_RELAY) !== relay.DEFAULT_RELAY) return false;
+  const home = env.EDIT_HOME;
+  const testHome = home !== undefined && home !== "" && nodePath.resolve(home) !== nodePath.join(os.homedir(), ".edit");
+  return !release || testHome;
+}
+
+/** A team project's cloud copy, as a guarded Edit sees it: one it may not write (someone else's last save). */
+async function teamsProject(id: string, holder: string): Promise<boolean> {
+  const meta = await remote.get(id);
+  return meta !== null && meta.updatedBy !== holder;
 }
 
 /** Who holds the project, from a write refused with `readOnly`'s words; null for any other refusal. */
@@ -822,6 +858,8 @@ interface Meta {
   createdBy: Creator | null;
   /** What its commits keep beside the body (`summary`): its kind of video. */
   summary: unknown;
+  /** The holder whose save it is now (the computer it was last edited on), when Convex says. */
+  updatedBy?: string | null;
 }
 
 /** Convex's `createdBy` as a project's `created_by`; null when it isn't one. */
@@ -841,6 +879,7 @@ function withCreator(project: Project, meta: Meta): Project {
 
 export const remote = {
   async acquire(id: string, holder: string, force: boolean): Promise<Acquired> {
+    if (guardsTeamProjects() && (await teamsProject(id, holder))) return { heldBy: GUARDED };
     const answer = await cloud.convexCall("mutation", "edit:acquireLock", { projectId: id, holder, force }, QUICK);
     if (field(answer, "acquired") === true) {
       const token = field(answer, "token");
@@ -874,6 +913,7 @@ export const remote = {
       holder: liveHolder(field(answer, "lock")),
       createdBy: creatorOf(field(answer, "createdBy")),
       summary: field(answer, "summary"),
+      updatedBy: typeof field(answer, "updatedBy") === "string" ? (field(answer, "updatedBy") as string) : null,
     };
   },
 
@@ -891,6 +931,7 @@ export const remote = {
 
   /** Uploads `project` and commits it as the rev after `base`: the new rev. */
   async push(project: Project, base: number, token: string | null, holder: string, quick = QUICK, slow = SLOW): Promise<number> {
+    if (guardsTeamProjects() && (await teamsProject(project.id, holder))) throw ConvexFailure.function(readOnly(GUARDED), "locked", null);
     const body = JSON.stringify(project);
     const url = await cloud.convexCall("mutation", "edit:uploadUrl", {}, quick);
     if (typeof url !== "string") throw ConvexFailure.relay("uploadUrl gave no URL");
@@ -1209,8 +1250,9 @@ async function pull(app: App, cloudProjects: Cloud, id: string): Promise<void> {
     entry.wantPull = false;
   });
   let fetched: [Project, number] | null;
+  let meta: Meta | null = null;
   try {
-    const meta = await remote.get(id);
+    meta = await remote.get(id);
     if (meta === null) {
       fetched = null;
     } else {
@@ -1298,7 +1340,7 @@ async function ownSave(app: App, cloudProjects: Cloud, id: string): Promise<bool
     if (!isOwnSave(attempt, { rev: meta.rev, bodyHash: bodyHash(body) })) return false;
     const live = app.store.get(id);
     // Unchanged since that push: saved; changed since: pushed again on top of it.
-    const still = live !== null && bodyHash(JSON.stringify(live.project)) === attempt.hash;
+    const still = live !== null && bodyHash(JSON.stringify(hooks.outgoing(app, id, live.project))) === attempt.hash;
     cloudProjects.with(id, (entry) => {
       entry.saved.rev = meta.rev;
       entry.saved.dirty = !still;
@@ -1316,10 +1358,12 @@ async function ownSave(app: App, cloudProjects: Cloud, id: string): Promise<bool
 }
 
 /** Told when someone else takes over a project this machine held (the agent stops its turn there: agent.ts). */
-export const hooks: { tookOver: (app: App, id: string, holder: string) => void; held: (id: string) => void } = {
+export const hooks: { tookOver: (app: App, id: string, holder: string) => void; held: (id: string) => void; outgoing: (app: App, id: string, project: Project) => Project } = {
   tookOver: (app, id, holder) => (app.agents as { lockLost?: (project: string, holder: string) => void } | undefined)?.lockLost?.(id, displayName(holder)),
   /** This machine took the project's lock: what only the computer editing it does may go now (effects.ts renders). */
   held: () => {},
+  /** The project as the cloud is sent it (effects.ts `forCloud`: a render's clear still is this computer's alone). */
+  outgoing: (_app, _id, project) => project,
 };
 
 /** Someone else took over a project held here: the editor and the agent panel hear it at once, and a turn running on it stops. */
@@ -1363,10 +1407,11 @@ async function push(app: App, cloudProjects: Cloud, id: string): Promise<void> {
   const [base, token, edits] = state;
   const started = performance.now();
   let rev: number;
+  const sent = hooks.outgoing(app, id, live.project);
   // What's being sent, written down before it goes: an answer lost (a timeout, Edit quitting) is known as ours later (`ownSave`).
-  cloudProjects.attempting(id, base, JSON.stringify(live.project));
+  cloudProjects.attempting(id, base, JSON.stringify(sent));
   try {
-    rev = await remote.push(live.project, base, token, cloudProjects.holder());
+    rev = await remote.push(sent, base, token, cloudProjects.holder());
   } catch (error) {
     return failure(app, cloudProjects, id, error);
   }
@@ -1537,8 +1582,9 @@ async function download(app: App, cloudProjects: Cloud, id: string): Promise<voi
   if (!validId(id)) throw new Error("no such project");
   if (!cloudProjects.projects.has(id)) cloudProjects.projects.set(id, new Entry({ rev: 0, dirty: false }));
   let fetched: [Project, number] | null;
+  let meta: Meta | null = null;
   try {
-    const meta = await remote.get(id);
+    meta = await remote.get(id);
     // Not brought here for someone who can't work on its kind of video.
     if (meta !== null && !kinds.mayWork(cloudShape(meta.summary))) {
       cloudProjects.forget(id);
@@ -1555,6 +1601,7 @@ async function download(app: App, cloudProjects: Cloud, id: string): Promise<voi
     throw new Error("no such project");
   }
   const [project, rev] = fetched;
+  madeOnKnown.set(id, madeOnName(meta?.updatedBy ?? null));
   cloudProjects.take(id, project, rev);
   diag.info("cloud", `${id} downloaded from the cloud (rev ${rev})`);
   // The editor opens now; the footage follows in the background, and the research another Mac did.
@@ -1568,6 +1615,37 @@ async function download(app: App, cloudProjects: Cloud, id: string): Promise<voi
   void chatSync.pull(app.store, id, (app.agents as { chatLoaded?: (project: string) => boolean }).chatLoaded?.(id) ?? false).catch((error: unknown) => {
     diag.warn("cloud", `fetching ${id}'s chat: ${diag.messageOf(error)}`);
   });
+}
+
+/** Whose Mac each project was last edited on, by id, as people see it (null: not said). */
+const madeOnKnown = new Map<string, string | null>();
+
+/** "Lauana's MacBook Pro#3f2a" → "Lauana's Mac"; a computer named otherwise as it is. */
+export function madeOnName(holder: string | null): string | null {
+  if (holder === null) return null;
+  const name = displayName(holder).trim();
+  if (name === "") return null;
+  const owner = /^(.+?)['’]s\b/.exec(name);
+  return owner === null ? name : `${owner[1]}'s Mac`;
+}
+
+/**
+ * The computer project `id` was last edited on (footage_ready.ts: "This edit was made on Lauana's Mac"): said by
+ * the cloud when it was downloaded, else asked once in the background (null until it answers); null when it's
+ * this one or nobody says.
+ */
+export function madeOn(app: App, id: string): string | null {
+  const cloudProjects = cloudOf(app);
+  const mine = cloudProjects === null ? null : madeOnName(cloudProjects.holder());
+  const known = madeOnKnown.get(id);
+  if (known !== undefined) return known === mine ? null : known;
+  if (cloudProjects === null || !cloudProjects.on()) return null;
+  madeOnKnown.set(id, null);
+  void remote
+    .get(id)
+    .then((meta) => madeOnKnown.set(id, madeOnName(meta?.updatedBy ?? null)))
+    .catch(() => madeOnKnown.delete(id));
+  return null;
 }
 
 /** Takes the lock from whoever has it and shows their latest version. */
@@ -1735,9 +1813,10 @@ export async function shutdown(): Promise<void> {
       const live = app.store.get(id);
       if (live !== null) {
         const edits = cloudProjects.with(id, (entry) => entry.edits) ?? 0;
-        cloudProjects.attempting(id, base, JSON.stringify(live.project));
+        const sent = hooks.outgoing(app, id, live.project);
+        cloudProjects.attempting(id, base, JSON.stringify(sent));
         try {
-          const rev = await remote.push(live.project, base, token, holder, call, call);
+          const rev = await remote.push(sent, base, token, holder, call, call);
           cloudProjects.with(id, (entry) => {
             entry.pushed(rev, edits);
             delete entry.saved.attempt;

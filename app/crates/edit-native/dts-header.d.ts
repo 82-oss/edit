@@ -22,3 +22,6 @@ export type Box = [number, number, number, number];
 /** A piece of text on screen: its box (as a face's) and what it says (screen_text.rs). */
 export type ScreenText = { b: Box; t: string };
 
+/** What taking a watermark out of a piece did (watermark.rs `Removed`): the strip's box (shares), its frames and those with the mark, the share of the mark's pixels from neighbouring frames, how much of the mark is still found (0 gone, 1 untouched), seconds it took. */
+export type WatermarkRemoved = { region: Box; frames: number; marked: number; filled: number; left: number; took: number };
+

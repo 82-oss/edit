@@ -1,5 +1,6 @@
 // Footage with another channel's subtitles taken out of its picture
-// (subtitle_removal.ts): the cleaned strip of each stretch is a media of its
+// (text_removal.ts), or their see-through watermark (watermark_removal.ts,
+// laid under a text strip of the same frames): the cleaned strip of each stretch is a media of its
 // own (`Media::cleans`: which footage, which of its seconds, which box of its
 // picture), stacked (see-through outside a feathered box round the
 // subtitles' band), and laid here, on every save, as a clip over each clip of
@@ -17,8 +18,9 @@
 import type { Clip, Keyframe, Media, Project, Track, VideoClip } from "./model.ts";
 import { clipEnd, fps as fpsOf, freshId, sample, trackOf } from "./project.ts";
 
-/** Every overlay laid here is named so, its footage clip's id after it. */
+/** Every overlay laid here is named so, its footage clip's id after it (a watermark's strips: `WATERMARK_NAME`). */
 export const NAME = "Subtitles removed";
+export const WATERMARK_NAME = "Watermark removed";
 /** burned_subtitles.ts's covers (`COVER`): kept here so the store needn't load it. */
 const COVER = "Burned-in cover";
 
@@ -28,12 +30,15 @@ export interface Cleans {
   from: number;
   to: number;
   box: [number, number, number, number];
+  /** What it took out: their text (the default) or their see-through watermark (watermark_removal.ts). */
+  what?: "text" | "watermark";
 }
 
 type Strip = Media & { cleans: Cleans };
 
 const isStrip = (media: Media): media is Strip => (media as { cleans?: Cleans | null }).cleans != null;
-export const isOverlay = (clip: Clip): boolean => clip.type === "video" && (clip.name ?? "").startsWith(`${NAME} · `);
+export const isOverlay = (clip: Clip): boolean => clip.type === "video" && ((clip.name ?? "").startsWith(`${NAME} · `) || (clip.name ?? "").startsWith(`${WATERMARK_NAME} · `));
+const isWatermark = (strip: Strip): boolean => strip.cleans.what === "watermark";
 const ownerOf = (name: string | undefined): string | null => {
   const at = (name ?? "").lastIndexOf(" · ");
   return at < 0 ? null : name!.slice(at + 3);
@@ -113,11 +118,14 @@ function wanted(project: Project): Wanted[] {
   }
   if (strips.size === 0) return [];
   const out: Wanted[] = [];
+  // Their text's strips first, then their watermark's: laid in that order, a watermark strip over the same frames
+  // gets the lane under the text strip's (laneFor), so where both cleaned the text strip's picture shows.
+  for (const kind of ["text", "watermark"] as const)
   for (const clip of project.clips) {
     if (clip.type !== "video" || isOverlay(clip) || trackOf(project, clip.track)?.hidden === true) continue;
-    const mine = strips.get(clip.media);
+    const mine = strips.get(clip.media)?.filter((strip) => (kind === "watermark") === isWatermark(strip));
     const footage = mine === undefined ? undefined : project.media.find((one) => one.id === clip.media);
-    if (mine === undefined || footage === undefined) continue;
+    if (mine === undefined || mine.length === 0 || footage === undefined) continue;
     const taken: [number, number][] = [];
     for (const strip of [...mine].sort((a, b) => a.cleans.from - b.cleans.from || b.cleans.to - a.cleans.to)) {
       const span = covered(project, clip, strip);
@@ -133,7 +141,7 @@ function wanted(project: Project): Wanted[] {
           start: a,
           duration: b - a,
           color: clip.color,
-          name: `${NAME} · ${clip.id}`,
+          name: `${kind === "watermark" ? WATERMARK_NAME : NAME} · ${clip.id}`,
           parent: clip.id,
           fade_in: a === clip.start ? clip.fade_in : 0,
           fade_out: b === clipEnd(clip) ? clip.fade_out : 0,
@@ -169,10 +177,12 @@ const keyOf = (clip: Wanted | VideoClip): string => {
   return JSON.stringify(rounded([one.start, one.duration, one.parent, one.media, one.source_in, one.speed, [x, y, scale, rotation ?? 0], one.opacity, one.crop ?? null, one.blend ?? "normal", one.fade_in, one.fade_out, keys]));
 };
 
-/** Whether `lane` is directly above `owner`'s track and holds only overlays. */
+/** Whether `lane` is above `owner`'s track with only overlay lanes between (a watermark's under a text strip's). */
 function laneAbove(project: Project, owner: string, lane: string): boolean {
   const at = project.tracks.findIndex((track) => track.id === owner);
-  return at >= 0 && project.tracks[at + 1]?.id === lane;
+  const there = project.tracks.findIndex((track) => track.id === lane);
+  if (at < 0 || there <= at) return false;
+  return project.tracks.slice(at + 1, there).every((track) => project.clips.some((clip) => clip.track === track.id) && project.clips.filter((clip) => clip.track === track.id).every(isOverlay));
 }
 
 /** The overlays' lane just above `track`, free over [start, end): an overlay lane there, else a new one. */
@@ -196,7 +206,10 @@ function laneFor(project: Project, track: string, start: number, end: number): s
  */
 export function strippedFrames(project: Project): Map<string, [number, number][]> {
   const out = new Map<string, [number, number][]>();
-  for (const one of wanted(project)) out.set(one.parent!, [...(out.get(one.parent!) ?? []), [one.start, one.start + one.duration]]);
+  for (const one of wanted(project)) {
+    if (!(one.name ?? "").startsWith(`${NAME} · `)) continue;
+    out.set(one.parent!, [...(out.get(one.parent!) ?? []), [one.start, one.start + one.duration]]);
+  }
   return out;
 }
 
@@ -268,7 +281,11 @@ export function enforceCleanStrips(_before: Project | null, project: Project): v
       project.clips.push(clip);
     }
   }
+  // Only their text's strips end the blur over their subtitles (a watermark's leaves the subtitles there).
   const stripped = new Map<string, [number, number][]>();
-  for (const one of want) stripped.set(one.parent!, [...(stripped.get(one.parent!) ?? []), [one.start, one.start + one.duration]]);
+  for (const one of want) {
+    if (!(one.name ?? "").startsWith(`${NAME} · `)) continue;
+    stripped.set(one.parent!, [...(stripped.get(one.parent!) ?? []), [one.start, one.start + one.duration]]);
+  }
   if (stripped.size > 0) trimCovers(project, stripped);
 }

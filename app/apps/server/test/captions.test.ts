@@ -273,6 +273,18 @@ test("a_rerun_keeps_who_is_who_and_their_colour", () => {
   expect(kept.size).toBe(1);
 });
 
+test("the in-video look: white Gabarito with a soft shadow falling down, no box, label or glow", () => {
+  const style = subtitleStyle(1920, 1080, "in_video");
+  expect(style).toMatchObject({ font: "Gabarito", weight: 700, size: 56, color: [1, 1, 1, 1], max_width: 1536, glow: { enabled: false } });
+  expect(style.background ?? null).toBeNull();
+  expect(style.label ?? null).toBeNull();
+  expect(style.shadow).toMatchObject({ angle: 180, opacity: f32(0.85), distance: 5, blur: 9 });
+  // At 4K, as big against the frame.
+  expect(subtitleStyle(3840, 2160, "in_video").size).toBe(112);
+  // Any other look is the house's.
+  expect(subtitleStyle(1920, 1080, "house")).toEqual(subtitleStyle(1920, 1080));
+});
+
 test("edit_subtitles_use_first_names_without_glow", () => {
   expect(subtitleStyle(1920, 1080).glow.enabled).toBe(false);
   expect(subtitleName("Jane Doe (Mother)")).toBe("Jane");
@@ -439,6 +451,27 @@ test("caption_speakers asks Claude who speaks and lays the intro's captions out 
     expect(JSON.parse(placed.text)).toMatchObject({ captions: 2, under_the_speakers_face: 0, bottom_middle: 2 });
     expect((await call(app, "place_captions", { project_id: id, under: { x: [1] } })).text).toBe("under.x: a point is [x, y]");
     expect((await call(app, "place_captions", { project_id: id, under: { x: 3 } })).text).toBe('under.x: "bottom", "auto" or [x, y]');
+    // The in-video look (Sphe, Nov 18): Gabarito in each speaker's colour, no box, kept on the project for later runs.
+    expect((await call(app, "caption_speakers", { project_id: id, look: "boxed" })).text).toContain('look is "house"');
+    const colourOf = (who: string) => store.get(id)!.project.clips.find((clip): clip is TextClip => clip.type === "text" && clip.name === `Caption · ${who}`)!.style.color;
+    const officer = colourOf("Officer");
+    process.env.EDIT_FFMPEG = `${bin}/ffmpeg`;
+    (await import("../src/tools.ts")).forget();
+    try {
+      reply = await call(app, "caption_speakers", { project_id: id, start: 0, end: 10, look: "in_video" });
+    } finally {
+      if (before === undefined) delete process.env.EDIT_FFMPEG;
+      else process.env.EDIT_FFMPEG = before;
+      (await import("../src/tools.ts")).forget();
+    }
+    expect(reply.isError).toBe(false);
+    expect(store.get(id)!.project.subtitle_look).toBe("in_video");
+    const inVideo = store.get(id)!.project.clips.filter((clip): clip is TextClip => clip.type === "text" && (clip.name ?? "").startsWith("Caption"));
+    expect(inVideo).toHaveLength(2);
+    expect(inVideo[0]!.style).toMatchObject({ font: "Gabarito", weight: 700, size: 56, glow: { enabled: false } });
+    expect(inVideo[0]!.style.background ?? null).toBeNull();
+    expect(inVideo[0]!.style.label ?? null).toBeNull();
+    expect(inVideo[0]!.style.color).toEqual(officer);
   } finally {
     standIn.post = was;
     cleanup();

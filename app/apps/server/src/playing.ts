@@ -57,13 +57,81 @@ function changed(): void {
   diag.info("playback", now ? "a play started: background work gives way" : "the play stopped: background work carries on");
   settleBelow();
   for (const listener of listeners) listener(now);
+  idleChanged();
+}
+
+// ---------------------------------------------------------------------------
+// The link is the person's
+//
+// While someone waits on a project's footage to open it (footage_ready.ts: its dialog, then its corner card until
+// the footage is here or they press Open now), the link is theirs as much as during a play: on kenobi (Nov 17, 1
+// MB/s) thumbnail strips, effect renders and backfill uploads took half of it while the dialog waited. Background
+// work gives way to it through the same gate as to a play (`whenIdle`, `isIdle`); the footage itself (whole copies,
+// its blocks, a long video's pieces) gives way only to a play (`isPlaying`, `whenNotPlaying`).
+
+/** Each project whose footage someone waits on, and until when that holds (its page asks again within it). */
+const holds = new Map<string, number>();
+const idleListeners = new Set<() => void>();
+let idleWas = true;
+let holdTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Someone waits on project `id`'s footage for `ms` more (asked again while they do). */
+export function holdLink(id: string, ms: number): void {
+  const fresh = !holds.has(id);
+  holds.set(id, hooks.now() + ms);
+  if (fresh) diag.info("playback", `${id}: its footage is waited on: background work gives way to it`);
+  idleChanged();
+}
+
+/** Nobody waits on project `id`'s footage now (it's here, or Open now was pressed). */
+export function releaseLink(id: string): void {
+  if (!holds.delete(id)) return;
+  diag.info("playback", `${id}: its footage isn't waited on now: background work carries on`);
+  idleChanged();
+}
+
+/** Whether someone waits on a project's footage on this Mac now. */
+export function linkHeld(): boolean {
+  const now = hooks.now();
+  for (const [id, until] of holds) if (until <= now) holds.delete(id);
+  return holds.size > 0;
+}
+
+/** Whether background work may take the link and the CPU now: nothing plays, and nobody waits on footage. */
+export function isIdle(): boolean {
+  return !isPlaying() && !linkHeld();
+}
+
+/** Told each time background work may go on again (a play stopped, footage no longer waited on). */
+export function onIdle(listener: () => void): () => void {
+  idleListeners.add(listener);
+  return () => idleListeners.delete(listener);
+}
+
+function idleChanged(): void {
+  const now = isIdle();
+  clearTimeout(holdTimer);
+  // A hold nobody renews ends by itself.
+  if (holds.size > 0) {
+    holdTimer = setTimeout(idleChanged, Math.max(10, Math.min(...holds.values()) - hooks.now()));
+    (holdTimer as { unref?: () => void }).unref?.();
+  }
+  if (now === idleWas) return;
+  idleWas = now;
+  if (now) for (const listener of idleListeners) listener();
 }
 
 /**
- * Resolves once nothing plays (at once when nothing does); false when `stop()` gave up first. Background work
- * waits here between its steps, never in the middle of a write.
+ * Resolves once nothing plays and nobody waits on footage (at once when so); false when `stop()` gave up first.
+ * Background work waits here between its steps, never in the middle of a write.
  */
 export async function whenIdle(stop: () => boolean = () => false): Promise<boolean> {
+  while (!isIdle() && !stop()) await new Promise((resolve) => setTimeout(resolve, hooks.pollMs));
+  return !stop();
+}
+
+/** Resolves once nothing plays: for the footage being waited on itself, which gives way only to a play. */
+export async function whenNotPlaying(stop: () => boolean = () => false): Promise<boolean> {
   while (isPlaying() && !stop()) await new Promise((resolve) => setTimeout(resolve, hooks.pollMs));
   return !stop();
 }
@@ -178,6 +246,9 @@ export function reset(): void {
   plays.clear();
   clearTimeout(timer);
   was = false;
+  holds.clear();
+  clearTimeout(holdTimer);
+  idleWas = true;
   below.clear();
   belowSet = false;
 }

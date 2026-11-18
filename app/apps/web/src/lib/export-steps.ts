@@ -58,6 +58,7 @@ function rightOf(state: StepState, steps: ExportStep[]): string | null {
 }
 
 function otherText(step: ExportStep): string {
+  if (step.kind === "removal") return step.label ? `Removing their text · ${step.label}` : "Removing their text";
   if (step.kind === "video") return step.label ? `Video · ${step.label}` : "Video";
   if (step.kind === "copy") return "Review copy";
   if (step.kind === "upload") return "Upload to the review link";
@@ -102,6 +103,7 @@ export function currentWords(given: ExportSteps): string {
     const graphics = given.steps.filter((one) => one.kind === "graphic");
     return graphics.length === 1 ? "Graphics" : `Graphics ${graphics.indexOf(step) + 1} of ${graphics.length}`;
   }
+  if (step.kind === "removal") return "Removing their text";
   if (step.kind === "video") return "Video";
   if (step.kind === "copy") return "Review copy";
   if (step.kind === "upload") return "Uploading";

@@ -102,6 +102,17 @@ export async function transcriptOf(app: App, media: Media, project?: Project, re
   }
 }
 
+/** A media's transcript if it's already made (null when not, or unreadable): read as it is, never heard or refined. */
+export function cachedTranscript(app: App, media: Media): Transcript | null {
+  const file = app.media.paths(media.path).transcript;
+  try {
+    return fs.existsSync(file) ? parseTranscript(fs.readFileSync(file, "utf8")) : null;
+  } catch (error) {
+    diag.warn("media", `${media.name}: its transcript couldn't be read: ${diag.messageOf(error)}`);
+    return null;
+  }
+}
+
 /**
  * A transcript file as serde reads Edit's transcript files: `model` and
  * `words` required, each word's text and times; the maps default to empty.

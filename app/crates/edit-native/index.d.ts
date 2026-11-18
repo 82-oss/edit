@@ -22,6 +22,9 @@ export type Box = [number, number, number, number];
 /** A piece of text on screen: its box (as a face's) and what it says (screen_text.rs). */
 export type ScreenText = { b: Box; t: string };
 
+/** What taking a watermark out of a piece did (watermark.rs `Removed`): the strip's box (shares), its frames and those with the mark, the share of the mark's pixels from neighbouring frames, how much of the mark is still found (0 gone, 1 untouched), seconds it took. */
+export type WatermarkRemoved = { region: Box; frames: number; marked: number; filled: number; left: number; took: number };
+
 /** One export, running on its own thread. */
 export declare class ExportJob {
   /** Starts exporting; progress (0–1) comes to `onProgress`. */
@@ -613,6 +616,36 @@ export interface TrackSample {
   x: number
   y: number
 }
+
+/**
+ * A channel's see-through watermark learned from footage that carries it
+ * (the engine's watermark.rs `learn`): in `hint` (shares, x0 y0 x1 y1) when
+ * the team showed where, else wherever a see-through mark stays put, never in
+ * `avoid` (the camera's stamp). The model as JSON text, kept with the channel.
+ */
+export declare function watermarkLearn(source: string, size: [number, number], duration: number, hint: Box | null, avoid: Box[], onProgress: (progress: number) => void): Promise<string>
+
+/** One stretch of footage to take a watermark out of. */
+export interface WatermarkPiece {
+  source: string
+  size: [number, number]
+  fps: number
+  /** Source seconds [from, to): the strip's first frame is `from`. */
+  from: number
+  to: number
+  /** The channel's model (JSON text, from `watermarkLearn`). */
+  model: string
+  /** Never touched (shares): the camera's stamp. */
+  keep: Box[]
+  /** Where the strip goes (an mp4: the restored box over its alpha). */
+  out: string
+}
+
+/**
+ * Takes the watermark out of a piece (the engine's watermark.rs `remove`):
+ * what it did, or null when the mark isn't in that stretch (nothing written).
+ */
+export declare function watermarkRemove(piece: WatermarkPiece, onProgress: (progress: number) => void): Promise<WatermarkRemoved | null>
 
 /** `path` ending in the format's extension. */
 export declare function withExtension(path: string, format: Format): string

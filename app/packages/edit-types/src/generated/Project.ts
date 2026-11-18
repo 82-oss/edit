@@ -109,9 +109,9 @@ channel?: string,
  */
 compilation?: boolean, 
 /**
- * What a re-uploader burned into the footage's picture (their subtitles,
- * their labels and text) is to be taken out of it, the camera's own stamp
- * kept: set when the agent lays subtitles with burned_in "remove" (a
- * channel taught so); the server's `text_removal.ts` does it.
+ * How its subtitles and intro captions look, as its channel's taught
+ * style asks: "in_video" (white Gabarito Bold, a soft shadow falling
+ * down, no box or label; the intro's words in each speaker's colour).
+ * None: the house look (words in a box, the speaker's label above).
  */
-remove_burned?: boolean, };
+subtitle_look?: string, };

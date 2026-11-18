@@ -377,6 +377,12 @@ async function readHedged(source: BlockSource, start: number, hedge: boolean): P
   }
 }
 
+/** Bytes of blocks read from the cloud since the server started: how fast footage is coming, whatever lands how (footage_ready.ts). */
+let received = 0;
+export function receivedBytes(): number {
+  return received;
+}
+
 /**
  * A block's bytes, tried again on a passing failure (the network's, a timeout, R2's 5xx or 429): a read to the
  * end that failed one block ended its answer short, which FFmpeg reads as "Input/output error".
@@ -384,7 +390,9 @@ async function readHedged(source: BlockSource, start: number, hedge: boolean): P
 async function fetchBlock(source: BlockSource, start: number, hedge: boolean): Promise<{ answer: Response; bytes: Uint8Array }> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await readHedged(source, start, hedge);
+      const read = await readHedged(source, start, hedge);
+      received += read.bytes.length;
+      return read;
     } catch (error) {
       const status = (error as { status?: number }).status;
       // Not there, or past its end: asking again won't change it.

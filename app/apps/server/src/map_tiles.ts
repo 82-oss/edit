@@ -111,6 +111,11 @@ export function keep(dir: string, from: URL, headers: Headers, body: Uint8Array,
     const before = fileSize(path);
     const temp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.partial`;
     fs.writeFileSync(temp, Buffer.concat([head, body]));
+    // Used at `now`, the time a read stamps too: what the least lately used is told by, on the cache's own clock.
+    // Left at the write's own time, a tile kept at `now` sorted after one read later on a disk slower than the clock
+    // (CI's Macs, Nov 17: a tile read after four were kept went before them).
+    const at = new Date(now);
+    fs.utimesSync(temp, at, at);
     fs.renameSync(temp, path);
     sizes.set(dir, used - before + head.length + body.length);
     if (sizes.get(dir)! > limits.mostBytes) trim(dir, now, limits.mostBytes * 0.8);

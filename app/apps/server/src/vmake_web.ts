@@ -24,15 +24,18 @@
 // Browser Use (Nov 17): $0.06 a browser-hour by the minute, $0.20 a GB with
 // its proxy off (vmake.ai shows no bot check), sessions of at most 240
 // minutes, 10 at once on pay-as-you-go; a profile keeps cookies and storage,
-// saved when its browser stops.
+// saved when its browser stops. The account, its key and its one profile are
+// the team's, on Edit's relay (relay/src/vmake.ts), which lends a Mac a
+// browser one at a time: no Mac holds a key or a sign-in.
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 
 import * as cloud from "./cloud.ts";
 import type { Page, Remote } from "./chrome_devtools.ts";
 import * as devtools from "./chrome_devtools.ts";
 import * as diag from "./diag.ts";
-import { classify, textOf, VmakeError } from "./vmake_api.ts";
+import { classify, VmakeError } from "./vmake_api.ts";
 
 export const SITE = "https://vmake.ai";
 
@@ -45,77 +48,170 @@ function said(line: string): void {
 const REMOVER = "/video-watermark-remover/upload";
 /** The mode to choose. */
 const MODE = "smart pro";
-/** Tabs working at once (one job a tab) within a session. */
-export const TABS = 3;
-/** Files a day Edit sends at most: Pro's is 30–50 (pricing says 50, the FAQ 30). */
-export const DAILY_FILES = 30;
+/** Pieces at once when the relay doesn't say (its AT_ONCE: one a browser). */
+export const AT_ONCE = 3;
+/**
+ * The plan's free files a day, the team's: Pro's 50 for the remover, nothing
+ * kept back for by-hand uploads (Sphe, Nov 17). Not a stop: past them
+ * vmake.ai spends the plan's credits ("Credits can be used beyond this
+ * quota"), so Edit goes on while it takes the jobs, each such file's credits
+ * read before and after and said; vmake.ai's own refusal is the real stop
+ * (`dailyLimit`). The page's own count (`Quota`, its purchase_config) says
+ * what's left, by-hand uploads included.
+ */
+export const DAILY_FILES = 50;
+/** Files a day Edit never goes past, whatever the credits: so a fault can't spend the month's credits. */
+export const SANITY_FILES = 150;
+/** Credits under which the editor says, in one line, that they're running low. */
+export const LOW_CREDITS = 300;
+
+/** Vmake's own name for each mode, in its purchase_config. */
+export const MODELS = { pro: "video_remove_full_pro", smart: "video_remove_full" } as const;
+
+/** The account's day as the remover's page loads it (its purchase_config): files left a mode, and its credits. */
+export interface Quota {
+  modes: Record<string, { remain: number | null; limit: number | null; seconds: number | null }>;
+  balance: number | null;
+  at: number;
+}
+
+/** The page's purchase_config answer read, or null when it isn't one. */
+export function parseQuota(text: string): Quota | null {
+  try {
+    const given = JSON.parse(text) as { response?: { list?: { effect_model?: unknown; remain?: unknown; limit_count?: unknown; duration_limit?: unknown }[]; balance?: unknown } };
+    const list = given.response?.list;
+    if (!Array.isArray(list)) return null;
+    const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    const modes: Quota["modes"] = {};
+    for (const one of list) if (typeof one.effect_model === "string") modes[one.effect_model] = { remain: number(one.remain), limit: number(one.limit_count), seconds: number(one.duration_limit) };
+    return { modes, balance: number(given.response?.balance), at: Date.now() };
+  } catch {
+    return null;
+  }
+}
+
+/** Every purchase_config answer the page loads itself, read off its own traffic (never asked for by Edit: their terms). */
+function watchQuota(page: Page, onQuota: (quota: Quota) => void): () => void {
+  const ids = new Set<string>();
+  const offs = [
+    page.on("Network.responseReceived", (params) => {
+      const url = (params.response as { url?: unknown } | undefined)?.url;
+      if (typeof url === "string" && url.includes("/vm/tool/purchase_config.json")) ids.add(String(params.requestId));
+    }),
+    page.on("Network.loadingFinished", (params) => {
+      const id = String(params.requestId);
+      if (!ids.delete(id)) return;
+      void page
+        .call("Network.getResponseBody", { requestId: id })
+        .then((body) => {
+          const quota = parseQuota(String(body.body ?? ""));
+          if (quota !== null) onQuota(quota);
+        })
+        .catch(() => {});
+    }),
+  ];
+  return () => offs.forEach((off) => off());
+}
+
+/**
+ * A prompt to spend the plan's credits on a file past the free ones
+ * (vmake.ai's "use N credits?"): accepted, as the plan's credits are what
+ * it's for, its words said. Never one that says there aren't enough.
+ */
+async function acceptSpend(page: Page, name: string): Promise<void> {
+  const prompt = await page
+    .evaluate<string | null>(
+      `(() => {
+        const shown = (el) => !!el && el.getClientRects().length > 0;
+        const box = [...document.querySelectorAll('.ant-modal, [role=dialog]')].find((el) => shown(el) && /credit/i.test(el.innerText) && !/insufficient|not enough|top up|buy more|purchase/i.test(el.innerText));
+        if (!box) return null;
+        const yes = [...box.querySelectorAll('button')].find((b) => shown(b) && /^(confirm|continue|ok|yes|use|start|apply|generate)/i.test(b.innerText.trim()));
+        if (!yes) return null;
+        const words = box.innerText.replace(/\s+/g, ' ').slice(0, 200);
+        yes.click();
+        return words;
+      })()`,
+    )
+    .catch(() => null);
+  if (prompt !== null) said(`vmake.ai ${name}: its prompt to spend credits accepted: "${prompt}"`);
+}
 /** A job's longest wait for Vmake (a 60 s piece took 2.5 min; 300 s of 1080p far longer at busy hours). */
 const JOB_MS = 2 * 3_600_000;
 /** Browser Use's price (Nov 17), and a session's longest life. */
 export const DOLLARS_AN_HOUR = 0.06;
 export const DOLLARS_A_GB = 0.2;
-/** Browser Use takes a browser's whole time up front (the rest given back when it's stopped): an hour at a time, not its 240-minute most. */
-const SESSION_MINUTES = 60;
-/**
- * Browser Use's proxy: off (Sphe, Nov 17). The browser goes out from its
- * datacenter, $0.20 a GB, where its US home proxy was $5 a GB (and the piece
- * crosses it twice) and refused connections now and then. vmake.ai shows no
- * bot check; the sign-in was made through the home proxy, and a session it
- * signs out is said as the account's ("signed_out").
- */
-const PROXY = null;
 /** A session's age after which it's let go once its tabs are done (another takes over). */
 const SESSION_RENEW_MS = 45 * 60_000;
 
 // ---------------------------------------------------------------------------
-// Browser Use
-
-const API = "https://api.browser-use.com/api/v4";
+// The team's browsers, lent by Edit's relay
 
 export interface Session {
   id: string;
-  /** Where a person can see and use it (a credential: anyone with it can). */
+  /** Where a person can see and use it (a credential: anyone with it can); an admin's sign-in only. */
   liveUrl: string | null;
   remote: Remote;
-  /** Stops it (its profile is saved then). */
+  /** Stops it (its sign-in saved into the team's profile, the relay's lease let go). */
   stop(): Promise<void>;
 }
 
-/** What starts browsers: Browser Use's, or a stand-in in tests. */
+/** What starts browsers on the team's profile: the relay's, or a stand-in in tests. */
 export interface Browsers {
-  open(profile: string | null): Promise<Session>;
-  profile(name: string): Promise<string>;
+  /**
+   * A browser on the team's profile; `signIn`: with its live view, for an
+   * admin. Waits while another Mac has the profile. `extra`: one more browser
+   * with NO profile for the lease's holder (ExtraRefused when there's none).
+   */
+  open(signIn?: boolean, extra?: boolean): Promise<Session>;
 }
 
-export function browserUse(key: string, api = API): Browsers {
-  const call = async (method: string, path: string, body?: unknown): Promise<Record<string, unknown>> => {
-    let response: Response;
+/** How long a Mac waits its turn on the team's profile before a piece gives up for now, and between asks. */
+export const turns = { waitMs: 3 * 3_600_000, everyMs: 45_000 };
+
+/** The relay's answer to asking for a browser. */
+type Lent = { id?: string; cdpUrl?: string; liveUrl?: string; busy?: string; full?: boolean };
+
+/**
+ * The team's Vmake account through Edit's relay (relay/src/vmake.ts): the
+ * relay holds the Browser Use key and the team's profile and lends this Mac
+ * (`holder`, its cloud holder) one browser at a time, the others waiting
+ * their turn. `ask` is the relay's JSON call (a stand-in in tests).
+ */
+export function teamBrowsers(holder: string, ask: (method: string, route: string, body: unknown) => Promise<unknown>): Browsers {
+  const call = async (route: string, body: unknown): Promise<Lent> => {
     try {
-      response = await fetch(`${api}${path}`, { method, headers: { "X-Browser-Use-API-Key": key, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(60_000) });
+      return (await ask("POST", route, body)) as Lent;
     } catch (error) {
-      throw new VmakeError(`Browser Use didn't answer: ${diag.messageOf(error)}`, "piece");
+      const said = diag.messageOf(error);
+      if (/browser_credits/u.test(said)) throw new VmakeError("Browser Use refused: the team's account is out of credits", "account", "browser_credits");
+      if (/browser_key/u.test(said)) throw new VmakeError("Browser Use refused the team's key", "account", "browser_key");
+      if (/\(403\)/u.test(said)) throw new VmakeError(said, "account", "refused");
+      throw new VmakeError(`Edit's relay: ${said}`, "piece");
     }
-    const text = await response.text();
-    if (response.status === 401 || response.status === 403 || response.status === 402) throw new VmakeError(`Browser Use refused (${response.status}): ${text.slice(0, 160)}`, "account", response.status === 402 ? "browser_credits" : "browser_key");
-    if (response.status === 429) throw new VmakeError("Browser Use has no browser free (too many at once)", "piece");
-    if (!response.ok) throw new VmakeError(`Browser Use: ${response.status} ${text.slice(0, 160)}`, "piece");
-    return text === "" ? {} : (JSON.parse(text) as Record<string, unknown>);
   };
   return {
-    async open(profile) {
-      const made = await call("POST", "/browsers", { proxyCountryCode: PROXY, timeout: SESSION_MINUTES, ...(profile !== null ? { profileId: profile } : {}) });
-      const id = textOf(made.id);
-      const stop = () => call("PATCH", `/browsers/${id}`, { action: "stop" }).then(() => undefined, () => undefined);
-      try {
-        const remote = await devtools.remote(textOf(made.cdpUrl), "Vmake's browser");
-        return { id, liveUrl: typeof made.liveUrl === "string" ? made.liveUrl : null, remote, stop: async () => (remote.close(), await stop()) };
-      } catch (error) {
-        await stop();
-        throw new VmakeError(`Browser Use's browser didn't connect: ${diag.messageOf(error)}`, "piece");
+    async open(signIn = false, extra = false) {
+      const until = Date.now() + turns.waitMs;
+      for (;;) {
+        const lent = await call("/v1/vmake/browser", { holder, signIn, ...(extra ? { extra: true } : {}) });
+        if (extra && (lent.full === true || lent.busy !== undefined)) throw new ExtraRefused(lent.full === true ? "the team's browsers at once are all out" : `${lent.busy} has the team's browser`);
+        if (lent.busy === undefined && typeof lent.id === "string" && typeof lent.cdpUrl === "string") {
+          const id = lent.id;
+          const stop = () => call(`/v1/vmake/browser/${id}/stop`, { holder, ...(extra ? { extra: true } : {}) }).then(() => undefined, () => undefined);
+          try {
+            const remote = await devtools.remote(lent.cdpUrl, "Vmake's browser");
+            return { id, liveUrl: lent.liveUrl ?? null, remote, stop: async () => (remote.close(), await stop()) };
+          } catch (error) {
+            await stop();
+            throw new VmakeError(`the team's browser didn't connect: ${diag.messageOf(error)}`, "piece");
+          }
+        }
+        // Another Mac has the team's profile: this one waits its turn (a sign-in never waits).
+        if (signIn) throw new VmakeError(`${lent.busy ?? "Another Mac"} is using the team's Vmake account now; sign it in once that's done`, "piece");
+        if (Date.now() > until) throw new VmakeError(`${lent.busy ?? "another Mac"} kept the team's Vmake account for hours`, "piece");
+        said(`vmake.ai: ${lent.busy ?? "another Mac"} has the team's browser; waiting`);
+        await Bun.sleep(turns.everyMs);
       }
-    },
-    async profile(name) {
-      return textOf((await call("POST", "/profiles", { name })).id);
     },
   };
 }
@@ -135,9 +231,30 @@ const ACCOUNT_SCRIPT = `(() => {
   return { said, signedOut };
 })()`;
 
+/**
+ * Whether vmake.ai's words say the day's allowance is used (its limit
+ * reached, come back tomorrow), never a file's own trouble (too long, too
+ * big, its format): the account's stop for the day, whatever Edit's count
+ * says (the team uploads by hand too). The first such words are logged as
+ * they're put, to learn Vmake's own wording.
+ */
+export function dailyLimit(said: string): VmakeError | null {
+  const words = said.toLowerCase();
+  const daily = classify(said, false).reason === "daily_limit" || (/\b(limit|limits|maximum|allowance|quota)\b/u.test(words) && /\b(reached|tomorrow|used up|exceeded|hit)\b/u.test(words));
+  if (!daily || /\b(duration|length|size|minutes?|seconds?|mb|gb|resolution|format|too long|too large|file type)\b/u.test(words)) return null;
+  if (!limitSaid) {
+    limitSaid = true;
+    diag.info("removal", `vmake.ai said the day's allowance is used, in its words: "${said.slice(0, 300)}"`);
+  }
+  return new VmakeError(`vmake.ai: ${said.slice(0, 160)}`, "account", "daily_limit");
+}
+let limitSaid = false;
+
 async function accountProblem(page: Page): Promise<VmakeError | null> {
   const seen = await page.evaluate<{ said: string; signedOut: boolean }>(ACCOUNT_SCRIPT, 15_000);
   if (seen.signedOut) return new VmakeError("vmake.ai shows Edit's browser signed out", "account", "signed_out");
+  const limit = seen.said === "" ? null : dailyLimit(seen.said);
+  if (limit !== null) return limit;
   if (seen.said !== "") {
     const whose = classify(seen.said, false);
     if (whose.scope === "account") return new VmakeError(`vmake.ai: ${seen.said.slice(0, 160)}`, "account", whose.reason);
@@ -291,11 +408,27 @@ async function apply(page: Page, name: string, step: (what: string) => void): Pr
   for (let press = 1; press <= 3; press++) {
     await pacing.wait(2500 + Math.random() * 1500);
     await click(page, `[...(${cardOf(name)}).querySelectorAll('button')].find((b) => /^apply/i.test(b.innerText.trim()))`);
+    // Past the free files vmake.ai may ask first to spend the plan's credits: yes.
+    await Bun.sleep(800);
+    await acceptSpend(page, name);
     const took = await waitFor<boolean>(page, `(() => { const s = ${cardState(name)}; return !!s && !s.ready; })()`, 15_000, "Apply taking", 1000).catch(() => false);
     step(took ? `applied (press ${press})` : `Apply didn't take (press ${press})`);
     if (took) return;
   }
   throw new VmakeError("vmake.ai didn't begin the piece when Apply was pressed", "piece");
+}
+
+/** Smart pro chosen on the piece's card, if it isn't already. */
+async function smartProOn(page: Page, name: string, step: (what: string) => void): Promise<void> {
+  const state = await page.evaluate<{ smartPro: string | null } | null>(cardState(name));
+  if (state?.smartPro == null || /disabled--/u.test(state.smartPro)) throw new VmakeError("vmake.ai doesn't offer Smart pro for the piece", "piece");
+  if (!/active--/u.test(state.smartPro)) {
+    await pacing.wait();
+    await click(page, `[...(${cardOf(name)}).querySelectorAll('ul[class*=radio] li')].find((li) => li.innerText.trim().toLowerCase() === '${MODE}')`);
+    await waitFor(page, `(() => { const s = ${cardState(name)}; return !!s && /active--/.test(s.smartPro ?? ''); })()`, 15_000, "Smart pro chosen on the piece");
+  }
+  await pacing.wait();
+  step("Smart pro chosen");
 }
 
 /** The cards of jobs the remover's page shows (the account's jobs, anyone's: Nov 17, two 7–9 minute files of the team's at 40%). */
@@ -322,6 +455,8 @@ const cardState = (name: string) => `(() => {
     smartPro: smartPro ? smartPro.className : null,
     ready: !!apply && !apply.disabled && /to be processed|click apply/i.test(text),
     percent: percent ? Number(percent[1]) : null,
+    failed: /download failed|upload failed|failed to process|processing failed/i.test(text),
+    text: text.replace(/\s+/g, ' ').slice(0, 300),
     done: !!download && !download.disabled && !busy,
     videos,
   };
@@ -338,58 +473,223 @@ const cardState = (name: string) => `(() => {
  * chosen before the file goes in; with cards, on our own card (found by its
  * file's name) as it comes. Nobody else's card is ever touched.
  */
-export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string, name: string, site = SITE, onProgress: (percent: number) => void = () => {}): Promise<string> {
+/**
+ * A piece's file name on vmake.ai: its own, never another's (the page finds a
+ * piece's job card by it, among every card the account has; Nov 17, packed
+ * pieces are mostly 300 s: "piece-300s.mp4" was many cards at once). From
+ * `label` (its file, seconds and try) it's the same each time the piece is
+ * asked for, so a card already there is picked up, after a restart too, and
+ * never sent again.
+ */
+export const pieceName = (seconds: number, label?: string): string =>
+  `edit-${label === undefined ? Math.random().toString(36).slice(2, 8) : createHash("sha256").update(label).digest("hex").slice(0, 8)}-${Math.round(seconds)}s.mp4`;
+
+/** The account's credits as the page's pill shows them (null when it shows none). */
+export async function creditsPill(page: Page): Promise<string | null> {
+  return page.evaluate<string | null>(`[...document.querySelectorAll('[class*=credit], [class*=Credit], [class*=point]')].filter((el) => el.getClientRects().length > 0).map((el) => el.innerText.trim()).find((t) => /^[0-9,]+$/.test(t)) ?? null`).catch(() => null);
+}
+
+/** What removeOnPage is told along the way. */
+export interface PieceHooks {
+  progress?: (percent: number) => void;
+  /** vmake.ai took the piece and is processing it (the account worked for it: the run's other pieces may go now). */
+  begun?: () => void;
+  /** About to send the file (it's counted then; a card already there sends nothing): whether it's past the free files (its credits read before and after). */
+  sending?: () => Promise<boolean>;
+  /** The account's day, each time the page loads it (files left a mode, credits). */
+  quota?: (quota: Quota) => void;
+  /**
+   * A finished result from before (a card named as pieces were before Nov 17's
+   * evening, `piece-<s>s.mp4`, as long as this one): whether it's this piece's
+   * (the provider fetches and compares it). The first that is, is used:
+   * nothing is sent (Sphe, Nov 17: the jobs given up on that afternoon had
+   * finished on vmake.ai, already paid for).
+   */
+  adopt?: (url: string) => Promise<boolean>;
+  /** The piece's length, for `adopt`'s cards. */
+  seconds?: number;
+}
+
+/** The finished cards named `legacy` and as long as `seconds` (±0.2 s, as each card shows it), by their place in the list. */
+const doneCards = (legacy: string, seconds: number) => `(() => {
+  const all = ${CARDS};
+  const length = (text) => { const m = /\\/\\s*(?:(\\d+):)?(\\d+):(\\d+(?:\\.\\d+)?)/.exec(text); return m ? Number(m[1] || 0) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null; };
+  return all.map((el, at) => ({ el, at })).filter(({ el }) => {
+    const text = el.innerText;
+    const download = [...el.querySelectorAll('button')].find((b) => /download/i.test(b.innerText));
+    const seen = length(text);
+    return text.includes(${JSON.stringify(legacy)}) && !!download && !download.disabled && !/uploading|to be processed|processing|failed/i.test(text) && seen !== null && Math.abs(seen - ${seconds}) <= 0.2;
+  }).map(({ at }) => at);
+})()`;
+
+/** Every card of the list drawn once (the page draws a card's words only once it's been in view), then back to the top. */
+async function drawCards(page: Page): Promise<void> {
+  const count = await page.evaluate<number>(`${CARDS}.length`).catch(() => 0);
+  for (let at = 0; at < count; at++) {
+    await page.evaluate(`(() => { ${CARDS}[${at}]?.scrollIntoView({ block: "center" }); return 1; })()`).catch(() => 0);
+    await Bun.sleep(700);
+  }
+  await page.evaluate(`(() => { ${CARDS}[0]?.scrollIntoView({ block: "center" }); return 1; })()`).catch(() => 0);
+}
+
+/** A finished result on the account's list from before pieces had names of their own (`piece-<s>s.mp4`): its name, length and address. */
+export interface Legacy {
+  name: string;
+  seconds: number;
+  url: string;
+}
+
+/** The account's finished cards named as pieces were before Nov 17's evening, each with its result's address. */
+export async function legacyCards(page: Page, site = SITE): Promise<Legacy[]> {
+  await go(page, `${site}${REMOVER}`);
+  if (!(await waitFor<boolean>(page, `${CARDS}.length > 0`, 15_000, "the job cards", 500).catch(() => false))) return [];
+  await drawCards(page);
+  const found = await page.evaluate<{ at: number; name: string; seconds: number }[]>(`(() => {
+    const length = (text) => { const m = /\\/\\s*(?:(\\d+):)?(\\d+):(\\d+(?:\\.\\d+)?)/.exec(text); return m ? Number(m[1] || 0) * 3600 + Number(m[2]) * 60 + Number(m[3]) : null; };
+    return ${CARDS}.map((el, at) => {
+      const text = el.innerText;
+      const name = /piece-\\d+s\\.mp4/.exec(text)?.[0] ?? null;
+      const download = [...el.querySelectorAll('button')].find((b) => /download/i.test(b.innerText));
+      const seconds = length(text);
+      return name && download && !download.disabled && !/uploading|to be processed|processing|failed/i.test(text) && seconds !== null ? { at, name, seconds } : null;
+    }).filter(Boolean);
+  })()`).catch(() => []);
+  const out: Legacy[] = [];
+  for (const one of found) {
+    const url = await downloadOf(page, one.at);
+    if (url !== null && /^https?:/u.test(url)) out.push({ name: one.name, seconds: one.seconds, url });
+  }
+  said(`vmake.ai: ${out.length} finished result(s) from before on the account (${out.map((one) => `${one.name} ${one.seconds.toFixed(1)} s`).join(", ")})`);
+  return out;
+}
+
+/** The full video's address as a download of card `at` (in the list) starts (null when none starts). */
+async function downloadOf(page: Page, at: number): Promise<string | null> {
+  await page.call("Page.setDownloadBehavior", { behavior: "deny" }).catch(() => {});
+  const asked = new Promise<string | null>((resolve) => {
+    const off = page.on("Page.downloadWillBegin", (params) => {
+      off();
+      resolve(typeof params.url === "string" ? params.url : null);
+    });
+    setTimeout(() => (off(), resolve(null)), 20_000);
+  });
+  await click(page, `(() => { const el = ${CARDS}[${at}]; el?.scrollIntoView({ block: "center" }); return [...(el?.querySelectorAll('button') ?? [])].find((b) => /download/i.test(b.innerText)); })()`);
+  await Bun.sleep(2500);
+  await click(page, `[...document.querySelectorAll('.ant-dropdown *, .ant-popover *, .ant-modal *, [role=menu] *, [role=dialog] *')].find((el) => el.children.length === 0 && el.getClientRects().length > 0 && /full/i.test(el.innerText))`).catch(() => {});
+  return asked;
+}
+
+/**
+ * One piece through the remover's page: its card if vmake.ai has one already
+ * (by name: processing, waiting on Apply, or done), else the file sent
+ * (`piece`: its address, or what stages it, only then).
+ */
+export async function removeOnPage(page: Page, remote: Remote, piece: string | (() => Promise<string>), name: string, site = SITE, given: PieceHooks | ((percent: number) => void) = {}): Promise<string> {
+  const hooks: PieceHooks = typeof given === "function" ? { progress: given } : given;
+  // The page's own count of the day, as it loads it.
+  const latest: { quota: Quota | null } = { quota: null };
+  await page.call("Network.enable").catch(() => {});
+  const stop = watchQuota(page, (quota) => {
+    latest.quota = quota;
+    hooks.quota?.(quota);
+  });
+  try {
+    return await onPage(page, remote, piece, name, site, hooks, latest);
+  } finally {
+    stop();
+  }
+}
+
+async function onPage(page: Page, remote: Remote, piece: string | (() => Promise<string>), name: string, site: string, hooks: PieceHooks, latest: { quota: Quota | null }): Promise<string> {
+  const onProgress = hooks.progress ?? (() => {});
   await go(page, `${site}${REMOVER}`);
   await waitFor(page, `!!document.querySelector('.ant-upload-btn input[type=file][name=file]:not([multiple])')`, 60_000, "the remover's page");
   await pacing.wait();
   const problem = await accountProblem(page);
   if (problem !== null) throw problem;
-  // A fresh page: the mode first, since the upload starts processing by itself.
-  // The account's job cards come a moment after the page (its task list): looked for a few seconds first.
-  const fresh = !(await waitFor<boolean>(page, `${CARDS}.length > 0`, 8_000, "the job cards", 500).catch(() => false));
-  if (fresh) {
-    const mode = await waitFor<string>(page, `(() => { const li = ${MODE_ITEM}; return li ? li.className : null; })()`, 30_000, "Smart pro");
-    if (/disabled--/u.test(mode)) throw new VmakeError("vmake.ai doesn't offer Smart pro on the remover's page now", "piece");
-    if (!/active--/u.test(mode)) {
-      await click(page, MODE_ITEM);
-      await waitFor(page, `(() => { const li = ${MODE_ITEM}; return !!li && /active--/.test(li.className); })()`, 15_000, "Smart pro chosen");
-    }
-    await pacing.wait();
-  }
   const began = Date.now();
   const step = (what: string) => said(`vmake.ai ${name}: ${what} (${Math.round((Date.now() - began) / 1000)} s)`);
-  await putPiece(page, remote, pieceUrl, name);
-  step("in the page");
-  // Our card, when the page makes one: Smart pro on it (a file of 5 minutes or less has it).
-  const card = await waitFor<boolean>(page, `!!${cardOf(name)}`, fresh ? 15_000 : 120_000, "the piece's card", 1500).catch(() => false);
-  if (card) {
-    // Uploaded to Vmake from the browser (the card says how far), then waiting on Apply: Smart pro chosen first.
-    step("its card");
-    await waitFor(page, `(() => { const s = ${cardState(name)}; return !!s && (s.ready || s.percent !== null || s.done); })()`, 30 * 60_000, "the piece's upload to vmake.ai", 2000);
-    const state = await page.evaluate<{ smartPro: string | null; ready: boolean } | null>(cardState(name));
-    step(`uploaded: ${JSON.stringify(state)}`);
-    if (state?.smartPro == null || /disabled--/u.test(state.smartPro)) throw new VmakeError("vmake.ai doesn't offer Smart pro for the piece", "piece");
-    if (state.ready) {
-      if (!/active--/u.test(state.smartPro)) {
-        await pacing.wait();
-        await click(page, `[...(${cardOf(name)}).querySelectorAll('ul[class*=radio] li')].find((li) => li.innerText.trim().toLowerCase() === '${MODE}')`);
-        await waitFor(page, `(() => { const s = ${cardState(name)}; return !!s && /active--/.test(s.smartPro ?? ''); })()`, 15_000, "Smart pro chosen on the piece");
+  // The account's job cards come a moment after the page (its task list): looked for a few seconds first.
+  const cards = await waitFor<boolean>(page, `${CARDS}.length > 0`, 8_000, "the job cards", 500).catch(() => false);
+  if (cards) await drawCards(page);
+  // Its card from before. One vmake.ai gave up on ("Download failed… credits returned") is the piece's trouble: it's
+  // sent once more, under its next try's name (never this one's, whose dead card the page still shows).
+  const before = cards ? await page.evaluate<{ ready: boolean; percent: number | null; done: boolean; failed: boolean } | null>(cardState(name)).catch(() => null) : null;
+  if (before?.failed === true) throw new VmakeError("vmake.ai failed the piece (its card says so)", "piece");
+  let card = before !== null;
+  let credits = false;
+  let creditsBefore: string | null = null;
+  if (before !== null) {
+    // Sent before (a run cut short, a restart): its own card, picked up where it is.
+    step(`its card from before: ${JSON.stringify(before)}`);
+    if (before.ready) {
+      await smartProOn(page, name, step);
+      await apply(page, name, step);
+    }
+  } else {
+    // Finished before under the old names (as long as this piece): the first that's this piece's is used, nothing sent.
+    if (hooks.adopt !== undefined && hooks.seconds !== undefined && cards) {
+      const legacy = `piece-${Math.round(hooks.seconds)}s.mp4`;
+      const found = await page.evaluate<number[]>(doneCards(legacy, hooks.seconds)).catch(() => []);
+      for (const at of found) {
+        const url = await downloadOf(page, at);
+        if (url !== null && /^https?:/u.test(url) && (await hooks.adopt(url))) {
+          step(`${legacy}'s result from before is this piece's: used, nothing sent`);
+          return url;
+        }
+        step(`${legacy} (card ${at}) is another piece's`);
+      }
+    }
+    // A fresh page showing the modes: the mode first, since the upload starts processing by itself.
+    // A fresh page with no modes shown (Nov 17 afternoon: only Upload and Batch upload until a file goes in) chooses Smart pro on the piece's card, as a page with cards does.
+    const mode = cards ? null : await waitFor<string>(page, `(() => { const li = ${MODE_ITEM}; return li ? li.className : null; })()`, 30_000, "Smart pro").catch(() => null);
+    const fresh = mode !== null;
+    if (mode !== null) {
+      if (/disabled--/u.test(mode)) throw new VmakeError("vmake.ai doesn't offer Smart pro on the remover's page now", "piece");
+      if (!/active--/u.test(mode)) {
+        await click(page, MODE_ITEM);
+        await waitFor(page, `(() => { const li = ${MODE_ITEM}; return !!li && /active--/.test(li.className); })()`, 15_000, "Smart pro chosen");
       }
       await pacing.wait();
-      step("Smart pro chosen");
-      await apply(page, name, step);
-    } else if (!/active--/u.test(state.smartPro)) throw new VmakeError("vmake.ai began the piece in another mode than Smart pro", "piece");
+    }
+    credits = (await hooks.sending?.()) ?? false;
+    if (credits) creditsBefore = latest.quota?.balance?.toString() ?? (await creditsPill(page));
+    await putPiece(page, remote, typeof piece === "string" ? piece : await piece(), name);
+    step("in the page");
+    await acceptSpend(page, name);
+    // Our card, when the page makes one: Smart pro on it (a file of 5 minutes or less has it).
+    card = await waitFor<boolean>(page, `!!${cardOf(name)}`, fresh ? 15_000 : 120_000, "the piece's card", 1500).catch(() => false);
+    if (card) {
+      // Uploaded to Vmake from the browser (the card says how far), then waiting on Apply: Smart pro chosen first.
+      step("its card");
+      await waitFor(page, `(() => { const s = ${cardState(name)}; return !!s && (s.ready || s.percent !== null || s.done || s.failed || /limit|allowance|tomorrow|quota|today|maximum/i.test(s.text)); })()`, 30 * 60_000, "the piece's upload to vmake.ai", 2000);
+      const after = await page.evaluate<{ text: string; failed: boolean } | null>(cardState(name)).catch(() => null);
+      const refused = dailyLimit(after?.text ?? "");
+      if (refused !== null) throw refused;
+      if (after?.failed === true) throw new VmakeError(`vmake.ai didn't take the piece: ${after.text.slice(0, 120)}`, "piece");
+      const state = await page.evaluate<{ smartPro: string | null; ready: boolean } | null>(cardState(name));
+      step(`uploaded: ${JSON.stringify(state)}`);
+      if (state?.smartPro == null || /disabled--/u.test(state.smartPro)) throw new VmakeError("vmake.ai doesn't offer Smart pro for the piece", "piece");
+      if (state.ready) {
+        await smartProOn(page, name, step);
+        await apply(page, name, step);
+      } else if (!/active--/u.test(state.smartPro)) throw new VmakeError("vmake.ai began the piece in another mode than Smart pro", "piece");
+    }
   }
+  hooks.begun?.();
   // Processing: the result, or the account's or the file's trouble said on the page.
   const until = Date.now() + JOB_MS;
   let last = -1;
   let videos: string[] = [];
   let moved = Date.now();
-  let pressedAgain = false;
+  let pressedAgain = 0;
   for (;;) {
     await Bun.sleep(3000 + Math.random() * 2000);
     if (card) {
-      const state = await page.evaluate<{ percent: number | null; done: boolean; videos: string[] } | null>(cardState(name), 15_000).catch(() => null);
+      const state = await page.evaluate<{ percent: number | null; done: boolean; videos: string[]; text: string } | null>(cardState(name), 15_000).catch(() => null);
+      // The card refused for the day (its own words): the account's stop, whatever Edit's count says.
+      const refused = state === null ? null : dailyLimit(state.text);
+      if (refused !== null) throw refused;
       if (state !== null && state.percent !== null && state.percent !== last) {
         onProgress((last = state.percent));
         moved = Date.now();
@@ -399,15 +699,20 @@ export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string,
         videos = state.videos;
         break;
       }
-      // No progress for timing.stallMs: back at "To be processed" its Apply is pressed again (once), else the piece is given up on (tried again by the run).
+      // No change for timing.stallMs: only a card back at "To be processed" (its Apply lost) is pressed again, twice at
+      // most. A card still processing is waited on, however slowly its percent moves (Nov 17, Sphe's M4: every piece
+      // sat over three minutes at one percent while vmake.ai worked through several, each was given up on and sent
+      // again, a file of the day each time, and none came back). A card gone is the piece's trouble.
       if (Date.now() - moved > timing.stallMs) {
-        const now = await page.evaluate<{ ready: boolean } | null>(cardState(name)).catch(() => null);
-        if (now?.ready === true && !pressedAgain) {
-          pressedAgain = true;
-          step("stalled at To be processed: Apply again");
+        const now = await page.evaluate<{ ready: boolean; done: boolean } | null>(cardState(name)).catch(() => undefined);
+        if (now === null) throw new VmakeError("vmake.ai's card for the piece went away", "piece");
+        if (now?.ready === true) {
+          if (pressedAgain >= 2) throw new VmakeError("vmake.ai didn't begin the piece when Apply was pressed again", "piece");
+          pressedAgain += 1;
+          step("back at To be processed: Apply again");
           await apply(page, name, step);
-          moved = Date.now();
-        } else throw new VmakeError(`vmake.ai showed no progress on the piece for ${Math.round(timing.stallMs / 60_000)} minutes`, "piece");
+        } else step(`still processing at ${last}%`);
+        moved = Date.now();
       }
     } else {
       const state = await page.evaluate<{ video: string | null; full: boolean; percent: number | null }>(PROGRESS_SCRIPT, 15_000).catch(() => null);
@@ -417,6 +722,7 @@ export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string,
         break;
       }
     }
+    await acceptSpend(page, name);
     const problem = await accountProblem(page).catch(() => null);
     if (problem !== null) throw problem;
     if (Date.now() > until) throw new VmakeError("vmake.ai took over two hours on the piece", "piece");
@@ -440,6 +746,13 @@ export async function removeOnPage(page: Page, remote: Remote, pieceUrl: string,
   const refused = await accountProblem(page).catch(() => null);
   if (refused !== null) throw refused;
   if (url === null || !/^https?:/u.test(url)) throw new VmakeError("vmake.ai gave no video to download", "piece");
+  if (credits) {
+    // Past the free files: what it cost in the plan's credits, to learn the price (read again from the page as it shows them).
+    await go(page, `${site}${REMOVER}`).catch(() => {});
+    await Bun.sleep(2000);
+    const after = latest.quota?.balance?.toString() ?? (await creditsPill(page));
+    diag.info("removal", `vmake.ai ${name}: past the day's free files: credits ${creditsBefore ?? "not shown"} before, ${after ?? "not shown"} after`);
+  }
   return url;
 }
 
@@ -475,25 +788,73 @@ export interface Day {
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+/** The relay had no more browsers for this Mac now (AT_ONCE in all, or the lease another Mac's): its pieces use the ones it has. */
+export class ExtraRefused extends Error {}
+
 /**
- * One Browser Use session at a time for the account (two at once on one
- * profile isn't documented), up to TABS jobs in it, renewed past
- * SESSION_RENEW_MS between jobs, stopped when nothing's left.
+ * The profile's browser's sign-in to `site` copied into another browser,
+ * which never had the profile: its cookies, and the site's local storage
+ * (vmake.ai keeps its sign-in there too: with the cookies alone, Nov 17, a
+ * piece's upload never finished and its card went). The count copied.
+ */
+export async function copySignIn(from: Remote, to: Remote, site = SITE): Promise<number> {
+  const host = new URL(site).hostname.replace(/^www\./u, "");
+  const all = ((await from.call("Storage.getCookies")) as { cookies?: Record<string, unknown>[] }).cookies ?? [];
+  const cookies = all
+    .filter((one) => typeof one.domain === "string" && one.domain.replace(/^\./u, "").endsWith(host))
+    .map(({ name, value, domain, path, expires, httpOnly, secure, sameSite }) => ({ name, value, domain, path, expires, httpOnly, secure, ...(sameSite ? { sameSite } : {}) }));
+  if (cookies.length > 0) await to.call("Storage.setCookies", { cookies });
+  const read = await from.tab();
+  let storage: Record<string, string> = {};
+  try {
+    await go(read, site);
+    storage = JSON.parse(await read.evaluate<string>(`JSON.stringify(Object.fromEntries(Object.entries(localStorage)))`)) as Record<string, string>;
+  } finally {
+    read.close();
+  }
+  const write = await to.tab();
+  try {
+    await go(write, site);
+    await write.evaluate(`(() => { const given = ${JSON.stringify(storage)}; for (const [key, value] of Object.entries(given)) localStorage.setItem(key, value); })()`);
+  } finally {
+    write.close();
+  }
+  return cookies.length + Object.keys(storage).length;
+}
+
+/** A browser the Driver holds: the profile's, or an extra one; a piece in it at a time. */
+interface Held {
+  open: Promise<Session>;
+  at: number;
+  busy: boolean;
+  extra: boolean;
+}
+
+/**
+ * The team's browsers for this Mac's pieces, one piece a browser (its upload
+ * in a tab in front: Chrome slows a tab behind another; a machine each):
+ * the profile's browser (the relay's lease), then
+ * up to `atOnce` − 1 more with no profile, its vmake.ai sign-in copied into
+ * each (none of them ever writes the profile). Renewed past SESSION_RENEW_MS
+ * between pieces, all stopped when nothing's left.
  */
 export class Driver {
-  private session: { at: number; open: Promise<Session> } | null = null;
-  private busy = 0;
+  private writer: Held | null = null;
+  private extras: Held[] = [];
+  private pieces = 0;
   private waiting: (() => void)[] = [];
+  /** Until when no more extra browsers are asked for (the relay had none; or one wasn't signed in: never again here). */
+  private noMore = 0;
 
   constructor(
     private readonly browsers: Browsers,
-    private readonly profile: string | null,
     private readonly site = SITE,
+    private readonly atOnce: () => number = () => AT_ONCE,
   ) {}
 
   private async slot(): Promise<void> {
-    if (this.busy < TABS) {
-      this.busy++;
+    if (this.pieces < this.atOnce()) {
+      this.pieces++;
       return;
     }
     await new Promise<void>((resolve) => this.waiting.push(resolve));
@@ -502,68 +863,156 @@ export class Driver {
   private release(): void {
     const next = this.waiting.shift();
     if (next !== undefined) return next();
-    this.busy--;
-    if (this.busy === 0) void this.close();
+    this.pieces--;
+    if (this.pieces === 0) void this.close();
   }
 
-  private async current(): Promise<Session> {
-    if (this.session !== null && Date.now() - this.session.at > SESSION_RENEW_MS && this.busy <= 1) await this.close();
-    // Each browser looks at the plan once, on its first tab, before any piece is sent.
-    if (this.session === null) {
-      this.session = {
-        at: Date.now(),
-        open: this.browsers.open(this.profile).then(async (session) => {
+  /** The profile's browser: it looks at the plan once, on its first tab, before any piece is sent. */
+  private openWriter(): Held {
+    return {
+      at: Date.now(),
+      busy: false,
+      extra: false,
+      open: this.browsers.open().then(async (session) => {
+        const page = await session.remote.tab();
+        try {
+          await plan(page, this.site);
+        } catch (error) {
+          await session.stop();
+          throw error;
+        } finally {
+          page.close();
+        }
+        return session;
+      }),
+    };
+  }
+
+  /** An extra browser: the profile's sign-in copied in, and looked at once (one that shows signed out is never used: no extra ones here after). */
+  private openExtra(writer: Held): Held {
+    return {
+      at: Date.now(),
+      busy: true,
+      extra: true,
+      open: this.browsers.open(false, true).then(async (session) => {
+        try {
+          const copied = await copySignIn((await writer.open).remote, session.remote, this.site);
           const page = await session.remote.tab();
           try {
-            await plan(page, this.site);
-          } catch (error) {
-            await session.stop();
-            throw error;
+            if (copied === 0 || !(await signedIn(page, this.site))) {
+              this.noMore = Infinity;
+              throw new ExtraRefused("the profile's sign-in didn't carry into another browser");
+            }
           } finally {
             page.close();
           }
           return session;
-        }),
-      };
+        } catch (error) {
+          await session.stop();
+          throw error;
+        }
+      }),
+    };
+  }
+
+  private async drop(held: Held): Promise<void> {
+    if (this.writer === held) this.writer = null;
+    this.extras = this.extras.filter((one) => one !== held);
+    await (await held.open.catch(() => null))?.stop();
+  }
+
+  /** A browser of its own for one piece: the profile's when it's free, else a free extra one, else a new one, else wait for one. */
+  private async browser(): Promise<{ held: Held; session: Session }> {
+    for (;;) {
+      for (const one of [this.writer, ...this.extras]) if (one !== null && !one.busy && Date.now() - one.at > SESSION_RENEW_MS) await this.drop(one);
+      if (this.writer === null) this.writer = this.openWriter();
+      const writer = this.writer;
+      if (!writer.busy) {
+        writer.busy = true;
+        const session = await writer.open.catch((error: unknown) => {
+          writer.busy = false;
+          if (this.writer === writer) this.writer = null;
+          throw error;
+        });
+        if (!session.remote.closed) return { held: writer, session };
+        await this.drop(writer);
+        continue;
+      }
+      const idle = this.extras.find((one) => !one.busy);
+      if (idle !== undefined) {
+        idle.busy = true;
+        const session = await idle.open.catch(() => null);
+        if (session !== null && !session.remote.closed) return { held: idle, session };
+        await this.drop(idle);
+        continue;
+      }
+      if (Date.now() > this.noMore) {
+        const held = this.openExtra(writer);
+        this.extras.push(held);
+        try {
+          return { held, session: await held.open };
+        } catch (error) {
+          this.extras = this.extras.filter((one) => one !== held);
+          if (!(error instanceof ExtraRefused)) throw error;
+          if (this.noMore !== Infinity) this.noMore = Date.now() + 60_000;
+          said(`vmake.ai: no more browsers now (${error.message}); this piece waits for one of the ${1 + this.extras.length} there`);
+          continue;
+        }
+      }
+      // Every browser busy and no more to be had: the first to free goes to this piece.
+      await Bun.sleep(3000);
     }
-    const session = await this.session.open.catch((error: unknown) => {
-      this.session = null;
-      throw error;
-    });
-    if (session.remote.closed) {
-      this.session = null;
-      return this.current();
-    }
-    return session;
   }
 
   async close(): Promise<void> {
-    const was = this.session;
-    this.session = null;
-    if (was !== null) await (await was.open.catch(() => null))?.stop();
+    const all = [this.writer, ...this.extras].filter((one): one is Held => one !== null);
+    this.writer = null;
+    this.extras = [];
+    await Promise.all(all.map(async (one) => (await one.open.catch(() => null))?.stop()));
+  }
+
+  /** The account's finished results from before (`legacyCards`), in a browser of the Driver's. */
+  async legacy(): Promise<Legacy[]> {
+    await this.slot();
+    let got: { held: Held; session: Session } | null = null;
+    try {
+      got = await this.browser();
+      const page = await got.session.remote.tab();
+      try {
+        return await legacyCards(page, this.site);
+      } finally {
+        page.close();
+      }
+    } finally {
+      if (got !== null) got.held.busy = false;
+      this.release();
+    }
   }
 
   /** One piece (at `pieceUrl`) cleaned: the result's URL. */
-  async run(pieceUrl: string, name: string, onProgress?: (percent: number) => void): Promise<string> {
+  async run(piece: string | (() => Promise<string>), name: string, hooks: PieceHooks = {}): Promise<string> {
     await this.slot();
+    let got: { held: Held; session: Session } | null = null;
     try {
-      // Tabs started a little apart, as a person would.
-      if (this.busy > 1) await pacing.wait(5_000 + Math.random() * 10_000);
-      for (let browser = 1; ; browser++) {
-        const session = await this.current();
-        const page = await session.remote.tab();
+      // Pieces started a little apart, as a person would.
+      if (this.pieces > 1) await pacing.wait(3_000 + Math.random() * 5_000);
+      for (let attempt = 1; ; attempt++) {
+        got = await this.browser();
+        const page = await got.session.remote.tab();
         try {
-          return await removeOnPage(page, session.remote, pieceUrl, name, this.site, onProgress);
+          return await removeOnPage(page, got.session.remote, piece, name, this.site, hooks);
         } catch (error) {
-          // A browser whose way out is down: another (alone, so no other tab's job goes with it).
-          if (!(error instanceof ProxyDown) || browser >= 3 || this.busy > 1) throw error;
+          // A browser whose way out is down: another.
+          if (!(error instanceof ProxyDown) || attempt >= 3) throw error;
           diag.warn("removal", `vmake.ai: the cloud browser's proxy is down; another browser`);
-          await this.close();
+          await this.drop(got.held);
+          got = null;
         } finally {
           page.close();
         }
       }
     } finally {
+      if (got !== null) got.held.busy = false;
       this.release();
     }
   }

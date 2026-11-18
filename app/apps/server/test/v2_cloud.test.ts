@@ -22,6 +22,7 @@ import { respond } from "../src/http/server.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import { buildRouter } from "../src/routes.ts";
 import { HOUSE_VOICE } from "../src/voice.ts";
+import * as teachingConflicts from "../src/teaching_conflicts.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
 import * as lessonNote from "../src/writer/lesson_note.ts";
 import * as writerStore from "../src/writer/store.ts";
@@ -317,6 +318,33 @@ test("what the agent remembers: a line or two each, the global skill first and n
     expect(withParts).not.toContain("Locked bottom middle");
     expect((await call(app, id, "read_skill", { name: "subtitles" })).content[0]!.text).toBe("- Locked bottom middle.");
     expect((await call(app, id, "read_skill", { name: "nope" })).content[0]!.text).toContain("no skill nope");
+    // A lesson that contradicts one taught already is said, not kept, until the person says which holds (Sphe, Nov 18:
+    // Cuffed & Caught kept "a black box with labels" and "no box, no labels" both, and nobody was told).
+    const ask = teachingConflicts.hooks.ask;
+    const asked: string[] = [];
+    teachingConflicts.hooks.ask = async (prompt) => {
+      asked.push(prompt);
+      return { conflicts: [{ skill: "subtitles", line: "- Locked bottom middle.", why: "top against bottom" }, { skill: "made-up", line: "x", why: "not a lesson here" }] };
+    };
+    try {
+      const refused = (await call(app, id, "remember", { skill: "subtitle-place", text: "Subtitles at the top of the frame.", reason: "JJ: subtitles go up top" })).content[0]!.text;
+      expect(refused).toContain('Not kept yet: it contradicts what\'s taught already:\n- subtitles: "- Locked bottom middle." (top against bottom)');
+      expect(refused).not.toContain("made-up");
+      expect(asked[0]).toContain("Subtitles at the top of the frame.");
+      expect(asked[0]).toContain("--- subtitles (Subtitles after the intro.)\n- Locked bottom middle.");
+      await v2cloud.refreshSkills();
+      expect(v2cloud.skill("subtitle-place", place)).toBeUndefined();
+      // Their answer kept with it, and nothing asked again.
+      expect((await call(app, id, "remember", { skill: "subtitle-place", text: "Subtitles at the top of the frame.", reason: "JJ: subtitles go up top", settled: "JJ: the top wins" })).content[0]!.text).toContain("Remembered as subtitle-place (version 1)");
+      expect(asked.length).toBe(1);
+      // No model to ask: kept, and the agent told it wasn't checked.
+      teachingConflicts.hooks.ask = async () => {
+        throw new Error("no model");
+      };
+      expect((await call(app, id, "remember", { skill: "pins-again", text: "Pins are green.", reason: "Sphe" })).content[0]!.text).toContain("couldn't be checked against what's taught");
+    } finally {
+      teachingConflicts.hooks.ask = ask;
+    }
     // Every other project reads the house's, and none of this.
     const plain = app.store.create("Plain", { width: 1920, height: 1080, fps: 30 }).project;
     expect(agentInstructions(plain)).toContain("WORK FAST");
@@ -598,6 +626,20 @@ test("other_channels: the rest listed only when asked, one's edit style shown, a
     expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/pacing")?.[0]).toMatchObject({ text: "Hold on faces.", from: { key: "skill:@jcs--edit/pacing", n: 1 } });
     expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/intro")).toHaveLength(1);
     expect((await call(app, id, "other_channels", { channel: "nobody" })).content[0]!.text).toContain('no channel "nobody"');
+    // One that contradicts this channel's is left, said, until the person says which holds (Nov 18).
+    seed("skill:@jcs--edit/music", "music", "No music under the footage.", "Music.");
+    await v2cloud.refreshSkills();
+    const ask = teachingConflicts.hooks.ask;
+    teachingConflicts.hooks.ask = async (prompt) => (prompt.includes("No music under the footage.") ? { conflicts: [{ skill: "intro", line: "Our own intro.", why: "stand-in clash" }] } : { conflicts: [] });
+    try {
+      const left = (await call(app, id, "other_channels", { channel: "JCS", bring: "music" })).content[0]!.text!;
+      expect(left).toContain("Nothing new brought.");
+      expect(left).toContain('- intro: "Our own intro." (music: stand-in clash)');
+      expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/music")).toBeUndefined();
+      expect((await call(app, id, "other_channels", { channel: "JCS", bring: "music", settled: "Sphe: bring it" })).content[0]!.text).toContain("to change here: lesson music.");
+    } finally {
+      teachingConflicts.hooks.ask = ask;
+    }
   } finally {
     mock.cloud.convex.channels = [];
     cleanup();

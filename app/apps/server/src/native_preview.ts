@@ -42,13 +42,14 @@ import type { App } from "./app.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import { PLAYBACK_ROUTE } from "./cloud_playback.ts";
 import * as diag from "./diag.ts";
-import { cut, TO_THE_END } from "./export_excerpts.ts";
+import { TO_THE_END } from "./export_excerpts.ts";
 import { json } from "./http/errors.ts";
 import { fetchWhole, onLanded, previewBytes } from "./local_previews.ts";
 import type { Project } from "./model.ts";
 import { isFile } from "./paths.ts";
 import * as player from "./player.ts";
 import * as pieces from "./proxy_pieces.ts";
+import * as tools from "./tools.ts";
 
 /** Seconds `from..to` of a streamed source in a file here: the window reads it instead of the stream. */
 export interface NativeExcerpt {
@@ -89,23 +90,33 @@ onLanded((key) => {
 /** Piece cuts at once, and the ones waiting or failed lately (tried again after `RETRY_MS`). */
 const CUTS_AT_ONCE = 2;
 const RETRY_MS = 10 * 60_000;
-const cutsWaiting: { url: string; from: number; to: number; out: string }[] = [];
+const cutsWaiting: { context: pieces.Context; base: string; n: number; out: string }[] = [];
 const cutting = new Set<string>();
 const cutFailed = new Map<string, number>();
 
 /**
- * Cuts a piece into `out`, whole or not at all: into a file beside it, moved
+ * Cuts piece `n` into `out`, whole or not at all: into a file beside it, moved
  * into place once FFmpeg is done, so a cut Edit quits during never leaves half
  * a piece the window would read. The pieces' folder is made here: nothing
  * else makes it, and until Nov 10 nothing did, so no piece was ever cut (JJ's
  * Mac, 104 times in six hours: "Error opening output files: No such file or
  * directory") and a long video's picture came through the stream for good.
+ *
+ * Its picture is copied from this Mac's own files of the piece (the head and
+ * its fragment), its first frame at time 0. Until Nov 18 it was cut from the
+ * loopback stream with -ss/-t, which FFmpeg can't seek, so it copied every
+ * frame from the video's start: on Sphe's M4 piece 36 of a 40-minute video
+ * held 53,244 frames (955 MB for a minute), and the window's copies filled
+ * the disk three times in a night (12.5 GB, then 16 GB in a quarter of an hour).
  */
-async function cutWhole(url: string, from: number, to: number, out: string): Promise<void> {
+async function cutWhole(head: string, video: string, out: string): Promise<void> {
   const part = out.replace(/\.mp4$/, ".part.mp4");
   try {
     fs.mkdirSync(out.slice(0, out.lastIndexOf("/")), { recursive: true });
-    await cut(url, from, to, part, new AbortController().signal);
+    await tools.run(
+      [tools.ffmpeg(), "-v", "error", "-nostdin", "-y", "-protocol_whitelist", "file,concat", "-i", `concat:${head}|${video}`, "-map", "0:v:0", "-c:v", "copy", "-an", "-sn", "-dn", part],
+      { timeoutMs: 5 * 60_000 },
+    );
     fs.renameSync(part, out);
   } finally {
     fs.rmSync(part, { force: true });
@@ -121,8 +132,9 @@ function cutNext(): void {
     if (next === undefined) return;
     if (cutting.has(next.out) || isFile(next.out)) continue;
     cutting.add(next.out);
-    void hooks
-      .cut(next.url, next.from, next.to, next.out)
+    void pieces
+      .pictureFiles(next.context, next.base, next.n)
+      .then(({ head, video }) => hooks.cut(head, video, next.out))
       .catch((error: unknown) => {
         cutFailed.set(next.out, Date.now());
         diag.warn("preview", `a piece for the window (${next.out}) wasn't cut: ${diag.messageOf(error)}`);
@@ -142,7 +154,7 @@ function cutNext(): void {
  * Only those: a cut piece is a second copy of its minute of the preview (a
  * two-hour interview's, 3.6 GB), and an edit plays a part of it.
  */
-async function pieceExcerpts(cache: string, base: string, url: string, played: [number, number][]): Promise<{ here: NativeExcerpt[]; coming: boolean }> {
+async function pieceExcerpts(cache: string, base: string, played: [number, number][]): Promise<{ here: NativeExcerpt[]; coming: boolean }> {
   const context = cloudMedia.piecesHere(cache);
   let layout: pieces.Layout;
   try {
@@ -173,8 +185,7 @@ async function pieceExcerpts(cache: string, base: string, url: string, played: [
     if (isFile(path) || Date.now() - (cutFailed.get(path) ?? 0) < RETRY_MS) continue;
     coming = true;
     if (!pieces.pictureHere(context, base, n) || cutting.has(path) || cutsWaiting.some((one) => one.out === path)) continue;
-    const [from, to] = span(n);
-    cutsWaiting.push({ url, from, to, out: path });
+    cutsWaiting.push({ context, base, n, out: path });
   }
   cutNext();
   return { here: out, coming };
@@ -239,7 +250,7 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
             streamed.add(key);
           }
           else if (shown.has(media.id)) {
-            const { here, coming } = await pieceExcerpts(cache, base, url, played.get(media.id) ?? []);
+            const { here, coming } = await pieceExcerpts(cache, base, played.get(media.id) ?? []);
             if (here.length > 0) excerpts[media.id] = here;
             if (coming) piecesComing = true;
           }

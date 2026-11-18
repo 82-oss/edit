@@ -15,7 +15,8 @@ export interface AgentEntry {
   /** "subagent": a sub-agent's card (its chat key in `detail`), opened to view its own chat. */
   /** "thinking": a reasoning block. `status` "running" while it is still being written. */
   /** "compact": Claude Code compacting the conversation; `detail` its sizes, {pre, post} tokens, once done. */
-  kind: "user" | "assistant" | "tool" | "error" | "subagent" | "thinking" | "compact";
+  /** "note": a plain line of Edit's own after a turn ("Muted 3 house words in the narration."). */
+  kind: "user" | "assistant" | "tool" | "error" | "subagent" | "thinking" | "compact" | "note";
   text: string;
   tool?: string;
   status?: "running" | "done" | "failed" | "stopped";
@@ -27,6 +28,8 @@ export interface AgentEntry {
   attachments?: { name: string; kind: FileKind; media?: string; file?: string; url?: string | null }[];
   /** A person's message: the id this page sent it with (`sendToAgent`). */
   send_id?: string;
+  /** "edit": a turn Edit started on a background event (a removal finished), shown as Edit's own line, not a bubble of the person's. */
+  by?: "edit";
   /** A message on screen before the chat has it (sentNow.ts): on its way, or it didn't go (`failure` why; `offline`, no answer). */
   pending?: "sending" | "failed";
   failure?: string;

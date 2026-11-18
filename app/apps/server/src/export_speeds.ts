@@ -23,6 +23,8 @@ export interface Speeds {
   copy_spv?: number;
   /** Bytes a second an upload goes at. */
   upload_bps?: number;
+  /** Bytes a second footage comes down from the cloud at (footage_ready.ts). */
+  download_bps?: number;
 }
 
 /** How far each new measurement moves its figure. */
@@ -77,6 +79,12 @@ export function noteExport(home: string, frames: number, seconds: number): void 
 export function noteCopy(home: string, videoSeconds: number, seconds: number): void {
   if (videoSeconds < 5 || seconds < 0.5) return;
   note(home, "copy_spv", seconds / videoSeconds);
+}
+
+/** Footage coming down: `bytes` in `seconds` (a few seconds of a project being got ready here). */
+export function noteDownload(home: string, bytes: number, seconds: number): void {
+  if (bytes < 8_000_000 || seconds < 2) return;
+  note(home, "download_bps", bytes / seconds);
 }
 
 /** An upload under way, by project: its first moment and bytes, and where it is now. */

@@ -43,6 +43,7 @@ import { UserWords } from "./Quotes";
 import { NoteQueue } from "./NoteQueue";
 import { ProblemView } from "./ProblemView";
 import { Button, cx, Modal } from "./ui";
+import { RemovalRow } from "./RemovalRow";
 import { ClaudeSetupCard } from "./ClaudeSetupCard";
 import { ClaudeMark } from "./ClaudeMark";
 import { MOD, THIS_MACHINE } from "../lib/platform";
@@ -180,6 +181,8 @@ function MainAgentPanel() {
   const loaded = useAgent((state) => state.loaded);
   const failed = useAgent((state) => state.failed);
   const waiting = useAgent((state) => state.queue);
+  // A channel's project: what its lesson takes out of the footage runs in the background (RemovalRow).
+  const channel = useEditor((state) => typeof state.project?.channel === "string" && state.project.channel !== "");
   const reload = () => projectId !== undefined && void openAgent(projectId);
   // The message just sent shows at once (sendToAgent holds it), until the chat (or its queue) has it by its id.
   const { entries } = useSentNow(projectId ?? "", chat, waiting);
@@ -227,6 +230,8 @@ function MainAgentPanel() {
       ) : (
         <EditTimes>
           <ChatTurns turns={turns} known={known} />
+          {/* Removal under way in the background: pinned at the end, between turns. */}
+          {projectId !== undefined && <RemovalRow projectId={projectId} marked={channel} running={running} />}
         </EditTimes>
       )}
     </ChatShell>
@@ -364,7 +369,8 @@ const TurnView = memo(function TurnView({ turn, known, thinking: said }: { turn:
           <SentFiles files={turn.user.attachments.map((one) => ({ name: one.name, kind: one.kind, url: one.url ?? (one.kind === "image" && one.media !== undefined && project !== undefined ? mediaUrl(project, one.media, "proxy") : null) }))} />
         </motion.div>
       )}
-      {turn.user && (
+      {/* A turn Edit started itself (a removal finished) shows only the agent's work and answer: never as the person's message. */}
+      {turn.user && turn.user.by !== "edit" && (
         <motion.div
           {...appear(fresh(turn.user.id) && !turn.user.id.startsWith("user-"))}
           className="mb-1 ml-8 max-w-[calc(100%-2rem)] self-end rounded-2xl bg-raised px-3 py-2 text-[13px] whitespace-pre-wrap text-fg ring-1 ring-line [overflow-wrap:anywhere]"
@@ -881,6 +887,8 @@ function EntryView({ entry, muted, fresh }: { entry: AgentEntry; muted?: boolean
   if (entry.kind === "compact") return <CompactLine entry={entry} />;
   // Stopped by the person: a line across the chat where it ended, as a compaction's (Sphe, Nov 12), not a problem card. Steered, there's none.
   if (entry.kind === "error" && entry.text.trim() === "Stopped.") return <ChatDivider label="Stopped" />;
+  // Edit's own line after a turn (house_words_pass.ts): quiet, under the answer.
+  if (entry.kind === "note") return <div className="px-1.5 text-[12px] text-muted">{entry.text}</div>;
   if (entry.kind === "error") {
     const resolved = entry.status === "done";
     return (

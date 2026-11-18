@@ -134,14 +134,15 @@ test("a pieced proxy's pieces here that the timeline plays are cut into files th
     write(localPath(cache, `${base}/layout.json`), JSON.stringify(layout));
     write(localPath(cache, `${base}/video/1.m4s`), "piece");
     write(localPath(cache, `${base}/video/5.m4s`), "piece");
+    write(localPath(cache, `${base}/head.mp4`), "head");
     await store.update(id, "test", (p) => {
       p.media.push({ ...media({ id: "long", name: "long.mp4", path: "https://r2.example/long", kind: "video", duration: 7200 }), cloud: { proxy: key } } as never);
       p.clips.push(clip({ id: "c1", type: "video", track: "v1", media: "long", start: 0, duration: 30, source_in: 65 }));
     });
     const url = `http://127.0.0.1:${app.port}${PLAYBACK_ROUTE}?key=${encodeURIComponent(key)}`;
-    const cuts: [string, number, number, string][] = [];
-    const cutting = spyOn(hooks, "cut").mockImplementation(async (from, start, end, out) => {
-      cuts.push([from, start, end, out]);
+    const cuts: [string, string, string][] = [];
+    const cutting = spyOn(hooks, "cut").mockImplementation(async (head, video, out) => {
+      cuts.push([head, video, out]);
       write(out, "cut");
     });
     const ask = async () => (await (await nativeSources(app, store.get(id)!.project)).json()) as { sources: Record<string, string>; excerpts: Record<string, unknown>; coming: boolean };
@@ -153,8 +154,8 @@ test("a pieced proxy's pieces here that the timeline plays are cut into files th
       expect(first.coming).toBe(true);
       await Bun.sleep(10);
       const file = localPath(cache, `${base}/native/1.mp4`);
-      // Only what the timeline plays is cut: a cut piece is a second copy of its minute.
-      expect(cuts).toEqual([[url, 60, 120, file]]);
+      // Only what the timeline plays is cut, from this Mac's own files of the piece: a cut piece is a second copy of its minute.
+      expect(cuts).toEqual([[localPath(cache, `${base}/head.mp4`), localPath(cache, `${base}/video/1.m4s`), file]]);
       const second = await ask();
       expect(second.sources.long).toBe(url);
       expect(second.excerpts).toEqual({ long: [{ from: 60, to: 120, path: file }] });
@@ -171,18 +172,39 @@ test("a pieced proxy's pieces here that the timeline plays are cut into files th
 
 // The real cut, where the test above stands in for it: nothing made the pieces' folder, so on a real Mac every cut
 // failed ("Error opening output files: No such file or directory", JJ's Mac, Nov 10) while that test passed.
-test.skipIf(Bun.which("ffmpeg") === null)("a piece is cut into a folder nothing has made yet, and lands whole", async () => {
+test.skipIf(Bun.which("ffmpeg") === null)("a piece is cut into a folder nothing has made yet, and lands whole: its own frames, from time 0", async () => {
   const { dir, cleanup } = fixtureHome("native-sources-cut");
   try {
+    // A fragmented video of three one-second fragments, split as a pieced proxy keeps it: its head, then each fragment.
     const footage = `${dir}/footage.mp4`;
-    const made = Bun.spawnSync(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=d=4:s=160x90:r=30", "-g", "30", "-pix_fmt", "yuv420p", footage]);
+    const made = Bun.spawnSync(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc=d=3:s=160x90:r=30", "-g", "30", "-pix_fmt", "yuv420p", "-movflags", "frag_keyframe+empty_moov+default_base_moof", footage]);
     expect(made.exitCode).toBe(0);
+    const bytes = fs.readFileSync(footage);
+    const boxes: { type: string; at: number; size: number }[] = [];
+    for (let at = 0; at < bytes.length; ) {
+      const size = bytes.readUInt32BE(at);
+      boxes.push({ type: bytes.toString("latin1", at + 4, at + 8), at, size });
+      at += size;
+    }
+    const moov = boxes.find((box) => box.type === "moov")!;
+    const head = `${dir}/head.mp4`;
+    fs.writeFileSync(head, bytes.subarray(0, moov.at + moov.size));
+    const moofs = boxes.filter((box) => box.type === "moof");
+    expect(moofs.length).toBe(3);
+    // The second fragment: its moof and mdat.
+    const second = `${dir}/1.m4s`;
+    fs.writeFileSync(second, bytes.subarray(moofs[1]!.at, moofs[2]!.at));
     const out = `${dir}/pieces/youtube/abc/native/1.mp4`;
-    await hooks.cut(footage, 1, 3, out);
-    expect(fs.statSync(out).size).toBeGreaterThan(1000);
+    await hooks.cut(head, second, out);
     expect(fs.readdirSync(`${dir}/pieces/youtube/abc/native`)).toEqual(["1.mp4"]);
+    // Its one second alone, starting at 0 (Nov 18: cut from the stream, a piece held every frame before it too).
+    const probe = Bun.spawnSync(["ffprobe", "-v", "error", "-select_streams", "v", "-count_packets", "-show_entries", "stream=nb_read_packets:format=start_time,duration", "-of", "json", out]);
+    const read = JSON.parse(probe.stdout.toString()) as { streams: { nb_read_packets: string }[]; format: { start_time: string; duration: string } };
+    expect(Number(read.streams[0]!.nb_read_packets)).toBe(30);
+    expect(Number(read.format.start_time)).toBe(0);
+    expect(Number(read.format.duration)).toBeCloseTo(1, 1);
     // One that fails leaves nothing the window would take for a piece.
-    await expect(hooks.cut(`${dir}/missing.mp4`, 0, 1, `${dir}/pieces/youtube/abc/native/2.mp4`)).rejects.toThrow();
+    await expect(hooks.cut(head, `${dir}/missing.m4s`, `${dir}/pieces/youtube/abc/native/2.mp4`)).rejects.toThrow();
     expect(fs.readdirSync(`${dir}/pieces/youtube/abc/native`)).toEqual(["1.mp4"]);
   } finally {
     cleanup();

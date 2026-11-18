@@ -341,3 +341,111 @@ pub fn text_block(text: String, px: f64, weight: u32, line_height: f64) -> napi:
         Ok(vec![width, height])
     })
 }
+
+/// A channel's see-through watermark learned from footage that carries it
+/// (the engine's watermark.rs `learn`): in `hint` (shares, x0 y0 x1 y1) when
+/// the team showed where, else wherever a see-through mark stays put, never in
+/// `avoid` (the camera's stamp). The model as JSON text, kept with the channel.
+#[napi(
+    ts_args_type = "source: string, size: [number, number], duration: number, hint: Box | null, avoid: Box[], onProgress: (progress: number) => void",
+    ts_return_type = "Promise<string>"
+)]
+pub async fn watermark_learn(
+    source: String,
+    size: Vec<u32>,
+    duration: f64,
+    hint: Option<Vec<f64>>,
+    avoid: Vec<Vec<f64>>,
+    on_progress: crate::Progress,
+) -> napi::Result<String> {
+    crate::blocking("learning a watermark", move || {
+        edit_engine::util::background_thread();
+        let size = pair(&size, "size")?;
+        let hint = hint.map(|one| shares(&one)).transpose()?;
+        let avoid = avoid
+            .iter()
+            .map(|one| shares(one))
+            .collect::<Result<Vec<_>, _>>()?;
+        let model = edit_engine::watermark::learn(
+            Path::new(&source),
+            size,
+            duration,
+            hint,
+            &avoid,
+            &|progress| {
+                crate::report(&on_progress, progress);
+            },
+        )?;
+        serde_json::to_string(&model).map_err(|error| error.to_string())
+    })
+    .await
+}
+
+/// One stretch of footage to take a watermark out of.
+#[napi(object)]
+pub struct WatermarkPiece {
+    pub source: String,
+    #[napi(ts_type = "[number, number]")]
+    pub size: Vec<u32>,
+    pub fps: f64,
+    /// Source seconds [from, to): the strip's first frame is `from`.
+    pub from: f64,
+    pub to: f64,
+    /// The channel's model (JSON text, from `watermarkLearn`).
+    pub model: String,
+    /// Never touched (shares): the camera's stamp.
+    #[napi(ts_type = "Box[]")]
+    pub keep: Vec<Vec<f64>>,
+    /// Where the strip goes (an mp4: the restored box over its alpha).
+    pub out: String,
+}
+
+/// Takes the watermark out of a piece (the engine's watermark.rs `remove`):
+/// what it did, or null when the mark isn't in that stretch (nothing written).
+#[napi(
+    ts_args_type = "piece: WatermarkPiece, onProgress: (progress: number) => void",
+    ts_return_type = "Promise<WatermarkRemoved | null>"
+)]
+pub async fn watermark_remove(
+    piece: WatermarkPiece,
+    on_progress: crate::Progress,
+) -> napi::Result<Option<serde_json::Value>> {
+    crate::blocking("taking a watermark out", move || {
+        edit_engine::util::background_thread();
+        let (width, height) = pair(&piece.size, "size")?;
+        let model: edit_engine::watermark::Model = serde_json::from_str(&piece.model)
+            .map_err(|error| format!("the watermark's model doesn't read: {error}"))?;
+        let keep = piece
+            .keep
+            .iter()
+            .map(|one| shares(one))
+            .collect::<Result<Vec<_>, _>>()?;
+        let footage = edit_engine::watermark::Footage {
+            width,
+            height,
+            fps: piece.fps,
+        };
+        let removed = edit_engine::watermark::remove(
+            Path::new(&piece.source),
+            footage,
+            piece.from,
+            piece.to,
+            &model,
+            &keep,
+            Path::new(&piece.out),
+            &|progress| {
+                crate::report(&on_progress, progress);
+            },
+        )?;
+        removed
+            .map(|one| serde_json::to_value(one).map_err(|error| error.to_string()))
+            .transpose()
+    })
+    .await
+}
+
+fn shares(values: &[f64]) -> Result<[f64; 4], String> {
+    values
+        .try_into()
+        .map_err(|_| "a box is four numbers".to_owned())
+}

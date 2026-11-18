@@ -44,6 +44,8 @@ const PAGE = 35;
 export const hooks = {
   /** A page as the browser renders it (scripts run), from a fresh profile that's deleted afterwards. */
   dump: (url: string, waitMs?: number): Promise<string> => chromeDump(url, waitMs),
+  /** Claude's own web search, when DuckDuckGo won't answer. */
+  claudeSearch: (query: string): Promise<Found[]> => claudeSearch(query),
   /** How long a page that ran out of time waits before it's asked once more. */
   againAfterMs: 5_000,
 };
@@ -383,7 +385,71 @@ async function chromeDump(url: string, waitMs = 6000): Promise<string> {
 }
 
 /** Web results for `query` (DuckDuckGo). */
+/**
+ * The web's results for `query`: DuckDuckGo first (free, from this Mac), and
+ * when it shows its bot check or finds nothing, Claude's own web search
+ * (Nov 17: DuckDuckGo challenged every search from the team's Macs and two
+ * edits' research found nothing; Bing, Brave, Mojeek and Startpage gave
+ * automated readers a check or unrelated results too, so no other free page
+ * is a way out).
+ */
 export async function searchWeb(query: string): Promise<Found[]> {
+  let found: Found[] = [];
+  let blocked: unknown = null;
+  try {
+    found = await duckDuckGo(query);
+  } catch (error) {
+    blocked = error;
+  }
+  if (found.length > 0) return found;
+  try {
+    const asked = await hooks.claudeSearch(query);
+    if (asked.length > 0) diag.info("research", `searched with Claude (DuckDuckGo ${blocked === null ? "found nothing" : "showed its bot check"})`);
+    return asked;
+  } catch (error) {
+    diag.warn("research", `searching with Claude: ${diag.messageOf(error)}`);
+    if (blocked !== null) throw blocked;
+    return [];
+  }
+}
+
+const CLAUDE_SEARCH_SCHEMA = {
+  type: "object",
+  properties: {
+    results: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { title: { type: "string" }, url: { type: "string" }, snippet: { type: "string" } },
+        required: ["title", "url", "snippet"],
+      },
+    },
+  },
+  required: ["results"],
+};
+
+/** Up to ten results for `query` from Claude's WebSearch, each as the search gave it (never made up). */
+async function claudeSearch(query: string): Promise<Found[]> {
+  const claude = await import("./writer/claude.ts");
+  const answer = await claude.askPatiently({
+    model: "haiku",
+    system: "You are a web search. Run WebSearch for the query exactly as given (one search, more only if it found nothing). Return up to ten of its results, best first, each with its title, its URL exactly as the search gave it, and a one- or two-sentence snippet of what the page says. Never invent a result or a URL.",
+    prompt: query,
+    schema: CLAUDE_SEARCH_SCHEMA,
+    web: true,
+    maxTurns: 6,
+    timeoutMs: 120_000,
+    label: "Claude haiku searching the web",
+  });
+  const rows = (answer.structured?.results ?? []) as { title?: unknown; url?: unknown; snippet?: unknown }[];
+  return rows.flatMap((row) =>
+    typeof row.url === "string" && row.url.startsWith("http") && typeof row.title === "string" && row.title.trim() !== ""
+      ? [{ title: row.title.trim(), url: row.url, snippet: typeof row.snippet === "string" ? row.snippet.trim() : "" }]
+      : [],
+  );
+}
+
+async function duckDuckGo(query: string): Promise<Found[]> {
   const page = await hooks.dump(`https://html.duckduckgo.com/html/?q=${seams.library.encode(query)}`);
   const found: Found[] = [];
   for (const block of page.split('class="result__a"').slice(1)) {

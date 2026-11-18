@@ -2310,6 +2310,14 @@
         "start": {
           "description": "Seconds on the timeline (default 0).",
           "type": "number"
+        },
+        "look": {
+          "description": "The channel's caption look, as its teaching says: \"house\" (the speaker's colour in a see-through box) or \"in_video\" (Gabarito in the speaker's colour, a soft shadow, no box). Kept on the project: its subtitles follow it too.",
+          "enum": [
+            "house",
+            "in_video"
+          ],
+          "type": "string"
         }
       },
       "required": [],
@@ -2322,11 +2330,10 @@
     "inputSchema": {
       "properties": {
         "burned_in": {
-          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours. \"remove\" lays ours the same way, their band blurred until Edit takes their subtitles out of the picture (the person starts that once the edit is done; you do nothing more). Either only for a channel whose taught style says so.",
+          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours: only for a channel whose taught style says so. A channel taught to take theirs out (its removal lesson, teach_removal) has them blurred and ours laid by itself, until Edit takes theirs out.",
           "enum": [
             "leave_off",
-            "cover",
-            "remove"
+            "cover"
           ],
           "type": "string"
         },
@@ -2349,6 +2356,14 @@
         "missing_only": {
           "type": "boolean",
           "description": "Add missing lines without replacing existing subtitles or captions (recovery). Default false."
+        },
+        "look": {
+          "description": "The channel's subtitle look, as its teaching says: \"house\" (white words in a box, the speaker's label above in their colour) or \"in_video\" (white Gabarito, a soft shadow, no box or label). Kept on the project: later runs (and the intro's captions) follow it.",
+          "enum": [
+            "house",
+            "in_video"
+          ],
+          "type": "string"
         }
       },
       "required": [],
@@ -2513,11 +2528,10 @@
     "inputSchema": {
       "properties": {
         "burned_in": {
-          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours. \"remove\" lays ours the same way, their band blurred until Edit takes their subtitles out of the picture (the person starts that once the edit is done; you do nothing more). Either only for a channel whose taught style says so.",
+          "description": "Where the footage already has subtitles burned into its picture (get_edit_context's media and burned_subtitles say where), ours are left off there (\"leave_off\", the default). \"cover\" blurs their band (stuck to each clip) and lays ours: only for a channel whose taught style says so. A channel taught to take theirs out (its removal lesson, teach_removal) has them blurred and ours laid by itself, until Edit takes theirs out.",
           "enum": [
             "leave_off",
-            "cover",
-            "remove"
+            "cover"
           ],
           "type": "string"
         },
@@ -4248,6 +4262,10 @@
             "channel"
           ],
           "type": "string"
+        },
+        "settled": {
+          "description": "Only after a remember was refused for contradicting what's taught: the person's answer on which holds, quoted.",
+          "type": "string"
         }
       },
       "required": [
@@ -4258,6 +4276,209 @@
       "type": "object"
     },
     "name": "remember"
+  },
+  {
+    "description": "Teach what this channel takes out of its footage's picture, and when, as the person says. Examples: \"we only want their subtitles removed\", \"only the watermarks\", \"subtitles and the 'Actual case footage' labels, keep the camera stamp\", \"remove watermarks only when we ask\", \"remove watermarks automatically after import\". One lesson of the channel's edit style, kept for its group (every channel in it) unless for says this channel alone. A part on means theirs out wherever a footage file actually has it: Edit looks at every file on the timeline itself (their subtitles and text read off it, each file's own see-through mark found without an example; a compilation's files come from many re-uploaders, most with none) and does nothing to a file without. Each part given is set (and when it runs: automatically after import, or only when someone asks), the others stay; the camera's own stamp is never taken out. Examples are optional and only help: give one when the person shows one, a second of a footage file (media and at) or a picture from the chat (picture: its file), with what to take out or keep there and where (box, shares of the picture); its words are read there, a watermark's box is a hint for that file. Untaught, nothing is taken out (theirs are left, ours stay off them). Edit does the rest itself as footage is cut. A teacher's to do.",
+    "inputSchema": {
+      "properties": {
+        "clear_examples": {
+          "description": "Forget the examples kept before (the person said they no longer hold)",
+          "type": "boolean"
+        },
+        "examples": {
+          "description": "At most 6: what the person showed",
+          "items": {
+            "properties": {
+              "action": {
+                "enum": [
+                  "remove",
+                  "keep"
+                ],
+                "type": "string"
+              },
+              "at": {
+                "description": "Seconds into that file",
+                "type": "number"
+              },
+              "box": {
+                "description": "Where: x0, y0, x1, y1 as shares of the picture from its top left",
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "enum": [
+                  "subtitles",
+                  "watermarks",
+                  "text",
+                  "stamp"
+                ],
+                "type": "string"
+              },
+              "media": {
+                "description": "A footage file of this project (its media id)",
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              },
+              "picture": {
+                "description": "Or a picture from the chat: its file",
+                "type": "string"
+              },
+              "text": {
+                "description": "Its words, when they're words",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "kind"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "for": {
+          "description": "In a grouped channel: \"group\" (the default) keeps it for every channel in the group; \"channel\" for this channel alone, when the person says it's for this one.",
+          "enum": [
+            "group",
+            "channel"
+          ],
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        },
+        "reason": {
+          "description": "What the person said, quoted",
+          "type": "string"
+        },
+        "subtitles": {
+          "description": "Their subtitles burned into the footage: taken out (true) or left (false)",
+          "type": "boolean"
+        },
+        "text": {
+          "description": "Their labels and other text laid over the picture (\"Actual case footage\", \"OFFICER 11\"), never the camera's own stamp",
+          "type": "boolean"
+        },
+        "watermarks": {
+          "description": "Their see-through marks (a channel's name or logo laid faintly over the picture), each file's own, wherever one has one",
+          "type": "boolean"
+        },
+        "when": {
+          "description": "When each part runs, as the person says: \"automatic\" (by itself on every footage file as it's cut: \"remove watermarks automatically after import\") or \"asked\" (only once someone asks in the chat, then start_removal: \"remove watermarks only when we ask\"). Parts turned on run automatically unless said.",
+          "properties": {
+            "subtitles": {
+              "enum": [
+                "automatic",
+                "asked"
+              ],
+              "type": "string"
+            },
+            "watermarks": {
+              "enum": [
+                "automatic",
+                "asked"
+              ],
+              "type": "string"
+            },
+            "text": {
+              "enum": [
+                "automatic",
+                "asked"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "teach_removal"
+  },
+  {
+    "description": "The pieces back from taking a channel's taught overlays out of its footage (their subtitles, text, watermark: see get_edit_context's removal), each listed, and the newest ones you haven't seen shown before (left) and after (right). Look at each: their text or mark gone, the camera's stamp the same, no ghost or smear. Reject any that isn't clean (reject: [{piece, why}]): it's done once more, then blurred (a watermark left) and said to the person. Nothing to do for clean ones.",
+    "inputSchema": {
+      "properties": {
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        },
+        "reject": {
+          "description": "Pieces that aren't clean, by the names listed",
+          "items": {
+            "properties": {
+              "piece": {
+                "type": "string"
+              },
+              "why": {
+                "type": "string",
+                "description": "What's wrong, in a few words"
+              }
+            },
+            "required": [
+              "piece",
+              "why"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "name": "check_removal"
+  },
+  {
+    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"). Say where: whole (the whole project, and footage cut in later), media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask. It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal as they come back; exports wait for them.",
+    "inputSchema": {
+      "properties": {
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        },
+        "kinds": {
+          "description": "What to take out (default: the parts the lesson keeps for an ask)",
+          "items": {
+            "enum": [
+              "subtitles",
+              "watermarks",
+              "text"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "whole": {
+          "description": "The whole project (as it grows)",
+          "type": "boolean"
+        },
+        "media": {
+          "description": "Footage files of this project (media ids)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "from": {
+          "description": "Timeline seconds: from",
+          "type": "number"
+        },
+        "to": {
+          "description": "Timeline seconds: to",
+          "type": "number"
+        }
+      },
+      "type": "object"
+    },
+    "name": "start_removal"
   },
   {
     "description": "Read one of your skills in V2's cloud: the part of the edit it covers, as the team does it (Edit V2). Read it before working on that part, once per conversation; your instructions list them with when each fits.",
@@ -4347,7 +4568,7 @@
   },
   {
     "name": "other_channels",
-    "description": "The team's other channels and their edit styles (a channel's project only), for when the person points you at something another channel has or asks you to start from another channel's style: never otherwise. No arguments: the other channels, each with how much its edit style holds. channel: one channel's edit style, its lessons, effects and sounds. bring (with channel): one of them by name, or \"all\" for the whole style as this channel's base, copied into this channel's own edit style to change and rebrand here (what this channel has of its own already stays); an effect then comes in with use_from_library.",
+    "description": "The team's other channels and their edit styles (a channel's project only), for when the person points you at something another channel has or asks you to start from another channel's style: never otherwise. No arguments: the other channels, each with how much its edit style holds. channel: one channel's edit style, its lessons, effects and sounds. bring (with channel): one of them by name, or \"all\" for the whole style as this channel's base, copied into this channel's own edit style to change and rebrand here (what this channel has of its own already stays); an effect then comes in with use_from_library. A lesson that contradicts this channel's is left until the person says which holds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4369,6 +4590,10 @@
             "group",
             "channel"
           ],
+          "type": "string"
+        },
+        "settled": {
+          "description": "Only after a bring left lessons for contradicting this channel's: the person's answer on which holds, quoted.",
           "type": "string"
         }
       }

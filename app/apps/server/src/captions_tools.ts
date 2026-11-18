@@ -119,6 +119,7 @@ registerTool("caption_speakers", async ({ app, args, projectId }) => {
   const end = number(args.end);
   const from = start === null ? introFrom : frameOf(start, fps);
   const to = end === null ? introTo : frameOf(end, fps);
+  await captions.keepLook(app, projectId, args.look);
   const summary = await captions.captionSpeakers(app, projectId, from, to);
   return text(`captioned ${display(from / fps)}–${display(to / fps)}s: ${stableStringify(summary)}`);
 });

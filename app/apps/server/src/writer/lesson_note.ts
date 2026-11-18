@@ -9,6 +9,7 @@ import type { Script } from "@edit/types/writer";
 import * as beta from "../beta.ts";
 import * as diag from "../diag.ts";
 import { parent } from "../paths.ts";
+import * as teachingConflicts from "../teaching_conflicts.ts";
 import * as lanes from "../lanes.ts";
 import * as v2cloud from "../v2_cloud.ts";
 import * as cloud from "../cloud.ts";
@@ -67,6 +68,11 @@ export async function keep(script: Script, lesson: Record<string, unknown> | nul
       diag.info("lessons", `${script.title}: ${kept}`);
       return `\n\n${kept.replace(/: its agents have it.*$/u, ".")} This channel's next scripts have it.`;
     } catch (error) {
+      // It contradicts what the channel's scripts are taught: said, and kept only once the person says which holds.
+      if (error instanceof teachingConflicts.Clash) {
+        diag.info("lessons", `${script.title}: a lesson not kept: it contradicts ${error.conflicts.map((one) => one.skill).join(", ")}`);
+        return `\n\nI haven't kept that for later scripts: it goes against what this channel's scripts are taught already: ${teachingConflicts.plainly(error.conflicts)}. Say which holds, and change the other on the channel's page if it's the new one.`;
+      }
       diag.warn("lessons", `${script.title}: the channel's lesson wasn't kept: ${diag.messageOf(error)}`);
       // The agent's words for why (a teacher's to do, too long) are its own: the person reads a plain line.
       return v2cloud.teacher() ? "\n\nThat sounds like a lesson for this channel's scripts, but it couldn't be kept just now: say it again in a moment." : "";

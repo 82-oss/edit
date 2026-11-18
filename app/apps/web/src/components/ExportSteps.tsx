@@ -10,9 +10,13 @@ import { cx } from "./ui";
  * the right. The Export dialog and the Exports queue show this same list.
  */
 export function ExportSteps({ steps, className, small = false }: { steps: ExportStep[]; className?: string; small?: boolean }) {
-  const rows = rowsOf(steps);
+  return <StepList label="Export steps" rows={rowsOf(steps)} className={className} small={small} />;
+}
+
+/** Steps as rows, ticked, turning or waiting: the export's, and a project's footage coming here (FootageReady.tsx). */
+export function StepList({ label, rows, className, small = false }: { label: string; rows: StepRow[]; className?: string; small?: boolean }) {
   return (
-    <ol aria-label="Export steps" className={cx("overflow-hidden rounded-xl border border-line bg-panel", className)}>
+    <ol aria-label={label} className={cx("overflow-hidden rounded-xl border border-line bg-panel", className)}>
       {rows.map((row) => (
         <Row key={row.key} row={row} small={small} />
       ))}

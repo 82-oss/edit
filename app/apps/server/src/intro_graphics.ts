@@ -99,7 +99,7 @@ export function introCaptions(project: Project, args: Args): Record<string, unkn
   const [start, end] = span(args, "intro_captions");
   const emphasis = new Set(Array.isArray(args.emphasis) ? args.emphasis.filter((id): id is string => typeof id === "string") : []);
   const heard = (Array.isArray(args.heard) ? args.heard.filter((frame): frame is number => typeof frame === "number") : []).sort((a, b) => a - b);
-  const look = seams.captions.captionStyle(project.settings.width, project.settings.height);
+  const look = seams.captions.captionStyle(project.settings.width, project.settings.height, project.subtitle_look ?? null);
   const restyled: string[] = [];
   project.clips.forEach((clip, index) => {
     if (clip.type !== "text" || clip.start < start || clip.start >= end) return;

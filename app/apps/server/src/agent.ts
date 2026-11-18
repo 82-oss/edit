@@ -12,6 +12,7 @@
 // with it): no chat, no tools.
 
 import * as localPreviews from "./local_previews.ts";
+import { EDIT_EVENT } from "./edit_event.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
@@ -57,7 +58,7 @@ const MODELS_TTL_MS = 24 * 3600 * 1000;
 
 export interface Entry {
   id: string;
-  /** "user", "assistant", "tool", "error" or "thinking". */
+  /** "user", "assistant", "tool", "error", "thinking", or "note" (a line of Edit's own, `note`). */
   kind: string;
   text: string;
   tool?: string;
@@ -71,6 +72,8 @@ export interface Entry {
   attachments?: Attached[];
   /** A person's message: the id its page sent it with, so a send repeated (its answer lost) is told as the same one (media_tools.ts). */
   sendId?: string;
+  /** "edit": a turn Edit started on a background event (edit_event.ts), shown as Edit's own, not the person's. */
+  by?: "edit";
 }
 
 /**
@@ -206,6 +209,7 @@ function entryJson(item: Entry): Record<string, unknown> {
   if (item.detail !== undefined) out.detail = item.detail;
   if (item.attachments !== undefined) out.attachments = item.attachments;
   if (item.sendId !== undefined) out.send_id = item.sendId;
+  if (item.by !== undefined) out.by = item.by;
   out.at = item.at;
   out.updated = item.updated;
   return out;
@@ -780,6 +784,12 @@ export class Agents implements seams.AgentPanel {
     return sorted({ entries: chat.entries.map(entryJson), running: chat.running, model: chat.model, effort: chat.effort, model_name: this.modelName(project), revising: this.revising(project), queue: chat.queue.map(queuedJson) });
   }
 
+  /** One plain line of Edit's own at the end of a project's chat (house_words_pass.ts: "Muted 3 house words in the narration."): the person's alone, never sent to the agent. */
+  note(project: string, text: string): void {
+    this.upsert(project, entry({ id: newId("note"), kind: "note", status: "done", text }));
+    this.save(project);
+  }
+
   /** The agent's `new_chat` (the user asked for one): this chat goes when the turn now running ends. */
   resetAfterTurn(project: string): void {
     this.resetAfter.add(project);
@@ -1131,7 +1141,7 @@ export class Agents implements seams.AgentPanel {
       chat.effort = effort;
       chat.provider = "claude";
     }
-    if (!replay) this.upsert(project, entry({ id: newId("user"), kind: "user", text, ...(attached.length > 0 ? { attachments: attached } : {}), ...(sendId === undefined ? {} : { sendId }) }));
+    if (!replay) this.upsert(project, entry({ id: newId("user"), kind: "user", text, ...(attached.length > 0 ? { attachments: attached } : {}), ...(sendId === undefined ? {} : { sendId }), ...(text.startsWith(EDIT_EVENT) ? { by: "edit" as const } : {}) }));
     this.save(project);
     // The once-per-nightly update finishes before a new CLI is started.
     // Sign-in failures below keep this already-visible message for recovery.
@@ -2211,6 +2221,7 @@ export function readChat(text: string): Chat {
       const attachments = savedAttached(fields.attachments);
       if (attachments !== undefined) read.attachments = attachments;
       if (typeof fields.send_id === "string") read.sendId = fields.send_id;
+      if (fields.by === "edit") read.by = "edit";
       chat.entries.push(read);
     }
   }

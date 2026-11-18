@@ -108,7 +108,8 @@ impl FontBook {
 
 /// Fonts used by Edit. Geist, Montserrat, Reenie Beanie, VT323 (horror's VHS
 /// lettering), Tinos (its serif place names) and Arimo (its dates and quotes,
-/// static weights cut from the variable font) are SIL OFL 1.1.
+/// static weights cut from the variable font) and Gabarito (Bold cut from the
+/// variable font: the in-video subtitle look) are SIL OFL 1.1.
 /// Akwe Pro is the team's commentary reference face; see assets/commentary/README.md
 /// for the review-build source and its separate distribution licence requirement.
 /// Drawn from where a text's own face has no glyph: Noto Sans JP (SIL OFL
@@ -131,6 +132,7 @@ pub const BUNDLED_FONTS: &[(&str, u16, &str)] = &[
     ("Tinos", 700, "Tinos-Bold.ttf"),
     ("Arimo", 400, "Arimo-Regular.ttf"),
     ("Arimo", 700, "Arimo-Bold.ttf"),
+    ("Gabarito", 700, "Gabarito-Bold.ttf"),
     ("Noto Sans JP", 700, "NotoSansJP-Bold.ttf"),
 ];
 
@@ -152,6 +154,7 @@ pub fn bundled_font_bytes(file: &str) -> Option<&'static [u8]> {
         "Tinos-Bold.ttf" => include_bytes!("../fonts/Tinos-Bold.ttf"),
         "Arimo-Regular.ttf" => include_bytes!("../fonts/Arimo-Regular.ttf"),
         "Arimo-Bold.ttf" => include_bytes!("../fonts/Arimo-Bold.ttf"),
+        "Gabarito-Bold.ttf" => include_bytes!("../fonts/Gabarito-Bold.ttf"),
         "NotoSansJP-Bold.ttf" => include_bytes!("../fonts/NotoSansJP-Bold.ttf"),
         _ => return None,
     })

@@ -174,7 +174,7 @@ const BENEATH_KEY = ".beneath.json";
 const beneathSlot = new Semaphore(1);
 
 /** The effect's clip, and the project as only the tracks below it: what it's laid over, or null when it isn't placed. */
-function under(project: Project, name: string): { start: number; end: number; project: Project; key: string } | null {
+function under(project: Project, name: string): { start: number; end: number; project: Project; key: string; legacy: string } | null {
   const media = project.media.find((one) => one.effect === name);
   if (media === undefined) return null;
   const clip = project.clips.find((one) => one.type === "video" && one.media === media.id);
@@ -185,11 +185,62 @@ function under(project: Project, name: string): { start: number; end: number; pr
   const clips = project.clips.filter((one) => below.has(one.track) && one.start < end && clipEnd(one) > start);
   const used = new Set(clips.map((one) => ("media" in one ? one.media : null)).filter((one): one is string => typeof one === "string"));
   const media_ = project.media.filter((one) => used.has(one.id));
-  const key = new Bun.CryptoHasher("sha256")
-    .update(stableStringify({ version: 1, settings: project.settings, start, end, clips, media: media_.map((one: Media) => ({ id: one.id, path: one.path, effect_key: one.effect_key ?? null })) }))
-    .digest("hex")
-    .slice(0, 16);
-  return { start, end, project: { ...project, clips, tracks: project.tracks.filter((one) => below.has(one.id)) }, key };
+  const hashed = (value: unknown) => new Bun.CryptoHasher("sha256").update(stableStringify(value)).digest("hex").slice(0, 16);
+  // Each footage by what it is (its content's id in the cloud), not where this computer keeps it: every computer, port
+  // and data folder gives a media a path of its own (cloud_media's resolver), so a key of paths was made again on each.
+  const key = hashed({ version: 2, settings: project.settings, start, end, clips, media: media_.map((one: Media) => ({ id: one.id, source: one.cloud?.source ?? one.path, effect_key: one.effect_key ?? null })) });
+  const legacy = hashed({ version: 1, settings: project.settings, start, end, clips, media: media_.map((one: Media) => ({ id: one.id, path: one.path, effect_key: one.effect_key ?? null })) });
+  return { start, end, project: { ...project, clips, tracks: project.tracks.filter((one) => below.has(one.id)) }, key, legacy };
+}
+
+// What's beneath an effect is told by its `.beneath.json`, which is part of its
+// code: a new one is a new render. So it's written only when what's beneath has
+// changed, never because this computer would have worded it otherwise. Until
+// Nov 17 its key had every footage's path, which is this computer's own: on
+// each computer (or data folder, or port) that opened a V2 project, every effect
+// drawn over footage had what's beneath it made again, its code changed by
+// that alone, and its render drawn again (kenobi, Nov 17: six of Cops Found 3
+// Bodies' effects, each time a new Edit opened it). Now a mark that isn't of
+// this computer's making, on an effect whose render is of its code, is taken
+// as what's beneath it now (`adopted`, kept in the cache), and only a change
+// from that makes it again.
+
+const ADOPTED = "beneath-adopted.json";
+
+/** Marks taken as they are, by `project/name`: the mark's text (its hash) and what was beneath then. */
+function readAdopted(cache: string): Record<string, { mark: string; key: string }> {
+  try {
+    return JSON.parse(fs.readFileSync(join(cache, ADOPTED), "utf8")) as Record<string, { mark: string; key: string }>;
+  } catch {
+    return {};
+  }
+}
+
+function writeAdopted(cache: string, adopted: Record<string, { mark: string; key: string }>): void {
+  fs.mkdirSync(cache, { recursive: true });
+  writeAtomic(join(cache, ADOPTED), JSON.stringify(adopted));
+}
+
+/** Whether a mark says what's beneath now (`found`), taking one made elsewhere (see above). */
+function markHolds(app: App, projectId: string, name: string, text: string | null, found: { key: string; legacy: string }): boolean {
+  if (text === null) return false;
+  let said: string | undefined;
+  try {
+    said = (JSON.parse(text) as { key?: string }).key;
+  } catch {
+    return false;
+  }
+  if (said === found.key || said === found.legacy) return true;
+  const cache = app.store.cacheDir();
+  const adopted = readAdopted(cache);
+  const id = `${projectId}/${name}`;
+  const mark = new Bun.CryptoHasher("sha256").update(text).digest("hex");
+  const taken = adopted[id];
+  if (taken !== undefined && taken.mark === mark) return taken.key === found.key;
+  if (!effects.rendersItsCode(app.store, projectId, name)) return false;
+  adopted[id] = { mark, key: found.key };
+  writeAdopted(cache, adopted);
+  return true;
 }
 
 /**
@@ -208,11 +259,14 @@ export async function beneath(app: App, projectId: string, name: string): Promis
     const fps = fpsOf(live.project);
     const seconds = (found.end - found.start) / fps;
     const keyFile = join(dir, BENEATH_KEY);
+    let text: string | null = null;
     try {
-      if ((JSON.parse(fs.readFileSync(keyFile, "utf8")) as { key?: string }).key === found.key && fs.existsSync(join(dir, BENEATH))) return { made: false, seconds };
+      text = fs.readFileSync(keyFile, "utf8");
     } catch {
-      // Never made, or unreadable: made now.
+      // Never made: made now.
     }
+    const holds = markHolds(app, projectId, name, text, found);
+    if (holds && fs.existsSync(join(dir, BENEATH))) return { made: false, seconds };
     const work = join(app.store.cacheDir(), "beneath");
     fs.mkdirSync(work, { recursive: true });
     const exported = join(work, `${projectId}-${name}-${found.key}.mp4`);
@@ -231,7 +285,8 @@ export async function beneath(app: App, projectId: string, name: string): Promis
       // Seekable as the page plays it: a keyframe every third of a second, as effect_footage's.
       await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", exported, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-g", "10", "-pix_fmt", "yuv420p", "-movflags", "+faststart", partial]);
       fs.renameSync(partial, join(dir, BENEATH));
-      writeAtomic(keyFile, JSON.stringify({ key: found.key }));
+      // The video alone when the mark still holds (it's never kept in the cloud: made again on each computer).
+      if (!holds) writeAtomic(keyFile, JSON.stringify({ key: found.key }));
     } finally {
       fs.rmSync(exported, { force: true });
       fs.rmSync(partial, { force: true });

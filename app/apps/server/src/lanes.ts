@@ -13,6 +13,7 @@
 
 import * as channels from "./channels.ts";
 import { groupRule, keepRule } from "./teaching.ts";
+import * as teachingConflicts from "./teaching_conflicts.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
 /** The lanes this module serves; the edit's is effect_tools'. */
@@ -164,6 +165,7 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
           text: { type: "string", description: "The lesson, whole: in the person's words, general (never about this one only)" },
           note: { type: "string", description: "Only for a longer part read when needed: when to read it (at most 160 characters)" },
           reason: { type: "string", description: "What the person said, quoted" },
+          settled: { type: "string", description: "Only after a remember was refused for contradicting what's taught: the person's answer on which holds, quoted" },
           for: FOR_ARG,
         },
         required: ["skill", "text", "reason"],
@@ -176,8 +178,8 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
     },
     {
       name: "other_channels",
-      description: `Another channel's ${word} style, only when the person points you at it or asks to start from it. No arguments: the other channels. channel: one channel's ${word} lessons. bring (with channel): a lesson's name, or "all" for the whole style as this channel's base, copied into this channel's own to change here (its group's, when it's in one, unless for says this channel alone; what's there already stays).`,
-      inputSchema: { type: "object", properties: { channel: { type: "string", description: "Its title, @handle or key" }, bring: { type: "string" }, for: FOR_ARG } },
+      description: `Another channel's ${word} style, only when the person points you at it or asks to start from it. No arguments: the other channels. channel: one channel's ${word} lessons. bring (with channel): a lesson's name, or "all" for the whole style as this channel's base, copied into this channel's own to change here (its group's, when it's in one, unless for says this channel alone; what's there already stays; a lesson that contradicts this channel's is left until the person says which holds).`,
+      inputSchema: { type: "object", properties: { channel: { type: "string", description: "Its title, @handle or key" }, bring: { type: "string" }, for: FOR_ARG, settled: { type: "string", description: "Only after a bring left lessons for contradicting this channel's: the person's answer on which holds, quoted" } } },
     },
   ];
   if (lane !== "script") {
@@ -249,11 +251,16 @@ async function remember(args: Record<string, unknown>, place: Place): Promise<st
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
   const most = part ? PART_MOST : MEMORY_MOST;
   if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part short: its rules, not their history" : "a line or two, in the person's words"}`);
-  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
+  // What it contradicts is said first, and kept only once the person says which holds (teaching_conflicts.ts).
+  const settled = typeof args.settled === "string" && args.settled.trim() !== "";
+  const clashes = settled ? [] : await teachingConflicts.conflicts(skill, args.text.trim(), lessonsOf(place));
+  if (clashes !== null && clashes.length > 0) throw new teachingConflicts.Clash(clashes);
+  const reason = settled ? `${args.reason.trim()} (settled against what was taught: ${String(args.settled).trim()})` : args.reason.trim();
+  const saved = await v2cloud.saveSkill(skill, args.text.trim(), reason, note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
   // Kept for the group while this channel has its own of that name: the channel's still wins here.
   const shadowed = kept.place !== v2cloud.laneKey(place.channel, place.lane) && lessonsOf(place).some((one) => one.name === skill && ownLesson(one, place));
   v2cloud.forgetSkills();
-  return `Kept as ${skill} (version ${saved.n}) in ${nameOf(place.channel)}'s ${WORD[place.lane]} style${kept.words === "" ? "" : `, ${kept.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}`;
+  return `Kept as ${skill} (version ${saved.n}) in ${nameOf(place.channel)}'s ${WORD[place.lane]} style${kept.words === "" ? "" : `, ${kept.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}${clashes === null ? teachingConflicts.UNCHECKED : ""}`;
 }
 
 // ---------------------------------------------------------------- another channel's style
@@ -305,18 +312,31 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
   const mineNow = new Set((await styleOf(mine, lane)).map((one) => `${one.kind}:${one.name}`));
   const brought: string[] = [];
   const kept: string[] = [];
+  // A lesson brought in that contradicts this channel's is said first, as a kept one is (teaching_conflicts.ts).
+  const settled = typeof args.settled === "string" && args.settled.trim() !== "";
+  const here = v2cloud.memories(channels.placesOf(mine, lane));
+  const clashing: teachingConflicts.Conflict[] = [];
   for (const item of wanted) {
     // What this channel has of its own already stays: bringing never writes over it.
     if (mineNow.has(`${item.kind}:${item.name}`)) {
       kept.push(item.name);
       continue;
     }
+    if (item.kind === "skill" && !settled) {
+      const text = (await v2cloud.version(item.key))?.version.text;
+      const found = typeof text === "string" ? await teachingConflicts.conflicts(item.name, text, here) : [];
+      if (found !== null && found.length > 0) {
+        clashing.push(...found.map((one) => ({ ...one, why: `${item.name}: ${one.why}` })));
+        continue;
+      }
+    }
     if (await v2cloud.copyItem(item, v2cloud.ownKey(item.kind as (typeof STYLE_KINDS)[number], place, item.name), `brought from ${from.title}'s ${word} style`)) brought.push(`${kindWord(item.kind)} ${item.name}`);
   }
   v2cloud.forgetSkills();
   return (
     (brought.length === 0 ? "Nothing new brought." : `Brought into this channel's own ${word} style${words === "" ? "" : ` (${words})`}, to change here: ${brought.join(", ")}.`) +
-    (kept.length > 0 ? ` This channel has its own ${kept.join(", ")} already, kept as they are.` : "")
+    (kept.length > 0 ? ` This channel has its own ${kept.join(", ")} already, kept as they are.` : "") +
+    (clashing.length > 0 ? `\n${teachingConflicts.refusal(clashing)} (Here: bring them again with settled.)` : "")
   );
 }
 

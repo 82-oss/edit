@@ -49,6 +49,7 @@ import * as firstPrompt from "./first_prompt.ts";
 import * as uploads from "./uploads.ts";
 import * as playbackRender from "./playback_render.ts";
 import * as playbackReady from "./playback_ready.ts";
+import * as footageReady from "./footage_ready.ts";
 import * as scrub from "./scrub.ts";
 import * as ranges from "./ranges.ts";
 import * as storyboard from "./storyboard.ts";
@@ -73,7 +74,9 @@ import * as channelMarks from "./channel_marks.ts";
 import * as beta from "./beta.ts";
 import * as effects from "./effects.ts";
 import * as exportSteps from "./export_steps.ts";
+import * as removalSchedule from "./removal_schedule.ts";
 import * as textRemoval from "./text_removal.ts";
+import * as watermarkRemoval from "./watermark_removal.ts";
 import * as effectCloud from "./effect_cloud.ts";
 import { BUILD, VERSION } from "./version.ts";
 import { jsonForSerde } from "./rust.ts";
@@ -107,6 +110,7 @@ export function buildRouter(): Router<App> {
   localFiles.routes(router);
   playbackRender.routes(router);
   playbackReady.routes(router);
+  footageReady.routes(router);
   scrub.routes(router);
   ranges.routes(router);
   storyboard.routes(router);
@@ -131,6 +135,8 @@ export function buildRouter(): Router<App> {
   beta.routes(router);
   effects.routes(router);
   textRemoval.routes(router);
+  removalSchedule.routes(router);
+  watermarkRemoval.routes(router);
   archive.routes(router);
   avatars.routes(router);
   router
@@ -1130,7 +1136,7 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
   // How far its effects' renders are, said as they go (Sphe, Nov 16: "I don't know how long that's going to take").
   let said = "";
   const tell = () => {
-    const line = effects.renderingLine(id) ?? "waiting for its effects to render";
+    const line = effects.renderingLine(id) ?? removalSchedule.exportLine(id) ?? "waiting for its effects to render";
     if (line !== said) row("queued", { waiting: (said = line) });
   };
   tell();

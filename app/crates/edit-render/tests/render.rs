@@ -295,6 +295,133 @@ fn renders_gradient_glowing_title_and_grade() {
     assert_eq!(renderer.read_output().unwrap(), pixels);
 }
 
+// The in-video look (captions.ts `inVideoStyle`, Nov 18): white Gabarito Bold, no box, a soft shadow falling down; an
+// intro caption the same in its speaker's colour. Saved as in_video_subtitle.png to look at.
+#[test]
+fn renders_in_video_subtitle_look() {
+    let (w, h) = (1920, 1080);
+    let Some(mut renderer) = renderer(w, h) else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut frame = vec![0_u8; (w * h * 4) as usize];
+    for (i, px) in frame.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let (x, y) = (
+            (i as u32 % w) as f32 / w as f32,
+            (i as u32 / w) as f32 / h as f32,
+        );
+        *px = [
+            (140.0 + 90.0 * x) as u8,
+            (150.0 + 60.0 * y) as u8,
+            (170.0 - 60.0 * x) as u8,
+            255,
+        ];
+    }
+    renderer.upload_video_rgba("m1", w, h, &frame);
+    let look = |color: Rgba| TextStyle {
+        font: "Gabarito".into(),
+        weight: 700,
+        size: 56.0,
+        color,
+        line_height: 1.15,
+        glow: Glow {
+            enabled: false,
+            color: None,
+            radius: 0.0,
+            strength: 0.0,
+        },
+        max_width: Some(1920.0 * 0.8),
+        background: None,
+        shadow: Some(TextShadow {
+            color: Rgba([0.0, 0.0, 0.0, 1.0]),
+            opacity: 0.85,
+            distance: 5.0,
+            angle: 180.0,
+            size: 2.0,
+            blur: 9.0,
+        }),
+        ..TextStyle::default()
+    };
+    let line = |clip: &str, text: &str, style: TextStyle, y: f32| Layer::Text {
+        clip: clip.into(),
+        text: text.into(),
+        style,
+        transform: Transform {
+            y,
+            ..Transform::default()
+        },
+        animation: TextAnimation::default(),
+        local_frame: 0.0,
+        opacity: 1.0,
+        shown_glyphs: None,
+    };
+    let scene = Scene {
+        width: w,
+        height: h,
+        layers: vec![
+            Layer::Video {
+                clip: "c1".into(),
+                media: "m1".into(),
+                source_time: 0.0,
+                transform: Transform::default(),
+                opacity: 1.0,
+                crop: Default::default(),
+                frame: None,
+                blend: Default::default(),
+                stacked: false,
+            },
+            line(
+                "c2",
+                "Ma'am, I need you to step out of the car right now.",
+                look(Rgba([1.0, 0.85, 0.1, 1.0])),
+                -200.0,
+            ),
+            line(
+                "s1",
+                "I didn't do anything, he hit me first, I swear.",
+                look(Rgba::WHITE),
+                432.0,
+            ),
+        ],
+    };
+    renderer.render(&scene);
+    let pixels = renderer.read_output().unwrap();
+    save("in_video_subtitle.png", w, h, &pixels);
+    let row_brightest = |y: u32| {
+        (300..1620)
+            .map(|x| {
+                let i = ((y * w + x) * 4) as usize;
+                pixels[i] as u32 + pixels[i + 1] as u32 + pixels[i + 2] as u32
+            })
+            .max()
+            .unwrap()
+    };
+    let row_darkest = |y: u32| {
+        (300..1620)
+            .map(|x| {
+                let i = ((y * w + x) * 4) as usize;
+                pixels[i] as u32 + pixels[i + 1] as u32 + pixels[i + 2] as u32
+            })
+            .min()
+            .unwrap()
+    };
+    // White words drawn on the subtitle row, with no box: the band beside the words keeps the footage's brightness.
+    let row = h / 2 + 432;
+    assert!(
+        (row - 20..row + 20).any(|y| row_brightest(y) > 740),
+        "white words on the subtitle row"
+    );
+    assert!(
+        (row - 20..row + 20).any(|y| row_darkest(y) < 200),
+        "their shadow"
+    );
+    let side = |y: u32| {
+        let i = ((y * w + 60) * 4) as usize;
+        pixels[i] as u32 + pixels[i + 1] as u32 + pixels[i + 2] as u32
+    };
+    assert!(side(row) > 400, "no box: the footage shows beside the line");
+}
+
 #[test]
 fn renders_repack_subtitle_style() {
     let (w, h) = (1920, 1080);

@@ -21,6 +21,7 @@ import { CloudBanner } from "./CloudBanner";
 import { ImportProblems, MissingBanner } from "./MissingBanner";
 import { TextRemovalLine } from "./TextRemovalLine";
 import { FootageBack } from "./FootageBack";
+import { FootageCard, FootageDialog, useFootage } from "./FootageReady";
 import { Timeline } from "./Timeline";
 import { TopBar } from "./TopBar";
 import { PROBLEM_BUTTON, ProblemView } from "./ProblemView";
@@ -108,6 +109,8 @@ export function Editor({ id }: { id: string }) {
 
   useShortcuts({ onImport: () => setImporting(true), onExport: () => setSharing(true) });
   useDropToChat();
+  // Footage not here enough to play smoothly from the start: a dialog over it until it is (FootageReady.tsx).
+  const footage = useFootage(id, project?.id === id);
 
   if (error !== null) {
     // Not this account's or gone (403, 404): trying again can't help; anything else can.
@@ -135,7 +138,7 @@ export function Editor({ id }: { id: string }) {
       </div>
     );
   }
-  if (!project || project.id !== id) {
+  if (!project || project.id !== id || footage.phase === "checking") {
     return (
       // Said, not just a dot: a long edit takes a while to open (the user, Oct 30: "we need a better loading view").
       <div className="flex h-full items-center justify-center">
@@ -181,6 +184,8 @@ export function Editor({ id }: { id: string }) {
       <FileBrowser open={importing} onClose={() => setImporting(false)} />
       <ShareDialog open={sharing} onClose={() => setSharing(false)} />
       <FootageBack />
+      {footage.phase === "dialog" && footage.answer && <FootageDialog answer={footage.answer} onOpen={footage.openNow} />}
+      <FootageCard answer={footage.card} />
     </div>
   );
 }
