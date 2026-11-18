@@ -1303,10 +1303,11 @@ async function answerIssue(issue: ScriptIssueRow, choice: Choice): Promise<boole
 
 /**
  * Whether Retry can help a stopped import: not one this build meets again, nor
- * one that asks a question Retry only asks again (a folder over a case's
- * limits, footage with no words heard, which would also be paid for again).
+ * one that asks a question Retry only asks again (footage with no words heard,
+ * which would also be paid for again). A folder an older Edit stopped as over
+ * a case's limits is retried whole: a case takes all its footage now.
  */
-const retries = (issue: ScriptIssueRow) => issue.retryHelps !== false && issue.decision?.kind !== "too_much" && issue.decision?.kind !== "no_speech";
+const retries = (issue: ScriptIssueRow) => issue.retryHelps !== false && issue.decision?.kind !== "no_speech";
 
 /**
  * What can be done about a stopped import, each in a dialog of its own: see
@@ -1578,7 +1579,7 @@ export function ImportDialog({ id, writing, issues, onClose }: { id: string | nu
   const why = problem ? `${problem.title}. ${problem.fix}`.trim() : null;
   const at = done ? STEPS.length : STEPS.findIndex((candidate) => candidate.key === step);
   const percent = done ? 100 : Math.floor(Math.max(0, Math.min(100, live ? creeping(live.id, live.percent, now) : (shown?.percent ?? 0))));
-  // A folder over a case's limits: its recordings to choose, in place of the steps (nothing has come down yet).
+  // A folder an older Edit stopped as over a case's limits: its recordings to choose, all ticked, in place of the steps (nothing has come down yet).
   const tooMuch = stopped?.decision?.kind === "too_much" ? stopped.decision : null;
   return (
     <Modal open={id !== null} onClose={onClose} width={560}>
@@ -1589,7 +1590,7 @@ export function ImportDialog({ id, writing, issues, onClose }: { id: string | nu
             {stopped ? (
               <>
                 <StartedBy by={stopped.createdBy} size={20} className="shrink-0" />
-                {tooMuch ? "This folder holds more than one case takes. Choose the recordings to bring in." : `Stopped ${stageWords(stopped.stage)}. It waits here until it's answered.`}
+                {tooMuch ? "Choose the recordings to bring in." : `Stopped ${stageWords(stopped.stage)}. It waits here until it's answered.`}
               </>
             ) : done ? (
               "The footage is in."

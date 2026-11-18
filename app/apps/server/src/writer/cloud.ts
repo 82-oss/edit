@@ -62,6 +62,16 @@ const PREFIX = "writer/scripts";
 /** Files bigger than this go up in parts of PART_SIZE. */
 const MULTIPART_OVER = 100_000_000;
 const PART_SIZE = 64 * 1024 * 1024;
+/**
+ * Parts whose links are asked for at once, just before they go up: a link
+ * lasts an hour (the relay's writer_cloud.ts). Asked 100 at a time (6.7 GB),
+ * on JJ's 8 Mbit/s line they ran out by the 55th part (an hour at 1 MB/s), so a
+ * preview over ~3.5 GB (a 26-hour case's is 11.9 GB) failed there and began
+ * again from part 1 every sync. Four go up in ~4 minutes there.
+ */
+const LINKS_AT_ONCE = 4;
+/** The least a slow line moves (bytes a millisecond, 400 kbit/s): what a script.json is given to go up or come down. */
+const SLOW_BYTES_PER_MS = 50;
 const BACKOFF_FIRST = 30_000;
 const BACKOFF_MAX = 3_600_000;
 const LESSONS_KEY = "writer/lessons.json";
@@ -392,8 +402,8 @@ async function upload(script: string, name: string, path: string, key: string, o
   const count = Math.ceil(size / PART_SIZE);
   const parts: { partNumber: number; etag: string }[] = [];
   try {
-    for (let first = 1; first <= count; first += 100) {
-      const numbers = Array.from({ length: Math.min(100, count - first + 1) }, (_, k) => first + k);
+    for (let first = 1; first <= count; first += LINKS_AT_ONCE) {
+      const numbers = Array.from({ length: Math.min(LINKS_AT_ONCE, count - first + 1) }, (_, k) => first + k);
       const urls = (await call("r2/multipart/urls", { key, uploadId, parts: numbers })).urls as Record<string, string>;
       for (const number of numbers) {
         const from = (number - 1) * PART_SIZE;
@@ -415,20 +425,44 @@ async function upload(script: string, name: string, path: string, key: string, o
 }
 
 async function uploadBytes(key: string, bytes: Uint8Array | string): Promise<void> {
-  const answer = await fetch(await presign(key, "PUT"), { method: "PUT", body: bytes, headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(60_000) }).catch((error: unknown) => {
+  // A 26-hour case is ~22 MB of words: a minute, or the time a slow line takes, whichever is longer.
+  const size = typeof bytes === "string" ? Buffer.byteLength(bytes) : bytes.length;
+  const answer = await fetch(await presign(key, "PUT"), { method: "PUT", body: bytes, headers: { "content-type": "application/json" }, signal: AbortSignal.timeout(Math.max(60_000, size / SLOW_BYTES_PER_MS)) }).catch((error: unknown) => {
     throw transferProblem(error, "script.json");
   });
   if (!answer.ok) throw new Problem(`The cloud refused script.json (${answer.status}).`);
 }
 
-/** What's at a key, or null when nothing is. */
+/** What's at a key, or null when nothing is: a minute to answer, then a minute for each chunk, so a big script.json on a slow line isn't cut off whole. */
 async function fetchBytes(key: string): Promise<Uint8Array | null> {
-  const answer = await fetch(await presign(key, "GET"), { signal: AbortSignal.timeout(60_000) }).catch((error: unknown) => {
-    throw transferProblem(error, key.split("/").pop() ?? "file");
-  });
-  if (answer.status === 404) return null;
-  if (!answer.ok) throw new Problem(`The cloud refused ${key.split("/").pop()} (${answer.status}).`);
-  return new Uint8Array(await answer.arrayBuffer());
+  const name = key.split("/").pop() ?? "file";
+  const stall = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const arm = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => stall.abort(new Error("no data for a minute")), 60_000);
+    timer.unref?.();
+  };
+  arm();
+  try {
+    const answer = await fetch(await presign(key, "GET"), { signal: stall.signal }).catch((error: unknown) => {
+      throw transferProblem(error, name);
+    });
+    if (answer.status === 404) return null;
+    if (!answer.ok || answer.body === null) throw new Problem(`The cloud refused ${name} (${answer.status}).`);
+    const chunks: Uint8Array[] = [];
+    try {
+      for await (const chunk of answer.body) {
+        arm();
+        chunks.push(chunk);
+      }
+    } catch (error) {
+      throw transferProblem(error, name);
+    }
+    return new Uint8Array(Buffer.concat(chunks));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Downloads a file beside its place, then moves it in whole. */

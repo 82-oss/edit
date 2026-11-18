@@ -54,12 +54,13 @@ export type Reuse = { url: string; title: string; after: number; footage?: strin
 
 export type Decision =
   | { kind: "failed_recordings"; summary: string; failed: { id: string; title: string; error: string }[]; total: number }
+  /** Asked only by an Edit from before Nov 18, when a case took at most 60 recordings and 20 hours: its limits are no longer read. */
   | {
       kind: "too_much";
       summary: string;
-      files: { id: string; title: string; size: number; durationMs: number | null; audio: boolean; tooLong: boolean }[];
-      maxFiles: number;
-      maxMs: number;
+      files: { id: string; title: string; size: number; durationMs: number | null; audio: boolean; tooLong?: boolean }[];
+      maxFiles?: number;
+      maxMs?: number;
     }
   | { kind: "no_speech"; summary: string; reason: "no_audio" | "no_words" };
 

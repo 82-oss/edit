@@ -154,9 +154,9 @@ async function addOne(app: App, dir: string, url: string, which: string, job: Jo
     const words: Word[] = heard === null ? [] : onClock(heard, startMs, lengthMs, null).map((word) => ({ ...word, id: `w-${crypto.randomUUID()}` }));
     const part: Part = { title, startMs, durationMs: lengthMs, audio: !found.video, url, ...shared };
     // The sound, extended: each 20 ms of the new footage after the old.
-    const resized = (values: ArrayLike<number>, length: number) => Array.from({ length }, (_, at) => values[at] ?? 0);
-    const peaks = resized(before, Math.floor(script.durationMs / 20));
-    peaks.push(...resized(added, Math.floor(lengthMs / 20)));
+    // One array, never `push(...added)`: a spread of a long video's peaks (2 M past ~11 h) overflows the stack.
+    const head = Math.floor(script.durationMs / 20);
+    const peaks = Array.from({ length: head + Math.floor(lengthMs / 20) }, (_, at) => (at < head ? before[at] : added[at - head]) ?? 0);
     // Into the script as it is now: only the footage, its words and sound are this job's to write.
     const now = store.read(dir);
     if (now.durationMs !== script.durationMs || (now.parts ?? []).length !== (script.parts ?? []).length || now.words.length !== script.words.length || now.revision !== script.revision) {

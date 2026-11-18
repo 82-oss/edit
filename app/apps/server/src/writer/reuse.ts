@@ -358,7 +358,8 @@ async function bringIn(app: App, dir: string, given: string[], job: Job): Promis
   // The sound, extended: each 20 ms of the new footage after the old.
   const resized = (values: ArrayLike<number>, length: number) => Array.from({ length }, (_, at) => values[at] ?? 0);
   const peaks = resized(readPeaks(dir) ?? (await media.peaks(base, job.signal).catch(() => new Float32Array())), Math.floor(script.durationMs / 20));
-  for (const [index, part] of parts.entries()) peaks.push(...resized(await media.peaks(segments[index]![1], job.signal).catch(() => new Float32Array()), Math.floor(part.durationMs / 20)));
+  // Value by value: a spread of a long case's peaks (2 M past ~11 h) overflows the stack.
+  for (const [index, part] of parts.entries()) for (const value of resized(await media.peaks(segments[index]![1], job.signal).catch(() => new Float32Array()), Math.floor(part.durationMs / 20))) peaks.push(value);
   // Each YouTube recording takes captions first, including a reused case given by an earlier script's Doc; audio is only the fallback.
   const keyterms = await caseNames(dir, script).catch(() => []);
   const words: Word[] = [];

@@ -50,10 +50,6 @@ import * as youtube from "./youtube.ts";
 
 /** Drive recordings (or compilation videos) downloaded at once. */
 const DOWNLOADS = 3;
-/** Repack's limits for one case. */
-const MAX_FILES = 60;
-const MAX_FILE_MS = 10 * 3_600_000;
-const MAX_FILE_BYTES = 30_000_000_000;
 /** Imports run side by side, up to three, each on its own script. */
 const MAX_IMPORTS = 3;
 
@@ -527,12 +523,11 @@ export async function resume(app: App, data: string, id: string, choice: Choice,
         parts.writeManifest(dir, manifest);
       }
     } else if (choice.kind === "select" && decision?.kind === "too_much") {
+      // Asked only by an Edit from before Nov 18, when a case had limits: Retry brings every recording in, and this the ones chosen.
       const manifest = parts.readManifest(dir);
       if (manifest === null) throw new Error("This import has lost its list of recordings. Retry it.");
       const chosen = manifest.recordings.filter((recording) => choice.ids.includes(recording.id));
       if (chosen.length === 0 || chosen.length !== choice.ids.length) throw new Error("Choose at least one recording from this folder.");
-      const reason = overLimits(chosen);
-      if (reason !== null) throw new Error(reason);
       manifest.chosen = choice.ids;
       parts.writeManifest(dir, manifest);
     } else if (choice.kind === "no_transcript" && decision?.kind === "no_speech") script.noSpeech = true;
@@ -758,7 +753,6 @@ const pipeline = Effect.fn("writer.import.pipeline")(function* (app: App, dir: s
       : yield* Effect.tryPromise({ try: () => media.streams(script.originalPath), catch: () => new FootageUnusable({ message: "This file can't be read as video or audio." }) });
   if (found.durationMs === 0) return yield* new FootageUnusable({ message: "This file has no length to play." });
   const duration = joined ? found.durationMs : yield* Effect.tryPromise({ try: () => media.playableMs(script.originalPath, found.durationMs), catch: (error) => error as Error });
-  if (duration > media.MAX_CASE_MS || (!joined && duration > MAX_FILE_MS)) return yield* new FootageUnusable({ message: "This footage runs longer than Edit imports at once (ten hours a file)." });
   if (duration + 2_000 < found.durationMs) note(script, `The file is cut short: it claims ${clock(found.durationMs)} but holds ${clock(duration)}. Edit imported what it holds.`);
   script.durationMs = duration;
   store.write(dir, script);
@@ -1016,8 +1010,6 @@ export async function fetchVideo(app: App, url: string, dest: string, onPercent:
   const manifest = join(folder, "manifest.json");
   const recordings: drive.Recording[] = link.kind === "folder" && isFile(manifest) ? (JSON.parse(fs.readFileSync(manifest, "utf8")) as drive.Recording[]) : (await drive.recordings(token, link))[1];
   if (recordings.length === 0) throw new Error("That Drive link has no recordings.");
-  const problem = overLimits(recordings);
-  if (problem !== null) throw new Error(problem);
   if (link.kind === "file") {
     const size = Math.max(recordings[0]!.size, 1);
     return drive.download(token, recordings[0]!, dest, (bytes) => onPercent(Math.floor((Math.min(bytes, size) * 100) / size), null), signal);
@@ -1044,16 +1036,6 @@ export async function fetchVideo(app: App, url: string, dest: string, onPercent:
   fs.renameSync(partial, dest);
 }
 
-const tooLong = (recording: drive.Recording): boolean => (recording.claimedMs ?? 0) > MAX_FILE_MS || recording.size > MAX_FILE_BYTES;
-
-export function overLimits(recordings: drive.Recording[]): string | null {
-  const total = recordings.reduce((sum, recording) => sum + (recording.claimedMs ?? 0), 0);
-  if (recordings.length > MAX_FILES) return `A case takes at most ${MAX_FILES} recordings.`;
-  if (total > media.MAX_CASE_MS) return "A case takes at most twenty hours of footage.";
-  if (recordings.some(tooLong)) return "A recording over ten hours or 30 GB can't be imported.";
-  return null;
-}
-
 /** Whether `path` is already the whole recording, exactly as Drive holds it (drive.intact: its size and MD5, proven once); a damaged copy of the right size is fetched again. */
 async function downloaded(path: string, recording: drive.Recording): Promise<boolean> {
   if (!isFile(path)) return false;
@@ -1072,6 +1054,42 @@ async function downloaded(path: string, recording: drive.Recording): Promise<boo
 function checkSpace(dir: string, needed: number): void {
   const short = room.admit(dir, needed, "This import", "retry");
   if (short !== null) throw new Error(short);
+}
+
+/** The bytes of every file under `path` (none: 0). */
+function bytesIn(path: string): number {
+  let total = 0;
+  try {
+    for (const entry of fs.readdirSync(path, { withFileTypes: true, recursive: true })) if (entry.isFile()) total += fs.statSync(join(entry.parentPath, entry.name)).size;
+  } catch {
+    // Not there.
+  }
+  return total;
+}
+
+/** A 480p preview's bytes a millisecond of footage (~450 MB an hour; Nov 18's 26-hour case made 0.93 Mbit/s). */
+const PREVIEW_BYTES_PER_MS = 125;
+/** A stretch's bytes a millisecond while its piece is made: its picture and its sound kept as samples until joined (~1.1 GB an hour). */
+const STRETCH_BYTES_PER_MS = 310;
+
+/**
+ * What a case's preview takes here at most while it's made, by its recordings'
+ * lengths (a fifth of the size where Drive gives none): its pieces and the
+ * preview they're copied into, both on the disk until it's whole, or before
+ * that its pieces and the stretches of the longest recordings being made
+ * (`DOWNLOADS` at once), whichever is more. A fifth of the footage's size
+ * counted only the preview: a long case of small files, or a long recording,
+ * needs several times that. Nov 18's 26-hour case (one recording of 12 hours,
+ * seven of 2) peaked at 25.4 GB besides its recordings; this says 29.6.
+ */
+export function previewRoom(recordings: { size: number; claimedMs?: number | null }[]): number {
+  const pieces = recordings.reduce((sum, one) => sum + (one.claimedMs ? one.claimedMs * PREVIEW_BYTES_PER_MS : one.size / 5), 0);
+  const longest = recordings
+    .map((one) => one.claimedMs ?? 0)
+    .filter((ms) => ms > media.STRETCHED_OVER_MS)
+    .sort((a, b) => b - a)
+    .slice(0, DOWNLOADS);
+  return pieces + Math.max(pieces, longest.reduce((sum, ms) => sum + ms * STRETCH_BYTES_PER_MS, 0));
 }
 
 /** Runs `work` on each item, `lanes` at a time. */
@@ -1108,27 +1126,16 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
     script.originalPath = proxy;
     return { joined: null };
   }
-  if (manifest.chosen == null) {
-    const reason = overLimits(manifest.recordings);
-    if (reason !== null) {
-      return pause(dir, script, {
-        kind: "too_much",
-        summary: `This folder holds more footage than one import takes. ${reason} Choose the recordings to bring in.`,
-        files: manifest.recordings.map((recording) => ({ id: recording.id, title: recording.name, size: recording.size, durationMs: recording.claimedMs ?? null, audio: recording.audio, tooLong: tooLong(recording) })),
-        maxFiles: MAX_FILES,
-        maxMs: media.MAX_CASE_MS,
-      });
-    }
-  }
   const wanted = parts.wanted(manifest);
   if (wanted.length === 0) throw new Error("No recordings are left to import from this folder.");
-  // Streamed, only the previews take room here (about a tenth of the footage); downloaded, the recordings too.
+  // Streamed, only the preview takes room here; downloaded, the recordings too.
   const stream = streamed.on();
   const needed = wanted.reduce((sum, [index, recording]) => {
     const path = parts.driveFile(folder, index, recording);
     return sum + Math.max(recording.size - (isFile(path) ? fs.statSync(path).size : 0), 0);
   }, 0);
-  checkSpace(dir, stream ? needed / 5 + 1_000_000_000 : needed + needed / 5 + 1_000_000_000);
+  // What a run cut short already made of the preview (pieces, stretches) is counted as there.
+  checkSpace(dir, (stream ? 0 : needed) + Math.max(previewRoom(wanted.map(([, recording]) => recording)) - bytesIn(join(dir, "pieces")), 0) + 1_000_000_000);
   // Each recording's original in the cloud, by its place among the wanted (streamed).
   const inCloud: (string | null)[] = wanted.map(() => null);
   // Three recordings come down at once; the progress shown is their sum.
@@ -1323,6 +1330,36 @@ async function joinPreview(dir: string, script: Script, items: [string, string, 
   };
 }
 
+/**
+ * Stops before a compilation this Mac has no room for, as a Drive folder
+ * case does (`checkSpace`): its Drive videos by Drive's sizes and lengths,
+ * a Drive folder's recordings with the full-size master they're joined into
+ * (about their own size again). A YouTube video's size isn't known until it
+ * comes down. One already here counts nothing.
+ */
+async function compilationRoom(dir: string, folder: string, wanted: [number, { url: string }][]): Promise<void> {
+  let needed = 0;
+  const previews: { size: number; claimedMs: number | null }[] = [];
+  for (const [index, video] of wanted) {
+    const dest = join(folder, `${String(index).padStart(2, "0")}.mp4`);
+    if (!video.url.includes("drive.google.com") || (await media.readable(dest))) continue;
+    const link = drive.parse(video.url);
+    // Not listed (no sign-in, Drive refusing): its own download says why, as before.
+    const recordings = await drive.hooks
+      .accessToken()
+      .then((token) => drive.recordings(token, link))
+      .then(([, found]) => found, (): drive.Recording[] => []);
+    if (recordings.length === 0) continue;
+    const size = recordings.reduce((sum, one) => sum + one.size, 0);
+    const lengths = recordings.map((one) => one.claimedMs);
+    previews.push({ size, claimedMs: lengths.every((ms) => ms != null) ? lengths.reduce<number>((sum, ms) => sum + ms!, 0) : null });
+    // A file goes straight to the cloud when streaming is on; a folder always comes down, and is joined.
+    if (link.kind === "folder") needed += Math.max(size - bytesIn(dest.replace(/\.[^./]+$/, ".recordings")), 0) + size;
+    else if (!streamed.on()) needed += size;
+  }
+  if (previews.length > 0) checkSpace(dir, needed + Math.max(previewRoom(previews) - bytesIn(join(dir, "pieces")), 0) + 1_000_000_000);
+}
+
 /** A compilation: several videos, each its own case, from YouTube or Drive links, joined in the order given. One that fails pauses the import with the question a Drive folder asks. */
 async function fetchCompilation(app: App, dir: string, script: Script): Promise<Fetched> {
   const folder = join(dir, "compilation");
@@ -1376,6 +1413,7 @@ async function fetchCompilation(app: App, dir: string, script: Script): Promise<
   const kept = videos;
   const wanted = kept.videos.flatMap((video, index): [number, (typeof kept.videos)[number]][] => (kept.skipped.includes(String(index)) ? [] : [[index, video]]));
   if (wanted.length === 0 || (!script.compilation && wanted.length < 2)) throw new Error(script.compilation ? "A compilation needs new footage." : "A case across videos needs at least two of them.");
+  await compilationRoom(dir, folder, wanted);
   // Up to three come down together, each tied to its place in the order.
   const percents = wanted.map(() => 0);
   const results: (string | Error)[] = wanted.map(() => new Error("The download stopped."));
