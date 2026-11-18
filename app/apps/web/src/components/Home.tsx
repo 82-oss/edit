@@ -840,9 +840,7 @@ function HomeList({ groups, solo, cross, lengthLabel }: { groups: { key: string;
       >
         <div role="row" className={cx(COLUMNS, "px-3 pb-2 text-[12px] font-medium text-muted")}>
           <span role="columnheader">Name</span>
-          <span role="columnheader" className="text-right">
-            Status
-          </span>
+          <span role="columnheader">Status</span>
           <span role="columnheader" className={CATEGORY}>
             {v2 ? "Channel" : "Niche"}
           </span>

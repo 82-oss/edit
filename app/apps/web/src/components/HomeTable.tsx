@@ -62,10 +62,10 @@ export const LENGTH = "group-data-[compact]/table:hidden";
 export const CATEGORY = "group-data-[slim]/table:hidden";
 const BY_NAME = "group-data-[faces]/table:hidden";
 
-/** A row's status: its pills against the right, beside the channel, onto a second line rather than into the next column. */
+/** A row's status: its pills from the left, as every column's words are (Sphe, Nov 18), onto a second line rather than into the next column. */
 export function StatusCell({ children }: { children: ReactNode }) {
   return (
-    <div role="cell" className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 py-0.5">
+    <div role="cell" className="flex min-w-0 flex-wrap items-center gap-1.5 py-0.5">
       {children}
     </div>
   );
