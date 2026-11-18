@@ -1,33 +1,40 @@
-// How much of this disk Edit's local data may take (cache_cleanup.ts and
-// Script mode's storage.ts keep to it).
+// How much of this disk Edit's local data may take, and the room work claims
+// as it writes (cache_cleanup.ts, Script mode's writer/storage.ts and every
+// writer that fills the disk keep to it).
+//
+// A floor, not a share (the local-first plan, Sphe, Nov 18): Edit keeps the
+// larger of 15 GB or a tenth of the disk free (`keepFreeBytes`) and may use
+// the rest. Until then the cache's budget was a quarter of the room, at most
+// 50 GB, with 1 GB kept free: JJ's Mac could have held three times what it
+// was allowed, and Sphe's M4 couldn't hold what it was given (12-18 GB free
+// of 245, ~150 GB not Edit's, disk full at 22:03 on Nov 17). A cache on
+// another volume keeps to that volume's numbers. What Edit holds is the
+// ledger's (ledger.ts), by project and kind.
 
 import * as fs from "node:fs";
 import * as os from "node:os";
 
-/**
- * The smallest local cache, and what it was until Nov 2. Sized for a Mac that
- * did its heavy work on Modal; once Edit moved back onto the Macs (Sphe,
- * Nov 2), 400 MB meant the previews a project plays and the footage its
- * exports read were evicted and fetched from R2 again all day.
- */
-export const DEFAULT_LOCAL_BUDGET_BYTES = 400_000_000;
-/** The disk's free space Edit never takes the cache below. */
+import { ledger } from "./ledger.ts";
+import { THIS_MACHINE } from "./machine.ts";
+
+export { ledger };
+
+/** The disk's free space Edit's writes never take it below (the last gigabyte: macOS's own). */
 export const FREE_FLOOR_BYTES = 1_000_000_000;
-/** The share of the room (free space plus the cache itself) the cache may hold. */
-const SHARE = 0.25;
-/** However big the disk, no more than this. */
-const MOST = 50_000_000_000;
+/** The least Edit keeps free on a disk however small it is. */
+export const KEEP_FREE_LEAST_BYTES = 15_000_000_000;
+/** The share of a disk Edit keeps free when that is more. */
+export const KEEP_FREE_SHARE = 0.1;
 
 /**
- * The local-data budget: with the disk known, a quarter of the room it has (its free space and what
- * the cache already holds, so the budget doesn't shrink as the cache fills),
- * between 400 MB and 50 GB and always leaving FREE_FLOOR_BYTES free: an M1
- * with 15 GB free and a 6.7 GB cache, 5.4 GB. Unknown, the old 400 MB.
+ * What Edit keeps free on the disk holding `dir`: the larger of 15 GB or a tenth of the disk (a 245 GB M4: 24.5 GB;
+ * a 128 GB Mac: 15 GB). The cleaner evicts projects that aren't in work to keep it, copies kept only to play sooner
+ * stop at it (`cacheFloor`), and work asked for evicts down to it before it starts (`admit`). A disk whose size is
+ * unknown keeps the 15 GB.
  */
-export function localBudgetBytes(disk?: { freeBytes: number; cacheBytes: number }): number {
-  if (disk === undefined || !Number.isFinite(disk.freeBytes)) return DEFAULT_LOCAL_BUDGET_BYTES;
-  const room = Math.max(disk.freeBytes, 0) + Math.max(disk.cacheBytes, 0);
-  return Math.floor(Math.max(DEFAULT_LOCAL_BUDGET_BYTES, Math.min(room * SHARE, room - FREE_FLOOR_BYTES, MOST)));
+export function keepFreeBytes(dir: string): number {
+  const total = diskHooks.total(dir);
+  return Math.max(KEEP_FREE_LEAST_BYTES, Number.isFinite(total) && total > 0 ? Math.floor(total * KEEP_FREE_SHARE) : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -50,28 +57,46 @@ export const SWAP_ROOM_BYTES = os.totalmem() <= 8 * 2 ** 30 ? 2_000_000_000 : 1_
 export const WORK_FLOOR_BYTES = FREE_FLOOR_BYTES + SWAP_ROOM_BYTES;
 
 /**
- * What copies kept only to play sooner (whole previews, a long video's pieces) leave free: the work's floor and a
- * gigabyte more, for the work that can't stream (an effect's render, an export).
+ * The least that copies kept only to play sooner leave free: the work's floor and a gigabyte more, for the work that
+ * can't stream (an effect's render, an export). They keep to `cacheFloor`, which is never less.
  */
 export const CACHE_FLOOR_BYTES = WORK_FLOOR_BYTES + 1_000_000_000;
 
-/** Seams for tests: the disk's free space, and the cleaner asked to make room (cache_cleanup.ts `makeRoom`, set at the server's start). */
+/** The nearest folder of `dir` that's there (a folder not made yet is on its parent's disk), or null. */
+function statfsOf(dir: string): fs.StatsFs | null {
+  for (let at = dir; ; ) {
+    try {
+      return fs.statfsSync(at);
+    } catch {
+      const up = at.lastIndexOf("/") > 0 ? at.slice(0, at.lastIndexOf("/")) : "/";
+      if (up === at || at === "") return null;
+      at = up;
+    }
+  }
+}
+
+/** Seams for tests: the disk's free space and size, and the cleaner asked to make room (cache_cleanup.ts `makeRoom`, set at the server's start). */
 export const diskHooks = {
   free: (dir: string): number => {
-    // A folder not made yet is on its nearest parent's disk.
-    for (let at = dir; ; ) {
-      try {
-        const stat = fs.statfsSync(at);
-        return stat.bavail * stat.bsize;
-      } catch {
-        const up = at.lastIndexOf("/") > 0 ? at.slice(0, at.lastIndexOf("/")) : "/";
-        if (up === at || at === "") return Number.POSITIVE_INFINITY;
-        at = up;
-      }
-    }
+    const stat = statfsOf(dir);
+    return stat === null ? Number.POSITIVE_INFINITY : stat.bavail * stat.bsize;
+  },
+  /** The disk's size (unknown: NaN). */
+  total: (dir: string): number => {
+    const stat = statfsOf(dir);
+    return stat === null ? Number.NaN : stat.blocks * stat.bsize;
   },
   makeRoom: (_wanted: number): number => 0,
 };
+
+/**
+ * What copies kept only to play sooner (whole previews, a long video's pieces, map tiles) leave free on the disk
+ * holding `dir`: the cache's floor, and never less than what Edit keeps free there (`keepFreeBytes`), so they never
+ * fill what the cleaner keeps; past it they stream.
+ */
+export function cacheFloor(dir: string): number {
+  return Math.max(CACHE_FLOOR_BYTES, keepFreeBytes(dir));
+}
 
 /** Bytes free on the disk holding `dir` (unknown: as good as endless). */
 export function freeBytes(dir: string): number {
@@ -130,6 +155,49 @@ export function askForRoom(wanted: number, now = Date.now()): number {
   } catch {
     return 0;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Admission (the plan's step 1, Nov 18): an import, an export, a project's
+// footage coming down each add up what they will write before they start,
+// the cleaner evicts projects that aren't in work to make room, and if it is
+// still short the work is refused at once in one plain line with the numbers,
+// never ENOSPC part-way (Nov 17: the M4's disk filled mid-export; kenobi's
+// mid-open).
+
+const GB = 1e9;
+const gb = (bytes: number) => (bytes < 10 * GB ? (Math.max(bytes, 0) / GB).toFixed(1) : String(Math.round(bytes / GB)));
+
+/** "This import needs about 12 GB free and this Mac has 6 GB. Free some space, then try again." */
+export function roomLine(what: string, need: number, has: number, then = "try again"): string {
+  return `${what} needs about ${gb(need)} GB free and ${THIS_MACHINE} has ${gb(Math.max(has, 0))} GB. Free some space, then ${then}.`;
+}
+
+/** Room asked for straight from the cleaner (a person's action: not held to `askForRoom`'s every few minutes). */
+function makeRoomNow(wanted: number): number {
+  try {
+    return diskHooks.makeRoom(wanted);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Whether work about to write `bytes` to the disk holding `dir` may start: null when it may, else why not, in one
+ * line with the numbers (`what`: "This import", "This export"). Short of what Edit keeps free after it, the cleaner
+ * evicts projects that aren't in work first (oldest first, whole). Refused only when, even then, the work would take
+ * the disk under the floor writes keep (`WORK_FLOOR_BYTES`, macOS's swap included): a Mac with 12 GB free does a
+ * 5 GB export, as it did before the floor was 15 GB, and the cleaner frees what it can around it.
+ */
+export function admit(dir: string, bytes: number, what: string, then?: string): string | null {
+  if (!(bytes > 0)) return null;
+  const free = () => freeBytes(dir) - claimedBytes();
+  if (!Number.isFinite(freeBytes(dir))) return null;
+  const target = bytes + keepFreeBytes(dir);
+  if (free() < target) makeRoomNow(freeBytes(dir) + target - free());
+  const has = free();
+  if (has - bytes >= WORK_FLOOR_BYTES) return null;
+  return roomLine(what, bytes + WORK_FLOOR_BYTES, has, then);
 }
 
 /** For tests. */

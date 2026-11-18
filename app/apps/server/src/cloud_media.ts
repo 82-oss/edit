@@ -503,6 +503,8 @@ export async function fetchKey(key: string, local: string): Promise<void> {
   fetching.set(local, job);
   try {
     await job;
+    // Counted now, not at the cleaner's next walk (storage.ts's ledger).
+    storage.ledger.note(local);
   } finally {
     if (fetching.get(local) === job) fetching.delete(local);
   }
@@ -1899,7 +1901,7 @@ export function fillPieces(app: App, id: string, from = 0): void {
       await fillHooks.fill(piecesContext(cache), wants, () => {
         if (mine.stopped) return true;
         if (playing.isPlaying()) return (paused = true);
-        if (storage.spare(cache, PIECE_ROOM, storage.CACHE_FLOOR_BYTES) < 0) return (full = true);
+        if (storage.spare(cache, PIECE_ROOM, storage.cacheFloor(cache)) < 0) return (full = true);
         return false;
       });
       if (full) diag.info("pieces", `${id}: its long videos' pieces stream on, the disk too full to keep them`);

@@ -33,6 +33,7 @@ import { listen } from "./http/server.ts";
 import { registerEffectTools } from "./effect_tools.ts";
 import { registerChannelTools } from "./channel_tools.ts";
 import * as changes from "./changes.ts";
+import * as busy from "./busy.ts";
 import * as effects from "./effects.ts";
 import { prepareShell } from "./chrome_devtools.ts";
 import { messageContext, registerMediaTools } from "./media_tools.ts";
@@ -334,7 +335,8 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     setSmoothByDefault(app.native.smoothSupported());
     // On Linux, RIFE on the GPU (rife.ts), looked for just after start (it runs a two-frame check).
     if (process.platform === "linux") setTimeout(() => setSmoothByDefault(smoothsFast(app)), 2_000).unref();
-    // The cache kept to what's used.
+    // The cache kept by each project's state; a project with an effect rendering or removal pieces out is in work.
+    busy.registerProjectWork((id) => effects.renderingLine(id) !== null || removalSchedule.progressOf(id).out > 0);
     startCleaning(app);
     exportRoom.make = (wanted) => void makeRoom(app, wanted);
     seams.broll.stopLeftoverMaps?.();

@@ -9,26 +9,38 @@
 // nothing again. Half-written files a day old go wherever they are. Nothing
 // touched in the last two days is removed.
 //
-// Footage projects still use kept its previews forever, though: Oct 21 the
-// Mac's disk was full with 36 GB of cache, mostly full-size previews of
-// projects not opened for days (one comp's alone 8 GB). So the cache is kept
-// under its budget, and the disk over FREE_FLOOR free: past either, the
-// previews of footage whose projects were saved longest ago go first (made
-// again when the project is opened), never those of a project saved in the
-// last two days. Runs a little after the server starts and then hourly.
+// Footage projects still used kept its previews forever, though (Oct 21: a
+// Mac's disk full with 36 GB of cache). Until Nov 18 the cache was kept
+// under a budget (a quarter of the room, 400 MB to 50 GB) by the least
+// recently used copy. Now (the local-first plan, Sphe, Nov 18: "storage
+// follows the project's state, automatically, with no settings") it follows
+// each project's state, from the ledger of every file here by project and
+// kind (ledger.ts):
 //
-// The budget is sized to the disk (storage.ts `localBudgetBytes`: a quarter
-// of the room, 400 MB to 50 GB; it was 400 MB until Nov 2, when Edit moved
-// its exports and playback renders off Modal and back onto the Macs, and
-// every preview a project played was evicted and read from R2 again). Past
-// it, copies of R2 objects go by project: footage no project here uses
-// first, then a done or archived project's, then the projects this Mac had
-// open longest ago (`opened.ts`; saved, for one not opened since). A project
-// open now or in the last twelve hours keeps all of its, so nothing an edit
-// in progress plays or exports from goes from under it; only with the disk
-// nearly full do those go too, never one open in the last ten minutes.
-// Whole proxy copies (`cloud/proxies/`, what the native player and the
-// agent's renders read) go only this way, never because R2 has them too.
+// - In work: open now, or anything running for it (busy.ts `workingFor`: a
+//   turn, an export, a removal, an effect's render, a job), or any of its
+//   files not yet in R2 (an upload pending or under way, media Edit made
+//   that hasn't gone up); else, unless it's done, opened here in the last 3
+//   days (or saved: an agent's turn with the editor closed). Everything of
+//   it stays.
+// - Idle: its derived copies go first when room is needed (exports made
+//   ahead, export chunks, pieces, excerpts, sound and scrub copies, smooth
+//   playback renders), then its proxies. Whole projects, the one worked on
+//   longest ago first, before any project in work is touched.
+// - Done on Home, or idle 7 days: its local footage goes at each pass, room
+//   needed or not, its originals only once R2 has said it holds them at their
+//   size (`confirmOriginals`), never a file from someone's disk (only Edit's
+//   own copies are ever taken: ledger.ts `evictable`). Opened again, it comes
+//   back as any cloud footage does (footage_ready.ts: "Getting the footage
+//   ready", with its progress).
+//
+// The disk is kept with what Edit keeps free on it (storage.ts
+// `keepFreeBytes`: 15 GB or a tenth of the disk); only with it under the
+// cache's hard floor does a project in work give up copies, never one open in
+// the last ten minutes nor one with work running. Whole proxy copies are the
+// footage this Mac plays and renders from: they go only this way, never
+// because R2 has them too. Pinned files (file_pins.ts), uploads not landed
+// and anything written in the last hours always stay.
 
 import * as fs from "node:fs";
 
@@ -43,17 +55,20 @@ import * as retention from "./export_retention.ts";
 import * as later from "./later.ts";
 import { exportRoots } from "./export_folder.ts";
 import * as reviews from "./reviews.ts";
-import { carryAnalysis, localPath, readLocalOriginals, uploadingNow, writeLocalOriginals } from "./cloud_media.ts";
+import { carryAnalysis, localPath, readLocalOriginals, uploadingNow, uploadsNow, writeLocalOriginals } from "./cloud_media.ts";
 import { createHash } from "node:crypto";
 
+import * as busy from "./busy.ts";
 import { pinned } from "./file_pins.ts";
+import * as ledgerOf from "./ledger.ts";
+import type { Entry } from "./ledger.ts";
 import { evicted as nativeEvicted, oldCuts } from "./native_preview.ts";
 import { openedTimes } from "./opened.ts";
 import { join } from "./paths.ts";
 import * as folderAccess from "./folder_access.ts";
 import * as research from "./research.ts";
 import * as writerStore from "./writer/store.ts";
-import { DEFAULT_LOCAL_BUDGET_BYTES, FREE_FLOOR_BYTES, diskHooks, localBudgetBytes } from "./storage.ts";
+import { CACHE_FLOOR_BYTES, FREE_FLOOR_BYTES, diskHooks, keepFreeBytes, ledger } from "./storage.ts";
 
 /** Made again cheaply from the source. */
 const REBUILT = /^(preview|thumbs|peaks|loudness|censor|light)/;
@@ -66,26 +81,23 @@ const RECENT = 2 * DAY;
 const COPY_RECENT = 6 * 3600 * 1000;
 /** A Drive download (its original in the cloud) not read by an export for this long goes. */
 const DOWNLOADED = 3 * DAY;
-/** Exports made ahead (export_ahead.ts) kept: the ones made last. */
-const AHEAD_KEPT = 2;
-/** The disk's free space below which old projects' previews go (safety valve only). */
-const FREE_FLOOR = FREE_FLOOR_BYTES;
-/** A project open this lately keeps all of its cache (an edit in progress). */
-const SESSION = 12 * 3600 * 1000;
-/** With the disk nearly full, only a project open this lately keeps its. */
+/** Exports made ahead (export_ahead.ts) kept: the one made last (one per Mac: each is about as big as the export). */
+const AHEAD_KEPT = 1;
+/** A project worked on here this lately is in work: all of it stays. */
+export const IN_WORK_MS = 3 * DAY;
+/** A project not worked on here for this long is let go as a done one is: its footage too, its originals once R2 has them. */
+export const LET_GO_MS = 7 * DAY;
+/** With the disk under the cache's hard floor, only a project open this lately (or with work running) keeps its copies. */
 const OPEN_NOW = 10 * 60 * 1000;
-/** Cloud-cache subtrees holding rebuildable copies of R2 objects (LRU-evicted past the budget); `blocks` are previews read for playback (cloud_blocks.ts), `exports` effects' renders (effect_cloud.ts). */
-const CLOUD_EVICTABLE = ["proxies", "sound", "originals", "excerpts", "blocks", "scrub", "pieces", "exports"];
-/** A preview file of a media folder (the picture, its light copy, the sound, the done mark). */
-const PREVIEW = /^preview/;
 
-/** When the cache trims used footage's previews: past `cacheBytes`, or with under `freeBytes` free (`free` overrides the disk's). */
+/** What a pass keeps the disk to: `freeBytes` free once it's done (`free` overrides the disk's free space now). */
 export interface Limits {
-  cacheBytes: number;
   freeBytes: number;
   free?: number;
-  /** The cache's size, when the caller has just measured it (it isn't walked again). */
-  used?: number;
+  /** Every file under the cache and the media, when the caller has just walked them (ledger.ts): not walked again. */
+  entries?: Entry[];
+  /** Originals R2 has said it holds at their size (`confirmOriginals`): only these of a done project's go. */
+  confirmed?: Set<string>;
 }
 
 export interface CleanReport {
@@ -191,15 +203,18 @@ export async function cleanCloudPreviews(
 }
 
 /**
- * The proxies made here whose uploads are noted in `<home>/jobs.json` and not
- * done yet (each the only copy until it lands); null when the file won't read
- * (then any might be one).
+ * The files whose uploads are noted in `<home>/jobs.json` and not done yet (each the only copy until it lands: a
+ * proxy made here, an original Edit downloaded) and the keys they go to; null when the file won't read (then any
+ * might be one).
  */
 function pendingUploads(home: string): Set<string> | null {
   const pending = new Set<string>();
   try {
-    const jobs = JSON.parse(fs.readFileSync(join(home, "jobs.json"), "utf8")) as { kind: string; args?: { local?: string } }[];
-    for (const job of jobs) if (job.kind === "upload" && typeof job.args?.local === "string") pending.add(job.args.local);
+    const jobs = JSON.parse(fs.readFileSync(join(home, "jobs.json"), "utf8")) as { kind: string; state?: string; args?: { local?: unknown; file?: unknown; originalKey?: unknown; proxy?: unknown } }[];
+    for (const job of jobs) {
+      if (job.kind !== "upload" || job.state === "done") continue;
+      for (const one of [job.args?.local, job.args?.file, job.args?.originalKey, job.args?.proxy]) if (typeof one === "string") pending.add(one);
+    }
   } catch {
     if (fs.existsSync(join(home, "jobs.json"))) return null;
   }
@@ -244,7 +259,7 @@ function age(path: string, now: number): number {
  * media work started). Null when a project file won't read: then nothing it
  * might use is known, so everything counts as used.
  */
-function used(app: App): Used | null {
+function used(app: App, pending: Set<string> | null): Used | null {
   const paths = new Set<string>();
   // Files a project uses that aren't here: their key can't be known.
   let missing = 0;
@@ -253,9 +268,13 @@ function used(app: App): Used | null {
   const saved = new Map<string, number>();
   const projects = new Map<string, UsedProject>();
   const keyProjects = new Map<string, Set<string>>();
-  const dir = join(app.store.home, "projects");
+  const pathProjects = new Map<string, Set<string>>();
+  const home = app.store.home;
+  const goingUp = new Set(uploadsNow().flatMap((one) => [one.file, one.originalKey, ...(one.proxy === null ? [] : [one.proxy])]));
+  const notUp = (one: unknown) => typeof one === "string" && (pending === null || pending.has(one) || goingUp.has(one) || uploadingNow(one));
+  const dir = join(home, "projects");
   for (const name of safeList(dir).filter((name) => name.endsWith(".json"))) {
-    let media: { path?: unknown; cloud?: { source?: unknown; original?: unknown; proxy?: unknown } | null }[] = [];
+    let media: { path?: unknown; kind?: unknown; cloud?: { source?: unknown; original?: unknown; proxy?: unknown } | null }[] = [];
     let at = 0;
     try {
       at = fs.statSync(join(dir, name)).mtimeMs;
@@ -266,7 +285,7 @@ function used(app: App): Used | null {
       return null;
     }
     const id = name.slice(0, -".json".length);
-    const project: UsedProject = { saved: at, tokens: new Set(), blocks: new Set() };
+    const project: UsedProject = { saved: at, tokens: new Set(), blocks: new Set(), unconfirmed: false };
     projects.set(id, project);
     for (const item of media) {
       const cloudMedia = item.cloud;
@@ -281,9 +300,17 @@ function used(app: App): Used | null {
           const token = sourceToken(cloudMedia.source);
           if (token !== null) project.tokens.add(token);
         }
+        // Not in R2 yet: its upload pending or under way (the only copy may be here).
+        if (typeof cloudMedia.original !== "string" || notUp(cloudMedia.original) || notUp(cloudMedia.proxy) || notUp(item.path)) project.unconfirmed = true;
+      } else if (typeof item.path === "string" && item.path.startsWith(`${home}/`) && fs.existsSync(item.path)) {
+        // A file Edit made or keeps for it (a smoothed shot, a map, an upload) that hasn't gone up.
+        project.unconfirmed = true;
       }
       if (typeof item.path !== "string") continue;
       paths.add(item.path);
+      let users = pathProjects.get(item.path);
+      if (users === undefined) pathProjects.set(item.path, users = new Set());
+      users.add(id);
       // A missing file keys differently (no size or time): its folder would look unused.
       if (!fs.existsSync(item.path)) {
         if (typeof item.cloud?.proxy !== "string" || !cloud.validKey(item.cloud.proxy)) missing += 1;
@@ -301,7 +328,7 @@ function used(app: App): Used | null {
       }
     }
   }
-  return { paths, keys, saved, missing, projects, keyProjects };
+  return { paths, keys, saved, missing, projects, keyProjects, pathProjects };
 }
 
 interface UsedProject {
@@ -311,6 +338,8 @@ interface UsedProject {
   tokens: Set<string>;
   /** Its proxies' and originals' block folders (cloud_blocks.ts). */
   blocks: Set<string>;
+  /** Something of it isn't in R2 yet (an upload pending or under way, a file Edit made that hasn't gone up): in work. */
+  unconfirmed: boolean;
 }
 
 interface Used {
@@ -321,6 +350,8 @@ interface Used {
   projects: Map<string, UsedProject>;
   /** The projects using each media key. */
   keyProjects: Map<string, Set<string>>;
+  /** The projects using each media path. */
+  pathProjects: Map<string, Set<string>>;
 }
 
 /** Folders under `edit/` whose keys name a source's place next (`edit/<folder>/<place>…`); a sound copy's is its original's key again. */
@@ -364,13 +395,19 @@ function blockFolder(key: string): string {
   return createHash("sha1").update(key).digest("hex");
 }
 
-/**
- * When each project was last worked on here, for the cache's order: the later
- * of its last open (opened.ts) and its last save here (an agent's turn, the
- * editor closed); 0 for a done or archived one, so its footage goes before an
- * active project's.
- */
-function lastUsed(app: App, inUse: Used, done: Set<string>): Map<string, number> {
+/** Where a project stands, for what of it is kept here (see the top). */
+export type State = "work" | "idle" | "done";
+
+export interface Standing {
+  state: State;
+  /** When it was last worked on here: the later of its last open in the editor and its last save. */
+  last: number;
+  /** Opened in the editor in the last minutes, or with work running: kept even with the disk all but full. */
+  active: boolean;
+}
+
+/** Each project's state on this computer (see the top). */
+function standings(app: App, inUse: Used, done: Set<string>, now: number): Map<string, Standing> {
   const opened = openedTimes(app.store.home);
   let archived: Record<string, unknown> = {};
   try {
@@ -378,48 +415,199 @@ function lastUsed(app: App, inUse: Used, done: Set<string>): Map<string, number>
   } catch {
     // None archived here.
   }
-  const times = new Map<string, number>();
+  const out = new Map<string, Standing>();
+  const workingFor = busy.workingNow(app);
   for (const [id, project] of inUse.projects) {
     // Worked on: the later of its last open in the editor and its last save (an agent's turn saves it, with the editor
     // closed). By the open alone, a project opened in the morning and edited by the agent all afternoon lost its
     // footage copies by evening, and came down again when it was opened to be watched (JJ's Mac, Nov 10: 110 files).
-    times.set(id, done.has(id) || archived[id] !== undefined ? 0 : Math.max(opened[id] ?? 0, project.saved));
+    const last = Math.max(opened[id] ?? 0, project.saved);
+    const working = workingFor(id);
+    const active = working || now - (opened[id] ?? 0) < OPEN_NOW;
+    // Marked done on Home (or archived) is let go once it's closed, though it was opened in the last days to look at;
+    // open now, with work running or with something not up yet, it's in work whatever it's marked.
+    const state: State = active || working || project.unconfirmed ? "work" : done.has(id) || archived[id] !== undefined || now - last >= LET_GO_MS ? "done" : now - last < IN_WORK_MS ? "work" : "idle";
+    out.set(id, { state, last, active });
   }
-  return times;
+  return out;
 }
 
-/** When a project open now uses this copy of the cloud: the newest of their `lastUsed`; -1 for none (footage no project here uses). */
-function copyUsed(path: string, cache: string, inUse: Used, times: Map<string, number>): number {
-  const cloudDir = join(cache, "cloud");
-  const relative = path.slice(cloudDir.length + 1);
-  let owners: (project: UsedProject, id: string) => boolean;
-  if (relative.startsWith("blocks/")) {
-    const folder = relative.slice("blocks/".length).split("/")[0] ?? "";
-    let token: string | null = null;
-    try {
-      const meta = JSON.parse(fs.readFileSync(join(cloudDir, "blocks", folder, "meta.json"), "utf8")) as { key?: unknown };
-      if (typeof meta.key === "string") token = ownerToken(meta.key);
-    } catch {
-      // A folder from before keys were kept: known by its name alone.
+/** Whose each file is (`Entry.owners`), from the projects' media: its folder's project, its footage's place in keys, its block folder, its media key. */
+function attribute(entries: Entry[], cache: string, home: string, inUse: Used): void {
+  const cloudDir = `${join(cache, "cloud")}/`;
+  const mediaDir = `${join(home, "media")}/`;
+  const byToken = new Map<string, Set<string>>();
+  const byBlock = new Map<string, Set<string>>();
+  const put = (map: Map<string, Set<string>>, key: string, id: string) => {
+    let ids = map.get(key);
+    if (ids === undefined) map.set(key, ids = new Set());
+    ids.add(id);
+  };
+  for (const [id, project] of inUse.projects) {
+    for (const token of project.tokens) put(byToken, token, id);
+    for (const folder of project.blocks) put(byBlock, folder, id);
+    put(byToken, `playback:${id}`, id);
+  }
+  // Drive downloads by their path: what original each is (cloud_media `localOriginal`).
+  const downloads = new Map<string, string>();
+  for (const [key, entry] of Object.entries(readLocalOriginals(cache))) if (typeof entry.path === "string") downloads.set(entry.path, key);
+  const blockTokens = new Map<string, string | null>();
+  const blockToken = (folder: string): string | null => {
+    if (!blockTokens.has(folder)) {
+      let token: string | null = null;
+      try {
+        const meta = JSON.parse(fs.readFileSync(join(cloudDir, "blocks", folder, "meta.json"), "utf8")) as { key?: unknown };
+        if (typeof meta.key === "string") token = ownerToken(meta.key);
+      } catch {
+        // A folder from before keys were kept: known by its name alone.
+      }
+      blockTokens.set(folder, token);
     }
-    owners = (project, id) => project.blocks.has(folder) || (token !== null && (project.tokens.has(token) || token === `playback:${id}`));
-  } else {
-    const token = ownerToken(`edit/${relative}`);
-    if (token === null) return -1;
-    owners = (project, id) => project.tokens.has(token) || token === `playback:${id}`;
+    return blockTokens.get(folder) ?? null;
+  };
+  for (const entry of entries) {
+    const owners = new Set<string>(entry.project === null ? [] : [entry.project]);
+    const add = (ids: Set<string> | undefined) => {
+      for (const id of ids ?? []) owners.add(id);
+    };
+    if (entry.path.startsWith(cloudDir)) {
+      const relative = entry.path.slice(cloudDir.length);
+      if (relative.startsWith("blocks/")) {
+        const folder = relative.slice("blocks/".length).split("/")[0] ?? "";
+        add(byBlock.get(folder));
+        const token = blockToken(folder);
+        if (token !== null) add(byToken.get(token));
+      } else {
+        const token = ownerToken(`edit/${relative}`);
+        if (token !== null) add(byToken.get(token));
+      }
+    } else if (entry.path.startsWith(mediaDir)) {
+      add(inUse.pathProjects.get(entry.path));
+      const key = downloads.get(entry.path);
+      const token = key === undefined ? null : ownerToken(key);
+      if (token !== null) add(byToken.get(token));
+    } else {
+      const folder = /^([0-9a-f]{16})\//.exec(entry.path.slice(cache.length + 1))?.[1];
+      if (folder !== undefined) add(inUse.keyProjects.get(folder));
+    }
+    entry.owners = [...owners];
   }
-  let newest = -1;
-  for (const [id, project] of inUse.projects) if (owners(project, id)) newest = Math.max(newest, times.get(id) ?? 0);
-  return newest;
 }
 
-function freeSpace(dir: string): number {
+/** A project's files of one state, as one: what's evicted together (half a project is neither playable nor freed). */
+interface Group {
+  /** The project ("" for files no project here uses). */
+  id: string;
+  state: State | "nobody's";
+  last: number;
+  active: boolean;
+  files: Entry[];
+}
+
+interface Survey {
+  inUse: Used | null;
+  groups: Group[];
+}
+
+/**
+ * The files the cleaner may take by project state, grouped by project: each file with the project using it that
+ * was worked on last (a file two projects use goes with the later one, and only once neither is in work), and
+ * never one that's pinned, on its way up, written lately, half-written, a block folder's note, the export being made
+ * ahead, a script's original, or not Edit's own copy.
+ */
+function survey(app: App, entries: Entry[], now: number, done: Set<string>, known?: Used | null): Survey {
+  const cache = app.store.cacheDir();
+  const home = app.store.home;
+  const pending = pendingUploads(home);
+  const inUse = known === undefined ? used(app, pending) : known;
+  if (inUse === null) return { inUse, groups: [] };
+  attribute(entries, cache, home, inUse);
+  const standing = standings(app, inUse, done, now);
+  let exporting = true;
   try {
-    const stat = fs.statfsSync(dir);
-    return stat.bavail * stat.bsize;
+    exporting = app.exports.running();
   } catch {
-    return Number.POSITIVE_INFINITY;
+    // No exports here to ask (tests): kept as if one ran.
   }
+  // Files from the last few hours stay (one may be uploading or playing), and while an export runs (it mixes from
+  // the sound copies) the last two days'.
+  const fresh = exporting ? RECENT : COPY_RECENT;
+  const making = makingAhead(app);
+  const ahead = making === null ? null : aheadFile(cache, making);
+  const scripts = writerStore.originals(writerStore.dataDir(home));
+  const groups = new Map<string, Group>();
+  for (const entry of entries) {
+    if (!entry.evictable || ledgerOf.tierOf(entry.kind) === null) continue;
+    const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
+    if (PARTIAL.test(name) || (name === "meta.json" && entry.path.includes("/cloud/blocks/"))) continue;
+    if (now - entry.at < fresh || pinned(entry.path) || scripts.has(entry.path)) continue;
+    if (ahead !== null && (entry.path === ahead || entry.path === `${ahead}.json`)) continue;
+    if (pending === null || pending.has(entry.path) || uploadingNow(entry.path)) continue;
+    let group: Group;
+    if (entry.owners.length === 0) {
+      group = groups.get("") ?? { id: "", state: "nobody's", last: Number.NEGATIVE_INFINITY, active: false, files: [] };
+      groups.set("", group);
+    } else {
+      // A project deleted here (its folder's name is all that's left of it) is let go.
+      const of = entry.owners.map((id) => ({ id, ...(standing.get(id) ?? { state: "done" as const, last: 0, active: false }) }));
+      const state: State = of.some((one) => one.state === "work") ? "work" : of.every((one) => one.state === "done") ? "done" : "idle";
+      const newest = of.reduce((a, b) => (b.last > a.last ? b : a));
+      const key = `${state}\n${newest.id}`;
+      group = groups.get(key) ?? { id: newest.id, state, last: newest.last, active: of.some((one) => one.active), files: [] };
+      group.active ||= of.some((one) => one.active);
+      groups.set(key, group);
+    }
+    group.files.push(entry);
+  }
+  return { inUse, groups: [...groups.values()] };
+}
+
+/** R2's own key for an original here: a cache copy's (`<cache>/cloud/<key less edit/>`), or a Drive download's (cloud_media `localOriginal`). */
+function originalKeyOf(cache: string, path: string, downloads: Map<string, string>): string | null {
+  const cloudDir = `${join(cache, "cloud")}/`;
+  if (path.startsWith(`${cloudDir}originals/`)) return `edit/${path.slice(cloudDir.length)}`;
+  return downloads.get(path) ?? null;
+}
+
+/** HEADs asked of R2 in one pass at most (the rest wait for the next). */
+const CONFIRM_MOST = 200;
+
+/**
+ * The originals here of projects let go (done on Home, or idle a week) and of nobody's that R2 says it holds at their
+ * very size: only these go (`Limits.confirmed`). Never a file from someone's disk (they're never Edit's to take).
+ */
+export async function confirmOriginals(
+  app: App,
+  entries: Entry[],
+  done: Set<string>,
+  now = Date.now(),
+  head: (key: string) => Promise<{ size: number } | null> = (key) => cloud.head(key),
+): Promise<Set<string>> {
+  const confirmed = new Set<string>();
+  const cache = app.store.cacheDir();
+  const downloads = new Map<string, string>();
+  for (const [key, entry] of Object.entries(readLocalOriginals(cache))) if (typeof entry.path === "string") downloads.set(entry.path, key);
+  const asks: [Entry, string][] = [];
+  // Nobody's originals go only for room: asked about only while the disk is short of what Edit keeps free.
+  const short = diskHooks.free(cache) < keepFreeBytes(cache);
+  for (const group of survey(app, entries, now, done).groups) {
+    if (group.state !== "done" && !(group.state === "nobody's" && short)) continue;
+    for (const entry of group.files) {
+      if (ledgerOf.tierOf(entry.kind) !== 2) continue;
+      const key = originalKeyOf(cache, entry.path, downloads);
+      if (key !== null && cloud.validKey(key)) asks.push([entry, key]);
+    }
+  }
+  const slots = new Semaphore(3);
+  await Promise.all(asks.slice(0, CONFIRM_MOST).map(([entry, key]) => slots.with(async () => {
+    try {
+      const there = await head(key);
+      if (there !== null && there.size === entry.bytes && entry.bytes > 0) confirmed.add(entry.path);
+    } catch {
+      // Not known: it stays.
+    }
+  })));
+  return confirmed;
 }
 
 /** Cleans the cache as the module notes say; with `dryRun`, only says what would go. */
@@ -433,18 +621,24 @@ export function cleanCache(
   // A home that isn't one (EDIT_HOME="") cleans nothing: its cache would be "/cache".
   if (app.store.home.trim() === "" || app.store.home === "/") return { folders: 0, files: 0, bytes: 0, removed: [] };
   const cache = app.store.cacheDir();
-  // The whole cache is walked once a pass, synchronously on the server's thread (Astra's audit, Nov 18: four walks of
-  // it a pass, and on demand when the disk is short, the worst moment to stall); what's taken off is counted from it.
-  const total = given?.used ?? size(cache);
-  const limits: Limits = given ?? { cacheBytes: localBudgetBytes({ freeBytes: freeSpace(cache), cacheBytes: total }), freeBytes: FREE_FLOOR };
-  const inUse = used(app);
-  const times = inUse === null ? new Map<string, number>() : lastUsed(app, inUse, done);
+  // The cache and the media are walked once a pass (the ledger's, off the thread, when the server's pass asks), and
+  // what's taken off is counted from it (Astra's audit, Nov 18: four walks a pass on the server's thread).
+  const entries = given?.entries ?? ledgerOf.walkSync(ledgerOf.rootsOf(app.store.home, cache));
+  const limits: Limits = given ?? { freeBytes: keepFreeBytes(cache) };
+  const confirmed = limits.confirmed ?? new Set<string>();
   const report: CleanReport = { folders: 0, files: 0, bytes: 0, removed: [] };
+  const gone = new Set<string>();
+  const seen = new Set<string>();
   const remove = (path: string) => {
     // An export reading it, or about to (its footage, an effect's render, the export made ahead it copies its chunks
     // from: file_pins.ts): left for the next pass.
-    if (pinned(path)) return;
-    const bytes = size(path);
+    if (pinned(path) || gone.has(path)) return;
+    // Gone since the ledger counted it (another pass, the export that made it): nothing to take.
+    if (!fs.existsSync(path)) {
+      if (!dryRun) ledger.forget(path);
+      return;
+    }
+    const bytes = size(path, seen);
     if (!dryRun) {
       try {
         fs.rmSync(path, { recursive: true, force: true });
@@ -452,9 +646,11 @@ export function cleanCache(
         diag.warn("cache", `couldn't remove ${path}: ${diag.messageOf(error)}`);
         return;
       }
+      ledger.forget(path);
       // A copy Edit.app's window reads: its page asks where to read from again (native_preview.ts).
       nativeEvicted(app, path);
     }
+    gone.add(path);
     report.files += 1;
     report.bytes += bytes;
     if (report.removed.length < 50) report.removed.push(path);
@@ -465,6 +661,7 @@ export function cleanCache(
   } catch {
     return report;
   }
+  const inUse = used(app, pendingUploads(app.store.home));
   // The window's copies of a long video's pieces cut the old way (native_preview.ts `oldCuts`: every frame from the
   // video's start, up to 955 MB a minute, never read since Nov 18), whatever their age: cut again small if wanted.
   for (const path of oldCuts(cache)) {
@@ -535,6 +732,12 @@ export function cleanCache(
       const path = join(chunksDir, project, "sound", entry);
       if (age(path, now) >= DOWNLOADED) remove(path);
     }
+    // A share's review pieces of its chunks (reviews.ts `reviewCopyFromChunks`, 1.1-1.5 GB a project on mandalorian,
+    // never taken before Nov 18): the next share's copy is made from them, so they go a few days after.
+    for (const entry of safeList(join(chunksDir, project, "review"))) {
+      const path = join(chunksDir, project, "review", entry);
+      if (age(path, now) >= DOWNLOADED) remove(path);
+    }
   }
   for (const name of names) {
     if (!/^[0-9a-f]{16}$/.test(name)) continue;
@@ -568,9 +771,9 @@ export function cleanCache(
       if (age(path, now) >= DOWNLOADED) remove(path);
     }
   }
-  // Exports made ahead (export_ahead.ts), each about as big as the export: the
-  // two made last stay while they're under three days old; the one being made
-  // is never touched (its `.json` comes only once it's done, so it's not listed).
+  // Exports made ahead (export_ahead.ts), each about as big as the export: one
+  // a Mac, the one made last, while it's under three days old; the one being
+  // made is never touched (its `.json` comes only once it's done, so it's not listed).
   {
     const aheadDir = join(cache, "ahead");
     const made = safeList(aheadDir)
@@ -600,98 +803,74 @@ export function cleanCache(
     report.files += 1;
     if (report.removed.length < 50) report.removed.push(research.poolDir(app.store.home));
   }
-  // Over the limit (or the disk nearly full): used footage's previews, the
-  // projects saved longest ago first.
+  // By project state (see the top).
   if (inUse !== null) {
-    const freed = report.bytes;
-    const free = limits.free !== undefined ? limits.free + freed : freeSpace(cache) + (dryRun ? freed : 0);
-    let over = Math.max(total - freed - limits.cacheBytes, limits.freeBytes - free);
-    // By when their projects were last worked on here (a key several use: the latest), none in an edit in progress.
-    const worked = (key: string) => Math.max(...[...(inUse.keyProjects.get(key) ?? [])].map((id) => times.get(id) ?? 0), 0);
-    const oldest = [...inUse.saved]
-      .filter(([key, at]) => now - at >= RECENT && now - worked(key) >= SESSION)
-      .map(([key]) => [key, worked(key)] as const)
-      .sort((a, b) => a[1] - b[1]);
-    for (const [key] of oldest) {
-      if (over <= 0) break;
-      const dir = join(cache, key);
-      // Finished previews only, not one being made, and none made lately.
-      const previews = safeList(dir).filter((entry) => PREVIEW.test(entry) && !PARTIAL.test(entry) && age(join(dir, entry), now) >= RECENT);
-      if (previews.length === 0) continue;
-      const before = report.bytes;
-      for (const entry of previews) remove(join(dir, entry));
-      if (!dryRun) app.media.forgetKey(key);
-      over -= report.bytes - before;
-      report.folders += 1;
+    const { groups } = survey(app, entries, now, done, inUse);
+    const take = (entry: Entry) => {
+      const before = report.files;
+      remove(entry.path);
+      // A legacy preview of local footage: the media's own note of it goes too (made again when it's opened).
+      const folder = /^([0-9a-f]{16})\/preview/.exec(entry.path.slice(cache.length + 1))?.[1];
+      if (folder !== undefined && report.files > before && !dryRun) app.media.forgetKey(folder);
+    };
+    const tierOf = (entry: Entry) => ledgerOf.tierOf(entry.kind);
+    // Let go (done on Home, or idle a week, or deleted): all of its copies at each pass, its originals once R2 has them.
+    for (const group of groups.filter((one) => one.state === "done")) {
+      for (const entry of group.files) if (tierOf(entry) !== 2 || confirmed.has(entry.path)) take(entry);
     }
-  }
-  // Cloud cache past the budget, or the disk nearly full: copies of R2
-  // objects (proxies, sound, originals, excerpts, blocks), by project as the
-  // notes at the top say, the least recently touched first within one. Files
-  // from the last few hours stay (one may be uploading or playing), and while
-  // an export runs (it mixes from the sound copies) the last two days'; the
-  // canonical copy is on R2, and a later need fetches or streams it again.
-  {
-    let exporting = true;
-    try {
-      exporting = app.exports.running();
-    } catch {
-      // No exports here to ask (tests): kept as if one ran.
-    }
-    const fresh = exporting ? RECENT : COPY_RECENT;
-    const free = limits.free !== undefined ? limits.free + report.bytes : freeSpace(cache) + (dryRun ? report.bytes : 0);
-    const full = limits.freeBytes - free > 0;
-    let over = Math.max(total - report.bytes - limits.cacheBytes, limits.freeBytes - free);
-    if (over > 0) {
-      const candidates: { path: string; at: number; bytes: number; worked: number }[] = [];
-      // A proxy made here whose upload hasn't landed is the only copy (a failed one is tried again at the next start).
-      const pending = pendingUploads(app.store.home);
-      const proxies = join(cache, "cloud", "proxies");
-      const uploading = (path: string) => path.startsWith(`${proxies}/`) && (pending === null || pending.has(path) || uploadingNow(path));
-      const collect = (dir: string) => {
-        for (const name of safeList(dir)) {
-          const path = join(dir, name);
-          try {
-            const stat = fs.statSync(path);
-            if (stat.isDirectory()) collect(path);
-            else if (now - stat.mtimeMs >= fresh && name !== "meta.json" && !pinned(path) && !uploading(path)) {
-              const worked = inUse === null ? Number.POSITIVE_INFINITY : copyUsed(path, cache, inUse, times);
-              // An edit in progress keeps its own (with the disk nearly full, only one open now).
-              if (now - worked < (full ? OPEN_NOW : SESSION)) continue;
-              candidates.push({ path, at: stat.mtimeMs, bytes: stat.size, worked });
-            }
-          } catch { /* gone */ }
-        }
-      };
-      for (const sub of CLOUD_EVICTABLE) collect(join(cache, "cloud", sub));
-      // Exports made ahead go before footage a project still edits from: made again from it if they're wanted.
-      for (const name of safeList(join(cache, "ahead"))) {
-        if (!name.endsWith(".mp4.json")) continue;
-        const path = join(cache, "ahead", name.slice(0, -".json".length));
-        const making = makingAhead(app);
-        if (making !== null && path === aheadFile(cache, making)) continue;
-        try {
-          const stat = fs.statSync(path);
-          candidates.push({ path, at: stat.mtimeMs, bytes: stat.size, worked: Number.NEGATIVE_INFINITY });
-        } catch { /* gone */ }
+    const free = () => (limits.free !== undefined ? limits.free + report.bytes : diskHooks.free(cache) + (dryRun ? report.bytes : 0));
+    const short = () => limits.freeBytes - free();
+    // Short of what's to be kept free: nobody's copies, the oldest first; then the projects not in work, whole, the
+    // one worked on longest ago first, each its derived copies and then its proxies.
+    if (short() > 0) {
+      const nobody = groups.find((one) => one.state === "nobody's");
+      for (const entry of [...(nobody?.files ?? [])].sort((a, b) => a.at - b.at)) {
+        if (short() <= 0) break;
+        if (tierOf(entry) !== 2 || confirmed.has(entry.path)) take(entry);
       }
-      candidates.sort((a, b) => a.worked - b.worked || a.at - b.at);
-      for (const candidate of candidates) {
-        if (over <= 0) break;
-        const before = report.bytes;
-        remove(candidate.path);
-        over -= report.bytes - before;
+    }
+    const wholeTier = (group: Group, tier: 0 | 1) => {
+      for (const entry of group.files) if (tierOf(entry) === tier) take(entry);
+    };
+    for (const group of groups.filter((one) => one.state === "idle").sort((a, b) => a.last - b.last)) {
+      if (short() <= 0) break;
+      wholeTier(group, 0);
+      if (short() <= 0) break;
+      wholeTier(group, 1);
+    }
+    // Under the cache's hard floor with nothing else left: projects in work give their copies up too, the oldest
+    // first, but never one open in the last minutes or with work running.
+    if (short() > 0 && free() < CACHE_FLOOR_BYTES) {
+      for (const group of groups.filter((one) => one.state === "work" && !one.active).sort((a, b) => a.last - b.last)) {
+        if (short() <= 0 || free() >= CACHE_FLOOR_BYTES) break;
+        wholeTier(group, 0);
+        if (short() <= 0 || free() >= CACHE_FLOOR_BYTES) break;
+        wholeTier(group, 1);
       }
     }
   }
-  // Project history is metadata, but unbounded it breaks the budget alone:
-  // past a quarter of it, the oldest saves go, across every project's
+  // A Drive download taken: no longer noted as its original's copy here (cloud_media `localOriginal`).
+  if (!dryRun && gone.size > 0) {
+    const known = readLocalOriginals(cache);
+    const left = Object.fromEntries(Object.entries(known).filter(([, entry]) => !gone.has(entry.path)));
+    if (Object.keys(left).length < Object.keys(known).length) writeLocalOriginals(cache, left);
+  }
+  if (!dryRun) {
+    // What's left, for the ledger: neither a file taken nor one in a folder taken.
+    const taken = (path: string) => {
+      for (let at = path; at.length > cache.length; at = at.slice(0, at.lastIndexOf("/"))) if (gone.has(at)) return true;
+      return gone.has(path);
+    };
+    ledger.replace(entries.filter((entry) => !taken(entry.path)), now);
+  }
+  // Project history is metadata, but unbounded it fills a disk alone: past
+  // HISTORY_BYTES, the oldest saves go, across every project's
   // (`projects/history/<id>/<ms>.json`), each project keeping its newest few
   // (a reset's "edit before" among them). It took whole projects' folders
   // until Nov 16, all 30 saves of one at a time, past a fixed 100 MB.
   {
     const history = join(app.store.home, "projects", "history");
-    let over = size(history) - historyBudget(limits.cacheBytes);
+    let over = size(history) - HISTORY_BYTES;
     if (over > 0) {
       const saves: { path: string; at: number }[] = [];
       for (const id of safeList(history)) {
@@ -725,10 +904,8 @@ export function cleanCache(
 /** The saves of each project's history the cleaner never takes: the newest, the one before it and the one before that. */
 const HISTORY_KEPT_EACH = 3;
 
-/** How much of the local budget (storage.ts `localBudgetBytes`) project history may take: a quarter, and never less than a quarter of the smallest budget. */
-export function historyBudget(budget: number): number {
-  return Math.floor(Math.max(budget, DEFAULT_LOCAL_BUDGET_BYTES) / 4);
-}
+/** How much project history may take before its oldest saves go (it was a quarter of the cache's budget until Nov 18). */
+export const HISTORY_BYTES = 1_000_000_000;
 
 /** The project whose export is being made ahead now (exports.ts `aheadFor`); none where there are no exports (tests). */
 function makingAhead(app: App): string | null {
@@ -753,7 +930,7 @@ export function cleanExports(app: App, dryRun: boolean, now = Date.now()): { fil
   }
   const roots = new Set(exportRoots(home));
   const shared = reviews.read(home).shared;
-  const free = freeSpace(app.store.cacheDir());
+  const free = diskHooks.free(app.store.cacheDir());
   const decisions = retention.decide(records, {
     now,
     roots: [...roots],
@@ -768,34 +945,68 @@ export function cleanExports(app: App, dryRun: boolean, now = Date.now()): { fil
       }
       return exporting || beingRead(path) || reviews.sharingNow(id) || drive.uploading(id);
     },
-    short: Number.isFinite(free) ? FREE_FLOOR - free : 0,
+    short: Number.isFinite(free) ? FREE_FLOOR_BYTES - free : 0,
   });
   return { ...retention.apply(home, decisions, dryRun), decisions };
 }
 
-/** Cleans now and then: a few minutes after the start, then hourly (a day of imports and exports filled the disk). */
+/** The edits marked done on Home at the last pass (later.ts): room-making between passes knows them too. */
+let doneLately = new Set<string>();
+
 /**
  * Room for work that needs `wanted` bytes free on the cache's disk and hasn't
- * them (an export about to be refused, a whole copy or an effect's render
- * with no room: storage.ts `askForRoom`): the cache's least recently used
- * copies go, as when the disk is nearly full, and exports kept here that are
- * in the cloud; never a copy of a project open in the last ten minutes (the
- * editor says it's open every 30 s) nor one touched in the last hours. What
- * was freed (bytes).
+ * them (an import or an export about to be refused: storage.ts `admit`; a
+ * whole copy or an effect's render with no room: `askForRoom`): what the
+ * pass would take for it (see the top), from the ledger, with no walk of the
+ * disk: nobody's copies, then projects not in work, whole and oldest first,
+ * and only with the disk under its hard floor a project in work that isn't
+ * open now. What was freed (bytes).
  */
 export function makeRoom(app: App, wanted: number): number {
   const cache = app.store.cacheDir();
-  const used = size(cache);
-  const report = cleanCache(app, false, Date.now(), { cacheBytes: localBudgetBytes({ freeBytes: freeSpace(cache), cacheBytes: used }), freeBytes: wanted, used });
+  const entries = ledger.covers(cache) ? ledger.all() : undefined;
+  const report = cleanCache(app, false, Date.now(), { freeBytes: wanted, ...(entries === undefined ? {} : { entries }) }, doneLately);
   if (report.bytes > 0) diag.info("cache", `freed ${(report.bytes / 1e9).toFixed(2)} GB for work that needs ${(wanted / 1e9).toFixed(1)} GB free`);
   return report.bytes;
 }
 
+/** The edits marked done on Home (none when Later can't be reached: ordered by when they were worked on alone). */
+async function doneOnHome(): Promise<Set<string>> {
+  const done = new Set<string>();
+  try {
+    for (const entry of await later.list()) if (entry.done === true && entry.key.startsWith("edit:")) done.add(entry.key.slice("edit:".length));
+  } catch {
+    // Later unreachable.
+  }
+  return done;
+}
+
+/**
+ * One pass, as the server runs it: the ledger built again off the thread, the originals of projects let go asked of
+ * R2, then the cache cleaned to keep what Edit keeps free (`head`: tests stand in for R2).
+ */
+export async function cleanPass(app: App, now = Date.now(), head?: (key: string) => Promise<{ size: number } | null>): Promise<CleanReport> {
+  const cache = app.store.cacheDir();
+  const previews = await cleanCloudPreviews(app, false, head);
+  const done = await doneOnHome();
+  doneLately = done;
+  ledger.useRoots(ledgerOf.rootsOf(app.store.home, cache));
+  const entries = await ledger.rebuild();
+  const confirmed = await confirmOriginals(app, entries, done, now, head);
+  const report = cleanCache(app, false, now, { freeBytes: keepFreeBytes(cache), entries, confirmed }, done);
+  const old = cleanExports(app, false, now);
+  report.bytes += old.bytes + previews.bytes;
+  report.files += old.files + previews.files;
+  return report;
+}
+
+/** Cleans now and then: a few minutes after the start, then hourly (a day of imports and exports filled the disk). */
 export function startCleaning(app: App): () => void {
-  // Whole copies and effects' renders with no room ask the cleaner for it (storage.ts `askForRoom`).
+  // Work with no room asks the cleaner for it (storage.ts `askForRoom`, `admit`).
   diskHooks.makeRoom = (wanted) => makeRoom(app, wanted);
+  ledger.useRoots(ledgerOf.rootsOf(app.store.home, app.store.cacheDir()));
   let running = false;
-  const run = async () => {
+  const run = async (clean: boolean) => {
     if (running) return;
     // A cache on a drive macOS hasn't answered about yet (plugged in after the start): asked off the event loop, cleaned next time.
     const open = folderAccess.unanswered([app.store.cacheDir()]);
@@ -805,30 +1016,24 @@ export function startCleaning(app: App): () => void {
     }
     running = true;
     try {
-      const cloud = await cleanCloudPreviews(app, false);
-      // Edits marked done on Home: their footage goes before an active one's.
-      const done = new Set<string>();
-      try {
-        for (const entry of await later.list()) if (entry.done === true && entry.key.startsWith("edit:")) done.add(entry.key.slice("edit:".length));
-      } catch {
-        // Later unreachable: ordered by last open alone.
+      if (!clean) {
+        // The first count, soon after the start: room-making has it before the first pass.
+        await ledger.rebuild();
+        diag.info("cache", `this computer holds ${ledger.summary()} of Edit's`);
+        return;
       }
-      const report = cleanCache(app, false, Date.now(), undefined, done);
-      const old = cleanExports(app, false);
-      report.bytes += old.bytes;
-      report.files += old.files;
-      report.bytes += cloud.bytes;
-      report.files += cloud.files;
-      if (report.files > 0) {
-        diag.info("cache", `freed ${(report.bytes / 1e9).toFixed(2)} GB: ${report.files} files in ${report.folders} media folders (no project uses them, half-written, or old projects' previews past the cache's limit)`);
-      }
+      const report = await cleanPass(app);
+      if (report.files > 0) diag.info("cache", `freed ${(report.bytes / 1e9).toFixed(2)} GB: ${report.files} files (no project uses them, half-written, of projects let go, or of projects not in work to keep ${(keepFreeBytes(app.store.cacheDir()) / 1e9).toFixed(0)} GB free)`);
+      diag.info("cache", `this computer holds ${ledger.summary()} of Edit's`);
     } catch (error) {
       diag.warn("cache", `cleaning the cache: ${diag.messageOf(error)}`);
     } finally { running = false; }
   };
-  const first = setTimeout(run, 10 * 60 * 1000);
-  const hourly = setInterval(run, 3600 * 1000);
+  const count = setTimeout(() => void run(false), 30 * 1000);
+  const first = setTimeout(() => void run(true), 10 * 60 * 1000);
+  const hourly = setInterval(() => void run(true), 3600 * 1000);
   return () => {
+    clearTimeout(count);
     clearTimeout(first);
     clearInterval(hourly);
   };

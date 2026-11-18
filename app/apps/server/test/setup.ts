@@ -48,3 +48,9 @@ process.env.TMPDIR = own;
 afterAll(() => fs.rmSync(own, { recursive: true, force: true }));
 beforeEach(() => forgetOutages());
 process.on("exit", () => fs.rmSync(own, { recursive: true, force: true }));
+// Every test sees a roomy disk unless it says otherwise (storage.ts `diskHooks`): what Edit keeps free is a tenth of
+// the disk, at least 15 GB (Nov 18), and this machine's /tmp is memory with ~13 GB free, so a test's copies would
+// stream here and not on a Mac. A test that measures room sets its own free space, and its disk's size if it matters.
+import { diskHooks } from "../src/storage.ts";
+diskHooks.free = () => 1e12;
+diskHooks.total = () => 100e9;

@@ -156,7 +156,7 @@ async function filesOf(cache: string, project: Project, root: string | null): Pr
       const seconds = has === "all" ? media.duration : has.reduce((sum, [a, b]) => sum + (b - a), 0);
       const share = media.duration > 0 ? Math.min(1, seconds / media.duration) : 0;
       const here = has === "all" || share >= 0.999;
-      out.push({ media, key, graphic, size, done: here ? size : share * size, here, stuck: !here && storage.spare(cache, 150_000_000, storage.CACHE_FLOOR_BYTES) < 0 });
+      out.push({ media, key, graphic, size, done: here ? size : share * size, here, stuck: !here && storage.spare(cache, 150_000_000, storage.cacheFloor(cache)) < 0 });
       continue;
     }
     const done = root === null ? 0 : Math.min(size, cloudBlocks.bytesHere(root, key));
@@ -268,7 +268,10 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
   let room: string | null = null;
   const keeping = cloudBlocks.keeping(root);
   const left = files.filter((file) => !file.here).reduce((sum, file) => sum + (file.size - file.done), 0);
-  const spare = storage.spare(cache, 0, storage.CACHE_FLOOR_BYTES) + storage.claimedBytes();
+  let spare = storage.spare(cache, 0, storage.cacheFloor(cache)) + storage.claimedBytes();
+  // Short of room for it: projects not in work make room first (oldest first, whole: cache_cleanup.ts `makeRoom`), at
+  // most every few minutes however often this is asked; what still doesn't fit plays from the cloud, said below.
+  if (keeping && left > spare && storage.askForRoom(storage.freeBytes(cache) + left - spare) > 0) spare = storage.spare(cache, 0, storage.cacheFloor(cache)) + storage.claimedBytes();
   if (!keeping) room = "This Mac's disk is too full to keep the footage, so it plays from the cloud.";
   else if (left > spare) room = `Only ${GB(Math.max(0, spare) + bytes_done)} of the ${GB(bytes_total)} GB fits on this Mac. The start of the edit comes first; the rest plays from the cloud.`;
 

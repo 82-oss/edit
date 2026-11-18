@@ -305,14 +305,14 @@ test("a piece the window cut the old way (from the stream, every frame before it
     for (const one of [`${other}/native/0.mp4`, `${other}/native/1.mp4`, `${other}/head.mp4`, `${other}/video/0.m4s`, `${other}/audio/0.m4s`, `${other}/joined/0.m4s`, `${older}/native/3.mp4`, `${older}/video/3.m4s`]) write(localPath(cache, one), "x");
     const unpin = pin([localPath(cache, `${other}/native/1.mp4`)]);
     try {
-      const report = cleanCache(app, false, Date.now(), { cacheBytes: 1e15, freeBytes: 0 });
+      const report = cleanCache(app, false, Date.now(), { freeBytes: 0 });
       expect(report.removed.sort()).toEqual([localPath(cache, `${other}/native/0.mp4`), localPath(cache, `${older}/native`), localPath(cache, `${older}/native/3.mp4`)].sort());
       for (const kept of [`${other}/native/1.mp4`, `${other}/head.mp4`, `${other}/video/0.m4s`, `${other}/audio/0.m4s`, `${other}/joined/0.m4s`, `${older}/video/3.m4s`, `${base}/native2/1.mp4`]) expect(fs.existsSync(localPath(cache, kept))).toBe(true);
     } finally {
       unpin();
     }
     // Unpinned, the next pass takes it and its folder.
-    cleanCache(app, false, Date.now(), { cacheBytes: 1e15, freeBytes: 0 });
+    cleanCache(app, false, Date.now(), { freeBytes: 0 });
     expect(fs.existsSync(localPath(cache, `${other}/native`))).toBe(false);
   } finally {
     cutting.mockRestore();
@@ -325,7 +325,9 @@ test("a piece the window cut the old way (from the stream, every frame before it
 test("a piece is cut only with room for it on the disk (its claim counted against every other write), else it streams on; unmeasured, it waits too", async () => {
   reset();
   storage.resetRoom();
-  let freeNow = storage.CACHE_FLOOR_BYTES + 10;
+  // What copies kept to play sooner leave free (the tests' disk: 15 GB, what Edit keeps free on it).
+  const floor = storage.cacheFloor("/");
+  let freeNow = floor + 10;
   const free = spyOn(storage.diskHooks, "free").mockImplementation(() => freeNow);
   const { base, cache, ask, cleanup } = await piecedProject("native-sources-no-room");
   const cutting = spyOn(hooks, "cut").mockImplementation(async (_head, _video, out) => write(out, "cut"));
@@ -337,7 +339,7 @@ test("a piece is cut only with room for it on the disk (its claim counted agains
     expect(answer.excerpts).toEqual({});
     expect(answer.coming).toBe(true);
     // Another write under way takes the room it would have.
-    freeNow = storage.CACHE_FLOOR_BYTES + 2_000;
+    freeNow = floor + 2_000;
     const other = storage.claim(1_500);
     answer = await ask();
     await Bun.sleep(10);
@@ -349,7 +351,7 @@ test("a piece is cut only with room for it on the disk (its claim counted agains
     await Bun.sleep(10);
     expect(cutting).not.toHaveBeenCalled();
     // With room, at the page's next ask, it's cut.
-    freeNow = storage.CACHE_FLOOR_BYTES + 2_000;
+    freeNow = floor + 2_000;
     await ask();
     await Bun.sleep(10);
     expect(cutting).toHaveBeenCalledTimes(1);

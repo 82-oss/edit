@@ -92,7 +92,7 @@ function sizeOf(one: Waiting): number {
 /**
  * Starts what's waiting, in its order, while slots are free (`most`) and the disk has room for each: one check,
  * here, of the disk's free space less what every copy under way still has to write (storage.ts claims) less this
- * file's own size, kept over the cache's floor (storage.ts `CACHE_FLOOR_BYTES`); checked again with what's left
+ * file's own size, kept over the cache's floor (storage.ts `cacheFloor`: never under what Edit keeps free); checked again with what's left
  * to write exactly once its first block says its size (`start`). Until Nov 17 the check was made when the files
  * were queued, counting nothing under way or queued, made again at every warm, and the window's own queue had
  * none: on kenobi 3.3 GB came down in a minute, to ENOSPC. A file with no room waits (it streams on) and is
@@ -102,7 +102,7 @@ function sizeOf(one: Waiting): number {
 function fetchNext(most = AT_ONCE, only?: Waiting): void {
   if (playing.isPlaying() || waiting.length === 0 || fetching.size >= most) return;
   const dir = parent(waiting[0]!.local) ?? waiting[0]!.local;
-  let room = storage.spare(dir, 0, storage.CACHE_FLOOR_BYTES);
+  let room = storage.spare(dir, 0, storage.cacheFloor(dir));
   let newlyShort = 0;
   let wanted = 0;
   for (let at = 0; at < waiting.length && fetching.size < most; ) {
@@ -157,12 +157,13 @@ function start(next: Waiting, need: number): void {
     claim.bytes = left;
     if (checked) return true;
     checked = true;
-    return storage.spare(dir, left, storage.CACHE_FLOOR_BYTES, claim) >= 0;
+    return storage.spare(dir, left, storage.cacheFloor(dir), claim) >= 0;
   };
   void hooks
     .fetch(next.key, next.local, room)
     .then(() => {
       diag.info("preview", `${next.key}: whole preview here in ${diag.human(performance.now() - started)}`);
+      storage.ledger.note(next.local);
       for (const listener of landedListeners) listener(next.key);
     })
     .catch((error: unknown) => {

@@ -326,8 +326,8 @@ test("the disk's floors hold: footage that can't all fit is said so plainly, and
     project.clips.push(clip("ca", "a", 0, 18000));
     keep(root, key, 2000, [0]);
     const app = appOf(cache, project);
-    // Room for a gigabyte over the cache's floor, of a 4.2 GB file.
-    storage.diskHooks.free = () => storage.CACHE_FLOOR_BYTES + 1e9;
+    // Room for a gigabyte over what whole copies leave free (what Edit keeps free on the tests' 100 GB disk), of a 4.2 GB file.
+    storage.diskHooks.free = () => storage.cacheFloor(cache) + 1e9;
     const short = await readiness(app, project.id, false);
     expect(short.room).toBe("Only 1.0 of the 4.2 GB fits on this Mac. The start of the edit comes first; the rest plays from the cloud.");
     expect(short.ready).toBe(false);

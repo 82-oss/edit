@@ -105,9 +105,9 @@ test("scripts' footage stays while there's room, and goes oldest first only past
   expect((await roundForTests(data, new Map(), 500)).freed).toBe(1000);
   expect(fs.existsSync(join(dir, "proxy.mp4"))).toBe(false);
   expect(fs.existsSync(join(otherDir, "proxy.mp4"))).toBe(true);
-  // The budget: the footage and the cache against a quarter of the room, the disk past its floor.
+  // What must go: what the disk has less free than Edit keeps on it (15 GB or a tenth of the disk; the tests' disk is 100 GB).
   const cache = join(data, "cache-here");
   fs.mkdirSync(cache, { recursive: true });
   expect(overBudget(data, cache, 100e9)).toBeLessThan(0);
-  expect(overBudget(data, cache, 0.5e9)).toBeGreaterThan(0);
+  expect(overBudget(data, cache, 14e9)).toBe(1e9);
 });

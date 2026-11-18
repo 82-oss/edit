@@ -8,6 +8,7 @@ import type { App } from "./app.ts";
 import { importing } from "./drive_import.ts";
 import * as ideaRuns from "./ideas/run.ts";
 import * as jobs from "./jobs.ts";
+import * as progress from "./progress.ts";
 import * as seams from "./seams.ts";
 import * as thumbnailRuns from "./thumbnails/run.ts";
 import * as writerImports from "./writer/imports.ts";
@@ -35,6 +36,48 @@ const others = new Set<() => string | null>();
 export function register(what: () => string | null): () => void {
   others.add(what);
   return () => others.delete(what);
+}
+
+/** Work on a project only its own module knows about (an effect's render, a removal's pieces), each saying whether it runs for an edit. */
+const projectWork = new Set<(id: string) => boolean>();
+
+/** Adds such work (wired where the server starts, serve.ts); undone by the function returned. */
+export function registerProjectWork(runs: (id: string) => boolean): () => void {
+  projectWork.add(runs);
+  return () => projectWork.delete(runs);
+}
+
+/**
+ * Whether anything runs for edit `id` on this computer now: an agent turn, an export, a job the table holds for it
+ * (an export, a share, smoothing, a watch, footage coming in, a turn a restart cut short), work under way that shows
+ * on its page (progress.ts), an effect's render or a removal's pieces. The cache's cleaner keeps such a project's
+ * files whatever its state (cache_cleanup.ts).
+ */
+export function workingFor(app: App, id: string): boolean {
+  return workingNow(app)(id);
+}
+
+/** `workingFor` for many projects at once: the job table and the agent's turns read once. */
+export function workingNow(app: App): (id: string) => boolean {
+  const agents = app.agents as { runningProjects?: () => string[] } | undefined;
+  const turns = new Set(agents?.runningProjects?.() ?? []);
+  const listed = new Set(jobs.list(app.store.home ?? null).filter(jobs.live).map((job) => job.project));
+  return (id) => {
+    if (turns.has(id) || listed.has(id) || progress.pending(id).length > 0) return true;
+    try {
+      if (app.exports.runningFor?.(id) != null) return true;
+    } catch {
+      // No exports here (tests).
+    }
+    for (const runs of projectWork) {
+      try {
+        if (runs(id)) return true;
+      } catch {
+        // Its module can't say: not counted.
+      }
+    }
+    return false;
+  };
 }
 
 interface ScriptJobs {
