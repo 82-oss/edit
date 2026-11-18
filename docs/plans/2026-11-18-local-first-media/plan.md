@@ -113,3 +113,7 @@ outages (backoff done, 3e1e8a72), effect render throughput.
   capped at 30, phone footage, a 2.1 s first seek under load.
 - Nov 18: canary on f1ff9935 (storage rules, picker, symbols) started on kenobi; Script mode's 20 h case cap being lifted
   (Sphe: a case takes all its footage).
+- Nov 18 16:40: nightly-86 out (35af2b0b): step 1, the joined/ floor fix, release symbols, Script mode cases whole (no
+  20 h cap). Canaries on kenobi passed (f1ff9935 storage rules, 35af2b0b Script mode). Open from them: room-making runs on
+  the server's thread (~9 s on a slow disk), a Nov 4 `.partial` in cloud/sound never swept, a deleted script's original
+  upload carries on, the stop-mid-export abort (no crash report written on kenobi).
