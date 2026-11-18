@@ -4,7 +4,7 @@ import { trelloCard, trelloCards } from "./trello";
 import { manifest } from "./manifest";
 import { cloud, emptyCleanups, r2Config, sweepFootage, type CloudEnv } from "./cloud";
 import { media, type EdgeCache } from "./media";
-import { ideasRoute, mayIdeas, NO_IDEAS } from "./ideas";
+import { ideasRoute, mayIdeas, NO_IDEAS, youtubeCheck } from "./ideas";
 import { channelsRoute } from "./channels";
 import { fromOtherRelay, openartReady, openartRoute, openartToken, type OpenArtEnv } from "./openart";
 import { channelsLive } from "./live_channels";
@@ -153,6 +153,19 @@ export default {
         return json(403, { error: "Your account can't import from Trello: an admin can give you an editing or scripts permission at accounts.spheceo.com." });
       }
       return url.pathname === "/v1/trello/card" ? trelloCard(url.searchParams.get("card") ?? "", env) : trelloCards(url.searchParams.get("list") ?? "", env);
+    }
+    // YouTube links checked before Script mode imports them (ideas.ts youtubeCheck): people who edit or write scripts.
+    if (url.pathname === "/v1/youtube/check" && request.method === "GET") {
+      const found = await allow(request, env, "use", "youtube");
+      if (found instanceof Response) return found;
+      if (found.kind === "person" && !found.admin && !found.perms.some((perm) => perm.startsWith("edit.") || perm.startsWith("scripts."))) {
+        return json(403, { error: "Your account can't import from YouTube: an admin can give you an editing or scripts permission at accounts.spheceo.com." });
+      }
+      try {
+        return json(200, await youtubeCheck(url.searchParams.get("ids") ?? "", env));
+      } catch (error) {
+        return json(error instanceof Error && "status" in error && typeof error.status === "number" ? error.status : 502, { error: error instanceof Error ? error.message : String(error) });
+      }
     }
     // The team's Vmake account in a Browser Use browser (vmake.ts): people who edit, one Mac at a time; its sign-in an admin's.
     if (url.pathname === "/v1/vmake" || url.pathname.startsWith("/v1/vmake/")) {

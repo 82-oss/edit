@@ -191,6 +191,31 @@ describe("YouTube's details", () => {
     expect((await ask("/v1/ideas/youtube?id=nope")).status).toBe(400);
   });
 
+  it("checks Script mode's pasted links in one call, for whoever edits or writes scripts (Sphe, Nov 18: checks took too long)", async () => {
+    const calls = stand({
+      "GET www.googleapis.com/youtube/v3/videos": () => ({
+        items: [
+          { id: "abcdefghijk", snippet: { title: "Verdict", channelTitle: "Court TV", liveBroadcastContent: "none" }, contentDetails: { duration: "PT4M3S" }, status: { privacyStatus: "public" } },
+          { id: "lmnopqrstuv", snippet: { title: "Sentencing", channelTitle: "News", liveBroadcastContent: "upcoming" }, contentDetails: { duration: "P0D", contentRating: { ytRating: "ytAgeRestricted" } }, status: { privacyStatus: "unlisted" } },
+        ],
+      }),
+    });
+    const writer = { claims: { perms: ["use", "scripts.interrogation"] } };
+    const answer = await ask("/v1/youtube/check?ids=abcdefghijk,lmnopqrstuv,zzzzzzzzzzz", writer);
+    expect(answer.status).toBe(200);
+    expect(await answer.json()).toEqual({
+      videos: {
+        abcdefghijk: { title: "Verdict", channel: "Court TV", durationSeconds: 243, live: "none", ageRestricted: false, privacy: "public" },
+        lmnopqrstuv: { title: "Sentencing", channel: "News", durationSeconds: 0, live: "upcoming", ageRestricted: true, privacy: "unlisted" },
+        zzzzzzzzzzz: null,
+      },
+    });
+    // One call for all of them.
+    expect(calls.length).toBe(1);
+    expect((await ask("/v1/youtube/check?ids=abcdefghijk", { claims: { perms: ["use", "ideas.bodycam"] } })).status).toBe(403);
+    expect((await ask("/v1/youtube/check?ids=nope", writer)).status).toBe(400);
+  });
+
   it("says so when the relay has no key, or the video isn't there", async () => {
     stand({ "GET www.googleapis.com/youtube/v3/videos": () => ({ items: [] }) });
     expect((await ask("/v1/ideas/youtube?id=abcdefghijk", {}, env({ YOUTUBE_API_KEY: undefined }))).status).toBe(503);

@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 
 import type { App } from "../app.ts";
 import { join } from "../paths.ts";
+import * as relay from "../relay.ts";
 import * as edit from "../youtube.ts";
 import { cookieArgs } from "../youtube_signin.ts";
 
@@ -73,6 +74,11 @@ export async function title(app: App, url: string): Promise<string> {
 }
 
 export async function probe(app: App, url: string): Promise<Probe> {
+  // YouTube's Data API through the relay first: a second, where yt-dlp read the watch page through the proxy (17 s to
+  // over a minute behind a bot wall, Sphe, Nov 18). What it can't settle (no public video by that id, an age limit
+  // the editor's sign-in may get past, no length) is asked of yt-dlp as before.
+  const quick = await fromApi(url).catch(() => null);
+  if (quick !== null) return quick;
   const first = await probeOnce(app, url, []);
   // An age-restricted (or members-only) video is checked again with the
   // editor's YouTube sign-in from Chrome, as its download will be (youtube.ts):
@@ -118,6 +124,23 @@ async function probeOnce(app: App, url: string, signIn: string[]): Promise<{ pro
               ? "It runs over 10 hours."
               : null;
   return { probe: { title: name, channel, durationMs, problem, warning: null }, signInWouldHelp: ageLocked };
+}
+
+type Checked = { title: string; channel: string; durationSeconds: number | null; live: "live" | "upcoming" | "none"; ageRestricted: boolean; privacy: string } | null;
+
+/** A link's check from the Data API (the relay's /v1/youtube/check), or null to ask yt-dlp. */
+async function fromApi(url: string): Promise<Probe | null> {
+  const id = edit.videoId(url);
+  // Signed out (or a test with no relay): yt-dlp alone, as before.
+  if (id === null || !relay.cloudEnabled()) return null;
+  const answer = await relay.json<{ videos: Record<string, Checked> }>("GET", `/v1/youtube/check?ids=${id}`, null, "YouTube's details", 15);
+  const video = answer.videos[id] ?? null;
+  if (video === null || video.ageRestricted || video.durationSeconds === null || video.durationSeconds <= 0) return null;
+  const name = [...(video.title || "YouTube video")].slice(0, 180).join("");
+  checked.set(url, [name, Date.now()]);
+  const durationMs = Math.floor(video.durationSeconds * 1000);
+  const problem = video.live === "live" ? "It's live now; import it once the stream has ended." : video.live === "upcoming" ? "It hasn't premiered yet." : durationMs > 10 * 3_600_000 ? "It runs over 10 hours." : null;
+  return { title: name, channel: video.channel, durationMs, problem, warning: null };
 }
 
 /** What only a signed-in YouTube gets past (age, members). */

@@ -314,6 +314,37 @@ async function youtube(path: string, params: Record<string, string>, env: IdeasE
   return (await answer.json()) as Record<string, unknown>;
 }
 
+/**
+ * Script mode's check of pasted YouTube links before an import, in one call
+ * of the Data API for up to 50 (Sphe, Nov 18: "checks take SOOOO long": yt-dlp
+ * read each watch page through the proxy, 17 s to over a minute behind a bot
+ * wall). Per id: what it is, or null when YouTube has no public video by it.
+ */
+export async function youtubeCheck(given: string, env: IdeasEnv) {
+  const ids = [...new Set(given.split(",").map((one) => one.trim()))].filter((one) => /^[A-Za-z0-9_-]{11}$/.test(one)).slice(0, 50);
+  if (ids.length === 0) throw new Refused(400, "Give YouTube video ids.");
+  const items = ((await youtube("videos", { part: "snippet,contentDetails,status", id: ids.join(","), maxResults: "50" }, env)).items as (Item & { status?: Record<string, unknown> })[] | undefined) ?? [];
+  const videos: Record<string, { title: string; channel: string; durationSeconds: number | null; live: "live" | "upcoming" | "none"; ageRestricted: boolean; privacy: string } | null> = {};
+  for (const id of ids) {
+    const item = items.find((one) => one.id === id);
+    if (item === undefined) {
+      videos[id] = null;
+      continue;
+    }
+    const snippet = item.snippet ?? {};
+    const live = snippet.liveBroadcastContent;
+    videos[id] = {
+      title: typeof snippet.title === "string" ? snippet.title : "",
+      channel: typeof snippet.channelTitle === "string" ? snippet.channelTitle : "",
+      durationSeconds: isoSeconds(item.contentDetails?.duration),
+      live: live === "live" || live === "upcoming" ? live : "none",
+      ageRestricted: (item.contentDetails?.contentRating as { ytRating?: unknown } | undefined)?.ytRating === "ytAgeRestricted",
+      privacy: typeof item.status?.privacyStatus === "string" ? item.status.privacyStatus : "public",
+    };
+  }
+  return { videos };
+}
+
 /** ISO 8601's PT1H2M3S, in seconds. */
 export function isoSeconds(duration: unknown): number | null {
   const match = typeof duration === "string" ? /^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(duration) : null;
