@@ -430,6 +430,12 @@ test("a strip finished touches only its own overlays: the rest keep their ids an
   // What's beneath the effect over s2's seconds is as it was (its render stays); the one over s1's changed.
   expect(beneathKey(done, "glass_b")).toBe(beneathKey(project, "glass_b"));
   expect(beneathKey(done, "glass_a")).not.toBe(beneathKey(project, "glass_a"));
+  // The new strip's upload landing (its cloud source filled in) is the same picture: no render again.
+  const uploaded = structuredClone(done);
+  const landed = uploaded.media.find((one) => one.id === "s1b")!;
+  expect(landed.cleans).toBeTruthy();
+  landed.cloud = { ...(landed.cloud ?? {}), source: "sha256:0123456789abcdef" } as NonNullable<typeof landed.cloud>;
+  expect(beneathKey(uploaded, "glass_a")).toBe(beneathKey(done, "glass_a"));
   // Then a save with nothing new: nothing changes.
   const still = structuredClone(done);
   enforceCleanStrips(done, still);

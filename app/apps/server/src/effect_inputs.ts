@@ -196,7 +196,10 @@ function under(project: Project, name: string): { start: number; end: number; pr
   // Each footage by what it is (its content's id in the cloud), not where this computer keeps it: every computer, port
   // and data folder gives a media a path of its own (cloud_media's resolver), so a key of paths was made again on each.
   const sources = media_.map((one: Media) => ({ id: one.id, source: one.cloud?.source ?? one.path, effect_key: one.effect_key ?? null }));
-  const key = hashed({ version: KEY_VERSION, settings: project.settings, start, end, layers, clips: byId, media: sources });
+  // A cleaned strip by its media alone: each piece cleaned again comes back as a new media (text_removal.ts,
+  // watermark_removal.ts), and its upload filling in its cloud source afterwards is the same picture, not a new render.
+  const what = media_.map((one: Media) => (one.cleans != null ? { id: one.id, strip: true, effect_key: one.effect_key ?? null } : { id: one.id, source: one.cloud?.source ?? one.path, effect_key: one.effect_key ?? null }));
+  const key = hashed({ version: KEY_VERSION, settings: project.settings, start, end, layers, clips: byId, media: what });
   // Marks written before (without the order of the tracks; before that, with paths): taken as what's beneath while they hold (markHolds).
   const older = [
     hashed({ version: 2, settings: project.settings, start, end, clips, media: sources }),
