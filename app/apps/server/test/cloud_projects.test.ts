@@ -696,3 +696,15 @@ test("no cloud attached: statuses are local", async () => {
     fixture.cleanup();
   }
 });
+
+test("a project's \"Sign in to Edit\" clears on its next call that works; another error stays until what failed is done", () => {
+  const entry = new Entry({ rev: 3, dirty: false });
+  // Marc's Mac, Nov 18: a lock renewal refused during the sign-in's renewal, kept under Needs attention.
+  entry.failed("Sign in to Edit (this relay answers signed-in people only). (401)", 1_000);
+  expect(entry.note).not.toBeNull();
+  entry.succeeded();
+  expect(entry.note).toBeNull();
+  entry.failed("the project file is too big (413)", 2_000);
+  entry.succeeded();
+  expect(entry.note).toEqual({ kind: "error", message: "the project file is too big (413)" });
+});

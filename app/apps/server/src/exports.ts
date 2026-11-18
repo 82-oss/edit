@@ -319,23 +319,30 @@ export async function archiveExportFile(
 }
 
 /**
+/**
+ * How an archive went: up (or in the cloud already), stopped for a newer
+ * export of the file, or not up (offline, signed out, the relay down): that
+ * one's job is put off and tried again by itself (jobs.ts `putOff`).
+ */
+export type Archived = "up" | "stopped" | "not up";
+
  * Puts a finished export in the cloud (`archiveExportFile`) and lists it
  * there: after the export, or after a restart cut the upload short (the
  * `archive` job). A file gone meanwhile is said, never exported again here.
  */
-export async function archiveFinished(home: string, id: string, output: string, key: string, record: ExportRecord, signal?: AbortSignal): Promise<void> {
+export async function archiveFinished(home: string, id: string, output: string, key: string, record: ExportRecord, signal?: AbortSignal): Promise<Archived> {
   if (!fs.existsSync(output)) {
     // Its review's copy stands in for it (`heldByReview`): listed as that.
     const kept = record.bytes === null ? null : reviewCopyOf(home, id, output, record.bytes);
     if (kept !== null) {
       remember(home, id, { ...record, cloudKey: kept });
-      return;
+      return "up";
     }
     // Archived and deleted here before a restart crossed its job off: listed in the cloud, and done.
     const there = record.bytes === null ? null : await exportCloud.head(key).catch(() => null);
     if (there !== null && there.size === record.bytes) {
       remember(home, id, { ...record, cloudKey: key });
-      return;
+      return "up";
     }
     // Nothing to send: the job is crossed off, not tried at every start until it's given up.
     throw new jobs.Gone(`${output} is gone`);
@@ -345,12 +352,13 @@ export async function archiveFinished(home: string, id: string, output: string, 
   if (held !== null) {
     remember(home, id, { ...record, cloudKey: held });
     diag.info("export", `${id}: ${output} is in the cloud already as ${held}: not archived again`);
-    return;
+    return "up";
   }
   // Short of room: the older copies kept while there was some go first, so this one may stay.
   dropKept(home, output);
-  // Its job begun by an earlier run: carried on after a restart.
-  const carriedOn = (jobs.get(home, jobs.keyOf("archive", id))?.started_ms ?? Infinity) < performance.timeOrigin;
+  // Its job begun by an earlier run, or tried before and put off: carried on (what's up already isn't sent again).
+  const listed = jobs.get(home, jobs.keyOf("archive", id));
+  const carriedOn = (listed?.started_ms ?? Infinity) < performance.timeOrigin || listed?.put_off !== undefined;
   if (await archiveExportFile(output, key, exportCloud, freeBytes, signal, carriedOn)) {
     try {
       remember(home, id, record);
@@ -359,25 +367,50 @@ export async function archiveFinished(home: string, id: string, output: string, 
     const held = fs.existsSync(output) ? reviewCopyOf(home, id, output, fs.statSync(output).size) : null;
     if (held !== null) await heldByReview(home, id, output, held, fs.statSync(output).size);
     diag.info("export", `${id}: archived ${output} to ${key}${fs.existsSync(output) ? " (the local copy kept: being read, or the newest with room for it)" : " and deleted the local copy"}`);
-  } else if (signal?.aborted) {
+    return "up";
+  }
+  if (signal?.aborted) {
     diag.info("export", `${id}: the upload of ${output} to the cloud stopped: a newer export of it is being made`);
-  } else {
-    diag.warn("export", `${id}: cloud archive of ${output} unverified; local copy kept`);
+    return "stopped";
   }
 }
+  diag.warn("export", `${id}: cloud archive of ${output} unverified; local copy kept`);
+  return "not up";
+}
+
+/**
+ * An `archive` job's upload, however it goes: up, stopped for a newer export,
+ * or its file gone, it's crossed off; not up (offline, signed out, the relay
+ * down: Marc's Mac, Nov 18, where three restarts left one "given up"), it's
+ * put off and tried again by itself, an hour and then a day later.
+ */
+export async function archiveJob(home: string | null, job: string, send: () => Promise<Archived>): Promise<void> {
+  let went: Archived;
+  try {
+    went = await send();
+  } catch (error) {
+    if (error instanceof jobs.Gone) {
+      jobs.end(home, job);
+      return;
+    }
+    went = "not up";
+    diag.warn("export", `${job}: archiving: ${diag.messageOf(error)}`);
+  }
+  if (went === "not up") jobs.putOff(home, job, "its export's cloud copy didn't go up");
+  else jobs.end(home, job);
 
 /**
  * `archiveFinished`, noted as going up while it does: a newer export of the
  * same file stops it (`ExportRegistry.start`) rather than writing the file
  * under it, and the cleaners leave the file alone (`beingRead`).
  */
-export async function archiveGoing(home: string, id: string, output: string, key: string, record: ExportRecord): Promise<void> {
+export async function archiveGoing(home: string, id: string, output: string, key: string, record: ExportRecord): Promise<Archived> {
   const stop = new AbortController();
   const sent = archiveFinished(home, id, output, key, record, stop.signal);
   const entry = { stop, done: sent.then(() => undefined, () => undefined) };
   archiving.set(output, entry);
   try {
-    await sent;
+    return await sent;
   } finally {
     if (archiving.get(output) === entry) archiving.delete(output);
   }
@@ -812,10 +845,10 @@ export class ExportRegistry implements seams.Exports {
   }
 
   /** Sends a finished export to the cloud (`archiveGoing`), counted as this Mac's work while it goes: after its export, or as the `archive` job a restart carries on. */
-  async sendUp(home: string, id: string, output: string, key: string, record: ExportRecord): Promise<void> {
+  async sendUp(home: string, id: string, output: string, key: string, record: ExportRecord): Promise<Archived> {
     this.sending += 1;
     try {
-      await archiveGoing(home, id, output, key, record);
+      return await archiveGoing(home, id, output, key, record);
     } finally {
       this.sending -= 1;
     }
@@ -1541,15 +1574,9 @@ export class ExportRegistry implements seams.Exports {
     await upFromHere?.();
   }
 
-  /** Sends a finished export to the cloud as its `archive` job, which ends however the upload does. */
+  /** Sends a finished export to the cloud as its `archive` job: crossed off once it's up (or stopped, or its file gone), put off and tried again by itself when it isn't. */
   private async archive(home: string, id: string, output: string, key: string, record: ExportRecord, job: string): Promise<void> {
-    try {
-      await this.sendUp(this.home ?? home, id, output, key, record);
-    } catch (error) {
-      diag.warn("export", `${id}: archiving ${output}: ${diag.messageOf(error)}`);
-    } finally {
-      jobs.end(this.home, job);
-    }
+    await archiveJob(this.home, job, () => this.sendUp(this.home ?? home, id, output, key, record));
   }
 }
 

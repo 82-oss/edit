@@ -8,7 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import * as cloud from "../src/cloud.ts";
-import { archiveExportFile, archiveFinished, dropLeftSnapshot, exportCloud, heldByReview, listExports, type ExportRecord } from "../src/exports.ts";
+import { archiveExportFile, archiveFinished, archiveJob, dropLeftSnapshot, exportCloud, heldByReview, listExports, type ExportRecord } from "../src/exports.ts";
 import * as jobs from "../src/jobs.ts";
 import { fullBehind } from "../src/reviews.ts";
 
@@ -154,6 +154,30 @@ test("an export shared for review is kept in the cloud once: its archive goes fo
     spies.push(spyOn(cloud, "remove").mockImplementation(async () => { throw new Error("Only an admin can delete from Edit's cloud."); }));
     await heldByReview(home, "p1", output, full, 50);
     expect(listExports(home, "p1")).toEqual([expect.objectContaining({ cloudKey: archive })]);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("an archive that didn't go up (offline, signed out) is put off and tried again by itself; one up, stopped or gone is crossed off", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "edit-archive-job-"));
+  try {
+    for (const [project, went] of [["up", "up"], ["stopped", "stopped"], ["down", "not up"]] as const) {
+      const key = jobs.begin(home, "archive", project, {});
+      await archiveJob(home, key, async () => went);
+    }
+    const gone = jobs.begin(home, "archive", "gone", {});
+    await archiveJob(home, gone, async () => {
+      throw new jobs.Gone("/x.mp4 is gone");
+    });
+    const failing = jobs.begin(home, "archive", "throws", {});
+    await archiveJob(home, failing, async () => {
+      throw new Error("could not reach Edit's relay: the sign-in is being renewed");
+    });
+    expect(jobs.list(home).map((job) => [job.key, job.state, job.put_off])).toEqual([
+      ["archive:down", "waiting", 1],
+      ["archive:throws", "waiting", 1],
+    ]);
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }

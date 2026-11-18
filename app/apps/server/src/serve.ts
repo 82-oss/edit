@@ -25,7 +25,7 @@ import * as logShip from "./log_ship.ts";
 import { agentHooks } from "./agent.ts";
 import * as scriptSync from "./script_sync.ts";
 import { registerEditingTools, unfinishedNote } from "./edit_tools.ts";
-import { archiveGoing, dropLeftSnapshot, ExportRegistry, room as exportRoom, resumeSnapshot, type ExportRecord, type StartExtra } from "./exports.ts";
+import { archiveGoing, archiveJob, dropLeftSnapshot, ExportRegistry, room as exportRoom, resumeSnapshot, type ExportRecord, type StartExtra } from "./exports.ts";
 import * as encoder from "./encoder.ts";
 import * as jobs from "./jobs.ts";
 import type { ExportOptions } from "./model.ts";
@@ -605,9 +605,8 @@ async function resumeJobs(app: App): Promise<void> {
     archive: async (job) => {
       // The export finished before the restart: only its upload is done again.
       const { output, key, record } = job.args as { output: string; key: string; record: ExportRecord };
-      await (app.exports.sendUp?.(app.store.home, job.project, output, key, record) ?? archiveGoing(app.store.home, job.project, output, key, record));
-      // Crossed off however it went, as after its export (ExportRegistry.archive): left listed, it was sent again at every start.
-      jobs.end(app.store.home, job.key);
+      // Crossed off once it's up (or its file gone), put off and tried again by itself when it isn't, as after its export (exports.ts archiveJob).
+      await archiveJob(app.store.home, job.key, () => app.exports.sendUp?.(app.store.home, job.project, output, key, record) ?? archiveGoing(app.store.home, job.project, output, key, record));
     },
     drive: (job) => {
       const { path } = job.args as { path: string };

@@ -109,6 +109,7 @@ beforeAll(() => {
         if (body.refresh_token === "slow-token-aaaaaaaa") return Bun.sleep(1500).then(() => Response.json({ error: "too late" }));
         if (body.refresh_token === "odd-token-aaaaaaaa") return Response.json({ hello: "there" });
         if (body.refresh_token === "down-token-aaaaaaaa") return new Response("<html>502 Bad Gateway</html>", { status: 502 });
+
         refreshes += 1;
         return Response.json({ access_token: jwt({ perms: ["use"], email: "someone@gmail.com", n: refreshes }), token_type: "Bearer", expires_in: 3600, refresh_token: `refresh-${refreshes + 1}-aaaaaaaa`, user: { email: "someone@gmail.com", name: "Someone", image: null } });
       }
@@ -119,6 +120,37 @@ beforeAll(() => {
 });
 
 let revokeBusy = 0;
+/** The next connection to the site closes as its request comes in (a Mac just awake); then it's passed through. */
+let dropNext = false;
+
+/** The accounts site behind a proxy that closes a connection when told to (`dropNext`), the way a dead one fails. */
+function dropping(): { url: string; stop: () => void } {
+  const proxy = Bun.listen<{ upstream: Promise<import("bun").Socket<undefined>> | null }>({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open(socket) {
+        socket.data = { upstream: null };
+      },
+      data(socket, chunk) {
+        if (socket.data.upstream === null) {
+          if (dropNext) {
+            dropNext = false;
+            socket.end();
+            return;
+          }
+          socket.data.upstream = Bun.connect({ hostname: "127.0.0.1", port: server.port!, socket: { data: (_up, back) => void socket.write(back), close: () => void socket.end() } });
+        }
+        const bytes = new Uint8Array(chunk);
+        void socket.data.upstream.then((up) => up.write(bytes));
+      },
+      close(socket) {
+        void socket.data.upstream?.then((up) => up.end());
+      },
+    },
+  });
+  return { url: `http://127.0.0.1:${proxy.port}`, stop: () => proxy.stop(true) };
+}
 
 afterEach(() => accounts.resetForTests());
 afterAll(() => {
@@ -460,6 +492,66 @@ test("a cloud call made while the kept sign-in is restored at start waits for it
     await starting;
     expect(answer.bearer).toBe(`Bearer ${accounts.accessToken()}`);
   } finally {
+    relayBack();
+    delete process.env.EDIT_TRIALS;
+  }
+});
+
+test("after a sleep every call waits on the one renewal, whose closed connection is asked again at once: none goes without a token", async () => {
+  await keychain.set(app.store.home, "wake-token-aaaaaaaa");
+  process.env.EDIT_RELAY_URL = process.env.EDIT_ACCOUNTS_URL;
+  const site = process.env.EDIT_ACCOUNTS_URL;
+  const proxy = dropping();
+  process.env.EDIT_ACCOUNTS_URL = proxy.url;
+  process.env.EDIT_TRIALS = "1";
+  try {
+    await accounts.start(app);
+    expect(accounts.status().signed_in).toBe(true);
+    // Asleep past the token's hour (Marc's Mac, Nov 18): it ran out, and the renewal's first connection is dead.
+    accounts.expireForTests();
+    dropNext = true;
+    const from = seen.length;
+    const answers = await Promise.all(Array.from({ length: 6 }, () => relay.json<{ bearer: string | null }>("GET", "/v1/test/bearer", null, "the test", 5)));
+    const token = accounts.accessToken();
+    expect(token).not.toBeNull();
+    expect(answers.map((answer) => answer.bearer)).toEqual(Array(6).fill(`Bearer ${token}`));
+    // One renewal: its try dropped on the way (it never reached the site) and the one asked at once.
+    expect(dropNext).toBe(false);
+    expect(seen.slice(from).filter((one) => one.path === "/app/token").length).toBe(1);
+    expect(accounts.status().problem).toBeNull();
+  } finally {
+    dropNext = false;
+    process.env.EDIT_ACCOUNTS_URL = site;
+    proxy.stop();
+    relayBack();
+    delete process.env.EDIT_TRIALS;
+  }
+});
+
+test("a call while the renewal is still failing after the wait doesn't go: it couldn't reach the relay, never \"Sign in to Edit\"", async () => {
+  const before = { accounts: accounts.ACCOUNTS_MS.value, wait: accounts.TOKEN_WAIT_MS.value };
+  process.env.EDIT_RELAY_URL = process.env.EDIT_ACCOUNTS_URL;
+  process.env.EDIT_TRIALS = "1";
+  try {
+    await keychain.set(app.store.home, "wake-token-aaaaaaaa");
+    await accounts.start(app);
+    accounts.ACCOUNTS_MS.value = 300;
+    accounts.TOKEN_WAIT_MS.value = 100;
+    await keychain.set(app.store.home, "slow-token-aaaaaaaa");
+    accounts.expireForTests();
+    const from = seen.length;
+    const error = await relay.json("GET", "/v1/test/bearer", null, "the test", 5).then(() => null, (failure: unknown) => failure);
+    expect(String(error)).toContain(relay.UNREACHABLE);
+    expect(String(error)).not.toContain("401");
+    // Nothing went to the relay without a token.
+    expect(seen.slice(from).filter((one) => one.path === "/v1/test/bearer").length).toBe(0);
+    expect(accounts.renewalUnderWay()).toBe(true);
+    // Still signed in.
+    expect(accounts.hasSession()).toBe(true);
+    expect(accounts.status().person).not.toBeNull();
+  } finally {
+    accounts.ACCOUNTS_MS.value = before.accounts;
+    accounts.TOKEN_WAIT_MS.value = before.wait;
     relayBack();
     delete process.env.EDIT_TRIALS;
   }

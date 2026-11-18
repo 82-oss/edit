@@ -752,8 +752,8 @@ export function removeWhenUploaded(file: string): void {
 
 /**
  * Starts `upload` in the background, noted in `<home>/jobs.json` so a
- * restart carries on with it; a failure is logged and stays noted, so the
- * next start tries again.
+ * restart carries on with it; a failure is logged and put off, so it's
+ * tried again by itself.
  */
 export function uploadLater(home: string, upload: Upload): void {
   // The same footage imported again while its upload goes on: that one carries it (two sent it twice, and the
@@ -771,7 +771,12 @@ export function uploadLater(home: string, upload: Upload): void {
         return true;
       },
       (error: unknown) => {
-        diag.error("cloud", `uploading ${upload.file}: ${scrub(failure(error))} (tried again when Edit starts)`);
+        // Its file gone (the only thing that can't change): crossed off. Anything else (offline, signed out, the relay
+        // down) is put off and tried again by itself, an hour and then a day later (jobs.ts putOff), or at the next start.
+        const gone = (upload.uploadOriginal && !isFile(upload.file)) || (upload.local !== null && !isFile(upload.local));
+        diag.error("cloud", `uploading ${upload.file}: ${scrub(failure(error))}${gone ? " (its file is gone: not tried again)" : ""}`);
+        if (gone) jobs.end(home, key);
+        else jobs.putOff(home, key, `its upload failed: ${scrub(failure(error))}`);
         return false;
       },
     )

@@ -129,6 +129,7 @@ export async function attention(app: App, setup: { id: string; ok: boolean; titl
   }
   for (const [project, quiet] of turns(app)) if (quiet > QUIET_MS) out.push(`Project ${project}: its agent turn has said nothing for ${Math.round(quiet / 60_000)} min (unstick stops it).`);
   for (const job of jobs.givenUp(app.store.home)) out.push(`Job ${job.key}: not started again (${job.given_up}) (unstick starts it again).`);
+  for (const job of jobs.putOffNow(app.store.home)) out.push(`Job ${job.key}: put off ${job.put_off} time${job.put_off === 1 ? "" : "s"} (${job.why ?? "stopped"}); tried again by itself${job.retry_at === undefined ? "" : ` at ${new Date(job.retry_at).toISOString().slice(0, 16).replace("T", " ")} UTC`} (unstick starts it now).`);
   out.push(...waitingByItself(app.store.home));
   // An idea's or thumbnail's ending that never reached the cloud: its page still says Claude is working.
   for (const job of jobs.list(app.store.home)) if ((job.kind === "idea" || job.kind === "thumbnail") && job.state === "failed") out.push(`Job ${job.key}: ${job.error ?? "how it ended never reached the cloud"}.`);

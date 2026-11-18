@@ -309,6 +309,9 @@ export const ask = Effect.fn("relay.ask")(function* (method: string, route: stri
   for (let again = false; ; again = true) {
     // A sign-in being restored or renewed is waited for, never asked without (accounts.tokenWhenReady).
     const used = accounts.accessToken() ?? (yield* Effect.promise(() => accounts.tokenWhenReady())) ?? envToken();
+    // Still being renewed after the wait (a Mac just awake, its network coming back): the call doesn't go, said as
+    // one that couldn't reach the relay (what the sync loops wait out), not as "Sign in to Edit" (Marc's, Nov 18).
+    if (used === null && accounts.renewalUnderWay()) return yield* renewing();
     const headers: Record<string, string> = authHeaders(used);
     let payload: string | undefined;
     if (body !== undefined && body !== null) {
@@ -326,9 +329,14 @@ export const ask = Effect.fn("relay.ask")(function* (method: string, route: stri
     );
     // Refused with a person's token: renewed once (a cut-off refuses tokens made before it).
     if (answer.status === 401 && !again && used !== null && used !== envToken() && (yield* Effect.promise(() => accounts.renewRefused(used)))) continue;
+    // Refused while the sign-in is being renewed: that moment's, never recorded as the person signed out.
+    if (answer.status === 401 && used !== envToken() && accounts.renewalUnderWay()) return yield* renewing();
     return answer;
   }
 });
+
+/** A call that waits on the sign-in's renewal: temporary, as a relay out of reach is, so it's tried again and nothing says "Sign in". */
+const renewing = () => Effect.fail(new service.ServiceUnreachable({ service: SERVICE, message: `${UNREACHABLE}: the sign-in is being renewed` }));
 
 /** `ask` with a JSON answer checked against `schema` (anything, by default). */
 export const askJson = <S extends Schema.Top = typeof Schema.Unknown>(method: string, route: string, body: unknown, feature: string, timeoutMs: number, schema?: S) =>

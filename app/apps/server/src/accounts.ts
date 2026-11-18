@@ -199,7 +199,9 @@ const postEffect = Effect.fn("accounts.post")(function* (path: string, body: Rec
     ACCOUNTS,
     `${accountsUrl()}${path}`,
     // What admins see as "where" on the person's page.
-    { method: "POST", headers: { "content-type": "application/json", accept: "application/json", "user-agent": userAgent(via) }, body: JSON.stringify(body) },
+    // A connection of its own each time (Marc's Mac, Nov 18: hourly after a sleep, the renewal went on the connection
+    // kept from an hour before, dead, and failed 18–20 s later). Renewals are an hour apart: nothing to reuse.
+    { method: "POST", headers: { "content-type": "application/json", accept: "application/json", "user-agent": userAgent(via) }, body: JSON.stringify(body), keepalive: false },
     ACCOUNTS_MS.value,
   );
   const value: Tokens =
@@ -304,7 +306,11 @@ const attempt = Effect.fn("accounts.renew")(function* (home: string) {
   });
   if (refresh === null) return "signed-out" as const;
   state.kept = true;
-  const answer = yield* postEffect("/app/token", { grant_type: "refresh_token", refresh_token: refresh, client_id: CLIENT }).pipe(
+  const ask = postEffect("/app/token", { grant_type: "refresh_token", refresh_token: refresh, client_id: CLIENT });
+  // A connection closed under it (a Mac just awake, its network coming back) is asked again at once, on a new one:
+  // the site still takes a refresh token it may have just rotated, for a minute.
+  const answer = yield* ask.pipe(
+    Effect.catchTag("ServiceUnreachable", (error) => Effect.logInfo(`renewing the sign-in: ${error.message}; asking again at once`).pipe(Effect.andThen(ask))),
     Effect.mapError((error) => new RenewalFailed({ message: error.message })),
   );
   if (answer.status === 200) {
@@ -350,9 +356,12 @@ const renewer = Effect.gen(function* () {
       due = state.access === null ? null : Math.max(state.expires - EARLY_MS, now + 5_000);
       continue;
     }
+    renewing = true;
     const exit = yield* Effect.exit(attempt(home));
+    renewing = false;
     const answered = [...asked, ...(yield* Queue.clear(requests))];
     if (Exit.isSuccess(exit)) {
+      lapsed = false;
       retry = yield* Schedule.toStep(renewalRetries);
       if (exit.value === "signed-out") forget(null);
       due = state.access === null ? null : Math.max(state.expires - EARLY_MS, now + 5_000);
@@ -365,6 +374,7 @@ const renewer = Effect.gen(function* () {
         yield* Effect.logInfo("sign-in ended (invalid_grant); signed out");
         due = null;
       } else {
+        lapsed = true;
         state.problem = `Couldn't renew the sign-in: ${error.message}`;
         const wait = yield* retry(now, error).pipe(
           Effect.map(([, delay]) => Duration.toMillis(delay)),
@@ -375,8 +385,28 @@ const renewer = Effect.gen(function* () {
       }
     }
     for (const request of answered) if (request.done !== null) Deferred.doneUnsafe(request.done, Exit.void);
+    for (const tell of attempted.splice(0)) tell();
   }
 }).pipe(inArea("accounts"));
+
+/** The renewer is asking the site now. */
+let renewing = false;
+/** The last renewal failed for a reason that passes (offline, the site slow or down) and none has worked since. */
+let lapsed = false;
+/** Told once the renewer's next attempt is answered, however it went. */
+const attempted: Array<() => void> = [];
+
+/**
+ * Whether the sign-in is kept but its token can't be had right now: being
+ * renewed, run out and not yet renewed, or a renewal that failed for a
+ * reason that passes. A call refused "Sign in to Edit" (401) then is that
+ * moment's, not the person signed out: the relay says it as a call that
+ * couldn't go (relay.ts `ask`), never as a project's error or a stopped sync.
+ */
+export function renewalUnderWay(): boolean {
+  if (!state.kept) return false;
+  return renewing || lapsed || state.access === null || Date.now() >= state.expires - 30_000;
+}
 
 let running: Fiber.Fiber<never> | null = null;
 
@@ -404,21 +434,34 @@ let restored: Promise<void> = Promise.resolve();
 /** When a request without a token last asked for a renewal (at most one every 30 s). */
 let lastTokenless = 0;
 
+/** How long a call waits for a renewal under way before it goes as it is (tests make it short). */
+export const TOKEN_WAIT_MS = { value: 10_000 };
+
 /**
  * The token to send, waiting for it when there's a sign-in to have one: while
  * the kept sign-in is restored at start, or renewed when the one held ran
  * out. Without the wait, the cloud's first calls after an update went with no
  * token at all and were refused ("Sign in to Edit", 401), 20 ms before the
  * sign-in was back (JJ's Mac, Nov 5), and a project kept that as its cloud
- * error (Marius's). Null when signed out.
+ * error (Marius's). Every call waits on the one renewal, up to
+ * `TOKEN_WAIT_MS`: only the first used to, and the 8–19 others of a Mac just
+ * awake went with none (Marc's, hourly on Nov 18). Null when signed out, or
+ * when the renewal is still going after the wait.
  */
 export async function tokenWhenReady(): Promise<string | null> {
   const held = accessToken();
   if (held !== null) return held;
   await restored;
-  if (accessToken() === null && hasSession() && Date.now() - lastTokenless >= 30_000) {
-    lastTokenless = Date.now();
-    await renew();
+  if (accessToken() === null && hasSession() && state.home !== null) {
+    // The renewer's next answer: the one under way, the one asked for here, or a retry it has due.
+    const next = new Promise<void>((resolve) => attempted.push(resolve));
+    if (!renewing && Date.now() - lastTokenless >= 30_000) {
+      lastTokenless = Date.now();
+      void renew();
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([next, new Promise<void>((resolve) => (timer = setTimeout(resolve, TOKEN_WAIT_MS.value)))]);
+    clearTimeout(timer);
   }
   return accessToken();
 }
@@ -750,6 +793,11 @@ export function routes(router: Router<App>): void {
 
 /** Tests: back to signed out with nothing pending. */
 /** Tests: someone signed in with these perms (kinds.ts reads them). */
+/** The access token held run out, as after a Mac's sleep (tests). */
+export function expireForTests(): void {
+  state.expires = Date.now();
+}
+
 export function signedInForTests(perms: string[], admin = false): void {
   state.person = { sub: "person-test", email: "test@example.com", name: "Test Person", image: null };
   state.perms = perms;
@@ -757,6 +805,9 @@ export function signedInForTests(perms: string[], admin = false): void {
 }
 
 export function resetForTests(): void {
+  renewing = false;
+  lapsed = false;
+  attempted.splice(0);
   if (running !== null) runtime.runFork(Fiber.interrupt(running));
   running = null;
   Effect.runSync(Queue.clear(requests));

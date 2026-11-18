@@ -16,8 +16,14 @@
 // (retry_after_update.ts). A job stays listed while it's started again (a
 // second crash during recovery, or a resumer that fails, never loses it). One
 // cut short three times in a row that didn't get further (`progressed`) may be
-// what brings the server down: it stays listed as given up, the diagnostics
-// say so, and unstick starts it again.
+// what brings the server down. Work that sends nothing paid (`BACKS_OFF`: an
+// export, its cloud copy, an upload) is then put off and started again by
+// itself, an hour later and then a day (`putOff`), one at a time, until it ends
+// or is cancelled; so is one an outage or a sign-in lapse stopped (Nov 18:
+// Marc's export archive sat "given up" for days, waiting on an unstick). The
+// rest (agent turns, Claude's runs, imports that pay for a hearing, map
+// renders) stays listed as given up, the diagnostics say so, and unstick
+// starts it again. Given up otherwise means it can't change: a `Gone` source.
 //
 // The file stays an array of plain objects, readable by hand.
 
@@ -86,13 +92,36 @@ export interface Job {
   retry_at?: number;
   /** State waiting: what it waits on instead of a time: the hardware encoder to be free, or the person (never woken by itself). */
   until?: "encoder" | "person";
+  /** How many times it's been put off to try again by itself (`putOff`): its next wait is an hour, then a day. Cleared as it gets further. */
+  put_off?: number;
+  /** Why it was last put off (state waiting, `put_off`), for the diagnostics. */
+  why?: string;
 }
 
 /** Thrown by a resumer when there's nothing left to start again (the project, clip or file is gone): the job is crossed off. */
 export class Gone extends Error {}
 
-/** Resumed this many times without ending or getting further: left alone. */
+/** Resumed this many times without ending or getting further: put off (`BACKS_OFF`), or left alone. */
 const MOST_RESUMES = 2;
+
+/**
+ * The kinds put off and started again by themselves when restarts, an outage
+ * or a sign-in lapse stop them (`putOff`): none sends anything paid (Vmake,
+ * a hearing, Claude, a map's tiles), so trying again costs only the line.
+ */
+// Not a share: the person is waiting on its link, so one given up says so beside Retry (reviews.ts shareNow).
+export const BACKS_OFF: readonly Kind[] = ["export", "archive", "drive", "smooth", "upload", "full", "footage"];
+
+/** How long a job put off waits: an hour for its first `HOURLY` tries, then a day (tests make them short). */
+export const PUT_OFF = { hourMs: 3_600_000, dayMs: 24 * 3_600_000, hourly: 6 };
+
+/** The wait before a job's next try once it's been put off `times` times already. */
+export function putOffWait(times: number): number {
+  return times < PUT_OFF.hourly ? PUT_OFF.hourMs : PUT_OFF.dayMs;
+}
+
+/** A job put off and started again by itself counts as the one under way for this long after its last note; then another may go. */
+const PUT_OFF_RUN_MS = 3 * 3_600_000;
 /** Done jobs (a share's outcome) and failed ones nothing retries are kept this long, then dropped. */
 const KEEP_ENDED_MS = 30 * 24 * 3_600_000;
 /** A turn cut short is carried on when Edit is back this soon after it was last noted (a restart, not a quit). */
@@ -168,8 +197,11 @@ export function keyOf(kind: Kind, project: string, part = ""): string {
 function fresh(kind: Kind, project: string, args: Record<string, unknown>, part: string, listed: Job | undefined, step?: string): Job {
   const now = nowMs();
   // One listed and still to do (a resumer starting it again, or a repeat) keeps its count; one that ended, failed or was given up starts over.
-  const attempts = listed !== undefined && live(listed) ? listed.attempts : 0;
-  return { key: keyOf(kind, project, part), kind, project, args, state: "running", ...(step === undefined ? {} : { step }), attempts, started_ms: listed !== undefined && live(listed) ? listed.started_ms : now, updated_ms: now };
+  const going = listed !== undefined && live(listed);
+  const attempts = going ? listed.attempts : 0;
+  // Started again after being put off: still counted as put off (its next wait, one at a time), until it gets further.
+  const putOff = going && listed.put_off !== undefined ? { put_off: listed.put_off } : {};
+  return { key: keyOf(kind, project, part), kind, project, args, state: "running", ...(step === undefined ? {} : { step }), attempts, ...putOff, started_ms: going ? listed.started_ms : now, updated_ms: now };
 }
 
 /**
@@ -213,6 +245,7 @@ export function step(home: string | null, key: string, step: string, args: Recor
     job.state = "running";
     delete job.retry_at;
     delete job.until;
+    delete job.why;
     Object.assign(job.args, args);
     job.updated_ms = nowMs();
   });
@@ -261,7 +294,40 @@ function settled(job: Job, state: "done" | "failed" | "waiting", fields: Settled
     delete job.build;
   }
   delete job.retry;
+  delete job.why;
   job.updated_ms = nowMs();
+}
+
+/**
+ * Stopped by something that passes (a restart, an outage, a sign-in lapse):
+ * waits and is started again by itself (`wake`), an hour from now for its
+ * first few tries and then a day, until it ends or is cancelled. Only the
+ * `BACKS_OFF` kinds; the rest are given up as before. Nothing when it isn't
+ * listed (cancelled). When it'll be tried, or null.
+ */
+export function putOff(home: string | null, key: string, why: string): number | null {
+  if (home === null) return null;
+  return change(home, (jobs) => {
+    const job = jobs.find((one) => one.key === key);
+    if (job === undefined) return false;
+    return postpone(job, why);
+  }) || null;
+}
+
+function postpone(job: Job, why: string): number {
+  const times = job.put_off ?? 0;
+  const at = nowMs() + putOffWait(times);
+  job.state = "waiting";
+  job.retry_at = at;
+  delete job.until;
+  delete job.given_up;
+  delete job.error;
+  delete job.build;
+  job.put_off = times + 1;
+  job.why = why.slice(0, 300);
+  job.updated_ms = nowMs();
+  diag.warn("jobs", `${job.key}: ${why}; trying it again by itself at ${new Date(at).toISOString()}`);
+  return at;
 }
 
 /**
@@ -291,8 +357,9 @@ export function progressed(home: string | null, key: string): void {
   if (home === null) return;
   change(home, (jobs) => {
     const job = jobs.find((one) => one.key === key);
-    if (job === undefined || !(job.attempts > 0)) return false;
+    if (job === undefined || (!(job.attempts > 0) && job.put_off === undefined)) return false;
     job.attempts = 0;
+    delete job.put_off;
   });
 }
 
@@ -304,6 +371,7 @@ export function touch(home: string | null, key: string): void {
     if (job === undefined) return false;
     job.updated_ms = nowMs();
     job.attempts = 0;
+    delete job.put_off;
   });
 }
 
@@ -355,12 +423,22 @@ export function takeOver(home: string, kinds?: readonly Kind[]): Job[] {
   change(home, (jobs) => {
     let changed = false;
     for (const job of jobs) {
+      // Given up by a build before work was put off (Marc's archive, Nov 18): put off now, tried again soon by itself.
+      if (job.state === "given_up" && BACKS_OFF.includes(job.kind) && (job.given_up ?? "").startsWith("cut short by") && (kinds === undefined || kinds.includes(job.kind))) {
+        postpone(job, job.given_up ?? "given up");
+        job.retry_at = nowMs() + 60_000;
+        changed = true;
+        continue;
+      }
       if (!live(job) || (kinds !== undefined && !kinds.includes(job.kind)) || kept.includes(job.kind)) continue;
       // Waiting on a time, the encoder or the person: not cut short by the restart; woken when it's due (`wake`).
       if (asleep(job)) continue;
       changed = true;
       if (planned) {
         out.push(job);
+      } else if (job.attempts >= MOST_RESUMES && BACKS_OFF.includes(job.kind)) {
+        // Its count stays: cut short again once it's woken, it's put off further at once.
+        postpone(job, `cut short by ${job.attempts + 1} restarts in a row`);
       } else if (job.attempts >= MOST_RESUMES) {
         job.state = "given_up";
         job.given_up = `cut short by ${job.attempts + 1} restarts in a row`;
@@ -442,12 +520,19 @@ export function dueNow(home: string, kinds?: readonly Kind[]): Job[] {
   const now = nowMs();
   const kept = held(home);
   change(home, (jobs) => {
+    // Work put off goes one at a time: none while another put off is under way (noted lately), and one a round.
+    let putOffGoing = jobs.some((job) => job.state === "running" && job.put_off !== undefined && now - job.updated_ms < PUT_OFF_RUN_MS);
     for (const job of jobs) {
       if (!due(job, now) || (kinds !== undefined && !kinds.includes(job.kind)) || kept.includes(job.kind)) continue;
+      if (job.put_off !== undefined) {
+        if (putOffGoing) continue;
+        putOffGoing = true;
+      }
       job.state = "running";
       job.step = "trying again";
       delete job.retry_at;
       delete job.until;
+      delete job.why;
       job.updated_ms = now;
       out.push(job);
     }
@@ -516,6 +601,12 @@ export function givenUp(home: string | null): Job[] {
   return read(home).filter((job) => job.state === "given_up");
 }
 
+/** The jobs put off, waiting to be tried again by themselves (`putOff`), for the diagnostics. */
+export function putOffNow(home: string | null): Job[] {
+  if (home === null) return [];
+  return read(home).filter((job) => job.state === "waiting" && job.put_off !== undefined);
+}
+
 /** What starts each kind again; a handler that throws is logged and skipped (the job stays listed), one that throws `Gone` crosses it off. */
 export type Resumers = Partial<Record<Kind, (job: Job) => Promise<void> | void>>;
 
@@ -540,6 +631,8 @@ function startAll(home: string, list: Job[], resumers: Resumers, why: "restart" 
             if (cause instanceof Gone) {
               return Effect.sync(() => end(home, job.key)).pipe(Effect.andThen(Effect.logInfo(`not starting ${job.key} again: ${cause.message}`)));
             }
+            // Work that can wait (an outage, a sign-in lapse as it starts): tried again later by itself.
+            if (BACKS_OFF.includes(job.kind)) return Effect.sync(() => void putOff(home, job.key, `couldn't start it again: ${diag.messageOf(cause)}`));
             return Effect.logWarning(`couldn't start ${job.key} again (kept for the next start, ${job.attempts} of ${MOST_RESUMES}): ${diag.messageOf(cause)}`);
           }),
         );
@@ -569,17 +662,20 @@ export function useResumers(home: string, resumers: Resumers): void {
 }
 
 /**
- * Unstick: the given-up jobs, their counts cleared and started again (now if
- * this run's resumers are in; otherwise the start-up resume picks them up).
- * Returns their keys.
+ * Unstick: the given-up jobs and those put off, their counts cleared and
+ * started again (now if this run's resumers are in; otherwise the start-up
+ * resume picks them up). Returns their keys.
  */
 export function startGivenUp(home: string | null): { keys: string[]; started: Promise<void> } {
   if (home === null) return { keys: [], started: Promise.resolve() };
   const revived: Job[] = [];
   change(home, (jobs) => {
     for (const job of jobs) {
-      if (job.state !== "given_up") continue;
+      if (job.state !== "given_up" && !(job.state === "waiting" && job.put_off !== undefined)) continue;
       delete job.given_up;
+      delete job.retry_at;
+      delete job.put_off;
+      delete job.why;
       job.state = "running";
       job.attempts = 0;
       revived.push(job);
