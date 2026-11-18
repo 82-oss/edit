@@ -365,7 +365,14 @@ function sameVideo(a: string, b: string): boolean {
   const hints = (url: string) => {
     const query = url.includes("?") ? url.slice(url.indexOf("?") + 1).split("#")[0]! : "";
     const value = (name: string) => query.split("&").find((pair) => pair.startsWith(`${name}=`))?.slice(name.length + 1) ?? "";
-    return `${value("t")}|${value("start")}|${value("end")}`;
+    // "t=63", "t=63s" and "t=1m3s" are one start (Nov 18: a card's two links to one video differed only so).
+    const seconds = (given: string) => {
+      if (given === "") return "";
+      if (/^\d+$/u.test(given)) return given;
+      const parts = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/u.exec(given);
+      return parts === null ? given : String(Number(parts[1] ?? 0) * 3600 + Number(parts[2] ?? 0) * 60 + Number(parts[3] ?? 0));
+    };
+    return `${seconds(value("t"))}|${seconds(value("start"))}|${seconds(value("end"))}`;
   };
   return key(a) === key(b) && hints(a) === hints(b);
 }

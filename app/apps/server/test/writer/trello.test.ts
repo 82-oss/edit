@@ -135,3 +135,8 @@ test("a card that names one video twice lists it once; the same video from anoth
   const later = cardLinks("Case 1: https://youtu.be/aaaaaaaaaaa\nCase 2: https://youtu.be/aaaaaaaaaaa?t=600", []);
   expect(later.length).toBe(2);
 });
+
+test("a start written t=63, t=63s or t=1m3s is one start", () => {
+  const card = cardLinks("Case 1: https://www.youtube.com/watch?v=aaaaaaaaaaa&t=63\nCase 2: https://www.youtube.com/watch?v=aaaaaaaaaaa&t=63s\nCase 3: https://youtu.be/aaaaaaaaaaa?t=1m3s\nCase 4: https://youtu.be/bbbbbbbbbbb&t=83s", []);
+  expect(card.map(line)).toEqual(["https://www.youtube.com/watch?v=aaaaaaaaaaa&t=63", "https://youtu.be/bbbbbbbbbbb&t=83s"]);
+});
