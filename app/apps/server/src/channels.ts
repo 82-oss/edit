@@ -101,12 +101,37 @@ export interface Channel {
   watermarkUpload?: { sha256: string; ext: "png" | "jpg" | "webp" } | null;
   /** How its watermark looks and moves on its exports, set on its page; null or missing: the house look. */
   watermarkLook?: WatermarkLook | null;
+  /** Its ideas' Trello board, pasted on its page (Sphe, Nov 18): its ideas use it, not a niche's; null or missing: none (or seen by its label alone). */
+  trello?: Trello | null;
+  /** Its competitors as the team wrote them (links, names, a Google Doc), read by its ideas; null or missing: none. */
+  competitors?: string | null;
   lanes: Record<Lane, string>;
   archived: boolean;
   /** Its group's key (missing from a mamagi before groups). */
   group?: string | null;
   addedBy: { name: string } | null;
   at: number;
+}
+
+/** A channel's ideas board, as the relay read it from a pasted link: the lists its ideas are sent to are its `lanes`. */
+export interface Trello {
+  boardId: string;
+  name: string;
+  url: string;
+  lanes: { id: string; name: string }[];
+}
+
+const TRELLO_ID = /^[a-f0-9]{24}$/;
+
+/** A board as the page sends it back to be kept, or null for none. */
+function trelloOf(given: unknown): Trello | null {
+  if (given === null) return null;
+  const value = given as Partial<Trello> | undefined;
+  const lanes = Array.isArray(value?.lanes) ? value.lanes : null;
+  if (typeof value?.boardId !== "string" || !TRELLO_ID.test(value.boardId) || typeof value.name !== "string" || typeof value.url !== "string" || lanes === null || !lanes.every((lane) => typeof lane?.id === "string" && TRELLO_ID.test(lane.id) && typeof lane.name === "string")) {
+    throw bad("trello is the board read from its link ({boardId, name, url, lanes}), or null for none");
+  }
+  return { boardId: value.boardId, name: value.name, url: value.url, lanes: lanes.map((lane) => ({ id: lane.id, name: lane.name })) };
 }
 
 /** Channels sharing one style, as this person may see it: only the channels they see. It has no name: it's its channels together (`groupName`). */
@@ -507,6 +532,14 @@ export function routes(router: Router<App>): void {
       void tokenCarries(listed.map((one) => one.key), app.store.home);
       return json({ channels: listed, groups: knownGroups(), teacher: v2cloud.teacher() });
     })
+    // A Trello board from a link pasted on a channel's page: its name, and the lists its ideas would be sent to.
+    .get("/api/channels/board", async ({ url }: RouteContext<App>) => {
+      needTeacher();
+      const link = (url.searchParams.get("url") ?? "").trim();
+      if (link === "") throw bad("url: a link to the Trello board.");
+      const board = await asked(() => relay.json<{ id: string; name: string; url: string; lanes: { id: string; name: string }[] }>("GET", `/v1/ideas/trello/board?url=${encodeURIComponent(link)}`, null, "the Trello board", 30));
+      return json({ trello: { boardId: board.id, name: board.name, url: board.url, lanes: board.lanes } satisfies Trello });
+    })
     .get("/api/channels/resolve", async ({ url }: RouteContext<App>) => {
       needCloud();
       return json({ channel: await asked(() => resolve(url.searchParams.get("url") ?? "")) });
@@ -576,7 +609,9 @@ export function routes(router: Router<App>): void {
     })
     .put("/api/channels/{key}", async (context: RouteContext<App>) => {
       needTeacher();
-      const given = await readJson<{ narration?: unknown; compilation?: unknown; lanes?: unknown; label?: unknown; watermark?: unknown; watermarkLook?: unknown }>(context);
+      const given = await readJson<{ narration?: unknown; compilation?: unknown; lanes?: unknown; label?: unknown; watermark?: unknown; watermarkLook?: unknown; trello?: unknown; competitors?: unknown }>(context);
+      const trello = given.trello === undefined ? undefined : trelloOf(given.trello);
+      if (given.competitors !== undefined && typeof given.competitors !== "string") throw bad("competitors is the team's list, as text");
       const look = given.watermarkLook === undefined ? undefined : lookOf(given.watermarkLook);
       if (given.label !== undefined && typeof given.label !== "string") throw bad("label is what someone allowed only its label sees");
       // Its picture in the Watermarks folder (the channel page's picker lists them), or null for none.
@@ -593,7 +628,7 @@ export function routes(router: Router<App>): void {
           lanes[lane] = text;
         }
       }
-      const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key: context.params.key!, ...(narration !== undefined ? { narration } : {}), ...(given.compilation !== undefined ? { compilation: given.compilation } : {}), ...(given.lanes !== undefined ? { lanes } : {}), ...(typeof given.label === "string" ? { label: given.label } : {}), ...(given.watermark !== undefined ? { watermark: given.watermark } : {}), ...(look !== undefined ? { watermarkLook: look } : {}) })) as Channel);
+      const channel = await asked(async () => (await cloud.mutation("channels:setChannel", { key: context.params.key!, ...(narration !== undefined ? { narration } : {}), ...(given.compilation !== undefined ? { compilation: given.compilation } : {}), ...(given.lanes !== undefined ? { lanes } : {}), ...(typeof given.label === "string" ? { label: given.label } : {}), ...(given.watermark !== undefined ? { watermark: given.watermark } : {}), ...(look !== undefined ? { watermarkLook: look } : {}), ...(trello !== undefined ? { trello } : {}), ...(typeof given.competitors === "string" ? { competitors: given.competitors } : {}) })) as Channel);
       forget();
       return json({ channel });
     })

@@ -5,6 +5,7 @@
 // served at /mcp/ideas/<token> (run.ts), for the runs on this Mac only.
 
 import * as channels from "../channels.ts";
+import * as lanes from "../lanes.ts";
 import { footageIn, footageKind, footageLine, WORKSPACE_NAMES, WORKSPACES, type IdeaFootage, type Workspace } from "@edit/types/ideas";
 import type { ChangeCard, Idea, IdeaImage, IdeaPlace, IdeaRow, IdeaSource, IdeasHome, IdeaTitle } from "@edit/types/ideas";
 
@@ -104,11 +105,12 @@ async function sourceOf(link: string): Promise<IdeaSource> {
   return (await sources.article(link)).source;
 }
 
-/** Where every sent card is, each workspace's board read a minute at a time; nothing when it can't be read. */
-async function places(rows: Omit<IdeaRow, "place">[], workspace: Workspace): Promise<[Record<string, IdeaPlace>, string | null]> {
-  const ids = rows.flatMap((row) => (row.workspace === workspace && row.summary.card !== null ? [row.summary.card.cardId] : []));
+/** Where every sent card on one board is, read a minute at a time; nothing when it can't be read. */
+async function places(rows: Omit<IdeaRow, "place">[], at: board.Where): Promise<[Record<string, IdeaPlace>, string | null]> {
+  const on = (row: Omit<IdeaRow, "place">) => (row.summary.card?.channel ?? null) === at.channel && (at.channel !== null || row.workspace === at.workspace);
+  const ids = rows.flatMap((row) => (on(row) && row.summary.card !== null ? [row.summary.card.cardId] : []));
   try {
-    return [await board.where(ids, workspace), null];
+    return [await board.where(ids, at), null];
   } catch (error) {
     return [{}, diag.messageOf(error)];
   }
@@ -118,23 +120,28 @@ async function home(): Promise<IdeasHome> {
   const mine = workspacesOf();
   const rows = (await cloud.list()).filter((row) => mine.includes(row.workspace));
   const linked = new Set(rows.flatMap((row) => (row.summary.card !== null ? [row.summary.card.cardId] : [])));
+  // Each workspace's board, and each channel's own one its ideas use (pasted on its page) or went to.
+  await channels.refresh().catch(() => {});
+  const own = new Set(channels.knownChannels().flatMap((one) => (one.trello ? [one.key] : [])));
+  const channelBoards = [...new Set(rows.flatMap((row) => [row.summary.card?.channel, row.summary.channel].filter((key): key is string => typeof key === "string" && (own.has(key) || row.summary.card?.channel === key))))];
+  const where: board.Where[] = [...mine.map(board.inWorkspace), ...channelBoards.map((channel) => ({ workspace: mine[0]!, channel }))];
   const boards = await Promise.all(
-    mine.map(async (workspace) => {
-      const [where, boardError] = await places(rows, workspace);
+    where.map(async (at) => {
+      const [found, boardError] = await places(rows, at);
       let changes: ChangeCard[] = [];
       let error = boardError;
       try {
-        changes = (await board.changes(workspace)).filter((one) => !linked.has(one.id)).map(({ id, name, url, list, comments, cover }) => ({ id, workspace, name, url, list, comments, cover }));
+        changes = (await board.changes(at)).filter((one) => !linked.has(one.id)).map(({ id, name, url, list, comments, cover }) => ({ id, workspace: at.workspace, name, url, list, comments, cover }));
       } catch (failure) {
         error ??= diag.messageOf(failure);
       }
-      const lanes = (await board.lanes(workspace).catch(() => [])).map((lane) => ({ ...lane, workspace }));
-      return { where, changes, lanes, error };
+      const lanes = (await board.lanes(at).catch(() => [])).map((lane) => ({ ...lane, workspace: at.workspace, ...(at.channel !== null ? { channel: at.channel } : {}) }));
+      return { where: found, changes, lanes, error };
     }),
   );
-  const where = Object.assign({}, ...boards.map((one) => one.where)) as Record<string, IdeaPlace>;
+  const placed = Object.assign({}, ...boards.map((one) => one.where)) as Record<string, IdeaPlace>;
   return {
-    ideas: rows.map((row) => ({ ...row, place: row.summary.card !== null ? (where[row.summary.card.cardId] ?? null) : null })),
+    ideas: rows.map((row) => ({ ...row, place: row.summary.card !== null ? (placed[row.summary.card.cardId] ?? null) : null })),
     changes: boards.flatMap((one) => one.changes),
     lanes: boards.flatMap((one) => one.lanes),
     workspaces: mine,
@@ -151,14 +158,20 @@ async function page(id: string) {
   const live = run.liveOf(id);
   // Live here: its turn as it goes. Going on a Mac that stopped renewing its lease: stopped, not "running" for good.
   const shown: Idea = idea.run === null ? idea : live !== null ? { ...idea, run: { ...idea.run, ...live } } : { ...idea, run: stale(idea.run) };
-  const style = lengthStyle((await board.approved(idea.workspace).catch(() => [])).map((one) => one.title));
+  const at = board.whereOf(idea);
+  const style = lengthStyle((await board.approved(at).catch(() => [])).map((one) => one.title));
+  // A channel's idea is held only to what the channel was taught (run.ts `taught`): no house checks on it.
+  const taught = run.isTaught(idea);
   const problems: Record<string, string> = {};
-  for (const title of idea.titles) {
+  for (const title of taught ? [] : idea.titles) {
     const problem = titleProblem(title.text, style);
     if (problem !== null) problems[title.id] = problem;
   }
-  const place = idea.card === null ? null : ((await board.where([idea.card.cardId], idea.workspace).catch(() => ({}) as Record<string, IdeaPlace>))[idea.card.cardId] ?? null);
-  return { idea: shown, rev, place, problems, guideProblem: idea.thumbnailGuide.trim() === "" ? null : guideProblem(idea.thumbnailGuide, idea.images.filter((one) => one.from === "frame").length), style };
+  const place = idea.card === null ? null : ((await board.where([idea.card.cardId], at).catch(() => ({}) as Record<string, IdeaPlace>))[idea.card.cardId] ?? null);
+  const untaught = taught ? (await lanes.teachingOf(idea.channel!, "ideas")) === "untaught" : false;
+  // The board its card goes to, as the page names it.
+  const boardName = at.channel !== null ? (channels.knownChannels().find((one) => one.key === at.channel)?.trello?.name ?? "the channel's") : idea.workspace === "bodycam" ? "Raw Channels" : "Interrogation";
+  return { idea: shown, rev, place, problems, guideProblem: taught || idea.thumbnailGuide.trim() === "" ? null : guideProblem(idea.thumbnailGuide, idea.images.filter((one) => one.from === "frame").length), style, untaught, board: { name: boardName, channel: at.channel } };
 }
 
 type Patch = {
@@ -357,7 +370,7 @@ async function relayImage(url: string): Promise<Response> {
 
 /** An existing card on the board as an idea: its titles, guide, links, footage and pictures, its comments when it waits on changes. */
 async function fromCard(given: string, workspace: Workspace): Promise<string> {
-  const card = await board.card(given, workspace);
+  const card = await board.card(given, board.inWorkspace(workspace));
   const rows = await cloud.list();
   const had = rows.find((row) => row.summary.card?.cardId === card.id);
   if (had !== undefined) return had.id;
@@ -371,8 +384,8 @@ async function fromCard(given: string, workspace: Workspace): Promise<string> {
     }
   }
   const who = by();
-  const lanes = await board.lanes(workspace).catch(() => []);
-  const lane = lanes.find((one) => one.name === card.list)?.key ?? "";
+  const known = await board.lanes(board.inWorkspace(workspace)).catch(() => []);
+  const lane = known.find((one) => one.name === card.list)?.key ?? "";
   const pictures = card.attachments.filter((one) => one.image);
   const images: IdeaImage[] = (card.cover !== null ? [...pictures].sort((a, b) => Number(b.url === card.cover) - Number(a.url === card.cover)) : pictures).slice(0, 8).map((one) => ({ id: shortId(), name: one.name.replace(/\.[a-z0-9]{2,5}$/i, "").slice(0, 80) || "picture", url: one.url, from: "card" as const }));
   const idea = run.fresh(newId(), who, { workspace, sources: found, steer: "", wantsSummary: parsed.summary !== "", images, footage: footageIn(parsed.footage, shortId).footage });
@@ -443,7 +456,9 @@ export function routes(router: Router<App>): void {
       const order = (link: string) => links.indexOf(link);
       made.sort((a, b) => order(a.link) - order(b.link));
       if (footage.length > 0) for (const one of made) void nameFootage(context.app, one.id, who);
-      for (const one of made) await run.repackage(contextOf(context.app), one.id).catch((error: unknown) => diag.warn("ideas", `${one.id}: ${diag.messageOf(error)}`));
+      // A channel whose ideas aren't taught yet writes nothing until told how (run.ts needsTeaching): the idea waits, its page says so.
+      const waits = channel !== null ? await run.needsTeaching({ channel: channel.key, steer }) : null;
+      if (waits === null) for (const one of made) await run.repackage(contextOf(context.app), one.id).catch((error: unknown) => diag.warn("ideas", `${one.id}: ${diag.messageOf(error)}`));
       return json({ ideas: made, refused });
     })
     .post("/api/ideas/from-card", async (context: Context) => {
@@ -513,9 +528,12 @@ export function routes(router: Router<App>): void {
           // The reviewers' comments, read fresh from the card: they're the brief.
           const found = await cloud.get(id);
           if (found?.idea.card == null) throw bad("This idea isn't on the board.");
-          const card = await board.card(found.idea.card.cardId, found.idea.workspace);
+          const card = await board.card(found.idea.card.cardId, board.whereOf(found.idea));
           await cloud.change(id, by(), (idea) => void (idea.changes = { comments: board.commentsOf(card), at: Date.now() }));
         }
+        const now = await cloud.get(id);
+        const waits = now === null ? null : await run.needsTeaching(now.idea);
+        if (waits !== null) throw bad(waits);
         await run.repackage(contextOf(context.app), id, { improve: body.improve === true, changes: body.changes === true });
         return json({ ok: true });
       } catch (error) {
@@ -546,7 +564,7 @@ export function routes(router: Router<App>): void {
         const found = await cloud.get(params.id!);
         if (found === null) throw notFound("This idea was deleted.");
         if (found.idea.card === null) return json({ changes: null });
-        const card = await board.card(found.idea.card.cardId, found.idea.workspace);
+        const card = await board.card(found.idea.card.cardId, board.whereOf(found.idea));
         const { idea } = await cloud.change(params.id!, by(), (idea) => {
           idea.changes = card.changes ? { comments: board.commentsOf(card), at: Date.now() } : null;
           if (idea.card !== null) idea.card.list = card.list;
@@ -573,7 +591,7 @@ export function routes(router: Router<App>): void {
         // second card for a video already there only when the person says so.
         if (found.idea.card === null && body.anyway !== true) {
           const ids = found.idea.sources.flatMap((one) => (one.kind === "youtube" ? [one.videoId] : []));
-          const hit = Object.values(await board.duplicates(ids, found.idea.workspace))[0];
+          const hit = Object.values(await board.duplicates(ids, board.whereOf(found.idea)))[0];
           if (hit !== undefined) {
             await cloud.change(found.idea.id, who, (idea) => void (idea.duplicate = { cardId: hit.cardId, name: hit.name, url: hit.url, list: hit.list }));
             throw new ApiError(409, `It's already on the board as “${hit.name}” (${hit.list || "archived"}). Nothing was sent.`);

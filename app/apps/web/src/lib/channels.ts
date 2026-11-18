@@ -48,10 +48,22 @@ export interface Channel {
   watermarkUpload?: { sha256: string; ext: string } | null;
   /** How its watermark looks on its exports; null or missing: the house look. */
   watermarkLook?: WatermarkLook | null;
+  /** Its ideas' Trello board, pasted on its page: its ideas use it, not a niche's; null or missing: none. */
+  trello?: Trello | null;
+  /** Its competitors as the team wrote them (links, names, a Google Doc), read by its ideas; null or missing: none. */
+  competitors?: string | null;
   lanes: Record<Lane, string>;
   /** Its group's key, or null. */
   group?: string | null;
   at: number;
+}
+
+/** A Trello board as Edit read it from a pasted link: `lanes` are the lists its ideas are sent to. */
+export interface Trello {
+  boardId: string;
+  name: string;
+  url: string;
+  lanes: { id: string; name: string }[];
 }
 
 /** Channels sharing one style: its lanes' descriptions, and the channels in it this person sees. */
@@ -139,7 +151,9 @@ export const channelApi = {
   addPlaceholder: (title: string) => request<{ channel: Channel }>("POST", "/api/channels", { title }).then((answer) => keep(answer.channel)),
   /** A placeholder linked to its YouTube channel: its teaching stays. */
   link: (key: string, url: string) => request<{ channel: Channel }>("POST", `/api/channels/${key}/link`, { url }).then((answer) => keep(answer.channel)),
-  set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>>; label?: string; watermark?: string | null; watermarkLook?: WatermarkLook | null }) =>
+  /** A Trello board from a pasted link, read but not kept: its name and the lists ideas go to. */
+  board: (url: string) => request<{ trello: Trello }>("GET", `/api/channels/board?url=${encodeURIComponent(url)}`).then((answer) => answer.trello),
+  set: (key: string, change: { narration?: Narration; compilation?: boolean; lanes?: Partial<Record<Lane, string>>; label?: string; watermark?: string | null; watermarkLook?: WatermarkLook | null; trello?: Trello | null; competitors?: string }) =>
     request<{ channel: Channel }>("PUT", `/api/channels/${key}`, change).then((answer) => keep(answer.channel)),
   /** A picture uploaded as its watermark (a teacher's): kept with the channel, in place of a Drive one. */
   uploadWatermark: async (key: string, file: File) => {

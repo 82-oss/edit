@@ -1,4 +1,5 @@
-// Each workspace's board (Interrogation's, bodycam's Raw Channels), through the relay (which holds the Trello key and
+// Each workspace's board (Interrogation's, bodycam's Raw Channels), or a channel's own (V2: pasted on its page,
+// Sphe, Nov 18), through the relay (which holds the Trello key and
 // writes only to the repackaging lanes): the cards that already have a video,
 // the titles the team approved, where a sent card is now, the cards waiting
 // on changes, and an idea's card written as the board writes one (Sphe
@@ -6,6 +7,7 @@
 
 import { footageLine, type ChangeCard, type Idea, type IdeaCard, type IdeaComment, type IdeaPlace, type Workspace } from "@edit/types/ideas";
 
+import * as channels from "../channels.ts";
 import * as relay from "../relay.ts";
 import { cleanTitle } from "./policy.ts";
 
@@ -31,31 +33,46 @@ export function forget(): void {
   kept.clear();
 }
 
-/** A workspace's board, as the relay's routes name it. */
-const on = (workspace: Workspace) => `workspace=${workspace}`;
+/** Which board: a channel's own when it has one (pasted on its page), else the workspace's. */
+export type Where = { workspace: Workspace; channel: string | null };
 
-export const lanes = (workspace: Workspace): Promise<Lane[]> => shared(`${workspace}:lanes`, 3600_000, async () => (await relay.json<{ lanes: Lane[] }>("GET", `/v1/ideas/lanes?${on(workspace)}`, null, "the board's lanes", 30)).lanes);
+/** A workspace's board. */
+export const inWorkspace = (workspace: Workspace): Where => ({ workspace, channel: null });
+
+/** An idea's board: where its card went when it was sent; before that, its channel's when the channel has one, else its workspace's. */
+export function whereOf(idea: Pick<Idea, "workspace" | "channel" | "card">): Where {
+  if (idea.card !== null) return { workspace: idea.workspace, channel: idea.card.channel ?? null };
+  const channel = idea.channel !== undefined && channels.knownChannels().some((one) => one.key === idea.channel && one.trello) ? idea.channel : null;
+  return { workspace: idea.workspace, channel };
+}
+
+/** A board as the relay's routes name it: in the query, and in a body. */
+const on = (where: Where) => (where.channel !== null ? `channel=${encodeURIComponent(where.channel)}` : `workspace=${where.workspace}`);
+const named = (where: Where) => (where.channel !== null ? { channel: where.channel } : { workspace: where.workspace });
+const tag = (where: Where) => where.channel ?? where.workspace;
+
+export const lanes = (where: Where): Promise<Lane[]> => shared(`${tag(where)}:lanes`, 3600_000, async () => (await relay.json<{ lanes: Lane[] }>("GET", `/v1/ideas/lanes?${on(where)}`, null, "the board's lanes", 30)).lanes);
 
 /** The cards anywhere on the board that already have these videos, by video id. */
-export async function duplicates(ids: string[], workspace: Workspace): Promise<Record<string, { cardId: string; name: string; url: string; list: string; closed: boolean }>> {
+export async function duplicates(ids: string[], where: Where): Promise<Record<string, { cardId: string; name: string; url: string; list: string; closed: boolean }>> {
   if (ids.length === 0) return {};
-  return (await relay.json<{ found: Record<string, { cardId: string; name: string; url: string; list: string; closed: boolean }> }>("POST", "/v1/ideas/trello/duplicates", { ids: ids.slice(0, 50), workspace }, "the board's duplicates", 60)).found;
+  return (await relay.json<{ found: Record<string, { cardId: string; name: string; url: string; list: string; closed: boolean }> }>("POST", "/v1/ideas/trello/duplicates", { ids: ids.slice(0, 50), ...named(where) }, "the board's duplicates", 60)).found;
 }
 
 /** The titles the team approved, newest first. */
-export const approved = (workspace: Workspace): Promise<Approved[]> => shared(`${workspace}:approved`, 10 * 60_000, async () => (await relay.json<{ titles: Approved[] }>("GET", `/v1/ideas/trello/approved?${on(workspace)}`, null, "the approved titles", 60)).titles);
+export const approved = (where: Where): Promise<Approved[]> => shared(`${tag(where)}:approved`, 10 * 60_000, async () => (await relay.json<{ titles: Approved[] }>("GET", `/v1/ideas/trello/approved?${on(where)}`, null, "the approved titles", 60)).titles);
 
 /** Where each sent card is now. */
-export async function where(cards: string[], workspace: Workspace): Promise<Record<string, IdeaPlace>> {
+export async function where(cards: string[], at: Where): Promise<Record<string, IdeaPlace>> {
   const ids = [...new Set(cards)].filter((id) => /^[a-f0-9]{24}$/.test(id)).sort();
   if (ids.length === 0) return {};
-  return shared(`${workspace}:where:${ids.join(",")}`, 60_000, async () => (await relay.json<{ places: Record<string, IdeaPlace> }>("POST", "/v1/ideas/trello/where", { cards: ids.slice(0, 300), workspace }, "the board", 60)).places);
+  return shared(`${tag(at)}:where:${ids.join(",")}`, 60_000, async () => (await relay.json<{ places: Record<string, IdeaPlace> }>("POST", "/v1/ideas/trello/where", { cards: ids.slice(0, 300), ...named(at) }, "the board", 60)).places);
 }
 
 /** The lanes' cards waiting on changes, with their comments. */
-export const changes = (workspace: Workspace): Promise<FullCard[]> => shared(`${workspace}:changes`, 60_000, async () => (await relay.json<{ cards: FullCard[] }>("GET", `/v1/ideas/trello/changes?${on(workspace)}`, null, "the board's changes", 90)).cards);
+export const changes = (where: Where): Promise<FullCard[]> => shared(`${tag(where)}:changes`, 60_000, async () => (await relay.json<{ cards: FullCard[] }>("GET", `/v1/ideas/trello/changes?${on(where)}`, null, "the board's changes", 90)).cards);
 
-export const card = (id: string, workspace: Workspace): Promise<FullCard> => relay.json<FullCard>("GET", `/v1/ideas/trello/card?card=${encodeURIComponent(id)}&${on(workspace)}`, null, "the card", 60);
+export const card = (id: string, where: Where): Promise<FullCard> => relay.json<FullCard>("GET", `/v1/ideas/trello/card?card=${encodeURIComponent(id)}&${on(where)}`, null, "the card", 60);
 
 /** The titles in the order the card lists them: the main one (its name) first. */
 export function orderedTitles(idea: Idea): string[] {
@@ -89,15 +106,17 @@ export function cardImages(idea: Idea): { name: string; key?: string; url?: stri
 export async function send(idea: Idea, lane: string, by: string): Promise<IdeaCard> {
   const name = orderedTitles(idea)[0];
   if (name === undefined) throw new Error("Write a title first: the main one names the card.");
+  const at = whereOf(idea);
   const sent = await relay.json<{ cardId: string; url: string; lane: string; list: string }>(
     "POST",
     "/v1/ideas/trello/send",
-    { lane, workspace: idea.workspace, ...(idea.card !== null ? { cardId: idea.card.cardId } : {}), name, desc: cardText(idea), images: cardImages(idea) },
+    { lane, ...named(at), ...(idea.card !== null ? { cardId: idea.card.cardId } : {}), name, desc: cardText(idea), images: cardImages(idea) },
     "the board",
     180,
   );
   forget();
-  return { cardId: sent.cardId, url: sent.url, lane: sent.lane, list: sent.list, sentAt: idea.card?.sentAt ?? Date.now(), sentBy: idea.card?.sentBy ?? by, updatedAt: Date.now() };
+  // The board it went to stays the card's, whatever the channel's is later.
+  return { cardId: sent.cardId, url: sent.url, lane: sent.lane, list: sent.list, sentAt: idea.card?.sentAt ?? Date.now(), sentBy: idea.card?.sentBy ?? by, updatedAt: Date.now(), ...(at.channel !== null ? { channel: at.channel } : {}) };
 }
 
 /** Writes an idea back onto its card (its changes made: the card gets Changes Made). */
@@ -105,7 +124,7 @@ export async function update(idea: Idea): Promise<{ url: string; labelled: boole
   if (idea.card === null) throw new Error("This idea isn't on the board yet.");
   const name = orderedTitles(idea)[0];
   if (name === undefined) throw new Error("Write a title first: the main one names the card.");
-  const done = await relay.json<{ url: string; labelled: boolean }>("POST", "/v1/ideas/trello/update", { cardId: idea.card.cardId, workspace: idea.workspace, name, desc: cardText(idea), images: cardImages(idea) }, "the board", 180);
+  const done = await relay.json<{ url: string; labelled: boolean }>("POST", "/v1/ideas/trello/update", { cardId: idea.card.cardId, ...named(whereOf(idea)), name, desc: cardText(idea), images: cardImages(idea) }, "the board", 180);
   forget();
   return done;
 }

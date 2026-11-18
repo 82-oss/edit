@@ -14,6 +14,13 @@
 //   GET  /v1/ideas/trello/image?url=  a card's attachment (Trello's need the key)
 //   POST /v1/ideas/trello/send        {lane, cardId?, name, desc, images}: the card in a lane
 //   POST /v1/ideas/trello/update      {cardId, name, desc, images}: a card's changes made
+//   GET  /v1/ideas/trello/board?url=  a pasted Trello link's board, its lists and the ones ideas go to (a teacher's)
+//   GET  /v1/ideas/trello/channel?channel=  the board a channel's settings keep (the dev relay asks the live one)
+//
+// Each route on a board takes the workspace (`workspace=`, or `workspace` in
+// the body: interrogation when none) or, in Edit V2, a channel (`channel=`,
+// or `channel` in the body: its key), whose settings keep its own board
+// (Nov 18, Sphe: each YouTube channel can have its own Trello board).
 //
 // Trello is written only on the lanes below (and on a card waiting on
 // changes), each list checked to still have its name first, as Sphe
@@ -21,7 +28,8 @@
 // Research's own token) and the YouTube key never leave the relay.
 
 import { forbiddenOf, withCaller, type Caller } from "./auth";
-import { actorOf, convexPaused, isObject, r2Config, r2Fetch, Upstream, type CloudEnv } from "./cloud";
+import { actorOf, convexPaused, isObject, PAUSED_MESSAGE, r2Config, r2Fetch, Upstream, type CloudEnv } from "./cloud";
+import { channelsLive } from "./live_channels";
 
 export interface IdeasEnv extends CloudEnv {
   TRELLO_API_KEY?: string;
@@ -33,18 +41,21 @@ export interface IdeasEnv extends CloudEnv {
 /** A workspace's Trello board: where its ideas go, which lists hold approved titles, its changes labels. */
 export interface Board {
   id: string;
+  /** Its name; "" for someone who sees its channel by the label alone (a board's name says whose channel it is). */
   name: string;
   lanes: readonly { key: string; id: string; name: string }[];
-  approved: { id: string; name: string };
+  approved: { id: string; name: string } | null;
   changesRequired: readonly string[];
   changesMade: readonly string[];
   madeLabel: string;
   /** The lists whose cards are approved titles, by id; null: every list but an idea list (`holdsApproved`). */
   approvedLists: readonly string[] | null;
+  /** Built from a channel's settings (`channelBoard`): its lanes chosen when its link was pasted, its changes labels read off the board by name. */
+  saved?: boolean;
 }
 
 /** The Interrogation board, as Sphe Research's registry and the board itself name it (read Oct 31). */
-export const BOARD: Board = {
+export const BOARD = {
   id: "CJiVnylO",
   name: "Interrogation",
   /** Where ideas go: each repackager's lane, and the drafts waiting for a check. */
@@ -60,7 +71,7 @@ export const BOARD: Board = {
   /** The label a card gets once its changes are made. */
   madeLabel: "6a5fbafa83dcd7639929dd7a",
   approvedLists: null,
-};
+} satisfies Board;
 
 /**
  * The bodycam ideas' board (Nov 1): Raw Channels, where the team's bodycam
@@ -70,7 +81,7 @@ export const BOARD: Board = {
  * channels (Penguin, snax, CopMind, Derek's) and footage sourcing, never
  * approved titles here. Read off the board Nov 1.
  */
-export const BODYCAM_BOARD: Board = {
+export const BODYCAM_BOARD = {
   id: "v3lybcjY",
   name: "Raw Channels",
   lanes: [{ key: "sphe", id: "6ab59220cf2512a8541af78f", name: "Ideas - Sphe" }],
@@ -107,7 +118,7 @@ export const BODYCAM_BOARD: Board = {
     "6941edf8044e61968d82137e", // Ready for upload (sams)
     "6a084d23fb3d4b4e2b31aa03", // Uploaded (sams)
   ],
-};
+} satisfies Board;
 
 /** Each workspace's board. */
 export const BOARDS: Record<string, Board> = { interrogation: BOARD, bodycam: BODYCAM_BOARD };
@@ -169,11 +180,13 @@ export async function ideasRoute(request: Request, url: URL, env: IdeasEnv, foun
     if (request.method === "GET") {
       if (route === "youtube") return json(200, await youtubeVideo(url.searchParams.get("id") ?? "", env));
       if (route === "trello/image") return await attachmentImage(url.searchParams.get("url") ?? "", env);
-      const board = workspaceOf(url.searchParams.get("workspace"), found);
+      if (route === "trello/board") return json(200, await boardLookup(url.searchParams.get("url") ?? "", env, found));
+      if (route === "trello/channel") return json(200, await channelSaved(url.searchParams.get("channel"), env, found, request));
+      const board = await boardOf(url.searchParams.get("workspace"), url.searchParams.get("channel"), env, found, request);
       if (route === "lanes") return json(200, { board: { id: board.id, name: board.name }, lanes: board.lanes, approved: board.approved });
       if (route === "trello/approved") return json(200, await approvedTitles(env, board));
-      if (route === "trello/changes") return json(200, await changesWaiting(env, board));
-      if (route === "trello/card") return json(200, await oneCard(url.searchParams.get("card") ?? "", env, board));
+      if (route === "trello/changes") return json(200, await changesWaiting(env, await labelled(env, board)));
+      if (route === "trello/card") return json(200, await oneCard(url.searchParams.get("card") ?? "", env, await labelled(env, board)));
       return json(404, { error: "not found" });
     }
     if (request.method !== "POST") return json(405, { error: `GET or POST ${url.pathname}` });
@@ -187,11 +200,11 @@ export async function ideasRoute(request: Request, url: URL, env: IdeasEnv, foun
       return json(400, { error: "Send a JSON object." });
     }
     if (route === "convex") return await convex(body, env, found);
-    const board = workspaceOf(body.workspace, found);
+    const board = await boardOf(body.workspace, body.channel, env, found, request);
     if (route === "trello/duplicates") return json(200, await duplicates(body.ids, env, board));
-    if (route === "trello/where") return json(200, await where(body.cards, env, board));
+    if (route === "trello/where") return json(200, await where(body.cards, env, await labelled(env, board)));
     if (route === "trello/send") return json(200, await send(body, env, board));
-    if (route === "trello/update") return json(200, await update(body, env, board));
+    if (route === "trello/update") return json(200, await update(body, env, await labelled(env, board)));
     return json(404, { error: "not found" });
   } catch (error) {
     if (error instanceof Refused) return json(error.status, { error: error.message });
@@ -372,10 +385,14 @@ async function trello<T = unknown>(env: IdeasEnv, method: string, path: string, 
   const answer = await fetch(`https://api.trello.com/1/${path}?${query}`, { method, ...(form ? { body: form } : {}), signal: AbortSignal.timeout(30_000) }).catch(() => null);
   // The key and token are in the query: a failure names the method and path only.
   if (answer === null) throw new Upstream(`Trello did not answer ${method} ${path}.`);
-  if (answer.status === 404) throw new Refused(404, "That card or list isn't on the Interrogation board any more.");
+  if (answer.status === 404) throw new Refused(404, "That card or list isn't on its Trello board any more.");
+  if (answer.status === 400 || answer.status === 401 || answer.status === 403) throw new TrelloRefused(`Trello refused ${method} ${path} (${answer.status}): ${(await answer.text()).slice(0, 200)}`);
   if (!answer.ok) throw new Upstream(`Trello answered ${answer.status} for ${method} ${path}: ${(await answer.text()).slice(0, 200)}`);
   return (await answer.json()) as T;
 }
+
+/** Trello refusing a call as asked (a bad id, a board not shared with the token's account): a 502 like any other, but a pasted link's lookup says it plainly. */
+class TrelloRefused extends Upstream {}
 
 type List = { id: string; name: string; closed: boolean; pos: number };
 type Attachment = { id: string; name?: string; url?: string; mimeType?: string | null; isUpload?: boolean; previews?: { url?: string; width?: number }[] | null };
@@ -406,7 +423,7 @@ async function cached<T>(key: string, ms: number, read: () => Promise<T>): Promi
 
 /** Forgets what was read of the board (a send or an update changed it). */
 function forget(): void {
-  for (const key of [...kept.keys()]) if (!key.endsWith(":lists") && !key.endsWith(":board")) kept.delete(key);
+  for (const key of [...kept.keys()]) if (!key.endsWith(":lists") && !key.endsWith(":board") && !key.endsWith(":labels")) kept.delete(key);
 }
 
 export function resetForTests(): void {
@@ -420,8 +437,9 @@ export function holdsApproved(name: string): boolean {
   return !/idea|repackag|channel interro|thumb/i.test(name);
 }
 
-/** Whether one of a board's lists holds its approved titles: named on the board's own allowlist, else by `holdsApproved`. */
+/** Whether one of a board's lists holds its approved titles: named on the board's own allowlist, else by `holdsApproved`; never a lane ideas go to. */
 export function approvedList(board: Board, list: { id: string; name: string }): boolean {
+  if (board.lanes.some((lane) => lane.id === list.id)) return false;
   return board.approvedLists === null ? holdsApproved(list.name) : board.approvedLists.includes(list.id);
 }
 
@@ -467,7 +485,8 @@ export function titleOf(name: string): string {
 }
 
 async function approvedTitles(env: IdeasEnv, board: Board) {
-  return cached(`${board.id}:approved`, 10 * 60_000, async () => {
+  // Its lanes in the key: two channels on one board may send ideas to different lists, which are never approved titles.
+  return cached(`${board.id}:approved:${board.lanes.map((lane) => lane.id).join(",")}`, 10 * 60_000, async () => {
     const [cards, named] = await Promise.all([allCards(env, board), lists(env, board)]);
     const approved = new Map(named.filter((list) => approvedList(board, list)).map((list) => [list.id, list.name]));
     const titles = cards
@@ -534,7 +553,7 @@ async function oneCard(id: string, env: IdeasEnv, board: Board) {
   const short = /trello\.com\/c\/([A-Za-z0-9]{6,32})/.exec(id)?.[1] ?? id;
   if (!/^[A-Za-z0-9]{6,32}$/.test(short)) throw new Refused(400, "That isn't a Trello card.");
   const card = await trello<Card>(env, "GET", `cards/${short}`, { fields: "id,name,desc,url,shortUrl,idList,idBoard,idLabels,closed,dateLastActivity,idAttachmentCover", attachments: "true", attachment_fields: "id,name,url,mimeType,isUpload,previews" });
-  if (card.idBoard !== (await boardId(env, board))) throw new Refused(403, `That card isn't on the ${board.name} board.`);
+  if (card.idBoard !== (await boardId(env, board))) throw new Refused(403, `That card isn't on ${onBoard(board)}.`);
   const list = (await lists(env, board)).find((one) => one.id === card.idList)?.name ?? "";
   return cardView(card, list, await commentsOf(env, card.id), board);
 }
@@ -613,10 +632,13 @@ export function described(markdown: string, images: { name: string; url: string 
 
 /** A lane's list, checked to be the open list of that name on the board before anything is written to it. */
 async function laneList(key: unknown, env: IdeasEnv, board: Board) {
+  if (board.lanes.length === 0) throw new Refused(409, "This channel's Trello board has no lists for ideas: choose them in the channel's settings.");
   const lane = board.lanes.find((one) => one.key === key);
   if (lane === undefined) throw new Refused(400, `Choose a lane: ${board.lanes.map((one) => one.key).join(", ")}.`);
   const list = await trello<{ id: string; name: string; idBoard: string; closed: boolean }>(env, "GET", `lists/${lane.id}`, { fields: "id,name,idBoard,closed" });
-  if (list.id !== lane.id || list.closed || list.name.trim() !== lane.name || list.idBoard !== (await boardId(env, board))) throw new Refused(409, `Ideas go only to the open ${lane.name} list on the ${board.name} board, and it isn't that now.`);
+  if (list.id !== lane.id || list.closed || list.name.trim() !== lane.name || list.idBoard !== (await boardId(env, board))) {
+    throw new Refused(409, `Ideas go only to the open ${lane.name} list on ${onBoard(board)}, and it isn't that now${board.saved ? ": paste the board's link again in the channel's settings." : "."}`);
+  }
   return lane;
 }
 
@@ -710,7 +732,7 @@ async function update(body: Record<string, unknown>, env: IdeasEnv, board: Board
   const markdown = text(body.desc, "desc", 16_000, 0);
   const images = imagesOf(body.images);
   const card = await trello<Card>(env, "GET", `cards/${body.cardId}`, { fields: "id,name,url,shortUrl,idList,idBoard,idLabels,closed" });
-  if (card.idBoard !== (await boardId(env, board))) throw new Refused(403, `That card isn't on the ${board.name} board.`);
+  if (card.idBoard !== (await boardId(env, board))) throw new Refused(403, `That card isn't on ${onBoard(board)}.`);
   // A card in a lane, or one waiting on changes anywhere on the board: never another of the board's cards.
   if (!board.lanes.some((lane) => lane.id === card.idList) && !needsChanges(card, board)) throw new Refused(409, "That card isn't in a repackaging lane or waiting on changes, so Edit doesn't change it.");
   const attached = await attach(card.id, images, env);
@@ -718,8 +740,150 @@ async function update(body: Record<string, unknown>, env: IdeasEnv, board: Board
   await trello(env, "PUT", `cards/${card.id}`, { name, desc });
   await cover(card.id, attached[0], env);
   // "Changes Made", added beside the card's other labels (never a PUT of them all: the board's workflow flags are labels too).
-  const made = needsChanges(card, board) && !(card.idLabels ?? []).includes(board.madeLabel);
+  // A channel's board without a "Changes made" label: the card is written, never labelled.
+  const made = board.madeLabel !== "" && needsChanges(card, board) && !(card.idLabels ?? []).includes(board.madeLabel);
   if (made) await trello(env, "POST", `cards/${card.id}/idLabels`, { value: board.madeLabel });
   forget();
   return { cardId: card.id, url: card.shortUrl || card.url, labelled: made };
+}
+
+// ---------------------------------------------------------------- A channel's board
+
+/** The board a channel's settings keep (mamagi's channels row, `trello`): saved when a teacher pasted its link, with the lists ideas go to. */
+export type SavedBoard = { boardId: string; name: string; url: string; lanes: { id: string; name: string }[] };
+
+const TRELLO_ID = /^[a-f0-9]{24}$/;
+const CHANNEL_KEY = /^[a-z0-9][a-z0-9-]{0,39}$/;
+export const NO_BOARD = "This channel has no Trello board yet: paste its link in the channel's settings.";
+
+/** The row's `trello`, checked here: the relay writes to Trello only on a shape it checked itself. Null: none. */
+export function savedBoardOf(value: unknown): SavedBoard | null {
+  if (!isObject(value) || typeof value.boardId !== "string" || !TRELLO_ID.test(value.boardId)) return null;
+  const lanes = (Array.isArray(value.lanes) ? value.lanes : []).filter((one): one is { id: string; name: string } => isObject(one) && typeof one.id === "string" && TRELLO_ID.test(one.id) && typeof one.name === "string" && one.name.trim() !== "");
+  return { boardId: value.boardId, name: typeof value.name === "string" ? value.name : "", url: typeof value.url === "string" ? value.url : "", lanes: lanes.map((one) => ({ id: one.id, name: one.name.trim() })) };
+}
+
+/** The board a request names: its channel's when it names one, else its workspace's. */
+async function boardOf(workspace: unknown, channel: unknown, env: IdeasEnv, found: Caller, request: Request): Promise<Board> {
+  return channel === undefined || channel === null || channel === "" ? workspaceOf(workspace, found) : channelBoard(channel, env, found, request);
+}
+
+/** The channel a request names, refused unless the caller sees it (in full or by its label, as mamagi's channels.ts) and works on ideas. */
+function channelAccess(given: unknown, found: Caller): { key: string; full: boolean } {
+  if (typeof given !== "string" || !CHANNEL_KEY.test(given)) throw new Refused(400, "That isn't one of Edit's channels.");
+  if (found.kind !== "person") throw new Refused(403, NO_IDEAS);
+  const full = found.admin || (found.perms.includes(`channel.${given}`) && !found.perms.includes(`channel.${given}.label`));
+  if (!full && !found.perms.includes(`channel.${given}.label`)) throw new Refused(403, "That channel isn't available to your account: an admin can give it to you at accounts.spheceo.com.");
+  if (!mayIdeas(found)) throw new Refused(403, NO_IDEAS);
+  return { key: given, full };
+}
+
+/** A channel's saved board. Channels are prod's alone (live_channels.ts), so the dev relay asks the live one, with the caller's own sign-in. */
+async function savedBoard(key: string, env: IdeasEnv, request: Request): Promise<SavedBoard | null> {
+  if (channelsLive(env)) {
+    const asked = new Request(`${env.CHANNELS_UPSTREAM!.replace(/\/+$/, "")}/v1/ideas/trello/channel?channel=${key}`, { headers: { authorization: request.headers.get("authorization") ?? "" } });
+    const answer = await (env.LIVE_RELAY !== undefined ? env.LIVE_RELAY.fetch(asked) : fetch(asked)).catch(() => null);
+    if (answer === null) throw new Upstream("The live relay didn't answer for the channel's board.");
+    const parsed: unknown = await answer.json().catch(() => null);
+    if (answer.ok && isObject(parsed)) return savedBoardOf(parsed.board);
+    if (answer.status >= 400 && answer.status < 500 && isObject(parsed) && typeof parsed.error === "string") throw new Refused(answer.status, parsed.error);
+    throw new Upstream(`The live relay answered ${answer.status} for the channel's board.`);
+  }
+  if (!env.CONVEX_URL || !env.CONVEX_SERVICE_TOKEN) throw new Refused(503, "Convex is not configured on the relay yet.");
+  if (convexPaused(env) !== null) throw new Refused(503, PAUSED_MESSAGE);
+  // Without a caller: Convex masks `trello` for someone who sees the channel by its label alone, and they may still send to it (checked above).
+  const row = await convexValue(env, "channels:getChannel", { key });
+  if (row === undefined) throw new Upstream("Convex couldn't read the channel; try again in a moment.");
+  if (row === null) throw new Refused(404, "That channel isn't in Edit any more: choose another in the project's settings.");
+  return savedBoardOf(isObject(row) ? row.trello : null);
+}
+
+/** `trello/channel`: the saved board, its name and link left out for someone who sees the channel by its label alone. */
+async function channelSaved(given: unknown, env: IdeasEnv, found: Caller, request: Request) {
+  const { key, full } = channelAccess(given, found);
+  const saved = await savedBoard(key, env, request);
+  return { board: saved === null || full ? saved : { ...saved, name: "", url: "" } };
+}
+
+/** One of the workspaces' boards when a board id is its: their own lanes, approved lists and labels (Raw Channels' approved lists can't be told by their names). */
+async function knownBoard(env: IdeasEnv, id: string): Promise<Board | null> {
+  for (const board of Object.values(BOARDS)) if ((await boardId(env, board)) === id) return board;
+  return null;
+}
+
+/** A channel's board: a workspace's own when it's one of theirs, else built from the channel's settings. */
+async function channelBoard(given: unknown, env: IdeasEnv, found: Caller, request: Request): Promise<Board> {
+  const { full } = channelAccess(given, found);
+  const saved = await savedBoard(given as string, env, request);
+  if (saved === null) throw new Refused(409, NO_BOARD);
+  const known = await knownBoard(env, saved.boardId);
+  if (known !== null) return { ...known, name: full ? known.name : "" };
+  return {
+    id: saved.boardId,
+    name: full ? saved.name : "",
+    // A lane is its list, by id: the lists a teacher chose when the link was pasted.
+    lanes: saved.lanes.map((lane) => ({ key: lane.id, id: lane.id, name: lane.name })),
+    approved: null,
+    changesRequired: [],
+    changesMade: [],
+    madeLabel: "",
+    approvedLists: null,
+    saved: true,
+  };
+}
+
+/** A saved board's changes labels, read off the board by name ("Changes required", "Sphe changes required", "Changes made"): with none, nothing waits on changes. */
+async function labelled(env: IdeasEnv, board: Board): Promise<Board> {
+  if (board.saved !== true) return board;
+  const labels = await cached(`${board.id}:labels`, 10 * 60_000, () => trello<{ id: string; name: string }[]>(env, "GET", `boards/${board.id}/labels`, { fields: "id,name", limit: "1000" }));
+  const made = labels.filter((one) => /changes? made/i.test(one.name ?? ""));
+  return {
+    ...board,
+    changesRequired: labels.filter((one) => /changes? required/i.test(one.name ?? "")).map((one) => one.id),
+    changesMade: made.map((one) => one.id),
+    madeLabel: (made.find((one) => /^\s*changes? made\s*$/i.test(one.name)) ?? made[0])?.id ?? "",
+  };
+}
+
+/** How a message names a board: by its name, or as the channel's for someone who sees the channel by its label alone. */
+const onBoard = (board: Board) => (board.name === "" ? "the channel's board" : `the ${board.name} board`);
+
+/** The lists ideas are sent to, as a board names them. */
+export const IDEA_LANE = /idea|repackag|draft/i;
+
+/** A pasted Trello link: a board's (`trello.com/b/<short>/…`), a card's (its board), or a board's bare short link or id. */
+export function trelloLink(text: string): { board: string } | { card: string } | null {
+  const given = text.trim();
+  const link = /^(?:https?:\/\/)?(?:www\.)?trello\.com\/([bc])\/([A-Za-z0-9]{6,32})(?:[/?#]|$)/i.exec(given);
+  if (link !== null) return link[1]!.toLowerCase() === "b" ? { board: link[2]! } : { card: link[2]! };
+  return /^[A-Za-z0-9]{6,32}$/.test(given) ? { board: given } : null;
+}
+
+const NOT_A_BOARD = "Edit can't open that Trello board: check the link, and that the board is shared with the team's Trello account.";
+
+/** A Trello read for a pasted link: a link Trello doesn't know, or a board it won't show, said plainly. */
+async function linkRead<T>(env: IdeasEnv, path: string, params: Record<string, string>): Promise<T> {
+  try {
+    return await trello<T>(env, "GET", path, params);
+  } catch (error) {
+    if ((error instanceof Refused && error.status === 404) || error instanceof TrelloRefused) throw new Refused(404, NOT_A_BOARD);
+    throw error;
+  }
+}
+
+/** `trello/board`: the board a pasted link is on, for a teacher saving a channel's settings, with the lists ideas would go to. */
+async function boardLookup(given: string, env: IdeasEnv, found: Caller) {
+  if (found.kind !== "person" || !(found.admin || found.perms.includes("agent.teach"))) throw new Refused(403, "Only a teacher sets a channel's Trello board: an admin can make you one at accounts.spheceo.com.");
+  const link = trelloLink(given);
+  if (link === null) throw new Refused(400, "That isn't a Trello link: paste the board's link, trello.com/b/… from its address bar.");
+  const short = "card" in link ? (await linkRead<{ idBoard: string }>(env, `cards/${link.card}`, { fields: "idBoard" })).idBoard : link.board;
+  const board = await linkRead<{ id: string; name: string; url: string; shortUrl?: string; closed: boolean; lists?: List[] }>(env, `boards/${short}`, { fields: "id,name,url,shortUrl,closed", lists: "open", list_fields: "id,name,closed,pos" });
+  if (board.closed) throw new Refused(409, "That Trello board is closed: reopen it in Trello, or paste another board's link.");
+  const lists = (board.lists ?? [])
+    .filter((list) => !list.closed)
+    .sort((a, b) => a.pos - b.pos)
+    .map((list) => ({ id: list.id, name: list.name.trim() }));
+  const known = await knownBoard(env, board.id);
+  const lanes = known !== null ? known.lanes.map((lane) => ({ id: lane.id, name: lane.name })) : lists.filter((list) => IDEA_LANE.test(list.name));
+  return { id: board.id, name: board.name, url: board.shortUrl || board.url, lists, lanes };
 }

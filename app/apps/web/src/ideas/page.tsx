@@ -154,12 +154,12 @@ export function IdeaScreen({ id }: { id: string }) {
           )}
         </main>
         <ChatDock working={active}>
-          <div className="flex min-h-0 flex-1 flex-col pt-2">{page === null ? <ChatShell loading /> : <Chat id={id} idea={page.idea} onAsked={() => void load()} />}</div>
+          <div className="flex min-h-0 flex-1 flex-col pt-2">{page === null ? <ChatShell loading /> : <Chat id={id} idea={page.idea} untaught={page.untaught === true} onAsked={() => void load()} />}</div>
         </ChatDock>
       </div>
       {/* Words selected in the title, titles, summary or guide can be quoted into the chat. */}
       <QuoteSelection chat={`idea:${id}`} />
-      {page !== null && <SendDialog open={sending} idea={page.idea} onClose={() => setSending(false)} onSent={() => void load()} />}
+      {page !== null && <SendDialog open={sending} idea={page.idea} board={page.board ?? null} onClose={() => setSending(false)} onSent={() => void load()} />}
     </div>
   );
 }
@@ -335,6 +335,12 @@ function Notices({ page, busy, onRepackage }: { page: Page; busy: string | null;
   const link = "underline decoration-amber-100/20 underline-offset-2 transition-colors hover:text-amber-100/90 disabled:opacity-40";
   return (
     <>
+      {page.untaught === true && !working(idea) && (
+        <div className={band}>
+          <p className="text-[12.5px] font-medium text-amber-100/90">Not taught yet</p>
+          <p className="mt-1 text-[11.5px] leading-relaxed text-amber-100/55">This channel's ideas haven't been taught yet. Tell the agent in the chat how they should be written, and what you teach carries to its next.</p>
+        </div>
+      )}
       {idea.duplicate !== null && idea.card === null && (
         <div className={band}>
           <p className="flex items-center gap-1.5 text-[12.5px] font-medium text-amber-100/90">
@@ -884,7 +890,7 @@ function Guide({
 
 // ---------------------------------------------------------------- the chat (the editor's own)
 
-function Chat({ id, idea, onAsked }: { id: string; idea: Idea; onAsked: () => void }) {
+function Chat({ id, idea, untaught = false, onAsked }: { id: string; idea: Idea; untaught?: boolean; onAsked: () => void }) {
   const toastError = useEditor((state) => state.toastError);
   const running = working(idea);
   const entries = conversationEntries(idea.chat, idea.createdAt, running ? idea.run : null, (turn) => (turn.images ?? []).map((image) => ({ name: image.name, kind: "image" as const, url: chatImageUrl(idea.id, image.id) })));
@@ -911,7 +917,7 @@ function Chat({ id, idea, onAsked }: { id: string; idea: Idea; onAsked: () => vo
           running={running}
           disabled={false}
           revising={ideaBuilt(idea)}
-          placeholder="Ask for another angle, or a change…"
+          placeholder={untaught ? "Tell the agent how this channel's ideas should be written…" : "Ask for another angle, or a change…"}
           draft={`ideas.chat-draft.${id}`}
           chat={`idea:${id}`}
           files={files}
@@ -943,7 +949,7 @@ function Chat({ id, idea, onAsked }: { id: string; idea: Idea; onAsked: () => vo
 // ---------------------------------------------------------------- sending
 
 /** Which lane the idea goes to (remembered on this Mac), checked on the board as it's sent. */
-function SendDialog({ open, idea, onClose, onSent }: { open: boolean; idea: Idea; onClose: () => void; onSent: () => void }) {
+function SendDialog({ open, idea, board, onClose, onSent }: { open: boolean; idea: Idea; board: { name: string; channel: string | null } | null; onClose: () => void; onSent: () => void }) {
   const [lanes, setLanes] = useState<{ key: string; name: string }[]>([]);
   const [lane, setLane] = useState(() => localStorage.getItem("ideas.lane") ?? "sphe");
   const [busy, setBusy] = useState(false);
@@ -956,11 +962,11 @@ function SendDialog({ open, idea, onClose, onSent }: { open: boolean; idea: Idea
     setAnyway(false);
     void ideasApi.home().then((home) => {
       // This idea's board's lanes; a lane remembered from the other board falls back to this one's first.
-      const own = home.lanes.filter((one) => one.workspace === idea.workspace);
+      const own = home.lanes.filter((one) => (board?.channel ? one.channel === board.channel : one.channel === undefined && one.workspace === idea.workspace));
       setLanes(own);
       setLane((now) => (own.length === 0 || own.some((one) => one.key === now) ? now : own[0]!.key));
     }, () => {});
-  }, [open, idea.workspace]);
+  }, [open, idea.workspace, board?.channel]);
   const send = () => {
     setBusy(true);
     setProblem(null);
@@ -980,7 +986,7 @@ function SendDialog({ open, idea, onClose, onSent }: { open: boolean; idea: Idea
       <div className="p-6">
         <DialogTitle
           title="Send to Trello"
-          detail={`A card at the top of the lane on the ${idea.workspace === "bodycam" ? "Raw Channels" : "Interrogation"} board, named “${idea.main ?? idea.titles[0]?.text ?? ""}”: its titles, the thumbnail guide and ${idea.images.length === 1 ? "its picture" : `its ${idea.images.length} pictures`} (the first is the cover), and the case.`}
+          detail={`A card at the top of the lane on the ${board?.name ?? (idea.workspace === "bodycam" ? "Raw Channels" : "Interrogation")} board, named “${idea.main ?? idea.titles[0]?.text ?? ""}”: its titles, the thumbnail guide and ${idea.images.length === 1 ? "its picture" : `its ${idea.images.length} pictures`} (the first is the cover), and the case.`}
         />
         <div className="mt-4 space-y-1.5">
           {(lanes.length > 0 ? lanes : [{ key: lane, name: "…" }]).map((one) => (

@@ -39,8 +39,8 @@ declare const FixedLengthStream:{ new(size: number): { readable: ReadableStream<
  *                          sign-in kept here (google.ts)
  *   GET /v1/channels/resolve  a link read into its YouTube channel (channels.ts), signed in
  *   GET /v1/channels/videos   a channel's most viewed or newest videos with their numbers (channels.ts), signed in
- *   GET|POST /v1/ideas/…   ideas: their Convex rows, YouTube's details, the Interrogation
- *                          board's Trello (ideas.ts), with an `ideas.*` capability
+ *   GET|POST /v1/ideas/…   ideas: their Convex rows, YouTube's details, a workspace's or a
+ *                          channel's Trello board (ideas.ts), with an `ideas.*` capability
  *   POST /v1/openart/mcp   the team's OpenArt account's MCP server, for thumbnails (openart.ts),
  *                          with an `ideas.*` capability
  *   GET  /health
@@ -177,7 +177,8 @@ export default {
     if (url.pathname.startsWith("/v1/ideas/")) {
       const found = await allow(request, env, "use", url.pathname.slice("/v1/".length));
       if (found instanceof Response) return found;
-      if (!mayIdeas(found)) return json(403, { error: NO_IDEAS });
+      // A pasted board's lookup is a teacher's, for a channel's settings (ideas.ts checks): a teacher may not work on ideas.
+      if (!mayIdeas(found) && url.pathname !== "/v1/ideas/trello/board") return json(403, { error: NO_IDEAS });
       if (env.CLOUD_BURST !== undefined && !(await env.CLOUD_BURST.limit({ key: `ideas:${burstKey(request, found)}` })).success) return json(429, { error: "Too many requests at once; try again in a minute." });
       return ideasRoute(request, url, env, found);
     }

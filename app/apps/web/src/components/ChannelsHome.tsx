@@ -661,6 +661,75 @@ function Compilation({ channel, boxed = false }: { channel: Channel; boxed?: boo
 }
 
 /**
+ * Its ideas' Trello board (Sphe, Nov 18: "we just paste in a URL of the
+ * Trello, and then it's like, 'Okay, detected. We're saving that.'"): pasted,
+ * read and kept at once; its name links to it, and × takes it off.
+ */
+function IdeasBoard({ channel }: { channel: Channel }) {
+  const [link, setLink] = useState("");
+  const [reading, setReading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const read = (given: string) => {
+    const url = given.trim();
+    if (url === "") return;
+    setReading(true);
+    setError(null);
+    void channelApi
+      .board(url)
+      .then((trello) => channelApi.set(channel.key, { trello }))
+      .then(() => setLink(""))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setReading(false));
+  };
+  return (
+    <div>
+      <span className={LABEL}>Ideas board</span>
+      {channel.trello ? (
+        <div className="flex h-9 items-center justify-between gap-2 rounded-lg border border-line px-3 text-[13px]">
+          <a href={channel.trello.url} target="_blank" rel="noreferrer" className="min-w-0 truncate hover:underline">
+            {channel.trello.name}
+          </a>
+          <IconButton label="Take the board off" onClick={() => change(channel, "ideas board", { trello: null })}>
+            <X size={13} />
+          </IconButton>
+        </div>
+      ) : (
+        <input
+          value={link}
+          disabled={reading}
+          placeholder={reading ? "Reading the board…" : "Paste its Trello board's link"}
+          onChange={(event) => setLink(event.target.value)}
+          onPaste={(event) => read(event.clipboardData.getData("text"))}
+          onKeyDown={(event) => event.key === "Enter" && read(link)}
+          className="h-9 w-full rounded-lg border border-line bg-black px-3 text-[13px] outline-none placeholder:text-faint focus:border-muted"
+        />
+      )}
+      {error !== null && <span className="mt-1 block text-[12px] text-muted">{error}</span>}
+    </div>
+  );
+}
+
+/** Its competitors, as the team writes them (links, names, a Google Doc): its ideas read them. Saved on leaving the box. */
+function Competitors({ channel }: { channel: Channel }) {
+  const value = channel.competitors ?? "";
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  return (
+    <div>
+      <span className={LABEL}>Competitors</span>
+      <textarea
+        value={text}
+        rows={3}
+        placeholder="Their channels, or a Google Doc"
+        onChange={(event) => setText(event.target.value)}
+        onBlur={() => text.trim() !== value.trim() && change(channel, "competitors", { competitors: text.trim() })}
+        className="max-h-60 w-full resize-none rounded-lg border border-line bg-black px-3 py-2 text-[13px] leading-[20px] outline-none [field-sizing:content] placeholder:text-faint focus:border-muted"
+      />
+    </div>
+  );
+}
+
+/**
  * A channel's page: its banner, picture and YouTube facts; its lanes, each
  * with what comes from its group and what's its alone (which a teacher moves
  * into the group); its settings, who it's grouped with, and what's in
@@ -795,6 +864,8 @@ function ChannelPage({ channel, group, work }: { channel: Channel; group: { grou
                 </div>
                 <Compilation channel={channel} />
                 {teacher && channel.masked !== true && <ChannelWatermark channel={channel} still={mine.find((one) => one.kind === "edit")?.id} />}
+                {teacher && channel.masked !== true && <IdeasBoard channel={channel} />}
+                {teacher && channel.masked !== true && <Competitors channel={channel} />}
                 {/* What someone given only its label sees for its name (accounts.spheceo.com), set by a teacher. */}
                 {teacher && channel.masked !== true && (
                   <div className="border-t border-line pt-3">

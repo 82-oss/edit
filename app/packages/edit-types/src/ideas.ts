@@ -164,6 +164,8 @@ export type IdeaCard = {
   sentBy: string;
   /** The last time it was written (sent again, or its changes made). */
   updatedAt?: number;
+  /** Sent to this channel's own board (pasted on its page); absent: its workspace's. */
+  channel?: string;
 };
 
 export type IdeaComment = { id: string; text: string; author: string; at: string };
@@ -216,7 +218,8 @@ export type IdeaSummary = {
   thumbnail: string | null;
   views: number | null;
   outlier: string | null;
-  card: { cardId: string; url: string; list: string } | null;
+  /** Its card; `channel`: on that channel's own board. */
+  card: { cardId: string; url: string; list: string; channel?: string } | null;
   changes: number;
   skipped: string | null;
   duplicate: string | null;
@@ -257,8 +260,8 @@ export type ChangeCard = {
 export type IdeasHome = {
   ideas: IdeaRow[];
   changes: ChangeCard[];
-  /** Each workspace's lanes (where a card is sent). */
-  lanes: { key: string; name: string; workspace: Workspace }[];
+  /** Each workspace's lanes (where a card is sent), and each channel's own board's (`channel`). */
+  lanes: { key: string; name: string; workspace: Workspace; channel?: string }[];
   /** The workspaces this person may work on. */
   workspaces: Workspace[];
   /** Why the board couldn't be read just now. */

@@ -99,7 +99,7 @@ export function summarize(idea: Idea): IdeaSummary {
     thumbnail: video?.kind === "youtube" ? video.thumbnail : null,
     views: video?.kind === "youtube" ? video.views : null,
     outlier: video?.kind === "youtube" ? video.outlier : null,
-    card: idea.card === null ? null : { cardId: idea.card.cardId, url: idea.card.url, list: idea.card.list },
+    card: idea.card === null ? null : { cardId: idea.card.cardId, url: idea.card.url, list: idea.card.list, ...(idea.card.channel !== undefined ? { channel: idea.card.channel } : {}) },
     changes: idea.changes?.comments.length ?? 0,
     skipped: idea.skipped,
     duplicate: idea.duplicate?.name ?? null,

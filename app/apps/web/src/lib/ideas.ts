@@ -22,7 +22,8 @@ export const NICHE: Record<Niche, { label: string; dot: string }> = {
 export type LengthStyle = { typicalWords: [number, number]; maxWords: number; maxCharacters: number } | null;
 
 /** An idea as its page shows it: where its card is, and what's wrong with each title by the channel's rules. */
-export type IdeaPage = { idea: Idea; rev: number; place: IdeaPlace | null; problems: Record<string, string>; guideProblem: string | null; style: LengthStyle };
+/** `untaught`: a channel's idea whose ideas aren't taught yet (it waits to be told how); `board`: where its card goes, a channel's own or the workspace's. */
+export type IdeaPage = { idea: Idea; rev: number; place: IdeaPlace | null; problems: Record<string, string>; guideProblem: string | null; style: LengthStyle; untaught?: boolean; board?: { name: string; channel: string | null } };
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(path, {

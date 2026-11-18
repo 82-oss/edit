@@ -1,12 +1,12 @@
 // Ideas on Edit's relay (apps/relay/src/ideas.ts): who may, the Convex calls,
-// YouTube's details, and the Interrogation board's Trello, read and written
-// only where ideas go, against stand-ins for Trello, YouTube and Convex.
+// YouTube's details, and the Interrogation board's Trello (and a channel's
+// own board, Nov 18), read and written only where ideas go, against stand-ins for Trello, YouTube and Convex.
 
 import { exportJWK, generateKeyPair, SignJWT, createLocalJWKSet, type JWK } from "jose";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { readCutOffsWith, useKeys } from "../../../relay/src/auth";
-import { approvedList, BOARD, BODYCAM_BOARD, coverWaits, described, holdsApproved, isoSeconds, outlier, resetForTests, titleOf, youtubeIds } from "../../../relay/src/ideas";
+import { approvedList, BOARD, BODYCAM_BOARD, coverWaits, described, holdsApproved, isoSeconds, NO_BOARD, outlier, resetForTests, savedBoardOf, titleOf, trelloLink, youtubeIds } from "../../../relay/src/ideas";
 import relay, { type Env } from "../../../relay/src/index";
 
 const ISSUER = "https://accounts.example.test";
@@ -361,5 +361,158 @@ describe("sending an idea", () => {
   it("lays a description out as the board writes it", () => {
     expect(described("Titles:\n- A\n[image]\nCase:\nhttps://x", [{ name: "a [1]", url: "https://t/a" }, { name: "b", url: "https://t/b" }])).toBe("Titles:\n\n- A\n\n![a 1](https://t/a)\n\nCase:\n\nhttps://x\n\n![b](https://t/b)");
     expect(youtubeIds("https://youtu.be/abcdefghijk and https://www.youtube.com/shorts/ABCDEFGHIJK?x=1")).toEqual(["abcdefghijk", "ABCDEFGHIJK"]);
+  });
+});
+
+describe("a channel's own board (Nov 18)", () => {
+  const TED = "inspector-ted";
+  const TED_BOARD = "7".repeat(24);
+  const TED_LANE = { id: "8".repeat(24), name: "Ideas - Ted" };
+  const BODYCAM_ID = "9".repeat(24);
+  const tedRow = (trello: unknown = { boardId: TED_BOARD, name: "Ted's Board", url: "https://trello.com/b/tedboard", lanes: [TED_LANE] }) => ({ key: TED, name: "Inspector Ted", trello });
+  const ted = { perms: ["use", "ideas.bodycam", `channel.${TED}`] };
+  /** Convex with the one channel row, and the two workspace boards' ids on Trello. */
+  const routes = (row: unknown = tedRow()) => ({
+    "POST convex.test/api/query": (_url: URL, init: RequestInit) => {
+      const sent = JSON.parse(String(init.body)) as { path: string; args: { key?: string } };
+      return { status: "success", value: sent.path === "channels:getChannel" && sent.args.key === TED ? row : null };
+    },
+    "GET api.trello.com/1/boards/CJiVnylO": () => ({ id: BOARD_ID }),
+    "GET api.trello.com/1/boards/v3lybcjY": () => ({ id: BODYCAM_ID }),
+    [`GET api.trello.com/1/boards/${TED_BOARD}`]: () => ({ id: TED_BOARD }),
+  });
+
+  it("reads the channel's board from its row, without a caller, and sends only to its saved lanes", async () => {
+    const calls = stand({
+      ...routes(),
+      [`GET api.trello.com/1/lists/${TED_LANE.id}`]: () => ({ ...TED_LANE, idBoard: TED_BOARD, closed: false }),
+      [`GET api.trello.com/1/lists/${TED_LANE.id}/cards`]: () => [],
+      "POST api.trello.com/1/cards": (url) => ({ id: "e".repeat(24), name: url.searchParams.get("name"), idList: url.searchParams.get("idList"), url: "u", shortUrl: "s" }),
+      "GET api.trello.com/1/cards/e+/attachments": () => [],
+      "PUT api.trello.com/1/cards/e+": () => ({}),
+    });
+    const lanes = await ask(`/v1/ideas/lanes?channel=${TED}`, { claims: ted }, env({ CONVEX_CALLER: "1" } as Partial<Env>));
+    expect(lanes.status).toBe(200);
+    expect(await lanes.json()).toEqual({ board: { id: TED_BOARD, name: "Ted's Board" }, lanes: [{ key: TED_LANE.id, ...TED_LANE }], approved: null });
+    const read = JSON.parse(String(calls.find((one) => one.url.host === "convex.test")!.init.body)) as { path: string; args: Record<string, unknown> };
+    expect(read).toMatchObject({ path: "channels:getChannel", args: { key: TED, token: "s".repeat(40) } });
+    expect(read.args.caller).toBeUndefined();
+    const sent = await ask("/v1/ideas/trello/send", { body: { channel: TED, lane: TED_LANE.id, name: "A Title", desc: "Titles:\n- A Title" }, claims: ted });
+    expect(sent.status).toBe(200);
+    expect(await sent.json()).toMatchObject({ lane: TED_LANE.id, list: TED_LANE.name, created: true });
+    expect(calls.find((one) => one.method === "POST" && one.url.pathname === "/1/cards")!.url.searchParams.get("idList")).toBe(TED_LANE.id);
+    // The workspace's lanes are not the channel's.
+    expect((await ask("/v1/ideas/trello/send", { body: { channel: TED, lane: "sphe", name: "A Title", desc: "" }, claims: ted })).status).toBe(400);
+  });
+
+  it("refuses who can't see the channel or work on ideas, and a channel with no board; a label is enough, its board's name left out", async () => {
+    stand(routes());
+    const refused = await ask(`/v1/ideas/lanes?channel=${TED}`, { claims: { perms: ["use", "ideas.bodycam", "channel.other"] } });
+    expect(refused.status).toBe(403);
+    expect(((await refused.json()) as { error: string }).error).toContain("That channel isn't available");
+    expect((await ask(`/v1/ideas/lanes?channel=${TED}`, { claims: { perms: ["use", `channel.${TED}`] } })).status).toBe(403);
+    expect((await ask("/v1/ideas/lanes?channel=../x", { claims: ted })).status).toBe(400);
+    const label = await ask(`/v1/ideas/lanes?channel=${TED}`, { claims: { perms: ["use", "ideas.interrogation", `channel.${TED}.label`] } });
+    expect(label.status).toBe(200);
+    expect(await label.json()).toMatchObject({ board: { id: TED_BOARD, name: "" }, lanes: [{ key: TED_LANE.id }] });
+    expect(await (await ask(`/v1/ideas/trello/channel?channel=${TED}`, { claims: { perms: ["use", "ideas.interrogation", `channel.${TED}.label`] } })).json()).toEqual({ board: { boardId: TED_BOARD, name: "", url: "", lanes: [TED_LANE] } });
+    stand(routes(tedRow(null)));
+    const none = await ask(`/v1/ideas/trello/approved?channel=${TED}`, { claims: ted });
+    expect(none.status).toBe(409);
+    expect(((await none.json()) as { error: string }).error).toBe(NO_BOARD);
+    expect(savedBoardOf({ boardId: "nope", lanes: [] })).toBeNull();
+    expect(savedBoardOf({ boardId: TED_BOARD, name: "B", url: "u", lanes: [{ id: "x", name: "bad" }, TED_LANE] })!.lanes).toEqual([TED_LANE]);
+  });
+
+  it("reads its changes labels off the board by name, labels a card Changes made, and never counts a lane as approved", async () => {
+    const id = "a".repeat(24);
+    const labels = [{ id: "1".repeat(24), name: "Changes Required" }, { id: "2".repeat(24), name: "Changes made" }];
+    const calls = stand({
+      ...routes(),
+      [`GET api.trello.com/1/boards/${TED_BOARD}/labels`]: () => labels,
+      [`GET api.trello.com/1/boards/${TED_BOARD}/lists`]: () => [{ ...TED_LANE, closed: false, pos: 1 }, { id: "3".repeat(24), name: "Scripting", closed: false, pos: 2 }],
+      [`GET api.trello.com/1/boards/${TED_BOARD}/cards`]: () => [card("w1", { name: "Waiting", idList: TED_LANE.id, idLabels: [labels[0]!.id] }), card("s1", { name: "Scripted Title", idList: "3".repeat(24) })],
+      "GET api.trello.com/1/cards/w1[0-9]+/actions": () => [],
+      [`GET api.trello.com/1/cards/${id}`]: () => ({ id, name: "Old", idList: "z".repeat(24), idBoard: TED_BOARD, idLabels: [labels[0]!.id], url: "u", shortUrl: "s" }),
+      [`GET api.trello.com/1/cards/${id}/attachments`]: () => [],
+      [`PUT api.trello.com/1/cards/${id}`]: () => ({}),
+      [`POST api.trello.com/1/cards/${id}/idLabels`]: () => [],
+    });
+    const { cards } = (await (await ask(`/v1/ideas/trello/changes?channel=${TED}`, { claims: ted })).json()) as { cards: { name: string }[] };
+    expect(cards.map((one) => one.name)).toEqual(["Waiting"]);
+    const { titles } = (await (await ask(`/v1/ideas/trello/approved?channel=${TED}`, { claims: ted })).json()) as { titles: { title: string }[] };
+    expect(titles.map((one) => one.title)).toEqual(["Scripted Title"]);
+    const updated = await ask("/v1/ideas/trello/update", { body: { channel: TED, cardId: id, name: "Better", desc: "" }, claims: ted });
+    expect(await updated.json()).toMatchObject({ labelled: true });
+    expect(calls.find((one) => one.url.pathname.endsWith("/idLabels"))!.url.searchParams.get("value")).toBe(labels[1]!.id);
+    // A card of another board's is refused, as on a workspace's.
+    stand({ ...routes(), [`GET api.trello.com/1/cards/${id}`]: () => ({ id, name: "X", idList: TED_LANE.id, idBoard: BOARD_ID, url: "u" }) });
+    expect((await ask(`/v1/ideas/trello/card?channel=${TED}&card=${id}`, { claims: ted })).status).toBe(403);
+  });
+
+  it("a board without changes labels has nothing waiting on changes, and an update never labels", async () => {
+    const id = "a".repeat(24);
+    const calls = stand({
+      ...routes(),
+      [`GET api.trello.com/1/boards/${TED_BOARD}/labels`]: () => [{ id: "1".repeat(24), name: "Urgent" }],
+      [`GET api.trello.com/1/boards/${TED_BOARD}/cards`]: () => [card("w1", { idList: TED_LANE.id, idLabels: ["1".repeat(24)] })],
+      [`GET api.trello.com/1/cards/${id}`]: () => ({ id, name: "Old", idList: TED_LANE.id, idBoard: TED_BOARD, idLabels: [], url: "u", shortUrl: "s" }),
+      [`GET api.trello.com/1/cards/${id}/attachments`]: () => [],
+      [`PUT api.trello.com/1/cards/${id}`]: () => ({}),
+    });
+    expect(await (await ask(`/v1/ideas/trello/changes?channel=${TED}`, { claims: ted })).json()).toEqual({ cards: [] });
+    expect(await (await ask("/v1/ideas/trello/update", { body: { channel: TED, cardId: id, name: "Better", desc: "" }, claims: ted })).json()).toMatchObject({ labelled: false });
+    expect(calls.some((one) => one.url.pathname.endsWith("/idLabels"))).toBe(false);
+  });
+
+  it("a channel on a workspace's board takes that board's own lanes, approved lists and labels", async () => {
+    stand(routes(tedRow({ boardId: BODYCAM_ID, name: "Raw Channels", url: "https://trello.com/b/v3lybcjY", lanes: [] })));
+    expect(await (await ask(`/v1/ideas/lanes?channel=${TED}`, { claims: ted })).json()).toEqual({ board: { id: "v3lybcjY", name: "Raw Channels" }, lanes: BODYCAM_BOARD.lanes, approved: BODYCAM_BOARD.approved });
+  });
+
+  it("the dev relay reads the board from the live relay, with the caller's own sign-in", async () => {
+    let asked: Request | null = null;
+    const live = { fetch: async (request: Request) => ((asked = request), relay.fetch(request, env())) };
+    stand(routes());
+    const devEnv = env({ CHANNELS_UPSTREAM: "https://live.test", LIVE_RELAY: live, CONVEX_URL: "https://dev-convex.test" } as Partial<Env>);
+    const lanes = await ask(`/v1/ideas/lanes?channel=${TED}`, { claims: ted }, devEnv);
+    expect(lanes.status).toBe(200);
+    expect(await lanes.json()).toMatchObject({ board: { id: TED_BOARD, name: "Ted's Board" } });
+    expect(new URL(asked!.url).pathname).toBe("/v1/ideas/trello/channel");
+    expect(asked!.headers.get("authorization")).toMatch(/^Bearer /);
+    // Refused on the live relay: refused here, as it said.
+    const other = await ask(`/v1/ideas/lanes?channel=${TED}`, { claims: { perms: ["use", "ideas.bodycam", "channel.other"] } }, devEnv);
+    expect(other.status).toBe(403);
+  });
+
+  it("reads a pasted link into its board and the lists ideas go to, for a teacher", async () => {
+    expect(trelloLink("https://trello.com/b/AbCd1234/teds-board")).toEqual({ board: "AbCd1234" });
+    expect(trelloLink("trello.com/b/AbCd1234")).toEqual({ board: "AbCd1234" });
+    expect(trelloLink(" AbCd1234 ")).toEqual({ board: "AbCd1234" });
+    expect(trelloLink("https://trello.com/c/XyZ98765/12-a-card")).toEqual({ card: "XyZ98765" });
+    expect(trelloLink("https://evil.test/b/AbCd1234")).toBeNull();
+    const board = { id: TED_BOARD, name: "Ted's Board", url: "https://trello.com/b/AbCd1234/teds-board", shortUrl: "https://trello.com/b/AbCd1234", closed: false, lists: [
+      { id: "3".repeat(24), name: "Scripting", closed: false, pos: 3 },
+      { id: TED_LANE.id, name: "Ideas - Ted ", closed: false, pos: 1 },
+      { id: "4".repeat(24), name: "Repackaging (JJ)", closed: false, pos: 2 },
+      { id: "5".repeat(24), name: "Old drafts", closed: true, pos: 4 },
+    ] };
+    const calls = stand({ ...routes(), "GET api.trello.com/1/boards/AbCd1234": () => board, "GET api.trello.com/1/cards/XyZ98765": () => ({ idBoard: TED_BOARD }), [`GET api.trello.com/1/boards/${TED_BOARD}`]: () => board, "GET api.trello.com/1/boards/Gone1234": () => new Response("unauthorized permission requested", { status: 401 }) });
+    const teacher = { perms: ["use", "agent.teach"] };
+    const found = await ask(`/v1/ideas/trello/board?url=${encodeURIComponent("https://trello.com/b/AbCd1234/teds-board")}`, { claims: teacher });
+    expect(found.status).toBe(200);
+    expect(await found.json()).toEqual({ id: TED_BOARD, name: "Ted's Board", url: "https://trello.com/b/AbCd1234", lists: [TED_LANE, { id: "4".repeat(24), name: "Repackaging (JJ)" }, { id: "3".repeat(24), name: "Scripting" }], lanes: [TED_LANE, { id: "4".repeat(24), name: "Repackaging (JJ)" }] });
+    expect(calls.find((one) => one.url.pathname === "/1/boards/AbCd1234")!.url.searchParams.get("lists")).toBe("open");
+    expect(await (await ask(`/v1/ideas/trello/board?url=${encodeURIComponent("https://trello.com/c/XyZ98765/12-a-card")}`, { claims: teacher })).json()).toMatchObject({ id: TED_BOARD });
+    expect((await ask("/v1/ideas/trello/board?url=AbCd1234", { claims: { perms: ["use", "ideas.bodycam"] } })).status).toBe(403);
+    expect((await ask("/v1/ideas/trello/board?url=not%20a%20link", { claims: teacher })).status).toBe(400);
+    const gone = await ask("/v1/ideas/trello/board?url=Gone1234", { claims: teacher });
+    expect(gone.status).toBe(404);
+    expect(((await gone.json()) as { error: string }).error).toContain("Edit can't open that Trello board");
+    stand({ ...routes(), "GET api.trello.com/1/boards/AbCd1234": () => ({ ...board, closed: true }) });
+    expect((await ask("/v1/ideas/trello/board?url=AbCd1234", { claims: teacher })).status).toBe(409);
+    // A workspace's board: its own lanes.
+    stand({ ...routes(), "GET api.trello.com/1/boards/v3lybcjY": () => ({ id: BODYCAM_ID, name: "Raw Channels", url: "u", closed: false, lists: [{ id: BODYCAM_BOARD.lanes[0]!.id, name: "Ideas - Sphe", closed: false, pos: 1 }, { id: "6".repeat(24), name: "Ideas - Ted", closed: false, pos: 2 }] }) });
+    expect(await (await ask("/v1/ideas/trello/board?url=v3lybcjY", { claims: teacher })).json()).toMatchObject({ lanes: [{ id: BODYCAM_BOARD.lanes[0]!.id, name: "Ideas - Sphe" }] });
   });
 });
