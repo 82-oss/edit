@@ -345,6 +345,41 @@ export async function youtubeCheck(given: string, env: IdeasEnv) {
   return { videos };
 }
 
+/**
+ * Script mode's footage search (writer/finder.ts, Sphe, Nov 18: "research and
+ * find more footage for this case … more courtroom footage, more bodycam
+ * footage on YouTube"): one search of YouTube's videos, best first, with each
+ * one's length, live state and age limit read in the same go (search's 100
+ * of the day's quota, then videos' 1). Violent footage is the work, so
+ * nothing is filtered out by YouTube's safe search.
+ */
+export async function youtubeSearch(q: string, given: string, env: IdeasEnv) {
+  const query = q.trim().slice(0, 200);
+  if (query === "") throw new Refused(400, "Say what to search for.");
+  const count = Math.min(Math.max(Math.trunc(Number(given) || 15), 1), 25);
+  const found = ((await youtube("search", { part: "snippet", type: "video", q: query, maxResults: String(count), safeSearch: "none", relevanceLanguage: "en" }, env)).items as { id?: { videoId?: unknown } }[] | undefined) ?? [];
+  const ids = [...new Set(found.flatMap((item) => (typeof item.id?.videoId === "string" && /^[A-Za-z0-9_-]{11}$/.test(item.id.videoId) ? [item.id.videoId] : [])))];
+  if (ids.length === 0) return { videos: [] };
+  const items = ((await youtube("videos", { part: "snippet,contentDetails", id: ids.join(","), maxResults: "50" }, env)).items as Item[] | undefined) ?? [];
+  const videos = ids.flatMap((id) => {
+    const item = items.find((one) => one.id === id);
+    if (item === undefined) return [];
+    const snippet = item.snippet ?? {};
+    const live = snippet.liveBroadcastContent;
+    return [{
+      id,
+      title: typeof snippet.title === "string" ? snippet.title : "",
+      channel: typeof snippet.channelTitle === "string" ? snippet.channelTitle : "",
+      publishedAt: typeof snippet.publishedAt === "string" ? snippet.publishedAt : "",
+      description: typeof snippet.description === "string" ? [...snippet.description].slice(0, 500).join("") : "",
+      durationSeconds: isoSeconds(item.contentDetails?.duration),
+      live: live === "live" || live === "upcoming" ? live : "none",
+      ageRestricted: (item.contentDetails?.contentRating as { ytRating?: unknown } | undefined)?.ytRating === "ytAgeRestricted",
+    }];
+  });
+  return { videos };
+}
+
 /** ISO 8601's PT1H2M3S, in seconds. */
 export function isoSeconds(duration: unknown): number | null {
   const match = typeof duration === "string" ? /^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(duration) : null;

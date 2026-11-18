@@ -32,6 +32,7 @@ import { projectFor } from "../writer_handoff.ts";
 import * as footage from "./footage.ts";
 import * as imports from "./imports.ts";
 import * as jobs from "./jobs.ts";
+import * as finder from "./finder.ts";
 import * as links from "./links.ts";
 import * as reuse from "./reuse.ts";
 import * as reviews from "./reviews.ts";
@@ -669,6 +670,8 @@ export function routes(router: Router<App>): void {
         // Footage the note links or the message carries comes in first, and the first draft is written with it (links.ts).
         const adding = footageOf(dataOf(context.app), script, note, given.files);
         if (adding !== null) return startJob(context.app, id(context), { kind: "link", ...adding, build: true, request: note, focus: NO_FOCUS });
+        // A note that may ask for more of the case's footage found on YouTube is read for that first (finder.ts).
+        if (!script.commentary && finder.mayAsk(note)) return startJob(context.app, id(context), { kind: "hunt", request: note, focus: NO_FOCUS, build: true });
         return startJob(context.app, id(context), { kind: "build", note, ...(given.kind ? { format: given.kind } : {}), review });
       });
     })
@@ -680,8 +683,12 @@ export function routes(router: Router<App>): void {
         if ([...request].length > 8_000) throw new Error("Keep the request under 8,000 characters.");
         const focus = given.focus ?? NO_FOCUS;
         // Footage linked in the message, or attached to it, comes into the script first, then the revision places it (links.ts).
-        const adding = footageOf(dataOf(context.app), readFor(dataOf(context.app), id(context)), request, given.files);
-        return startJob(context.app, id(context), adding !== null ? { kind: "link", ...adding, request, focus } : { kind: "revise", request, focus });
+        const script = readFor(dataOf(context.app), id(context));
+        const adding = footageOf(dataOf(context.app), script, request, given.files);
+        if (adding !== null) return startJob(context.app, id(context), { kind: "link", ...adding, request, focus });
+        // One that may ask for more of the case's footage found on YouTube is read for that first (finder.ts).
+        if (!script.commentary && finder.mayAsk(request)) return startJob(context.app, id(context), { kind: "hunt", request, focus });
+        return startJob(context.app, id(context), { kind: "revise", request, focus });
       });
     })
     // A file attached to a message in the script's chat, streamed here until the message adds it to the footage (links.ts).

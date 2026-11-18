@@ -13,6 +13,7 @@ import * as durable from "../jobs.ts";
 import * as archive from "./archive.ts";
 import * as feedback from "./feedback.ts";
 import * as fixing from "./fixing.ts";
+import * as finder from "./finder.ts";
 import * as footage from "./footage.ts";
 import * as imports from "./imports.ts";
 import * as jobs from "./jobs.ts";
@@ -32,6 +33,8 @@ export function runFor(app: App, id: string, work: jobs.Work): (job: jobs.Job) =
       return (job) => scripting.reviseWith(data, id, work.request, work.request, work.focus, false, job);
     case "link":
       return (job) => links.addFootage(app, data, id, work, job);
+    case "hunt":
+      return (job) => finder.findFootage(app, data, id, work, job);
     case "reuse":
       return (job) => reuse.importReused(app, data, id, work.urls, job);
     case "find":

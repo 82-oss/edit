@@ -133,8 +133,14 @@ const keepWithoutCloud = (remove: () => void) => () => {
   if (editCloud.enabled()) remove();
 };
 
+/** What's known of a YouTube video already (the footage search read it on the Data API, finder.ts): it isn't checked again. */
+export interface Known {
+  title: string;
+  ms: number;
+}
+
 /** A link's recordings: one for a video, every one for a Drive folder. Throws why one can't be added before anything comes down. */
-async function piecesOf(app: App, dir: string, url: string): Promise<Piece[]> {
+async function piecesOf(app: App, dir: string, url: string, known?: Known): Promise<Piece[]> {
   if (drive.isDrive(url)) {
     const link = drive.parse(url);
     let token: string;
@@ -174,6 +180,7 @@ async function piecesOf(app: App, dir: string, url: string): Promise<Piece[]> {
   }
   const link = linkOf(url);
   if (link.kind !== "youtube") return [byLink(app, link)];
+  if (known !== undefined) return [{ ...byLink(app, link), title: known.title || "Linked video", size: known.ms * YOUTUBE_BYTES_PER_MS, ms: known.ms }];
   // Checked on YouTube's Data API first, as New script checks a video: a private, removed or live one is said before any download.
   const probe = await ytw.probe(app, link.url).catch(() => null);
   // A video's length is no reason (Nov 18: a script takes all its footage).
@@ -367,15 +374,41 @@ export async function addFootage(app: App, data: string, id: string, adding: Add
   return await reviseWith(data, id, told, adding.request, adding.focus, false, { ...job, resumed: true });
 }
 
+/**
+ * YouTube videos the footage search chose (finder.ts), added as a message's
+ * links are but with no revision after: each with what the Data API said of
+ * it. What couldn't be is put in `failed`. Each one in, by its link: the
+ * recording it is (1 for Recording 1) and its part.
+ */
+export async function addVideos(app: App, dir: string, videos: (Known & { url: string })[], failed: string[], job: Job): Promise<Map<string, { number: number; part: Part }>> {
+  await addAll(app, dir, videos.map((one) => one.url), [], failed, job, new Map(videos.map((one) => [one.url, one])));
+  const parts = store.read(dir).parts ?? [];
+  const out = new Map<string, { number: number; part: Part }>();
+  for (const one of videos) {
+    const key = keyOf({ url: one.url });
+    const at = parts.findIndex((part) => part.reuse === undefined && keyOf(part) === key);
+    if (at >= 0) out.set(one.url, { number: at + 1, part: parts[at]! });
+  }
+  return out;
+}
+
+/** What a script has already, each by its key (`youtube:<id>`, `drive:<id>`…): what the footage search never adds again. */
+export function keysIn(script: { parts?: Part[] | undefined; sourceUrl?: string | null | undefined }): Set<string> {
+  const keys = new Set((script.parts ?? []).flatMap((part) => keyOf(part) ?? []));
+  const own = script.sourceUrl ? keyOf({ url: script.sourceUrl }) : null;
+  if (own !== null) keys.add(own);
+  return keys;
+}
+
 /** Every recording `urls` and `files` bring, added to the footage but those already in; what couldn't be is put in `failed`. The recordings asked for. */
-async function addAll(app: App, dir: string, urls: string[], files: string[], failed: string[], job: Job): Promise<Piece[]> {
+async function addAll(app: App, dir: string, urls: string[], files: string[], failed: string[], job: Job, known = new Map<string, Known>()): Promise<Piece[]> {
   const script = store.read(dir);
   if (script.commentary) throw new Error("A commentary takes its videos as sources: add them under Sources.");
   const pieces: Piece[] = [];
   for (const url of urls) {
     checkStopped(job);
     try {
-      pieces.push(...(await piecesOf(app, dir, url)));
+      pieces.push(...(await piecesOf(app, dir, url, known.get(url))));
     } catch (error) {
       if (job.signal.aborted) throw error;
       failed.push(`${url} couldn't be added (${diag.messageOf(error)})`);

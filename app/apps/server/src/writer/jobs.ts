@@ -72,6 +72,8 @@ export type Work =
    * when the script isn't built yet.
    */
   | { kind: "link"; urls: string[]; files?: string[]; build?: boolean; request: string; focus: import("@edit/types/writer").Focus }
+  /** A message that may ask for more of the case's footage found on YouTube (finder.ts), else the revision or first build (`build`) it would have been. */
+  | { kind: "hunt"; request: string; focus: import("@edit/types/writer").Focus; build?: boolean }
   | { kind: "reuse"; urls: string[] }
   | { kind: "find" }
   | { kind: "learn"; step: import("@edit/types/writer").LearnStep }
@@ -85,6 +87,7 @@ const FIRST_STAGE: Record<Work["kind"], string> = {
   build: "Starting",
   revise: "Editing the script",
   link: "Adding the footage",
+  hunt: "Reading the ask",
   reuse: "Bringing in the reused cases",
   find: "Finding clips",
   learn: "Learning from the feedback",
@@ -104,6 +107,8 @@ function described(work: Work): string {
       return `revising: "${[...work.request].slice(0, 80).join("")}"`;
     case "link":
       return `adding ${plural(work.urls.length + (work.files?.length ?? 0), "link or file", "links and files")} to the footage and ${work.build ? "building" : "revising"}: "${[...work.request].slice(0, 80).join("")}"`;
+    case "hunt":
+      return `finding footage on YouTube, or ${work.build ? "building" : "revising"}: "${[...work.request].slice(0, 80).join("")}"`;
     case "reuse":
       return `bringing in ${plural(work.urls.length, "reused case", "reused cases")}`;
     case "find":

@@ -381,7 +381,7 @@ export function givenLinks(text: string): string[] {
 
 // ---- Searching ----
 
-interface Hit {
+export interface Hit {
   id: string;
   title: string;
   channel: string;
@@ -389,7 +389,7 @@ interface Hit {
   views?: number;
 }
 
-async function search(app: App, query: string): Promise<Hit[]> {
+export async function search(app: App, query: string): Promise<Hit[]> {
   const said = await ask(app, `ytsearch${RESULTS_PER_QUERY}:${query}`, ["--flat-playlist", "--dump-single-json", "--no-warnings"], 90_000);
   let found: { entries?: Record<string, unknown>[] };
   try {
@@ -435,7 +435,7 @@ export interface Line {
 }
 
 /** A video's English captions (its own, else YouTube's automatic ones) as timed lines, kept so a second search doesn't fetch them again. */
-async function captionsOf(app: App, video: string, dir: string): Promise<Line[]> {
+export async function captionsOf(app: App, video: string, dir: string): Promise<Line[]> {
   const kept = () => fs.readdirSync(dir).filter((name) => name.startsWith(`${video}.`) && name.endsWith(".json3")).sort()[0];
   if (kept() === undefined) {
     // Asked as every reader of a video's words asks (youtube_words.ts): a way YouTube turns away, a 429 included, gives way to the next.

@@ -216,6 +216,31 @@ describe("YouTube's details", () => {
     expect((await ask("/v1/youtube/check?ids=nope", writer)).status).toBe(400);
   });
 
+  it("searches YouTube for a script's footage, best first with each one's length, for whoever edits or writes scripts (Sphe, Nov 18)", async () => {
+    const calls = stand({
+      "GET www.googleapis.com/youtube/v3/search": () => ({ items: [{ id: { videoId: "lmnopqrstuv" } }, { id: { videoId: "abcdefghijk" } }, { id: { channelId: "UC1" } }] }),
+      "GET www.googleapis.com/youtube/v3/videos": () => ({
+        items: [
+          { id: "abcdefghijk", snippet: { title: "Bodycam", channelTitle: "Police", publishedAt: "2024-01-02T00:00:00Z", description: "d".repeat(900), liveBroadcastContent: "none" }, contentDetails: { duration: "PT12M" } },
+          { id: "lmnopqrstuv", snippet: { title: "Trial Day 3", channelTitle: "Court TV", liveBroadcastContent: "none" }, contentDetails: { duration: "PT5H1S", contentRating: { ytRating: "ytAgeRestricted" } } },
+        ],
+      }),
+    });
+    const writer = { claims: { perms: ["use", "scripts.interrogation"] } };
+    const answer = await ask("/v1/youtube/search?q=esparza%20trial%20day%203&max=10", writer);
+    expect(answer.status).toBe(200);
+    const { videos } = (await answer.json()) as { videos: Record<string, unknown>[] };
+    expect(videos.map((one) => one.id)).toEqual(["lmnopqrstuv", "abcdefghijk"]);
+    expect(videos[0]).toMatchObject({ title: "Trial Day 3", channel: "Court TV", durationSeconds: 18001, live: "none", ageRestricted: true });
+    expect((videos[1]!.description as string).length).toBe(500);
+    const search = calls.find((one) => one.url.pathname.endsWith("/search"))!;
+    expect(search.url.searchParams.get("q")).toBe("esparza trial day 3");
+    expect(search.url.searchParams.get("maxResults")).toBe("10");
+    expect(search.url.searchParams.get("safeSearch")).toBe("none");
+    expect((await ask("/v1/youtube/search?q=x", { claims: { perms: ["use", "ideas.bodycam"] } })).status).toBe(403);
+    expect((await ask("/v1/youtube/search?q=", writer)).status).toBe(400);
+  });
+
   it("says so when the relay has no key, or the video isn't there", async () => {
     stand({ "GET www.googleapis.com/youtube/v3/videos": () => ({ items: [] }) });
     expect((await ask("/v1/ideas/youtube?id=abcdefghijk", {}, env({ YOUTUBE_API_KEY: undefined }))).status).toBe(503);

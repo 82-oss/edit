@@ -271,6 +271,33 @@ test("a Drive folder's recordings and an attached file join in one go, each a re
   }
 }, 120_000);
 
+test("the footage search's videos come in as a link's do, by what the Data API said of them, with no revision after, and never twice", async () => {
+  const fx = fixtureHome("writer-links-found");
+  try {
+    const { addVideos } = await import("../../src/writer/links.ts");
+    const { dir, lengthMs } = await aScript(fx);
+    // Downloaded already (youtube.ts keeps a finished one by its .done), so no yt-dlp is asked.
+    const folder = `${fx.app.store.driveDir()}/youtube/abcdefghijk`;
+    fs.mkdirSync(folder, { recursive: true });
+    make(["-f", "lavfi", "-i", "testsrc=s=1280x720:d=2", "-f", "lavfi", "-i", "sine=f=330:d=2", "-shortest"], `${folder}/Trial Day 3 [abcdefghijk].mp4`);
+    fs.writeFileSync(`${folder}/.done`, "Trial Day 3 [abcdefghijk].mp4");
+    const url = "https://www.youtube.com/watch?v=abcdefghijk";
+    const failed: string[] = [];
+    const added = await addVideos(fx.app, dir, [{ url, title: "Esparza Trial Day 3", ms: 2_000 }], failed, jobOf());
+    expect(failed).toEqual([]);
+    expect(added.get(url)).toMatchObject({ number: 2, part: { title: "Esparza Trial Day 3", startMs: lengthMs, url } });
+    expect(heardFiles).toHaveLength(1);
+    expect(told).toEqual([]);
+    // Asked again (a restart), it's in already.
+    const again = await addVideos(fx.app, dir, [{ url, title: "Esparza Trial Day 3", ms: 2_000 }], failed, jobOf());
+    expect(again.get(url)?.number).toBe(2);
+    expect(store.read(dir).parts).toHaveLength(2);
+    expect(heardFiles).toHaveLength(1);
+  } finally {
+    fx.cleanup();
+  }
+}, 120_000);
+
 test("footage brought to a script not built yet comes in, then the first draft is written with the message as its note", async () => {
   const fx = fixtureHome("writer-links-build");
   try {

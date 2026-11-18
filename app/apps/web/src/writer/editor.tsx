@@ -1,4 +1,5 @@
 import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { mayAskForFootage } from "@edit/types/footage_ask";
 import { scriptBuilt } from "@edit/types/models";
 import { chatDraftKey, useChatDraft } from "./agent";
 import { AgentChat, Empty, ResetAsk, type ChatTimes } from "../components/AgentPanel";
@@ -491,7 +492,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     setError(null);
     setStage(uploads.length > 0 ? "Adding the footage" : "Starting");
     // Shown the moment it's sent, not once the server answers: the message, and Claude at work on it.
-    setSent(request.trim() ? `Build the script. ${request.trim()}` : "Build the script.");
+    // An ask for more footage is said as it was (the server reads it for that first, writer/finder.ts).
+    setSent(request.trim() ? (uploads.length === 0 && !/https?:\/\//u.test(request) && mayAskForFootage(request) ? request.trim() : `Build the script. ${request.trim()}`) : "Build the script.");
     setSentFiles(files.map((one) => one.name));
     setAsking(true);
     setStarted(Date.now());
