@@ -60,6 +60,8 @@ export function peopleProblem(project: Project): string | null {
     // name label and keep white words whoever speaks (the team, Oct 22). This
     // copy lacked it, so the preview refused Judge EXPLODES (Oct 23).
     if (project.style === "courtroom" && (clip.style.label === undefined || clip.style.label === null)) continue;
+    // Nor do the in-video look's subtitles (Nov 18); its intro captions still take the speaker's colour.
+    if (project.subtitle_look === "in_video" && (clip.style.label === undefined || clip.style.label === null) && (clip.name ?? "").startsWith("Subtitle · ")) continue;
     const shown = toHex((clip.style.label ?? clip.style).color);
     if (shown !== toHex([person.bytes[0] / 255, person.bytes[1] / 255, person.bytes[2] / 255, 1])) {
       return `${person.name}'s clips must all be in their colour ${person.color}: recolour the person, not one of their clips`;
