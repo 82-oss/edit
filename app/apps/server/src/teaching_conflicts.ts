@@ -76,6 +76,18 @@ export async function conflicts(name: string, text: string, known: readonly Skil
   }
 }
 
+/** A lesson not kept for what it contradicts: its message is what the agent is told (`refusal`). */
+export class Clash extends Error {
+  constructor(readonly conflicts: readonly Conflict[]) {
+    super(refusal(conflicts));
+  }
+}
+
+/** The clashes in a line or two each, for a person to read (Script mode, which keeps a lesson without asking back). */
+export function plainly(found: readonly Conflict[]): string {
+  return found.map((one) => `"${one.line}" (${one.skill})`).join("; ");
+}
+
 /** What the agent is told when the lesson isn't kept for its conflicts: what clashes, and what to do. */
 export function refusal(found: readonly Conflict[]): string {
   return (

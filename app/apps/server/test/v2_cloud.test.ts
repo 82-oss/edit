@@ -626,6 +626,20 @@ test("other_channels: the rest listed only when asked, one's edit style shown, a
     expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/pacing")?.[0]).toMatchObject({ text: "Hold on faces.", from: { key: "skill:@jcs--edit/pacing", n: 1 } });
     expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/intro")).toHaveLength(1);
     expect((await call(app, id, "other_channels", { channel: "nobody" })).content[0]!.text).toContain('no channel "nobody"');
+    // One that contradicts this channel's is left, said, until the person says which holds (Nov 18).
+    seed("skill:@jcs--edit/music", "music", "No music under the footage.", "Music.");
+    await v2cloud.refreshSkills();
+    const ask = teachingConflicts.hooks.ask;
+    teachingConflicts.hooks.ask = async (prompt) => (prompt.includes("No music under the footage.") ? { conflicts: [{ skill: "intro", line: "Our own intro.", why: "stand-in clash" }] } : { conflicts: [] });
+    try {
+      const left = (await call(app, id, "other_channels", { channel: "JCS", bring: "music" })).content[0]!.text!;
+      expect(left).toContain("Nothing new brought.");
+      expect(left).toContain('- intro: "Our own intro." (music: stand-in clash)');
+      expect(mock.cloud.convex.libraryVersions.get("skill:@drinsanity--edit/music")).toBeUndefined();
+      expect((await call(app, id, "other_channels", { channel: "JCS", bring: "music", settled: "Sphe: bring it" })).content[0]!.text).toContain("to change here: lesson music.");
+    } finally {
+      teachingConflicts.hooks.ask = ask;
+    }
   } finally {
     mock.cloud.convex.channels = [];
     cleanup();

@@ -497,7 +497,7 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
   // What it contradicts is said first, and kept only once the person says which holds (teaching_conflicts.ts).
   const settled = typeof args.settled === "string" && args.settled.trim() !== "";
   const clashes = settled ? [] : await teachingConflicts.conflicts(skill, args.text.trim(), v2cloud.memories(places));
-  if (clashes !== null && clashes.length > 0) throw new Error(teachingConflicts.refusal(clashes));
+  if (clashes !== null && clashes.length > 0) throw new teachingConflicts.Clash(clashes);
   // A part keeps its note when it's saved somewhere else (a channel's own changed for its group).
   const key = v2cloud.ownKey("skill", where.place, skill);
   const reason = settled ? `${args.reason.trim()} (settled against what was taught: ${String(args.settled).trim()})` : args.reason.trim();
