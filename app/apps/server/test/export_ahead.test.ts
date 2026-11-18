@@ -48,6 +48,8 @@ function setUp(name: string) {
   });
   const project = async (title: string): Promise<Project> => {
     const id = store.create(title, { width: 64, height: 36, fps: 30 }).project.id;
+    // Its footage is here: an export waits for footage that isn't (missing_media.ts).
+    fs.writeFileSync(`${home}/shot.mp4`, "footage");
     await store.update(id, "test", (p) => {
       p.media.push(media({ id: "m1", name: "shot.mp4", path: `${home}/shot.mp4`, kind: "video", duration: 10 }));
       p.clips.push(clip({ id: "shot", track: p.tracks[0]!.id, start: 0, duration: 30, type: "video", media: "m1", source_in: 0 }));

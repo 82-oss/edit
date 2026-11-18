@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { ExportRegistry } from "../src/exports.ts";
 import { respond } from "../src/http/server.ts";
 import { messageContext } from "../src/media_tools.ts";
+import { mediaHooks } from "../src/media.ts";
 import * as missingMedia from "../src/missing_media.ts";
 import type { Media } from "../src/model.ts";
 import { buildRouter } from "../src/routes.ts";
@@ -76,6 +77,41 @@ test("a project whose footage is all here says nothing and holds nothing", async
     expect(await missingMedia.held(app.store.home, store.get(id)!.project)).toBeNull();
     expect(await missingMedia.forAgent(app.store.home, store.get(id)!.project)).toBe("");
   } finally {
+    cleanup();
+  }
+});
+
+test("only footage that truly didn't come in holds an export: never cloud footage not fetched yet, a stand-in or what Edit renders itself", async () => {
+  const { app, store, id, cleanup } = await withProject("edit-made-here");
+  const asked = mediaHooks.keyAnswers;
+  // The cloud has every proxy but one.
+  mediaHooks.keyAnswers = async (key) => key !== "edit/proxies/gone.mp4";
+  try {
+    const own = store.uploadsDir(id);
+    const streamed = (key: string) => `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(key)}`;
+    const cloudOf = (proxy: string) => ({ source: `drive:${proxy}`, original: `edit/originals/${proxy}`, proxy, size: 1 });
+    const kept = [
+      // In the cloud, not on this Mac yet: it comes when it's needed.
+      { ...media("cloud", join(own, "not-yet.mp4")), cloud: cloudOf("edit/proxies/here.mp4") },
+      // Streamed, its proxy in the cloud; a pieced proxy's address is no object of its own.
+      { ...media("streamed", streamed("edit/proxies/here.mp4")), cloud: cloudOf("edit/proxies/here.mp4") },
+      { ...media("pieced", streamed("edit/pieces/v3/drive/abc/proxy.mp4")), cloud: cloudOf("edit/pieces/v3/drive/abc/proxy.mp4") },
+      // Edit's own: an effect's still not rendered yet, a map shot's stand-in and render, smoothed slow motion, a strip with words taken out.
+      { ...media("effect", join(own, "board.clear.png")), effect: "board" },
+      media("map", join(own, "maps", "map-k1-first.jpg")),
+      media("smooth", join(own, "smooth", "c1.mp4")),
+      { ...media("strip", join(app.store.cacheDir(), "cleaned", "s.mp4")), cleans: { media: "m1", from: 0, to: 1, box: [0, 0, 1, 1] } },
+    ] as Media[];
+    // Streamed, but the cloud lacks its proxy: it can't play anywhere.
+    const lost = { ...media("lost", streamed("edit/proxies/gone.mp4")), cloud: cloudOf("edit/proxies/gone.mp4") } as Media;
+    await store.update(id, "test", (p) => {
+      p.media.push(...kept, lost);
+      for (const [at, one] of [...kept, lost].entries()) p.clips.push({ type: "video", id: `k${at}`, track: "v1", media: one.id, start: 60 + at * 5, duration: 5, source_in: 0, speed: 1 } as never);
+    });
+    const { missing } = await missingMedia.missingOf(app.store.home, store.get(id)!.project);
+    expect(missing.map((one) => one.id).sort()).toEqual(["lost", "m2"]);
+  } finally {
+    mediaHooks.keyAnswers = asked;
     cleanup();
   }
 });

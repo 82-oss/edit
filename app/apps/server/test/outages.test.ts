@@ -42,12 +42,23 @@ function destination() {
   return one;
 }
 
-/** What was said since `since` with `part` in it; `real`: only of the real relay, not the stand-in. */
-const said = (part: string, since: number, real = false) =>
-  diag.lines(500).filter((line) => line.at >= since && line.message.includes(part) && (!real || !line.message.includes("stand-in")));
+/** A line said now, which `said` counts from: not a time, since an earlier test's outage can end in the same millisecond. */
+function mark(): string {
+  const id = `outages test mark ${crypto.randomUUID()}`;
+  diag.info("test", id);
+  return id;
+}
+
+/** What was said after mark `since` with `part` in it; `real`: only of the real relay, not the stand-in. */
+function said(part: string, since: string, real = false) {
+  const all = diag.lines(2000);
+  const from = all.findIndex((line) => line.message === since);
+  expect(from).toBeGreaterThanOrEqual(0);
+  return all.slice(from + 1).filter((line) => line.message.includes(part) && (!real || !line.message.includes("stand-in")));
+}
 
 test("pollers stop calling a destination that's down, one probe at a time, and all resume once it answers; the lock renewal is tried throughout", async () => {
-  const since = Date.now();
+  const since = mark();
   const cloudSide = destination();
   const pollers = [0, 1, 2].map(() => () => outages.background("relay", () => cloudSide.hit("poller")));
   const round = async () => {
@@ -155,7 +166,7 @@ afterAll(() => {
 });
 
 test("relay calls that can't connect make the outage, and a lock renewal during it still goes out and ends it", async () => {
-  const since = Date.now();
+  const since = mark();
   const real = process.env.EDIT_RELAY_URL;
   let renewals = 0;
   mock.on("POST", "/v1/cloud/convex", async (request) => {

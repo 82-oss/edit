@@ -467,6 +467,8 @@ export const fullUpload = { waitMs: (attempt: number): number => Math.min(attemp
 export function fullBehind(home: string, projectId: string, name: string, path: string, key: string, version?: number): Promise<void> {
   const job = jobs.begin(home, "full", projectId, { name, path, key, ...(version === undefined ? {} : { version }) }, key);
   let moved = false;
+  // Out of tries with its file still here (offline for hours, signed out): put off and tried again by itself, not dropped.
+  let putOff: string | null = null;
   // How it's going, on the review page where its Download button will be (Sphe, Nov 8: "we need a way to see progress of
   // when we'll get the full quality download"): sent of total bytes, when, and this run's start, for the page's time left.
   // Said now and then (a version's meta, which the page follows live), and the version never waits on it.
@@ -517,13 +519,17 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
         if (attempt >= fullUpload.tries) {
           diag.warn("review", `${name}: the full-quality file didn't go up after ${attempt} tries: ${diag.messageOf(error)}`);
           await tell({ fullUpload: { ...last, at: Date.now(), failed: diag.messageOf(error).slice(0, 300) } }).catch(() => undefined);
+          if (fs.existsSync(path)) putOff = `the full-quality file didn't go up after ${attempt} tries: ${diag.messageOf(error)}`;
           return;
         }
         diag.warn("review", `${name}: the full-quality file (try ${attempt}): ${diag.messageOf(error)}; trying again`);
         await new Promise((resolve) => setTimeout(resolve, fullUpload.waitMs(attempt)));
       }
     }
-  }).finally(() => jobs.end(home, job));
+  }).finally(() => {
+    if (putOff === null) jobs.end(home, job);
+    else jobs.putOff(home, job, putOff);
+  });
 }
 
 

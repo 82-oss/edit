@@ -180,6 +180,11 @@ export function heldBy(message: string): string | null {
 /** Something to tell the user about a project. */
 export type Note = { kind: "error"; message: string };
 
+/** Whether an error is the relay refusing the sign-in ("Sign in to Edit … (401)"). */
+export function signInRefused(message: string): boolean {
+  return /\(401\)\s*$/u.test(message) || message.includes("Sign in to Edit");
+}
+
 const since = (now: number, at: number) => Math.max(now - at, 0);
 
 /** A cloud project's state on this machine. */
@@ -347,6 +352,9 @@ export class Entry {
     this.offline = false;
     this.failures = 0;
     this.retryAt = null;
+    // A refused sign-in is over once a call works again (Marc's Mac, Nov 18: "Sign in to Edit" kept under Needs
+    // attention after a renewal, while he was signed in); other errors stay until what failed is done.
+    if (this.note !== null && signInRefused(this.note.message)) this.note = null;
   }
 
   /** The cloud couldn't be reached: carry on locally and try again later. */

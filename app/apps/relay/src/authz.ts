@@ -158,6 +158,8 @@ export const WRITABLE = [
   "edit/library/",
   // Footage with a re-uploader's text taken out (text_removal.ts), by file and seconds: never paid for twice.
   "edit/cleaned/",
+  // An agent chat's pictures (chat_pictures.ts), by project and content, so another computer shows them.
+  "edit/chat-pictures/",
   REPORTS, IDEAS, THUMBNAILS, CHANNELS,
 ];
 
@@ -178,6 +180,7 @@ export function projectOfKey(key: string): string | null {
     // Home's old card covers: Edit no longer writes them, but those still in R2 stay its project's.
     /^edit\/covers\/([^/]+)\.jpg$/,
     /^edit\/chats\/([^/]+)\.json$/,
+    /^edit\/chat-pictures\/([^/]+)\//,
     /^edit\/exports\/playback\/([^/]+)\//,
     /^edit\/exports\/(?!playback\/)([^/]+)\//,
     /^edit\/research\/projects\/([^/]+)\//,

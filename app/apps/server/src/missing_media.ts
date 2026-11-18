@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import type { EditMissing } from "@edit/types/footage_ready";
 
 import type { App } from "./app.ts";
+import { isMapStandIn } from "./broll.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import { playbackKey } from "./cloud_playback.ts";
 import * as diag from "./diag.ts";
@@ -50,15 +51,31 @@ const usedIds = (project: Project): Set<string> => new Set(project.clips.flatMap
 /** The R2 key a streamed medium plays (its proxy), or null for one that's a file here. */
 const proxyKeyOf = (media: Media): string | null => playbackKey(media.path);
 
+/** Edit's own folders of what it renders for a project and renders again itself: `<home>/media/<project>/<folder>/…`. */
+const MADE_HERE = /^[^/]+\/(?:effect-renders|maps|smooth)\//u;
+
 /**
- * What the timeline uses that isn't here and can't play: files gone from
+ * Whether `media` is something Edit makes for the edit rather than footage:
+ * a coded effect's still or render, a map shot or its stand-in, smoothed
+ * slow motion, a strip with words taken out. One of those not here is
+ * Edit's to make again, and an export already waits for it or makes it
+ * again itself (broll.exportReady, an effect's remake); it never "didn't come in".
+ */
+function madeHere(home: string, media: Media): boolean {
+  if (media.effect !== undefined || media.cleans !== undefined || isMapStandIn(media.path)) return true;
+  const own = `${join(home, "media")}/`;
+  return media.path.startsWith(own) && MADE_HERE.test(media.path.slice(own.length));
+}
+
+/**
+ * What the timeline uses that isn't here and can't play: footage gone from
  * this machine with no cloud copy, and footage whose cloud proxy the cloud
  * doesn't have (8 asked at once; each answer is kept a while, media.ts).
- * `all`: those gone on without too.
+ * Never what Edit makes itself (`madeHere`). `all`: those gone on without too.
  */
 export async function missingOf(home: string, project: Project, all = false): Promise<{ used: number; missing: Media[] }> {
   const used = usedIds(project);
-  const streamed = project.media.filter((media) => used.has(media.id) && proxyKeyOf(media) !== null);
+  const streamed = project.media.filter((media) => used.has(media.id) && proxyKeyOf(media) !== null && !madeHere(home, media));
   const gone = new Set<string>();
   for (let at = 0; at < streamed.length; at += 8) {
     await Promise.all(
@@ -68,7 +85,7 @@ export async function missingOf(home: string, project: Project, all = false): Pr
     );
   }
   const left = new Set(all ? [] : waived(home, project.id));
-  const missing = [...missingMedia(project), ...streamed.filter((media) => gone.has(media.id))].filter((media) => !left.has(media.id));
+  const missing = [...missingMedia(project).filter((media) => !madeHere(home, media)), ...streamed.filter((media) => gone.has(media.id))].filter((media) => !left.has(media.id));
   return { used: project.media.filter((media) => used.has(media.id)).length, missing };
 }
 
