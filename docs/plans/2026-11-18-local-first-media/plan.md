@@ -104,3 +104,12 @@ outages (backoff done, 3e1e8a72), effect render throughput.
   cleaner by project state (in work kept; idle derived→proxies for room, whole, oldest first; done/7-day idle let go,
   originals only after R2 HEADs their size); `admit` before Drive/local/Script imports and exports; one ahead a Mac;
   review pieces after 3 days. Not yet: Script mode's footage in the ledger (its own round keeps to the floor).
+- Nov 18: canary on 841eaa03 passed (kenobi). Found: joined/ ignored the floor at low disk (fixed 0482e10d); a pre-existing abort
+  when the server stops mid-export (symbols kept from e613c7d3 to place it); a render in flight at a restart waits for the
+  window to reopen its project; keep-awake drops ~15 s between a render and the export waiting on it.
+- Nov 18: step 2 measured (`measure-originals.md`, e871cad7): YouTube keyframes 4–7 s apart, so originals jump 80–270 ms idle
+  and up to 1.5 s under load. Rule for step 3: files with keyframes within ~2 s play as they are; the rest get one local
+  720p proxy (1 s keyframes, no B-frames, VideoToolbox, ~1.8 Mbit/s, made at 5–17× real time), never uploaded. Open: 60 fps
+  capped at 30, phone footage, a 2.1 s first seek under load.
+- Nov 18: canary on f1ff9935 (storage rules, picker, symbols) started on kenobi; Script mode's 20 h case cap being lifted
+  (Sphe: a case takes all its footage).
