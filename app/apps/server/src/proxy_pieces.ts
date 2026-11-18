@@ -33,6 +33,7 @@ import * as diag from "./diag.ts";
 import * as fmp4 from "./fmp4.ts";
 import { Semaphore } from "./media.ts";
 import { isFile, join, parent } from "./paths.ts";
+import * as storage from "./storage.ts";
 import * as tools from "./tools.ts";
 
 /** Seconds of the source in a piece. */
@@ -644,32 +645,103 @@ function made(context: Context, base: string, layout: Layout, n: number): boolea
   return isFile(context.local(videoKey(base, n))) && (layout.audio === null || isFile(context.local(audioKey(base, n))));
 }
 
+/** A piece's file to read from, and what its reader calls once it has sent it (a copy kept only for its readers then goes). */
+export interface PieceFile {
+  file: string;
+  release(): void;
+}
+
+/** Pieces joined while the disk is under the floor (`ensurePiece`): shared by their readers, removed once none reads them. */
+type Passing = { file: Promise<string>; readers: number; timer: ReturnType<typeof setTimeout> | null };
+const passing = new Map<string, Passing>();
+
+/** How long a passing piece stays after its last read (the page reads a piece a few MiB at a time, each its own request). */
+export const passingTiming = { ms: 10_000 };
+
+function dropPassing(key: string): void {
+  const one = passing.get(key);
+  if (one === undefined) return;
+  passing.delete(key);
+  if (one.timer !== null) clearTimeout(one.timer);
+  void one.file.then(
+    (file) => fs.rmSync(file, { force: true }),
+    () => {},
+  );
+}
+
+/** The passing copy of `key`, made by `make` if there's none, held until `release`; at most one left idle at a time. */
+function borrow(key: string, make: () => Promise<string>): Promise<PieceFile> {
+  let entry = passing.get(key);
+  if (entry === undefined) {
+    for (const [other, one] of passing) if (one.readers === 0) dropPassing(other);
+    const made: Passing = { file: make(), readers: 0, timer: null };
+    made.file.catch(() => {
+      if (passing.get(key) === made) passing.delete(key);
+    });
+    passing.set(key, made);
+    entry = made;
+  }
+  const held = entry;
+  held.readers++;
+  if (held.timer !== null) clearTimeout(held.timer);
+  held.timer = null;
+  let released = false;
+  const release = () => {
+    if (released) return;
+    released = true;
+    held.readers--;
+    if (held.readers > 0 || passing.get(key) !== held) return;
+    held.timer = setTimeout(() => dropPassing(key), passingTiming.ms);
+    held.timer.unref?.();
+  };
+  return held.file.then(
+    (file) => ({ file, release }),
+    (error: unknown) => {
+      release();
+      throw error;
+    },
+  );
+}
+
+const kept = (file: string): PieceFile => ({ file, release: () => {} });
+
 /**
  * This Mac's file of piece `n` as the virtual file holds it: one fragment
- * of its picture and its sound (made, or fetched, apart), joined here and
- * kept beside them; a piece with no sound is its picture's.
+ * of its picture and its sound (made, or fetched, apart), joined here; a
+ * piece with no sound is its picture's. The join is a copy kept only to
+ * play sooner, so it keeps to the same floor as the others (storage.ts
+ * `cacheFloor`): kept in `joined/` while the disk has room for it, else a
+ * scratch copy held only while it's read (and a few seconds after). kenobi,
+ * Nov 18: with 3.40 GB free, under the floor, every piece of a 24-minute
+ * video was joined and kept (~600 MB in 38 s), and the disk fell to
+ * 2.75 GB, under the work's floor.
  */
-export function ensurePiece(context: Context, base: string, layout: Layout, n: number, urgent = true): Promise<string> {
-  if (layout.audio === null) return ensureVideo(context, base, layout, n, urgent);
-  const out = context.local(joinedKey(base, n));
-  if (isFile(out)) return Promise.resolve(out);
+export function ensurePiece(context: Context, base: string, layout: Layout, n: number, urgent = true): Promise<PieceFile> {
+  if (layout.audio === null) return ensureVideo(context, base, layout, n, urgent).then(kept);
+  const key = joinedKey(base, n);
+  const out = context.local(key);
+  if (isFile(out)) return Promise.resolve(kept(out));
   // The picture is asked for apart from the join, so a read someone waits on is first in line even when one behind the viewer started the join.
   const picture = ensureVideo(context, base, layout, n, urgent);
   picture.catch(() => {});
-  return once(joinedKey(base, n), async () => {
+  const joinInto = async (to: string) => {
     const [, sound] = await Promise.all([picture, ensureAudio(context, base, layout, n)]);
     const tracks = [...fmp4.readFragment(await picture), ...fmp4.readFragment(sound)];
-    fs.mkdirSync(parent(out)!, { recursive: true });
-    const partial = `${out}.partial`;
+    fs.mkdirSync(parent(to)!, { recursive: true });
+    const partial = `${to}.partial`;
     try {
       const size = fmp4.writeFragment(partial, n + 1, tracks);
       if (size + 8 + QUIET > pieceSize(layout)) throw new Error(`piece ${n} takes ${size} bytes, more than its slot's ${pieceSize(layout)}`);
-      fs.renameSync(partial, out);
+      fs.renameSync(partial, to);
     } finally {
       fs.rmSync(partial, { force: true });
     }
-    return out;
-  });
+    return to;
+  };
+  if (!passing.has(key) && (inFlight.has(key) || storage.spare(context.cache, pieceSize(layout), storage.cacheFloor(context.cache)) >= 0)) {
+    return once(key, () => joinInto(out)).then(kept);
+  }
+  return borrow(key, () => joinInto(scratch(context, "m4s")));
 }
 
 /**
@@ -882,12 +954,17 @@ function* regionBytes(content: { file: string } | { bytes: Uint8Array }, size: n
   }
 }
 
-/** Where an open-ended read from `from` ends: the end of the region it starts in, then of each made one after it. */
+/**
+ * Where an open-ended read from `from` ends: the end of the region it starts in, then of each one after it that's
+ * ready to send as it is (a piece joined already, or a picture with no sound). Never one whose picture and sound are
+ * here but not joined: each would be joined for the read before its answer began (kenobi, Nov 18: the window's first
+ * read of a 24-minute video whose pieces were all made took 37.7 s, joining all 24).
+ */
 function readyUpTo(context: Context, base: string, layout: Layout, from: number, asked: number): number {
   const all = regions(layout, from, asked);
   let end = Math.min(asked, all[0] === undefined ? asked : all[0].at + all[0].size);
   for (const region of all.slice(1)) {
-    const here = region.kind === "tail" || region.kind === "index" || (region.kind === "piece" && made(context, base, layout, region.n));
+    const here = region.kind === "tail" || region.kind === "index" || (region.kind === "piece" && isFile(context.local(layout.audio === null ? videoKey(base, region.n) : joinedKey(base, region.n))));
     if (!here) break;
     end = Math.min(asked, region.at + region.size);
   }
@@ -927,41 +1004,72 @@ export async function serve(context: Context, request: Request, base: string, pa
   const openEnded = !/-\d+\s*$/.test(request.headers.get("range") ?? "");
   const to = openEnded ? readyUpTo(context, base, layout, from, asked) : asked;
   const covered = regions(layout, from, to);
+  // The pieces this read holds (one joined only for its readers, the disk under the floor, goes once none holds it):
+  // let go once it's answered or given up.
+  const held: (() => void)[] = [];
+  let sent = false;
+  const letGo = () => {
+    sent = true;
+    for (const release of held.splice(0)) release();
+  };
   // Everything this range needs, made or fetched first: then the answer streams without waiting.
-  const ready = Promise.all(
-    covered.map(async (region) => {
-      if (region.kind === "head") return { bytes: fs.readFileSync(await ensureHead(context, base)) };
-      if (region.kind === "tail") return { bytes: tail(layout) };
-      if (region.kind === "index") return { bytes: index(layout) };
-      if (Math.max(from, region.at) - region.at >= region.size - QUIET && !made(context, base, layout, region.n)) return { quiet: true as const };
-      return { file: await ensurePiece(context, base, layout, region.n, urgent) };
-    }),
-  );
+  const each = covered.map(async (region) => {
+    if (region.kind === "head") return { bytes: fs.readFileSync(await ensureHead(context, base)) };
+    if (region.kind === "tail") return { bytes: tail(layout) };
+    if (region.kind === "index") return { bytes: index(layout) };
+    if (Math.max(from, region.at) - region.at >= region.size - QUIET && !made(context, base, layout, region.n)) return { quiet: true as const };
+    const piece = await ensurePiece(context, base, layout, region.n, urgent);
+    held.push(piece.release);
+    // One that landed after its read was answered 503 or failed: nobody reads it.
+    if (sent) letGo();
+    return { file: piece.file };
+  });
+  const ready = Promise.all(each);
+  // A read that fails or isn't waited for leaves no copy behind once its other pieces land.
+  const abandon = () => void Promise.allSettled(each).then(letGo);
   let contents: ({ bytes: Uint8Array } | { file: string } | { quiet: true })[];
   if (patience === null) {
-    contents = await ready;
+    contents = await ready.catch((error: unknown) => {
+      abandon();
+      throw error;
+    });
   } else {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), patience)));
     ready.catch(() => {});
-    const first = await Promise.race([ready, late]).finally(() => clearTimeout(timer));
-    if (first === null) return new Response("this stretch's proxy is being made", { status: 503, headers: { "retry-after": "5", "cache-control": "no-store" } });
+    const first = await Promise.race([ready, late])
+      .catch((error: unknown) => {
+        abandon();
+        throw error;
+      })
+      .finally(() => clearTimeout(timer));
+    if (first === null) {
+      abandon();
+      return new Response("this stretch's proxy is being made", { status: 503, headers: { "retry-after": "5", "cache-control": "no-store" } });
+    }
     contents = first;
   }
   const parts: Part[] = [];
-  covered.forEach((region, index) => {
-    const content = contents[index]!;
-    const a = Math.max(from, region.at) - region.at;
-    const b = Math.min(to, region.at + region.size) - region.at;
-    if ("quiet" in content) parts.push({ zeros: b - a });
-    else for (const part of regionBytes(content, region.size, a, b)) parts.push(part);
-  });
+  try {
+    covered.forEach((region, index) => {
+      const content = contents[index]!;
+      const a = Math.max(from, region.at) - region.at;
+      const b = Math.min(to, region.at + region.size) - region.at;
+      if ("quiet" in content) parts.push({ zeros: b - a });
+      else for (const part of regionBytes(content, region.size, a, b)) parts.push(part);
+    });
+  } catch (error) {
+    letGo();
+    throw error;
+  }
   let next = 0;
   const body = new ReadableStream<Uint8Array>({
+    cancel: letGo,
     pull(controller) {
       const part = parts[next++];
       if (part === undefined) {
         controller.close();
+        letGo();
         return;
       }
       if (part instanceof Uint8Array) {
@@ -982,6 +1090,7 @@ export async function serve(context: Context, request: Request, base: string, pa
         const got = fs.readSync(fd, buffer, 0, chunk, part.at);
         if (got <= 0) {
           controller.error(new Error(`${part.file} ended early`));
+          letGo();
           return;
         }
         controller.enqueue(buffer.subarray(0, got));
@@ -995,7 +1104,7 @@ export async function serve(context: Context, request: Request, base: string, pa
   // A small answer is sent whole (a streamed one goes out chunked, and FFmpeg
   // found the connection closed when it asked again on it).
   const small = to - from <= 16 * MIB;
-  return new Response(small ? await new Response(body).arrayBuffer() : body, {
+  return new Response(small ? await new Response(body).arrayBuffer().finally(letGo) : body, {
     status: partial ? 206 : 200,
     headers: {
       "content-type": "video/mp4",
