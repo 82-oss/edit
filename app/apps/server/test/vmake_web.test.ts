@@ -166,7 +166,9 @@ beforeAll(async () => {
   const port = await devToolsPort(profile);
   cdp = `http://127.0.0.1:${port}`;
   web.pacing.wait = async () => {};
-});
+  // A headless Chrome's first start can take longer than bun's 5 s for a hook on a loaded 8 GB Mac (kenobi, Nov 18:
+  // the whole file failed as "(unnamed)", a beforeAll timed out, in 2 of 3 runs beside an export).
+}, 30_000);
 
 afterAll(() => {
   void vmake?.stop(true);
