@@ -44,11 +44,13 @@ import { PLAYBACK_ROUTE } from "./cloud_playback.ts";
 import * as diag from "./diag.ts";
 import { TO_THE_END } from "./export_excerpts.ts";
 import { json } from "./http/errors.ts";
+import { pinned } from "./file_pins.ts";
 import { fetchWhole, onLanded, previewBytes } from "./local_previews.ts";
 import type { Project } from "./model.ts";
 import { isFile } from "./paths.ts";
 import * as player from "./player.ts";
 import * as pieces from "./proxy_pieces.ts";
+import * as storage from "./storage.ts";
 import * as tools from "./tools.ts";
 
 /** Seconds `from..to` of a streamed source in a file here: the window reads it instead of the stream. */
@@ -90,9 +92,120 @@ onLanded((key) => {
 /** Piece cuts at once, and the ones waiting or failed lately (tried again after `RETRY_MS`). */
 const CUTS_AT_ONCE = 2;
 const RETRY_MS = 10 * 60_000;
-const cutsWaiting: { context: pieces.Context; base: string; n: number; out: string }[] = [];
+const cutsWaiting: { context: pieces.Context; base: string; n: number; out: string; headBytes: number }[] = [];
 const cutting = new Set<string>();
 const cutFailed = new Map<string, number>();
+/** Cuts left to the stream for want of room (said once each), looked at again at the page's next ask. */
+const cutShort = new Set<string>();
+
+/**
+ * The folder of a pieced proxy's cut pieces, by the way they're cut. `native/` holds the cuts made until Nov 18
+ * from the loopback stream (every frame from the video's start: 955 MB for a minute), so a cut there is never read
+ * again, only taken away (`oldCuts`); `native2/` holds the cuts from this Mac's own files of the piece.
+ */
+const CUTS = "native2";
+const OLD_CUTS = ["native"];
+
+/** Where piece `n` of pieced proxy `base` is cut to, in this cache. */
+export function cutPath(cache: string, base: string, n: number): string {
+  return cloudMedia.localPath(cache, `${base}/${CUTS}/${n}.mp4`);
+}
+
+/** A pieced proxy's folder of cuts made the old way, under `<cache>/cloud/` (`pieces/[v3/]<scheme>/<id>/native`). */
+const OLD_CUTS_FOLDER = new RegExp(`^pieces/(?:v\\d+/)?(?:drive|youtube|sha256)/[A-Za-z0-9._-]+/(?:${OLD_CUTS.join("|")})$`);
+
+/** Whether a window was told to read `path` (or something in it) since this server started. */
+function inHand(path: string): boolean {
+  for (const files of handed.values()) for (const file of files) if (file === path || file.startsWith(`${path}/`)) return true;
+  return false;
+}
+
+/**
+ * Every piece cut the old way in `cache` (nothing reads them: `CUTS`), each folder's files and then the folder, but
+ * a folder a window was told to read, for the cache's cleaner to take one by one (cache_cleanup.ts, which leaves a
+ * pinned one). Only those: never a piece's head, picture, sound or join beside them, nor anything else of the
+ * pieced proxy.
+ */
+export function oldCuts(cache: string): string[] {
+  const root = cloudMedia.localPath(cache, "edit/pieces");
+  const found: string[] = [];
+  const walk = (dir: string, depth: number) => {
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const path = `${dir}/${name}`;
+      const relative = `pieces/${path.slice(root.length + 1)}`;
+      if (OLD_CUTS_FOLDER.test(relative)) {
+        if (!inHand(path)) found.push(...safeList(path).map((file) => `${path}/${file}`), path);
+        continue;
+      }
+      // pieces/<v3>/<scheme>/<id>/native: four folders down at most.
+      if (depth < 3) {
+        try {
+          if (fs.statSync(path).isDirectory()) walk(path, depth + 1);
+        } catch {
+          // Gone.
+        }
+      }
+    }
+  };
+  walk(root, 0);
+  return found;
+}
+
+function safeList(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+/** Takes away pieced proxy `base`'s old cuts in `cache` as its pieces are asked for, the cleaner taking every other one. */
+function reclaimOldCuts(cache: string, base: string): void {
+  for (const name of OLD_CUTS) {
+    const dir = cloudMedia.localPath(cache, `${base}/${name}`);
+    if (inHand(dir)) continue;
+    try {
+      if (!fs.statSync(dir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    let freed = 0;
+    for (const file of fs.readdirSync(dir)) {
+      if (pinned(`${dir}/${file}`)) continue;
+      try {
+        freed += fs.statSync(`${dir}/${file}`).size;
+        fs.rmSync(`${dir}/${file}`, { recursive: true, force: true });
+      } catch {
+        // Gone, or taken next time.
+      }
+    }
+    try {
+      fs.rmdirSync(dir);
+    } catch {
+      // Not empty yet: the rest next time.
+    }
+    if (freed > 0) diag.info("preview", `${base}: the window's old piece copies taken away (${(freed / 1e9).toFixed(2)} GB)`);
+  }
+}
+
+/**
+ * What a cut of a piece writes: the piece's picture fragment and a head, and the pieced proxy's head as well when
+ * it's not here yet (`pictureFiles` fetches it first). Unknown (its fragment unreadable): null, and nothing is cut.
+ */
+function cutBytes(context: pieces.Context, base: string, n: number, headBytes: number): number | null {
+  try {
+    const video = fs.statSync(context.local(`${base}/video/${n}.m4s`)).size;
+    return video + headBytes + (isFile(context.local(`${base}/head.mp4`)) ? 0 : headBytes);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Cuts piece `n` into `out`, whole or not at all: into a file beside it, moved
@@ -126,12 +239,36 @@ async function cutWhole(head: string, video: string, out: string): Promise<void>
 /** Seams for tests. */
 export const hooks = { cut: cutWhole };
 
+/**
+ * Starts the cuts waiting, two at a time, each only with room for it: a cut is a copy kept only to play sooner, so
+ * it claims what it writes (storage.ts) and starts only while the disk keeps the cache's floor beside every other
+ * write under way (`CACHE_FLOOR_BYTES`), its claim let go however it ends. With no room, or the disk's free space
+ * not measurable, the piece streams on and is looked at again at the page's next ask; the cleaner is asked for room.
+ * Until Nov 18 cuts claimed nothing, and two of 955 MB could start together on a nearly full disk.
+ */
 function cutNext(): void {
+  let wanted = 0;
+  let dir = "";
   while (cutting.size < CUTS_AT_ONCE) {
     const next = cutsWaiting.shift();
-    if (next === undefined) return;
+    if (next === undefined) break;
     if (cutting.has(next.out) || isFile(next.out)) continue;
+    const need = cutBytes(next.context, next.base, next.n, next.headBytes);
+    if (need === null) continue;
+    dir = next.out.slice(0, next.out.lastIndexOf("/"));
+    const free = storage.freeBytes(dir);
+    const room = Number.isFinite(free) ? storage.spare(dir, need, storage.CACHE_FLOOR_BYTES) : -1;
+    if (room < 0) {
+      if (!cutShort.has(next.out)) {
+        cutShort.add(next.out);
+        diag.info("preview", `a piece for the window (${next.out}) streams on, ${Number.isFinite(free) ? `the disk too full to keep a copy (${(free / 1e9).toFixed(2)} GB free, ${(storage.claimedBytes() / 1e9).toFixed(2)} GB still coming)` : "the disk's free space unknown"}`);
+      }
+      if (Number.isFinite(free)) wanted = Math.max(wanted, -room);
+      continue;
+    }
+    cutShort.delete(next.out);
     cutting.add(next.out);
+    const claim = storage.claim(need);
     void pieces
       .pictureFiles(next.context, next.base, next.n)
       .then(({ head, video }) => hooks.cut(head, video, next.out))
@@ -140,9 +277,16 @@ function cutNext(): void {
         diag.warn("preview", `a piece for the window (${next.out}) wasn't cut: ${diag.messageOf(error)}`);
       })
       .finally(() => {
+        claim.release();
         cutting.delete(next.out);
         cutNext();
       });
+  }
+  // The cleaner asked for the room (a few minutes apart at most, never what an open project plays).
+  if (wanted > 0) {
+    setTimeout(() => {
+      storage.askForRoom(storage.freeBytes(dir) + wanted);
+    }, 0).unref?.();
   }
 }
 
@@ -166,8 +310,10 @@ async function pieceExcerpts(cache: string, base: string, played: [number, numbe
   for (const [from, to] of played) {
     for (let n = pieces.pieceAt(layout, from); n <= pieces.pieceAt(layout, to); n++) if (!wanted.includes(n)) wanted.push(n);
   }
+  // The cuts made the old way are never read, and go as soon as their pieces are asked for.
+  reclaimOldCuts(cache, base);
   const out: NativeExcerpt[] = [];
-  const file = (n: number) => cloudMedia.localPath(cache, `${base}/native/${n}.mp4`);
+  const file = (n: number) => cutPath(cache, base, n);
   const span = (n: number): [number, number] => {
     const [first, end] = pieces.framesOf(layout, n);
     return [first / layout.fps, end / layout.fps];
@@ -185,7 +331,7 @@ async function pieceExcerpts(cache: string, base: string, played: [number, numbe
     if (isFile(path) || Date.now() - (cutFailed.get(path) ?? 0) < RETRY_MS) continue;
     coming = true;
     if (!pieces.pictureHere(context, base, n) || cutting.has(path) || cutsWaiting.some((one) => one.out === path)) continue;
-    cutsWaiting.push({ context, base, n, out: path });
+    cutsWaiting.push({ context, base, n, out: path, headBytes: layout.head });
   }
   cutNext();
   return { here: out, coming };
@@ -298,4 +444,5 @@ export function reset(): void {
   cutsWaiting.length = 0;
   cutting.clear();
   cutFailed.clear();
+  cutShort.clear();
 }

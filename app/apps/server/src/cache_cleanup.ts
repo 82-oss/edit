@@ -47,7 +47,7 @@ import { carryAnalysis, localPath, readLocalOriginals, uploadingNow, writeLocalO
 import { createHash } from "node:crypto";
 
 import { pinned } from "./file_pins.ts";
-import { evicted as nativeEvicted } from "./native_preview.ts";
+import { evicted as nativeEvicted, oldCuts } from "./native_preview.ts";
 import { openedTimes } from "./opened.ts";
 import { join } from "./paths.ts";
 import * as folderAccess from "./folder_access.ts";
@@ -459,6 +459,13 @@ export function cleanCache(
     names = fs.readdirSync(cache);
   } catch {
     return report;
+  }
+  // The window's copies of a long video's pieces cut the old way (native_preview.ts `oldCuts`: every frame from the
+  // video's start, up to 955 MB a minute, never read since Nov 18), whatever their age: cut again small if wanted.
+  for (const path of oldCuts(cache)) {
+    // A folder goes once its files have (one pinned stays, and so does its folder).
+    if (safeList(path).length > 0) continue;
+    remove(path);
   }
   // Footage Edit downloaded from Drive (drive_import.ts) whose original is in
   // the cloud: the copy only speeds exports up, so it goes once unused a while.
