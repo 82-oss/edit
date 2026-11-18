@@ -10,6 +10,7 @@ import { join } from "node:path";
 import * as vm from "node:vm";
 
 import { registerEffectTools } from "../src/effect_tools.ts";
+import { stableStringify } from "../src/stable.ts";
 import * as effects from "../src/effects.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import { findAddon, useNative, wrap, type Native } from "../src/native/index.ts";
@@ -198,6 +199,46 @@ test.skipIf(addon === null)("what's beneath an effect, opened on another compute
     await call(app, id, "effect_beneath", { name: "glass" });
     expect(fs.readFileSync(join(dir, ".beneath.json"), "utf8")).not.toBe(foreign);
     expect(effects.list(app.store, id)[0]!.key).not.toBe(foreignKey);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test.skipIf(addon === null)("a mark keyed before the tracks' order counted is taken as it is (no render again on the update), and a change of which lane is over which is seen from then on (Nov 18)", async () => {
+  const { app, cleanup, id } = hq("effect-beneath-order");
+  try {
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+      project.media.push({ id: "m2", name: "glass", path: "/nowhere/glass.png", kind: "image", duration: 1, width: 1280, height: 720, fps: 0, has_audio: false, effect: "glass" });
+      for (const track of ["t1", "t3", "t2"]) project.tracks.push({ id: track, kind: "video", name: track, hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c0", type: "solid", track: "t1", start: 0, duration: 90, fill: [0, 0, 1, 1], opacity: 1 } as unknown as (typeof project.clips)[number]);
+      project.clips.push({ id: "c2", type: "solid", track: "t3", start: 0, duration: 90, fill: [1, 0, 0, 1], opacity: 0.5 } as unknown as (typeof project.clips)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t2", start: 30, duration: 30, media: "m2", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 } } as unknown as (typeof project.clips)[number]);
+    });
+    const dir = effects.folder(app.store, id, "glass");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(join(dir, "scene.html"), "<p>glass</p>");
+    expect((await call(app, id, "effect_beneath", { name: "glass" })).isError).toBe(false);
+    // The mark as Edit worded it until now (version 2: no order of the tracks).
+    const project = app.store.get(id)!.project;
+    const clips = project.clips.filter((one) => one.track === "t1" || one.track === "t3");
+    const old = JSON.stringify({ key: new Bun.CryptoHasher("sha256").update(stableStringify({ version: 2, settings: project.settings, start: 30, end: 60, clips, media: [] })).digest("hex").slice(0, 16) });
+    fs.writeFileSync(join(dir, ".beneath.json"), old);
+    expect((await call(app, id, "effect_beneath", { name: "glass" })).content[0]!.text).toContain("already of what's there now");
+    expect(fs.readFileSync(join(dir, ".beneath.json"), "utf8")).toBe(old);
+    // A lane put in under it with nothing in its span: nothing to make again.
+    await app.store.update(id, "test", (project) => {
+      project.tracks.splice(1, 0, { id: "t4", kind: "video", name: "t4", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c3", type: "solid", track: "t4", start: 200, duration: 30, fill: [0, 1, 0, 1], opacity: 1 } as unknown as (typeof project.clips)[number]);
+    });
+    expect((await call(app, id, "effect_beneath", { name: "glass" })).content[0]!.text).toContain("already of what's there now");
+    // The two lanes under it swapped: the red one under the blue now, so it's made again.
+    await app.store.update(id, "test", (project) => {
+      const [a, b] = [project.tracks.findIndex((one) => one.id === "t1"), project.tracks.findIndex((one) => one.id === "t3")];
+      [project.tracks[a], project.tracks[b]] = [project.tracks[b]!, project.tracks[a]!];
+    });
+    expect((await call(app, id, "effect_beneath", { name: "glass" })).content[0]!.text).not.toContain("already of what's there now");
+    expect(fs.readFileSync(join(dir, ".beneath.json"), "utf8")).not.toBe(old);
   } finally {
     cleanup();
   }

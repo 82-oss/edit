@@ -14,7 +14,8 @@ import * as fs from "node:fs";
 import type { App } from "../src/app.ts";
 import * as burned from "../src/burned_subtitles.ts";
 import * as channels from "../src/channels.ts";
-import { enforceCleanStrips, NAME, strippedFrames } from "../src/clean_strips.ts";
+import { enforceCleanStrips, NAME, strippedFrames, WATERMARK_NAME } from "../src/clean_strips.ts";
+import { beneathKey } from "../src/effect_inputs.ts";
 import type { Media, Project, VideoClip } from "../src/model.ts";
 import { native, useNative, type Native, type ScreenText } from "../src/native/index.ts";
 import { createStub } from "../src/native/stub.ts";
@@ -361,6 +362,83 @@ test("a strip is laid over each clip of its footage it covers, stuck to it, just
   enforceCleanStrips(project, gone);
   expect(gone.clips.some((clip) => (clip.name ?? "").startsWith(NAME))).toBe(false);
   expect(gone.tracks.map((track) => track.id)).toEqual(["v1", "v2", "t1"]);
+});
+
+test("a strip finished touches only its own overlays: the rest keep their ids and lanes, an effect drawn elsewhere keeps what's beneath it, and a save with nothing new changes nothing (Nov 18, Sphe's M4)", () => {
+  // 20 clips of a 40 s tape, 2 s each; their text cleaned in two strips (0–20 s, 20–40 s), their watermark in one (0–40 s).
+  const strip = (id: string, from: number, to: number, what: "text" | "watermark") =>
+    ({ id, name: id, path: `/${id}.mp4`, kind: "video", duration: to - from, width: 1280, height: 640, fps: 30, has_audio: false, stacked_alpha: true, cleans: { media: "m", from, to, box: [0, 0, 1, 0.9], what } }) as unknown as Media;
+  const effect = (id: string, name: string) => ({ id, name, path: `/${name}.mp4`, kind: "video", duration: 4, width: 1920, height: 1080, fps: 30, has_audio: false, effect: name }) as unknown as Media;
+  const project = {
+    version: 1,
+    id: "p",
+    name: "p",
+    style: "bodycam",
+    settings: { width: 1920, height: 1080, fps: 30 },
+    media: [
+      { id: "m", name: "tape", path: "/tape.mp4", kind: "video", duration: 40, width: 1280, height: 720, fps: 30, has_audio: true },
+      strip("s1", 0, 20, "text"),
+      strip("s2", 20, 40, "text"),
+      strip("w", 0, 40, "watermark"),
+      effect("ea", "glass_a"),
+      effect("eb", "glass_b"),
+    ],
+    tracks: [
+      { id: "v1", kind: "video", hidden: false, muted: false, locked: false },
+      { id: "fx", kind: "video", hidden: false, muted: false, locked: false },
+    ],
+    clips: [
+      ...Array.from({ length: 20 }, (_, index) => ({ id: `f${index}`, track: "v1", start: index * 60, duration: 60, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: index * 2, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 })),
+      // Effects over 0–4 s (s1's) and 30–34 s (s2's).
+      { id: "xa", track: "fx", start: 0, duration: 120, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "ea", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 },
+      { id: "xb", track: "fx", start: 900, duration: 120, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "eb", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 },
+    ],
+    next_id: 100,
+  } as unknown as Project;
+  const overlays = (of: Project) => of.clips.filter((clip): clip is VideoClip => (clip.name ?? "").startsWith(NAME) || (clip.name ?? "").startsWith(WATERMARK_NAME));
+  const rank = (of: Project, clip: VideoClip) => of.tracks.findIndex((track) => track.id === clip.track);
+  /** Every text overlay above the watermark overlay of the same clip, and every overlay between its footage and the effects. */
+  const layered = (of: Project) => {
+    for (const one of overlays(of)) {
+      expect(rank(of, one)).toBeGreaterThan(rank(of, of.clips.find((clip) => clip.id === one.parent)! as VideoClip));
+      expect(rank(of, one)).toBeLessThan(of.tracks.findIndex((track) => track.id === "fx"));
+      if (!one.name!.startsWith(NAME)) continue;
+      for (const under of overlays(of).filter((clip) => clip.parent === one.parent && clip.name!.startsWith(WATERMARK_NAME))) expect(rank(of, one)).toBeGreaterThan(rank(of, under));
+    }
+  };
+  enforceCleanStrips(null, project);
+  expect(overlays(project).length).toBe(40);
+  layered(project);
+  // Saved again with nothing new: nothing changes.
+  const again = structuredClone(project);
+  enforceCleanStrips(project, again);
+  expect(again).toEqual(project);
+  // s1 done again (text_removal.ts `place`: the old strip out, a fresh media in, as long).
+  const done = structuredClone(project);
+  done.media = done.media.filter((media) => media.id !== "s1");
+  done.media.push({ ...strip("s1b", 0, 20, "text"), path: "/s1-again.mp4" });
+  enforceCleanStrips(project, done);
+  const ids = (of: Project, keep: (clip: VideoClip) => boolean) => overlays(of).filter(keep).map((clip) => [clip.id, clip.track, clip.media]).sort();
+  // The watermark's overlays and s2's: as they were, ids, lanes and all.
+  const untouched = (clip: VideoClip) => clip.media !== "s1" && clip.media !== "s1b";
+  expect(ids(done, untouched)).toEqual(ids(project, untouched));
+  // s1's ten overlays now of the new strip, still over their clips, and no lanes more than before.
+  expect(overlays(done).filter((clip) => clip.media === "s1b").length).toBe(10);
+  expect(overlays(done).some((clip) => clip.media === "s1")).toBe(false);
+  expect(done.tracks.length).toBe(project.tracks.length);
+  layered(done);
+  // What's beneath the effect over s2's seconds is as it was (its render stays); the one over s1's changed.
+  expect(beneathKey(done, "glass_b")).toBe(beneathKey(project, "glass_b"));
+  expect(beneathKey(done, "glass_a")).not.toBe(beneathKey(project, "glass_a"));
+  // Then a save with nothing new: nothing changes.
+  const still = structuredClone(done);
+  enforceCleanStrips(done, still);
+  expect(still).toEqual(done);
+  // The lanes reordered under an effect: what's beneath it changed (which is drawn over which).
+  const swapped = structuredClone(done);
+  const lanes = swapped.tracks.splice(1, 2);
+  swapped.tracks.splice(1, 0, lanes[1]!, lanes[0]!);
+  expect(beneathKey(swapped, "glass_b")).not.toBe(beneathKey(done, "glass_b"));
 });
 
 // ---------------------------------------------------------------------------
