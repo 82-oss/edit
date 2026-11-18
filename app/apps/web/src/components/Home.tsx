@@ -20,7 +20,7 @@ import { creeping, elapsed, STEPS, stepOf } from "../writer/import-steps";
 import { prefetchScript } from "../writer/opened";
 import { CAN, useGrants } from "../writer/can";
 import { SHAPES, type Shape, shapeOf } from "../writer/several";
-import type { Kind } from "../writer/types";
+import type { Choice, Decision, Kind } from "../writer/types";
 import { useKept } from "../lib/kept";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
@@ -37,6 +37,7 @@ import { NewThumbnail } from "../thumbnails/new";
 import { Loader, Tile } from "./Logo";
 import { SetupCard } from "./SetupCard";
 import { StartedBy } from "./StartedBy";
+import { ChooseRecordings } from "./ChooseRecordings";
 import { StatusChips } from "./MemoryChip";
 import { UpdateButton } from "./UpdateButton";
 import { Button, ConfirmDialog, cx, Modal, Pulse, spring, Switch } from "./ui";
@@ -1256,7 +1257,7 @@ export type ScriptIssueRow = {
   progress?: number;
   error: string | null;
   createdBy?: Creator;
-  decision?: { kind: string; summary: string; failed?: { id: string; title: string; error: string }[] };
+  decision?: Decision;
   /** Dismissed from "need you" (still stopped). */
   dismissedAt?: number;
   /** Its first prompt still to start. */
@@ -1288,11 +1289,25 @@ export type ScriptIssueRow = {
 /** What a stopped import that Retry can't help says instead of offering it. */
 export const NEEDS_A_FIX = "Retrying stops here again: this needs a fix in Edit. Once Edit is updated, Retry carries on from what it kept.";
 
-/** Answers a stopped import; it carries on in the background and Home follows it. */
-async function answerIssue(issue: ScriptIssueRow, choice: Record<string, unknown>) {
+/** Answers a stopped import; it carries on in the background and Home follows it. Whether the server took the answer. */
+async function answerIssue(issue: ScriptIssueRow, choice: Choice): Promise<boolean> {
   const writer = await import("../writer/api");
-  void writer.resumeImport(issue.id, choice as Parameters<typeof writer.resumeImport>[1]).catch((cause) => useEditor.getState().toastError(cause, `carry on “${issue.title}”`));
+  return writer.resumeImport(issue.id, choice).then(
+    () => true,
+    (cause) => {
+      useEditor.getState().toastError(cause, `carry on “${issue.title}”`);
+      return false;
+    },
+  );
 }
+
+/**
+ * Whether Retry can help a stopped import: not one this build meets again, nor
+ * one that asks a question Retry only asks again (footage with no words heard,
+ * which would also be paid for again). A folder an older Edit stopped as over
+ * a case's limits is retried whole: a case takes all its footage now.
+ */
+const retries = (issue: ScriptIssueRow) => issue.retryHelps !== false && issue.decision?.kind !== "no_speech";
 
 /**
  * What can be done about a stopped import, each in a dialog of its own: see
@@ -1305,7 +1320,7 @@ async function answerIssue(issue: ScriptIssueRow, choice: Record<string, unknown
 export function useIssueDialogs(issue: ScriptIssueRow) {
   const [open, setOpen] = useState<"error" | "replace" | "dismiss" | null>(null);
   const [url, setUrl] = useState("");
-  const failed = issue.decision?.failed ?? [];
+  const failed = issue.decision?.kind === "failed_recordings" ? issue.decision.failed : [];
   const [which, setWhich] = useState(failed[0]?.id ?? "");
   const close = () => setOpen(null);
   // Why, said plainly (problems.ts): the original words go to the log, never on screen.
@@ -1314,11 +1329,12 @@ export function useIssueDialogs(issue: ScriptIssueRow) {
     close();
     void answerIssue(issue, { kind: "retry" });
   };
-  const helps = issue.retryHelps !== false;
+  const helps = retries(issue);
   const items: MenuItem[] = [
     { label: "Why it stopped", icon: <TriangleAlert size={14} />, onSelect: () => setOpen("error") },
     ...(helps ? [{ label: "Retry", icon: <RotateCw size={14} />, onSelect: retry }] : []),
-    ...(issue.decision?.kind === "failed_recordings" ? [{ label: "Go on without them", icon: <SkipForward size={14} />, onSelect: () => void answerIssue(issue, { kind: "skip_failed" }) }] : []),
+    ...(issue.decision?.kind === "failed_recordings" ? [{ label: goOnWithout(issue), icon: <SkipForward size={14} />, onSelect: () => void answerIssue(issue, { kind: "skip_failed" }) }] : []),
+    ...(issue.decision?.kind === "no_speech" ? [{ label: NO_TRANSCRIPT, icon: <FileText size={14} />, onSelect: () => void answerIssue(issue, { kind: "no_transcript" }) }] : []),
     { label: "Replace…", icon: <Replace size={14} />, onSelect: () => setOpen("replace") },
     { separator: true },
     { label: "Dismiss…", icon: <X size={14} />, danger: true, onSelect: () => setOpen("dismiss") },
@@ -1340,7 +1356,7 @@ export function useIssueDialogs(issue: ScriptIssueRow) {
               ))}
             </ul>
           )}
-          {!helps && <p className="mt-3 text-[13px] leading-relaxed text-muted">{NEEDS_A_FIX}</p>}
+          {issue.retryHelps === false && <p className="mt-3 text-[13px] leading-relaxed text-muted">{NEEDS_A_FIX}</p>}
           <div className="mt-[22px] flex items-center justify-end gap-2">
             <div className="flex gap-2">
               <Button variant={helps ? "subtle" : "primary"} onClick={() => setOpen("replace")}>
@@ -1413,17 +1429,24 @@ export function useIssueDialogs(issue: ScriptIssueRow) {
  */
 function IssueActions({ issue }: { issue: ScriptIssueRow }) {
   const { dialogs, retry, replace } = useIssueDialogs(issue);
+  const kind = issue.decision?.kind;
   return (
     <>
-      {issue.decision?.kind === "failed_recordings" ? (
-        <Button onClick={() => void answerIssue(issue, { kind: "skip_failed" })}>Go on without them</Button>
+      {kind === "failed_recordings" ? (
+        <Button onClick={() => void answerIssue(issue, { kind: "skip_failed" })}>{goOnWithout(issue)}</Button>
       ) : (
-        <Button variant={issue.retryHelps === false ? "primary" : undefined} onClick={replace}>
+        <Button variant={retries(issue) || kind === "no_speech" ? undefined : "primary"} onClick={replace}>
           Replace…
         </Button>
       )}
+      {/* Footage with no words: opened as it is, its script written without a transcript (as Writer's dialog offered until Nov 15). */}
+      {kind === "no_speech" && (
+        <Button variant="primary" onClick={() => void answerIssue(issue, { kind: "no_transcript" })}>
+          {NO_TRANSCRIPT}
+        </Button>
+      )}
       {/* A failure this build meets again isn't offered Retry: it would download it all again to stop in the same place (Nov 1, 13 retries of a 413). */}
-      {issue.retryHelps !== false && (
+      {retries(issue) && (
         <Button variant="primary" onClick={retry}>
           Retry
         </Button>
@@ -1432,6 +1455,9 @@ function IssueActions({ issue }: { issue: ScriptIssueRow }) {
     </>
   );
 }
+
+const NO_TRANSCRIPT = "Open without a transcript";
+const goOnWithout = (issue: ScriptIssueRow) => (issue.decision?.kind === "failed_recordings" && issue.decision.failed.length === 1 ? "Go on without it" : "Go on without them");
 
 /**
  * A stopped import on Home's "need you" list, in the table's columns below it
@@ -1553,6 +1579,8 @@ export function ImportDialog({ id, writing, issues, onClose }: { id: string | nu
   const why = problem ? `${problem.title}. ${problem.fix}`.trim() : null;
   const at = done ? STEPS.length : STEPS.findIndex((candidate) => candidate.key === step);
   const percent = done ? 100 : Math.floor(Math.max(0, Math.min(100, live ? creeping(live.id, live.percent, now) : (shown?.percent ?? 0))));
+  // A folder an older Edit stopped as over a case's limits: its recordings to choose, all ticked, in place of the steps (nothing has come down yet).
+  const tooMuch = stopped?.decision?.kind === "too_much" ? stopped.decision : null;
   return (
     <Modal open={id !== null} onClose={onClose} width={560}>
       <div className="flex flex-col gap-5 p-6">
@@ -1562,7 +1590,7 @@ export function ImportDialog({ id, writing, issues, onClose }: { id: string | nu
             {stopped ? (
               <>
                 <StartedBy by={stopped.createdBy} size={20} className="shrink-0" />
-                Stopped {stageWords(stopped.stage)}. It waits here until it's answered.
+                {tooMuch ? "Choose the recordings to bring in." : `Stopped ${stageWords(stopped.stage)}. It waits here until it's answered.`}
               </>
             ) : done ? (
               "The footage is in."
@@ -1571,49 +1599,55 @@ export function ImportDialog({ id, writing, issues, onClose }: { id: string | nu
             )}
           </p>
         </div>
-        <div>
-          <div className="flex items-baseline gap-3">
-            <span className="text-[28px] font-semibold tabular">{percent}%</span>
-            <span className="truncate text-[13px] text-muted">{done ? "Ready" : stopped ? "Stopped" : shown?.detail || "Starting…"}</span>
-          </div>
-          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-raised">
-            <div className={cx("h-full rounded-full transition-[width] duration-500", stopped ? "bg-warning" : "bg-info")} style={{ width: `${percent}%` }} />
-          </div>
-        </div>
-        <ol className="flex flex-col gap-1">
-          {STEPS.map((candidate, index) => {
-            const state = index < at ? "done" : index === at ? "now" : "later";
-            return (
-              <li key={candidate.key} className={cx("flex items-start gap-3 rounded-lg px-3 py-2", state === "now" && "bg-raised")}>
-                <span className={cx("mt-1.5 size-2 shrink-0 rounded-full", state === "done" ? "bg-success" : state === "now" ? (stopped ? "bg-warning" : "animate-pulse bg-info") : "border border-line-strong")} />
-                <div className="min-w-0 flex-1">
-                  <div className={cx("text-[13px] font-medium", state === "later" ? "text-muted" : "text-fg")}>{candidate.label}</div>
-                  <div className={cx("text-[12px]", state === "now" && stopped ? "whitespace-normal text-warning" : "truncate text-muted")}>{state === "now" && why ? why : state === "now" && shown?.detail ? shown.detail : candidate.hint}</div>
-                </div>
-                <span className="shrink-0 text-[12px] text-faint tabular">{state === "now" && !stopped && began[candidate.key] ? elapsed(now - began[candidate.key]!) : state === "done" ? "Done" : ""}</span>
-              </li>
-            );
-          })}
-        </ol>
-        {/* One row: Close, and only what fits where it is (stopped: Replace and Retry; in: Open the script). */}
-        <div className="flex items-center gap-2">
-          <span className="mr-auto text-[12px] text-faint" title={stopped?.retryHelps === false ? NEEDS_A_FIX : undefined}>
-            {began.start && !stopped && !done ? `Running for ${elapsed(now - began.start)}` : stopped?.retryHelps === false ? "Needs a fix in Edit before Retry." : ""}
-          </span>
-          <Button variant="ghost" onClick={onClose}>
-            Close
-          </Button>
-          {stopped ? (
-            <IssueActions issue={stopped} />
-          ) : (
-            done &&
-            id !== null && (
-              <Button variant="primary" onClick={() => navigate(`/scripts/${id}`)}>
-                Open the script
+        {tooMuch && stopped ? (
+          <ChooseRecordings key={stopped.id} decision={tooMuch} onClose={onClose} onChoose={(ids) => answerIssue(stopped, { kind: "select", ids })} />
+        ) : (
+          <>
+            <div>
+              <div className="flex items-baseline gap-3">
+                <span className="text-[28px] font-semibold tabular">{percent}%</span>
+                <span className="truncate text-[13px] text-muted">{done ? "Ready" : stopped ? "Stopped" : shown?.detail || "Starting…"}</span>
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-raised">
+                <div className={cx("h-full rounded-full transition-[width] duration-500", stopped ? "bg-warning" : "bg-info")} style={{ width: `${percent}%` }} />
+              </div>
+            </div>
+            <ol className="flex flex-col gap-1">
+              {STEPS.map((candidate, index) => {
+                const state = index < at ? "done" : index === at ? "now" : "later";
+                return (
+                  <li key={candidate.key} className={cx("flex items-start gap-3 rounded-lg px-3 py-2", state === "now" && "bg-raised")}>
+                    <span className={cx("mt-1.5 size-2 shrink-0 rounded-full", state === "done" ? "bg-success" : state === "now" ? (stopped ? "bg-warning" : "animate-pulse bg-info") : "border border-line-strong")} />
+                    <div className="min-w-0 flex-1">
+                      <div className={cx("text-[13px] font-medium", state === "later" ? "text-muted" : "text-fg")}>{candidate.label}</div>
+                      <div className={cx("text-[12px]", state === "now" && stopped ? "whitespace-normal text-warning" : "truncate text-muted")}>{state === "now" && why ? why : state === "now" && shown?.detail ? shown.detail : candidate.hint}</div>
+                    </div>
+                    <span className="shrink-0 text-[12px] text-faint tabular">{state === "now" && !stopped && began[candidate.key] ? elapsed(now - began[candidate.key]!) : state === "done" ? "Done" : ""}</span>
+                  </li>
+                );
+              })}
+            </ol>
+            {/* One row: Close, and only what fits where it is (stopped: Replace and Retry; in: Open the script). */}
+            <div className="flex items-center gap-2">
+              <span className="mr-auto text-[12px] text-faint" title={stopped?.retryHelps === false ? NEEDS_A_FIX : undefined}>
+                {began.start && !stopped && !done ? `Running for ${elapsed(now - began.start)}` : stopped?.retryHelps === false ? "Needs a fix in Edit before Retry." : ""}
+              </span>
+              <Button variant="ghost" onClick={onClose}>
+                Close
               </Button>
-            )
-          )}
-        </div>
+              {stopped ? (
+                <IssueActions issue={stopped} />
+              ) : (
+                done &&
+                id !== null && (
+                  <Button variant="primary" onClick={() => navigate(`/scripts/${id}`)}>
+                    Open the script
+                  </Button>
+                )
+              )}
+            </div>
+          </>
+        )}
       </div>
     </Modal>
   );

@@ -15,8 +15,8 @@
 // playback for someone watching; what it made is kept and it carries on from
 // there next time. Nothing lists it, nothing waits on it, and it never keeps
 // the Mac awake. Not on battery, not while the project's slowed shots are
-// still being smoothed (they'd change the picture), and not for an edit its
-// last export already shows.
+// still being smoothed, its footage cleaned or its effects rendered (each
+// would change the picture), and not for an edit its last export already shows.
 
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -24,11 +24,13 @@ import * as fs from "node:fs";
 import type { App } from "./app.ts";
 import * as channels from "./channels.ts";
 import * as diag from "./diag.ts";
+import * as effects from "./effects.ts";
 import { aheadFile, type ExportRegistry, listExports, optionsKey, timelineHash, withWatermarkKey } from "./exports.ts";
 import type { ExportOptions, Project } from "./model.ts";
 import { native } from "./native/index.ts";
 import * as playing from "./playing.ts";
 import { duration } from "./project.ts";
+import * as removalSchedule from "./removal_schedule.ts";
 import { read as reviewState } from "./reviews.ts";
 import * as seams from "./seams.ts";
 import { THE_MACHINE } from "./machine.ts";
@@ -72,9 +74,15 @@ function onBattery(): boolean {
     }
   }
   if (process.platform !== "darwin") return false;
+  // Asked once a minute at most: every project's rest ends here, and pmset waits up to 2 s on the server's thread each time.
+  if (battery !== null && Date.now() - battery.at < 60_000) return battery.on;
   const result = spawnSync("pmset", ["-g", "batt"], { encoding: "utf8", timeout: 2000 });
-  return result.status === 0 && result.stdout.includes("'Battery Power'");
+  battery = { on: result.status === 0 && result.stdout.includes("'Battery Power'"), at: Date.now() };
+  return battery.on;
 }
+
+/** pmset's last answer, and when. */
+let battery: { on: boolean; at: number } | null = null;
 
 function agentsWorking(app: App): boolean {
   return (app.agents as { hasRunningTurns?: () => boolean }).hasRunningTurns?.() === true;
@@ -98,6 +106,10 @@ export function tryNow(app: App, id: string): string | null {
     if (!seams.isUnavailable(error)) throw error;
   }
   if (pending.length > 0) return "slowed shots still smoothing";
+  // Its picture is still changing: each cleaned piece and each effect's render lands in it, and an export made of it
+  // now is thrown away (Nov 18, Sphe's M4: 7–8 GB made ahead of an edit still being cleaned, twice in a night).
+  if (removalSchedule.progressOf(id).out > 0) return "its footage still being cleaned";
+  if (effects.notReady(app.store, project) !== null) return "its effects still rendering";
   // It reads every original from R2: not while a play or footage someone waits on has the link (playing.ts).
   if (!playing.isIdle()) return "the link is the person's";
   const { options, watermark: kept } = nextShare(app.store.home, id);
@@ -156,7 +168,7 @@ function changed(app: App, id: string): void {
       }
       if (why === null) diag.info("export", `${app.store.get(id)?.project.name ?? id}: making its export ahead, for the next export or share`);
       // Busy, smoothing or making another's: looked at again after another rest.
-      else if (why === `${THE_MACHINE} is busy` || why === "slowed shots still smoothing" || why === "making another's" || why === "an agent is working" || why === "the link is the person's") wait();
+      else if (why === `${THE_MACHINE} is busy` || why === "slowed shots still smoothing" || why === "its footage still being cleaned" || why === "its effects still rendering" || why === "making another's" || why === "an agent is working" || why === "the link is the person's") wait();
     }, hooks.restMs);
     later.unref?.();
     resting.set(id, later);

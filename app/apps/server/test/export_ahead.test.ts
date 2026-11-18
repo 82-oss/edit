@@ -7,6 +7,8 @@ import * as fs from "node:fs";
 import * as ahead from "../src/export_ahead.ts";
 import { aheadFile, exportCloud, ExportRegistry } from "../src/exports.ts";
 import type { Project } from "../src/model.ts";
+import * as effects from "../src/effects.ts";
+import * as removalSchedule from "../src/removal_schedule.ts";
 import * as seams from "../src/seams.ts";
 import { fixtureHome } from "./helpers/home.ts";
 import { clip, media } from "./helpers/model.ts";
@@ -150,6 +152,13 @@ test("an edit's export is made ahead with its next share's settings, unless it's
     smoothing.mockReturnValue(["c1"]);
     expect(ahead.tryNow(t.app, project.id)).toBe("slowed shots still smoothing");
     smoothing.mockReturnValue([]);
+    // Its picture still changing: footage being cleaned, or an effect not rendered yet (Nov 18).
+    const cleaning = spyOn(removalSchedule, "progressOf").mockReturnValue({ done: 2, out: 3 });
+    expect(ahead.tryNow(t.app, project.id)).toBe("its footage still being cleaned");
+    cleaning.mockRestore();
+    const rendering = spyOn(effects, "notReady").mockReturnValue("The title effect is still rendering: export again in a minute or two.");
+    expect(ahead.tryNow(t.app, project.id)).toBe("its effects still rendering");
+    rendering.mockRestore();
     expect(ahead.tryNow(t.app, project.id)).toBeNull();
     await t.settle(() => t.started.length === 1);
     expect(t.started[0]).toMatchObject({ name: "Shared", background: true });

@@ -14,6 +14,7 @@ import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
 import { writeAtomic } from "./files.ts";
+import * as outages from "./outages.ts";
 import * as research from "./research.ts";
 
 const LISTS = ["index.json", "articles.json", "names.json"];
@@ -128,16 +129,20 @@ export function free(app: App, project: string, modifiedMs: number, now = Date.n
 
 /** Sends every project's new research now and then (one Mac does a project's research; any may open it). */
 export function start(app: App): void {
-  const sweep = async () => {
-    for (const summary of app.store.visible()) {
-      try {
-        await push(app, summary.id);
-        free(app, summary.id, summary.modified_ms);
-      } catch (error) {
-        diag.warn("research", `${summary.name}: sending its research to the cloud: ${diag.messageOf(error)}`);
+  // A background round: skipped while the relay or R2 is down, but for one probe at a time (outages.ts); one
+  // going down partway leaves the rest for the next round, not a warning each.
+  const sweep = () =>
+    outages.background(["relay", "r2"], async () => {
+      for (const summary of app.store.visible()) {
+        try {
+          await push(app, summary.id);
+          free(app, summary.id, summary.modified_ms);
+        } catch (error) {
+          if (outages.quiet(error)) return;
+          diag.warn("research", `${summary.name}: sending its research to the cloud: ${diag.messageOf(error)}`);
+        }
       }
-    }
-  };
+    });
   const first = setTimeout(() => void sweep(), 3 * 60_000);
   const every = setInterval(() => void sweep(), EVERY_MS);
   first.unref?.();

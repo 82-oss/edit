@@ -151,7 +151,7 @@ test("an export short of room keeps the export made ahead it copies from while a
     fs.writeFileSync(ahead, "made ahead");
     room.make = () => void heldAhead.push(pinned(ahead));
     // Ten terabytes: no room whatever goes, so it's let go for the second ask, then refused.
-    await expect(registry.start(store, app.library, store.get(id)!.project, { ...native.exportDefaults(), target_mb: 10_000_000 }, `${dir}/big.mp4`, { drive: false })).rejects.toThrow("not enough disk space");
+    await expect(registry.start(store, app.library, store.get(id)!.project, { ...native.exportDefaults(), target_mb: 10_000_000 }, `${dir}/big.mp4`, { drive: false })).rejects.toThrow("This export needs about");
     expect(heldAhead).toEqual([true, false]);
     expect(pinned(file)).toBe(false);
     // An export that starts holds its render while it renders, and lets go once it's done.

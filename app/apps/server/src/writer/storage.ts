@@ -1,14 +1,13 @@
 // A script's footage is kept in the cloud (Oct 29, the user: "things
 // shouldn't take up storage on the local devices… everything on the
 // cloud!"), and on this Mac only as much as its room allows (Sphe, Nov 6:
-// the same capped rule as Edit's own footage, "this doesnt mean we clog
+// the same rule as Edit's own footage, "this doesnt mean we clog
 // storage with multi gb fotage right?"). Until then a script left alone for
 // half an hour lost its footage here however much room the disk had, and the
 // edit made from it read it back from R2 for every picture and export (JJ's
 // Mac: the agent waited 47 minutes in 2.5 days on pictures decoded from the
-// cloud). Now a round adds up the scripts' footage and Edit's cache, and only
-// while they're past their budget (storage.ts `localBudgetBytes`: a quarter
-// of the room, at most 50 GB) or the disk is nearly full does footage go,
+// cloud). Now footage goes only while the disk has less free than Edit keeps
+// (storage.ts `keepFreeBytes`: 15 GB or a tenth of the disk, since Nov 18),
 // the scripts left alone longest first. A script that goes has its
 // recordings shared with Edit's originals first if they aren't yet
 // (handoff.ts: a script brought in from Writer, or one whose share failed),
@@ -29,7 +28,7 @@ import * as editCloud from "../cloud.ts";
 import * as diag from "../diag.ts";
 import { idle, inArea, runPromise, runtime } from "../effect/runtime.ts";
 import { isFile, join } from "../paths.ts";
-import { FREE_FLOOR_BYTES, localBudgetBytes } from "../storage.ts";
+import { keepFreeBytes } from "../storage.ts";
 import * as archive from "./archive.ts";
 import * as cloud from "./cloud.ts";
 import * as handoff from "./handoff.ts";
@@ -237,55 +236,15 @@ type Said = Map<string, string>;
 const sayOnce = (said: Said, error: FootageStays) =>
   said.get(error.id) === error.message ? Effect.void : Effect.sync(() => said.set(error.id, error.message)).pipe(Effect.andThen(Effect.logWarning(`${error.id.slice(0, 8)}: its footage stays here: ${error.message}`)));
 
-/** Bytes of every file under `path` (0 when absent). */
-function bytesUnder(path: string): number {
-  let total = 0;
-  const stack = [path];
-  for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(at, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const one = join(at, entry.name);
-      if (entry.isDirectory()) stack.push(one);
-      else
-        try {
-          total += fs.lstatSync(one).size;
-        } catch {
-          // Gone meanwhile.
-        }
-    }
-  }
-  return total;
-}
-
-/** The scripts' footage here, in bytes. */
-function scriptsFootage(data: string): number {
-  let total = 0;
-  for (const id of store.ids(data)) {
-    const dir = store.scriptDir(data, id);
-    for (const name of footageFiles(dir, true)) {
-      try {
-        total += fs.statSync(join(dir, name)).size;
-      } catch {
-        // Gone meanwhile.
-      }
-    }
-  }
-  return total;
-}
-
 /**
- * How many bytes of footage must go for the scripts' footage and Edit's cache
- * (`cache`) to fit their budget, with the disk past its floor; 0 or less when
- * they fit.
+ * How many bytes of footage must go for the disk holding Edit's cache (`cache`)
+ * to keep what Edit keeps free on it (storage.ts `keepFreeBytes`: 15 GB or a
+ * tenth of the disk); 0 or less when it does. Until Nov 18 the scripts'
+ * footage and the cache were held to a quarter of the room, at most 50 GB,
+ * walked whole at every ask.
  */
-export function overBudget(data: string, cache: string, freeBytes = freeAt(cache)): number {
-  const used = scriptsFootage(data) + bytesUnder(cache);
-  return Math.max(used - localBudgetBytes({ freeBytes, cacheBytes: used }), FREE_FLOOR_BYTES - freeBytes);
+export function overBudget(_data: string, cache: string, freeBytes = freeAt(cache)): number {
+  return keepFreeBytes(cache) - freeBytes;
 }
 
 function freeAt(path: string): number {

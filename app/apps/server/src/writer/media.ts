@@ -12,8 +12,14 @@ import * as encoder from "../encoder.ts";
 import { ffmpeg, ffprobe, hardwareDecode, isUrl, protocols, urlArgs, videoHardware } from "../tools.ts";
 import { ProgramTimedOut, run } from "./proc.ts";
 
-/** A joined case may run as long as Repack lets one run. */
-export const MAX_CASE_MS = 20 * 3_600_000;
+/**
+ * A case takes all of its footage, however long (Sphe, Nov 18: every recording
+ * has to be considered for a script to be good). Writer's 20 hours a case
+ * stopped JJ's 23.4-hour folder; nothing here needs it: a joined preview past
+ * ~12 h has 64-bit track lengths in its MP4 (FFmpeg writes them as needed),
+ * its offsets are 64-bit past 4 GB, and every clock on it is milliseconds.
+ */
+const NO_LENGTH = "This footage has no length to play.";
 
 /** What a file holds: its length and whether it has picture and sound. */
 export interface Streams {
@@ -240,7 +246,7 @@ export function inputsOf(part: JoinPart, first: number, decode: string[] = [], f
 
 async function joinHardware(part: JoinPart, dest: string, onPercent: (percent: number) => void, signal?: AbortSignal): Promise<void> {
   const total = part.streams.durationMs;
-  if (total === 0 || total > MAX_CASE_MS) throw new Error("Use footage between a second and twenty hours in all.");
+  if (total === 0) throw new Error(NO_LENGTH);
   const read = inputsOf(part, 0, HARDWARE_DECODE());
   const picture = `[${read.video}]${hardwarePicture(854, 480)},trim=duration=${seconds(total)},setpts=PTS-STARTPTS[v]`;
   const sound = part.streams.audio
@@ -330,7 +336,7 @@ export async function joinStretched(
   stretchMs = STRETCH_MS,
 ): Promise<{ encoder: Encoder; stretches: number; kept: number }> {
   const total = part.streams.durationMs;
-  if (total === 0 || total > MAX_CASE_MS) throw new Error("Use footage between a second and twenty hours in all.");
+  if (total === 0) throw new Error(NO_LENGTH);
   if (!part.streams.video) throw new Error("only a video is made in stretches");
   fs.mkdirSync(work, { recursive: true });
   const count = Math.ceil(total / stretchMs);
@@ -485,7 +491,7 @@ export async function joinOriginal(parts: JoinPart[], dest: string, onPercent: (
 
 async function joinSized(parts: JoinPart[], dest: string, onPercent: (percent: number) => void, width: number, height: number, crf: string, signal?: AbortSignal): Promise<void> {
   const total = parts.reduce((sum, part) => sum + part.streams.durationMs, 0);
-  if (total === 0 || total > MAX_CASE_MS) throw new Error("Use footage between a second and twenty hours in all.");
+  if (total === 0) throw new Error(NO_LENGTH);
   const args = ["-hide_banner", "-y"];
   const filters: string[] = [];
   let joined = "";
@@ -533,7 +539,6 @@ async function formatOf(path: string): Promise<string | null> {
 export async function append(base: string, more: string[], dest: string, onPercent: (percent: number) => void = () => {}, signal?: AbortSignal, matched = false, label = "the preview"): Promise<boolean> {
   const pieces = await Promise.all([base, ...more].map(async (path): Promise<JoinPart> => ({ path, streams: await streams(path) })));
   const total = pieces.reduce((sum, piece) => sum + piece.streams.durationMs, 0);
-  if (total > MAX_CASE_MS) throw new Error("Use footage between a second and twenty hours in all.");
   const first = await formatOf(base);
   const formats = await Promise.all(more.map(formatOf));
   if (first === null || formats.some((format) => format !== first)) {
@@ -632,8 +637,10 @@ export async function peaks(source: string, signal?: AbortSignal): Promise<Float
     for (let i = 0; i + 1 < bytes.length; i += 2) loud = Math.max(loud, Math.abs((bytes[i]! | (bytes[i + 1]! << 8)) << 16 >> 16));
     out.push(loud / 32768);
   };
+  // Read in time by its length: a whole day's case outlasts a fixed hour.
+  const lengthMs = await streams(source).then((found) => found.durationMs, () => 0);
   await run(ffmpeg(), ["-hide_banner", "-loglevel", "error", "-i", source, "-vn", "-ac", "1", "-ar", "24000", "-f", "s16le", "pipe:1"], {
-    timeoutMs: 3_600_000,
+    timeoutMs: toolTime(lengthMs),
     ...(signal ? { signal } : {}),
     onBytes: (chunk) => {
       let offset = 0;

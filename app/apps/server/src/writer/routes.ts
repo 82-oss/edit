@@ -2,6 +2,8 @@
 // answered (its UI came over with them), each checked against what the
 // signed-in person may do (can.ts).
 
+import * as fs from "node:fs";
+
 import * as channels from "../channels.ts";
 import type { Adding, BuildStatus, Choice, Clip, Draft, Focus, Kind, LearnStep, Pacing, Role, Script } from "@edit/types/writer";
 
@@ -74,10 +76,38 @@ export function readFor(data: string, id: string): Script {
   return script;
 }
 
+/** What `can` reads of a script, kept by its script.json's time and size. */
+const seen = new Map<string, { mtimeMs: number; size: number; script: Pick<Script, "sourceKind" | "compilation" | "kind" | "channel"> }>();
+
+/**
+ * `readFor`'s check alone, for a route that needs only to know the person may
+ * see the script: its file parsed once a change, not on every call. Nov 18's
+ * 26-hour case is 22.5 MB of words, 70 ms to parse, and the preview's range
+ * reads (a MiB each: its 125 MB index alone is 125 of them), the import's
+ * progress and the build's status each read and parsed all of it.
+ */
+export function checkFor(data: string, id: string): void {
+  if (!store.idOk(id)) throw notFound("Unknown script.");
+  const dir = store.scriptDir(data, id);
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(join(dir, "script.json"));
+  } catch {
+    throw notFound("That script is missing.");
+  }
+  let kept = seen.get(dir);
+  if (kept === undefined || kept.mtimeMs !== stat.mtimeMs || kept.size !== stat.size) {
+    const { sourceKind, compilation, kind, channel } = store.read(dir);
+    kept = { mtimeMs: stat.mtimeMs, size: stat.size, script: { sourceKind, compilation, kind, channel } };
+    seen.set(dir, kept);
+  }
+  can.requireScript(kept.script);
+}
+
 /** Whether the signed-in person may see script `id` (one that isn't here: no): work under way on this Mac is listed only for them. */
 export function seesScript(data: string, id: string): boolean {
   try {
-    readFor(data, id);
+    checkFor(data, id);
     return true;
   } catch {
     return false;
@@ -137,7 +167,7 @@ export function routes(router: Router<App>): void {
     .delete("/api/writer/scripts/{id}", (context) =>
       answer(async () => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         await imports.stop(id(context));
         if (!(await jobs.stopAndWait(id(context)))) throw new Error("Claude is still stopping on this script. Try again in a moment.");
         // The cloud's delete is recorded first: a crash between the two can't bring the script back.
@@ -163,7 +193,7 @@ export function routes(router: Router<App>): void {
       const { title } = await body<{ title: string }>(context);
       return answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return detail(data, edits.rename(data, id(context), String(title ?? "")));
       });
     })
@@ -178,7 +208,7 @@ export function routes(router: Router<App>): void {
       const { note } = await body<{ note?: unknown }>(context);
       return answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return { note: store.writeNote(store.scriptDir(data, id(context)), typeof note === "string" ? note : "") };
       });
     })
@@ -198,7 +228,7 @@ export function routes(router: Router<App>): void {
       const given = await body<{ revision: number; clips: Clip[] }>(context);
       return answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         idle(id(context));
         return detail(data, edits.saveClips(data, id(context), Number(given.revision), Array.isArray(given.clips) ? given.clips : []));
       });
@@ -207,7 +237,7 @@ export function routes(router: Router<App>): void {
       const given = await body<{ revision: number; word: string; text: string }>(context);
       return answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return detail(data, edits.correctWord(data, id(context), Number(given.revision), String(given.word ?? ""), String(given.text ?? "")));
       });
     })
@@ -215,21 +245,21 @@ export function routes(router: Router<App>): void {
       const given = await body<{ revision: number; heading: string }>(context);
       return answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return detail(data, edits.setHeading(data, id(context), Number(given.revision), String(given.heading ?? "")));
       });
     })
     .get("/api/writer/scripts/{id}/versions", (context) =>
       answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return versions.list(store.scriptDir(data, id(context)));
       }),
     )
     .get("/api/writer/scripts/{id}/versions/{version}", (context) =>
       answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return versions.read(store.scriptDir(data, id(context)), context.params.version ?? "");
       }),
     )
@@ -237,7 +267,7 @@ export function routes(router: Router<App>): void {
       const given = await body<{ revision: number }>(context);
       return answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         if (jobs.running(id(context))) throw new Error("Claude is still working on this script.");
         return detail(data, edits.restoreVersion(data, id(context), Number(given.revision), context.params.version ?? ""));
       });
@@ -246,7 +276,7 @@ export function routes(router: Router<App>): void {
       const given = await body<{ revision: number; proposals: string[]; accept: boolean }>(context);
       return answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         if (jobs.running(id(context)) || imports.importing(id(context))) throw new Error("Wait for the current work to finish before reviewing changes.");
         return detail(data, edits.resolveProposals(data, id(context), Number(given.revision), Array.isArray(given.proposals) ? given.proposals.map(String) : [], given.accept === true));
       });
@@ -254,14 +284,14 @@ export function routes(router: Router<App>): void {
     .get("/api/writer/scripts/{id}/chat", (context) =>
       answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return chat.read(store.scriptDir(data, id(context)));
       }),
     )
     .delete("/api/writer/scripts/{id}/chat", (context) =>
       answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         if (jobs.running(id(context))) throw new Error("Claude is still working on this script.");
         chat.clear(store.scriptDir(data, id(context)));
         return { ok: true };
@@ -271,7 +301,7 @@ export function routes(router: Router<App>): void {
       const given = await body<{ accept: boolean }>(context);
       return answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         if (jobs.running(id(context))) throw new Error("Claude is still working on this script.");
         return detail(data, edits.resetScript(data, id(context), given.accept === true));
       });
@@ -279,13 +309,13 @@ export function routes(router: Router<App>): void {
     .get("/api/writer/scripts/{id}/build", (context) =>
       answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return jobs.status(data, id(context));
       }),
     )
     .post("/api/writer/scripts/{id}/build/stop", (context) =>
       answer(() => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         jobs.stop(id(context), dataOf(context.app));
         return { ok: true };
       }),
@@ -329,7 +359,7 @@ export function routes(router: Router<App>): void {
     .post("/api/writer/scripts/{id}/resume", async (context) => {
       const choice = await body<Choice>(context);
       return answer(async () => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return detail(dataOf(context.app), await imports.resume(context.app, dataOf(context.app), id(context), choice, "started"));
       });
     })
@@ -358,7 +388,7 @@ export function routes(router: Router<App>): void {
     .post("/api/writer/scripts/{id}/share", (context) =>
       answer(async () => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         // It runs on its own, as an edit's share does (JJ, Nov 1): refused at once says so, else the script says it's sharing.
         const started = reviews.startShare(context.app, data, id(context));
         started.catch((error: unknown) => {
@@ -371,14 +401,14 @@ export function routes(router: Router<App>): void {
     )
     .post("/api/writer/scripts/{id}/review/compress", (context) =>
       answer(async () => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return detail(dataOf(context.app), await reviews.compress(context.app, dataOf(context.app), id(context)));
       }),
     )
     // Deletes the script's review link for good: reviewers lose the page and their notes (asked first in the Review dialog).
     .delete("/api/writer/scripts/{id}/review", (context) =>
       answer(async () => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return detail(dataOf(context.app), await reviews.removeLink(dataOf(context.app), id(context)));
       }),
     )
@@ -388,7 +418,7 @@ export function routes(router: Router<App>): void {
       const given = await body<{ approve?: boolean }>(context);
       return answer(async () => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         if (given.approve === false) await reviews.unapprove(data, id(context));
         else await reviews.approve(data, id(context));
         return reviewState(data, id(context));
@@ -398,7 +428,7 @@ export function routes(router: Router<App>): void {
     .post("/api/writer/scripts/{id}/review/fix", (context) =>
       answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         const approved = reviews.approval(data, id(context));
         if (approved !== null) throw new Error(`v${approved.version} is approved, so its notes aren't fixed. Take the approval back to fix them.`);
         const notes = reviews.openNotes(data, id(context));
@@ -409,14 +439,14 @@ export function routes(router: Router<App>): void {
     )
     .get("/api/writer/scripts/{id}/review/fix", (context) =>
       answer(() => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return reviews.fixState(id(context));
       }),
     )
     .post("/api/writer/scripts/{id}/review/notes", async (context) => {
       const given = await body<{ text?: string; details?: reviews.NoteDetails }>(context);
       return answer(async () => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         await reviews.addNote(dataOf(context.app), id(context), String(given.text ?? ""), given.details ?? {});
         return { ok: true };
       });
@@ -424,7 +454,7 @@ export function routes(router: Router<App>): void {
     .post("/api/writer/scripts/{id}/review/notes/{note}/replies", async (context) => {
       const given = await body<{ text?: string }>(context);
       return answer(async () => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         await reviews.reply(dataOf(context.app), context.params.note ?? "", String(given.text ?? ""));
         return { ok: true };
       });
@@ -432,14 +462,14 @@ export function routes(router: Router<App>): void {
     .post("/api/writer/scripts/{id}/review/notes/{note}/check", async (context) => {
       const given = await body<{ verdict?: string; text?: string }>(context);
       return answer(async () => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         await reviews.check(dataOf(context.app), context.params.note ?? "", String(given.verdict ?? ""), given.text ?? null);
         return { ok: true };
       });
     })
     .delete("/api/writer/scripts/{id}/review/notes/{note}", (context) =>
       answer(async () => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         await reviews.deleteNote(dataOf(context.app), context.params.note ?? "");
         return { ok: true };
       }),
@@ -448,25 +478,25 @@ export function routes(router: Router<App>): void {
     .post("/api/writer/scripts/{id}/docs", async (context) => {
       const given = await body<{ draft?: boolean; docx?: string }>(context);
       return answer(() => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return docs.exportDoc(dataOf(context.app), id(context), given.draft === true, String(given.docx ?? ""));
       });
     })
     .get("/api/writer/scripts/{id}/docs", (context) =>
       answer(() => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return docs.listDocs(id(context));
       }),
     )
     .get("/api/writer/scripts/{id}/docs/comments", (context) =>
       answer(() => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return docs.docComments(dataOf(context.app), id(context), null);
       }),
     )
     .get("/api/writer/scripts/{id}/docs/{doc}/comments", (context) =>
       answer(() => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return docs.docComments(dataOf(context.app), id(context), context.params.doc ?? "");
       }),
     )
@@ -482,13 +512,13 @@ export function routes(router: Router<App>): void {
     .get("/api/writer/scripts/{id}/finds", (context) =>
       answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return scout.load(store.scriptDir(data, id(context)));
       }),
     )
     .get("/api/writer/scripts/{id}/finds/frames/{name}", (context) => {
       const data = dataOf(context.app);
-      readFor(data, id(context));
+      checkFor(data, id(context));
       const name = context.params.name ?? "";
       if (!/^frames-\d+\.jpg$/.test(name)) throw notFound("No such frames.");
       const path = join(store.scriptDir(data, id(context)), "finds", "frames", name);
@@ -499,7 +529,7 @@ export function routes(router: Router<App>): void {
     .post("/api/writer/scripts/{id}/feedback", (context) =>
       answer(async () => {
         can.require(can.LESSONS);
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         notWhileWriting(id(context));
         return feedback.pull(dataOf(context.app), id(context));
       }),
@@ -508,7 +538,7 @@ export function routes(router: Router<App>): void {
       answer(() => {
         can.require(can.LESSONS);
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return feedback.load(store.scriptDir(data, id(context)));
       }),
     )
@@ -517,7 +547,7 @@ export function routes(router: Router<App>): void {
       return answer(() => {
         can.require(can.LESSONS);
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         notWhileWriting(id(context));
         return feedback.setItem(store.scriptDir(data, id(context)), context.params.item ?? "", given.skip ?? null, given.note ?? null);
       });
@@ -527,7 +557,7 @@ export function routes(router: Router<App>): void {
       return answer(() => {
         can.require(can.LESSONS);
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         notWhileWriting(id(context));
         const [saved, leaks] = feedback.setLesson(store.scriptDir(data, id(context)), String(given.lesson ?? ""));
         return { feedback: saved, leaks };
@@ -538,7 +568,7 @@ export function routes(router: Router<App>): void {
       return answer(() => {
         can.require(can.LESSONS);
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         feedback.ready(store.scriptDir(data, id(context)), step);
         return startJob(context.app, id(context), { kind: "learn", step });
       });
@@ -546,7 +576,7 @@ export function routes(router: Router<App>): void {
     .post("/api/writer/scripts/{id}/feedback/keep", (context) =>
       answer(() => {
         can.require(can.LESSONS);
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         notWhileWriting(id(context));
         return feedback.keep(dataOf(context.app), id(context));
       }),
@@ -566,13 +596,13 @@ export function routes(router: Router<App>): void {
     // A commentary's clip footage, as Split plays it.
     .get("/api/writer/scripts/{id}/footage", (context) =>
       answer(() => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return footage.now(context.app, dataOf(context.app), id(context));
       }),
     )
     .get("/api/writer/scripts/{id}/footage/{name}", (context) => {
       const data = dataOf(context.app);
-      readFor(data, id(context));
+      checkFor(data, id(context));
       const path = footage.file(store.scriptDir(data, id(context)), context.params.name ?? "");
       if (path === null) throw notFound("No such clip.");
       return serveFile(context.request, path);
@@ -586,14 +616,14 @@ export function routes(router: Router<App>): void {
     // Brings an archived script's footage back; followed as a build.
     .post("/api/writer/scripts/{id}/restore", (context) =>
       answer(() => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return archive.startRestore(context.app, dataOf(context.app), id(context));
       }),
     )
     // The Edit project this script became, if it has one: Edit mode's side of the same project.
     .get("/api/writer/scripts/{id}/edit", (context) =>
       answer(() => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return { project: projectFor(context.app, id(context)) };
       }),
     )
@@ -636,13 +666,13 @@ export function routes(router: Router<App>): void {
     .get("/api/writer/scripts/{id}/research", (context) =>
       answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return scripting.researchShown(store.scriptDir(data, id(context)));
       }),
     )
     .post("/api/writer/scripts/{id}/research", (context) =>
       answer(() => {
-        readFor(dataOf(context.app), id(context));
+        checkFor(dataOf(context.app), id(context));
         return scripting.researchAgain(dataOf(context.app), id(context), context.request.signal);
       }),
     )
@@ -672,7 +702,7 @@ export function routes(router: Router<App>): void {
       const given = await body<{ adding: Adding; role: Role }>(context);
       return answer(async () => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         notWhileWriting(id(context), "Claude is writing this script. Add sources once it's done.");
         return detail(data, await commentary.add(data, id(context), given.adding, given.role));
       });
@@ -680,7 +710,7 @@ export function routes(router: Router<App>): void {
     .get("/api/writer/scripts/{id}/sources/{source}", (context) =>
       answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return readText(store.scriptDir(data, id(context)), context.params.source ?? "");
       }),
     )
@@ -688,14 +718,14 @@ export function routes(router: Router<App>): void {
       const given = await body<{ role?: Role; title?: string }>(context);
       return answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         return detail(data, commentary.updateSource(data, id(context), context.params.source ?? "", given.role ?? null, given.title ?? null));
       });
     })
     .delete("/api/writer/scripts/{id}/sources/{source}", (context) =>
       answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         notWhileWriting(id(context), "Claude is writing this script. Remove sources once it's done.");
         return detail(data, commentary.removeSource(data, id(context), context.params.source ?? ""));
       }),
@@ -704,7 +734,7 @@ export function routes(router: Router<App>): void {
       const given = await body<{ pacing: Pacing }>(context);
       return answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         notWhileWriting(id(context));
         if (given.pacing !== "channel" && given.pacing !== "documentary") throw new Error("Pace it as the channel or as a documentary.");
         return detail(data, commentary.setPacing(data, id(context), given.pacing));
@@ -714,7 +744,7 @@ export function routes(router: Router<App>): void {
       const given = await body<{ revision: number; draft: Draft }>(context);
       return answer(() => {
         const data = dataOf(context.app);
-        readFor(data, id(context));
+        checkFor(data, id(context));
         notWhileWriting(id(context), "Claude is writing this script.");
         return detail(data, commentary.saveDraft(data, id(context), Number(given.revision), given.draft));
       });
@@ -727,7 +757,7 @@ export function routes(router: Router<App>): void {
       return answer(() =>
         windowSources(context.app, srcs, (script) => {
           try {
-            readFor(data, script);
+            checkFor(data, script);
             return true;
           } catch {
             return false;
@@ -738,7 +768,7 @@ export function routes(router: Router<App>): void {
     // The preview: the file on this Mac, a range at a time (cloud.ts streams one that's only in the cloud).
     .get("/api/writer/scripts/{id}/proxy", async (context) => {
       const data = dataOf(context.app);
-      readFor(data, id(context));
+      checkFor(data, id(context));
       const path = store.proxyPath(store.scriptDir(data, id(context)));
       if (isFile(path)) return serveFile(context.request, path);
       // Made on another Mac: played from the cloud, through the shared block cache.
@@ -777,7 +807,7 @@ async function madeOf(app: App, given: { person?: unknown; channel?: unknown }):
 function mark(context: RouteContext<App>, how: "test" | "show" | "hide" | "promote"): Promise<Response> {
   return answer(() => {
     const data = dataOf(context.app);
-    readFor(data, id(context));
+    checkFor(data, id(context));
     const dir = store.scriptDir(data, id(context));
     if ((how === "show" || how === "hide") && !store.readTest(dir).test) throw new Error("Not a test script: it's on Home already.");
     store.writeTest(dir, how !== "promote", how === "show");

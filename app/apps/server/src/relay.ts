@@ -14,6 +14,7 @@ import type { ChildProcessSpawner } from "effect/process";
 import * as accounts from "./accounts.ts";
 import { messageOf } from "./diag.ts";
 import * as mapTiles from "./map_tiles.ts";
+import * as outages from "./outages.ts";
 import { runPromise } from "./effect/runtime.ts";
 import * as service from "./effect/service.ts";
 import { serdeParse } from "./rust.ts";
@@ -41,15 +42,17 @@ export const UNREACHABLE = "could not reach Edit's relay";
  */
 export const reach = { failedAt: 0, failed: "", answeredAt: 0 };
 
-/** A request that couldn't reach the relay. */
+/** A request that couldn't reach the relay (also told to outages.ts, which pauses background checks after a few). */
 export function noteUnreachable(said: string): void {
   reach.failedAt = Date.now();
   reach.failed = said;
+  outages.failed("relay", said);
 }
 
-/** A request the relay answered (any status). */
+/** A request the relay answered (any status): an outage, if any, is over. */
 export function noteAnswered(): void {
   reach.answeredAt = Date.now();
+  outages.answered("relay");
 }
 
 /** Whether the relay answers now (its `/health`, no sign-in needed), within `timeoutMs`; said in `reach`. */

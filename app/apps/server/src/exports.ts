@@ -27,6 +27,7 @@ import { canonical, fileName, homePath, isFile, join, parent } from "./paths.ts"
 import { duration } from "./project.ts";
 import { fixed, jsonForSerde } from "./rust.ts";
 import * as seams from "./seams.ts";
+import * as storage from "./storage.ts";
 import type { Store } from "./store.ts";
 import { BUILD } from "./version.ts";
 
@@ -1124,7 +1125,8 @@ export class ExportRegistry implements seams.Exports {
     const make = () => {
       if (room.make === null) return;
       try {
-        room.make(roomWanted(size, store.cacheDir(), folder));
+        // As far as what Edit keeps free on the disk, from projects not in work (cache_cleanup.ts `makeRoom`).
+        room.make(roomWanted(size, store.cacheDir(), folder) + storage.keepFreeBytes(store.cacheDir()));
       } catch (error) {
         diag.warn("export", `making room for ${project.name}'s export: ${diag.messageOf(error)}`);
       }
@@ -1276,7 +1278,7 @@ export class ExportRegistry implements seams.Exports {
       const make = () => {
         if (room.make === null) return;
         try {
-          room.make(roomWanted(bytes, store.cacheDir(), folder) + (running.review ?? 0));
+          room.make(roomWanted(bytes, store.cacheDir(), folder) + (running.review ?? 0) + storage.keepFreeBytes(store.cacheDir()));
         } catch (error) {
           diag.warn("export", `making room for ${project.name}'s export: ${diag.messageOf(error)}`);
         }
@@ -1626,7 +1628,9 @@ export function roomFor(bytes: number, cacheDir: string, outputDir: string, free
   for (const { path, bytes: wanted } of need.values()) {
     const has = free(path);
     if (has < wanted) {
-      return `not enough disk space for this export: it needs about ${(wanted / GB).toFixed(1)} GB on the disk with ${path}, and ${(has / GB).toFixed(1)} GB is free (free some space, or export a shorter span, a smaller size or a lower quality)`;
+      // In one line with the numbers, before anything is written (storage.ts `roomLine`); an export folder on another disk is named.
+      const what = path === cacheDir || device(path) === device(cacheDir) ? "This export" : `This export (into ${path})`;
+      return storage.roomLine(what, wanted, has, "export it again, or export a shorter span, a smaller size or a lower quality");
     }
   }
   return null;

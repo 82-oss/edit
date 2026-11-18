@@ -173,8 +173,11 @@ const BENEATH_KEY = ".beneath.json";
 
 const beneathSlot = new Semaphore(1);
 
+/** How what's beneath is keyed now (3: with the order of its tracks, Nov 18). */
+const KEY_VERSION = 3;
+
 /** The effect's clip, and the project as only the tracks below it: what it's laid over, or null when it isn't placed. */
-function under(project: Project, name: string): { start: number; end: number; project: Project; key: string; legacy: string } | null {
+function under(project: Project, name: string): { start: number; end: number; project: Project; key: string; older: string[] } | null {
   const media = project.media.find((one) => one.effect === name);
   if (media === undefined) return null;
   const clip = project.clips.find((one) => one.type === "video" && one.media === media.id);
@@ -186,11 +189,28 @@ function under(project: Project, name: string): { start: number; end: number; pr
   const used = new Set(clips.map((one) => ("media" in one ? one.media : null)).filter((one): one is string => typeof one === "string"));
   const media_ = project.media.filter((one) => used.has(one.id));
   const hashed = (value: unknown) => new Bun.CryptoHasher("sha256").update(stableStringify(value)).digest("hex").slice(0, 16);
+  // Which is drawn over which: the order of the tracks below that have something in its span, and whether each shows. Only
+  // those: a lane put in or taken out elsewhere on the timeline (a cleaned strip's, clean_strips.ts) changes nothing here.
+  const layers = order.filter((id) => below.has(id) && clips.some((one) => one.track === id)).map((id) => [id, project.tracks.find((one) => one.id === id)?.hidden === true]);
+  const byId = [...clips].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   // Each footage by what it is (its content's id in the cloud), not where this computer keeps it: every computer, port
   // and data folder gives a media a path of its own (cloud_media's resolver), so a key of paths was made again on each.
-  const key = hashed({ version: 2, settings: project.settings, start, end, clips, media: media_.map((one: Media) => ({ id: one.id, source: one.cloud?.source ?? one.path, effect_key: one.effect_key ?? null })) });
-  const legacy = hashed({ version: 1, settings: project.settings, start, end, clips, media: media_.map((one: Media) => ({ id: one.id, path: one.path, effect_key: one.effect_key ?? null })) });
-  return { start, end, project: { ...project, clips, tracks: project.tracks.filter((one) => below.has(one.id)) }, key, legacy };
+  const sources = media_.map((one: Media) => ({ id: one.id, source: one.cloud?.source ?? one.path, effect_key: one.effect_key ?? null }));
+  // A cleaned strip by its media alone: each piece cleaned again comes back as a new media (text_removal.ts,
+  // watermark_removal.ts), and its upload filling in its cloud source afterwards is the same picture, not a new render.
+  const what = media_.map((one: Media) => (one.cleans != null ? { id: one.id, strip: true, effect_key: one.effect_key ?? null } : { id: one.id, source: one.cloud?.source ?? one.path, effect_key: one.effect_key ?? null }));
+  const key = hashed({ version: KEY_VERSION, settings: project.settings, start, end, layers, clips: byId, media: what });
+  // Marks written before (without the order of the tracks; before that, with paths): taken as what's beneath while they hold (markHolds).
+  const older = [
+    hashed({ version: 2, settings: project.settings, start, end, clips, media: sources }),
+    hashed({ version: 1, settings: project.settings, start, end, clips, media: media_.map((one: Media) => ({ id: one.id, path: one.path, effect_key: one.effect_key ?? null })) }),
+  ];
+  return { start, end, project: { ...project, clips, tracks: project.tracks.filter((one) => below.has(one.id)) }, key, older };
+}
+
+/** What's beneath effect `name` now, as its mark says it (null when it isn't placed): a change there is a new render. */
+export function beneathKey(project: Project, name: string): string | null {
+  return under(project, name)?.key ?? null;
 }
 
 // What's beneath an effect is told by its `.beneath.json`, which is part of its
@@ -208,21 +228,21 @@ function under(project: Project, name: string): { start: number; end: number; pr
 const ADOPTED = "beneath-adopted.json";
 
 /** Marks taken as they are, by `project/name`: the mark's text (its hash) and what was beneath then. */
-function readAdopted(cache: string): Record<string, { mark: string; key: string }> {
+function readAdopted(cache: string): Record<string, { mark: string; key: string; v?: number }> {
   try {
-    return JSON.parse(fs.readFileSync(join(cache, ADOPTED), "utf8")) as Record<string, { mark: string; key: string }>;
+    return JSON.parse(fs.readFileSync(join(cache, ADOPTED), "utf8")) as Record<string, { mark: string; key: string; v?: number }>;
   } catch {
     return {};
   }
 }
 
-function writeAdopted(cache: string, adopted: Record<string, { mark: string; key: string }>): void {
+function writeAdopted(cache: string, adopted: Record<string, { mark: string; key: string; v?: number }>): void {
   fs.mkdirSync(cache, { recursive: true });
   writeAtomic(join(cache, ADOPTED), JSON.stringify(adopted));
 }
 
-/** Whether a mark says what's beneath now (`found`), taking one made elsewhere (see above). */
-function markHolds(app: App, projectId: string, name: string, text: string | null, found: { key: string; legacy: string }): boolean {
+/** Whether a mark says what's beneath now (`found`), taking one made elsewhere or keyed as before (see above). */
+function markHolds(app: App, projectId: string, name: string, text: string | null, found: { key: string; older: string[] }): boolean {
   if (text === null) return false;
   let said: string | undefined;
   try {
@@ -230,15 +250,18 @@ function markHolds(app: App, projectId: string, name: string, text: string | nul
   } catch {
     return false;
   }
-  if (said === found.key || said === found.legacy) return true;
+  if (said === found.key) return true;
   const cache = app.store.cacheDir();
   const adopted = readAdopted(cache);
   const id = `${projectId}/${name}`;
   const mark = new Bun.CryptoHasher("sha256").update(text).digest("hex");
-  const taken = adopted[id];
-  if (taken !== undefined && taken.mark === mark) return taken.key === found.key;
-  if (!effects.rendersItsCode(app.store, projectId, name)) return false;
-  adopted[id] = { mark, key: found.key };
+  const taken = adopted[id]?.mark === mark ? adopted[id] : undefined;
+  // Taken as today's key: holds while that's what's beneath.
+  if (taken !== undefined && taken.v === KEY_VERSION) return taken.key === found.key;
+  // Keyed as before (by the mark, or when it was taken): holding by that key, it's kept as today's, so a change from here on is seen.
+  const before = (said !== undefined && found.older.includes(said)) || (taken !== undefined && found.older.includes(taken.key));
+  if (!before && (taken !== undefined || !effects.rendersItsCode(app.store, projectId, name))) return false;
+  adopted[id] = { mark, key: found.key, v: KEY_VERSION };
   writeAdopted(cache, adopted);
   return true;
 }

@@ -24,6 +24,7 @@ import { deleteExport, listExports } from "./exports.ts";
 import { writeAtomic } from "./files.ts";
 import { ApiError } from "./http/errors.ts";
 import { readJson, type Router } from "./http/router.ts";
+import * as outages from "./outages.ts";
 import { join } from "./paths.ts";
 import type { ScriptJob } from "./model.ts";
 import { stableStringify } from "./stable.ts";
@@ -141,7 +142,8 @@ export function start(app: App): void {
   if (timer !== null) return;
   const tick = () => {
     if (!cloud.enabled()) return;
-    void poll(app).catch((error: unknown) => diag.warn("cloud", `following archives: ${diag.messageOf(error)}`));
+    // A background round: skipped while the relay is down, but for one probe at a time (outages.ts).
+    void outages.background("relay", () => poll(app)).catch((error: unknown) => diag.warn("cloud", `following archives: ${diag.messageOf(error)}`));
   };
   timer = setInterval(tick, POLL_MS);
   timer.unref?.();

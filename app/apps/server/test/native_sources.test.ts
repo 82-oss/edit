@@ -3,12 +3,15 @@
 import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 
+import { cleanCache } from "../src/cache_cleanup.ts";
 import { localPath } from "../src/cloud_media.ts";
+import { pin } from "../src/file_pins.ts";
 import { PLAYBACK_ROUTE } from "../src/cloud_playback.ts";
 import * as localPreviews from "../src/local_previews.ts";
 import { hooks, nativeSources, reset } from "../src/native_preview.ts";
 import * as player from "../src/player.ts";
 import * as pieces from "../src/proxy_pieces.ts";
+import * as storage from "../src/storage.ts";
 import { spyOn } from "bun:test";
 import { fixtureHome } from "./helpers/home.ts";
 import { clip, media } from "./helpers/model.ts";
@@ -153,7 +156,7 @@ test("a pieced proxy's pieces here that the timeline plays are cut into files th
       // The piece played isn't cut yet: asked again.
       expect(first.coming).toBe(true);
       await Bun.sleep(10);
-      const file = localPath(cache, `${base}/native/1.mp4`);
+      const file = localPath(cache, `${base}/native2/1.mp4`);
       // Only what the timeline plays is cut, from this Mac's own files of the piece: a cut piece is a second copy of its minute.
       expect(cuts).toEqual([[localPath(cache, `${base}/head.mp4`), localPath(cache, `${base}/video/1.m4s`), file]]);
       const second = await ask();
@@ -241,6 +244,201 @@ test("as a streamed preview's whole copy lands, the window's pages hear it and a
   } finally {
     localPreviews.hooks.fetch = realFetch;
     localPreviews.reset();
+    reset();
+    cleanup();
+  }
+});
+
+/** A two-hour pieced proxy whose piece 1 is here (its head, its picture: 26 bytes), played by a clip at 1:05. */
+async function piecedProject(name: string) {
+  const fixture = fixtureHome(name);
+  const { app, store } = fixture;
+  const id = store.create("p", { width: 1920, height: 1080, fps: 30 }).project.id;
+  // Its own file (layouts are kept in memory by key).
+  const source = `drive:${name.replace(/[^A-Za-z0-9]/g, "")}`;
+  const key = pieces.proxyKeyOf(source);
+  const base = pieces.baseOf(key)!;
+  const cache = store.cacheDir();
+  const layout = { ...pieces.plan(source, `edit/originals/${source.replace(":", "/")}/long.mp4`, 7200, 30, 1920, 1080, true), head: 1000, total: 1 };
+  write(localPath(cache, `${base}/layout.json`), JSON.stringify(layout));
+  write(localPath(cache, `${base}/video/1.m4s`), "x".repeat(26));
+  write(localPath(cache, `${base}/head.mp4`), "head");
+  await store.update(id, "test", (p) => {
+    p.media.push({ ...media({ id: "long", name: "long.mp4", path: "https://r2.example/long", kind: "video", duration: 7200 }), cloud: { proxy: key } } as never);
+    p.clips.push(clip({ id: "c1", type: "video", track: "v1", media: "long", start: 0, duration: 30, source_in: 65 }));
+  });
+  const ask = async () => (await (await nativeSources(app, store.get(id)!.project)).json()) as { excerpts: Record<string, { path: string }[]>; coming: boolean };
+  return { ...fixture, base, cache, ask };
+}
+
+function write(path: string, text: string): void {
+  fs.mkdirSync(path.slice(0, path.lastIndexOf("/")), { recursive: true });
+  fs.writeFileSync(path, text);
+}
+
+test("a piece the window cut the old way (from the stream, every frame before it too) is never read again: it's cut anew and the old copies go, the cleaner taking every other one but the pieces themselves", async () => {
+  reset();
+  storage.resetRoom();
+  const free = spyOn(storage.diskHooks, "free").mockReturnValue(100e9);
+  const { app, base, cache, ask, cleanup } = await piecedProject("native-sources-old-cuts");
+  const cutting = spyOn(hooks, "cut").mockImplementation(async (_head, _video, out) => write(out, "cut"));
+  try {
+    // Nov 17–18, Sphe's M4: an upgraded Mac keeps its old copies, 955 MB for a minute (sparse here).
+    const old = localPath(cache, `${base}/native/1.mp4`);
+    write(old, "");
+    fs.truncateSync(old, 955_000_000);
+    write(localPath(cache, `${base}/native/7.mp4`), "old");
+    const first = await ask();
+    expect(first.excerpts).toEqual({});
+    expect(first.coming).toBe(true);
+    await Bun.sleep(10);
+    const cut = localPath(cache, `${base}/native2/1.mp4`);
+    expect(cutting).toHaveBeenCalledTimes(1);
+    expect((await ask()).excerpts.long!.map((one) => one.path)).toEqual([cut]);
+    // Its own old copies gone as soon as it's asked for, the pieces beside them kept.
+    expect(fs.existsSync(localPath(cache, `${base}/native`))).toBe(false);
+    for (const kept of ["layout.json", "head.mp4", "video/1.m4s", "native2/1.mp4"]) expect(fs.existsSync(localPath(cache, `${base}/${kept}`))).toBe(true);
+    // Another long video's (no project opened it since), unversioned or v3: the cleaner takes them, whatever their
+    // age and however much room the cache has, but a pinned one (an export reading it) and its folder stay.
+    const other = pieces.baseKey("youtube:abcdefghijk");
+    const older = "edit/pieces/drive/fiveMinutePieces01";
+    for (const one of [`${other}/native/0.mp4`, `${other}/native/1.mp4`, `${other}/head.mp4`, `${other}/video/0.m4s`, `${other}/audio/0.m4s`, `${other}/joined/0.m4s`, `${older}/native/3.mp4`, `${older}/video/3.m4s`]) write(localPath(cache, one), "x");
+    const unpin = pin([localPath(cache, `${other}/native/1.mp4`)]);
+    try {
+      const report = cleanCache(app, false, Date.now(), { freeBytes: 0 });
+      expect(report.removed.sort()).toEqual([localPath(cache, `${other}/native/0.mp4`), localPath(cache, `${older}/native`), localPath(cache, `${older}/native/3.mp4`)].sort());
+      for (const kept of [`${other}/native/1.mp4`, `${other}/head.mp4`, `${other}/video/0.m4s`, `${other}/audio/0.m4s`, `${other}/joined/0.m4s`, `${older}/video/3.m4s`, `${base}/native2/1.mp4`]) expect(fs.existsSync(localPath(cache, kept))).toBe(true);
+    } finally {
+      unpin();
+    }
+    // Unpinned, the next pass takes it and its folder.
+    cleanCache(app, false, Date.now(), { freeBytes: 0 });
+    expect(fs.existsSync(localPath(cache, `${other}/native`))).toBe(false);
+  } finally {
+    cutting.mockRestore();
+    free.mockRestore();
+    reset();
+    cleanup();
+  }
+});
+
+test("a piece is cut only with room for it on the disk (its claim counted against every other write), else it streams on; unmeasured, it waits too", async () => {
+  reset();
+  storage.resetRoom();
+  // What copies kept to play sooner leave free (the tests' disk: 15 GB, what Edit keeps free on it).
+  const floor = storage.cacheFloor("/");
+  let freeNow = floor + 10;
+  const free = spyOn(storage.diskHooks, "free").mockImplementation(() => freeNow);
+  const { base, cache, ask, cleanup } = await piecedProject("native-sources-no-room");
+  const cutting = spyOn(hooks, "cut").mockImplementation(async (_head, _video, out) => write(out, "cut"));
+  try {
+    // The fragment (26 bytes) and a head (1,000) don't fit over the cache's floor: streamed, asked again later.
+    let answer = await ask();
+    await Bun.sleep(10);
+    expect(cutting).not.toHaveBeenCalled();
+    expect(answer.excerpts).toEqual({});
+    expect(answer.coming).toBe(true);
+    // Another write under way takes the room it would have.
+    freeNow = floor + 2_000;
+    const other = storage.claim(1_500);
+    answer = await ask();
+    await Bun.sleep(10);
+    expect(cutting).not.toHaveBeenCalled();
+    other.release();
+    // The disk's free space not measurable: not taken for endless room.
+    freeNow = Number.POSITIVE_INFINITY;
+    await ask();
+    await Bun.sleep(10);
+    expect(cutting).not.toHaveBeenCalled();
+    // With room, at the page's next ask, it's cut.
+    freeNow = floor + 2_000;
+    await ask();
+    await Bun.sleep(10);
+    expect(cutting).toHaveBeenCalledTimes(1);
+    answer = await ask();
+    expect(answer.excerpts.long!.map((one) => one.path)).toEqual([localPath(cache, `${base}/native2/1.mp4`)]);
+    expect(answer.coming).toBe(false);
+    expect(storage.claimedBytes()).toBe(0);
+  } finally {
+    cutting.mockRestore();
+    free.mockRestore();
+    storage.resetRoom();
+    reset();
+    cleanup();
+  }
+});
+
+test("a cut claims what it writes while it runs, and lets it go when it fails", async () => {
+  reset();
+  storage.resetRoom();
+  const free = spyOn(storage.diskHooks, "free").mockReturnValue(100e9);
+  const { ask, cleanup } = await piecedProject("native-sources-claim");
+  const during: number[] = [];
+  const cutting = spyOn(hooks, "cut").mockImplementation(async () => {
+    during.push(storage.claimedBytes());
+    throw new Error("ffmpeg died");
+  });
+  try {
+    await ask();
+    await Bun.sleep(10);
+    // The fragment and one head (the pieced proxy's is here already).
+    expect(during).toEqual([26 + 1000]);
+    expect(storage.claimedBytes()).toBe(0);
+    // Failed lately: streamed, not asked about again for a while.
+    const answer = await ask();
+    expect(answer.excerpts).toEqual({});
+    expect(answer.coming).toBe(false);
+  } finally {
+    cutting.mockRestore();
+    free.mockRestore();
+    storage.resetRoom();
+    reset();
+    cleanup();
+  }
+});
+
+test("a piece the window plays is cut the moment its picture lands, and the page hears each cut at once, not at its next ask", async () => {
+  reset();
+  storage.resetRoom();
+  const free = spyOn(storage.diskHooks, "free").mockReturnValue(100e9);
+  const { store, base, cache, ask, cleanup } = await piecedProject("native-sources-landing");
+  const id = store.visible()[0]!.id;
+  // The clip plays on into piece 2 (1:05 to 2:05), which isn't here yet.
+  await store.update(id, "test", (p) => {
+    p.clips[0]!.duration = 1800;
+  });
+  const cuts: string[] = [];
+  const cutting = spyOn(hooks, "cut").mockImplementation(async (_head, _video, out) => {
+    cuts.push(out);
+    write(out, "cut");
+  });
+  const heard: unknown[] = [];
+  const stop = store.subscribe((event) => heard.push(event));
+  const told = () => heard.filter((event) => (event as { type: string }).type === "native-sources").length;
+  try {
+    expect((await ask()).coming).toBe(true);
+    // Piece 1 was here: cut, and the page told a moment after.
+    await Bun.sleep(450);
+    expect(cuts).toEqual([localPath(cache, `${base}/native2/1.mp4`)]);
+    expect(told()).toBe(1);
+    // Piece 2's picture lands (made or fetched behind the viewer): cut with no ask, and the page told again.
+    write(localPath(cache, `${base}/video/2.m4s`), "x".repeat(26));
+    pieces.pictureLanded(base, 2);
+    await Bun.sleep(450);
+    expect(cuts).toEqual([localPath(cache, `${base}/native2/1.mp4`), localPath(cache, `${base}/native2/2.mp4`)]);
+    expect(told()).toBe(2);
+    const answer = await ask();
+    expect(answer.excerpts.long!.map((one) => one.path)).toEqual([localPath(cache, `${base}/native2/1.mp4`), localPath(cache, `${base}/native2/2.mp4`)]);
+    expect(answer.coming).toBe(false);
+    // Another video's piece landing cuts nothing.
+    pieces.pictureLanded("edit/pieces/v3/drive/other", 2);
+    await Bun.sleep(10);
+    expect(cuts.length).toBe(2);
+  } finally {
+    stop();
+    cutting.mockRestore();
+    free.mockRestore();
+    storage.resetRoom();
     reset();
     cleanup();
   }

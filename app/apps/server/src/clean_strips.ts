@@ -185,17 +185,39 @@ function laneAbove(project: Project, owner: string, lane: string): boolean {
   return project.tracks.slice(at + 1, there).every((track) => project.clips.some((clip) => clip.track === track.id) && project.clips.filter((clip) => clip.track === track.id).every(isOverlay));
 }
 
-/** The overlays' lane just above `track`, free over [start, end): an overlay lane there, else a new one. */
-function laneFor(project: Project, track: string, start: number, end: number): string {
+const isWatermarkOverlay = (clip: Clip | Wanted): boolean => (clip.name ?? "").startsWith(`${WATERMARK_NAME} · `);
+
+/**
+ * A lane for an overlay of `track`'s footage over [start, end): a free one of
+ * the overlay lanes just above it, else a new one there. Where a text strip and
+ * a watermark strip cover the same frames the text strip's lane is the higher
+ * (its picture shows), so a text overlay goes above every watermark overlay it
+ * meets and a watermark overlay below every text overlay it meets.
+ */
+function laneFor(project: Project, track: string, watermark: boolean, start: number, end: number): string {
   const at = project.tracks.findIndex((one) => one.id === track);
-  const next = project.tracks[at + 1];
-  if (next !== undefined && next.kind === "video" && next.subtitles !== true && next.hidden !== true) {
-    const there = project.clips.filter((clip) => clip.track === next.id);
-    if (there.length > 0 && there.every(isOverlay) && !there.some((clip) => clip.start < end && start < clipEnd(clip))) return next.id;
+  // The overlay lanes right above the footage's, bottom first.
+  const stack: Track[] = [];
+  for (const lane of project.tracks.slice(at + 1)) {
+    if (lane.kind !== "video" || lane.subtitles === true || lane.hidden === true) break;
+    const there = project.clips.filter((clip) => clip.track === lane.id);
+    if (there.length === 0 || !there.every(isOverlay)) break;
+    stack.push(lane);
   }
+  const meets = (lane: Track) => project.clips.filter((clip) => clip.track === lane.id && clip.start < end && start < clipEnd(clip));
+  let lo = 0;
+  let hi = stack.length - 1;
+  stack.forEach((lane, index) => {
+    for (const clip of meets(lane)) {
+      if (watermark && !isWatermarkOverlay(clip)) hi = Math.min(hi, index - 1);
+      if (!watermark && isWatermarkOverlay(clip)) lo = Math.max(lo, index + 1);
+    }
+  });
+  for (let index = lo; index <= hi; index++) if (meets(stack[index]!).length === 0) return stack[index]!.id;
   const id = freshId(project, "v");
   const lane: Track = { id, kind: "video", hidden: false, muted: false, locked: false };
-  project.tracks.splice(at + 1, 0, lane);
+  // A watermark's new lane at the bottom (under every text overlay); a text strip's just above the watermarks it meets.
+  project.tracks.splice(at + 1 + (watermark ? 0 : lo), 0, lane);
   return id;
 }
 
@@ -248,35 +270,43 @@ function trimCovers(project: Project, stripped: Map<string, [number, number][]>)
 /**
  * The house rule kept on every save (the store's, as pointers.ts's): each
  * clip of footage that has cleaned strips shows them, and nothing else is
- * touched. Nothing changes when the overlays are as they should be.
+ * touched. Only what changed changes: an overlay that's still wanted, on a
+ * lane still right for it, stays as it is (its id, its lane), so a strip
+ * finished, taken out or re-cut touches only its own overlays, and nothing
+ * drawn over the rest of the timeline (an effect's picture beneath,
+ * effect_inputs.ts) is changed by it (Nov 18, Sphe's M4: each piece done laid
+ * every overlay again with new ids, and ~50 effects drawn over footage went
+ * back to waiting every few minutes, never catching up).
  */
 export function enforceCleanStrips(_before: Project | null, project: Project): void {
   const old = project.clips.filter((clip): clip is VideoClip => isOverlay(clip));
   if (old.length === 0 && !project.media.some(isStrip)) return;
   const want = wanted(project);
-  const same =
-    want.length === old.length &&
-    (() => {
-      const left = new Map<string, number>();
-      for (const one of old) left.set(keyOf(one), (left.get(keyOf(one)) ?? 0) + 1);
-      for (const one of want) {
-        const count = left.get(keyOf(one)) ?? 0;
-        if (count === 0) return false;
-        left.set(keyOf(one), count - 1);
-      }
-      const owners = new Map(project.clips.map((clip) => [clip.id, clip]));
-      return old.every((one) => one.parent != null && owners.has(one.parent) && laneAbove(project, owners.get(one.parent)!.track, one.track));
-    })();
-  if (!same) {
-    const lanes = new Set(old.map((clip) => clip.track));
-    project.clips = project.clips.filter((clip) => !isOverlay(clip));
-    // Lanes left empty that only ever held overlays go with them.
+  const owners = new Map(project.clips.map((clip) => [clip.id, clip]));
+  // Each overlay that's as it should be, on a lane above its footage's, by what it is.
+  const standing = new Map<string, VideoClip[]>();
+  for (const one of old) {
+    const owner = one.parent == null ? undefined : owners.get(one.parent);
+    if (owner === undefined || !laneAbove(project, owner.track, one.track)) continue;
+    standing.set(keyOf(one), [...(standing.get(keyOf(one)) ?? []), one]);
+  }
+  const kept = new Set<string>();
+  const missing: Wanted[] = [];
+  for (const one of want) {
+    const match = standing.get(keyOf(one))?.shift();
+    if (match !== undefined) kept.add(match.id);
+    else missing.push(one);
+  }
+  const gone = new Set(old.filter((clip) => !kept.has(clip.id)).map((clip) => clip.id));
+  if (gone.size > 0 || missing.length > 0) {
+    const lanes = new Set(old.filter((clip) => gone.has(clip.id)).map((clip) => clip.track));
+    project.clips = project.clips.filter((clip) => !gone.has(clip.id));
+    // Lanes left empty that held the overlays taken out go with them.
     project.tracks = project.tracks.filter((track) => !lanes.has(track.id) || project.clips.some((clip) => clip.track === track.id));
-    const owners = new Map(project.clips.map((clip) => [clip.id, clip]));
-    for (const one of want) {
+    for (const one of missing) {
       const owner = owners.get(one.parent!);
       if (owner === undefined) continue;
-      const clip = { ...one, id: freshId(project, "c"), track: laneFor(project, owner.track, one.start, one.start + one.duration) } as VideoClip;
+      const clip = { ...one, id: freshId(project, "c"), track: laneFor(project, owner.track, isWatermarkOverlay(one), one.start, one.start + one.duration) } as VideoClip;
       if (clip.keyframes !== undefined && Object.keys(clip.keyframes).length === 0) delete (clip as { keyframes?: unknown }).keyframes;
       project.clips.push(clip);
     }

@@ -391,6 +391,9 @@ pub(crate) struct VideoReader {
     excerpt: Option<(usize, Box<VideoReader>)>,
     /// Excerpts that wouldn't read: the URL for those stretches.
     broken: Vec<usize>,
+    /// The next excerpt's reader, opened and standing on its first frame on a thread of its own while this
+    /// one plays towards it (`prime_next`): one piece ahead, never more.
+    next: Option<(PathBuf, std::thread::JoinHandle<Option<VideoReader>>)>,
     /// A read failed: never put back in a pool, so the next asks a fresh reader (`ReaderPool::put`).
     failed: bool,
 }
@@ -454,6 +457,7 @@ impl VideoReader {
             excerpts_seen,
             excerpt: None,
             broken: Vec::new(),
+            next: None,
             failed: false,
         }
     }
@@ -478,10 +482,82 @@ impl VideoReader {
         if same {
             return false;
         }
-        self.excerpts = fresh;
+        let held = std::mem::replace(&mut self.excerpts, fresh);
         // Both count in the list it held.
         self.broken.clear();
-        self.excerpt.take().is_some()
+        // The excerpt being read stays open where it's still known (another piece cut puts it at another index):
+        // let go, the piece playing was opened and seeked again on the frame after each piece cut elsewhere.
+        let Some((at, reader)) = self.excerpt.take() else {
+            return false;
+        };
+        let reading = held.as_ref().and_then(|held| held.get(at));
+        let still = self
+            .excerpts
+            .as_ref()
+            .and_then(|known| known.iter().position(|excerpt| Some(excerpt) == reading));
+        match still {
+            Some(index) => {
+                self.excerpt = Some((index, reader));
+                false
+            }
+            None => true,
+        }
+    }
+
+    /// The reader `prime_next` made ready for the excerpt at `path`, if it was this one; the thread is waited
+    /// for (opened seconds ago, it's done by now, and a wait is never longer than opening it here).
+    fn primed(&mut self, path: &Path) -> Option<VideoReader> {
+        match self.next.take() {
+            Some((at, thread)) if at == path => thread.join().ok().flatten(),
+            _ => None,
+        }
+    }
+
+    /// Reading forward in excerpt `index` at `time` (excerpt seconds of the original): the excerpt it goes on
+    /// to is opened and seeked to its first frame on another thread once that's `PRIME_SECONDS` away, so
+    /// crossing into it reads on (Nov 18, kenobi: a long preview played across 4:00 opened its next piece's
+    /// copy on the frame, 133 ms, and three pictures were missed at every minute).
+    fn prime_next(&mut self, excerpts: &[crate::excerpts::Excerpt], index: usize, time: f64) {
+        let Some(current) = excerpts.get(index) else {
+            return;
+        };
+        // The one read next: the first starting after this one's start and within it (`covering` takes the
+        // latest start), as a long preview's pieces follow each other.
+        let Some(next) = excerpts
+            .iter()
+            .enumerate()
+            .filter(|(at, excerpt)| {
+                *at != index
+                    && !self.broken.contains(at)
+                    && excerpt.from > current.from + 1e-6
+                    && excerpt.from <= current.to + 1e-6
+            })
+            .map(|(_, excerpt)| excerpt)
+            .min_by(|a, b| a.from.total_cmp(&b.from))
+        else {
+            return;
+        };
+        if next.from - time > PRIME_SECONDS
+            || self.next.as_ref().is_some_and(|(at, _)| *at == next.path)
+            || !next.path.is_file()
+        {
+            return;
+        }
+        let mut source = self.source.clone();
+        source.key.path = next.path.clone();
+        let thread = std::thread::Builder::new()
+            .name("edit next piece".to_owned())
+            .spawn(move || {
+                // Behind the frame being drawn, and counted as decoding ahead, not as a frame's.
+                crate::util::utility_thread();
+                decode_stats::AHEAD_THREAD.with(|ahead| ahead.set(true));
+                let mut reader = VideoReader::open(source);
+                let mut scratch = vec![0_u8; reader.source.bytes()];
+                reader.frame_into(0.0, &mut scratch, false).ok()?;
+                Some(reader)
+            });
+        // One that couldn't start: the excerpt is opened on its frame, as before.
+        self.next = thread.ok().map(|thread| (next.path.clone(), thread));
     }
 
     /// The frame at `time` from a local excerpt that holds it, into `out`;
@@ -494,6 +570,7 @@ impl VideoReader {
         if_changed: bool,
     ) -> Option<bool> {
         let excerpts = self.excerpts.clone()?;
+        let playing = self.forward;
         // The frame nearest `time` is read from the excerpt that holds it, at
         // its own time. A time in a piece's last half-frame is nearest the next
         // piece's first frame, which a piece cut to its own frames doesn't have:
@@ -507,23 +584,32 @@ impl VideoReader {
         loop {
             let index = crate::excerpts::covering(&excerpts, time, &self.broken)?;
             let excerpt = excerpts.get(index)?;
-            if self.excerpt.as_ref().is_none_or(|(at, _)| *at != index) {
+            let switched = self.excerpt.as_ref().is_none_or(|(at, _)| *at != index);
+            if switched {
                 if !excerpt.path.is_file() {
                     self.broken.push(index);
                     continue;
                 }
-                let mut source = self.source.clone();
-                source.key.path = excerpt.path.clone();
-                self.excerpt = Some((index, Box::new(VideoReader::open(source))));
+                let reader = self.primed(&excerpt.path).unwrap_or_else(|| {
+                    let mut source = self.source.clone();
+                    source.key.path = excerpt.path.clone();
+                    VideoReader::open(source)
+                });
+                self.excerpt = Some((index, Box::new(reader)));
             }
             let (_, reader) = self.excerpt.as_mut()?;
-            // A new reader has copied nothing out yet: it always says the picture changed.
+            // Another excerpt's reader (a primed one has read its first frame already) says the picture changed.
             match reader.frame_into_mapped(
                 (time - excerpt.from).max(0.0),
                 out.slice(..),
-                if_changed,
+                if_changed && !switched,
             ) {
-                Ok(changed) => return Some(changed),
+                Ok(changed) => {
+                    if playing {
+                        self.prime_next(&excerpts, index, time);
+                    }
+                    return Some(changed);
+                }
                 Err(error) => {
                     crate::log::warn(
                         "render",
@@ -694,6 +780,9 @@ impl VideoReader {
 
     /// Frame covering `time` (seconds into the source), into the reader's own buffer.
     pub(crate) fn frame_at(&mut self, time: f64) -> Result<&[u8], String> {
+        self.forward = self
+            .position
+            .is_some_and(|position| position <= time + 1e-6 && time - position <= 2.0);
         self.position = Some(time);
         if self.source.key.still {
             if !self.has_frame {
@@ -932,6 +1021,10 @@ impl Drop for VideoReader {
         self.stop();
     }
 }
+
+/// How far ahead (source seconds) of the next excerpt a reader playing towards it has it opened
+/// (`VideoReader::prime_next`): the window's cuts are warmed as far ahead (`player::AHEAD_SECONDS`).
+const PRIME_SECONDS: f64 = 3.0;
 
 /// How long a reader made ready for a cut ahead is the last the pool lets go: the playhead reaches
 /// the cut within three seconds of playing (`player::AHEAD_SECONDS`), or it went elsewhere.
@@ -5333,6 +5426,67 @@ mod tests {
             assert_eq!(counted(&out), n, "at {time}");
             assert_eq!(counted(reader.frame_at(time).unwrap()), n, "at {time}");
         }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// Playing on into the next piece reads it from a reader opened and seeked to its first frame on
+    /// another thread beforehand, and a piece cut elsewhere while one plays leaves the one playing open
+    /// (Nov 18, kenobi: a long preview opened each minute's copy on its frame, three pictures missed).
+    #[test]
+    fn playing_into_the_next_piece_reads_on_from_a_reader_opened_ahead() {
+        let dir = temp_dir("excerpt-next");
+        let path = dir.join("counter-next.mp4");
+        let made = crate::util::ffmpeg_command()
+            .args(["-v", "error", "-f", "lavfi", "-i"])
+            .arg("color=c=black:size=64x36:rate=30:duration=2,format=yuv420p,geq=lum='16+3*N':cb=128:cr=128")
+            .args(["-c:v", "libx264", "-qp", "4", "-g", "15"])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let cut = |from: &str, name: &str| {
+            let out = dir.join(name);
+            let done = crate::util::ffmpeg_command()
+                .args(["-v", "error", "-ss", from, "-i"])
+                .arg(&path)
+                .args(["-frames:v", "15", "-map", "0:v:0", "-c:v", "copy", "-an"])
+                .arg(&out)
+                .status()
+                .unwrap();
+            assert!(done.success());
+            out
+        };
+        let piece = |from: f64, name: &str| crate::excerpts::Excerpt {
+            from,
+            to: from + 0.5,
+            path: cut(&format!("{from}"), name),
+        };
+        let object = "https://r2.invalid/edit/pieces/v3/youtube/nextNEXT01/proxy.mp4";
+        crate::excerpts::add(object, [piece(0.5, "a.mp4"), piece(1.0, "b.mp4")]);
+        let media: Media = serde_json::from_value(json!({
+            "id": "m", "name": "m", "path": format!("{object}?sig=1"), "kind": "video",
+            "duration": 2.0, "width": 64, "height": 36, "fps": 30
+        }))
+        .unwrap();
+        let source = Source::new(&media, PathBuf::from(&media.path), (64, 36), Order::Rgba);
+        let opened = || OPENED.with(std::cell::Cell::get);
+        let before = opened();
+        let mut reader = VideoReader::open(source.clone());
+        let mut out = vec![0; source.bytes()];
+        for n in 15..=44_i64 {
+            // The piece before is cut while a plays: a moves down the list and stays open.
+            if n == 20 {
+                crate::excerpts::add(object, [piece(0.0, "z.mp4")]);
+            }
+            assert!(
+                reader.frame_into(n as f64 / 30.0, &mut out, true).unwrap(),
+                "frame {n}"
+            );
+            assert_eq!(counted(&out), n, "frame {n}");
+        }
+        // The reader itself and a's on this thread; b's on the one that made it ready.
+        assert_eq!(opened() - before, 2);
+        assert!(reader.next.is_none());
         std::fs::remove_dir_all(dir).ok();
     }
 

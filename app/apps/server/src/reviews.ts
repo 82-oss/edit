@@ -32,6 +32,7 @@ import * as jobs from "./jobs.ts";
 import { inArea, runPromise } from "./effect/runtime.ts";
 import * as machine from "./machine.ts";
 import * as notices from "./notices.ts";
+import * as outages from "./outages.ts";
 import * as reviewGuard from "./review_guard.ts";
 import { DEFAULT_RELAY, url as relayUrl } from "./relay.ts";
 import { ApiError } from "./http/errors.ts";
@@ -1642,13 +1643,17 @@ let checkTimer: ReturnType<typeof setTimeout> | null = null;
 export function start(app: App, every = POLL_MS): void {
   if (timer !== null) return;
   let lastReconcile = 0;
+  // Both are background rounds: skipped while the relay is down, but for one probe at a time (outages.ts).
   const tick = () => {
     if (!cloud.enabled()) return;
-    void poll(app)
-      .then(async () => {
+    void outages
+      .background("relay", async () => {
+        await poll(app);
         if (Date.now() - lastReconcile < RECONCILE_MS) return;
         lastReconcile = Date.now();
         await reconcile(app);
+        // Cut short by the relay going: read whole again once it's back.
+        if (outages.down("relay")) lastReconcile = 0;
       })
       .catch((error: unknown) => diag.warn("review", `following the reviews: ${diag.messageOf(error)}`));
   };
@@ -1662,7 +1667,8 @@ export function start(app: App, every = POLL_MS): void {
       checkTimer.unref?.();
     };
     if (!cloud.enabled()) return next();
-    void checkIn(app)
+    void outages
+      .background("relay", () => checkIn(app))
       .catch((error: unknown) => diag.warn("review", `checking in for Ready for changes: ${diag.messageOf(error)}`))
       .finally(next);
   };
@@ -1700,6 +1706,8 @@ export async function reconcile(app: App): Promise<string[]> {
     try {
       review = (await cloud.query("reviews:get", { sourceId: projectId })) as typeof review;
     } catch (error) {
+      // The relay gone (said once, by outages.ts): the rest wait for the next round, not a warning each.
+      if (outages.quiet(error, ["relay"])) return found;
       diag.warn("review", `checking ${projectId}'s review: ${diag.messageOf(error)}`);
       continue;
     }

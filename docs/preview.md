@@ -35,7 +35,11 @@ a cloud one's whole copy (a made proxy, or footage that's its own proxy), else
 its footage on the Mac, else the server's loopback stream while the whole file
 comes down (a stream read moves that file's copy to the front, `local_previews.hurry`,
 and each copy landing tells the page at once, `native-sources`, which sends the
-window the sources alone, `preview_sources`: readers of files still read stay); a pieced proxy's pieces on the Mac are read as files of their own;
+window the sources alone, `preview_sources`: readers of files still read stay); a pieced proxy's pieces on the Mac are read as files of their own,
+each cut as its picture lands and the page told once it's cut, and a reader playing towards the next piece has
+it opened and on its first frame on another thread three seconds ahead, so crossing a minute reads on (Nov 18,
+kenobi, six crossings of a 22-minute video: 43–138 ms on the frame and 2–3 pictures missed at most of them
+before, 1.1–1.9 ms and none after);
 each sound from a made preview's `preview.m4a`, a cloud copy's own sound, else
 the footage or the stream (`apps/server/src/native_preview.ts`). A project the window
 draws is marked as its on the server (`apps/server/src/player.ts`): its whole

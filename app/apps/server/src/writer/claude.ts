@@ -12,7 +12,7 @@ import type * as Sdk from "@anthropic-ai/claude-agent-sdk";
 
 import { nameOf } from "@edit/types/models";
 
-import { baseOptions, findClaude, sdk } from "../claude.ts";
+import { baseOptions, findClaude, HQ_COMPACT_WINDOW, sdk } from "../claude.ts";
 import * as claudeUsage from "../claude_usage.ts";
 import * as diag from "../diag.ts";
 import { claudeTurn } from "../memory.ts";
@@ -49,6 +49,21 @@ export class Trouble extends Error {
   ) {
     super(message);
   }
+}
+
+/**
+ * Claude Code compacts near 180k tokens (claude.ts `baseOptions`), but a long case's transcript alone can be more:
+ * a case is taken whole however long (Sphe, Nov 18), and at 26 h of talk the build's prompt is ~320k tokens, so the
+ * first compaction would summarise away the words the script is written from. A question whose prompt nears that compacts
+ * only once its prompt and room to work past it are used: about 3.5 characters a token, 150k for the work, at most
+ * the model's whole window (claude.ts HQ_COMPACT_WINDOW; Claude Code clamps it to the model's own).
+ */
+export function compactAbove(question: Pick<Question, "prompt" | "system">): { env?: Record<string, string | undefined> } {
+  const tokens = Math.ceil((question.prompt.length + question.system.length) / 3.5);
+  // Under ~120k tokens a prompt leaves the work its room below 180k: those questions (every case of a few hours) keep it.
+  if (tokens < 120_000) return {};
+  const window = Math.min(HQ_COMPACT_WINDOW, tokens + 150_000);
+  return { env: { ...baseOptions("", "").env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(window) } };
 }
 
 export interface Question {
@@ -199,6 +214,7 @@ async function askNow(question: Question): Promise<Answer> {
   const allowed = [...(readDir ? [`Read(/${readDir}/**)`] : []), ...(question.tools ? ["mcp__writer"] : []), ...(question.web ? ["WebSearch", "WebFetch"] : [])];
   const options: Sdk.Options = {
     ...baseOptions(binary, dir),
+    ...compactAbove(question),
     model: question.model,
     systemPrompt: question.system,
     tools: [...(readDir ? ["Read"] : []), ...(question.web ? ["WebSearch", "WebFetch"] : [])],

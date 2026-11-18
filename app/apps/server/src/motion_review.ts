@@ -22,7 +22,10 @@ registerTool("review_motion", async ({ app, args, projectId }) => reviewSlot.wit
   if (to <= from) throw new Error("sample is outside the edit");
   const question = typeof args.question === "string" ? args.question : "Check motion continuity, text legibility, picture gaps, speech intelligibility, music/source boundaries, sound timing and abrupt level changes. Report only observable defects.";
   const clips = p.clips.filter((c) => c.start < to && clipEnd(c) > from);
-  const key = new Bun.CryptoHasher("sha256").update(stableStringify({ version: 1, settings: p.settings, media: p.media, clips, from, to, question })).digest("hex");
+  // Of what's in the sample only: the media its clips show and the tracks they sit on (their order and whether
+  // they're shown), so a strip or a cloud backfill on footage elsewhere doesn't make a paid look happen again.
+  const used = new Set(clips.flatMap((c) => ("media" in c && typeof c.media === "string" ? [c.media] : [])));
+  const key = new Bun.CryptoHasher("sha256").update(stableStringify({ version: 2, settings: p.settings, media: p.media.filter((m) => used.has(m.id)), tracks: p.tracks, clips, from, to, question })).digest("hex");
   const dir = join(app.store.home, "research", projectId, "motion"); fs.mkdirSync(dir, { recursive: true });
   const saved = join(dir, `${key}.json`); if (fs.existsSync(saved)) return text(fs.readFileSync(saved, "utf8"));
   const output = join(dir, `${key}.mp4`); const request = join(dir, `${key}.request.json`);

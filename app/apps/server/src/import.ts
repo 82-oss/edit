@@ -13,8 +13,10 @@ import * as media from "./media.ts";
 import type { Clip, ClipColor, Media, Project } from "./model.ts";
 import { fileName, join } from "./paths.ts";
 import { duration, fps, freshId, mediaOf } from "./project.ts";
+import { bitrateFor } from "./proxy_pieces.ts";
 import { cloudEnabled } from "./relay.ts";
 import * as seams from "./seams.ts";
+import * as storage from "./storage.ts";
 import * as uploads from "./uploads.ts";
 
 export { expandHome } from "./paths.ts";
@@ -90,6 +92,12 @@ export async function importPaths(
     }
   }
   const nameOf = (path: string) => names.get(path) ?? fileName(path) ?? path;
+  // The proxies about to be made here, before any is (storage.ts `admit`): projects not in work make room first, and
+  // only then is the import refused, with the numbers, rather than a proxy failing on a full disk part-way.
+  if (cloudEnabled()) {
+    const short = storage.admit(app.store.cacheDir(), proxiesBytes(probed.map(([, probe]) => probe)), "This import", "import it again");
+    if (short !== null) throw new Error(short);
+  }
   const items: seams.Made[] = [];
   for (const [path, probe] of probed) {
     const name = nameOf(path);
@@ -110,6 +118,20 @@ export async function importPaths(
     }
   }
   return addMedia(app, id, items, errors, place, origin);
+}
+
+/** A long video's proxy is made a piece at a time as it's read (cloud_media.ts `PIECED_FROM`): its first 20 minutes are counted. */
+const PIECED_COUNTED_S = 1200;
+
+/** About how much the proxies of these files take (proxy_pieces.ts `bitrateFor`, the sound at 160 kbit/s). */
+export function proxiesBytes(probes: media.Probe[]): number {
+  let total = 0;
+  for (const probe of probes) {
+    if (probe.kind !== "video") continue;
+    const seconds = Math.min(Math.max(probe.duration, 0), PIECED_COUNTED_S);
+    total += (seconds * (bitrateFor(probe.width, probe.height) + (probe.has_audio ? 160_000 : 0))) / 8;
+  }
+  return Math.ceil(total);
 }
 
 /** Adds already-made media (a cloud excerpt's proxy and where it is on R2). */

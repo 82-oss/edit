@@ -123,6 +123,9 @@ test("the page player's footage comes down whole in the timeline's order from th
   }
 });
 
+/** What whole copies leave free (storage.ts `cacheFloor`; the tests' disk: 15 GB, what Edit keeps free on it). */
+const FLOOR = storage.cacheFloor("/");
+
 /** A disk with `free` bytes free, which each fake fetch fills as it "writes" (telling its room what's left). */
 function disk(free: number) {
   const state = { free, lowest: free };
@@ -153,7 +156,7 @@ test("whole copies start only while the disk keeps the cache's floor beside what
     const finish = new Map<string, () => void>();
     localPreviews.hooks.fetch = (key) => new Promise<void>((resolve) => { started.push(key); finish.set(key, resolve); });
     // 300 MB over the cache's floor.
-    const { state } = disk(storage.CACHE_FLOOR_BYTES + 300_000_000);
+    const { state } = disk(FLOOR + 300_000_000);
     const big = own("big", 250_000_000);
     const bigger = own("bigger", 200_000_000);
     const small = own("small", 40_000_000);
@@ -185,7 +188,7 @@ test("whole copies start only while the disk keeps the cache's floor beside what
 test("a whole copy's exact size is checked again once its first block says it: one too big stops, isn't failed, and the censor check reads the stream at once", async () => {
   const home = scratch("local-previews");
   try {
-    disk(storage.CACHE_FLOOR_BYTES + 300_000_000);
+    disk(FLOOR + 300_000_000);
     let asked = 0;
     localPreviews.hooks.fetch = async (_key, _local, room) => {
       asked++;
@@ -232,8 +235,8 @@ test("no whole copy starts while a play is watched; what waited starts once it s
 test("a project's every file asked for at once, from both players, on a small disk: the cache's floor is never crossed, and what doesn't fit streams", async () => {
   const home = scratch("local-previews");
   try {
-    // 4 GB free, 60 files of 150 MB each (9 GB), written 10 MB at a time as the blocks of a fill would be.
-    const { state, write } = disk(4_000_000_000);
+    // 1 GB over the floor free, 60 files of 150 MB each (9 GB), written 10 MB at a time as the blocks of a fill would be.
+    const { state, write } = disk(FLOOR + 1_000_000_000);
     const files = Array.from({ length: 60 }, (_, n) => own(`f${n}`, 150_000_000));
     let kept = 0;
     localPreviews.hooks.fetch = async (_key, _local, room) => {
@@ -255,10 +258,10 @@ test("a project's every file asked for at once, from both players, on a small di
       localPreviews.fetchInPlayheadOrder(home.dir, project, n * 100);
       await Bun.sleep(10);
     }
-    for (let wait = 0; wait < 200 && state.free > storage.CACHE_FLOOR_BYTES + 150_000_000; wait++) await Bun.sleep(5);
+    for (let wait = 0; wait < 200 && state.free > FLOOR + 150_000_000; wait++) await Bun.sleep(5);
     await Bun.sleep(100);
-    expect(state.lowest).toBeGreaterThanOrEqual(storage.CACHE_FLOOR_BYTES);
-    expect(kept).toBe(Math.floor((4_000_000_000 - storage.CACHE_FLOOR_BYTES) / 150_000_000));
+    expect(state.lowest).toBeGreaterThanOrEqual(FLOOR);
+    expect(kept).toBe(Math.floor(1_000_000_000 / 150_000_000));
   } finally {
     home.cleanup();
   }

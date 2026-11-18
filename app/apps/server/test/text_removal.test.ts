@@ -14,7 +14,8 @@ import * as fs from "node:fs";
 import type { App } from "../src/app.ts";
 import * as burned from "../src/burned_subtitles.ts";
 import * as channels from "../src/channels.ts";
-import { enforceCleanStrips, NAME, strippedFrames } from "../src/clean_strips.ts";
+import { enforceCleanStrips, NAME, strippedFrames, WATERMARK_NAME } from "../src/clean_strips.ts";
+import { beneathKey } from "../src/effect_inputs.ts";
 import type { Media, Project, VideoClip } from "../src/model.ts";
 import { native, useNative, type Native, type ScreenText } from "../src/native/index.ts";
 import { createStub } from "../src/native/stub.ts";
@@ -361,6 +362,89 @@ test("a strip is laid over each clip of its footage it covers, stuck to it, just
   enforceCleanStrips(project, gone);
   expect(gone.clips.some((clip) => (clip.name ?? "").startsWith(NAME))).toBe(false);
   expect(gone.tracks.map((track) => track.id)).toEqual(["v1", "v2", "t1"]);
+});
+
+test("a strip finished touches only its own overlays: the rest keep their ids and lanes, an effect drawn elsewhere keeps what's beneath it, and a save with nothing new changes nothing (Nov 18, Sphe's M4)", () => {
+  // 20 clips of a 40 s tape, 2 s each; their text cleaned in two strips (0–20 s, 20–40 s), their watermark in one (0–40 s).
+  const strip = (id: string, from: number, to: number, what: "text" | "watermark") =>
+    ({ id, name: id, path: `/${id}.mp4`, kind: "video", duration: to - from, width: 1280, height: 640, fps: 30, has_audio: false, stacked_alpha: true, cleans: { media: "m", from, to, box: [0, 0, 1, 0.9], what } }) as unknown as Media;
+  const effect = (id: string, name: string) => ({ id, name, path: `/${name}.mp4`, kind: "video", duration: 4, width: 1920, height: 1080, fps: 30, has_audio: false, effect: name }) as unknown as Media;
+  const project = {
+    version: 1,
+    id: "p",
+    name: "p",
+    style: "bodycam",
+    settings: { width: 1920, height: 1080, fps: 30 },
+    media: [
+      { id: "m", name: "tape", path: "/tape.mp4", kind: "video", duration: 40, width: 1280, height: 720, fps: 30, has_audio: true },
+      strip("s1", 0, 20, "text"),
+      strip("s2", 20, 40, "text"),
+      strip("w", 0, 40, "watermark"),
+      effect("ea", "glass_a"),
+      effect("eb", "glass_b"),
+    ],
+    tracks: [
+      { id: "v1", kind: "video", hidden: false, muted: false, locked: false },
+      { id: "fx", kind: "video", hidden: false, muted: false, locked: false },
+    ],
+    clips: [
+      ...Array.from({ length: 20 }, (_, index) => ({ id: `f${index}`, track: "v1", start: index * 60, duration: 60, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: index * 2, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 })),
+      // Effects over 0–4 s (s1's) and 30–34 s (s2's).
+      { id: "xa", track: "fx", start: 0, duration: 120, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "ea", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 },
+      { id: "xb", track: "fx", start: 900, duration: 120, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "eb", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 },
+    ],
+    next_id: 100,
+  } as unknown as Project;
+  const overlays = (of: Project) => of.clips.filter((clip): clip is VideoClip => (clip.name ?? "").startsWith(NAME) || (clip.name ?? "").startsWith(WATERMARK_NAME));
+  const rank = (of: Project, clip: VideoClip) => of.tracks.findIndex((track) => track.id === clip.track);
+  /** Every text overlay above the watermark overlay of the same clip, and every overlay between its footage and the effects. */
+  const layered = (of: Project) => {
+    for (const one of overlays(of)) {
+      expect(rank(of, one)).toBeGreaterThan(rank(of, of.clips.find((clip) => clip.id === one.parent)! as VideoClip));
+      expect(rank(of, one)).toBeLessThan(of.tracks.findIndex((track) => track.id === "fx"));
+      if (!one.name!.startsWith(NAME)) continue;
+      for (const under of overlays(of).filter((clip) => clip.parent === one.parent && clip.name!.startsWith(WATERMARK_NAME))) expect(rank(of, one)).toBeGreaterThan(rank(of, under));
+    }
+  };
+  enforceCleanStrips(null, project);
+  expect(overlays(project).length).toBe(40);
+  layered(project);
+  // Saved again with nothing new: nothing changes.
+  const again = structuredClone(project);
+  enforceCleanStrips(project, again);
+  expect(again).toEqual(project);
+  // s1 done again (text_removal.ts `place`: the old strip out, a fresh media in, as long).
+  const done = structuredClone(project);
+  done.media = done.media.filter((media) => media.id !== "s1");
+  done.media.push({ ...strip("s1b", 0, 20, "text"), path: "/s1-again.mp4" });
+  enforceCleanStrips(project, done);
+  const ids = (of: Project, keep: (clip: VideoClip) => boolean) => overlays(of).filter(keep).map((clip) => [clip.id, clip.track, clip.media]).sort();
+  // The watermark's overlays and s2's: as they were, ids, lanes and all.
+  const untouched = (clip: VideoClip) => clip.media !== "s1" && clip.media !== "s1b";
+  expect(ids(done, untouched)).toEqual(ids(project, untouched));
+  // s1's ten overlays now of the new strip, still over their clips, and no lanes more than before.
+  expect(overlays(done).filter((clip) => clip.media === "s1b").length).toBe(10);
+  expect(overlays(done).some((clip) => clip.media === "s1")).toBe(false);
+  expect(done.tracks.length).toBe(project.tracks.length);
+  layered(done);
+  // What's beneath the effect over s2's seconds is as it was (its render stays); the one over s1's changed.
+  expect(beneathKey(done, "glass_b")).toBe(beneathKey(project, "glass_b"));
+  expect(beneathKey(done, "glass_a")).not.toBe(beneathKey(project, "glass_a"));
+  // The new strip's upload landing (its cloud source filled in) is the same picture: no render again.
+  const uploaded = structuredClone(done);
+  const landed = uploaded.media.find((one) => one.id === "s1b")!;
+  expect(landed.cleans).toBeTruthy();
+  landed.cloud = { ...(landed.cloud ?? {}), source: "sha256:0123456789abcdef" } as NonNullable<typeof landed.cloud>;
+  expect(beneathKey(uploaded, "glass_a")).toBe(beneathKey(done, "glass_a"));
+  // Then a save with nothing new: nothing changes.
+  const still = structuredClone(done);
+  enforceCleanStrips(done, still);
+  expect(still).toEqual(done);
+  // The lanes reordered under an effect: what's beneath it changed (which is drawn over which).
+  const swapped = structuredClone(done);
+  const lanes = swapped.tracks.splice(1, 2);
+  swapped.tracks.splice(1, 0, lanes[1]!, lanes[0]!);
+  expect(beneathKey(swapped, "glass_b")).not.toBe(beneathKey(done, "glass_b"));
 });
 
 // ---------------------------------------------------------------------------
@@ -1097,6 +1181,184 @@ test("an update mid-piece: after the restart the piece goes under the same name,
   }
 }, 120_000);
 
+/** A card on vmake.ai's job list, as the stand-in site keeps it: whether a look finds it now, whether it's finished, whether it failed. */
+interface Card {
+  shown: boolean;
+  done: boolean;
+  failed: boolean;
+}
+
+/**
+ * vmake.ai's website as the provider meets it, by the piece's name: a file sent makes a card (an upload: a file of the
+ * day, counted), looked for again by name when it went in before (never sent then); `made` says how each new card
+ * behaves. Every call's name, and whether it was told the file went in before, kept.
+ */
+function jobList(made: (card: Card, uploads: number) => void = () => {}) {
+  const cards = new Map<string, Card>();
+  const calls: { name: string; sentBefore: boolean }[] = [];
+  const counts = { uploads: 0, returned: 0 };
+  const provider: tr.Provider = {
+    id: "vmake-web",
+    price: () => "",
+    async remove(input, out, seconds, _signal, _whole, _begun, label, look) {
+      const name = web.pieceName(seconds, label);
+      calls.push({ name, sentBefore: look?.sentBefore === true });
+      let card = cards.get(name);
+      if (card === undefined) {
+        // Sent before and nowhere on the list: the page can't say it's lost.
+        if (look?.sentBefore === true) throw new VmakeError("the piece's card isn't on vmake.ai's list yet", "piece");
+        counts.uploads += 1;
+        look?.sent();
+        card = { shown: true, done: true, failed: false };
+        cards.set(name, card);
+        made(card, counts.uploads);
+      }
+      if (card.failed) throw new web.Refused("vmake.ai failed the piece (its card says so)", "piece");
+      if (!card.shown) throw new VmakeError("the piece's card isn't on vmake.ai's list yet", "piece");
+      if (!card.done) throw new VmakeError("vmake.ai is still on the piece after two hours (32%)", "piece");
+      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", input, "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", out]);
+      counts.returned += 1;
+      return { credits: null };
+    },
+    async check() {},
+  };
+  return { provider, cards, calls, counts };
+}
+
+async function until(what: () => boolean, ms = 60_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!what()) {
+    if (Date.now() > end) throw new Error("timed out");
+    await Bun.sleep(25);
+  }
+}
+
+test("a piece sent whose card can't be found in time, or is still processing at the deadline, is never sent again: it waits on vmake.ai (the export doesn't), is looked for again under the same name, and is used once its card shows done (GPT 6.2 Astra's audit, Nov 18)", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-unsure");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const site = jobList((card) => (card.shown = false));
+  tr.useProvider(site.provider);
+  const afterMs = tr.looking.afterMs;
+  tr.looking.afterMs = Array.from({ length: 8 }, () => 150);
+  try {
+    const file = await labelledFootage(dir, 8);
+    const id = await labelledProject(app, file, 8);
+    await removalSchedule.ensure(app, id);
+    // Sent, its card not on the list when looked for: waiting, said, and nothing out for the export to wait on.
+    await until(() => tr.piecesOf(id)[0]?.state === "waiting");
+    expect((await tr.status(app, id)).line).toBe("Waiting on vmake.ai for one piece sent earlier; their text stays blurred there until it's back.");
+    expect(removalSchedule.progressOf(id).out).toBe(0);
+    // Looked for again by itself, under the same name, nothing sent.
+    await until(() => site.calls.length >= 3);
+    // The card shows, still processing at the deadline: waiting again; then it's done and used.
+    for (const card of site.cards.values()) [card.shown, card.done] = [true, false];
+    const looked = site.calls.length;
+    await until(() => site.calls.length >= looked + 2 && tr.piecesOf(id)[0]?.state === "waiting");
+    for (const card of site.cards.values()) card.done = true;
+    await until(() => store.get(id)!.project.media.some((media) => media.cleans != null));
+    await tr.settled(id);
+    expect(site.counts.uploads).toBe(1);
+    expect(new Set(site.calls.map((call) => call.name)).size).toBe(1);
+    expect(site.calls.map((call) => call.sentBefore)).toEqual([false, ...site.calls.slice(1).map(() => true)]);
+    expect(tr.piecesOf(id).map((one) => one.state)).toEqual(["check"]);
+    // Back and kept: nothing is out at Vmake for it any more.
+    expect(JSON.parse(fs.readFileSync(join(app.store.home, "text-removal.json"), "utf8")).out).toEqual({});
+  } finally {
+    tr.looking.afterMs = afterMs;
+    cleanup();
+  }
+}, 120_000);
+
+test("a stop between vmake.ai's result and its keep on the shelf: after the restart the piece's card is picked up under the same name, nothing sent again", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-keep-crash");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  const shelf = tr.shelfIn(join(dir, "shelf"), () => false);
+  let crash = true;
+  // The Edit that fetched the result stops for good as it keeps it (an update ends its process).
+  tr.useShelf({ ...shelf, keep: async (...args) => (crash ? await new Promise<never>(() => {}) : shelf.keep(...args)) });
+  const site = jobList();
+  tr.useProvider(site.provider);
+  try {
+    const file = await labelledFootage(dir, 8);
+    const id = await labelledProject(app, file, 8);
+    await removalSchedule.ensure(app, id);
+    await until(() => site.counts.returned === 1);
+    await Bun.sleep(100);
+    // The restart: memory gone, the disk kept.
+    tr.reset();
+    crash = false;
+    await removalSchedule.resume(app);
+    await tr.settled(id);
+    expect(site.counts.uploads).toBe(1);
+    expect(site.calls).toEqual([site.calls[0]!, { name: site.calls[0]!.name, sentBefore: true }]);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).length).toBe(1);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test("vmake.ai saying the piece won't come back (its card failed, credits returned) sends it once more, under its next name", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-refused");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const site = jobList((card, uploads) => (card.failed = uploads === 1));
+  tr.useProvider(site.provider);
+  try {
+    const file = await labelledFootage(dir, 8);
+    const id = await labelledProject(app, file, 8);
+    await removalSchedule.ensure(app, id);
+    await until(() => store.get(id)!.project.media.some((media) => media.cleans != null));
+    await tr.settled(id);
+    expect(site.counts.uploads).toBe(2);
+    expect(site.calls.length).toBe(2);
+    expect(site.calls[1]!.name).not.toBe(site.calls[0]!.name);
+    expect(site.calls.map((call) => call.sentBefore)).toEqual([false, false]);
+    expect(tr.piecesOf(id).map((one) => [one.state, one.tries])).toEqual([["check", 2]]);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test("a piece vmake.ai never shows back after every look is given up on: blurred, said plainly, never sent again, after a restart too", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-lost");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const site = jobList((card) => (card.shown = false));
+  tr.useProvider(site.provider);
+  const afterMs = tr.looking.afterMs;
+  tr.looking.afterMs = [100, 100];
+  const blurs = () => store.get(id)!.project.clips.filter((clip) => (clip.name ?? "").startsWith(burned.UNTIL_REMOVED)).length;
+  let id = "";
+  try {
+    const file = await labelledFootage(dir, 8);
+    id = await labelledProject(app, file, 8);
+    await removalSchedule.ensure(app, id);
+    await until(() => tr.piecesOf(id)[0]?.state === "failed");
+    await tr.settled(id);
+    // Sent once, looked for twice more, then given up on.
+    expect(site.counts.uploads).toBe(1);
+    expect(site.calls.map((call) => call.sentBefore)).toEqual([false, true, true]);
+    expect(await tr.status(app, id)).toEqual({ line: "vmake.ai never gave back one piece sent to it; their text stays blurred there.", action: null, running: null });
+    const blurred = blurs();
+    expect(blurred).toBeGreaterThan(0);
+    // A restart: still given up on, nothing sent or looked for, blurred once.
+    tr.reset();
+    await removalSchedule.resume(app);
+    await tr.settled(id);
+    expect(site.calls.length).toBe(3);
+    expect(tr.piecesOf(id).map((one) => [one.state, one.lost])).toEqual([["failed", true]]);
+    expect(blurs()).toBe(blurred);
+  } finally {
+    tr.looking.afterMs = afterMs;
+    cleanup();
+  }
+}, 120_000);
+
 test("removal starts by itself as soon as edits rest (no button on the website's plan); a longer clip sends only its new seconds", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });
@@ -1167,11 +1429,15 @@ test("the agent looks at each piece and rejects one that isn't clean: done once 
     expect(looked.isError).toBe(false);
     expect(looked.content[0]!.text).toContain("text:m@0 · tape 0–8 s · text · check");
     expect(looked.content.some((one) => one.type === "image")).toBe(true);
+    // Looked at once: not shown again.
+    expect((await call({})).content.some((one) => one.type === "image")).toBe(false);
     // Rejected: sent again; rejected again: given up on, blurred, said.
     const key = tr.piecesOf(id)[0]!.key;
     await call({ reject: [{ piece: key, why: "a ghost of the label" }] });
     await tr.settled(id);
     expect(log).toEqual(["remove 8", "remove 8"]);
+    // What came back the second time is a new strip of the same piece: shown again, to be looked at.
+    expect((await call({})).content.some((one) => one.type === "image")).toBe(true);
     await call({ reject: [{ piece: key, why: "still a ghost" }] });
     await tr.settled(id);
     expect(log.length).toBe(2);

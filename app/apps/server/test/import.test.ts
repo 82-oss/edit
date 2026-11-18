@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import { footageRate, hooks, houseMedia, importMade, importPaths, placeAtEnd } from "../src/import.ts";
 import type { Project } from "../src/model.ts";
 import { newProject } from "../src/project.ts";
+import * as storage from "../src/storage.ts";
 import * as tools from "../src/tools.ts";
 import { timing } from "../src/transcribe.ts";
 import { expandHome, homePath } from "../src/paths.ts";
@@ -108,6 +109,45 @@ test.skipIf(ffmpeg === null || ffprobe === null)("in cloud mode the file goes up
     expect(app.media.status(`${dir}/proxy-of-ok.mp4`).transcript).toBe("pending");
   } finally {
     hooks.importLocal = before;
+    if (token === undefined) delete process.env.EDIT_RELAY_TOKEN;
+    else process.env.EDIT_RELAY_TOKEN = token;
+    cleanup();
+  }
+});
+
+test.skipIf(ffmpeg === null || ffprobe === null)("in cloud mode an import with no room for its proxies is refused before any is made, with the numbers, once the cleaner had its say", async () => {
+  const { dir, app, store, cleanup } = fixtureHome("import-room");
+  const before = hooks.importLocal;
+  const token = process.env.EDIT_RELAY_TOKEN;
+  const realFree = storage.diskHooks.free;
+  const realRoom = storage.diskHooks.makeRoom;
+  try {
+    process.env.EDIT_RELAY_TOKEN = "cloud-token";
+    const clip = `${dir}/clip.mp4`;
+    makeClip(clip, true);
+    const made: string[] = [];
+    hooks.importLocal = async (_cache, path, probe, name) => {
+      made.push(path);
+      return { path: `${dir}/proxy-of-${name}`, name, probe, cloud: { source: "sha256:ab", original: "edit/originals/sha256/ab/clip.mp4", size: 10 } };
+    };
+    // Its proxy (2 s at 800 kbit/s and its sound) doesn't fit over the writes' floor, and the cleaner frees nothing.
+    const asked: number[] = [];
+    storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES + 100_000;
+    storage.diskHooks.makeRoom = (wanted) => (asked.push(wanted), 0);
+    const id = store.create("p", { width: 1920, height: 1080, fps: 30 }).project.id;
+    await expect(importPaths(app, id, [clip], false, "ui")).rejects.toThrow(/^This import needs about [\d.]+ GB free and this (Mac|computer) has [\d.]+ GB\. Free some space, then import it again\.$/);
+    expect(asked.length).toBe(1);
+    expect(made).toEqual([]);
+    expect(store.get(id)!.project.media).toEqual([]);
+    // With room, it goes ahead.
+    storage.diskHooks.free = () => 1e12;
+    const [, added] = await importPaths(app, id, [clip], false, "ui");
+    expect(added.length).toBe(1);
+  } finally {
+    hooks.importLocal = before;
+    storage.diskHooks.free = realFree;
+    storage.diskHooks.makeRoom = realRoom;
+    storage.resetRoom();
     if (token === undefined) delete process.env.EDIT_RELAY_TOKEN;
     else process.env.EDIT_RELAY_TOKEN = token;
     cleanup();

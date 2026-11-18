@@ -13,7 +13,7 @@
 // A script's preview that's only in the cloud (made on another Mac, or left
 // to the cloud when room was short) comes down whole behind the ask when the
 // scripts' footage and Edit's cache have room for it (storage.overBudget, the
-// same budget that later decides what leaves), and the page asks again until
+// same rule that later decides what leaves: what Edit keeps free on the disk), and the page asks again until
 // it's here. With no room it stays in the cloud and plays as it did.
 
 import type { CutSource } from "@edit/types/script_cut";

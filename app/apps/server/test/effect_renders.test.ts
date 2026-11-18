@@ -4,6 +4,7 @@ import os from "node:os";
 import { join } from "node:path";
 
 import * as devtools from "../src/chrome_devtools.ts";
+import * as diag from "../src/diag.ts";
 import * as effects from "../src/effects.ts";
 import { registerEffectTools } from "../src/effect_tools.ts";
 import { registerEditingTools } from "../src/edit_tools.ts";
@@ -447,6 +448,97 @@ test.skipIf(chrome === null)("a render is made in chunks of its frames, joined b
     const blue = frameAt(0.5, 1440, 540);
     expect(blue[2]).toBeGreaterThan(200);
     expect(blue[0]).toBeLessThan(40);
+  } finally {
+    effects.chunkHooks.bytes = bytes;
+    await server.stop(true);
+    cleanup();
+  }
+}, 240_000);
+
+/** A bar crossing the frame over `seconds`, the frame's number on it and a colour of its own behind: a frame out of place shows. */
+const counting = (seconds: number) =>
+  GOOD.replace("window.duration = 2;", `window.duration = ${seconds};`)
+    .replace("(t / 2) * 1840", `(t / ${seconds}) * 560`)
+    .replace("font:700 64px", "font:700 40px")
+    .replace("document.getElementById(\"n\").textContent", "const n = Math.round(t * 30); document.body.style.background = `rgb(${(n * 37) % 256},${(n * 91) % 256},${(n * 53) % 256})`; document.getElementById(\"n\").textContent");
+
+test.skipIf(chrome === null)("renders take turns at a chunk's end: another project's render an export waits on starts after at most one chunk of a long one, which goes on from its chunks and comes out the same as drawn in one go; each says how long it waited in the queue (Sphe's M4, Nov 18)", async () => {
+  const size = { width: 640, height: 360 };
+  const { app, cleanup, id: long } = hq("effects-turns", size);
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  const bytes = effects.chunkHooks.bytes;
+  const place = async (project: string, name: string, page: string) => {
+    await app.store.update(project, "test", (edited) => {
+      edited.hq = true;
+    });
+    write(app, project, name, { "scene.html": page });
+    const added = await effects.add(app, project, name);
+    await app.store.update(project, "test", (edited) => {
+      edited.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof edited.tracks)[number]);
+      edited.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: added.media, source_in: 0 } as unknown as (typeof edited.clips)[number]);
+    });
+    return () => app.store.get(project)!.project.media.find((one) => one.id === added.media)!;
+  };
+  try {
+    app.port = server.port!;
+    // Half a second a chunk: the long one 12 chunks, the short one 2.
+    effects.chunkHooks.bytes = 16 * size.width * size.height * 1.5;
+    expect(effects.chunkFrames({ ...size, fps: 30 })).toBe(15);
+    const short = app.store.create("Title cards", { ...size, fps: 30 }).project.id;
+    const whole = app.store.create("Drawn in one go", { ...size, fps: 30 }).project.id;
+    const longMedia = await place(long, "interview", counting(6));
+    const shortMedia = await place(short, "card", counting(1));
+    const wholeMedia = await place(whole, "interview", counting(6));
+    // The long one nobody waits on (a render after the agent's turn), its frames under way.
+    const longDone = effects.renderNow(app, long, "interview");
+    const until = Date.now() + 60_000;
+    while (!/ of 180 frames$/.test(effects.renderingLine(long) ?? "") || (effects.drawing()[0] ?? "") === "") {
+      if (Date.now() > until) throw new Error(`the long render never started: ${effects.renderingLine(long)}`);
+      await Bun.sleep(5);
+    }
+    expect(effects.drawing()).toEqual(["Welfare check's interview effect"]);
+    // An export of the other project waits on its card.
+    const asked = Number(/(\d+) of 180/.exec(effects.renderingLine(long)!)![1]);
+    const exported = seams.broll.waitForMaps(app, short, 120_000);
+    let shortStarted = false;
+    let longAtShort = -1;
+    let exportDone = false;
+    void exported.finally(() => (exportDone = true));
+    while (!exportDone) {
+      if (!shortStarted && /^rendering the card effect/.test(effects.renderingLine(short) ?? "")) {
+        shortStarted = true;
+        const state = effects.renderState(long, "interview", effects.list(app.store, long)[0]!.key) ?? "";
+        expect(state).toMatch(/^waiting behind Title cards's render \(\d+ of 180 frames drawn\)$/);
+        longAtShort = Number(/\((\d+) of 180/.exec(state)![1]);
+        expect(effects.drawing()).toEqual(["Title cards's card effect", "Welfare check's interview effect"]);
+      }
+      await Bun.sleep(5);
+    }
+    await exported;
+    expect(shortStarted).toBe(true);
+    // At most the rest of the chunk it was drawing: it gave way at that chunk's end.
+    expect(longAtShort % 15).toBe(0);
+    expect(longAtShort).toBeLessThanOrEqual((Math.floor(asked / 15) + 1) * 15);
+    expect(shortMedia().kind).toBe("video");
+    // The long one, waiting meanwhile, then goes on from its chunks.
+    expect(longMedia().kind).toBe("image");
+    await longDone;
+    expect(longMedia().kind).toBe("video");
+    expect(effects.drawing()).toEqual([]);
+    // Drawn again in one go, in a project of its own: the same frames, in the same order (Chrome's pixels and the encoder
+    // aren't bit for bit the same twice, so frame by frame alike to the eye; one out of place is another colour).
+    await effects.renderNow(app, whole, "interview");
+    const psnr = Bun.spawnSync(["ffmpeg", "-v", "error", "-i", longMedia().path, "-i", wholeMedia().path, "-lavfi", "[0:v][1:v]psnr=stats_file=-", "-f", "null", "-"]).stdout.toString();
+    const frames = [...psnr.matchAll(/psnr_avg:(\S+)/g)].map((match) => (match[1] === "inf" ? Number.POSITIVE_INFINITY : Number(match[1])));
+    expect(frames.length).toBe(180);
+    expect(Math.min(...frames)).toBeGreaterThan(35);
+    // Each start, and each turn again, says how long it waited in the queue, by project.
+    const said = diag.lines(400).map((line) => line.message);
+    expect(said.some((line) => new RegExp(`^${short}: card's render starts after \\d+\\.\\d s in the queue \\(waited on\\)$`).test(line))).toBe(true);
+    expect(said.some((line) => new RegExp(`^${long}: interview's render gives way to another project's at \\d+ of 180 frames`).test(line))).toBe(true);
+    expect(said.some((line) => new RegExp(`^${long}: interview's render takes its turn again after \\d+\\.\\d s in the queue, \\d+ of 180 frames drawn$`).test(line))).toBe(true);
+    expect(said.some((line) => new RegExp(`^${long}: interview rendered \\(180 frames, \\d+\\.\\d s drawing and joining, \\d+\\.\\d s in the queue\\)$`).test(line))).toBe(true);
   } finally {
     effects.chunkHooks.bytes = bytes;
     await server.stop(true);

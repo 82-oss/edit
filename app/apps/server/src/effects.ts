@@ -74,7 +74,8 @@ import { letStrangersRead } from "./http/host.ts";
 import type { RouteContext, Router } from "./http/router.ts";
 import { importPaths } from "./import.ts";
 import { fingerprint } from "./hash.ts";
-import { probe as probeFile, Semaphore } from "./media.ts";
+import { probe as probeFile } from "./media.ts";
+import { Turns, type Turn, type TurnHooks } from "./render_turns.ts";
 import type { Media, Project } from "./model.ts";
 import { native } from "./native/index.ts";
 import { fps as rateOf } from "./project.ts";
@@ -1573,11 +1574,29 @@ interface Render {
   /** When this run began drawing, and the frames it had then (a render cut short goes on from them): its own speed. */
   began?: number;
   from?: number;
+  /** Its frames drawn and joined, its video being put in place (the slot given up): under way, not waiting. */
+  placing?: boolean;
+  /** Its time with the slot and its time waiting for it (ms), across its turns. */
+  spent: number;
+  queued: number;
+  /** Frames it drew itself across its turns (not found drawn), for its speed. */
+  made: number;
 }
 
 const renders = new Map<string, Render>();
-/** The render drawing now (the one slot's), for a render waiting behind it to say whose it waits for. */
-let drawing: Render | null = null;
+/** The render drawing now (the slot's), for a render waiting behind it to say whose it waits for. */
+let holding: Render | null = null;
+/** A render under way: drawing now, or its video being put in place. */
+const underWay = (render: Render) => render === holding || render.placing === true;
+
+/**
+ * What's rendering on this Mac, the one drawing first, then those waiting
+ * their turn (each "<project>'s <name> effect"): empty when nothing is. The
+ * keep-awake's, so the Mac stays awake while an effect renders.
+ */
+export function drawing(): string[] {
+  return [...renders.values()].sort((a, b) => Number(underWay(b)) - Number(underWay(a))).map((render) => `${render.title}'s ${render.name} effect`);
+}
 
 /**
  * What an export of `project` waiting on its effects is waiting for, in a few
@@ -1587,9 +1606,9 @@ let drawing: Render | null = null;
 export function renderingLine(project: string): string | null {
   const own = [...renders.values()].filter((render) => render.project === project);
   if (own.length === 0) return null;
-  const now = own.find((render) => render === drawing) ?? own[0]!;
-  const ahead = drawing;
-  if (now !== drawing && ahead !== null) return ahead.project === project ? `waiting behind the ${ahead.name} effect's render` : `waiting behind ${ahead.title}'s render`;
+  const now = own.find(underWay) ?? own[0]!;
+  const ahead = holding;
+  if (!underWay(now) && ahead !== null) return ahead.project === project ? `waiting behind the ${ahead.name} effect's render` : `waiting behind ${ahead.title}'s render`;
   const more = own.length > 1 ? ` (then ${own.length - 1} more)` : "";
   return now.frames > 0 ? `rendering the ${now.name} effect · ${now.drawn} of ${now.frames} frames${more}` : `rendering the ${now.name} effect${more}`;
 }
@@ -1659,7 +1678,7 @@ export function graphicsOf(app: App, project: string, now = Date.now()): Graphic
     if (effect === undefined) continue;
     const clip = live.project.clips.filter((one) => (one.type === "video" || one.type === "audio") && one.media === effect.media.id).sort((a, b) => a.start - b.start)[0];
     const running = [...renders.values()].find((render) => render.project === project && render.name === name);
-    const current = running !== undefined && running === drawing;
+    const current = running !== undefined && underWay(running);
     const frames = running !== undefined && running.frames > 0 ? running.frames : Math.max(1, Math.round(effect.media.duration * fps));
     const drawn = running?.drawn ?? 0;
     const ran = current && running.began !== undefined ? (now - running.began) / 1000 : 0;
@@ -1703,7 +1722,27 @@ function failureOf(render: string): { said: string; told: string; kind: Failure 
  */
 const untold = new Map<string, string>();
 const settling = new Map<string, ReturnType<typeof setTimeout>>();
-const renderSlot = new Semaphore(1);
+/** One render draws at a time, renders taking turns at a chunk's end (render_turns.ts). */
+export const turnHooks: TurnHooks = { sliceMs: 30_000, ageMs: 5 * 60_000, now: () => Date.now() };
+const turns = new Turns(turnHooks, () => new Outdated());
+/** Effects someone waits on now (an export, a tool), by `project/name`, and how many wait: their renders go first. */
+const waitedFor = new Map<string, number>();
+
+/** Someone waits on effect `name`'s render until the answer is called. */
+function waitOn(project: string, name: string): () => void {
+  const at = `${project}/${name}`;
+  waitedFor.set(at, (waitedFor.get(at) ?? 0) + 1);
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    const left = (waitedFor.get(at) ?? 1) - 1;
+    if (left > 0) waitedFor.set(at, left);
+    else waitedFor.delete(at);
+  };
+}
+
+const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 const id = (project: string, name: string, key: string) => `${project}/${name}/${key}`;
 
 /** The disk can't hold a render: said as how much to free. */
@@ -1843,19 +1882,47 @@ export function renderNow(app: App, project: string, name: string): Promise<void
   if (running !== undefined) return running.done;
   const failure = failureOf(id(project, name, key));
   if (failure !== undefined) return Promise.reject(new Error(failure.told));
-  const render: Render = { project, title: live.project.name, name, key, drawn: 0, frames: 0, done: Promise.resolve() };
+  const render: Render = { project, title: live.project.name, name, key, drawn: 0, frames: 0, done: Promise.resolve(), spent: 0, queued: 0, made: 0 };
   const since = Date.now();
-  const once = () =>
-    renderSlot.with(async () => {
-      drawing = render;
+  // Dropped before it draws when its code (or what it's given from the timeline) changed while it waited.
+  const stale = () => {
+    const now = app.store.get(project);
+    return now !== null && keyOf(app.store, project, dir, frameOf(now.project)) !== key;
+  };
+  const urgent = () => waitedFor.has(`${project}/${name}`);
+  const once = async () => {
+    // Turns with the slot until its frames are drawn and joined: it gives way at a chunk's end to another project's render
+    // that goes first, and goes on from its chunks when its turn comes again.
+    for (let turn = 1; ; turn++) {
+      const mine = await turns.take({ project, urgent, stale });
+      holding = render;
+      render.queued += mine.waited;
+      const began = Date.now();
+      const progress = render.frames > 0 ? `, ${render.drawn} of ${render.frames} frames drawn` : "";
+      diag.info("effects", `${project}: ${name}'s render ${turn === 1 ? "starts" : "takes its turn again"} after ${seconds(mine.waited)} in the queue${progress}${urgent() ? " (waited on)" : ""}`);
+      let gaveWay: boolean;
+      render.began = undefined;
+      render.from = undefined;
       try {
-        await draw(app, render);
-        // Its speed here, frames drawn and joined a second: the next renders' times.
-        if (render.began !== undefined && render.from !== undefined) speeds.noteGraphic(app.store.home, render.map === true, render.frames - render.from, (Date.now() - render.began) / 1000);
+        gaveWay = await drawIn(app, render, mine);
       } finally {
-        drawing = null;
+        render.spent += Date.now() - began;
+        if (render.began !== undefined && render.from !== undefined) render.made += Math.max(0, render.drawn - render.from);
+        holding = null;
+        mine.release();
       }
-    });
+      if (!gaveWay) break;
+      diag.info("effects", `${project}: ${name}'s render gives way to another project's at ${render.drawn} of ${render.frames} frames, ${seconds(render.spent)} drawn so far`);
+    }
+    render.placing = true;
+    try {
+      await place(app, render);
+    } finally {
+      render.placing = false;
+    }
+    // Its speed here, frames drawn and joined a second: the next renders' times.
+    if (render.made > 0) speeds.noteGraphic(app.store.home, render.map === true, render.made, render.spent / 1000);
+  };
   render.done = once()
     .catch((error: unknown) => {
       if (error instanceof Outdated || failureKind(error) !== "passing") throw error;
@@ -1936,18 +2003,32 @@ function retryWhenBack(app: App, project: string, render: string): void {
   check();
 }
 
-async function draw(app: App, render: Render): Promise<void> {
+/**
+ * A render's turn with the slot: its video brought back or its frames drawn
+ * and joined (`drawAndJoin`). True when it gave way to another project's
+ * render at a chunk's end, its chunks kept for its next turn.
+ */
+async function drawIn(app: App, render: Render, turn: Turn): Promise<boolean> {
+  const { project, name, key } = render;
+  const live = app.store.get(project);
+  if (live === null) throw new Error("the project is gone");
+  const dir = rendersDir(app.store, project);
+  const out = join(dir, `${name}-${key}.mp4`);
+  const frames = join(dir, `${name}-${key}.frames`);
+  // Drawn before and kept in the cache since it went up (effect_cloud.ts): that file again, not drawn again.
+  if (!fs.existsSync(out) && effectCloud.bringBack(app.store.cacheDir(), project, `${name}-${key}.mp4`, out)) diag.info("effects", `${project}: ${name}'s render of this code was here already`);
+  if (fs.existsSync(out)) return false;
+  return drawAndJoin(app, render, live.project, dir, frames, out, turn);
+}
+
+/** A render's video, drawn and joined, put in place of the effect's still: outside the slot, so the next render draws meanwhile. */
+async function place(app: App, render: Render): Promise<void> {
   const { project, name, key } = render;
   const live = app.store.get(project);
   if (live === null) throw new Error("the project is gone");
   const frame = frameOf(live.project);
   const dir = rendersDir(app.store, project);
   const out = join(dir, `${name}-${key}.mp4`);
-  const frames = join(dir, `${name}-${key}.frames`);
-  const started = Date.now();
-  // Drawn before and kept in the cache since it went up (effect_cloud.ts): that file again, not drawn again.
-  if (!fs.existsSync(out) && effectCloud.bringBack(app.store.cacheDir(), project, `${name}-${key}.mp4`, out)) diag.info("effects", `${project}: ${name}'s render of this code was here already`);
-  if (!fs.existsSync(out)) await drawAndJoin(app, render, live.project, dir, frames, out);
   const probe = await probeFile(out);
   if (probe.kind !== "video" || !(probe.duration > 0)) throw new Error("its render isn't a video Edit can read");
   // A stacked render is twice as tall as the frame is for its width (whatever size it was kept at).
@@ -1995,8 +2076,8 @@ async function draw(app: App, render: Render): Promise<void> {
   } catch (error) {
     diag.warn("cloud", `backfill ${project}: ${diag.messageOf(error)}`);
   }
-  diag.record("effects", "render", Date.now() - started);
-  diag.info("effects", `${project}: ${name} rendered (${render.frames} frames in ${((Date.now() - started) / 1000).toFixed(1)} s)`);
+  diag.record("effects", "render", render.spent);
+  diag.info("effects", `${project}: ${name} rendered (${render.frames} frames, ${seconds(render.spent)} drawing and joining, ${seconds(render.queued)} in the queue)`);
   keepVersion(app, project, name, key);
 }
 
@@ -2155,7 +2236,7 @@ function prune(store: Store, project: string, name: string, kept: string): void 
  * moment the same), never made from their H.264, and `state.json` says so. A
  * render cut short (a quit) goes on from its chunks and frames.
  */
-async function drawAndJoin(app: App, render: Render, project: Project, dir: string, frames: string, out: string): Promise<void> {
+async function drawAndJoin(app: App, render: Render, project: Project, dir: string, frames: string, out: string, turn: Turn): Promise<boolean> {
   const { name, key } = render;
   const frame = frameOf(project);
   const id = render.project;
@@ -2295,16 +2376,24 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
       };
       // One chunk drawn while the one before it is encoded: at most two chunks' frames on the disk.
       let encoding: Promise<void> = Promise.resolve();
+      let drawnThisTurn = 0;
       for (;;) {
         if (queue.length === 0) {
           await encoding;
           if (queue.length === 0) break;
+        }
+        // Another project's render goes first (render_turns.ts): this one gives way at a chunk's end, at least one chunk
+        // drawn each turn, its chunks kept for its next turn, which goes on from them.
+        if (drawnThisTurn > 0 && turn.shouldYield()) {
+          await encoding;
+          return true;
         }
         const n = queue.shift()!;
         // A play on this Mac comes first: the next chunk waits for it to stop (kenobi, Nov 17: a render's FFmpeg at
         // 160–400% CPU beside a cold play of Cops Found 3 Bodies).
         await playing.whenIdle();
         await drawChunk(n);
+        drawnThisTurn += 1;
         await encoding;
         encoding = encodeChunk(n);
         encoding.catch(() => {});
@@ -2334,6 +2423,7 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
       throw new Error(`its frames didn't join into a video: ${diag.messageOf(error)}`);
     }
     fs.rmSync(frames, { recursive: true, force: true });
+    return false;
   } catch (error) {
     // Outrun by the code: its frames are of a version nobody will play.
     if (error instanceof Outdated) fs.rmSync(frames, { recursive: true, force: true });
@@ -2518,10 +2608,13 @@ export function renderLine(app: App, project: string, name: string): string | nu
 export function renderState(project: string, name: string, key: string): string | null {
   const running = renders.get(id(project, name, key));
   if (running !== undefined) {
+    // One render draws at a time: another's holds the place (this one's turn may come again, its frames kept).
+    const ahead = holding;
+    if (ahead !== null && !underWay(running)) {
+      const behind = ahead.project === project ? `waiting behind the ${ahead.name} effect's render` : `waiting behind ${ahead.title}'s render`;
+      return running.frames > 0 ? `${behind} (${running.drawn} of ${running.frames} frames drawn)` : behind;
+    }
     if (running.frames > 0) return `rendering, ${running.drawn} of ${running.frames} frames`;
-    // One render draws at a time: another's holds the place.
-    const ahead = drawing;
-    if (ahead !== null && ahead !== running) return ahead.project === project ? `waiting behind the ${ahead.name} effect's render` : `waiting behind ${ahead.title}'s render`;
     return "rendering";
   }
   const failure = failureOf(id(project, name, key));
@@ -2556,17 +2649,31 @@ export function untoldFailures(app: App, project: string): string[] {
 export async function waitForRenders(app: App, project: string, limitMs: number): Promise<void> {
   const until = Date.now() + limitMs;
   await readyToRender(app, project);
-  for (const effect of needed(app.store, project)) {
-    if (effect.fresh) continue;
-    if (effect.current === null) throw new Error(`The ${effect.name} effect was made on another computer and never rendered there: open the project there to render it.`);
-    const done = renderNow(app, project, effect.name);
-    const left = until - Date.now();
-    const timedOut = await Promise.race([done.then(() => false), Bun.sleep(Math.max(0, left)).then(() => true)]);
-    if (timedOut) {
-      const state = renderState(project, effect.name, effect.current.key);
-      if (state !== null && state.startsWith("waiting behind")) throw new Error(`The ${effect.name} effect is ${state}: export again once it's done.`);
-      throw new Error(`The ${effect.name} effect is still rendering${state !== null && state.startsWith("rendering,") ? ` (${state.slice("rendering, ".length)})` : ""}: export again in a minute or two.`);
+  // Every render it waits on is waited on from now (render_turns.ts: it goes ahead of renders nobody waits on, another
+  // project's long one giving way at its next chunk), started now if it isn't under way.
+  const waits: { effect: ReturnType<typeof needed>[number]; done: Promise<void> }[] = [];
+  const held: (() => void)[] = [];
+  try {
+    for (const effect of needed(app.store, project)) {
+      if (effect.fresh) continue;
+      if (effect.current === null) throw new Error(`The ${effect.name} effect was made on another computer and never rendered there: open the project there to render it.`);
+      held.push(waitOn(project, effect.name));
+      const done = renderNow(app, project, effect.name);
+      // Said when its turn in the loop below comes; one failing before then isn't a rejection nobody heard.
+      done.catch(() => {});
+      waits.push({ effect, done });
     }
+    for (const { effect, done } of waits) {
+      const left = until - Date.now();
+      const timedOut = await Promise.race([done.then(() => false), Bun.sleep(Math.max(0, left)).then(() => true)]);
+      if (timedOut) {
+        const state = renderState(project, effect.name, effect.current!.key);
+        if (state !== null && state.startsWith("waiting behind")) throw new Error(`The ${effect.name} effect is ${state}: export again once it's done.`);
+        throw new Error(`The ${effect.name} effect is still rendering${state !== null && state.startsWith("rendering,") ? ` (${state.slice("rendering, ".length)})` : ""}: export again in a minute or two.`);
+      }
+    }
+  } finally {
+    for (const done of held) done();
   }
 }
 
@@ -2629,7 +2736,13 @@ export async function remake(project: string, name: string, key: string, unreada
   const current = list(app.store, project).find((one) => one.name === name) ?? null;
   if (current === null) throw new Error(`the ${name} effect's render isn't on this computer and its code isn't either: open the project where it was made`);
   if (!sameCode(project, name, key, current)) throw new Error(`The ${name} effect is still rendering: export again in a minute or two.`);
-  await renderNow(app, project, name);
+  // An export waits on it: it goes first.
+  const done = waitOn(project, name);
+  try {
+    await renderNow(app, project, name);
+  } finally {
+    done();
+  }
 }
 
 /** Whether a file of a project's renders (`<name>-<key>.frames`, `.partial.mp4`) is a render's under way or waiting to go on (effect_cloud.ts's sweep leaves it). */

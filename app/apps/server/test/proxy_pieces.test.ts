@@ -6,6 +6,7 @@ import * as path from "node:path";
 import * as diag from "../src/diag.ts";
 import * as fmp4 from "../src/fmp4.ts";
 import * as pieces from "../src/proxy_pieces.ts";
+import * as storage from "../src/storage.ts";
 
 const MIB = 1 << 20;
 
@@ -164,6 +165,84 @@ test("a range of the virtual file is the pieces' bytes with free boxes after the
   // A piece nobody has and none can make: the read fails (the preview path answers 503), nothing half-written stays.
   await expect(ask(pieces.pieceSlotAt(layout, 2), pieces.pieceSlotAt(layout, 2) + 10)).rejects.toThrow("no original here");
   expect(fs.existsSync(context.local(`${base}/video/2.m4s`))).toBe(false);
+});
+
+/** A pieced proxy with sound whose every piece's picture and sound are on this Mac, none joined yet (the fill made them). */
+function madePieces(source: string): { context: pieces.Context; layout: pieces.Layout; base: string; root: string } {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "pieces-"));
+  const context = fakeContext(root);
+  const layout = pieces.plan(source, `edit/originals/${source}.mp4`, 150, 30, 320, 180, true);
+  const base = pieces.baseKey(source);
+  const bytes = path.join(root, "samples.bin");
+  fs.writeFileSync(bytes, Uint8Array.from({ length: 4000 }, (_, i) => (i * 13) % 251));
+  const write = (key: string, id: number, seed: number) => {
+    const file = context.local(key);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fmp4.writeFragment(file, 1, [{ id, baseTime: 0, samples: [0, 1, 2].map((i) => ({ size: 300 + seed * 10 + i, duration: 3000, sync: i === 0, cts: 0, from: bytes, offset: seed * 400 + i * 50 })) }]);
+  };
+  for (let n = 0; n < layout.pieces; n++) {
+    write(`${base}/video/${n}.m4s`, 1, n);
+    write(`${base}/audio/${n}.m4s`, 2, n + 3);
+  }
+  // The head sets the layout's size (`headOf`).
+  fs.writeFileSync(context.local(`${base}/head.mp4`), pieces.headOf(layout, entry("avc1"), pieces.AUDIO_ENTRY));
+  fs.writeFileSync(context.local(`${base}/layout.json`), JSON.stringify(layout));
+  return { context, layout, base, root };
+}
+
+test("an open-ended read ends at the first piece not joined yet, never joining the rest before it answers", async () => {
+  // kenobi, Nov 18: the window's first read (FFmpeg's `bytes=N-`) of a 24-minute video whose pieces were all made
+  // was one 37.7 s request that joined every piece (~600 MB) before its answer began.
+  const { context, layout, base } = madePieces("drive:open");
+  const at = (n: number) => pieces.pieceSlotAt(layout, n);
+  const read = async (from: number) => {
+    const response = await pieces.serve(context, new Request("http://x/", { headers: { range: `bytes=${from}-` } }), base);
+    await response.arrayBuffer();
+    return response.headers.get("content-range");
+  };
+  const joined = (n: number) => fs.existsSync(context.local(`${base}/joined/${n}.m4s`));
+  expect(layout.pieces).toBe(3);
+  expect(await read(at(0))).toBe(`bytes ${at(0)}-${at(1) - 1}/${layout.total}`);
+  expect([0, 1, 2].map(joined)).toEqual([true, false, false]);
+  // Asked again from the next piece, as FFmpeg does: that one is joined; one already joined reads on into it.
+  expect(await read(at(1))).toBe(`bytes ${at(1)}-${at(2) - 1}/${layout.total}`);
+  expect(await read(at(0))).toBe(`bytes ${at(0)}-${at(2) - 1}/${layout.total}`);
+  expect(joined(2)).toBe(false);
+});
+
+test("under the copies' floor a piece is joined only while it's read, then removed, the same bytes as one kept", async () => {
+  const { context, layout, base, root } = madePieces("drive:full");
+  const tmp = path.join(root, "cloud", "tmp");
+  const scratch = () => (fs.existsSync(tmp) ? fs.readdirSync(tmp) : []);
+  const slot = (n: number) => `bytes=${pieces.pieceSlotAt(layout, n)}-${pieces.pieceSlotAt(layout, n) + pieces.pieceSize(layout) - 1}`;
+  const read = async (n: number) => new Uint8Array(await (await pieces.serve(context, new Request("http://x/", { headers: { range: slot(n) } }), base)).arrayBuffer());
+  const roomy = storage.diskHooks.free;
+  const linger = pieces.passingTiming.ms;
+  try {
+    // 3.40 GB free, as kenobi had: under what copies kept only to play sooner leave free (storage.ts cacheFloor).
+    storage.diskHooks.free = () => 3.4e9;
+    expect(3.4e9).toBeLessThan(storage.cacheFloor(root));
+    const first = await read(1);
+    // The page reads a piece a few MiB at a time: its reads share one copy while they come.
+    const again = await read(1);
+    expect([...again]).toEqual([...first]);
+    expect(scratch()).toHaveLength(1);
+    expect(fs.existsSync(context.local(`${base}/joined/1.m4s`))).toBe(false);
+    // Another piece read: the idle one goes (one left idle at most); this one goes once its last read is done.
+    pieces.passingTiming.ms = 0;
+    await read(2);
+    await Bun.sleep(20);
+    expect(scratch()).toEqual([]);
+    expect(fs.existsSync(context.local(`${base}/joined/2.m4s`))).toBe(false);
+    // With room again it's joined and kept, and reads the same.
+    storage.diskHooks.free = roomy;
+    expect([...(await read(1))]).toEqual([...first]);
+    expect(fs.existsSync(context.local(`${base}/joined/1.m4s`))).toBe(true);
+    expect(first.subarray(0, 8).some((value) => value !== 0)).toBe(true);
+  } finally {
+    storage.diskHooks.free = roomy;
+    pieces.passingTiming.ms = linger;
+  }
 });
 
 test("a pieced proxy that can't be made gives way to the whole proxy", async () => {

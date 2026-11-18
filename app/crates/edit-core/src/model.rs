@@ -2503,6 +2503,17 @@ impl Project {
             if self.style == Style::Courtroom && style.label.is_none() {
                 continue;
             }
+            // Nor do the in-video look's (Sphe, Nov 18: all white after the
+            // intro); its intro captions still take the speaker's colour.
+            if self.subtitle_look.as_deref() == Some("in_video")
+                && style.label.is_none()
+                && clip
+                    .name
+                    .as_deref()
+                    .is_some_and(|name| name.starts_with("Subtitle · "))
+            {
+                continue;
+            }
             let shown = style
                 .label
                 .as_ref()
@@ -2909,6 +2920,10 @@ mod validation_tests {
         };
         let yellow = Rgba([1.0, 1.0, 0.0, 1.0]);
         let teal = Rgba([0.0, 0.9, 0.78, 1.0]);
+        let caption = |color: Rgba| Clip {
+            name: Some("Caption · Lauren".into()),
+            ..line(color, None)
+        };
         let cases: Vec<(&str, Style, Person, Clip)> = vec![
             (
                 "courtroom: an unlabelled subtitle stays white",
@@ -2952,11 +2967,30 @@ mod validation_tests {
                 person("#e6e6e6", "bystander"),
                 line(Rgba::WHITE, None),
             ),
+            (
+                "in-video look: an unlabelled subtitle stays white",
+                Style::Bodycam,
+                person("#ffff00", "suspect"),
+                line(Rgba::WHITE, None),
+            ),
+            (
+                "in-video look: an intro caption in the person's colour",
+                Style::Bodycam,
+                person("#ffff00", "suspect"),
+                caption(yellow),
+            ),
+            (
+                "in-video look: an intro caption in white isn't the person's colour",
+                Style::Bodycam,
+                person("#ffff00", "suspect"),
+                caption(Rgba::WHITE),
+            ),
         ];
         let written: Vec<serde_json::Value> = cases
             .into_iter()
             .map(|(name, style, person, clip)| {
                 let mut p = base.clone();
+                p.subtitle_look = name.starts_with("in-video look").then(|| "in_video".into());
                 p.style = style;
                 p.people = vec![person];
                 p.clips = vec![clip];

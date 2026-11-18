@@ -103,7 +103,7 @@ export function keep(dir: string, from: URL, headers: Headers, body: Uint8Array,
   const age = maxAgeOf(headers.get("cache-control"));
   if (age === null || body.length === 0) return;
   try {
-    if (storage.spare(dir, body.length, storage.CACHE_FLOOR_BYTES) < 0) return;
+    if (storage.spare(dir, body.length, storage.cacheFloor(dir)) < 0) return;
     fs.mkdirSync(dir, { recursive: true });
     const used = sizeOf(dir, now);
     const head = Buffer.from(`${JSON.stringify({ type: headers.get("content-type") ?? "application/octet-stream", etag: headers.get("etag"), expires: now + age * 1000 })}\n`);
