@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { docComments, exportDoc, getScript, listDocs, message } from "./api";
 import { COMMENT_AUTHOR, docContent } from "./doc-export";
 import { scriptDocx } from "./docx";
@@ -39,9 +39,12 @@ export function commentsNote(comments: DocComment[]) {
 }
 
 /**
- * The script as a Google Doc, as Repack offers it: the latest export and
- * whether the script has changed since, a new export or a draft, every
- * earlier export, and the comments people left on the latest one.
+ * The script as a Google Doc: the latest export and whether the script has
+ * changed since, every earlier export, and the comments people left on the
+ * latest one. One primary action (Astra, Nov 18): Open Doc while the latest
+ * matches the script, Export updated Doc once it changes. A same-revision
+ * copy and a draft sit under All exports, for a Doc deleted in Drive or a
+ * draft on purpose. The comments are read as the dialog opens.
  */
 export function DocsDialog({
   open,
@@ -74,9 +77,29 @@ export function DocsDialog({
     if (!open) return;
     setProblem(null);
     setMade(null);
+  }, [open]);
+
+  // The latest Doc's comments, read as the dialog opens; a late answer for another script or Doc is dropped.
+  const reading = useRef(0);
+  const readComments = async () => {
+    const mine = ++reading.current;
+    setCommentsProblem(null);
+    try {
+      const given = (await docComments(script.id)).comments;
+      if (mine === reading.current) setComments(given);
+    } catch (cause) {
+      if (mine !== reading.current) return;
+      setCommentsProblem(message(cause));
+      setComments([]);
+    }
+  };
+  useEffect(() => {
+    reading.current++;
     setComments(null);
     setCommentsProblem(null);
-  }, [open]);
+    if (open && doc) void readComments();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per opening, script and Doc
+  }, [open, script.id, doc?.url]);
 
   // Read afresh each time: Docs are deleted in Drive itself.
   useEffect(() => {
@@ -90,17 +113,6 @@ export function DocsDialog({
       alive = false;
     };
   }, [open, earlierOpen, script.id]);
-
-  const readComments = async () => {
-    setCommentsProblem(null);
-    setComments(null);
-    try {
-      setComments((await docComments(script.id)).comments);
-    } catch (cause) {
-      setCommentsProblem(message(cause));
-      setComments([]);
-    }
-  };
 
   const make = async (kind: "script" | "draft") => {
     setExporting(kind);
@@ -128,7 +140,7 @@ export function DocsDialog({
       open={open}
       onClose={onClose}
       title="Google Doc"
-      description="A new Doc from the script as it stands, with a comment on each timestamp, open to anyone with its link. Each export is a new Doc, as in Repack."
+      description="The script as it stands, with a comment on each timestamp, open to anyone with its link."
       width={560}
       footer={
         <>
@@ -137,20 +149,14 @@ export function DocsDialog({
           <button type="button" className="ghost" onClick={onClose}>
             Close
           </button>
-          {mayShare ? (
-            <>
-              <button
-                type="button"
-                disabled={!exportable || !!exporting}
-                title="The same Doc, named “(DRAFT)” before the title"
-                onClick={() => void make("draft")}
-              >
-                {exporting === "draft" ? "Exporting…" : "Export draft"}
-              </button>
-              <button type="button" className="primary" disabled={!exportable || !!exporting} onClick={() => void make("script")}>
-                {exporting === "script" ? "Exporting…" : doc ? "Export again" : "Export"}
-              </button>
-            </>
+          {doc && !behind ? (
+            <button type="button" className="primary" data-autofocus onClick={() => window.open(doc.url, "_blank", "noopener,noreferrer")}>
+              Open Doc ↗
+            </button>
+          ) : mayShare ? (
+            <button type="button" className="primary" disabled={!exportable || !!exporting} onClick={() => void make("script")}>
+              {exporting === "script" ? "Exporting…" : doc ? "Export updated Doc" : "Export"}
+            </button>
           ) : (
             <span className="faint">Sign in to export.</span>
           )}
@@ -165,15 +171,9 @@ export function DocsDialog({
         ) : (
           <strong>Not exported yet</strong>
         )}
-        <p className="hint">
-          {!exportable
-            ? "Write the script first."
-            : behind
-              ? "The script has changed since. Export again for an up-to-date Doc."
-              : doc
-                ? "Up to date with the script."
-                : "Docs land in the Writer scripts folder of the account that owns Repack's script Docs."}
-        </p>
+        {(!exportable || doc) && (
+          <p className="hint">{!exportable ? "Write the script first." : behind ? "The script has changed since." : "Up to date with the script."}</p>
+        )}
         {made && (
           <p className="ok">
             Exported {made.draft ? "a draft" : "the script"}.{" "}
@@ -188,6 +188,18 @@ export function DocsDialog({
         </button>
         {earlierOpen && (
           <div className="doc-list">
+            {mayShare && (
+              <div className="row">
+                {doc && !behind && (
+                  <button type="button" className="ghost sm" disabled={!exportable || !!exporting} title="A new Doc of the same script, for one deleted in Drive" onClick={() => void make("script")}>
+                    {exporting === "script" ? "Exporting…" : "New export"}
+                  </button>
+                )}
+                <button type="button" className="ghost sm" disabled={!exportable || !!exporting} title="The same Doc, named “(DRAFT)” before the title" onClick={() => void make("draft")}>
+                  {exporting === "draft" ? "Exporting…" : "Export draft"}
+                </button>
+              </div>
+            )}
             {!earlier ? (
               <p className="hint">Looking in Drive…</p>
             ) : !earlier.length ? (
@@ -212,9 +224,19 @@ export function DocsDialog({
 
       <div className="doc-section">
         <div className="row">
-          <button type="button" className="ghost sm" disabled={!doc && !earlier?.length} onClick={() => void readComments()}>
-            {comments === null ? "Read comments from the Doc" : "Read again"}
-          </button>
+          {comments !== null || commentsProblem ? (
+            <button type="button" className="ghost sm" onClick={() => void readComments()}>
+              Refresh comments
+            </button>
+          ) : doc ? (
+            <span className="hint">Reading the comments…</span>
+          ) : (
+            !!earlier?.length && (
+              <button type="button" className="ghost sm" onClick={() => void readComments()}>
+                Read comments from the Doc
+              </button>
+            )
+          )}
           {comments && comments.length > 0 && (
             <label className="faint toggle">
               <input type="checkbox" checked={showResolved} onChange={(event) => setShowResolved(event.target.checked)} /> Resolved too

@@ -97,6 +97,8 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   // The marked stretches' export, and whether it's what the dialog says (begun here, or running as it opened).
   const [batch, setBatch] = useState<RangesBatch | null>(null);
   const [batchShown, setBatchShown] = useState(false);
+  // What was picked as the export ended in failure, so changing it after makes Export the action, not Retry.
+  const [endedWith, setEndedWith] = useState<string | null>(null);
   useEffect(() => {
     if (!open) return;
     setMarkTouched(false);
@@ -231,6 +233,13 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
     }
   }, [review, sharing, latest, said, toast]);
 
+  const failedNow = exportState?.state === "failed" || lastShare?.state === "failed";
+  useEffect(() => {
+    setEndedWith(failedNow ? `${where}|${what}|${marked ? channel : ""}` : null);
+    // Only as it fails: what's picked after is the change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [failedNow, open]);
+
   if (!project) return null;
   const busy = starting || sharing !== null;
   const exporting = exportState?.state === "queued" || exportState?.state === "running";
@@ -339,6 +348,10 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   const running = busy || exporting || batchRunning;
   const stepsShown = steps !== null && !showBatch && (exporting || sharing !== null) && !problem;
   const ended = !showBatch && !busy && !exporting && (status.kind === "share-failed" || status.kind === "export-failed" || status.kind === "cancelled");
+  // One next action once it's over (Astra, Nov 18: Retry and Export side by side): a failure, its choices as they were,
+  // is tried again the way it was asked; a cancel, or anything changed since, is a new export with what's picked now.
+  const asked = `${where}|${what}|${marked ? channel : ""}`;
+  const retryable = ended && status.kind !== "cancelled" && (endedWith === null || endedWith === asked);
   const retry = async () => {
     if (busy || retrying) return;
     setRetrying(true);
@@ -562,20 +575,20 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
               {stopping || sharing === "cancelling" ? "Stopping…" : "Cancel export"}
             </Button>
           )}
-          {ended && (
-            <Button variant="ghost" disabled={retrying} onClick={() => void retry()}>
-              {retrying ? "Retrying…" : "Retry"}
-            </Button>
-          )}
           <Button variant="ghost" onClick={onClose}>
             Close
           </Button>
-          {/* While one runs, Cancel export and Close; Export again once it's over. */}
-          {!running && (
-            <Button variant="primary" disabled={unable} onClick={go}>
-              Export
-            </Button>
-          )}
+          {/* While one runs, Cancel export and Close; once it's over, one action: Retry a failure, Export again after a cancel. */}
+          {!running &&
+            (retryable ? (
+              <Button variant="primary" disabled={retrying} onClick={() => void retry()}>
+                {retrying ? "Retrying…" : "Retry"}
+              </Button>
+            ) : (
+              <Button variant="primary" disabled={unable} onClick={go}>
+                {ended && status.kind === "cancelled" ? "Export again" : "Export"}
+              </Button>
+            ))}
         </div>
       </div>
     </Modal>

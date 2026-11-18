@@ -188,3 +188,33 @@ describe("ShareDialog's marked parts (Sphe, Nov 17: three cards, each a picture 
     expect(cards()).toEqual([]);
   });
 });
+
+describe("ShareDialog once an export has ended (Astra, Nov 18: one obvious next action)", () => {
+  const labels = () => [...document.querySelectorAll("button")].map((one) => one.textContent?.trim());
+  const primary = () => [...document.querySelectorAll("button")].filter((one) => ["Retry", "Export", "Export again"].includes(one.textContent?.trim() ?? "")).map((one) => one.textContent?.trim());
+
+  it("a failed export: Retry alone, and it retries; picking another destination makes it Export", async () => {
+    await open(project(), { channel: null, channels: [] });
+    act(() => useEditor.setState({ exportState: { state: "failed", progress: 0, path: "/x.mp4", error: "disk full" } as never }));
+    await settle();
+    expect(primary()).toEqual(["Retry"]);
+    const retried = vi.spyOn(api, "retryExport").mockResolvedValue({ started: true });
+    act(() => [...document.querySelectorAll("button")].find((one) => one.textContent?.trim() === "Retry")!.click());
+    await settle();
+    expect(retried).toHaveBeenCalledWith("p1");
+
+    act(() => document.querySelector<HTMLButtonElement>('[role="radio"][aria-checked="false"]')!.click());
+    expect(primary()).toEqual(["Export"]);
+    // Back to what failed: Retry again.
+    act(() => document.querySelector<HTMLButtonElement>('[role="radio"][aria-checked="false"]')!.click());
+    expect(primary()).toEqual(["Retry"]);
+  });
+
+  it("a cancelled export: Export again, no Retry", async () => {
+    await open(project(), { channel: null, channels: [] });
+    act(() => useEditor.setState({ exportState: { state: "cancelled", progress: 0, path: "/x.mp4" } as never }));
+    await settle();
+    expect(primary()).toEqual(["Export again"]);
+    expect(labels()).not.toContain("Retry");
+  });
+});
