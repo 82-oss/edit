@@ -37,6 +37,7 @@ import * as parts from "./parts.ts";
 import * as research from "./research.ts";
 import * as reuse from "./reuse.ts";
 import * as storage from "./storage.ts";
+import * as room from "../storage.ts";
 import * as streamed from "./streamed.ts";
 import * as store from "./store.ts";
 import * as transcription from "./transcription.ts";
@@ -46,7 +47,6 @@ import * as versions from "./versions.ts";
 import * as watch from "./watch.ts";
 import * as edit from "../youtube.ts";
 import * as youtube from "./youtube.ts";
-import { THIS_MACHINE } from "../machine.ts";
 
 /** Drive recordings (or compilation videos) downloaded at once. */
 const DOWNLOADS = 3;
@@ -1065,16 +1065,13 @@ async function downloaded(path: string, recording: drive.Recording): Promise<boo
   }
 }
 
-/** Stops before a download this Mac has no room for. */
+/**
+ * Stops before a download this Mac has no room for: projects not in work make room first (oldest first, whole), and
+ * only then is it refused, in one line with the numbers (storage.ts `admit`).
+ */
 function checkSpace(dir: string, needed: number): void {
-  let free: number;
-  try {
-    const stats = fs.statfsSync(dir);
-    free = stats.bavail * stats.bsize;
-  } catch {
-    return;
-  }
-  if (free < needed) throw new Error(`This needs about ${(needed / 1e9).toFixed(1)} GB free on ${THIS_MACHINE}, and ${(free / 1e9).toFixed(1)} GB is free. Make room, then retry.`);
+  const short = room.admit(dir, needed, "This import", "retry");
+  if (short !== null) throw new Error(short);
 }
 
 /** Runs `work` on each item, `lanes` at a time. */

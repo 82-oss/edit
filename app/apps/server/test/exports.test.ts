@@ -2,13 +2,14 @@ import { expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
-import { archiveExportFile, archiveFinished, beingRead, deleteExport, dropKept, exportCloud, ExportRegistry, holdExport, listExports, restorePrevious, resumeSnapshot, room, roomWanted, stall, withExport } from "../src/exports.ts";
+import { archiveExportFile, archiveFinished, beingRead, chunkFolder, deleteExport, dropKept, exportCloud, ExportRegistry, holdExport, listExports, restorePrevious, resumeSnapshot, room, roomWanted, stall, withExport } from "../src/exports.ts";
 import type { Project } from "../src/model.ts";
 import * as capacity from "../src/export_capacity.ts";
 import * as seams from "../src/seams.ts";
 import { fixtureHome } from "./helpers/home.ts";
 import { clip } from "./helpers/model.ts";
 import { THIS_MACHINE } from "../src/machine.ts";
+import { keepFreeBytes } from "../src/storage.ts";
 
 test("local exports queue across projects, preserve snapshots and advance after failure or queued cancellation", async () => {
   // One at a time, whatever Mac runs the tests (export_capacity.ts lets a big one run more).
@@ -374,7 +375,8 @@ test("a local export the disks can't hold is refused up front, saying what it ne
   // One disk holds the chunks and then the file: twice the size and a gigabyte's margin.
   const oneDisk = () => 1;
   expect(roomFor(bytes, "/cache", "/out", () => 5e9, oneDisk)).toBeNull();
-  expect(roomFor(bytes, "/cache", "/out", () => 3e9, oneDisk)).toContain("needs about 4.5 GB");
+  expect(roomFor(bytes, "/cache", "/out", () => 3e9, oneDisk)).toContain("This export needs about 4.5 GB free and this");
+  expect(roomFor(bytes, "/cache", "/out", () => 3e9, oneDisk)).toContain("has 3.0 GB");
   // Two disks: each holds one of them.
   expect(roomFor(bytes, "/cache", "/out", () => 3e9, (path) => (path === "/cache" ? 1 : 2))).toBeNull();
 });
@@ -393,9 +395,13 @@ test("an export short of room asks the cache to make some before it's refused", 
     await store.update(id, "test", (p) => p.clips.push(clip({ id: "solid", track: p.tracks[0]!.id, start: 0, duration: 30, type: "solid" })));
     // Ten terabytes: more than any disk here has, whatever the cache gives up.
     const options = { ...native.exportDefaults(), target_mb: 10_000_000 };
-    await expect(registry.start(store, app.library, store.get(id)!.project, options, `${dir}/big.mp4`, { drive: false })).rejects.toThrow("not enough disk space for this export");
-    expect(asked).toEqual([roomWanted(10_000_000 * 1e6, store.cacheDir(), dir)]);
+    // Refused before anything is written, in one line with the numbers (storage.ts `roomLine`).
+    await expect(registry.start(store, app.library, store.get(id)!.project, options, `${dir}/big.mp4`, { drive: false })).rejects.toThrow(/^This export needs about \d+ GB free and this (Mac|computer) has [\d.]+ GB\. Free some space, then export it again/);
+    // Room asked for as far as what Edit keeps free on the disk besides it.
+    expect(asked).toEqual([roomWanted(10_000_000 * 1e6, store.cacheDir(), dir) + keepFreeBytes(store.cacheDir())]);
     expect(registry.runningFor(id)).toBeNull();
+    expect(fs.existsSync(`${dir}/big.mp4`)).toBe(false);
+    expect(fs.existsSync(chunkFolder(store.cacheDir(), id))).toBe(false);
   } finally {
     room.make = before;
     plan.mockRestore(); cleanup();

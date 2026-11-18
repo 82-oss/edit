@@ -17,6 +17,7 @@ import { importPaths, placeAtEnd, type Imported } from "./import.ts";
 import * as steps from "./import_steps.ts";
 import { startsWith } from "./paths.ts";
 import * as seams from "./seams.ts";
+import * as storage from "./storage.ts";
 import { curl, driveError, encode, quote } from "./library.ts";
 import { join } from "./paths.ts";
 import { serdeParse } from "./rust.ts";
@@ -32,13 +33,13 @@ export function folderId(url: string): string | null {
   return match === null ? null : match[1]!;
 }
 
-/** A folder's videos (id, name), by name. */
-export async function videosIn(app: App, folder: string): Promise<{ id: string; name: string }[]> {
-  const files: { id: string; name: string; mimeType: string }[] = [];
+/** A folder's videos (id, name, and their bytes when Drive says), by name. */
+export async function videosIn(app: App, folder: string): Promise<{ id: string; name: string; size?: number }[]> {
+  const files: { id: string; name: string; mimeType: string; size?: string }[] = [];
   let page = "";
   for (;;) {
     const query = `'${folder}' in parents and trashed = false`;
-    let url = `${API}/files?q=${encode(query)}&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=nextPageToken,files(id,name,mimeType)`;
+    let url = `${API}/files?q=${encode(query)}&pageSize=1000&supportsAllDrives=true&includeItemsFromAllDrives=true&fields=nextPageToken,files(id,name,mimeType,size)`;
     if (page !== "") url += `&pageToken=${encode(page)}`;
     const config = `header = ${quote(`Authorization: Bearer ${await app.library.accessToken()}`)}\n`;
     const [code, body] = await curl(config, ["--max-time", "60", url]);
@@ -51,7 +52,7 @@ export async function videosIn(app: App, folder: string): Promise<{ id: string; 
   }
   return files
     .filter((file) => typeof file.mimeType === "string" && file.mimeType.startsWith("video/"))
-    .map((file) => ({ id: file.id, name: file.name }))
+    .map((file) => ({ id: file.id, name: file.name, ...(Number(file.size) > 0 ? { size: Number(file.size) } : {}) }))
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
@@ -135,8 +136,13 @@ async function importDriveNow(app: App, key: string, id: string, url: string, pl
   const folder = folderId(url);
   const file = folder === null ? script.driveFileId(url) : null;
   if (folder === null && file === null) throw new Error("that isn't a Google Drive folder or file link");
-  const files = folder !== null ? await videosIn(app, folder) : [{ id: file!, name: file! }];
+  const files: { id: string; name: string; size?: number }[] = folder !== null ? await videosIn(app, folder) : [{ id: file!, name: file! }];
   if (files.length === 0) throw new Error("there's no video in that Drive folder");
+  // Room for the downloads (what isn't here yet) and their proxies (about a quarter of them), before any comes down:
+  // projects not in work make room first, and only then is it refused, with the numbers (storage.ts `admit`).
+  const coming = files.reduce((sum, one) => sum + Math.max((one.size ?? 0) - downloadedBytes(join(app.store.uploadsDir(id), "drive", one.id)), 0), 0);
+  const short = storage.admit(app.store.uploadsDir(id), Math.ceil(coming * 1.25), "This import", "import it again");
+  if (short !== null) throw new Error(short);
   const paths: string[] = [];
   for (const one of files) {
     const dir = join(app.store.uploadsDir(id), "drive", one.id);
@@ -190,6 +196,23 @@ function finish(app: App, key: string, id: string, added: string[], paths: strin
     }
   }
   jobs.end(app.store.home, key);
+}
+
+/** Bytes a download kept in `dir` already (a resumed import's). */
+function downloadedBytes(dir: string): number {
+  let total = 0;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      try {
+        total += fs.statSync(join(dir, name)).size;
+      } catch {
+        // Gone meanwhile.
+      }
+    }
+  } catch {
+    // Nothing yet.
+  }
+  return total;
 }
 
 /** Deletes a Drive staging copy under `root` (Edit's own copy only). Whether it went. */
