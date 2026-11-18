@@ -18,14 +18,16 @@ const MAX_REDIRECTS = 5;
 /** Whether `ip` (v4 or v6) is somewhere a public page can't be: this Mac, its network, link-local, multicast, reserved. */
 export function isPrivateAddress(ip: string): boolean {
   if (isIP(ip) === 4) {
-    const [a, b] = ip.split(".").map(Number) as [number, number, number, number];
+    const [a, b, c] = ip.split(".").map(Number) as [number, number, number, number];
     return (
       a === 0 || a === 10 || a === 127 || a >= 224 ||
       (a === 100 && b >= 64 && b <= 127) ||
       (a === 169 && b === 254) ||
       (a === 172 && b >= 16 && b <= 31) ||
       (a === 192 && b === 168) ||
-      (a === 192 && b === 0) ||
+      // 192.0.0.x (IETF) and 192.0.2.x (documentation) only: the rest of 192.0 is the
+      // web (WordPress VIP, 192.0.64-127, serves many local news sites).
+      (a === 192 && b === 0 && (c === 0 || c === 2)) ||
       (a === 198 && (b === 18 || b === 19))
     );
   }
