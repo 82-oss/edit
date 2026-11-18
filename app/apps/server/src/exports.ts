@@ -18,6 +18,7 @@ import { diskFull, freeOn, outOfSpace, shownProgress } from "./export_prep.ts";
 import * as speeds from "./export_speeds.ts";
 import { runPromise } from "./effect/runtime.ts";
 import * as jobs from "./jobs.ts";
+import * as missingMedia from "./missing_media.ts";
 import { ioMessage, nowMs, writeAtomic } from "./files.ts";
 import { subtitleVideo } from "./drive.ts";
 import { catchBugsAsync } from "./guard.ts";
@@ -319,13 +320,13 @@ export async function archiveExportFile(
 }
 
 /**
-/**
  * How an archive went: up (or in the cloud already), stopped for a newer
  * export of the file, or not up (offline, signed out, the relay down): that
  * one's job is put off and tried again by itself (jobs.ts `putOff`).
  */
 export type Archived = "up" | "stopped" | "not up";
 
+/**
  * Puts a finished export in the cloud (`archiveExportFile`) and lists it
  * there: after the export, or after a restart cut the upload short (the
  * `archive` job). A file gone meanwhile is said, never exported again here.
@@ -373,7 +374,6 @@ export async function archiveFinished(home: string, id: string, output: string, 
     diag.info("export", `${id}: the upload of ${output} to the cloud stopped: a newer export of it is being made`);
     return "stopped";
   }
-}
   diag.warn("export", `${id}: cloud archive of ${output} unverified; local copy kept`);
   return "not up";
 }
@@ -398,6 +398,7 @@ export async function archiveJob(home: string | null, job: string, send: () => P
   }
   if (went === "not up") jobs.putOff(home, job, "its export's cloud copy didn't go up");
   else jobs.end(home, job);
+}
 
 /**
  * `archiveFinished`, noted as going up while it does: a newer export of the
@@ -1076,6 +1077,9 @@ export class ExportRegistry implements seams.Exports {
     output: string,
     extra: StartExtra = {},
   ): Promise<string> {
+    // Nothing final while footage is missing (missing_media.ts): the button's, a share's, the agent's and a retry's export wait alike.
+    const missing = await missingMedia.held(store.home, project);
+    if (missing !== null) throw new Error(missing);
     // This project's export made ahead stops first (it writes the same chunk folder); what it made is reused.
     await this.stopAhead(project.id);
     const addon = native();

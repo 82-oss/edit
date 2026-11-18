@@ -57,3 +57,15 @@ export interface FootageComing {
   /** Seconds until all of it is here; null with no measured speed. */
   left_s: number | null;
 }
+
+/**
+ * An edit's footage that isn't here and can't play (Sphe, Nov 18): files gone from this machine with no cloud copy, or
+ * footage whose cloud proxy is gone. The top bar's cloud says it, with Retry now and Go on without it; export and share
+ * wait for it. The server's `missing_media.ts`.
+ */
+export interface EditMissing {
+  /** Files the timeline uses. */
+  used: number;
+  /** Those not here, less the ones the person went on without. */
+  missing: { id: string; name: string; path: string }[];
+}

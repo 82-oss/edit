@@ -23,6 +23,7 @@ import * as drive from "./drive.ts";
 import * as handoff from "./handoff.ts";
 import { join } from "../paths.ts";
 import * as jobs from "./jobs.ts";
+import * as missing from "./missing.ts";
 import * as storage from "./storage.ts";
 import * as store from "./store.ts";
 
@@ -47,6 +48,7 @@ export function start(app: App, options: { trials?: boolean } = {}): void {
   if (options.trials === true) {
     carryOn(app, data, store.markInterrupted(data));
     for (const id of store.ids(data)) jobs.markInterrupted(data, id);
+    missing.start(app, data);
     cloud.start(data, holderFor(app.store.home, readSettings(app.store.home).holder ?? machine.name()));
     storage.start(data, join(app.store.home, "projects"), app.store.cacheDir());
     scriptSync.start(app);
@@ -54,6 +56,8 @@ export function start(app: App, options: { trials?: boolean } = {}): void {
   }
   carryOn(app, data, store.markInterrupted(data));
   for (const id of store.ids(data)) jobs.markInterrupted(data, id);
+  // Footage that didn't come in, tried again by itself (and imports an older Edit paused on it, carried on).
+  missing.start(app, data);
   cloud.start(data, holderFor(app.store.home, readSettings(app.store.home).holder ?? machine.name()));
   reviews.start(app, data);
   // Idle scripts' footage left to the cloud as room runs short.

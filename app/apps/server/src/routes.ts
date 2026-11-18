@@ -23,7 +23,7 @@ import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as localPreviews from "./local_previews.ts";
 import { nativeSources } from "./native_preview.ts";
-import { PLAYBACK_ROUTE, playbackKey, previewable } from "./cloud_playback.ts";
+import { PLAYBACK_ROUTE, previewable } from "./cloud_playback.ts";
 import { ioMessage } from "./files.ts";
 import { ApiError, bad, json, notFound } from "./http/errors.ts";
 import { serveFile } from "./http/files.ts";
@@ -31,7 +31,7 @@ import { badShape, pathEndingAt, readJson, showPath, type RouteContext, type Rou
 import { baseRouter } from "./http/server.ts";
 import { importPaths } from "./import.ts";
 import { routes as mediaRoutes } from "./media_tools.ts";
-import { checkKey, Semaphore } from "./media.ts";
+import { Semaphore } from "./media.ts";
 import type { ExportOptions, Project, Style } from "./model.ts";
 import { withProjectAsync } from "./native/index.ts";
 import * as patches from "./patch.ts";
@@ -40,7 +40,8 @@ import { DEFAULT_SETTINGS, SHORTS_SETTINGS } from "./project.ts";
 import * as seams from "./seams.ts";
 import { readExportFolder, saveExportFolder } from "./export_folder.ts";
 import { defaultExportPath } from "./server_seam.ts";
-import { missingMedia, UpdateError } from "./store.ts";
+import { UpdateError } from "./store.ts";
+import * as missingMedia from "./missing_media.ts";
 import * as archive from "./archive.ts";
 import * as avatars from "./avatars.ts";
 import * as kinds from "./kinds.ts";
@@ -171,7 +172,8 @@ export function buildRouter(): Router<App> {
       return serveFile(context.request, found.file!);
     })
     .get("/api/projects/{id}/media-status", mediaStatus)
-    .get("/api/projects/{id}/missing", missingFootage);
+;
+  missingMedia.routes(router);
   mediaRoutes(router);
   seams.research.routes(router);
   seams.captions.routes(router);
@@ -606,24 +608,6 @@ function getProject({ app, params }: Context): Response {
 }
 
 /** The footage the timeline plays that isn't here and can't be fetched: the editor says so. */
-async function missingFootage({ app, params }: Context): Promise<Response> {
-  const live = liveOr404(app, params.id!);
-  const used = new Set(live.project.clips.flatMap((clip) => ("media" in clip && typeof clip.media === "string" ? [clip.media] : [])));
-  // And footage streamed from the cloud whose proxy the cloud doesn't have (it 404s: "Loading frame…" for good otherwise).
-  const streamed = live.project.media.filter((media) => used.has(media.id) && playbackKey(media.path) !== null);
-  const gone = new Set<string>();
-  for (let at = 0; at < streamed.length; at += 8) {
-    await Promise.all(streamed.slice(at, at + 8).map(async (media) => {
-      if ((await checkKey(playbackKey(media.path)!)) === false) gone.add(media.id);
-    }));
-  }
-  const missing = [...missingMedia(live.project), ...streamed.filter((media) => gone.has(media.id))];
-  return json({
-    used: live.project.media.filter((media) => used.has(media.id)).length,
-    missing: missing.map((media) => ({ id: media.id, name: media.name, path: media.path })),
-  });
-}
-
 async function putProject(context: Context): Promise<Response> {
   const given = await body(context);
   const baseRev = field<number>(given, "base_rev", "u64");

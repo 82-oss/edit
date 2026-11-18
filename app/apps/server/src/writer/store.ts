@@ -126,6 +126,7 @@ export function summary(script: Script, dir?: string): Summary {
     building: false,
     sourceKind: script.sourceKind,
     ...(script.decision ? { decision: script.decision } : {}),
+    ...((script.missing ?? []).length > 0 ? { missing: script.missing } : {}),
     ...(script.dismissedAt ? { dismissedAt: script.dismissedAt } : {}),
     ...(script.firstBuild ? { firstBuild: true } : {}),
     ...(script.builtAt !== undefined ? { builtAt: script.builtAt } : {}),

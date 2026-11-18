@@ -6,12 +6,13 @@ import { ChatDock } from "../components/ChatDock";
 import { useUntaughtLane } from "../components/Untaught";
 import { addQuote, useQuotesOf, type ChatQuote } from "../lib/chatQuotes";
 import { scriptEntries } from "./chat/editor-entries";
-import { buildStatus, completeTranscription, correctWord, editProject, footageOnly, footageUploader, getChat, getResearch, getScript, importReuses, message, previewSrc, resetScript, resolveProposals, restoreVersion, retrySpeakers, saveClips, setHeading, startBuild, startEdit, startRevision, stopJob, uploadsOf } from "./api";
+import { buildStatus, completeTranscription, correctWord, editProject, footageOnly, footageUploader, getChat, getResearch, getScript, importReuses, message, previewSrc, resetScript, resolveProposals, restoreVersion, resumeImport, retrySpeakers, saveClips, setHeading, startBuild, startEdit, startRevision, stopJob, uploadsOf } from "./api";
 import type { ChatFile } from "../lib/chatFiles";
 import { navigate } from "../lib/route";
 import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
 import { Avatar } from "./avatar";
 import { StatusChips } from "../components/MemoryChip";
+import { MissingCloud } from "../components/MissingCloud";
 import { ProblemView } from "../components/ProblemView";
 import { UpdateButton } from "./update";
 import { DocsDialog } from "./docs-dialog";
@@ -658,6 +659,21 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
         <div className="top-actions">
           <StatusChips />
           <UpdateButton />
+          {/* Footage that didn't come in: writing waits for it (missing.ts), said at the cloud with its two answers. */}
+          {(script.missing ?? []).length > 0 && (
+            <MissingCloud
+              items={script.missing!.map((one) => ({ id: one.id, name: one.title }))}
+              noun={script.sourceKind === "compilation" ? "video" : "recording"}
+              onRetry={() => resumeImport(script.id, { kind: "retry_missing" }).catch((cause: unknown) => setError(message(cause)))}
+              onWithout={async (ids) => {
+                try {
+                  for (const one of ids) onChange(await resumeImport(script.id, { kind: "skip_missing", id: one }));
+                } catch (cause) {
+                  setError(message(cause));
+                }
+              }}
+            />
+          )}
           <ViewTabs view={view} onChange={(next) => (setExpanded(false), setView(next))} />
           <button type="button" className="icon-tool" aria-label="Undo" title={`Undo (${MOD}Z)`} disabled={!past.current.length || busy} onClick={undo}>
             <Icon name="undo" />

@@ -11,6 +11,7 @@ import { navigate } from "../lib/route";
 import { useEditor } from "../lib/store";
 import { AppMenu } from "./AppMenu";
 import { FootageCloud, footageShowing } from "./FootageReady";
+import { MissingCloud, useEditMissing } from "./MissingCloud";
 import { DocChangesButton } from "./DocChangesBar";
 import { toggleMenu } from "./ContextMenu";
 import { Tile } from "./Logo";
@@ -86,11 +87,19 @@ export function TopBar({ onShare, footage = null }: { onShare: () => void; foota
 
 /**
  * A cloud project’s sync as an icon only (its words are its tooltip): saved, syncing, offline, read-only, a problem;
- * while its footage is still coming here, how far that has got instead (`FootageCloud`), back to the sync once it's here.
+ * while its footage is still coming here, how far that has got instead (`FootageCloud`), back to the sync once it's here;
+ * and before either, footage that didn't come in (`MissingCloud`), with Retry now and Go on without it.
  */
 function SyncState({ footage }: { footage: Ready | null }) {
   const cloud = useEditor((state) => state.cloud);
   const label = syncLabel(cloud);
+  const id = useEditor((state) => state.project?.id ?? "");
+  // Asked again when the media change (an import, a relink), and once cleared footage is back (FootageBack).
+  const mediaCount = useEditor((state) => state.project?.media.length ?? 0);
+  const back = useEditor((state) => (state.scriptJob?.back === true ? state.scriptJob.state : null));
+  const missing = useEditMissing(id, mediaCount, back);
+  // Footage that didn't come in comes first: export and share wait on it (missing_media.ts).
+  if (missing.items.length > 0) return <MissingCloud items={missing.items} noun="file" onRetry={missing.retry} onWithout={missing.without} />;
   if (footageShowing(footage)) return <FootageCloud answer={footage} />;
   if (!label) return null;
   const Icon = { ok: CloudCheck, busy: CloudSync, warn: label.text === "Read-only" ? Lock : CloudOff, bad: CloudAlert }[label.tone];

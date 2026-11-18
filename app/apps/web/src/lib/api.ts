@@ -1,5 +1,5 @@
 import type { ExportSteps } from "@edit/types/export_steps";
-import type { FootageComing, FootageReady } from "@edit/types/footage_ready";
+import type { EditMissing, FootageComing, FootageReady } from "@edit/types/footage_ready";
 import { useEffect, useState } from "react";
 import { create } from "zustand";
 
@@ -274,8 +274,11 @@ export const api = {
   /** Vmake's sign-in in this Mac's cloud browser: the live view to open. */
   vmakeSignIn: () => request<{ open: string }>("POST", "/api/text-removal/sign-in"),
   /** The footage the timeline plays that isn't on this machine and can't be fetched. */
-  missingFootage: (id: string) =>
-    request<{ used: number; missing: { id: string; name: string; path: string }[] }>("GET", `/api/projects/${id}/missing`),
+  /** Footage the timeline uses that isn't here (missing_media.ts): Edit tries it again by itself meanwhile. */
+  missingFootage: (id: string) => request<EditMissing>("GET", `/api/projects/${id}/missing`),
+  retryMissingFootage: (id: string) => request<EditMissing>("POST", `/api/projects/${id}/missing/retry`),
+  /** Goes on without one file for good: never asked about again, and export no longer waits for it. */
+  goWithoutFootage: (id: string, media: string) => request<EditMissing>("POST", `/api/projects/${id}/missing/${encodeURIComponent(media)}/without`),
   /** A folder on the machine running Edit: its folders and media, or (`extensions`) its files with those extensions. */
   browse: (path?: string, extensions: string[] = []) => {
     const query = new URLSearchParams();

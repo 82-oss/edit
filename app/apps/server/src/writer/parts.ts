@@ -27,6 +27,8 @@ export interface Manifest {
   recordings: Recording[];
   chosen?: string[] | null;
   skipped: string[];
+  /** Recordings that didn't come in and are still tried (Script.missing): out of the case until they're here. */
+  missing?: string[];
 }
 
 export const manifestPath = (dir: string): string => join(dir, "drive", "manifest.json");
@@ -41,9 +43,11 @@ export function writeManifest(dir: string, manifest: Manifest): void {
   writeAtomic(manifestPath(dir), JSON.stringify(manifest, null, 2));
 }
 
-/** The recordings to import, with their place in the first listing, which names their files on disk and so never changes. */
-export const wanted = (manifest: Manifest): [number, Recording][] =>
-  manifest.recordings.flatMap((recording, index): [number, Recording][] => ((manifest.chosen == null || manifest.chosen.includes(recording.id)) && !manifest.skipped.includes(recording.id) ? [[index, recording]] : []));
+/** The recordings in the case, with their place in the first listing, which names their files on disk and so never changes: chosen, not gone without, and here (none still missing). */
+export const wanted = (manifest: Manifest, withMissing = false): [number, Recording][] =>
+  manifest.recordings.flatMap((recording, index): [number, Recording][] =>
+    (manifest.chosen == null || manifest.chosen.includes(recording.id)) && !manifest.skipped.includes(recording.id) && (withMissing || !(manifest.missing ?? []).includes(recording.id)) ? [[index, recording]] : [],
+  );
 
 /** A recording's file in its folder: its place in the listing and its own extension. */
 export function driveFile(folder: string, index: number, recording: Recording): string {
@@ -55,6 +59,8 @@ export function driveFile(folder: string, index: number, recording: Recording): 
 export interface Videos {
   videos: { url: string; title: string }[];
   skipped: string[];
+  /** Videos (by index) that didn't come in and are still tried: out of the case until they're here. */
+  missing?: string[];
 }
 
 export function readVideos(dir: string): Videos | null {
@@ -67,7 +73,9 @@ export function writeVideos(dir: string, videos: Videos): void {
   writeAtomic(join(dir, "compilation", "videos.json"), JSON.stringify(videos, null, 2));
 }
 
-const keptVideos = (videos: Videos): [number, Videos["videos"][number]][] => videos.videos.flatMap((video, index): [number, typeof video][] => (videos.skipped.includes(String(index)) ? [] : [[index, video]]));
+/** The videos in the compilation, by their place in the list: not gone without, and here (none still missing). */
+export const keptVideos = (videos: Videos, withMissing = false): [number, Videos["videos"][number]][] =>
+  videos.videos.flatMap((video, index): [number, typeof video][] => (videos.skipped.includes(String(index)) || (!withMissing && (videos.missing ?? []).includes(String(index))) ? [] : [[index, video]]));
 
 /** Where each recording's own file belongs on this Mac, in the order of the script's parts (a reused case's footage, joined later, has none). */
 export function partTargets(dir: string, script: Script): (string | null)[] {

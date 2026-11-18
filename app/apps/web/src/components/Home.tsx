@@ -1,4 +1,4 @@
-import { Archive, Check, ChevronDown, ChevronRight, ListFilter, CloudDownload, CloudOff, Copy, ExternalLink, FileText, Film, FileVideo, Lock, MessageSquare, Pencil, PenLine, Plus, Replace, RotateCw, Search, Share2, SkipForward, Tag, Trash2, TriangleAlert, X } from "lucide-react";
+import { Archive, Check, ChevronDown, ChevronRight, ListFilter, CloudDownload, CloudOff, Copy, ExternalLink, FileText, Film, FileVideo, Lock, MessageSquare, Pencil, PenLine, Plus, Replace, RotateCw, Search, Share2, Tag, Trash2, TriangleAlert, X } from "lucide-react";
 import { motion } from "motion/react";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
@@ -1329,8 +1329,6 @@ const retries = (issue: ScriptIssueRow) => issue.retryHelps !== false && issue.d
 export function useIssueDialogs(issue: ScriptIssueRow) {
   const [open, setOpen] = useState<"error" | "replace" | "dismiss" | null>(null);
   const [url, setUrl] = useState("");
-  const failed = issue.decision?.kind === "failed_recordings" ? issue.decision.failed : [];
-  const [which, setWhich] = useState(failed[0]?.id ?? "");
   const close = () => setOpen(null);
   // Why, said plainly (problems.ts): the original words go to the log, never on screen.
   const said = issue.decision?.summary ?? issue.error ?? "It stopped without saying why.";
@@ -1342,7 +1340,6 @@ export function useIssueDialogs(issue: ScriptIssueRow) {
   const items: MenuItem[] = [
     { label: "Why it stopped", icon: <TriangleAlert size={14} />, onSelect: () => setOpen("error") },
     ...(helps ? [{ label: "Retry", icon: <RotateCw size={14} />, onSelect: retry }] : []),
-    ...(issue.decision?.kind === "failed_recordings" ? [{ label: goOnWithout(issue), icon: <SkipForward size={14} />, onSelect: () => void answerIssue(issue, { kind: "skip_failed" }) }] : []),
     ...(issue.decision?.kind === "no_speech" ? [{ label: NO_TRANSCRIPT, icon: <FileText size={14} />, onSelect: () => void answerIssue(issue, { kind: "no_transcript" }) }] : []),
     { label: "Replace…", icon: <Replace size={14} />, onSelect: () => setOpen("replace") },
     { separator: true },
@@ -1355,16 +1352,6 @@ export function useIssueDialogs(issue: ScriptIssueRow) {
           <h2 className="text-[18px] font-semibold tracking-[-0.3px]">Why “{issue.title}” stopped</h2>
           <p className="mt-1 text-[13px] text-muted">Stopped {stageWords(issue.stage)}{issue.progress ? `, ${Math.round(issue.progress)}% in` : ""}. It waits there until it’s answered.</p>
           <ProblemView error={said} doing="finish the import" className="mt-4" />
-          {failed.length > 0 && (
-            <ul className="mt-3 space-y-1 text-[12px]">
-              {failed.map((one) => (
-                <li key={one.id} className="flex min-w-0 gap-2">
-                  <span className="min-w-0 truncate text-secondary">{one.title}</span>
-                  <span className="shrink-0 text-muted">{explain(one.error, "download it").title}</span>
-                </li>
-              ))}
-            </ul>
-          )}
           {issue.retryHelps === false && <p className="mt-3 text-[13px] leading-relaxed text-muted">{NEEDS_A_FIX}</p>}
           <div className="mt-[22px] flex items-center justify-end gap-2">
             <div className="flex gap-2">
@@ -1387,21 +1374,12 @@ export function useIssueDialogs(issue: ScriptIssueRow) {
             event.preventDefault();
             if (url.trim() === "") return;
             close();
-            void answerIssue(issue, { kind: "replace", url: url.trim(), ...(failed.length > 0 ? { id: which } : {}) });
+            void answerIssue(issue, { kind: "replace", url: url.trim() });
             setUrl("");
           }}
         >
           <h2 className="text-[18px] font-semibold tracking-[-0.3px]">Replace a video</h2>
-          <p className="mt-1 text-[13px] leading-relaxed text-muted">Give another link for {failed.length > 0 ? "a video that failed" : "this import’s video"}, such as a Google Drive copy of a YouTube video that won’t download. The import carries on from where it stopped.</p>
-          {failed.length > 1 && (
-            <select value={which} onChange={(event) => setWhich(event.target.value)} className="mt-4 h-9 w-full rounded-md border border-line bg-black px-2 text-[13px]">
-              {failed.map((one) => (
-                <option key={one.id} value={one.id}>
-                  {one.title}
-                </option>
-              ))}
-            </select>
-          )}
+          <p className="mt-1 text-[13px] leading-relaxed text-muted">Give another link for this import’s video, such as a Google Drive copy of a YouTube video that won’t download. The import carries on from where it stopped.</p>
           <input autoFocus value={url} onChange={(event) => setUrl(event.target.value)} placeholder="A YouTube or Google Drive link" className="mt-4 h-9 w-full rounded-md border border-line bg-black px-3 text-[13px] outline-none placeholder:text-faint focus:border-muted" />
           <div className="mt-[22px] flex justify-end gap-2">
             <Button type="button" variant="subtle" onClick={close}>
@@ -1441,13 +1419,9 @@ function IssueActions({ issue }: { issue: ScriptIssueRow }) {
   const kind = issue.decision?.kind;
   return (
     <>
-      {kind === "failed_recordings" ? (
-        <Button onClick={() => void answerIssue(issue, { kind: "skip_failed" })}>{goOnWithout(issue)}</Button>
-      ) : (
-        <Button variant={retries(issue) || kind === "no_speech" ? undefined : "primary"} onClick={replace}>
-          Replace…
-        </Button>
-      )}
+      <Button variant={retries(issue) || kind === "no_speech" ? undefined : "primary"} onClick={replace}>
+        Replace…
+      </Button>
       {/* Footage with no words: opened as it is, its script written without a transcript (as Writer's dialog offered until Nov 15). */}
       {kind === "no_speech" && (
         <Button variant="primary" onClick={() => void answerIssue(issue, { kind: "no_transcript" })}>
@@ -1466,7 +1440,6 @@ function IssueActions({ issue }: { issue: ScriptIssueRow }) {
 }
 
 const NO_TRANSCRIPT = "Open without a transcript";
-const goOnWithout = (issue: ScriptIssueRow) => (issue.decision?.kind === "failed_recordings" && issue.decision.failed.length === 1 ? "Go on without it" : "Go on without them");
 
 /**
  * A stopped import on Home's "need you" list, in the table's columns below it

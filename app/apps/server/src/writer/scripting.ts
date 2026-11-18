@@ -25,6 +25,7 @@ import { checkStopped, type Job, type Outcome, named } from "./jobs.ts";
 import * as lessonNote from "./lesson_note.ts";
 import { lessonsText } from "./lessons.ts";
 import * as media from "./media.ts";
+import * as missingFootage from "./missing.ts";
 import { nameVoices } from "./naming.ts";
 import { clock, ensureIds } from "./paragraphs.ts";
 import { compile, isTaught, type Plan } from "./plan.ts";
@@ -159,7 +160,8 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   let built: build.Built;
   try {
     // Its progress kept beside it, so a restart carries on from the last phase done, not from the outline.
-    built = await build.buildFast(script, note, found, peaks, job.signal, job.stage, join(dir, ".build-progress.json"));
+    // Footage not in the case is said with the producer's note, so the writer never writes around it unsaid (missing.ts).
+    built = await build.buildFast(script, withMissing(note, script), found, peaks, job.signal, job.stage, join(dir, ".build-progress.json"));
   } catch (error) {
     failed(dir, job, error);
   }
@@ -187,6 +189,12 @@ export async function buildOnce(app: App, data: string, id: string, note: string
   save(dir, before, now);
   chat.add(dir, "editor", report, built.costUsd);
   return [report, built.costUsd];
+}
+
+/** `said` with what footage isn't in the case (missing.ts `forWriter`), as Edit's note after it. */
+export function withMissing(said: string, script: Script): string {
+  const note = missingFootage.forWriter(script);
+  return note === "" ? said : `${said.trim()}${said.trim() === "" ? "" : "\n\n"}(Edit's note on the footage: ${note})`;
 }
 
 /**
@@ -366,7 +374,7 @@ export async function reviseWith(data: string, id: string, request: string, said
   const found = casefiles.withDocuments(dir, research.load(dir) ?? { articles: [], queries: [], at: 0 });
   let done: Awaited<ReturnType<typeof revise>>;
   try {
-    done = await revise(script, request, focus, earlier, found, peaks, direct, job.signal);
+    done = await revise(script, withMissing(request, script), focus, earlier, found, peaks, direct, job.signal);
   } catch (error) {
     failed(dir, job, error);
   }

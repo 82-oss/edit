@@ -10,6 +10,7 @@ import { readAttached, type Attached } from "./chat_attachments.ts";
 import { CHAT_PICTURES, fetchPicture, keptPicture } from "./chat_pictures.ts";
 import { subKey } from "./agent.ts";
 import * as archive from "./archive.ts";
+import * as missingMedia from "./missing_media.ts";
 import * as diag from "./diag.ts";
 import { join } from "./paths.ts";
 import * as drive from "./drive.ts";
@@ -603,7 +604,9 @@ export async function messageContext(app: App, id: string, playhead: number | nu
   const at = playhead === null ? "" : playheadContext(live.project, playhead, cachedTranscripts(app, live.project, false));
   // Its footage cleared by the footage sweep (archive.ts): said plainly, so the agent asks for it back instead of failing on missing files.
   const cleared = archive.clearedOf(id) === null || archive.backRunning(id) ? at : `${CLEARED_NOTE}${at === "" ? "" : `\n\n${at}`}`;
-  const broken = notes ? effects.untoldFailures(app, id) : [];
+  // Footage that didn't come in (missing_media.ts): said plainly with every message, so it's never cut around unsaid.
+  const gone = await missingMedia.forAgent(app.store.home, live.project);
+  const broken = [...(gone === "" ? [] : [gone]), ...(notes ? effects.untoldFailures(app, id) : [])];
   const said = broken.length === 0 ? "" : `\n\n(Edit, automatically) ${broken.join(" ")}`;
   const where = said === "" || cleared === "" || cleared.startsWith("\n") ? `${said}${cleared}` : `${said}\n\n${cleared}`;
   const taken = !notes

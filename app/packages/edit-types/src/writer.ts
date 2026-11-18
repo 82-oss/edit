@@ -54,7 +54,16 @@ export type Highlight = { firstWordId: string; lastWordId: string; startMs: numb
 /** A case of a compilation the channel already covered: its transition is written from its earlier script, and its footage joins only for intro clips. */
 export type Reuse = { url: string; title: string; after: number; footage?: string; narration?: string; earlier?: string; script?: string; scriptTitle?: string; scriptText?: string };
 
+/**
+ * A recording (a Drive folder's file, a compilation's video) that didn't come in (Sphe, Nov 18): the import carries on
+ * with the rest, Edit tries it again by itself (after 1, 5 and 15 minutes, then hourly) and joins it into the case
+ * when it comes, and nothing final (writing the script) happens until it has, or the producer goes on without it.
+ * `id`: the manifest's recording id, or a compilation video's index.
+ */
+export type MissingRecording = { id: string; title: string; error: string; tries: number; nextAt: number };
+
 export type Decision =
+  /** Asked only by an Edit from before Nov 18: an import now carries on past a recording that fails (`Script.missing`), and one stopped on this moves on by itself. */
   | { kind: "failed_recordings"; summary: string; failed: { id: string; title: string; error: string }[]; total: number }
   /** Asked only by an Edit from before Nov 18, when a case took at most 60 recordings and 20 hours: its limits are no longer read. */
   | {
@@ -69,6 +78,10 @@ export type Decision =
 export type Choice =
   | { kind: "retry" }
   | { kind: "skip_failed" }
+  /** Footage that didn't come in (`Script.missing`): tried again now. */
+  | { kind: "retry_missing" }
+  /** The producer goes on without that recording (confirmed): it's left out for good, never asked about again. */
+  | { kind: "skip_missing"; id: string }
   | { kind: "select"; ids: string[] }
   | { kind: "no_transcript" }
   /** A video that failed, given another link (a Drive copy of a YouTube video that won't download): `id` the failed one's, or none for the script's own video. */
@@ -113,6 +126,8 @@ export type Script = {
   overview: number[];
   parts?: Part[];
   decision?: Decision;
+  /** Recordings that didn't come in, still being tried (`MissingRecording`): writing waits until they're here or gone without. */
+  missing?: MissingRecording[];
   noSpeech?: boolean;
   notes?: string[];
   kind?: Kind;
@@ -210,6 +225,8 @@ export type Summary = {
   building: boolean;
   sourceKind: string;
   decision?: Decision;
+  /** Recordings that didn't come in (`Script.missing`). */
+  missing?: MissingRecording[];
   /** A commentary script's narration words, once written. */
   draftWords: number;
   compilation: boolean;

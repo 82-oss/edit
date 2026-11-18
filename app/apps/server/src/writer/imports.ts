@@ -32,6 +32,7 @@ import * as drive from "./drive.ts";
 import * as handoff from "./handoff.ts";
 import * as jobs from "./jobs.ts";
 import * as media from "./media.ts";
+import * as missingFootage from "./missing.ts";
 import { caseNames } from "./names.ts";
 import * as parts from "./parts.ts";
 import * as research from "./research.ts";
@@ -470,6 +471,11 @@ export const hooks = { build: (_app: App, _id: string, _note: string): void => {
  */
 function buildWhenReady(app: App, data: string, script: Script): void {
   if (script.status !== "ready" || script.firstBuild === undefined) return;
+  // Writing waits for footage that didn't come in: it starts by itself once that's here or gone without (missing.ts).
+  if ((script.missing ?? []).length > 0) {
+    diag.info("writer", `${jobs.named(script.id, script.title)}: its import is ready, but writing waits for ${script.missing!.map((one) => one.title).join(", ")}`);
+    return;
+  }
   void buildOnceReady(app, data, script, script.firstBuild.note);
 }
 
@@ -493,8 +499,12 @@ async function buildOnceReady(app: App, data: string, script: Script, note: stri
   }
 }
 
-/** Answers a paused import, or retries a failed one, then carries on. */
+/** The build a script waits to start (`firstBuild`), started now when it's ready and nothing is missing. */
+export const buildIfWaiting = (app: App, data: string, script: Script): void => buildWhenReady(app, data, script);
+
+/** Answers a paused import, or retries a failed one, then carries on. Footage that didn't come in is answered by missing.ts. */
 export async function resume(app: App, data: string, id: string, choice: Choice, answer: Answer = "finished"): Promise<Script> {
+  if (choice.kind === "retry_missing" || choice.kind === "skip_missing") return missingFootage.answer(app, data, id, choice);
   const done = busy(id);
   let result: Script;
   let alone = false;
@@ -636,9 +646,11 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
     const spent = stageTimes(script.id);
     if (step === "done") yield* Effect.logInfo(`${jobs.named(script.id, script.title)}: imported in ${seconds}: ${clock(script.durationMs)} of footage, ${script.words.length} words, ${new Set(script.words.map((word) => word.speaker).filter(Boolean)).size} voices${spent ? ` (${spent})` : ""}`);
     else yield* Effect.logWarning(`${jobs.named(script.id, script.title)}: paused after ${seconds}${spent ? ` (${spent})` : ""} for a choice: ${script.decision?.summary ?? ""}`);
-    // Its first build, when it was made with one, says so itself once written.
-    if (step !== "done") notices.notify({ key: `import:${script.id}:${began}`, title: "The import needs you", body: `${script.title || "Untitled script"}: ${notices.line(script.decision?.summary ?? "a choice to make")}`, path: `/scripts/${script.id}` });
-    else if (script.firstBuild === undefined) notices.notify({ key: `import:${script.id}:${began}`, title: "Ready to script", body: script.title || "Untitled script", path: `/scripts/${script.id}` });
+    // Its first build, when it was made with one, says so itself once written; late footage joined in says nothing.
+    if (!rejoining.has(script.id)) {
+      if (step !== "done") notices.notify({ key: `import:${script.id}:${began}`, title: "The import needs you", body: `${script.title || "Untitled script"}: ${notices.line(script.decision?.summary ?? "a choice to make")}`, path: `/scripts/${script.id}` });
+      else if (script.firstBuild === undefined) notices.notify({ key: `import:${script.id}:${began}`, title: "Ready to script", body: script.title || "Untitled script", path: `/scripts/${script.id}` });
+    }
     return script;
   }
   const error = ran.failure;
@@ -1114,15 +1126,6 @@ function lanes<T>(items: T[], count: number, work: (item: T, index: number) => P
   return runPromise(Effect.forEach(items, (item, index) => Effect.tryPromise({ try: () => work(item, index), catch: (error) => error as Error }), { concurrency: Math.max(1, count), discard: true }));
 }
 
-/** The question a Drive folder or compilation asks when some of its recordings failed. */
-function failedQuestion(dir: string, script: Script, failed: { id: string; title: string; error: string }[], total: number, what: string): "paused" {
-  if (failed.length === total) throw new Error(`None of the ${what} came through. ${failed[0]!.title}: ${failed[0]!.error}`);
-  const ready = total - failed.length;
-  const verb = ready === 1 ? "is" : "are";
-  const summary = failed.length === 1 ? `${failed[0]!.title} couldn't be imported; the other ${ready} ${verb} ready. Go on without it, try it again, or cancel.` : `${failed.length} ${what} couldn't be imported; the other ${ready} ${verb} ready. Go on without them, try them again, or cancel.`;
-  return pause(dir, script, { kind: "failed_recordings", summary, failed, total });
-}
-
 async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
   const folder = join(dir, "drive");
   fs.mkdirSync(folder, { recursive: true });
@@ -1142,7 +1145,8 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
     script.originalPath = proxy;
     return { joined: null };
   }
-  const wanted = parts.wanted(manifest);
+  // Every recording, those still missing too: each run tries them again.
+  const wanted = parts.wanted(manifest, true);
   if (wanted.length === 0) throw new Error("No recordings are left to import from this folder.");
   // Streamed, only the preview takes room here; downloaded, the recordings too.
   const stream = streamed.on();
@@ -1167,92 +1171,241 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
   };
   const failed: [number, { id: string; title: string; error: string }][] = [];
   await lanes(wanted, DOWNLOADS, async ([index, recording], step) => {
-    const dest = parts.driveFile(folder, index, recording);
-    let problem: string | null = null;
     const began = Date.now();
-    if (stream && !(await downloaded(dest, recording))) {
-      try {
-        const put = await streamed.drive(dir, recording, (bytes) => {
-          pulled[step] = Math.min(bytes, recording.size);
-          report();
-        });
-        const label = `${jobs.named(script.id, script.title)} · ${recording.name}`;
-        // Looked at in the cloud; read here when that fails (never dropped for it), and an AVI's piece made here (`streamed.readHere`).
-        let found = await media.streams(put.url).catch((error: unknown) => {
-          diag.warn("writer", `${label}: didn't read from the cloud (${diag.messageOf(error)}), so it's read here`);
-          return null;
-        });
-        if (found !== null && !fits(found)) diag.warn("writer", `${label}: no length, picture or sound read from the cloud, so it's read here`);
-        let source = put.url;
-        if (!fits(found) || (media.isAvi(recording.name) && !(await previewFits(piecePath(dir, put.url), found.durationMs)))) {
-          source = await streamed.readHere(dir, put);
-          found = await media.streams(source).catch((error: unknown) => {
-            diag.warn("writer", `${label}: didn't read here either: ${diag.messageOf(error)}`);
-            return null;
-          });
-        }
-        try {
-          if (!fits(found)) problem = "Couldn't be read as video or audio, so it was dropped.";
-          else {
-            inCloud[step] = put.url;
-            await encodePiece(dir, source, label, put.url);
-          }
-        } finally {
-          if (source !== put.url) fs.rmSync(source, { force: true });
-        }
-      } catch (error) {
-        problem = diag.scrub(diag.messageOf(error));
-      }
-    } else if (!(await downloaded(dest, recording))) {
-      const onBytes = (bytes: number) => {
-        pulled[step] = Math.min(bytes, recording.size);
-        report();
-      };
-      // One that comes down short is fetched again once, from where it stopped; short twice, it is dropped so a retry starts it clean.
-      try {
-        await drive.download(await drive.hooks.accessToken(), recording, dest, onBytes);
-      } catch (error) {
-        problem = diag.messageOf(error);
-        if (error instanceof drive.DownloadShort) {
-          try {
-            await drive.download(await drive.hooks.accessToken(), recording, dest, onBytes);
-            problem = null;
-          } catch (again) {
-            fs.rmSync(dest, { force: true });
-            problem = diag.messageOf(again);
-          }
-        }
-      }
-    }
-    if (problem === null && inCloud[step] === null) {
-      const found = await media.streams(dest).catch(() => null);
-      if (!fits(found)) {
-        fs.rmSync(dest, { force: true });
-        problem = "Couldn't be read as video or audio, so it was dropped.";
-      }
-    }
-    // Its piece of the preview, while the other recordings still come down; one recording alone is the footage itself.
-    if (problem === null && inCloud[step] === null && wanted.length > 1) await encodePiece(dir, dest, `${jobs.named(script.id, script.title)} · ${recording.name}`);
+    const got = await fetchRecording(dir, script, folder, index, recording, stream, wanted.length > 1, (bytes) => {
+      pulled[step] = Math.min(bytes, recording.size);
+      report();
+    });
+    inCloud[step] = got.inCloud;
     pulled[step] = recording.size;
     finished++;
-    if (problem === null) diag.info("writer", `${jobs.named(script.id, script.title)}: Drive recording ${finished} of ${wanted.length} ready: ${recording.name} in ${Math.round((Date.now() - began) / 1000)} s`);
+    if (got.problem === null) diag.info("writer", `${jobs.named(script.id, script.title)}: Drive recording ${finished} of ${wanted.length} ready: ${recording.name} in ${Math.round((Date.now() - began) / 1000)} s`);
     else {
-      diag.error("writer", `${jobs.named(script.id, script.title)}: Drive recording ${recording.name} didn't come through: ${problem}`);
-      failed.push([step, { id: recording.id, title: recording.name, error: problem }]);
+      diag.error("writer", `${jobs.named(script.id, script.title)}: Drive recording ${recording.name} didn't come through: ${got.problem}`);
+      failed.push([step, { id: recording.id, title: recording.name, error: got.problem }]);
     }
     report();
   });
-  if (failed.length > 0) return failedQuestion(dir, script, failed.sort((a, b) => a[0] - b[0]).map(([, item]) => item), wanted.length, "recordings");
-  const [[firstIndex, first]] = wanted as [[number, drive.Recording]];
-  if (wanted.length === 1 && !first.audio && inCloud[0] === null) {
+  // What didn't come in is left out of the case for now and tried again by itself (missing.ts); the import carries on with the rest.
+  if (failed.length === wanted.length) throw new Error(`None of the recordings came through. ${failed[0]![1].title}: ${failed[0]![1].error}`);
+  const gone = new Set(failed.map(([step]) => step));
+  stillMissing(dir, script, failed.sort((a, b) => a[0] - b[0]).map(([, item]) => item));
+  const came = wanted.flatMap((one, step): [[number, drive.Recording], string | null][] => (gone.has(step) ? [] : [[one, inCloud[step] ?? null]]));
+  const [[[firstIndex, first], firstInCloud]] = came as [[[number, drive.Recording], string | null]];
+  if (came.length === 1 && !first.audio && firstInCloud === null) {
     script.originalPath = parts.driveFile(folder, firstIndex, first);
     script.parts = [];
     store.write(dir, script);
     return "one";
   }
   // Joined, each recording at the length it actually holds. The recordings stay: each is heard from its own file, and they're the full-quality footage Edit cuts from.
-  const items: [string, string, string | null][] = wanted.map(([index, recording], step) => [drive.stem(recording.name), inCloud[step] ?? parts.driveFile(folder, index, recording), drive.fileLink(recording.id)]);
+  const items: [string, string, string | null][] = came.map(([[index, recording], cloudUrl]) => [drive.stem(recording.name), cloudUrl ?? parts.driveFile(folder, index, recording), drive.fileLink(recording.id)]);
   return { joined: await joinPreview(dir, script, items, "recordings") };
+}
+
+/**
+ * One Drive recording of a case brought here or to the cloud, read, and its
+ * piece of the preview made (`many`: the case has other recordings, so it
+ * needs one): what went wrong, if it didn't come in, and its cloud address
+ * when it went there. The import's lanes run it for each recording, and
+ * missing.ts for one that didn't come in.
+ */
+export async function fetchRecording(dir: string, script: Script, folder: string, index: number, recording: drive.Recording, stream: boolean, many: boolean, onBytes: (bytes: number) => void = () => {}): Promise<{ problem: string | null; inCloud: string | null }> {
+  const dest = parts.driveFile(folder, index, recording);
+  let problem: string | null = null;
+  let inCloud: string | null = null;
+  if (stream && !(await downloaded(dest, recording))) {
+    try {
+      const put = await streamed.drive(dir, recording, onBytes);
+      const label = `${jobs.named(script.id, script.title)} · ${recording.name}`;
+      // Looked at in the cloud; read here when that fails (never dropped for it), and an AVI's piece made here (`streamed.readHere`).
+      let found = await media.streams(put.url).catch((error: unknown) => {
+        diag.warn("writer", `${label}: didn't read from the cloud (${diag.messageOf(error)}), so it's read here`);
+        return null;
+      });
+      if (found !== null && !fits(found)) diag.warn("writer", `${label}: no length, picture or sound read from the cloud, so it's read here`);
+      let source = put.url;
+      if (!fits(found) || (media.isAvi(recording.name) && !(await previewFits(piecePath(dir, put.url), found.durationMs)))) {
+        source = await streamed.readHere(dir, put);
+        found = await media.streams(source).catch((error: unknown) => {
+          diag.warn("writer", `${label}: didn't read here either: ${diag.messageOf(error)}`);
+          return null;
+        });
+      }
+      try {
+        if (!fits(found)) problem = "Couldn't be read as video or audio, so it was dropped.";
+        else {
+          inCloud = put.url;
+          await encodePiece(dir, source, label, put.url);
+        }
+      } finally {
+        if (source !== put.url) fs.rmSync(source, { force: true });
+      }
+    } catch (error) {
+      problem = diag.scrub(diag.messageOf(error));
+    }
+  } else if (!(await downloaded(dest, recording))) {
+    // One that comes down short is fetched again once, from where it stopped; short twice, it is dropped so a retry starts it clean.
+    try {
+      await drive.download(await drive.hooks.accessToken(), recording, dest, onBytes);
+    } catch (error) {
+      problem = diag.messageOf(error);
+      if (error instanceof drive.DownloadShort) {
+        try {
+          await drive.download(await drive.hooks.accessToken(), recording, dest, onBytes);
+          problem = null;
+        } catch (again) {
+          fs.rmSync(dest, { force: true });
+          problem = diag.messageOf(again);
+        }
+      }
+    }
+  }
+  if (problem === null && inCloud === null) {
+    const found = await media.streams(dest).catch(() => null);
+    if (!fits(found)) {
+      fs.rmSync(dest, { force: true });
+      problem = "Couldn't be read as video or audio, so it was dropped.";
+    }
+  }
+  // Its piece of the preview, while the other recordings still come down; one recording alone is the footage itself.
+  if (problem === null && inCloud === null && many) await encodePiece(dir, dest, `${jobs.named(script.id, script.title)} · ${recording.name}`);
+  return { problem, inCloud };
+}
+
+/**
+ * After a fetch: the recordings that didn't come in (`failed`, by the
+ * manifest's id or a compilation video's index) are noted on the script and
+ * its list as missing, each keeping its tries so far, and tried again by
+ * itself (missing.ts); every other one is in the case.
+ */
+function stillMissing(dir: string, script: Script, failed: { id: string; title: string; error: string }[]): void {
+  const ids = failed.map((one) => one.id);
+  if (script.sourceKind === "compilation") {
+    const videos = parts.readVideos(dir);
+    if (videos !== null) parts.writeVideos(dir, { ...videos, missing: ids });
+  } else {
+    const manifest = parts.readManifest(dir);
+    if (manifest !== null) parts.writeManifest(dir, { ...manifest, missing: ids });
+  }
+  const before = new Map((script.missing ?? []).map((one) => [one.id, one]));
+  const now = Date.now();
+  const missing = failed.map((one) => {
+    const known = before.get(one.id);
+    return known !== undefined ? { ...known, title: one.title, error: one.error } : { ...one, tries: 0, nextAt: now + missingFootage.delayAfter(0) };
+  });
+  if (missing.length > 0) script.missing = missing;
+  else delete script.missing;
+  store.write(dir, script);
+  missingFootage.markHere(dir, missing.length > 0);
+  if (missing.length > 0) {
+    missingFootage.schedule(script.id, Math.min(...missing.map((one) => one.nextAt)));
+    diag.warn("writer", `${jobs.named(script.id, script.title)}: carrying on without ${missing.length} recording${missing.length === 1 ? "" : "s"} for now (${missing.map((one) => one.title).join(", ")}); each is tried again by itself`);
+  }
+}
+
+/**
+ * A recording that didn't come in (`id`: the manifest's, or a compilation
+ * video's index), tried again on its own, its piece of the preview made:
+ * throws why when it still doesn't come.
+ */
+export async function fetchMissing(app: App, dir: string, script: Script, id: string): Promise<void> {
+  if (script.sourceKind === "compilation") {
+    const videos = parts.readVideos(dir);
+    const index = Number(id);
+    const video = videos?.videos[index];
+    if (video === undefined || !Number.isInteger(index)) throw new Error("It's no longer in this compilation's list.");
+    await fetchCompilationVideo(app, dir, script, join(dir, "compilation"), index, video.url);
+    return;
+  }
+  const manifest = parts.readManifest(dir);
+  const index = manifest?.recordings.findIndex((recording) => recording.id === id) ?? -1;
+  const recording = manifest?.recordings[index];
+  if (recording === undefined) throw new Error("It's no longer in this folder's list.");
+  const stream = streamed.on();
+  checkSpace(dir, (stream ? (media.isAvi(recording.name) ? recording.size : 0) : recording.size) + previewRoom([recording]) + 1_000_000_000);
+  const got = await fetchRecording(dir, script, join(dir, "drive"), index, recording, stream, true);
+  if (got.problem !== null) throw new Error(got.problem);
+}
+
+/** The case's recordings in play order, by the manifest's id or a compilation video's index. */
+function caseOrder(dir: string, script: Script): string[] {
+  if (script.sourceKind === "compilation") return parts.keptVideos(parts.readVideos(dir) ?? { videos: [], skipped: [] }).map(([index]) => String(index));
+  const manifest = parts.readManifest(dir);
+  return manifest === null ? [] : parts.wanted(manifest).map(([, recording]) => recording.id);
+}
+
+/** Where a recording's hearing is kept by its place among `order` (transcription.ts `recordings`): "whole" alone, else part-NN. */
+const hearingKey = (order: string[], index: number): string => (order.length < 2 ? "whole" : `part-${String(index + 1).padStart(2, "0")}`);
+
+/**
+ * Each recording's kept hearing moved to the key its new place gives it, so
+ * none is heard (or paid for) again and none is read as another's: a
+ * recording joining between two moves every one after it along. A folder
+ * left at a place nobody kept is another recording's old one, and goes.
+ */
+export function moveHearings(dir: string, before: string[], after: string[]): void {
+  const root = join(dir, "transcript");
+  if (!fs.existsSync(root)) return;
+  const moved: [string, string][] = [];
+  for (const [index, id] of before.entries()) {
+    const at = after.indexOf(id);
+    const from = join(root, hearingKey(before, index));
+    if (at < 0 || !fs.existsSync(from)) continue;
+    const held = join(root, `.moving-${moved.length}`);
+    fs.rmSync(held, { recursive: true, force: true });
+    fs.renameSync(from, held);
+    moved.push([held, join(root, hearingKey(after, at))]);
+  }
+  for (const name of fs.readdirSync(root)) if (name === "whole" || /^part-\d+$/u.test(name)) fs.rmSync(join(root, name), { recursive: true, force: true });
+  for (const [held, to] of moved) fs.renameSync(held, to);
+}
+
+/** Scripts whose late footage is being joined in now: their import says nothing when it ends (it's not a new import). */
+const rejoining = new Set<string>();
+
+/**
+ * Recordings that came in after the import (`arrived`) joined into the case
+ * in their place (missing.ts): out of the missing, the hearings moved to
+ * their new places, and the import run again over what it kept, so only
+ * the new recording is downloaded, its piece copied in with the others and
+ * heard, and the voices read again. Only before anything is written: the
+ * clips' times would move under a script.
+ */
+export function rejoin(app: App, data: string, id: string, arrived: string[]): Script {
+  const dir = store.scriptDir(data, id);
+  const done = busy(id);
+  let script: Script;
+  try {
+    script = store.read(dir);
+    if (script.clips.some((clip) => clip.kind === "cut-in" || (clip.narration ?? "") !== "")) throw new Error("This script is written already, so its footage isn't joined again.");
+    const before = caseOrder(dir, script);
+    if (script.sourceKind === "compilation") {
+      const videos = parts.readVideos(dir);
+      if (videos !== null) parts.writeVideos(dir, { ...videos, missing: (videos.missing ?? []).filter((one) => !arrived.includes(one)) });
+    } else {
+      const manifest = parts.readManifest(dir);
+      if (manifest !== null) parts.writeManifest(dir, { ...manifest, missing: (manifest.missing ?? []).filter((one) => !arrived.includes(one)) });
+    }
+    const left = (script.missing ?? []).filter((one) => !arrived.includes(one.id));
+    if (left.length > 0) script.missing = left;
+    else delete script.missing;
+    moveHearings(dir, before, caseOrder(dir, script));
+    // Heard again from what's kept, on the case's new clock.
+    for (const field of ["speakers", "suspects", "exact", "exactKeyterms", "captions", "rough", "corrections", "speakerCheck"] as const) delete script[field];
+    Object.assign(script, { words: [], clips: [], parts: [], overview: [], status: "processing", stage: "downloading", progress: 5, error: null, updatedAt: Date.now() });
+    store.write(dir, script);
+  } catch (error) {
+    done();
+    throw error;
+  }
+  diag.info("writer", `${jobs.named(id, script.title)}: joining ${arrived.length} recording${arrived.length === 1 ? "" : "s"} that came in late into the case`);
+  rejoining.add(id);
+  carryOnAlone(app, data, dir, script, () => {
+    rejoining.delete(id);
+    done();
+  });
+  return script;
 }
 
 /** Footage with a length, and picture or sound. */
@@ -1343,8 +1496,10 @@ async function joinPreview(dir: string, script: Script, items: [string, string, 
   script.parts = made;
   script.originalPath = proxy;
   store.write(dir, script);
+  // A recording still missing keeps the pieces: when it comes, the preview is copied together again with its own (missing.ts).
+  const keepPieces = (script.missing ?? []).length > 0;
   if (await previewFits(proxy, startMs)) {
-    fs.rmSync(join(dir, "pieces"), { recursive: true, force: true });
+    if (!keepPieces) fs.rmSync(join(dir, "pieces"), { recursive: true, force: true });
     return null;
   }
   const pieces = items.map(([, path]) => piecePath(dir, path));
@@ -1359,11 +1514,11 @@ async function joinPreview(dir: string, script: Script, items: [string, string, 
         pieces.length > 1 && whole.every(Boolean)
           ? await media.append(pieces[0]!, pieces.slice(1), partial, onPercent, signal, false, label)
           : pieces.length === 1 && whole[0] === true
-            ? (fs.renameSync(pieces[0]!, partial), true)
+            ? (keepPieces ? fs.copyFileSync(pieces[0]!, partial) : fs.renameSync(pieces[0]!, partial), true)
             : (await media.join(toJoin, partial, onPercent, signal), false);
       fs.renameSync(partial, proxy);
       diag.info("writer", `${label}: ${items.length} ${what} joined into the preview (${clock(startMs)}) in ${Math.round((Date.now() - began) / 1000)} s${copied ? ", copied from the pieces encoded as they came down" : ""}`);
-      fs.rmSync(join(dir, "pieces"), { recursive: true, force: true });
+      if (!keepPieces) fs.rmSync(join(dir, "pieces"), { recursive: true, force: true });
     } catch (error) {
       fs.rmSync(partial, { force: true });
       diag.error("writer", `${label}: the preview couldn't be joined: ${diag.messageOf(error)}`);
@@ -1402,7 +1557,7 @@ async function compilationRoom(dir: string, folder: string, wanted: [number, { u
   if (previews.length > 0) checkSpace(dir, needed + Math.max(previewRoom(previews) - bytesIn(join(dir, "pieces")), 0) + 1_000_000_000);
 }
 
-/** A compilation: several videos, each its own case, from YouTube or Drive links, joined in the order given. One that fails pauses the import with the question a Drive folder asks. */
+/** A compilation: several videos, each its own case, from YouTube or Drive links, joined in the order given. One that fails is left out for now and tried again by itself, as a Drive folder's recording is. */
 async function fetchCompilation(app: App, dir: string, script: Script): Promise<Fetched> {
   const folder = join(dir, "compilation");
   fs.mkdirSync(folder, { recursive: true });
@@ -1452,37 +1607,23 @@ async function fetchCompilation(app: App, dir: string, script: Script): Promise<
     script.originalPath = proxy;
     return { joined: null };
   }
-  const kept = videos;
-  const wanted = kept.videos.flatMap((video, index): [number, (typeof kept.videos)[number]][] => (kept.skipped.includes(String(index)) ? [] : [[index, video]]));
+  // Every video, those still missing too: each run tries them again.
+  const wanted = parts.keptVideos(videos, true);
   if (wanted.length === 0 || (!script.compilation && wanted.length < 2)) throw new Error(script.compilation ? "A compilation needs new footage." : "A case across videos needs at least two of them.");
   await compilationRoom(dir, folder, wanted);
   // Up to three come down together, each tied to its place in the order.
   const percents = wanted.map(() => 0);
   const results: (string | Error)[] = wanted.map(() => new Error("The download stopped."));
+  const tell = (said: string | null) => {
+    const done = percents.filter((value) => value === 100).length;
+    say(script, `Downloading videos: ${done} of ${wanted.length} ready.${said === null ? "" : ` ${said}`}`, "downloading", 5 + Math.floor((percents.reduce((sum, value) => sum + value, 0) * 33) / (wanted.length * 100)));
+  };
   await lanes(wanted, DOWNLOADS, async ([index, video], step) => {
-    const dest = join(folder, `${String(index).padStart(2, "0")}.mp4`);
     try {
-      // A YouTube video or one Drive file goes to the cloud without a copy here; a Drive folder (one case, joined into a master) comes down as before.
-      const link = video.url.includes("drive.google.com") ? drive.parse(video.url) : null;
-      if (streamed.on() && !(await media.readable(dest)) && (link === null || link.kind === "file")) {
-        const onBytes = () => say(script, `Streaming videos to the cloud: ${percents.filter((value) => value === 100).length} of ${wanted.length} ready.`, "downloading", 5 + Math.floor((percents.reduce((sum, value) => sum + value, 0) * 33) / (wanted.length * 100)));
-        const stop = link === null ? sayWhileParked(script, video.url) : () => {};
-        const put = await (link !== null ? streamed.drive(dir, (await drive.recordings(await drive.hooks.accessToken(), link))[1][0]!, onBytes) : streamed.fromYoutube(app, dir, video.url, onBytes)).finally(stop);
-        if (!(await media.readable(put.url))) throw new Error("Couldn't be read as video, so it was dropped.");
-        percents[step] = 100;
-        await encodePiece(dir, put.url, `${jobs.named(script.id, script.title)} · video ${index + 1}`);
-        results[step] = put.url;
-        return;
-      }
-      await fetchVideo(app, video.url, dest, (percent, said) => {
+      results[step] = await fetchCompilationVideo(app, dir, script, folder, index, video.url, (percent, said) => {
         percents[step] = Math.max(percents[step]!, percent);
-        const done = percents.filter((value) => value === 100).length;
-        say(script, `Downloading videos: ${done} of ${wanted.length} ready.${said === null ? "" : ` ${said}`}`, "downloading", 5 + Math.floor((percents.reduce((sum, value) => sum + value, 0) * 33) / (wanted.length * 100)));
+        tell(said);
       });
-      if (!(await media.readable(dest))) throw new Error("Couldn't be read as video, so it was dropped.");
-      // Its piece of the preview, while the other videos still come down.
-      await encodePiece(dir, dest, `${jobs.named(script.id, script.title)} · video ${index + 1}`);
-      results[step] = dest;
     } catch (error) {
       results[step] = error instanceof Error ? error : new Error(String(error));
     }
@@ -1492,11 +1633,42 @@ async function fetchCompilation(app: App, dir: string, script: Script): Promise<
   wanted.forEach(([index, video], step) => {
     const result = results[step]!;
     if (typeof result === "string") items.push([video.title, result, video.url]);
-    else failed.push({ id: String(index), title: video.title, error: result.message });
+    else {
+      diag.error("writer", `${jobs.named(script.id, script.title)}: video ${index + 1} (${video.title || video.url}) didn't come through: ${result.message}`);
+      failed.push({ id: String(index), title: video.title || video.url, error: result.message });
+    }
   });
-  if (failed.length > 0) return failedQuestion(dir, script, failed, wanted.length, "videos");
+  // What didn't come in is left out for now and tried again by itself (missing.ts); the import carries on with the rest.
+  if (items.length === 0) throw new Error(`None of the videos came through. ${failed[0]!.title}: ${failed[0]!.error}`);
+  if (!script.compilation && items.length < 2) throw new Error(`A case across videos needs at least two of them. ${failed[0]!.title}: ${failed[0]!.error}`);
+  stillMissing(dir, script, failed);
   // The videos stay: each is heard from its own file, and they're the full-quality footage Edit cuts from.
   return { joined: await joinPreview(dir, script, items, "videos") };
+}
+
+/**
+ * One video of a compilation, `index` in its list, brought in with its piece
+ * of the preview: where it is (a file here, or its cloud address), or an
+ * error when it didn't come. The import's lanes run it for each video, and
+ * missing.ts for one that didn't come in.
+ */
+export async function fetchCompilationVideo(app: App, dir: string, script: Script, folder: string, index: number, url: string, onPercent: (percent: number, said: string | null) => void = () => {}): Promise<string> {
+  const dest = join(folder, `${String(index).padStart(2, "0")}.mp4`);
+  // A YouTube video or one Drive file goes to the cloud without a copy here; a Drive folder (one case, joined into a master) comes down as before.
+  const link = url.includes("drive.google.com") ? drive.parse(url) : null;
+  if (streamed.on() && !(await media.readable(dest)) && (link === null || link.kind === "file")) {
+    const stop = link === null ? sayWhileParked(script, url) : () => {};
+    const put = await (link !== null ? streamed.drive(dir, (await drive.recordings(await drive.hooks.accessToken(), link))[1][0]!, () => onPercent(0, null)) : streamed.fromYoutube(app, dir, url, () => onPercent(0, null))).finally(stop);
+    if (!(await media.readable(put.url))) throw new Error("Couldn't be read as video, so it was dropped.");
+    onPercent(100, null);
+    await encodePiece(dir, put.url, `${jobs.named(script.id, script.title)} · video ${index + 1}`);
+    return put.url;
+  }
+  await fetchVideo(app, url, dest, onPercent);
+  if (!(await media.readable(dest))) throw new Error("Couldn't be read as video, so it was dropped.");
+  // Its piece of the preview, while the other videos still come down.
+  await encodePiece(dir, dest, `${jobs.named(script.id, script.title)} · video ${index + 1}`);
+  return dest;
 }
 
 /**
