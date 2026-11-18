@@ -4246,6 +4246,10 @@
             "channel"
           ],
           "type": "string"
+        },
+        "settled": {
+          "description": "Only after a remember was refused for contradicting what's taught: the person's answer on which holds, quoted.",
+          "type": "string"
         }
       },
       "required": [

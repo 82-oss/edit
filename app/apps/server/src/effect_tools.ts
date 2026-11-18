@@ -20,6 +20,7 @@ import * as tools from "./tools.ts";
 import * as removal from "./removal_lesson.ts";
 import * as removalSchedule from "./removal_schedule.ts";
 import * as textRemoval from "./text_removal.ts";
+import * as teachingConflicts from "./teaching_conflicts.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
 /** An effect's name from a call, in a project made the new way. */
@@ -493,13 +494,18 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
   const most = part ? SKILL_MOST : MEMORY_MOST;
   if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part's skill short: its rules, not their history" : "a line or two, in the person's words"}`);
+  // What it contradicts is said first, and kept only once the person says which holds (teaching_conflicts.ts).
+  const settled = typeof args.settled === "string" && args.settled.trim() !== "";
+  const clashes = settled ? [] : await teachingConflicts.conflicts(skill, args.text.trim(), v2cloud.memories(places));
+  if (clashes !== null && clashes.length > 0) throw new Error(teachingConflicts.refusal(clashes));
   // A part keeps its note when it's saved somewhere else (a channel's own changed for its group).
   const key = v2cloud.ownKey("skill", where.place, skill);
-  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
+  const reason = settled ? `${args.reason.trim()} (settled against what was taught: ${String(args.settled).trim()})` : args.reason.trim();
+  const saved = await v2cloud.saveSkill(skill, args.text.trim(), reason, note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
   // Kept for the group while this channel has its own of that name: the channel's still wins here.
   const shadowed = places !== null && where.place !== places[0] && v2cloud.ownPlaceOf(before?.key ?? "") === places[0];
   v2cloud.forgetSkills();
-  return text(`Remembered as ${skill} (version ${saved.n}) in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}`);
+  return text(`Remembered as ${skill} (version ${saved.n}) in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}${clashes === null ? teachingConflicts.UNCHECKED : ""}`);
 }
 
 /**

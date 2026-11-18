@@ -13,6 +13,7 @@
 
 import * as channels from "./channels.ts";
 import { groupRule, keepRule } from "./teaching.ts";
+import * as teachingConflicts from "./teaching_conflicts.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
 /** The lanes this module serves; the edit's is effect_tools'. */
@@ -164,6 +165,7 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
           text: { type: "string", description: "The lesson, whole: in the person's words, general (never about this one only)" },
           note: { type: "string", description: "Only for a longer part read when needed: when to read it (at most 160 characters)" },
           reason: { type: "string", description: "What the person said, quoted" },
+          settled: { type: "string", description: "Only after a remember was refused for contradicting what's taught: the person's answer on which holds, quoted" },
           for: FOR_ARG,
         },
         required: ["skill", "text", "reason"],
@@ -249,11 +251,16 @@ async function remember(args: Record<string, unknown>, place: Place): Promise<st
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
   const most = part ? PART_MOST : MEMORY_MOST;
   if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part short: its rules, not their history" : "a line or two, in the person's words"}`);
-  const saved = await v2cloud.saveSkill(skill, args.text.trim(), args.reason.trim(), note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
+  // What it contradicts is said first, and kept only once the person says which holds (teaching_conflicts.ts).
+  const settled = typeof args.settled === "string" && args.settled.trim() !== "";
+  const clashes = settled ? [] : await teachingConflicts.conflicts(skill, args.text.trim(), lessonsOf(place));
+  if (clashes !== null && clashes.length > 0) throw new Error(teachingConflicts.refusal(clashes));
+  const reason = settled ? `${args.reason.trim()} (settled against what was taught: ${String(args.settled).trim()})` : args.reason.trim();
+  const saved = await v2cloud.saveSkill(skill, args.text.trim(), reason, note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
   // Kept for the group while this channel has its own of that name: the channel's still wins here.
   const shadowed = kept.place !== v2cloud.laneKey(place.channel, place.lane) && lessonsOf(place).some((one) => one.name === skill && ownLesson(one, place));
   v2cloud.forgetSkills();
-  return `Kept as ${skill} (version ${saved.n}) in ${nameOf(place.channel)}'s ${WORD[place.lane]} style${kept.words === "" ? "" : `, ${kept.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}`;
+  return `Kept as ${skill} (version ${saved.n}) in ${nameOf(place.channel)}'s ${WORD[place.lane]} style${kept.words === "" ? "" : `, ${kept.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}${clashes === null ? teachingConflicts.UNCHECKED : ""}`;
 }
 
 // ---------------------------------------------------------------- another channel's style
