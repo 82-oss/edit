@@ -15,6 +15,7 @@ import * as diag from "./diag.ts";
 import { writeAtomic } from "./files.ts";
 import { join } from "./paths.ts";
 import * as removal from "./removal_lesson.ts";
+import type { Treatment } from "./removal_modes.ts";
 
 export type Spans = [number, number][];
 
@@ -23,6 +24,15 @@ export interface Ask {
   kinds: removal.Kind[];
   /** "all": the whole project, as it grows; else each footage file's source seconds, or "all" it shows. */
   media: "all" | Record<string, Spans | "all">;
+  /** How the person asked for it to be taken out there, over the section's default (removal_modes.ts): "Smart on case 3 too", "just blur case 2". */
+  mode?: Treatment;
+  /**
+   * The agent's in and out points (start_removal `marks`, `unmark`): the stretches of footage it looked at and found
+   * their text in, for a channel taught to take it out. Only marked seconds go to Vmake or the tracked blur there.
+   */
+  mark?: "add" | "remove";
+  /** Where, as the person said it ("case 3", "the intro"), for the agent's context. */
+  said?: string;
 }
 
 const fileOf = (home: string) => join(home, "removal-asks.json");
@@ -63,7 +73,7 @@ export function isStopped(home: string, id: string): boolean {
 }
 
 /** The asks that count: those since the person's Stop, if any. */
-function liveAsks(home: string, id: string): Ask[] {
+export function liveAsks(home: string, id: string): Ask[] {
   const stopped = loaded(home).stopped[id];
   return asksOf(home, id).filter((ask) => stopped === undefined || ask.at > stopped);
 }
@@ -91,7 +101,8 @@ export function add(home: string, id: string, ask: Ask): void {
 
 /** The parts asked for in project `id`. */
 export function askedKinds(home: string, id: string): removal.Kind[] {
-  return removal.KINDS.filter((kind) => liveAsks(home, id).some((ask) => ask.kinds.includes(kind)));
+  // The agent's marks say where their text is, never that it's asked for.
+  return removal.KINDS.filter((kind) => liveAsks(home, id).some((ask) => ask.mark === undefined && ask.kinds.includes(kind)));
 }
 
 /** The lesson as it applies to project `id` now: the parts running by themselves (unless stopped), and those asked for. */
@@ -120,12 +131,46 @@ export function scope(lesson: removal.Lesson | null, home: string, id: string, k
   if (lesson?.remove[kind] === true && lesson.when[kind] === "automatic" && !isStopped(home, id)) return shown;
   const out: Spans = [];
   for (const ask of liveAsks(home, id)) {
-    if (!ask.kinds.includes(kind)) continue;
+    if (ask.mark !== undefined || !ask.kinds.includes(kind)) continue;
     const given = ask.media === "all" ? "all" : ask.media[media];
     if (given === undefined) continue;
     out.push(...(given === "all" ? shown : intersect(shown, given)));
   }
   return merged(out);
+}
+
+function minus(spans: Spans, holes: Spans): Spans {
+  let out = merged(spans);
+  for (const [a, b] of holes) out = out.flatMap(([x, y]): Spans => (b <= x || a >= y ? [[x, y]] : ([[x, Math.min(y, a)], [Math.max(x, b), y]] as Spans).filter(([p, q]) => q > p)));
+  return out;
+}
+
+/** Whether the agent took every stretch detection proposes (start_removal `marks: "proposed"`) in project `id`. */
+export function marksProposed(home: string, id: string): boolean {
+  return asksOf(home, id).some((ask) => ask.mark === "add" && ask.media === "all");
+}
+
+/**
+ * The source seconds of each footage file the agent marked in project `id`
+ * (its marks in order, an unmark taking its seconds back out); a mark of
+ * everything proposed takes `proposed`'s seconds (detection's, by file).
+ */
+export function marked(home: string, id: string, proposed: Map<string, Spans> = new Map()): Map<string, Spans> {
+  // The person's Stop doesn't undo them: they say where their text is, not what runs (asks' `scope` says that).
+  const out = new Map<string, Spans>();
+  for (const ask of asksOf(home, id)) {
+    if (ask.mark === undefined) continue;
+    if (ask.media === "all") {
+      if (ask.mark === "add") for (const [media, spans] of proposed) out.set(media, merged([...(out.get(media) ?? []), ...spans]));
+      continue;
+    }
+    for (const [media, given] of Object.entries(ask.media)) {
+      if (given === "all") continue;
+      const was = out.get(media) ?? [];
+      out.set(media, ask.mark === "add" ? merged([...was, ...given]) : minus(was, given));
+    }
+  }
+  return out;
 }
 
 /** For tests: nothing remembered here (the file stays). */

@@ -4437,7 +4437,7 @@
     "name": "check_removal"
   },
   {
-    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"). Say where: whole (the whole project, and footage cut in later), media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask. It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal as they come back; exports wait for them.",
+    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"), or how a section's text comes out when the person asks for another than its own (by itself: Vmake's Smart Pro on the intro, Smart on the first two cases, a blur tracked over their text from the third on; \"use Smart on case 3 too\" is {case: 3, mode: \"smart\"}, \"Smart Pro on case 1\" is {case: 1, mode: \"smart_pro\"}, \"just blur case 2\" is {case: 2, mode: \"blur\"}). For a channel taught to take their text out, it's also how you mark it: only stretches you mark go, never whole clips; look at what get_edit_context's removal proposes (render_frame, contact_sheet), then {marks: [{from: 12.4, to: 15.0}, {from: 31.2, to: 33.8}]} (timeline seconds, tight to their words), {unmark: [...]} to take one back. Say where: whole (the whole project, and footage cut in later), case (its number), intro, media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask (with a mode, the parts Vmake takes out). It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal as they come back; exports wait for them.",
     "inputSchema": {
       "properties": {
         "project_id": {
@@ -4474,6 +4474,64 @@
         "to": {
           "description": "Timeline seconds: to",
           "type": "number"
+        },
+        "case": {
+          "description": "A case of the edit, by its number from 1 (get_edit_context's removal lists them): its stretch of the timeline",
+          "type": "integer"
+        },
+        "intro": {
+          "description": "The intro: the opening before the first case",
+          "type": "boolean"
+        },
+        "mode": {
+          "description": "How their text comes out there, only when the person asks for another than the section's own: \"smart\" or \"smart_pro\" (Vmake), or \"blur\" (the tracked blur); it stands over the section's own from then on",
+          "enum": [
+            "smart",
+            "smart_pro",
+            "blur"
+          ],
+          "type": "string"
+        },
+        "marks": {
+          "description": "Your in and out points (a channel taught to take their text out): the timeline stretches where you saw their subtitles or text, tight to them, several short ones; or \"proposed\" once you've looked and every stretch get_edit_context's removal proposes is theirs. Only marked stretches go to Vmake or the tracked blur",
+          "items": {
+            "properties": {
+              "from": {
+                "type": "number"
+              },
+              "to": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ],
+            "type": "object"
+          },
+          "type": [
+            "array",
+            "string"
+          ]
+        },
+        "unmark": {
+          "description": "Stretches of the timeline to take back out of your marks",
+          "items": {
+            "properties": {
+              "from": {
+                "type": "number"
+              },
+              "to": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "from",
+              "to"
+            ],
+            "type": "object"
+          },
+          "type": "array"
         }
       },
       "type": "object"

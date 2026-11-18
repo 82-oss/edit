@@ -28,14 +28,15 @@ const seen = { mode: "", bytes: 0, uploads: 0, others: 0 };
 /** `cardLimit`: the piece's own card refuses it for the day (as a by-hand upload of the team's could have used the allowance). */
 /** `remain`/`balance`: the account's day as the page's own purchase_config says it; `spend`: a "use credits?" prompt before the job starts. */
 /** `failed`: a card of this name vmake.ai gave up on ("Download failed, credits returned"). */
-const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, slowMs: 0, noModes: false, legacy: false, existing: "", failed: "", cardLimit: false, remain: 37, balance: 4110, spend: false };
+/** `startOn`: the mode the page (and a new card) starts on: Smart, as vmake.ai's does; another to see a mode chosen. */
+const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, slowMs: 0, noModes: false, legacy: false, existing: "", failed: "", cardLimit: false, remain: 37, balance: 4110, spend: false, startOn: "Smart" };
 const PIECE = new Uint8Array(3_000_000).map((_, at) => at % 251);
 
 const PAGE = () => `<!doctype html><html><body>
 <header>${site.signedOut ? '<button>Log in</button>' : '<div class="user-avatar--x1">S</div>'}</header>
 <div class="ant-segmented" aria-label="segmented control"><div>Auto</div><div>Manual</div></div>
-${site.noModes ? "" : `<div style="display:none"><ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul></div>
-<ul class="radio--q7">${["Smart", "Smart pro", "Subtitle", "Watermark", "Passerby"].map((mode, at) => `<li class="item--a ${at === 0 ? "active--z" : ""} ${mode === "Smart pro" && site.noSmartPro ? "disabled--d" : ""}">${mode}</li>`).join("")}</ul>`}
+${site.noModes ? "" : `<div style="display:none"><ul class="radio--q7"><li class="item--a ${site.startOn === "Smart" ? "active--z" : ""}">Smart</li><li class="item--a disabled--d">Smart pro</li></ul></div>
+<ul class="radio--q7">${["Smart", "Smart pro", "Subtitle", "Watermark", "Passerby"].map((mode) => `<li class="item--a ${mode === site.startOn ? "active--z" : ""} ${mode === "Smart pro" && site.noSmartPro ? "disabled--d" : ""}">${mode}</li>`).join("")}</ul>`}
 <span class="ant-upload-btn"><input type="file" name="file" accept=".mp4,.mov"></span>
 <span class="ant-upload-btn"><input type="file" name="file" multiple></span>
 <div id="work">${site.cards ? `<div class="viewport-task-card--o5h" id="other"><span>v3p2.mp4</span> 40% <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul><button>Download</button></div>` : ""}${[site.legacy ? "piece-8s.mp4" : "", site.existing].filter(Boolean).map((name) => `<div class="viewport-task-card--o5h"><span>${name}</span> 00:00.04 / 00:08.00 60% <button onclick="location.href='/result.mp4?full=1'">Download</button></div>`).join("")}${site.failed ? `<div class="viewport-task-card--o5h"><span>${site.failed}</span> 00:00.00 / 00:08.00 Download failed, credits returned <button disabled>Download</button></div>` : ""}</div>
@@ -56,7 +57,7 @@ document.querySelector('input:not([multiple])').addEventListener('change', async
     // A card of its own, as Sphe's Pro account shows it: uploading, then waiting on Apply (Smart first), processing, Download.
     const card = document.createElement('div');
     card.className = 'viewport-task-card--o5h';
-    card.innerHTML = '<i>Uploading... 0%</i> 00:00.00 / 00:08.00 40% <span>' + file.name + '</span> <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a">Smart pro</li><li class="item--a">Subtitle</li></ul><button>40%</button>';
+    card.innerHTML = '<i>Uploading... 0%</i> 00:00.00 / 00:08.00 40% <span>' + file.name + '</span> <ul class="radio--q7">' + ['Smart', 'Smart pro', 'Subtitle'].map((mode) => '<li class="item--a' + (mode === ${JSON.stringify(site.startOn)} ? ' active--z' : '') + '">' + mode + '</li>').join('') + '</ul><button>40%</button>';
     work.prepend(card);
     card.querySelectorAll('li').forEach((li) => li.addEventListener('click', () => {
       if (/Uploading/.test(card.innerText)) return;
@@ -238,6 +239,33 @@ test.skipIf(CHROME === undefined)("a fresh page that shows no modes until a file
     await session.stop();
   }
 }, 90_000);
+
+test.skipIf(CHROME === undefined)("Smart is chosen when a piece asks for it, on a fresh page and on its own card, never Smart pro (its own words, not a part of them); Smart pro stays the default", async () => {
+  site.startOn = "Subtitle";
+  const session = await browsers.open();
+  try {
+    const page = await session.remote.tab();
+    const site_ = `http://localhost:${vmake.port}`;
+    let uploads = seen.uploads;
+    // A fresh page: the mode before the file.
+    expect(await web.removeOnPage(page, session.remote, piece(), "piece-smart.mp4", site_, { mode: "smart" })).toBe(`${site_}/result.mp4?full=1`);
+    expect([seen.mode, seen.uploads - uploads]).toEqual(["Smart", 1]);
+    uploads = seen.uploads;
+    // A page of job cards: on the piece's own card, then Apply.
+    site.cards = true;
+    expect(await web.removeOnPage(page, session.remote, piece(), "piece-smart-card.mp4", site_, { mode: "smart" })).toBe(`${site_}/result.mp4?full=1`);
+    expect([seen.mode, seen.uploads - uploads, seen.others]).toEqual(["Smart", 1, 0]);
+    uploads = seen.uploads;
+    // No mode said: Smart pro, as every piece before Nov 18.
+    expect(await web.removeOnPage(page, session.remote, piece(), "piece-pro-card.mp4", site_)).toBe(`${site_}/result.mp4?full=1`);
+    expect([seen.mode, seen.uploads - uploads]).toEqual(["Smart pro", 1]);
+    page.close();
+  } finally {
+    site.startOn = "Smart";
+    site.cards = false;
+    await session.stop();
+  }
+}, 120_000);
 
 test.skipIf(CHROME === undefined)("a piece whose card sits at one percent for longer than the stall time is waited on, never given up or sent again (Nov 17, Sphe's M4: every piece was)", async () => {
   site.cards = true;
@@ -543,3 +571,53 @@ test.skipIf(CHROME === undefined)("the website's provider counts the day's files
     cleanup();
   }
 }, 150_000);
+
+test("vmake.ai's result is streamed to its .part as it comes and renamed in whole; a CDN that stops sending ends the fetch in the stall time, never a wait for good (Nov 18 live test: Bun.write of the response never wrote a byte of an 82 MB result)", async () => {
+  const { whole } = await import("../src/ranged_download.ts");
+  const was = whole.stallMs;
+  whole.stallMs = 400;
+  const body = new Uint8Array(3 << 20).map((_, at) => at % 251);
+  let seenPart = false;
+  const dir = fs.mkdtempSync(join(os.tmpdir(), "vmake-fetch-"));
+  const out = join(dir, "result.mp4");
+  const server = Bun.serve({
+    port: 0,
+    fetch(request) {
+      const path = new URL(request.url).pathname;
+      if (path === "/stalls") {
+        // Headers and a first chunk, then nothing ever again (the connection kept open).
+        return new Response(new ReadableStream({ start: (controller) => controller.enqueue(body.slice(0, 1 << 16)) }), { headers: { "content-length": String(body.length) } });
+      }
+      // Slowly, a chunk at a time: the .part is on the disk while it comes.
+      let at = 0;
+      return new Response(
+        new ReadableStream({
+          async pull(controller) {
+            if (at >= body.length) return controller.close();
+            await Bun.sleep(20);
+            if (at > 0 && fs.existsSync(`${out}.part`) && fs.statSync(`${out}.part`).size > 0) seenPart = true;
+            controller.enqueue(body.slice(at, (at += 1 << 19)));
+          },
+        }),
+        { headers: { "content-length": String(body.length) } },
+      );
+    },
+  });
+  try {
+    await web.fetchResult(`http://127.0.0.1:${server.port}/ok`, out);
+    expect(seenPart).toBe(true);
+    expect(fs.existsSync(`${out}.part`)).toBe(false);
+    expect(Buffer.compare(fs.readFileSync(out), Buffer.from(body))).toBe(0);
+    const started = Date.now();
+    const stalled = await web.fetchResult(`http://127.0.0.1:${server.port}/stalls`, join(dir, "stalled.mp4")).then(() => null, (error: unknown) => error);
+    expect(stalled).toBeInstanceOf(VmakeError);
+    expect(String(stalled)).toContain("nothing came for");
+    // Three tries of 0.4 s with 2 s and 4 s between: well under the 30 minutes the old fetch could wait.
+    expect(Date.now() - started).toBeLessThan(15_000);
+    expect(fs.existsSync(join(dir, "stalled.mp4.part"))).toBe(false);
+  } finally {
+    whole.stallMs = was;
+    void server.stop(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);

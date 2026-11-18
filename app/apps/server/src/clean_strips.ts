@@ -21,6 +21,8 @@ import { clipEnd, fps as fpsOf, freshId, sample, trackOf } from "./project.ts";
 /** Every overlay laid here is named so, its footage clip's id after it (a watermark's strips: `WATERMARK_NAME`). */
 export const NAME = "Subtitles removed";
 export const WATERMARK_NAME = "Watermark removed";
+/** text_blur.ts's tracked blurs over their text, its footage clip's id after it: their text counts as gone there. */
+export const TRACKED = "Text blur";
 /** burned_subtitles.ts's covers (`COVER`): kept here so the store needn't load it. */
 const COVER = "Burned-in cover";
 
@@ -227,10 +229,21 @@ function laneFor(project: Project, track: string, watermark: boolean, start: num
  * (burned_subtitles.ts reads it to tell their subtitles gone there).
  */
 export function strippedFrames(project: Project): Map<string, [number, number][]> {
-  const out = new Map<string, [number, number][]>();
+  const out = trackedFrames(project);
   for (const one of wanted(project)) {
     if (!(one.name ?? "").startsWith(`${NAME} · `)) continue;
     out.set(one.parent!, [...(out.get(one.parent!) ?? []), [one.start, one.start + one.duration]]);
+  }
+  return out;
+}
+
+/** The frames each footage clip's tracked blurs (text_blur.ts) cover, by clip id. */
+function trackedFrames(project: Project): Map<string, [number, number][]> {
+  const out = new Map<string, [number, number][]>();
+  for (const clip of project.clips) {
+    if (clip.type !== "adjustment" || !(clip.name ?? "").startsWith(`${TRACKED} · `)) continue;
+    const owner = ownerOf(clip.name);
+    if (owner !== null) out.set(owner, [...(out.get(owner) ?? []), [clip.start, clipEnd(clip)]]);
   }
   return out;
 }
@@ -280,7 +293,12 @@ function trimCovers(project: Project, stripped: Map<string, [number, number][]>)
  */
 export function enforceCleanStrips(_before: Project | null, project: Project): void {
   const old = project.clips.filter((clip): clip is VideoClip => isOverlay(clip));
-  if (old.length === 0 && !project.media.some(isStrip)) return;
+  const tracked = trackedFrames(project);
+  if (old.length === 0 && !project.media.some(isStrip)) {
+    // No strips: only a tracked blur's frames end the blur over their band.
+    if (tracked.size > 0) trimCovers(project, tracked);
+    return;
+  }
   const want = wanted(project);
   const owners = new Map(project.clips.map((clip) => [clip.id, clip]));
   // Each overlay that's as it should be, on a lane above its footage's, by what it is.
@@ -311,8 +329,8 @@ export function enforceCleanStrips(_before: Project | null, project: Project): v
       project.clips.push(clip);
     }
   }
-  // Only their text's strips end the blur over their subtitles (a watermark's leaves the subtitles there).
-  const stripped = new Map<string, [number, number][]>();
+  // Only their text's strips (and tracked blurs) end the blur over their subtitles (a watermark's leaves the subtitles there).
+  const stripped = tracked;
   for (const one of want) {
     if (!(one.name ?? "").startsWith(`${NAME} · `)) continue;
     stripped.set(one.parent!, [...(stripped.get(one.parent!) ?? []), [one.start, one.start + one.duration]]);

@@ -17,6 +17,7 @@ import { createHash, createHmac } from "node:crypto";
 import * as fs from "node:fs";
 
 import * as diag from "./diag.ts";
+import { fetchFile } from "./ranged_download.ts";
 
 /** The WAPI host and the SDK's own name and version (the server checks it: `need_update`). */
 const WAPI = "wapi-skill.vmake.ai";
@@ -25,6 +26,8 @@ const USER_AGENT = `action-api-sdk-${VERSION}`;
 const REGION = "cn-north-4";
 /** Smart Pro, video smart removal: 4 credits a second, ≤600 s, ≤300 MB a file. */
 export const SMART_PRO = "SKM0005";
+/** Smart, video smart removal: 2 credits a second, the same limits (the developers page, Nov 14). */
+export const SMART = "SKM0003";
 /** How long a task may take once submitted (15 s of footage took 187 s, Nov 17; a 5-minute piece is far longer). */
 const TASK_MS = 3 * 3_600_000;
 const CALL_MS = 30_000;
@@ -375,19 +378,10 @@ export async function remove(
 }
 
 async function download(url: string, out: string, signal?: AbortSignal): Promise<void> {
-  const partial = `${out}.part`;
-  for (let attempt = 1; ; attempt++) {
-    try {
-      const response = await fetch(url, { signal: signal ?? AbortSignal.timeout(30 * 60_000) });
-      if (response.status !== 200) throw new Error(`status ${response.status}`);
-      await Bun.write(partial, response);
-      fs.renameSync(partial, out);
-      return;
-    } catch (error) {
-      fs.rmSync(partial, { force: true });
-      if (attempt >= 3) throw new VmakeError(`fetching Vmake's result: ${diag.messageOf(error)}`, "piece");
-      await sleep(2_000 * attempt, signal);
-    }
+  try {
+    await fetchFile(url, out, { what: "fetching Vmake's result", ...(signal ? { signal } : {}) });
+  } catch (error) {
+    throw new VmakeError(diag.messageOf(error), "piece");
   }
 }
 

@@ -3,8 +3,10 @@
 // their text, so cleanly "you really have to stare deeply in order to notice
 // that something is gone", the camera's own stamp kept exactly as it was.
 //
-// Vmake's Smart Pro does the removing (a provider: its developer API now, its
-// website on the team's flat plan once that's mapped). It re-renders the whole
+// Vmake does the removing (a provider: its website on the team's flat plan,
+// its developer API after a yes to its price), in the mode each stretch's
+// section gets (removal_modes.ts, Sphe and JJ, Nov 18: Smart Pro on the
+// intro, Smart on the first two cases, nothing after). It re-renders the whole
 // frame, a little sharper everywhere, so only what it took out is pasted back:
 // where its frame differs from the original by text-shaped marks (the
 // difference over a threshold, specks opened away, grown over the letters'
@@ -19,8 +21,10 @@
 // carry their subtitles (burned_subtitles.ts) or a label of theirs that stays
 // put, with a second's handle each side, in pieces of at most 300 s cut from
 // the original at full quality. What comes back is kept on R2 by the file and
-// its seconds (`edit/cleaned/…`), so the same footage, in this project or the
-// next that reuses the case, is never paid for twice. Each piece becomes a
+// its seconds (`edit/cleaned/…`, and its mode: a Smart result is named so and
+// never stands in for Smart Pro; Smart Pro's, every result from before Nov 18,
+// stands in for either), so the same footage, in this project or the next
+// that reuses the case, is never paid for twice. Each piece becomes a
 // strip (clean_strips.ts): a stacked, see-through video of the box Vmake
 // changed, laid over every clip of that footage and stuck to it.
 //
@@ -57,8 +61,10 @@ import * as playing from "./playing.ts";
 import { clipEnd, fps as fpsOf, freshId, reusedMedia, trackOf } from "./project.ts";
 import * as seams from "./seams.ts";
 import * as relay from "./relay.ts";
+import * as blur from "./text_blur.ts";
 import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
+import * as modes from "./removal_modes.ts";
 import { holderFor } from "./sync_core.ts";
 import * as tools from "./tools.ts";
 import * as vmake from "./vmake_api.ts";
@@ -319,11 +325,27 @@ export function shownSeconds(project: Project): Map<string, [number, number][]> 
   return out;
 }
 
-/** A cleaned piece kept: the file's seconds [from, to) it covers, by which provider, where. */
+/** The source seconds of each footage file the timeline shows between `from` and `to` (timeline seconds). */
+export function shownBetween(project: Project, from: number, to: number): Map<string, [number, number][]> {
+  const fps = fpsOf(project);
+  const [a, b] = [Math.round(from * fps), Math.round(Math.min(to, Number.MAX_SAFE_INTEGER / 1e6) * fps)];
+  // Read only, so the clips alone are new (removal_modes asks this for every section of the edit).
+  const clips = project.clips.flatMap((clip): Project["clips"] => {
+    if (clip.type !== "video") return [clip];
+    const start = Math.max(clip.start, a);
+    const end = Math.min(clipEnd(clip), b);
+    if (end <= start) return [];
+    return [{ ...clip, start, duration: end - start, source_in: clip.source_in + ((start - clip.start) / fps) * clip.speed }];
+  });
+  return shownSeconds({ ...project, clips });
+}
+
+/** A cleaned piece kept: the file's seconds [from, to) it covers, by which provider, in which mode, where. */
 export interface Cached {
   from: number;
   to: number;
   provider: ProviderId;
+  mode: web.Mode;
   key: string;
 }
 
@@ -555,15 +577,15 @@ export interface Provider {
    * compares like with like), so they go lighter.
    */
   pieceQuality?: { crf: number; rate: number };
-  /** The price of sending `seconds` of footage in `files` pieces, as the line says it. */
-  price(seconds: number, files: number): string;
+  /** The price of sending `seconds` of footage in `files` pieces (`smart` of those seconds in Smart), as the line says it. */
+  price(seconds: number, files: number, smart?: number): string;
   /**
    * Takes the text out of the piece at `input` into `out`. Throws VmakeError (its `scope` says whose the failure is;
    * web.Refused: vmake.ai said it won't come back). `look.sentBefore`: this name's file went in before, so it's only
    * looked for, never sent; `look.longer`: it may have (kept by a build before it was said): looked for as long
-   * first; `look.sent`: called as the file goes in.
+   * first; `look.sent`: called as the file goes in. `mode`: Smart Pro unless said.
    */
-  remove(input: string, out: string, seconds: number, signal?: AbortSignal, whole?: { key: string }, begun?: () => void, label?: string, look?: { sentBefore: boolean; longer?: boolean; sent: () => void }): Promise<{ credits: number | null }>;
+  remove(input: string, out: string, seconds: number, signal?: AbortSignal, whole?: { key: string }, begun?: () => void, label?: string, look?: { sentBefore: boolean; longer?: boolean; sent: () => void }, mode?: web.Mode): Promise<{ credits: number | null }>;
   /** Whether the account can be used, nothing spent. Throws VmakeError. */
   check(): Promise<void>;
   /** Pieces it takes at once (PARALLEL when it doesn't say). */
@@ -696,8 +718,9 @@ function unblock(home: string, provider: ProviderId): void {
 export function apiProvider(keys: vmake.Keys): Provider {
   return {
     id: "vmake-api",
-    price: (seconds) => `≈ $${Math.max(1, Math.round(seconds * API_DOLLARS_A_SECOND))}`,
-    remove: (input, out, seconds, signal) => vmake.remove(keys, input, out, { seconds, ...(signal ? { signal } : {}) }),
+    // Smart is half Smart Pro's credits a second.
+    price: (seconds, _files, smart = 0) => `≈ $${Math.max(1, Math.round((seconds - smart / 2) * API_DOLLARS_A_SECOND))}`,
+    remove: (input, out, seconds, signal, _whole, _begun, _label, _look, mode = "pro") => vmake.remove(keys, input, out, { seconds, material: mode === "smart" ? vmake.SMART : vmake.SMART_PRO, ...(signal ? { signal } : {}) }),
     check: () => vmake.check(keys),
   };
 }
@@ -767,7 +790,7 @@ export function websiteProvider(home: string, browsers: web.Browsers, site = web
       const browser = dollars < 0.5 ? "under $0.50" : `≈ $${dollars.toFixed(2)}`;
       return `${count} ${count === 1 ? "file" : "files"} on your Vmake plan${count > left ? ` (${Math.max(0, left)} today, the rest tomorrow)` : ""}, ${browser} of cloud browser`;
     },
-    async remove(input, out, seconds, _signal, whole, begun, label, look) {
+    async remove(input, out, seconds, _signal, whole, begun, label, look, mode = "pro") {
       // Staged and counted only when the file is sent: a card of it already on vmake.ai (its name from `label`), or
       // a finished result from before that's this piece's, sends nothing.
       const staged: { drop: () => Promise<void> }[] = [];
@@ -783,6 +806,7 @@ export function websiteProvider(home: string, browsers: web.Browsers, site = web
           },
           web.pieceName(seconds, label),
           {
+            mode,
             ...(begun ? { begun } : {}),
             seconds,
             quota: quotaSeen,
@@ -797,7 +821,7 @@ export function websiteProvider(home: string, browsers: web.Browsers, site = web
             sending: async () => {
               if (web.DAILY_FILES - files.left() >= web.SANITY_FILES) throw new VmakeError(`Edit's own ceiling of ${web.SANITY_FILES} Vmake files a day is reached`, "account", "daily_limit");
               const today = await files.count();
-              const remain = day.quota?.modes[web.MODELS.pro]?.remain;
+              const remain = day.quota?.modes[web.MODELS[mode]]?.remain;
               return remain === 0 || (remain == null && today > web.DAILY_FILES);
             },
             adopt: async (found) => {
@@ -954,19 +978,23 @@ export interface Shelf {
   list(source: string): Promise<Cached[]>;
   /** The piece as a file here. */
   bring(source: string, cached: Cached): Promise<string>;
-  keep(source: string, file: string, from: number, to: number, provider: ProviderId): Promise<Cached>;
+  keep(source: string, file: string, from: number, to: number, provider: ProviderId, mode?: web.Mode): Promise<Cached>;
   /** A kept piece that wasn't clean: gone here and on R2, so it's sent again. */
   forget(source: string, cached: Cached): Promise<void>;
 }
 
 export const PREFIX = "edit/cleaned";
 export const folderOf = (source: string) => createHash("sha256").update(source).digest("hex").slice(0, 32);
-const nameOf = (from: number, to: number, provider: ProviderId) => `${Math.round(from * 1000)}-${Math.round(to * 1000)}.${provider}.mp4`;
+/** A piece's name on the shelf: its seconds, its provider, and `.smart` when it's Smart's (a name without one is Smart Pro's). */
+const nameOf = (from: number, to: number, provider: ProviderId, mode: web.Mode = "pro") => `${Math.round(from * 1000)}-${Math.round(to * 1000)}.${provider}${mode === "smart" ? ".smart" : ""}.mp4`;
 
 export function parseName(key: string): Omit<Cached, "key"> | null {
-  const match = /(\d+)-(\d+)\.(vmake-api|vmake-web)\.mp4$/u.exec(key);
-  return match === null ? null : { from: Number(match[1]) / 1000, to: Number(match[2]) / 1000, provider: match[3] as ProviderId };
+  const match = /(\d+)-(\d+)\.(vmake-api|vmake-web)(\.smart)?\.mp4$/u.exec(key);
+  return match === null ? null : { from: Number(match[1]) / 1000, to: Number(match[2]) / 1000, provider: match[3] as ProviderId, mode: match[4] === undefined ? "pro" : "smart" };
 }
+
+/** Whether a kept piece serves one asked for in `mode`: Smart Pro's serves either, Smart's only Smart. */
+export const serves = (cached: Pick<Cached, "mode">, mode: web.Mode): boolean => cached.mode === "pro" || mode === "smart";
 
 /** R2 under `edit/cleaned/<file>/`, each piece also kept in `dir` (this Mac's cache); with the cloud off, `dir` alone. */
 export function shelfIn(dir: string, useCloud: () => boolean = () => cloud.enabled()): Shelf {
@@ -995,14 +1023,14 @@ export function shelfIn(dir: string, useCloud: () => boolean = () => cloud.enabl
       }
       return file;
     },
-    async keep(source, file, from, to, provider) {
-      const name = nameOf(from, to, provider);
+    async keep(source, file, from, to, provider, mode = "pro") {
+      const name = nameOf(from, to, provider, mode);
       const key = `${PREFIX}/${folderOf(source)}/${name}`;
       const here = local(source, name);
       fs.mkdirSync(join(dir, folderOf(source)), { recursive: true });
       if (file !== here) fs.renameSync(file, here);
       if (useCloud()) await cloud.uploadFile(here, key).catch((error: unknown) => diag.warn("removal", `keeping ${name} in the cloud: ${diag.messageOf(error)}`));
-      return { from, to, provider, key };
+      return { from, to, provider, mode, key };
     },
     async forget(source, cached) {
       fs.rmSync(local(source, cached.key.slice(cached.key.lastIndexOf("/") + 1)), { force: true });
@@ -1082,33 +1110,76 @@ export interface FilePlan {
   use: Cached[];
   /** The parts its pieces take out (what's pasted back): those in force for this file's seconds. */
   kinds: removal.Kind[];
+  /** The mode its pieces are sent in (by the sections their seconds show in: removal_modes.ts); a file can have a plan in each. */
+  mode: web.Mode;
 }
+
+/** A strip's mode, by its name (`place`): Smart's end " · Smart". */
+export const stripMode = (strip: Pick<Media, "name">): web.Mode => (strip.name.endsWith(SMART_STRIP) ? "smart" : "pro");
+const SMART_STRIP = " · Smart";
+
+/** Each footage file's seconds by the mode they're cleaned in (removal_modes.ts). */
+export const modesOf = (app: App, project: Project): modes.ByMode => modes.byMode(project, app.store.home, (from, to) => shownBetween(project, from, to));
 
 /** The lesson as it applies to `project` now (its parts that run by themselves, and those asked for: removal_asks.ts). */
 export const inForceOf = (app: App, project: Pick<Project, "id" | "channel">): removal.Lesson | null => asks.inForce(lessonOf(project), app.store.home, project.id);
 
-/** Every file of `project` to send to Vmake (what its channel's lesson takes out there: their subtitles, their text), or the files still being read. */
-export async function plan(app: App, project: Project, provider: Provider | null = null): Promise<{ files: FilePlan[]; reading: string[] }> {
-  const files: FilePlan[] = [];
+/**
+ * Whether only the agent's marks go (removal_asks.ts `marked`): a channel
+ * taught to take their subtitles or text out (Sphe, Nov 18: detection
+ * proposes, the agent marks the in and out points, only those are sent or
+ * blurred). A channel taught nothing of theirs sends what's asked, by
+ * detection, as before.
+ */
+export const marksOnly = (project: Pick<Project, "channel">): boolean => removal.kinds(lessonOf(project)).vmake.length > 0;
+
+/** One file's seconds to take their text out of, and the parts that take them (`wantedOf`). */
+interface Wanted {
+  media: Media;
+  spans: [number, number][];
+  kinds: removal.Kind[];
+}
+
+/**
+ * What of each footage file has their text to take out now: the agent's
+ * marks within what the lesson covers there (a channel taught it), else
+ * what detection finds within what was asked; and the files still being read.
+ */
+function wantedOf(app: App, project: Project): { wanted: Wanted[]; reading: string[] } {
+  const wanted: Wanted[] = [];
   const reading: string[] = [];
   const taught = lessonOf(project);
   const lesson = asks.inForce(taught, app.store.home, project.id);
-  if (lesson === null || removal.kinds(lesson).vmake.length === 0) return { files, reading };
+  if (lesson === null || removal.kinds(lesson).vmake.length === 0) return { wanted, reading };
+  const marking = marksOnly(project);
+  // Every stretch detection proposes, when the agent took them all (its own marks and unmarks over them).
+  const proposals = new Map<string, [number, number][]>();
+  const unreadIds = new Set<string>();
+  if (marking && asks.marksProposed(app.store.home, project.id)) {
+    for (const [id] of shownSeconds(project)) {
+      const media = project.media.find((one) => one.id === id)!;
+      const spans = textOf(media, cameraFromReads(media, null), lesson);
+      if (spans === undefined) unreadIds.add(id);
+      else proposals.set(id, spans);
+    }
+  }
+  const marks = marking ? asks.marked(app.store.home, project.id, proposals) : new Map<string, [number, number][]>();
   for (const [id, shown] of shownSeconds(project)) {
     const media = project.media.find((one) => one.id === id)!;
     // Each part on the seconds it covers: all the timeline shows for one that runs by itself, what was asked for else.
     const found: [number, number][] = [];
     const kinds: removal.Kind[] = [];
-    let unread = false;
+    let unread = marking && unreadIds.has(id);
     for (const kind of removal.kinds(lesson).vmake) {
+      if (unread) break;
       const within = asks.scope(taught, app.store.home, project.id, kind, id, shown);
       if (within.length === 0) continue;
-      const spans = textOf(media, cameraFromReads(media, null), removal.only(lesson, [kind]));
+      const spans = marking ? (marks.get(id) ?? []) : textOf(media, cameraFromReads(media, null), removal.only(lesson, [kind]));
       if (spans === undefined) {
         unread = true;
         break;
       }
-      const mine = spans.flatMap(([a, b]) => within.flatMap(([x, y]): [number, number][] => (Math.min(b, y) > Math.max(a, x) ? [[Math.max(a, x), Math.min(b, y)]] : [])));
+      const mine = modes.intersect(spans, within);
       if (mine.length === 0) continue;
       found.push(...mine);
       kinds.push(kind);
@@ -1118,19 +1189,108 @@ export async function plan(app: App, project: Project, provider: Provider | null
       void burned.warm(app.media, media);
       continue;
     }
-    const wanted = merged(found);
-    if (wanted.length === 0) continue;
+    const spans = merged(found);
+    if (spans.length > 0) wanted.push({ media, spans, kinds });
+  }
+  return { wanted, reading };
+}
+
+/**
+ * The files whose marked seconds get the tracked blur (removal_modes: from
+ * the third case on, or where asked), as text_blur.ts takes them.
+ */
+export async function blurPlan(app: App, project: Project): Promise<blur.BlurPlan[]> {
+  const out: blur.BlurPlan[] = [];
+  const { wanted } = wantedOf(app, project);
+  if (wanted.length === 0) return out;
+  const sections = modesOf(app, project);
+  const lesson = inForceOf(app, project);
+  for (const { media, spans, kinds } of wanted) {
+    const mine = modes.intersect(spans, sections.get(media.id)?.blur ?? []);
+    if (mine.length === 0) continue;
+    const reads = burned.readsOf(media);
+    const camera = cameraFromReads(media, null);
+    const keep = removal.keepBoxes(lesson);
+    const labels = reads === null || !kinds.includes("text") ? [] : labelBoxes(reads.texts, reads.seconds, [...camera, ...keep], removal.exampleWords(lesson));
+    out.push({ media, source: await sourceOf(media), spans: mine, band: burned.of(media)?.band ?? null, labels, avoid: [...camera, ...keep], subtitles: kinds.includes("subtitles"), text: kinds.includes("text") });
+  }
+  return out;
+}
+
+/**
+ * What detection proposes for the agent to mark (get_edit_context's
+ * removal): each visible clip's stretch of the timeline where its file shows
+ * their text (burned_subtitles' spans, their labels), and whether it's marked
+ * already; and the marks made beyond them.
+ */
+export function proposed(app: App, project: Project): modes.Proposed[] {
+  const fps = fpsOf(project);
+  const lesson = inForceOf(app, project);
+  if (lesson === null) return [];
+  const all = new Map<string, [number, number][]>();
+  if (asks.marksProposed(app.store.home, project.id)) for (const media of project.media) if (media.kind === "video") all.set(media.id, textOf(media, cameraFromReads(media, null), lesson) ?? []);
+  const marks = asks.marked(app.store.home, project.id, all);
+  const out: modes.Proposed[] = [];
+  const seen = new Map<string, [number, number][]>();
+  for (const clip of project.clips) {
+    if (clip.type !== "video" || isOverlay(clip) || trackOf(project, clip.track)?.hidden === true || !(clip.speed > 0)) continue;
+    const media = project.media.find((one) => one.id === clip.media);
+    if (media === undefined || media.kind !== "video" || media.cleans != null || media.effect != null) continue;
+    const spans = textOf(media, cameraFromReads(media, null), lesson) ?? [];
+    const end = clip.source_in + (clip.duration / fps) * clip.speed;
+    const timeline = (seconds: number) => clip.start / fps + (seconds - clip.source_in) / clip.speed;
+    const mine = marks.get(media.id) ?? [];
+    for (const [a, b] of modes.intersect(spans, [[clip.source_in, end]])) {
+      const covered = modes.minus([[a, b]], mine).length === 0;
+      out.push({ from: timeline(a), to: timeline(b), media: media.name, marked: covered });
+    }
+    for (const [a, b] of modes.intersect(mine, [[clip.source_in, end]])) {
+      // A mark beyond what detection found (the agent saw it itself).
+      if (modes.minus([[a, b]], spans).length === 0) continue;
+      const key = media.id;
+      if ((seen.get(key) ?? []).some(([x, y]) => x === a && y === b)) continue;
+      seen.set(key, [...(seen.get(key) ?? []), [a, b]]);
+      out.push({ from: timeline(a), to: timeline(b), media: media.name, marked: true });
+    }
+  }
+  return out.sort((x, y) => x.from - y.from);
+}
+
+/** Every file of `project` to send to Vmake (what its channel's lesson takes out there: their subtitles, their text; the agent's marks of them for a channel taught it), or the files still being read. */
+export async function plan(app: App, project: Project, provider: Provider | null = null): Promise<{ files: FilePlan[]; reading: string[] }> {
+  const files: FilePlan[] = [];
+  const { wanted: all, reading } = wantedOf(app, project);
+  if (all.length === 0) return { files, reading };
+  const sections = modesOf(app, project);
+  for (const { media, spans: wanted, kinds } of all) {
+    // Their text's seconds by the mode their sections give them: Smart Pro's, Smart's; the blur's (a third case on) are text_blur.ts's.
+    const by = sections.get(media.id) ?? { pro: [], smart: [], blur: [] };
+    const asked = { pro: modes.intersect(wanted, by.pro), smart: modes.intersect(wanted, by.smart) };
+    if (asked.pro.length === 0 && asked.smart.length === 0) continue;
     const source = await sourceOf(media);
     // A piece given up on (twice not clean) stays blurred: never sent again in this project.
-    const given = [...(textPieces.get(project.id)?.values() ?? [])].filter((one) => one.media === media.id && one.state === "failed").map((one): Cached => ({ from: one.from, to: one.to, provider: "vmake-api", key: "" }));
+    const given = [...(textPieces.get(project.id)?.values() ?? [])].filter((one) => one.media === media.id && one.state === "failed").map((one): Cached => ({ from: one.from, to: one.to, provider: "vmake-api", mode: "pro", key: "" }));
     const cached = [...(await listed(app, source)), ...given];
-    // Paid by the file: a short one goes whole (one file either way).
-    const whole = provider?.wholeFiles === true && (media.duration ?? 0) <= PIECE_SECONDS;
-    const { send, use } = piecesFor(whole ? [[HANDLE, Math.max(HANDLE, (media.duration ?? 0) - HANDLE)]] : wanted, media.duration ?? 0, media.fps || fpsOf(project), cached, provider?.wholeFiles === true);
+    // Paid by the file: a short one goes whole (one file either way), in the better mode it needs; never past the agent's marks.
+    const whole = provider?.wholeFiles === true && !marksOnly(project) && (media.duration ?? 0) <= PIECE_SECONDS;
     // Pieces already in the project as strips (or given up on) need nothing.
     const have = project.media.filter((one) => one.cleans?.media === media.id && (one.cleans.what ?? "text") === "text");
-    const used = use.filter((one) => one.key !== "" && !have.some((strip) => Math.abs(strip.cleans!.from - one.from) < 0.01 && Math.abs(strip.cleans!.to - one.to) < 0.05));
-    if (send.length > 0 || used.length > 0) files.push({ media, source, send, use: used, kinds });
+    // Smart Pro's pieces first: what they send isn't Smart's to send too.
+    const planned: Cached[] = [];
+    const taken = new Set<string>();
+    for (const mode of ["pro", "smart"] as const) {
+      if (asked[mode].length === 0) continue;
+      // A Smart result never stands in for Smart Pro; Smart Pro's (every result from before) does for Smart.
+      // A Smart result wholly inside a Smart Pro one adds nothing: the better one's laid.
+      const inside = (one: Cached) => one.mode === "smart" && cached.some((other) => other.mode === "pro" && other.key !== "" && other.from <= one.from + 0.01 && other.to >= one.to - 0.05);
+      const fits = [...cached.filter((one) => one.key === "" || (serves(one, mode) && !inside(one))), ...planned];
+      const { send, use } = piecesFor(whole ? [[HANDLE, Math.max(HANDLE, (media.duration ?? 0) - HANDLE)]] : asked[mode], media.duration ?? 0, media.fps || fpsOf(project), fits, provider?.wholeFiles === true);
+      const used = use.filter((one) => one.key !== "" && !taken.has(one.key) && !have.some((strip) => Math.abs(strip.cleans!.from - one.from) < 0.01 && Math.abs(strip.cleans!.to - one.to) < 0.05 && serves({ mode: stripMode(strip) }, mode)));
+      for (const one of used) taken.add(one.key);
+      planned.push(...send.map(([from, to]): Cached => ({ from, to, provider: "vmake-api", mode, key: "" })));
+      if (send.length > 0 || used.length > 0) files.push({ media, source, send, use: used, kinds, mode });
+      if (whole) break;
+    }
   }
   return { files, reading };
 }
@@ -1174,10 +1334,18 @@ export interface TextPiece {
   strip?: string;
   /** Given up on because vmake.ai never showed it back (not because it wasn't clean). */
   lost?: boolean;
+  /** The mode it's cleaned in (its section's: removal_modes.ts). */
+  mode: web.Mode;
 }
 
 const textPieces = new Map<string, Map<string, TextPiece>>();
 const pieceKeyOf = (media: string, from: number) => `text:${media}@${Math.round(from * 1000)}`;
+/**
+ * A piece's place among those out at Vmake, and its name there (with its
+ * try): by file and seconds, and Smart's marked so (a Smart card is never
+ * picked up for a Smart Pro piece); Smart Pro's as before Nov 18.
+ */
+const outKeyOf = (source: string, from: number, to: number, mode: web.Mode) => `${source}|${from}|${to}${mode === "smart" ? "|smart" : ""}`;
 
 /** The project's pieces through Vmake (removal.ts reads them for its line, its check and the export's wait). */
 export function piecesOf(id: string): TextPiece[] {
@@ -1234,7 +1402,13 @@ const minutes = (seconds: number) => (seconds < 90 ? `${Math.max(1, Math.round(s
  */
 export async function ensure(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
-  if (live === null || removal.kinds(inForceOf(app, live.project)).vmake.length === 0) return;
+  if (live === null) return;
+  if (removal.kinds(inForceOf(app, live.project)).vmake.length === 0) {
+    await blur.ensure(app, id, []);
+    return;
+  }
+  // The tracked blur (a third case on): here and free, whatever Vmake's account or run is doing.
+  await blur.ensure(app, id, await blurPlan(app, live.project));
   const running = runs.get(id);
   if (running !== undefined && !running.over) {
     running.again = true;
@@ -1346,9 +1520,19 @@ export async function status(app: App, id: string): Promise<Status> {
   const failed = pieces.filter((one) => one.state === "failed").length;
   if (provider.id === "vmake-api" && !confirmed.has(id)) {
     const { files } = await plan(app, live.project, provider);
-    const seconds = files.reduce((sum, file) => sum + file.send.reduce((all, [a, b]) => all + b - a, 0), 0);
+    const long = (file: FilePlan) => file.send.reduce((all, [a, b]) => all + b - a, 0);
+    const seconds = files.reduce((sum, file) => sum + long(file), 0);
+    const smart = files.filter((file) => file.mode === "smart").reduce((sum, file) => sum + long(file), 0);
     const count = files.reduce((sum, file) => sum + file.send.length, 0);
-    if (count > 0) return { line: `Take their text out of ${minutes(seconds)} of footage: ${provider.price(seconds, count)}`, action: "remove", running: null };
+    // The split, plainly: "Smart Pro on the intro, Smart on cases 1 and 2".
+    const sent: modes.ByMode = new Map();
+    for (const file of files) {
+      const one = sent.get(file.media.id) ?? { pro: [], smart: [], blur: [] };
+      one[file.mode].push(...file.send);
+      sent.set(file.media.id, one);
+    }
+    const split = modes.describe(live.project, modesOf(app, live.project), sent, (from, to) => shownBetween(live.project, from, to));
+    if (count > 0) return { line: `Take their text out of ${minutes(seconds)} of footage${split === "" ? "" : `, ${split}`}: ${provider.price(seconds, count, smart)}`, action: "remove", running: null };
   }
   const waiting = pieces.filter((one) => one.state === "waiting").length;
   if (waiting > 0) return { line: `Waiting on vmake.ai for ${waiting === 1 ? "one piece" : `${waiting} pieces`} sent earlier; their text stays blurred there until it's back.`, action: null, running: null };
@@ -1474,11 +1658,12 @@ export async function reject(app: App, id: string, key: string, why: string, las
   const media = live?.project.media.find((one) => one.id === piece.media);
   if (live === null || media === undefined) throw new Error("its footage is gone");
   const source = await sourceOf(media);
-  const kept = (await shelfOf(app).list(source)).filter((one) => Math.abs(one.from - piece.from) < 0.01);
+  // The kept result that served it (a Smart piece's may be Smart Pro's), never one of another mode it couldn't use.
+  const kept = (await shelfOf(app).list(source)).filter((one) => Math.abs(one.from - piece.from) < 0.01 && serves(one, piece.mode));
   for (const one of kept) await shelfOf(app).forget(source, one);
   listings.delete(source);
   // Done again under its next name (after a restart too), never the card whose result this was.
-  const outKey = `${source}|${piece.from}|${piece.to}`;
+  const outKey = outKeyOf(source, piece.from, piece.to, piece.mode);
   const had = outstanding(app.store.home, outKey);
   if (!last && had?.sent !== true) setOutstanding(app.store.home, outKey, { tries: Math.max(had?.tries ?? 0, piece.tries + 1), sent: false });
   // Each go that went wrong or wasn't clean counts: a second, then given up on.
@@ -1545,7 +1730,7 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
   runs.set(id, run);
   for (const job of jobs) {
     const known = textPieces.get(id)?.get(pieceKeyOf(job.file.media.id, job.range[0]));
-    notePiece(id, { key: pieceKeyOf(job.file.media.id, job.range[0]), media: job.file.media.id, name: job.file.media.name, from: job.range[0], to: job.range[1], state: "queued", tries: known?.tries ?? 0 });
+    notePiece(id, { key: pieceKeyOf(job.file.media.id, job.range[0]), media: job.file.media.id, name: job.file.media.name, from: job.range[0], to: job.range[1], state: "queued", tries: known?.tries ?? 0, mode: job.file.mode });
   }
   const sent = { seconds: 0, credits: 0, creditsSaid: false };
   const stamps = new Map<string, Promise<Box[]>>();
@@ -1556,10 +1741,11 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
     const [from, to] = range;
     const key = pieceKeyOf(file.media.id, from);
     let piece = notePiece(id, { ...textPieces.get(id)!.get(key)!, state: "running" });
-    const label = `${file.media.name} ${Math.round(from)}–${Math.round(to)} s`;
+    const label = `${file.media.name} ${Math.round(from)}–${Math.round(to)} s${file.mode === "smart" ? " (Smart)" : ""}`;
+    // Its place among the pieces out at Vmake (on disk: a restart keeps it): by file, seconds and mode.
+    const outKey = outKeyOf(file.source, from, to, file.mode);
     /** A look that couldn't tell (the piece is vmake.ai's): looked for again later, or, its looks used, given up on. */
     const park = async (now: Omit<Out, "at">, why: string): Promise<void> => {
-      const outKey = `${file.source}|${from}|${to}`;
       const looks = (now.looks ?? 0) + 1;
       const since = now.since ?? Date.now();
       if (looks > looking.afterMs.length) {
@@ -1578,8 +1764,6 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
     const dir = join(app.store.cacheDir(), "cleaned", "work");
     fs.mkdirSync(dir, { recursive: true });
     const stem = join(dir, `${id}-${file.media.id}-${Math.round(from * 1000)}`);
-    // Its place among the pieces out at Vmake (on disk: a restart keeps it): by file and seconds.
-    const outKey = `${file.source}|${from}|${to}`;
     try {
       if (job.cached !== null) {
         // Kept on the shelf: whatever was out for it is back (a stop between the keep and this let go).
@@ -1631,7 +1815,7 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
             longer: was !== null && was.sent === undefined,
             // The file is going into vmake.ai's page: from now on it's only looked for (on disk at once, before the page hears it).
             sent: () => setOutstanding(app.store.home, outKey, { ...going, sent: true, since: going.since ?? Date.now() }),
-          });
+          }, file.mode);
         } catch (error) {
           const now = outstanding(app.store.home, outKey) ?? going;
           if (error instanceof web.Refused) {
@@ -1654,7 +1838,7 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
           sent.credits += spent.credits;
           sent.creditsSaid = true;
         }
-        cached = await shelfOf(app).keep(file.source, out, from, to, provider.id);
+        cached = await shelfOf(app).keep(file.source, out, from, to, provider.id, file.mode);
         listings.delete(file.source);
         // Only now, its result kept, is it no longer out (a stop before this picks its card up again).
         setOutstanding(app.store.home, outKey, null);
@@ -1663,7 +1847,7 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
       const info = await probe(original);
       // The camera's text, and what the lesson keeps out of reach (only the subtitles' band when that's all it takes out).
       const keep = [...(await stamps.get(file.media.id)!), ...keptFor(lesson === null ? null : removal.only(lesson, file.kinds), burned.of(file.media)?.band ?? null)];
-      const out = join(app.store.cacheDir(), "cleaned", `${id}-${file.media.id}-${Math.round(cached.from * 1000)}-${Math.round(cached.to * 1000)}.${cached.provider}.strip.mp4`);
+      const out = join(app.store.cacheDir(), "cleaned", `${id}-${file.media.id}-${Math.round(cached.from * 1000)}-${Math.round(cached.to * 1000)}.${cached.provider}${cached.mode === "smart" ? ".smart" : ""}.strip.mp4`);
       const made = await makeStrip(original, cleaned, { width: info.width, height: info.height, fps: info.fps }, keep, out);
       // The automatic look: their words read again in what Vmake gave back (never their see-through watermark's: the engine's, Vmake leaves it).
       const marked = [...(await markBoxesOf(app, file.source)), ...(lesson?.examples ?? []).filter((one) => one.kind === "watermarks" && one.box !== undefined).map((one) => one.box!)];
@@ -1679,7 +1863,8 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
         if (example.action !== "remove" || example.box === undefined || example.from?.source !== file.source || example.from.at < from || example.from.at > to) continue;
         if (overlapShare(example.box, made.box) < 0.5) diag.warn("removal", `${label}: the lesson's example "${example.text ?? example.kind}" isn't in what was taken out (box ${made.box.join(" ")})`);
       }
-      const strip = await place(app, id, file.media, { from: cached.from, to: Math.min(cached.to, cached.from + info.duration) }, made.box, out);
+      // Laid as what it is: a Smart Pro result serving a Smart piece is Smart Pro's strip.
+      const strip = await place(app, id, file.media, { from: cached.from, to: Math.min(cached.to, cached.from + info.duration) }, made.box, out, cached.mode);
       piece = notePiece(id, { ...piece, state: "check", ...(strip !== null ? { strip } : {}) });
       if (still !== null) await reject(app, id, key, still);
     } catch (error) {
@@ -1830,17 +2015,25 @@ export async function takeExample(app: App, project: Project, channel: string, g
   }
 }
 
-/** Puts a strip in the project (clean_strips.ts lays it over the clips on the save). */
-async function place(app: App, id: string, footage: Media, range: { from: number; to: number }, box: Box, file: string): Promise<string | null> {
+/**
+ * Puts a strip in the project (clean_strips.ts lays it over the clips on the
+ * save), in place of one of the same seconds, and of Smart strips wholly
+ * inside a Smart Pro one (their seconds now Smart Pro's: an ask, a re-cut).
+ */
+async function place(app: App, id: string, footage: Media, range: { from: number; to: number }, box: Box, file: string, mode: web.Mode = "pro"): Promise<string | null> {
   const probed: Probe = await probe(file);
   await playing.whenIdle();
   let made: string | null = null;
   await app.store.update(id, "text removal", (project) => {
     if (!project.media.some((one) => one.id === footage.id)) return;
-    project.media = project.media.filter((one) => !(one.cleans?.media === footage.id && (one.cleans.what ?? "text") === "text" && Math.abs(one.cleans.from - range.from) < 0.01 && Math.abs(one.cleans.to - range.to) < 0.05));
+    const replaced = (one: Media) =>
+      one.cleans?.media === footage.id &&
+      (one.cleans.what ?? "text") === "text" &&
+      ((Math.abs(one.cleans.from - range.from) < 0.01 && Math.abs(one.cleans.to - range.to) < 0.05) || (mode === "pro" && stripMode(one) === "smart" && one.cleans.from >= range.from - 0.01 && one.cleans.to <= range.to + 0.05));
+    project.media = project.media.filter((one) => !replaced(one));
     const strip: Media = {
       id: freshId(project, "m"),
-      name: `${footage.name} · their text out ${Math.round(range.from)}–${Math.round(range.to)} s`,
+      name: `${footage.name} · their text out ${Math.round(range.from)}–${Math.round(range.to)} s${mode === "smart" ? SMART_STRIP : ""}`,
       path: file,
       kind: "video",
       duration: probed.duration,
