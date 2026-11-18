@@ -1181,6 +1181,184 @@ test("an update mid-piece: after the restart the piece goes under the same name,
   }
 }, 120_000);
 
+/** A card on vmake.ai's job list, as the stand-in site keeps it: whether a look finds it now, whether it's finished, whether it failed. */
+interface Card {
+  shown: boolean;
+  done: boolean;
+  failed: boolean;
+}
+
+/**
+ * vmake.ai's website as the provider meets it, by the piece's name: a file sent makes a card (an upload: a file of the
+ * day, counted), looked for again by name when it went in before (never sent then); `made` says how each new card
+ * behaves. Every call's name, and whether it was told the file went in before, kept.
+ */
+function jobList(made: (card: Card, uploads: number) => void = () => {}) {
+  const cards = new Map<string, Card>();
+  const calls: { name: string; sentBefore: boolean }[] = [];
+  const counts = { uploads: 0, returned: 0 };
+  const provider: tr.Provider = {
+    id: "vmake-web",
+    price: () => "",
+    async remove(input, out, seconds, _signal, _whole, _begun, label, look) {
+      const name = web.pieceName(seconds, label);
+      calls.push({ name, sentBefore: look?.sentBefore === true });
+      let card = cards.get(name);
+      if (card === undefined) {
+        // Sent before and nowhere on the list: the page can't say it's lost.
+        if (look?.sentBefore === true) throw new VmakeError("the piece's card isn't on vmake.ai's list yet", "piece");
+        counts.uploads += 1;
+        look?.sent();
+        card = { shown: true, done: true, failed: false };
+        cards.set(name, card);
+        made(card, counts.uploads);
+      }
+      if (card.failed) throw new web.Refused("vmake.ai failed the piece (its card says so)", "piece");
+      if (!card.shown) throw new VmakeError("the piece's card isn't on vmake.ai's list yet", "piece");
+      if (!card.done) throw new VmakeError("vmake.ai is still on the piece after two hours (32%)", "piece");
+      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", input, "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", out]);
+      counts.returned += 1;
+      return { credits: null };
+    },
+    async check() {},
+  };
+  return { provider, cards, calls, counts };
+}
+
+async function until(what: () => boolean, ms = 60_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!what()) {
+    if (Date.now() > end) throw new Error("timed out");
+    await Bun.sleep(25);
+  }
+}
+
+test("a piece sent whose card can't be found in time, or is still processing at the deadline, is never sent again: it waits on vmake.ai (the export doesn't), is looked for again under the same name, and is used once its card shows done (GPT 6.2 Astra's audit, Nov 18)", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-unsure");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const site = jobList((card) => (card.shown = false));
+  tr.useProvider(site.provider);
+  const afterMs = tr.looking.afterMs;
+  tr.looking.afterMs = Array.from({ length: 8 }, () => 150);
+  try {
+    const file = await labelledFootage(dir, 8);
+    const id = await labelledProject(app, file, 8);
+    await removalSchedule.ensure(app, id);
+    // Sent, its card not on the list when looked for: waiting, said, and nothing out for the export to wait on.
+    await until(() => tr.piecesOf(id)[0]?.state === "waiting");
+    expect((await tr.status(app, id)).line).toBe("Waiting on vmake.ai for one piece sent earlier; their text stays blurred there until it's back.");
+    expect(removalSchedule.progressOf(id).out).toBe(0);
+    // Looked for again by itself, under the same name, nothing sent.
+    await until(() => site.calls.length >= 3);
+    // The card shows, still processing at the deadline: waiting again; then it's done and used.
+    for (const card of site.cards.values()) [card.shown, card.done] = [true, false];
+    const looked = site.calls.length;
+    await until(() => site.calls.length >= looked + 2 && tr.piecesOf(id)[0]?.state === "waiting");
+    for (const card of site.cards.values()) card.done = true;
+    await until(() => store.get(id)!.project.media.some((media) => media.cleans != null));
+    await tr.settled(id);
+    expect(site.counts.uploads).toBe(1);
+    expect(new Set(site.calls.map((call) => call.name)).size).toBe(1);
+    expect(site.calls.map((call) => call.sentBefore)).toEqual([false, ...site.calls.slice(1).map(() => true)]);
+    expect(tr.piecesOf(id).map((one) => one.state)).toEqual(["check"]);
+    // Back and kept: nothing is out at Vmake for it any more.
+    expect(JSON.parse(fs.readFileSync(join(app.store.home, "text-removal.json"), "utf8")).out).toEqual({});
+  } finally {
+    tr.looking.afterMs = afterMs;
+    cleanup();
+  }
+}, 120_000);
+
+test("a stop between vmake.ai's result and its keep on the shelf: after the restart the piece's card is picked up under the same name, nothing sent again", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-keep-crash");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  const shelf = tr.shelfIn(join(dir, "shelf"), () => false);
+  let crash = true;
+  // The Edit that fetched the result stops for good as it keeps it (an update ends its process).
+  tr.useShelf({ ...shelf, keep: async (...args) => (crash ? await new Promise<never>(() => {}) : shelf.keep(...args)) });
+  const site = jobList();
+  tr.useProvider(site.provider);
+  try {
+    const file = await labelledFootage(dir, 8);
+    const id = await labelledProject(app, file, 8);
+    await removalSchedule.ensure(app, id);
+    await until(() => site.counts.returned === 1);
+    await Bun.sleep(100);
+    // The restart: memory gone, the disk kept.
+    tr.reset();
+    crash = false;
+    await removalSchedule.resume(app);
+    await tr.settled(id);
+    expect(site.counts.uploads).toBe(1);
+    expect(site.calls).toEqual([site.calls[0]!, { name: site.calls[0]!.name, sentBefore: true }]);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).length).toBe(1);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test("vmake.ai saying the piece won't come back (its card failed, credits returned) sends it once more, under its next name", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-refused");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const site = jobList((card, uploads) => (card.failed = uploads === 1));
+  tr.useProvider(site.provider);
+  try {
+    const file = await labelledFootage(dir, 8);
+    const id = await labelledProject(app, file, 8);
+    await removalSchedule.ensure(app, id);
+    await until(() => store.get(id)!.project.media.some((media) => media.cleans != null));
+    await tr.settled(id);
+    expect(site.counts.uploads).toBe(2);
+    expect(site.calls.length).toBe(2);
+    expect(site.calls[1]!.name).not.toBe(site.calls[0]!.name);
+    expect(site.calls.map((call) => call.sentBefore)).toEqual([false, false]);
+    expect(tr.piecesOf(id).map((one) => [one.state, one.tries])).toEqual([["check", 2]]);
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test("a piece vmake.ai never shows back after every look is given up on: blurred, said plainly, never sent again, after a restart too", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-lost");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const site = jobList((card) => (card.shown = false));
+  tr.useProvider(site.provider);
+  const afterMs = tr.looking.afterMs;
+  tr.looking.afterMs = [100, 100];
+  const blurs = () => store.get(id)!.project.clips.filter((clip) => (clip.name ?? "").startsWith(burned.UNTIL_REMOVED)).length;
+  let id = "";
+  try {
+    const file = await labelledFootage(dir, 8);
+    id = await labelledProject(app, file, 8);
+    await removalSchedule.ensure(app, id);
+    await until(() => tr.piecesOf(id)[0]?.state === "failed");
+    await tr.settled(id);
+    // Sent once, looked for twice more, then given up on.
+    expect(site.counts.uploads).toBe(1);
+    expect(site.calls.map((call) => call.sentBefore)).toEqual([false, true, true]);
+    expect(await tr.status(app, id)).toEqual({ line: "vmake.ai never gave back one piece sent to it; their text stays blurred there.", action: null, running: null });
+    const blurred = blurs();
+    expect(blurred).toBeGreaterThan(0);
+    // A restart: still given up on, nothing sent or looked for, blurred once.
+    tr.reset();
+    await removalSchedule.resume(app);
+    await tr.settled(id);
+    expect(site.calls.length).toBe(3);
+    expect(tr.piecesOf(id).map((one) => [one.state, one.lost])).toEqual([["failed", true]]);
+    expect(blurs()).toBe(blurred);
+  } finally {
+    tr.looking.afterMs = afterMs;
+    cleanup();
+  }
+}, 120_000);
+
 test("removal starts by itself as soon as edits rest (no button on the website's plan); a longer clip sends only its new seconds", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });

@@ -238,7 +238,7 @@ const ACCOUNT_SCRIPT = `(() => {
  * says (the team uploads by hand too). The first such words are logged as
  * they're put, to learn Vmake's own wording.
  */
-export function dailyLimit(said: string): VmakeError | null {
+export function dailyLimit(said: string, card = false): VmakeError | null {
   const words = said.toLowerCase();
   const daily = classify(said, false).reason === "daily_limit" || (/\b(limit|limits|maximum|allowance|quota)\b/u.test(words) && /\b(reached|tomorrow|used up|exceeded|hit)\b/u.test(words));
   if (!daily || /\b(duration|length|size|minutes?|seconds?|mb|gb|resolution|format|too long|too large|file type)\b/u.test(words)) return null;
@@ -246,7 +246,8 @@ export function dailyLimit(said: string): VmakeError | null {
     limitSaid = true;
     diag.info("removal", `vmake.ai said the day's allowance is used, in its words: "${said.slice(0, 300)}"`);
   }
-  return new VmakeError(`vmake.ai: ${said.slice(0, 160)}`, "account", "daily_limit");
+  // On the piece's own card it's that file refused (sent again tomorrow, under its next name); elsewhere on the page, the account's day.
+  return new (card ? Refused : VmakeError)(`vmake.ai: ${said.slice(0, 160)}`, "account", "daily_limit");
 }
 let limitSaid = false;
 
@@ -271,6 +272,19 @@ async function waitFor<T>(page: Page, expression: string, ms: number, what: stri
     await Bun.sleep(step);
   }
 }
+
+/**
+ * vmake.ai said, on the piece's own card, that it won't come back: the card
+ * failed (credits returned), the page refused the file, no Smart pro for it,
+ * the day's limit in its own words. Only then is a piece that went in sent
+ * again, under its next name (a new file of the day). Any other trouble once
+ * it went in (its card not found in time, the page not answering, still
+ * processing at the deadline, the browser lost) can't say it's lost: it's
+ * looked for again under the same name, never sent twice (GPT 6.2 Astra's
+ * audit and Sphe's M4, Nov 17–18: a 3 s piece sat at 32% for two hours and
+ * was sent again).
+ */
+export class Refused extends VmakeError {}
 
 /** The browser's proxy refuses every connection: that browser is let go and another started (its own way out). */
 export class ProxyDown extends VmakeError {
@@ -335,7 +349,7 @@ const PROGRESS_SCRIPT = `(() => {
 /** The ranges a piece is read in, in the browser. */
 const CHUNK = 4 * 1024 * 1024;
 
-export async function putPiece(page: Page, remote: Remote, pieceUrl: string, name: string): Promise<void> {
+export async function putPiece(page: Page, remote: Remote, pieceUrl: string, name: string, handing: () => void = () => {}): Promise<void> {
   const tag = `edit_piece_${Date.now()}_${Math.round(Math.random() * 1e9)}`;
   const began = Date.now();
   const step = (what: string) => said(`vmake.ai ${name}: ${what} (${Math.round((Date.now() - began) / 1000)} s)`);
@@ -377,6 +391,8 @@ export async function putPiece(page: Page, remote: Remote, pieceUrl: string, nam
   } finally {
     reader.close();
   }
+  // From here the file may be in vmake.ai's hands, whatever this call hears back.
+  handing();
   const put = await page.evaluate<string>(
     `(async () => {
       const blob = await Promise.race([window.${tag}, new Promise((resolve) => setTimeout(() => resolve(null), 120000))]);
@@ -396,7 +412,7 @@ export async function putPiece(page: Page, remote: Remote, pieceUrl: string, nam
 }
 
 /** How long a piece may show no progress before it's looked at again (15 s of 1080p: 10 s of Vmake's processing). */
-export const timing = { stallMs: 3 * 60_000 };
+export const timing = { stallMs: 3 * 60_000, lookMs: 60_000 };
 
 /**
  * Presses our card's Apply and makes sure it took: the card leaves "To be
@@ -421,7 +437,8 @@ async function apply(page: Page, name: string, step: (what: string) => void): Pr
 /** Smart pro chosen on the piece's card, if it isn't already. */
 async function smartProOn(page: Page, name: string, step: (what: string) => void): Promise<void> {
   const state = await page.evaluate<{ smartPro: string | null } | null>(cardState(name));
-  if (state?.smartPro == null || /disabled--/u.test(state.smartPro)) throw new VmakeError("vmake.ai doesn't offer Smart pro for the piece", "piece");
+  if (state === null) throw new VmakeError("vmake.ai's card for the piece went away", "piece");
+  if (state.smartPro == null || /disabled--/u.test(state.smartPro)) throw new Refused("vmake.ai doesn't offer Smart pro for the piece", "piece");
   if (!/active--/u.test(state.smartPro)) {
     await pacing.wait();
     await click(page, `[...(${cardOf(name)}).querySelectorAll('ul[class*=radio] li')].find((li) => li.innerText.trim().toLowerCase() === '${MODE}')`);
@@ -508,6 +525,17 @@ export interface PieceHooks {
   adopt?: (url: string) => Promise<boolean>;
   /** The piece's length, for `adopt`'s cards. */
   seconds?: number;
+  /**
+   * Whether this name's file went in before (a run cut short, a restart, a
+   * look again): then its card is looked for longer (`timing.lookMs`) and the
+   * file is never sent again; a card not found is trouble for later, never
+   * "absent".
+   */
+  sentBefore?: () => boolean;
+  /** It may have gone in (kept by a build before it was said): its card looked for as long, and sent only if it isn't there. */
+  lookLonger?: boolean;
+  /** The file is going into the page now (from here it may be vmake.ai's, whatever comes back). */
+  handed?: () => void;
 }
 
 /** The finished cards named `legacy` and as long as `seconds` (±0.2 s, as each card shows it), by their place in the list. */
@@ -579,6 +607,36 @@ async function downloadOf(page: Page, at: number): Promise<string | null> {
   return asked;
 }
 
+/** Our card's state as `cardState` reads it. */
+type CardSeen = { ready: boolean; percent: number | null; done: boolean; failed: boolean };
+
+/**
+ * Our card on the remover's page, looked for up to `ms`: the job list waited
+ * for, every card drawn (the page writes a card's words only once it's been in
+ * view), our name looked for; `again`: drawn and looked for again until `ms`
+ * is up. `unsure`: a read of the page failed, so a card not found can't be
+ * taken as absent.
+ */
+async function findCard(page: Page, name: string, ms: number, again: boolean): Promise<{ cards: boolean; state: CardSeen | null; unsure: boolean }> {
+  const until = Date.now() + ms;
+  const cards = await waitFor<boolean>(page, `${CARDS}.length > 0`, ms, "the job cards", 500).catch(() => false);
+  if (!cards) {
+    // No list at all: an empty account's page, or one that didn't answer.
+    const answered = await page.evaluate<boolean>("true").then(() => true, () => false);
+    return { cards, state: null, unsure: !answered };
+  }
+  let unsure = false;
+  for (;;) {
+    await drawCards(page);
+    let failed = false;
+    const state = await page.evaluate<CardSeen | null>(cardState(name), 15_000).catch(() => ((failed = true), null));
+    if (state !== null) return { cards, state, unsure: false };
+    unsure = failed;
+    if (!again || Date.now() > until) return { cards, state: null, unsure };
+    await Bun.sleep(3000);
+  }
+}
+
 /**
  * One piece through the remover's page: its card if vmake.ai has one already
  * (by name: processing, waiting on Apply, or done), else the file sent
@@ -609,13 +667,20 @@ async function onPage(page: Page, remote: Remote, piece: string | (() => Promise
   if (problem !== null) throw problem;
   const began = Date.now();
   const step = (what: string) => said(`vmake.ai ${name}: ${what} (${Math.round((Date.now() - began) / 1000)} s)`);
-  // The account's job cards come a moment after the page (its task list): looked for a few seconds first.
-  const cards = await waitFor<boolean>(page, `${CARDS}.length > 0`, 8_000, "the job cards", 500).catch(() => false);
-  if (cards) await drawCards(page);
+  // The account's job cards come a moment after the page (its task list): looked for a few seconds first, up to
+  // `timing.lookMs` (drawn again and again) when this name went in before.
+  const sentBefore = hooks.sentBefore?.() === true;
+  const longer = sentBefore || hooks.lookLonger === true;
+  const found = await findCard(page, name, longer ? timing.lookMs : 8_000, longer);
+  const cards = found.cards;
+  // Sent before and not seen: vmake.ai may still have it (a slow list, a page not answering): looked at again later, never sent twice.
+  if (sentBefore && found.state === null) throw new VmakeError(found.unsure ? "vmake.ai's page didn't answer when its card was looked for" : "the piece's card isn't on vmake.ai's list yet", "piece");
+  // Couldn't tell whether a card's there: nothing sent this time.
+  if (found.unsure && found.state === null) throw new VmakeError("vmake.ai's page didn't answer when the job cards were read", "piece");
   // Its card from before. One vmake.ai gave up on ("Download failed… credits returned") is the piece's trouble: it's
   // sent once more, under its next try's name (never this one's, whose dead card the page still shows).
-  const before = cards ? await page.evaluate<{ ready: boolean; percent: number | null; done: boolean; failed: boolean } | null>(cardState(name)).catch(() => null) : null;
-  if (before?.failed === true) throw new VmakeError("vmake.ai failed the piece (its card says so)", "piece");
+  const before = found.state;
+  if (before?.failed === true) throw new Refused("vmake.ai failed the piece (its card says so)", "piece");
   let card = before !== null;
   let credits = false;
   let creditsBefore: string | null = null;
@@ -654,7 +719,7 @@ async function onPage(page: Page, remote: Remote, piece: string | (() => Promise
     }
     credits = (await hooks.sending?.()) ?? false;
     if (credits) creditsBefore = latest.quota?.balance?.toString() ?? (await creditsPill(page));
-    await putPiece(page, remote, typeof piece === "string" ? piece : await piece(), name);
+    await putPiece(page, remote, typeof piece === "string" ? piece : await piece(), name, () => hooks.handed?.());
     step("in the page");
     await acceptSpend(page, name);
     // Our card, when the page makes one: Smart pro on it (a file of 5 minutes or less has it).
@@ -664,16 +729,17 @@ async function onPage(page: Page, remote: Remote, piece: string | (() => Promise
       step("its card");
       await waitFor(page, `(() => { const s = ${cardState(name)}; return !!s && (s.ready || s.percent !== null || s.done || s.failed || /limit|allowance|tomorrow|quota|today|maximum/i.test(s.text)); })()`, 30 * 60_000, "the piece's upload to vmake.ai", 2000);
       const after = await page.evaluate<{ text: string; failed: boolean } | null>(cardState(name)).catch(() => null);
-      const refused = dailyLimit(after?.text ?? "");
+      const refused = dailyLimit(after?.text ?? "", true);
       if (refused !== null) throw refused;
-      if (after?.failed === true) throw new VmakeError(`vmake.ai didn't take the piece: ${after.text.slice(0, 120)}`, "piece");
+      if (after?.failed === true) throw new Refused(`vmake.ai didn't take the piece: ${after.text.slice(0, 120)}`, "piece");
       const state = await page.evaluate<{ smartPro: string | null; ready: boolean } | null>(cardState(name));
       step(`uploaded: ${JSON.stringify(state)}`);
-      if (state?.smartPro == null || /disabled--/u.test(state.smartPro)) throw new VmakeError("vmake.ai doesn't offer Smart pro for the piece", "piece");
+      if (state === null) throw new VmakeError("vmake.ai's card for the piece went away", "piece");
+      if (state.smartPro == null || /disabled--/u.test(state.smartPro)) throw new Refused("vmake.ai doesn't offer Smart pro for the piece", "piece");
       if (state.ready) {
         await smartProOn(page, name, step);
         await apply(page, name, step);
-      } else if (!/active--/u.test(state.smartPro)) throw new VmakeError("vmake.ai began the piece in another mode than Smart pro", "piece");
+      } else if (!/active--/u.test(state.smartPro)) throw new Refused("vmake.ai began the piece in another mode than Smart pro", "piece");
     }
   }
   hooks.begun?.();
@@ -688,7 +754,7 @@ async function onPage(page: Page, remote: Remote, piece: string | (() => Promise
     if (card) {
       const state = await page.evaluate<{ percent: number | null; done: boolean; videos: string[]; text: string } | null>(cardState(name), 15_000).catch(() => null);
       // The card refused for the day (its own words): the account's stop, whatever Edit's count says.
-      const refused = state === null ? null : dailyLimit(state.text);
+      const refused = state === null ? null : dailyLimit(state.text, true);
       if (refused !== null) throw refused;
       if (state !== null && state.percent !== null && state.percent !== last) {
         onProgress((last = state.percent));
@@ -725,7 +791,7 @@ async function onPage(page: Page, remote: Remote, piece: string | (() => Promise
     await acceptSpend(page, name);
     const problem = await accountProblem(page).catch(() => null);
     if (problem !== null) throw problem;
-    if (Date.now() > until) throw new VmakeError("vmake.ai took over two hours on the piece", "piece");
+    if (Date.now() > until) throw new VmakeError(`vmake.ai is still on the piece after two hours${last >= 0 ? ` (${last}%)` : ""}`, "piece");
   }
   await pacing.wait();
   // The full video, as a person downloads it: its address as the download starts, the file fetched by Edit.

@@ -557,8 +557,13 @@ export interface Provider {
   pieceQuality?: { crf: number; rate: number };
   /** The price of sending `seconds` of footage in `files` pieces, as the line says it. */
   price(seconds: number, files: number): string;
-  /** Takes the text out of the piece at `input` into `out`. Throws VmakeError (its `scope` says whose the failure is). */
-  remove(input: string, out: string, seconds: number, signal?: AbortSignal, whole?: { key: string }, begun?: () => void, label?: string): Promise<{ credits: number | null }>;
+  /**
+   * Takes the text out of the piece at `input` into `out`. Throws VmakeError (its `scope` says whose the failure is;
+   * web.Refused: vmake.ai said it won't come back). `look.sentBefore`: this name's file went in before, so it's only
+   * looked for, never sent; `look.longer`: it may have (kept by a build before it was said): looked for as long
+   * first; `look.sent`: called as the file goes in.
+   */
+  remove(input: string, out: string, seconds: number, signal?: AbortSignal, whole?: { key: string }, begun?: () => void, label?: string, look?: { sentBefore: boolean; longer?: boolean; sent: () => void }): Promise<{ credits: number | null }>;
   /** Whether the account can be used, nothing spent. Throws VmakeError. */
   check(): Promise<void>;
   /** Pieces it takes at once (PARALLEL when it doesn't say). */
@@ -597,13 +602,40 @@ interface Kept {
   /** Each run: what it sent and what it spent. */
   runs: { at: number; project: string; provider: ProviderId; seconds: number; pieces: number; failed: number; credits: number | null; estimate: number | null }[];
   /**
-   * Pieces out at Vmake now (by `source|from|to`): the try they went as and
-   * when, so after a restart (an update mid-run) a piece goes under the same
-   * name and its card is picked up, never a file spent twice; gone once it's
-   * back, a try on when it failed (sent once more, under a new name).
+   * Pieces out at Vmake now (by `source|from|to`), so after a restart (an
+   * update mid-run) a piece goes under the same name and its card is picked
+   * up, never a file spent twice; gone only once its result is on the shelf.
    */
-  out?: Record<string, { tries: number; at: number }>;
+  out?: Record<string, Out>;
 }
+
+/**
+ * A piece out at Vmake: the try it goes as (its name on vmake.ai), and
+ * whether its file went into the page (`sent`: from then on it's only looked
+ * for, never sent again under a new name unless vmake.ai says it won't come
+ * back, web.Refused). A look that couldn't tell parks it (`looks` so far,
+ * since when, the next at `next`); `lost`: never shown back after every look,
+ * given up on and blurred (in the projects `covered`), never sent again by
+ * itself.
+ */
+interface Out {
+  tries: number;
+  at: number;
+  /** Missing only in what a build before Nov 18 kept: it may have gone in. */
+  sent?: boolean;
+  looks?: number;
+  since?: number;
+  next?: number;
+  lost?: boolean;
+  covered?: string[];
+}
+
+/**
+ * How long after each look that couldn't tell the piece is looked for again
+ * (5 min, then 10, 20, 40, then hourly: about 5 h in all, past the first
+ * try's two); once they're all used it's given up on (blurred, said).
+ */
+export const looking = { afterMs: [5, 10, 20, 40, 60, 60, 60, 60].map((minutes) => minutes * 60_000) };
 
 const keptFile = (home: string) => join(home, "text-removal.json");
 
@@ -624,18 +656,20 @@ function writeKept(home: string, kept: Kept): void {
   }
 }
 
-/** The try a piece out at Vmake went as (a day at most: its card's gone by then), or null. */
-function outstanding(home: string, key: string): number | null {
+/** A piece out at Vmake (or the try its next go takes), or null. */
+function outstanding(home: string, key: string): Out | null {
   const one = readKept(home).out?.[key];
-  return one === undefined || Date.now() - one.at > 86_400_000 ? null : one.tries;
+  return one === undefined || typeof one.tries !== "number" ? null : one;
 }
 
-function setOutstanding(home: string, key: string, tries: number | null): void {
+function setOutstanding(home: string, key: string, out: Omit<Out, "at"> | null): void {
   const kept = readKept(home);
-  const out = { ...kept.out };
-  if (tries === null) delete out[key];
-  else out[key] = { tries, at: Date.now() };
-  writeKept(home, { ...kept, out });
+  const all = { ...kept.out };
+  if (out === null) {
+    if (all[key] === undefined) return;
+    delete all[key];
+  } else all[key] = { ...out, at: Date.now() };
+  writeKept(home, { ...kept, out: all });
 }
 
 /** The account's refusal standing now, if any (gone once RECHECK_MS has passed; `check` asks again). */
@@ -733,11 +767,13 @@ export function websiteProvider(home: string, browsers: web.Browsers, site = web
       const browser = dollars < 0.5 ? "under $0.50" : `≈ $${dollars.toFixed(2)}`;
       return `${count} ${count === 1 ? "file" : "files"} on your Vmake plan${count > left ? ` (${Math.max(0, left)} today, the rest tomorrow)` : ""}, ${browser} of cloud browser`;
     },
-    async remove(input, out, seconds, _signal, whole, begun, label) {
+    async remove(input, out, seconds, _signal, whole, begun, label, look) {
       // Staged and counted only when the file is sent: a card of it already on vmake.ai (its name from `label`), or
       // a finished result from before that's this piece's, sends nothing.
       const staged: { drop: () => Promise<void> }[] = [];
       let adopted = false;
+      // In vmake.ai's hands since this call (a browser lost after it, and another tried): only looked for from then on.
+      let handed = false;
       try {
         const url = await driver.run(
           async () => {
@@ -750,6 +786,12 @@ export function websiteProvider(home: string, browsers: web.Browsers, site = web
             ...(begun ? { begun } : {}),
             seconds,
             quota: quotaSeen,
+            sentBefore: () => look?.sentBefore === true || handed,
+            ...(look?.longer === true ? { lookLonger: true } : {}),
+            handed: () => {
+              handed = true;
+              look?.sent();
+            },
             // Past the free files the plan's credits pay, and Edit goes on (vmake.ai's own refusal stops it), never past
             // SANITY_FILES a day. Whether this one is past them: the page's own count (by-hand uploads in it), else Edit's.
             sending: async () => {
@@ -1115,14 +1157,23 @@ export interface TextPiece {
   name: string;
   from: number;
   to: number;
-  /** held: Vmake's account can't be used now (said in the line); picked up again once it can. */
-  state: "queued" | "running" | "held" | "check" | "done" | "failed";
-  /** Sends so far (a second one after a piece wasn't clean). */
+  /**
+   * held: Vmake's account can't be used now (said in the line); picked up again once it can. waiting: sent, and
+   * vmake.ai hasn't shown it back yet (a look couldn't tell): looked for again by itself at `lookAt`, never sent again.
+   */
+  state: "queued" | "running" | "held" | "waiting" | "check" | "done" | "failed";
+  /** Its try on vmake.ai (its name there): a new one only after a result wasn't clean or vmake.ai refused it. */
   tries: number;
+  /** Goes it had at Vmake that went wrong or weren't clean (a second, then given up on). */
+  attempts?: number;
+  /** When a piece waiting on vmake.ai is looked for again. */
+  lookAt?: number;
   /** What the automatic look found (their words still read), or why it failed. */
   why?: string;
   /** The strip's media id once laid. */
   strip?: string;
+  /** Given up on because vmake.ai never showed it back (not because it wasn't clean). */
+  lost?: boolean;
 }
 
 const textPieces = new Map<string, Map<string, TextPiece>>();
@@ -1133,18 +1184,18 @@ export function piecesOf(id: string): TextPiece[] {
   return [...(textPieces.get(id)?.values() ?? [])].sort((a, b) => a.media.localeCompare(b.media) || a.from - b.from);
 }
 
-/** Drops `id`'s pieces waiting (or held) that aren't in `keep`. */
+/** Drops `id`'s pieces waiting (queued, held, or waiting on vmake.ai) that aren't in `keep`. */
 function prune(id: string, keep: Set<string>): void {
   const mine = textPieces.get(id);
   if (mine === undefined) return;
-  for (const [key, one] of mine) if ((one.state === "queued" || one.state === "held") && !keep.has(key)) mine.delete(key);
+  for (const [key, one] of mine) if ((one.state === "queued" || one.state === "held" || one.state === "waiting") && !keep.has(key)) mine.delete(key);
 }
 
 function notePiece(id: string, piece: TextPiece): TextPiece {
   let mine = textPieces.get(id);
   if (mine === undefined) textPieces.set(id, (mine = new Map()));
   const was = mine.get(piece.key);
-  const next = { ...piece, tries: Math.max(piece.tries, was?.tries ?? 0) };
+  const next = { ...piece, tries: Math.max(piece.tries, was?.tries ?? 0), attempts: Math.max(piece.attempts ?? 0, was?.attempts ?? 0) };
   mine.set(piece.key, next);
   return next;
 }
@@ -1299,6 +1350,10 @@ export async function status(app: App, id: string): Promise<Status> {
     const count = files.reduce((sum, file) => sum + file.send.length, 0);
     if (count > 0) return { line: `Take their text out of ${minutes(seconds)} of footage: ${provider.price(seconds, count)}`, action: "remove", running: null };
   }
+  const waiting = pieces.filter((one) => one.state === "waiting").length;
+  if (waiting > 0) return { line: `Waiting on vmake.ai for ${waiting === 1 ? "one piece" : `${waiting} pieces`} sent earlier; their text stays blurred there until it's back.`, action: null, running: null };
+  const lost = pieces.filter((one) => one.state === "failed" && one.lost === true).length;
+  if (failed > 0 && lost === failed) return { line: `vmake.ai never gave back ${lost === 1 ? "one piece" : `${lost} pieces`} sent to it; their text stays blurred there.`, action: null, running: null };
   if (failed > 0) return { line: `Vmake couldn't clean ${failed === 1 ? "one piece" : `${failed} pieces`}; their text stays blurred there.`, action: null, running: null };
   // Past the free files the plan's credits pay: said only when they run low.
   const credits = provider.id === "vmake-web" ? (team.quota?.balance ?? null) : null;
@@ -1352,6 +1407,8 @@ export async function settled(id: string): Promise<void> {
 
 /** For tests: nothing remembered. */
 export function reset(): void {
+  for (const one of lookTimers.values()) clearTimeout(one.timer);
+  lookTimers.clear();
   harvested.clear();
   textPieces.clear();
   runs.clear();
@@ -1410,7 +1467,7 @@ export async function stillShows(original: string, cleaned: string, size: [numbe
  * taken out of the project and its kept copy forgotten; sent once more, else
  * given up on, their blur laid back over it and said.
  */
-export async function reject(app: App, id: string, key: string, why: string): Promise<string> {
+export async function reject(app: App, id: string, key: string, why: string, last = false): Promise<string> {
   const piece = textPieces.get(id)?.get(key);
   if (piece === undefined) throw new Error(`no piece ${key}`);
   const live = app.store.get(id);
@@ -1420,13 +1477,19 @@ export async function reject(app: App, id: string, key: string, why: string): Pr
   const kept = (await shelfOf(app).list(source)).filter((one) => Math.abs(one.from - piece.from) < 0.01);
   for (const one of kept) await shelfOf(app).forget(source, one);
   listings.delete(source);
-  const second = piece.tries < 2;
+  // Done again under its next name (after a restart too), never the card whose result this was.
+  const outKey = `${source}|${piece.from}|${piece.to}`;
+  const had = outstanding(app.store.home, outKey);
+  if (!last && had?.sent !== true) setOutstanding(app.store.home, outKey, { tries: Math.max(had?.tries ?? 0, piece.tries + 1), sent: false });
+  // Each go that went wrong or wasn't clean counts: a second, then given up on.
+  const attempts = (piece.attempts ?? 0) + 1;
+  const second = !last && attempts < 2;
   await app.store.update(id, "text removal", (project) => {
     project.media = project.media.filter((one) => !(one.cleans?.media === piece.media && (one.cleans.what ?? "text") === "text" && Math.abs(one.cleans.from - piece.from) < 0.01));
     if (!second) coverAgain(project, media, piece.from, piece.to);
   });
-  notePiece(id, { ...piece, state: second ? "queued" : "failed", why, strip: undefined });
-  diag.warn("removal", `${id}: ${piece.name} ${Math.round(piece.from)}–${Math.round(piece.to)} s not clean (${why}): ${second ? "sent again" : "given up on, blurred"}`);
+  notePiece(id, { ...piece, attempts, state: second ? "queued" : "failed", why, strip: undefined });
+  if (why !== LOST) diag.warn("removal", `${id}: ${piece.name} ${Math.round(piece.from)}–${Math.round(piece.to)} s not clean (${why}): ${second ? "sent again" : "given up on, blurred"}`);
   if (second) await ensure(app, id);
   return second ? "sent to Vmake again" : "given up on: their text there is blurred";
 }
@@ -1449,6 +1512,26 @@ function coverAgain(project: Project, media: Media, from: number, to: number): v
       burned.coverBox(project, clip, media, box, from, to);
     }
   }
+}
+
+/** Why a piece given up on because vmake.ai never showed it back is blurred. */
+const LOST = "vmake.ai never gave it back, though it was looked for again for hours; it wasn't sent again";
+
+/** Each project's next look for its pieces waiting on vmake.ai. */
+const lookTimers = new Map<string, { at: number; timer: ReturnType<typeof setTimeout> }>();
+
+/** Looks again at `id`'s pieces waiting on vmake.ai at `at` (the earliest asked for): they're queued and brought up to date as an edit would. */
+function lookLater(app: App, id: string, at: number): void {
+  const had = lookTimers.get(id);
+  if (had !== undefined && had.at <= at) return;
+  if (had !== undefined) clearTimeout(had.timer);
+  const timer = setTimeout(() => {
+    lookTimers.delete(id);
+    for (const one of piecesOf(id)) if (one.state === "waiting" && (one.lookAt ?? 0) <= Date.now() + 1000) notePiece(id, { ...one, state: "queued" });
+    void schedule.ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: looking again: ${diag.messageOf(error)}`));
+  }, Math.max(0, at - Date.now()));
+  timer.unref?.();
+  lookTimers.set(id, { at, timer });
 }
 
 function start(app: App, id: string, provider: Provider, files: FilePlan[]): void {
@@ -1474,10 +1557,51 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
     const key = pieceKeyOf(file.media.id, from);
     let piece = notePiece(id, { ...textPieces.get(id)!.get(key)!, state: "running" });
     const label = `${file.media.name} ${Math.round(from)}–${Math.round(to)} s`;
+    /** A look that couldn't tell (the piece is vmake.ai's): looked for again later, or, its looks used, given up on. */
+    const park = async (now: Omit<Out, "at">, why: string): Promise<void> => {
+      const outKey = `${file.source}|${from}|${to}`;
+      const looks = (now.looks ?? 0) + 1;
+      const since = now.since ?? Date.now();
+      if (looks > looking.afterMs.length) {
+        setOutstanding(app.store.home, outKey, { ...now, looks, since, lost: true, covered: [id] });
+        diag.warn("removal", `${id}: ${label}: vmake.ai never showed it back in ${Math.round((Date.now() - since) / 60_000)} min (${looks} looks; last: ${why}): given up on, blurred, not sent again`);
+        await reject(app, id, key, LOST, true);
+        piece = notePiece(id, { ...textPieces.get(id)!.get(key)!, state: "failed", why: LOST, lost: true });
+        return;
+      }
+      const next = Date.now() + looking.afterMs[looks - 1]!;
+      setOutstanding(app.store.home, outKey, { ...now, looks, since, next });
+      diag.info("removal", `${id}: ${label}: waiting on vmake.ai (${why}); looked for again in ${Math.round((next - Date.now()) / 60_000)} min under the same name, nothing sent`);
+      piece = notePiece(id, { ...piece, state: "waiting", lookAt: next });
+      lookLater(app, id, next);
+    };
     const dir = join(app.store.cacheDir(), "cleaned", "work");
     fs.mkdirSync(dir, { recursive: true });
     const stem = join(dir, `${id}-${file.media.id}-${Math.round(from * 1000)}`);
+    // Its place among the pieces out at Vmake (on disk: a restart keeps it): by file and seconds.
+    const outKey = `${file.source}|${from}|${to}`;
     try {
+      if (job.cached !== null) {
+        // Kept on the shelf: whatever was out for it is back (a stop between the keep and this let go).
+        setOutstanding(app.store.home, outKey, null);
+      } else {
+        const was = outstanding(app.store.home, outKey);
+        if (was?.lost === true) {
+          // vmake.ai never showed it back after every look: blurred (once a project), never sent again by itself.
+          if (!(was.covered ?? []).includes(id)) {
+            await reject(app, id, key, LOST, true);
+            setOutstanding(app.store.home, outKey, { ...was, covered: [...(was.covered ?? []), id] });
+          }
+          piece = notePiece(id, { ...textPieces.get(id)!.get(key)!, state: "failed", why: LOST, lost: true });
+          return;
+        }
+        if (was?.sent === true && was.next !== undefined && was.next > Date.now()) {
+          // Sent, and the last look couldn't tell: looked for again at its time, nothing sent.
+          piece = notePiece(id, { ...piece, state: "waiting", lookAt: was.next });
+          lookLater(app, id, was.next);
+          return;
+        }
+      }
       const input = await cloudMedia.originalInput(app.store.cacheDir(), file.media);
       if (!stamps.has(file.media.id)) stamps.set(file.media.id, stampOf(app, file.media, input));
       const original = `${stem}.original.mp4`;
@@ -1492,21 +1616,39 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
         // A whole file already on R2 goes from there (a cloud browser fetches it at a datacenter's speed).
         const fileKey = file.media.cloud?.original;
         const whole = fileKey && from <= 0.05 && to >= (file.media.duration ?? 0) - 0.05 && (file.media.cloud?.size ?? Infinity) <= 300_000_000 ? { key: fileKey } : undefined;
-        // Named by its file, seconds and try: asked again (a restart, an update mid-run), its card on vmake.ai is picked
-        // up under the same name, never sent twice: the try it went as is kept on disk while it's out.
-        const outKey = `${file.source}|${from}|${to}`;
+        // Named by its file, seconds and try: asked again (a restart, an update mid-run, a look again), its card on
+        // vmake.ai is looked for under the same name, never sent twice: the try it went as is kept on disk while it's
+        // out, and moves on only once vmake.ai said it won't come back (or its result wasn't clean).
         const was = outstanding(app.store.home, outKey);
-        piece = notePiece(id, { ...piece, tries: Math.max(piece.tries + 1, was ?? 0) });
-        setOutstanding(app.store.home, outKey, piece.tries);
+        piece = notePiece(id, { ...piece, tries: was !== null ? was.tries : piece.tries + 1, lookAt: undefined });
+        const going: Omit<Out, "at"> = was !== null ? { ...was, tries: piece.tries } : { tries: piece.tries, sent: false };
+        setOutstanding(app.store.home, outKey, going);
         let spent: { credits: number | null };
         try {
-          spent = await provider.remove(original, out, to - from, run.stop.signal, whole, begun, `${outKey}|${piece.tries}`);
+          spent = await provider.remove(original, out, to - from, run.stop.signal, whole, begun, `${outKey}|${piece.tries}`, {
+            sentBefore: was?.sent === true,
+            // Kept by a build before it said whether the file went in (an update mid-piece): its card looked for as long first.
+            longer: was !== null && was.sent === undefined,
+            // The file is going into vmake.ai's page: from now on it's only looked for (on disk at once, before the page hears it).
+            sent: () => setOutstanding(app.store.home, outKey, { ...going, sent: true, since: going.since ?? Date.now() }),
+          });
         } catch (error) {
-          // The piece's own trouble (its card gone or failed): the next try goes under a new name. An account's: the same.
-          if (error instanceof VmakeError && error.scope === "piece") setOutstanding(app.store.home, outKey, piece.tries + 1);
+          const now = outstanding(app.store.home, outKey) ?? going;
+          if (error instanceof web.Refused) {
+            // vmake.ai said it won't come back (its card failed, the file refused, the day's limit on its card): the next try goes under a new name.
+            setOutstanding(app.store.home, outKey, { tries: piece.tries + 1, sent: false });
+          } else if (now.sent === true && !(error instanceof VmakeError && error.scope === "account")) {
+            // In vmake.ai's hands and nothing says it's lost (its card not found in time, the page not answering, still
+            // processing, the browser gone): parked under the same name and looked for again later, never sent twice.
+            await park(now, diag.messageOf(error));
+            return;
+          } else if (now.sent !== true && !(error instanceof VmakeError && error.scope === "account")) {
+            // Never went in: nothing on vmake.ai under this name.
+            setOutstanding(app.store.home, outKey, { tries: piece.tries + 1, sent: false });
+          }
+          // The account's trouble: the same name once it can be used (its card, if any, looked for then).
           throw error;
         }
-        setOutstanding(app.store.home, outKey, null);
         sent.seconds += to - from;
         if (spent.credits !== null) {
           sent.credits += spent.credits;
@@ -1514,6 +1656,8 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
         }
         cached = await shelfOf(app).keep(file.source, out, from, to, provider.id);
         listings.delete(file.source);
+        // Only now, its result kept, is it no longer out (a stop before this picks its card up again).
+        setOutstanding(app.store.home, outKey, null);
       }
       const cleaned = await shelfOf(app).bring(file.source, cached);
       const info = await probe(original);

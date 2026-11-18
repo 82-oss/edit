@@ -2375,11 +2375,12 @@ function removalContext(app: App, p: Project): Args {
   const back = textRemoval.piecesOf(p.id).filter((one) => one.state === "check").length + watermarkRemoval.piecesOf(p.id).filter((one) => one.state === "done").length;
   const { done, out } = removalSchedule.progressOf(p.id);
   const failed = pieces.filter((one) => one.state === "failed").length;
+  const waiting = pieces.filter((one) => one.state === "waiting").length;
   return {
     removal: {
       taught: lesson === null ? "Nothing is taught; what was asked for here is being taken out." : removalLesson.summary(lesson),
       ...(asked.length > 0 ? { when_asked: `${asked.join(", ")}: only when someone asks in the chat; then start_removal on what they point to (media, from/to, or whole: true)` } : {}),
-      pieces: `${done} done, ${out} still being done${failed > 0 ? `, ${failed} not clean` : ""}`,
+      pieces: `${done} done, ${out} still being done${waiting > 0 ? `, ${waiting} sent and waiting on vmake.ai (Edit looks again by itself)` : ""}${failed > 0 ? `, ${failed} not clean` : ""}`,
       ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "The person stopped it (the chat's Stop): what ran by itself doesn't now; only what's asked with start_removal (from/to, media, or whole) is taken out." } : {}),
       note:
         (removalLesson.KINDS.some((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "automatic")

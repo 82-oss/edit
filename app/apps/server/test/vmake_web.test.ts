@@ -27,7 +27,8 @@ const seen = { mode: "", bytes: 0, uploads: 0, others: 0 };
 /** `legacy`: a finished card from before named as pieces were (piece-8s.mp4, 8 s long); `existing`: a finished card of this name. */
 /** `cardLimit`: the piece's own card refuses it for the day (as a by-hand upload of the team's could have used the allowance). */
 /** `remain`/`balance`: the account's day as the page's own purchase_config says it; `spend`: a "use credits?" prompt before the job starts. */
-const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, slowMs: 0, noModes: false, legacy: false, existing: "", cardLimit: false, remain: 37, balance: 4110, spend: false };
+/** `failed`: a card of this name vmake.ai gave up on ("Download failed, credits returned"). */
+const site = { signedOut: false, noSmartPro: false, dailyLimit: false, free: false, cards: false, stall: false, slowMs: 0, noModes: false, legacy: false, existing: "", failed: "", cardLimit: false, remain: 37, balance: 4110, spend: false };
 const PIECE = new Uint8Array(3_000_000).map((_, at) => at % 251);
 
 const PAGE = () => `<!doctype html><html><body>
@@ -37,7 +38,7 @@ ${site.noModes ? "" : `<div style="display:none"><ul class="radio--q7"><li class
 <ul class="radio--q7">${["Smart", "Smart pro", "Subtitle", "Watermark", "Passerby"].map((mode, at) => `<li class="item--a ${at === 0 ? "active--z" : ""} ${mode === "Smart pro" && site.noSmartPro ? "disabled--d" : ""}">${mode}</li>`).join("")}</ul>`}
 <span class="ant-upload-btn"><input type="file" name="file" accept=".mp4,.mov"></span>
 <span class="ant-upload-btn"><input type="file" name="file" multiple></span>
-<div id="work">${site.cards ? `<div class="viewport-task-card--o5h" id="other"><span>v3p2.mp4</span> 40% <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul><button>Download</button></div>` : ""}${[site.legacy ? "piece-8s.mp4" : "", site.existing].filter(Boolean).map((name) => `<div class="viewport-task-card--o5h"><span>${name}</span> 00:00.04 / 00:08.00 60% <button onclick="location.href='/result.mp4?full=1'">Download</button></div>`).join("")}</div>
+<div id="work">${site.cards ? `<div class="viewport-task-card--o5h" id="other"><span>v3p2.mp4</span> 40% <ul class="radio--q7"><li class="item--a active--z">Smart</li><li class="item--a disabled--d">Smart pro</li></ul><button>Download</button></div>` : ""}${[site.legacy ? "piece-8s.mp4" : "", site.existing].filter(Boolean).map((name) => `<div class="viewport-task-card--o5h"><span>${name}</span> 00:00.04 / 00:08.00 60% <button onclick="location.href='/result.mp4?full=1'">Download</button></div>`).join("")}${site.failed ? `<div class="viewport-task-card--o5h"><span>${site.failed}</span> 00:00.00 / 00:08.00 Download failed, credits returned <button disabled>Download</button></div>` : ""}</div>
 <script>
 fetch('/vm/tool/purchase_config.json').then((r) => r.text());
 document.getElementById('other')?.addEventListener('click', () => fetch('/record-other', { method: 'POST' }));
@@ -292,6 +293,45 @@ test.skipIf(CHROME === undefined)("a piece's own card already on vmake.ai is pic
     site.cards = false;
     site.legacy = false;
     site.existing = "";
+    await session.stop();
+  }
+}, 90_000);
+
+test.skipIf(CHROME === undefined)("a piece that went in before is only looked for: its card not on the list is trouble for later, never a new upload; its card failed is vmake.ai's refusal; a fresh one says as it goes in (GPT 6.2 Astra's audit, Nov 18)", async () => {
+  site.cards = true;
+  web.timing.lookMs = 3_000;
+  const session = await browsers.open();
+  const sent: string[] = [];
+  const hooks = (sentBefore: boolean): web.PieceHooks => ({ seconds: 8, sentBefore: () => sentBefore, sending: async () => (sent.push("counted"), false), handed: () => sent.push("handed") });
+  const staging = async () => (sent.push("staged"), piece());
+  const at = `http://localhost:${vmake.port}`;
+  try {
+    const uploads = seen.uploads;
+    // Sent before, nowhere on the list (looked for a while): not lost, not refused, nothing sent.
+    let page = await session.remote.tab();
+    const missing = await web.removeOnPage(page, session.remote, staging, web.pieceName(8, "drive:abc|0|8|1"), at, hooks(true)).catch((thrown: unknown) => thrown);
+    page.close();
+    expect(missing).toBeInstanceOf(VmakeError);
+    expect(missing).not.toBeInstanceOf(web.Refused);
+    expect([sent, seen.uploads - uploads]).toEqual([[], 0]);
+    // Its card failed (credits returned): vmake.ai's own word that it won't come back.
+    const name = web.pieceName(8, "drive:abc|0|8|2");
+    site.failed = name;
+    page = await session.remote.tab();
+    const failed = await web.removeOnPage(page, session.remote, staging, name, at, hooks(true)).catch((thrown: unknown) => thrown);
+    page.close();
+    expect(failed).toBeInstanceOf(web.Refused);
+    expect([sent, seen.uploads - uploads]).toEqual([[], 0]);
+    site.failed = "";
+    // A fresh piece: counted, staged, and said to be in vmake.ai's hands as it goes into the page.
+    page = await session.remote.tab();
+    expect(await web.removeOnPage(page, session.remote, staging, web.pieceName(8, "drive:abc|0|8|3"), at, hooks(false))).toBe(`${at}/result.mp4?full=1`);
+    page.close();
+    expect([sent, seen.uploads - uploads]).toEqual([["counted", "staged", "handed"], 1]);
+  } finally {
+    site.cards = false;
+    site.failed = "";
+    web.timing.lookMs = 60_000;
     await session.stop();
   }
 }, 90_000);

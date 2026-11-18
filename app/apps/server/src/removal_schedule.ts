@@ -330,7 +330,7 @@ export interface PieceRow {
   name: string;
   from: number;
   to: number;
-  /** queued, running, held (the account), check (back, waiting for the agent's look), done, none (no mark there), failed (given up or done again). */
+  /** queued, running, held (the account), waiting (sent, not back from vmake.ai yet), check (back, waiting for the agent's look), done, none (no mark there), failed (given up or done again). */
   state: string;
   why?: string;
 }
@@ -427,6 +427,7 @@ export function wakeText(rows: PieceRow[]): string {
   const cleaned = rows.filter((row) => row.state === "done" || row.state === "check");
   const left = rows.filter((row) => row.state === "failed");
   const held = rows.filter((row) => row.state === "held");
+  const waiting = rows.filter((row) => row.state === "waiting");
   // Its first line is what the chat shows as Edit's event: "Their text and watermarks are out of the footage (24 pieces, 1 blurred)".
   const what = whatOf(rows);
   const blurred = left.filter((row) => row.what === "text").length;
@@ -437,6 +438,7 @@ export function wakeText(rows: PieceRow[]): string {
     (cleaned.length > 0 ? `Cleaned:\n${byFile(cleaned.slice(0, 60))}\n\n` : "") +
     (left.length > 0 ? `Not clean, and why:\n${byFile(left.slice(0, 30), true)}\n\n` : "") +
     (held.length > 0 ? `${held.length} piece${held.length === 1 ? " waits" : "s wait"} for the Vmake account (the line at the top of the editor says why); they go once it can be used, their blur on until then.\n\n` : "") +
+    (waiting.length > 0 ? `${waiting.length} piece${waiting.length === 1 ? " was" : "s were"} sent and vmake.ai hasn't given ${waiting.length === 1 ? "it" : "them"} back yet; Edit looks again by itself (never sending ${waiting.length === 1 ? "it" : "them"} twice), their blur on until then.\n\n` : "") +
     "Now lay OUR subtitles, and the intro's titles and captions, wherever they're missing over the cleaned footage (add_subtitles with missing_only; the intro's as its lesson says), and look at your work (check_removal for any piece you haven't seen; a frame of ours over a cleaned stretch). " +
     "Only then tell the person in one plain message: what was cleaned, what was blurred or left and why, and that our subtitles are on. If there's nothing to add, just say what was cleaned."
   );
