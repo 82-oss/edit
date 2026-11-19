@@ -534,3 +534,17 @@ test("work waiting for room starts again only once there's room for what it need
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a wait due sooner than the table's next look goes when it's due, not at the next 30-second look", async () => {
+  const dir = home();
+  try {
+    const started: string[] = [];
+    jobs.useResumers(dir, { case: (job) => void started.push(job.key) });
+    const key = jobs.begin(dir, "case", "p-soon", {}, "", "downloading");
+    jobs.settle(dir, key, "waiting", { retry_at: Date.now() + 200 });
+    await Bun.sleep(1000);
+    expect(started).toEqual([key]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

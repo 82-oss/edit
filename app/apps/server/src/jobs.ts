@@ -284,6 +284,7 @@ export function settle(home: string | null, key: string, state: "done" | "failed
     if (job === undefined) return false;
     settled(job, state, fields);
   });
+  if (state === "waiting" && fields.retry_at !== undefined) wakeAt(home, fields.retry_at);
 }
 
 function settled(job: Job, state: "done" | "failed" | "waiting", fields: Settled): void {
@@ -322,6 +323,7 @@ export function wait(home: string | null, key: string, error: unknown, step?: st
       if (job === undefined) return false;
       const at = postpone(job, error);
       if (step !== undefined && job.state === "waiting") job.step = step;
+      if (at !== null) wakeAt(home, at);
       return at;
     }) || null
   );
@@ -664,6 +666,27 @@ export function wakePassing(home: string, why: string): string[] {
 
 /** How often the waiting jobs are looked at (a quota's 30 min, an export's end). */
 export const WAKE_MS = { value: 30_000 };
+
+/** The soonest try a timer is set for, by data folder. */
+const soonest = new Map<string, { at: number; timer: ReturnType<typeof setTimeout> }>();
+
+/**
+ * A wait falls due sooner than the table's next look: a timer for it, so it goes when it's due, not up to a look
+ * later (bad-day wifi-drop-editor-import, Nov 19: a file that failed as the line came back waited 26 s for the tick).
+ */
+function wakeAt(home: string, at: number): void {
+  const wait = at - nowMs();
+  if (wait >= WAKE_MS.value || !registered.has(home)) return;
+  const set = soonest.get(home);
+  if (set !== undefined && set.at <= at) return;
+  if (set !== undefined) clearTimeout(set.timer);
+  const timer = setTimeout(() => {
+    soonest.delete(home);
+    void wake(home).catch((error: unknown) => diag.warn("jobs", `waking waiting jobs: ${diag.messageOf(error)}`));
+  }, Math.max(wait, 0) + 50);
+  timer.unref?.();
+  soonest.set(home, { at, timer });
+}
 const waking = new Map<string, ReturnType<typeof setInterval>>();
 
 /** What waking waits for first, by data folder: the sign-in's renewal after the machine woke (serve.ts). */
