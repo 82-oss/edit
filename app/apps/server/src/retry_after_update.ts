@@ -29,6 +29,7 @@ import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as diag from "./diag.ts";
+import * as failureRules from "./failure.ts";
 import { chunkFolders, failedExports, type ExportFailure } from "./exports.ts";
 import { writeAtomic } from "./files.ts";
 import * as jobs from "./jobs.ts";
@@ -115,11 +116,18 @@ export function noteBuild(app: App, build = BUILD): Item[] {
 export interface Actions {
   share(app: App, item: Item): Promise<void>;
   export(app: App, failure: ExportFailure): Promise<void>;
+  /** A share whose export is made, carried on from its failed step (reviews.retryShare). */
+  carryOnShare?(app: App, item: Item): Promise<void>;
 }
 
 const real: Actions = {
   // Ends in a failure said on the page and `unshared` set again, never thrown (reviews.shareFixes).
   share: (app, item) => reviews.shareFixes(app, item.project, null, item.name, NOTE),
+  carryOnShare: async (app, item) => {
+    const run = reviews.retryShare(app, item.project);
+    if (run === null) throw new Error("its share can't be carried on from its step");
+    await run.then(() => undefined);
+  },
   // Queued like any export; the next retry waits for it to end (the Mac isn't idle meanwhile).
   export: async (app, failure) => {
     if (app.store.get(failure.project) === null) throw new Error(`the project isn't on ${THIS_MACHINE}`);
@@ -161,6 +169,14 @@ async function skipped(app: App, item: Item): Promise<string | null> {
   return null;
 }
 
+/** The project's chunk cache gone, so its next export renders fresh. */
+function freshChunks(app: App, project: string): void {
+  for (const folder of chunkFolders(app.store.cacheDir(), project)) fs.rmSync(folder, { recursive: true, force: true });
+}
+
+/** What an export's failure surely was (failure.ts), or null when nothing recognises it (taken as the render's own). */
+const failureKind = (error: string): failureRules.Kind | null => failureRules.surely(error);
+
 let stepping = false;
 
 /**
@@ -183,14 +199,26 @@ export async function step(app: App, actions: Actions = real): Promise<string | 
       diag.info("update", `${item.name}: not tried again after the update: ${why}`);
       return `skipped: ${why}`;
     }
-    // Rendered fresh, nothing copied out of the export before.
-    for (const folder of chunkFolders(app.store.cacheDir(), item.project)) fs.rmSync(folder, { recursive: true, force: true });
     if (item.kind === "share") {
+      // Its export made and only what came after failed (the review copy, the upload, the publish): it goes on from
+      // that step with the export it has, nothing rendered again (honest council change 7h, Nov 19: the chunks were
+      // deleted before every retry, so a share that failed at its upload rendered all of it again).
+      const job = jobs.get(home, key);
+      if (job !== undefined && (job.args as { path?: unknown }).path !== undefined && actions.carryOnShare !== undefined) {
+        diag.info("update", `${item.name}: ${NOTE}: sharing from its ${job.step ?? "last"} step, with the export it has`);
+        await actions.carryOnShare(app, item);
+        return "shared from its step";
+      }
+      freshChunks(app, item.project);
       diag.info("update", `${item.name}: ${NOTE}: sharing the fixes an earlier share failed on`);
       await actions.share(app, item);
       return "shared";
     }
     const failure = failedExports(home)[item.project]!;
+    // Rendered fresh only when the render itself failed (a copy out of an export that came out wrong fails the same way
+    // every time: JJ's, Nov 2); one stopped by the line, the disk or a restart keeps what it rendered.
+    const kind = failureKind(failure.error);
+    if (kind === null || kind === "broken") freshChunks(app, item.project);
     diag.info("update", `${item.name}: ${NOTE}: exporting it again as before (it failed on ${failure.build}: ${failure.error})`);
     await actions.export(app, failure);
     return "exported";

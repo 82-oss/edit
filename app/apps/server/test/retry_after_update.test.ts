@@ -101,6 +101,30 @@ test("a new build tries again, once and one at a time, the share that failed aft
   }
 });
 
+test("what failed only after its render keeps what it rendered: a share whose export was made goes on from its step, an export stopped by the line exports again from its chunks", async () => {
+  const { app, home, mom, cops, cleanup } = setUp("retry-keeps-chunks", "nightly-47");
+  try {
+    // Mom's share failed at its upload, its export made; Cops' export failed on the relay, not on its picture.
+    jobs.settle(home, jobs.begin(home, "share", mom, { id: "unshared", fixes: { reviewId: null, next: 2 }, path: "/out/mom.mp4" }, "", "uploading"), "failed", { error: "R2 part 813 failed" });
+    jobs.settle(home, jobs.begin(home, "export", cops, failure(cops) as unknown as Record<string, unknown>), "failed", { error: "could not reach Edit's relay: The socket connection was closed unexpectedly", build: "nightly-47" });
+    retry.noteBuild(app, "nightly-48");
+    for (const project of [mom, cops]) {
+      fs.mkdirSync(chunkFolder(app.store.cacheDir(), project), { recursive: true });
+      fs.writeFileSync(`${chunkFolder(app.store.cacheDir(), project)}/manifest-v1.json`, "{}");
+    }
+    const { done, actions } = recorder();
+    actions.carryOnShare = async (_app, item) => void done.push(`carry on ${item.project}`);
+    expect(await retry.step(app, actions)).toBe("shared from its step");
+    expect(done).toEqual([`carry on ${mom}`]);
+    expect(fs.existsSync(chunkFolder(app.store.cacheDir(), mom))).toBe(true);
+    expect(failedExports(home)[cops]?.error).toContain("could not reach Edit's relay");
+    expect(await retry.step(app, actions)).toBe("exported");
+    expect(fs.existsSync(chunkFolder(app.store.cacheDir(), cops))).toBe(true);
+  } finally {
+    cleanup();
+  }
+});
+
 test("the build that ran before was never noted (older builds didn't): it counts as new", () => {
   const { app, cleanup } = setUp("retry-first-noted", null);
   try {
