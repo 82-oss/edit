@@ -93,7 +93,32 @@ export function parse(bytes: Uint8Array, total: number): Parsed {
   return at >= total ? { none: "no index" } : { need: at + 16 };
 }
 
+/**
+ * The index in a `moov` box (`bytes`: the box, its header first), wherever in its file it was: an original whose index
+ * is at its end too (keyframe_index.ts reads it there). A string says why there's none.
+ */
+export function fromMoov(bytes: Uint8Array): Mp4Index | string {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  try {
+    const [box] = boxes(view, 0, bytes.length);
+    if (box === undefined || box.type !== "moov") return "no index";
+    return moov(view, box);
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+}
+
+/** When each keyframe of the first picture track is shown (seconds, ascending); [] with no picture. */
+export function keyframes(index: Mp4Index): number[] {
+  const video = index.tracks.find((track) => track.kind === "video");
+  if (video === undefined) return [];
+  const times = video.sync === null ? [...video.start] : [...video.sync].map((n) => video.start[n]!);
+  return times.sort((a, b) => a - b);
+}
+
 function moov(view: DataView, box: Box): Mp4Index {
+  // Fragmented: its samples are in the fragments after it, not here.
+  if (child(view, box, "mvex") !== undefined) throw new Error("its samples are in fragments");
   const mvhd = child(view, box, "mvhd");
   const movieScale = mvhd === undefined ? 0 : view.getUint32(mvhd.body + (view.getUint8(mvhd.body) === 1 ? 20 : 12));
   const tracks: Track[] = [];

@@ -42,3 +42,21 @@ test("cut refuses and removes an excerpt that comes out wrong", async () => {
   expect((failed as Error).message).toContain("came out wrong");
   expect(fs.existsSync(wrong)).toBe(false);
 });
+
+test("copied picture running on by its B-frames' reorder delay is the stretch asked, not an excerpt come out wrong", async () => {
+  // Nov 18, JJ's Axon bodycam: a 0.6 s reorder delay, its 29.2 s excerpt read 29.8 s (every frame sound) and was
+  // refused twice. Here 3 fps with 3 B-frames: two frames, 0.67 s, past the 0.5 s a short excerpt was allowed.
+  const footage = join(dir, "bodycam.mp4");
+  await tools.run([
+    tools.ffmpeg(), "-v", "error", "-y",
+    "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=3:duration=60",
+    "-f", "lavfi", "-i", "sine=frequency=300:sample_rate=48000:duration=60",
+    "-c:v", "libx264", "-preset", "ultrafast", "-g", "30", "-bf", "3", "-c:a", "aac", "-shortest", footage,
+  ]);
+  const excerpt = join(dir, "bodycam 10-22.mp4");
+  await cut(footage, 10, 22, excerpt);
+  expect(fs.existsSync(excerpt)).toBe(true);
+  // Run on, as FFmpeg cuts it, yet asked of it, it passes; a sound shorter than asked still doesn't.
+  expect(await excerptProblem(footage, 10, 22, excerpt)).toBeNull();
+  expect(await excerptProblem(footage, 10, 30, excerpt)).toMatch(/not 20\.0 s/);
+});

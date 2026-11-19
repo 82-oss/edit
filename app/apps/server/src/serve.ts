@@ -574,6 +574,12 @@ async function resumeJobs(app: App): Promise<void> {
     if (live === null) throw new jobs.Gone("the project is gone");
     return live.project;
   };
+  // Imports an older build left asking the person about files this one tries again by itself: woken first.
+  try {
+    seams.script.wakeWhatPasses(app.store.home);
+  } catch (error) {
+    diag.warn("jobs", `looking at imports waiting for the person: ${diag.messageOf(error)}`);
+  }
   void jobs.resume(app.store.home, {
     case: (job) => {
       project(job.project);

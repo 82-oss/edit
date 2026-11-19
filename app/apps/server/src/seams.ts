@@ -375,6 +375,7 @@ export interface ScriptSeam {
   start(app: App, projectId: string, recut: boolean): Promise<void> | null;
   /** Carries an import on from what its job kept (the job table's resumer, Retry, a remote resume, unstick): what it did. */
   carryOn(app: App, id: string): "started" | "working" | "finished" | "nothing";
+  wakeWhatPasses(home: string): string[];
   summary(parsed: Parsed): Json;
   unfinished(project: Project): boolean;
   /** `/api/scripts/preview`, `/api/projects/{id}/script`, `/api/projects/{id}/script/job`. */

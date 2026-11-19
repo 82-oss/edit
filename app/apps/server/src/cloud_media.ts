@@ -1415,21 +1415,77 @@ export async function driveExcerpts(
   const out: Excerpt[] = new Array(spans.length);
   let next = 0;
   let done = 0;
+  // Where the excerpts are cut from: the cloud's address, or, once a cut there couldn't be made (`cutsBetterHere`),
+  // the original downloaded here whole, for this excerpt and every one after: a file that's there and reads is never
+  // handed to the person for how the cloud serves it.
+  let source = url;
+  let here: Promise<string> | null = null;
+  const one = async (index: number, from: string) => {
+    const [at, to] = spans[index]!;
+    const start = await scriptParts.keyframeBefore(from, at);
+    const made = await diag.timeOnAsync("cloud", "cloud: excerpt", `${original.name} ${scriptParts.clock(start)}–${scriptParts.clock(to)}`, () =>
+      excerptMedia(cache, original, from, start, to, stem, ext),
+    );
+    out[index] = { path: made.path, from: start, to, cloud: made };
+  };
   onCut(0, spans.length);
   const worker = async () => {
     while (next < spans.length) {
       const index = next++;
-      const [from, to] = spans[index]!;
-      const start = await scriptParts.keyframeBefore(url, from);
-      const made = await diag.timeOnAsync("cloud", "cloud: excerpt", `${original.name} ${scriptParts.clock(start)}–${scriptParts.clock(to)}`, () =>
-        excerptMedia(cache, original, url, start, to, stem, ext),
-      );
-      out[index] = { path: made.path, from: start, to, cloud: made };
+      const from = source;
+      try {
+        await one(index, from);
+      } catch (error) {
+        if (isBug(error) || from !== url || input !== null || !cutsBetterHere(error)) throw error;
+        if (here === null) {
+          diag.warn("cloud", `${original.name}: ${scrub(diag.messageOf(error)).replace(/\.$/u, "")}; its excerpts are cut from a copy downloaded here`);
+          here = wholeHere(cache, original);
+        }
+        let local: string;
+        try {
+          local = await here;
+        } catch (failed) {
+          if (isBug(failed)) throw failed;
+          diag.warn("cloud", `${original.name}: downloading it here to cut its excerpts: ${scrub(diag.messageOf(failed))}`);
+          // What went wrong in the cloud is what's said (and tried again by itself).
+          throw error;
+        }
+        source = local;
+        await one(index, local);
+      }
       onCut(++done, spans.length);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(EXCERPTS_AT_ONCE, spans.length) }, worker));
+  try {
+    await Promise.all(Array.from({ length: Math.min(EXCERPTS_AT_ONCE, spans.length) }, worker));
+  } finally {
+    const copy = here === null ? null : await (here as Promise<string>).catch(() => null);
+    if (copy !== null) fs.rmSync(copy, { force: true });
+  }
   return out;
+}
+
+/**
+ * Whether an excerpt the cloud's address couldn't give is cut from the
+ * original downloaded here instead: its keyframe or its cut past their time
+ * (a slow line reading a file whose index is at its end), or the cut not the
+ * stretch asked (FFmpeg reading it over the network). A dropped connection is
+ * tried again as it is, and a file that's gone is the person's.
+ */
+export function cutsBetterHere(error: unknown): boolean {
+  if (error instanceof steps.StepTimedOut) return !error.shared;
+  return /came out wrong|Couldn't cut an excerpt/u.test(diag.messageOf(error));
+}
+
+/** Drive file `original` downloaded whole into the scratch folder (resuming a partial a stopped try left), when there's room. */
+async function wholeHere(cache: string, original: Original): Promise<string> {
+  const dir = scratchDir(cache);
+  if (!storage.roomFor(dir, original.size)) {
+    throw new Error(`There isn't room on ${THIS_MACHINE} for ${original.name} (${(original.size / 1e9).toFixed(1)} GB) to cut its excerpts here.`);
+  }
+  const dest = join(dir, `whole-${original.key.split("/").slice(-2).join("-")}`);
+  await diag.timeOnAsync("cloud", "cloud: original here to cut", original.key, () => cloud.download(original.key, dest));
+  return dest;
 }
 
 /** Excerpts of one file made at once. */

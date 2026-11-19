@@ -1236,3 +1236,62 @@ test("a long video's pieces come down behind the viewer for a project Edit.app's
     cleanup();
   }
 });
+
+// Nov 18–19, JJ's Axon bodycam (its index after 6.3 GB of footage): its excerpt's keyframe took over two minutes to
+// find over the cloud's address, and a cut came out "wrong", so the file was handed to him as one that couldn't be
+// downloaded. A cut the cloud's address can't give is made from the original downloaded here whole, once.
+test("an excerpt the cloud's address can't cut is cut from the original downloaded here, its keyframe from the index", async () => {
+  const fixture = home("cloud-cut-here");
+  const { store, cleanup } = fixture;
+  const keyframes = await import("../src/keyframe_index.ts");
+  const tools = await import("../src/tools.ts");
+  keyframes.forget();
+  try {
+    // 5 minutes, a keyframe every 10 s, B-frames, the index at the end (FFmpeg's own way, as the bodycam's).
+    const file = `${fixture.dir}/MartyBlank.mp4`;
+    await tools.run([
+      tools.ffmpeg(), "-v", "error", "-y",
+      "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=5:duration=300",
+      "-f", "lavfi", "-i", "sine=frequency=300:sample_rate=48000:duration=300",
+      "-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-keyint_min", "50", "-sc_threshold", "0", "-bf", "3", "-c:a", "aac", "-shortest", file,
+    ]);
+    const bytes = new Uint8Array(fs.readFileSync(file));
+    const key = "edit/originals/drive/MartyFile1/MartyBlank.mp4";
+    mock.cloud.put(key, bytes);
+    const raw = createStub();
+    raw.init({ home: fixture.home, cacheDir: `${fixture.home}/cache`, ffmpeg: "ffmpeg", ffprobe: "ffprobe", log: () => {} });
+    raw.probe = async () => ({ ...VIDEO, duration: 300 });
+    raw.makeCloudProxy = async (source: string, _probe: Probe, out: string) => void fs.copyFileSync(source, out);
+    useNative(wrap(raw));
+    // The cloud's address cuts it wrong, as it did for JJ; a file here cuts as FFmpeg does.
+    const real = cloudMedia.scriptParts.cut;
+    const fromWhere: string[] = [];
+    const cut = spyOn(cloudMedia.scriptParts, "cut").mockImplementation(async (source, start, to, out) => {
+      fromWhere.push(source.startsWith("http") ? "cloud" : "here");
+      if (source.startsWith("http")) throw new Error("The excerpt cut from the footage came out wrong (it runs 29.8 s, not 29.2 s).");
+      return real(source, start, to, out);
+    });
+    try {
+      const original = { file: "MartyFile1", source: "drive:MartyFile1", key, name: "MartyBlank.mp4", size: bytes.length };
+      // Two stretches (22–27 s and 250–252 s, each with its 10 s handles): a sixth of the file, cut as excerpts.
+      const made = await cloudMedia.driveExcerpts(store.cacheDir(), original, [[22, 27], [250, 252]]);
+      // Each starts on its keyframe (from the index), the first tried in the cloud, every cut after it made here.
+      expect(made.map((one) => [one.from, one.to])).toEqual([[10, 37], [240, 262]]);
+      expect(fromWhere[0]).toBe("cloud");
+      expect(fromWhere.filter((where) => where === "here")).toHaveLength(2);
+      for (const one of made) expect(mock.cloud.objects.has(one.cloud!.cloud!.original)).toBe(true);
+      expect(made[0]!.cloud!.cloud!.source).toBe("drive:MartyFile1#10000-37000");
+      // The copy here is gone once they're cut.
+      expect(fs.readdirSync(cloudMedia.scratchDir(store.cacheDir()))).toEqual([]);
+      // A dropped connection isn't a reason to download a file whole; a file that's gone is the person's.
+      expect(cloudMedia.cutsBetterHere(new Error("could not reach Edit's relay: The socket connection was closed unexpectedly"))).toBe(false);
+      expect(cloudMedia.cutsBetterHere(new steps.StepTimedOut("Finding the excerpt's keyframe", 120_000, false))).toBe(true);
+      expect(cloudMedia.cutsBetterHere(new steps.StepTimedOut("Cutting an excerpt", 600_000, true))).toBe(false);
+    } finally {
+      cut.mockRestore();
+    }
+  } finally {
+    keyframes.forget();
+    cleanup();
+  }
+});

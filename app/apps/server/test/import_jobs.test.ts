@@ -15,7 +15,7 @@ import { Processor } from "../src/media.ts";
 import type { MediaStatus, Probe, ScriptJob } from "../src/model.ts";
 import * as relay from "../src/relay.ts";
 import { waitingByItself } from "../src/remote_actions.ts";
-import { carryOn, Jobs, skipFootage, start, timing } from "../src/script.ts";
+import { carryOn, Jobs, skipFootage, start, timing, wakeWhatPasses } from "../src/script.ts";
 import * as seams from "../src/seams.ts";
 import type { Excerpt } from "../src/seams.ts";
 import { fixtureHome, type Fixture } from "./helpers/home.ts";
@@ -475,6 +475,48 @@ test("ElevenLabs out of credit: the voice-over waits for it, the import kept wai
     expect(done.state).toBe("done");
     expect(voice).toHaveBeenCalledTimes(2);
     expect(voice.mock.calls[1]).toEqual([fixture.app, id, true]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// Nov 19: nightly-89 handed JJ's Scissors Attack import to him ("Waiting for you: one file couldn't be downloaded",
+// "Finding the excerpt's keyframe took more than 2 min and was stopped"). The build after it wakes such an import as it
+// starts, to carry on by itself; one over a file that's really gone still waits for the person.
+test("an import an older build left waiting for the person over a file that passes is woken at start; a file really gone still waits", () => {
+  const fixture = fixtureHome("import-wake-what-passes");
+  try {
+    const asked = (project: string, error: string) => {
+      const job: ScriptJob = {
+        state: "waiting",
+        error: "1 of 2 footage files couldn't be downloaded",
+        files: [
+          { file: "FILEcase0001", bytes: 10, state: "done" },
+          { file: "FILEcase0002", name: "MartyBlank_202604201718_BWL7148938-1.mp4", bytes: 0, state: "failed", error, why: "person" },
+        ],
+      };
+      const key = jobs.begin(fixture.home, "case", project, { import: job, made: {} });
+      jobs.settle(fixture.home, key, "waiting", { step: "waiting for the person", until: "person" });
+      return key;
+    };
+    const stuck = asked("p-scissors", "Finding the excerpt's keyframe took more than 2 min and was stopped");
+    const wrong = asked("p-wrong", "The excerpt cut from the footage came out wrong (it runs 29.8 s, not 29.2 s).");
+    const gone = asked("p-gone", "This file isn't shared with Edit's Google account, or was deleted, or in the trash.");
+    expect(wakeWhatPasses(fixture.home).sort()).toEqual(["p-scissors", "p-wrong"]);
+    for (const key of [stuck, wrong]) {
+      const job = jobs.get(fixture.home, key)!;
+      expect(job.state).toBe("waiting");
+      expect(job.until).toBeUndefined();
+      expect(job.retry_at).toBeLessThanOrEqual(Date.now());
+      const shown = (job.args as { import: ScriptJob }).import;
+      expect(shown.files[1]).toMatchObject({ state: "waiting", why: "passing" });
+      expect(shown.error).toBeUndefined();
+    }
+    // Due now: the job table starts it at its next look.
+    expect(jobs.dueNow(fixture.home, ["case"]).map((job) => job.project).sort()).toEqual(["p-scissors", "p-wrong"]);
+    expect(jobs.get(fixture.home, gone)).toMatchObject({ state: "waiting", until: "person" });
+    // Started again, nothing more to wake.
+    expect(wakeWhatPasses(fixture.home)).toEqual([]);
   } finally {
     fixture.cleanup();
   }

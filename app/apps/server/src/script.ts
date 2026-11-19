@@ -41,6 +41,7 @@ import { LINK_PREFIX as FINISHED_LINK, reviewCode, reviewOf } from "./finished.t
 import { finishCase, pendingCase } from "./case_insertion.ts";
 import * as durableJobs from "./jobs.ts";
 import * as steps from "./import_steps.ts";
+import * as keyframeIndex from "./keyframe_index.ts";
 import { THIS_MACHINE } from "./machine.ts";
 
 export type { DriveHead, Excerpt, Parsed } from "./seams.ts";
@@ -1485,6 +1486,40 @@ interface CaseArgs {
   made?: Record<string, Kept>;
 }
 
+/**
+ * At start, before the job table carries work on: an import left waiting for
+ * the person only over files this build doesn't ask about (a step past its
+ * time, a cut that came out wrong: `steps.whyOf` now takes them as passing)
+ * waits by itself instead, woken at once, so nobody is asked about a file
+ * that's there and reads. Nov 19: JJ's Scissors Attack import on nightly-89
+ * asked him about MartyBlank_202604201718 ("Finding the excerpt's keyframe
+ * took more than 2 min") with "I have a replacement" and "Go on without it".
+ * Returns the projects woken.
+ */
+export function wakeWhatPasses(home: string): string[] {
+  const woken: string[] = [];
+  for (const durable of durableJobs.list(home, "case")) {
+    if (durable.state !== "waiting" || durable.until !== "person") continue;
+    const kept = (durable.args as CaseArgs).import;
+    if (kept === undefined || !Array.isArray(kept.files)) continue;
+    const asked = kept.files.filter((file) => file.state === "failed");
+    if (asked.length === 0 || asked.some((file) => steps.whyOf(file.error ?? "") === "person")) continue;
+    const job = structuredClone(kept);
+    for (const file of job.files) {
+      if (file.state !== "failed") continue;
+      file.state = "waiting";
+      file.why = "passing";
+      delete file.retry_at;
+    }
+    delete job.error;
+    durableJobs.patch(home, durable.key, { import: job, waiting_on: "passing" });
+    durableJobs.settle(home, durable.key, "waiting", { retry_at: nowMs(), step: "trying again by itself" });
+    diag.info("script", `${durable.project}: its import waited for the person over ${asked.length === 1 ? "a file" : `${asked.length} files`} this build tries again by itself: woken`);
+    woken.push(durable.project);
+  }
+  return woken;
+}
+
 /** How often a file's bytes are written to the job table while only they change (its states are written as they change). */
 const KEEP_EVERY_MS = 1000;
 
@@ -2019,8 +2054,14 @@ export async function durationOf(path: string): Promise<number> {
   return seconds;
 }
 
-/** The last keyframe at or before `time` (an excerpt must start on one to be cut without re-encoding). */
+/**
+ * The last keyframe at or before `time` (an excerpt must start on one to be
+ * cut without re-encoding): from an MP4's or MOV's index, read once a file
+ * (`keyframe_index`), else by ffprobe reading the pictures before it.
+ */
 export async function keyframeBefore(path: string, time: number): Promise<number> {
+  const indexed = await keyframeIndex.keyframeTimes(path);
+  if (indexed !== null) return indexed.findLast((pts) => pts <= time + 1e-6) ?? 0;
   for (const window of [20.0, 120.0, 600.0]) {
     const from = Math.max(time - window, 0);
     let text = "";
@@ -2206,12 +2247,30 @@ export async function excerptProblem(source: string, start: number, to: number, 
   const got = await secondsOf(out);
   if (got === null) return "it can't be read back";
   const leeway = Math.max(0.5, asked * 0.02);
-  if (got > asked + leeway) return `it runs ${got.toFixed(1)} s, not ${asked.toFixed(1)} s`;
+  // Copied picture runs on past the end by its reorder delay: FFmpeg stops at the last frame decoded by then, and with
+  // B-frames frames shown later come with it (Nov 18, JJ's Axon bodycam MartyBlank_202604201718: a 0.6 s delay, its
+  // 29.2 s excerpt read 29.8 s, all 895 frames sound, and was refused as wrong twice; longer ones passed on 2%).
+  if (got > asked + leeway && got > asked + leeway + (await pictureDelay(out))) return `it runs ${got.toFixed(1)} s, not ${asked.toFixed(1)} s`;
   if (got >= asked - leeway) return null;
   // Shorter than asked is right only when the footage itself ends sooner.
   const whole = await secondsOf(source);
   if (whole !== null && whole - start <= got + leeway) return null;
   return `it runs ${got.toFixed(1)} s, not ${asked.toFixed(1)} s`;
+}
+
+/** How far a cut's copied picture is shown after it's decoded (its first frame's pts less its dts), 0 with none. */
+async function pictureDelay(path: string): Promise<number> {
+  try {
+    const output = await runTool(
+      [tools.ffprobe(), "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,dts_time", "-read_intervals", "%+#1", "-of", "csv=p=0", path],
+      steps.LIMITS.probe,
+      "Reading the excerpt's first frame",
+    );
+    const [pts, dts] = trim(output.stdout).split("\n")[0]!.split(",").map((part) => parseF64(trim(part)));
+    return pts !== null && pts !== undefined && dts !== null && dts !== undefined ? Math.max(0, pts - dts) : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /** `durationOf`, null when it can't be read (or reads as nothing). */
