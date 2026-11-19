@@ -44,8 +44,9 @@ test("tool_reference_is_one_short_line_per_tool", () => {
   // import_link (Nov 11: a video linked in the person's message) another, contact_sheet's times (Nov 11: any moments side by side) a few words,
   // set_in_out and set_ranges (Nov 13: in and out points are a stretch marked to export) a few more,
   // add_subtitles' and repack_subtitles' burned_in (Nov 16: footage with its own subtitles burned in) a few more,
-  // find_camera_time (Nov 17: a time on a bodycam's clock as the footage's seconds) one short line.
-  expect(reference.length).toBeLessThan(22_600);
+  // find_camera_time (Nov 17: a time on a bodycam's clock as the footage's seconds) one short line,
+  // start_removal's marks and sections (Nov 18–19: the agent marks where their text is) a few words.
+  expect(reference.length).toBeLessThan(22_700);
 });
 
 test("every tool takes project_id; the instructions list the skills", () => {

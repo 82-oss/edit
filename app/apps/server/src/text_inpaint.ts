@@ -311,8 +311,8 @@ class Worker implements Cleaner {
     const id = `r${++this.next}`;
     const answer = new Promise<Answer>((resolve) => this.waiting.set(id, { resolve }));
     const stdin = this.child!.stdin as import("bun").FileSink;
-    stdin.write(`${JSON.stringify({ id, ffmpeg: tools.ffmpeg(), ...request })}\n`);
-    stdin.flush();
+    void stdin.write(`${JSON.stringify({ id, ffmpeg: tools.ffmpeg(), ...request })}\n`);
+    void stdin.flush();
     const done = await answer;
     this.idle = setTimeout(() => this.stop(), IDLE_MS);
     this.idle.unref?.();
@@ -323,7 +323,7 @@ class Worker implements Cleaner {
     const child = this.child;
     if (child === null) return;
     try {
-      (child.stdin as import("bun").FileSink).end();
+      void (child.stdin as import("bun").FileSink).end();
     } catch {
       child.kill();
     }

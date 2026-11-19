@@ -1088,11 +1088,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(strips.len(), 2);
-        assert!(
-            strips
-                .iter()
-                .all(|(y0, y1)| (y1 - y0) % 64 == 0 && *y1 <= tall)
-        );
+        assert!(strips
+            .iter()
+            .all(|(y0, y1)| (y1 - y0) % 64 == 0 && *y1 <= tall));
         assert!(strips[0].0 <= 400 - 64 && strips[0].1 >= 466 + 64);
         assert!(strips[1].0 <= 900 - 64 && strips[1].1 >= 930 + 64);
         // No place found: nothing to look at.
@@ -1100,8 +1098,8 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_is_as_before_when_its_text_is_where_it_was_with_the_same_pixels_whatever_moves_round_it()
-     {
+    fn a_frame_is_as_before_when_its_text_is_where_it_was_with_the_same_pixels_whatever_moves_round_it(
+    ) {
         let cut = Cut {
             wide: 1920,
             high: 1080,
