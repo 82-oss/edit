@@ -1014,7 +1014,7 @@ async function fetchYoutube(app: App, dir: string, script: Script): Promise<Fetc
     say(script, "Making the preview.", "downloading", 15);
     try {
       await encodePiece(dir, inCloud.here ?? inCloud.url, jobs.named(script.id, script.title), inCloud.url);
-      return { joined: await joinPreview(dir, script, [[script.title, inCloud.url, script.sourceUrl]], "video") };
+      return { joined: await joinPreview(dir, script, [{ title: script.title, path: inCloud.url, url: script.sourceUrl }], "video") };
     } finally {
       streamed.done(dir, inCloud);
     }
@@ -1181,6 +1181,8 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
     say(script, wanted.length === 1 ? `Downloading from Google Drive: ${share}.` : `Downloading recordings from Google Drive: ${share} (${finished} of ${wanted.length} done).`, "downloading", 5 + Math.min(Math.floor((bytes * 33) / totalBytes), 33));
   };
   const failed: [number, { id: string; title: string; error: string }][] = [];
+  // What each recording's fetch read of it (its length, picture and sound), handed to the join so it isn't read again.
+  const readOf = new Map<string, media.Streams>();
   await lanes(wanted, DOWNLOADS, async ([index, recording], step) => {
     const began = Date.now();
     // Its piece made already (a run a restart cut off), its copy here is read again if it's kept: nothing comes down.
@@ -1194,6 +1196,7 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
       report();
     }, here).finally(() => coming?.release());
     inCloud[step] = got.inCloud;
+    if (got.streams !== null) readOf.set(recording.id, got.streams);
     pulled[step] = recording.size;
     finished++;
     if (got.problem === null) diag.info("writer", `${jobs.named(script.id, script.title)}: Drive recording ${finished} of ${wanted.length} ready: ${recording.name} in ${Math.round((Date.now() - began) / 1000)} s`);
@@ -1217,7 +1220,7 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
     return "one";
   }
   // Joined, each recording at the length it actually holds. The recordings stay: each is heard from its own file, and they're the full-quality footage Edit cuts from.
-  const items: [string, string, string | null][] = came.map(([[index, recording], cloudUrl]) => [drive.stem(recording.name), cloudUrl ?? parts.driveFile(folder, index, recording), drive.fileLink(recording.id)]);
+  const items: JoinItem[] = came.map(([[index, recording], cloudUrl]) => ({ title: drive.stem(recording.name), path: cloudUrl ?? parts.driveFile(folder, index, recording), url: drive.fileLink(recording.id), id: recording.id, streams: readOf.get(recording.id) ?? null }));
   return { joined: await joinPreview(dir, script, items, "recordings") };
 }
 
@@ -1228,10 +1231,11 @@ async function fetchDrive(dir: string, script: Script): Promise<Fetched> {
  * when it went there. The import's lanes run it for each recording, and
  * missing.ts for one that didn't come in.
  */
-export async function fetchRecording(dir: string, script: Script, folder: string, index: number, recording: drive.Recording, stream: boolean, many: boolean, onBytes: (bytes: number) => void = () => {}, here = false): Promise<{ problem: string | null; inCloud: string | null }> {
+export async function fetchRecording(dir: string, script: Script, folder: string, index: number, recording: drive.Recording, stream: boolean, many: boolean, onBytes: (bytes: number) => void = () => {}, here = false): Promise<{ problem: string | null; inCloud: string | null; streams: media.Streams | null }> {
   const dest = parts.driveFile(folder, index, recording);
   let problem: string | null = null;
   let inCloud: string | null = null;
+  let streams: media.Streams | null = null;
   if (stream && !(await downloaded(dest, recording))) {
     try {
       // `here`: room to keep it on this Mac until it's up, so it comes down first and its piece is made from that copy (streamed.ts).
@@ -1266,6 +1270,7 @@ export async function fetchRecording(dir: string, script: Script, folder: string
         if (!fits(found)) problem = "Couldn't be read as video or audio, so it was dropped.";
         else {
           inCloud = put.url;
+          streams = found;
           await encodePiece(dir, source, label, put.url);
         }
       } finally {
@@ -1297,11 +1302,11 @@ export async function fetchRecording(dir: string, script: Script, folder: string
     if (!fits(found)) {
       fs.rmSync(dest, { force: true });
       problem = "Couldn't be read as video or audio, so it was dropped.";
-    }
+    } else streams = found;
   }
   // Its piece of the preview, while the other recordings still come down; one recording alone is the footage itself.
   if (problem === null && inCloud === null && many) await encodePiece(dir, dest, `${jobs.named(script.id, script.title)} · ${recording.name}`);
-  return { problem, inCloud };
+  return { problem, inCloud, streams };
 }
 
 /**
@@ -1519,21 +1524,53 @@ function importSignal(dir: string): AbortSignal | undefined {
  * (null: it's joined). Pieces encoded while the downloads ran are copied end
  * to end; without them all, the preview is encoded whole.
  */
-async function joinPreview(dir: string, script: Script, items: [string, string, string | null][], what: string): Promise<Build | null> {
+/** One recording or video to join into the preview: its title, file (or cloud address), source link, its id in the case (for one left out), and what was read of it already. */
+export interface JoinItem {
+  title: string;
+  path: string;
+  url: string | null;
+  id?: string;
+  streams?: media.Streams | null;
+}
+
+export async function joinPreview(dir: string, script: Script, given: JoinItem[], what: string): Promise<Build | null> {
   const made: NonNullable<Script["parts"]> = [];
   const toJoin: media.JoinPart[] = [];
+  const items: JoinItem[] = [];
+  const unreadable: { id: string | undefined; title: string; error: string }[] = [];
   let startMs = 0;
-  for (const [title, named, url] of items) {
+  for (const item of given) {
+    const { title, path: named, url } = item;
     // A cloud original still on its way up is read from its copy here (streamed.ts).
     const path = (isUrl(named) ? streamed.localOf(dir, named) : null) ?? named;
-    const found = await media.streams(path).catch(() => {
-      throw new Error(`Could not read ${title}.`);
-    });
-    const held = await media.playableMs(path, found.durationMs);
+    // What fetching it read already is used, not read again (often over the network). One that can't be read now is
+    // left out with why, and tried again by itself: one recording never stops the case (JJ's Mom Of 4 on nightly-90,
+    // "its import stopped (Could not read BenjaminCunningham_…)", the reason hidden).
+    let found: media.Streams;
+    let held: number;
+    try {
+      found = fits(item.streams ?? null) ? item.streams! : await media.streams(path);
+      if (!fits(found)) throw new Error("no length, picture or sound could be read from it");
+      held = await media.playableMs(path, found.durationMs);
+    } catch (error) {
+      const why = diag.scrub(diag.messageOf(error));
+      diag.warn("writer", `${jobs.named(script.id, script.title)}: ${title} couldn't be read for the preview: ${why}`);
+      unreadable.push({ id: item.id, title, error: why });
+      continue;
+    }
     if (held < found.durationMs) note(script, `${title} is cut short: it claims ${clock(found.durationMs)} but holds ${clock(held)}. Edit joined what it holds.`);
     made.push({ title, startMs, durationMs: held, audio: !found.video, ...(held < found.durationMs ? { claimedMs: found.durationMs } : {}), ...(url !== null ? { url } : {}) });
     startMs += held;
     toJoin.push({ path, streams: { ...found, durationMs: held } });
+    items.push(item);
+  }
+  if (unreadable.length > 0) {
+    const first = unreadable[0]!;
+    if (items.length === 0) throw new Error(given.length === 1 ? `${first.title} couldn't be read: ${first.error}` : `None of the ${what} could be read. ${first.title}: ${first.error}`);
+    const lost = unreadable.find((one) => one.id === undefined);
+    if (lost !== undefined) throw new Error(`${lost.title} couldn't be read: ${lost.error}`);
+    // Left out for now with the others that didn't come in, each keeping its tries (missing.ts).
+    stillMissing(dir, script, [...(script.missing ?? []).map((one) => ({ id: one.id, title: one.title, error: one.error })), ...unreadable.map((one) => ({ id: one.id!, title: one.title, error: one.error }))]);
   }
   const proxy = store.proxyPath(dir);
   script.parts = made;
@@ -1545,7 +1582,7 @@ async function joinPreview(dir: string, script: Script, items: [string, string, 
     if (!keepPieces) fs.rmSync(join(dir, "pieces"), { recursive: true, force: true });
     return null;
   }
-  const pieces = items.map(([, path]) => piecePath(dir, path));
+  const pieces = items.map((item) => piecePath(dir, item.path));
   const label = jobs.named(script.id, script.title);
   return async (onPercent, signal) => {
     const partial = making(proxy);
@@ -1672,10 +1709,10 @@ async function fetchCompilation(app: App, dir: string, script: Script): Promise<
     }
   });
   const failed: { id: string; title: string; error: string }[] = [];
-  const items: [string, string, string | null][] = [];
+  const items: JoinItem[] = [];
   wanted.forEach(([index, video], step) => {
     const result = results[step]!;
-    if (typeof result === "string") items.push([video.title, result, video.url]);
+    if (typeof result === "string") items.push({ title: video.title, path: result, url: video.url, id: String(index) });
     else {
       diag.error("writer", `${jobs.named(script.id, script.title)}: video ${index + 1} (${video.title || video.url}) didn't come through: ${result.message}`);
       failed.push({ id: String(index), title: video.title || video.url, error: result.message });

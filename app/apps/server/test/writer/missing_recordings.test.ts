@@ -147,6 +147,38 @@ test.skipIf(ffmpeg === null)("a recording that won't come down is left out for n
   }
 }, 180_000);
 
+test.skipIf(ffmpeg === null)("a recording that can't be read as the preview is joined never stops the case: the rest is joined, it's left out with the real reason and tried again by itself (JJ's Mom Of 4 on nightly-90: \"its import stopped (Could not read BenjaminCunningham_…)\")", async () => {
+  const { app, cleanup } = fixtureHome("missing-unreadable");
+  try {
+    const data = store.dataDir(app.store.home);
+    const id = "0bad-cafe-0001";
+    const dir = store.scriptDir(data, id);
+    const now = Date.now();
+    const script = { id, title: "Unreadable", sourceKind: "drive", sourceUrl: URL_, originalPath: "", status: "processing", stage: "downloading", progress: 5, error: null, durationMs: 0, words: [], clips: [], overview: [], parts: [], notes: [], kind: "interrogation", revision: 1, createdAt: now, updatedAt: now, proxyPath: null } as unknown as Script;
+    const folder = join(dir, "drive");
+    fs.mkdirSync(folder, { recursive: true });
+    const files = [0, 1, 2].map((n) => join(folder, `0${n}.mp4`));
+    fs.writeFileSync(files[0]!, bytes[0]!);
+    // Its copy here gone bad, as a dropped read leaves it: a megabyte of noise.
+    fs.writeFileSync(files[1]!, new Uint8Array(1_000_000).map(() => Math.floor(Math.random() * 256)));
+    fs.writeFileSync(files[2]!, bytes[2]!);
+    store.write(dir, script);
+    const items: imports.JoinItem[] = files.map((path, n) => ({ title: `CH0${n + 1}`, path, url: drive.fileLink(ids[n]!), id: ids[n]! }));
+    await imports.joinPreview(dir, script, items, "recordings");
+    const after = store.read(dir);
+    expect(after.parts?.map((part) => part.title)).toEqual(["CH01", "CH03"]);
+    expect(after.missing?.map((one) => one.id)).toEqual([ids[1]!]);
+    expect(after.missing?.[0]?.error ?? "").not.toBe("");
+    expect(after.missing?.[0]?.error).not.toContain("Could not read");
+    // None readable: it says so, with why.
+    fs.writeFileSync(files[0]!, new Uint8Array(1000));
+    fs.writeFileSync(files[2]!, new Uint8Array(1000));
+    await expect(imports.joinPreview(dir, after, items, "recordings")).rejects.toThrow(/None of the recordings could be read\. CH01: /);
+  } finally {
+    cleanup();
+  }
+});
+
 test.skipIf(ffmpeg === null)("Go on without it leaves the recording out for good, says so to the writer, and the waiting build starts", async () => {
   const { app, cleanup } = fixtureHome("missing-without");
   try {
