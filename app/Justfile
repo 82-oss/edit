@@ -158,6 +158,13 @@ serve-build: web serve-build-bin
 trial-server *args:
     scripts/trial-server.sh {{args}}
 
+# The bad-day tests (scripts/bad-day, final.md section 3): a real Edit from source against stand-ins,
+# through a bad line, frozen and killed on cue, in a sandbox capped at 6 GB with no network of its own.
+# `just bad-day` runs every case, `just bad-day slow-cut` one, `just bad-day --at 7b59f4e2 slow-cut`
+# runs Edit as it was at that commit (exported with git archive into ~/.cache/edit-bad-day).
+bad-day *args:
+    bun scripts/bad-day/run.ts "$@"
+
 serve-build-bin:
     #!/usr/bin/env bash
     set -euo pipefail
