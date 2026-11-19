@@ -354,7 +354,34 @@ export function unshared(home: string, projectId: string): boolean {
 export function carriedOn(home: string, projectId: string): boolean {
   const job = shareJob(home, projectId);
   const args = job?.args as Partial<ShareArgs> | undefined;
-  return job !== undefined && job.state === "failed" && args !== undefined && args.fixes === undefined && args.id !== undefined && (args.export === undefined || (args.path !== undefined && args.path !== null));
+  return (
+    job !== undefined &&
+    job.state === "failed" &&
+    // A failure weeks old is no longer what anyone waits for (Fable's last look, Nov 19).
+    Date.now() - job.updated_ms < CARRY_ON_DAYS * 86_400_000 &&
+    args !== undefined &&
+    args.fixes === undefined &&
+    args.id !== undefined &&
+    (args.export === undefined || (args.path !== undefined && args.path !== null))
+  );
+}
+
+/** How old a failed plain share may be and still be carried on by a new build. */
+const CARRY_ON_DAYS = 7;
+
+/**
+ * Why a plain share carried on by a new build would publish the wrong video, or null: its export is gone, or was made
+ * from an edit that has changed since (or doesn't say which), so a review link would get an old cut by itself.
+ */
+export function carryOnStale(app: App, projectId: string): string | null {
+  const home = app.store.home;
+  const live = app.store.get(projectId);
+  if (live === null) return "the project isn't here";
+  const chosen = shareable(listExports(home, projectId), (shareJob(home, projectId)?.args as Partial<ShareArgs> | undefined)?.path ?? null);
+  if (chosen === undefined) return "its export is gone";
+  if (chosen.timeline === undefined) return "its export doesn't say which edit it was made from";
+  if (chosen.timeline !== timelineHash(live.project)) return "the edit has changed since its export";
+  return null;
 }
 
 /** Every plain share that failed and can be carried on (`carriedOn`). */

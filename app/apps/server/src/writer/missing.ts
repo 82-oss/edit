@@ -153,7 +153,9 @@ export async function tryAgain(id: string, all = false): Promise<void> {
         arrived.push(one.id);
         diag.info("writer", `${jobs.named(id, script.title)}: ${one.title} came in on try ${one.tries + 2}`);
       } catch (error) {
-        const tries = one.tries + 1;
+        // Signed out isn't a try spent on the file: it waits as it was, and signing in wakes it (serve.ts
+        // onSessionChange; Fable's last look, Nov 19).
+        const tries = failure.kindOf(error) === "signin" ? one.tries : one.tries + 1;
         const at = nextAt(tries + 1, error);
         tried.set(one.id, { ...one, tries, error: diag.scrub(diag.messageOf(error)), nextAt: at, ...(failure.waitsByItself(failure.kindOf(error)) ? {} : { asked: true }) });
         diag.warn("writer", `${jobs.named(id, script.title)}: ${one.title} still didn't come in (try ${tries + 1}, ${failure.kindOf(error)}): ${diag.messageOf(error)}; next try at ${new Date(at).toISOString()}`);

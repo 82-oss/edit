@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 
 import { readOnly } from "../src/cloud_projects.ts";
-import { chunkFolder, ExportRegistry, failedExports, type ExportFailure } from "../src/exports.ts";
+import { chunkFolder, ExportRegistry, failedExports, timelineHash, type ExportFailure } from "../src/exports.ts";
 import * as jobs from "../src/jobs.ts";
 import * as reviews from "../src/reviews.ts";
 import * as retry from "../src/retry_after_update.ts";
@@ -125,20 +125,35 @@ test("what failed only after its render keeps what it rendered: a share whose ex
   }
 });
 
-test("a plain share (not Ready for changes) that failed after its export was made is carried on by a new build, once; one still to export isn't", async () => {
+test("a plain share (not Ready for changes) that failed after its export was made is carried on by a new build, once; one still to export, one whose edit changed since and one weeks old aren't", async () => {
   const { app, home, cops, cleanup } = setUp("retry-plain-share", "nightly-47");
   try {
     const exported = app.store.createAs("First Share", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
     const unexported = app.store.createAs("Never Exported", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
-    jobs.settle(home, jobs.begin(home, "share", exported, { id: "first", export: { options: {} }, path: "/out/first.mp4" }, "", "uploading"), "failed", { error: "R2 refused the upload (403)" });
+    const changed = app.store.createAs("Changed Since", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const old = app.store.createAs("Weeks Old", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
+    // Each export's file and record; Changed Since's was made from another edit.
+    const records: Record<string, unknown[]> = {};
+    for (const [project, timeline] of [[exported, timelineHash(app.store.get(exported)!.project)], [changed, "an-older-edit"], [old, timelineHash(app.store.get(old)!.project)]] as const) {
+      const path = `${home}/${project}.mp4`;
+      fs.writeFileSync(path, "video");
+      records[project] = [{ path, whole: true, timeline, bytes: 5 }];
+      jobs.settle(home, jobs.begin(home, "share", project, { id: project, export: { options: {} }, path }, "", "uploading"), "failed", { error: "R2 refused the upload (403)" });
+    }
+    fs.writeFileSync(`${home}/exports.json`, JSON.stringify(records));
+    const rows = JSON.parse(fs.readFileSync(`${home}/jobs.json`, "utf8")) as jobs.Job[];
+    for (const row of rows) if (row.project === old) row.updated_ms = Date.now() - 30 * 86_400_000;
+    fs.writeFileSync(`${home}/jobs.json`, JSON.stringify(rows));
     jobs.settle(home, jobs.begin(home, "share", unexported, { id: "second", export: { options: {} } }, "", "exporting"), "failed", { error: "Native encoder stalled" });
     const queued = retry.noteBuild(app, "nightly-48").map((one) => `${one.kind} ${one.project}`);
     expect(queued).toContain(`share ${exported}`);
     expect(queued).not.toContain(`share ${unexported}`);
+    expect(queued).not.toContain(`share ${old}`);
     const { done, actions } = recorder();
     actions.carryOnShare = async (_app, item) => void done.push(`carry on ${item.project}`);
     while ((await retry.step(app, actions)) !== null);
     expect(done).toContain(`carry on ${exported}`);
+    expect(done).not.toContain(`carry on ${changed}`);
     expect(done).toContain(`export ${cops} /out/${cops}.mp4`);
     expect(done.filter((one) => one.startsWith("share "))).toHaveLength(1);
     expect(retry.noteBuild(app, "nightly-48")).toEqual([]);

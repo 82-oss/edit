@@ -426,20 +426,68 @@ test("two pieces of work that waited on one dropped line both go when it's back:
   }
 });
 
-test("work that got further between blips waits a minute after each, not longer every time", () => {
+test("work that got further between blips waits a minute after each; work that only reaches the same step again waits longer each time (Fable's last look)", () => {
   const dir = home();
   try {
     const dropped = "could not reach Edit's relay: The socket connection was closed unexpectedly";
     const key = jobs.begin(dir, "script", "s9", { waiting_on: "import" }, "", "importing");
     const waited: number[] = [];
-    for (let blip = 0; blip < 5; blip++) {
+    for (const stage of ["downloading", "transcribing", "placing", "voicing", "finishing"]) {
+      jobs.step(dir, key, stage);
       const now = Date.now();
       waited.push(Math.round((jobs.wait(dir, key, dropped)! - now) / 60_000));
-      // Woken, it begins again and gets further (a step) before the next blip.
+      // Woken, it begins its row again (as a Script import does) and gets to a step it never reached before.
       jobs.begin(dir, "script", "s9", { waiting_on: "import" }, "", "importing");
-      jobs.step(dir, key, "transcribing");
     }
     expect(waited).toEqual([1, 1, 1, 1, 1]);
+    // A file the relay refuses every time: each start reaches the same step and fails there. Its waits grow, and the
+    // table's waking leaves the step as it was, so starting again isn't read as progress.
+    const again = jobs.begin(dir, "script", "s10", { waiting_on: "import" }, "", "importing");
+    const grew: number[] = [];
+    for (let time = 0; time < 4; time++) {
+      jobs.step(dir, again, "downloading");
+      const now = Date.now();
+      grew.push(Math.round((jobs.wait(dir, again, "Relay answered 500 for the hearing")! - now) / 60_000));
+      jobs.begin(dir, "script", "s10", { waiting_on: "import" }, "", "importing");
+    }
+    expect(grew.slice(0, 3)).toEqual([1, 5, 15]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a known outage never fails work by the same-failure count, however long; a restart isn't a failure; work nobody is shown only waits; words nothing knows fail on the fourth time (Fable's last look)", () => {
+  const dir = home();
+  try {
+    const dropped = "could not reach Edit's relay: The socket connection was closed unexpectedly";
+    for (const kind of ["archive", "share", "export"] as const) {
+      const key = jobs.begin(dir, kind, `p-${kind}`, {}, "", "uploading");
+      for (let time = 0; time < 8; time++) jobs.wait(dir, key, dropped);
+      expect([kind, jobs.get(dir, key)!.state]).toEqual([kind, "waiting"]);
+    }
+    const cut = jobs.begin(dir, "export", "p-cut", {}, "", "rendering");
+    for (let time = 0; time < 8; time++) jobs.wait(dir, cut, "cut short by 3 restarts in a row");
+    expect(jobs.get(dir, cut)!.state).toBe("waiting");
+    const odd = "Repack said something nobody has seen";
+    const unseen = jobs.begin(dir, "full", "p-full", {}, "", "uploading");
+    for (let time = 0; time < 8; time++) jobs.wait(dir, unseen, odd);
+    expect(jobs.get(dir, unseen)!.state).toBe("waiting");
+    const seen = jobs.begin(dir, "share", "p-seen", {}, "", "uploading");
+    const states: string[] = [];
+    for (let time = 0; time < 4; time++) {
+      jobs.wait(dir, seen, odd);
+      states.push(jobs.get(dir, seen)!.state);
+    }
+    expect(states).toEqual(["waiting", "waiting", "waiting", "failed"]);
+    // A Script import begins its row afresh each wake: the count is carried through.
+    const script = jobs.begin(dir, "script", "s-odd", { waiting_on: "import" }, "", "importing");
+    const scriptStates: string[] = [];
+    for (let time = 0; time < 4; time++) {
+      jobs.wait(dir, script, odd);
+      scriptStates.push(jobs.get(dir, script)!.state);
+      if (jobs.get(dir, script)!.state === "waiting") jobs.begin(dir, "script", "s-odd", { waiting_on: "import" }, "", "importing");
+    }
+    expect(scriptStates).toEqual(["waiting", "waiting", "waiting", "failed"]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

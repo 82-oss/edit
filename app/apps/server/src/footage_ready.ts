@@ -236,7 +236,9 @@ function measure(home: string, id: string, bytes: number, now: number): number |
  * for good, all 2.0 GB here, and nothing said so): the same answer for five minutes while someone waits is logged
  * once, with what it says, so the Mac's report carries it (its recurring warnings).
  */
-const stills = new Map<string, { signature: string; since: number; said: boolean }>();
+const stills = new Map<string, { signature: string; since: number; last: number; said: boolean }>();
+/** Looks further apart than this: the dialog was closed between them, and the watch starts over. */
+const LOOKS_APART_MS = 60_000;
 export const STILL_FOR_MS = { value: 5 * 60_000 };
 
 /** Whether it said so now (once a wait). */
@@ -246,10 +248,12 @@ export function watchStill(id: string, ready: boolean, signature: string, now: n
     return false;
   }
   const known = stills.get(id);
-  if (known === undefined || known.signature !== signature) {
-    stills.set(id, { signature, since: now, said: false });
+  // Closed and opened again later isn't the same wait (Fable's last look, Nov 19: it said "same for 60 min").
+  if (known === undefined || known.signature !== signature || now - known.last > LOOKS_APART_MS) {
+    stills.set(id, { signature, since: now, last: now, said: false });
     return false;
   }
+  known.last = now;
   if (known.said || now - known.since < STILL_FOR_MS.value) return false;
   known.said = true;
   diag.warn("footage", `${id}: the footage dialog has said the same for ${Math.round((now - known.since) / 60_000)} min while someone waits (${what}): a wait that isn't moving`);
@@ -338,7 +342,8 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
     if (!playing.linkHeld()) exportAhead.giveWay(app);
     playing.holdLink(id, HOLD_MS);
   } else playing.releaseLink(id);
-  if (waiting) watchStill(id, ready, `${bytes_done} ${files.filter((file) => file.here).length} ${ready ? 0 : Math.round((time(headBytes) ?? -1) / 10)}`, now, `${files.filter((file) => file.here).length} of ${files.length} files, ${GB(bytes_done)} of ${GB(bytes_total)} GB, ${room ?? cant ?? "no room line"}`);
+  // What moves: bytes and files here, not the estimate (a jittering estimate hid bytes standing still).
+  if (waiting) watchStill(id, ready, `${bytes_done} ${files.filter((file) => file.here).length}`, now, `${files.filter((file) => file.here).length} of ${files.length} files, ${GB(bytes_done)} of ${GB(bytes_total)} GB, ${room ?? cant ?? "no room line"}`);
   return {
     ready,
     done,

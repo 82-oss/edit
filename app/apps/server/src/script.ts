@@ -1648,7 +1648,7 @@ export class Jobs {
     const key = durableJobs.keyOf("case", project);
     if (settled.state === "end") return durableJobs.end(this.home, key);
     const { state, on, ...fields } = settled;
-    durableJobs.settle(this.home, key, state, { ...fields, args: { ...(job === undefined ? {} : { import: shownJob(job) }), made: this.made.get(project) ?? {}, waiting_on: on ?? null } });
+    durableJobs.settle(this.home, key, state, { ...fields, args: { ...fields.args, ...(job === undefined ? {} : { import: shownJob(job) }), made: this.made.get(project) ?? {}, waiting_on: on ?? null } });
     if (job !== undefined) this.written.set(project, signature(job));
   }
 
@@ -2595,8 +2595,10 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
               : whys.includes("limit")
                 ? { state: "waiting", step: "waiting for Google Drive", retry_at: retryAt, on: "drive" }
                 : whys.includes("room")
-                  ? { state: "waiting", step: "waiting for room", retry_at: retryAt, on: "room" }
-                  : { state: "waiting", step: "trying again by itself", retry_at: retryAt, on: "passing" }
+                  ? // The room it needs kept, so the table looks at the disk before cutting again (Fable's last look, Nov 19:
+                    // it cut into a full disk every five minutes on JJ's Mac, verify.md finding 5's own case).
+                    { state: "waiting", step: "waiting for room", retry_at: retryAt, on: "room", args: { room_bytes: roomFor(missing.map((index) => errors[index])) } }
+                  : { state: "waiting", step: "trying again by itself", retry_at: retryAt, on: "passing", args: { room_bytes: 0 } }
           : // The person's file waits for them; one passing beside it is still tried again by itself.
             whys.includes("passing") && retryAt !== null
             ? { state: "waiting", step: "waiting for the person", retry_at: retryAt }
@@ -2666,6 +2668,17 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
 class CreditWait extends Error {}
 
 /** The import's line while it waits by itself. */
+/** The most room any of these failures says it needs (a `NoRoom`, or one it caused), in bytes; 0 when none says. */
+export function roomFor(errors: unknown[]): number {
+  let most = 0;
+  for (const error of errors) {
+    for (let at: unknown = error, depth = 0; at !== undefined && at !== null && depth < 4; at = (at as { cause?: unknown }).cause, depth++) {
+      if (at instanceof failure.NoRoom) most = Math.max(most, at.needBytes);
+    }
+  }
+  return most;
+}
+
 function waitingLine(whys: steps.Why[], missing: number, total: number, retryAt: number | null, errors: unknown[] = []): string {
   const files = `${missing} of ${total} footage files`;
   if (whys.includes("quota")) return `The transcription plan is out of credit: ${files} wait for it${retryAt === null ? "" : `; Edit tries again at ${clockTime(retryAt)}`}.`;

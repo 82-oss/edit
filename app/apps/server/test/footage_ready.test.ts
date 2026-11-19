@@ -522,14 +522,15 @@ test("Home's status carries each project's footage coming here, and none for a p
 test("a footage dialog saying the same for five minutes while someone waits is logged once, as a wait that isn't moving (Fable's check 4)", async () => {
   const { watchStill } = await import("../src/footage_ready.ts");
   const now = 1_000_000;
-  const said = [
-    watchStill("still-1", false, "2000 79 12", now, "79 of 97 files, 2.0 of 2.0 GB"),
-    watchStill("still-1", false, "2000 79 12", now + 4 * 60_000, "same"),
-    watchStill("still-1", false, "2000 79 12", now + 5 * 60_000, "79 of 97 files"),
-    watchStill("still-1", false, "2000 79 12", now + 9 * 60_000, "79 of 97 files"),
-  ];
-  expect(said).toEqual([false, false, true, false]);
-  // Moving resets it; ready forgets it.
-  expect(watchStill("still-1", false, "2100 80 11", now + 10 * 60_000, "moving")).toBe(false);
+  // The dialog looks every few seconds while it's up.
+  const said: boolean[] = [];
+  for (let at = 0; at <= 9 * 60_000; at += 20_000) said.push(watchStill("still-1", false, "2000 79", now + at, "79 of 97 files, 2.0 of 2.0 GB"));
+  expect(said.filter(Boolean)).toHaveLength(1);
+  expect(said.indexOf(true)).toBe(15);
+  // Moving resets it.
+  expect(watchStill("still-1", false, "2100 80", now + 10 * 60_000, "moving")).toBe(false);
+  // Closed and opened again an hour later, still the same: a new wait, not "the same for an hour".
+  expect(watchStill("still-1", false, "2100 80", now + 70 * 60_000, "reopened")).toBe(false);
+  expect(watchStill("still-1", false, "2100 80", now + 70 * 60_000 + 20_000, "reopened")).toBe(false);
   expect(watchStill("still-1", true, "", now + 20 * 60_000, "ready")).toBe(false);
 });

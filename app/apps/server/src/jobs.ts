@@ -185,6 +185,9 @@ export function keyOf(kind: Kind, project: string, part = ""): string {
   return part === "" ? `${kind}:${project}` : `${kind}:${project}:${part}`;
 }
 
+/** How many of a row's steps are kept to tell getting further from reaching a step again (a step's words may change as it goes). */
+const STEPS_KEPT = 30;
+
 function fresh(kind: Kind, project: string, args: Record<string, unknown>, part: string, listed: Job | undefined, step?: string): Job {
   const now = nowMs();
   // One listed and still to do (a resumer starting it again, or a repeat) keeps its count; one that ended, failed or was given up starts over.
@@ -192,7 +195,11 @@ function fresh(kind: Kind, project: string, args: Record<string, unknown>, part:
   const attempts = going ? listed.attempts : 0;
   // Started again after being put off: still counted as put off (its next wait, one at a time), until it gets further.
   const putOff = going && listed.put_off !== undefined ? { put_off: listed.put_off, ...(listed.crashy === true ? { crashy: true } : {}) } : {};
-  return { key: keyOf(kind, project, part), kind, project, args, state: "running", ...(step === undefined ? {} : { step }), attempts, ...putOff, started_ms: going ? listed.started_ms : now, updated_ms: now };
+  // Its count of the same failure in a row and the steps it reached too (a Script import begins its row afresh on
+  // each wake, which lost them, so its count never grew and every wake read as getting further).
+  const same = going && typeof listed.args.same_count === "number" && args.same_count === undefined ? { same_why: listed.args.same_why, same_count: listed.args.same_count } : {};
+  const steps = going && Array.isArray(listed.args.steps_seen) && args.steps_seen === undefined ? { steps_seen: listed.args.steps_seen } : {};
+  return { key: keyOf(kind, project, part), kind, project, args: { ...args, ...same, ...steps }, state: "running", ...(step === undefined ? {} : { step }), attempts, ...putOff, started_ms: going ? listed.started_ms : now, updated_ms: now };
 }
 
 /**
@@ -232,11 +239,17 @@ export function step(home: string | null, key: string, step: string, args: Recor
   change(home, (jobs) => {
     const job = jobs.find((one) => one.key === key);
     if (job === undefined) return false;
-    // Getting further forgives its waits and restarts so far (verify.md finding 3: otherwise every blip waited longer).
-    if (job.step !== step) {
+    // Getting further forgives its waits and restarts so far (verify.md finding 3: otherwise every blip waited longer):
+    // a step this row has never reached before, not one it reaches again after a wait (Fable's last look, Nov 19: a
+    // file the relay refused every time was tried every minute for good, each start's first step read as progress).
+    const seen = Array.isArray(job.args.steps_seen) ? (job.args.steps_seen as unknown[]).filter((one): one is string => typeof one === "string") : [];
+    if (!seen.includes(step)) {
       job.attempts = 0;
       delete job.put_off;
       delete job.crashy;
+      delete job.args.same_why;
+      delete job.args.same_count;
+      job.args.steps_seen = [...seen, step].slice(-STEPS_KEPT);
     }
     job.step = step;
     job.state = "running";
@@ -320,14 +333,33 @@ export const putOff = (home: string | null, key: string, why: string): number | 
 /** The same failure, word for word, this many times in a row with nothing between: a refusal that's the same every time, so Edit's to fix (failure.ts `broken`). */
 const SAME_TIMES = 4;
 
+/**
+ * Whether `error` counts toward `SAME_TIMES`: only words nothing recognises (and FFmpeg's "Invalid data found", a file
+ * it can't read). A known network error, a full disk or a sign-in passes however often it comes, and a restart isn't a
+ * failure at all (Fable's last look, Nov 19: a 21-minute outage failed an export's cloud copy for good on its fourth
+ * try, and six kills in a row failed work on "cut short by 3 restarts", giving up for restarts again).
+ */
+function counts(error: unknown, why: string): boolean {
+  if (why.startsWith("cut short by")) return false;
+  return /Invalid data found/i.test(why) || failure.surely(error) === null;
+}
+
+/** Work nobody is shown (an export's cloud copy, a share's full-quality file, a footage upload): never failed by the count, it goes on waiting its half hour. */
+const UNSEEN: readonly Kind[] = ["archive", "full", "upload"];
+
 function postpone(job: Job, error: unknown): number | null {
   const why = typeof error === "string" ? error : diag.messageOf(error);
   let kind = failure.kindOf(error);
   // Counted across its waits (not forgiven by a step: the same stage fails the same way each time it's reached).
-  const same = job.args.same_why === why && typeof job.args.same_count === "number" ? job.args.same_count + 1 : 1;
-  job.args.same_why = why.slice(0, 300);
-  job.args.same_count = same;
-  if (kind === "passing" && same >= SAME_TIMES) kind = "broken";
+  if (counts(error, why)) {
+    const same = job.args.same_why === why.slice(0, 300) && typeof job.args.same_count === "number" ? job.args.same_count + 1 : 1;
+    job.args.same_why = why.slice(0, 300);
+    job.args.same_count = same;
+    if (kind === "passing" && same >= SAME_TIMES && !UNSEEN.includes(job.kind)) kind = "broken";
+  } else {
+    delete job.args.same_why;
+    delete job.args.same_count;
+  }
   const times = job.put_off ?? 0;
   const now = nowMs();
   delete job.given_up;
@@ -395,10 +427,13 @@ export function progressed(home: string | null, key: string): void {
   if (home === null) return;
   change(home, (jobs) => {
     const job = jobs.find((one) => one.key === key);
-    if (job === undefined || (!(job.attempts > 0) && job.put_off === undefined)) return false;
+    if (job === undefined || (!(job.attempts > 0) && job.put_off === undefined && job.args.same_count === undefined)) return false;
     job.attempts = 0;
     delete job.put_off;
     delete job.crashy;
+    // Getting further isn't the same failure in a row.
+    delete job.args.same_why;
+    delete job.args.same_count;
   });
 }
 
@@ -585,8 +620,8 @@ export function dueNow(home: string, kinds?: readonly Kind[]): Job[] {
         if (putOffGoing) continue;
         putOffGoing = true;
       }
+      // Its step stays what it was: the resumer carries on from it, and reaching it again isn't getting further.
       job.state = "running";
-      job.step = "trying again";
       delete job.retry_at;
       delete job.until;
       delete job.why;

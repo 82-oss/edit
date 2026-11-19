@@ -159,6 +159,10 @@ async function skipped(app: App, item: Item): Promise<string | null> {
     // A first share has no review yet; fixes always have one.
     if (shared === undefined && !plain) return "it has no review";
     if (shared?.approved) return `v${shared.approved.version} of its review was approved`;
+    if (plain) {
+      const stale = reviews.carryOnStale(app, item.project);
+      if (stale !== null) return stale;
+    }
     if (reviews.askedFor(item.project)) return `a reviewer asked again on ${THIS_MACHINE}, and that request does it`;
   } else {
     if (failedExports(home)[item.project] === undefined) return "it has exported since";

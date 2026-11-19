@@ -111,3 +111,9 @@ test("real network errors are passing by their code and by FFmpeg's, curl's and 
   for (const words of ["This import needs about 12 GB free and this Mac has 6 GB. Free some space, then import it again.", "Needs 12 MB free on this computer to cut the footage's excerpts", "This computer is out of room to cut the footage's excerpts"]) expect([words, failure.surely(words)]).toEqual([words, "room"]);
   expect(failure.surely(new failure.SignedOut("The sound library and Google Drive need you signed in to Edit."))).toBe("signin");
 });
+
+test("the editor's import keeps the most room its files said they need, so the table looks at the disk before cutting again (Fable's last look, bug 3)", async () => {
+  const { roomFor } = await import("../src/script.ts");
+  expect(roomFor([new failure.NoRoom(2e9), new Error("could not reach Edit's relay"), Object.assign(new Error("wrapped"), { cause: new failure.NoRoom(5.5e9) }), undefined])).toBe(5.5e9);
+  expect(roomFor([new Error("could not reach Edit's relay")])).toBe(0);
+});
