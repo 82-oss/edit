@@ -36,6 +36,14 @@ test("a stretch's frames are the file's own at its rate; a kept strip's name giv
   expect(one.under).toMatch(/^[0-9a-f]{10}$/u);
   expect(inpaint.beneathOf({ media: [wm("/c/0-30.watermark-b.mp4", 0)] }, "m1", 25, 35).under).not.toBe(one.under);
   expect(inpaint.beneathOf({ media: [] }, "m1", 25, 35)).toEqual({ strips: [], under: "" });
+  // Which strips of a file are current: told by name, as a strip backed up to the cloud is read from a URL of its name.
+  const strip = (name: string) => ({ id: "s", name, path: "http://127.0.0.1:7790/api/cloud/preview?key=edit%2Fexports%2Fx", cleans: { media: "m1", from: 1, to: 3, box, what: "text" } }) as unknown as Media;
+  expect(inpaint.current({ media: [strip(inpaint.nameOf("tape.mp4", 1, 3, ""))] }, "m1", 1, 3, "")).toBe(true);
+  // Made over a watermark done since, or before the watermark fix (no tag): made again.
+  expect(inpaint.current({ media: [strip(inpaint.nameOf("tape.mp4", 1, 3, "ab12cd34ef"))] }, "m1", 1, 3, "")).toBe(false);
+  expect(inpaint.current({ media: [strip("tape.mp4 · their subtitles out 1–3 s")] }, "m1", 1, 3, "")).toBe(false);
+  // Another's (Vmake's, from before Nov 19) stays as it was.
+  expect(inpaint.current({ media: [strip("tape.mp4 · their text out 1–3 s · Smart")] }, "m1", 1, 3, "")).toBe(true);
   // Another version's or another kind's isn't this one's.
   expect(inpaint.parseStrip("1000-3000.watermark-abc-none.json")).toBeNull();
   expect(inpaint.pixelsOf([[[0.1, 0.8, 0.9, 0.9]], []], 1920, 1080)).toEqual([[[192, 864, 1728, 972]], []]);

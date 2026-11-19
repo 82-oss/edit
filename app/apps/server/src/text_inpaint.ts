@@ -357,28 +357,36 @@ export function stripCovers(project: { media: Media[] }, media: string, from: nu
   return project.media.some((one) => one.cleans != null && one.cleans.media === media && (one.cleans.what ?? "text") === "text" && one.cleans.from <= from + 0.05 && one.cleans.to >= to - 0.05);
 }
 
-/** A strip of ours for [from, to) made as it'd be made now (this version, over these watermark strips): one that isn't is made again. */
-function current(project: { media: Media[] }, media: string, from: number, to: number, under: string): boolean {
+/**
+ * What a strip of ours is called: its seconds and, last, how it was made (`tagOf`). Its name, not its path, says so: a
+ * strip backed up to the cloud is read from a URL made from its name (Nov 19: the shelf's name was gone after that,
+ * and a strip from before the watermark fix was taken as current).
+ */
+const OURS = / · their subtitles out \d+–\d+ s(?: · (v\d+(?:\.[0-9a-f]+)?))?$/u;
+export const tagOf = (under: string) => `v${VERSION}${under === "" ? "" : `.${under}`}`;
+export const nameOf = (footage: string, from: number, to: number, under: string) => `${footage} · their subtitles out ${Math.round(from)}–${Math.round(to)} s · ${tagOf(under)}`;
+
+/** A strip of ours for [from, to) made as it'd be made now (this version, over these watermark strips), or another's (a Vmake one from before Nov 19, kept as it was): one of ours that isn't is made again. */
+export function current(project: { media: Media[] }, media: string, from: number, to: number, under: string): boolean {
   return project.media.some((one) => {
     if (one.cleans == null || one.cleans.media !== media || (one.cleans.what ?? "text") !== "text" || Math.abs(one.cleans.from - from) > 0.01 || Math.abs(one.cleans.to - to) > 0.05) return false;
-    const ours = parseStrip(one.path.slice(one.path.lastIndexOf("/") + 1));
-    // Another's strip (a Vmake one, from before Nov 19) stays as it was.
-    return ours === null ? !/\.minimax-v\d/u.test(one.path) : ours.under === under;
+    const ours = OURS.exec(one.name);
+    return ours === null || ours[1] === tagOf(under);
   });
 }
 
 /** Puts a stretch's strip in the project (clean_strips.ts lays it over the clips there). */
-async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string): Promise<void> {
+async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string, under: string): Promise<void> {
   const probed = await probe(file);
   await playing.whenIdle();
   await app.store.update(id, "text removal", (project) => {
     if (!project.media.some((one) => one.id === footage.id)) return;
-    if (project.media.some((one) => one.path === file)) return;
+    if (current(project, footage.id, from, to, under)) return;
     // One of ours for the same seconds made before (another version, or over a watermark done again) gives way.
-    project.media = project.media.filter((one) => !(one.cleans?.media === footage.id && (one.cleans.what ?? "text") === "text" && Math.abs(one.cleans.from - from) < 0.01 && Math.abs(one.cleans.to - to) < 0.05 && /\.minimax-v\d/u.test(one.path)));
+    project.media = project.media.filter((one) => !(one.cleans?.media === footage.id && (one.cleans.what ?? "text") === "text" && Math.abs(one.cleans.from - from) < 0.01 && Math.abs(one.cleans.to - to) < 0.05 && OURS.test(one.name)));
     project.media.push({
       id: freshId(project, "m"),
-      name: `${footage.name} · their subtitles out ${Math.round(from)}–${Math.round(to)} s`,
+      name: nameOf(footage.name, from, to, under),
       path: file,
       kind: "video",
       duration: probed.duration,
@@ -452,7 +460,7 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       const kept = await shelved(app, plan.source, from, to, under).catch(() => null);
       if (kept !== null) {
         piece.state = "done";
-        if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file);
+        if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under);
         continue;
       }
       const boxes = masksOf(plan.source, from0, to0, fps, first, frames);
@@ -484,7 +492,7 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
     if (!answer.ok) throw new Error(answer.error ?? "the model failed");
     const box = answer.box ?? null;
     const file = await keep(app, plan.source, from, to, box === null ? null : out, box, under);
-    if (file !== null && box !== null) await place(app, id, plan.media, from, to, box, file);
+    if (file !== null && box !== null) await place(app, id, plan.media, from, to, box, file, under);
     piece.state = "done";
     const seconds = (Date.now() - started) / 1000;
     diag.info("removal", `${id}: ${label} cleaned by the model in ${Math.round(seconds)} s (${answer.inferred ?? 0} of ${boxes.length} frames through it, ${(seconds / Math.max(0.1, to - from)).toFixed(1)} s a second)`);
