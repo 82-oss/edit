@@ -207,7 +207,7 @@ const wifiDropScript: Case = {
   change: "7",
   spec:
     "Time run 60 times faster, uploads held to 20 Mbit/s. A three-recording case in Script mode mid-import (its second and third recordings held), and a share of another edit, " +
-    "its export's copy for the cloud and its full-quality file going up beside it: the line drops for 90 s as the share publishes; Edit is killed and started again 20 s into the drop. " +
+    "its export's copy for the cloud and its full-quality file going up beside it: the line drops for 180 s as the share publishes (three hours at this speed: every wait's try fails the same way, past the same-failure count, which must not fail any of them; Fable's last look); Edit is killed and started again 20 s into the drop. " +
     "After the line is back the case's third recording takes 45 s more, so the import runs on. " +
     "Checks: everything that waited on the drop (the import, the share, the uploads) goes again within 30 s of the line coming back, none behind another (verify.md finding 1); " +
     "no 'import stopped'; the import's row survives the kill; the case is whole; the share's link comes by itself; the uploads end.",
@@ -238,7 +238,7 @@ const wifiDropScript: Case = {
       if (downAt !== 0 || path !== "reviews:publish") return;
       downAt = Date.now();
       phase = "down";
-      context.log("as the share publishes: the line drops for 90 s");
+      context.log("as the share publishes: the line drops for 180 s");
       line.set("down");
       release();
     };
@@ -261,7 +261,7 @@ const wifiDropScript: Case = {
     await restart(context, "20 s into the drop");
     const afterKill = rows(context).find((row) => row.key === `script:${id}`) ?? rows(context).find((row) => row.kind === "script");
     context.check("the import's row survived the kill", afterKill !== undefined && live(afterKill), afterKill === undefined ? `no script row: ${describeRows(rows(context))}` : describeRows([afterKill]));
-    await context.sleep(Math.max(0, downAt + 90_000 - Date.now()));
+    await context.sleep(Math.max(0, downAt + 180_000 - Date.now()));
     look();
     clearInterval(looking);
     for (const row of rows(context)) if (UPLOADS.has(row.kind) && live(row) && !uploadsBeside.includes(row.key)) uploadsBeside.push(row.key);
@@ -439,7 +439,7 @@ const shareDrop: Case = {
   name: "share-drop",
   change: "7",
   spec:
-    "Time run 60 times faster, uploads held to 2 Mbit/s. A share of a laid-out edit; the line drops for 45 s 600 kB into its upload, and again for 60 s as it publishes. " +
+    "Time run 60 times faster, uploads held to 2 Mbit/s. A share of a laid-out edit; the line drops for 45 s 600 kB into its upload, and again for 150 s as it publishes (past the same-failure count: four tries or more fail the same way, and the share must still wait; Fable's last look). " +
     "Checks: the share waits and its link comes by itself (within 3 minutes of the line); it never ends failed and nothing says 'stopped'; " +
     "the bytes sent of its video are at most the file plus one part for each drop.",
   env: { EDIT_BAD_DAY_SPEED: "60" },
@@ -467,12 +467,12 @@ const shareDrop: Case = {
     cloud.beforeConvex = (path) => {
       if (publishDrop !== 0 || path !== "reviews:publish") return;
       publishDrop = Date.now();
-      context.log("as it publishes: the line drops for 60 s");
+      context.log("as it publishes: the line drops for 150 s");
       line.set("down");
       setTimeout(() => {
         line.set("up");
         back = Date.now();
-      }, 60_000);
+      }, 150_000);
     };
     let failed: Row | null = null;
     const watch = setInterval(() => {

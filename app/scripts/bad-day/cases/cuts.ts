@@ -253,9 +253,11 @@ export const cutCases: Case[] = [
     name: "no-room",
     change: "5",
     spec:
-      "The import runs with Edit's home on a 256 MB disk with only ~12 MB of it free, then, two minutes in, the room is made (the filler deleted). " +
-      "Checks: Edit says how much room it needs; the same bytes aren't fetched over and over; no 'No space left' reaches jobs.json or a project's file; the file comes in once room is made.",
+      "Time run 60 times faster. The import runs with Edit's home on a 256 MB disk with only ~12 MB of it free, then, a minute in (a dozen five-minute room waits at this speed), the room is made (the filler deleted). " +
+      "Checks: Edit says how much room it needs; while there's no room the originals are fetched at most once (it looks at the disk, never cutting again into it: Fable's last look); " +
+      "the same bytes aren't fetched over and over; no 'No space left' reaches jobs.json or a project's file; the file comes in once room is made.",
     smallDisk: true,
+    env: { EDIT_BAD_DAY_SPEED: "60" },
     async run(context) {
       const { footage, home } = context;
       // Fill the small disk to ~12 MB free.
@@ -270,8 +272,14 @@ export const cutCases: Case[] = [
       fs.closeSync(fd);
       context.log(`small disk filled: ${(free() / 1e6).toFixed(1)} MB free`);
       const setup = await editorImport(context, [{ id: A, clip: footage.axon, ranges: [[60, 80], [360, 380]] }]);
-      await context.sleep(120_000);
+      await context.sleep(60_000);
       const before = describe(await job(context, setup.project));
+      const fetchedBefore = setup.originals.reduce((sum, key) => sum + context.line.sent(`/r2/${key}`), 0);
+      context.check(
+        "while there's no room, the originals were fetched at most once",
+        fetchedBefore <= setup.needed * 1.1,
+        `${(fetchedBefore / 1e6).toFixed(1)} MB fetched before the room was made, ${(setup.needed / 1e6).toFixed(1)} MB needed`,
+      );
       context.log(`before the room is made: ${before}`);
       const said = [before, context.edit.log()].join("\n");
       context.check("Edit says how much room it needs", /Needs [\d.]+ ?[MG]B free/i.test(said), /Needs [\d.]+ ?[MG]B free/i.test(said) ? "yes" : `no "Needs … free" line: ${before.slice(0, 300)}`);

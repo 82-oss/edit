@@ -69,7 +69,11 @@ function preload(dir: string, modelUrl: string, roomy: boolean): string {
       (roomy
         ? `import { diskHooks } from ${JSON.stringify(join(SERVER, "apps/server/src/storage.ts"))};\n` +
           `diskHooks.free = () => 1e12;\ndiskHooks.total = () => 2e12;\n`
-        : "") +
+        : // The small disk (256 MB) is smaller than the floor Edit leaves free under its own work: what's really free
+          // counts as over the floor, so "is there room for N bytes" means N bytes are free on it (the disk still fills
+          // and refuses writes for real).
+          `import { diskHooks, WORK_FLOOR_BYTES } from ${JSON.stringify(join(SERVER, "apps/server/src/storage.ts"))};\n` +
+          `const realFree = diskHooks.free;\ndiskHooks.free = (dir) => realFree(dir) + WORK_FLOOR_BYTES;\n`) +
       `import { standIn } from ${JSON.stringify(join(SERVER, "apps/server/src/ai_claude.ts"))};\n` +
       `standIn.post = async (body) => {\n` +
       `  const answer = await fetch(${JSON.stringify(`${modelUrl}/v1/chat/completions`)}, { method: "POST", headers: { "content-type": "application/json" }, body: require("node:fs").readFileSync(body) });\n` +

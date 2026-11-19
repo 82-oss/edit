@@ -209,7 +209,11 @@ export const scriptCases: Case[] = [
         90_000,
       );
       context.check("Edit shows the sign-in screen", out !== null, out === null ? "it never signed out" : JSON.stringify(out).slice(0, 200));
-      await context.sleep(40_000);
+      // Signed out past the retry's time and one look of the job table after it (Fable's last look: 40 s alone could
+      // end before the retry fell due, so it passed by its timing); at most six minutes.
+      const dueAt = waiting.missing![0]!.nextAt;
+      await context.sleep(Math.min(Math.max(40_000, dueAt - Date.now() + 35_000), 360_000));
+      context.log(`signed out until ${Math.round((Date.now() - dueAt) / 1000)} s after the retry was due`);
       const during = await script(context, id);
       const spent = (during.missing ?? []).find((item) => item.id === IDS[1]);
       context.check(
