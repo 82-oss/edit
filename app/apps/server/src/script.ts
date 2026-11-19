@@ -2264,7 +2264,7 @@ export async function cut(source: string, start: number, to: number, out: string
     if (/No space left on device/iu.test(output.stderr)) {
       // How much the cut needs, from the footage's bit rate (asked only now), so the line can say it.
       const need = await bitRateOf(source).then((rate) => (rate === null ? 0 : Math.ceil(((to - start) * rate) / 8 / 1e6) * 1e6), () => 0);
-      throw new failure.NoRoom(need, need > 0 ? `Needs about ${need >= 1e9 ? `${(need / 1e9).toFixed(1)} GB` : `${Math.round(need / 1e6)} MB`} free on this computer to cut the footage's excerpts: make room, and Edit goes on by itself.` : "This computer is out of room to cut the footage's excerpts: make room, and Edit goes on by itself.");
+      throw new failure.NoRoom(need, need > 0 ? `Needs ${need >= 1e9 ? `${(need / 1e9).toFixed(1)} GB` : `${Math.round(need / 1e6)} MB`} free on this computer to cut the footage's excerpts: make room, and Edit goes on by itself.` : "This computer is out of room to cut the footage's excerpts: make room, and Edit goes on by itself.");
     }
     throw new Error("Couldn't cut an excerpt from the footage.");
   }
