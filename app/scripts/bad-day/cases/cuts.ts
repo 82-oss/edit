@@ -230,7 +230,7 @@ export const cutCases: Case[] = [
     change: "5",
     spec:
       "The same file and ranges at 2 Mbit/s, time run 60 times faster; Edit frozen 30 s mid-cut (the line cut at the freeze, back 5 s after the wake). " +
-      "Check: the cut isn't stopped for the time it was frozen; it finishes; bytes fetched at most 1.3 times the excerpts'.",
+      "Check: the cut isn't stopped by the freeze (no step stopped, no file failed and started again); it finishes; bytes fetched at most 1.3 times the excerpts'.",
     env: { EDIT_BAD_DAY_SPEED: "60" },
     async run(context) {
       const { line, footage } = context;
@@ -244,7 +244,7 @@ export const cutCases: Case[] = [
       const last = end ?? (await job(context, setup.project));
       context.check("Edit was frozen mid-cut", frozen.fired(), frozen.fired() ? "yes" : "the cut never got that far");
       context.check("the import finished", end !== null, describe(last));
-      const lines = context.edit.log().split("\n").filter((one) => stopped.test(one) || /no progress|stood still|standing still/i.test(one));
+      const lines = context.edit.log().split("\n").filter((one) => stopped.test(one) || /no progress|stood still|standing still/i.test(one) || /file \d+ of \d+ \([^)]*\) failed after|cloud excerpts failed after/.test(one));
       context.check("the cut wasn't stopped for the freeze", lines.length === 0, lines.length === 0 ? "nothing stopped" : lines.slice(0, 3).map((one) => one.slice(0, 220)).join(" | "));
       bytesCheck(context, setup);
     },

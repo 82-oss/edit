@@ -197,6 +197,14 @@ async function runCase(one: Case, made: ReturnType<typeof footage>, index: numbe
     log(`the common checks threw: ${String(caught)}`);
   }
   await edit.stop();
+  // The small disk goes with the sandbox: its log and table are kept with the case's.
+  if (one.smallDisk === true) {
+    for (const name of ["logs", "jobs.json", "projects"]) {
+      try {
+        fs.cpSync(join(real, name), join(dir, "home", name), { recursive: true });
+      } catch {}
+    }
+  }
   line.stop();
   cloud.stop();
   fs.writeFileSync(join(dir, "requests.json"), JSON.stringify(cloud.seen, null, 1));
