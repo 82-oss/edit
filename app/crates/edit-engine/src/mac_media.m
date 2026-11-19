@@ -256,24 +256,57 @@ int edit_subject_cutout(const char *input, const char *output, double x, double 
 // per piece of text, "x0 y0 x1 y1 confidence<TAB>text" (0..1 from the top
 // left), as CFData the caller releases; NULL when Vision fails. The pixels
 // are only read during the call.
+// The lines Vision reads in a BGRA picture, or nil when it couldn't look.
+static NSArray<VNRecognizedTextObservation *> *edit_text_read(const uint8_t *bgra, uint32_t width, uint32_t height,
+                                                              size_t stride, int accurate) {
+    CVPixelBufferRef pixel = NULL;
+    if (CVPixelBufferCreateWithBytes(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
+            (void *)bgra, stride, NULL, NULL, NULL, &pixel) != kCVReturnSuccess || !pixel) {
+        return nil;
+    }
+    VNRecognizeTextRequest *request = [VNRecognizeTextRequest new];
+    request.recognitionLevel = accurate ? VNRequestTextRecognitionLevelAccurate : VNRequestTextRecognitionLevelFast;
+    request.usesLanguageCorrection = NO;
+    VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:pixel options:@{}];
+    NSError *problem = nil;
+    BOOL ok = [handler performRequests:@[request] error:&problem];
+    CVPixelBufferRelease(pixel);
+    return ok ? (request.results ?: @[]) : nil;
+}
+// Lines the accurate level is sure of (it says 1 for a line it read right).
+static NSUInteger edit_text_sure(NSArray<VNRecognizedTextObservation *> *lines) {
+    NSUInteger sure = 0;
+    for (VNRecognizedTextObservation *seen in lines) sure += [seen topCandidates:1].firstObject.confidence >= 1;
+    return sure;
+}
 static void *edit_text_unguarded(const uint8_t *bgra, uint32_t width, uint32_t height, size_t stride, int accurate) {
     @autoreleasepool {
         if (!width || !height || stride < (size_t)width * 4) return NULL;
-        CVPixelBufferRef pixel = NULL;
-        if (CVPixelBufferCreateWithBytes(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA,
-                (void *)bgra, stride, NULL, NULL, NULL, &pixel) != kCVReturnSuccess || !pixel) {
-            return NULL;
+        NSArray<VNRecognizedTextObservation *> *results = edit_text_read(bgra, width, height, stride, accurate);
+        if (!results) return NULL;
+        // The accurate level now and then reads a plain line as nothing or upside down, unsure ("Put your hands up"
+        // as "dn suez nd" at 0.3; Nov 19, 4 of 180 subtitled frames on macOS 26), where the same picture changed a
+        // little reads right: a read that's empty or unsure of a line is made again in grey (BT.601 luma, the
+        // letters' edges as they were), and the one sure of more lines kept (4 misses in 180 to 1, ~5% read twice).
+        BOOL unsure = results.count == 0;
+        for (VNRecognizedTextObservation *seen in results) unsure |= [seen topCandidates:1].firstObject.confidence < 1;
+        if (accurate && unsure) {
+            NSMutableData *grey = [NSMutableData dataWithLength:(size_t)width * height * 4];
+            uint8_t *out = grey.mutableBytes;
+            for (uint32_t y = 0; y < height; y++) {
+                const uint8_t *from = bgra + y * stride;
+                for (uint32_t x = 0; x < width; x++, from += 4, out += 4) {
+                    uint8_t luma = (uint8_t)((from[0] * 29 + from[1] * 150 + from[2] * 77 + 128) >> 8);
+                    out[0] = out[1] = out[2] = luma;
+                    out[3] = 255;
+                }
+            }
+            NSArray<VNRecognizedTextObservation *> *again =
+                edit_text_read(grey.bytes, width, height, (size_t)width * 4, accurate);
+            if (again && edit_text_sure(again) > edit_text_sure(results)) results = again;
         }
-        VNRecognizeTextRequest *request = [VNRecognizeTextRequest new];
-        request.recognitionLevel = accurate ? VNRequestTextRecognitionLevelAccurate : VNRequestTextRecognitionLevelFast;
-        request.usesLanguageCorrection = NO;
-        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCVPixelBuffer:pixel options:@{}];
-        NSError *problem = nil;
-        BOOL ok = [handler performRequests:@[request] error:&problem];
-        CVPixelBufferRelease(pixel);
-        if (!ok) return NULL;
         NSMutableString *lines = [NSMutableString string];
-        for (VNRecognizedTextObservation *seen in request.results) {
+        for (VNRecognizedTextObservation *seen in results) {
             VNRecognizedText *best = [[seen topCandidates:1] firstObject];
             if (!best) continue;
             NSString *text = [[best.string componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet]

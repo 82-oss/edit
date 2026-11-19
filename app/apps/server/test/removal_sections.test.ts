@@ -30,7 +30,11 @@ function fixtureHome(name: string): ReturnType<typeof stubbedHome> {
   return made;
 }
 
+// The real reader put back after each test (its stand-in read nothing, Nov 19: in CI's Mac shard text_blur's real-engine
+// test ran after this file and read no words in one pass).
+const ownOpen = blur.reader.open;
 afterEach(() => {
+  blur.reader.open = ownOpen;
   asks.reset();
   removalSchedule.reset();
   blur.reset();
