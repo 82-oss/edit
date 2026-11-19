@@ -50,7 +50,7 @@ async function ffmpegsLeft(path: string): Promise<number> {
   return ffmpegsFor(path);
 }
 
-test.skipIf(ffmpeg === null)("an import whose words fail stops its preview too, and says the failure with its kind", async () => {
+test.skipIf(ffmpeg === null)("an import whose words wait on the plan's credit stops its preview too, and waits in the job table, still importing", async () => {
   const { dir, app, cleanup } = fixtureHome("import-stops");
   try {
     // 8 minutes of sound: its preview (sound over black) takes a while to make (20 minutes ran past the test's time in the full suite).
@@ -60,14 +60,16 @@ test.skipIf(ffmpeg === null)("an import whose words fail stops its preview too, 
     // The relay refuses at once (a quota): not asked again, so the words fail long before the preview is made.
     mock.on("POST", "/v1/transcribe", () => Response.json({ detail: { message: "quota exceeded" } }, { status: 402 }));
     const data = store.dataDir(app.store.home);
-    const failed = await imports.fromFile(app, data, source, null, "Stops", null).catch((error: unknown) => error);
-    expect((failed as Error).message).toContain("quota exceeded");
-    expect((failed as imports.ImportStopped).kind).toBe("later");
+    const waiting = await imports.fromFile(app, data, source, null, "Stops", null);
     const [id] = store.ids(data);
     const scriptDir = store.scriptDir(data, id!);
     const script = store.read(scriptDir);
-    expect(script.status).toBe("error");
-    expect(script.stuckOn).toBeUndefined();
+    // Not stopped for a person: still importing, waiting on the credit (a 402), its line saying when.
+    expect(waiting.status).toBe("processing");
+    expect(script.status).toBe("processing");
+    expect(script.error).toBeNull();
+    expect(jobs.get(app.store.home, jobs.keyOf("script", id!))).toMatchObject({ state: "waiting", args: { waiting_on: "quota" } });
+    expect(imports.progress().find((one) => one.id === id)?.detail).toContain("Edit tries again by itself");
     // The preview's FFmpeg is gone, and no half-made preview is left.
     expect(await ffmpegsLeft(scriptDir)).toBe(0);
     expect(fs.existsSync(store.proxyPath(scriptDir))).toBe(false);
@@ -100,14 +102,14 @@ test.skipIf(ffmpeg === null)("an import asked for by a route is answered once it
     expect(now.status).toBe("ready");
     expect(now.words.length).toBeGreaterThan(0);
 
-    // One that stops does so on the script, with its reason; its slot is let go too.
-    mock.on("POST", "/v1/transcribe", () => Response.json({ detail: { message: "quota exceeded" } }, { status: 402 }));
+    // One that stops (a refusal the same every time: Edit's to fix) does so on the script, with its reason; its slot is let go too.
+    mock.on("POST", "/v1/transcribe", () => Response.json({ detail: { message: "That recording is too long for one request." } }, { status: 413 }));
     const second = await imports.fromFile(app, data, source, null, "Stops later", null, null, "started");
     expect(second.status).toBe("processing");
     for (let i = 0; i < 600 && imports.importing(second.id); i++) await Bun.sleep(50);
     const stopped = store.read(store.scriptDir(data, second.id));
     expect(stopped.status).toBe("error");
-    expect(stopped.error).toContain("quota exceeded");
+    expect(stopped.error).toContain("too long for one request");
     // Retry, answered the same way.
     mock.on("POST", "/v1/transcribe", () => Response.json(scribeAnswer(["Where", "were", "you?"])));
     const retried = await imports.resume(app, data, second.id, { kind: "retry" }, "started");
@@ -169,9 +171,9 @@ test.skipIf(ffmpeg === null)("an import refused for the transcription plan's cre
     // ElevenLabs' answer when the plan runs out (Nov 8, four imports on two Macs).
     mock.on("POST", "/v1/transcribe", () => Response.json({ detail: { status: "quota_exceeded", message: "This request exceeds your quota of 100000. You have 15 credits remaining, while 230 credits are required for this request." } }, { status: 401 }));
     const data = store.dataDir(app.store.home);
-    const failed = await imports.fromFile(app, data, source, null, "Credit", null).catch((error: unknown) => error);
-    expect((failed as Error).message).toContain("The transcription plan is out of credit; Edit tries again by itself at");
+    await imports.fromFile(app, data, source, null, "Credit", null);
     const [id] = store.ids(data);
+    expect(imports.progress().find((one) => one.id === id)?.detail).toStartWith("The transcription plan (ElevenLabs) is out of credit: an admin adds credit, and Edit tries again by itself at");
     const waiting = jobs.get(app.store.home, jobs.keyOf("script", id!));
     expect(waiting).toMatchObject({ kind: "script", state: "waiting", args: { waiting_on: "quota" } });
     expect(waiting!.retry_at).toBeGreaterThan(Date.now() + 20 * 60_000);

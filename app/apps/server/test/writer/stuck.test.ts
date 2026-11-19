@@ -8,10 +8,11 @@ import type { Script } from "@edit/types/writer";
 
 import { AudioUnreadable, RelayBusy, TooLongForOneRequest } from "../../src/transcribe.ts";
 import { BUILD } from "../../src/version.ts";
-import { stuck } from "../../src/writer/imports.ts";
+import { kindOf } from "../../src/failure.ts";
 import { summary } from "../../src/writer/store.ts";
 
-test("only a failure the same build meets again is stuck", () => {
+test("only a failure the same build meets again is stuck: failure.ts calls it broken", () => {
+  const stuck = (error: unknown) => kindOf(error) === "broken";
   expect(stuck(new TooLongForOneRequest({ bytes: 67_000_000, message: "transcription failed (413): That recording is too long for one request." }))).toBe(true);
   expect(stuck(new AudioUnreadable({ message: "could not extract audio: no sound" }))).toBe(true);
   expect(stuck(new RelayBusy({ message: "busy" }))).toBe(false);

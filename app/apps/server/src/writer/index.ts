@@ -3,13 +3,11 @@
 // the server (an update, a crash), and before Edit restarts itself the jobs
 // are stopped where they are, to carry on after it.
 
-import type { ImportProgress } from "@edit/types/writer";
 
-import * as accounts from "../accounts.ts";
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
+import * as durable from "../jobs.ts";
 import * as paid from "../paid.ts";
-import * as service from "../effect/service.ts";
 import * as update from "../update.ts";
 import * as scriptSync from "../script_sync.ts";
 import * as archive from "./archive.ts";
@@ -47,7 +45,7 @@ export function start(app: App, options: { trials?: boolean } = {}): void {
   // acted on (Oct 31: with Script mode off there, a script's builds called the tools on :7700
   // and its Drive reads had no token).
   if (options.trials === true) {
-    carryOn(app, data, store.markInterrupted(data));
+    adoptCutImports(app.store.home, data);
     for (const id of store.ids(data)) jobs.markInterrupted(data, id);
     streamed.start(app);
     missing.start(app, data);
@@ -56,7 +54,7 @@ export function start(app: App, options: { trials?: boolean } = {}): void {
     scriptSync.start(app);
     return;
   }
-  carryOn(app, data, store.markInterrupted(data));
+  adoptCutImports(app.store.home, data);
   for (const id of store.ids(data)) jobs.markInterrupted(data, id);
   // Originals an import kept here going up behind it (streamed.ts), carried on.
   streamed.start(app);
@@ -102,67 +100,26 @@ function holdBeforeRestart(): void {
   });
 }
 
-/** How long a carry-on waits for the sign-in to be back, and how long between its tries after a passing failure. */
-export const carrying = { signInMs: 60_000, retryMs: [30_000, 120_000, 300_000] };
-
-/** Imports cut off by the restart and not started again yet, as the page follows them (routes.ts `/api/writer/progress`). */
-const waiting = new Map<string, ImportProgress>();
-
-/** The imports about to carry on after a restart: still importing, and saying so. */
-export const carryingOn = (): ImportProgress[] => [...waiting.values()];
-
 /**
- * Imports a restart or an update cut off carry on by themselves, from what
- * they kept, as Retry would: they waited for someone to press it, and a dev
- * server reloaded by a saved file left the Kroger import stopped at its
- * transcription (Oct 31). Each stays importing meanwhile ("Carrying on after
- * the update"), starts once the sign-in is back (a Drive import asked for its
- * token before it, after a fixed 15 s, and stopped for a person to retry), and
- * a passing failure after it (the relay busy, a dropped connection) is tried
- * again a few times. Another failure stops it as any other would.
+ * Imports a restart or an update cut off carry on from the job table, as any long work does (honest council change
+ * 7c, Nov 19): each has its row there from its start to "ready", and the table's one resumer (serve.ts `script`)
+ * starts it again once the sign-in is back. One an older build left importing with no row of its own is given one
+ * now, so it's carried on the same way. The timer that did this in memory (`carryOn`, its own tries and waits) is gone.
  */
-export function carryOn(app: App, data: string, cut: string[]): void {
-  if (cut.length === 0) return;
-  for (const id of cut) {
+export function adoptCutImports(home: string, data: string): void {
+  for (const id of store.ids(data)) {
+    let importing = false;
     try {
-      const script = store.read(store.scriptDir(data, id));
-      waiting.set(id, { id, title: script.title, stage: script.stage, percent: script.progress, detail: jobs.CARRYING_ON });
+      importing = store.read(store.scriptDir(data, id)).status === "processing";
     } catch {
-      // Unreadable: its resume says why.
+      continue;
     }
-  }
-  void (async () => {
-    await Promise.race([accounts.tokenWhenReady().catch(() => null), Bun.sleep(carrying.signInMs)]);
-    const imports = await import("./imports.ts");
-    // Side by side, as they were running: each resume lasts its whole import.
-    await Promise.all(cut.map((id) => carryOnImport(app, data, id, imports)));
-  })();
-}
-
-async function carryOnImport(app: App, data: string, id: string, imports: typeof import("./imports.ts")): Promise<void> {
-  for (let tries = 0; ; tries++) {
-    try {
-      diag.info("writer", `${id}: carrying on the import a restart cut off${tries > 0 ? ` (try ${tries + 1})` : ""}`);
-      waiting.delete(id);
-      await imports.resume(app, data, id, { kind: "retry" });
-      return;
-    } catch (error) {
-      const wait = carrying.retryMs[tries];
-      // Started by someone meanwhile, or stopped for Edit to restart (it stays importing, for the next run): not this carry-on's to say.
-      if (imports.importing(id) || jobs.restartUnderWay()) return;
-      if (wait === undefined || !service.isTemporary(error)) {
-        // A failure the import said stays on the script; one before it started leaves it stopped, for Retry.
-        store.markStopped(data, id);
-        diag.warn("writer", `${id}: the import a restart cut off didn't carry on: ${diag.messageOf(error)}`);
-        return;
-      }
-      // Still importing while it waits to try again, not stopped for a person.
-      const dir = store.scriptDir(data, id);
-      const script = store.update(dir, (one) => Object.assign(one, { status: "processing", error: null }), true);
-      waiting.set(id, { id, title: script.title, stage: script.stage, percent: script.progress, detail: `Trying again in a moment: ${diag.messageOf(error)}` });
-      diag.warn("writer", `${id}: the import a restart cut off failed for now (${diag.messageOf(error)}); trying again in ${Math.round(wait / 1000)} s`);
-      await Bun.sleep(wait);
-    }
+    if (!importing) continue;
+    const key = durable.keyOf("script", id);
+    const listed = durable.get(home, key);
+    if (listed !== undefined && durable.live(listed)) continue;
+    durable.begin(home, "script", id, { waiting_on: "import" }, "", "importing");
+    diag.info("writer", `${id}: an import a restart cut off, carried on from the job table`);
   }
 }
 

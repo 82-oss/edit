@@ -677,8 +677,11 @@ async function resumeJobs(app: App): Promise<void> {
         return;
       }
       if (writerImports.importing(job.project)) return;
-      jobs.end(app.store.home, job.key);
-      void writerImports.resume(app, data, job.project, { kind: "retry" }).catch((error: unknown) => diag.warn("writer", `trying ${job.project}'s import again: ${diag.messageOf(error)}`));
+      // Its row stays from start to "ready" (the import ends it, or waits in it again); one that can't even start waits too.
+      void writerImports.resume(app, data, job.project, { kind: "retry" }).catch((error: unknown) => {
+        diag.warn("writer", `trying ${job.project}'s import again: ${diag.messageOf(error)}`);
+        if (!writerImports.importing(job.project)) jobs.wait(app.store.home, job.key, error);
+      });
     },
     // Claude on a Writer script (a build, a revision, review fixes…): started again from what it was started with and kept.
     writer: async (job) => (await import("./writer/work.ts")).carryOn(app, job),

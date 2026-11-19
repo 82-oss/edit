@@ -11,7 +11,8 @@ import type { Script } from "@edit/types/writer";
 import * as busy from "../../src/busy.ts";
 import * as durable from "../../src/jobs.ts";
 import * as chat from "../../src/writer/chat.ts";
-import { carryOn as carryOnImports, carrying } from "../../src/writer/index.ts";
+import { adoptCutImports } from "../../src/writer/index.ts";
+import * as imports from "../../src/writer/imports.ts";
 import * as fixing from "../../src/writer/fixing.ts";
 import * as jobs from "../../src/writer/jobs.ts";
 import * as scripting from "../../src/writer/scripting.ts";
@@ -211,26 +212,24 @@ test("review fixes carried on keep the notes they took and don't fix again those
   }
 });
 
-test("an import a restart cut off stays importing until it carries on, and one that can't says it stopped", async () => {
+test("an import a restart cut off is given its row in the job table and carried on from it; one whose footage is gone stops for the person", async () => {
   const { home, app, cleanup } = fixtureHome("writer-import-on");
   try {
-    // Importing on disk, from a file that's gone: it carries on, and stops as any import would.
+    // Importing on disk with no row of its own (an older build's): given one, running, for the table's resumer.
     const { data } = made(home, { status: "processing", stage: "transcribing", progress: 60, sourceKind: "file", originalPath: join(home, "nowhere.m4a") });
-    const cut = store.markInterrupted(data);
-    expect(cut).toEqual([ID]);
+    adoptCutImports(home, data);
+    expect(durable.get(home, durable.keyOf("script", ID))).toMatchObject({ state: "running", step: "importing" });
     expect(store.read(store.scriptDir(data, ID)).status).toBe("processing");
-    carrying.signInMs = 10;
-    carryOnImports(app, data, cut);
-    for (let i = 0; i < 300 && store.read(store.scriptDir(data, ID)).status === "processing"; i++) await Bun.sleep(10);
+    // Given once: a second start doesn't add another.
+    adoptCutImports(home, data);
+    expect(durable.list(home, "script").length).toBe(1);
+    // Carried on as the resumer does: its file is gone, which only the person can put right, so it stops and says so.
+    await imports.resume(app, data, ID, { kind: "retry" }).catch(() => undefined);
     const script = store.read(store.scriptDir(data, ID));
     expect(script.status).toBe("error");
     expect(script.error).not.toBeNull();
-    // Stopped while not importing: marked so, for Retry, as before.
-    made(home, { status: "processing" });
-    store.markStopped(data, ID);
-    expect(store.read(store.scriptDir(data, ID))).toMatchObject({ status: "error", error: store.STOPPED_WHEN_CLOSED });
+    expect(durable.get(home, durable.keyOf("script", ID))).toBeUndefined();
   } finally {
-    carrying.signInMs = 60_000;
     cleanup();
   }
 });

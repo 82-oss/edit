@@ -64,7 +64,8 @@ test.skipIf(ffmpeg === null)("a script's import stopped for an update stays impo
 
     // The next start: named as cut off by the restart, and carried on to the end.
     mock.on("POST", "/v1/transcribe", () => Response.json(scribeAnswer(["Where", "were", "you?"])));
-    expect(store.markInterrupted(data)).toEqual([script.id]);
+    // Its row in the job table, from its start, still running: the table's resumer carries it on.
+    expect(jobs.get(app.store.home, jobs.keyOf("script", script.id))).toMatchObject({ state: "running" });
     const done = await imports.resume(app, data, script.id, { kind: "retry" });
     expect(done.status).toBe("ready");
     expect(done.words.length).toBeGreaterThan(0);

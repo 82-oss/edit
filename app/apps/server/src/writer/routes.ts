@@ -48,7 +48,6 @@ import * as versions from "./versions.ts";
 import * as watch from "./watch.ts";
 import { windowSources } from "./window_sources.ts";
 import { begin as beginJob } from "./work.ts";
-import { carryingOn } from "./index.ts";
 
 type Context = RouteContext<App>;
 
@@ -624,12 +623,8 @@ export function routes(router: Router<App>): void {
       if (path === null) throw notFound("No such clip.");
       return serveFile(context.request, path);
     })
-    // With the imports a restart cut off, until they're started again: still importing, carrying on.
-    .get("/api/writer/progress", ({ app }) => {
-      const now = imports.progress();
-      const all = [...now, ...carryingOn().filter((one) => !now.some((going) => going.id === one.id) && !imports.importing(one.id))];
-      return json(all.filter((one) => seesScript(dataOf(app), one.id)));
-    })
+    // With the imports waiting in the job table to try again by themselves, each saying when.
+    .get("/api/writer/progress", ({ app }) => json(imports.progress().filter((one) => seesScript(dataOf(app), one.id))))
     // Brings an archived script's footage back; followed as a build.
     .post("/api/writer/scripts/{id}/restore", (context) =>
       answer(() => {

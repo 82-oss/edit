@@ -148,11 +148,12 @@ export function kindOf(error: unknown): Kind {
       // temporary is passing; a file not shared or footage moved is the person's; a 401 is a sign-in being renewed
       // (a real sign-out is SignedOut), a 402 credit, a 403 the person's. The rest ("later": a lock, a paused
       // connection) is read by its words.
-      if (tag === "ServiceRefused") {
-        const status = (at as { status?: unknown }).status;
-        if (status === 401) return "passing";
+      // A refusal by its status (the relay's, transcription's): 402 credit, 403 the person's, a 401 a sign-in being renewed.
+      const status = (at as { status?: unknown }).status;
+      if (typeof status === "number") {
         if (status === 402) return "quota";
         if (status === 403) return "person";
+        if (status === 401 && tag === "ServiceRefused") return "passing";
       }
       if (PERSON_TAGS.has(tag)) return "person";
       const kind = service.kindOf(at);

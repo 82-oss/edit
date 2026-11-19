@@ -290,43 +290,6 @@ export function ids(data: string): string[] {
   }
 }
 
-/**
- * The imports that died with the server (still importing on disk): their ids,
- * each carried on by itself (index.ts `carryOn`). They stay importing
- * meanwhile, where they said "The import stopped when Edit closed. Retry…"
- * for the seconds until they were started again (Nov 10: updates go through
- * mid-import).
- */
-export function markInterrupted(data: string): string[] {
-  const cut: string[] = [];
-  for (const id of ids(data)) {
-    try {
-      if (read(join(scriptsRoot(data), id)).status === "processing") cut.push(id);
-    } catch {
-      continue;
-    }
-  }
-  return cut;
-}
-
-export const STOPPED_WHEN_CLOSED = "The import stopped when Edit closed. Retry: what finished is kept.";
-
-/** An import a restart cut off that didn't carry on: stopped, for Retry, as before (none running on it here). */
-export function markStopped(data: string, id: string, why = STOPPED_WHEN_CLOSED): void {
-  const dir = join(scriptsRoot(data), id);
-  let script: Script;
-  try {
-    script = read(dir);
-  } catch {
-    return;
-  }
-  if (script.status !== "processing") return;
-  script.status = "error";
-  script.error = why;
-  script.updatedAt = Date.now();
-  write(dir, script);
-}
-
 export function remove(data: string, id: string): void {
   fs.rmSync(scriptDir(data, id), { recursive: true, force: true });
 }

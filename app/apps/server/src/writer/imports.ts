@@ -15,6 +15,7 @@ import type { Choice, Decision, ImportProgress, Kind, Label, Research, Reuse, Sc
 import type { App } from "../app.ts";
 import { creator } from "../accounts.ts";
 import * as diag from "../diag.ts";
+import * as failure from "../failure.ts";
 import * as folderAccess from "../folder_access.ts";
 import { inArea, runPromise, runtime } from "../effect/runtime.ts";
 import * as notices from "../notices.ts";
@@ -101,7 +102,7 @@ export async function stopAll(): Promise<number> {
 }
 
 /** Every import running now, so the page can follow them. */
-export const progress = (): ImportProgress[] => [...latest.values()];
+export const progress = (): ImportProgress[] => [...latest.values(), ...[...waitingNow.values()].filter((one) => !latest.has(one.id))];
 
 function busy(id: string): () => void {
   if (jobs.running(id)) throw new Error("Wait for this project's current job to finish before retrying its import.");
@@ -607,26 +608,16 @@ function replaceSource(dir: string, script: Script, id: string | null, url: stri
   script.sourceUrl = url;
 }
 
-/**
- * Whether `error` is one the same build meets again however often it's
- * asked: its kind is permanent (effect/service.ts `kindOf`, the table every
- * area gives its errors to). Nov 1, Mathias
- * resumed two imports 13 times, each ~41 minutes of footage before the same
- * 413. Try again isn't offered for one of these until Edit is updated
- * (`Script.stuckOn`): Replace, Dismiss and an admin's `edit remote resume`
- * still are. A temporary failure (the relay busy, a dropped connection) or
- * one a person can change (the day's allowance, a sign-in) keeps it.
- */
-export function stuck(error: unknown): boolean {
-  return service.kindOf(error) === "permanent";
-}
-
 /** Runs the pipeline. A failure, or even a bug, ends as a failed import that says so and can be retried; it never leaves the script stuck importing. */
 const importScript = Effect.fn("writer.import")(function* (app: App, dir: string, script: Script) {
   const began = Date.now();
   const name = jobs.named(script.id, script.title);
   const from = script.sourceKind === "file" ? `the file ${script.originalPath.split("/").pop()}` : script.sourceKind === "compilation" ? `${script.sourceUrl.split("\n").length} videos` : `${script.sourceKind} ${script.sourceUrl.split("\n")[0]}`;
   yield* Effect.logInfo(`${name}: importing from ${from}`);
+  // One row in the job table from its start to "ready" (honest council change 7c): a restart carries it on from it,
+  // and a wait sits in it, never on a timer in memory.
+  durableJobs.begin(app.store.home, "script", script.id, { waiting_on: "import" }, "", "importing");
+  waitingNow.delete(script.id);
   say(script, "Starting.");
   let ran = yield* pipeline(app, dir, script).pipe(Effect.scoped, Effect.result);
   // Footage Edit made or fetched itself whose sound can't be read is made again, once (Nov 1, Mathias's "Mom
@@ -654,20 +645,39 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
     return script;
   }
   const error = ran.failure;
-  // The transcription plan out of credit isn't the person's to retry: it waits in the job table, woken every half hour (import_steps.ts).
-  const credit = steps.whyOf(error) === "quota";
-  const retryAt = credit ? steps.retryAt("quota", Date.now()) : null;
-  const message = credit && retryAt !== null ? `The transcription plan is out of credit; Edit tries again by itself at ${new Date(retryAt).toTimeString().slice(0, 5)} (${diag.messageOf(error)})` : diag.messageOf(error);
+  const kind = failure.kindOf(error);
   const key = durableJobs.keyOf("script", script.id);
-  if (retryAt !== null) {
-    durableJobs.begin(app.store.home, "script", script.id, { waiting_on: "quota" }, "", "waiting for credit");
-    durableJobs.settle(app.store.home, key, "waiting", { step: "waiting for credit", retry_at: retryAt, args: { waiting_on: "quota" } });
-  } else durableJobs.end(app.store.home, key);
   const spent = stageTimes(script.id);
-  yield* Effect.logError(`${jobs.named(script.id, script.title)}: stopped after ${Math.round((Date.now() - began) / 1000)} s${spent ? ` (${spent})` : ""}: ${message}`);
+  // Trouble that passes (a dropped line, the relay busy, a full disk, the plan out of credit, Drive's day): the
+  // script stays importing with one line saying when Edit tries again, the row waits in the job table, and no "The
+  // import stopped" goes out. Before, Script mode read an error it didn't know as the person's and stopped (JJ's
+  // imports on the night of Nov 18, the same dropped line the editor's import waited out).
+  if (failure.waitsByItself(kind)) {
+    const at = durableJobs.wait(app.store.home, key, error);
+    // What it waits on, in the words the diagnostics and the waking read (`waiting_on`).
+    durableJobs.patch(app.store.home, key, { waiting_on: kind === "limit" ? "drive" : kind });
+    const line = waitLine(kind, error, at);
+    yield* Effect.logWarning(`${jobs.named(script.id, script.title)}: waiting by itself after ${Math.round((Date.now() - began) / 1000)} s${spent ? ` (${spent})` : ""} (${kind}): ${diag.messageOf(error)}`);
+    script.status = "processing";
+    script.error = null;
+    delete script.stuckOn;
+    delete script.decision;
+    script.updatedAt = Date.now();
+    try {
+      store.write(dir, script);
+    } catch {
+      // Said either way.
+    }
+    waitingNow.set(script.id, { id: script.id, title: script.title, stage: script.stage, percent: script.progress, detail: line });
+    return script;
+  }
+  const message = diag.messageOf(error);
+  durableJobs.end(app.store.home, key);
+  yield* Effect.logError(`${jobs.named(script.id, script.title)}: stopped after ${Math.round((Date.now() - began) / 1000)} s${spent ? ` (${spent})` : ""} (${kind}): ${message}`);
   script.status = "error";
   script.error = message;
-  if (stuck(error)) script.stuckOn = BUILD;
+  // Edit's own bug: Try again isn't offered until a new build (`Script.stuckOn`); Replace and Dismiss still are.
+  if (kind === "broken") script.stuckOn = BUILD;
   else delete script.stuckOn;
   delete script.decision;
   script.updatedAt = Date.now();
@@ -680,6 +690,20 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
   notices.notify({ key: `import:${script.id}:${began}`, title: "The import stopped", body: `${script.title || "Untitled script"}: ${notices.line(message)}`, path: `/scripts/${script.id}` });
   return yield* new ImportStopped({ message, kind: service.kindOf(error) });
 });
+
+/** Imports waiting in the job table to try again by themselves, as the page follows them (`progress`). */
+const waitingNow = new Map<string, ImportProgress>();
+
+/** The one line a waiting import shows: what it waits on, and when Edit tries again. */
+function waitLine(kind: failure.Kind, error: unknown, at: number | null): string {
+  const when = at === null ? "" : ` at ${steps.clock(at)}`;
+  if (kind === "quota") return steps.hearingWaits(error, at ?? Date.now());
+  if (kind === "limit") return `Google Drive's download limit is used up for today for a recording: Edit tries again by itself${when}.`;
+  if (kind === "room") return `${diag.messageOf(error).replace(/\s*Retry[^.]*\.?\s*$/u, "").replace(/\.?\s*$/u, ".")} Edit goes on by itself once there's room${when === "" ? "" : ` (it looks again${when})`}.`;
+  if (kind === "encoder") return "The hardware encoder is busy with an export: the import goes on once it's free.";
+  if (kind === "signin") return "Sign in to Edit, and the import goes on by itself.";
+  return `Waiting for the connection: Edit tries again by itself${when}.`;
+}
 
 /** The sound couldn't be taken from the footage: a damaged file, not a passing failure. */
 export function unreadable(error: unknown): boolean {
@@ -1085,7 +1109,8 @@ async function downloaded(path: string, recording: drive.Recording): Promise<boo
  */
 function checkSpace(dir: string, needed: number): void {
   const short = room.admit(dir, needed, "This import", "retry");
-  if (short !== null) throw new Error(short);
+  // A wait of its own (failure.ts `room`): the import goes on by itself once there's room, never stopped for a Retry.
+  if (short !== null) throw new failure.NoRoom(needed, short);
 }
 
 /** The bytes of every file under `path` (none: 0). */

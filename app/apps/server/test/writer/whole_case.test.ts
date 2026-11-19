@@ -15,6 +15,7 @@ import * as tools from "../../src/tools.ts";
 import { timing } from "../../src/transcribe.ts";
 import * as captionTurns from "../../src/writer/caption_turns.ts";
 import * as drive from "../../src/writer/drive.ts";
+import * as jobs from "../../src/jobs.ts";
 import * as imports from "../../src/writer/imports.ts";
 import * as parts from "../../src/writer/parts.ts";
 import * as store from "../../src/writer/store.ts";
@@ -159,14 +160,17 @@ test("a case's room is counted by its length: its pieces, and the preview they'r
   expect(imports.previewRoom([{ size: 5e9, claimedMs: null }])).toBe(2e9);
 });
 
-test.skipIf(ffmpeg === null)("a long case a Mac has no room for is refused before anything comes down, with the numbers", async () => {
+test.skipIf(ffmpeg === null)("a long case a Mac has no room for waits before anything comes down, with the numbers, and goes on by itself once there's room", async () => {
   const { app, cleanup } = fixtureHome("whole-case-room");
   const free = diskHooks.free;
   diskHooks.free = () => 20e9;
   try {
     const data = store.dataDir(app.store.home);
     const before = mock.calls("/www.googleapis.com/drive/v3/files/").filter((call) => call.query.get("alt") === "media").length;
-    await expect(imports.fromDrive(app, data, URL_, null, null, null)).rejects.toThrow(/^This import needs about \d+ GB free and this (Mac|computer) has 20 GB\./);
+    const waiting = await imports.fromDrive(app, data, URL_, null, null, null);
+    expect(waiting.status).toBe("processing");
+    expect(imports.progress().find((one) => one.id === waiting.id)?.detail).toMatch(/^This import needs about \d+ GB free and this (Mac|computer) has 20 GB\..* Edit goes on by itself once there's room/);
+    expect(jobs.get(app.store.home, jobs.keyOf("script", waiting.id))).toMatchObject({ state: "waiting", args: { waiting_on: "room" } });
     expect(mock.calls("/www.googleapis.com/drive/v3/files/").filter((call) => call.query.get("alt") === "media").length).toBe(before);
   } finally {
     diskHooks.free = free;
