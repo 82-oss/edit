@@ -258,7 +258,8 @@ export const scriptCases: Case[] = [
       const id = await startImport(context);
       const first = await settled(context, id, 240_000, false);
       const at = first ?? (await script(context, id));
-      context.check("the line dropped while the second was read from the cloud", dropped, dropped ? "yes" : "the second recording was never read from the cloud (the case didn't reach the join)");
+      // Not a check: since change 3 the join uses what the fetch read and reads a recording again only when it must.
+      context.log(dropped ? "the line dropped as the second was read from the cloud" : "the second was never read back from the cloud (the join used what the fetch read)");
       const others = (at.parts ?? []).length;
       context.check("the import ended ready with the others", at.status === "ready" && others >= 2, describe(at));
       const listed = (at.missing ?? []).find((item) => item.id === IDS[1]);
