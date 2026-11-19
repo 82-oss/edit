@@ -507,7 +507,8 @@ pub struct Cleans {
     /// left: x0, y0, x1, y1.
     #[serde(rename = "box")]
     pub region: [f32; 4],
-    /// What it took out: a re-uploader's text (Vmake's, the default) or
+    /// What it took out: a re-uploader's text (the default; only strips made
+    /// before Nov 19 are text, none is made any more) or
     /// their see-through watermark (Edit's own arithmetic, the server's
     /// `watermark_removal.ts`). A watermark's strip lies under a text strip
     /// of the same seconds, and only a text strip ends the blur over their

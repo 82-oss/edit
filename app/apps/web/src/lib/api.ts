@@ -220,23 +220,17 @@ export interface ExportActivity {
  */
 export const byPerson = (): { person?: true } => (navigator.webdriver ? {} : { person: true });
 
-/** The line about taking their text out of the footage, its one button, and a run's progress. */
+/** Removal of their text and watermarks under way, for the chat's waiting row (the server's removal_schedule.ts `statusOf`). */
 export interface TextRemoval {
-  line: string | null;
-  action: "remove" | "retry" | "sign_in" | null;
-  running: { done: number; total: number } | null;
-  /** Under way in the background: the chat's waiting row (RemovalRow.tsx) says it, not the line at the top. */
-  background?: RemovalRun | null;
+  /** Under way in the background: the chat's waiting row (RemovalRow.tsx) says it. */
+  background: RemovalRun | null;
 }
 
-/** A removal under way (the server's removal_schedule.ts `backgroundOf`). */
 export interface RemovalRun {
   label: string;
   done: number;
   total: number;
   started_at: number;
-  /** The day's free Vmake files left, when few are (past them the plan's credits pay). */
-  free_left?: number;
 }
 
 
@@ -266,13 +260,10 @@ export const api = {
   scriptChanges: (id: string) => request<ScriptChanges>("GET", `/api/projects/${id}/script/pull`),
   /** Takes the Doc's changed ranges and cuts their clips again; the rest is left for the agent. */
   pullScript: (id: string) => request<ScriptChanges>("POST", `/api/projects/${id}/script/pull`, { apply: true }),
-  /** Taking what re-uploaders burned into the footage out of its picture (text_removal.ts): the editor's one line. */
+  /** Taking what re-uploaders burned into the footage out of its picture (text_removal.ts): the chat's waiting row. */
   textRemoval: (id: string) => request<TextRemoval>("GET", `/api/projects/${id}/text-removal`),
-  removeText: (id: string, retry = false) => request<TextRemoval>("POST", `/api/projects/${id}/text-removal`, { retry }),
-  /** The chat's waiting row's Stop: nothing more is sent (cleaned pieces stay). */
+  /** The chat's waiting row's Stop: nothing more is done (what's done stays). */
   stopRemoval: (id: string) => request<TextRemoval>("POST", `/api/projects/${id}/removal/stop`),
-  /** Vmake's sign-in in this Mac's cloud browser: the live view to open. */
-  vmakeSignIn: () => request<{ open: string }>("POST", "/api/text-removal/sign-in"),
   /** The footage the timeline plays that isn't on this machine and can't be fetched. */
   /** Footage the timeline uses that isn't here (missing_media.ts): Edit tries it again by itself meanwhile. */
   missingFootage: (id: string) => request<EditMissing>("GET", `/api/projects/${id}/missing`),

@@ -1,5 +1,5 @@
-// text_blur.ts: the Gaussian blur tracked over their text where Vmake isn't
-// used (a taught channel's third case on): read three times a second and
+// text_blur.ts: the Gaussian blur tracked over their text (a taught
+// channel's, in every section, where the agent marked): read three times a second and
 // halved at each change, its box following the words (moving with them,
 // both boxes across a change, off with none), laid through the clip's own
 // framing, kept as it is when nothing changed; and, with the real engine, a

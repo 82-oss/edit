@@ -78,7 +78,6 @@ import * as beta from "./beta.ts";
 import * as effects from "./effects.ts";
 import * as exportSteps from "./export_steps.ts";
 import * as removalSchedule from "./removal_schedule.ts";
-import * as textRemoval from "./text_removal.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
 import * as effectCloud from "./effect_cloud.ts";
 import { BUILD, VERSION } from "./version.ts";
@@ -139,7 +138,6 @@ export function buildRouter(): Router<App> {
   channelMarks.routes(router);
   beta.routes(router);
   effects.routes(router);
-  textRemoval.routes(router);
   removalSchedule.routes(router);
   watermarkRemoval.routes(router);
   archive.routes(router);

@@ -19,7 +19,8 @@ from: number, to: number,
  */
 box: [number, number, number, number], 
 /**
- * What it took out: a re-uploader's text (Vmake's, the default) or
+ * What it took out: a re-uploader's text (the default; only strips made
+ * before Nov 19 are text, none is made any more) or
  * their see-through watermark (Edit's own arithmetic, the server's
  * `watermark_removal.ts`). A watermark's strip lies under a text strip
  * of the same seconds, and only a text strip ends the blur over their

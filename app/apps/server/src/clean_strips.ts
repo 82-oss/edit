@@ -1,6 +1,6 @@
-// Footage with another channel's subtitles taken out of its picture
-// (text_removal.ts), or their see-through watermark (watermark_removal.ts,
-// laid under a text strip of the same frames): the cleaned strip of each stretch is a media of its
+// Footage with another channel's subtitles taken out of its picture, or
+// their see-through watermark (watermark_removal.ts, laid under a text strip
+// of the same frames): the cleaned strip of each stretch is a media of its
 // own (`Media::cleans`: which footage, which of its seconds, which box of its
 // picture), stacked (see-through outside a feathered box round the
 // subtitles' band), and laid here, on every save, as a clip over each clip of
@@ -14,6 +14,11 @@
 // Where a strip covers a clip, the blur over the band laid while waiting for
 // it (burned_subtitles.ts `cover`) gives way: blurring the clean picture would
 // undo it.
+//
+// Text strips are read-only now: none is made any more (Sphe, Nov 19, their
+// text gets text_blur.ts's tracked blur instead). Those already in projects,
+// made before then and kept on R2 (`edit/cleaned/…`), are still laid here so
+// finished edits don't change. Watermark strips are still made.
 
 import type { Clip, Keyframe, Media, Project, Track, VideoClip } from "./model.ts";
 import { clipEnd, fps as fpsOf, freshId, sample, trackOf } from "./project.ts";

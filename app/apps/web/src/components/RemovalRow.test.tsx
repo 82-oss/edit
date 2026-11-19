@@ -23,7 +23,7 @@ const settle = () =>
     for (let n = 0; n < 5; n++) await Promise.resolve();
   });
 
-const RUN: TextRemoval = { line: null, action: null, running: { done: 12, total: 81 }, background: { label: "Removing their text and watermarks", done: 12, total: 25, started_at: Date.now() - 1_084_000 } };
+const RUN: TextRemoval = { background: { label: "Removing their text and watermarks", done: 12, total: 25, started_at: Date.now() - 1_084_000 } };
 
 function mount(running: boolean): HTMLElement {
   const container = document.createElement("div");
@@ -36,7 +36,7 @@ function mount(running: boolean): HTMLElement {
 describe("the chat's waiting row for a removal in the background", () => {
   it("a dashed ring, what, how far and how long, never cut (it wraps), a thin line of how far; one button, Stop, and the row goes", async () => {
     vi.spyOn(api, "textRemoval").mockResolvedValue(RUN);
-    const stop = vi.spyOn(api, "stopRemoval").mockResolvedValue({ line: null, action: null, running: null });
+    const stop = vi.spyOn(api, "stopRemoval").mockResolvedValue({ background: null });
     const container = mount(false);
     await settle();
     const row = container.querySelector("[data-testid=removal-row]")!;
@@ -62,14 +62,13 @@ describe("the chat's waiting row for a removal in the background", () => {
   });
 
   it("nothing under way: no row", async () => {
-    vi.spyOn(api, "textRemoval").mockResolvedValue({ line: "Taking their text out is off: the team's Vmake account is signed out.", action: "retry", running: null });
+    vi.spyOn(api, "textRemoval").mockResolvedValue({ background: null });
     const container = mount(false);
     await settle();
     expect(container.querySelector("[data-testid=removal-row]")).toBeNull();
   });
 
-  it("its words, and the day's free files only when few are left", () => {
+  it("its words", () => {
     expect(runLine(RUN.background!)).toBe("Removing their text and watermarks · 12 of 25 pieces");
-    expect(runLine({ ...RUN.background!, free_left: 3 })).toBe("Removing their text and watermarks · 12 of 25 pieces · 3 free files left today");
   });
 });

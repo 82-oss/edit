@@ -45,7 +45,8 @@ test("cells: the fixed 30 s of each file the timeline shows, a second's handle e
   expect(wm.parseCell("30000-60000.watermark-abc123-3734-6167-6281-8417.mp4", "abc123")).toEqual({ from: 30, to: 60, box: [0.3734, 0.6167, 0.6281, 0.8417] });
   expect(wm.parseCell("0-30000.watermark-abc123-none.json", "abc123")).toEqual({ from: 0, to: 30, box: null });
   expect(wm.parseCell("0-30000.watermark-def456-none.json", "abc123")).toBeNull();
-  expect(wm.parseCell("9000-31000.vmake-api.mp4", "abc123")).toBeNull();
+  // A text piece kept in the same folder (strips from before Nov 19) is never a cell.
+  expect(wm.parseCell("9000-31000.text.mp4", "abc123")).toBeNull();
 });
 
 /** A project: footage `m` on v1 in one clip, a blur over its subtitles, a text strip and a watermark strip of the same seconds. */

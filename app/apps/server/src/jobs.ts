@@ -106,8 +106,8 @@ const MOST_RESUMES = 2;
 
 /**
  * The kinds put off and started again by themselves when restarts, an outage
- * or a sign-in lapse stop them (`putOff`): none sends anything paid (Vmake,
- * a hearing, Claude, a map's tiles), so trying again costs only the line.
+ * or a sign-in lapse stop them (`putOff`): none sends anything paid (a
+ * hearing, Claude, a map's tiles), so trying again costs only the line.
  */
 // Not a share: the person is waiting on its link, so one given up says so beside Retry (reviews.ts shareNow).
 export const BACKS_OFF: readonly Kind[] = ["export", "archive", "drive", "smooth", "upload", "full", "footage"];

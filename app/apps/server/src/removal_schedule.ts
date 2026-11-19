@@ -8,17 +8,16 @@
 //     agent's cut-ins and graphics; whenever clips change, only the newly
 //     needed seconds go (each worker keeps its pieces by file and seconds, so
 //     nothing is done or paid for twice);
-//   - two workers: their watermarks taken out here by the engine
-//     (watermark_removal.ts, free; every footage file looked at once for a
+//   - two workers, both here and free: their watermarks taken out by the
+//     engine (watermark_removal.ts; every footage file looked at once for a
 //     mark of its own, kept by source; nothing done where there's none),
-//     their subtitles and text by Vmake (text_removal.ts, the team's
-//     plan on its website by default; the API only after the person's yes to
-//     its price);
-//   - every piece checked: automatically as it comes back (Vmake's: their
-//     words read again; the engine's: how much of the mark is left), then by
-//     the agent (`check_removal`: before and after, it rejects what isn't
-//     clean); a piece that isn't is done once more, then given up on and
-//     blurred (a watermark left as it was), and said;
+//     their subtitles and text under a blur tracked tight over their words
+//     (text_blur.ts, through text_removal.ts's plan: only the stretches the
+//     agent marked, in every section of the edit);
+//   - every piece checked: the engine's automatically (how much of the mark
+//     is left), then by the agent (`check_removal`: before and after, it
+//     rejects what isn't clean; the blur's with render_frame); a watermark
+//     that isn't is done once more, then left as it was, and said;
 //   - an export waits for pieces still out ("Removing their text · 3 of 19
 //     pieces" among its steps): footage of a channel taught to take theirs out
 //     never goes out uncleaned while a piece is coming.
@@ -33,7 +32,7 @@ import { image, registerTool, text, type Content, type ToolCall } from "./mcp/re
 import type { Media } from "./model.ts";
 import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
-import * as modes from "./removal_modes.ts";
+import * as sections from "./removal_sections.ts";
 import { EDIT_EVENT } from "./edit_event.ts";
 import * as seams from "./seams.ts";
 import * as textBlur from "./text_blur.ts";
@@ -41,7 +40,7 @@ import * as textRemoval from "./text_removal.ts";
 import * as tools from "./tools.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
 
-/** How long an export waits for pieces still out (Vmake's site takes minutes a piece, three at once); how soon after the server starts its work resumes. */
+/** How long an export waits for pieces still out; how soon after the server starts its work resumes. */
 export const timing = { exportWaitMs: 3 * 3_600_000, restMs: 2000, resumeMs: 15_000, watchMs: 2000, wakeEveryMs: 3000 };
 
 /** Projects whose work resumes when the server starts: those changed within this. */
@@ -82,7 +81,7 @@ export async function ensure(app: App, id: string): Promise<void> {
   // The parts that run by themselves, and those asked for here (a part taught to wait for an ask does nothing until then).
   const lesson = asks.inForce(removal.lessonOf(live.project), app.store.home, id);
   if (lesson?.remove.watermarks === true) await watermarkRemoval.ensure(app, id);
-  if (removal.kinds(lesson).vmake.length > 0) await textRemoval.ensure(app, id);
+  if (removal.kinds(lesson).blur.length > 0) await textRemoval.ensure(app, id);
   noteRun(app, id);
 }
 
@@ -104,16 +103,14 @@ function hintsOf(app: App, id: string): watermarkRemoval.Hints {
 }
 
 watermarkRemoval.hintsFor.project = hintsOf;
-textRemoval.schedule.ensure = (app, id) => ensure(app, id);
 
 /** Pieces out (queued or being done) and done, of both workers, for the line and the export's step. */
 export function progressOf(id: string): { done: number; out: number } {
-  const text = textRemoval.piecesOf(id);
   const marks = watermarkRemoval.piecesOf(id);
   // A file still being looked at for its mark counts as out: its pieces aren't known yet.
   const blurs = textBlur.piecesOf(id);
-  const out = text.filter((one) => one.state === "queued" || one.state === "running").length + marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id);
-  const done = text.filter((one) => one.state === "check" || one.state === "done").length + marks.filter((one) => one.state === "done" || one.state === "none").length + blurs.filter((one) => one.state === "done").length;
+  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id);
+  const done = marks.filter((one) => one.state === "done" || one.state === "none").length + blurs.filter((one) => one.state === "done").length;
   return { done, out };
 }
 
@@ -126,19 +123,15 @@ export function exportLine(id: string): string | null {
 /**
  * Waits for `id`'s pieces still out before an export (broll's `waitForMaps`,
  * which every export goes through): caught up with the edit first, then
- * until none is out. Vmake not set up, or its account refused, has nothing
- * coming: the export goes with their blur. The API's paid route without the
- * person's yes is refused in words.
+ * until none is out.
  */
 export async function waitForPieces(app: App, id: string, limitMs = timing.exportWaitMs): Promise<void> {
   await ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: ${diag.messageOf(error)}`));
-  const said = await textRemoval.status(app, id).catch(() => null);
-  if (said?.action === "remove") throw new Error("Their text isn't out of the footage yet: say yes to the price at the top of the editor first.");
   const started = Date.now();
   while (progressOf(id).out > 0) {
     // The quick look an export takes in its request: said "still rendering", it waits on in the background (routes.ts `whenReady`).
     if (limitMs <= 10_000 && Date.now() - started > limitMs) throw new Error("still rendering: their text is being taken out of the footage");
-    if (Date.now() - started > Math.max(limitMs, timing.exportWaitMs)) throw new Error("Their text is still being taken out of the footage; export again once the line at the top says it's done.");
+    if (Date.now() - started > Math.max(limitMs, timing.exportWaitMs)) throw new Error("Their text is still being taken out of the footage; export again once the chat says it's done.");
     await Bun.sleep(1000);
   }
 }
@@ -185,9 +178,8 @@ async function checkRemoval({ app, args, projectId }: ToolCall): Promise<Content
   for (const one of Array.isArray(args.reject) ? (args.reject as { piece?: unknown; why?: unknown }[]) : []) {
     const key = typeof one.piece === "string" ? one.piece : "";
     const why = typeof one.why === "string" && one.why.trim() !== "" ? one.why.trim() : "the agent saw it isn't clean";
-    if (key.startsWith("text:")) said.push(`${key}: ${await textRemoval.reject(app, projectId, key, why)}`);
-    else if (key.startsWith("watermark:")) said.push(`${key}: ${await watermarkRemoval.reject(app, projectId, key, why)}`);
-    else if (key.startsWith("blur:")) said.push(`${key}: the tracked blur follows their words as read; if it misses some, mark that stretch again tighter, or ask for {mode: "smart"} there`);
+    if (key.startsWith("watermark:")) said.push(`${key}: ${await watermarkRemoval.reject(app, projectId, key, why)}`);
+    else if (key.startsWith("blur:")) said.push(`${key}: the tracked blur follows their words as read; if it misses some, mark that stretch again tighter`);
     else throw new Error(`no piece ${key}: the pieces are listed by check_removal`);
   }
   const project = app.store.get(projectId)!.project;
@@ -195,15 +187,14 @@ async function checkRemoval({ app, args, projectId }: ToolCall): Promise<Content
   const rows: string[] = [];
   let shown = 0;
   const pieces = [
-    ...textRemoval.piecesOf(projectId).map((one) => ({ key: one.key, media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, why: one.why, what: "text" as const, mode: one.mode })),
     ...watermarkRemoval.piecesOf(projectId).map((one) => ({ key: `watermark:${one.media}@${Math.round(one.from * 1000)}`, media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, why: one.error, what: "watermark" as const })),
     // The tracked blur's stretches: looked at with render_frame (nothing to compare), never rejected here.
     ...textBlur.piecesOf(projectId).map((one) => ({ key: one.key, media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, why: one.why, what: "blur" as const })),
   ];
   for (const piece of pieces) {
-    rows.push(`${piece.key} · ${piece.name} ${Math.round(piece.from)}–${Math.round(piece.to)} s · ${piece.what}${"mode" in piece ? ` (${modes.WORDS[piece.mode]})` : ""} · ${piece.state}${piece.why ? ` (${piece.why})` : ""}`);
+    rows.push(`${piece.key} · ${piece.name} ${Math.round(piece.from)}–${Math.round(piece.to)} s · ${piece.what} · ${piece.state}${piece.why ? ` (${piece.why})` : ""}`);
     if (shown >= 4) continue;
-    const strip = strips.find((one) => one.cleans!.media === piece.media && (one.cleans!.what ?? "text") === piece.what && Math.abs(one.cleans!.from - piece.from) < 0.01);
+    const strip = strips.find((one) => one.cleans!.media === piece.media && one.cleans!.what === piece.what && Math.abs(one.cleans!.from - piece.from) < 0.01);
     const footage = project.media.find((one) => one.id === piece.media);
     if (strip === undefined || footage === undefined) continue;
     const seen = `${projectId}|${piece.key}|${strip.id}`;
@@ -220,7 +211,7 @@ async function checkRemoval({ app, args, projectId }: ToolCall): Promise<Content
   const head =
     pieces.length === 0
       ? "Nothing has come back from removal yet (it runs by itself as footage is cut; get_edit_context says when pieces are out)."
-      : `${rows.join("\n")}\n\nLook at each after (right) against before (left): their text or mark gone, the camera's stamp the same, no ghost or smear. Reject any that isn't clean (reject: [{piece, why}]): it's done once more, then blurred and said. Nothing to say when they're clean.`;
+      : `${rows.join("\n")}\n\nLook at each after (right) against before (left): their text or mark gone, the camera's stamp the same, no ghost or smear. Reject a watermark piece that isn't clean (reject: [{piece, why}]): it's done once more, then left as it was and said; a blur that misses their words is marked again tighter (start_removal marks). Nothing to say when they're clean.`;
   return [...text([...said, head].filter(Boolean).join("\n\n")), ...out];
 }
 
@@ -232,11 +223,9 @@ export const shownBetween = textRemoval.shownBetween;
 /**
  * `start_removal`: what the person asked to have taken out, now (a part the
  * lesson says runs only when asked, or one not taught at all): the whole
- * project, some footage files, a case, the intro, or a stretch of the
- * timeline; with `mode`, the Vmake mode the person asked for there over its
- * section's default ("use Smart on case 3 too", "Smart Pro on case 1":
- * removal_modes.ts). Kept (removal_asks.ts) and started at once; its pieces
- * come back, are checked and counted as any others.
+ * project, some footage files, a case, the intro (removal_sections.ts), or a
+ * stretch of the timeline. Kept (removal_asks.ts) and started at once; its
+ * pieces are checked and counted as any others.
  */
 async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content[]> {
   const live = app.store.get(projectId);
@@ -245,31 +234,28 @@ async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content
   await removal.refresh();
   const lesson = removal.lessonOf(project);
   if (args.marks !== undefined || args.unmark !== undefined) return markRemoval(app, projectId, args);
-  const mode = args.mode === undefined || args.mode === null ? null : modes.modeOfAsked(args.mode);
-  if (args.mode !== undefined && args.mode !== null && mode === null) throw new Error('mode is "smart", "smart_pro" or "blur"');
   const given = Array.isArray(args.kinds) ? (args.kinds as unknown[]) : [];
   if (given.some((kind) => !removal.KINDS.includes(kind as removal.Kind))) throw new Error('kinds are "subtitles", "watermarks" and "text"');
-  // What the person didn't name: with a mode, the parts Vmake takes out; else the parts taught to wait for an ask, else every part taught.
+  // What the person didn't name: the parts taught to wait for an ask, else every part taught.
   const waiting = removal.KINDS.filter((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "asked");
   const taught = removal.KINDS.filter((kind) => lesson?.remove[kind] === true);
-  const kinds = given.length > 0 ? (given as removal.Kind[]) : mode !== null ? removal.kinds(lesson).vmake : waiting.length > 0 ? waiting : taught;
-  if (kinds.length === 0) throw new Error(`say what to take out: kinds [${mode !== null ? '"subtitles", "text"' : '"subtitles", "watermarks", "text"'}] (nothing${mode !== null ? " of theirs for Vmake" : ""} is taught for this channel)`);
-  if (mode !== null && !kinds.some((kind) => kind !== "watermarks")) throw new Error("a mode is for their subtitles and text: their watermarks come out here, free, whatever the mode");
+  const kinds = given.length > 0 ? (given as removal.Kind[]) : waiting.length > 0 ? waiting : taught;
+  if (kinds.length === 0) throw new Error('say what to take out: kinds ["subtitles", "watermarks", "text"] (nothing is taught for this channel)');
   const ids = Array.isArray(args.media) ? (args.media as unknown[]).filter((one): one is string => typeof one === "string") : [];
   for (const one of ids) {
     const media = project.media.find((m) => m.id === one);
     if (media === undefined || media.kind !== "video" || media.cleans != null || media.effect != null) throw new Error(`${one} isn't a footage file of this project`);
   }
-  // A case or the intro: its stretch of the timeline, as removal_modes finds the edit's sections.
+  // A case or the intro: its stretch of the timeline, as removal_sections finds the edit's sections.
   const number = typeof args.case === "number" && Number.isInteger(args.case) && args.case >= 1 ? args.case : null;
   if (args.case !== undefined && args.case !== null && number === null) throw new Error("case is the case's number, from 1");
   let stretch: [number, number] | null = null;
   let said: string | undefined;
   if (number !== null || args.intro === true) {
-    stretch = modes.stretchOf(project, number ?? "intro");
-    const cases = modes.parts(project).filter((part) => part.case !== null).length;
+    stretch = sections.stretchOf(project, number ?? "intro");
+    const cases = sections.parts(project).filter((part) => part.case !== null).length;
     if (stretch === null) throw new Error(number === null ? "this edit has no intro it can tell (no script on the timeline): say from/to" : `this edit has no case ${number}: it has ${cases === 1 ? "one" : cases} (get_edit_context's removal lists them)`);
-    said = number === null ? "the intro" : modes.isCompilation(project) ? `case ${number}` : "the case";
+    said = number === null ? "the intro" : sections.isCompilation(project) ? `case ${number}` : "the case";
   }
   const from = stretch?.[0] ?? (typeof args.from === "number" ? args.from : null);
   const to = stretch?.[1] ?? (typeof args.to === "number" ? args.to : null);
@@ -283,14 +269,14 @@ async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content
   else throw new Error("say where: whole: true (the whole project, as it grows), case (its number), intro: true, media (footage files), or from/to (timeline seconds)");
   if (scope !== "all" && Object.keys(scope).length === 0) throw new Error("no footage is on the timeline there");
   const names = scope === "all" ? "the whole project" : (said ?? Object.keys(scope).map((id) => project.media.find((m) => m.id === id)?.name ?? id).join(", "));
-  asks.add(app.store.home, projectId, { at: Date.now(), kinds, media: scope, ...(mode !== null ? { mode, said: said ?? (scope === "all" ? "the whole video" : names) } : {}) });
+  asks.add(app.store.home, projectId, { at: Date.now(), kinds, media: scope });
   await ensure(app, projectId);
   const words: Record<removal.Kind, string> = { subtitles: "their subtitles", watermarks: "their watermarks", text: "their labels and other text" };
   const { done, out } = progressOf(projectId);
   return text(
-    `Taking ${kinds.map((kind) => words[kind]).join(", ")} out of ${names}${mode !== null ? (mode === "blur" ? " with a tracked blur" : ` in Vmake's ${modes.WORDS[mode]}`) : ""}, in the background, wherever the footage has them (the camera's stamp kept)${out > 0 ? `: ${out} piece${out === 1 ? "" : "s"} out${done > 0 ? `, ${done} done` : ""}` : ""}. ` +
-      "Look at pieces with check_removal as they come back; exports wait for them." +
-      (kinds.includes("subtitles") ? " Their subtitles are blurred until theirs are out: lay ours with add_subtitles over them as usual." : ""),
+    `Taking ${kinds.map((kind) => words[kind]).join(", ")} out of ${names}, in the background, wherever the footage has them (their subtitles and text under a tight tracked blur, the camera's stamp kept)${out > 0 ? `: ${out} piece${out === 1 ? "" : "s"} out${done > 0 ? `, ${done} done` : ""}` : ""}. ` +
+      "Look at pieces with check_removal as they come back (the blur's with render_frame); exports wait for them." +
+      (kinds.includes("subtitles") ? " Lay ours with add_subtitles over theirs as usual." : ""),
   );
 }
 
@@ -298,13 +284,13 @@ async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content
  * The agent's in and out points (start_removal `marks`, `unmark`), for a
  * channel taught to take their text out: timeline stretches where it saw
  * their text, kept as the source seconds of each footage file shown there
- * (so a re-cut keeps them), and only those go to Vmake or the tracked blur.
+ * (so a re-cut keeps them), and only those get the tracked blur.
  */
 async function markRemoval(app: App, projectId: string, args: Record<string, unknown>): Promise<Content[]> {
   const project = app.store.get(projectId)!.project;
   if (!textRemoval.marksOnly(project)) throw new Error("this channel isn't taught to take their text out: ask with start_removal on what the person points to (media, case, intro, from/to)");
   const lesson = removal.lessonOf(project);
-  const kinds = removal.kinds(lesson).vmake;
+  const kinds = removal.kinds(lesson).blur;
   const stretches = (value: unknown, name: string): [number, number][] => {
     if (value === undefined) return [];
     if (!Array.isArray(value)) throw new Error(`${name} is a list of {from, to} (timeline seconds)`);
@@ -351,8 +337,8 @@ async function markRemoval(app: App, projectId: string, args: Record<string, unk
   await ensure(app, projectId);
   const { done, out } = progressOf(projectId);
   return text(
-    `${said.join("; ")}. Only marked stretches are taken out, each as its section says (Smart Pro on the intro, Smart on cases 1 and 2, a tracked blur from case 3 on, unless asked otherwise), in the background${out > 0 ? `: ${out} piece${out === 1 ? "" : "s"} out${done > 0 ? `, ${done} done` : ""}` : ""}. ` +
-      "Look at pieces with check_removal as they come back (the tracked blur's with render_frame); exports wait for them.",
+    `${said.join("; ")}. Only marked stretches get the tracked blur, tight to their words, in every section, in the background${out > 0 ? `: ${out} piece${out === 1 ? "" : "s"} out${done > 0 ? `, ${done} done` : ""}` : ""}. ` +
+      "Look at them with render_frame as they're done; exports wait for them.",
   );
 }
 
@@ -364,21 +350,21 @@ registerTool("start_removal", startRemoval);
 const resting = new Map<string, ReturnType<typeof setTimeout>>();
 
 /**
- * The editor's line (GET /api/projects/{id}/text-removal): pieces out of
- * both workers quietly counted ("Removing their text · 3 of 19 pieces"), else
- * Vmake's own (its account's trouble, the API's price to say yes to, pieces
- * given up on).
+ * The chat's waiting row (GET /api/projects/{id}/text-removal): pieces out
+ * of both workers counted ("Removing their text · 3 of 19 pieces"), null
+ * when none is.
  */
-export async function statusOf(app: App, id: string): Promise<textRemoval.Status> {
+export interface Status {
+  background: { label: string; done: number; total: number; started_at: number } | null;
+}
+
+export function statusOf(app: App, id: string): Status {
   if (app.store.get(id) === null) throw new ApiError(404, "no such project");
-  const { done, out } = progressOf(id);
-  // Under way: the chat's waiting row says it (no line at the top, which keeps the account's trouble).
-  if (out > 0) return { line: null, action: null, running: { done, total: done + out }, background: backgroundOf(id) };
-  return textRemoval.status(app, id);
+  return { background: backgroundOf(id) };
 }
 
 export function routes(router: Router<App>): void {
-  router.get("/api/projects/{id}/text-removal", ({ app, params }) => statusOf(app, params.id ?? "").then((answer) => json(answer)));
+  router.get("/api/projects/{id}/text-removal", ({ app, params }) => json(statusOf(app, params.id ?? "")));
   // The chat's waiting row: its Details (every piece, its seconds, how it came out and the check) and its Stop.
   router.get("/api/projects/{id}/removal", ({ app, params }) => {
     const id = params.id ?? "";
@@ -389,7 +375,7 @@ export function routes(router: Router<App>): void {
     const id = params.id ?? "";
     if (app.store.get(id) === null) throw new ApiError(404, "no such project");
     stop(app, id);
-    return json(await statusOf(app, id));
+    return json(statusOf(app, id));
   });
 }
 
@@ -399,19 +385,18 @@ export function routes(router: Router<App>): void {
 /** One piece of either worker, as the waiting row's Details lists it. */
 export interface PieceRow {
   key: string;
-  what: "text" | "watermark" | "blur";
+  what: "watermark" | "blur";
   media: string;
   name: string;
   from: number;
   to: number;
-  /** queued, running, held (the account), waiting (sent, not back from vmake.ai yet), check (back, waiting for the agent's look), done, none (no mark there), failed (given up or done again). */
+  /** queued, running, done, none (no mark there), failed (given up on). */
   state: string;
   why?: string;
 }
 
 export function pieceRows(id: string): PieceRow[] {
   return [
-    ...textRemoval.piecesOf(id).map((one): PieceRow => ({ key: one.key, what: "text", media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, ...(one.why ? { why: one.why } : {}) })),
     ...watermarkRemoval.piecesOf(id).map((one): PieceRow => ({ key: `watermark:${one.media}@${Math.round(one.from * 1000)}`, what: "watermark", media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, ...(one.error ? { why: one.error } : {}) })),
     ...textBlur.piecesOf(id).map((one): PieceRow => ({ key: one.key, what: "blur", media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, ...(one.why ? { why: one.why } : {}) })),
   ];
@@ -441,7 +426,7 @@ function noteRun(app: App, id: string): void {
 
 /** What's being taken out, in words: "their text and watermarks". */
 function whatOf(rows: PieceRow[]): string {
-  const text = rows.some((row) => row.what === "text" || row.what === "blur");
+  const text = rows.some((row) => row.what === "blur");
   const marks = rows.some((row) => row.what === "watermark");
   return text && marks ? "their text and watermarks" : marks ? "their watermarks" : "their text";
 }
@@ -450,20 +435,17 @@ function whatOf(rows: PieceRow[]): string {
 const labelOf = (rows: PieceRow[]) => `Removing ${whatOf(rows)}`;
 
 /** The waiting row's numbers: what, how far, since when. */
-export function backgroundOf(id: string): NonNullable<textRemoval.Status["background"]> | null {
+export function backgroundOf(id: string): Status["background"] {
   const { done, out } = progressOf(id);
   if (out === 0) return null;
   const run = active.get(id);
   const rows = pieceRows(id);
-  // The day's free Vmake files, said only when few are left (past them the plan's credits pay).
-  const free = rows.some((row) => row.what === "text") ? textRemoval.freeLeft() : null;
-  return { label: labelOf(rows.filter((row) => row.state === "queued" || row.state === "running" || run?.before.get(row.key) !== row.state)), done, total: done + out, started_at: run?.startedAt ?? Date.now(), ...(free !== null && free < 10 ? { free_left: free } : {}) };
+  return { label: labelOf(rows.filter((row) => row.state === "queued" || row.state === "running" || run?.before.get(row.key) !== row.state)), done, total: done + out, started_at: run?.startedAt ?? Date.now() };
 }
 
-/** The person's Stop: nothing more sent or done (what's under way comes back and is kept); kept across restarts until someone asks again. */
+/** The person's Stop: nothing more done (what's done is kept); kept across restarts until someone asks again. */
 export function stop(app: App, id: string): void {
   asks.setStopped(app.store.home, id, true);
-  textRemoval.stop(id);
   watermarkRemoval.stop(id);
   active.delete(id);
   diag.info("removal", `${id}: stopped by the person`);
@@ -499,30 +481,26 @@ function byFile(rows: PieceRow[], withWhy = false): string {
 
 /** The agent's turn when a run is done: what was cleaned and what wasn't, and what to do now. */
 export function wakeText(rows: PieceRow[]): string {
-  const cleaned = rows.filter((row) => row.state === "done" || row.state === "check");
+  const cleaned = rows.filter((row) => row.state === "done");
   const left = rows.filter((row) => row.state === "failed");
-  const held = rows.filter((row) => row.state === "held");
-  const waiting = rows.filter((row) => row.state === "waiting");
-  // Its first line is what the chat shows as Edit's event: "Their text and watermarks are out of the footage (24 pieces, 1 blurred)".
+  // Its first line is what the chat shows as Edit's event: "Their text and watermarks are out of the footage (24 pieces, 1 with the mark left)".
   const what = whatOf(rows);
-  const blurred = left.filter((row) => row.what === "text").length;
-  const kept = left.length - blurred;
-  const said = [`${cleaned.length} piece${cleaned.length === 1 ? "" : "s"}`, ...(blurred > 0 ? [`${blurred} blurred`] : []), ...(kept > 0 ? [`${kept} with the mark left`] : [])].join(", ");
+  const unblurred = left.filter((row) => row.what === "blur").length;
+  const kept = left.length - unblurred;
+  const said = [`${cleaned.length} piece${cleaned.length === 1 ? "" : "s"}`, ...(unblurred > 0 ? [`${unblurred} not blurred`] : []), ...(kept > 0 ? [`${kept} with the mark left`] : [])].join(", ");
   return (
     `${EDIT_EVENT} ${what[0]!.toUpperCase()}${what.slice(1)} ${what === "their text" ? "is" : "are"} out of the footage (${said}).\n\n` +
     (cleaned.length > 0 ? `Cleaned:\n${byFile(cleaned.slice(0, 60))}\n\n` : "") +
     (left.length > 0 ? `Not clean, and why:\n${byFile(left.slice(0, 30), true)}\n\n` : "") +
-    (held.length > 0 ? `${held.length} piece${held.length === 1 ? " waits" : "s wait"} for the Vmake account (the line at the top of the editor says why); they go once it can be used, their blur on until then.\n\n` : "") +
-    (waiting.length > 0 ? `${waiting.length} piece${waiting.length === 1 ? " was" : "s were"} sent and vmake.ai hasn't given ${waiting.length === 1 ? "it" : "them"} back yet; Edit looks again by itself (never sending ${waiting.length === 1 ? "it" : "them"} twice), their blur on until then.\n\n` : "") +
-    "Now lay OUR subtitles, and the intro's titles and captions, wherever they're missing over the cleaned footage (add_subtitles with missing_only; the intro's as its lesson says), and look at your work (check_removal for any piece you haven't seen; a frame of ours over a cleaned stretch). " +
-    "Only then tell the person in one plain message: what was cleaned, what was blurred or left and why, and that our subtitles are on. If there's nothing to add, just say what was cleaned."
+    "Now lay OUR subtitles, and the intro's titles and captions, wherever they're missing over the cleaned footage (add_subtitles with missing_only; the intro's as its lesson says), and look at your work (check_removal for any piece you haven't seen; render_frame on a blurred stretch, with ours over it). " +
+    "Only then tell the person in one plain message: what was cleaned, what was left and why, and that our subtitles are on. If there's nothing to add, just say what was cleaned."
   );
 }
 
 /** A run done: the agent is woken with what it did, once any turn under way ends (Edit's own event, not the person's message). */
 function finished(app: App, id: string, run: Run): void {
   const rows = pieceRows(id).filter((row) => run.before.get(row.key) !== row.state && row.state !== "none" && row.state !== "queued");
-  if (!rows.some((row) => row.state === "done" || row.state === "check" || row.state === "failed")) return;
+  if (!rows.some((row) => row.state === "done" || row.state === "failed")) return;
   diag.info("removal", `${id}: done in ${Math.round((Date.now() - run.startedAt) / 1000)} s; the agent is told`);
   // One wake-up a project: a run done while an earlier one's still waits for a turn to end joins it (one turn, not two).
   const waiting = wakes.get(id);

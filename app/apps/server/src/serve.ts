@@ -487,7 +487,7 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     }
     if ((app.agents as { hasRunningTurns?: () => boolean }).hasRunningTurns?.()) return "the agent";
     // An effect's render or footage being cleaned, with no agent turn or export beside it (Nov 18, Sphe's M4: "nothing
-    // running" at 05:12 with removal still polling Vmake, and the Mac asleep for 20 minutes).
+    // running" at 05:12 with removal still under way, and the Mac asleep for 20 minutes).
     for (const { id } of app.store.list()) {
       if (effects.renderingLine(id) !== null) return "an effect's render";
       if (removalSchedule.progressOf(id).out > 0) return "footage being cleaned";

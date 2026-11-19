@@ -1,7 +1,7 @@
-// Their text blurred where Vmake isn't used (removal_modes.ts: a channel
-// taught removal, from its third case on; or where asked, "just blur case 2"):
-// a Gaussian blur tracked over the words themselves, never a big still box
-// over their band (Sphe, Nov 18).
+// Their text blurred, in every section of the edit (Sphe, Nov 18 and 19: a
+// channel taught to take their subtitles or text out, or where asked): a
+// Gaussian blur tracked over the words themselves, never a big still box over
+// their band.
 //
 // Only the stretches the agent marked go (removal_asks.ts `marked`). Each is
 // read for its words on screen (screen_text's `screenTextAt`, the region where
@@ -20,10 +20,10 @@
 // through the clip's own framing as it pushes in, inside a card's picture),
 // feathered, padded only a little past the letters, its strength following
 // the clip through a dissolve. Laid again only when what it would be changes
-// (ids kept otherwise, as clean_strips' are), and taken off when its marks or
-// its section's mode change. Where it lies the blur over their band laid
-// while waiting (burned_subtitles `cover`) gives way, and their subtitles
-// count as gone (clean_strips.ts `strippedFrames`).
+// (ids kept otherwise, as clean_strips' are), and taken off when its marks
+// change. Where it lies the blur over their band (burned_subtitles `cover`)
+// gives way, and their subtitles count as gone (clean_strips.ts
+// `strippedFrames`).
 
 import * as fs from "node:fs";
 import * as os from "node:os";

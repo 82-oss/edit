@@ -14,7 +14,7 @@ routes = [{ pattern = "media.spheceo.com", custom_domain = true }]
 # stdin, never printed). For `wrangler dev`, apps/relay/.dev.vars, gitignored. Never in this file:
 #   ELEVENLABS_MAIN_KEY, ELEVENLABS_VOICES_KEY, GOOGLE_MAPS_KEY, PROXY_URL (the YouTube proxy, /v1/proxy),
 #   PYANNOTE_API_KEY (who speaks when, /v1/diarize/jobs, while DIARIZE is "pyannote"),
-#   BROWSER_USE_API_KEY (the team's Vmake account in a Browser Use browser, /v1/vmake: src/vmake.ts)
+#   BROWSER_USE_API_KEY (the team's Browser Use account; nothing in Edit uses it right now)
 # Edit's cloud (/v1/cloud/*, src/cloud.ts; signed-in people only, src/auth.ts):
 #   R2_ACCOUNT_ID          Cloudflare account id (<id>.r2.cloudflarestorage.com)
 #   R2_ACCESS_KEY_ID       an R2 API token's S3 access key id

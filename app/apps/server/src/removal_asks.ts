@@ -1,7 +1,7 @@
 // What someone asked to have taken out of a project's footage (Sphe, Nov 17:
 // "remove watermarks only when we ask"): a part the channel's lesson says
 // runs only when asked (removal_lesson.ts `when: "asked"`) does nothing at all
-// (no file looked at, nothing sent) until the agent's start_removal says what
+// (no file looked at, nothing done) until the agent's start_removal says what
 // the person pointed to: the whole project (as it grows), some footage files
 // (what the timeline shows of them), or seconds of them. A part not taught at
 // all can be asked for too: the person asked.
@@ -15,7 +15,6 @@ import * as diag from "./diag.ts";
 import { writeAtomic } from "./files.ts";
 import { join } from "./paths.ts";
 import * as removal from "./removal_lesson.ts";
-import type { Treatment } from "./removal_modes.ts";
 
 export type Spans = [number, number][];
 
@@ -24,15 +23,11 @@ export interface Ask {
   kinds: removal.Kind[];
   /** "all": the whole project, as it grows; else each footage file's source seconds, or "all" it shows. */
   media: "all" | Record<string, Spans | "all">;
-  /** How the person asked for it to be taken out there, over the section's default (removal_modes.ts): "Smart on case 3 too", "just blur case 2". */
-  mode?: Treatment;
   /**
    * The agent's in and out points (start_removal `marks`, `unmark`): the stretches of footage it looked at and found
-   * their text in, for a channel taught to take it out. Only marked seconds go to Vmake or the tracked blur there.
+   * their text in, for a channel taught to take it out. Only marked seconds get the tracked blur there.
    */
   mark?: "add" | "remove";
-  /** Where, as the person said it ("case 3", "the intro"), for the agent's context. */
-  said?: string;
 }
 
 const fileOf = (home: string) => join(home, "removal-asks.json");
@@ -67,7 +62,7 @@ function keep(file: string, value: unknown): void {
  * runs by itself doesn't any more, and what was asked before it is done
  * with; an ask after it runs on just what it names (Sphe, Nov 17: stop the
  * whole video, then clean only the intro and the first case's start), the
- * agent's marks too (Nov 19: marks made after a Stop sent nothing).
+ * agent's marks too (Nov 19: marks made after a Stop did nothing).
  */
 export function isStopped(home: string, id: string): boolean {
   return loaded(home).stopped[id] !== undefined;

@@ -22,10 +22,9 @@
 //
 // What it decides (`kinds`): an untaught channel takes nothing out (theirs
 // left, ours off there, today's default; "cover" still blurs for a channel
-// taught so). Subtitles and text go to Vmake (text_removal.ts, only the
-// seconds that show them, its strip pasted back only where taught);
-// watermarks go to the engine here alone (watermark_removal.ts), so a channel
-// taught only watermarks never pays Vmake.
+// taught so). Their subtitles and text get a blur tracked tight over their
+// words (text_blur.ts, only the stretches the agent marked, in every section);
+// their watermarks come out by the engine here (watermark_removal.ts), free.
 
 import * as channels from "./channels.ts";
 import type { Project } from "./model.ts";
@@ -70,18 +69,21 @@ const CLOSE = "</removal>";
 
 const WORDS: Record<Kind, string> = { subtitles: "their subtitles", watermarks: "their watermarks", text: "their labels and other text" };
 
-const listed = (words: string[]) => (words.length === 1 ? words[0]! : `${words.slice(0, -1).join(", ")} and ${words.at(-1)}`);
+/** What happens to `kinds`, plainly: "their subtitles and text get a tight blur; their watermarks come out". */
+function how(kinds: Kind[]): string {
+  const [subtitles, text] = [kinds.includes("subtitles"), kinds.includes("text")];
+  const blurred = subtitles && text ? "their subtitles and text" : subtitles ? WORDS.subtitles : text ? WORDS.text : null;
+  return [...(blurred !== null ? [`${blurred} get a tight blur`] : []), ...(kinds.includes("watermarks") ? ["their watermarks come out"] : [])].join("; ");
+}
 
-/** The line the person reads: what's taken out and when, and that the camera's stamp stays. */
+/** The line the person reads: what's done to theirs and when, and that the camera's stamp stays. */
 export function summary(lesson: Lesson): string {
   const on = KINDS.filter((kind) => lesson.remove[kind]);
-  const automatic = on.filter((kind) => lesson.when[kind] === "automatic").map((kind) => WORDS[kind]);
-  const asked = on.filter((kind) => lesson.when[kind] === "asked").map((kind) => WORDS[kind]);
-  const parts = [
-    ...(automatic.length > 0 ? [`Take ${listed(automatic)} out of the footage's picture wherever a file has them, by itself as footage is cut`] : []),
-    ...(asked.length > 0 ? [`${automatic.length > 0 ? "" : "Take "}${listed(asked)} out${automatic.length > 0 ? "" : " of the footage's picture"} only when someone asks`] : []),
-  ];
-  const said = on.length === 0 ? "Nothing is taken out of the footage's picture" : parts.join("; ");
+  const automatic = on.filter((kind) => lesson.when[kind] === "automatic");
+  const asked = on.filter((kind) => lesson.when[kind] === "asked");
+  const parts = [...(automatic.length > 0 ? [how(automatic)] : []), ...(asked.length > 0 ? [`only when someone asks, ${how(asked)}`] : [])];
+  const line = parts.join("; ");
+  const said = on.length === 0 ? "Nothing is taken out of the footage's picture" : `${line[0]!.toUpperCase()}${line.slice(1)}`;
   const kept = lesson.examples.filter((one) => one.action === "keep" && one.text).map((one) => `"${one.text}"`);
   return `${said}; the camera's stamp${kept.length > 0 ? ` and ${kept.join(", ")}` : ""} always kept.`;
 }
@@ -129,15 +131,15 @@ export function parse(text: string): Lesson | null {
 }
 
 /**
- * Where each taught part goes: `vmake` the parts Vmake takes out (and only
- * those are pasted back), `local` the parts done here. Nothing at all for an
- * untaught channel.
+ * Where each taught part goes: `blur` the parts the tracked blur covers
+ * (text_blur.ts), `watermarks` the engine's (watermark_removal.ts). Nothing
+ * at all for an untaught channel.
  */
-export function kinds(lesson: Lesson | null): { vmake: Kind[]; local: Kind[] } {
-  if (lesson === null) return { vmake: [], local: [] };
+export function kinds(lesson: Lesson | null): { blur: Kind[]; watermarks: Kind[] } {
+  if (lesson === null) return { blur: [], watermarks: [] };
   return {
-    vmake: (["subtitles", "text"] as const).filter((kind) => lesson.remove[kind]),
-    local: lesson.remove.watermarks ? ["watermarks"] : [],
+    blur: (["subtitles", "text"] as const).filter((kind) => lesson.remove[kind]),
+    watermarks: lesson.remove.watermarks ? ["watermarks"] : [],
   };
 }
 
@@ -202,7 +204,7 @@ export function inForce(lesson: Lesson | null, asked: Kind[], taught: Lesson | n
   return { remove, when: taught?.when ?? AUTOMATIC, examples: taught?.examples ?? [] };
 }
 
-/** The lesson with only `kinds` taken out (what one file's pieces paste back). */
+/** The lesson with only `kinds` taken out. */
 export function only(lesson: Lesson, kinds: Kind[]): Lesson {
   return { ...lesson, remove: Object.fromEntries(KINDS.map((kind) => [kind, lesson.remove[kind] && kinds.includes(kind)])) as Record<Kind, boolean> };
 }

@@ -1,7 +1,7 @@
 // Removal under way in the background, at the end of the agent's chat (Sphe,
 // Nov 17, like T3's background task; ~/.cache/mockups/background-wait.html):
 // a dashed ring turning, "Waiting · Removing their text and watermarks · 12 of
-// 25 pieces · 18m 04s", Stop (nothing more is sent; what's cleaned stays), a
+// 25 pieces · 18m 04s", Stop (nothing more is done; what's done stays), a
 // thin red line of how far under it. Only between turns: a turn's own work
 // shows while it runs, and the row comes back below it when it ends. Its
 // words are never cut: they wrap. When the run is done the row goes, and Edit

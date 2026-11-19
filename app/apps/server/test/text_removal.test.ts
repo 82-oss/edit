@@ -1,12 +1,13 @@
-// text_removal.ts and clean_strips.ts: what re-uploaders burned into footage
-// (subtitles, labels) taken out of its picture by Vmake, only what it took out
-// pasted back, the camera's own stamp kept as it was. The planning (handles,
-// pieces of ≤300 s, cleaned pieces reused), the camera's text and its bar on
-// real reads (Tulsa's Axon stamp under "Actual case footage", Nov 17; "SWAT
-// Faces Off"'s Motorola bar under an "OFFICER 11" label), the strip's pixels,
-// the strips laid over the footage's clips on every save, and a run with a
-// stand-in provider: kept pieces never paid for twice, a failed piece left
-// blurred, an account that can't be used stopping every send at once.
+// text_removal.ts, removal_schedule.ts and clean_strips.ts: what re-uploaders
+// burned into footage (subtitles, labels) found and covered, the camera's own
+// stamp kept as it was. The camera's text and its bar on real reads (Tulsa's
+// Axon stamp under "Actual case footage", Nov 17; "SWAT Faces Off"'s Motorola
+// bar under an "OFFICER 11" label), strips already in projects laid over the
+// footage's clips on every save, the channel's removal lesson, and runs with
+// stand-ins for the tracked blur's reads and the watermark engine: what goes
+// follows the lesson and what's asked, the chat's waiting row, the agent woken
+// once a run is done, the person's Stop, a restart's resume, removal starting
+// as edits rest, and an export waiting for pieces still out.
 
 import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
@@ -21,6 +22,7 @@ import { native, useNative, type Native, type ScreenText } from "../src/native/i
 import { createStub } from "../src/native/stub.ts";
 import { join } from "../src/paths.ts";
 import * as tr from "../src/text_removal.ts";
+import * as blur from "../src/text_blur.ts";
 import * as tools from "../src/tools.ts";
 import * as removal from "../src/removal_lesson.ts";
 import { EDIT_EVENT } from "../src/edit_event.ts";
@@ -28,73 +30,28 @@ import * as asks from "../src/removal_asks.ts";
 import * as removalSchedule from "../src/removal_schedule.ts";
 import * as cloudMedia from "../src/cloud_media.ts";
 import { dispatch } from "../src/mcp/index.ts";
-import * as web from "../src/vmake_web.ts";
-import * as packs from "../src/removal_packs.ts";
 import * as wm from "../src/watermark_removal.ts";
 import type { WatermarkRemoved } from "../src/native/index.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
-import { classify, signOss, signSdk, VmakeError } from "../src/vmake_api.ts";
-import { fixtureHome, scratch } from "./helpers/home.ts";
+import { fixtureHome } from "./helpers/home.ts";
 
 // One cell at a time unless a test says (the Mac's memory would decide: watermark_removal.ts `limits`).
 wm.limits.cells = 1;
 
+const ownRead = blur.reader.read;
 let before: Native | null = null;
-afterEach(() => {
+afterEach(async () => {
+  await blur.settled();
   if (before !== null) useNative(before);
   before = null;
-  tr.useProvider(undefined);
-  tr.useShelf(null);
-  tr.reset();
+  blur.reader.read = ownRead;
+  blur.reset();
   asks.reset();
-  removalSchedule.reset();
   removalSchedule.reset();
   wm.useEngine(null);
   wm.useShelf(null);
   wm.reset();
   v2cloud.useSkillsForTests([]);
-});
-
-// ---------------------------------------------------------------------------
-// Pieces
-
-test("what's sent: their seconds on the timeline, a second's handle each side, in pieces of at most 300 s on frames, less what's kept", () => {
-  // Two stretches close enough that their handles meet are one piece.
-  expect(tr.piecesFor([[10, 20], [21.5, 30]], 600, 30, []).send).toEqual([[9, 31]]);
-  // The file's ends hold the handles in.
-  expect(tr.piecesFor([[0.2, 5]], 5.5, 30, []).send).toEqual([[0, 5.5]]);
-  // A long stretch: equal pieces, none over 300 s, each starting on a frame.
-  const long = tr.piecesFor([[0, 700]], 900, 29.97, []).send;
-  expect(long.length).toBe(3);
-  expect(long.every(([a, b]) => b - a <= tr.PIECE_SECONDS)).toBe(true);
-  expect(long[0]![0]).toBe(0);
-  expect(long[2]![1]).toBe(701);
-  for (const [a] of long) expect(Math.abs(a * 29.97 - Math.round(a * 29.97))).toBeLessThan(0.05);
-  // Kept already: used, not sent; what's left beside it is sent, at least 2 s; a sliver is the kept one's handle.
-  const kept: tr.Cached = { from: 9, to: 31, provider: "vmake-api", mode: "pro", key: "edit/cleaned/x/9000-31000.vmake-api.mp4" };
-  expect(tr.piecesFor([[10, 30]], 600, 30, [kept])).toEqual({ send: [], use: [kept] });
-  expect(tr.piecesFor([[10, 40]], 600, 30, [kept]).send).toEqual([[31, 41]]);
-  expect(tr.piecesFor([[10, 30.8]], 600, 30, [kept]).send).toEqual([[31, 33]]);
-  expect(tr.piecesFor([[10, 30.3]], 600, 30, [kept]).send).toEqual([]);
-  // Another file's piece names parse back.
-  expect(tr.parseName("edit/cleaned/ab/9000-31000.vmake-web.mp4")).toEqual({ from: 9, to: 31, provider: "vmake-web", mode: "pro" });
-});
-
-test("paid by the file (the website's plan): nearby stretches go as one piece with the seconds between, as few of at most 300 s as fit, never across what's cleaned already", () => {
-  // A compilation's file: 12 short stretches of their text over 20 minutes, 12 files apart; packed, 4.
-  const stretches = Array.from({ length: 12 }, (_, at): [number, number] => [at * 100 + 10, at * 100 + 18]);
-  expect(tr.piecesFor(stretches, 1300, 30, []).send.length).toBe(12);
-  const packed = tr.piecesFor(stretches, 1300, 30, [], true).send;
-  expect(packed).toEqual([[9, 219], [309, 519], [609, 819], [909, 1119]]);
-  expect(packed.every(([a, b]) => b - a <= tr.PIECE_SECONDS)).toBe(true);
-  // A long stretch stays in pieces of at most 300 s.
-  expect(tr.piecesFor([[0, 700]], 900, 30, [], true).send.every(([a, b]) => b - a <= tr.PIECE_SECONDS)).toBe(true);
-  // What another Mac cleaned already is reused, and a piece never reaches across it (it'd clean those seconds twice).
-  const kept: tr.Cached = { from: 109, to: 119, provider: "vmake-web", mode: "pro", key: "edit/cleaned/x/109000-119000.vmake-web.mp4" };
-  const around = tr.piecesFor([[10, 18], [110, 118], [210, 218]], 1300, 30, [kept], true);
-  expect(around).toEqual({ send: [[9, 19], [209, 219]], use: [kept] });
-  // The API is paid by the second: never packed.
-  expect(tr.piecesFor([[10, 18], [110, 118]], 1300, 30, []).send).toEqual([[9, 19], [109, 119]]);
 });
 
 // ---------------------------------------------------------------------------
@@ -156,7 +113,7 @@ test("Motorola's stamp bar is found, its clock reads as one, and its own text is
   expect(kept(boxes, MOTOROLA.find((line) => line.t === "RAGIAL")!)).toBe(false);
   // Planning reads no frames: a clock at the picture's edge stands for its row, the same boxes.
   expect(tr.cameraText([MOTOROLA, MOTOROLA, MOTOROLA], null)).toEqual(boxes);
-  // OFFICER 11 is a label of theirs that stays put: the file is sent.
+  // OFFICER 11 is a label of theirs that stays put: the file shows their text.
   const seconds = [1, 5, 9, 13, 17];
   expect(tr.labelSpans(Object.fromEntries(seconds.map((second) => [second, MOTOROLA])), seconds, 20, boxes)).toEqual([[0, 20]]);
   // A synthetic bar the same way: dark see-through rows over a moving picture, in every frame.
@@ -170,7 +127,7 @@ test("Motorola's stamp bar is found, its clock reads as one, and its own text is
   expect(tr.findBar(frames.map((frame) => frame.map((value, at) => (at < 12 * 480 ? Math.round(value / 0.45) : value))), 480, 270)).toBeNull();
 });
 
-test("Axon's stamp and its logo are kept, Tulsa's 'Actual case footage' isn't, and it makes the file one to send", () => {
+test("Axon's stamp and its logo are kept, Tulsa's 'Actual case footage' isn't, and the file shows their text", () => {
   const seconds = [2, 5, 8];
   const frames = seconds.map((second) => TULSA[second]!);
   const boxes = tr.cameraText(frames, null);
@@ -184,110 +141,6 @@ test("Axon's stamp and its logo are kept, Tulsa's 'Actual case footage' isn't, a
   const stampOnly = Object.fromEntries(seconds.map((second) => [second, TULSA[second]!.filter((line) => /^(2025|AXON)/u.test(line.t))]));
   expect(tr.labelSpans(stampOnly, seconds, 10, boxes)).toEqual([]);
 });
-
-// ---------------------------------------------------------------------------
-// Vmake's API: signatures and whose a failure is
-
-test("the engine's learned mark is a box the automatic look leaves alone (Vmake leaves a see-through watermark to the engine)", () => {
-  const model = JSON.stringify({ version: 1, width: 1280, height: 720, gamma: 2.2, white: 1, at: [495, 470], matte_width: 290, matte_height: 120, matte: "", strength: 0.3, frames: 2000 });
-  const box = tr.markBox(model)!;
-  [0.3867, 0.6528, 0.6133, 0.8194].forEach((share, at) => expect(box[at]).toBeCloseTo(share, 3));
-  expect(tr.markBox("{}")).toBeNull();
-  expect(tr.markBox("not json")).toBeNull();
-});
-
-test("Vmake's signatures match its Python SDK's, and a refusal is the account's or the piece's", () => {
-  const at = new Date(Date.UTC(2026, 10, 17, 8, 0, 0));
-  // Worked out by the SDK's own sign.py and alibabacloud_oss_v2's v4.py with these inputs (Nov 17).
-  expect(signSdk({ ak: "AKID", sk: "SECRET" }, "GET", "https://openapi.starii.com/api/sdk/task/status?task_id=ab+c&z=1&a=2", { Host: "openapi.starii.com", "User-Agent": "action-api-sdk-v2.0.1" }, "", at).Authorization).toBe(
-    "Bearer U0RLLUhNQUMtU0hBMjU2IEFjY2Vzcz1BS0lELCBTaWduZWRIZWFkZXJzPWhvc3Q7dXNlci1hZ2VudDt4LXNkay1kYXRlLCBTaWduYXR1cmU9MTUxNDU1YjNmNDcxODM1MjYyNjcwYzY2ZDgzYmNlNWMwZTAzNjQ4ZTQ3MWM5ZThlMmYzZTBiZTc1MTM5MmNmMA==",
-  );
-  expect(signOss({ access_key: "AKID", secret_key: "SECRET", session_token: "TOKEN" }, "ap-southeast-1", "kapkap-common", "skill_upload/abc d", { "Content-Type": "video/mp4", "Content-Length": "10" }, at).Authorization).toBe(
-    "OSS4-HMAC-SHA256 Credential=AKID/20261117/ap-southeast-1/oss/aliyun_v4_request,Signature=b7ce8c5fcc0a09201ceadca5a16c72ca2f6a68b56a90c96551576112a2ac6097",
-  );
-  const whose = (said: string, quota = false, status: number | null = null) => {
-    const error = classify(said, quota, status);
-    return error.scope === "account" ? error.reason : "piece";
-  };
-  // Vmake's own words (Nov 17): bad keys.
-  expect(whose("invalid or inactive AK/SK")).toBe("keys_refused");
-  expect(whose("sign not equals client")).toBe("keys_refused");
-  expect(whose("insufficient balance", true)).toBe("out_of_credits");
-  expect(whose("Daily upload limit reached, try again tomorrow", true)).toBe("daily_limit");
-  expect(whose("This account has been suspended")).toBe("closed");
-  expect(whose("Your Pro subscription has expired")).toBe("lapsed");
-  expect(whose("session expired, please log in again")).toBe("signed_out");
-  expect(whose("forbidden", false, 403)).toBe("keys_refused");
-  // Anything else from taking the quota is still the account's; from a task, the piece's.
-  expect(whose("permission denied for SKM0005", true)).toBe("refused");
-  expect(whose("the task gave no video")).toBe("piece");
-  expect(tr.accountLine("closed")).toBe("Taking their text out is off: Vmake says this account is closed. Their subtitles stay blurred until it's sorted.");
-  expect(tr.accountLine("daily_limit")).toBe("Taking their text out is paused: the day's Vmake allowance is used up; it carries on tomorrow.");
-});
-
-// ---------------------------------------------------------------------------
-// The strip's pixels
-
-/** Raw RGB frames of `file` (`frames` of them) at its size. */
-async function rgb(file: string, width: number, height: number, frame: number, matrix = "bt709"): Promise<Uint8Array> {
-  return tools.run([tools.ffmpeg(), "-v", "error", "-i", file, "-vf", `select=eq(n\\,${frame}),scale=in_range=tv:out_range=pc:in_color_matrix=${matrix},format=rgb24`, "-frames:v", "1", "-f", "rawvideo", "-"]).then((bytes) => (bytes.length === width * height * 3 ? bytes : new Uint8Array(0)));
-}
-
-/**
- * A see-through picture (a moving pattern), a re-uploader's label (white
- * block letters, still) at the top left and the camera's stamp at the top
- * right; "Vmake's" result: the label gone, the stamp redrawn (lighter) and the
- * whole picture a little changed, as Smart Pro re-renders it.
- */
-async function footagePair(dir: string): Promise<{ original: string; cleaned: string }> {
-  const original = join(dir, "original.mp4");
-  const cleaned = join(dir, "cleaned.mp4");
-  const base = "testsrc2=size=320x180:rate=30:duration=2,format=yuv420p,drawbox=x=220:y=6:w=90:h=14:color=0x202020@1:t=fill";
-  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `${base},drawbox=x=10:y=40:w=80:h=24:color=white:t=fill,drawbox=x=16:y=46:w=68:h=12:color=black:t=fill`, "-c:v", "libx264", "-qp", "0", original]);
-  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `${base},drawbox=x=220:y=6:w=90:h=14:color=0x909090@1:t=fill,eq=brightness=0.02`, "-c:v", "libx264", "-qp", "0", cleaned]);
-  return { original, cleaned };
-}
-
-test("the strip is Vmake's picture where it took the label out, see-through elsewhere and over the camera's stamp, with no ghost", async () => {
-  const { dir, cleanup } = scratch("strip");
-  try {
-    const { original, cleaned } = await footagePair(dir);
-    const out = join(dir, "strip.mp4");
-    // The stamp's box (shares): kept as it was.
-    const stamp: [number, number, number, number] = [0.68, 0.02, 0.98, 0.13];
-    const made = await tr.makeStrip(original, cleaned, { width: 320, height: 180, fps: 30 }, [stamp], out);
-    expect(made).not.toBeNull();
-    const [x0, y0, x1, y1] = made!.box;
-    // Cropped to what was taken out (the label and a feathered margin), not the stamp nor the whole frame.
-    expect(x0 * 320).toBeLessThan(10);
-    expect(x1 * 320).toBeGreaterThan(90);
-    expect(x1 * 320).toBeLessThan(140);
-    expect(y1 * 180).toBeLessThan(100);
-    const [w, h] = [Math.round((x1 - x0) * 320), Math.round((y1 - y0) * 180)];
-    const strip = await rgb(out, w, h * 2, 30);
-    // Footage under 720 lines untagged is BT.601's; the strip is written as BT.709.
-    const clean = await rgb(cleaned, 320, 180, 30, "bt601");
-    expect(strip.length).toBe(w * h * 2 * 3);
-    const alphaAt = (x: number, y: number) => strip[((h + y) * w + x) * 3]!;
-    const pictureAt = (x: number, y: number, c: number) => strip[(y * w + x) * 3 + c]!;
-    // Inside the label, wholly Vmake's picture: alpha full, the colour Vmake's (premultiplied by 1).
-    const [lx, ly] = [50 - Math.round(x0 * 320), 52 - Math.round(y0 * 180)];
-    expect(alphaAt(lx, ly)).toBeGreaterThanOrEqual(252);
-    for (let c = 0; c < 3; c++) expect(Math.abs(pictureAt(lx, ly, c) - clean[(52 * 320 + 50) * 3 + c]!)).toBeLessThanOrEqual(6);
-    // Away from it (the re-render's small change everywhere), the original: nothing.
-    const [fx, fy] = [Math.min(w - 1, 130 - Math.round(x0 * 320)), Math.min(h - 1, 90 - Math.round(y0 * 180))];
-    if (fx >= 0 && fy >= 0) expect(alphaAt(fx, fy)).toBeLessThanOrEqual(3);
-    // The strip ends before the stamp: kept as the original whatever Vmake did there.
-    expect(x1).toBeLessThanOrEqual(stamp[0] + 0.01);
-    // Kept even where Vmake redrew it and nothing says to keep it: the stamp's box is the only difference.
-    const unkept = await tr.makeStrip(original, cleaned, { width: 320, height: 180, fps: 30 }, [], join(dir, "unkept.mp4"));
-    expect(unkept!.box[2]).toBeGreaterThan(0.9);
-    // Nothing taken out: no strip.
-    expect(await tr.makeStrip(original, original, { width: 320, height: 180, fps: 30 }, [], join(dir, "none.mp4"))).toBeNull();
-  } finally {
-    cleanup();
-  }
-}, 60_000);
 
 // ---------------------------------------------------------------------------
 // In the project
@@ -414,7 +267,7 @@ test("a strip finished touches only its own overlays: the rest keep their ids an
   const again = structuredClone(project);
   enforceCleanStrips(project, again);
   expect(again).toEqual(project);
-  // s1 done again (text_removal.ts `place`: the old strip out, a fresh media in, as long).
+  // s1 replaced (the old strip out, a fresh media in, as long).
   const done = structuredClone(project);
   done.media = done.media.filter((media) => media.id !== "s1");
   done.media.push({ ...strip("s1b", 0, 20, "text"), path: "/s1-again.mp4" });
@@ -449,7 +302,7 @@ test("a strip finished touches only its own overlays: the rest keep their ids an
 });
 
 // ---------------------------------------------------------------------------
-// A run, with a stand-in for Vmake
+// Runs, with stand-ins for the blur's reads and the watermark engine
 
 /** The fixture's addon, reading `reads` off every file (as Paddle or Vision would). */
 function reading(reads: Record<number, ScreenText[]>): void {
@@ -457,35 +310,15 @@ function reading(reads: Record<number, ScreenText[]>): void {
   const current = native() as unknown as Record<string, unknown>;
   for (const key of Object.keys(current)) raw[key] = current[key];
   raw.stub = false;
-  // What Vmake gave back reads clean (`stillShows` finds nothing of theirs left).
-  raw.screenTextDetect = async (source: string, _size: [number, number], indexes: number[]) => Object.fromEntries(indexes.map((index) => [index, source.includes(".vmake-") ? [] : (reads[index] ?? reads[Number(Object.keys(reads)[0])] ?? [])]));
+  raw.screenTextDetect = async (_source: string, _size: [number, number], indexes: number[]) => Object.fromEntries(indexes.map((index) => [index, reads[index] ?? reads[Number(Object.keys(reads)[0])] ?? []]));
   raw.screenTextCached = () => reads;
   before = useNative(raw as unknown as Native);
-}
-
-/** A stand-in for Vmake: the label's box filled with the picture's grey (what Smart Pro would leave), or `fail` thrown. */
-function standIn(log: string[], fail: (call: number) => VmakeError | null = () => null, id: tr.ProviderId = "vmake-api", gate: Promise<void> = Promise.resolve()): tr.Provider {
-  return {
-    id,
-    price: (seconds) => `≈ $${Math.round(seconds * 0.027)}`,
-    async remove(input, out, seconds) {
-      log.push(`remove ${Math.round(seconds)}`);
-      await gate;
-      const error = fail(log.filter((one) => one.startsWith("remove")).length);
-      if (error !== null) throw error;
-      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", input, "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", out]);
-      return { credits: Math.round(seconds * 4) };
-    },
-    async check() {
-      log.push("check");
-    },
-  };
 }
 
 async function labelledFootage(dir: string, seconds: number): Promise<string> {
   const file = join(dir, "tape.mp4");
   await tools.run([
-    tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `color=c=0x7f7f7f:size=320x180:rate=30:duration=${seconds},format=yuv420p,noise=alls=12:allf=t,drawbox=x=10:y=40:w=80:h=24:color=white:t=fill`,
+    tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `color=c=0x7f7f7f:size=320x180:rate=30:duration=${seconds},format=yuv420p,noise=alls=12:allf=t,drawbox=x=10:y=10:w=80:h=16:color=white:t=fill`,
     "-c:v", "libx264", "-qp", "0", file,
   ]);
   return file;
@@ -511,160 +344,52 @@ async function labelledProject(app: App, file: string, duration: number, name = 
   return project.id;
 }
 
-/** The agent's look done and every stretch detection proposes taken (start_removal `marks: "proposed"`): what these tests send is detection's. */
+/** The agent's look done and every stretch detection proposes taken (start_removal `marks: "proposed"`): what these tests blur is detection's. */
 function takeProposed(app: App, id: string): void {
   asks.add(app.store.home, id, { at: Date.now(), kinds: ["subtitles", "text"], media: "all", mark: "add" });
 }
 
-const LABEL: ScreenText = { t: "Actual case footage", b: [0.03, 0.22, 0.28, 0.36] };
+/** A re-uploader's label along the top, where theirs go (text_removal.ts `labelBoxes`). */
+const LABEL: ScreenText = { t: "Actual case footage", b: [0.03, 0.05, 0.28, 0.15] };
 
-test("a run takes the label out through the provider, lays the strip, keeps the piece, and never pays for it twice", async () => {
-  const { app, dir, store, home, cleanup } = fixtureHome("removal-run");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  const log: string[] = [];
-  tr.useProvider(standIn(log));
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
-  try {
-    const file = await labelledFootage(dir, 8);
-    const id = await labelledProject(app, file, 8);
-    const offered = await tr.status(app, id);
-    expect(offered).toEqual({ line: "Take their text out of 8 s of footage, Smart on the case: ≈ $0", action: "remove", running: null });
-    await tr.begin(app, id);
-    await tr.settled(id);
-    expect(log).toEqual(["remove 8"]);
-    const project = store.get(id)!.project;
-    const strip = project.media.find((media) => media.cleans != null);
-    expect(strip).toMatchObject({ stacked_alpha: true, has_audio: false, cleans: { media: "m", from: 0, to: 8 } });
-    expect(fs.existsSync(strip!.path)).toBe(true);
-    expect(project.clips.filter((clip) => (clip.name ?? "").startsWith(NAME)).map((clip) => (clip as VideoClip).parent)).toEqual(["f"]);
-    // Done: nothing more to offer; the run is kept with what it spent.
-    expect((await tr.status(app, id)).line).toBeNull();
-    const record = JSON.parse(fs.readFileSync(join(home, "text-removal.json"), "utf8")) as { runs: { seconds: number; credits: number; estimate: number }[] };
-    expect(record.runs.at(-1)).toMatchObject({ seconds: 8, credits: 32, estimate: 32 });
-    // The same footage in another project (a reused case): the kept piece, nothing sent.
-    const other = await labelledProject(app, file, 8, "q");
-    await tr.ensure(app, other);
-    await tr.settled(other);
-    expect(log).toEqual(["remove 8"]);
-    expect(store.get(other)!.project.media.some((media) => media.cleans != null)).toBe(true);
-  } finally {
-    cleanup();
-  }
-}, 120_000);
+/** The tracked blur's reads (text_blur.ts `reader`): LABEL wherever it looks, once `gate` lets it; each read's times counted in `reads`. */
+function blurReads(reads: number[], gate: () => Promise<void> = async () => {}): void {
+  blur.reader.read = async (_input, _size, _fps, _region, times) => {
+    await gate();
+    reads.push(times.length);
+    return times.map(() => [LABEL]);
+  };
+}
 
-test("each result is kept with its mode: a Smart one never stands in for Smart Pro, Smart Pro's (every result from before) does for Smart; a run sends each piece in its own", async () => {
-  const { app, dir, home, store, cleanup } = fixtureHome("removal-modes-shelf");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  const sent: string[] = [];
-  const log: string[] = [];
-  const base = standIn(log, () => null, "vmake-web");
-  tr.useProvider({ ...base, remove: (input, out, seconds, signal, whole, begun, label, look, mode) => (sent.push(mode ?? "pro"), base.remove(input, out, seconds, signal, whole, begun, label, look, mode)) });
-  const shelf = tr.shelfIn(join(dir, "shelf"), () => false);
-  tr.useShelf(shelf);
-  try {
-    // The names: Smart's marked, every other Smart Pro's (all kept before Nov 18).
-    expect(tr.parseName("edit/cleaned/ab/0-8000.vmake-web.smart.mp4")).toEqual({ from: 0, to: 8, provider: "vmake-web", mode: "smart" });
-    expect(tr.parseName("edit/cleaned/ab/0-8000.vmake-api.mp4")?.mode).toBe("pro");
-    expect([tr.serves({ mode: "pro" }, "smart"), tr.serves({ mode: "pro" }, "pro"), tr.serves({ mode: "smart" }, "smart"), tr.serves({ mode: "smart" }, "pro")]).toEqual([true, true, true, false]);
-    const file = await labelledFootage(dir, 8);
-    const id = await labelledProject(app, file, 8);
-    const source = await tr.sourceOf(store.get(id)!.project.media[0]!);
-    // A video of one case with no intro to tell: Smart. A Smart result on the shelf is used, nothing sent.
-    fs.copyFileSync(file, join(dir, "smart.mp4"));
-    const smart = await shelf.keep(source, join(dir, "smart.mp4"), 0, 8, "vmake-web", "smart");
-    expect(smart.key.endsWith("0-8000.vmake-web.smart.mp4")).toBe(true);
-    const plan = async () => (await tr.plan(app, store.get(id)!.project)).files.map((one) => ({ mode: one.mode, send: one.send, use: one.use.map((kept) => kept.mode) }));
-    expect(await plan()).toEqual([{ mode: "smart", send: [], use: ["smart"] }]);
-    // Smart Pro asked for there ("Smart Pro on this case"): the Smart result can't stand in, so the seconds go again in Smart Pro.
-    asks.add(home, id, { at: Date.now(), kinds: ["text"], media: "all", mode: "pro", said: "the whole video" });
-    tr.reset();
-    expect(await plan()).toEqual([{ mode: "pro", send: [[0, 8]], use: [] }]);
-    await tr.ensure(app, id);
-    await tr.settled(id);
-    expect(sent).toEqual(["pro"]);
-    const kept = await shelf.list(source);
-    expect(kept.map((one) => one.mode).sort()).toEqual(["pro", "smart"]);
-    // Laid as Smart Pro's strip, the Smart one's gone from the project.
-    expect(store.get(id)!.project.media.filter((one) => one.cleans != null).map((one) => tr.stripMode(one))).toEqual(["pro"]);
-    // Another project of the same footage, Smart by its section: Smart Pro's result stands in (the Smart one of the same seconds adds nothing), nothing sent.
-    const other = await labelledProject(app, file, 8, "q");
-    tr.reset();
-    expect((await tr.plan(app, store.get(other)!.project)).files.map((one) => [one.mode, one.send, one.use.map((kept) => kept.mode)])).toEqual([["smart", [], ["pro"]]]);
-    expect(sent).toEqual(["pro"]);
-  } finally {
-    cleanup();
-  }
-}, 120_000);
+/** A gate that holds until opened. */
+function gated(): { wait: () => Promise<void>; open: () => void } {
+  let open = () => {};
+  const held = new Promise<void>((resolve) => (open = resolve));
+  return { wait: () => held, open: () => open() };
+}
 
-test("a piece Vmake fails stays blurred and is said; an account it refuses stops every send at once, is kept, and is asked again later", async () => {
-  const { app, dir, store, home, cleanup } = fixtureHome("removal-fail");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
-  try {
-    const file = await labelledFootage(dir, 8);
-    // A piece's failure: sent once more, then given up on, their label blurred, said.
-    const log: string[] = [];
-    tr.useProvider(standIn(log, () => new VmakeError("Vmake's task gave no video", "piece")));
-    const id = await labelledProject(app, file, 8);
-    await tr.begin(app, id);
-    await tr.settled(id);
-    expect(log).toEqual(["remove 8", "remove 8"]);
-    expect(store.get(id)!.project.media.some((media) => media.cleans != null)).toBe(false);
-    expect(tr.piecesOf(id).map((one) => [one.state, one.tries])).toEqual([["failed", 2]]);
-    expect(store.get(id)!.project.clips.filter((clip) => (clip.name ?? "").startsWith(burned.UNTIL_REMOVED)).length).toBeGreaterThan(0);
-    expect(await tr.status(app, id)).toEqual({ line: "Vmake couldn't clean one piece; their text stays blurred there.", action: null, running: null });
-    // The account's: two files of footage, the first refused, the second never sent.
-    const second = join(dir, "second.mp4");
-    fs.copyFileSync(file, second);
-    await store.update(id, "test", (project) => {
-      project.media.push({ ...project.media[0]!, id: "m2", name: "second", path: second });
-      project.clips.push({ ...structuredClone(project.clips[0]!), id: "g", start: 240, media: "m2" } as VideoClip);
-    });
-    await burned.warm(app.media, store.get(id)!.project.media.find((media) => media.id === "m2")!);
-    const refused: string[] = [];
-    tr.useProvider(standIn(refused, () => new VmakeError("Vmake's quota: insufficient balance", "account", "out_of_credits")));
-    await tr.begin(app, id);
-    await tr.settled(id);
-    expect(refused.filter((one) => one.startsWith("remove"))).toEqual(["remove 8"]);
-    const line = "Taking their text out is off: the Vmake account is out of credits. Their subtitles stay blurred until it's sorted.";
-    expect(await tr.status(app, id)).toEqual({ line, action: "retry", running: null });
-    // Pressed again before an hour: nothing sent, still off (kept in the home, so a restart keeps it too).
-    await tr.begin(app, id);
-    await tr.settled(id);
-    expect(refused.filter((one) => one.startsWith("remove")).length).toBe(1);
-    expect(JSON.parse(fs.readFileSync(join(home, "text-removal.json"), "utf8")).accounts["vmake-api"].reason).toBe("out_of_credits");
-    // An hour on, it's offered again; the person's retry checks the account first.
-    expect(tr.blocked(home, "vmake-api", Date.now() + tr.RECHECK_MS + 1)).toBeNull();
-    const back: string[] = [];
-    tr.useProvider(standIn(back));
-    await tr.begin(app, id, true);
-    await tr.settled(id);
-    expect(back[0]).toBe("check");
-    // The second file only: the first was given up on (it stays blurred, never sent again here).
-    expect(back.filter((one) => one.startsWith("remove")).length).toBe(1);
-    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).map((media) => media.cleans!.media)).toEqual(["m2"]);
-  } finally {
-    cleanup();
-  }
-}, 120_000);
+/** The blur's stretches of `id`: file, seconds, state. */
+const blurs = (id: string) => blur.piecesOf(id).map((one) => [one.media, one.from, one.to, one.state]);
+/** Whether `id`'s timeline has a tracked blur laid. */
+const tracked = (app: App, id: string) => app.store.get(id)!.project.clips.some((clip) => clip.type === "adjustment" && (clip.name ?? "").startsWith(`${blur.TRACKED} · `));
 
 // ---------------------------------------------------------------------------
-// What a channel is taught to take out (removal_lesson.ts) and what that sends
+// What a channel is taught to take out (removal_lesson.ts) and what that does
 
-test("a removal lesson reads back as kept, changes part by part, and says where each part goes", () => {
+test("a removal lesson reads back as kept, changes part by part, and says plainly what's done to each part", () => {
   const actual: removal.Example = { kind: "text", action: "remove", text: "Actual case footage", box: [0.03, 0.05, 0.35, 0.13], from: { source: "drive:abc", at: 5 } };
   const stamp: removal.Example = { kind: "stamp", action: "keep", text: "AXON BODY 3", box: [0.66, 0.01, 0.97, 0.09] };
   const lesson = removal.changed(null, { subtitles: true, text: true }, [actual, stamp]);
   const kept = removal.write(lesson);
-  expect(kept.split("\n")[0]).toBe(`Take their subtitles and their labels and other text out of the footage's picture wherever a file has them, by itself as footage is cut; the camera's stamp and "AXON BODY 3" always kept.`);
+  expect(kept.split("\n")[0]).toBe(`Their subtitles and text get a tight blur; the camera's stamp and "AXON BODY 3" always kept.`);
   expect(removal.parse(kept)).toEqual(lesson);
   // When each part runs, said in the first line: by itself after import, or only when someone asks.
   const timed = removal.changed(lesson, { watermarks: true }, [], false, { watermarks: "asked" });
-  expect(removal.summary(timed)).toBe(`Take their subtitles and their labels and other text out of the footage's picture wherever a file has them, by itself as footage is cut; their watermarks out only when someone asks; the camera's stamp and "AXON BODY 3" always kept.`);
-  expect(removal.summary(removal.changed(null, { watermarks: true }, [], false, { watermarks: "asked" }))).toBe("Take their watermarks out of the footage's picture only when someone asks; the camera's stamp always kept.");
+  expect(removal.summary(timed)).toBe(`Their subtitles and text get a tight blur; only when someone asks, their watermarks come out; the camera's stamp and "AXON BODY 3" always kept.`);
+  expect(removal.summary(removal.changed(null, { watermarks: true }, [], false, { watermarks: "asked" }))).toBe("Only when someone asks, their watermarks come out; the camera's stamp always kept.");
+  expect(removal.summary(removal.changed(null, { subtitles: true, watermarks: true }, []))).toBe("Their subtitles get a tight blur; their watermarks come out; the camera's stamp always kept.");
+  expect(removal.summary(removal.changed(null, { text: true }, []))).toBe("Their labels and other text get a tight blur; the camera's stamp always kept.");
+  expect(removal.summary(removal.changed(null, {}, []))).toBe("Nothing is taken out of the footage's picture; the camera's stamp always kept.");
   expect(removal.parse(removal.write(timed))!.when).toEqual({ subtitles: "automatic", watermarks: "asked", text: "automatic" });
   // A lesson kept before timings read back: every part by itself, as it ran.
   expect(removal.parse(`x\n<removal>{"remove":{"subtitles":true},"examples":[]}</removal>`)!.when).toEqual({ subtitles: "automatic", watermarks: "automatic", text: "automatic" });
@@ -676,19 +401,12 @@ test("a removal lesson reads back as kept, changes part by part, and says where 
   expect(later.remove).toEqual({ subtitles: true, watermarks: true, text: false });
   expect(later.examples.map((one) => one.text)).toEqual(["AXON BODY 3", "Actual footage"]);
   expect(removal.changed(later, {}, [], true).examples).toEqual([]);
-  // Where each part goes: Vmake for subtitles and text, the local step for watermarks, nothing untaught.
-  expect(removal.kinds(null)).toEqual({ vmake: [], local: [] });
-  expect(removal.kinds(removal.changed(null, { subtitles: true }, []))).toEqual({ vmake: ["subtitles"], local: [] });
-  expect(removal.kinds(removal.changed(null, { watermarks: true }, []))).toEqual({ vmake: [], local: ["watermarks"] });
-  expect(removal.kinds(removal.changed(null, { subtitles: true, text: true, watermarks: true }, []))).toEqual({ vmake: ["subtitles", "text"], local: ["watermarks"] });
+  // Where each part goes: the tracked blur for subtitles and text, the engine for watermarks, nothing untaught.
+  expect(removal.kinds(null)).toEqual({ blur: [], watermarks: [] });
+  expect(removal.kinds(removal.changed(null, { subtitles: true }, []))).toEqual({ blur: ["subtitles"], watermarks: [] });
+  expect(removal.kinds(removal.changed(null, { watermarks: true }, []))).toEqual({ blur: [], watermarks: ["watermarks"] });
+  expect(removal.kinds(removal.changed(null, { subtitles: true, text: true, watermarks: true }, []))).toEqual({ blur: ["subtitles", "text"], watermarks: ["watermarks"] });
   expect(removal.takesOut(removal.changed(null, { subtitles: false }, []))).toBe(false);
-  // The paste-back's reach: only their subtitles' band when that's all; everywhere but it for text alone; the keep examples always kept.
-  const band: burned.Band = [0.2, 0.8, 0.8, 0.92];
-  const near: [number, number, number, number] = [0.17, 0.77, 0.83, 0.95];
-  const round = (boxes: number[][]) => boxes.map((box) => box.map((value) => Math.round(value * 1000) / 1000));
-  expect(round(tr.keptFor(removal.changed(null, { subtitles: true }, []), band))).toEqual(round(tr.outside(near)));
-  expect(round(tr.keptFor(removal.changed(null, { text: true }, []), band))).toEqual([near]);
-  expect(tr.keptFor(removal.changed(null, { subtitles: true, text: true }, [stamp]), band)).toEqual([stamp.box!]);
   // Taught words: a label of theirs counts the first time it's read; words it keeps never count, staying put or not.
   const once = { 3: [{ t: "Actual case footage", b: [0.03, 0.05, 0.35, 0.13] }] } as Record<number, ScreenText[]>;
   expect(tr.labelSpans(once, [1, 3, 5, 7], 8, [])).toEqual([]);
@@ -713,53 +431,56 @@ function engine(calls: string[]): wm.Engine {
   };
 }
 
-test("what's sent follows the lesson: untaught nothing, subtitles alone not their labels, watermarks alone to the engine and never Vmake", async () => {
+test("what's done follows the lesson: untaught nothing, subtitles alone not their labels, their text under the tracked blur, watermarks alone to the engine", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-lessons");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  const log: string[] = [];
-  tr.useProvider(standIn(log, () => null, "vmake-web"));
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const reads: number[] = [];
+  blurReads(reads);
   const calls: string[] = [];
   wm.useEngine(engine(calls));
   wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
   try {
     const file = await labelledFootage(dir, 8);
     const id = await labelledProject(app, file, 8);
-    // Untaught: nothing said, nothing sent, nothing learned.
+    // Untaught: nothing said, nothing read, nothing learned.
     await removalSchedule.ensure(app, id);
-    await tr.settled(id);
+    await blur.settled();
     await wm.settled();
-    expect(await removalSchedule.statusOf(app, id)).toEqual({ line: null, action: null, running: null });
-    expect([log, calls]).toEqual([[], []]);
+    expect(removalSchedule.statusOf(app, id)).toEqual({ background: null });
+    expect([reads, calls, blurs(id)]).toEqual([[], [], []]);
     // Taught their subtitles alone: this footage shows a label, no subtitles, so nothing.
     teach({ subtitles: true });
-    expect((await tr.plan(app, store.get(id)!.project)).files).toEqual([]);
-    // Their text: the label's file is the one to send.
+    expect(await tr.blurPlan(app, store.get(id)!.project)).toEqual([]);
+    // Their text: the label's seconds get the tracked blur, laid over its clip.
     teach({ text: true });
-    expect((await tr.plan(app, store.get(id)!.project)).files.map((one) => [one.media.id, one.send])).toEqual([["m", [[0, 8]]]]);
-    // Their watermark alone, with an example of it: the mark learned from it once, the timeline's cells done here, Vmake never asked.
+    expect((await tr.blurPlan(app, store.get(id)!.project)).map((one) => [one.media.id, one.spans, one.text, one.subtitles])).toEqual([["m", [[0, 8]], true, false]]);
+    await removalSchedule.ensure(app, id);
+    await blur.settled();
+    expect(blurs(id)).toEqual([["m", 0, 8, "done"]]);
+    expect(reads.length).toBeGreaterThan(0);
+    expect(tracked(app, id)).toBe(true);
+    // Their watermark alone, with an example of it: the mark learned from it once, the timeline's cells done here, the blur taken off.
     const source = `sha256:${await cloudMedia.sha256File(file)}`;
     teach({ watermarks: true }, [{ kind: "watermarks", action: "remove", box: [0.3, 0.6, 0.7, 0.85], from: { source, at: 4 } }]);
-    expect((await tr.plan(app, store.get(id)!.project)).files).toEqual([]);
+    expect(await tr.blurPlan(app, store.get(id)!.project)).toEqual([]);
+    await tr.ensure(app, id);
     await removalSchedule.ensure(app, id);
     await wm.settled();
     expect(calls).toEqual([`learn ${JSON.stringify([0.3, 0.6, 0.7, 0.85])}`, "remove 0-8"]);
-    expect(log).toEqual([]);
+    expect(tracked(app, id)).toBe(false);
     expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(1);
   } finally {
     cleanup();
   }
 }, 120_000);
 
-test("a part taught to run only when asked does nothing until the agent starts it on what the person pointed to; then it's counted, checked and waited for as any", async () => {
+test("a part taught to run only when asked does nothing until the agent starts it on what the person pointed to; then it's counted and waited for as any", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-asked");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
   teach({ text: true, watermarks: true }, [], { text: "asked", watermarks: "asked" });
-  const log: string[] = [];
-  let open = () => {};
-  const gate = new Promise<void>((resolve) => (open = resolve));
-  tr.useProvider(standIn(log, () => null, "vmake-web", gate));
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const reads: number[] = [];
+  const gate = gated();
+  blurReads(reads, gate.wait);
   const calls: string[] = [];
   wm.useEngine(engine(calls));
   wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
@@ -769,13 +490,12 @@ test("a part taught to run only when asked does nothing until the agent starts i
   try {
     const file = await labelledFootage(dir, 8);
     id = await labelledProject(app, file, 8);
-    // Taught, not asked: no file looked at, nothing sent, nothing said, nothing for an export to wait for.
+    // Taught, not asked: no file looked at, nothing read, nothing said, nothing for an export to wait for.
     await removalSchedule.ensure(app, id);
-    await tr.settled(id);
     await wm.settled();
-    expect([log, calls]).toEqual([[], []]);
-    expect((await tr.plan(app, store.get(id)!.project)).files).toEqual([]);
-    expect(await removalSchedule.statusOf(app, id)).toEqual({ line: null, action: null, running: null });
+    expect([reads, calls, blurs(id)]).toEqual([[], [], []]);
+    expect(await tr.blurPlan(app, store.get(id)!.project)).toEqual([]);
+    expect(removalSchedule.statusOf(app, id)).toEqual({ background: null });
     await removalSchedule.waitForPieces(app, id, 200);
     // Asked with nowhere said: the agent is told what to give.
     expect((await call({})).content[0]!.text).toContain("say where");
@@ -783,20 +503,24 @@ test("a part taught to run only when asked does nothing until the agent starts i
     const said = await call({ media: ["m"] });
     expect(said.isError).toBe(false);
     expect(said.content[0]!.text).toContain("Taking their watermarks, their labels and other text out of tape");
-    while (removalSchedule.progressOf(id).out === 0 || log.length === 0) await Bun.sleep(20);
-    expect((await removalSchedule.statusOf(app, id)).background?.label).toMatch(/^Removing their (text|watermarks)/u);
+    expect(said.content[0]!.text).toContain("tight tracked blur");
+    while (removalSchedule.progressOf(id).out === 0) await Bun.sleep(20);
+    expect(removalSchedule.statusOf(app, id).background?.label).toMatch(/^Removing their (text|watermarks)/u);
     expect(await removalSchedule.waitForPieces(app, id, 200).catch((error: unknown) => String(error))).toContain("still rendering");
     const waited = removalSchedule.waitForPieces(app, id, 60_000);
-    open();
+    gate.open();
     await waited;
-    await tr.settled(id);
+    await blur.settled();
     await wm.settled();
     expect(calls).toEqual(["learn null", "remove 0-8"]);
-    expect(log.filter((one) => one.startsWith("remove")).length).toBe(1);
-    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).map((media) => media.cleans!.what ?? "text").sort()).toEqual(["text", "watermark"]);
+    expect(blurs(id)).toEqual([["m", 0, 8, "done"]]);
+    expect(tracked(app, id)).toBe(true);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).map((media) => media.cleans!.what)).toEqual(["watermark"]);
     // Kept across a restart of the server: what was asked still covers this footage.
     asks.reset();
     expect(asks.scope(removal.lessonOf(store.get(id)!.project), app.store.home, id, "text", "m", [[0, 8]])).toEqual([[0, 8]]);
+    // A mode is no longer a thing: start_removal has none.
+    expect((await call({ media: ["m"], mode: "smart" })).isError).toBe(false);
   } finally {
     cleanup();
   }
@@ -806,31 +530,29 @@ test("asked for a stretch of the timeline, only those seconds of the footage the
   const { app, dir, store, cleanup } = fixtureHome("removal-asked-span");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });
   v2cloud.useSkillsForTests([]);
-  const log: string[] = [];
-  tr.useProvider(standIn(log, () => null, "vmake-web"));
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const reads: number[] = [];
+  blurReads(reads);
   try {
     const file = await labelledFootage(dir, 30);
     const id = await labelledProject(app, file, 30);
     // The timeline's 2–6 s are the footage's 2–6 s.
     const project = store.get(id)!.project;
     expect([...removalSchedule.shownBetween(project, 2, 6)]).toEqual([["m", [[2, 6]]]]);
-    // Untaught: nothing until asked; asked for their text from 2 to 6 s: that stretch (with its handle) alone.
+    // Untaught: nothing until asked; asked for their text from 2 to 6 s: that stretch alone.
     await removalSchedule.ensure(app, id);
-    await tr.settled(id);
-    expect(log).toEqual([]);
+    await blur.settled();
+    expect([reads, blurs(id)]).toEqual([[], []]);
     const said = (await dispatch(app, { id: 1, method: "tools/call", params: { name: "start_removal", arguments: { project_id: id, kinds: ["text"], from: 2, to: 6 } } }, null)) as { result: { isError: boolean } };
     expect(said.result.isError).toBe(false);
-    await tr.settled(id);
-    expect(log).toEqual(["remove 6"]);
-    const strips = store.get(id)!.project.media.filter((media) => media.cleans != null);
-    expect(strips.map((media) => [media.cleans!.from, media.cleans!.to])).toEqual([[1, 7]]);
+    await blur.settled();
+    expect(blurs(id)).toEqual([["m", 2, 6, "done"]]);
+    expect(tracked(app, id)).toBe(true);
   } finally {
     cleanup();
   }
 }, 120_000);
 
-test("after a restart the work resumes by itself, with no edit (Nov 17, Sphe's M4): a cell cut short by the stop is done again, kept ones never twice; a retry runs their watermarks' work too", async () => {
+test("after a restart the work resumes by itself, with no edit (Nov 17, Sphe's M4): a cell cut short by the stop is done again, kept ones never twice", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-resume");
   reading({});
   const calls: string[] = [];
@@ -847,7 +569,6 @@ test("after a restart the work resumes by itself, with no edit (Nov 17, Sphe's M
     },
   });
   wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
-  tr.useProvider(null);
   try {
     const file = await labelledFootage(dir, 40);
     const id = await labelledProject(app, file, 40);
@@ -870,16 +591,6 @@ test("after a restart the work resumes by itself, with no edit (Nov 17, Sphe's M
     await removalSchedule.resume(app);
     await wm.settled();
     expect(calls.length).toBe(4);
-    // The line's retry (or a yes) with their watermarks alone taught and no Vmake here: the engine's work, not a refusal.
-    wm.reset();
-    const strips = store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").map((media) => media.id);
-    await store.update(id, "test", (p) => {
-      p.media = p.media.filter((media) => !strips.includes(media.id));
-    });
-    expect(await tr.begin(app, id, true)).toEqual({ line: null, action: null, running: null });
-    await wm.settled();
-    expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(2);
-    expect(calls.length).toBe(4);
     // Untaught, or an old project: nothing resumes.
     v2cloud.useSkillsForTests([]);
     expect(await removalSchedule.resume(app)).toBe(0);
@@ -888,15 +599,13 @@ test("after a restart the work resumes by itself, with no edit (Nov 17, Sphe's M
   }
 }, 120_000);
 
-test("a run in the background: the chat row's numbers while it's out, then the agent woken with what it did once any turn under way ends, as Edit's own event; Stop sends nothing more", async () => {
+test("a run in the background: the chat row's numbers while it's out, then the agent woken with what it did once any turn under way ends, as Edit's own event; Stop does nothing more", async () => {
   const { app, dir, cleanup } = fixtureHome("removal-row");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
   teach({ text: true });
-  const log: string[] = [];
-  let open = () => {};
-  let gate = new Promise<void>((resolve) => (open = resolve));
-  tr.useProvider({ ...standIn(log, () => null, "vmake-web"), remove: async (...args) => (await gate, standIn(log, () => null, "vmake-web").remove(...args)) });
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const reads: number[] = [];
+  let gate = gated();
+  blurReads(reads, () => gate.wait());
   const sent: string[] = [];
   let running = true;
   (app as unknown as { agents: unknown }).agents = { chat: () => ({ running }), send: async (_project: string, text: string) => void sent.push(text) };
@@ -908,13 +617,11 @@ test("a run in the background: the chat row's numbers while it's out, then the a
     const id = await labelledProject(app, file, 8);
     await removalSchedule.ensure(app, id);
     while (removalSchedule.progressOf(id).out === 0) await Bun.sleep(20);
-    // The row's numbers, its Details, no line at the top.
-    const said = await removalSchedule.statusOf(app, id);
-    expect(said.line).toBeNull();
-    expect(said.background).toMatchObject({ label: "Removing their text", done: 0, total: 1 });
-    expect(removalSchedule.pieceRows(id)).toEqual([expect.objectContaining({ key: "text:m@0", what: "text", name: "tape", from: 0, to: 8 })]);
-    open();
-    await tr.settled(id);
+    // The row's numbers and its Details.
+    expect(removalSchedule.statusOf(app, id).background).toMatchObject({ label: "Removing their text", done: 0, total: 1 });
+    expect(removalSchedule.pieceRows(id)).toEqual([expect.objectContaining({ key: "blur:m@0-8000", what: "blur", name: "tape", from: 0, to: 8 })]);
+    gate.open();
+    await blur.settled();
     // Done while the agent's turn runs: it waits for the turn to end, then one turn of Edit's own.
     await Bun.sleep(300);
     expect(sent).toEqual([]);
@@ -927,22 +634,23 @@ test("a run in the background: the chat row's numbers while it's out, then the a
     expect(sent[0]).toContain("lay OUR subtitles");
     await Bun.sleep(200);
     expect(sent.length).toBe(1);
-    // Stopped mid-run (another project): the piece under way comes back and stays, nothing more goes, nobody is woken.
-    gate = new Promise<void>((resolve) => (open = resolve));
+    expect(removalSchedule.statusOf(app, id)).toEqual({ background: null });
+    // Stopped mid-run (another project): nothing more is done there and nobody is woken.
+    gate = gated();
     fs.mkdirSync(join(dir, "b"), { recursive: true });
     const other = await labelledProject(app, await labelledFootage(join(dir, "b"), 9), 9, "q");
     await removalSchedule.ensure(app, other);
     while (removalSchedule.progressOf(other).out === 0) await Bun.sleep(20);
     removalSchedule.stop(app, other);
     expect(asks.isStopped(app.store.home, other)).toBe(true);
-    open();
-    await tr.settled(other);
+    gate.open();
+    await blur.settled();
     await removalSchedule.ensure(app, other);
-    await tr.settled(other);
+    await blur.settled();
     await Bun.sleep(300);
     expect(sent.length).toBe(1);
     expect(removalSchedule.progressOf(other).out).toBe(0);
-    expect((await removalSchedule.statusOf(app, other)).background).toBeUndefined();
+    expect(removalSchedule.statusOf(app, other).background).toBeNull();
   } finally {
     Object.assign(removalSchedule.timing, before);
     cleanup();
@@ -953,9 +661,8 @@ test("two runs done while the person's turn runs: one turn of Edit's own once it
   const { app, dir, store, cleanup } = fixtureHome("removal-wake-once");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });
   teach({ text: true });
-  const log: string[] = [];
-  tr.useProvider(standIn(log, () => null, "vmake-web"));
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const reads: number[] = [];
+  blurReads(reads);
   const sent: string[] = [];
   let running = true;
   (app as unknown as { agents: unknown }).agents = { chat: () => ({ running }), send: async (_project: string, text: string) => void sent.push(text) };
@@ -968,20 +675,18 @@ test("two runs done while the person's turn runs: one turn of Edit's own once it
     await store.update(id, "test", (p) => {
       (p.clips[0] as VideoClip).duration = 240;
     });
-    const done = async (count: number) => {
-      const until = Date.now() + 20_000;
-      while (log.length < count && Date.now() < until) await Bun.sleep(20);
-      await tr.settled(id);
-      await Bun.sleep(200);
-    };
     await removalSchedule.ensure(app, id);
-    await done(1);
+    await blur.settled();
+    await Bun.sleep(200);
+    expect(blurs(id)).toEqual([["m", 0, 8, "done"]]);
     // The clip grows: a second run, done while the turn still runs.
     await store.update(id, "agent", (p) => {
       (p.clips[0] as VideoClip).duration = 360;
     });
     await removalSchedule.ensure(app, id);
-    await done(2);
+    await blur.settled();
+    await Bun.sleep(200);
+    expect(blurs(id)).toEqual([["m", 0, 12, "done"]]);
     expect(sent).toEqual([]);
     running = false;
     const until = Date.now() + 10_000;
@@ -995,84 +700,12 @@ test("two runs done while the person's turn runs: one turn of Edit's own once it
   }
 }, 120_000);
 
-test("the website's pieces go three at once once Vmake has taken the first (Nov 17, Sphe's M4: the first was waited on to its end, ~7 min, alone); a provider that never says it began keeps the first alone to its end", async () => {
-  const { app, dir, store, cleanup } = fixtureHome("removal-parallel");
-  // A label on screen the whole 800 s: three pieces of at most 300 s.
-  reading(Object.fromEntries(Array.from({ length: 400 }, (_, at) => [at * 2 + 1, [LABEL]])));
-  teach({ text: true });
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
-  const file = join(dir, "long.mp4");
-  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0x7f7f7f:size=160x90:rate=10:duration=800,format=yuv420p,drawbox=x=5:y=20:w=40:h=12:color=white:t=fill", "-c:v", "libx264", "-preset", "ultrafast", file]);
-  const timeline = (says: boolean) => {
-    const seen: number[] = [];
-    let active = 0;
-    let first = true;
-    let open = () => {};
-    const all = new Promise<void>((resolve) => (open = resolve));
-    const provider: tr.Provider = {
-      id: "vmake-web",
-      price: () => "",
-      async remove(input, out, _seconds, _signal, _whole, begun) {
-        active += 1;
-        seen.push(active);
-        if (active === 3) open();
-        const mine = first;
-        first = false;
-        // Taken a moment in; on the website every piece is held until all three are in (none ends before the others start).
-        await Bun.sleep(100);
-        if (says) {
-          if (mine) begun?.();
-          await Promise.race([all, Bun.sleep(60_000)]);
-        }
-        fs.copyFileSync(input, out);
-        active -= 1;
-        return { credits: null };
-      },
-      async check() {},
-    };
-    return { provider, seen };
-  };
-  try {
-    const live = app.store.create("p", { width: 1920, height: 1080, fps: 30 });
-    const project = structuredClone(live.project) as Project;
-    const media: Media = { id: "m", name: "long", path: file, kind: "video", duration: 800, width: 160, height: 90, fps: 10, has_audio: false };
-    project.media = [media];
-    project.clips = [{ id: "f", track: "v1", start: 0, duration: 800 * 30, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as VideoClip];
-    project.channel = "ch-taught";
-    await app.store.replace(project.id, null, project, "test");
-    await burned.warm(app.media, media);
-    takeProposed(app, project.id);
-    expect((await tr.plan(app, store.get(project.id)!.project)).files[0]!.send.length).toBe(3);
-    // The website: the first alone until it's taken, then the other two beside it (three at once).
-    const site = timeline(true);
-    tr.useProvider(site.provider);
-    await tr.ensure(app, project.id);
-    await tr.settled(project.id);
-    expect(site.seen).toEqual([1, 2, 3]);
-    // Never said: the first to its end, then the rest.
-    tr.reset();
-    tr.useShelf(tr.shelfIn(join(dir, "shelf2"), () => false));
-    await app.store.update(project.id, "test", (p) => {
-      p.media = p.media.filter((one) => one.cleans == null);
-    });
-    const api = timeline(false);
-    tr.useProvider(api.provider);
-    await tr.ensure(app, project.id);
-    await tr.settled(project.id);
-    // The second only once the first has ended.
-    expect(api.seen.slice(0, 2)).toEqual([1, 1]);
-  } finally {
-    cleanup();
-  }
-}, 180_000);
-
 test("after a start nothing else has read the channels: removal reads them itself, so a group's lesson is found and the work resumes (Nov 17, Sphe's M4 on nightly-82)", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-group-resume");
   reading({});
   const calls: string[] = [];
   wm.useEngine(engine(calls));
   wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
-  tr.useProvider(null);
   // The lesson is the group's; the channel's group is known only once the channels are read.
   const lesson = removal.changed(null, { watermarks: true }, []);
   v2cloud.useSkillsForTests([{ name: removal.SKILL, key: v2cloud.ownKey("skill", "gr-caught--edit", removal.SKILL), text: removal.write(lesson) }]);
@@ -1093,332 +726,43 @@ test("after a start nothing else has read the channels: removal reads them itsel
   }
 }, 60_000);
 
-test("a finished result from before is used only when it's this piece's footage: as long, and the same picture but for small parts", async () => {
-  const { dir, cleanup } = scratch("same-footage");
-  try {
-    const original = await labelledFootage(dir, 8);
-    const cleaned = join(dir, "cleaned.mp4");
-    await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", original, "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", cleaned]);
-    expect(await tr.sameFootage(original, cleaned)).toBe(true);
-    // Another stretch of footage, as long: not this piece's.
-    const other = join(dir, "other.mp4");
-    await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=8", "-c:v", "libx264", "-qp", "0", other]);
-    expect(await tr.sameFootage(original, other)).toBe(false);
-    // Not as long: not this piece's.
-    const short = join(dir, "short.mp4");
-    await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", original, "-t", "6", "-c:v", "libx264", "-qp", "0", short]);
-    expect(await tr.sameFootage(original, short)).toBe(false);
-  } finally {
-    cleanup();
-  }
-}, 60_000);
-
-test("stopped, then asked for a stretch: only that stretch is cleaned, what ran by itself stays stopped (Sphe, Nov 17: just the intro and the first case's start)", async () => {
+test("stopped, then asked for a stretch: only that stretch is blurred, what ran by itself stays stopped (Sphe, Nov 17: just the intro and the first case's start)", async () => {
   const { app, dir, cleanup } = fixtureHome("removal-stop-ask");
   reading(Object.fromEntries(Array.from({ length: 15 }, (_, at) => [at * 2 + 1, [LABEL]])));
   teach({ text: true });
-  const log: string[] = [];
-  tr.useProvider(standIn(log, () => null, "vmake-web"));
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const reads: number[] = [];
+  blurReads(reads);
   try {
     const file = await labelledFootage(dir, 30);
     const id = await labelledProject(app, file, 30);
     removalSchedule.stop(app, id);
     await removalSchedule.ensure(app, id);
-    await tr.settled(id);
-    expect(log).toEqual([]);
+    await blur.settled();
+    expect([reads, blurs(id)]).toEqual([[], []]);
     await Bun.sleep(5);
     const said = (await dispatch(app, { id: 1, method: "tools/call", params: { name: "start_removal", arguments: { project_id: id, kinds: ["text"], from: 2, to: 6 } } }, null)) as { result: { isError: boolean } };
     expect(said.result.isError).toBe(false);
-    await tr.settled(id);
-    expect(log).toEqual(["remove 6"]);
-    // An edit later, a restart: still only that stretch.
+    await blur.settled();
+    expect(blurs(id)).toEqual([["m", 2, 6, "done"]]);
+    // An edit later, a restart: still only that stretch, nothing read again.
+    const count = reads.length;
     await removalSchedule.ensure(app, id);
-    await tr.settled(id);
+    await blur.settled();
     expect(await removalSchedule.resume(app)).toBe(1);
-    await tr.settled(id);
-    expect(log).toEqual(["remove 6"]);
+    await blur.settled();
+    expect(blurs(id)).toEqual([["m", 2, 6, "done"]]);
+    expect(reads.length).toBe(count);
   } finally {
     cleanup();
   }
 }, 120_000);
 
-test("finished results from before (named by length) are matched to the whole video's windows, used once they're the footage, and a stretch asked for then sends nothing for them; another footage's result is never used", async () => {
-  const { app, dir, store, cleanup } = fixtureHome("removal-legacy");
-  reading(Object.fromEntries(Array.from({ length: 15 }, (_, at) => [at * 2 + 1, [LABEL]])));
-  teach({ text: true });
-  const log: string[] = [];
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
-  const file = await labelledFootage(dir, 30);
-  // vmake.ai's result of the window nightly-81 planned for the whole file (0–30 s), and another footage's as long.
-  const mine = join(dir, "mine.mp4");
-  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", file, "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", mine]);
-  const theirs = join(dir, "theirs.mp4");
-  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=30", "-c:v", "libx264", "-qp", "0", theirs]);
-  const server = Bun.serve({ port: 0, fetch: (request) => new Response(Bun.file(new URL(request.url).pathname === "/mine.mp4" ? mine : theirs)) });
-  const provider = (cards: string[]): tr.Provider => ({ ...standIn(log, () => null, "vmake-web"), legacy: async () => cards.map((name) => ({ name: "piece-30s.mp4", seconds: 30, url: `http://127.0.0.1:${server.port}/${name}` })) });
-  const ask = (id: string) => dispatch(app, { id: 1, method: "tools/call", params: { name: "start_removal", arguments: { project_id: id, kinds: ["text"], from: 2, to: 6 } } }, null);
-  try {
-    // Another footage's result, as long: not used; the stretch's piece is sent.
-    tr.useProvider(provider(["theirs.mp4"]));
-    const other = await labelledProject(app, file, 30, "q");
-    removalSchedule.stop(app, other);
-    await Bun.sleep(5);
-    await ask(other);
-    await tr.settled(other);
-    expect(log).toEqual(["remove 6"]);
-    // Its own result: kept for 0–30 s; the stretch's seconds are laid from it, nothing sent.
-    log.length = 0;
-    tr.reset();
-    tr.useShelf(tr.shelfIn(join(dir, "shelf2"), () => false));
-    tr.useProvider(provider(["theirs.mp4", "mine.mp4"]));
-    const id = await labelledProject(app, file, 30, "p");
-    removalSchedule.stop(app, id);
-    await Bun.sleep(5);
-    await ask(id);
-    await tr.settled(id);
-    expect(log).toEqual([]);
-    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).map((media) => [media.cleans!.from, media.cleans!.to])).toEqual([[0, 30]]);
-  } finally {
-    void server.stop(true);
-    cleanup();
-  }
-}, 180_000);
-
-test("an update mid-piece: after the restart the piece goes under the same name, its card on vmake.ai is picked up and its result used; one file counted", async () => {
-  const { app, dir, store, cleanup } = fixtureHome("removal-restart-piece");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
-  // The account's job list: a card a name, done once vmake.ai finishes.
-  const cards = new Map<string, Promise<void>>();
-  const names: string[] = [];
-  let counted = 0;
-  let finish = () => {};
-  const processing = new Promise<void>((resolve) => (finish = resolve));
-  const provider: tr.Provider = {
-    id: "vmake-web",
-    price: () => "",
-    async remove(input, out, seconds, _signal, _whole, _begun, label) {
-      const name = web.pieceName(seconds, label);
-      names.push(name);
-      if (!cards.has(name)) {
-        counted += 1;
-        cards.set(name, processing);
-      }
-      // The Edit that sent it stops here for good (the update ended its process); vmake.ai's job goes on.
-      if (names.length === 1) await new Promise(() => {});
-      await cards.get(name);
-      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", input, "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", out]);
-      return { credits: null };
-    },
-    async check() {},
-  };
-  tr.useProvider(provider);
-  try {
-    const file = await labelledFootage(dir, 8);
-    const id = await labelledProject(app, file, 8);
-    await removalSchedule.ensure(app, id);
-    while (names.length === 0) await Bun.sleep(20);
-    // The update: this Edit's memory gone (its run with it), its disk kept; vmake.ai goes on and finishes the job.
-    tr.reset();
-    finish();
-    await removalSchedule.resume(app);
-    await tr.settled(id);
-    expect(names.length).toBe(2);
-    expect(names[1]).toBe(names[0]);
-    expect(counted).toBe(1);
-    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).length).toBe(1);
-  } finally {
-    cleanup();
-  }
-}, 120_000);
-
-/** A card on vmake.ai's job list, as the stand-in site keeps it: whether a look finds it now, whether it's finished, whether it failed. */
-interface Card {
-  shown: boolean;
-  done: boolean;
-  failed: boolean;
-}
-
-/**
- * vmake.ai's website as the provider meets it, by the piece's name: a file sent makes a card (an upload: a file of the
- * day, counted), looked for again by name when it went in before (never sent then); `made` says how each new card
- * behaves. Every call's name, and whether it was told the file went in before, kept.
- */
-function jobList(made: (card: Card, uploads: number) => void = () => {}) {
-  const cards = new Map<string, Card>();
-  const calls: { name: string; sentBefore: boolean }[] = [];
-  const counts = { uploads: 0, returned: 0 };
-  const provider: tr.Provider = {
-    id: "vmake-web",
-    price: () => "",
-    async remove(input, out, seconds, _signal, _whole, _begun, label, look) {
-      const name = web.pieceName(seconds, label);
-      calls.push({ name, sentBefore: look?.sentBefore === true });
-      let card = cards.get(name);
-      if (card === undefined) {
-        // Sent before and nowhere on the list: the page can't say it's lost.
-        if (look?.sentBefore === true) throw new VmakeError("the piece's card isn't on vmake.ai's list yet", "piece");
-        counts.uploads += 1;
-        look?.sent();
-        card = { shown: true, done: true, failed: false };
-        cards.set(name, card);
-        made(card, counts.uploads);
-      }
-      if (card.failed) throw new web.Refused("vmake.ai failed the piece (its card says so)", "piece");
-      if (!card.shown) throw new VmakeError("the piece's card isn't on vmake.ai's list yet", "piece");
-      if (!card.done) throw new VmakeError("vmake.ai is still on the piece after two hours (32%)", "piece");
-      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", input, "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", out]);
-      counts.returned += 1;
-      return { credits: null };
-    },
-    async check() {},
-  };
-  return { provider, cards, calls, counts };
-}
-
-async function until(what: () => boolean, ms = 60_000): Promise<void> {
-  const end = Date.now() + ms;
-  while (!what()) {
-    if (Date.now() > end) throw new Error("timed out");
-    await Bun.sleep(25);
-  }
-}
-
-test("a piece sent whose card can't be found in time, or is still processing at the deadline, is never sent again: it waits on vmake.ai (the export doesn't), is looked for again under the same name, and is used once its card shows done (GPT 6.2 Astra's audit, Nov 18)", async () => {
-  const { app, dir, store, cleanup } = fixtureHome("removal-unsure");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
-  const site = jobList((card) => (card.shown = false));
-  tr.useProvider(site.provider);
-  const afterMs = tr.looking.afterMs;
-  tr.looking.afterMs = Array.from({ length: 8 }, () => 150);
-  try {
-    const file = await labelledFootage(dir, 8);
-    const id = await labelledProject(app, file, 8);
-    await removalSchedule.ensure(app, id);
-    // Sent, its card not on the list when looked for: waiting, said, and nothing out for the export to wait on.
-    await until(() => tr.piecesOf(id)[0]?.state === "waiting");
-    expect((await tr.status(app, id)).line).toBe("Waiting on vmake.ai for one piece sent earlier; their text stays blurred there until it's back.");
-    expect(removalSchedule.progressOf(id).out).toBe(0);
-    // Looked for again by itself, under the same name, nothing sent.
-    await until(() => site.calls.length >= 3);
-    // The card shows, still processing at the deadline: waiting again; then it's done and used.
-    for (const card of site.cards.values()) [card.shown, card.done] = [true, false];
-    const looked = site.calls.length;
-    await until(() => site.calls.length >= looked + 2 && tr.piecesOf(id)[0]?.state === "waiting");
-    for (const card of site.cards.values()) card.done = true;
-    await until(() => store.get(id)!.project.media.some((media) => media.cleans != null));
-    await tr.settled(id);
-    expect(site.counts.uploads).toBe(1);
-    expect(new Set(site.calls.map((call) => call.name)).size).toBe(1);
-    expect(site.calls.map((call) => call.sentBefore)).toEqual([false, ...site.calls.slice(1).map(() => true)]);
-    expect(tr.piecesOf(id).map((one) => one.state)).toEqual(["check"]);
-    // Back and kept: nothing is out at Vmake for it any more.
-    expect(JSON.parse(fs.readFileSync(join(app.store.home, "text-removal.json"), "utf8")).out).toEqual({});
-  } finally {
-    tr.looking.afterMs = afterMs;
-    cleanup();
-  }
-}, 120_000);
-
-test("a stop between vmake.ai's result and its keep on the shelf: after the restart the piece's card is picked up under the same name, nothing sent again", async () => {
-  const { app, dir, store, cleanup } = fixtureHome("removal-keep-crash");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  const shelf = tr.shelfIn(join(dir, "shelf"), () => false);
-  let crash = true;
-  // The Edit that fetched the result stops for good as it keeps it (an update ends its process).
-  tr.useShelf({ ...shelf, keep: async (...args) => (crash ? await new Promise<never>(() => {}) : shelf.keep(...args)) });
-  const site = jobList();
-  tr.useProvider(site.provider);
-  try {
-    const file = await labelledFootage(dir, 8);
-    const id = await labelledProject(app, file, 8);
-    await removalSchedule.ensure(app, id);
-    await until(() => site.counts.returned === 1);
-    await Bun.sleep(100);
-    // The restart: memory gone, the disk kept.
-    tr.reset();
-    crash = false;
-    await removalSchedule.resume(app);
-    await tr.settled(id);
-    expect(site.counts.uploads).toBe(1);
-    expect(site.calls).toEqual([site.calls[0]!, { name: site.calls[0]!.name, sentBefore: true }]);
-    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).length).toBe(1);
-  } finally {
-    cleanup();
-  }
-}, 120_000);
-
-test("vmake.ai saying the piece won't come back (its card failed, credits returned) sends it once more, under its next name", async () => {
-  const { app, dir, store, cleanup } = fixtureHome("removal-refused");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
-  const site = jobList((card, uploads) => (card.failed = uploads === 1));
-  tr.useProvider(site.provider);
-  try {
-    const file = await labelledFootage(dir, 8);
-    const id = await labelledProject(app, file, 8);
-    await removalSchedule.ensure(app, id);
-    await until(() => store.get(id)!.project.media.some((media) => media.cleans != null));
-    await tr.settled(id);
-    expect(site.counts.uploads).toBe(2);
-    expect(site.calls.length).toBe(2);
-    expect(site.calls[1]!.name).not.toBe(site.calls[0]!.name);
-    expect(site.calls.map((call) => call.sentBefore)).toEqual([false, false]);
-    expect(tr.piecesOf(id).map((one) => [one.state, one.tries])).toEqual([["check", 2]]);
-  } finally {
-    cleanup();
-  }
-}, 120_000);
-
-test("a piece vmake.ai never shows back after every look is given up on: blurred, said plainly, never sent again, after a restart too", async () => {
-  const { app, dir, store, cleanup } = fixtureHome("removal-lost");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
-  const site = jobList((card) => (card.shown = false));
-  tr.useProvider(site.provider);
-  const afterMs = tr.looking.afterMs;
-  tr.looking.afterMs = [100, 100];
-  const blurs = () => store.get(id)!.project.clips.filter((clip) => (clip.name ?? "").startsWith(burned.UNTIL_REMOVED)).length;
-  let id = "";
-  try {
-    const file = await labelledFootage(dir, 8);
-    id = await labelledProject(app, file, 8);
-    await removalSchedule.ensure(app, id);
-    await until(() => tr.piecesOf(id)[0]?.state === "failed");
-    await tr.settled(id);
-    // Sent once, looked for twice more, then given up on.
-    expect(site.counts.uploads).toBe(1);
-    expect(site.calls.map((call) => call.sentBefore)).toEqual([false, true, true]);
-    expect(await tr.status(app, id)).toEqual({ line: "vmake.ai never gave back one piece sent to it; their text stays blurred there.", action: null, running: null });
-    const blurred = blurs();
-    expect(blurred).toBeGreaterThan(0);
-    // A restart: still given up on, nothing sent or looked for, blurred once.
-    tr.reset();
-    await removalSchedule.resume(app);
-    await tr.settled(id);
-    expect(site.calls.length).toBe(3);
-    expect(tr.piecesOf(id).map((one) => [one.state, one.lost])).toEqual([["failed", true]]);
-    expect(blurs()).toBe(blurred);
-  } finally {
-    tr.looking.afterMs = afterMs;
-    cleanup();
-  }
-}, 120_000);
-
-test("removal starts by itself as soon as edits rest (no button on the website's plan); a longer clip sends only its new seconds", async () => {
+test("removal starts by itself as soon as edits rest; a longer clip is blurred to its new end", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-timing");
   reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL], 9: [LABEL], 11: [LABEL] });
   teach({ text: true });
-  const log: string[] = [];
-  tr.useProvider(standIn(log, () => null, "vmake-web"));
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const reads: number[] = [];
+  blurReads(reads);
   removalSchedule.timing.restMs = 50;
   removalSchedule.start(app);
   try {
@@ -1436,277 +780,68 @@ test("removal starts by itself as soon as edits rest (no button on the website's
       p.clips = [{ id: "f", track: "v1", start: 0, duration: 240, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as VideoClip];
     });
     const until = Date.now() + 30_000;
-    while (!store.get(project.id)!.project.media.some((one) => one.cleans != null) && Date.now() < until) await Bun.sleep(100);
-    await tr.settled(project.id);
-    expect(log).toEqual(["remove 9"]);
-    // The clip extended to 12 s: only what's new goes.
+    while (!tracked(app, project.id) && Date.now() < until) await Bun.sleep(100);
+    await blur.settled();
+    expect(blurs(project.id)).toEqual([["m", 0, 8, "done"]]);
+    // The clip extended to 12 s: its blur follows it there.
     await store.update(project.id, "agent", (p) => {
       (p.clips[0] as VideoClip).duration = 360;
     });
     const later = Date.now() + 30_000;
-    while (store.get(project.id)!.project.media.filter((one) => one.cleans != null).length < 2 && Date.now() < later) await Bun.sleep(100);
-    await tr.settled(project.id);
-    expect(log).toEqual(["remove 9", "remove 4"]);
-    expect(await removalSchedule.statusOf(app, project.id)).toEqual({ line: null, action: null, running: null });
+    while (blurs(project.id)[0]?.[2] !== 12 && Date.now() < later) await Bun.sleep(100);
+    await blur.settled();
+    expect(blurs(project.id)).toEqual([["m", 0, 12, "done"]]);
+    expect(removalSchedule.statusOf(app, project.id)).toEqual({ background: null });
   } finally {
     removalSchedule.timing.restMs = 2000;
     cleanup();
   }
 }, 120_000);
 
-test("the agent looks at each piece and rejects one that isn't clean: done once more, then blurred and said; an export waits for pieces still out", async () => {
+test("an export waits for pieces still out, and the agent looks at each watermark piece and rejects one that isn't clean: done once more", async () => {
   const { app, dir, store, cleanup } = fixtureHome("removal-check");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  const log: string[] = [];
-  let open = () => {};
-  const gate = new Promise<void>((resolve) => (open = resolve));
-  tr.useProvider(standIn(log, () => null, "vmake-web", gate));
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  reading({});
+  teach({ watermarks: true });
+  const calls: string[] = [];
+  const gate = gated();
+  const base = engine(calls);
+  let held = true;
+  wm.useEngine({ ...base, remove: async (piece, progress) => (held ? (calls.push("held"), await gate.wait(), (held = false)) : null, base.remove(piece, progress)) });
+  wm.useShelf(wm.shelfIn(join(dir, "shelf"), () => false));
   try {
     const file = await labelledFootage(dir, 8);
     const id = await labelledProject(app, file, 8);
     await removalSchedule.ensure(app, id);
-    // While the piece is out: the line counts it, a quick export look says "still rendering", the export's step says how far.
-    while (removalSchedule.progressOf(id).out === 0) await Bun.sleep(20);
-    expect(await removalSchedule.statusOf(app, id)).toEqual({ line: null, action: null, running: { done: 0, total: 1 }, background: { label: "Removing their text", done: 0, total: 1, started_at: expect.any(Number) } });
+    // While the piece is out: the row counts it, a quick export look says "still rendering", the export's step says how far.
+    while (!calls.includes("held")) await Bun.sleep(20);
+    expect(removalSchedule.statusOf(app, id)).toEqual({ background: { label: "Removing their watermarks", done: 0, total: 1, started_at: expect.any(Number) } });
     expect(removalSchedule.exportLine(id)).toBe("Removing their text · 0 of 1 pieces");
     expect(await removalSchedule.waitForPieces(app, id, 200).catch((error: unknown) => String(error))).toContain("still rendering");
     const waited = removalSchedule.waitForPieces(app, id, 60_000);
-    open();
+    gate.open();
     await waited;
-    await tr.settled(id);
-    expect(tr.piecesOf(id).map((one) => one.state)).toEqual(["check"]);
+    await wm.settled();
+    expect(removalSchedule.exportLine(id)).toBeNull();
     const call = async (args: Record<string, unknown>) =>
       ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "check_removal", arguments: { project_id: id, ...args } } }, null)) as { result: { content: { type: string; text?: string }[]; isError: boolean } }).result;
     const looked = await call({});
     expect(looked.isError).toBe(false);
-    expect(looked.content[0]!.text).toContain("text:m@0 · tape 0–8 s · text (Smart) · check");
+    expect(looked.content[0]!.text).toContain("watermark:m@0 · tape 0–8 s · watermark · done");
     expect(looked.content.some((one) => one.type === "image")).toBe(true);
     // Looked at once: not shown again.
     expect((await call({})).content.some((one) => one.type === "image")).toBe(false);
-    // Rejected: sent again; rejected again: given up on, blurred, said.
-    const key = tr.piecesOf(id)[0]!.key;
-    await call({ reject: [{ piece: key, why: "a ghost of the label" }] });
-    await tr.settled(id);
-    expect(log).toEqual(["remove 8", "remove 8"]);
-    // What came back the second time is a new strip of the same piece: shown again, to be looked at.
-    expect((await call({})).content.some((one) => one.type === "image")).toBe(true);
-    await call({ reject: [{ piece: key, why: "still a ghost" }] });
-    await tr.settled(id);
-    expect(log.length).toBe(2);
-    expect(tr.piecesOf(id)[0]).toMatchObject({ state: "failed", why: "still a ghost" });
-    expect(store.get(id)!.project.media.some((media) => media.cleans != null)).toBe(false);
-    expect(store.get(id)!.project.clips.some((clip) => (clip.name ?? "").startsWith(burned.UNTIL_REMOVED))).toBe(true);
-    expect((await removalSchedule.statusOf(app, id)).line).toBe("Vmake couldn't clean one piece; their text stays blurred there.");
+    // Rejected: done once more.
+    const again = await call({ reject: [{ piece: "watermark:m@0", why: "a ghost of the mark" }] });
+    expect(again.content[0]!.text).toContain("watermark:m@0: done once more");
+    // Started again in the background (watermark_removal.ts `reject`).
+    const until = Date.now() + 20_000;
+    while (calls.filter((one) => one.startsWith("remove")).length < 2 && Date.now() < until) await Bun.sleep(20);
+    await wm.settled();
+    expect(calls.filter((one) => one.startsWith("remove")).length).toBe(2);
+    expect(store.get(id)!.project.media.filter((media) => media.cleans?.what === "watermark").length).toBe(1);
+    // A blur's stretch isn't rejected here: it's marked again tighter.
+    expect((await call({ reject: [{ piece: "blur:m@0-8000", why: "misses a word" }] })).content[0]!.text).toContain("mark that stretch again tighter");
   } finally {
     cleanup();
   }
 }, 120_000);
-
-// ---------------------------------------------------------------------------
-// Stretches of many files as one file on vmake.ai (Sphe, Nov 19)
-
-/** A labelled file of its own (its own bytes, so its own source) at `rate`. */
-async function labelledFile(dir: string, name: string, seconds: number, rate: string): Promise<string> {
-  const file = join(dir, `${name}.mp4`);
-  await tools.run([
-    tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `color=c=0x7f7f7f:size=320x180:rate=${rate}:duration=${seconds},format=yuv420p,noise=alls=12:allf=t,drawbox=x=10:y=40:w=80:h=24:color=white:t=fill`,
-    "-c:v", "libx264", "-qp", "0", file,
-  ]);
-  return file;
-}
-
-/** A project of channel ch-taught with each file one clip after another, their words read (a label that stays put). */
-async function filesProject(app: App, files: { path: string; seconds: number; fps: number }[], name = "p"): Promise<string> {
-  const live = app.store.create(name, { width: 1920, height: 1080, fps: 30 });
-  const project = structuredClone(live.project) as Project;
-  let at = 0;
-  project.media = files.map((one, index): Media => ({ id: `m${index + 1}`, name: `tape ${index + 1}`, path: one.path, kind: "video", duration: one.seconds, width: 320, height: 180, fps: one.fps, has_audio: false }));
-  project.clips = files.map((one, index): VideoClip => {
-    const clip = { id: `f${index + 1}`, track: "v1", start: at, duration: Math.round(one.seconds * 30), color: "blue", fade_in: 0, fade_out: 0, type: "video", media: `m${index + 1}`, source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as VideoClip;
-    at += clip.duration;
-    return clip;
-  });
-  project.channel = "ch-taught";
-  await app.store.replace(project.id, null, project, "test");
-  for (const media of project.media) await burned.warm(app.media, media);
-  takeProposed(app, project.id);
-  return project.id;
-}
-
-/** vmake.ai's website as `jobList` keeps it, paid by the file (so it packs). */
-const website = (site: ReturnType<typeof jobList>): tr.Provider => ({ ...site.provider, wholeFiles: true, pieceQuality: { crf: 20, rate: 6_000_000 } });
-
-const out = (tries: number, more: Partial<tr.Out> = {}): tr.Out => ({ tries, at: 0, ...more });
-
-test("which stretches go as one file: one mode's, up to its length, never Smart Pro with Smart; a pack out as it went; a piece out alone, or unpacked, alone", () => {
-  const stretch = (key: string, mode: web.Mode, seconds: number) => ({ key, mode, seconds });
-  const many = [stretch("a|0|5", "pro", 5), stretch("b|0|3|smart", "smart", 3), stretch("c|10|17", "pro", 7), stretch("d|0|4|smart", "smart", 4), stretch("e|2|6|smart", "smart", 4)];
-  const units = tr.bundles(many, {});
-  expect(units.map((one) => [one.members, one.pack?.mode])).toEqual([
-    [[0, 2], "pro"],
-    [[1, 3, 4], "smart"],
-  ]);
-  expect(units[0]!.pack!.members).toEqual(["a|0|5", "c|10|17"]);
-  expect(units[0]!.pack!.key).toBe(`pack|${units[0]!.pack!.id}`);
-  // Deterministic: the same stretches, the same packs and names.
-  expect(tr.bundles(structuredClone(many), {})).toEqual(units);
-  // The limits: Smart Pro 300 s, Smart 600 s (the website's quality holds Smart to 360 s).
-  const long = [stretch("a|0|290", "pro", 290), stretch("b|0|20", "pro", 20), stretch("c|0|290|smart", "smart", 290), stretch("d|0|290|smart", "smart", 290)];
-  expect(tr.bundles(long, {}).map((one) => one.members)).toEqual([[0], [1], [2, 3]]);
-  expect(tr.bundles(long, {}, { rate: 6_000_000 }).map((one) => one.members)).toEqual([[0], [1], [2], [3]]);
-  // A pack in vmake.ai's hands goes as it went (a member no longer asked for left out), whatever else there is now.
-  const sent = { "pack|abc": out(1, { sent: true, pack: { mode: "smart", members: ["b|0|3|smart", "gone|0|9|smart"], layout: packs.layout([{ width: 2, height: 2, rate: { num: 30, den: 1 }, frames: 1 }]) } }) };
-  expect(tr.bundles(many, sent).map((one) => [one.members, one.pack?.id ?? null])).toEqual([
-    [[1], "abc"],
-    [[0, 2], units[0]!.pack!.id],
-    [[3, 4], expect.any(String)],
-  ]);
-  // A pack never sent is laid again; a piece out on its own, one unpacked after its pack failed, stay alone; a try counts in the name.
-  expect(tr.bundles(many, { "pack|abc": { ...sent["pack|abc"], sent: false } }).map((one) => one.members)).toEqual([[0, 2], [1, 3, 4]]);
-  expect(tr.bundles(many, { "a|0|5": out(1, { sent: true }), "b|0|3|smart": out(1, { sent: false, alone: true }) }).map((one) => one.members)).toEqual([[0], [1], [2], [3, 4]]);
-  expect(tr.bundles(many, { "a|0|5": out(2, { sent: false }) })[0]!.pack!.id).not.toBe(units[0]!.pack!.id);
-});
-
-test("short stretches of several files (another rate among them) go as one file in their mode, come back as each file's own piece and strip, and are never paid twice", async () => {
-  const { app, dir, store, cleanup } = fixtureHome("removal-packed");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  const shelf = tr.shelfIn(join(dir, "shelf"), () => false);
-  tr.useShelf(shelf);
-  const site = jobList();
-  const modes: (web.Mode | undefined)[] = [];
-  const seconds: number[] = [];
-  const labels: string[] = [];
-  const base = website(site);
-  tr.useProvider({ ...base, remove: (input, output, length, signal, whole, begun, label, look, mode) => (modes.push(mode), seconds.push(length), labels.push(label ?? ""), base.remove(input, output, length, signal, whole, begun, label, look, mode)) });
-  try {
-    const files = [
-      { path: await labelledFile(dir, "one", 8, "30"), seconds: 8, fps: 30 },
-      { path: await labelledFile(dir, "two", 9, "25"), seconds: 9, fps: 25 },
-      { path: await labelledFile(dir, "three", 10, "30"), seconds: 10, fps: 30 },
-    ];
-    const id = await filesProject(app, files);
-    const planned = (await tr.plan(app, store.get(id)!.project, base)).files;
-    expect(planned.map((one) => [one.media.id, one.mode, one.send])).toEqual([
-      ["m1", "smart", [[0, 8]]],
-      ["m2", "smart", [[0, 9]]],
-      ["m3", "smart", [[0, 10]]],
-    ]);
-    await removalSchedule.ensure(app, id);
-    await until(() => store.get(id)!.project.media.filter((media) => media.cleans != null).length === 3, 240_000);
-    await tr.settled(id);
-    // One file, in their mode, as long as the three: named from its members, so asked again it's the same card.
-    expect(site.counts.uploads).toBe(1);
-    expect(modes).toEqual(["smart"]);
-    expect(seconds[0]).toBeCloseTo(27, 1);
-    const sources = await Promise.all(store.get(id)!.project.media.filter((media) => media.cleans == null).map((media) => tr.sourceOf(media)));
-    const members = sources.map((source, index) => `${source}|0|${files[index]!.seconds}|smart`);
-    expect(labels[0]).toBe(`pack|${packs.packId("smart", members.map((key) => ({ key, tries: 0 })))}|1`);
-    // Each file's own piece on the shelf (by file and seconds, Smart's), at its own rate, and its own strip.
-    for (const [index, source] of sources.entries()) {
-      const kept = await shelf.list(source);
-      expect(kept.map((one) => [one.from, one.to, one.mode])).toEqual([[0, files[index]!.seconds, "smart"]]);
-      const back = await packs.cutOf(await shelf.bring(source, kept[0]!));
-      expect(back.rate).toEqual(index === 1 ? { num: 25, den: 1 } : { num: 30, den: 1 });
-      expect(back.frames).toBe(files[index]!.seconds * files[index]!.fps);
-    }
-    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).map((media) => [media.cleans!.media, media.cleans!.from, media.cleans!.to]).sort()).toEqual([
-      ["m1", 0, 8],
-      ["m2", 0, 9],
-      ["m3", 0, 10],
-    ]);
-    expect(tr.piecesOf(id).map((one) => one.state)).toEqual(["check", "check", "check"]);
-    // Nothing left out at vmake.ai.
-    expect(JSON.parse(fs.readFileSync(join(app.store.home, "text-removal.json"), "utf8")).out).toEqual({});
-    // The same footage in another project (a reused case): each kept piece, nothing sent.
-    const other = await filesProject(app, files, "q");
-    await tr.ensure(app, other);
-    await tr.settled(other);
-    expect(site.counts.uploads).toBe(1);
-    expect(store.get(other)!.project.media.filter((media) => media.cleans != null).length).toBe(3);
-  } finally {
-    cleanup();
-  }
-}, 400_000);
-
-test("a pack vmake.ai refuses is unpacked: each stretch goes on its own, never in a pack again", async () => {
-  const { app, dir, store, cleanup } = fixtureHome("removal-packed-refused");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
-  const site = jobList((card, uploads) => (card.failed = uploads === 1));
-  const labels: string[] = [];
-  const base = website(site);
-  tr.useProvider({ ...base, remove: (input, output, length, signal, whole, begun, label, look, mode) => (labels.push(label ?? ""), base.remove(input, output, length, signal, whole, begun, label, look, mode)) });
-  try {
-    const files = [
-      { path: await labelledFile(dir, "one", 8, "30"), seconds: 8, fps: 30 },
-      { path: await labelledFile(dir, "two", 9, "30"), seconds: 9, fps: 30 },
-    ];
-    const id = await filesProject(app, files);
-    await removalSchedule.ensure(app, id);
-    await until(() => store.get(id)!.project.media.filter((media) => media.cleans != null).length === 2, 240_000);
-    await tr.settled(id);
-    expect(site.counts.uploads).toBe(3);
-    expect(labels[0]!.startsWith("pack|")).toBe(true);
-    expect(labels.slice(1).every((label) => !label.startsWith("pack|"))).toBe(true);
-    expect(tr.piecesOf(id).map((one) => one.state)).toEqual(["check", "check"]);
-    expect(JSON.parse(fs.readFileSync(join(app.store.home, "text-removal.json"), "utf8")).out).toEqual({});
-  } finally {
-    cleanup();
-  }
-}, 400_000);
-
-test("an update while a pack is at vmake.ai: after the restart the pack is looked for under the same name, its result cut back and used; one file counted", async () => {
-  const { app, dir, store, cleanup } = fixtureHome("removal-packed-restart");
-  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
-  teach({ text: true });
-  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
-  const names: { name: string; sentBefore: boolean }[] = [];
-  let uploads = 0;
-  let finish = () => {};
-  const processing = new Promise<void>((resolve) => (finish = resolve));
-  tr.useProvider({
-    id: "vmake-web",
-    wholeFiles: true,
-    pieceQuality: { crf: 20, rate: 6_000_000 },
-    price: () => "",
-    async remove(input, output, length, _signal, _whole, _begun, label, look) {
-      const name = web.pieceName(length, label);
-      names.push({ name, sentBefore: look?.sentBefore === true });
-      if (look?.sentBefore !== true) {
-        uploads += 1;
-        look?.sent();
-        fs.copyFileSync(input, join(dir, "sent.mp4"));
-      }
-      // The Edit that sent it stops here for good (the update ended its process); vmake.ai's job goes on.
-      if (names.length === 1) await new Promise(() => {});
-      await processing;
-      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", join(dir, "sent.mp4"), "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", output]);
-      return { credits: null };
-    },
-    async check() {},
-  });
-  try {
-    const files = [
-      { path: await labelledFile(dir, "one", 8, "30"), seconds: 8, fps: 30 },
-      { path: await labelledFile(dir, "two", 9, "25"), seconds: 9, fps: 25 },
-    ];
-    const id = await filesProject(app, files);
-    await removalSchedule.ensure(app, id);
-    await until(() => names.length === 1, 240_000);
-    // The update: this Edit's memory gone, its disk kept; vmake.ai finishes the job.
-    tr.reset();
-    finish();
-    await removalSchedule.resume(app);
-    await until(() => store.get(id)!.project.media.filter((media) => media.cleans != null).length === 2, 240_000);
-    await tr.settled(id);
-    expect(names.map((one) => one.sentBefore)).toEqual([false, true]);
-    expect(names[1]!.name).toBe(names[0]!.name);
-    expect(uploads).toBe(1);
-  } finally {
-    cleanup();
-  }
-}, 400_000);

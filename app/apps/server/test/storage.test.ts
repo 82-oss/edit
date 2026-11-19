@@ -120,7 +120,7 @@ test("the ledger: each file once by disk and by project, kept up as files are wr
     put(`${cache}/ahead/p1-2.mp4`, 700);
     put(`${cache}/cloud/exports/p1-2/effect-board-0123456789ab.mp4`, 70);
     put(`${cache}/cloud/pieces/v3/drive/AbcFile0001/native2/1.mp4`, 40);
-    put(`${cache}/cleaned/p1-2-m1-0-1000.vmake.strip.mp4`, 90);
+    put(`${cache}/cleaned/p1-2-m1-0-1000.strip.mp4`, 90);
     put(`${home}/media/drive/AbcFile0001/a.mp4`, 5000);
     put(`${home}/media/p1-2/effect-renders/board.mp4`, 80);
     const roots = rootsOf(home, cache);

@@ -5,4 +5,4 @@
 import type { RemovalRun } from "./api";
 
 /** The row's words: "Removing their text and watermarks · 12 of 25 pieces". */
-export const runLine = (run: RemovalRun) => `${run.label} · ${run.done} of ${run.total} pieces${run.free_left !== undefined ? ` · ${run.free_left} free ${run.free_left === 1 ? "file" : "files"} left today` : ""}`;
+export const runLine = (run: RemovalRun) => `${run.label} · ${run.done} of ${run.total} pieces`;

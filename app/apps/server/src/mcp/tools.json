@@ -4404,7 +4404,7 @@
     "name": "teach_removal"
   },
   {
-    "description": "The pieces back from taking a channel's taught overlays out of its footage (their subtitles, text, watermark: see get_edit_context's removal), each listed, and the newest ones you haven't seen shown before (left) and after (right). Look at each: their text or mark gone, the camera's stamp the same, no ghost or smear. Reject any that isn't clean (reject: [{piece, why}]): it's done once more, then blurred (a watermark left) and said to the person. Nothing to do for clean ones.",
+    "description": "The pieces done taking a channel's taught overlays out of its footage (their watermark's, the blur's over their text: see get_edit_context's removal), each listed, and the newest watermark pieces you haven't seen shown before (left) and after (right). Look at each: their mark gone, the camera's stamp the same, no ghost or smear. Reject a watermark piece that isn't clean (reject: [{piece, why}]): it's done once more, then left as it was and said to the person; look at a blur's stretch with render_frame, and mark it again tighter where it misses their words. Nothing to do for clean ones.",
     "inputSchema": {
       "properties": {
         "project_id": {
@@ -4412,7 +4412,7 @@
           "type": "string"
         },
         "reject": {
-          "description": "Pieces that aren't clean, by the names listed",
+          "description": "Watermark pieces that aren't clean, by the names listed",
           "items": {
             "properties": {
               "piece": {
@@ -4437,7 +4437,7 @@
     "name": "check_removal"
   },
   {
-    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"), or how a section's text comes out when the person asks for another than its own (by itself: Vmake's Smart Pro on the intro, Smart on the first two cases, a blur tracked over their text from the third on; \"use Smart on case 3 too\" is {case: 3, mode: \"smart\"}, \"Smart Pro on case 1\" is {case: 1, mode: \"smart_pro\"}, \"just blur case 2\" is {case: 2, mode: \"blur\"}). For a channel taught to take their text out, it's also how you mark it: only stretches you mark go, never whole clips; look at what get_edit_context's removal proposes (render_frame, contact_sheet), then {marks: [{from: 12.4, to: 15.0}, {from: 31.2, to: 33.8}]} (timeline seconds, tight to their words), {unmark: [...]} to take one back. Say where: whole (the whole project, and footage cut in later), case (its number), intro, media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask (with a mode, the parts Vmake takes out). It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal as they come back; exports wait for them.",
+    "description": "Take theirs out of the footage now, when the person asks. For a part the channel's lesson says runs only when asked (get_edit_context's removal says which), or one not taught at all (\"take the watermark out of this footage\", \"remove their subtitles from the Tulsa case\", \"do it for the whole video\"). Their subtitles and text get a blur tracked tight over their words, in every section; their watermarks come out. For a channel taught to take their text out, it's also how you mark it: only stretches you mark are blurred, never whole clips; look at what get_edit_context's removal proposes (render_frame, contact_sheet), then {marks: [{from: 12.4, to: 15.0}, {from: 31.2, to: 33.8}]} (timeline seconds, tight to their words), {unmark: [...]} to take one back. Say where: whole (the whole project, and footage cut in later), case (its number), intro, media (footage files: what the timeline shows of them), or from/to (a stretch of the timeline, in seconds; with media, only those files there). kinds defaults to the parts waiting for an ask. It runs in the background on what's there, nothing where a file has none, the camera's stamp kept; look at pieces with check_removal (the blur's with render_frame) as they're done; exports wait for them.",
     "inputSchema": {
       "properties": {
         "project_id": {
@@ -4483,17 +4483,8 @@
           "description": "The intro: the opening before the first case",
           "type": "boolean"
         },
-        "mode": {
-          "description": "How their text comes out there, only when the person asks for another than the section's own: \"smart\" or \"smart_pro\" (Vmake), or \"blur\" (the tracked blur); it stands over the section's own from then on",
-          "enum": [
-            "smart",
-            "smart_pro",
-            "blur"
-          ],
-          "type": "string"
-        },
         "marks": {
-          "description": "Your in and out points (a channel taught to take their text out): the timeline stretches where you saw their subtitles or text, tight to them, several short ones; or \"proposed\" once you've looked and every stretch get_edit_context's removal proposes is theirs. Only marked stretches go to Vmake or the tracked blur",
+          "description": "Your in and out points (a channel taught to take their text out): the timeline stretches where you saw their subtitles or text, tight to them, several short ones; or \"proposed\" once you've looked and every stretch get_edit_context's removal proposes is theirs. Only marked stretches get the tracked blur",
           "items": {
             "properties": {
               "from": {

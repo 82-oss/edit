@@ -27,8 +27,9 @@ import * as onscreen from "./onscreen.ts";
 import * as burned from "./burned_subtitles.ts";
 import * as removalAsks from "./removal_asks.ts";
 import * as removalLesson from "./removal_lesson.ts";
-import * as removalModes from "./removal_modes.ts";
+import * as removalSections from "./removal_sections.ts";
 import * as removalSchedule from "./removal_schedule.ts";
+import * as textBlur from "./text_blur.ts";
 import * as textRemoval from "./text_removal.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
 import * as markBlurs from "./mark_blurs.ts";
@@ -2371,28 +2372,27 @@ function burnedContext(p: Project, from: number, to: number): Args {
 function removalContext(app: App, p: Project): Args {
   const lesson = removalLesson.lessonOf(p);
   const asked = removalLesson.KINDS.filter((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "asked");
-  if (!removalLesson.takesOut(lesson) && watermarkRemoval.piecesOf(p.id).length === 0 && textRemoval.piecesOf(p.id).length === 0) return {};
-  const pieces = [...textRemoval.piecesOf(p.id), ...watermarkRemoval.piecesOf(p.id)];
-  const back = textRemoval.piecesOf(p.id).filter((one) => one.state === "check").length + watermarkRemoval.piecesOf(p.id).filter((one) => one.state === "done").length;
+  if (!removalLesson.takesOut(lesson) && watermarkRemoval.piecesOf(p.id).length === 0 && textBlur.piecesOf(p.id).length === 0) return {};
+  const pieces = [...watermarkRemoval.piecesOf(p.id), ...textBlur.piecesOf(p.id)];
+  const back = watermarkRemoval.piecesOf(p.id).filter((one) => one.state === "done").length;
   const { done, out } = removalSchedule.progressOf(p.id);
   const failed = pieces.filter((one) => one.state === "failed").length;
-  const waiting = pieces.filter((one) => one.state === "waiting").length;
   return {
     removal: {
       taught: lesson === null ? "Nothing is taught; what was asked for here is being taken out." : removalLesson.summary(lesson),
       ...(asked.length > 0 ? { when_asked: `${asked.join(", ")}: only when someone asks in the chat; then start_removal on what they point to (media, case, intro, from/to, or whole: true)` } : {}),
-      // How each section's text comes out, by itself (Sphe and JJ, Nov 18), the one call that changes it, and what detection proposes for the agent to mark.
-      ...(removalLesson.kinds(lesson).vmake.length > 0 ? removalModes.outline(p, app.store.home, textRemoval.proposed(app, p)) : {}),
-      pieces: `${done} done, ${out} still being done${waiting > 0 ? `, ${waiting} sent and waiting on vmake.ai (Edit looks again by itself)` : ""}${failed > 0 ? `, ${failed} not clean` : ""}`,
+      // How their text comes out (a tight tracked blur, every section), the edit's sections, and what detection proposes for the agent to mark.
+      ...(removalLesson.kinds(lesson).blur.length > 0 ? removalSections.outline(p, textRemoval.proposed(app, p)) : {}),
+      pieces: `${done} done, ${out} still being done${failed > 0 ? `, ${failed} not clean` : ""}`,
       ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "The person stopped it (the chat's Stop): what ran by itself doesn't now; only what's asked or marked since with start_removal (marks, from/to, media, or whole) is taken out." } : {}),
       note:
         (textRemoval.marksOnly(p)
-          ? "Their subtitles and text come out only where you mark them (marks above), in the background; their watermarks by themselves as footage is cut. "
+          ? "Their subtitles and text get a tight tracked blur only where you mark them (marks above), in the background; their watermarks come out by themselves as footage is cut. "
           : removalLesson.KINDS.some((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "automatic")
-          ? "Edit takes the parts that run by themselves out of the footage as it's cut, in the background (only the seconds the timeline shows; a re-cut sends only what's new). "
+          ? "Edit takes the parts that run by themselves out of the footage as it's cut, in the background (only the seconds the timeline shows; a re-cut does only what's new). "
           : "What's asked for with start_removal runs in the background on what was pointed to. ") +
         (back > 0 ? `${back} piece${back === 1 ? " is" : "s are"} back: look at them with check_removal and reject any that isn't clean. ` : "Look at pieces with check_removal as they come back. ") +
-        "Their subtitles stay blurred until theirs are out; lay ours as usual. Exports wait for pieces still being done.",
+        "Lay our subtitles as usual. Exports wait for pieces still being done.",
     },
   };
 }
