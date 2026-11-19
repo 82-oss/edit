@@ -9,6 +9,9 @@
 // the model (minimax_worker.py, one process kept alive while there's work, the model loaded once and kept on the GPU):
 // each frame's mask is their words' boxes from the track, grown; what comes back is a stacked see-through strip of
 // their band (`Media::cleans`, what clean_strips.ts lays over every clip of the file there, its tracked blur then off).
+// Where the relay cleans on RunPod (its /health `remover`, apps/relay/src/remover.ts; Sphe, Nov 19: "temporarily disable
+// the local GPU stuff, and then just quickly set up Runpod"), every Edit cleans there instead,
+// many stretches at once, and this machine's GPU isn't used (still the intro and first two cases only: Sphe, Nov 19).
 // Strips are kept by file and seconds, here and on R2 beside the rest (`edit/cleaned/<file>/<from>-<to>.minimax-…`),
 // so a re-cut, another project of the same case, or a restart lays them again with nothing run twice; what was
 // still being cleaned when the server stopped is planned again from the edit when it starts (removal_schedule
@@ -28,6 +31,7 @@ import type { Box } from "./native/index.ts";
 import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
 import { freshId } from "./project.ts";
+import * as relay from "./relay.ts";
 import * as seams from "./seams.ts";
 import * as tools from "./tools.ts";
 import workerSource from "./minimax_worker.py" with { type: "text" };
@@ -78,10 +82,45 @@ const isFile = (path: string) => {
   }
 };
 
+/** The relay's `remover` flag (RunPod), asked at most once a minute; the last answer meanwhile. */
+const remote = { on: false, at: 0, relay: "", asking: null as Promise<boolean> | null };
+export const timing = { healthMs: 60_000, pollMs: 5_000, deadlineMs: 3 * 3600_000 };
+
+/** Whether the relay cleans on RunPod now (asked again once its answer is a minute old). */
+export async function cloudOn(): Promise<boolean> {
+  if (override !== null) return false;
+  if (!cloud.enabled()) return false;
+  const asked = relay.url();
+  if (remote.relay === asked && Date.now() - remote.at < timing.healthMs) return remote.on;
+  remote.asking ??= (async () => {
+    let on = false;
+    try {
+      const answer = await fetch(`${asked}/health`, { signal: AbortSignal.timeout(20_000) });
+      on = answer.ok && ((await answer.json()) as { remover?: unknown }).remover === true;
+    } catch {
+      // Unreachable: as it was.
+      on = remote.relay === asked && remote.on;
+    }
+    Object.assign(remote, { on, at: Date.now(), relay: asked });
+    return on;
+  })().finally(() => {
+    remote.asking = null;
+  });
+  return remote.asking;
+}
+
+/** For tests: the relay's flag as given. */
+export function setCloudOnForTests(on: boolean): void {
+  Object.assign(remote, { on, at: Number.MAX_SAFE_INTEGER / 2, relay: relay.url() });
+}
+
+const cloudNow = (): boolean => override === null && cloud.enabled() && remote.on;
+
 let availableHere: boolean | null = null;
-/** Whether this machine cleans with the model: Linux, the model installed, an NVIDIA GPU. */
+/** Whether stretches are cleaned with the model: on RunPod (the relay's flag), or on this machine (Linux, the model installed, an NVIDIA GPU). */
 export function available(): boolean {
   if (override !== null) return true;
+  if (cloudNow()) return true;
   if (availableHere !== null) return availableHere;
   availableHere =
     // Under tests only a stand-in counts (`useCleaner`): a test never starts the real model on a machine that has it.
@@ -134,6 +173,8 @@ export interface Beneath {
   file: string;
   from: number;
   box: Box;
+  /** Its key on R2, where RunPod's GPU reads it (none: not backed up yet). */
+  key?: string;
 }
 
 /** The file's watermark strips over source seconds [from, to) in `project`, and their hash for the shelf ("" with none). */
@@ -141,10 +182,16 @@ export function beneathOf(project: { media: Media[] }, media: string, from: numb
   const strips = project.media
     .filter((one) => one.cleans != null && one.cleans.media === media && one.cleans.what === "watermark" && one.cleans.from < to && one.cleans.to > from)
     .sort((a, b) => a.cleans!.from - b.cleans!.from)
-    .map((one): Beneath => ({ file: one.path, from: one.cleans!.from, box: one.cleans!.box }));
+    .map((one): Beneath => ({ file: one.path, from: one.cleans!.from, box: one.cleans!.box, ...(cloudKeyOf(one) === undefined ? {} : { key: cloudKeyOf(one) }) }));
   const under = strips.length === 0 ? "" : createHash("sha256").update(strips.map((one) => one.file.slice(one.file.lastIndexOf("/") + 1)).join("|")).digest("hex").slice(0, 10);
   return { strips, under };
 }
+
+/** A file's key on R2 (its original), if it has one Edit may use. */
+const cloudKeyOf = (media: Pick<Media, "cloud">): string | undefined => {
+  const key = media.cloud?.original;
+  return key !== undefined && key !== "" && cloud.validKey(key) ? key : undefined;
+};
 
 /** Whether a watermark piece of the file over [from, to) is still being made (watermark_removal.ts; removal_schedule.ts sets it): a stretch waits for it. */
 export const watermarks = { pending: (_id: string, _media: string, _from: number, _to: number): boolean => false };
@@ -198,6 +245,10 @@ async function keep(app: App, source: string, from: number, to: number, file: st
 // The worker
 
 interface Request {
+  /** The footage's key on R2 (RunPod reads it there), when it has one. */
+  inputKey?: string;
+  /** The piece it's for (a Stop cancels its RunPod job). */
+  piece?: string;
   input: string;
   input_args: string[];
   from: number;
@@ -331,7 +382,63 @@ class Worker implements Cleaner {
 }
 
 let worker: Worker | null = null;
-const cleaner = (app: App): Cleaner => override ?? (worker ??= new Worker(join(app.store.cacheDir(), "cleaned", "minimax")));
+const cleaner = (app: App): Cleaner => override ?? (cloudNow() ? remoteCleaner : (worker ??= new Worker(join(app.store.cacheDir(), "cleaned", "minimax"))));
+
+/** RunPod's GPUs, through the relay (apps/relay/src/remover.ts): the stretch's R2 keys go, its strip comes back by R2. */
+class RunPod implements Cleaner {
+  /** Each running piece's RunPod job (a Stop cancels it: the GPU is paid by the second). */
+  readonly jobs = new Map<string, string>();
+
+  async clean(request: Request): Promise<Answer> {
+    if (request.inputKey === undefined) return { ok: false, error: "the footage isn't in the cloud yet" };
+    const beneath = request.beneath.map((one) => (one.key === undefined ? null : { key: one.key, from: one.from, box: one.box }));
+    if (beneath.some((one) => one === null)) return { ok: false, error: "a watermark strip under it isn't in the cloud yet" };
+    const { from, fps, width, height, matrix, masks } = request;
+    const started = Date.now();
+    const job = await relay.json<{ id: string; out: string }>("POST", "/v1/remover/jobs", { worker: workerSource, request: { input: request.inputKey, beneath, from, fps, width, height, matrix, masks } }, "subtitle removal", 120);
+    if (request.piece !== undefined) this.jobs.set(request.piece, job.id);
+    let misses = 0;
+    try {
+      for (;;) {
+        await Bun.sleep(timing.pollMs);
+        if (request.piece !== undefined && !this.jobs.has(request.piece)) return { ok: false, error: "stopped" };
+        if (Date.now() - started > timing.deadlineMs) {
+          await this.cancel(job.id);
+          return { ok: false, error: "RunPod didn't finish it in 3 hours" };
+        }
+        let answer: Answer & { pending?: boolean };
+        try {
+          answer = await relay.json<Answer & { pending?: boolean }>("GET", `/v1/remover/jobs/${job.id}`, null, "subtitle removal", 60);
+          misses = 0;
+        } catch (error) {
+          // The model's own failure (502 with its words) ends it; the relay out of reach a moment is waited out.
+          if (++misses >= 6 || !/could not reach|didn't answer/u.test(diag.messageOf(error))) throw error;
+          continue;
+        }
+        if (answer.pending === true) continue;
+        if (answer.box != null) await cloud.download(job.out, request.out);
+        await cloud.remove([job.out]).catch(() => {});
+        return { ok: true, box: answer.box ?? null, inferred: answer.inferred, seconds: answer.seconds };
+      }
+    } finally {
+      if (request.piece !== undefined) this.jobs.delete(request.piece);
+    }
+  }
+
+  /** The piece's job stopped on RunPod (a person's Stop). */
+  stop(piece: string): void {
+    const job = this.jobs.get(piece);
+    if (job === undefined) return;
+    this.jobs.delete(piece);
+    void this.cancel(job);
+  }
+
+  private async cancel(job: string): Promise<void> {
+    await relay.json("DELETE", `/v1/remover/jobs/${job}`, null, "subtitle removal", 30).catch(() => {});
+  }
+}
+
+const remoteCleaner = new RunPod();
 
 // ---------------------------------------------------------------------------
 // Each project's stretches, one at a time
@@ -340,6 +447,8 @@ const pieces = new Map<string, Map<string, InpaintPiece>>();
 const tries = new Map<string, number>();
 const queue: { key: string; run: () => Promise<void> }[] = [];
 let busy: Promise<void> | null = null;
+/** Stretches cleaned at once: RunPod's workers (the account's 10), or this machine's one GPU. */
+const AT_ONCE_CLOUD = 10;
 
 const keyOf = (media: string, from: number, to: number) => `clean:${media}@${Math.round(from * 1000)}-${Math.round(to * 1000)}`;
 const jobKey = (source: string, from: number, to: number) => `${source}|${Math.round(from * 1000)}|${Math.round(to * 1000)}`;
@@ -488,7 +597,8 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
     const [width, height] = [plan.media.width || 1920, plan.media.height || 1080];
     const input = await cloudMedia.originalInput(app.store.cacheDir(), plan.media);
     const started = Date.now();
-    const answer = await cleaner(app).clean({ input, input_args: tools.urlArgs(input), from: first / fps, fps, width, height, matrix: matrixOf(height), masks: pixelsOf(boxes, width, height), out, beneath });
+    const inputKey = cloudKeyOf(plan.media);
+    const answer = await cleaner(app).clean({ ...(inputKey === undefined ? {} : { inputKey }), piece: `${id} ${piece.key}`, input, input_args: tools.urlArgs(input), from: first / fps, fps, width, height, matrix: matrixOf(height), masks: pixelsOf(boxes, width, height), out, beneath });
     if (!answer.ok) throw new Error(answer.error ?? "the model failed");
     const box = answer.box ?? null;
     const file = await keep(app, plan.source, from, to, box === null ? null : out, box, under);
@@ -509,7 +619,10 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
 function drain(): void {
   if (busy !== null) return;
   busy = (async () => {
-    for (let next = queue.shift(); next !== undefined; next = queue.shift()) await next.run();
+    const lane = async () => {
+      for (let next = queue.shift(); next !== undefined; next = queue.shift()) await next.run();
+    };
+    await Promise.all(Array.from({ length: cloudNow() ? AT_ONCE_CLOUD : 1 }, lane));
   })().finally(() => {
     busy = null;
     if (queue.length > 0) drain();
@@ -557,9 +670,10 @@ export async function reject(app: App, id: string, key: string, why: string): Pr
   return again ? "taken out; it's cleaned once more (blurred meanwhile)" : "taken out; it stays blurred";
 }
 
-/** The person's Stop: nothing more is cleaned (what's done is kept). */
+/** The person's Stop: nothing more is cleaned (what's done is kept), and its stretches on RunPod are let go. */
 export function stop(id: string): void {
   for (let at = queue.length - 1; at >= 0; at--) if (piecesOf(id).some((one) => one.key === queue[at]!.key)) queue.splice(at, 1);
+  for (const one of piecesOf(id)) remoteCleaner.stop(`${id} ${one.key}`);
   pieces.delete(id);
 }
 

@@ -496,7 +496,7 @@ export function proposed(app: App, project: Project): sections.Proposed[] {
   return out.sort((x, y) => x.from - y.from);
 }
 
-/** The sections the model cleans where this machine has it (text_inpaint.ts): the intro and the first cases (Sphe, Nov 19); the rest is blurred. */
+/** The sections the model cleans (text_inpaint.ts), on RunPod or this machine's GPU: the intro and the first cases (Sphe, Nov 19); the rest is blurred. */
 export const INPAINT_CASES = 2;
 
 /**
@@ -520,6 +520,8 @@ export function inpaintPlan(project: Project, plans: blur.BlurPlan[]): inpaint.I
 
 /** Brings `id`'s tracked blurs, and where this machine has the model its cleaned stretches, up to what's marked now (removal_schedule.ts calls it as soon as edits rest). */
 export async function ensure(app: App, id: string): Promise<void> {
+  // The relay's word on RunPod, fresh (a minute old at most) before planning what the model cleans.
+  await inpaint.cloudOn();
   const live = app.store.get(id);
   if (live === null) return;
   const plans = removal.kinds(inForceOf(app, live.project)).blur.length === 0 ? [] : await blurPlan(app, live.project);
