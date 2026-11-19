@@ -322,7 +322,7 @@ export async function archiveExportFile(
 /**
  * How an archive went: up (or in the cloud already), stopped for a newer
  * export of the file, or not up (offline, signed out, the relay down): that
- * one's job is put off and tried again by itself (jobs.ts `putOff`).
+ * one's job waits and is tried again by itself (jobs.ts `wait`, failure.ts's schedule).
  */
 export type Archived = "up" | "stopped" | "not up";
 
@@ -396,7 +396,7 @@ export async function archiveJob(home: string | null, job: string, send: () => P
     went = "not up";
     diag.warn("export", `${job}: archiving: ${diag.messageOf(error)}`);
   }
-  if (went === "not up") jobs.putOff(home, job, "its export's cloud copy didn't go up");
+  if (went === "not up") jobs.wait(home, job, "its export's cloud copy didn't go up");
   else jobs.end(home, job);
 }
 

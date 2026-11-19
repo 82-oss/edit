@@ -529,7 +529,7 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
     }
   }).finally(() => {
     if (putOff === null) jobs.end(home, job);
-    else jobs.putOff(home, job, putOff);
+    else jobs.wait(home, job, putOff);
   });
 }
 
