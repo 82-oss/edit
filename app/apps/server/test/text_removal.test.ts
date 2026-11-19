@@ -38,13 +38,13 @@ import { fixtureHome } from "./helpers/home.ts";
 // One cell at a time unless a test says (the Mac's memory would decide: watermark_removal.ts `limits`).
 wm.limits.cells = 1;
 
-const ownRead = blur.reader.read;
+const ownOpen = blur.reader.open;
 let before: Native | null = null;
 afterEach(async () => {
   await blur.settled();
   if (before !== null) useNative(before);
   before = null;
-  blur.reader.read = ownRead;
+  blur.reader.open = ownOpen;
   blur.reset();
   asks.reset();
   removalSchedule.reset();
@@ -354,11 +354,14 @@ const LABEL: ScreenText = { t: "Actual case footage", b: [0.03, 0.05, 0.28, 0.15
 
 /** The tracked blur's reads (text_blur.ts `reader`): LABEL wherever it looks, once `gate` lets it; each read's times counted in `reads`. */
 function blurReads(reads: number[], gate: () => Promise<void> = async () => {}): void {
-  blur.reader.read = async (_input, _size, _fps, _region, times) => {
-    await gate();
-    reads.push(times.length);
-    return times.map(() => [LABEL]);
-  };
+  blur.reader.open = () => ({
+    read: async (times) => {
+      await gate();
+      reads.push(times.length);
+      return times.map(() => [LABEL]);
+    },
+    close: () => {},
+  });
 }
 
 /** A gate that holds until opened. */

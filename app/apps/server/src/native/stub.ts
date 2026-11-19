@@ -520,6 +520,13 @@ export function createStub(): Stub {
     async screenTextAt() {
       notInStub("screenTextAt");
     },
+    screenTextStretch() {
+      notInStub("screenTextStretch");
+    },
+    async screenTextStretchRead() {
+      notInStub("screenTextStretchRead");
+    },
+    screenTextStretchClose() {},
     SCREEN_TEXT_RATE: 1.0,
     censorWarm() {},
     setPlaying() {},

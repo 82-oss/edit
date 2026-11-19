@@ -295,6 +295,11 @@ export interface Native {
   screenTextCached(source: string): Record<number, ScreenText[]> | null; // S
   /** The words in `region` of the frames at `times` (seconds; the file's own frames at `fps`), at the file's own size: a bodycam's clock (camera_clock.ts). Missing from an addon built before it (a dev server's). */
   screenTextAt?(source: string, size: [number, number], fps: number, region: Box, times: number[]): Promise<ScreenText[][]>; // A
+  /** A stretch of a file opened to read the words in `region` in time order (text_blur.ts): one decode carried through it, frames asked to be kept held for a read back. Its id. Missing from an addon built before it. */
+  screenTextStretch?(source: string, size: [number, number], fps: number, region: Box): number; // S
+  /** The words at `times` of stretch `id`, the frames at `keep` held for a later read. */
+  screenTextStretchRead?(id: number, times: number[], keep: number[]): Promise<ScreenText[][]>; // A
+  screenTextStretchClose?(id: number): void; // S
   readonly SCREEN_TEXT_RATE: number;
   /** A channel's see-through watermark learned from footage carrying it (watermark.rs `learn`): the model's JSON. Missing from an addon built before it. */
   watermarkLearn?(source: string, size: [number, number], duration: number, hint: Box | null, avoid: Box[], onProgress: (progress: number) => void): Promise<string>; // A

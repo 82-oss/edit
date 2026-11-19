@@ -148,7 +148,7 @@ test.skipIf(real === null)("only the agent's marks are blurred, in every section
     expect(tr.marksOnly(saved())).toBe(true);
     expect(await tr.blurPlan(app, saved())).toEqual([]);
     // The tracked blur's reads stand in (no words: nothing laid; this is about what goes where).
-    blur.reader.read = async (_input, _size, _fps, _region, times) => times.map(() => []);
+    blur.reader.open = () => ({ read: async (times) => times.map(() => []), close: () => {} });
     // In and out points: a's case 1 at 21–24 s (its 1–4 s), the intro's b teaser at 2–3 s (b 102–103 s), c's case 3 at 152–155 s (c 2–5 s) and 170–171 s (c 20–21 s).
     const marked = await call(app, p.id, { marks: [{ from: 21, to: 24 }, { from: 2, to: 3 }, { from: 152, to: 155 }, { from: 170, to: 171 }] });
     expect(marked.isError).toBe(false);
@@ -200,7 +200,7 @@ test.skipIf(real === null)("the agent's marks go under our own see-through subti
     expect(fillsFrame(saved(), saved().clips.find((one) => one.id === "s1")!)).toBe(false);
     // Left alone by itself: a reused video of ours isn't footage to clean until it's pointed at.
     expect(tr.shownSeconds(saved()).has("d")).toBe(false);
-    blur.reader.read = async (_input, _size, _fps, _region, times) => times.map(() => []);
+    blur.reader.open = () => ({ read: async (times) => times.map(() => []), close: () => {} });
     // The person stopped it; then the agent marks a's case 1 at 21–24 s (a 1–4 s) and the reused d's case 4 at 230–233 s (d 30–33 s), nothing read by detection.
     removalSchedule.stop(app, p.id);
     await Bun.sleep(5);

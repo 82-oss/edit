@@ -88,6 +88,44 @@ fn run(
 /// The lines of text in a `width`×`height` BGRA picture: box (x0, y0, x1, y1
 /// as shares), how sure, and the words, as `mac_media::text` answers.
 pub fn text(bgra: &[u8], width: u32, height: u32) -> Result<Vec<([f32; 4], f32, String)>, String> {
+    text_knowing(bgra, width, height, &|_| None)
+}
+
+/// As `text`, a line `known` already has (by its box in pixels: one read in a
+/// frame before, its pixels unchanged) taken from it rather than read again.
+pub fn text_knowing(
+    bgra: &[u8],
+    width: u32,
+    height: u32,
+    known: &dyn Fn([usize; 4]) -> Option<(String, f32)>,
+) -> Result<Vec<([f32; 4], f32, String)>, String> {
+    let (w, h) = (width as usize, height as usize);
+    let mut lines = Vec::new();
+    for [x0, y0, x1, y1] in find(bgra, width, height)? {
+        let found = match known([x0, y0, x1, y1]) {
+            Some(hit) => Some(hit),
+            None => read(bgra, w, [x0, y0, x1, y1])?,
+        };
+        let Some((words, sure)) = found else {
+            continue;
+        };
+        lines.push((
+            [
+                x0 as f32 / w as f32,
+                y0 as f32 / h as f32,
+                x1 as f32 / w as f32,
+                y1 as f32 / h as f32,
+            ],
+            sure,
+            words,
+        ));
+    }
+    Ok(lines)
+}
+
+/// Where the text is in a `width`×`height` BGRA picture (the finder alone):
+/// each region's box in pixels (x0, y0, x1, y1), top to bottom.
+pub fn find(bgra: &[u8], width: u32, height: u32) -> Result<Vec<[usize; 4]>, String> {
     let (w, h) = (width as usize, height as usize);
     if w == 0 || h == 0 || bgra.len() < w * h * 4 {
         return Err("text picture doesn't match its size".to_owned());
@@ -116,23 +154,7 @@ pub fn text(bgra: &[u8], width: u32, height: u32) -> Result<Vec<([f32; 4], f32, 
         }
     }
     let (map, _) = run(&plan(true, padded_h, padded_w)?, input, padded_h, padded_w)?;
-    let mut lines = Vec::new();
-    for [x0, y0, x1, y1] in regions(&map, padded_w, w, h) {
-        let Some((words, sure)) = read(bgra, w, [x0, y0, x1, y1])? else {
-            continue;
-        };
-        lines.push((
-            [
-                x0 as f32 / w as f32,
-                y0 as f32 / h as f32,
-                x1 as f32 / w as f32,
-                y1 as f32 / h as f32,
-            ],
-            sure,
-            words,
-        ));
-    }
-    Ok(lines)
+    Ok(regions(&map, padded_w, w, h))
 }
 
 /// The finder's text regions in a `stride`-wide map: each run of text

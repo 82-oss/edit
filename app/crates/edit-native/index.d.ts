@@ -493,6 +493,23 @@ export declare function screenTextCached(source: string): Record<number, ScreenT
 export declare function screenTextDetect(source: string, size: [number, number], indexes: number[]): Promise<Record<number, ScreenText[]>>
 
 /**
+ * Opens a stretch of the footage at `source` to read the words in `region`
+ * (as `screen_text_at`) in time order: one decode carried through it, the
+ * frames asked to be kept held for a read back (`screen_text_stretch_read`).
+ * Its id; close it when done (`screen_text_stretch_close`).
+ */
+export declare function screenTextStretch(source: string, size: [number, number], fps: number, region: Box): number
+
+/** Lets stretch `id` go (its decoder and frames). */
+export declare function screenTextStretchClose(id: number): void
+
+/**
+ * The words at `times` (source seconds) of stretch `id`, one list a time in
+ * `times`' order, the frames at `keep` held for a later read.
+ */
+export declare function screenTextStretchRead(id: number, times: Array<number>, keep: Array<number>): Promise<ScreenText[][]>
+
+/**
  * Scenes and camera angles in small greyscale frames (64 × 36 bytes each,
  * two a second, one after another).
  */

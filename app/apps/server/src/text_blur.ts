@@ -4,10 +4,12 @@
 // their band.
 //
 // Only the stretches the agent marked go (removal_asks.ts `marked`). Each is
-// read for its words on screen (screen_text's `screenTextAt`, the region where
+// read for its words on screen (screen_text's `Stretch`, the region where
 // their text is: their subtitles' band, their labels' boxes) three times a
 // second, and twice more between two reads where the words change, appear or
-// go, so each change is found within a twelfth of a second. What's theirs is
+// go, so each change is found within a twelfth of a second: decoded once in
+// time order, a frame that shows what the one before it did taken as read
+// there, the rest read side by side. What's theirs is
 // kept (their band, their labels; never the camera's stamp or what the lesson
 // keeps) and its box is the track: between two reads of the same words it
 // moves from one to the other (text that slides), across a change it's both
@@ -59,8 +61,8 @@ const PAD_LEAST = 6;
 const PAD_ACROSS = 0.3;
 /** Two reads say the same words when their words share this much. */
 const SAME = 0.5;
-/** Reads asked of the engine at once (it gives way to a play between them). */
-const CHUNK = 30;
+/** Reads asked of the engine at once, each chunk halved before the next (it gives way to a play between them; the frames a halving may read are held through one chunk). */
+const CHUNK = 15;
 /**
  * A new way of tracking is a new file. 2: a box for each line of theirs (or adjacent lines), never one over words far
  * apart; scene text (a sticker, a sign) never a label of theirs (Nov 19: a cage's "Pro-gard" sticker joined the subtitle
@@ -113,12 +115,25 @@ export interface BlurPiece {
   why?: string;
 }
 
+/** One stretch of a file being read in time order (`reader.open`). */
+export interface Reading {
+  /** The lines at each of `times`, the frames at `keep` held for a read after (a read between two that differ). */
+  read(times: number[], keep: number[]): Promise<ScreenText[][]>;
+  close(): void;
+}
+
 /** What reads the words on screen: the engine's (tests put a stand-in here). */
 export const reader = {
-  read: (input: string, size: [number, number], fps: number, region: Box, times: number[]): Promise<ScreenText[][]> => {
-    const at = native().screenTextAt;
+  open: (input: string, size: [number, number], fps: number, region: Box): Reading => {
+    const engine = native();
+    // One decode carried through the stretch (Nov 19: a read at a time, each a seek into a cloud original, took 2 s a read).
+    if (engine.screenTextStretch !== undefined && engine.screenTextStretchRead !== undefined) {
+      const id = engine.screenTextStretch(input, size, fps, region);
+      return { read: (times, keep) => engine.screenTextStretchRead!(id, times, keep), close: () => engine.screenTextStretchClose?.(id) };
+    }
+    const at = engine.screenTextAt;
     if (at === undefined) throw new Error("this build of Edit can't read words in a region yet");
-    return at(input, size, fps, region, times);
+    return { read: (times) => at(input, size, fps, region, times), close: () => {} };
   },
 };
 
@@ -255,31 +270,46 @@ export function slotsOf(samples: Sample[]): Map<string, Sample[]> {
 /**
  * Their text's box over source seconds [from, to): read RATE a second, then
  * between each two reads that differ (words changed, came or went) halved
- * HALVINGS times. `read` gives the lines at each of the times asked.
+ * HALVINGS times. Read in time order, CHUNK at a time, each chunk halved
+ * before the next is read; `read` gives the lines at each of the times asked,
+ * holding the frames at `keep` (where a halving may read next).
  */
-export async function track(plan: Parameters<typeof theirs>[0], from: number, to: number, read: (times: number[]) => Promise<ScreenText[][]>): Promise<Sample[]> {
+export async function track(plan: Parameters<typeof theirs>[0], from: number, to: number, read: (times: number[], keep: number[]) => Promise<ScreenText[][]>): Promise<Sample[]> {
+  const ms = (t: number) => round(t * 1000) / 1000;
   const step = 1 / RATE;
-  const times: number[] = [];
-  for (let t = from; t < to - 1e-6; t += step) times.push(round(t * 1000) / 1000);
-  times.push(round(Math.max(from, to - 0.01) * 1000) / 1000);
-  const readAll = async (at: number[]): Promise<Sample[]> => {
-    const out: Sample[] = [];
-    for (let i = 0; i < at.length; i += CHUNK) {
-      await playing.whenIdle();
-      const part = at.slice(i, i + CHUNK);
-      const lines = await read(part);
-      part.forEach((t, j) => out.push(sampleOf(plan, t, lines[j] ?? [])));
-    }
-    return out;
+  const base: number[] = [];
+  for (let t = from; t < to - 1e-6; t += step) base.push(ms(t));
+  base.push(ms(Math.max(from, to - 0.01)));
+  const times = [...new Set(base)].sort((a, b) => a - b);
+  // The times halving may read between a and b, `depth` deep.
+  const between = (a: number, b: number, depth: number): number[] => {
+    if (depth === 0) return [];
+    const mid = ms((a + b) / 2);
+    return [mid, ...between(a, mid, depth - 1), ...between(mid, b, depth - 1)];
   };
-  let samples = await readAll(times);
-  for (let halving = 0; halving < HALVINGS; halving++) {
-    const mids: number[] = [];
-    for (let i = 0; i + 1 < samples.length; i++) if (!same(samples[i]!, samples[i + 1]!)) mids.push(round(((samples[i]!.t + samples[i + 1]!.t) / 2) * 1000) / 1000);
-    if (mids.length === 0) break;
-    samples = [...samples, ...(await readAll(mids))].sort((a, b) => a.t - b.t);
+  const readAll = async (at: number[], keep: number[]): Promise<Sample[]> => {
+    const lines = await read(at, keep);
+    return at.map((t, j) => sampleOf(plan, t, lines[j] ?? []));
+  };
+  const out: Sample[] = [];
+  for (let i = 0; i < times.length; i += CHUNK) {
+    await playing.whenIdle();
+    const part = times.slice(i, i + CHUNK);
+    // The read before this chunk (the last chunk's last): the change between them is halved here.
+    const last = out.at(-1);
+    const bounds = last === undefined ? part : [last.t, ...part];
+    let samples = [...(last === undefined ? [] : [last]), ...(await readAll(part, bounds.slice(1).flatMap((t, j) => between(bounds[j]!, t, HALVINGS))))];
+    for (let halving = 0; halving < HALVINGS; halving++) {
+      const pairs: [Sample, Sample][] = [];
+      for (let j = 0; j + 1 < samples.length; j++) if (!same(samples[j]!, samples[j + 1]!)) pairs.push([samples[j]!, samples[j + 1]!]);
+      if (pairs.length === 0) break;
+      const mids = pairs.map(([a, b]) => ms((a.t + b.t) / 2));
+      const deeper = pairs.flatMap(([a, b]) => between(a.t, b.t, HALVINGS - halving).slice(1));
+      samples = [...samples, ...(await readAll(mids, deeper))].sort((a, b) => a.t - b.t);
+    }
+    out.push(...(last === undefined ? samples : samples.slice(1)));
   }
-  return samples;
+  return out;
 }
 
 /** Their text's box at source second `t` of a track (see the top), null where there's none. */
@@ -573,7 +603,8 @@ export async function ensure(app: App, id: string, given: BlurPlan[]): Promise<v
             const size: [number, number] = [plan.media.width || 1920, plan.media.height || 1080];
             const region = regionOf(plan);
             const started = Date.now();
-            const samples = await track(plan, from, to, (times) => reader.read(input, size, plan.media.fps || 30, region, times));
+            const reading = reader.open(input, size, plan.media.fps || 30, region);
+            const samples = await track(plan, from, to, (times, keep) => reading.read(times, keep)).finally(() => reading.close());
             const file = fileOf(app, plan.source, from, to);
             // Its folder (paths.join keeps ".." as a name: Nov 19, every track's file was made a folder and its write failed, EISDIR).
             fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -602,8 +633,8 @@ export async function ensure(app: App, id: string, given: BlurPlan[]): Promise<v
 /**
  * Tracks read at once: one on a Mac (its OCR beside the editor's own work), several on a Linux machine with cores to
  * spare (Nov 19, Sphe's Linux prod Edit: one at a time read 3.3 s for each second of footage, ~150 stretches of two
- * compilations' later cases would have taken all day; each read is single-threaded on the CPU). At most 3: six at once
- * held ~21 FFmpeg decoders, 8 GB, and the server stalled at its memory limit.
+ * compilations' later cases would have taken all day). At most 3: six at once held ~21 FFmpeg decoders, 8 GB, and the
+ * server stalled at its memory limit (each is one decoder now, its reads on 3 or 4 threads, screen_text.rs `Stretch`).
  */
 export const AT_ONCE = process.platform === "linux" ? Math.min(3, Math.max(1, Math.floor(os.cpus().length / 8))) : 1;
 

@@ -250,3 +250,70 @@ test("with the real engine: a line of words sliding across the picture is read, 
     cleanup();
   }
 }, 120_000);
+
+test("with the real engine, a 30 s subtitled clip at 1920: read in one pass the words are the old way's (each change caught within a twelfth of a second, boxes within 4 px), and its speed recorded", async () => {
+  const { useNative, initNative, isReal, native } = await import("../src/native/index.ts");
+  if (process.env.EDIT_NO_GPU === "1") return;
+  const { app, cleanup } = fixtureHome("text-blur-speed");
+  const previous = useNative(null);
+  try {
+    try {
+      initNative({ home: app.store.home, cacheDir: app.store.cacheDir(), ffmpeg: tools.ffmpeg(), ffprobe: tools.ffprobe() });
+    } catch {
+      return;
+    }
+    if (!isReal() || native().screenTextAt === undefined || native().screenTextStretch === undefined) return;
+    const font = ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "/System/Library/Fonts/Supplemental/Arial Bold.ttf", "/Library/Fonts/Arial Bold.ttf"].find((one) => fs.existsSync(one));
+    if (font === undefined) return;
+    // A new subtitle every 1.5 s: on a black box over the first 15 s, outlined over the moving picture after.
+    const words = ["Stop right there", "Put your hands up", "I did nothing wrong", "Sir step out of the car", "Where are you going", "Get on the ground now", "I want my lawyer", "You are under arrest", "Do you understand me", "Turn around slowly", "Is this your vehicle", "Keep your hands visible", "Why did you run", "I was scared okay", "We found the bag", "That is not mine", "Watch your head", "Sit in the back", "Call my mother please", "We are done here"];
+    const changes = words.map((_, at) => at * 1.5);
+    const draws = words.map((line, at) => `drawtext=fontfile='${font}':text='${line}':fontsize=56:fontcolor=white:borderw=4:bordercolor=black${at < 10 ? ":box=1:boxcolor=black:boxborderw=12" : ""}:x=(w-text_w)/2:y=950:enable='between(t,${changes[at]},${changes[at]! + 1.5 - 0.001})'`);
+    const file = join(app.store.home, "subtitled.mp4");
+    try {
+      await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30:duration=30", "-vf", draws.join(","), "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-y", file]);
+    } catch {
+      return; // An FFmpeg without drawtext.
+    }
+    const plan = { band: [0.15, 0.86, 0.85, 0.96] as Box, labels: [], avoid: [], subtitles: true, text: false };
+    const region = blur.regionOf(plan);
+    // The old way (a read at a time, read_at) and the new (one stretch, read in one pass) over the first 10 s.
+    let started = performance.now();
+    const before = await blur.track(plan, 0, 10, (times) => native().screenTextAt!(file, [1920, 1080], 30, region, times));
+    const beforeSeconds = (performance.now() - started) / 1000;
+    const reading = blur.reader.open(file, [1920, 1080], 30, region);
+    started = performance.now();
+    const after = await blur.track(plan, 0, 10, (times, keep) => reading.read(times, keep)).finally(() => reading.close());
+    const afterSeconds = (performance.now() - started) / 1000;
+    expect(after.map((one) => one.t)).toEqual(before.map((one) => one.t));
+    let [off, worded] = [0, 0];
+    after.forEach((one, at) => {
+      const was = before[at]!;
+      // The same words as the tracker tells them (OCR may read a line's first "I" one way and not the other).
+      expect(blur.same(one, was)).toBe(true);
+      if (one.words !== was.words) worded++;
+      else if (one.box !== null && was.box !== null) for (const [side, value] of one.box.entries()) off = Math.max(off, Math.abs(value - was.box[side]!));
+    });
+    expect(off).toBeLessThan(0.0041);
+    // All 30 s the new way: every change caught between two reads at most a twelfth of a second (and a frame) apart.
+    const whole = blur.reader.open(file, [1920, 1080], 30, region);
+    started = performance.now();
+    const samples = await blur.track(plan, 0, 30, (times, keep) => whole.read(times, keep)).finally(() => whole.close());
+    const wholeSeconds = (performance.now() - started) / 1000;
+    // Read as the tracker tells words apart (OCR reads "lawyer" as "Iawyer").
+    const reads = (one: blur.Sample, line: string) => one.box !== null && blur.same(one, { t: one.t, box: one.box, words: line });
+    for (const [at, change] of changes.entries()) {
+      if (at === 0) continue;
+      const after = samples.findIndex((one) => one.t >= change);
+      const [a, b] = [samples[after - 1]!, samples[after]!];
+      expect(b.t - a.t).toBeLessThanOrEqual(1 / 12 + 1 / 30 + 1e-3);
+      expect(reads(a, words[at - 1]!)).toBe(true);
+      expect(reads(b, words[at]!)).toBe(true);
+    }
+    console.log(`text blur tracking, 1920×1080 subtitles: ${(beforeSeconds / 10).toFixed(2)} s a footage second read at a time, ${(afterSeconds / 10).toFixed(2)} s in one pass (${(wholeSeconds / 30).toFixed(2)} s over all 30 s, ${samples.length} reads; boxes at most ${off.toFixed(3)} from the old way's, ${worded} of ${after.length} reads' words not letter for letter)`);
+    expect(afterSeconds).toBeLessThan(beforeSeconds);
+  } finally {
+    useNative(previous);
+    cleanup();
+  }
+}, 600_000);

@@ -195,6 +195,63 @@ pub async fn screen_text_at(
     .await
 }
 
+/// Stretches open for reading (`screen_text_stretch`), by id.
+static STRETCHES: parking_lot::Mutex<
+    BTreeMap<u32, std::sync::Arc<parking_lot::Mutex<edit_engine::screen_text::Stretch>>>,
+> = parking_lot::Mutex::new(BTreeMap::new());
+static NEXT_STRETCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+/// Opens a stretch of the footage at `source` to read the words in `region`
+/// (as `screen_text_at`) in time order: one decode carried through it, the
+/// frames asked to be kept held for a read back (`screen_text_stretch_read`).
+/// Its id; close it when done (`screen_text_stretch_close`).
+#[napi(ts_args_type = "source: string, size: [number, number], fps: number, region: Box")]
+pub fn screen_text_stretch(
+    source: String,
+    size: Vec<u32>,
+    fps: f64,
+    region: Vec<f64>,
+) -> napi::Result<u32> {
+    crate::sync("reading text on screen", || {
+        let size = pair(&size, "size")?;
+        let region: [f64; 4] = region
+            .try_into()
+            .map_err(|_| "region: four numbers".to_owned())?;
+        let stretch =
+            edit_engine::screen_text::Stretch::open(Path::new(&source), size, fps, region)?;
+        let id = NEXT_STRETCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        STRETCHES
+            .lock()
+            .insert(id, std::sync::Arc::new(parking_lot::Mutex::new(stretch)));
+        Ok(id)
+    })
+}
+
+/// The words at `times` (source seconds) of stretch `id`, one list a time in
+/// `times`' order, the frames at `keep` held for a later read.
+#[napi(ts_return_type = "Promise<ScreenText[][]>")]
+pub async fn screen_text_stretch_read(
+    id: u32,
+    times: Vec<f64>,
+    keep: Vec<f64>,
+) -> napi::Result<serde_json::Value> {
+    let stretch = STRETCHES
+        .lock()
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| crate::fail("that stretch isn't open"))?;
+    crate::blocking("reading text on screen", move || {
+        serde_json::to_value(stretch.lock().read(&times, &keep)?).map_err(|error| error.to_string())
+    })
+    .await
+}
+
+/// Lets stretch `id` go (its decoder and frames).
+#[napi]
+pub fn screen_text_stretch_close(id: u32) {
+    STRETCHES.lock().remove(&id);
+}
+
 /// The words on screen read in `source` so far, without looking at anything new.
 #[napi(ts_return_type = "Record<number, ScreenText[]> | null")]
 pub fn screen_text_cached(source: String) -> napi::Result<Option<serde_json::Value>> {
