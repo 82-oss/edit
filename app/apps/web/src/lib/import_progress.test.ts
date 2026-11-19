@@ -27,8 +27,22 @@ describe("a script import's lines", () => {
     expect(importProgress(busy).line).toBe("Downloading footage · file 1 of 2");
   });
 
+  it("a dropped connection waits by itself, said as a try again with its time, never as the person's", () => {
+    const at = new Date(2026, 10, 18, 22, 11).getTime();
+    const job: ScriptJob = {
+      state: "waiting",
+      error: "Trying a file again at 22:11",
+      retry_at: at,
+      files: [
+        { file: "a", bytes: 10, total: 10, state: "done" },
+        { file: "b", bytes: 0, state: "waiting", why: "passing", retry_at: at, error: "could not reach Edit's relay: The socket connection was closed unexpectedly." },
+      ],
+    };
+    expect(importProgress(job).line).toBe(`Trying a file again at ${timeOfDay(at)}`);
+  });
+
   it("waiting on the person still asks for them", () => {
     const job: ScriptJob = { state: "waiting", files: [{ file: "a", bytes: 0, state: "failed", why: "person", error: "This Drive file isn't shared." }] };
-    expect(importProgress(job).line).toBe("Waiting for you: one file couldn’t be downloaded");
+    expect(importProgress(job).line).toBe("One file can’t be downloaded");
   });
 });

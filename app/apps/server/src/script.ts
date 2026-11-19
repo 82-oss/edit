@@ -23,7 +23,7 @@ import * as mediaModule from "./media.ts";
 import { cloudEnabled } from "./relay.ts";
 import type { ClipColor, Media, Project, Script, ScriptBlock, ScriptJob, Style, TextStyle, TrackKind } from "./model.ts";
 import { isEssay, NARRATION } from "./model.ts";
-import { addTrack, clipOf, duration as projectDuration, fps as fpsOf, freeTrack, freshId, insertTime, marksCut, mediaOf, REUSE_LABEL, reuseCaseLabel, reuseCaseOf, reusedLabel, WHOLE_SOURCE_LABEL, REUSED_SCRIPT_NOTE, reusedScriptBlock } from "./project.ts";
+import { addTrack, clipOf, duration as projectDuration, fps as fpsOf, freeTrack, freshId, GONE_WITHOUT_NOTE, goneWithout, goneWithoutName, insertTime, marksCut, mediaOf, REUSE_LABEL, reuseCaseLabel, reuseCaseOf, reusedLabel, WHOLE_SOURCE_LABEL, REUSED_SCRIPT_NOTE, reusedScriptBlock } from "./project.ts";
 import { fileName, fileStem, extension as pathExtension, join, parent } from "./paths.ts";
 import { byteLength, charCount, display, f32, isAlphanumeric, isWhitespace, parseHex, round, splitWhitespace, takeChars, trim } from "./rust.ts";
 import * as ranged from "./ranged_download.ts";
@@ -100,18 +100,31 @@ export async function replaceFootage(app: App, id: string, file: string, url: st
   void start(app, id, false);
 }
 
-/** Goes on without footage file `file`: its ranges leave the script, the rest is laid out. The person's "proceed without it". */
+/**
+ * Goes on without footage file `file`, the person's "proceed without it": its
+ * ranges stay in the script, each holding its place in the edit as a black
+ * card of its length (`goneWithout`), and the rest is laid out as written.
+ * Taking them out of the script (as it did until Nov 19) left JJ's School
+ * Bookkeeper a 2:44 edit of its door footage, the 22-minute interview gone.
+ */
 export async function skipFootage(app: App, id: string, file: string): Promise<void> {
   // "*": every file it couldn't get, in one go (each skip starts the import again, so one at a time the second was refused).
-  const files = file === "*" ? (app.scripts.get(id)?.files ?? []).filter((one) => one.state === "failed" || one.state === "waiting").map((one) => one.file) : [file];
+  // Never one still being tried by itself (a dropped connection): that one comes in.
+  const job = app.scripts.get(id);
+  const files = file === "*" ? (job?.files ?? []).filter((one) => one.state === "failed" || (one.state === "waiting" && one.why !== "passing")).map((one) => one.file) : [file];
   if (files.length === 0) throw new Error("Nothing is waiting to be skipped.");
   const project = waitingFor(app, id, files[0]!);
-  if (!(project.script?.blocks ?? []).some((block) => block.kind === "footage" && !files.includes(block.file))) {
+  if (!(project.script?.blocks ?? []).some((block) => block.kind === "footage" && !files.includes(block.file) && !goneWithout(block))) {
     throw new Error("That's the only footage in the script: give another link for it instead.");
   }
+  const nameOf = (one: string): string => job?.files.find((entry) => entry.file === one)?.name ?? footageLabel(project, one);
   await app.store.update(id, "script", (edited) => {
-    if (edited.script) edited.script.blocks = edited.script.blocks.filter((block) => block.kind !== "footage" || !files.includes(block.file));
+    for (const block of edited.script?.blocks ?? []) {
+      if (block.kind !== "footage" || !files.includes(block.file) || goneWithout(block)) continue;
+      block.notes = [...(block.notes ?? []), `${GONE_WITHOUT_NOTE}${nameOf(block.file)}`];
+    }
   });
+  diag.info("script", `${project.name}: going on without ${files.map(nameOf).join(", ")}, as asked: ${files.length === 1 ? "its" : "their"} ranges hold their place as black cards`);
   void start(app, id, false);
 }
 
@@ -1434,8 +1447,8 @@ type JobState = ScriptJob["state"];
 
 const RUNNING: JobState[] = ["downloading", "transcribing", "placing", "voicing"];
 
-/** What an import waiting by itself waits on (the job table's `waiting_on`): the transcription plan's credit, the encoder, ElevenLabs' voice credit or the day's voice allowance, Google Drive's download limit. */
-export type WaitingOn = "quota" | "encoder" | "voice" | "drive";
+/** What an import waiting by itself waits on (the job table's `waiting_on`): the transcription plan's credit, the encoder, ElevenLabs' voice credit or the day's voice allowance, Google Drive's download limit, or a failure that passes (a dropped connection) tried again. */
+export type WaitingOn = "quota" | "encoder" | "voice" | "drive" | "passing";
 
 /** A job as it's always been written: its fields in order, the unset ones left out. */
 function shownJob(job: ScriptJob): ScriptJob {
@@ -2232,6 +2245,8 @@ function missingFiles(project: Project): string[] {
   for (const block of project.script?.blocks ?? []) {
     if (block.kind !== "footage") continue;
     if (block.media !== undefined && block.media !== null && mediaOf(project, block.media) !== undefined) continue;
+    // Gone without: nothing to fetch, its card holds its place.
+    if (goneWithout(block)) continue;
     if (seen.has(block.file)) continue;
     seen.add(block.file);
     out.push(block.file);
@@ -2443,34 +2458,35 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
     const missing = files.flatMap((_, index) => (toFetch(index) ? [index] : []));
     if (missing.length > 0 && !inserting) {
       const whys = missing.map((index) => steps.whyOf(errors[index] ?? ""));
-      // Only credit, Drive's download limit or the encoder in the way: it waits by itself, woken by the job table.
-      // Anything else is the person's (another link, skip, Retry).
-      const byItself = whys.every((why) => why === "quota" || why === "encoder" || why === "limit");
+      // Only the person's (a file deleted, never shared, a private video) is asked about: another link, or go on
+      // without it. Anything else waits by itself, woken by the job table: credit, Drive's download limit, the encoder,
+      // and whatever passes (a dropped connection, a busy Google, a step past its time), tried again every
+      // PASSING_RETRY_MS until it comes in (Nov 18, JJ's School Bookkeeper: his Wi-Fi dropped for a minute, the
+      // interview's file was handed to him as "couldn't be downloaded", and his "Go on without it" lost it).
+      const byItself = whys.every((why) => why !== "person");
       const now = nowMs();
-      // Each file's own time (credit's half hour, the day's reset, Google's); the import is woken at the soonest.
-      const fileAt = missing.map((index, n) => steps.retryAt(whys[n]!, now, errors[index]));
+      // Each file's own time (credit's half hour, the day's reset, Google's, a passing one's next try); the import is woken at the soonest.
+      const fileAt = missing.map((index, n) => (whys[n] === "passing" ? now + steps.PASSING_RETRY_MS.value : steps.retryAt(whys[n]!, now, errors[index])));
       const times = fileAt.filter((at): at is number => at !== null);
       const retryAt = times.length > 0 ? Math.min(...times) : null;
+      const asked = whys.filter((why) => why === "person").length;
       app.scripts.set(app, id, (job) => {
         job.state = "waiting";
         for (const [n, index] of missing.entries()) {
           const entry = job.files[index];
           if (entry === undefined) continue;
           const at = fileAt[n];
-          if (byItself) {
+          // The person's stays `failed` (what the page asks about); the rest wait by themselves.
+          if (whys[n] !== "person") {
             entry.state = "waiting";
             if (at !== null && at !== undefined) entry.retry_at = at;
             else delete entry.retry_at;
           } else delete entry.retry_at;
         }
-        if (byItself) {
-          job.error = waitingLine(whys, missing.length, files.length, retryAt);
-          if (retryAt !== null) job.retry_at = retryAt;
-          else delete job.retry_at;
-        } else {
-          job.error = `${missing.length} of ${files.length} footage files couldn't be downloaded`;
-          delete job.retry_at;
-        }
+        if (byItself) job.error = waitingLine(whys, missing.length, files.length, retryAt);
+        else job.error = `${asked} of ${files.length} footage files couldn't be downloaded`;
+        if (retryAt !== null) job.retry_at = retryAt;
+        else delete job.retry_at;
       });
       diag.warn("script", `${title}: ${byItself ? "waiting by itself" : "waiting for the person"}: ${missing.length} of ${files.length} files couldn't be downloaded (${diag.human(timing.now() - began)})`);
       finish(
@@ -2479,8 +2495,13 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
             ? { state: "waiting", step: "waiting for the encoder", until: "encoder", on: "encoder" }
             : whys.includes("quota")
               ? { state: "waiting", step: "waiting for credit", retry_at: retryAt, on: "quota" }
-              : { state: "waiting", step: "waiting for Google Drive", retry_at: retryAt, on: "drive" }
-          : { state: "waiting", step: "waiting for the person", until: "person" },
+              : whys.includes("limit")
+                ? { state: "waiting", step: "waiting for Google Drive", retry_at: retryAt, on: "drive" }
+                : { state: "waiting", step: "trying again by itself", retry_at: retryAt, on: "passing" }
+          : // The person's file waits for them; one passing beside it is still tried again by itself.
+            whys.includes("passing") && retryAt !== null
+            ? { state: "waiting", step: "waiting for the person", retry_at: retryAt }
+            : { state: "waiting", step: "waiting for the person", until: "person" },
       );
       return;
     }
@@ -2553,7 +2574,9 @@ function waitingLine(whys: steps.Why[], missing: number, total: number, retryAt:
     const one = whys.filter((why) => why === "limit").length === 1;
     return `Google Drive's download limit is used up for today for ${one ? "a footage file" : "some footage files"}: Edit tries again by itself${retryAt === null ? "" : ` at ${when(retryAt)}`}. To go on sooner, replace ${one ? "it" : "them"} with a copy's link (Make a copy in Drive).`;
   }
-  return `The hardware encoder is busy with an export: ${files} wait until it's free.`;
+  if (whys.includes("encoder")) return `The hardware encoder is busy with an export: ${files} wait until it's free.`;
+  // Whatever passes (a dropped connection, a busy Google): tried again by itself, nothing for the person to do.
+  return `Trying ${missing === 1 ? "a file" : `${missing} files`} again${retryAt === null ? "" : ` at ${clockTime(retryAt)}`}`;
 }
 
 const clockTime = steps.clock;
@@ -3268,7 +3291,25 @@ export function layOut(project: Project): void {
       // The transcript's cut when there is one, else the Doc's times.
       const [start, end] = block.cut ?? [block.start, block.end];
       const media = isSome(block.media) ? mediaOf(project, block.media) : undefined;
-      if (media === undefined) continue;
+      if (media === undefined) {
+        // A range whose file the person went on without: a black card of the Doc's length holds its place, so the
+        // story around it stays as written and plays and exports (no media to read).
+        if (!goneWithout(block)) continue;
+        const length = Math.max(Math.trunc(round((end - start) * fps)), 0);
+        if (length <= 0) continue;
+        let shade = colors.get(block.file);
+        if (shade === undefined) {
+          shade = FILE_COLORS[colors.size % FILE_COLORS.length]!;
+          colors.set(block.file, shade);
+        }
+        const id = freshId(project, "c");
+        project.clips.push(
+          clipFrom({ id, track: lower, start: cursor, duration: length, color: shade, name: `${goneWithoutName(block) ?? "Footage"} · didn't come in`, type: "solid", fill: [0, 0, 0, 1], opacity: 1 }),
+        );
+        block.clip = id;
+        cursor += length;
+        continue;
+      }
       const from = Math.min(Math.max(start - offset, 0), media.duration);
       const to = Math.min(end - offset, media.duration);
       if (to <= from) continue;

@@ -2,16 +2,18 @@
 // (GET /missing), export and share held with the same note, the agent told with each message, and Go on without it
 // remembered per file so it's never asked again and the export goes.
 
-import { afterAll, afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
 
-import { ExportRegistry } from "../src/exports.ts";
+import * as diag from "../src/diag.ts";
+import { exportCloud, ExportRegistry, listExports } from "../src/exports.ts";
 import { respond } from "../src/http/server.ts";
 import { messageContext } from "../src/media_tools.ts";
 import { mediaHooks } from "../src/media.ts";
 import * as missingMedia from "../src/missing_media.ts";
 import type { Media } from "../src/model.ts";
+import { findAddon, native, useNative, wrap, type Native } from "../src/native/index.ts";
 import { buildRouter } from "../src/routes.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
@@ -120,3 +122,79 @@ test("the note's words", () => {
   expect(missingMedia.line([{ name: "a.mp4" }, { name: "b.mp4" }, { name: "c.mp4" }])).toBe("3 files didn't come in: a.mp4, b.mp4 and c.mp4");
   expect([0, 1, 2, 3].map(missingMedia.delayAfter)).toEqual([60_000, 300_000, 900_000, 3_600_000]);
 });
+
+// Nov 18, JJ: after "Go on without it" the edit must still play and export. Its export failed on the file it no longer
+// had ("the edit uses files that aren't on this machine"): now that footage plays nothing, its time kept.
+test("footage gone without plays nothing in what's rendered, its time kept: its pictures empty cards, its sound left out", async () => {
+  const { app, store, id, cleanup } = await withProject("edit-playable");
+  try {
+    await store.update(id, "test", (p) => {
+      const audio = p.tracks.find((track) => track.kind === "audio")!.id;
+      p.clips.push({ type: "audio", id: "a2", track: audio, media: "m2", start: 30, duration: 30, source_in: 0, speed: 1, volume_db: 0 } as never);
+    });
+    const before = store.get(id)!.project;
+    // Nothing gone without: the same project.
+    expect(missingMedia.playable(app.store.home, before)).toBe(before);
+    missingMedia.goWithout(app, id, "m2");
+    const project = store.get(id)!.project;
+    const shown = missingMedia.playable(app.store.home, project);
+    expect(shown.clips.map((clip) => [clip.id, clip.type, clip.start, clip.duration])).toEqual([["c1", "video", 0, 30], ["c2", "solid", 30, 30]]);
+    expect(shown.clips[1]).toMatchObject({ fill: [0, 0, 0, 0], opacity: 0 });
+    expect("media" in shown.clips[1]!).toBe(false);
+    // The edit itself is untouched: the person's clips stay.
+    expect(store.get(id)!.project.clips.map((clip) => clip.id)).toEqual(["c1", "c2", "a2"]);
+    // Its file back here: it plays again.
+    fs.mkdirSync(join(store.get(id)!.project.media.find((one) => one.id === "m2")!.path, ".."), { recursive: true });
+    fs.writeFileSync(store.get(id)!.project.media.find((one) => one.id === "m2")!.path, "back");
+    expect(missingMedia.playable(app.store.home, store.get(id)!.project).clips.map((clip) => clip.type)).toEqual(["video", "video", "audio"]);
+  } finally {
+    cleanup();
+  }
+});
+
+const ffmpeg = Bun.which("ffmpeg");
+const ffprobe = Bun.which("ffprobe");
+const addon = findAddon();
+test.skipIf(ffmpeg === null || ffprobe === null || addon === null)("an edit gone on without exports whole on the real engine: the rest plays, the gap its own length", async () => {
+  const fixture = fixtureHome("edit-gone-export");
+  const { dir, home, store, app } = fixture;
+  const before = useNative(wrap(require(addon!) as Native));
+  native().init({ home, cacheDir: store.cacheDir(), ffmpeg: ffmpeg!, ffprobe: ffprobe!, log: diag.nativeLog });
+  const most = process.env.EDIT_LOCAL_EXPORTS;
+  process.env.EDIT_LOCAL_EXPORTS = "1";
+  const archive = spyOn(exportCloud, "enabled").mockReturnValue(false);
+  const registry = new ExportRegistry(home);
+  app.exports = registry;
+  try {
+    const shot = join(dir, "shot.mp4");
+    const made = Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30:duration=3", "-f", "lavfi", "-i", "sine=frequency=440:duration=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", shot]);
+    expect(made.exitCode).toBe(0);
+    const id = store.create("gone", { width: 160, height: 90, fps: 30 }).project.id;
+    await store.update(id, "test", (p) => {
+      const video = p.tracks[0]!.id;
+      const audio = p.tracks.find((track) => track.kind === "audio")!.id;
+      p.media.push({ ...media("m1", shot), width: 160, height: 90, duration: 3 }, { ...media("m2", join(dir, "gone", "interview.mp4")), width: 160, height: 90, duration: 3 });
+      // The door footage, then the interview that's gone, then the door again: two seconds each.
+      for (const [at, one] of ["m1", "m2", "m1"].entries()) {
+        p.clips.push({ type: "video", id: `v${at}`, track: video, media: one, start: at * 60, duration: 60, source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as never);
+        p.clips.push({ type: "audio", id: `a${at}`, track: audio, media: one, start: at * 60, duration: 60, source_in: 0, speed: 1, volume_db: 0 } as never);
+      }
+    });
+    // Asked about, then gone without: the export goes.
+    expect((await missingMedia.missingOf(home, store.get(id)!.project)).missing.map((one) => one.id)).toEqual(["m2"]);
+    missingMedia.goWithout(app, id, "m2");
+    const out = join(dir, "gone.mp4");
+    await registry.start(store, app.library, store.get(id)!.project, native().exportDefaults(), out, { drive: false, keepLocal: true });
+    for (let tries = 0; registry.running() && tries < 1200; tries++) await Bun.sleep(50);
+    const [record] = listExports(home, id);
+    expect(record?.path).toBe(out);
+    const probed = Bun.spawnSync([ffprobe!, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", out]);
+    expect(Math.abs(Number(probed.stdout.toString().trim()) - 6)).toBeLessThan(0.2);
+  } finally {
+    archive.mockRestore();
+    if (most === undefined) delete process.env.EDIT_LOCAL_EXPORTS;
+    else process.env.EDIT_LOCAL_EXPORTS = most;
+    if (before !== null) useNative(before);
+    fixture.cleanup();
+  }
+}, 120_000);

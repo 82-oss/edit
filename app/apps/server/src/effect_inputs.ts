@@ -24,6 +24,7 @@ import * as diag from "./diag.ts";
 import * as effects from "./effects.ts";
 import { writeAtomic } from "./files.ts";
 import { Semaphore } from "./media.ts";
+import * as missingMedia from "./missing_media.ts";
 import type { Media, Project } from "./model.ts";
 import { native } from "./native/index.ts";
 import { join } from "./paths.ts";
@@ -296,7 +297,7 @@ export async function beneath(app: App, projectId: string, name: string): Promis
     const partial = join(dir, `${BENEATH}.partial.mp4`);
     try {
       const options = { ...native().exportDefaults(), format: "h264" as const, size: null, range: [found.start, found.end] as [number, number], quality: "high" as const, audio: false, loudness: null };
-      const input = { json: jsonForSerde(found.project) };
+      const input = { json: jsonForSerde(missingMedia.playable(app.store.home, found.project)) };
       const { plan } = native().exportPlan(input, options);
       const job = native().ExportJob.start({ project: input, options, plan, output: exported, cacheDir: app.store.cacheDir() }, () => {});
       const timer = setTimeout(() => job.cancel(), 10 * 60_000);

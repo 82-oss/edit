@@ -23,9 +23,14 @@ export function importProgress(job: ScriptJob): { fraction: number; line: string
   if (job.state === "failed") return { fraction: footage * 0.85, line: explain(job.error ?? "The import stopped", "finish the import").title };
   if (job.state === "waiting") {
     const missing = job.files.filter((file) => file.state === "failed").length;
+    // A dropped connection, a busy Google: tried again by itself, said as the in-run tries are, nothing to press.
+    const again = job.files.filter((file) => file.state === "waiting" && file.why === "passing");
+    if (missing === 0 && again.length > 0 && again.length === job.files.filter((file) => file.state === "waiting").length && job.retry_at !== undefined) {
+      return { fraction: footage * 0.85, line: `Trying ${again.length === 1 ? "a file" : `${again.length} files`} again at ${timeOfDay(job.retry_at)}` };
+    }
     // Waiting by itself (the transcription plan's credit, the encoder): said as the server says it, nothing to press.
     if (missing === 0) return { fraction: footage * 0.85, line: job.error ?? "Waiting to carry on" };
-    return { fraction: footage * 0.85, line: `Waiting for you: ${missing === 1 ? "one file" : `${missing} files`} couldn’t be downloaded` };
+    return { fraction: footage * 0.85, line: `${missing === 1 ? "One file" : `${missing} files`} can’t be downloaded` };
   }
   if (job.state === "done") return { fraction: 1, line: "Ready" };
   // A YouTube file waiting out YouTube turning Edit away (a downloading file with a time): it goes again by itself.

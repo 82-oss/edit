@@ -10,6 +10,7 @@ import { createApp } from "../src/app.ts";
 import * as encoder from "../src/encoder.ts";
 import * as steps from "../src/import_steps.ts";
 import * as jobs from "../src/jobs.ts";
+import * as missingMedia from "../src/missing_media.ts";
 import { Processor } from "../src/media.ts";
 import type { MediaStatus, Probe, ScriptJob } from "../src/model.ts";
 import * as relay from "../src/relay.ts";
@@ -135,7 +136,7 @@ test("an import waiting on the person survives a restart with its files' states,
   }
 });
 
-test("a step past its time lands its file in failed with a passing reason, tried again by itself, then Retry is offered", async () => {
+test("a step past its time lands its file with a passing reason, tried again by itself, then waits by itself: never the person's", async () => {
   const scripts = new Jobs();
   const fixture = fixtureHome("import-timeout", { services: { scripts } });
   try {
@@ -143,13 +144,107 @@ test("a step past its time lands its file in failed with a passing reason, tried
     const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" ? new steps.StepTimedOut("Cutting an excerpt", 600_000, false) : null));
     await start(fixture.app, id, false);
     const job = await settled(scripts, id);
-    // Tried again once by itself (timing.retryWaits), then the person's: Retry, another link or skip, never a job left running.
+    // Tried again once by itself (timing.retryWaits), then waiting by itself to be tried again: never a job left running.
     expect(fetched.filter((file) => file === "FILEcase0002").length).toBe(2);
     expect(job.state).toBe("waiting");
-    expect(job.files[1]).toMatchObject({ state: "failed", why: "passing" });
+    expect(job.files[1]).toMatchObject({ state: "waiting", why: "passing" });
     expect(job.files[1]!.error).toContain("took more than 10 min");
+    expect(job.retry_at).toBeGreaterThan(Date.now());
     expect(scripts.working(id)).toBe(false);
     expect(steps.passing(job.files[1]!.error!)).toBe(true);
+    expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", args: { waiting_on: "passing" } });
+    expect(caseJob(fixture.home, id)!.until).toBeUndefined();
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// Nov 18, JJ's School Bookkeeper on nightly-87: the interview's file failed on "could not reach Edit's relay: The socket
+// connection was closed unexpectedly" (his Wi-Fi dropped), was tried after 1 and 5 minutes, then handed to him as
+// "Waiting for you: one file couldn't be downloaded" with "Edit couldn't reach the internet". His Wi-Fi was back.
+test("JJ's dropped connection: the file waits and is tried again by itself until it comes in, never asking the person", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-dropped", { services: { scripts } });
+  const passingWait = steps.PASSING_RETRY_MS.value;
+  try {
+    const id = await twoFiles(fixture);
+    let down = true;
+    const dropped = "could not reach Edit's relay: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()";
+    const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" && down ? new Error(dropped) : null));
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    steps.PASSING_RETRY_MS.value = 0;
+    await start(fixture.app, id, false);
+    const waiting = await settled(scripts, id);
+    expect(steps.whyOf(dropped)).toBe("passing");
+    expect(waiting.state).toBe("waiting");
+    // Nothing for the person: no file failed (what the page asks about), one waiting with its next try.
+    expect(waiting.files.map((file) => [file.state, file.why ?? null])).toEqual([["done", null], ["waiting", "passing"]]);
+    expect(waiting.files.filter((file) => file.state === "failed")).toEqual([]);
+    expect(waiting.error).toStartWith("Trying a file again at ");
+    expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", step: "trying again by itself", args: { waiting_on: "passing" } });
+    // Going on without it isn't offered for a file still being tried.
+    await expect(skipFootage(fixture.app, id, "*")).rejects.toThrow("Nothing is waiting to be skipped.");
+    // The job table wakes it; still down, it waits again by itself.
+    jobs.useResumers(fixture.home, { case: (one) => void carryOn(fixture.app, one.project) });
+    await jobs.wake(fixture.home, ["case"]);
+    expect((await settled(scripts, id)).files[1]).toMatchObject({ state: "waiting", why: "passing" });
+    // The connection back: the next wake brings the file in and the edit is laid out whole.
+    down = false;
+    await jobs.wake(fixture.home, ["case"]);
+    const done = await settled(scripts, id);
+    expect(done.state).toBe("done");
+    expect(done.files.every((file) => file.state === "done")).toBe(true);
+    expect(fetched.filter((file) => file === "FILEcase0002").length).toBeGreaterThanOrEqual(5);
+    const project = fixture.store.get(id)!.project;
+    expect(project.script!.blocks.filter((block) => block.kind === "footage").every((block) => typeof block.clip === "string" && typeof block.media === "string")).toBe(true);
+  } finally {
+    steps.PASSING_RETRY_MS.value = passingWait;
+    fixture.cleanup();
+  }
+});
+
+// The rest of JJ's path: "Go on without it" on a file that's really gone took its 19 ranges out of the script and left a
+// 2:44 edit of a 25-minute one. Now its ranges hold their place as black cards and the rest is laid out as written.
+test("going on without a file that's really gone keeps its ranges in place as black cards: the edit is whole, and the agent is told", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-gone-without", { services: { scripts } });
+  try {
+    const id = await twoFiles(fixture);
+    const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" ? new steps.NeedsPerson("Google Drive can't find this file: it was deleted, or in the trash.") : null));
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    await start(fixture.app, id, false);
+    const asked = await settled(scripts, id);
+    expect(asked.files[1]).toMatchObject({ state: "failed", why: "person" });
+    expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", until: "person" });
+
+    await skipFootage(fixture.app, id, "FILEcase0002");
+    const done = await settled(scripts, id);
+    expect(done.state).toBe("done");
+    // Not fetched again: it's gone without.
+    expect(fetched.filter((file) => file === "FILEcase0002").length).toBe(1);
+    const project = fixture.store.get(id)!.project;
+    const blocks = project.script!.blocks;
+    // Every block still in the script, in order, each placed.
+    expect(blocks.map((block) => block.kind)).toEqual(["footage", "narration", "footage"]);
+    expect(blocks.every((block) => typeof block.clip === "string")).toBe(true);
+    const gone = blocks[2]!;
+    expect(gone.kind === "footage" && gone.media).toBeFalsy();
+    // Named as the person knows it (its case; a file that started downloading, by its file name).
+    expect(gone.notes).toContain("Gone without (it couldn't be downloaded): Case 2");
+    const card = project.clips.find((clip) => clip.id === gone.clip)!;
+    // Its range's length (4 s at 30 fps), black, after the cut-in, with no media to read.
+    expect(card).toMatchObject({ type: "solid", fill: [0, 0, 0, 1], opacity: 1, duration: 120, name: "Case 2 · didn't come in" });
+    const first = project.clips.find((clip) => clip.id === blocks[0]!.clip)!;
+    const cutIn = project.clips.find((clip) => clip.id === blocks[1]!.clip)!;
+    expect(cutIn.start).toBe(first.start + first.duration);
+    expect(card.start).toBe(cutIn.start + cutIn.duration);
+    // A file nothing in the edit lacks: nothing for the editor's cloud to ask, nothing for the export to wait on.
+    expect(await missingMedia.held(fixture.home, project)).toBeNull();
+    expect(await missingMedia.forAgent(fixture.home, project)).toContain("went on without Case 2, which couldn't be downloaded: its range holds its place as black cards");
+    // A Re-cut lays it out again the same way.
+    await start(fixture.app, id, true);
+    const recut = fixture.store.get(id)!.project;
+    expect(recut.clips.filter((clip) => clip.type === "solid" && clip.name === "Case 2 · didn't come in")).toHaveLength(1);
   } finally {
     fixture.cleanup();
   }

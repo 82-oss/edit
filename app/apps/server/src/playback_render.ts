@@ -39,6 +39,7 @@ import * as cloud from "./cloud.ts";
 import * as cloudBlocks from "./cloud_blocks.ts";
 import { localPath, playbackSounds, prefetchProject, streamFromCloud } from "./cloud_media.ts";
 import * as diag from "./diag.ts";
+import * as missingMedia from "./missing_media.ts";
 import { ApiError, json, notFound } from "./http/errors.ts";
 import { serveFile } from "./http/files.ts";
 import type { Router } from "./http/router.ts";
@@ -458,7 +459,7 @@ async function render(app: App, project: Project, current: Running): Promise<voi
   if (current.cancelled) return;
   const options = playbackOptions();
   // Its own chunk folder and file, so the real export's are never touched.
-  const own = { ...project, id: `${project.id}.playback` };
+  const own = { ...missingMedia.playable(app.store.home, project), id: `${project.id}.playback` };
   const input = { json: jsonForSerde(own) };
   const { plan } = native().exportPlan(input, options);
   if (plan.end <= plan.start) throw new ApiError(400, "nothing on the timeline to play");

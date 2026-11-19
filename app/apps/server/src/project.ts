@@ -302,6 +302,24 @@ export function reusedScriptBlock(block: ScriptBlock): boolean {
   return (block.notes ?? []).some((note) => note.startsWith(REUSED_SCRIPT_NOTE));
 }
 
+/**
+ * A script range whose file the person went on without at the import (its
+ * file can't be downloaded: deleted, never shared): the range stays in the
+ * script and holds its place in the edit as a black card of its length, so
+ * the rest is laid out as written (Nov 18, JJ's School Bookkeeper: the
+ * interview's 19 ranges taken out of the script left a 2:44 edit of a 25-minute
+ * one). The note names the file.
+ */
+export const GONE_WITHOUT_NOTE = "Gone without (it couldn't be downloaded): ";
+export function goneWithout(block: ScriptBlock): boolean {
+  return block.kind === "footage" && (block.notes ?? []).some((note) => note.startsWith(GONE_WITHOUT_NOTE));
+}
+/** The name of the file a range gone without is from (as its note keeps it). */
+export function goneWithoutName(block: ScriptBlock): string | null {
+  const note = (block.notes ?? []).find((one) => one.startsWith(GONE_WITHOUT_NOTE));
+  return note === undefined ? null : note.slice(GONE_WITHOUT_NOTE.length);
+}
+
 /** The media of the finished videos a script reuses, whole or a case of them (their subtitles and mutes are burned in). */
 export function reusedMedia(project: Project): Set<string> {
   const out = new Set<string>();

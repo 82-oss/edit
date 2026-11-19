@@ -13,8 +13,9 @@
 // What a failure is, in four words (`whyOf`), read from the error's class
 // first and its words only for text from outside Edit (Drive's pages, yt-dlp):
 // - passing: may go if tried again (a dropped connection, a busy Google, a
-//   step past its time). Edit tries again by itself (`RETRY_WAITS`), then the
-//   person may Retry.
+//   step past its time). Edit tries again by itself (`RETRY_WAITS`), then
+//   waits by itself and tries every `PASSING_RETRY_MS` until it comes in: the
+//   person is never asked about it.
 // - person: only the person can fix it (a file nobody shared, a private
 //   video): another link, or go on without it.
 // - quota: the transcription plan is out of credit, or the relay's allowance
@@ -53,6 +54,11 @@ export const LIMITS = {
 
 /** The pauses before Edit tries a passing failure again by itself (tests make them instant). */
 export const RETRY_WAITS = { value: [60_000, 5 * 60_000] };
+/**
+ * After those, a file whose failure passes (a dropped connection, a busy Google, a step past its time) waits by itself
+ * this long before the import is woken to try it again, and again, until it comes in: never handed to the person.
+ */
+export const PASSING_RETRY_MS = { value: 10 * 60_000 };
 /** A file waiting on the transcription plan's credit is tried again this often. */
 export const QUOTA_RETRY_MS = { value: 30 * 60_000 };
 /** A file at Google Drive's download limit is tried again this long after, when Google gives no time of its own. */

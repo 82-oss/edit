@@ -3370,7 +3370,7 @@
   },
   {
     "name": "skip_footage",
-    "description": "Go on without footage the import couldn't fetch: its ranges leave the script and the rest is laid out. Use only when the user says to proceed without it. file is from import.missing.",
+    "description": "Go on without footage the import couldn't fetch: its ranges stay in the script, each laid out as a black card of its length (no picture or sound), and the rest is laid out as written. Use only when the user says to proceed without it. file is from import.missing.",
     "inputSchema": {
       "type": "object",
       "properties": {

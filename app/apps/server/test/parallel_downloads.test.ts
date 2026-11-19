@@ -39,9 +39,10 @@ test("script downloads overlap in three slots and a failed file does not strand 
     // Each tried twice (once again by itself), never more than three at a time.
     expect(entered).toBe(8);
     expect(peak).toBe(3);
-    expect(scripts.get(id)!.files.every(f => f.state === "failed")).toBe(true);
-    // Nothing laid out with holes: the import waits for the person.
+    // A failure that may pass: nothing laid out with holes, and nothing asked: the import waits to try them again by itself.
+    expect(scripts.get(id)!.files.every(f => f.state === "waiting" && f.why === "passing")).toBe(true);
     expect(scripts.get(id)!.state).toBe("waiting");
+    expect(scripts.get(id)!.error).toStartWith("Trying 4 files again at ");
     expect(store.get(id)!.project.clips).toEqual([]);
   } finally {
     release(); await work;
@@ -100,10 +101,13 @@ test("footage that can't be fetched waits for the person: another link, or go on
     expect(asked.slice(2).sort()).toEqual(["FILEcase0002", "youtube:abcdefghijk"]);
     expect(scripts.get(id)!.state).toBe("waiting");
 
-    // Going on without case 2: its ranges leave the script; the last footage can't go.
+    // Going on without case 2: its ranges stay in the script, marked gone without (black cards once laid out); the last footage can't go.
     await skipFootage(app, id, "FILEcase0002");
     await settle(id);
-    expect(store.get(id)!.project.script!.blocks.map((block) => block.kind === "footage" && block.file)).toEqual(["youtube:abcdefghijk"]);
+    const kept = store.get(id)!.project.script!.blocks;
+    expect(kept.map((block) => block.kind === "footage" && block.file)).toEqual(["youtube:abcdefghijk", "FILEcase0002"]);
+    expect(kept[1]!.notes?.some((note) => note.startsWith("Gone without (it couldn't be downloaded): "))).toBe(true);
+    expect(asked.filter((file) => file === "FILEcase0002")).toHaveLength(2);
     await expect(skipFootage(app, id, "youtube:abcdefghijk")).rejects.toThrow("That's the only footage in the script");
   } finally {
     drive.mockRestore();

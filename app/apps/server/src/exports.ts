@@ -1359,7 +1359,8 @@ export class ExportRegistry implements seams.Exports {
             let stalled = false;
             // Its renders read from where the edit has them now, should one have moved since it was taken (file_pins.ts
             // holds them from then on; a snapshot carried on after a restart, an export waiting in line).
-            const reading = located(project, store.get(id)?.project ?? null, remade);
+            // Footage the person went on without plays nothing, its time kept (missing_media.playable): never a file it can't read.
+            const reading = missingMedia.playable(store.home, located(project, store.get(id)?.project ?? null, remade));
             // Cloud footage: the originals, not the proxies (read from R2 for the export), signed afresh each try.
             let exported = reading;
             let originals: seams.Originals | null = null;

@@ -2075,7 +2075,7 @@ const BUDGET = 36_000;
  */
 export function importStatus(app: App, p: Project): Args | null {
   const job = app.scripts.get(p.id);
-  // Waiting by itself (the transcription plan's credit, the encoder): nothing to ask the person.
+  // Waiting by itself (the transcription plan's credit, the encoder, a dropped connection tried again): nothing to ask the person.
   const byItself = job?.state === "waiting" && !job.files.some((file) => file.state === "failed");
   return job === null || job.state === "done"
     ? null
@@ -2087,7 +2087,7 @@ export function importStatus(app: App, p: Project): Args | null {
           missing: job.files
             .filter((file) => file.state === "failed")
             .map((file) => ({ file: file.file, label: footageLabel(p, file.file), why: file.error ?? "" })),
-          ask: "This footage couldn't be downloaded, even tried again. Don't edit yet. Ask the user, for each: do they have a replacement (a Drive file or YouTube link of the same recording: replace_footage), or should the edit go on without it (skip_footage)?",
+          ask: "This footage couldn't be downloaded, even tried again. Don't edit yet. Ask the user, for each: do they have a replacement (a Drive file or YouTube link of the same recording: replace_footage), or should the edit go on without it (skip_footage: its parts are laid out as black cards of their length)?",
         }
       : { state: job.state, note: job.state === "failed" ? (job.error ?? "the import stopped") : "Still importing: wait for it before editing." };
 }

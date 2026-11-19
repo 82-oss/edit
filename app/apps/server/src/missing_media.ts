@@ -13,6 +13,7 @@ import type { EditMissing } from "@edit/types/footage_ready";
 
 import type { App } from "./app.ts";
 import { isMapStandIn } from "./broll.ts";
+import { clipFrom } from "./clips.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import { playbackKey } from "./cloud_playback.ts";
 import * as diag from "./diag.ts";
@@ -22,6 +23,7 @@ import type { Router } from "./http/router.ts";
 import { checkKey } from "./media.ts";
 import type { Media, Project } from "./model.ts";
 import { join } from "./paths.ts";
+import { goneWithout, goneWithoutName } from "./project.ts";
 import { stableStringify } from "./stable.ts";
 import { missingMedia } from "./store.ts";
 
@@ -96,6 +98,39 @@ export function line(missing: { name: string }[]): string {
   return `${missing.length} ${missing.length === 1 ? "file" : "files"} didn't come in: ${listed}`;
 }
 
+function isFile(path: string): boolean {
+  try {
+    return fs.statSync(path).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `project` as an export (or any render) reads it: footage the person went on
+ * without plays nothing and is heard not at all, its time kept. Each of its
+ * pictures becomes an empty card of the same length (what's beneath shows,
+ * black where nothing is), its sound and its sound's picture are left out.
+ * Its file back here plays again. Without this an export of an edit gone on
+ * without failed on the file it no longer has ("the edit uses files that
+ * aren't on this machine"), the promise of a working edit broken. The same
+ * project when nothing was gone without.
+ */
+export function playable(home: string, project: Project): Project {
+  const without = new Set(waived(home, project.id));
+  if (without.size === 0) return project;
+  const gone = new Set(project.media.filter((media) => without.has(media.id) && !isFile(media.path)).map((media) => media.id));
+  if (gone.size === 0 || !project.clips.some((clip) => "media" in clip && typeof clip.media === "string" && gone.has(clip.media))) return project;
+  const out = structuredClone(project);
+  out.clips = out.clips.flatMap((clip) => {
+    if (!("media" in clip) || typeof clip.media !== "string" || !gone.has(clip.media)) return [clip];
+    if (clip.type !== "video") return [];
+    const { keyframes: _keyframes, ...rest } = clip;
+    return [clipFrom({ ...rest, type: "solid", fill: [0, 0, 0, 0], opacity: 0 })];
+  });
+  return out;
+}
+
 /** Why an export or share of `project` waits, or null when its footage is all here (or gone on without). */
 export async function held(home: string, project: Project): Promise<string | null> {
   const { missing } = await missingOf(home, project).catch(() => ({ missing: [] as Media[] }));
@@ -111,6 +146,12 @@ export async function forAgent(home: string, project: Project): Promise<string> 
   const lines: string[] = [];
   if (missing.length > 0) lines.push(`FOOTAGE MISSING: ${line(missing)}. Its clips have no picture or sound here, and Edit is still trying to bring it in; exporting and sharing wait for it. Don't cut around it or import it again: say so in a line where it matters.`);
   if (left.length > 0) lines.push(`The person went on without ${left.map((one) => one.name).join(", ")}, which didn't come in: their clips play black and silent. Say so wherever that leaves a gap.`);
+  // The import's: a file that couldn't be downloaded, its script ranges holding their place as black cards.
+  const ranges = (project.script?.blocks ?? []).filter((block) => goneWithout(block) && typeof block.clip === "string" && project.clips.some((clip) => clip.id === block.clip));
+  if (ranges.length > 0) {
+    const names = [...new Set(ranges.map((block) => goneWithoutName(block) ?? "a file"))];
+    lines.push(`The person went on without ${names.join(", ")}, which couldn't be downloaded: ${ranges.length === 1 ? "its range holds its place" : `its ${ranges.length} ranges hold their place`} as black cards named "… · didn't come in", with no picture or sound. Leave them where they are unless the person asks, and say so wherever that leaves a gap.`);
+  }
   return lines.join(" ");
 }
 

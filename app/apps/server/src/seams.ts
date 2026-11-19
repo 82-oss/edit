@@ -338,7 +338,7 @@ export interface ScriptJobs {
   /** Whether `project`'s import is working in this process now (one read back after a restart isn't, until it's resumed). */
   working(project: string): boolean;
   /** The import ended here: kept in the job table as `settled` says (`end` crosses it off). */
-  finish(project: string, settled: { state: "done" | "failed" | "waiting" | "end"; on?: "quota" | "encoder" | "voice" | "drive"; error?: string; step?: string; retry_at?: number; until?: "encoder" | "person" }): void;
+  finish(project: string, settled: { state: "done" | "failed" | "waiting" | "end"; on?: "quota" | "encoder" | "voice" | "drive" | "passing"; error?: string; step?: string; retry_at?: number; until?: "encoder" | "person" }): void;
   keepMade(project: string, file: string, ranges: [number, number][], excerpts: Excerpt[]): void;
   keptMade(project: string, file: string, ranges: [number, number][]): Excerpt[] | null;
 }

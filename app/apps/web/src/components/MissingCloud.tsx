@@ -30,6 +30,7 @@ export function MissingCloud({
   noun = "recording",
   onRetry,
   onWithout,
+  outcome,
 }: {
   items: MissingItem[];
   /** What each is ("recording", "video", "file"). */
@@ -37,6 +38,8 @@ export function MissingCloud({
   onRetry: () => Promise<unknown>;
   /** Goes on without these, each remembered for good. */
   onWithout: (ids: string[]) => Promise<unknown>;
+  /** What going on without them does, said before it's confirmed ("it" or "them"); left out for good, unless said otherwise. */
+  outcome?: (it: "it" | "them") => string;
 }) {
   const [open, setOpen] = useState(true);
   const [asking, setAsking] = useState(false);
@@ -101,7 +104,7 @@ export function MissingCloud({
         open={asking}
         onClose={() => setAsking(false)}
         title={`Go on without ${items.length === 1 ? items[0]!.name : `these ${items.length} ${noun}s`}?`}
-        detail={`It's left out for good and Edit stops trying to bring ${it} in.`}
+        detail={outcome?.(it) ?? `It's left out for good and Edit stops trying to bring ${it} in.`}
         confirm={`Go on without ${it}`}
         busy={busy === "without"}
         onConfirm={() =>

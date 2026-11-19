@@ -7,10 +7,13 @@ import { ProblemView } from "./ProblemView";
 import { Button } from "./ui";
 
 /**
- * An import waiting on the person: each file it couldn't get, with its two
- * answers, and one to go on without them all. Said where the edit would be
- * (the Viewer), since the Downloads tab that held them is gone: the first
- * horror import (Nov 4) waited with nothing to press anywhere.
+ * An import waiting on the person: each file that can't be downloaded however
+ * often it's tried (deleted, never shared, private; a dropped connection is
+ * tried again by itself and never shows here), with its two answers, and one
+ * for them all. Said where the edit would be (the Viewer), since the Downloads
+ * tab that held them is gone: the first horror import (Nov 4) waited with
+ * nothing to press anywhere. Each answer says what it does: the edit is made
+ * with the file's parts left black (they hold their place), or another link.
  */
 export function WaitingFiles({ project, job }: { project: Project; job: ScriptJob }) {
   const [busy, setBusy] = useState(false);
@@ -36,10 +39,10 @@ export function WaitingFiles({ project, job }: { project: Project; job: ScriptJo
     <div className="flex max-h-[70%] w-[min(520px,90%)] flex-col gap-2 overflow-y-auto text-left">
       {missing.length > 1 && (
         <Button size="sm" variant="primary" className="self-center" disabled={busy} onClick={() => void skipAll()}>
-          {busy ? "Going on…" : "Go on without them"}
+          {busy ? "Making the edit…" : "Make the edit with their parts black"}
         </Button>
       )}
-      {failed !== null && <ProblemView error={failed} doing="go on without them" />}
+      {failed !== null && <ProblemView error={failed} doing="make the edit without them" />}
       {missing.map((file) => (
         <div key={file.file}>
           <div className="truncate text-[11px] text-muted" title={linkOf(file.file)}>{file.name ?? linkOf(file.file)}</div>
@@ -103,10 +106,10 @@ function MissingFile({ project, file, error }: { project: Project; file: string;
       ) : (
         <div className="flex gap-1.5">
           <Button size="sm" onClick={() => setReplacing(true)} disabled={busy}>
-            I have a replacement
+            Use another link
           </Button>
           <Button size="sm" variant="ghost" onClick={() => answer({ skip: true })} disabled={busy}>
-            Go on without it
+            Make the edit with its parts black
           </Button>
         </div>
       )}
