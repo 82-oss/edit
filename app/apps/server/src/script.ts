@@ -2597,7 +2597,7 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
                 : whys.includes("room")
                   ? // The room it needs kept, so the table looks at the disk before cutting again (Fable's last look, Nov 19:
                     // it cut into a full disk every five minutes on JJ's Mac, verify.md finding 5's own case).
-                    { state: "waiting", step: "waiting for room", retry_at: retryAt, on: "room", args: { room_bytes: roomFor(missing.map((index) => errors[index])) } }
+                    { state: "waiting", step: "waiting for room", retry_at: retryAt, on: "room", args: { room_bytes: roomNeeded(app, id, files, missing, errors) } }
                   : { state: "waiting", step: "trying again by itself", retry_at: retryAt, on: "passing", args: { room_bytes: 0 } }
           : // The person's file waits for them; one passing beside it is still tried again by itself.
             whys.includes("passing") && retryAt !== null
@@ -2668,6 +2668,17 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
 class CreditWait extends Error {}
 
 /** The import's line while it waits by itself. */
+/**
+ * The room an editor import waits for: each file's `NoRoom` speaks for one excerpt, and a file's excerpts are cut a few
+ * at once, so it's that times the file's ranges, summed over the files, with a fifth more for the disk's own overhead
+ * (bad-day no-room, Nov 20: 12 MB said, 12 MB free, two excerpts cut at once into it every five minutes).
+ */
+function roomNeeded(app: App, id: string, files: string[], missing: number[], errors: unknown[]): number {
+  const project = app.store.get(id)?.project;
+  const total = missing.reduce((sum, index) => sum + roomFor([errors[index]]) * Math.max(1, project === undefined ? 1 : fileRanges(project, files[index]!).length), 0);
+  return Math.ceil(total * 1.2);
+}
+
 /** The most room any of these failures says it needs (a `NoRoom`, or one it caused), in bytes; 0 when none says. */
 export function roomFor(errors: unknown[]): number {
   let most = 0;

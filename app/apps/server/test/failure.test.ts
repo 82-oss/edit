@@ -52,6 +52,8 @@ test("each error class and outside phrase has one kind; anything unknown is pass
     ["Google Drive can't find this file: it was deleted, or in the trash.", "person"],
     ["There isn't room on this Mac for MartyBlank.mp4 (5.5 GB)", "room"],
     ["Sign in to Edit to go on.", "signin"],
+    // SignedOut's words kept as a string (writer/missing.ts reads the try's error so: bad-day signin-ended, Nov 20).
+    ["The sound library and Google Drive need you signed in to Edit.", "signin"],
     ["something nobody has seen before", "passing"],
     [new Error("something nobody has seen before"), "passing"],
   ];

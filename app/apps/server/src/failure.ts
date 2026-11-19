@@ -117,7 +117,7 @@ const PASSING = /could not reach|unreachable|socket connection was closed|connec
 /** The codes Bun, Node and curl give a connection that failed or dropped: passing, whatever the words say. */
 const PASSING_CODES = new Set(["ConnectionRefused", "ConnectionClosed", "FailedToOpenSocket", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
 /** No sign-in at all, in an older build's words kept in a job. */
-const SIGNIN = /Sign in to Edit to go on/i;
+const SIGNIN = /Sign in to Edit to go on|needs? you signed in to Edit/i;
 
 /** Tagged errors only the person can answer: a Drive file not shared with Edit, footage no longer where it was. */
 const PERSON_TAGS = new Set(["DriveNotShared", "FootageMissing"]);
