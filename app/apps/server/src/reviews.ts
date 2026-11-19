@@ -29,6 +29,7 @@ import * as cloud from "./cloud.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as accounts from "./accounts.ts";
 import * as diag from "./diag.ts";
+import * as failure from "./failure.ts";
 import * as editNotes from "./edit_notes.ts";
 import * as footageReady from "./footage_ready.ts";
 import * as jobs from "./jobs.ts";
@@ -610,7 +611,18 @@ export async function exportAndShare(app: App, projectId: string, options: Parti
   return startShare(app, projectId, { export: { options, ...(mark === undefined ? {} : { watermark: mark }) }, ...(replace ? { replace } : {}), ...(note === undefined ? {} : { note }), ...(fixes === undefined ? {} : { fixes }) }, from);
 }
 
-/** The person hears a share went up, or why it didn't (notices.ts); a cancel they pressed says nothing. */
+/** Whether a share waits out `error` by itself: only what's surely passing, never one of its own refusals. */
+function waitsOn(error: unknown): boolean {
+  const kind = failure.surely(error);
+  return kind !== null && failure.waitsByItself(kind);
+}
+
+/** A share that met trouble that passes: it waits in the job table and goes on by itself (nothing to tell the person). */
+export class ShareWaits extends Error {
+  override readonly name = "ShareWaits";
+}
+
+/** The person hears a share went up, or why it didn't (notices.ts); a cancel they pressed, or a share waiting by itself, says nothing. */
 async function toldOf<T extends { version: number } | void>(app: App, projectId: string, sharing: Promise<T>): Promise<T> {
   const name = () => app.store.get(projectId)?.project.name || "Untitled";
   try {
@@ -620,7 +632,7 @@ async function toldOf<T extends { version: number } | void>(app: App, projectId:
     return done;
   } catch (error) {
     const message = diag.messageOf(error);
-    if (message !== "the share was cancelled" && message !== "the export was cancelled") {
+    if (!(error instanceof ShareWaits) && message !== "the share was cancelled" && message !== "the export was cancelled") {
       notices.notify({ key: `share:${projectId}:${Date.now()}`, title: "Sharing stopped", body: `${name()}: ${notices.line(message)}`, path: `/p/${projectId}` });
     }
     throw error;
@@ -650,8 +662,13 @@ export function retryShare(app: App, projectId: string): Promise<{ url: string; 
   const home = app.store.home;
   const job = shareJob(home, projectId);
   const args = job?.args as Partial<ShareArgs> | undefined;
-  if (job === undefined || job.state !== "failed" || args === undefined || args.id === undefined || (args.export !== undefined && args.path === undefined)) return null;
-  canShare(home, projectId);
+  // Failed, or waiting by itself (Retry goes now rather than at its next try).
+  if (job === undefined || (job.state !== "failed" && job.state !== "waiting") || args === undefined || args.id === undefined || (args.export !== undefined && args.path === undefined)) return null;
+  // A waiting share is its own row: only one running here now refuses.
+  if (job.state === "waiting") {
+    if (!cloud.enabled()) throw new Error("sharing needs Edit's cloud (sign in)");
+    if (sharing.has(projectId)) throw new Error("this project is already being shared");
+  } else canShare(home, projectId);
   jobs.step(home, job.key, job.step ?? "review copy");
   const run = runShare(app, projectId);
   return args.export === undefined ? run : toldOf(app, projectId, run);
@@ -726,7 +743,13 @@ async function runShare(app: App, projectId: string): Promise<{ url: string; ver
     const message = diag.messageOf(error);
     const cancelled = message === "the share was cancelled" || message === "the export was cancelled" || droppedShares.has(projectId);
     if (cancelled) jobs.end(home, key);
-    else {
+    else if (waitsOn(error)) {
+      // Trouble that passes (the line dropped, the relay busy, a full disk): the share waits and goes on from its step
+      // by itself; nothing says "Sharing stopped", and the link's notice comes when it's up (honest council change 7f).
+      const at = jobs.wait(home, key, error, "Waiting for the connection. The link comes by itself.");
+      diag.warn("review", `${app.store.get(projectId)?.project.name ?? projectId}: sharing waits (${failure.surely(error)}): ${message}; it goes on by itself${at === null ? "" : ` at ${new Date(at).toISOString()}`}`);
+      throw new ShareWaits(message);
+    } else {
       jobs.settle(home, key, "failed", { error: message, build: BUILD });
       if (first.fixes !== undefined) {
         // Said here too: the page's message alone left the log silent (Nov 6, four shares failed with nothing logged).

@@ -112,6 +112,8 @@ const DRIVE_LIMIT = /download limit for this file|Too many users|downloadQuotaEx
 const PERSON = /isn't shared|can't find this file|deleted, or in the trash|Private video|This video is private|confirm your age|age.restricted|members.only|Join this channel|not available in your country|blocked it in your country|Video unavailable|has been removed|has been terminated|no longer available|isn't a Drive file|isn't a YouTube video|has no bytes|A shared folder master|is not uploaded yet|pictures only, with no video|only shown to someone signed in/i;
 /** The disk full, in the system's words or Edit's own (older builds' "There isn't room on this Mac for …"). */
 const ROOM = /no space left on device|ENOSPC|There isn't room on this|Needs [\d.]+ GB free/i;
+/** A connection, a timeout or a busy service, in the words a job keeps (Edit's own, FFmpeg's, Bun's fetch). */
+const PASSING = /could not reach|unreachable|socket connection was closed|connection (reset|refused|timed out)|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|getaddrinfo|timed out|didn't answer|took more than|made no progress|being renewed|network|Server returned 5\d\d|\(5\d\d\)|busy/i;
 /** No sign-in at all, in an older build's words kept in a job. */
 const SIGNIN = /Sign in to Edit to go on/i;
 
@@ -123,8 +125,17 @@ function tagOf(error: unknown): string | null {
   return typeof tag === "string" ? tag : null;
 }
 
-/** The kind of any failure, an error or its words (a job keeps only the words). */
+/** The kind of any failure, an error or its words (a job keeps only the words); one nothing recognises is passing. */
 export function kindOf(error: unknown): Kind {
+  return surely(error) ?? "passing";
+}
+
+/**
+ * The kind a failure is known to be, or null when nothing recognises it (`kindOf` then takes it as passing). For work
+ * whose own refusals are plain errors (a share's "export the whole edit first"), which must not wait for ever: it
+ * waits only on what's surely passing.
+ */
+export function surely(error: unknown): Kind | null {
   for (let at: unknown = error, depth = 0; at !== undefined && at !== null && depth < 4; at = (at as { cause?: unknown }).cause, depth++) {
     if (at instanceof NeedsPerson) return "person";
     if (at instanceof DriveLimit) return "limit";
@@ -168,7 +179,8 @@ export function kindOf(error: unknown): Kind {
   if (QUOTA.test(words)) return "quota";
   if (PERSON.test(words)) return "person";
   if (SIGNIN.test(words)) return "signin";
-  return "passing";
+  if (PASSING.test(words)) return "passing";
+  return null;
 }
 
 /** Whether Edit waits it out by itself: anything but the person's and Edit's own bug. */

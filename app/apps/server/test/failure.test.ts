@@ -81,3 +81,13 @@ test("the bad-day switch divides every wait", () => {
   expect(failure.nextTry("passing", 5, now)! - now).toBe(30_000);
   expect(failure.nextTry("room", 0, now)! - now).toBe(5000);
 });
+
+test("surely: what's known to pass, or null for Edit's own plain refusals (a share waits only on the first)", () => {
+  expect(failure.surely("Repack didn't answer")).toBe("passing");
+  expect(failure.surely("could not reach Edit's relay: The socket connection was closed unexpectedly")).toBe("passing");
+  expect(failure.surely(new failure.NoRoom(1e9))).toBe("room");
+  expect(failure.surely(new Error("export the whole edit first: a review shares an export"))).toBeNull();
+  expect(failure.surely("that isn't one of this project's whole exports")).toBeNull();
+  // kindOf still takes what nothing recognises as passing (an import waits it out).
+  expect(failure.kindOf("that isn't one of this project's whole exports")).toBe("passing");
+});

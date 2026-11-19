@@ -220,7 +220,7 @@ test("cut short as its export finished (the export listed, the share not told): 
   }
 });
 
-test("a share that fails is kept failed with why, where the dialog reads it; Retry carries it on from that step", async () => {
+test("a share that meets trouble that passes waits and says the link comes by itself, never \"Sharing stopped\"; it carries on from that step", async () => {
   const { app, home, id, path, copy, poster, work, cleanup } = await exported("share-fails");
   let refuse = true;
   const { steps } = fakeCloud(() => refuse);
@@ -229,9 +229,13 @@ test("a share that fails is kept failed with why, where the dialog reads it; Ret
     fs.copyFileSync(path, copy);
     fs.writeFileSync(poster, "jpg");
     cutShort(home, id, "publishing", { checked: true, uploaded: true });
-    await carryOn(app, home, id);
-    expect(reviews.shareNow(home, id)).toEqual({ line: null, share: expect.objectContaining({ state: "failed", error: "Repack didn't answer" }) });
-    expect(remote.busyWith(app)).not.toContain("a share");
+    await jobs.resume(home, { share: (job) => reviews.resumeShareJob(app, job) }, ["share"]);
+    for (let tries = 0; tries < 2000 && jobs.get(home, `share:${id}`)?.state === "running"; tries++) await Bun.sleep(10);
+    // Repack not answering passes: the share waits in the job table, still going, its step saying so, no error.
+    const waiting = reviews.shareNow(home, id).share!;
+    expect(waiting).toMatchObject({ state: "running", step: "Waiting for the connection. The link comes by itself." });
+    expect(waiting.error).toBeUndefined();
+    expect(jobs.get(home, jobs.keyOf("share", id))).toMatchObject({ state: "waiting" });
     refuse = false;
     expect(await reviews.retryShare(app, id)).toEqual({ url: "https://review.test/r1", version: 1 });
     // The copy and poster aren't sent again: only the publish, which failed, then went.

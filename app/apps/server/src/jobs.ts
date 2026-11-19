@@ -293,13 +293,15 @@ function settled(job: Job, state: "done" | "failed" | "waiting", fields: Settled
  * person's waits for them; Edit's own bug is failed (a new build tries it once). Nothing when it isn't listed
  * (cancelled). When it'll be tried, or null.
  */
-export function wait(home: string | null, key: string, error: unknown): number | null {
+export function wait(home: string | null, key: string, error: unknown, step?: string): number | null {
   if (home === null) return null;
   return (
     change(home, (jobs) => {
       const job = jobs.find((one) => one.key === key);
       if (job === undefined) return false;
-      return postpone(job, error);
+      const at = postpone(job, error);
+      if (step !== undefined && job.state === "waiting") job.step = step;
+      return at;
     }) || null
   );
 }
