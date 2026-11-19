@@ -56,7 +56,7 @@ export const timing = {
   now: () => performance.now(),
   /** A download sending nothing for this long is dropped and resumed (a dead connection never ends by itself). */
   stall: 60_000,
-  /** The pauses before Edit tries a failed download (or the voice-over) again by itself. */
+  /** The pauses before Edit tries the voice-over again by itself (a file's tries are failure.ts's, from the job table). */
   retryWaits: [60_000, 5 * 60_000],
 };
 
@@ -1455,7 +1455,7 @@ type JobState = ScriptJob["state"];
 const RUNNING: JobState[] = ["downloading", "transcribing", "placing", "voicing"];
 
 /** What an import waiting by itself waits on (the job table's `waiting_on`): the transcription plan's credit, the encoder, ElevenLabs' voice credit or the day's voice allowance, Google Drive's download limit, or a failure that passes (a dropped connection) tried again. */
-export type WaitingOn = "quota" | "encoder" | "voice" | "drive" | "passing";
+export type WaitingOn = "quota" | "encoder" | "voice" | "drive" | "passing" | "room";
 
 /** A job as it's always been written: its fields in order, the unset ones left out. */
 function shownJob(job: ScriptJob): ScriptJob {
@@ -1468,6 +1468,7 @@ function shownJob(job: ScriptJob): ScriptJob {
     if (file.error !== undefined) shown.error = file.error;
     if (file.why !== undefined) shown.why = file.why;
     if (file.retry_at !== undefined) shown.retry_at = file.retry_at;
+    if (file.tries !== undefined) shown.tries = file.tries;
     if (file.cut !== undefined) shown.cut = file.cut;
     return shown as unknown as FileJob;
   });
@@ -2503,6 +2504,8 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
           entry.state = "failed";
           entry.error = diag.messageOf(error);
           entry.why = why;
+          // Its tries so far: the next one's wait grows with them (failure.ts `nextTry`).
+          entry.tries = (entry.tries ?? 0) + 1;
           delete entry.cut;
         });
       } finally {
@@ -2512,38 +2515,23 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
     const toFetch = (index: number) => fetched[index] === undefined;
     // A few at once (ten files took the sum of their times, the bar sitting on the first).
     await Promise.all(files.map((file, index) => (toFetch(index) ? cloudDownloads.with(() => fetchOne(index, file)) : Promise.resolve())));
-    // Edit tries again by itself, a little later, whatever might pass (a
-    // dropped connection, a busy Google, YouTube's bot check, a step past its
-    // time): the person is asked only about what retrying can't fix, never to
-    // press Retry. What waits by itself (credit, the encoder) waits for the job table to wake it.
-    for (const wait of timing.retryWaits) {
-      const again = files.flatMap((_, index) => (toFetch(index) && steps.whyOf(errors[index] ?? "") === "passing" ? [index] : []));
-      if (again.length === 0) break;
-      const at = nowMs() + wait;
-      app.scripts.set(app, id, (job) => {
-        for (const index of again) {
-          const entry = job.files[index];
-          if (entry !== undefined) entry.retry_at = at;
-        }
-      });
-      diag.info("script", `${title}: trying ${again.length} file${again.length === 1 ? "" : "s"} again in ${diag.human(wait)}`);
-      await timing.sleep(wait);
-      if ((app.store.get(id)?.project.script?.source ?? null) !== source) break;
-      await Promise.all(again.map((index) => cloudDownloads.with(() => fetchOne(index, files[index]!))));
-    }
-    // Still missing after that: the edit isn't laid out with a hole in it.
+    // Still missing: the edit isn't laid out with a hole in it. Nothing sleeps in here between tries (it did, a minute
+    // and then five, while the import counted as working and every answer was refused): each file is settled at
+    // once by failure.ts and the import waits in the job table, woken at its soonest try, at once when the
+    // connection is back (jobs.wakePassing), or by the person's answer.
     const missing = files.flatMap((_, index) => (toFetch(index) ? [index] : []));
     if (missing.length > 0 && !inserting) {
       const whys = missing.map((index) => steps.whyOf(errors[index] ?? ""));
       // Only the person's (a file deleted, never shared, a private video) is asked about: another link, or go on
       // without it. Anything else waits by itself, woken by the job table: credit, Drive's download limit, the encoder,
-      // and whatever passes (a dropped connection, a busy Google, a step past its time), tried again every
-      // PASSING_RETRY_MS until it comes in (Nov 18, JJ's School Bookkeeper: his Wi-Fi dropped for a minute, the
-      // interview's file was handed to him as "couldn't be downloaded", and his "Go on without it" lost it).
+      // a full disk, and whatever passes (a dropped connection, a busy Google, a step that stood still), tried again
+      // after 1, 5 and 15 minutes then every 30 until it comes in (Nov 18, JJ's School Bookkeeper: his Wi-Fi dropped
+      // for a minute, the interview's file was handed to him as "couldn't be downloaded", and his "Go on without it" lost it).
       const byItself = whys.every(steps.waitsByItself);
       const now = nowMs();
       // Each file's own time (credit's half hour, the day's reset, Google's, a passing one's next try); the import is woken at the soonest.
-      const fileAt = missing.map((index, n) => (whys[n] === "passing" ? now + steps.PASSING_RETRY_MS.value : steps.retryAt(whys[n]!, now, errors[index])));
+      const triesOf = (index: number) => Math.max((app.scripts.get(id)?.files[index]?.tries ?? 1) - 1, 0);
+      const fileAt = missing.map((index, n) => (steps.waitsByItself(whys[n]!) ? failure.nextTry(whys[n]!, triesOf(index), now, errors[index]) : null));
       const times = fileAt.filter((at): at is number => at !== null);
       const retryAt = times.length > 0 ? Math.min(...times) : null;
       const asked = whys.filter((why) => !steps.waitsByItself(why)).length;
@@ -2574,7 +2562,9 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
               ? { state: "waiting", step: "waiting for credit", retry_at: retryAt, on: "quota" }
               : whys.includes("limit")
                 ? { state: "waiting", step: "waiting for Google Drive", retry_at: retryAt, on: "drive" }
-                : { state: "waiting", step: "trying again by itself", retry_at: retryAt, on: "passing" }
+                : whys.includes("room")
+                  ? { state: "waiting", step: "waiting for room", retry_at: retryAt, on: "room" }
+                  : { state: "waiting", step: "trying again by itself", retry_at: retryAt, on: "passing" }
           : // The person's file waits for them; one passing beside it is still tried again by itself.
             whys.includes("passing") && retryAt !== null
             ? { state: "waiting", step: "waiting for the person", retry_at: retryAt }
@@ -2652,6 +2642,7 @@ function waitingLine(whys: steps.Why[], missing: number, total: number, retryAt:
     return `Google Drive's download limit is used up for today for ${one ? "a footage file" : "some footage files"}: Edit tries again by itself${retryAt === null ? "" : ` at ${when(retryAt)}`}. To go on sooner, replace ${one ? "it" : "them"} with a copy's link (Make a copy in Drive).`;
   }
   if (whys.includes("encoder")) return `The hardware encoder is busy with an export: ${files} wait until it's free.`;
+  if (whys.includes("room")) return `This computer is out of room: ${files} wait, and Edit tries again by itself once there's room${retryAt === null ? "" : ` (next at ${clockTime(retryAt)})`}.`;
   // Whatever passes (a dropped connection, a busy Google): tried again by itself, nothing for the person to do.
   return `Trying ${missing === 1 ? "a file" : `${missing} files`} again${retryAt === null ? "" : ` at ${clockTime(retryAt)}`}`;
 }

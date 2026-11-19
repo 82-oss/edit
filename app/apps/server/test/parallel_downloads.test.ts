@@ -36,8 +36,8 @@ test("script downloads overlap in three slots and a failed file does not strand 
     expect(scripts.get(id)!.files.map(f => f.state)).toEqual(["downloading", "downloading", "downloading", "queued"]);
     release();
     await work;
-    // Each tried twice (once again by itself), never more than three at a time.
-    expect(entered).toBe(8);
+    // Each tried once here, never more than three at a time: the next tries are the job table's (nothing sleeps inside the import).
+    expect(entered).toBe(4);
     expect(peak).toBe(3);
     // A failure that may pass: nothing laid out with holes, and nothing asked: the import waits to try them again by itself.
     expect(scripts.get(id)!.files.every(f => f.state === "waiting" && f.why === "passing")).toBe(true);

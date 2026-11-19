@@ -56,13 +56,6 @@ export const LIMITS = {
   transcript: 30 * 60_000,
 };
 
-/** The pauses before Edit tries a passing failure again by itself (tests make them instant). */
-export const RETRY_WAITS = { value: [60_000, 5 * 60_000] };
-/**
- * After those, a file whose failure passes (a dropped connection, a busy Google, a step past its time) waits by itself
- * this long before the import is woken to try it again, and again, until it comes in: never handed to the person.
- */
-export const PASSING_RETRY_MS = { value: 10 * 60_000 };
 /** A file waiting on the transcription plan's credit is tried again this often (failure.ts's own). */
 export const QUOTA_RETRY_MS = failure.QUOTA_EVERY_MS;
 /** A file at Google Drive's download limit is tried again this long after, when Google gives no time of its own (failure.ts's own). */

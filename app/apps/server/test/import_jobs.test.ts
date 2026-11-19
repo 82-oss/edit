@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 
 import { createApp } from "../src/app.ts";
 import * as encoder from "../src/encoder.ts";
+import * as failure from "../src/failure.ts";
 import * as steps from "../src/import_steps.ts";
 import * as jobs from "../src/jobs.ts";
 import * as missingMedia from "../src/missing_media.ts";
@@ -136,7 +137,7 @@ test("an import waiting on the person survives a restart with its files' states,
   }
 });
 
-test("a step past its time lands its file with a passing reason, tried again by itself, then waits by itself: never the person's", async () => {
+test("a step past its time lands its file with a passing reason and the import waits in the table at once, its next try a minute on: never the person's, never asleep inside the import", async () => {
   const scripts = new Jobs();
   const fixture = fixtureHome("import-timeout", { services: { scripts } });
   try {
@@ -144,10 +145,11 @@ test("a step past its time lands its file with a passing reason, tried again by 
     const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" ? new steps.StepTimedOut("Cutting an excerpt", 600_000, false) : null));
     await start(fixture.app, id, false);
     const job = await settled(scripts, id);
-    // Tried again once by itself (timing.retryWaits), then waiting by itself to be tried again: never a job left running.
-    expect(fetched.filter((file) => file === "FILEcase0002").length).toBe(2);
+    // Not tried again inside the import (it slept there, counted as working, every answer refused): waiting in the table.
+    expect(fetched.filter((file) => file === "FILEcase0002").length).toBe(1);
     expect(job.state).toBe("waiting");
-    expect(job.files[1]).toMatchObject({ state: "waiting", why: "passing" });
+    expect(job.files[1]).toMatchObject({ state: "waiting", why: "passing", tries: 1 });
+    expect(job.files[1]!.retry_at! - Date.now()).toBeGreaterThan(55_000);
     expect(job.files[1]!.error).toContain("took more than 10 min");
     expect(job.retry_at).toBeGreaterThan(Date.now());
     expect(scripts.working(id)).toBe(false);
@@ -165,14 +167,14 @@ test("a step past its time lands its file with a passing reason, tried again by 
 test("JJ's dropped connection: the file waits and is tried again by itself until it comes in, never asking the person", async () => {
   const scripts = new Jobs();
   const fixture = fixtureHome("import-dropped", { services: { scripts } });
-  const passingWait = steps.PASSING_RETRY_MS.value;
+  const passingWaits = failure.PASSING_WAITS.value;
   try {
     const id = await twoFiles(fixture);
     let down = true;
     const dropped = "could not reach Edit's relay: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()";
     const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" && down ? new Error(dropped) : null));
     mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
-    steps.PASSING_RETRY_MS.value = 0;
+    failure.PASSING_WAITS.value = [0, 0, 0, 0, 0, 0, 0, 0];
     await start(fixture.app, id, false);
     const waiting = await settled(scripts, id);
     expect(steps.whyOf(dropped)).toBe("passing");
@@ -189,19 +191,22 @@ test("JJ's dropped connection: the file waits and is tried again by itself until
     expect(JSON.stringify(fixture.store.get(id)!.project.script!.blocks)).toBe(before);
     // The job table wakes it; still down, it waits again by itself.
     jobs.useResumers(fixture.home, { case: (one) => void carryOn(fixture.app, one.project) });
+    await Bun.sleep(5);
     await jobs.wake(fixture.home, ["case"]);
     expect((await settled(scripts, id)).files[1]).toMatchObject({ state: "waiting", why: "passing" });
     // The connection back: the next wake brings the file in and the edit is laid out whole.
     down = false;
+    await Bun.sleep(5);
     await jobs.wake(fixture.home, ["case"]);
     const done = await settled(scripts, id);
     expect(done.state).toBe("done");
     expect(done.files.every((file) => file.state === "done")).toBe(true);
-    expect(fetched.filter((file) => file === "FILEcase0002").length).toBeGreaterThanOrEqual(5);
+    // Once at the start, once woken still down, once woken with the line back: no tries slept through inside the import.
+    expect(fetched.filter((file) => file === "FILEcase0002").length).toBe(3);
     const project = fixture.store.get(id)!.project;
     expect(project.script!.blocks.filter((block) => block.kind === "footage").every((block) => typeof block.clip === "string" && typeof block.media === "string")).toBe(true);
   } finally {
-    steps.PASSING_RETRY_MS.value = passingWait;
+    failure.PASSING_WAITS.value = passingWaits;
     fixture.cleanup();
   }
 });
