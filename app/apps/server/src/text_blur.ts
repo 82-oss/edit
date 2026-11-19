@@ -26,6 +26,7 @@
 // count as gone (clean_strips.ts `strippedFrames`).
 
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 
 import type { App } from "./app.ts";
@@ -519,11 +520,19 @@ export async function ensure(app: App, id: string, given: BlurPlan[]): Promise<v
   drain();
 }
 
+/**
+ * Tracks read at once: one on a Mac (its OCR beside the editor's own work), several on a Linux machine with cores to
+ * spare (Nov 19, Sphe's Linux prod Edit: one at a time read 3.3 s for each second of footage, ~150 stretches of two
+ * compilations' later cases would have taken all day; each read is single-threaded on the CPU).
+ */
+export const AT_ONCE = process.platform === "linux" ? Math.min(6, Math.max(1, Math.floor(os.cpus().length / 4))) : 1;
+
 function drain(): void {
   if (busy !== null) return;
-  busy = (async () => {
+  const worker = async () => {
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) await next.run();
-  })().finally(() => {
+  };
+  busy = Promise.all(Array.from({ length: AT_ONCE }, worker)).then(() => {}).finally(() => {
     busy = null;
     if (queue.length > 0) drain();
   });
