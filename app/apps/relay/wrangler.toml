@@ -37,6 +37,8 @@ VOICES = "scribe"
 # Older builds read DIARIZE ("pyannote" with PYANNOTE_API_KEY): left on for them until every Mac runs a build from Nov 11 on,
 # since with it off they hear each long file twice in Scribe (in pieces, and whole for its voices). Then set it "off".
 DIARIZE = "pyannote"
+REMOVER = "runpod"                 # their subtitles cleaned on RunPod (remover.ts; Sphe, Nov 19); anything else: Edit's own GPU or the blur
+REMOVER_ENDPOINT = "w3mrdf9v40ozsp"  # app/scripts/remover-runpod/endpoint.ts made it; dev and prod share it (it only computes)
 # Comma-separated voice IDs belonging to ELEVENLABS_VOICES_KEY; all others
 # (including the existing house voice) use ELEVENLABS_MAIN_KEY.
 ELEVENLABS_VOICES_IDS = "vVj9i7yXuhHiV9JHF0kj,QWUeV5PUhJjaGUhu0cKp"
@@ -173,6 +175,8 @@ crons = ["*/30 * * * *", "15 3 * * *"]
 MEDIA_HOST = "media-dev.spheceo.com"
 VOICES = "scribe"
 DIARIZE = "off"
+REMOVER = "runpod"
+REMOVER_ENDPOINT = "w3mrdf9v40ozsp"
 CONVEX_CALLER = "1"  # dev Convex (determined-heron-867) has accounts 6d2c2a2's convex/access.ts
 # Thumbnails' OpenArt: the live relay holds the team's one sign-in (openart.ts); dev asks it.
 OPENART_UPSTREAM = "https://edit-relay.sphe-g-personal.workers.dev"
