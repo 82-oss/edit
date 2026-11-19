@@ -31,6 +31,8 @@
 // midnight UTC") waits for its reset, not half an hour: asking before then
 // only hears the same refusal.
 
+import * as fs from "node:fs";
+
 import * as diag from "./diag.ts";
 import * as encoder from "./encoder.ts";
 import * as failure from "./failure.ts";
@@ -40,7 +42,7 @@ import { CREDIT, DAILY, StepTimedOut } from "./failure.ts";
 export const LIMITS = {
   /** ffprobe of a file or a presigned URL: its length, its keyframes (a few range reads). */
   probe: 2 * 60_000,
-  /** Cutting an excerpt (picture copied, sound encoded) over the network: a base plus a second per second cut. */
+  /** Cutting an excerpt (picture copied, sound encoded) from a file here: a base plus a second per second cut. Over the network a cut runs for as long as it moves (`whileMoving`). */
   cut: (seconds: number) => 10 * 60_000 + Math.max(seconds, 0) * 1000,
   /** A proxy encode (~200 fps at 1080p on the M1; slower from R2, slower still beside an export): a base plus two seconds per second of footage. */
   proxy: (seconds: number) => 15 * 60_000 + Math.max(seconds, 0) * 2000,
@@ -127,6 +129,62 @@ export async function bounded<T>(what: string, ms: number, work: (signal: AbortS
     return await Promise.race([work(stop.signal), late]);
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** How long a step over the network may stand still (no new bytes) before it's stopped and tried again (tests set it). */
+export const STILL_MS = { value: 5 * 60_000 };
+
+/**
+ * Runs `work`, read over the network, for as long as it moves: stopped (its signal aborted, an FFmpeg given it
+ * ended) only once `progress()` (bytes: the cut's file growing, a copy's count rising) has stood still for
+ * `stillMs`, failing with `StoodStill`, passing. A line slower than any fixed limit assumed is never "stuck"
+ * (honest council change 5, Nov 19: JJ's "Genius" Killer's first file, cut five times on nightly-90 and each
+ * stopped at 15 to 18 minutes on "Cutting an excerpt took more than 16 min", about 85 minutes of his line thrown
+ * away). A pause longer than a beat (the machine asleep, the process frozen) starts its clock again: a step isn't
+ * stuck for the time the lid was shut.
+ */
+export async function whileMoving<T>(what: string, progress: () => number, work: (signal: AbortSignal) => Promise<T>, stillMs = STILL_MS.value): Promise<T> {
+  const stop = new AbortController();
+  const still = failure.scaled(stillMs);
+  const beat = Math.max(Math.min(5_000, Math.floor(still / 10)), 20);
+  let seen = progress();
+  let movedAt = Date.now();
+  let tickedAt = movedAt;
+  let timer: ReturnType<typeof setInterval> | undefined;
+  const stood = new Promise<never>((_, reject) => {
+    timer = setInterval(() => {
+      const now = Date.now();
+      // Asleep or frozen between beats: the clock starts again.
+      if (now - tickedAt > Math.max(10_000, beat * 3)) movedAt = now;
+      tickedAt = now;
+      const at = progress();
+      if (at !== seen) {
+        seen = at;
+        movedAt = now;
+        return;
+      }
+      if (now - movedAt >= still) {
+        clearInterval(timer);
+        // Said first, so the race ends on why it stopped, not on the work's own "aborted".
+        reject(new failure.StoodStill(what, still));
+        stop.abort();
+      }
+    }, beat);
+  });
+  try {
+    return await Promise.race([work(stop.signal), stood]);
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+/** The size of `path` now, 0 while it isn't there: a cut's or a download's progress. */
+export function sizeOf(path: string): number {
+  try {
+    return fs.statSync(path).size;
+  } catch {
+    return 0;
   }
 }
 

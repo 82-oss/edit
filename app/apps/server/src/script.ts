@@ -40,6 +40,7 @@ import * as posts from "./posts.ts";
 import { LINK_PREFIX as FINISHED_LINK, reviewCode, reviewOf } from "./finished.ts";
 import { finishCase, pendingCase } from "./case_insertion.ts";
 import * as durableJobs from "./jobs.ts";
+import * as failure from "./failure.ts";
 import * as steps from "./import_steps.ts";
 import * as keyframeIndex from "./keyframe_index.ts";
 import { THIS_MACHINE } from "./machine.ts";
@@ -2041,6 +2042,15 @@ async function runTool(command: string[], ms: number, what: string): Promise<{ o
   }
 }
 
+/** `runTool` for work read over the network: run for as long as `progress()` moves (import_steps `whileMoving`), never stopped by a clock. */
+async function runMoving(command: string[], what: string, progress: () => number): Promise<{ ok: boolean; stdout: string; stderr: string }> {
+  const [program = "", ...args] = command;
+  return steps.whileMoving(what, progress, async (signal) => {
+    const done = await runPromise(proc.capture(program, args, 24 * 3600_000), { signal });
+    return { ok: done.exitCode === 0, stdout: new TextDecoder().decode(done.stdout), stderr: done.stderr };
+  });
+}
+
 /** Seconds of a file (or a presigned URL's object). */
 export async function durationOf(path: string): Promise<number> {
   let output: { stdout: string };
@@ -2193,8 +2203,10 @@ export async function excerpts(source: string, ranges: [number, number][], onCut
  */
 export async function cut(source: string, start: number, to: number, out: string): Promise<void> {
   let output: { ok: boolean; stderr: string };
+  // From the cloud's address: cut for as long as the excerpt's file grows. From a file here: within a fixed time.
+  const remote = tools.isUrl(source);
   try {
-    output = await runTool([
+    const command = [
       tools.ffmpeg(),
       "-v",
       "error",
@@ -2221,10 +2233,11 @@ export async function cut(source: string, start: number, to: number, out: string
       "-b:a",
       "192k",
       out,
-    ], steps.LIMITS.cut(to - start), "Cutting an excerpt");
+    ];
+    output = remote ? await runMoving(command, "Cutting an excerpt", () => steps.sizeOf(out)) : await runTool(command, steps.LIMITS.cut(to - start), "Cutting an excerpt");
   } catch (error) {
     fs.rmSync(out, { force: true });
-    if (error instanceof steps.StepTimedOut) throw error;
+    if (error instanceof steps.StepTimedOut || error instanceof failure.StoodStill) throw error;
     throw new Error(`ffmpeg: ${diag.messageOf(error)}`);
   }
   if (!output.ok) {
