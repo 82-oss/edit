@@ -2,7 +2,7 @@
 // step with no work done twice and no record lost; a Mac that slept past a
 // wait wakes the job once; two imports and an export at once share the
 // encoder and the one job table. Upload resume over a dropped connection is
-// in cloud.test.ts; what can't be scripted is app/AGENTS.md's "By hand on a Mac".
+// in cloud.test.ts; what can't be scripted is docs/dev.md's "By hand on a Mac".
 
 import { afterEach, expect, setSystemTime, test } from "bun:test";
 import * as fs from "node:fs";

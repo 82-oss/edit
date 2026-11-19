@@ -35,7 +35,7 @@ We need to be on the same page with terminology. When communicating, use this la
 When I hand you a project to take through Edit, pass on the team's feedback on the agent's work, ask for a trial or teaching loop, or you change anything in `agent/`, use the `in-app-agent` skill in `.agents/skills`. Its core rule is to go through Edit as a real user would and fix what breaks in the product, never by hand.
 
 # General Rules
-- Before working on the code, read `app/AGENTS.md`.
+- Dev/prod setup, release rules, and the Mac manual test checklist live in `docs/dev.md`. Do not add a second `AGENTS.md` or log feature/incident history there.
 - Try not to kill a running dev server unless absolutely necessary.
 - Try and have as few environment variables as possible. If something can just be hard-coded as a normal variable within the code, just do that.
 - Try not to create audit reports or endless documentation content. This must be done thoughtfully. Once you no longer need something docs-related, like a plan, you can then just remove it after you're done using it.
