@@ -2,10 +2,12 @@
 // "missing footage is never silently written around"): a file no longer on
 // this machine with no cloud copy, or footage streamed from the cloud whose
 // proxy the cloud doesn't have. The top bar's cloud says it with Retry now
-// and Go on without it; Edit tries again by itself meanwhile (after 1, 5 and
-// 15 minutes, then hourly: each source fetched again from where it came
-// from); export and share wait for it, and the agent is told. Going on
-// without a file is remembered here, per file, and never asked again.
+// and Go on without it; Edit tries again by itself meanwhile (failure.ts's
+// passing schedule, 1, 5 and 15 minutes then every 30, from one row a project
+// in the job table, `media:<id>`, woken at once when the connection is back:
+// each source fetched again from where it came from); export and share wait
+// for it, and the agent is told. Going on without a file is remembered here,
+// per file, and never asked again.
 
 import * as fs from "node:fs";
 
@@ -17,8 +19,10 @@ import { clipFrom } from "./clips.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import { playbackKey } from "./cloud_playback.ts";
 import * as diag from "./diag.ts";
+import * as failure from "./failure.ts";
 import { writeAtomic } from "./files.ts";
 import { ApiError } from "./http/errors.ts";
+import * as jobs from "./jobs.ts";
 import type { Router } from "./http/router.ts";
 import { checkKey } from "./media.ts";
 import type { Media, Project } from "./model.ts";
@@ -27,10 +31,6 @@ import { goneWithout, goneWithoutName } from "./project.ts";
 import { stableStringify } from "./stable.ts";
 import { missingMedia } from "./store.ts";
 
-/** How long after each try the next one is: 1, 5, 15 minutes, then every hour (writer/missing.ts's, the same). */
-const DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
-const HOURLY_MS = 60 * 60_000;
-export const delayAfter = (tries: number): number => DELAYS_MS[tries] ?? HOURLY_MS;
 
 /** The files gone on without, by project: `<home>/footage-gone-without.json`. */
 const waivedFile = (home: string): string => join(home, "footage-gone-without.json");
@@ -155,17 +155,30 @@ export async function forAgent(home: string, project: Project): Promise<string> 
   return lines.join(" ");
 }
 
-/** Each project's tries here: how many, and when the next. */
-const tries = new Map<string, { tries: number; at: number; timer: ReturnType<typeof setTimeout> | undefined }>();
+/** Projects being tried now. */
 const trying = new Set<string>();
 
-/** Project `id` has footage missing: tried again later by itself (once a try is set, the next follows it). */
+const keyOf = (id: string): string => jobs.keyOf("media", id);
+
+/**
+ * Project `id`'s missing footage waits in the job table to be tried again by itself, its `tries` so far counted
+ * (honest council change 7e, Nov 19: its tries lived on timers in memory, which a restart forgot).
+ */
+function waitToTry(app: App, id: string, tries: number): number | null {
+  const home = app.store.home;
+  const key = keyOf(id);
+  const listed = jobs.get(home, key);
+  if (listed === undefined || !jobs.live(listed)) jobs.begin(home, "media", id, {}, "", "trying again by itself");
+  const at = failure.nextTry("passing", tries, Date.now());
+  jobs.settle(home, key, "waiting", { step: "trying again by itself", ...(at === null ? {} : { retry_at: at }), args: { waiting_on: "passing", tries } });
+  return at;
+}
+
+/** Project `id` has footage missing: tried again later by itself (once it waits, its next try follows the last). */
 function keepTrying(app: App, id: string): void {
-  if (tries.has(id)) return;
-  const at = Date.now() + delayAfter(0);
-  const timer = setTimeout(() => void tryAgain(app, id), delayAfter(0));
-  timer.unref?.();
-  tries.set(id, { tries: 0, at, timer });
+  const listed = jobs.get(app.store.home, keyOf(id));
+  if (listed !== undefined && jobs.live(listed)) return;
+  waitToTry(app, id, 0);
 }
 
 /**
@@ -177,8 +190,8 @@ function keepTrying(app: App, id: string): void {
 export async function tryAgain(app: App, id: string): Promise<EditMissing> {
   const live = app.store.get(id);
   if (live === null) throw new ApiError(404, "no such project");
-  const known = tries.get(id);
-  clearTimeout(known?.timer);
+  const listed = jobs.get(app.store.home, keyOf(id));
+  const before = typeof listed?.args.tries === "number" ? listed.args.tries : -1;
   if (!trying.has(id)) {
     trying.add(id);
     try {
@@ -202,15 +215,11 @@ export async function tryAgain(app: App, id: string): Promise<EditMissing> {
   }
   const now = await state(app, id, false);
   if (now.missing.length === 0) {
-    tries.delete(id);
+    jobs.end(app.store.home, keyOf(id));
     return now;
   }
-  const count = (known?.tries ?? -1) + 1;
-  const wait = delayAfter(count);
-  const timer = setTimeout(() => void tryAgain(app, id), wait);
-  timer.unref?.();
-  tries.set(id, { tries: count, at: Date.now() + wait, timer });
-  diag.info("cloud", `${id}: ${line(now.missing)}; tried again in ${Math.round(wait / 60_000)} min`);
+  const at = waitToTry(app, id, before + 1);
+  diag.info("cloud", `${id}: ${line(now.missing)}; tried again${at === null ? " later" : ` at ${new Date(at).toISOString()}`}`);
   return now;
 }
 
@@ -247,8 +256,7 @@ export function routes(router: Router<App>): void {
     });
 }
 
-/** Stops the tries (tests). */
+/** Stops the tries (tests): nothing runs here between them any more, the job table wakes them. */
 export function stop(): void {
-  for (const one of tries.values()) clearTimeout(one.timer);
-  tries.clear();
+  trying.clear();
 }

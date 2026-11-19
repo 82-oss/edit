@@ -66,7 +66,9 @@ export type Kind =
   /** Claude on a Writer script (writer/jobs.ts: a build, a revision, review fixes…), with what it was started with and kept: carried on from it after a restart (writer/work.ts). */
   | "writer"
   /** A Writer script's recordings that didn't come in (writer/missing.ts): tried again by itself, joined when they come. */
-  | "missing";
+  | "missing"
+  /** An edit's footage that isn't here (missing_media.ts): fetched again by itself from where it came from. */
+  | "media";
 
 export type State = "queued" | "running" | "waiting" | "done" | "failed" | "given_up";
 

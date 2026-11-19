@@ -29,6 +29,7 @@ import { archiveGoing, archiveJob, dropLeftSnapshot, ExportRegistry, room as exp
 import * as encoder from "./encoder.ts";
 import * as failure from "./failure.ts";
 import * as jobs from "./jobs.ts";
+import * as missingMediaTries from "./missing_media.ts";
 import * as outages from "./outages.ts";
 import * as wake from "./wake.ts";
 import type { ExportOptions } from "./model.ts";
@@ -683,6 +684,11 @@ async function resumeJobs(app: App): Promise<void> {
         diag.warn("writer", `trying ${job.project}'s import again: ${diag.messageOf(error)}`);
         if (!writerImports.importing(job.project)) jobs.wait(app.store.home, job.key, error);
       });
+    },
+    // An edit's footage that isn't here: fetched again from where it came from.
+    media: (job) => {
+      project(job.project);
+      void missingMediaTries.tryAgain(app, job.project).catch((error: unknown) => diag.warn("cloud", `${job.project}: trying its missing footage again: ${diag.messageOf(error)}`));
     },
     // A script's recordings that didn't come in: every one tried now (its row woke at the soonest's time, or as the connection came back).
     missing: (job) => {

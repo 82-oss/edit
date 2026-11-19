@@ -11,6 +11,7 @@ import { exportCloud, ExportRegistry, listExports } from "../src/exports.ts";
 import { respond } from "../src/http/server.ts";
 import { messageContext } from "../src/media_tools.ts";
 import { mediaHooks } from "../src/media.ts";
+import * as jobs from "../src/jobs.ts";
 import * as missingMedia from "../src/missing_media.ts";
 import type { Media } from "../src/model.ts";
 import { findAddon, native, useNative, wrap, type Native } from "../src/native/index.ts";
@@ -120,7 +121,34 @@ test("only footage that truly didn't come in holds an export: never cloud footag
 
 test("the note's words", () => {
   expect(missingMedia.line([{ name: "a.mp4" }, { name: "b.mp4" }, { name: "c.mp4" }])).toBe("3 files didn't come in: a.mp4, b.mp4 and c.mp4");
-  expect([0, 1, 2, 3].map(missingMedia.delayAfter)).toEqual([60_000, 300_000, 900_000, 3_600_000]);
+});
+
+test("an edit's missing footage waits in the job table, its tries counted there, and the row ends once it's all here", async () => {
+  const { app, store, id, cleanup } = await withProject("edit-missing-row");
+  try {
+    await store.update(id, "test", (p) => {
+      p.media.push({ id: "gone", name: "gone.mp4", path: "/nowhere/gone.mp4", kind: "video", duration: 10, width: 64, height: 36, fps: 30, has_audio: false } as Media);
+      p.clips.push({ type: "video", id: "gone-clip", track: "v1", media: "gone", start: 300, duration: 30, source_in: 0, speed: 1 } as never);
+    });
+    const shown = await missingMedia.state(app, id);
+    expect(shown.missing.map((one) => one.id)).toContain("gone");
+    const key = jobs.keyOf("media", id);
+    const row = jobs.get(app.store.home, key)!;
+    expect(row).toMatchObject({ state: "waiting", args: { waiting_on: "passing", tries: 0 } });
+    expect(row.retry_at! - Date.now()).toBeGreaterThan(55_000);
+    // Asked again: still not here, the next try further off.
+    await missingMedia.tryAgain(app, id);
+    const again = jobs.get(app.store.home, key)!;
+    expect(again.args.tries).toBe(1);
+    expect(again.retry_at! - Date.now()).toBeGreaterThan(4 * 60_000);
+    // Taken out of the edit (and anything else of it not here): nothing missing, the row ends.
+    const missingIds = new Set(shown.missing.map((one) => one.id));
+    await store.update(id, "test", (p) => void (p.clips = p.clips.filter((clip) => !("media" in clip) || !missingIds.has(String(clip.media)))));
+    await missingMedia.tryAgain(app, id);
+    expect(jobs.get(app.store.home, key)).toBeUndefined();
+  } finally {
+    cleanup();
+  }
 });
 
 // Nov 18, JJ: after "Go on without it" the edit must still play and export. Its export failed on the file it no longer
