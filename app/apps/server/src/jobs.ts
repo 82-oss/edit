@@ -16,14 +16,14 @@
 // (retry_after_update.ts). A job stays listed while it's started again (a
 // second crash during recovery, or a resumer that fails, never loses it). One
 // cut short three times in a row that didn't get further (`progressed`) may be
-// what brings the server down. Work that sends nothing paid (`BACKS_OFF`: an
-// export, its cloud copy, an upload) is then put off and started again by
-// itself, an hour later and then a day (`putOff`), one at a time, until it ends
-// or is cancelled; so is one an outage or a sign-in lapse stopped (Nov 18:
-// Marc's export archive sat "given up" for days, waiting on an unstick). The
-// rest (agent turns, Claude's runs, imports that pay for a hearing, map
-// renders) stays listed as given up, the diagnostics say so, and unstick
-// starts it again. Given up otherwise means it can't change: a `Gone` source.
+// what brings the server down: it then waits and is tried again by itself on
+// failure.ts's passing schedule (1, 5, 15 minutes, then every 30), one put off
+// at a time, until it ends or is cancelled (`postpone`). Nothing is given up
+// for restarts (honest council change 7a, Nov 19: Marc's archive sat "given up
+// … cut short by 3 restarts in a row" for days, waiting on an unstick); an
+// agent's turn is the one exception, ended with its line in the chat. Work
+// that fails as it starts waits the same way (`wait`), by what its failure is.
+// Given up otherwise means it can't change: a `Gone` source.
 //
 // The file stays an array of plain objects, readable by hand.
 
@@ -33,6 +33,7 @@ import { Effect } from "effect";
 
 import * as diag from "./diag.ts";
 import * as encoder from "./encoder.ts";
+import * as failure from "./failure.ts";
 import { inArea, runPromise } from "./effect/runtime.ts";
 import { nowMs, readState, writeAtomic } from "./files.ts";
 import { join } from "./paths.ts";
@@ -92,7 +93,7 @@ export interface Job {
   retry_at?: number;
   /** State waiting: what it waits on instead of a time: the hardware encoder to be free, or the person (never woken by itself). */
   until?: "encoder" | "person";
-  /** How many times it's been put off to try again by itself (`putOff`): its next wait is an hour, then a day. Cleared as it gets further. */
+  /** How many times it's waited to be tried again by itself (`wait`): its next wait follows failure.ts's schedule. Cleared as it gets further. */
   put_off?: number;
   /** Why it was last put off (state waiting, `put_off`), for the diagnostics. */
   why?: string;
@@ -101,24 +102,8 @@ export interface Job {
 /** Thrown by a resumer when there's nothing left to start again (the project, clip or file is gone): the job is crossed off. */
 export class Gone extends Error {}
 
-/** Resumed this many times without ending or getting further: put off (`BACKS_OFF`), or left alone. */
-const MOST_RESUMES = 2;
-
-/**
- * The kinds put off and started again by themselves when restarts, an outage
- * or a sign-in lapse stop them (`putOff`): none sends anything paid (a
- * hearing, Claude, a map's tiles), so trying again costs only the line.
- */
-// Not a share: the person is waiting on its link, so one given up says so beside Retry (reviews.ts shareNow).
-export const BACKS_OFF: readonly Kind[] = ["export", "archive", "drive", "smooth", "upload", "full", "footage"];
-
-/** How long a job put off waits: an hour for its first `HOURLY` tries, then a day (tests make them short). */
-export const PUT_OFF = { hourMs: 3_600_000, dayMs: 24 * 3_600_000, hourly: 6 };
-
-/** The wait before a job's next try once it's been put off `times` times already. */
-export function putOffWait(times: number): number {
-  return times < PUT_OFF.hourly ? PUT_OFF.hourMs : PUT_OFF.dayMs;
-}
+/** Cut short this many times in a row without ending or getting further: it waits and is tried again by itself (`postpone`), never given up. */
+const IN_A_ROW = 2;
 
 /** A job put off and started again by itself counts as the one under way for this long after its last note; then another may go. */
 const PUT_OFF_RUN_MS = 3 * 3_600_000;
@@ -299,34 +284,58 @@ function settled(job: Job, state: "done" | "failed" | "waiting", fields: Settled
 }
 
 /**
- * Stopped by something that passes (a restart, an outage, a sign-in lapse):
- * waits and is started again by itself (`wake`), an hour from now for its
- * first few tries and then a day, until it ends or is cancelled. Only the
- * `BACKS_OFF` kinds; the rest are given up as before. Nothing when it isn't
- * listed (cancelled). When it'll be tried, or null.
+ * Stopped by `error` (its words will do): waits and is tried again by itself as failure.ts says for what it is, a
+ * passing failure after 1, 5 and 15 minutes then every 30, credit in half an hour, a full disk in five minutes; the
+ * person's waits for them; Edit's own bug is failed (a new build tries it once). Nothing when it isn't listed
+ * (cancelled). When it'll be tried, or null.
  */
-export function putOff(home: string | null, key: string, why: string): number | null {
+export function wait(home: string | null, key: string, error: unknown): number | null {
   if (home === null) return null;
-  return change(home, (jobs) => {
-    const job = jobs.find((one) => one.key === key);
-    if (job === undefined) return false;
-    return postpone(job, why);
-  }) || null;
+  return (
+    change(home, (jobs) => {
+      const job = jobs.find((one) => one.key === key);
+      if (job === undefined) return false;
+      return postpone(job, error);
+    }) || null
+  );
 }
 
-function postpone(job: Job, why: string): number {
+/** `wait`, by the name its callers had (exports' cloud copies, full-quality uploads, uploads): a passing failure's words. */
+export const putOff = (home: string | null, key: string, why: string): number | null => wait(home, key, why);
+
+function postpone(job: Job, error: unknown): number | null {
+  const why = typeof error === "string" ? error : diag.messageOf(error);
+  const kind = failure.kindOf(error);
   const times = job.put_off ?? 0;
-  const at = nowMs() + putOffWait(times);
-  job.state = "waiting";
-  job.retry_at = at;
-  delete job.until;
+  const now = nowMs();
   delete job.given_up;
+  delete job.until;
+  delete job.retry_at;
+  job.updated_ms = now;
+  job.why = why.slice(0, 300);
+  if (kind === "broken") {
+    job.state = "failed";
+    job.error = why.slice(0, 300);
+    diag.warn("jobs", `${job.key}: ${why}; it needs a fix in Edit (a new build tries it again)`);
+    return null;
+  }
   delete job.error;
   delete job.build;
+  job.state = "waiting";
   job.put_off = times + 1;
-  job.why = why.slice(0, 300);
-  job.updated_ms = nowMs();
-  diag.warn("jobs", `${job.key}: ${why}; trying it again by itself at ${new Date(at).toISOString()}`);
+  if (kind === "person") {
+    job.until = "person";
+    diag.warn("jobs", `${job.key}: ${why}; waiting for the person`);
+    return null;
+  }
+  const at = failure.nextTry(kind, times, now, error);
+  if (at === null) {
+    job.until = "encoder";
+    diag.warn("jobs", `${job.key}: ${why}; waiting for the encoder`);
+    return null;
+  }
+  job.retry_at = at;
+  diag.warn("jobs", `${job.key}: ${why} (${kind}); trying it again by itself at ${new Date(at).toISOString()}`);
   return at;
 }
 
@@ -423,10 +432,10 @@ export function takeOver(home: string, kinds?: readonly Kind[]): Job[] {
   change(home, (jobs) => {
     let changed = false;
     for (const job of jobs) {
-      // Given up by a build before work was put off (Marc's archive, Nov 18): put off now, tried again soon by itself.
-      if (job.state === "given_up" && BACKS_OFF.includes(job.kind) && (job.given_up ?? "").startsWith("cut short by") && (kinds === undefined || kinds.includes(job.kind))) {
+      // Given up for restarts by an older build (Marc's archive, Nov 18): waits now, tried again in a minute by itself.
+      if (job.state === "given_up" && job.kind !== "turn" && (job.given_up ?? "").startsWith("cut short by") && (kinds === undefined || kinds.includes(job.kind))) {
         postpone(job, job.given_up ?? "given up");
-        job.retry_at = nowMs() + 60_000;
+        job.retry_at = nowMs() + failure.scaled(60_000);
         changed = true;
         continue;
       }
@@ -436,10 +445,11 @@ export function takeOver(home: string, kinds?: readonly Kind[]): Job[] {
       changed = true;
       if (planned) {
         out.push(job);
-      } else if (job.attempts >= MOST_RESUMES && BACKS_OFF.includes(job.kind)) {
-        // Its count stays: cut short again once it's woken, it's put off further at once.
+      } else if (job.attempts >= IN_A_ROW && job.kind !== "turn") {
+        // Its count stays: cut short again once it's woken, it waits again at once, a little longer.
         postpone(job, `cut short by ${job.attempts + 1} restarts in a row`);
-      } else if (job.attempts >= MOST_RESUMES) {
+      } else if (job.attempts >= IN_A_ROW) {
+        // An agent's turn: ended, with its line in the chat (`whenGivenUp`); the person sends again.
         job.state = "given_up";
         job.given_up = `cut short by ${job.attempts + 1} restarts in a row`;
         gaveUp.push(job);
@@ -631,9 +641,9 @@ function startAll(home: string, list: Job[], resumers: Resumers, why: "restart" 
             if (cause instanceof Gone) {
               return Effect.sync(() => end(home, job.key)).pipe(Effect.andThen(Effect.logInfo(`not starting ${job.key} again: ${cause.message}`)));
             }
-            // Work that can wait (an outage, a sign-in lapse as it starts): tried again later by itself.
-            if (BACKS_OFF.includes(job.kind)) return Effect.sync(() => void putOff(home, job.key, `couldn't start it again: ${diag.messageOf(cause)}`));
-            return Effect.logWarning(`couldn't start ${job.key} again (kept for the next start, ${job.attempts} of ${MOST_RESUMES}): ${diag.messageOf(cause)}`);
+            // Failed as it starts (an outage, a sign-in lapse, a full disk): waits by what it is and is tried again by itself.
+            if (job.kind !== "turn") return Effect.sync(() => void wait(home, job.key, cause));
+            return Effect.logWarning(`couldn't start ${job.key} again (kept for the next start): ${diag.messageOf(cause)}`);
           }),
         );
       },

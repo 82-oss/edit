@@ -32,29 +32,26 @@ test("a job is listed while it runs and crossed off when it ends", () => {
   }
 });
 
-test("a restart starts unfinished jobs again; one that pays (a watch) cut short three times is kept as given up, not started", async () => {
+test("a restart starts unfinished jobs again; one cut short three times in a row waits by itself, an agent's turn alone is ended", async () => {
   const dir = home();
   try {
     jobs.begin(dir, "watch", "p1", {});
+    jobs.begin(dir, "turn", "p2", {});
     const resumed: string[] = [];
-    const resumers: jobs.Resumers = {
-      watch: (job) => {
-        resumed.push(job.key);
-        // Started again, as its owner does: noted again under its key.
-        jobs.begin(dir, "watch", job.project, job.args);
-      },
+    const again = (job: jobs.Job) => {
+      resumed.push(job.key);
+      // Started again, as its owner does: noted again under its key.
+      jobs.begin(dir, job.kind, job.project, job.args);
     };
+    const resumers: jobs.Resumers = { watch: again, turn: again };
     for (let restart = 1; restart <= 3; restart++) await jobs.resume(dir, resumers);
-    // Resumed after the first and second restarts; the third leaves it, listed and given up.
-    expect(resumed).toEqual(["watch:p1", "watch:p1"]);
-    const listed = read(dir);
-    expect(listed.length).toBe(1);
-    expect(listed[0]!.given_up).toContain("cut short");
-    expect(jobs.givenUp(dir).map((job) => job.key)).toEqual(["watch:p1"]);
-    // Excluded from every later restart.
+    // Resumed after the first and second restarts; the third leaves the watch waiting and the turn ended.
+    expect(resumed).toEqual(["watch:p1", "turn:p2", "watch:p1", "turn:p2"]);
+    expect(jobs.get(dir, "watch:p1")).toMatchObject({ state: "waiting", put_off: 1, why: "cut short by 3 restarts in a row" });
+    expect(jobs.givenUp(dir).map((job) => job.key)).toEqual(["turn:p2"]);
+    // Neither is started by a later restart: the watch when its time comes, the turn never.
     await jobs.resume(dir, resumers);
-    expect(resumed.length).toBe(2);
-    expect(read(dir).length).toBe(1);
+    expect(resumed.length).toBe(4);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -127,21 +124,21 @@ test("a resumer that throws keeps its job; one that says it's gone crosses it of
   }
 });
 
-test("unstick starts a given-up job again, its count cleared", async () => {
+test("unstick starts a given-up job (a turn) or one waiting by itself again at once, its count cleared", async () => {
   const dir = home();
   try {
-    jobs.begin(dir, "watch", "p1", {});
+    jobs.begin(dir, "turn", "p1", {});
     const started: string[] = [];
     // Each restart cuts it short again (its resumer never gets it to the end).
-    const resumers: jobs.Resumers = { watch: (job) => void started.push(job.key) };
+    const resumers: jobs.Resumers = { turn: (job) => void started.push(job.key) };
     for (let restart = 1; restart <= 3; restart++) await jobs.resume(dir, resumers);
     expect(started.length).toBe(2);
     expect(jobs.givenUp(dir).length).toBe(1);
     const revived = jobs.startGivenUp(dir);
-    expect(revived.keys).toEqual(["watch:p1"]);
+    expect(revived.keys).toEqual(["turn:p1"]);
     await revived.started;
     expect(started.length).toBe(3);
-    expect(read(dir).map((job) => [job.key, job.attempts, job.given_up])).toEqual([["watch:p1", 0, undefined]]);
+    expect(read(dir).map((job) => [job.key, job.attempts, job.given_up])).toEqual([["turn:p1", 0, undefined]]);
     // Nothing left given up: unstick again does nothing.
     expect(jobs.startGivenUp(dir).keys).toEqual([]);
   } finally {
@@ -296,23 +293,23 @@ test("a job waiting on a time, the encoder or the person isn't cut short by a re
   }
 });
 
-test("work that pays nothing (an archive) cut short three times is put off and started again by itself: an hour, then a day, one at a time", async () => {
+test("any work cut short three times in a row waits and is started again by itself on the passing schedule (1, then 5 minutes), one at a time; never given up", async () => {
   const dir = home();
-  const was = { ...jobs.PUT_OFF };
   try {
-    for (const project of ["p1", "p2"]) jobs.begin(dir, "archive", project, { output: `/${project}.mp4` });
+    for (const [kind, project] of [["archive", "p1"], ["idea", "p2"]] as const) jobs.begin(dir, kind, project, { output: `/${project}.mp4` });
     const started: string[] = [];
     // Each start notes it again (as ExportRegistry does) and never gets it to the end.
-    const resumers: jobs.Resumers = { archive: (job) => void (started.push(job.key), jobs.begin(dir, "archive", job.project, job.args)) };
+    const again = (job: jobs.Job) => void (started.push(job.key), jobs.begin(dir, job.kind, job.project, job.args));
+    const resumers: jobs.Resumers = { archive: again, idea: again };
     for (let restart = 1; restart <= 3; restart++) await jobs.resume(dir, resumers);
     expect(started.length).toBe(4);
-    // Not given up: waiting an hour, why kept.
+    // Not given up, a paid one (Claude on an idea) neither: waiting a minute, why kept.
     expect(jobs.givenUp(dir)).toEqual([]);
     const waiting = jobs.putOffNow(dir);
-    expect(waiting.map((job) => [job.key, job.put_off, job.why])).toEqual([["archive:p1", 1, "cut short by 3 restarts in a row"], ["archive:p2", 1, "cut short by 3 restarts in a row"]]);
+    expect(waiting.map((job) => [job.key, job.put_off, job.why])).toEqual([["archive:p1", 1, "cut short by 3 restarts in a row"], ["idea:p2", 1, "cut short by 3 restarts in a row"]]);
     const wait = waiting[0]!.retry_at! - Date.now();
-    expect(wait).toBeGreaterThan(jobs.PUT_OFF.hourMs - 5_000);
-    expect(wait).toBeLessThanOrEqual(jobs.PUT_OFF.hourMs);
+    expect(wait).toBeGreaterThan(55_000);
+    expect(wait).toBeLessThanOrEqual(60_000);
     // A restart doesn't start them early.
     expect(jobs.takeOver(dir)).toEqual([]);
     // Due: woken one at a time, the second only once the first has ended.
@@ -323,43 +320,41 @@ test("work that pays nothing (an archive) cut short three times is put off and s
     expect(started.slice(4)).toEqual(["archive:p1"]);
     await jobs.wake(dir);
     expect(started.slice(4)).toEqual(["archive:p1"]);
-    // Begun again by its resumer, it's still counted as put off.
     expect(jobs.get(dir, "archive:p1")).toMatchObject({ state: "running", put_off: 1 });
-    // Cut short once more: put off again at once, for longer once its hourly tries are spent.
-    jobs.PUT_OFF.hourly = 1;
+    // Cut short once more: waits again at once, five minutes this time.
     jobs.takeOver(dir);
-    const again = jobs.get(dir, "archive:p1")!;
-    expect(again).toMatchObject({ state: "waiting", put_off: 2 });
-    expect(again.retry_at! - Date.now()).toBeGreaterThan(jobs.PUT_OFF.dayMs - 5_000);
-    // p1 waits a day; p2 goes now.
+    const later = jobs.get(dir, "archive:p1")!;
+    expect(later).toMatchObject({ state: "waiting", put_off: 2 });
+    expect(later.retry_at! - Date.now()).toBeGreaterThan(5 * 60_000 - 5_000);
     await jobs.wake(dir);
-    expect(started.slice(4)).toEqual(["archive:p1", "archive:p2"]);
-    // Getting further forgives it: no longer put off.
-    jobs.progressed(dir, "archive:p2");
-    expect(jobs.get(dir, "archive:p2")?.put_off).toBeUndefined();
-    // Unstick starts one put off now.
+    expect(started.slice(4)).toEqual(["archive:p1", "idea:p2"]);
+    // Getting further forgives it.
+    jobs.progressed(dir, "idea:p2");
+    expect(jobs.get(dir, "idea:p2")?.put_off).toBeUndefined();
+    // Unstick still starts one waiting now.
     const revived = jobs.startGivenUp(dir);
     expect(revived.keys).toEqual(["archive:p1"]);
     await revived.started;
     expect(started.at(-1)).toBe("archive:p1");
     expect(jobs.get(dir, "archive:p1")).toMatchObject({ state: "running", attempts: 0 });
   } finally {
-    Object.assign(jobs.PUT_OFF, was);
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("a job given up by an older build for restarts (Marc's archive) is put off and tried again soon; a paid one stays given up", () => {
+test("a job given up for restarts by an older build (Marc's archive), of any kind, waits and is tried again in a minute; a turn stays ended", () => {
   const dir = home();
   try {
     const old = (kind: string, project: string) => ({ key: `${kind}:${project}`, kind, project, args: {}, state: "given_up", attempts: 2, started_ms: 0, updated_ms: 0, given_up: "cut short by 3 restarts in a row" });
-    fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify([old("archive", "p1"), old("idea", "p2")]));
+    fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify([old("archive", "p1"), old("idea", "p2"), old("turn", "p3")]));
     expect(jobs.takeOver(dir)).toEqual([]);
-    const archive = jobs.get(dir, "archive:p1")!;
-    expect(archive).toMatchObject({ state: "waiting", put_off: 1 });
-    expect(archive.given_up).toBeUndefined();
-    expect(archive.retry_at! - Date.now()).toBeLessThanOrEqual(60_000);
-    expect(jobs.get(dir, "idea:p2")).toMatchObject({ state: "given_up" });
+    for (const key of ["archive:p1", "idea:p2"]) {
+      const job = jobs.get(dir, key)!;
+      expect(job).toMatchObject({ state: "waiting", put_off: 1 });
+      expect(job.given_up).toBeUndefined();
+      expect(job.retry_at! - Date.now()).toBeLessThanOrEqual(60_000);
+    }
+    expect(jobs.get(dir, "turn:p3")).toMatchObject({ state: "given_up" });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
