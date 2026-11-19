@@ -673,8 +673,10 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
           {/* Footage that didn't come in: writing waits for it (missing.ts), said at the cloud with its two answers. */}
           {(script.missing ?? []).length > 0 && (
             <MissingCloud
-              items={script.missing!.map((one) => ({ id: one.id, name: one.title }))}
+              items={script.missing!.map((one) => ({ id: one.id, name: one.title, ...(one.asked === true ? { asked: true } : {}) }))}
               noun={script.sourceKind === "compilation" ? "video" : "recording"}
+              without={(it) => `Write without ${it}`}
+              outcome={(it) => `the script is written without ${it} for now. ${it === "it" ? "It stays" : "They stay"} listed as left out, and you can add ${it} to the script later like any footage.`}
               onRetry={() => resumeImport(script.id, { kind: "retry_missing" }).catch((cause: unknown) => setError(message(cause)))}
               onWithout={async (ids) => {
                 try {

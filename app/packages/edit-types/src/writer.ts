@@ -60,7 +60,8 @@ export type Reuse = { url: string; title: string; after: number; footage?: strin
  * when it comes, and nothing final (writing the script) happens until it has, or the producer goes on without it.
  * `id`: the manifest's recording id, or a compilation video's index.
  */
-export type MissingRecording = { id: string; title: string; error: string; tries: number; nextAt: number };
+/** A recording that didn't come in; `asked` when only the person can put it right (not shared, deleted), so Retry is worth pressing. */
+export type MissingRecording = { id: string; title: string; error: string; tries: number; nextAt: number; asked?: boolean };
 
 export type Decision =
   /** Asked only by an Edit from before Nov 18: an import now carries on past a recording that fails (`Script.missing`), and one stopped on this moves on by itself. */

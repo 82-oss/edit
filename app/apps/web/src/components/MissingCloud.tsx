@@ -10,13 +10,17 @@ import { Button, ConfirmDialog, escapeCloses, IconButton } from "./ui";
  * Footage that didn't come in, at the top bar's cloud (Sphe, Nov 18: an
  * import never stops or asks because of one file, and missing footage is
  * never silently written around): the cloud with a dot, and dropped from it
- * once, a short plain note with its two answers, Retry now and Go on without
- * it (confirmed; the server remembers it per file). Hidden by a click away
- * or Escape, shown again from the cloud. Script mode's top bar and the
- * editor's show the same one; Edit tries again by itself meanwhile.
+ * once, a short plain note with its answer, named for what it does (the
+ * editor's "Export with its parts black", Script mode's "Write without it";
+ * confirmed), and Retry now only where the person may have put something
+ * right (a file shared since, put back): for trouble that passes there's
+ * nothing to press (honest council's question census, Nov 19). Hidden by a
+ * click away or Escape, shown again from the cloud. Script mode's top bar and
+ * the editor's show the same one; Edit tries again by itself meanwhile.
  */
 
-export type MissingItem = { id: string; name: string };
+/** `asked`: only the person can put it right, so Retry now is worth pressing. */
+export type MissingItem = { id: string; name: string; asked?: boolean };
 
 /** "1 recording didn't come in: CH03.avi", "2 files didn't come in: a.mp4 and b.mp4". */
 export function missingWords(items: MissingItem[], one = "recording", many = `${one}s`): string {
@@ -30,16 +34,19 @@ export function MissingCloud({
   noun = "recording",
   onRetry,
   onWithout,
+  without,
   outcome,
 }: {
   items: MissingItem[];
   /** What each is ("recording", "video", "file"). */
   noun?: string;
   onRetry: () => Promise<unknown>;
-  /** Goes on without these, each remembered for good. */
+  /** The answer for these, each remembered (`without`'s words say what it does). */
   onWithout: (ids: string[]) => Promise<unknown>;
-  /** What going on without them does, said before it's confirmed ("it" or "them"); left out for good, unless said otherwise. */
-  outcome?: (it: "it" | "them") => string;
+  /** The answer's name, for "it" or "them": "Export with its parts black", "Write without it". */
+  without: (it: "it" | "them") => string;
+  /** What the answer does, said before it's confirmed. */
+  outcome: (it: "it" | "them") => string;
 }) {
   const [open, setOpen] = useState(true);
   const [asking, setAsking] = useState(false);
@@ -89,13 +96,16 @@ export function MissingCloud({
             transition={{ duration: 0.18, ease: [0.2, 0, 0, 1] }}
           >
             <p className="leading-snug text-fg break-words">{line}</p>
+            {!items.some((item) => item.asked === true) && <p className="mt-1 leading-snug text-muted">Edit keeps trying to bring {it} in.</p>}
             <div className="mt-3 flex justify-end gap-1.5">
               <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setAsking(true)}>
-                Go on without {it}
+                {without(it)}
               </Button>
-              <Button size="sm" variant="subtle" busy={busy === "retry"} disabled={busy !== null} onClick={() => void run("retry", onRetry)}>
-                Retry now
-              </Button>
+              {items.some((item) => item.asked === true) && (
+                <Button size="sm" variant="subtle" busy={busy === "retry"} disabled={busy !== null} onClick={() => void run("retry", onRetry)}>
+                  Retry now
+                </Button>
+              )}
             </div>
           </motion.div>
         )}
@@ -103,9 +113,9 @@ export function MissingCloud({
       <ConfirmDialog
         open={asking}
         onClose={() => setAsking(false)}
-        title={`Go on without ${items.length === 1 ? items[0]!.name : `these ${items.length} ${noun}s`}?`}
-        detail={outcome?.(it) ?? `It's left out for good and Edit stops trying to bring ${it} in.`}
-        confirm={`Go on without ${it}`}
+        title={`${without(it)}?`}
+        detail={`${items.length === 1 ? items[0]!.name : `These ${items.length} ${noun}s`}: ${outcome(it)}`}
+        confirm={without(it)}
         busy={busy === "without"}
         onConfirm={() =>
           void run("without", () => onWithout(items.map((item) => item.id))).then(() => {

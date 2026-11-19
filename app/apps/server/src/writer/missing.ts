@@ -155,7 +155,7 @@ export async function tryAgain(id: string, all = false): Promise<void> {
       } catch (error) {
         const tries = one.tries + 1;
         const at = nextAt(tries + 1, error);
-        tried.set(one.id, { ...one, tries, error: diag.scrub(diag.messageOf(error)), nextAt: at });
+        tried.set(one.id, { ...one, tries, error: diag.scrub(diag.messageOf(error)), nextAt: at, ...(failure.waitsByItself(failure.kindOf(error)) ? {} : { asked: true }) });
         diag.warn("writer", `${jobs.named(id, script.title)}: ${one.title} still didn't come in (try ${tries + 1}, ${failure.kindOf(error)}): ${diag.messageOf(error)}; next try at ${new Date(at).toISOString()}`);
       }
     }
@@ -188,9 +188,10 @@ export async function tryAgain(id: string, all = false): Promise<void> {
 
 /**
  * The note's two answers: Retry now (every missing recording tried at once,
- * in the background), or Go on without it (confirmed on the page): left out
- * of the case for good, remembered in its list so it's never asked again,
- * and a build that waited starts.
+ * in the background), or Write without it (confirmed on the page): left out
+ * of the case for now, remembered in its list so it isn't asked again, and a
+ * build that waited starts. It can be added to the script later as any
+ * footage is.
  */
 export async function answer(app: App, data: string, id: string, choice: Choice & { kind: "retry_missing" | "skip_missing" }): Promise<Script> {
   const dir = store.scriptDir(data, id);

@@ -86,12 +86,13 @@ export function TopBar({ onShare, footage = null }: { onShare: () => void; foota
 }
 
 /** What going on without an edit's footage does: its clips stay, black and silent, and the edit plays and exports. */
-const editWithout = (it: "it" | "them") => `${it === "it" ? "Its" : "Their"} clips stay black and silent, the rest plays and exports, and Edit stops trying to bring ${it} in.`;
+const editWithout = (it: "it" | "them") => `Export with ${it === "it" ? "its" : "their"} parts black`;
+const editOutcome = (it: "it" | "them") => `${it === "it" ? "its" : "their"} clips stay black and silent in what's exported, the rest plays and exports, and Edit keeps trying to bring ${it} in: ${it === "it" ? "it plays" : "they play"} again once ${it === "it" ? "it's" : "they're"} here.`;
 
 /**
  * A cloud project’s sync as an icon only (its words are its tooltip): saved, syncing, offline, read-only, a problem;
  * while its footage is still coming here, how far that has got instead (`FootageCloud`), back to the sync once it's here;
- * and before either, footage that didn't come in (`MissingCloud`), with Retry now and Go on without it.
+ * and before either, footage that didn't come in (`MissingCloud`), with Export with its parts black (and Retry now where the person can put it right).
  */
 function SyncState({ footage }: { footage: Ready | null }) {
   const cloud = useEditor((state) => state.cloud);
@@ -102,7 +103,7 @@ function SyncState({ footage }: { footage: Ready | null }) {
   const back = useEditor((state) => (state.scriptJob?.back === true ? state.scriptJob.state : null));
   const missing = useEditMissing(id, mediaCount, back);
   // Footage that didn't come in comes first: export and share wait on it (missing_media.ts).
-  if (missing.items.length > 0) return <MissingCloud items={missing.items} noun="file" onRetry={missing.retry} onWithout={missing.without} outcome={editWithout} />;
+  if (missing.items.length > 0) return <MissingCloud items={missing.items} noun="file" onRetry={missing.retry} onWithout={missing.without} without={editWithout} outcome={editOutcome} />;
   if (footageShowing(footage)) return <FootageCloud answer={footage} />;
   if (!label) return null;
   const Icon = { ok: CloudCheck, busy: CloudSync, warn: label.text === "Read-only" ? Lock : CloudOff, bad: CloudAlert }[label.tone];

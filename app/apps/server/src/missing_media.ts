@@ -195,7 +195,8 @@ export async function tryAgain(app: App, id: string): Promise<EditMissing> {
   if (!trying.has(id)) {
     trying.add(id);
     try {
-      const { missing } = await missingOf(app.store.home, live.project);
+      // Those gone on without too: going on without a file only stops the export waiting for it (Q2 of the census).
+      const { missing } = await missingOf(app.store.home, live.project, true);
       const ids = new Set(missing.map((media) => media.id));
       const files = [...cloudMedia.footageBySource(live.project)].flatMap(([source, media]) => {
         const file = cloudMedia.fileOfSource(source);
@@ -214,12 +215,13 @@ export async function tryAgain(app: App, id: string): Promise<EditMissing> {
     }
   }
   const now = await state(app, id, false);
-  if (now.missing.length === 0) {
+  const still = (await missingOf(app.store.home, (app.store.get(id) ?? live).project, true)).missing;
+  if (still.length === 0) {
     jobs.end(app.store.home, keyOf(id));
     return now;
   }
   const at = waitToTry(app, id, before + 1);
-  diag.info("cloud", `${id}: ${line(now.missing)}; tried again${at === null ? " later" : ` at ${new Date(at).toISOString()}`}`);
+  diag.info("cloud", `${id}: ${line(still)}; tried again${at === null ? " later" : ` at ${new Date(at).toISOString()}`}`);
   return now;
 }
 
@@ -228,11 +230,17 @@ export async function state(app: App, id: string, follow = true): Promise<EditMi
   const live = app.store.get(id);
   if (live === null) throw new ApiError(404, "no such project");
   const { used, missing } = await missingOf(app.store.home, live.project);
-  if (follow && missing.length > 0) keepTrying(app, id);
-  return { used, missing: missing.map((media) => ({ id: media.id, name: media.name, path: media.path })) };
+  // Tried by itself while anything is missing, the ones gone on without too: they play again once they're back.
+  if (follow && (missing.length > 0 || (await missingOf(app.store.home, live.project, true)).missing.length > 0)) keepTrying(app, id);
+  // A file gone from this machine with no cloud copy is the person's to put back; a cloud proxy Edit fetches again itself.
+  const local = new Set(missingMedia(live.project).map((media) => media.id));
+  return { used, missing: missing.map((media) => ({ id: media.id, name: media.name, path: media.path, ...(local.has(media.id) ? { asked: true } : {}) })) };
 }
 
-/** Goes on without medium `media` of project `id`: remembered here for good, never asked again. */
+/**
+ * Exports `id` with medium `media`'s parts black (the person's answer): the export stops waiting for it, its clips
+ * play black and silent, and Edit keeps trying to bring it in; once it's here it plays and exports again.
+ */
 export function goWithout(app: App, id: string, media: string): void {
   const live = app.store.get(id);
   if (live === null) throw new ApiError(404, "no such project");
@@ -240,7 +248,7 @@ export function goWithout(app: App, id: string, media: string): void {
   const all = readWaived(app.store.home);
   all[id] = [...new Set([...(all[id] ?? []), media])];
   writeAtomic(waivedFile(app.store.home), JSON.stringify(all, null, 2));
-  diag.info("cloud", `${id}: going on without ${live.project.media.find((one) => one.id === media)!.name}, as asked`);
+  diag.info("cloud", `${id}: exporting with ${live.project.media.find((one) => one.id === media)!.name}'s parts black, as asked; still trying to bring it in`);
 }
 
 const reply = (value: unknown): Response => new Response(stableStringify(value), { headers: { "content-type": "application/json" } });

@@ -1356,7 +1356,8 @@ function stillMissing(dir: string, script: Script, failed: { id: string; title: 
   const now = Date.now();
   const missing = failed.map((one) => {
     const known = before.get(one.id);
-    return known !== undefined ? { ...known, title: one.title, error: one.error } : { ...one, tries: 0, nextAt: missingFootage.nextAt(1, one.error, now) };
+    const asked = !failure.waitsByItself(failure.kindOf(one.error)) ? { asked: true } : {};
+    return known !== undefined ? { ...known, title: one.title, error: one.error, ...asked } : { ...one, tries: 0, nextAt: missingFootage.nextAt(1, one.error, now), ...asked };
   });
   if (missing.length > 0) script.missing = missing;
   else delete script.missing;

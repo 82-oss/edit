@@ -66,6 +66,6 @@ export interface FootageComing {
 export interface EditMissing {
   /** Files the timeline uses. */
   used: number;
-  /** Those not here, less the ones the person went on without. */
-  missing: { id: string; name: string; path: string }[];
+  /** Those not here, less the ones the person went on without; `asked` when only the person can put it right (a file gone from this machine with no cloud copy), so Retry is worth pressing. */
+  missing: { id: string; name: string; path: string; asked?: boolean }[];
 }
