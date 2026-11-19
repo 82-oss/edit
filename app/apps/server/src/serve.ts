@@ -27,7 +27,10 @@ import * as scriptSync from "./script_sync.ts";
 import { registerEditingTools, unfinishedNote } from "./edit_tools.ts";
 import { archiveGoing, archiveJob, dropLeftSnapshot, ExportRegistry, room as exportRoom, resumeSnapshot, type ExportRecord, type StartExtra } from "./exports.ts";
 import * as encoder from "./encoder.ts";
+import * as failure from "./failure.ts";
 import * as jobs from "./jobs.ts";
+import * as outages from "./outages.ts";
+import * as wake from "./wake.ts";
 import type { ExportOptions } from "./model.ts";
 import { listen } from "./http/server.ts";
 import { registerEffectTools } from "./effect_tools.ts";
@@ -503,6 +506,7 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     // updater installed this build). Ordinary launches do no maintenance.
     if (RELEASE && NIGHTLY !== null && !process.env.CI && process.env.EDIT_CLAUDE_MAINTENANCE !== "0") seams.agentPanel(app).claudeSupport?.afterNightly(BUILD);
     void Promise.race([signedIn.catch(() => undefined), Bun.sleep(20_000)]).then(() => resumeJobs(app));
+    wakeAfterTrouble(app);
   };
   if (asked.length === 0) afterListen();
   else {
@@ -545,6 +549,21 @@ function optional(area: string, work: () => void): void {
   } catch (error) {
     if (!seams.isUnavailable(error)) diag.warn(area, diag.messageOf(error));
   }
+}
+
+/**
+ * When the trouble is over, the work waiting on it goes at once (honest council changes 2e and 6, Nov 19): the
+ * machine woke (wake.ts), so the sign-in is renewed first and only then is what fell due started (each try used to
+ * land in the same second as the renewal, with no token); or the relay or R2 answered again after an outage.
+ */
+function wakeAfterTrouble(app: App): void {
+  wake.onWake((sleptMs) => {
+    void (async () => {
+      if (accounts.hasSession()) await Promise.race([accounts.renew().catch(() => undefined), Bun.sleep(failure.scaled(20_000))]);
+      jobs.wakePassing(app.store.home, `the machine woke after ${diag.human(sleptMs)}`);
+    })();
+  });
+  outages.onBack((destination) => void jobs.wakePassing(app.store.home, `${destination === "relay" ? "Edit's relay" : "R2"} answers again`));
 }
 
 /**

@@ -378,3 +378,25 @@ test("a resumer of work that can wait that fails as it starts (offline) puts its
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("when the trouble is over (the relay answers again, the machine woke), work waiting on something that passes goes at once; credit's wait stays", async () => {
+  const dir = home();
+  try {
+    jobs.begin(dir, "archive", "p1", {});
+    jobs.wait(dir, "archive:p1", "could not reach Edit's relay: The socket connection was closed unexpectedly");
+    jobs.begin(dir, "case", "p2", {});
+    jobs.settle(dir, "case:p2", "waiting", { step: "trying again by itself", retry_at: Date.now() + 30 * 60_000, args: { waiting_on: "passing" } });
+    jobs.begin(dir, "case", "p3", {});
+    jobs.settle(dir, "case:p3", "waiting", { step: "waiting for credit", retry_at: Date.now() + 30 * 60_000, args: { waiting_on: "quota" } });
+    const woken: string[] = [];
+    jobs.useResumers(dir, { archive: (job) => void woken.push(job.key), case: (job) => void woken.push(job.key) });
+    expect(jobs.wakePassing(dir, "Edit's relay answers again").sort()).toEqual(["archive:p1", "case:p2"]);
+    // A few seconds apart: the first now, the next after.
+    await Bun.sleep(50);
+    await jobs.wake(dir);
+    expect(woken.length).toBeGreaterThanOrEqual(1);
+    expect(jobs.get(dir, "case:p3")).toMatchObject({ state: "waiting", step: "waiting for credit" });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

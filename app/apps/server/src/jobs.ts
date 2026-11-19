@@ -551,6 +551,35 @@ export function dueNow(home: string, kinds?: readonly Kind[]): Job[] {
   return out;
 }
 
+/**
+ * The trouble is over (the relay or R2 answered again, the machine woke with its sign-in renewed): every job waiting
+ * on something that passes is due now, a few seconds apart, and woken. Nobody waits half an hour because the Wi-Fi
+ * came back a minute after a try. Returns the keys woken.
+ */
+export function wakePassing(home: string, why: string): string[] {
+  const now = nowMs();
+  const keys: string[] = [];
+  change(home, (jobs) => {
+    for (const job of jobs) {
+      if (job.state !== "waiting" || job.retry_at === undefined || job.retry_at <= now) continue;
+      // What it waits on: its put-off reason, or the import's own word for it (`waiting_on`); a wait with neither (credit, Drive's day) is left.
+      const on = typeof job.args.waiting_on === "string" ? job.args.waiting_on : undefined;
+      const said = job.why ?? on;
+      if (said === undefined) continue;
+      const kind = job.why === undefined ? (on === "passing" ? "passing" : "other") : failure.kindOf(said);
+      if (kind !== "passing" && kind !== "signin") continue;
+      job.retry_at = now + keys.length * failure.scaled(3_000);
+      keys.push(job.key);
+    }
+    return keys.length > 0;
+  });
+  if (keys.length > 0) {
+    diag.info("jobs", `${why}: ${keys.length} waiting job${keys.length === 1 ? "" : "s"} woken (${keys.join(", ")})`);
+    void wake(home).catch((error: unknown) => diag.warn("jobs", `waking waiting jobs: ${diag.messageOf(error)}`));
+  }
+  return keys;
+}
+
 /** How often the waiting jobs are looked at (a quota's 30 min, an export's end). */
 export const WAKE_MS = { value: 30_000 };
 const waking = new Map<string, ReturnType<typeof setInterval>>();

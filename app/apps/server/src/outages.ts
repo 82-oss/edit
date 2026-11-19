@@ -79,6 +79,13 @@ export function failed(destination: Destination, said: string): void {
   diag.warn("cloud", `${NAMES[destination]} unreachable: background checks paused (${diag.scrub(said).slice(0, 300)})`);
 }
 
+/** Told as an outage ends (`answered`): the work waiting on it is woken at once (serve.ts), not at its next try. */
+const backs = new Set<(destination: Destination) => void>();
+export function onBack(listener: (destination: Destination) => void): () => void {
+  backs.add(listener);
+  return () => void backs.delete(listener);
+}
+
 /** `destination` answered a request (any status): an outage is over, for everyone. */
 export function answered(destination: Destination): void {
   const health = of(destination);
@@ -88,6 +95,13 @@ export function answered(destination: Destination): void {
   const lasted = diag.human(timing.now() - health.since);
   diag.info("cloud", `${NAMES[destination]} reachable again after ${lasted}: background checks resumed (${health.skipped} skipped meanwhile)`);
   Object.assign(health, { since: null, probing: false, skipped: 0 });
+  for (const listener of backs) {
+    try {
+      listener(destination);
+    } catch (error) {
+      diag.warn("cloud", diag.messageOf(error));
+    }
+  }
 }
 
 /** Whether `destination` is in an outage now. */
