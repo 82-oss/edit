@@ -2137,6 +2137,15 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
           lookLater(app, id, next);
           return;
         }
+        // The cloud browser didn't connect, or its proxy is down: nothing went in, and nothing about the pack is wrong.
+        // Kept packed and tried again in two minutes (Nov 19: Chrome's connection timing out unpacked every pack on
+        // Sphe's two edits, each stretch then going alone, the very cost packing saves).
+        if (error instanceof web.BrowserUnreachable || error instanceof web.ProxyDown) {
+          diag.info("removal", `${id}: ${label}: ${diag.messageOf(error)}; kept packed, tried again in 2 min`);
+          note("waiting", { lookAt: Date.now() + 120_000 });
+          lookLater(app, id, Date.now() + 120_000);
+          return;
+        }
         unpackAlone(diag.messageOf(error));
         return;
       }

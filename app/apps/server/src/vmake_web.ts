@@ -210,7 +210,7 @@ export function teamBrowsers(holder: string, ask: (method: string, route: string
             return { id, liveUrl: lent.liveUrl ?? null, remote, stop: async () => (remote.close(), await stop()) };
           } catch (error) {
             await stop();
-            throw new VmakeError(`the team's browser didn't connect: ${diag.messageOf(error)}`, "piece");
+            throw new BrowserUnreachable(diag.messageOf(error));
           }
         }
         // Another Mac has the team's profile: this one waits its turn (a sign-in never waits).
@@ -292,6 +292,13 @@ async function waitFor<T>(page: Page, expression: string, ms: number, what: stri
  * was sent again).
  */
 export class Refused extends VmakeError {}
+
+/** The team's cloud browser was lent but didn't connect (Chrome's connection timed out): nothing went in, try again soon. */
+export class BrowserUnreachable extends VmakeError {
+  constructor(why: string) {
+    super(`the team's browser didn't connect: ${why}`, "piece");
+  }
+}
 
 /** The browser's proxy refuses every connection: that browser is let go and another started (its own way out). */
 export class ProxyDown extends VmakeError {
