@@ -1,9 +1,14 @@
 // Footage that didn't come in (Sphe, Nov 18: "an import never stops or asks a
 // question because of one file, and missing footage is never silently written
 // around"). An import carries on past a recording that fails (imports.ts
-// `stillMissing`); each one is tried again here by itself, after 1, 5 and 15
-// minutes, then hourly, and joined into the case when it comes (imports.ts
-// `rejoin`: its piece copied into the preview, heard, the voices read again).
+// `stillMissing`); each one is tried again by itself as failure.ts says for
+// what failed (a dropped line after 1, 5 and 15 minutes, then every 30), and
+// joined into the case when it comes (imports.ts `rejoin`: its piece copied
+// into the preview, heard, the voices read again). Each script with recordings
+// missing has one row in the job table (`missing:<id>`), woken by it and by
+// the connection coming back; the table is this computer's own, so the row is
+// also what says this Mac ran the import (honest council change 7d, Nov 19:
+// the tries lived on a timer in memory, which a restart forgot).
 // Until it's here, or the producer goes on without it (remembered in the
 // case's list, never asked again), the script isn't written: a build waits
 // (`firstBuild`) and starts by itself, and the writer is told what's missing.
@@ -14,46 +19,34 @@ import type { Choice, MissingRecording, Script } from "@edit/types/writer";
 
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
+import * as failure from "../failure.ts";
+import * as durable from "../jobs.ts";
 import { join } from "../paths.ts";
 import * as jobs from "./jobs.ts";
 import * as parts from "./parts.ts";
 import * as store from "./store.ts";
 
-/** How long after each try the next one is: 1, 5, 15 minutes, then every hour. */
-const DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
-const HOURLY_MS = 60 * 60_000;
-
-export const delayAfter = (tries: number): number => DELAYS_MS[tries] ?? HOURLY_MS;
-
-/** Each script's next try, here; one timer wakes for the soonest. */
-const due = new Map<string, number>();
-let timer: ReturnType<typeof setTimeout> | undefined;
+/** The script being tried now, and the server's app and data folder (`start`). */
 let started: { app: App; data: string } | null = null;
-/** Scripts being tried now. */
 const trying = new Set<string>();
 
-/** Script `id` has footage to try again at `at` (the soonest of its recordings). */
+const keyOf = (id: string): string => durable.keyOf("missing", id);
+
+/** When a recording that failed on `error`, tried `tries` times, is tried next (ms since the epoch). */
+export function nextAt(tries: number, error: unknown, now = Date.now()): number {
+  const kind = failure.kindOf(error);
+  return failure.nextTry(kind, Math.max(tries - 1, 0), now, error) ?? now + failure.scaled(failure.PERSON_EVERY_MS.value);
+}
+
+/** Script `id` has footage to try again at `at` (the soonest of its recordings): its row waits until then. */
 export function schedule(id: string, at: number): void {
-  const known = due.get(id);
-  if (known === undefined || at < known) due.set(id, at);
-  wake();
-}
-
-function wake(): void {
   if (started === null) return;
-  clearTimeout(timer);
-  if (due.size === 0) return;
-  const soonest = Math.min(...due.values());
-  timer = setTimeout(() => void tick(), Math.max(0, Math.min(soonest - Date.now(), HOURLY_MS)));
-  timer.unref?.();
-}
-
-async function tick(): Promise<void> {
-  const now = Date.now();
-  const ready = [...due.entries()].filter(([, at]) => at <= now).map(([id]) => id);
-  for (const id of ready) due.delete(id);
-  await Promise.all(ready.map((id) => tryAgain(id)));
-  wake();
+  const home = started.app.store.home;
+  const key = keyOf(id);
+  const listed = durable.get(home, key);
+  if (listed === undefined || !durable.live(listed)) durable.begin(home, "missing", id, {}, "", "trying again by itself");
+  // Said as passing, so the connection coming back wakes it at once (jobs.wakePassing).
+  durable.settle(home, key, "waiting", { step: "trying again by itself", retry_at: at, args: { waiting_on: "passing" } });
 }
 
 /**
@@ -74,24 +67,19 @@ export function start(app: App, data: string): void {
     }
     // Only an import this computer ran, which keeps its preview pieces (they never sync): a teammate's script paused on
     // its own Mac is synced here too, and carrying it on took over their import (Sphe's Linux Edit, Nov 18: two of JJ's).
-    if (script.status === "needs_choice" && script.decision?.kind === "failed_recordings" && ranHere(store.scriptDir(data, id))) older.push(id);
-    else if ((script.missing ?? []).length > 0 && hasList(store.scriptDir(data, id), script)) schedule(id, Math.min(...script.missing!.map((one) => one.nextAt)));
+    const dir = store.scriptDir(data, id);
+    if (script.status === "needs_choice" && script.decision?.kind === "failed_recordings" && ranHere(dir)) older.push(id);
+    // Marked by an older build with its dot file: given its row now, the dot file gone.
+    else if ((script.missing ?? []).length > 0 && hasList(dir, script) && fs.existsSync(join(dir, OLD_HERE))) {
+      schedule(id, Math.min(...script.missing!.map((one) => one.nextAt)));
+      fs.rmSync(join(dir, OLD_HERE), { force: true });
+    }
   }
-  wake();
   if (older.length > 0) void carryOnOlder(app, data, older);
 }
 
-/**
- * Footage is tried only on the computer whose import left it missing, which
- * keeps its pieces for the join: marked by a dot file, which never syncs (the
- * script and its list do, so another Mac sees the note but doesn't join).
- */
-const HERE = ".missing-here";
-
-export function markHere(dir: string, missing: boolean): void {
-  if (missing) fs.writeFileSync(join(dir, HERE), "");
-  else fs.rmSync(join(dir, HERE), { force: true });
-}
+/** The dot file an older build marked "this computer ran the import" with: read once at start, then gone (the row says it now). */
+const OLD_HERE = ".missing-here";
 
 /** Whether this computer ran the script's import: its preview pieces are here (the sync leaves them out, cloud.ts). */
 function ranHere(dir: string): boolean {
@@ -99,8 +87,14 @@ function ranHere(dir: string): boolean {
 }
 
 function hasList(dir: string, script: Script): boolean {
-  const listed = script.sourceKind === "compilation" ? parts.readVideos(dir) !== null : parts.readManifest(dir) !== null;
-  return listed && fs.existsSync(join(dir, HERE));
+  return script.sourceKind === "compilation" ? parts.readVideos(dir) !== null : parts.readManifest(dir) !== null;
+}
+
+/** Whether this computer tries script `id`'s footage: its row is here (a teammate's script synced here has none). */
+function oursToTry(id: string): boolean {
+  if (started === null) return false;
+  const listed = durable.get(started.app.store.home, keyOf(id));
+  return listed !== undefined && durable.live(listed);
 }
 
 /** Imports an older Edit paused on failed recordings, run again: what failed is tried with the rest and, failing, missing. */
@@ -122,26 +116,31 @@ async function carryOnOlder(app: App, data: string, ids: string[]): Promise<void
  * later, its error kept. Nothing runs beside the script's import or Claude.
  */
 export async function tryAgain(id: string, all = false): Promise<void> {
-  if (started === null || trying.has(id)) return;
+  if (started === null || trying.has(id) || !oursToTry(id)) return;
   const { app, data } = started;
+  const home = app.store.home;
   const imports = await import("./imports.ts");
   const dir = store.scriptDir(data, id);
   if (imports.importing(id) || jobs.running(id)) {
-    schedule(id, Date.now() + 60_000);
+    schedule(id, Date.now() + failure.scaled(60_000));
     return;
   }
   let script: Script;
   try {
     script = store.read(dir);
   } catch {
+    durable.end(home, keyOf(id));
     return;
   }
-  if (!hasList(dir, script)) return;
-  const now = Date.now();
   const missing = script.missing ?? [];
+  if (!hasList(dir, script) || missing.length === 0) {
+    durable.end(home, keyOf(id));
+    return;
+  }
+  const now = Date.now();
   const wanted = missing.filter((one) => all || one.nextAt <= now);
   if (wanted.length === 0) {
-    if (missing.length > 0) schedule(id, Math.min(...missing.map((one) => one.nextAt)));
+    schedule(id, Math.min(...missing.map((one) => one.nextAt)));
     return;
   }
   trying.add(id);
@@ -155,8 +154,9 @@ export async function tryAgain(id: string, all = false): Promise<void> {
         diag.info("writer", `${jobs.named(id, script.title)}: ${one.title} came in on try ${one.tries + 2}`);
       } catch (error) {
         const tries = one.tries + 1;
-        tried.set(one.id, { ...one, tries, error: diag.scrub(diag.messageOf(error)), nextAt: Date.now() + delayAfter(tries) });
-        diag.warn("writer", `${jobs.named(id, script.title)}: ${one.title} still didn't come in (try ${tries + 1}): ${diag.messageOf(error)}; next try in ${Math.round(delayAfter(tries) / 60_000)} min`);
+        const at = nextAt(tries + 1, error);
+        tried.set(one.id, { ...one, tries, error: diag.scrub(diag.messageOf(error)), nextAt: at });
+        diag.warn("writer", `${jobs.named(id, script.title)}: ${one.title} still didn't come in (try ${tries + 1}, ${failure.kindOf(error)}): ${diag.messageOf(error)}; next try at ${new Date(at).toISOString()}`);
       }
     }
   } finally {
@@ -177,12 +177,13 @@ export async function tryAgain(id: string, all = false): Promise<void> {
       imports.rejoin(app, data, id, arrived);
     } catch (error) {
       diag.warn("writer", `${jobs.named(id, script.title)}: what came in wasn't joined into the case yet: ${diag.messageOf(error)}`);
-      schedule(id, Date.now() + delayAfter(0));
+      schedule(id, nextAt(1, error));
       return;
     }
   }
   const left = (script.missing ?? []).filter((one) => !arrived.includes(one.id));
   if (left.length > 0) schedule(id, Math.min(...left.map((one) => tried.get(one.id)?.nextAt ?? one.nextAt)));
+  else durable.end(home, keyOf(id));
 }
 
 /**
@@ -220,8 +221,7 @@ export async function answer(app: App, data: string, id: string, choice: Choice 
   }, true);
   diag.info("writer", `${jobs.named(id, saved.title)}: going on without ${one.title}, as asked`);
   if ((saved.missing ?? []).length === 0) {
-    due.delete(id);
-    markHere(dir, false);
+    durable.end(app.store.home, keyOf(id));
     // Nothing more to join: the pieces kept for it go.
     fs.rmSync(join(dir, "pieces"), { recursive: true, force: true });
     imports.buildIfWaiting(app, data, saved);
@@ -257,7 +257,5 @@ export function line(script: Script): string {
 
 /** Stops the tries (tests). */
 export function stop(): void {
-  clearTimeout(timer);
-  due.clear();
   started = null;
 }

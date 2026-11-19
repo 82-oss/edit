@@ -1353,12 +1353,11 @@ function stillMissing(dir: string, script: Script, failed: { id: string; title: 
   const now = Date.now();
   const missing = failed.map((one) => {
     const known = before.get(one.id);
-    return known !== undefined ? { ...known, title: one.title, error: one.error } : { ...one, tries: 0, nextAt: now + missingFootage.delayAfter(0) };
+    return known !== undefined ? { ...known, title: one.title, error: one.error } : { ...one, tries: 0, nextAt: missingFootage.nextAt(1, one.error, now) };
   });
   if (missing.length > 0) script.missing = missing;
   else delete script.missing;
   store.write(dir, script);
-  missingFootage.markHere(dir, missing.length > 0);
   if (missing.length > 0) {
     missingFootage.schedule(script.id, Math.min(...missing.map((one) => one.nextAt)));
     diag.warn("writer", `${jobs.named(script.id, script.title)}: carrying on without ${missing.length} recording${missing.length === 1 ? "" : "s"} for now (${missing.map((one) => one.title).join(", ")}); each is tried again by itself`);

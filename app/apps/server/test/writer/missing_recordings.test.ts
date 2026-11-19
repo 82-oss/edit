@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 import type { Script } from "@edit/types/writer";
 
+import * as durable from "../../src/jobs.ts";
 import * as macSpeech from "../../src/mac_speech.ts";
 import * as tools from "../../src/tools.ts";
 import { timing } from "../../src/transcribe.ts";
@@ -112,6 +113,8 @@ test.skipIf(ffmpeg === null)("a recording that won't come down is left out for n
     expect(done.missing![0]!.nextAt - Date.now()).toBeGreaterThan(50_000);
     expect(parts.readManifest(dir)?.missing).toEqual([ids[1]!]);
     expect(store.summary(done).missing?.length).toBe(1);
+    // Its tries are a row in this computer's job table, not a timer in memory: a restart keeps them.
+    expect(durable.get(app.store.home, durable.keyOf("missing", done.id))).toMatchObject({ state: "waiting", args: { waiting_on: "passing" } });
     // Writing waits, and the writer would be told.
     expect(built).toEqual([]);
     expect(store.read(dir).firstBuild).toEqual({ note: "Write it tight." });
@@ -272,8 +275,11 @@ test("a teammate's script paused on failed recordings, synced here, is left to t
   }
 });
 
-test("the tries back off: 1, 5 and 15 minutes, then hourly", () => {
-  expect([0, 1, 2, 3, 9].map(missing.delayAfter)).toEqual([60_000, 300_000, 900_000, 3_600_000, 3_600_000]);
+test("the tries back off as failure.ts says: a dropped line after 1, 5 and 15 minutes, then every 30; a file nobody shared looked at again in 30", () => {
+  const now = 1_000_000;
+  const dropped = "could not reach Edit's relay: The socket connection was closed unexpectedly";
+  expect([1, 2, 3, 4, 10].map((tries) => missing.nextAt(tries, dropped, now) - now)).toEqual([60_000, 300_000, 900_000, 1_800_000, 1_800_000]);
+  expect(missing.nextAt(1, "This file isn't shared with Edit's Google account", now) - now).toBe(1_800_000);
 });
 
 test("a hearing moves with its recording when one joins before it; what nobody keeps goes", () => {

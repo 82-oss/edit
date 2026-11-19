@@ -66,6 +66,7 @@ import { windowPid } from "./window.ts";
 import * as exactAfter from "./writer/exact_after.ts";
 import * as writer from "./writer/index.ts";
 import * as writerImports from "./writer/imports.ts";
+import * as writerMissing from "./writer/missing.ts";
 import * as writerStore from "./writer/store.ts";
 import * as ideas from "./ideas/index.ts";
 import * as thumbnails from "./thumbnails/index.ts";
@@ -682,6 +683,12 @@ async function resumeJobs(app: App): Promise<void> {
         diag.warn("writer", `trying ${job.project}'s import again: ${diag.messageOf(error)}`);
         if (!writerImports.importing(job.project)) jobs.wait(app.store.home, job.key, error);
       });
+    },
+    // A script's recordings that didn't come in: every one tried now (its row woke at the soonest's time, or as the connection came back).
+    missing: (job) => {
+      const data = writerStore.dataDir(app.store.home);
+      if (!writerStore.ids(data).includes(job.project)) throw new jobs.Gone("the script is gone");
+      void writerMissing.tryAgain(job.project, true);
     },
     // Claude on a Writer script (a build, a revision, review fixes…): started again from what it was started with and kept.
     writer: async (job) => (await import("./writer/work.ts")).carryOn(app, job),

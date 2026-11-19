@@ -64,7 +64,9 @@ export type Kind =
   /** Footage from a Drive link into an edit (drive_import.ts): downloaded (resuming) and added again after a restart. */
   | "footage"
   /** Claude on a Writer script (writer/jobs.ts: a build, a revision, review fixes…), with what it was started with and kept: carried on from it after a restart (writer/work.ts). */
-  | "writer";
+  | "writer"
+  /** A Writer script's recordings that didn't come in (writer/missing.ts): tried again by itself, joined when they come. */
+  | "missing";
 
 export type State = "queued" | "running" | "waiting" | "done" | "failed" | "given_up";
 
