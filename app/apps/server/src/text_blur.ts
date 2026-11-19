@@ -41,6 +41,7 @@ import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
 import { clipEnd, fps as fpsOf, freshId, sample } from "./project.ts";
 import { round } from "./rust.ts";
+import { stripCovers } from "./text_inpaint.ts";
 
 export { TRACKED };
 export type Spans = [number, number][];
@@ -476,6 +477,23 @@ function known(app: App, source: string, from: number, to: number): Sample[] | n
   }
 }
 
+/** Called when one of a project's stretches is tracked (text_removal.ts cleans it then, where it's cleaned). */
+export const whenTracked: ((app: App, id: string) => void)[] = [];
+
+/**
+ * Their words' boxes (shares) at each of a stretch's frames, from its track: frame k at source second (first + k) / fps,
+ * a box for each place of theirs there (`slotsOf`, `boxAt`). Null while it isn't tracked. The mask text_inpaint.ts cleans by.
+ */
+export function boxesOf(app: App, source: string, from: number, to: number, fps: number, first: number, frames: number): Box[][] | null {
+  const samples = known(app, source, from, to);
+  if (samples === null) return null;
+  const slots = [...slotsOf(samples).values()];
+  return Array.from({ length: frames }, (_, k) => slots.flatMap((one): Box[] => {
+    const box = boxAt(one, (first + k) / fps);
+    return box === null ? [] : [box];
+  }));
+}
+
 /** The project's stretches being tracked or tracked. */
 export function piecesOf(id: string): BlurPiece[] {
   return [...(pieces.get(id)?.values() ?? [])].sort((a, b) => a.media.localeCompare(b.media) || a.from - b.from);
@@ -496,13 +514,13 @@ function laidOf(app: App, id: string): Map<string, Laid[]> {
   return out;
 }
 
-/** The tracked blurs `project` should have now, over every clip of their footage. */
+/** The tracked blurs `project` should have now, over every clip of their footage (none where a strip took their words out: text_inpaint.ts). */
 function wanted(app: App, project: Project): AdjustmentClip[] {
   const laid = laidOf(app, project.id);
   const out: AdjustmentClip[] = [];
   for (const clip of project.clips) {
     if (clip.type !== "video") continue;
-    const mine = laid.get(clip.media);
+    const mine = laid.get(clip.media)?.filter((one) => !stripCovers(project, clip.media, one.from, one.to));
     const media = project.media.find((one) => one.id === clip.media);
     if (mine === undefined || media === undefined) continue;
     out.push(...blursFor(project, clip, media, mine));
@@ -571,6 +589,7 @@ export async function ensure(app: App, id: string, given: BlurPlan[]): Promise<v
             diag.warn("removal", `${id}: ${plan.media.name} ${Math.round(from)}–${Math.round(to)} s couldn't be tracked for the blur: ${piece.why}`);
           }
           await layNow(app, id).catch((error: unknown) => diag.warn("removal", `${id}: laying the tracked blur: ${diag.messageOf(error)}`));
+          for (const listener of whenTracked) listener(app, id);
         },
       });
     }

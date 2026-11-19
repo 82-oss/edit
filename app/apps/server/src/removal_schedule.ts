@@ -36,6 +36,7 @@ import * as sections from "./removal_sections.ts";
 import { EDIT_EVENT } from "./edit_event.ts";
 import * as seams from "./seams.ts";
 import * as textBlur from "./text_blur.ts";
+import * as textInpaint from "./text_inpaint.ts";
 import * as textRemoval from "./text_removal.ts";
 import * as tools from "./tools.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
@@ -109,8 +110,9 @@ export function progressOf(id: string): { done: number; out: number } {
   const marks = watermarkRemoval.piecesOf(id);
   // A file still being looked at for its mark counts as out: its pieces aren't known yet.
   const blurs = textBlur.piecesOf(id);
-  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id);
-  const done = marks.filter((one) => one.state === "done" || one.state === "none").length + blurs.filter((one) => one.state === "done").length;
+  const cleans = textInpaint.piecesOf(id);
+  const out = marks.filter((one) => one.state === "queued" || one.state === "running").length + watermarkRemoval.lookingAt(id) + textBlur.outOf(id) + textInpaint.outOf(id);
+  const done = marks.filter((one) => one.state === "done" || one.state === "none").length + blurs.filter((one) => one.state === "done").length + cleans.filter((one) => one.state === "done").length;
   return { done, out };
 }
 
@@ -179,6 +181,7 @@ async function checkRemoval({ app, args, projectId }: ToolCall): Promise<Content
     const key = typeof one.piece === "string" ? one.piece : "";
     const why = typeof one.why === "string" && one.why.trim() !== "" ? one.why.trim() : "the agent saw it isn't clean";
     if (key.startsWith("watermark:")) said.push(`${key}: ${await watermarkRemoval.reject(app, projectId, key, why)}`);
+    else if (key.startsWith("clean:")) said.push(`${key}: ${await textInpaint.reject(app, projectId, key, why)}`);
     else if (key.startsWith("blur:")) said.push(`${key}: the tracked blur follows their words as read; if it misses some, mark that stretch again tighter`);
     else throw new Error(`no piece ${key}: the pieces are listed by check_removal`);
   }
@@ -190,6 +193,8 @@ async function checkRemoval({ app, args, projectId }: ToolCall): Promise<Content
     ...watermarkRemoval.piecesOf(projectId).map((one) => ({ key: `watermark:${one.media}@${Math.round(one.from * 1000)}`, media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, why: one.error, what: "watermark" as const })),
     // The tracked blur's stretches: looked at with render_frame (nothing to compare), never rejected here.
     ...textBlur.piecesOf(projectId).map((one) => ({ key: one.key, media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, why: one.why, what: "blur" as const })),
+    // Their subtitles taken out by the model (the intro and first cases where this machine has it): a strip, before and after.
+    ...textInpaint.piecesOf(projectId).map((one) => ({ key: one.key, media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, why: one.why, what: "text" as const })),
   ];
   for (const piece of pieces) {
     rows.push(`${piece.key} · ${piece.name} ${Math.round(piece.from)}–${Math.round(piece.to)} s · ${piece.what} · ${piece.state}${piece.why ? ` (${piece.why})` : ""}`);
@@ -385,7 +390,8 @@ export function routes(router: Router<App>): void {
 /** One piece of either worker, as the waiting row's Details lists it. */
 export interface PieceRow {
   key: string;
-  what: "watermark" | "blur";
+  /** blur: the tracked blur; clean: their subtitles taken out by the model (text_inpaint.ts). */
+  what: "watermark" | "blur" | "clean";
   media: string;
   name: string;
   from: number;
@@ -399,6 +405,7 @@ export function pieceRows(id: string): PieceRow[] {
   return [
     ...watermarkRemoval.piecesOf(id).map((one): PieceRow => ({ key: `watermark:${one.media}@${Math.round(one.from * 1000)}`, what: "watermark", media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, ...(one.error ? { why: one.error } : {}) })),
     ...textBlur.piecesOf(id).map((one): PieceRow => ({ key: one.key, what: "blur", media: one.media, name: one.name, from: one.from, to: one.to, state: one.state, ...(one.why ? { why: one.why } : {}) })),
+    ...textInpaint.piecesOf(id).map((one): PieceRow => ({ key: one.key, what: "clean", media: one.media, name: one.name, from: one.from, to: one.to, state: one.state === "waiting" ? "queued" : one.state, ...(one.why ? { why: one.why } : {}) })),
   ];
 }
 
@@ -426,7 +433,7 @@ function noteRun(app: App, id: string): void {
 
 /** What's being taken out, in words: "their text and watermarks". */
 function whatOf(rows: PieceRow[]): string {
-  const text = rows.some((row) => row.what === "blur");
+  const text = rows.some((row) => row.what === "blur" || row.what === "clean");
   const marks = rows.some((row) => row.what === "watermark");
   return text && marks ? "their text and watermarks" : marks ? "their watermarks" : "their text";
 }
@@ -447,6 +454,7 @@ export function backgroundOf(id: string): Status["background"] {
 export function stop(app: App, id: string): void {
   asks.setStopped(app.store.home, id, true);
   watermarkRemoval.stop(id);
+  textInpaint.stop(id);
   active.delete(id);
   diag.info("removal", `${id}: stopped by the person`);
 }
@@ -486,8 +494,10 @@ export function wakeText(rows: PieceRow[]): string {
   // Its first line is what the chat shows as Edit's event: "Their text and watermarks are out of the footage (24 pieces, 1 with the mark left)".
   const what = whatOf(rows);
   const unblurred = left.filter((row) => row.what === "blur").length;
-  const kept = left.length - unblurred;
-  const said = [`${cleaned.length} piece${cleaned.length === 1 ? "" : "s"}`, ...(unblurred > 0 ? [`${unblurred} not blurred`] : []), ...(kept > 0 ? [`${kept} with the mark left`] : [])].join(", ");
+  // A stretch the model couldn't clean keeps its tracked blur.
+  const blurredInstead = left.filter((row) => row.what === "clean").length;
+  const kept = left.length - unblurred - blurredInstead;
+  const said = [`${cleaned.length} piece${cleaned.length === 1 ? "" : "s"}`, ...(unblurred > 0 ? [`${unblurred} not blurred`] : []), ...(blurredInstead > 0 ? [`${blurredInstead} blurred instead`] : []), ...(kept > 0 ? [`${kept} with the mark left`] : [])].join(", ");
   return (
     `${EDIT_EVENT} ${what[0]!.toUpperCase()}${what.slice(1)} ${what === "their text" ? "is" : "are"} out of the footage (${said}).\n\n` +
     (cleaned.length > 0 ? `Cleaned:\n${byFile(cleaned.slice(0, 60))}\n\n` : "") +

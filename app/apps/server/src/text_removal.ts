@@ -34,6 +34,7 @@ import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
 import * as sections from "./removal_sections.ts";
 import * as blur from "./text_blur.ts";
+import * as inpaint from "./text_inpaint.ts";
 import * as tools from "./tools.ts";
 
 // ---------------------------------------------------------------------------
@@ -495,12 +496,51 @@ export function proposed(app: App, project: Project): sections.Proposed[] {
   return out.sort((x, y) => x.from - y.from);
 }
 
-/** Brings `id`'s tracked blurs up to what's marked now (removal_schedule.ts calls it as soon as edits rest). */
+/** The sections the model cleans where this machine has it (text_inpaint.ts): the intro and the first cases (Sphe, Nov 19); the rest is blurred. */
+export const INPAINT_CASES = 2;
+
+/**
+ * Of the blur's stretches, those the model cleans: each marked stretch of a file the intro or the first
+ * INPAINT_CASES cases show (by the file's seconds there: the same seconds reused in a later case are clean there too).
+ */
+export function inpaintPlan(project: Project, plans: blur.BlurPlan[]): inpaint.InpaintPlan[] {
+  if (plans.length === 0 || !inpaint.available()) return [];
+  const fps = fpsOf(project);
+  const shown = new Map<string, [number, number][]>();
+  for (const part of sections.parts(project)) {
+    if (part.case !== null && part.case > INPAINT_CASES) continue;
+    for (const [id, spans] of shownBetween(project, part.start / fps, part.end / fps, true)) shown.set(id, merged([...(shown.get(id) ?? []), ...spans]));
+  }
+  return plans.flatMap((plan) => {
+    const within = shown.get(plan.media.id) ?? [];
+    const spans = plan.spans.filter((span) => sections.intersect([span], within).length > 0);
+    return spans.length === 0 ? [] : [{ media: plan.media, source: plan.source, spans }];
+  });
+}
+
+/** Brings `id`'s tracked blurs, and where this machine has the model its cleaned stretches, up to what's marked now (removal_schedule.ts calls it as soon as edits rest). */
 export async function ensure(app: App, id: string): Promise<void> {
   const live = app.store.get(id);
   if (live === null) return;
-  await blur.ensure(app, id, removal.kinds(inForceOf(app, live.project)).blur.length === 0 ? [] : await blurPlan(app, live.project));
+  const plans = removal.kinds(inForceOf(app, live.project)).blur.length === 0 ? [] : await blurPlan(app, live.project);
+  await blur.ensure(app, id, plans);
+  await inpaint.ensure(app, id, inpaintPlan(live.project, plans), (source, from, to, fps, first, frames) => blur.boxesOf(app, source, from, to, fps, first, frames));
 }
+
+/** Each project's stretches cleaned as soon as their tracks are read (one look at a time a project). */
+const cleaning = new Map<string, Promise<void>>();
+blur.whenTracked.push((app, id) => {
+  if (!inpaint.available() || cleaning.has(id)) return;
+  const run = (async () => {
+    const live = app.store.get(id);
+    if (live === null) return;
+    const plans = removal.kinds(inForceOf(app, live.project)).blur.length === 0 ? [] : await blurPlan(app, live.project);
+    await inpaint.ensure(app, id, inpaintPlan(live.project, plans), (source, from, to, fps, first, frames) => blur.boxesOf(app, source, from, to, fps, first, frames));
+  })()
+    .catch(() => {})
+    .finally(() => cleaning.delete(id));
+  cleaning.set(id, run);
+});
 
 // ---------------------------------------------------------------------------
 // A lesson's examples
