@@ -4146,7 +4146,7 @@
           "type": "string"
         },
         "brief": {
-          "description": "How to change it without making it again (its settings at the top), in a line or two. (An effect's or a sound's; a font has none.)",
+          "description": "How to change it without making it again (its settings at the top), in a line or two, at most 240 characters. (An effect's or a sound's; a font has none.)",
           "type": "string"
         },
         "category": {
@@ -4167,7 +4167,7 @@
           "type": "string"
         },
         "note": {
-          "description": "When to use it, in a line.",
+          "description": "When to use it, in a line (at most 160 characters).",
           "type": "string"
         },
         "project_id": {
