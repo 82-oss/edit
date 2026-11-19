@@ -23,18 +23,30 @@ export { ledger };
 export const FREE_FLOOR_BYTES = 1_000_000_000;
 /** The least Edit keeps free on a disk however small it is. */
 export const KEEP_FREE_LEAST_BYTES = 15_000_000_000;
-/** The share of a disk Edit keeps free when that is more. */
+/** The share of a disk Edit keeps free when that is more, up to `KEEP_FREE_MOST_BYTES`. */
 export const KEEP_FREE_SHARE = 0.1;
+/**
+ * The most Edit keeps free however big the disk. A tenth of every disk counted JJ's 494 GB Mac, 41 GB free, as full
+ * (49 GB kept): his long videos streamed instead of being saved and the "getting footage ready" dialog waited for
+ * ever (nightly-90, Nov 19), and his Midland file was refused on a 1 TB Mac with 50 GB free. macOS itself is well
+ * with a few GB; 20 GB is room to spare.
+ */
+export const KEEP_FREE_MOST_BYTES = 20_000_000_000;
 
 /**
- * What Edit keeps free on the disk holding `dir`: the larger of 15 GB or a tenth of the disk (a 245 GB M4: 24.5 GB;
- * a 128 GB Mac: 15 GB). The cleaner evicts projects that aren't in work to keep it, copies kept only to play sooner
- * stop at it (`cacheFloor`), and work asked for evicts down to it before it starts (`admit`). A disk whose size is
- * unknown keeps the 15 GB.
+ * What Edit keeps free on the disk holding `dir`: a tenth of the disk, at least 15 GB and at most 20 GB (a 245 GB M4:
+ * 20 GB; JJ's 494 GB: 20 GB; a 128 GB Mac: 15 GB). The cleaner evicts projects that aren't in work to keep it, copies
+ * kept only to play sooner stop at it (`cacheFloor`), and work asked for evicts down to it before it starts (`admit`).
+ * A disk whose size is unknown keeps the 15 GB. Held against the team's real Macs in test/storage_machines.test.ts.
  */
 export function keepFreeBytes(dir: string): number {
-  const total = diskHooks.total(dir);
-  return Math.max(KEEP_FREE_LEAST_BYTES, Number.isFinite(total) && total > 0 ? Math.floor(total * KEEP_FREE_SHARE) : 0);
+  return keepFreeFor(diskHooks.total(dir));
+}
+
+/** `keepFreeBytes` for a disk of `total` bytes (unknown: NaN or 0). */
+export function keepFreeFor(total: number): number {
+  const share = Number.isFinite(total) && total > 0 ? Math.floor(total * KEEP_FREE_SHARE) : 0;
+  return Math.max(KEEP_FREE_LEAST_BYTES, Math.min(share, KEEP_FREE_MOST_BYTES));
 }
 
 // ---------------------------------------------------------------------------
