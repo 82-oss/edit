@@ -29,6 +29,7 @@ import * as removalSchedule from "../src/removal_schedule.ts";
 import * as cloudMedia from "../src/cloud_media.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import * as web from "../src/vmake_web.ts";
+import * as packs from "../src/removal_packs.ts";
 import * as wm from "../src/watermark_removal.ts";
 import type { WatermarkRemoved } from "../src/native/index.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
@@ -1502,3 +1503,210 @@ test("the agent looks at each piece and rejects one that isn't clean: done once 
     cleanup();
   }
 }, 120_000);
+
+// ---------------------------------------------------------------------------
+// Stretches of many files as one file on vmake.ai (Sphe, Nov 19)
+
+/** A labelled file of its own (its own bytes, so its own source) at `rate`. */
+async function labelledFile(dir: string, name: string, seconds: number, rate: string): Promise<string> {
+  const file = join(dir, `${name}.mp4`);
+  await tools.run([
+    tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", `color=c=0x7f7f7f:size=320x180:rate=${rate}:duration=${seconds},format=yuv420p,noise=alls=12:allf=t,drawbox=x=10:y=40:w=80:h=24:color=white:t=fill`,
+    "-c:v", "libx264", "-qp", "0", file,
+  ]);
+  return file;
+}
+
+/** A project of channel ch-taught with each file one clip after another, their words read (a label that stays put). */
+async function filesProject(app: App, files: { path: string; seconds: number; fps: number }[], name = "p"): Promise<string> {
+  const live = app.store.create(name, { width: 1920, height: 1080, fps: 30 });
+  const project = structuredClone(live.project) as Project;
+  let at = 0;
+  project.media = files.map((one, index): Media => ({ id: `m${index + 1}`, name: `tape ${index + 1}`, path: one.path, kind: "video", duration: one.seconds, width: 320, height: 180, fps: one.fps, has_audio: false }));
+  project.clips = files.map((one, index): VideoClip => {
+    const clip = { id: `f${index + 1}`, track: "v1", start: at, duration: Math.round(one.seconds * 30), color: "blue", fade_in: 0, fade_out: 0, type: "video", media: `m${index + 1}`, source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as VideoClip;
+    at += clip.duration;
+    return clip;
+  });
+  project.channel = "ch-taught";
+  await app.store.replace(project.id, null, project, "test");
+  for (const media of project.media) await burned.warm(app.media, media);
+  takeProposed(app, project.id);
+  return project.id;
+}
+
+/** vmake.ai's website as `jobList` keeps it, paid by the file (so it packs). */
+const website = (site: ReturnType<typeof jobList>): tr.Provider => ({ ...site.provider, wholeFiles: true, pieceQuality: { crf: 20, rate: 6_000_000 } });
+
+const out = (tries: number, more: Partial<tr.Out> = {}): tr.Out => ({ tries, at: 0, ...more });
+
+test("which stretches go as one file: one mode's, up to its length, never Smart Pro with Smart; a pack out as it went; a piece out alone, or unpacked, alone", () => {
+  const stretch = (key: string, mode: web.Mode, seconds: number) => ({ key, mode, seconds });
+  const many = [stretch("a|0|5", "pro", 5), stretch("b|0|3|smart", "smart", 3), stretch("c|10|17", "pro", 7), stretch("d|0|4|smart", "smart", 4), stretch("e|2|6|smart", "smart", 4)];
+  const units = tr.bundles(many, {});
+  expect(units.map((one) => [one.members, one.pack?.mode])).toEqual([
+    [[0, 2], "pro"],
+    [[1, 3, 4], "smart"],
+  ]);
+  expect(units[0]!.pack!.members).toEqual(["a|0|5", "c|10|17"]);
+  expect(units[0]!.pack!.key).toBe(`pack|${units[0]!.pack!.id}`);
+  // Deterministic: the same stretches, the same packs and names.
+  expect(tr.bundles(structuredClone(many), {})).toEqual(units);
+  // The limits: Smart Pro 300 s, Smart 600 s (the website's quality holds Smart to 360 s).
+  const long = [stretch("a|0|290", "pro", 290), stretch("b|0|20", "pro", 20), stretch("c|0|290|smart", "smart", 290), stretch("d|0|290|smart", "smart", 290)];
+  expect(tr.bundles(long, {}).map((one) => one.members)).toEqual([[0], [1], [2, 3]]);
+  expect(tr.bundles(long, {}, { rate: 6_000_000 }).map((one) => one.members)).toEqual([[0], [1], [2], [3]]);
+  // A pack in vmake.ai's hands goes as it went (a member no longer asked for left out), whatever else there is now.
+  const sent = { "pack|abc": out(1, { sent: true, pack: { mode: "smart", members: ["b|0|3|smart", "gone|0|9|smart"], layout: packs.layout([{ width: 2, height: 2, rate: { num: 30, den: 1 }, frames: 1 }]) } }) };
+  expect(tr.bundles(many, sent).map((one) => [one.members, one.pack?.id ?? null])).toEqual([
+    [[1], "abc"],
+    [[0, 2], units[0]!.pack!.id],
+    [[3, 4], expect.any(String)],
+  ]);
+  // A pack never sent is laid again; a piece out on its own, one unpacked after its pack failed, stay alone; a try counts in the name.
+  expect(tr.bundles(many, { "pack|abc": { ...sent["pack|abc"], sent: false } }).map((one) => one.members)).toEqual([[0, 2], [1, 3, 4]]);
+  expect(tr.bundles(many, { "a|0|5": out(1, { sent: true }), "b|0|3|smart": out(1, { sent: false, alone: true }) }).map((one) => one.members)).toEqual([[0], [1], [2], [3, 4]]);
+  expect(tr.bundles(many, { "a|0|5": out(2, { sent: false }) })[0]!.pack!.id).not.toBe(units[0]!.pack!.id);
+});
+
+test("short stretches of several files (another rate among them) go as one file in their mode, come back as each file's own piece and strip, and are never paid twice", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-packed");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  const shelf = tr.shelfIn(join(dir, "shelf"), () => false);
+  tr.useShelf(shelf);
+  const site = jobList();
+  const modes: (web.Mode | undefined)[] = [];
+  const seconds: number[] = [];
+  const labels: string[] = [];
+  const base = website(site);
+  tr.useProvider({ ...base, remove: (input, output, length, signal, whole, begun, label, look, mode) => (modes.push(mode), seconds.push(length), labels.push(label ?? ""), base.remove(input, output, length, signal, whole, begun, label, look, mode)) });
+  try {
+    const files = [
+      { path: await labelledFile(dir, "one", 8, "30"), seconds: 8, fps: 30 },
+      { path: await labelledFile(dir, "two", 9, "25"), seconds: 9, fps: 25 },
+      { path: await labelledFile(dir, "three", 10, "30"), seconds: 10, fps: 30 },
+    ];
+    const id = await filesProject(app, files);
+    const planned = (await tr.plan(app, store.get(id)!.project, base)).files;
+    expect(planned.map((one) => [one.media.id, one.mode, one.send])).toEqual([
+      ["m1", "smart", [[0, 8]]],
+      ["m2", "smart", [[0, 9]]],
+      ["m3", "smart", [[0, 10]]],
+    ]);
+    await removalSchedule.ensure(app, id);
+    await until(() => store.get(id)!.project.media.filter((media) => media.cleans != null).length === 3, 240_000);
+    await tr.settled(id);
+    // One file, in their mode, as long as the three: named from its members, so asked again it's the same card.
+    expect(site.counts.uploads).toBe(1);
+    expect(modes).toEqual(["smart"]);
+    expect(seconds[0]).toBeCloseTo(27, 1);
+    const sources = await Promise.all(store.get(id)!.project.media.filter((media) => media.cleans == null).map((media) => tr.sourceOf(media)));
+    const members = sources.map((source, index) => `${source}|0|${files[index]!.seconds}|smart`);
+    expect(labels[0]).toBe(`pack|${packs.packId("smart", members.map((key) => ({ key, tries: 0 })))}|1`);
+    // Each file's own piece on the shelf (by file and seconds, Smart's), at its own rate, and its own strip.
+    for (const [index, source] of sources.entries()) {
+      const kept = await shelf.list(source);
+      expect(kept.map((one) => [one.from, one.to, one.mode])).toEqual([[0, files[index]!.seconds, "smart"]]);
+      const back = await packs.cutOf(await shelf.bring(source, kept[0]!));
+      expect(back.rate).toEqual(index === 1 ? { num: 25, den: 1 } : { num: 30, den: 1 });
+      expect(back.frames).toBe(files[index]!.seconds * files[index]!.fps);
+    }
+    expect(store.get(id)!.project.media.filter((media) => media.cleans != null).map((media) => [media.cleans!.media, media.cleans!.from, media.cleans!.to]).sort()).toEqual([
+      ["m1", 0, 8],
+      ["m2", 0, 9],
+      ["m3", 0, 10],
+    ]);
+    expect(tr.piecesOf(id).map((one) => one.state)).toEqual(["check", "check", "check"]);
+    // Nothing left out at vmake.ai.
+    expect(JSON.parse(fs.readFileSync(join(app.store.home, "text-removal.json"), "utf8")).out).toEqual({});
+    // The same footage in another project (a reused case): each kept piece, nothing sent.
+    const other = await filesProject(app, files, "q");
+    await tr.ensure(app, other);
+    await tr.settled(other);
+    expect(site.counts.uploads).toBe(1);
+    expect(store.get(other)!.project.media.filter((media) => media.cleans != null).length).toBe(3);
+  } finally {
+    cleanup();
+  }
+}, 400_000);
+
+test("a pack vmake.ai refuses is unpacked: each stretch goes on its own, never in a pack again", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-packed-refused");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const site = jobList((card, uploads) => (card.failed = uploads === 1));
+  const labels: string[] = [];
+  const base = website(site);
+  tr.useProvider({ ...base, remove: (input, output, length, signal, whole, begun, label, look, mode) => (labels.push(label ?? ""), base.remove(input, output, length, signal, whole, begun, label, look, mode)) });
+  try {
+    const files = [
+      { path: await labelledFile(dir, "one", 8, "30"), seconds: 8, fps: 30 },
+      { path: await labelledFile(dir, "two", 9, "30"), seconds: 9, fps: 30 },
+    ];
+    const id = await filesProject(app, files);
+    await removalSchedule.ensure(app, id);
+    await until(() => store.get(id)!.project.media.filter((media) => media.cleans != null).length === 2, 240_000);
+    await tr.settled(id);
+    expect(site.counts.uploads).toBe(3);
+    expect(labels[0]!.startsWith("pack|")).toBe(true);
+    expect(labels.slice(1).every((label) => !label.startsWith("pack|"))).toBe(true);
+    expect(tr.piecesOf(id).map((one) => one.state)).toEqual(["check", "check"]);
+    expect(JSON.parse(fs.readFileSync(join(app.store.home, "text-removal.json"), "utf8")).out).toEqual({});
+  } finally {
+    cleanup();
+  }
+}, 400_000);
+
+test("an update while a pack is at vmake.ai: after the restart the pack is looked for under the same name, its result cut back and used; one file counted", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("removal-packed-restart");
+  reading({ 1: [LABEL], 3: [LABEL], 5: [LABEL], 7: [LABEL] });
+  teach({ text: true });
+  tr.useShelf(tr.shelfIn(join(dir, "shelf"), () => false));
+  const names: { name: string; sentBefore: boolean }[] = [];
+  let uploads = 0;
+  let finish = () => {};
+  const processing = new Promise<void>((resolve) => (finish = resolve));
+  tr.useProvider({
+    id: "vmake-web",
+    wholeFiles: true,
+    pieceQuality: { crf: 20, rate: 6_000_000 },
+    price: () => "",
+    async remove(input, output, length, _signal, _whole, _begun, label, look) {
+      const name = web.pieceName(length, label);
+      names.push({ name, sentBefore: look?.sentBefore === true });
+      if (look?.sentBefore !== true) {
+        uploads += 1;
+        look?.sent();
+        fs.copyFileSync(input, join(dir, "sent.mp4"));
+      }
+      // The Edit that sent it stops here for good (the update ended its process); vmake.ai's job goes on.
+      if (names.length === 1) await new Promise(() => {});
+      await processing;
+      await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-i", join(dir, "sent.mp4"), "-vf", "drawbox=x=8:y=38:w=84:h=28:color=0x7f7f7f@1:t=fill", "-c:v", "libx264", "-qp", "0", output]);
+      return { credits: null };
+    },
+    async check() {},
+  });
+  try {
+    const files = [
+      { path: await labelledFile(dir, "one", 8, "30"), seconds: 8, fps: 30 },
+      { path: await labelledFile(dir, "two", 9, "25"), seconds: 9, fps: 25 },
+    ];
+    const id = await filesProject(app, files);
+    await removalSchedule.ensure(app, id);
+    await until(() => names.length === 1, 240_000);
+    // The update: this Edit's memory gone, its disk kept; vmake.ai finishes the job.
+    tr.reset();
+    finish();
+    await removalSchedule.resume(app);
+    await until(() => store.get(id)!.project.media.filter((media) => media.cleans != null).length === 2, 240_000);
+    await tr.settled(id);
+    expect(names.map((one) => one.sentBefore)).toEqual([false, true]);
+    expect(names[1]!.name).toBe(names[0]!.name);
+    expect(uploads).toBe(1);
+  } finally {
+    cleanup();
+  }
+}, 400_000);

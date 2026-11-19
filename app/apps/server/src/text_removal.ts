@@ -65,6 +65,7 @@ import * as blur from "./text_blur.ts";
 import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
 import * as modes from "./removal_modes.ts";
+import * as packs from "./removal_packs.ts";
 import { holderFor } from "./sync_core.ts";
 import * as tools from "./tools.ts";
 import * as vmake from "./vmake_api.ts";
@@ -552,8 +553,11 @@ export async function makeStrip(original: string, cleaned: string, info: { width
   return { box: [x / width, y / height, (x + w) / width, (y + h) / height] as Box };
 }
 
-/** The stretch [from, to) of `input` at full quality, as a file Vmake takes (≤ `maxBytes`), no sound. */
-export async function cutPiece(input: string, from: number, to: number, out: string, maxBytes = 300_000_000, quality: { crf: number; rate: number } = { crf: 14, rate: 20_000_000 }): Promise<void> {
+/**
+ * The stretch [from, to) of `input` at full quality, as a file Vmake takes (≤ `maxBytes`), no sound. `exact`: its
+ * frames as decoded, one for one, timed k/F at the source's rate (a packed stretch's original: removal_packs.ts).
+ */
+export async function cutPiece(input: string, from: number, to: number, out: string, maxBytes = 300_000_000, quality: { crf: number; rate: number } = { crf: 14, rate: 20_000_000 }, exact?: packs.Rate): Promise<void> {
   const seconds = to - from;
   // Under the size cap whatever the footage: the bitrate it leaves, at most the quality's.
   const rate = Math.min(quality.rate, Math.floor((maxBytes * 0.9 * 8) / Math.max(1, seconds)));
@@ -562,7 +566,7 @@ export async function cutPiece(input: string, from: number, to: number, out: str
   await tools.run(
     [
       tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...tools.urlArgs(input), "-ss", String(from), "-i", input, "-t", String(seconds),
-      "-map", "0:v:0", "-an", "-c:v", "libx264", "-preset", "medium", "-crf", String(quality.crf), "-maxrate", String(rate), "-bufsize", String(rate * 2), "-pix_fmt", "yuv420p", "-movflags", "+faststart", partial,
+      "-map", "0:v:0", "-an", ...(exact !== undefined ? ["-vf", packs.timed(exact), "-fps_mode", "passthrough"] : []), "-c:v", "libx264", "-preset", "medium", "-crf", String(quality.crf), "-maxrate", String(rate), "-bufsize", String(rate * 2), "-pix_fmt", "yuv420p", "-movflags", "+faststart", partial,
     ],
     { background: true },
   );
@@ -658,7 +662,7 @@ interface Kept {
  * given up on and blurred (in the projects `covered`), never sent again by
  * itself.
  */
-interface Out {
+export interface Out {
   tries: number;
   at: number;
   /** Missing only in what a build before Nov 18 kept: it may have gone in. */
@@ -668,6 +672,23 @@ interface Out {
   next?: number;
   lost?: boolean;
   covered?: string[];
+  /** Sent on its own after the pack it was in failed: never packed again. */
+  alone?: boolean;
+  /** A pack (kept under `pack|<id>`): its mode, its members' places among those out (in its order), and where each sits in it. */
+  pack?: { mode: web.Mode; members: string[]; layout: packs.Layout };
+}
+
+/** Where a pack's place among those out starts (`pack|<id>`). */
+const PACK = "pack|";
+
+/** A piece's place among those out (`outKeyOf`) read back: its file, seconds and mode. */
+export function parseOutKey(key: string): { source: string; from: number; to: number; mode: web.Mode } | null {
+  const parts = key.split("|");
+  const mode: web.Mode = parts.at(-1) === "smart" ? "smart" : "pro";
+  if (mode === "smart") parts.pop();
+  const [to, from] = [Number(parts.pop()), Number(parts.pop())];
+  const source = parts.join("|");
+  return source !== "" && Number.isFinite(from) && Number.isFinite(to) && to > from ? { source, from, to, mode } : null;
 }
 
 /**
@@ -710,11 +731,19 @@ function outstanding(home: string, key: string): Out | null {
  */
 function inHandsOf(home: string, source: string): { from: number; to: number; mode: web.Mode }[] {
   const out: { from: number; to: number; mode: web.Mode }[] = [];
-  for (const [key, one] of Object.entries(readKept(home).out ?? {})) {
+  const all = readKept(home).out ?? {};
+  for (const [key, one] of Object.entries(all)) {
     if (!key.startsWith(`${source}|`) || one?.sent === false || one?.lost === true) continue;
-    const rest = key.slice(source.length + 1).split("|");
-    const [from, to] = [Number(rest[0]), Number(rest[1])];
-    if (Number.isFinite(from) && Number.isFinite(to) && to > from) out.push({ from, to, mode: rest[2] === "smart" ? "smart" : "pro" });
+    const read = parseOutKey(key);
+    if (read?.source === source) out.push({ from: read.from, to: read.to, mode: read.mode });
+  }
+  // A pack's stretches as it went (Nov 19: stretches of many files sent as one).
+  for (const [key, one] of Object.entries(all)) {
+    if (!key.startsWith(PACK) || one?.pack === undefined || one.sent !== true || one.lost === true) continue;
+    for (const member of one.pack.members) {
+      const read = parseOutKey(member);
+      if (read?.source === source && !out.some((has) => has.from === read.from && has.to === read.to && has.mode === read.mode)) out.push({ from: read.from, to: read.to, mode: read.mode });
+    }
   }
   return out;
 }
@@ -1770,6 +1799,47 @@ function lookLater(app: App, id: string, at: number): void {
   lookTimers.set(id, { at, timer });
 }
 
+/**
+ * Paid pieces (by their place among those out, mode and length) as the files
+ * sent, by index: on the website's plan (paid by the file) stretches of many
+ * files of one mode packed into one of up to its length (Sphe, Nov 19: two
+ * edits' intros and first cases were ~95 files of a few seconds each), never a
+ * Smart Pro stretch with a Smart one; a pack already in vmake.ai's hands as it
+ * went (its members still asked for); a piece on its own there, or sent alone
+ * after its pack failed, on its own. `out`: what's out now (Kept.out).
+ */
+export function bundles(stretches: { key: string; mode: web.Mode; seconds: number }[], out: Record<string, Out>, quality?: { rate: number }): { members: number[]; pack?: { id: string; key: string; mode: web.Mode; members: string[] } }[] {
+  const units: ReturnType<typeof bundles> = [];
+  const free = new Set(stretches.map((_, index) => index));
+  for (const [key, one] of Object.entries(out)) {
+    if (!key.startsWith(PACK) || one?.pack === undefined || (one.sent !== true && one.lost !== true)) continue;
+    const members = one.pack.members.flatMap((member) => [...free].filter((index) => stretches[index]!.key === member));
+    if (members.length === 0) continue;
+    for (const index of members) free.delete(index);
+    units.push({ members, pack: { id: key.slice(PACK.length), key, mode: one.pack.mode, members: one.pack.members } });
+  }
+  const loose: number[] = [];
+  for (const index of free) {
+    const was = out[stretches[index]!.key];
+    if (was !== undefined && (was.alone === true || was.sent !== false || was.lost === true)) units.push({ members: [index] });
+    else loose.push(index);
+  }
+  for (const mode of ["pro", "smart"] as const) {
+    const mine = loose.filter((index) => stretches[index]!.mode === mode).map((index) => ({ index, seconds: stretches[index]!.seconds }));
+    for (const group of packs.packsOf(mine, packs.limitOf(mode, quality))) {
+      const members = group.map((one) => one.index);
+      if (members.length === 1) {
+        units.push({ members });
+        continue;
+      }
+      const keys = members.map((index) => stretches[index]!.key);
+      const id = packs.packId(mode, keys.map((key) => ({ key, tries: out[key]?.tries ?? 0 })));
+      units.push({ members, pack: { id, key: `${PACK}${id}`, mode, members: keys } });
+    }
+  }
+  return units;
+}
+
 function start(app: App, id: string, provider: Provider, files: FilePlan[]): void {
   if (runs.get(id)?.over === false) return;
   const jobs = files.flatMap((file) => [...file.use.map((cached) => ({ file, cached, range: [cached.from, cached.to] as [number, number] })), ...file.send.map((range) => ({ file, cached: null as Cached | null, range }))]);
@@ -1785,8 +1855,9 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
   }
   const sent = { seconds: 0, credits: 0, creditsSaid: false };
   const stamps = new Map<string, Promise<Box[]>>();
-  /** `begun`: Vmake took the piece (the account works): what waits behind it goes. */
-  const work = async (job: (typeof jobs)[number], begun: () => void = () => {}) => {
+  type Job = (typeof jobs)[number];
+  /** `begun`: Vmake took the piece (the account works): what waits behind it goes. `cut`: its original is cut already (a pack's member). */
+  const work = async (job: Job, begun: () => void = () => {}, cut = false) => {
     if (run.stop.signal.aborted) return;
     const { file, range } = job;
     const [from, to] = range;
@@ -1840,7 +1911,7 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
       const input = await cloudMedia.originalInput(app.store.cacheDir(), file.media);
       if (!stamps.has(file.media.id)) stamps.set(file.media.id, stampOf(app, file.media, input));
       const original = `${stem}.original.mp4`;
-      await cutPiece(input, from, to, original, 300_000_000, provider.pieceQuality);
+      if (!cut || !fs.existsSync(original)) await cutPiece(input, from, to, original, 300_000_000, provider.pieceQuality);
       let cached = job.cached;
       if (cached === null) {
         if (blocked(app.store.home, provider.id) !== null) {
@@ -1935,31 +2006,211 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
       run.done += 1;
     }
   };
+  const home = app.store.home;
+  const dir = join(app.store.cacheDir(), "cleaned", "work");
+  const keyOf = (job: Job) => outKeyOf(job.file.source, job.range[0], job.range[1], job.file.mode);
+  const stemOf = (job: Job) => `${id}-${job.file.media.id}-${Math.round(job.range[0] * 1000)}.`;
+  /** What's sent as one file: a piece, or a pack of stretches of many files (`pack`: its place among those out). */
+  type Unit = { jobs: Job[]; pack?: { id: string; key: string; mode: web.Mode; members: string[] } };
+  /** What's left to send (a pack that failed puts its stretches back, each on its own). */
+  const queue: Unit[] = [];
+
+  const unitsOf = (paid: Job[]): Unit[] =>
+    provider.wholeFiles !== true
+      ? paid.map((job) => ({ jobs: [job] }))
+      : bundles(
+          paid.map((job) => ({ key: keyOf(job), mode: job.file.mode, seconds: job.range[1] - job.range[0] })),
+          readKept(home).out ?? {},
+          provider.pieceQuality,
+        ).map((one) => ({ jobs: one.members.map((index) => paid[index]!), ...(one.pack !== undefined ? { pack: one.pack } : {}) }));
+
+  /**
+   * A pack: each stretch's original cut (its own size and rate, frame by
+   * frame), the pack laid and sent as one file under a name from its members
+   * (after a restart its card is picked up, never sent twice), Vmake's result
+   * cut back into each stretch, kept on the shelf as its own piece, then laid
+   * and checked as any (`work`). One that fails (vmake.ai refused it, it never
+   * went in, its result can't be cut back) is unpacked: each stretch goes on
+   * its own. One in vmake.ai's hands that a look couldn't tell waits, as a
+   * piece does.
+   */
+  const workPack = async (unit: Unit & { pack: NonNullable<Unit["pack"]> }, begun: () => void = () => {}): Promise<void> => {
+    if (run.stop.signal.aborted) return;
+    const { pack, jobs: members } = unit;
+    const label = `${members.length} stretches packed in one file${pack.mode === "smart" ? " (Smart)" : ""}`;
+    const pieceOf = (job: Job) => pieceKeyOf(job.file.media.id, job.range[0]);
+    const note = (state: TextPiece["state"], extra: Partial<TextPiece> = {}) => {
+      for (const job of members) {
+        const known = textPieces.get(id)?.get(pieceOf(job));
+        if (known !== undefined) notePiece(id, { ...known, state, ...extra });
+      }
+    };
+    // Members passed on (to `work`, or back to the queue on their own): counted there.
+    const handed = new Set<Job>();
+    const unpackAlone = (why: string) => {
+      diag.warn("removal", `${id}: ${label}: ${why}; each stretch goes on its own`);
+      for (const job of members) {
+        const key = keyOf(job);
+        setOutstanding(home, key, { tries: Math.max(1, outstanding(home, key)?.tries ?? 0), sent: false, alone: true });
+        handed.add(job);
+      }
+      setOutstanding(home, pack.key, null);
+      note("queued");
+      queue.push(...members.map((job): Unit => ({ jobs: [job] })));
+    };
+    const lose = async (why: string) => {
+      for (const job of members) {
+        await reject(app, id, pieceOf(job), LOST, true);
+        notePiece(id, { ...textPieces.get(id)!.get(pieceOf(job))!, state: "failed", why: LOST, lost: true });
+      }
+      diag.warn("removal", `${id}: ${label}: ${why}`);
+    };
+    note("running");
+    fs.mkdirSync(dir, { recursive: true });
+    const stem = join(dir, `${id}-pack-${pack.id}`);
+    try {
+      const was = outstanding(home, pack.key);
+      if (was?.lost === true) {
+        // vmake.ai never showed it back after every look: blurred (once a project), never sent again by itself.
+        if (!(was.covered ?? []).includes(id)) {
+          await lose("vmake.ai never gave it back: blurred");
+          setOutstanding(home, pack.key, { ...was, covered: [...(was.covered ?? []), id] });
+        } else note("failed", { why: LOST, lost: true });
+        return;
+      }
+      if (was?.sent === true && was.next !== undefined && was.next > Date.now()) {
+        note("waiting", { lookAt: was.next });
+        lookLater(app, id, was.next);
+        return;
+      }
+      const order = was?.pack?.members ?? pack.members;
+      // Each stretch's original from its source at full quality, its frames as decoded (the strip's like-for-like).
+      const sources: packs.Source[] = [];
+      const cuts: packs.Cut[] = [];
+      for (const job of members) {
+        const input = await cloudMedia.originalInput(app.store.cacheDir(), job.file.media);
+        if (!stamps.has(job.file.media.id)) stamps.set(job.file.media.id, stampOf(app, job.file.media, input));
+        const rate = await packs.rateOf(input);
+        const [from, to] = job.range;
+        const original = join(dir, `${stemOf(job)}original.mp4`);
+        await cutPiece(input, from, to, original, packs.PACK_BYTES, provider.pieceQuality, rate);
+        cuts.push(await packs.cutOf(original));
+        sources.push({ input, from, seconds: to - from, rate });
+      }
+      // Sent before: as it was laid then; else laid now.
+      const layout = was?.pack?.layout ?? packs.layout(cuts);
+      for (const [index, job] of members.entries()) {
+        const place = layout.places[order.indexOf(keyOf(job))];
+        if (place !== undefined && place.frames !== cuts[index]!.frames) diag.warn("removal", `${id}: ${label}: ${job.file.media.name} was cut ${cuts[index]!.frames} frames, ${place.frames} when it was sent`);
+      }
+      if (blocked(home, provider.id) !== null) {
+        note("held");
+        return;
+      }
+      const tries = was?.tries ?? 1;
+      const going: Omit<Out, "at"> = was !== null ? { ...was, tries } : { tries, sent: false, pack: { mode: pack.mode, members: pack.members, layout } };
+      setOutstanding(home, pack.key, going);
+      const input = `${stem}.pack.mp4`;
+      if (was?.sent !== true) await packs.build(sources, layout, input, provider.pieceQuality ?? { crf: 14, rate: 20_000_000 });
+      const out = `${stem}.vmake.mp4`;
+      try {
+        await provider.remove(input, out, layout.seconds, run.stop.signal, undefined, begun, `${pack.key}|${tries}`, {
+          sentBefore: was?.sent === true,
+          sent: () => setOutstanding(home, pack.key, { ...going, sent: true, since: going.since ?? Date.now() }),
+        }, pack.mode);
+      } catch (error) {
+        if (error instanceof VmakeError && error.scope === "account") throw error;
+        const now = outstanding(home, pack.key) ?? going;
+        if (!(error instanceof web.Refused) && now.sent === true) {
+          // In vmake.ai's hands and nothing says it's lost: looked for again later under the same name, never sent twice.
+          const looks = (now.looks ?? 0) + 1;
+          const since = now.since ?? Date.now();
+          if (looks > looking.afterMs.length) {
+            setOutstanding(home, pack.key, { ...now, looks, since, lost: true, covered: [id] });
+            await lose(`vmake.ai never showed it back in ${Math.round((Date.now() - since) / 60_000)} min (${looks} looks; last: ${diag.messageOf(error)}): given up on, blurred, not sent again`);
+            return;
+          }
+          const next = Date.now() + looking.afterMs[looks - 1]!;
+          setOutstanding(home, pack.key, { ...now, looks, since, next });
+          diag.info("removal", `${id}: ${label}: waiting on vmake.ai (${diag.messageOf(error)}); looked for again in ${Math.round((next - Date.now()) / 60_000)} min under the same name, nothing sent`);
+          note("waiting", { lookAt: next });
+          lookLater(app, id, next);
+          return;
+        }
+        unpackAlone(diag.messageOf(error));
+        return;
+      }
+      // Back: each stretch cut out of it at its own size and rate, kept as its own piece (a member no longer here kept too).
+      const kept = new Map<string, Cached>();
+      try {
+        const begin = await packs.fits(out, layout);
+        for (const [index, member] of order.entries()) {
+          const read = parseOutKey(member);
+          if (read === null) continue;
+          const file = `${stem}.back-${index}.mp4`;
+          await packs.unpack(out, layout, index, file, begin);
+          kept.set(member, await shelfOf(app).keep(read.source, file, read.from, read.to, provider.id, read.mode));
+          listings.delete(read.source);
+        }
+      } catch (error) {
+        unpackAlone(`vmake.ai's result couldn't be cut back into its stretches (${diag.messageOf(error)})`);
+        return;
+      }
+      setOutstanding(home, pack.key, null);
+      sent.seconds += layout.seconds;
+      diag.info("removal", `${id}: ${label}, ${layout.seconds.toFixed(1)} s: back from vmake.ai, each stretch kept`);
+      for (const job of members) {
+        handed.add(job);
+        await work({ ...job, cached: kept.get(keyOf(job)) ?? null }, () => {}, true);
+      }
+    } catch (error) {
+      if (error instanceof VmakeError && error.scope === "account") {
+        run.account = error.reason;
+        block(home, provider.id, error);
+        run.stop.abort();
+        note("held");
+        return;
+      }
+      unpackAlone(diag.messageOf(error));
+    } finally {
+      const left = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+      for (const name of left.filter((one) => one.startsWith(`${id}-pack-${pack.id}.`))) fs.rmSync(join(dir, name), { force: true });
+      for (const job of members) {
+        if (handed.has(job)) continue;
+        for (const name of left.filter((one) => one.startsWith(stemOf(job)))) fs.rmSync(join(dir, name), { force: true });
+        run.done += 1;
+      }
+    }
+  };
+
+  const send = (unit: Unit, begun?: () => void): Promise<void> => (unit.pack !== undefined ? workPack(unit as Unit & { pack: NonNullable<Unit["pack"]> }, begun) : work(unit.jobs[0]!, begun));
+
   void (async () => {
     const started = Date.now();
-    const pool = (queue: typeof jobs) =>
+    const pool = (list: typeof jobs) =>
       Promise.all(
-        Array.from({ length: Math.min(provider.atOnce?.() ?? PARALLEL, queue.length) }, async () => {
-          for (let job = queue.shift(); job !== undefined; job = queue.shift()) await work(job);
+        Array.from({ length: Math.min(provider.atOnce?.() ?? PARALLEL, list.length) }, async () => {
+          for (let job = list.shift(); job !== undefined; job = list.shift()) await work(job);
         }),
       );
-    // Kept pieces first (free); then one piece sent alone until Vmake has taken it (so an account that can't be used is
+    // Kept pieces first (free); then one file sent alone until Vmake has taken it (so an account that can't be used is
     // told once, never three times at once), then the rest, PARALLEL at once (Nov 17, Sphe's M4: the first piece was
     // waited on to its end, ~7 min, before any other went).
     await pool(jobs.filter((job) => job.cached !== null));
     const paid = jobs.filter((job) => job.cached === null);
-    if (paid.length > 0) {
-      const rest = paid.slice(1);
+    queue.push(...unitsOf(paid));
+    const files = queue.length;
+    if (queue.length > 0) {
       const drain = async () => {
-        for (let job = rest.shift(); job !== undefined; job = rest.shift()) await work(job);
+        for (let unit = queue.shift(); unit !== undefined; unit = queue.shift()) await send(unit);
       };
       let begun = () => {};
       const taken = new Promise<void>((resolve) => (begun = resolve));
-      const alone = work(paid[0]!, begun);
+      const alone = send(queue.shift()!, begun);
       await Promise.race([alone, taken]);
-      // The first piece's worker carries on with the rest once it's done.
+      // The first file's worker carries on with the rest once it's done.
       const first = alone.then(drain);
-      await Promise.all([first, ...Array.from({ length: Math.min((provider.atOnce?.() ?? PARALLEL) - 1, rest.length) }, drain)]);
+      await Promise.all([first, ...Array.from({ length: Math.min((provider.atOnce?.() ?? PARALLEL) - 1, queue.length) }, drain)]);
     }
     const kept = readKept(app.store.home);
     kept.runs.push({
@@ -1973,7 +2224,7 @@ function start(app: App, id: string, provider: Provider, files: FilePlan[]): voi
       estimate: provider.id === "vmake-api" ? Math.round(sent.seconds * API_CREDITS_A_SECOND) : null,
     });
     writeKept(app.store.home, kept);
-    diag.info("removal", `${id}: ${jobs.length} pieces in ${Math.round((Date.now() - started) / 1000)} s (${sent.seconds.toFixed(1)} s sent${run.account !== null ? `, stopped: ${run.account}` : ""})`);
+    diag.info("removal", `${id}: ${jobs.length} pieces in ${Math.round((Date.now() - started) / 1000)} s (${sent.seconds.toFixed(1)} s sent${paid.length > 0 ? ` in ${files} ${files === 1 ? "file" : "files"}` : ""}${run.account !== null ? `, stopped: ${run.account}` : ""})`);
     // Stopped by the account: what never went is held (not out), until it can be used again.
     if (run.account !== null) for (const one of piecesOf(id)) if (one.state === "queued") notePiece(id, { ...one, state: "held" });
     // What changed meanwhile, and pieces sent again, go now.
