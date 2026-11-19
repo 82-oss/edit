@@ -60,14 +60,28 @@ const PAD_ACROSS = 0.3;
 const SAME = 0.5;
 /** Reads asked of the engine at once (it gives way to a play between them). */
 const CHUNK = 30;
-/** A new way of tracking is a new file. */
-const VERSION = 1;
+/**
+ * A new way of tracking is a new file. 2: a box for each line of theirs (or adjacent lines), never one over words far
+ * apart; scene text (a sticker, a sign) never a label of theirs (Nov 19: a cage's "Pro-gard" sticker joined the subtitle
+ * line into one box over half a woman's body).
+ */
+const VERSION = 2;
+/** A subtitle's words change as it's spoken: a line read the same for this long (seconds) is the picture's (a decal, a sign). */
+const STILL = 8;
 
-/** One read: a source second, and the box of their words there (shares of the picture), null with none. */
+/** Their words in one place at a read: a line, or lines stacked tight; `slot` says which it is from read to read ("s" their subtitle, "l<n>" their nth label). */
+export interface Part {
+  slot: string;
+  box: Box;
+  words: string;
+}
+
+/** One read: a source second, and the box of their words there (shares of the picture), null with none; each place's own in `parts`. */
 export interface Sample {
   t: number;
   box: Box | null;
   words: string;
+  parts?: Part[];
 }
 
 /** What one file's marked seconds need (text_removal.ts `plan`). */
@@ -119,7 +133,7 @@ const union = (a: Box, b: Box): Box => [Math.min(a[0], b[0]), Math.min(a[1], b[1
 export function regionOf(plan: Pick<BlurPlan, "band" | "labels" | "subtitles" | "text">): Box {
   const boxes: Box[] = [];
   if (plan.subtitles) boxes.push(plan.band !== null ? grow(plan.band, 0.06) : [0.04, 0.6, 0.96, 1]);
-  if (plan.text) boxes.push(...(plan.labels.length > 0 ? plan.labels.map((box) => grow(box, 0.05)) : [[0, 0, 1, 1] as Box]));
+  if (plan.text) boxes.push(...plan.labels.map((box) => grow(box, 0.05)));
   return boxes.length === 0 ? [0, 0, 1, 1] : boxes.reduce(union);
 }
 
@@ -133,13 +147,7 @@ export function theirs(plan: Pick<BlurPlan, "band" | "labels" | "avoid" | "subti
     if (plan.band !== null ? overlap(box, grow(plan.band, 0.03)) > 0.5 * area(box) : box[1] > 0.66 && Math.abs((box[0] + box[2]) / 2 - 0.5) < 0.25) return true;
   }
   if (plan.text) {
-    // No label of theirs known (a file not read yet): words that aren't a stamp's (along the very top or bottom, mostly digits).
-    if (plan.labels.length === 0) {
-      const middle = (box[1] + box[3]) / 2;
-      const letters = (line.t.match(/\p{L}/gu) ?? []).length;
-      const digits = (line.t.match(/\p{N}/gu) ?? []).length;
-      return middle > 0.1 && middle < 0.92 && letters >= 3 && digits < letters;
-    }
+    // No label of theirs known: none (words anywhere were taken as theirs, a cage's sticker among them, Nov 19).
     if (plan.labels.some((label) => overlap(box, grow(label, 0.02)) > 0.5 * area(box))) return true;
   }
   return false;
@@ -183,9 +191,61 @@ export function theirLines(plan: Parameters<typeof theirs>[0], lines: ScreenText
   return mine.filter((line) => !mine.some((other) => high(line.b) < SPECK * high(other.b) && Math.abs((line.b[1] + line.b[3]) / 2 - (other.b[1] + other.b[3]) / 2) < 1.5 * high(other.b)));
 }
 
+/** Whether two lines sit one over the other, close: a subtitle's two lines (never a line and words far above or below it). */
+function stacked(a: Box, b: Box): boolean {
+  const high = Math.max(a[3] - a[1], b[3] - b[1]);
+  const gap = Math.max(a[1], b[1]) - Math.min(a[3], b[3]);
+  const across = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+  return gap < 0.6 * high && across > 0 && Math.min(a[3] - a[1], b[3] - b[1]) >= 0.6 * high;
+}
+
+const letters = (words: string) => (words.match(/\p{L}/gu) ?? []).length;
+
+/**
+ * Their lines in places: lines beside each other on a row or stacked tight are one place, words apart are never one.
+ * A place on a label of theirs is that label's ("l<n>"); of the rest the one with the most letters is their subtitle
+ * ("s"), any other in its band its own place by height ("s@<twentieths down>").
+ */
+export function partsOf(plan: Pick<BlurPlan, "labels">, mine: ScreenText[]): Part[] {
+  const group = mine.map((_, at) => at);
+  const root = (at: number): number => (group[at] === at ? at : (group[at] = root(group[at]!)));
+  for (let a = 0; a < mine.length; a++) for (let b = a + 1; b < mine.length; b++) if (besides(mine[a]!.b, mine[b]!.b) || stacked(mine[a]!.b, mine[b]!.b)) group[root(a)] = root(b);
+  const places = new Map<number, ScreenText[]>();
+  mine.forEach((line, at) => places.set(root(at), [...(places.get(root(at)) ?? []), line]));
+  const parts: (Part & { label: number })[] = [...places.values()].map((lines) => {
+    lines.sort((a, b) => a.b[1] - b.b[1] || a.b[0] - b.b[0]);
+    const box = lines.map((line) => line.b).reduce(union);
+    const label = plan.labels.findIndex((one) => lines.some((line) => overlap(line.b, grow(one, 0.02)) > 0.5 * area(line.b)));
+    return { slot: "", box, words: lines.map((line) => line.t).join(" "), label };
+  });
+  const subtitles = parts.filter((one) => one.label < 0).sort((a, b) => letters(b.words) - letters(a.words) || b.box[3] - a.box[3]);
+  subtitles.forEach((one, at) => (one.slot = at === 0 ? "s" : `s@${Math.round(((one.box[1] + one.box[3]) / 2) * 20)}`));
+  for (const one of parts) if (one.label >= 0) one.slot = `l${one.label}`;
+  return parts.map(({ slot, box, words }) => ({ slot, box, words })).sort((a, b) => a.slot.localeCompare(b.slot));
+}
+
 function sampleOf(plan: Parameters<typeof theirs>[0], t: number, lines: ScreenText[]): Sample {
-  const mine = theirLines(plan, lines).sort((a, b) => a.b[1] - b.b[1] || a.b[0] - b.b[0]);
-  return { t, box: mine.length === 0 ? null : mine.map((line) => line.b).reduce(union), words: mine.map((line) => line.t).join(" ") };
+  const parts = partsOf(plan, theirLines(plan, lines));
+  return { t, box: parts.length === 0 ? null : parts.map((one) => one.box).reduce(union), words: parts.map((one) => one.words).join(" "), parts };
+}
+
+/**
+ * A track by place (`partsOf`'s slots), each its own samples: a box over each, never one spanning them. A place of
+ * subtitles whose words never change over STILL seconds is the picture's (a decal, a sign), dropped.
+ */
+export function slotsOf(samples: Sample[]): Map<string, Sample[]> {
+  const out = new Map<string, Sample[]>();
+  const names = new Set(samples.flatMap((one) => (one.parts ?? (one.box === null ? [] : [{ slot: "s" }])).map((part) => part.slot)));
+  for (const slot of [...names].sort()) {
+    const mine = samples.map((one): Sample => {
+      const part = one.parts === undefined ? (one.box === null ? undefined : { slot: "s", box: one.box, words: one.words }) : one.parts.find((p) => p.slot === slot);
+      return { t: one.t, box: part?.box ?? null, words: part?.words ?? "" };
+    });
+    const shown = mine.filter((one) => one.box !== null);
+    if (slot.startsWith("s") && shown.length > 1 && shown.at(-1)!.t - shown[0]!.t >= STILL && shown.every((one) => same(one, shown[0]!))) continue;
+    out.set(slot, mine);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -294,7 +354,7 @@ export function blursFor(project: Project, clip: VideoClip, media: Media, tracks
   const out: AdjustmentClip[] = [];
   const sourceAt = (frame: number) => clip.source_in + ((frame - clip.start) / fps) * clip.speed;
   for (const run of runs) {
-    for (const one of tracks) {
+    for (const one of tracks.flatMap((laid) => [...slotsOf(laid.samples).values()].map((samples) => ({ ...laid, samples })))) {
       // The run's frames whose source seconds are in [from, to).
       let start = Math.max(run.start, clip.start + Math.ceil(((one.from - clip.source_in) / clip.speed) * fps - 1e-6));
       let end = Math.min(clipEnd(run), clip.start + Math.ceil(((one.to - clip.source_in) / clip.speed) * fps - 1e-6));

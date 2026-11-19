@@ -258,8 +258,16 @@ export function labelSpans(texts: Record<number, ScreenText[]>, seconds: number[
   return hits.length === 0 ? [] : runsOf(hits, read, duration);
 }
 
-/** The boxes (shares) of a file's labels as `labelSpans` finds them, each grown a little: what's blurred when Vmake can't take one out. */
-export function labelBoxes(texts: Record<number, ScreenText[]>, seconds: number[], camera: Box[], taught: { remove: string[]; keep: string[] } = { remove: [], keep: [] }): Box[] {
+/** How far from the top or bottom (a share of the picture) an untaught label of theirs sits, for the blurs. */
+const LABEL_EDGE = 0.2;
+
+/**
+ * The boxes (shares) of a file's labels as `labelSpans` finds them, each grown a little: what's blurred when Vmake can't
+ * take one out. With `edges`, words that stay put count only along the top or bottom, where a re-uploader puts a label;
+ * the picture's own (a sticker on a cage, a sign, a car's decal, still in a fixed camera) stays sharp (Nov 19). A line a
+ * lesson gave as theirs counts anywhere.
+ */
+export function labelBoxes(texts: Record<number, ScreenText[]>, seconds: number[], camera: Box[], taught: { remove: string[]; keep: string[] } = { remove: [], keep: [] }, edges = false): Box[] {
   const read = seconds.filter((second) => Object.hasOwn(texts, second));
   const removeWords = taught.remove.map(tokens);
   const keepWords = taught.keep.map(tokens);
@@ -281,7 +289,8 @@ export function labelBoxes(texts: Record<number, ScreenText[]>, seconds: number[
     }
   }
   const least = Math.max(3, Math.ceil(read.length / 4));
-  return groups.filter((group) => group.taught || group.seen >= least).map((group) => grown(group.box, 0.01));
+  const atEdge = (box: Box) => (box[1] + box[3]) / 2 < LABEL_EDGE || (box[1] + box[3]) / 2 > 1 - LABEL_EDGE;
+  return groups.filter((group) => group.taught || (group.seen >= least && (!edges || atEdge(group.box)))).map((group) => grown(group.box, 0.01));
 }
 
 /** [a, b) spans merged. */
@@ -1246,7 +1255,7 @@ export async function blurPlan(app: App, project: Project): Promise<blur.BlurPla
     const reads = burned.readsOf(media);
     const camera = cameraFromReads(media, null);
     const keep = removal.keepBoxes(lesson);
-    const labels = reads === null || !kinds.includes("text") ? [] : labelBoxes(reads.texts, reads.seconds, [...camera, ...keep], removal.exampleWords(lesson));
+    const labels = reads === null || !kinds.includes("text") ? [] : labelBoxes(reads.texts, reads.seconds, [...camera, ...keep], removal.exampleWords(lesson), true);
     out.push({ media, source: await sourceOf(media), spans: mine, band: burned.of(media)?.band ?? null, labels, avoid: [...camera, ...keep], subtitles: kinds.includes("subtitles"), text: kinds.includes("text") });
   }
   return out;

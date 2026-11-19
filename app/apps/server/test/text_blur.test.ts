@@ -15,6 +15,7 @@ import { join } from "../src/paths.ts";
 import { sample } from "../src/project.ts";
 import { jsonForSerde } from "../src/rust.ts";
 import * as blur from "../src/text_blur.ts";
+import { labelBoxes } from "../src/text_removal.ts";
 import * as tools from "../src/tools.ts";
 import { fixtureHome } from "./helpers/home.ts";
 import { clip, media } from "./helpers/model.ts";
@@ -122,6 +123,56 @@ test("laid through the clip: a push-in carries the box with it, the blur is off 
   expect(laid.clips.find((c) => c.name === one!.name)!.id).toBe(id);
   expect(blur.lay(laid, [])).toBe(true);
   expect(laid.clips.some((c) => c.name === one!.name)).toBe(false);
+});
+
+test("Nov 19, Cuffed & Caught's m10 at 7.57 s: only the subtitle line is blurred, never the cage's Pro-gard sticker beside it; lines stacked tight are one box, words apart never", async () => {
+  // As read off the frame (shares of 1920×1080): the camera's stamp, the sticker on the cage, their yellow line.
+  const stamp: ScreenText[] = [{ b: [0.636, 0.002, 0.946, 0.044], t: "2025-08-08 12:50:28 -0600" }, { b: [0.636, 0.03, 0.9, 0.07], t: "AXON BODY 4 D01A0653Y" }];
+  const sticker: ScreenText = { b: [0.749, 0.533, 0.795, 0.58], t: "Pro gard" };
+  const line: ScreenText = { b: [0.344, 0.861, 0.656, 0.912], t: "unable to start her car" };
+  const later: ScreenText = { b: [0.235, 0.861, 0.76, 0.912], t: "because it had an Intoxalock installed," };
+  const frame = (t: number) => [...stamp, sticker, t < 1 ? line : later];
+  const avoid: Box[] = [[0.62, 0, 0.96, 0.08]];
+  // Both ways it was planned: their text taken out with no label of theirs known, and the sticker taken for a label (it stays put).
+  for (const labels of [[], [[0.739, 0.523, 0.805, 0.59]]] as Box[][]) {
+    const mine = { band: null, labels, avoid, subtitles: true, text: true };
+    const samples = await blur.track(mine, 0, 2, async (times) => times.map(frame));
+    const p = { ...project(), clips: [clip({ id: "c1", track: "v1", start: 0, duration: 60, type: "video", media: "m", source_in: 0 })] } as unknown as Project;
+    const laid = blur.blursFor(p, p.clips[0] as VideoClip, p.media[0]!, [{ from: 0, to: 2, samples }]);
+    const edges = laid.map((one): [number, number, number, number] => {
+      const [x, y, w, h] = [one.blur!.x ?? 0, one.blur!.y ?? 0, one.blur!.width ?? 0, one.blur!.height ?? 0];
+      return [960 + x - w / 2, 540 + y - h / 2, 960 + x + w / 2, 540 + y + h / 2];
+    });
+    // The line's box alone: as tight as the text (660–1260 across, 930–985 down), a letter's width and the feather more.
+    const subtitle = edges.filter(([, y0]) => y0 > 880);
+    expect(subtitle.length).toBe(1);
+    const [x0, y0, x1, y1] = subtitle[0]!;
+    expect(x0).toBeGreaterThan(560);
+    expect(x0).toBeLessThan(660);
+    expect(x1).toBeGreaterThan(1260);
+    expect(x1).toBeLessThan(1360);
+    expect(y0).toBeLessThan(930);
+    expect(y1).toBeGreaterThan(985);
+    expect(y1 - y0).toBeLessThan(110);
+    if (labels.length === 0) expect(edges.length).toBe(1);
+    // Never a box reaching up to the sticker or the woman's body above the line.
+    expect(edges.every(([, top, , bottom]) => bottom < 700 || top > 880)).toBe(true);
+  }
+  // The sticker is no label of theirs: words that stay put in the middle of a fixed camera's picture are the picture's; a channel's tag along the top is theirs.
+  const seconds = Array.from({ length: 12 }, (_, at) => at * 10);
+  const texts = Object.fromEntries(seconds.map((second) => [second, [...stamp, sticker, { b: [0.02, 0.1, 0.2, 0.15], t: "@CopsDaily clips" }, { b: [0.3, 0.86, 0.7, 0.91], t: ["she said", "nothing happened", "get out", "of the car", "now ma'am", "hands behind", "your back", "stop resisting", "I didn't", "do anything", "you're under", "arrest"][second / 10]! }]])) as Record<number, ScreenText[]>;
+  const labels = labelBoxes(texts, seconds, avoid, undefined, true);
+  expect(labels.length).toBe(1);
+  expect(labels[0]![1]).toBeLessThan(0.12);
+  expect(labelBoxes(texts, seconds, avoid).length).toBe(2);
+  // Two stacked lines of a subtitle are one place; a line far above it in the band its own.
+  const two = blur.partsOf({ labels: [] }, [{ b: [0.3, 0.8, 0.7, 0.85], t: "he said he was" }, { b: [0.32, 0.86, 0.68, 0.91], t: "never there" }]);
+  expect(two.length).toBe(1);
+  const apart = blur.partsOf({ labels: [] }, [{ b: [0.3, 0.5, 0.45, 0.55], t: "EXIT" }, { b: [0.32, 0.86, 0.68, 0.91], t: "never there at all" }]);
+  expect(apart.map((one) => one.slot)).toEqual(["s", "s@11"]);
+  // A line low and centred that never changes (a car's decal) isn't their subtitle: dropped from the track.
+  const decal: blur.Sample[] = Array.from({ length: 31 }, (_, at) => ({ t: at / 3, box: [0.4, 0.85, 0.6, 0.9] as Box, words: "STATE PATROL", parts: [{ slot: "s", box: [0.4, 0.85, 0.6, 0.9] as Box, words: "STATE PATROL" }] }));
+  expect(blur.slotsOf(decal).size).toBe(0);
 });
 
 /** How sharp a region of an RGB(A) frame is: the mean absolute Laplacian of its luma. */
