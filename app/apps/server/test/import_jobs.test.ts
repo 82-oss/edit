@@ -182,8 +182,11 @@ test("JJ's dropped connection: the file waits and is tried again by itself until
     expect(waiting.files.filter((file) => file.state === "failed")).toEqual([]);
     expect(waiting.error).toStartWith("Trying a file again at ");
     expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", step: "trying again by itself", args: { waiting_on: "passing" } });
-    // Going on without it isn't offered for a file still being tried.
+    // Going on without it isn't offered for a file still being tried, all at once or by name (the agent's tool).
+    const before = JSON.stringify(fixture.store.get(id)!.project.script!.blocks);
     await expect(skipFootage(fixture.app, id, "*")).rejects.toThrow("Nothing is waiting to be skipped.");
+    await expect(skipFootage(fixture.app, id, "FILEcase0002")).rejects.toThrow("Edit is still bringing this in by itself");
+    expect(JSON.stringify(fixture.store.get(id)!.project.script!.blocks)).toBe(before);
     // The job table wakes it; still down, it waits again by itself.
     jobs.useResumers(fixture.home, { case: (one) => void carryOn(fixture.app, one.project) });
     await jobs.wake(fixture.home, ["case"]);

@@ -312,7 +312,7 @@ registerTool("skip_footage", async ({ app, args, projectId }) => {
   if (!file) throw new Error("file (from get_edit_context's import.missing) is required.");
   await app.store.mayWrite(projectId);
   await script.skipFootage(app, projectId, file);
-  return text(stableStringify({ job: app.scripts.get(projectId), then: "Its ranges left the script; the rest is laid out now. Check get_edit_context's import again in a minute; edit once it's laid out." }));
+  return text(stableStringify({ job: app.scripts.get(projectId), then: "Its ranges hold their place in the edit as black cards of their length; the rest is laid out as written. Check get_edit_context's import again in a minute; edit once it's laid out." }));
 });
 
 registerTool("generate_voiceover", async ({ app, projectId }) => {

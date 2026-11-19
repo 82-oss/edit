@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 
 import type { ScriptBlock } from "../src/model.ts";
 import { native } from "../src/native/index.ts";
-import { clipEnd, fps as fpsOf, subtitledSpans } from "../src/project.ts";
+import { clipEnd, fps as fpsOf, GONE_WITHOUT_NOTE, subtitledSpans } from "../src/project.ts";
 import {
   align,
   clock,
@@ -186,6 +186,24 @@ test("lays_out_footage_and_cut_ins_in_order", () => {
   layOut(project);
   expect(project.clips.length).toBe(count);
   expect(project.script.blocks.filter((block) => block.kind === "narration").every((block) => placed(project, block))).toBe(true);
+});
+
+// The Wi-Fi night's rule, held in code (honest council change 4d, Nov 19): the edit laid out is as long as the script's
+// ranges and cut-ins, a file gone without included as black cards of its length. The old skip, which took the gone
+// file's ranges out of the script, left JJ's 25-minute edit at 2:44 and fails this.
+test("an edit laid out is as long as its script, a file gone without kept as black cards of its length", () => {
+  stubNative();
+  const project = newProject("Test");
+  project.media.push(media({ id: "m1", name: "door.mp4", path: "/tmp/door.mp4", kind: "video", duration: 120, width: 1920, height: 1080, fps: 30, has_audio: true }));
+  const door = (start: number, end: number): ScriptBlock => ({ kind: "footage", url: "", file: "door", start, end, label: "", media: "m1" });
+  const interview = (start: number, end: number): ScriptBlock => ({ kind: "footage", url: "", file: "interview", start, end, label: "", notes: [`${GONE_WITHOUT_NOTE}Interview`] });
+  project.script = { blocks: [door(0, 4), interview(30, 90), { kind: "narration", text: "Then the interview." }, interview(200, 260), door(10, 12)] };
+  layOut(project);
+  const fps = fpsOf(project);
+  const ranges = project.script.blocks.reduce((sum, block) => sum + (block.kind === "footage" ? Math.round((block.end - block.start) * fps) : CUT_IN_SECONDS * fps), 0);
+  const end = Math.max(...project.clips.filter((clip) => clip.type === "video" || clip.type === "solid").map(clipEnd));
+  expect(end).toBe(ranges);
+  expect(project.clips.filter((clip) => clip.type === "solid" && clip.name?.endsWith("didn't come in")).length).toBe(2);
 });
 
 test("a_resumed_import_whose_footage_comes_before_placed_blocks_is_out_of_order", () => {

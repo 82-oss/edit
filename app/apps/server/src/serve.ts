@@ -591,7 +591,12 @@ async function resumeJobs(app: App): Promise<void> {
       const { options, output, drive, keepLocal, share, note, watermark, replace } = job.args as unknown as { options: ExportOptions; output: string } & StartExtra;
       // The timeline it was started with, not edits made since.
       const current = project(job.project);
-      const asked = resumeSnapshot(app.store.home, job.project, job.args) ?? current;
+      const kept = resumeSnapshot(app.store.home, job.project, job.args);
+      // Its kept timeline unreadable: made from the edit as it is now, and said so, never swapped silently.
+      const asNow = kept === null ? "Exported as the edit is now: the timeline it was started with couldn't be read after the restart." : null;
+      if (asNow !== null) diag.warn("export", `${job.project} (key ${job.key}): ${asNow}`);
+      const asked = kept ?? current;
+      const said = asNow === null ? note : note === undefined ? asNow : `${note} · ${asNow}`;
       // A share's export is its share's: the share job carries it on (and starts it again under this key).
       if (share === true) {
         const owner = jobs.get(app.store.home, jobs.keyOf("share", job.project));
@@ -606,7 +611,7 @@ async function resumeJobs(app: App): Promise<void> {
           .catch((error: unknown) => diag.warn("review", `sharing ${job.project} after the restart (key ${job.key}): ${diag.messageOf(error)}`));
         return;
       }
-      await app.exports.start(app.store, app.library, asked, options, output, { drive, ...(keepLocal === true ? { keepLocal } : {}), ...(note === undefined ? {} : { note }), ...(watermark === undefined ? {} : { watermark }) });
+      await app.exports.start(app.store, app.library, asked, options, output, { drive, ...(keepLocal === true ? { keepLocal } : {}), ...(said === undefined ? {} : { note: said }), ...(watermark === undefined ? {} : { watermark }) });
     },
     archive: async (job) => {
       // The export finished before the restart: only its upload is done again.
