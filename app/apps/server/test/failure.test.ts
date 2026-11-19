@@ -91,3 +91,23 @@ test("surely: what's known to pass, or null for Edit's own plain refusals (a sha
   // kindOf still takes what nothing recognises as passing (an import waits it out).
   expect(failure.kindOf("that isn't one of this project's whole exports")).toBe("passing");
 });
+
+test("real network errors are passing by their code and by FFmpeg's, curl's and Bun's words; Edit's own room lines are room (verify.md findings 4 and 5)", () => {
+  for (const words of [
+    "Server returned 5XX Server Error reply",
+    "Input/output error",
+    "No route to host",
+    "Failed to resolve hostname r2.example",
+    "Stream ends prematurely at 81234, should be 912345",
+    "Unable to connect. Is the computer able to access the url?",
+    "curl: (6) Could not resolve host: example",
+    "curl: (7) Failed to connect to example port 443",
+    "curl: (18) transfer closed with 1234 bytes remaining to read",
+    "curl: (35) OpenSSL SSL_connect: SSL_ERROR_SYSCALL",
+    "curl: (92) HTTP/2 stream 1 was not closed cleanly",
+  ]) expect([words, failure.surely(words)]).toEqual([words, "passing"]);
+  expect(failure.surely(Object.assign(new Error("fetch failed"), { code: "ConnectionRefused" }))).toBe("passing");
+  expect(failure.surely(Object.assign(new Error("whatever"), { code: "ECONNRESET" }))).toBe("passing");
+  for (const words of ["This import needs about 12 GB free and this Mac has 6 GB. Free some space, then import it again.", "Needs 12 MB free on this computer to cut the footage's excerpts", "This computer is out of room to cut the footage's excerpts"]) expect([words, failure.surely(words)]).toEqual([words, "room"]);
+  expect(failure.surely(new failure.SignedOut("The sound library and Google Drive need you signed in to Edit."))).toBe("signin");
+});

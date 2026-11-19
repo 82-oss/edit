@@ -558,3 +558,27 @@ test("a footage file whose original is on this Mac is cut from that copy, never 
     fixture.cleanup();
   }
 });
+
+// Fable's check of the work (verify.md finding 2): each wake started the job afresh and the file's tries went with it.
+test("a file on a dropped line is tried again after 1 minute, then 5, then 15, then 30", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-tries", { services: { scripts } });
+  try {
+    const id = await twoFiles(fixture);
+    const dropped = "could not reach Edit's relay: The socket connection was closed unexpectedly";
+    cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" ? new Error(dropped) : null));
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    const seen: [number, number][] = [];
+    const note = (job: ScriptJob) => seen.push([job.files[1]!.tries ?? 0, Math.round((job.files[1]!.retry_at! - Date.now()) / 60_000)]);
+    await start(fixture.app, id, false);
+    note(await settled(scripts, id));
+    for (let wake = 0; wake < 3; wake++) {
+      // What serve.ts' case resumer does when the table wakes it.
+      expect(carryOn(fixture.app, id)).toBe("started");
+      note(await settled(scripts, id));
+    }
+    expect(seen).toEqual([[1, 1], [2, 5], [3, 15], [4, 30]]);
+  } finally {
+    fixture.cleanup();
+  }
+});

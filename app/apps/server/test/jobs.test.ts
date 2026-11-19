@@ -4,6 +4,7 @@ import * as os from "node:os";
 
 import { readState } from "../src/files.ts";
 import * as encoder from "../src/encoder.ts";
+import * as failure from "../src/failure.ts";
 import * as jobs from "../src/jobs.ts";
 import { scratch } from "./helpers/home.ts";
 
@@ -397,6 +398,91 @@ test("when the trouble is over (the relay answers again, the machine woke), work
     expect(woken.length).toBeGreaterThanOrEqual(1);
     expect(jobs.get(dir, "case:p3")).toMatchObject({ state: "waiting", step: "waiting for credit" });
   } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Fable's check of the work, Nov 19 (verify.md findings 1, 3 and 6).
+test("two pieces of work that waited on one dropped line both go when it's back: one at a time is only for work cut short by restarts", async () => {
+  const dir = home();
+  const waits = failure.PASSING_WAITS.value;
+  failure.PASSING_WAITS.value = [0, 0, 0];
+  try {
+    const dropped = "could not reach Edit's relay: The socket connection was closed unexpectedly";
+    const script = jobs.begin(dir, "script", "s1", { waiting_on: "import" }, "", "importing");
+    const share = jobs.begin(dir, "share", "p1", { id: "x" }, "", "uploading");
+    jobs.wait(dir, script, dropped);
+    jobs.wait(dir, share, dropped);
+    const started: string[] = [];
+    // As serve.ts' resumers do: start long work and return, the row left running.
+    jobs.useResumers(dir, { script: (job) => void started.push(job.key), share: (job) => void started.push(job.key) });
+    await Bun.sleep(5);
+    await jobs.wake(dir);
+    await jobs.wake(dir);
+    expect(started.sort()).toEqual([script, share].sort());
+  } finally {
+    failure.PASSING_WAITS.value = waits;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("work that got further between blips waits a minute after each, not longer every time", () => {
+  const dir = home();
+  try {
+    const dropped = "could not reach Edit's relay: The socket connection was closed unexpectedly";
+    const key = jobs.begin(dir, "script", "s9", { waiting_on: "import" }, "", "importing");
+    const waited: number[] = [];
+    for (let blip = 0; blip < 5; blip++) {
+      const now = Date.now();
+      waited.push(Math.round((jobs.wait(dir, key, dropped)! - now) / 60_000));
+      // Woken, it begins again and gets further (a step) before the next blip.
+      jobs.begin(dir, "script", "s9", { waiting_on: "import" }, "", "importing");
+      jobs.step(dir, key, "transcribing");
+    }
+    expect(waited).toEqual([1, 1, 1, 1, 1]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failure read as the person's is looked at again in half an hour, never parked where nobody is asked (only an import's question waits on the person)", () => {
+  const dir = home();
+  try {
+    const key = jobs.begin(dir, "archive", "p2", { output: "/x.mp4", key: "k" }, "", "uploading");
+    jobs.wait(dir, key, "its upload failed: the export has no bytes");
+    const row = jobs.get(dir, key)!;
+    expect(row.until).toBeUndefined();
+    expect(row.retry_at! - Date.now()).toBeGreaterThan(29 * 60_000);
+    const asked = jobs.begin(dir, "case", "p3", {}, "", "downloading");
+    jobs.wait(dir, asked, "Google Drive can't find this file: it was deleted, or in the trash.");
+    expect(jobs.get(dir, asked)!.until).toBe("person");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("work waiting for room starts again only once there's room for what it needs, never redone into a full disk every five minutes", async () => {
+  const dir = home();
+  const was = jobs.roomCheck.has;
+  const waits = failure.ROOM_EVERY_MS.value;
+  failure.ROOM_EVERY_MS.value = 0;
+  try {
+    const key = jobs.begin(dir, "script", "s1", { waiting_on: "import" }, "", "importing");
+    jobs.wait(dir, key, new failure.NoRoom(5e9, "This import needs about 5 GB free and this Mac has 3 GB."));
+    expect(jobs.get(dir, key)!.args.room_bytes).toBe(5e9);
+    const started: string[] = [];
+    jobs.useResumers(dir, { script: (job) => void started.push(job.key) });
+    let free = 3e9;
+    jobs.roomCheck.has = (bytes) => free >= bytes;
+    await Bun.sleep(5);
+    await jobs.wake(dir);
+    expect(started).toEqual([]);
+    free = 8e9;
+    await jobs.wake(dir);
+    expect(started).toEqual([key]);
+  } finally {
+    jobs.roomCheck.has = was;
+    failure.ROOM_EVERY_MS.value = waits;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

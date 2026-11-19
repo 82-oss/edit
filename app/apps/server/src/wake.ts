@@ -35,14 +35,28 @@ export function woke(sleptMs: number): void {
   }
 }
 
+/** Processor time used by this process, in ms, at the last beat. */
+let cpu = 0;
+const cpuMs = (): number => {
+  const used = process.cpuUsage();
+  return (used.user + used.system) / 1000;
+};
+
 function start(): void {
   if (timer !== null) return;
   last = Date.now();
+  cpu = cpuMs();
   timer = setInterval(() => {
     const now = Date.now();
+    const used = cpuMs();
     const gap = now - last;
+    const busy = used - cpu;
     last = now;
-    if (gap > GAP_MS.value) woke(gap);
+    cpu = used;
+    // Asleep or frozen, the process used almost no processor time across the gap; a server that was only busy (a
+    // long synchronous step) used most of it, and isn't a wake (verify.md finding 10: 10–12 s stalls taken as sleeps).
+    if (gap > GAP_MS.value && busy < gap * 0.25) woke(gap);
+    else if (gap > GAP_MS.value) diag.info("wake", `the server was busy for ${diag.human(gap)} (${Math.round(busy)} ms of processor time): not a sleep`);
   }, BEAT_MS);
   timer.unref?.();
 }

@@ -135,6 +135,12 @@ export function accessToken(): string | null {
   return now < state.expires ? state.access : null;
 }
 
+/** How long the access token held has left, in ms (0 when there's none, or it has run out). */
+export function tokenLeftMs(): number {
+  if (state.access === null) return 0;
+  return Math.max(0, state.expires - Date.now());
+}
+
 /** What the UI shows: who's signed in (or not), what they may use, and why a sign-in failed. */
 export function status(): Record<string, unknown> {
   return {

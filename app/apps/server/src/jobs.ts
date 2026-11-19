@@ -101,6 +101,8 @@ export interface Job {
   put_off?: number;
   /** Why it was last put off (state waiting, `put_off`), for the diagnostics. */
   why?: string;
+  /** Put off for being cut short by restarts in a row: it may be what brings the server down, so such work goes one at a time. Cleared as it gets further. */
+  crashy?: boolean;
 }
 
 /** Thrown by a resumer when there's nothing left to start again (the project, clip or file is gone): the job is crossed off. */
@@ -189,7 +191,7 @@ function fresh(kind: Kind, project: string, args: Record<string, unknown>, part:
   const going = listed !== undefined && live(listed);
   const attempts = going ? listed.attempts : 0;
   // Started again after being put off: still counted as put off (its next wait, one at a time), until it gets further.
-  const putOff = going && listed.put_off !== undefined ? { put_off: listed.put_off } : {};
+  const putOff = going && listed.put_off !== undefined ? { put_off: listed.put_off, ...(listed.crashy === true ? { crashy: true } : {}) } : {};
   return { key: keyOf(kind, project, part), kind, project, args, state: "running", ...(step === undefined ? {} : { step }), attempts, ...putOff, started_ms: going ? listed.started_ms : now, updated_ms: now };
 }
 
@@ -230,6 +232,12 @@ export function step(home: string | null, key: string, step: string, args: Recor
   change(home, (jobs) => {
     const job = jobs.find((one) => one.key === key);
     if (job === undefined) return false;
+    // Getting further forgives its waits and restarts so far (verify.md finding 3: otherwise every blip waited longer).
+    if (job.step !== step) {
+      job.attempts = 0;
+      delete job.put_off;
+      delete job.crashy;
+    }
     job.step = step;
     job.state = "running";
     delete job.retry_at;
@@ -309,9 +317,17 @@ export function wait(home: string | null, key: string, error: unknown, step?: st
 /** `wait`, by the name its callers had (exports' cloud copies, full-quality uploads, uploads): a passing failure's words. */
 export const putOff = (home: string | null, key: string, why: string): number | null => wait(home, key, why);
 
+/** The same failure, word for word, this many times in a row with nothing between: a refusal that's the same every time, so Edit's to fix (failure.ts `broken`). */
+const SAME_TIMES = 4;
+
 function postpone(job: Job, error: unknown): number | null {
   const why = typeof error === "string" ? error : diag.messageOf(error);
-  const kind = failure.kindOf(error);
+  let kind = failure.kindOf(error);
+  // Counted across its waits (not forgiven by a step: the same stage fails the same way each time it's reached).
+  const same = job.args.same_why === why && typeof job.args.same_count === "number" ? job.args.same_count + 1 : 1;
+  job.args.same_why = why.slice(0, 300);
+  job.args.same_count = same;
+  if (kind === "passing" && same >= SAME_TIMES) kind = "broken";
   const times = job.put_off ?? 0;
   const now = nowMs();
   delete job.given_up;
@@ -329,11 +345,18 @@ function postpone(job: Job, error: unknown): number | null {
   delete job.build;
   job.state = "waiting";
   job.put_off = times + 1;
-  if (kind === "person") {
+  // Only an import shows the person a question (its file); anything else that reads as the person's (an upload of a
+  // file gone, a 403) is looked at again in half an hour, never parked where nobody is asked (verify.md finding 6).
+  if (kind === "person" && job.kind === "case") {
     job.until = "person";
     diag.warn("jobs", `${job.key}: ${why}; waiting for the person`);
     return null;
   }
+  // Waiting for room: the bytes it needs are kept, so the table looks at the disk before starting it again (`due`),
+  // never redoing the work every five minutes into a full disk (verify.md finding 5).
+  const needs = roomNeeded(error);
+  if (kind === "room" && needs > 0) job.args.room_bytes = needs;
+  else delete job.args.room_bytes;
   const at = failure.nextTry(kind, times, now, error);
   if (at === null) {
     job.until = "encoder";
@@ -375,6 +398,7 @@ export function progressed(home: string | null, key: string): void {
     if (job === undefined || (!(job.attempts > 0) && job.put_off === undefined)) return false;
     job.attempts = 0;
     delete job.put_off;
+    delete job.crashy;
   });
 }
 
@@ -387,6 +411,7 @@ export function touch(home: string | null, key: string): void {
     job.updated_ms = nowMs();
     job.attempts = 0;
     delete job.put_off;
+    delete job.crashy;
   });
 }
 
@@ -442,6 +467,7 @@ export function takeOver(home: string, kinds?: readonly Kind[]): Job[] {
       if (job.state === "given_up" && job.kind !== "turn" && (job.given_up ?? "").startsWith("cut short by") && (kinds === undefined || kinds.includes(job.kind))) {
         postpone(job, job.given_up ?? "given up");
         job.retry_at = nowMs() + failure.scaled(60_000);
+        job.crashy = true;
         changed = true;
         continue;
       }
@@ -452,8 +478,9 @@ export function takeOver(home: string, kinds?: readonly Kind[]): Job[] {
       if (planned) {
         out.push(job);
       } else if (job.attempts >= IN_A_ROW && job.kind !== "turn") {
-        // Its count stays: cut short again once it's woken, it waits again at once, a little longer.
+        // Its count stays: cut short again once it's woken, it waits again at once, a little longer, one at a time.
         postpone(job, `cut short by ${job.attempts + 1} restarts in a row`);
+        job.crashy = true;
       } else if (job.attempts >= IN_A_ROW) {
         // An agent's turn: ended, with its line in the chat (`whenGivenUp`); the person sends again.
         job.state = "given_up";
@@ -519,13 +546,26 @@ function asleep(job: Job): boolean {
   return job.state === "waiting" && (job.retry_at !== undefined || job.until !== undefined);
 }
 
-/** Whether a sleeping job is due: its time has come, or the encoder it waits for is free. */
+/** Whether a sleeping job is due: its time has come, or the encoder it waits for is free, and the room it waits for is there. */
 function due(job: Job, now: number): boolean {
   if (!asleep(job)) return false;
   if (job.until === "person") return false;
   if (job.until === "encoder" && encoder.busy()) return false;
-  return job.retry_at === undefined || job.retry_at <= now;
+  if (!(job.retry_at === undefined || job.retry_at <= now)) return false;
+  const bytes = job.args.room_bytes;
+  return typeof bytes !== "number" || bytes <= 0 || roomCheck.has(bytes);
 }
+
+/** How many bytes a `NoRoom` failure (or its cause) says it needs; 0 when it doesn't say. */
+function roomNeeded(error: unknown): number {
+  for (let at: unknown = error, depth = 0; at !== undefined && at !== null && depth < 4; at = (at as { cause?: unknown }).cause, depth++) {
+    if (at instanceof failure.NoRoom) return at.needBytes;
+  }
+  return 0;
+}
+
+/** Whether there's room now for `bytes` (serve.ts sets it from storage.ts; without it, there always is). */
+export const roomCheck = { has: (_bytes: number): boolean => true };
 
 /**
  * The waiting jobs that are due, marked running and handed back (their count
@@ -536,11 +576,12 @@ export function dueNow(home: string, kinds?: readonly Kind[]): Job[] {
   const now = nowMs();
   const kept = held(home);
   change(home, (jobs) => {
-    // Work put off goes one at a time: none while another put off is under way (noted lately), and one a round.
-    let putOffGoing = jobs.some((job) => job.state === "running" && job.put_off !== undefined && now - job.updated_ms < PUT_OFF_RUN_MS);
+    // Work put off for restarts in a row goes one at a time (it may be what brings the server down): none while
+    // another is under way (noted lately), and one a round. Work that waited on a failure goes when it's due.
+    let putOffGoing = jobs.some((job) => job.state === "running" && job.crashy === true && now - job.updated_ms < PUT_OFF_RUN_MS);
     for (const job of jobs) {
       if (!due(job, now) || (kinds !== undefined && !kinds.includes(job.kind)) || kept.includes(job.kind)) continue;
-      if (job.put_off !== undefined) {
+      if (job.crashy === true) {
         if (putOffGoing) continue;
         putOffGoing = true;
       }
@@ -742,6 +783,7 @@ export function startGivenUp(home: string | null): { keys: string[]; started: Pr
       delete job.given_up;
       delete job.retry_at;
       delete job.put_off;
+      delete job.crashy;
       delete job.why;
       job.state = "running";
       job.attempts = 0;

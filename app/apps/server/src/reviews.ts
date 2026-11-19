@@ -746,7 +746,8 @@ async function runShare(app: App, projectId: string): Promise<{ url: string; ver
     else if (waitsOn(error)) {
       // Trouble that passes (the line dropped, the relay busy, a full disk): the share waits and goes on from its step
       // by itself; nothing says "Sharing stopped", and the link's notice comes when it's up (honest council change 7f).
-      const at = jobs.wait(home, key, error, "Waiting for the connection. The link comes by itself.");
+      const kind = failure.surely(error) ?? "passing";
+      const at = jobs.wait(home, key, error, kind === "passing" ? "Waiting for the connection. The link comes by itself." : `${failure.waitLine(kind, error, null)} The link comes by itself.`);
       diag.warn("review", `${app.store.get(projectId)?.project.name ?? projectId}: sharing waits (${failure.surely(error)}): ${message}; it goes on by itself${at === null ? "" : ` at ${new Date(at).toISOString()}`}`);
       throw new ShareWaits(message);
     } else {

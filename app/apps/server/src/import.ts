@@ -8,6 +8,7 @@ import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
+import { NoRoom } from "./failure.ts";
 import * as folderAccess from "./folder_access.ts";
 import * as media from "./media.ts";
 import type { Clip, ClipColor, Media, Project } from "./model.ts";
@@ -96,7 +97,7 @@ export async function importPaths(
   // only then is the import refused, with the numbers, rather than a proxy failing on a full disk part-way.
   if (cloudEnabled()) {
     const short = storage.admit(app.store.cacheDir(), proxiesBytes(probed.map(([, probe]) => probe)), "This import", "import it again");
-    if (short !== null) throw new Error(short);
+    if (short !== null) throw new NoRoom(proxiesBytes(probed.map(([, probe]) => probe)), short);
   }
   const items: seams.Made[] = [];
   for (const [path, probe] of probed) {

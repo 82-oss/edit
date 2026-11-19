@@ -23,6 +23,7 @@
 import * as fs from "node:fs";
 
 import * as accounts from "./accounts.ts";
+import { SignedOut } from "./failure.ts";
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
 import { google, googleProto, useGateway } from "./endpoints.ts";
@@ -239,7 +240,8 @@ export class Library implements seams.Library {
       const token = await relay.token();
       if (token !== null) return token;
       if (accounts.hasSession()) throw new Error(`${relay.UNREACHABLE}: the sign-in is being renewed`);
-      throw new Error("The sound library and Google Drive need you signed in to Edit.");
+      // No sign-in kept at all: a wait of its own (failure.ts `signin`), woken the moment someone signs in.
+      throw new SignedOut("The sound library and Google Drive need you signed in to Edit.");
     }
     if (this.token !== null && this.now() < this.token[1]) return this.token[0];
     const config = (

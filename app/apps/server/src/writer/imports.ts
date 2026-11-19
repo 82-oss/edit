@@ -184,8 +184,18 @@ function stageTimes(id: string): string {
   return [...at.spent.entries()].filter(([, ms]) => ms >= 1000).map(([stage, ms]) => `${stage || "starting"} ${took(ms)}`).join(", ");
 }
 
+/** Each running import's Edit home, for its row in the job table (`say` writes its steps there), and the step last written. */
+const homes = new Map<string, string>();
+const stepped = new Map<string, string>();
+
 function say(script: Script, detail: string, stage = script.stage, percent = script.progress): void {
   if (running.has(script.id)) noteStage(script.id, stage);
+  // Its row says each stage it reaches: getting further forgives its waits so far (verify.md finding 3).
+  const home = homes.get(script.id);
+  if (home !== undefined && running.has(script.id) && stepped.get(script.id) !== stage) {
+    stepped.set(script.id, stage);
+    durableJobs.step(home, durableJobs.keyOf("script", script.id), stage);
+  }
   if (running.has(script.id)) latest.set(script.id, { id: script.id, title: script.title, stage, percent, detail, ...(started.has(script.id) ? { startedAt: started.get(script.id)! } : {}) });
 }
 
@@ -617,6 +627,8 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
   // One row in the job table from its start to "ready" (honest council change 7c): a restart carries it on from it,
   // and a wait sits in it, never on a timer in memory.
   durableJobs.begin(app.store.home, "script", script.id, { waiting_on: "import" }, "", "importing");
+  homes.set(script.id, app.store.home);
+  stepped.delete(script.id);
   waitingNow.delete(script.id);
   say(script, "Starting.");
   let ran = yield* pipeline(app, dir, script).pipe(Effect.scoped, Effect.result);
@@ -655,8 +667,10 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
   // script stays importing with one line saying when Edit tries again, the row waits in the job table, and no "The
   // import stopped" goes out. Before, Script mode read an error it didn't know as the person's and stopped (JJ's
   // imports on the night of Nov 18, the same dropped line the editor's import waited out).
-  if (known !== null && failure.waitsByItself(known)) {
-    const at = durableJobs.wait(app.store.home, key, error);
+  // The same failure four times in a row is Edit's to fix (jobs.ts `postpone`): its row is failed, and the import stops.
+  const repeated = known !== null && failure.waitsByItself(known) && (durableJobs.wait(app.store.home, key, error), durableJobs.get(app.store.home, key)?.state === "failed");
+  if (known !== null && failure.waitsByItself(known) && !repeated) {
+    const at = durableJobs.get(app.store.home, key)?.retry_at ?? null;
     // What it waits on, in the words the diagnostics and the waking read (`waiting_on`).
     durableJobs.patch(app.store.home, key, { waiting_on: kind === "limit" ? "drive" : kind });
     const line = waitLine(kind, error, at);
@@ -680,7 +694,7 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
   script.status = "error";
   script.error = message;
   // Edit's own bug: Try again isn't offered until a new build (`Script.stuckOn`); Replace and Dismiss still are.
-  if (known === "broken") script.stuckOn = BUILD;
+  if (known === "broken" || repeated) script.stuckOn = BUILD;
   else delete script.stuckOn;
   delete script.decision;
   script.updatedAt = Date.now();

@@ -11,6 +11,8 @@ const SRC = join(import.meta.dir, "..", "src");
 
 /** Every place work is parked for a person, by file and the words that park it. */
 const CENSUS: { file: string; parks: string; asks: string }[] = [
+  // The job table parks for the person only an import's file (jobs.ts postpone: `job.kind === "case"`); anything else
+  // that reads as the person's is looked at again in half an hour (verify.md finding 6).
   // Q1: the editor's import, a file that's really the person's (deleted, never shared, private, not a video); both answers keep the work.
   { file: "script.ts", parks: `until: "person"`, asks: "Use another link · Make the edit with its parts black" },
   // Q6: a fact about the footage, never a failure: no sound, or the hearing answered with no words.
@@ -30,8 +32,6 @@ test("every place the server parks work for a person is on the census, and nothi
   const found: { file: string; parks: string }[] = [];
   for (const path of sources(SRC)) {
     const file = path.slice(SRC.length + 1);
-    // The table itself only says what `until: "person"` means.
-    if (file === "jobs.ts") continue;
     const text = fs.readFileSync(path, "utf8");
     for (const parks of [`until: "person"`, `pause(dir, script, { kind: "no_speech"`]) {
       let at = text.indexOf(parks);

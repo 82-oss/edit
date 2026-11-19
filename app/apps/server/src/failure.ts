@@ -111,9 +111,11 @@ const DRIVE_LIMIT = /download limit for this file|Too many users|downloadQuotaEx
 /** Text from outside Edit that only the person can answer (Drive's pages; posts; older builds' words kept in a job). */
 const PERSON = /isn't shared|can't find this file|deleted, or in the trash|Private video|This video is private|confirm your age|age.restricted|members.only|Join this channel|not available in your country|blocked it in your country|Video unavailable|has been removed|has been terminated|no longer available|isn't a Drive file|isn't a YouTube video|has no bytes|A shared folder master|is not uploaded yet|pictures only, with no video|only shown to someone signed in/i;
 /** The disk full, in the system's words or Edit's own (older builds' "There isn't room on this Mac for …"). */
-const ROOM = /no space left on device|ENOSPC|There isn't room on this|Needs [\d.]+ GB free/i;
+const ROOM = /no space left on device|ENOSPC|There isn't room on this|needs? (about )?[\d.]+ ?[MG]B free|out of room/i;
 /** A connection, a timeout or a busy service, in the words a job keeps (Edit's own, FFmpeg's, Bun's fetch). */
-const PASSING = /could not reach|unreachable|socket connection was closed|connection (reset|refused|timed out)|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|getaddrinfo|timed out|didn't answer|took more than|made no progress|being renewed|network|Server returned 5\d\d|\(5\d\d\)|busy/i;
+const PASSING = /could not reach|unreachable|socket connection was closed|connection (reset|refused|timed out)|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|getaddrinfo|timed out|didn't answer|took more than|made no progress|being renewed|network|Server returned 5(\d\d|XX)|\(5\d\d\)|busy|Input\/output error|No route to host|Failed to resolve hostname|Could not resolve host|Failed to connect|Stream ends prematurely|Invalid data found when processing input|Unable to connect|transfer closed with|SSL_ERROR_SYSCALL|was not closed cleanly|Broken pipe/i;
+/** The codes Bun, Node and curl give a connection that failed or dropped: passing, whatever the words say. */
+const PASSING_CODES = new Set(["ConnectionRefused", "ConnectionClosed", "FailedToOpenSocket", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
 /** No sign-in at all, in an older build's words kept in a job. */
 const SIGNIN = /Sign in to Edit to go on/i;
 
@@ -143,7 +145,9 @@ export function surely(error: unknown): Kind | null {
     if (at instanceof SignedOut) return "signin";
     if (at instanceof StoodStill) return "passing";
     if (at instanceof StepTimedOut) return at.shared ? "encoder" : "passing";
-    if ((at as { code?: unknown }).code === "ENOSPC") return "room";
+    const code = (at as { code?: unknown }).code;
+    if (code === "ENOSPC") return "room";
+    if (typeof code === "string" && PASSING_CODES.has(code)) return "passing";
     const tag = tagOf(at);
     if (tag === "AllowanceUsedUp") return "quota";
     if (tag === "DownloadFailed") {
@@ -259,4 +263,20 @@ function limitHint(error: unknown): number | null {
 export function nextMidnightUtc(now: number): number {
   const day = new Date(now);
   return Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1);
+}
+
+/** The one line work waiting by itself shows: what it waits on, and when Edit tries again (`at`), in plain words. */
+export function waitLine(kind: Kind, error: unknown, at: number | null): string {
+  const clock = (ms: number) => {
+    const day = new Date(ms);
+    return `${String(day.getHours()).padStart(2, "0")}:${String(day.getMinutes()).padStart(2, "0")}`;
+  };
+  const when = at === null ? "" : ` at ${clock(at)}`;
+  const words = typeof error === "string" ? error : diag.messageOf(error);
+  if (kind === "quota") return `The plan is out of credit or today's allowance is used up: Edit tries again by itself${when}.`;
+  if (kind === "limit") return `Google Drive's download limit is used up for today: Edit tries again by itself${when}.`;
+  if (kind === "room") return `${words.replace(/\s*(Retry|then press Retry|Free some space)[^.]*\.?\s*$/u, "").replace(/\.?\s*$/u, ".")} Edit goes on by itself once there's room${when === "" ? "" : ` (it looks again${when})`}.`;
+  if (kind === "encoder") return "The hardware encoder is busy with an export: it goes on once it's free.";
+  if (kind === "signin") return "Sign in to Edit, and it goes on by itself.";
+  return `Waiting for the connection: Edit tries again by itself${when}.`;
 }

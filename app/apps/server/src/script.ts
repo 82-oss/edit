@@ -119,7 +119,8 @@ export async function skipFootage(app: App, id: string, file: string): Promise<v
   // One given by name (the agent's tool, an older page) the same: only a file that's the person's to answer, never one
   // still being brought in by itself (Astra's council, Nov 19: the named path never asked).
   const named = file === "*" ? undefined : job?.files.find((one) => one.file === file);
-  if (named !== undefined && !askable(named)) throw new Error("Edit is still bringing this in by itself: it comes in once the connection is back.");
+  // By name, only a file that's the person's (failed): one waiting for room, credit or a sign-in comes in by itself too.
+  if (named !== undefined && named.state !== "failed") throw new Error("Edit is still bringing this in by itself: it comes in once the connection is back.");
   const project = waitingFor(app, id, files[0]!);
   if (!(project.script?.blocks ?? []).some((block) => block.kind === "footage" && !files.includes(block.file) && !goneWithout(block))) {
     throw new Error("That's the only footage in the script: give another link for it instead.");
@@ -2457,6 +2458,8 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
       const row: FileJob = { file, bytes: was?.bytes ?? 0, state: fetched[index] !== undefined ? "done" : "queued" };
       if (was?.name !== undefined) row.name = was.name;
       if (was?.total !== undefined) row.total = was.total;
+      // A file not in yet keeps its tries, so its next wait grows (1, 5, 15, then every 30 minutes; verify.md finding 2).
+      if (fetched[index] === undefined && was?.tries !== undefined) row.tries = was.tries;
       return row;
     }),
   };

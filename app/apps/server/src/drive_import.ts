@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
+import { NoRoom } from "./failure.ts";
 import * as jobs from "./jobs.ts";
 import { importPaths, placeAtEnd, type Imported } from "./import.ts";
 import * as steps from "./import_steps.ts";
@@ -142,7 +143,7 @@ async function importDriveNow(app: App, key: string, id: string, url: string, pl
   // projects not in work make room first, and only then is it refused, with the numbers (storage.ts `admit`).
   const coming = files.reduce((sum, one) => sum + Math.max((one.size ?? 0) - downloadedBytes(join(app.store.uploadsDir(id), "drive", one.id)), 0), 0);
   const short = storage.admit(app.store.uploadsDir(id), Math.ceil(coming * 1.25), "This import", "import it again");
-  if (short !== null) throw new Error(short);
+  if (short !== null) throw new NoRoom(Math.ceil(coming * 1.25), short);
   const paths: string[] = [];
   for (const one of files) {
     const dir = join(app.store.uploadsDir(id), "drive", one.id);

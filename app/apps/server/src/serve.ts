@@ -30,6 +30,7 @@ import * as encoder from "./encoder.ts";
 import * as jobs from "./jobs.ts";
 import * as missingMediaTries from "./missing_media.ts";
 import * as outages from "./outages.ts";
+import * as storage from "./storage.ts";
 import * as wake from "./wake.ts";
 import type { ExportOptions } from "./model.ts";
 import { listen } from "./http/server.ts";
@@ -542,11 +543,15 @@ function optional(area: string, work: () => void): void {
  * land in the same second as the renewal, with no token); or the relay or R2 answered again after an outage.
  */
 function wakeAfterTrouble(app: App): void {
+  // Work waiting for room starts again only once there's room for what it needs (jobs.ts `due`).
+  jobs.roomCheck.has = (bytes) => storage.roomFor(app.store.cacheDir(), bytes);
   wake.onWake((sleptMs) => {
     // Nothing that fell due is woken until the sign-in is back (its first tries can fail: the network comes back
     // seconds after a wake), up to two minutes; the table's own timer holds meanwhile (jobs.holdWaking).
     const renewed = (async () => {
-      if (!accounts.hasSession()) return;
+      // Renewed only when the token is near its end: swapping a good sign-in at every wake, while the network is least
+      // sure, is a chance to lose it (verify.md finding 10).
+      if (!accounts.hasSession() || accounts.tokenLeftMs() > 5 * 60_000) return;
       const until = Date.now() + 120_000;
       for (;;) {
         await accounts.renew().catch(() => undefined);
@@ -558,6 +563,10 @@ function wakeAfterTrouble(app: App): void {
     void renewed.then(() => jobs.wakePassing(app.store.home, `the machine woke after ${diag.human(sleptMs)}`));
   });
   outages.onBack((destination) => void jobs.wakePassing(app.store.home, `${destination === "relay" ? "Edit's relay" : "R2"} answers again`));
+  // Someone signed in (or back in): work waiting on a sign-in goes now, not at its next look (verify.md finding 4).
+  accounts.onSessionChange(() => {
+    if (accounts.hasSession()) void jobs.wakePassing(app.store.home, "signed in");
+  });
 }
 
 /**
