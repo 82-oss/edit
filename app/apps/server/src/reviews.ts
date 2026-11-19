@@ -346,6 +346,22 @@ export function unshared(home: string, projectId: string): boolean {
   return job !== undefined && (job.state === "failed" || job.state === "given_up") && (job.args as Partial<ShareArgs>).fixes !== undefined;
 }
 
+/**
+ * A share that failed after its export was made (or with nothing to export), not one from Ready for changes: it can
+ * be carried on from its step with the export it has (retryShare), as a new build does once (retry_after_update;
+ * honest council change 7h: a plain share that failed at its upload was never tried again).
+ */
+export function carriedOn(home: string, projectId: string): boolean {
+  const job = shareJob(home, projectId);
+  const args = job?.args as Partial<ShareArgs> | undefined;
+  return job !== undefined && job.state === "failed" && args !== undefined && args.fixes === undefined && args.id !== undefined && (args.export === undefined || (args.path !== undefined && args.path !== null));
+}
+
+/** Every plain share that failed and can be carried on (`carriedOn`). */
+export function carriedOnProjects(home: string): string[] {
+  return jobs.list(home, "share").flatMap((job) => (carriedOn(home, job.project) ? [job.project] : []));
+}
+
 /** Every project with fixes `unshared`. */
 export function unsharedProjects(home: string): string[] {
   return jobs.list(home, "share").flatMap((job) => (unshared(home, job.project) ? [job.project] : []));

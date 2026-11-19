@@ -88,6 +88,33 @@ export function workingOn(app: App, key: string): boolean {
   return job !== null && RUNNING_IMPORT.has(job.state);
 }
 
+/** When this run began: a running row written before it was cut short by the restart. */
+const STARTED_MS = Date.now();
+
+/** A running job's word, by its kind. */
+const WORDS: Record<jobs.Kind, string> = {
+  export: "an export",
+  archive: "an export going up to the cloud",
+  drive: "an upload to Drive",
+  smooth: "smoothing",
+  watch: "a watch",
+  upload: "an upload",
+  map: "a map shot",
+  case: "a footage import",
+  full: "a share's full-quality file",
+  share: "a share",
+  fix: "a Ready for changes fix",
+  turn: "an agent turn",
+  idea: "Claude on an idea",
+  thumbnail: "Claude on a thumbnail",
+  playback: "a smooth playback render",
+  script: "a script's import",
+  footage: "a footage import",
+  writer: "Claude on a script",
+  missing: "a script's import",
+  media: "a footage import",
+};
+
 /**
  * What runs on this computer now, in a word each: the one answer that keeps the Mac awake (serve.ts), holds a restart
  * from afar (remote_actions, reviews.busyHere) and that the diagnostics say (honest council change 7i, Nov 19: three
@@ -128,6 +155,15 @@ export function runningNow(app: App, agentTurns = true): string[] {
     agentTurns && ideaRuns.anyRunning() ? "Claude on an idea" : "",
   ];
   for (const what of others) said.push(what() ?? "");
+  // Whatever the job table holds as running, written by this run (one read back from before a restart is its
+  // resumer's to start): each module's own word above can miss a moment between its steps, and the table is the one
+  // record (bad-day awake-and-busy, Nov 19: the share's full-quality file going up alone said nothing, and the Mac
+  // could sleep mid-upload).
+  for (const job of jobs.list(app.store.home ?? null)) {
+    if (job.state !== "running" || job.updated_ms < STARTED_MS) continue;
+    if (!agentTurns && (job.kind === "turn" || job.kind === "idea" || job.kind === "thumbnail")) continue;
+    said.push(WORDS[job.kind]);
+  }
   // An effect's render or footage being cleaned, on any edit.
   if (projectWork.size > 0) {
     let projects: string[] = [];

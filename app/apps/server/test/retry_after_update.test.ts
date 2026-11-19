@@ -125,6 +125,28 @@ test("what failed only after its render keeps what it rendered: a share whose ex
   }
 });
 
+test("a plain share (not Ready for changes) that failed after its export was made is carried on by a new build, once; one still to export isn't", async () => {
+  const { app, home, cops, cleanup } = setUp("retry-plain-share", "nightly-47");
+  try {
+    const exported = app.store.createAs("First Share", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const unexported = app.store.createAs("Never Exported", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
+    jobs.settle(home, jobs.begin(home, "share", exported, { id: "first", export: { options: {} }, path: "/out/first.mp4" }, "", "uploading"), "failed", { error: "R2 refused the upload (403)" });
+    jobs.settle(home, jobs.begin(home, "share", unexported, { id: "second", export: { options: {} } }, "", "exporting"), "failed", { error: "Native encoder stalled" });
+    const queued = retry.noteBuild(app, "nightly-48").map((one) => `${one.kind} ${one.project}`);
+    expect(queued).toContain(`share ${exported}`);
+    expect(queued).not.toContain(`share ${unexported}`);
+    const { done, actions } = recorder();
+    actions.carryOnShare = async (_app, item) => void done.push(`carry on ${item.project}`);
+    while ((await retry.step(app, actions)) !== null);
+    expect(done).toContain(`carry on ${exported}`);
+    expect(done).toContain(`export ${cops} /out/${cops}.mp4`);
+    expect(done.filter((one) => one.startsWith("share "))).toHaveLength(1);
+    expect(retry.noteBuild(app, "nightly-48")).toEqual([]);
+  } finally {
+    cleanup();
+  }
+});
+
 test("the build that ran before was never noted (older builds didn't): it counts as new", () => {
   const { app, cleanup } = setUp("retry-first-noted", null);
   try {

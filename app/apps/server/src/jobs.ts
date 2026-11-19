@@ -620,10 +620,10 @@ export function wakePassing(home: string, why: string): string[] {
     }
     return keys.length > 0;
   });
-  if (keys.length > 0) {
-    diag.info("jobs", `${why}: ${keys.length} waiting job${keys.length === 1 ? "" : "s"} woken (${keys.join(", ")})`);
-    void wake(home).catch((error: unknown) => diag.warn("jobs", `waking waiting jobs: ${diag.messageOf(error)}`));
-  }
+  if (keys.length > 0) diag.info("jobs", `${why}: ${keys.length} waiting job${keys.length === 1 ? "" : "s"} woken (${keys.join(", ")})`);
+  // Also what fell due since the table's last look (a try due a few seconds ago waited for the next 30-second tick:
+  // the bad-day wifi-drop-editor-import case, done 29 s after the line came back).
+  void wake(home).catch((error: unknown) => diag.warn("jobs", `waking waiting jobs: ${diag.messageOf(error)}`));
   return keys;
 }
 

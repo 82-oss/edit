@@ -343,8 +343,10 @@ const killThreeTimes: Case = {
     "Checks: nothing is given up; every piece of work is listed once; nothing already fetched is fetched again (each recording about once from Drive); " +
     "nothing paid is sent twice (a hearing a recording, a voice a line); check 7: the export killed three times is the same video as a clean export of the same edit.",
   env: { EDIT_BAD_DAY_SPEED: "60" },
-  // A hearing a recording and one a voice-over cut-in (the editor hears its own voice), a voice a line.
-  paidAtMost: { hearings: 5, voices: 2 },
+  // A hearing a recording and one a voice-over cut-in (the editor hears its own voice), a voice a line, and one more
+  // for a kill that lands while a line's request is out (Nov 19 run: killed 0.4 s after line 1 was sent, nothing back
+  // to keep; both lines were voiced once after the restart). Paid for, but no build can keep an answer it never got.
+  paidAtMost: { hearings: 5, voices: 3 },
   async run(context) {
     const { line, footage, cloud } = context;
     const kills: string[] = [];

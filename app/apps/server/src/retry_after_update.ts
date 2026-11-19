@@ -10,6 +10,8 @@
 //     from Ready for changes, reviews.ts `unshared`): exported and shared as the
 //     next version, as Share again does, which ends the failed request on the
 //     review page;
+//   - each plain share that failed after its export was made (reviews.ts
+//     `carriedOn`): carried on from its step with that export;
 //   - each export that failed and hasn't been exported since (a failed
 //     `export` job), but a share's: exported again with the same settings,
 //     through the normal queue.
@@ -93,7 +95,7 @@ export function noteBuild(app: App, build = BUILD): Item[] {
   const from = typeof last === "string" ? last : null;
   const nameOf = (project: string, given?: string) => app.store.get(project)?.project.name ?? given ?? project;
   // The fixes a share couldn't put up (failed `share` jobs), then the exports.
-  const shares = reviews.unsharedProjects(home);
+  const shares = [...reviews.unsharedProjects(home), ...reviews.carriedOnProjects(home)];
   const failures = failedExports(home);
   const exports = Object.values(failures)
     .filter((failure) => failure.share !== true && !shares.includes(failure.project))
@@ -151,10 +153,12 @@ async function skipped(app: App, item: Item): Promise<string | null> {
   if (app.store.get(item.project) === null) return `the project isn't on ${THIS_MACHINE}`;
   if (item.kind === "share") {
     const state = reviews.read(home);
-    if (!reviews.unshared(home, item.project)) return "it has been shared since";
+    const plain = reviews.carriedOn(home, item.project);
+    if (!reviews.unshared(home, item.project) && !plain) return "it has been shared since";
     const shared = state.shared[item.project];
-    if (shared === undefined) return "it has no review";
-    if (shared.approved) return `v${shared.approved.version} of its review was approved`;
+    // A first share has no review yet; fixes always have one.
+    if (shared === undefined && !plain) return "it has no review";
+    if (shared?.approved) return `v${shared.approved.version} of its review was approved`;
     if (reviews.askedFor(item.project)) return `a reviewer asked again on ${THIS_MACHINE}, and that request does it`;
   } else {
     if (failedExports(home)[item.project] === undefined) return "it has exported since";
@@ -204,7 +208,7 @@ export async function step(app: App, actions: Actions = real): Promise<string | 
       // that step with the export it has, nothing rendered again (honest council change 7h, Nov 19: the chunks were
       // deleted before every retry, so a share that failed at its upload rendered all of it again).
       const job = jobs.get(home, key);
-      if (job !== undefined && (job.args as { path?: unknown }).path !== undefined && actions.carryOnShare !== undefined) {
+      if (job !== undefined && ((job.args as { path?: unknown }).path !== undefined || reviews.carriedOn(home, item.project)) && actions.carryOnShare !== undefined) {
         diag.info("update", `${item.name}: ${NOTE}: sharing from its ${job.step ?? "last"} step, with the export it has`);
         await actions.carryOnShare(app, item);
         return "shared from its step";

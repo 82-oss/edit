@@ -70,6 +70,15 @@ test("what runs now is one list: an effect's render or a removal on any edit kee
     expect(busy.runningNow(app)).toEqual([]);
     fs.writeFileSync(join(root, "jobs.json"), JSON.stringify([{ key: "share:p1", kind: "share", project: "p1", args: {}, state: "running", attempts: 0, started_ms: 1, updated_ms: 1 }]));
     expect(busy.runningNow(app)).toEqual(["a share"]);
+    // A share's full-quality file going up alone (its share done) is running too, by the table's row; a row left
+    // running by the run before a restart isn't (its resumer starts it, or nothing does).
+    const now = Date.now();
+    fs.writeFileSync(join(root, "jobs.json"), JSON.stringify([
+      { key: "share:p1", kind: "share", project: "p1", args: {}, state: "done", attempts: 0, started_ms: now, updated_ms: now },
+      { key: "full:p1", kind: "full", project: "p1", args: {}, state: "running", attempts: 0, started_ms: now, updated_ms: now },
+      { key: "watch:p2", kind: "watch", project: "p2", args: {}, state: "running", attempts: 0, started_ms: 1, updated_ms: 1 },
+    ]));
+    expect(busy.runningNow(app)).toEqual(["a share's full-quality file"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
