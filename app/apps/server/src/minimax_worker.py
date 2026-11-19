@@ -5,7 +5,8 @@ loaded once and sits in VRAM, serving one stretch at a time.
 The protocol is JSON lines: a request on stdin, its answer on stdout (progress lines first, `"progress"`), the
 model's own chatter on stderr. A request:
 
-  {"id", "input": file or URL, "input_args": FFmpeg's arguments for it (a URL's), "from": source seconds of its first frame, "frames": N, "fps", "width", "height",
+  {"id", "input": file or URL, "input_args": FFmpeg's arguments for it (a URL's), "beneath": the file's watermark
+   strips over the stretch, laid on it first ([{"file", "from": its source second, "box": shares}]), "from": source seconds of its first frame, "frames": N, "fps", "width", "height",
    "matrix": "bt709" | "bt601", "masks": [[[x0, y0, x1, y1], ...] per frame] (their words' boxes, source pixels),
    "out": the strip's path, "ffmpeg": FFmpeg's path}
 
@@ -267,12 +268,17 @@ def alpha_of(mask):
 
 
 class Frames:
-    """The band of a stretch's frames, decoded once, in order (FFmpeg's pipe)."""
+    """The band of a stretch's frames, decoded once, in order (FFmpeg's pipe), with the file's watermark strips laid
+    on it first (`beneath`: watermark_removal.ts's stacked, premultiplied strips), so the model starts from the
+    picture with their watermark already out and never brings it back where their words were (Nov 19: ARRESTFLIX in
+    the subtitle band of the Boyfriends intro came back under the cleaned words)."""
 
-    def __init__(self, ffmpeg, input, start, frames, fps, width, y0, y1, matrix, input_args=()):
+    def __init__(self, ffmpeg, input, start, frames, fps, width, y0, y1, matrix, input_args=(), height=1080, beneath=()):
         first = round(start * fps)
         seek = max(0.0, (first - 0.5) / fps)
         self.size = (y1 - y0) * width * 3
+        self.shape = (y1 - y0, width, 3)
+        self.y0, self.y1 = y0, y1
         args = [ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{seek:.6f}"]
         args += list(input_args)
         args += [
@@ -281,20 +287,72 @@ class Frames:
             "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
         ]
         self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
-        self.shape = (y1 - y0, width, 3)
+        self.under = []
+        for strip in beneath:
+            x0, sy0, x1, sy1 = strip["box"]
+            bx, by = int(round(x0 * width)), int(round(sy0 * height))
+            bw, bh = max(2, int(round((x1 - x0) * width))), max(2, int(round((sy1 - sy0) * height)))
+            # Only the rows of the band it reaches.
+            top, bottom = max(by, y0), min(by + bh, y1)
+            if bottom <= top:
+                continue
+            into = first / fps - float(strip["from"])
+            reader = subprocess.Popen(
+                [
+                    ffmpeg, "-hide_banner", "-loglevel", "error", "-ss", f"{max(0.0, into - 0.5 / fps):.6f}", "-i", strip["file"], "-an",
+                    "-vf", f"setpts=PTS-STARTPTS,fps={fps:.6f},scale={bw}:{2 * bh}:in_color_matrix=bt709:in_range=tv,format=rgb24",
+                    "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+                ],
+                stdout=subprocess.PIPE, stdin=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            # Frames of the stretch before the strip starts (it starts later than the stretch).
+            self.under.append({"proc": reader, "wait": max(0, int(round(-into * fps))), "size": 2 * bh * bw * 3, "bw": bw, "bh": bh, "bx": bx, "by": by, "rows": (top, bottom), "done": False})
 
-    def read(self):
+    @staticmethod
+    def _read(pipe, size):
         buf = bytearray()
-        while len(buf) < self.size:
-            part = self.proc.stdout.read(self.size - len(buf))
+        while len(buf) < size:
+            part = pipe.read(size - len(buf))
             if not part:
                 return None
             buf += part
-        return np.frombuffer(bytes(buf), dtype=np.uint8).reshape(self.shape)
+        return bytes(buf)
+
+    def read(self):
+        raw = self._read(self.proc.stdout, self.size)
+        if raw is None:
+            return None
+        frame = np.frombuffer(raw, dtype=np.uint8).reshape(self.shape)
+        if not self.under:
+            return frame
+        frame = frame.copy()
+        for one in self.under:
+            if one["wait"] > 0:
+                one["wait"] -= 1
+                continue
+            if one["done"]:
+                continue
+            got = self._read(one["proc"].stdout, one["size"])
+            if got is None:
+                one["done"] = True
+                continue
+            stacked = np.frombuffer(got, dtype=np.uint8).reshape(2 * one["bh"], one["bw"], 3)
+            picture, alpha = stacked[: one["bh"]], stacked[one["bh"] :, :, :1].astype(np.float32) / 255.0
+            top, bottom = one["rows"]
+            ry = slice(top - one["by"], bottom - one["by"])
+            fy = slice(top - self.y0, bottom - self.y0)
+            fx = slice(one["bx"], one["bx"] + one["bw"])
+            base = frame[fy, fx].astype(np.float32)
+            frame[fy, fx] = np.clip(picture[ry].astype(np.float32) + base * (1.0 - alpha[ry]) + 0.5, 0, 255).astype(np.uint8)
+        return frame
 
     def close(self):
         self.proc.stdout.close()
         self.proc.wait()
+        for one in self.under:
+            one["proc"].stdout.close()
+            one["proc"].kill()
+            one["proc"].wait()
 
 
 class Strip:
@@ -348,7 +406,7 @@ def clean(model, req, progress=lambda done, total: None):
     # The model's size: the band scaled so it's at most PROC_WIDE across, sides in steps of 16.
     k = min(1.0, PROC_WIDE / width)
     pw, ph = step_up(width * k), step_up(bh * k)
-    source = Frames(req["ffmpeg"], req["input"], float(req["from"]), total, fps, width, y0, y1, req.get("matrix", "bt709"), req.get("input_args", []))
+    source = Frames(req["ffmpeg"], req["input"], float(req["from"]), total, fps, width, y0, y1, req.get("matrix", "bt709"), req.get("input_args", []), height, req.get("beneath", []))
     strip = Strip(req["ffmpeg"], req["out"], width, bh, fps)
     inferred = 0
     try:

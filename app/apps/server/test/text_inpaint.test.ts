@@ -26,8 +26,16 @@ test("a stretch's frames are the file's own at its rate; a kept strip's name giv
   expect(inpaint.framesOf(10, 12, 30000 / 1001)).toEqual({ first: 300, frames: 60 });
   const box: Box = [0, 0.55, 1, 0.92];
   const name = inpaint.stripName(1, 3, box);
-  expect(inpaint.parseStrip(name)).toEqual({ from: 1, to: 3, box });
-  expect(inpaint.parseStrip(inpaint.stripName(1, 3, null))).toEqual({ from: 1, to: 3, box: null });
+  expect(inpaint.parseStrip(name)).toEqual({ from: 1, to: 3, box, under: "" });
+  expect(inpaint.parseStrip(inpaint.stripName(1, 3, null))).toEqual({ from: 1, to: 3, box: null, under: "" });
+  // Cleaned over their watermark strips: which ones is in its name, so a watermark done again makes it again.
+  expect(inpaint.parseStrip(inpaint.stripName(1, 3, box, "ab12cd34ef"))).toEqual({ from: 1, to: 3, box, under: "ab12cd34ef" });
+  const wm = (path: string, from: number) => ({ id: path, path, cleans: { media: "m1", from, to: from + 30, box: [0, 0.8, 1, 1] as Box, what: "watermark" as const } }) as unknown as Media;
+  const one = inpaint.beneathOf({ media: [wm("/c/0-30.watermark-a.mp4", 0), wm("/c/30-60.watermark-a.mp4", 30)] }, "m1", 25, 35);
+  expect(one.strips.map((strip) => strip.from)).toEqual([0, 30]);
+  expect(one.under).toMatch(/^[0-9a-f]{10}$/u);
+  expect(inpaint.beneathOf({ media: [wm("/c/0-30.watermark-b.mp4", 0)] }, "m1", 25, 35).under).not.toBe(one.under);
+  expect(inpaint.beneathOf({ media: [] }, "m1", 25, 35)).toEqual({ strips: [], under: "" });
   // Another version's or another kind's isn't this one's.
   expect(inpaint.parseStrip("1000-3000.watermark-abc-none.json")).toBeNull();
   expect(inpaint.pixelsOf([[[0.1, 0.8, 0.9, 0.9]], []], 1920, 1080)).toEqual([[[192, 864, 1728, 972]], []]);
@@ -77,11 +85,18 @@ test("a cleaned stretch is laid as a strip over its file's seconds and kept: a s
     // The tracked blur gives way under it, and only there.
     expect(inpaint.stripCovers(app.store.get(first.id)!.project, "m1", 1, 3)).toBe(true);
     expect(inpaint.stripCovers(app.store.get(first.id)!.project, "m1", 3, 5)).toBe(false);
+    // Asked again and again at once (an edit resting as a track finishes): the stretch is cleaned once.
+    const twice = await make("C");
+    await app.store.update(twice.id, "test", (project) => void (project.media = project.media.filter((one) => one.cleans == null)));
+    const otherPlan = [{ ...plan[0]!, source: "r2:footage/other.mp4" }];
+    await Promise.all([inpaint.ensure(app, twice.id, otherPlan, masksOf), inpaint.ensure(app, twice.id, otherPlan, masksOf), inpaint.ensure(app, twice.id, otherPlan, masksOf)]);
+    await inpaint.settled();
+    expect(calls.length).toBe(2);
     // Another project of the same footage: laid from the shelf, the model never asked.
     const second = await make("B");
     await inpaint.ensure(app, second.id, plan, masksOf);
     await inpaint.settled();
-    expect(calls.length).toBe(1);
+    expect(calls.length).toBe(2);
     expect(app.store.get(second.id)!.project.media.find((one) => one.cleans != null)?.cleans?.from).toBe(1);
     expect(fs.existsSync(strip.path)).toBe(true);
   } finally {
@@ -124,23 +139,30 @@ test.skipIf(!fs.existsSync(PYTHON))("the worker streams a stretch through a stan
     await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=320x180:r=30", "-frames:v", "150", "-pix_fmt", "yuv420p", input]);
     // Words in frames 70–99 only, a line low in the picture.
     const masks = Array.from({ length: 120 }, (_, k) => (k >= 70 && k < 100 ? [[40, 140, 280, 160]] : []));
-    const request = { input, input_args: [], from: 0.5, fps: 30, width: 320, height: 180, matrix: "bt601", masks, out: join(dir, "strip.mp4"), ffmpeg: tools.ffmpeg() };
+    // Their watermark taken out underneath (a stacked strip: solid red over full alpha, the picture's lower third), from source 1.0 s.
+    const under = join(dir, "watermark.mp4");
+    await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=320x60:r=30", "-f", "lavfi", "-i", "color=c=white:s=320x60:r=30", "-filter_complex", "[0:v][1:v]vstack", "-frames:v", "150", "-pix_fmt", "yuv420p", under]);
+    const request = { input, input_args: [], from: 0.5, fps: 30, width: 320, height: 180, matrix: "bt601", masks, out: join(dir, "strip.mp4"), ffmpeg: tools.ffmpeg(), beneath: [{ file: under, from: 1.0, box: [0, 2 / 3, 1, 1] }] };
     const script = `
 import json, sys, numpy as np
 sys.path.insert(0, ${JSON.stringify(join(import.meta.dir, "..", "src"))})
 import minimax_worker as w
 class Fake:
     calls = []
+    red = []
     def infer(self, images, masks):
         Fake.calls.append(len(images))
+        # The lower rows of the band at the chunk's first frame (source 2.37 s: the watermark strip laid there) and its
+        # last real one: red, as the strip, not the test pattern.
+        Fake.red.append([int(v) for v in images[0, -4:, :, :].reshape(-1, 3).mean(axis=0)])
         return np.full(images.shape, 200, np.uint8)
 req = json.loads(sys.stdin.read())
 out = w.clean(Fake(), req)
-print(json.dumps({**out, "calls": Fake.calls}))
+print(json.dumps({**out, "calls": Fake.calls, "red": Fake.red}))
 `;
     const run = Bun.spawnSync([PYTHON, "-I", "-c", script], { stdin: new TextEncoder().encode(JSON.stringify(request)), stderr: "pipe" });
     expect(run.exitCode).toBe(0);
-    const answer = JSON.parse(new TextDecoder().decode(run.stdout).trim().split("\n").at(-1)!) as { box: Box; inferred: number; calls: number[] };
+    const answer = JSON.parse(new TextDecoder().decode(run.stdout).trim().split("\n").at(-1)!) as { box: Box; inferred: number; calls: number[]; red: number[][] };
     // The band of the words (rows round 140–160, with room round them), the whole width.
     expect(answer.box[0]).toBe(0);
     expect(answer.box[2]).toBe(1);
@@ -148,6 +170,11 @@ print(json.dumps({**out, "calls": Fake.calls}))
     expect(answer.box[3]).toBeGreaterThan(160 / 180);
     // Chunks of 61 overlapping by 5: [0, 61) has none, [56, 117) has them all, [112, 120) none: one call, of 61 frames.
     expect(answer.calls).toEqual([61]);
+    // The model was given the picture with their watermark already out (the red strip), not the original under it.
+    const [r, g, b] = answer.red[0]!;
+    expect(r).toBeGreaterThan(180);
+    expect(g).toBeLessThan(80);
+    expect(b).toBeLessThan(80);
     const bandHigh = Math.round((answer.box[3] - answer.box[1]) * 180);
     const frames = new Uint8Array(await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-i", request.out, "-f", "rawvideo", "-pix_fmt", "gray", "-"]));
     const size = 320 * bandHigh * 2;

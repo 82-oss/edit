@@ -34,8 +34,8 @@ import workerSource from "./minimax_worker.py" with { type: "text" };
 
 /** Where the model is installed (its Python, weights and code): a machine without it blurs. */
 export const REMOVER = join(os.homedir(), ".local", "share", "edit-remover");
-/** A new way of cleaning is a new name on the shelf. */
-const VERSION = 1;
+/** A new way of cleaning is a new name on the shelf. 2: cleaned from the picture with their watermark out (`beneath`). */
+const VERSION = 2;
 /** The worker is let go (its GPU memory freed) after this long with nothing to do. */
 const IDLE_MS = 5 * 60_000;
 /** A stretch the model failed on is tried once more, then left blurred. */
@@ -114,15 +114,40 @@ export function pixelsOf(boxes: Box[][], width: number, height: number): number[
 // The shelf: strips kept by file and seconds
 
 const boxPart = (box: Box) => box.map((value) => String(Math.round(value * 1e4))).join("-");
-export const stripName = (from: number, to: number, box: Box | null) => `${Math.round(from * 1000)}-${Math.round(to * 1000)}.minimax-v${VERSION}-${box === null ? "none.json" : `${boxPart(box)}.mp4`}`;
+/**
+ * A strip's name on the shelf: its seconds, which watermark strips it was cleaned over (`under`: their hash, "" with
+ * none; a watermark done again is a new strip), and its box.
+ */
+export const stripName = (from: number, to: number, box: Box | null, under = "") =>
+  `${Math.round(from * 1000)}-${Math.round(to * 1000)}.minimax-v${VERSION}${under === "" ? "" : `-u${under}`}-${box === null ? "none.json" : `${boxPart(box)}.mp4`}`;
 
-/** A kept strip's name read back: its seconds and box (null: nothing of theirs was there). */
-export function parseStrip(name: string): { from: number; to: number; box: Box | null } | null {
-  const match = new RegExp(`^(\\d+)-(\\d+)\\.minimax-v${VERSION}-(?:none\\.json|(\\d+)-(\\d+)-(\\d+)-(\\d+)\\.mp4)$`, "u").exec(name);
+/** A kept strip's name read back: its seconds, what it was cleaned over, and its box (null: nothing of theirs was there). */
+export function parseStrip(name: string): { from: number; to: number; box: Box | null; under: string } | null {
+  const match = new RegExp(`^(\\d+)-(\\d+)\\.minimax-v${VERSION}(?:-u([0-9a-f]+))?-(?:none\\.json|(\\d+)-(\\d+)-(\\d+)-(\\d+)\\.mp4)$`, "u").exec(name);
   if (match === null) return null;
-  const box = match[3] === undefined ? null : ([match[3], match[4], match[5], match[6]].map((value) => Number(value) / 1e4) as Box);
-  return { from: Number(match[1]) / 1000, to: Number(match[2]) / 1000, box };
+  const box = match[4] === undefined ? null : ([match[4], match[5], match[6], match[7]].map((value) => Number(value) / 1e4) as Box);
+  return { from: Number(match[1]) / 1000, to: Number(match[2]) / 1000, box, under: match[3] ?? "" };
 }
+
+/** A watermark strip under a stretch (watermark_removal.ts's), laid on the picture before it's cleaned. */
+export interface Beneath {
+  file: string;
+  from: number;
+  box: Box;
+}
+
+/** The file's watermark strips over source seconds [from, to) in `project`, and their hash for the shelf ("" with none). */
+export function beneathOf(project: { media: Media[] }, media: string, from: number, to: number): { strips: Beneath[]; under: string } {
+  const strips = project.media
+    .filter((one) => one.cleans != null && one.cleans.media === media && one.cleans.what === "watermark" && one.cleans.from < to && one.cleans.to > from)
+    .sort((a, b) => a.cleans!.from - b.cleans!.from)
+    .map((one): Beneath => ({ file: one.path, from: one.cleans!.from, box: one.cleans!.box }));
+  const under = strips.length === 0 ? "" : createHash("sha256").update(strips.map((one) => one.file.slice(one.file.lastIndexOf("/") + 1)).join("|")).digest("hex").slice(0, 10);
+  return { strips, under };
+}
+
+/** Whether a watermark piece of the file over [from, to) is still being made (watermark_removal.ts; removal_schedule.ts sets it): a stretch waits for it. */
+export const watermarks = { pending: (_id: string, _media: string, _from: number, _to: number): boolean => false };
 
 const PREFIX = "edit/cleaned";
 
@@ -130,12 +155,12 @@ const PREFIX = "edit/cleaned";
 const folderOf = (source: string) => createHash("sha256").update(source).digest("hex").slice(0, 32);
 
 /** A stretch's strip on the shelf, brought here (null: not cleaned yet). */
-async function shelved(app: App, source: string, from: number, to: number): Promise<{ file: string | null; box: Box | null } | null> {
+async function shelved(app: App, source: string, from: number, to: number, under: string): Promise<{ file: string | null; box: Box | null } | null> {
   const folder = folderOf(source);
   const dir = join(app.store.cacheDir(), "cleaned", folder);
   const want = (name: string) => {
     const one = parseStrip(name);
-    return one !== null && Math.abs(one.from - from) < 0.001 && Math.abs(one.to - to) < 0.001 ? one : null;
+    return one !== null && one.under === under && Math.abs(one.from - from) < 0.001 && Math.abs(one.to - to) < 0.001 ? one : null;
   };
   let names: string[] = [];
   try {
@@ -157,11 +182,11 @@ async function shelved(app: App, source: string, from: number, to: number): Prom
   return { file: box === null ? null : join(dir, name), box };
 }
 
-async function keep(app: App, source: string, from: number, to: number, file: string | null, box: Box | null): Promise<string | null> {
+async function keep(app: App, source: string, from: number, to: number, file: string | null, box: Box | null, under: string): Promise<string | null> {
   const folder = folderOf(source);
   const dir = join(app.store.cacheDir(), "cleaned", folder);
   fs.mkdirSync(dir, { recursive: true });
-  const name = stripName(from, to, box);
+  const name = stripName(from, to, box, under);
   const local = join(dir, name);
   if (file === null) fs.writeFileSync(local, "{}");
   else fs.renameSync(file, local);
@@ -182,6 +207,7 @@ interface Request {
   matrix: string;
   masks: number[][][];
   out: string;
+  beneath: Beneath[];
 }
 
 interface Answer {
@@ -331,13 +357,25 @@ export function stripCovers(project: { media: Media[] }, media: string, from: nu
   return project.media.some((one) => one.cleans != null && one.cleans.media === media && (one.cleans.what ?? "text") === "text" && one.cleans.from <= from + 0.05 && one.cleans.to >= to - 0.05);
 }
 
+/** A strip of ours for [from, to) made as it'd be made now (this version, over these watermark strips): one that isn't is made again. */
+function current(project: { media: Media[] }, media: string, from: number, to: number, under: string): boolean {
+  return project.media.some((one) => {
+    if (one.cleans == null || one.cleans.media !== media || (one.cleans.what ?? "text") !== "text" || Math.abs(one.cleans.from - from) > 0.01 || Math.abs(one.cleans.to - to) > 0.05) return false;
+    const ours = parseStrip(one.path.slice(one.path.lastIndexOf("/") + 1));
+    // Another's strip (a Vmake one, from before Nov 19) stays as it was.
+    return ours === null ? !/\.minimax-v\d/u.test(one.path) : ours.under === under;
+  });
+}
+
 /** Puts a stretch's strip in the project (clean_strips.ts lays it over the clips there). */
 async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string): Promise<void> {
   const probed = await probe(file);
   await playing.whenIdle();
   await app.store.update(id, "text removal", (project) => {
     if (!project.media.some((one) => one.id === footage.id)) return;
-    if (project.media.some((one) => one.cleans?.media === footage.id && (one.cleans.what ?? "text") === "text" && Math.abs(one.cleans.from - from) < 0.01 && Math.abs(one.cleans.to - to) < 0.05)) return;
+    if (project.media.some((one) => one.path === file)) return;
+    // One of ours for the same seconds made before (another version, or over a watermark done again) gives way.
+    project.media = project.media.filter((one) => !(one.cleans?.media === footage.id && (one.cleans.what ?? "text") === "text" && Math.abs(one.cleans.from - from) < 0.01 && Math.abs(one.cleans.to - to) < 0.05 && /\.minimax-v\d/u.test(one.path)));
     project.media.push({
       id: freshId(project, "m"),
       name: `${footage.name} · their subtitles out ${Math.round(from)}–${Math.round(to)} s`,
@@ -369,7 +407,21 @@ const matrixOf = (height: number) => (height >= 720 ? "bt709" : "bt601");
  * (text_blur calls back, `tracked`), and what's no longer wanted is forgotten (its strip, if laid, stays: a strip is
  * only ever what was there).
  */
-export async function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf): Promise<void> {
+export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf): Promise<void> {
+  // One at a time a project: two at once (an edit resting as a track finished) each queued the same stretch, and it
+  // was cleaned twice (Nov 19, four of the Boyfriends intro's 13).
+  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => ensureNow(app, id, given, masksOf));
+  const settledRun = run.catch(() => {});
+  ensuring.set(id, settledRun);
+  void settledRun.finally(() => {
+    if (ensuring.get(id) === settledRun) ensuring.delete(id);
+  });
+  return run;
+}
+
+const ensuring = new Map<string, Promise<void>>();
+
+async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf): Promise<void> {
   if (!available()) return;
   const live = app.store.get(id);
   if (live === null) return;
@@ -385,13 +437,19 @@ export async function ensure(app: App, id: string, given: InpaintPlan[], masksOf
       const key = keyOf(plan.media.id, from, to);
       const piece: InpaintPiece = was?.get(key) ?? { key, media: plan.media.id, name: plan.media.name, from, to, state: "waiting" };
       mine.set(key, piece);
-      if (stripCovers(live.project, plan.media.id, from, to)) {
+      const { strips, under } = beneathOf(live.project, plan.media.id, from, to);
+      if (current(live.project, plan.media.id, from, to, under)) {
         piece.state = "done";
         continue;
       }
       if (piece.state === "queued" || piece.state === "running") continue;
       if (piece.state === "failed" && (tries.get(jobKey(plan.source, from, to)) ?? 0) >= TRIES) continue;
-      const kept = await shelved(app, plan.source, from, to).catch(() => null);
+      // Their watermark there still being taken out: cleaned once it's out (a strip laid saves the project, which asks again).
+      if (watermarks.pending(id, plan.media.id, from, to)) {
+        piece.state = "waiting";
+        continue;
+      }
+      const kept = await shelved(app, plan.source, from, to, under).catch(() => null);
       if (kept !== null) {
         piece.state = "done";
         if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file);
@@ -403,13 +461,13 @@ export async function ensure(app: App, id: string, given: InpaintPlan[], masksOf
         continue;
       }
       piece.state = "queued";
-      queue.push({ key, run: () => work(app, id, plan, piece, from, to, first, boxes) });
+      queue.push({ key, run: () => work(app, id, plan, piece, from, to, first, boxes, strips, under) });
     }
   }
   drain();
 }
 
-async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece, from: number, to: number, first: number, boxes: Box[][]): Promise<void> {
+async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece, from: number, to: number, first: number, boxes: Box[][], beneath: Beneath[], under: string): Promise<void> {
   piece.state = "running";
   const job = jobKey(plan.source, from, to);
   tries.set(job, (tries.get(job) ?? 0) + 1);
@@ -422,10 +480,10 @@ async function work(app: App, id: string, plan: InpaintPlan, piece: InpaintPiece
     const [width, height] = [plan.media.width || 1920, plan.media.height || 1080];
     const input = await cloudMedia.originalInput(app.store.cacheDir(), plan.media);
     const started = Date.now();
-    const answer = await cleaner(app).clean({ input, input_args: tools.urlArgs(input), from: first / fps, fps, width, height, matrix: matrixOf(height), masks: pixelsOf(boxes, width, height), out });
+    const answer = await cleaner(app).clean({ input, input_args: tools.urlArgs(input), from: first / fps, fps, width, height, matrix: matrixOf(height), masks: pixelsOf(boxes, width, height), out, beneath });
     if (!answer.ok) throw new Error(answer.error ?? "the model failed");
     const box = answer.box ?? null;
-    const file = await keep(app, plan.source, from, to, box === null ? null : out, box);
+    const file = await keep(app, plan.source, from, to, box === null ? null : out, box, under);
     if (file !== null && box !== null) await place(app, id, plan.media, from, to, box, file);
     piece.state = "done";
     const seconds = (Date.now() - started) / 1000;

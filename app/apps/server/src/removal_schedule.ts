@@ -104,6 +104,9 @@ function hintsOf(app: App, id: string): watermarkRemoval.Hints {
 }
 
 watermarkRemoval.hintsFor.project = hintsOf;
+// A stretch the model cleans waits while their watermark there is still being taken out (it's cleaned over the result).
+textInpaint.watermarks.pending = (id, media, from, to) =>
+  watermarkRemoval.piecesOf(id).some((one) => one.media === media && (one.state === "queued" || one.state === "running") && one.from < to && one.to > from) || watermarkRemoval.lookingAt(id) > 0;
 
 /** Pieces out (queued or being done) and done, of both workers, for the line and the export's step. */
 export function progressOf(id: string): { done: number; out: number } {
