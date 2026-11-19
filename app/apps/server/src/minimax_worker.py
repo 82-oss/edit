@@ -208,8 +208,10 @@ def band_of(masks, width, height):
     rows = [(y0, y1) for frame in masks for (_, y0, _, y1) in frame]
     if not rows:
         return None
-    # The mask's own pad and a little of the picture beyond it for the model to fill from.
-    pad = (PAD_Y + 24) * scale
+    # Give tall boxes (watermarks/logos) generous unmasked context above and below so the model sees surrounding
+    # texture (bricks, concrete) and the mask never slams into the band's top/bottom edges unfeathered (Nov 19).
+    tallest = max(r[1] - r[0] for r in rows)
+    pad = max((PAD_Y + 24) * scale, min(140 * scale, 0.55 * tallest))
     y0 = max(0, int(min(r[0] for r in rows) - pad))
     y1 = min(height, int(math.ceil(max(r[1] for r in rows) + pad)))
     # At least 160 lines at 1080 of context round the words (the model fills from what's around), on even rows.
@@ -225,44 +227,53 @@ def band_of(masks, width, height):
 
 
 def mask_frame(frame_rgb, boxes, y0, scale):
-    """The mask of one frame's band (uint8, 255 = theirs): each box grown, out along its row to a dash or a stop
-    beside it (bold-coloured glyphs within reach: a line's leading '-'), its dark outline inside the pad."""
+    """The mask of one frame's band (uint8, 255 = theirs): each subtitle box grown and extended along its row to a
+    dash or stop beside it; tall marked logo/watermark boxes keep tight padding without sideways colour-grabbing
+    (Nov 19: subtitle padding + HSV search on a 230 px ARRESTFLIX box grabbed surrounding bricks and hit the band edges)."""
     import cv2
 
     bh, bw = frame_rgb.shape[:2]
     m = np.zeros((bh, bw), dtype=np.uint8)
     if not boxes:
         return m
-    hsv = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2HSV)
-    # Bold-coloured glyphs only (a cyan or yellow '-'): plain white beside a line is as often the picture's own (a vest's "POLICE").
-    glyph = (hsv[:, :, 1] > 110) & (hsv[:, :, 2] > 100)
+    hsv = None
+    glyph = None
     for x0, by0, x1, by1 in boxes:
         line = by1 - by0
         bx0, bx1 = int(x0), int(math.ceil(x1))
-        ry0, ry1 = max(0, int(by0 - y0 - 4 * scale)), min(bh, int(math.ceil(by1 - y0 + 4 * scale)))
-        if ry1 <= ry0:
-            continue
-        reach_l, reach_r = int(110 * scale), int(60 * scale)
-        left = glyph[ry0:ry1, max(0, bx0 - reach_l):bx0]
-        if left.size and left.any():
-            cols = np.where(left.any(axis=0))[0]
-            bx0 = max(0, bx0 - reach_l) + int(cols[0])
-        right = glyph[ry0:ry1, bx1:min(bw, bx1 + reach_r)]
-        if right.size and right.any():
-            cols = np.where(right.any(axis=0))[0]
-            bx1 = bx1 + int(cols[-1]) + 1
-        px = PAD_X * scale + 0.3 * line
-        py = PAD_Y * scale + 0.15 * line
+        if line > 95 * scale:
+            # Tall watermark/logo box: already drawn around the mark — keep padding tight so MiniMax has real context.
+            px = 8 * scale
+            py = 8 * scale
+        else:
+            if glyph is None:
+                hsv = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2HSV)
+                # Bold-coloured glyphs only (a cyan or yellow '-'): plain white beside a line is as often the picture's own (a vest's "POLICE").
+                glyph = (hsv[:, :, 1] > 110) & (hsv[:, :, 2] > 100)
+            ry0, ry1 = max(0, int(by0 - y0 - 4 * scale)), min(bh, int(math.ceil(by1 - y0 + 4 * scale)))
+            if ry1 <= ry0:
+                continue
+            reach_l, reach_r = int(110 * scale), int(60 * scale)
+            left = glyph[ry0:ry1, max(0, bx0 - reach_l):bx0]
+            if left.size and left.any():
+                cols = np.where(left.any(axis=0))[0]
+                bx0 = max(0, bx0 - reach_l) + int(cols[0])
+            right = glyph[ry0:ry1, bx1:min(bw, bx1 + reach_r)]
+            if right.size and right.any():
+                cols = np.where(right.any(axis=0))[0]
+                bx1 = bx1 + int(cols[-1]) + 1
+            px = PAD_X * scale + 0.3 * line
+            py = PAD_Y * scale + 0.15 * line
         a, b = max(0, int(bx0 - px)), min(bw, int(math.ceil(bx1 + px)))
         c, d = max(0, int(by0 - y0 - py)), min(bh, int(math.ceil(by1 - y0 + py)))
         m[c:d, a:b] = 255
     return m
 
 
-def alpha_of(mask):
+def alpha_of(mask, feather=FEATHER):
     import cv2
 
-    k = FEATHER * 2 + 1
+    k = feather * 2 + 1
     a = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (k, k), 0)
     return np.clip(a * 1.35, 0.0, 1.0)
 
@@ -391,6 +402,62 @@ class Strip:
         os.replace(self.partial, self.out)
 
 
+# Maximum frames a box's mask holds onto adjacent unmasked frames when the pixels inside it haven't changed
+# (catches OCR/mark timing slop on static shots so unmasked edge frames never leak the text back through the temporal model).
+MAX_HOLD = 15
+
+
+def _box_overlap(a, b):
+    ix0, iy0 = max(a[0], b[0]), max(a[1], b[1])
+    ix1, iy1 = min(a[2], b[2]), min(a[3], b[3])
+    if ix1 <= ix0 or iy1 <= iy0:
+        return 0.0
+    inter = (ix1 - ix0) * (iy1 - iy0)
+    area_a = max(1e-6, (a[2] - a[0]) * (a[3] - a[1]))
+    return inter / area_a
+
+
+def hold_edges(window, window_boxes, y0):
+    """Extends each box across adjacent unmasked frames while the pixels inside it stay unchanged (still the same
+    text/logo), plus one same-shot transition frame for fades / slow-mo blends (Nov 19, Boyfriends intro: orange 'No'
+    lingering 5 frames past a mark leaked back onto every masked frame in the 61-frame chunk)."""
+    n = len(window)
+    if n < 2:
+        return window_boxes
+    bh, bw = window[0].shape[:2]
+    out = [list(bs) for bs in window_boxes]
+    for i, boxes in enumerate(window_boxes):
+        for box in boxes:
+            rx0, rx1 = max(0, int(box[0])), min(bw, int(math.ceil(box[2])))
+            ry0, ry1 = max(0, int(box[1] - y0)), min(bh, int(math.ceil(box[3] - y0)))
+            if rx1 <= rx0 or ry1 <= ry0:
+                continue
+            ref = window[i][ry0:ry1, rx0:rx1].astype(np.float32)
+            # Uniform/blank patches (spatial std < 12) aren't text or logos; never hold them across frames.
+            if float(ref.std(axis=(0, 1)).max()) < 12.0:
+                continue
+            for step in (-1, 1):
+                nxt = i + step
+                if not (0 <= nxt < n) or any(_box_overlap(box, other) >= 0.5 for other in window_boxes[nxt]):
+                    continue
+                last = i
+                for dist in range(1, MAX_HOLD + 1):
+                    j = i + step * dist
+                    if not (0 <= j < n) or any(_box_overlap(box, other) >= 0.5 for other in out[j]):
+                        break
+                    diff = np.abs(window[j][ry0:ry1, rx0:rx1].astype(np.float32) - ref)
+                    if float(diff.mean()) < 5.0 and float(np.percentile(diff, 95)) < 25.0:
+                        out[j].append(box)
+                        last = j
+                    else:
+                        # One extra frame on the same shot catches 1-frame fades / 0.80x frame blends without crossing a hard cut.
+                        shot_diff = float(np.abs(window[j].astype(np.float32) - window[last].astype(np.float32)).mean())
+                        if shot_diff < 15.0:
+                            out[j].append(box)
+                        break
+    return out
+
+
 def clean(model, req, progress=lambda done, total: None):
     import cv2
 
@@ -411,7 +478,7 @@ def clean(model, req, progress=lambda done, total: None):
     inferred = 0
     try:
         # A window of frames (the chunk being cleaned and the overlap kept from the last), their masks, and what came out.
-        window, window_masks = [], []
+        window, window_boxes = [], []
         written = 0
         held = None  # the last chunk's picture of the overlap frames (model size, uint8), crossfaded into the next
         next_frame = 0
@@ -423,13 +490,15 @@ def clean(model, req, progress=lambda done, total: None):
                     total = next_frame
                     break
                 window.append(frame)
-                window_masks.append(mask_frame(frame, masks[next_frame], y0, scale))
+                window_boxes.append(masks[next_frame])
                 next_frame += 1
             if not window:
                 break
             count = len(window)
             last = next_frame >= total
             keep = count if last else count - OVERLAP
+            eff_boxes = hold_edges(window, window_boxes, y0)
+            window_masks = [mask_frame(frame, bs, y0, scale) for frame, bs in zip(window, eff_boxes)]
             any_mask = any(m.any() for m in window_masks)
             if any_mask:
                 pad = (4 - ((count - 1) % 4)) % 4
@@ -451,13 +520,14 @@ def clean(model, req, progress=lambda done, total: None):
                     strip.write(None, None)
                 else:
                     picture = cv2.resize(out[i], (width, bh), interpolation=cv2.INTER_CUBIC)
-                    alpha = alpha_of(m)
+                    feather = max(FEATHER, int(round(10 * scale))) if any((b[3] - b[1]) > 95 * scale for b in eff_boxes[i]) else FEATHER
+                    alpha = alpha_of(m, feather)
                     # The original outside the mask (premultiplied, so only what's inside counts).
                     strip.write(picture, alpha)
             written += keep
             progress(written, total)
             held = None if out is None or last else out[keep:count].copy()
-            window, window_masks = window[keep:], window_masks[keep:]
+            window, window_boxes = window[keep:], eff_boxes[keep:]
             if last:
                 break
         # Frames never decoded (the file ended early) stay see-through, so the strip keeps its length.

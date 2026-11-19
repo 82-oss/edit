@@ -22,12 +22,20 @@ afterEach(() => {
 
 test("a stretch's frames are the file's own at its rate; a kept strip's name gives back its seconds and box", () => {
   expect(inpaint.framesOf(1.0, 3.0, 30)).toEqual({ first: 30, frames: 60 });
-  // 29.97: the first frame at or after the second, through the last before its end.
-  expect(inpaint.framesOf(10, 12, 30000 / 1001)).toEqual({ first: 300, frames: 60 });
+  // 29.97: the frame on screen at the second (the one before it: 299.7), through the last before its end.
+  expect(inpaint.framesOf(10, 12, 30000 / 1001)).toEqual({ first: 299, frames: 61 });
+  // A clip starting between two frames (218.28 s at 30: frame 6548.4) shows frame 6548, so the stretch starts there.
+  expect(inpaint.framesOf(218.28, 222.81, 30).first).toBe(6548);
   const box: Box = [0, 0.55, 1, 0.92];
   const name = inpaint.stripName(1, 3, box);
   expect(inpaint.parseStrip(name)).toEqual({ from: 1, to: 3, box, under: "" });
   expect(inpaint.parseStrip(inpaint.stripName(1, 3, null))).toEqual({ from: 1, to: 3, box: null, under: "" });
+  // Their watermark's box marked there is in its name too (a mark added later makes it again); none there, as before.
+  const mark = { from: 2, to: 4, box: [0.1, 0.5, 0.3, 0.6] as Box };
+  expect(inpaint.underWith("", [mark], 5, 8)).toBe("");
+  expect(inpaint.underWith("ab12cd34ef", [], 1, 3)).toBe("ab12cd34ef");
+  expect(inpaint.underWith("", [mark], 1, 3)).toMatch(/^[0-9a-f]{10}$/u);
+  expect(inpaint.underWith("", [mark], 1, 3)).not.toBe(inpaint.underWith("", [{ ...mark, box: [0.1, 0.5, 0.35, 0.6] }], 1, 3));
   // Cleaned over their watermark strips: which ones is in its name, so a watermark done again makes it again.
   expect(inpaint.parseStrip(inpaint.stripName(1, 3, box, "ab12cd34ef"))).toEqual({ from: 1, to: 3, box, under: "ab12cd34ef" });
   const wm = (path: string, from: number) => ({ id: path, path, cleans: { media: "m1", from, to: from + 30, box: [0, 0.8, 1, 1] as Box, what: "watermark" as const } }) as unknown as Media;

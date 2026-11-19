@@ -32,6 +32,48 @@ function screen(t: number): ScreenText[] {
   return [stamp];
 }
 
+test("a tracked blur sits just above its own clip, never over our captions on a lane that also holds a picture (Nov 19, the Boyfriends intro: Kelly's captions blurred)", () => {
+  const clip = (one: Record<string, unknown>) => ({ color: "blue", fade_in: 0, fade_out: 0, opacity: 1, ...one }) as unknown as Project["clips"][number];
+  const project = {
+    settings: { width: 1920, height: 1080, fps: 30 },
+    media: [],
+    tracks: ["v1", "v2"].map((id) => ({ id, kind: "video", hidden: false, muted: false, locked: false })),
+    clips: [
+      clip({ id: "c1", track: "v1", start: 0, duration: 100, type: "video", media: "m", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 } }),
+      // Our caption over it, on a lane that holds a B-roll picture later on.
+      clip({ id: "t1", track: "v2", start: 0, duration: 50, type: "text", text: "I'm not afraid of you." }),
+      clip({ id: "b1", track: "v2", start: 200, duration: 50, type: "video", media: "m", source_in: 300, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 } }),
+      // One laid before the rule, over the caption: laid again where it belongs.
+      clip({ id: "old", track: "v9", start: 60, duration: 10, type: "adjustment", name: `${blur.TRACKED} · c1`, blur: { radius: 20, x: 0, y: 0, width: 100, height: 40, feather: 4, shape: "rect" } }),
+    ],
+    next_id: 10,
+  } as unknown as Project;
+  project.tracks.push({ id: "v9", kind: "video", hidden: false, muted: false, locked: false });
+  const template = structuredClone(project.clips.find((one) => one.id === "old") as AdjustmentClip);
+  const want = (start: number, duration: number) => ({ ...template, id: "", track: "", start, duration });
+  expect(blur.lay(project, [want(10, 20), want(60, 10)])).toBe(true);
+  const laid = project.clips.filter((one) => (one.name ?? "").startsWith(`${blur.TRACKED} · `));
+  expect(laid.length).toBe(2);
+  const index = (track: string) => project.tracks.findIndex((one) => one.id === track);
+  for (const one of laid) {
+    expect(index(one.track)).toBeGreaterThan(index("v1"));
+    expect(index(one.track)).toBeLessThan(index("v2"));
+  }
+  expect(project.tracks.some((one) => one.id === "v9")).toBe(false);
+  // Laid again as they are: nothing changes.
+  expect(blur.lay(project, [want(10, 20), want(60, 10)])).toBe(false);
+});
+
+test("their watermark's marked box is a place of its own, there over its seconds alone (Nov 19, the Boyfriends intro's ARRESTFLIX)", () => {
+  const laid = blur.markTrack({ from: 10, to: 12, box: [0.1, 0.5, 0.3, 0.6] }, 0);
+  const slots = blur.slotsOf(laid.samples);
+  expect([...slots.keys()]).toEqual(["w0"]);
+  const samples = slots.get("w0")!;
+  expect(blur.boxAt(samples, 10)).toEqual([0.1, 0.5, 0.3, 0.6]);
+  expect(blur.boxAt(samples, 11.99)).toEqual([0.1, 0.5, 0.3, 0.6]);
+  expect(blur.boxAt(samples, 12)).toBeNull();
+});
+
 test("the track: read three times a second, halved twice at each change; between reads of the same words the box moves with them, across a change it's both, with none it's off; never the camera's stamp", async () => {
   const asked: number[][] = [];
   const samples = await blur.track(plan, 0, 4, async (times) => (asked.push(times), times.map(screen)));

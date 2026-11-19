@@ -76,8 +76,9 @@ const SAID = 0.5;
 /**
  * What to do with ours where footage has its own: none over theirs (the
  * default), theirs blurred and ours on it, or theirs taken out of the picture
- * and ours on it ("remove", subtitle_removal.ts: blurred like "cover" until
- * it's done, and where it can't be). Either of the last two only when taught.
+ * and ours on it ("remove": removal_schedule.ts takes them out, or blurs them
+ * tight, where they're marked; no still blur stands in meanwhile). Either of
+ * the last two only when taught.
  */
 export type BurnedIn = "leave_off" | "cover" | "remove";
 /** How long a subtitling tool waits for the footage it subtitles to be read (ms). */
@@ -88,7 +89,10 @@ export const CONTEXT_WAIT_MS = 8_000;
 const STEP = 25;
 /** The name of every blur `cover` lays; a re-run replaces them. */
 export const COVER = "Burned-in cover";
-/** A cover laid for "remove": standing in until their subtitles are taken out (subtitle_removal.ts finds what's wanted by it). */
+/**
+ * A still blur over their band that once stood in while "remove" took them out (Nov 19, the Boyfriends intro: five
+ * were left over cleaned or empty frames, one on a clip long gone): none is laid now, and clean_strips drops those left.
+ */
 export const UNTIL_REMOVED = `${COVER} · until removed`;
 
 /** A box as shares of the picture from its top left: x0, y0, x1, y1. */
@@ -637,10 +641,9 @@ function trimmed(keys: Keyframe[], cut: number, length: number): Keyframe[] {
 /**
  * Covers each of `shown` with a blur over the band, stuck to its clip (it
  * follows a push-in and fades with a dissolve: mark_blurs' way), named
- * COVER (UNTIL_REMOVED for "remove"). The covers laid before over the same
- * frames go first. Returns how many.
+ * COVER. The covers laid before over the same frames go first. Returns how many.
  */
-export function cover(project: Project, shown: Shown[], removing = false): number {
+export function cover(project: Project, shown: Shown[]): number {
   project.clips = project.clips.filter((clip) => !((clip.name ?? "").startsWith(COVER) && shown.some((one) => clip.start < one.end && one.start < clipEnd(clip))));
   const made: AdjustmentClip[] = [];
   for (const one of shown) {
@@ -654,7 +657,7 @@ export function cover(project: Project, shown: Shown[], removing = false): numbe
       const cut = start - blur.start;
       const keyframes: Record<string, Keyframe[]> = {};
       for (const [param, keys] of Object.entries(blur.keyframes ?? {})) if (keys.length > 0) keyframes[param] = trimmed(keys, cut, end - start);
-      made.push({ ...blur, start, duration: end - start, name: `${removing ? UNTIL_REMOVED : COVER} · ${clip.id}`, ...(Object.keys(keyframes).length > 0 ? { keyframes } : { keyframes: undefined }) } as AdjustmentClip);
+      made.push({ ...blur, start, duration: end - start, name: `${COVER} · ${clip.id}`, ...(Object.keys(keyframes).length > 0 ? { keyframes } : { keyframes: undefined }) } as AdjustmentClip);
     }
   }
   for (const blur of made) {
@@ -664,35 +667,6 @@ export function cover(project: Project, shown: Shown[], removing = false): numbe
     project.clips.push(blur);
   }
   return made.length;
-}
-
-/**
- * A blur over `box` (shares of `media`'s picture) on `clip` where it plays
- * the file's seconds [from, to), stuck to it as `cover`'s are, named
- * UNTIL_REMOVED: their label blurred where it couldn't be taken out
- * (text_removal.ts). How many were laid.
- */
-export function coverBox(project: Project, clip: VideoClip, media: Media, box: Band, from: number, to: number): number {
-  const fps = fpsOf(project);
-  const at = (seconds: number) => clip.start + Math.round(((seconds - clip.source_in) / clip.speed) * fps);
-  const start = Math.max(clip.start, at(from));
-  const end = Math.min(clipEnd(clip), at(to));
-  if (end - start < 2) return 0;
-  let laid = 0;
-  for (const blur of markBlurs.blursFor(project, clip, media, { text: "their label", box })) {
-    const a = Math.max(blur.start, start);
-    const b = Math.min(clipEnd(blur), end);
-    if (b - a < 2) continue;
-    const keyframes: Record<string, Keyframe[]> = {};
-    for (const [param, keys] of Object.entries(blur.keyframes ?? {})) if (keys.length > 0) keyframes[param] = trimmed(keys, a - blur.start, b - a);
-    const made = { ...blur, start: a, duration: b - a, name: `${UNTIL_REMOVED} · ${clip.id}`, ...(Object.keys(keyframes).length > 0 ? { keyframes } : {}) } as AdjustmentClip;
-    if (Object.keys(keyframes).length === 0) delete made.keyframes;
-    made.id = freshId(project, "c");
-    made.track = markBlurs.laneFor(project, made.start, clipEnd(made), COVER);
-    project.clips.push(made);
-    laid += 1;
-  }
-  return laid;
 }
 
 /** The band of `media` as a face-like box on the frame for a caption to keep off, while it shows in source seconds [from, to); null when it doesn't. */

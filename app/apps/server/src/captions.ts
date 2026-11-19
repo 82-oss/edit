@@ -1085,7 +1085,8 @@ export async function subtitles(app: App, projectId: string, from: number, to: n
   const [saved, [placed, kept, starred, people]] = await app.store.update(projectId, "agent", (project) => {
     // Their band blurred on each clip where it shows, so ours read over it.
     const shownNow = clashing.length > 0 ? burned.onTimeline(project).shown : [];
-    if (burnedIn !== "leave_off" && shownNow.length > 0) covers = burned.cover(project, shownNow, burnedIn === "remove");
+    // Taught to take theirs out: none, ours laid over theirs (removal takes them out of the picture, or blurs them tight).
+    if (burnedIn === "cover" && shownNow.length > 0) covers = burned.cover(project, shownNow);
     const preserved = missingOnly ? new Map(project.clips.map((clip) => [clip.id, JSON.stringify(clip)])) : null;
     // Who each transcript voice was made out to be (a relabel: "Mother" →
     // "Tabitha:") and their colour: a re-run keeps them.

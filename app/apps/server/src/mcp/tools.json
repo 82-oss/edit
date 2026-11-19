@@ -4484,7 +4484,7 @@
           "type": "boolean"
         },
         "marks": {
-          "description": "Your in and out points (a channel taught to take their text out): the timeline stretches where you saw their subtitles or text, tight to them, several short ones; or \"proposed\" once you've looked and every stretch get_edit_context's removal proposes is theirs. Only marked stretches get the tracked blur",
+          "description": "Your in and out points (a channel taught to take their text out): the timeline stretches where you saw their subtitles or text, tight to them, several short ones; or \"proposed\" once you've looked and every stretch get_edit_context's removal proposes is theirs. Only marked stretches get the tracked blur (a mark covers the shot it's in). Their watermark still showing (a logo or name laid over the footage, never the camera's stamp): its stretch with box round the whole mark",
           "items": {
             "properties": {
               "from": {
@@ -4492,6 +4492,13 @@
               },
               "to": {
                 "type": "number"
+              },
+              "box": {
+                "description": "Their watermark there: [x0, y0, x1, y1], shares of the frame as render_frame shows it, from its top left",
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
               }
             },
             "required": [

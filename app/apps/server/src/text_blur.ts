@@ -32,7 +32,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import type { App } from "./app.ts";
-import { TRACKED } from "./clean_strips.ts";
+import { isOverlay, TRACKED } from "./clean_strips.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import { framingAt } from "./frames_fill.ts";
@@ -41,7 +41,7 @@ import type { AdjustmentClip, Keyframe, Media, Project, VideoClip } from "./mode
 import { native, type Box, type ScreenText } from "./native/index.ts";
 import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
-import { clipEnd, fps as fpsOf, freshId, sample } from "./project.ts";
+import { addTrack, clipEnd, fps as fpsOf, freshId, sample } from "./project.ts";
 import { round } from "./rust.ts";
 import { stripCovers } from "./text_inpaint.ts";
 
@@ -102,6 +102,22 @@ export interface BlurPlan {
   /** The parts taken out here: their subtitles, their other text. */
   subtitles: boolean;
   text: boolean;
+  /** Their watermark's boxes the agent marked (start_removal `marks` with `box`): source seconds and a box, taken out with their words. */
+  marks?: Mark[];
+}
+
+/** Their watermark marked where it sits: source seconds [from, to) of the file and its box (shares of its picture). */
+export interface Mark {
+  from: number;
+  to: number;
+  box: Box;
+}
+
+/** A marked box as a track of its own place ("w<n>": never taken for a still subtitle), there over [from, to). */
+export function markTrack(mark: Mark, at: number): Laid {
+  const part = { slot: `w${at}`, box: mark.box, words: "their watermark" };
+  const shown = (t: number): Sample => ({ t, box: mark.box, words: part.words, parts: [part] });
+  return { from: mark.from, to: mark.to, samples: [shown(mark.from), shown(Math.max(mark.from, mark.to - 1e-3)), { t: mark.to, box: null, words: "", parts: [] }] };
 }
 
 /** One stretch being tracked or tracked, as check_removal and the waiting row list it. */
@@ -449,6 +465,50 @@ export function blursFor(project: Project, clip: VideoClip, media: Media, tracks
 
 const isTracked = (clip: Project["clips"][number]) => clip.type === "adjustment" && (clip.name ?? "").startsWith(`${TRACKED} · `);
 const shapeOf = (clip: Project["clips"][number]) => JSON.stringify({ ...clip, id: "", track: "" });
+/** The footage clip a tracked blur is over (its name ends with the clip's id). */
+const ownerOf = (clip: Project["clips"][number]) => (clip.name ?? "").slice(`${TRACKED} · `.length);
+
+/**
+ * The lanes from just above `owner`'s track up through the lanes laid over it (clean_strips' strips, the tracked
+ * blurs' own): where a tracked blur over that clip goes, so it blurs that picture alone and never our captions or
+ * graphics over it (Nov 19, the Boyfriends intro: a lane "above every picture" sat over caption tracks that also
+ * hold B-roll and the title card, and Kelly's and the officer's captions were blurred). [first index, last index].
+ */
+function aboveOwner(project: Project, owner: string): [number, number] | null {
+  const track = project.clips.find((clip) => clip.id === owner)?.track;
+  const at = project.tracks.findIndex((one) => one.id === track);
+  if (at < 0) return null;
+  let last = at;
+  for (let index = at + 1; index < project.tracks.length; index++) {
+    const mine = project.clips.filter((clip) => clip.track === project.tracks[index]!.id);
+    if (mine.length === 0 || !mine.every((clip) => isOverlay(clip) || isTracked(clip))) break;
+    last = index;
+  }
+  return [at + 1, last];
+}
+
+/** A lane for a tracked blur over `owner`'s frames [start, end): one of the tracked blurs' own among `aboveOwner`, free then, else a new one at its top. */
+function laneOver(project: Project, owner: string, start: number, end: number): string {
+  const span = aboveOwner(project, owner);
+  if (span === null) return markBlurs.laneFor(project, start, end, TRACKED);
+  for (let index = span[0]; index <= span[1]; index++) {
+    const lane = project.tracks[index]!;
+    const mine = project.clips.filter((clip) => clip.track === lane.id);
+    if (mine.length > 0 && mine.every(isTracked) && !mine.some((clip) => clip.start < end && start < clipEnd(clip))) return lane.id;
+  }
+  const id = addTrack(project, "video");
+  const track = project.tracks.find((one) => one.id === id)!;
+  project.tracks.splice(project.tracks.indexOf(track), 1);
+  project.tracks.splice(span[1] + 1, 0, track);
+  return id;
+}
+
+/** Whether a tracked blur sits where `laneOver` would put it (a blur laid before Nov 19's fix may sit over our captions). */
+function wellPlaced(project: Project, clip: Project["clips"][number]): boolean {
+  const span = aboveOwner(project, ownerOf(clip));
+  const at = project.tracks.findIndex((one) => one.id === clip.track);
+  return span === null || (at >= span[0] && at <= span[1]);
+}
 
 /**
  * Lays exactly `want` (from `blursFor`) in `project`: those already there as
@@ -457,7 +517,8 @@ const shapeOf = (clip: Project["clips"][number]) => JSON.stringify({ ...clip, id
  */
 export function lay(project: Project, want: AdjustmentClip[]): boolean {
   const standing = new Map<string, string[]>();
-  for (const clip of project.clips) if (isTracked(clip)) standing.set(shapeOf(clip), [...(standing.get(shapeOf(clip)) ?? []), clip.id]);
+  // One on a lane over our captions (laid before the lane rule) is laid again where it belongs.
+  for (const clip of project.clips) if (isTracked(clip) && wellPlaced(project, clip)) standing.set(shapeOf(clip), [...(standing.get(shapeOf(clip)) ?? []), clip.id]);
   const kept = new Set<string>();
   const missing: AdjustmentClip[] = [];
   for (const one of want) {
@@ -472,7 +533,7 @@ export function lay(project: Project, want: AdjustmentClip[]): boolean {
   project.tracks = project.tracks.filter((track) => !lanes.has(track.id) || project.clips.some((clip) => clip.track === track.id));
   for (const one of missing) {
     const clip = { ...one, id: freshId(project, "c") } as AdjustmentClip;
-    clip.track = markBlurs.laneFor(project, clip.start, clipEnd(clip), TRACKED);
+    clip.track = laneOver(project, ownerOf(clip), clip.start, clipEnd(clip));
     project.clips.push(clip);
   }
   return true;
@@ -541,6 +602,8 @@ function laidOf(app: App, id: string): Map<string, Laid[]> {
       const samples = known(app, plan.source, from, to);
       if (samples !== null) out.set(plan.media.id, [...(out.get(plan.media.id) ?? []), { from, to, samples }]);
     }
+    // Their watermark's marked boxes: blurred as they are (until the model takes them out, where it does).
+    (plan.marks ?? []).forEach((mark, at) => out.set(plan.media.id, [...(out.get(plan.media.id) ?? []), markTrack(mark, at)]));
   }
   return out;
 }

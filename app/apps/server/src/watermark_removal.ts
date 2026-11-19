@@ -279,6 +279,12 @@ export interface Piece {
 
 /** A piece with more of the mark than this still found isn't clean: done once more, then left. */
 export const LEFT_MAX = 0.35;
+/**
+ * At least this much of the mark still found: it wasn't found in the cell at all (a mark learned wrong, or one that isn't
+ * there then), so nothing is laid and nothing is done again (Nov 19, the Boyfriends intro: 649TcIBMrOQ's "mark" learned
+ * from the re-uploader's picture-in-picture card came back 100% left in every cell, each done twice for nothing).
+ */
+export const NOT_FOUND = 0.9;
 
 interface Job {
   project: string;
@@ -397,6 +403,7 @@ export async function ensure(app: App, id: string, hints: Hints = hintsFor.proje
   if (live === null || engine() === null) return;
   const { cells, unknown } = await plan(app, live.project, hints);
   for (const { media, source } of unknown) {
+    lookedFor.set(`${id}|${media.id}`, source);
     const waiting = looking.get(source);
     if (waiting !== undefined) {
       waiting.add(id);
@@ -429,6 +436,15 @@ export async function ensure(app: App, id: string, hints: Hints = hintsFor.proje
 }
 
 /** Files of `id` being looked at for their mark now or queued to be (an export waits for them as for pieces). */
+/** Each project's files queued or being looked at for their mark, by `project|media`: their source. */
+const lookedFor = new Map<string, string>();
+
+/** Whether project `id`'s file `media` is still being looked at for its mark (a stretch of it the model cleans waits). */
+export function lookingAtMedia(id: string, media: string): boolean {
+  const source = lookedFor.get(`${id}|${media}`);
+  return source !== undefined && looking.get(source)?.has(id) === true;
+}
+
 export function lookingAt(id: string): number {
   let count = 0;
   for (const waiting of looking.values()) if (waiting.has(id)) count += 1;
@@ -495,19 +511,22 @@ async function work(app: App, job: Job): Promise<void> {
       () => {},
     );
     piece.seconds = Math.round((Date.now() - started) / 100) / 10;
-    const done = await shelfOf(app).keep(job.source, removed === null ? null : out, { from: job.from, to: job.to, box: removed?.region ?? null }, job.model.hash);
-    if (removed === null || done.box === null) {
+    // Its mark not found in the cell at all: kept as none there.
+    const found = removed !== null && removed.left < NOT_FOUND ? removed : null;
+    if (removed !== null && found === null) diag.info("watermark", `${job.project}: ${label}: its mark wasn't found there (${Math.round(removed.left * 100)}% left), nothing laid`);
+    const done = await shelfOf(app).keep(job.source, found === null ? null : out, { from: job.from, to: job.to, box: found?.region ?? null }, job.model.hash);
+    if (found === null || done.box === null) {
       piece.state = "none";
       return;
     }
-    piece.left = Math.round(removed.left * 1000) / 1000;
-    piece.filled = Math.round(removed.filled * 1000) / 1000;
+    piece.left = Math.round(found.left * 1000) / 1000;
+    piece.filled = Math.round(found.filled * 1000) / 1000;
     const file = await shelfOf(app).bring(job.source, done);
     await place(app, job.project, job.media, job.from, done.box, file);
     piece.state = "done";
     // The automatic look: too much of the mark still found is no clean piece.
-    if (removed.left > LEFT_MAX) await reject(app, job.project, `watermark:${job.media.id}@${Math.round(job.from * 1000)}`, `${Math.round(removed.left * 100)}% of the mark still found`);
-    diag.info("watermark", `${job.project}: ${label} in ${piece.seconds} s (${Math.round(removed.filled * 100)}% rebuilt from its neighbours, ${Math.round(removed.left * 100)}% of the mark left)`);
+    if (found.left > LEFT_MAX) await reject(app, job.project, `watermark:${job.media.id}@${Math.round(job.from * 1000)}`, `${Math.round(found.left * 100)}% of the mark still found`);
+    diag.info("watermark", `${job.project}: ${label} in ${piece.seconds} s (${Math.round(found.filled * 100)}% rebuilt from its neighbours, ${Math.round(found.left * 100)}% of the mark left)`);
   } catch (error) {
     piece.state = "failed";
     piece.error = diag.messageOf(error);
@@ -607,6 +626,7 @@ export function reset(): void {
   // A fresh server's queue: what was under way is gone with the one that stopped.
   running = 0;
   lookingNow = false;
+  lookedFor.clear();
 }
 
 export function routes(router: Router<App>): void {

@@ -29,7 +29,10 @@ import type { Router } from "./http/router.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import { image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
-import type { Media } from "./model.ts";
+import { framingAt } from "./frames_fill.ts";
+import type { Media, Project, VideoClip } from "./model.ts";
+import { clipEnd, fps as fpsOf, trackOf } from "./project.ts";
+import { isOverlay } from "./clean_strips.ts";
 import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
 import * as sections from "./removal_sections.ts";
@@ -104,9 +107,11 @@ function hintsOf(app: App, id: string): watermarkRemoval.Hints {
 }
 
 watermarkRemoval.hintsFor.project = hintsOf;
-// A stretch the model cleans waits while their watermark there is still being taken out (it's cleaned over the result).
+// A stretch the model cleans waits while their watermark there is still being taken out (it's cleaned over the result):
+// its own file's cells there, and its own file still being looked at for a mark, never another file's (Nov 19, the
+// Boyfriends intro: every stretch waited on the engine's look at each of the project's eleven files in turn).
 textInpaint.watermarks.pending = (id, media, from, to) =>
-  watermarkRemoval.piecesOf(id).some((one) => one.media === media && (one.state === "queued" || one.state === "running") && one.from < to && one.to > from) || watermarkRemoval.lookingAt(id) > 0;
+  watermarkRemoval.piecesOf(id).some((one) => one.media === media && (one.state === "queued" || one.state === "running") && one.from < to && one.to > from) || watermarkRemoval.lookingAtMedia(id, media);
 
 /** Pieces out (queued or being done) and done, of both workers, for the line and the export's step. */
 export function progressOf(id: string): { done: number; out: number } {
@@ -318,6 +323,8 @@ async function markRemoval(app: App, projectId: string, args: Record<string, unk
     if (args[name] === "proposed") continue;
     const given = stretches(args[name], name);
     if (given.length === 0) continue;
+    // Their watermark's box with a mark (shares of the frame as render_frame shows it): onto each file's own picture.
+    const boxes = mark === "add" ? boxMarks(project, args[name] as { box?: unknown }[], given) : {};
     const media: Record<string, [number, number][]> = {};
     const bare: [number, number][] = [];
     for (const [from, to] of given) {
@@ -327,7 +334,7 @@ async function markRemoval(app: App, projectId: string, args: Record<string, unk
       for (const [id, spans] of shown) media[id] = [...(media[id] ?? []), ...spans];
     }
     if (Object.keys(media).length === 0) throw new Error(`${name}: no footage is on the timeline at ${given.map(([a, b]) => `${a}–${b}`).join(", ")}`);
-    asks.add(app.store.home, projectId, { at: Date.now(), kinds, media, mark });
+    asks.add(app.store.home, projectId, { at: Date.now(), kinds, media, mark, ...(Object.keys(boxes).length > 0 ? { boxes } : {}) });
     // Which files the stretches landed on, so a file that should be there and isn't is seen at once.
     const files = Object.entries(media)
       .map(([id, spans]) => ({ name: project.media.find((one) => one.id === id)?.name ?? id, id, seconds: spans.reduce((sum, [a, b]) => sum + b - a, 0) }))
@@ -348,6 +355,50 @@ async function markRemoval(app: App, projectId: string, args: Record<string, unk
     `${said.join("; ")}. Only marked stretches get the tracked blur, tight to their words, in every section, in the background${out > 0 ? `: ${out} piece${out === 1 ? "" : "s"} out${done > 0 ? `, ${done} done` : ""}` : ""}. ` +
       "Look at them with render_frame as they're done; exports wait for them.",
   );
+}
+
+/**
+ * Each mark's `box` (shares of the frame as render_frame shows it: their watermark, a logo or name laid over the
+ * footage) as the source seconds and box of each file shown under it there, through its clip's framing (Nov 19, the
+ * Boyfriends intro: ARRESTFLIX moves about 4PuH2FjxQJA, so no one place of the file is its).
+ */
+function boxMarks(project: Project, given: { box?: unknown }[], stretches: [number, number][]): Record<string, asks.BoxMark[]> {
+  const out: Record<string, asks.BoxMark[]> = {};
+  const fps = fpsOf(project);
+  const { width, height } = project.settings;
+  stretches.forEach(([from, to], at) => {
+    const box = given[at]?.box;
+    if (box === undefined || box === null) return;
+    if (!Array.isArray(box) || box.length !== 4 || box.some((value) => typeof value !== "number" || value < 0 || value > 1) || box[2] <= box[0] || box[3] <= box[1]) {
+      throw new Error(`marks: box is [x0, y0, x1, y1], shares of the frame from its top left (0 to 1), not ${JSON.stringify(box)}`);
+    }
+    const shown = shownBetween(project, from, to, true);
+    for (const clip of project.clips) {
+      if (clip.type !== "video" || isOverlay(clip) || trackOf(project, clip.track)?.hidden === true || !(clip.speed > 0)) continue;
+      const media = project.media.find((one) => one.id === clip.media);
+      const spans = media === undefined ? undefined : shown.get(media.id);
+      if (media === undefined || spans === undefined) continue;
+      const [a, b] = [Math.max(clip.start, Math.round(from * fps)), Math.min(clipEnd(clip), Math.round(to * fps))];
+      if (b <= a) continue;
+      const at = (frame: number) => clip.source_in + ((frame - clip.start) / fps) * clip.speed;
+      const mine = sections.intersect([[at(a), at(b)]], spans);
+      if (mine.length === 0) continue;
+      // The frame's box on the file's picture, by the clip's framing halfway through (a push-in moves it little).
+      const { x, y, scale } = framingAt(clip as VideoClip, Math.round((a + b) / 2) - clip.start);
+      const [mw, mh] = [media.width || width, media.height || height];
+      const fit = Math.min(width / mw, height / mh) * scale;
+      const share = (value: number) => Math.round(Math.min(1, Math.max(0, value)) * 1e4) / 1e4;
+      const onPicture: [number, number, number, number] = [
+        share(((box[0] as number) * width - width / 2 - x) / (mw * fit) + 0.5),
+        share(((box[1] as number) * height - height / 2 - y) / (mh * fit) + 0.5),
+        share(((box[2] as number) * width - width / 2 - x) / (mw * fit) + 0.5),
+        share(((box[3] as number) * height - height / 2 - y) / (mh * fit) + 0.5),
+      ];
+      if (onPicture[2] <= onPicture[0] || onPicture[3] <= onPicture[1]) continue;
+      out[media.id] = [...(out[media.id] ?? []), ...mine.map(([s0, s1]): asks.BoxMark => [s0, s1, onPicture])];
+    }
+  });
+  return out;
 }
 
 registerTool("start_removal", startRemoval);

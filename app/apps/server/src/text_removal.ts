@@ -24,11 +24,11 @@ import { parseClock, clockRegion } from "./camera_clock.ts";
 import { isOverlay } from "./clean_strips.ts";
 import * as cloud from "./cloud.ts";
 import * as cloudMedia from "./cloud_media.ts";
-import { fillsFrame } from "./frames_fill.ts";
+import { hidingFrames } from "./frames_fill.ts";
 import { probe } from "./media.ts";
 import type { Media, Project } from "./model.ts";
 import { native, type Box, type ScreenText } from "./native/index.ts";
-import { join } from "./paths.ts";
+import { fileStem, join } from "./paths.ts";
 import { clipEnd, fps as fpsOf, reusedMedia, trackOf } from "./project.ts";
 import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
@@ -104,7 +104,8 @@ const overlapShare = (a: Box, b: Box) => {
  * inside the bar that share the clock's row (Motorola's maker and camera id;
  * with `bar` null, a clock within a tenth of the top or bottom stands for it);
  * a line reaching out of the bar ("OFFICER 11", laid over it) isn't the
- * camera's. Each only where it stays put: in a third of the frames read or more.
+ * camera's. Each only where it stays put: in three of the frames read or more
+ * (a third, of fewer).
  */
 export function cameraText(frames: ScreenText[][], bar: Bar | null): Box[] {
   type Seen = { box: Box; count: number };
@@ -139,7 +140,10 @@ export function cameraText(frames: ScreenText[][], bar: Bar | null): Box[] {
       }
     }
   }
-  const least = Math.max(1, Math.ceil(frames.length / 3));
+  // A compilation shows each camera's stamp in only part of its reads (Nov 19, the Boyfriends intro's 4PuH2FjxQJA: its
+  // Axon stamp in under a third, so it wasn't the camera's, and the watermark engine learned it as their mark): three
+  // reads of the same place is a stamp that stays put.
+  const least = Math.max(1, Math.min(3, Math.ceil(frames.length / 3)));
   const clamp = (value: number) => Math.round(Math.min(1, Math.max(0, value)) * 1000) / 1000;
   return kept.filter((one) => one.count >= least).map(({ box }) => box.map(clamp) as Box);
 }
@@ -274,9 +278,10 @@ export function shownSeconds(project: Project, reused = false): Map<string, [num
     if (clip.type !== "video" || isOverlay(clip) || trackOf(project, clip.track)?.hidden === true || !(clip.speed > 0)) continue;
     const media = project.media.find((one) => one.id === clip.media);
     if (media === undefined || media.kind !== "video" || ours.has(media.id) || media.cleans != null || media.effect != null) continue;
+    // Hidden only where a picture above fills the frame at full strength (a flash fading out, a dissolve: not there).
     const above = project.clips
-      .filter((other) => other.id !== clip.id && index(other.track) > index(clip.track) && trackOf(project, other.track)?.hidden !== true && fillsFrame(project, other) && other.start < clipEnd(clip) && clipEnd(other) > clip.start)
-      .map((other): [number, number] => [other.start, clipEnd(other)]);
+      .filter((other) => other.id !== clip.id && index(other.track) > index(clip.track) && trackOf(project, other.track)?.hidden !== true && other.start < clipEnd(clip) && clipEnd(other) > clip.start)
+      .flatMap((other) => hidingFrames(project, other));
     const at = (frame: number) => clip.source_in + ((frame - clip.start) / fps) * clip.speed;
     for (const [a, b] of minus([[clip.start, clipEnd(clip)]], above)) out.set(media.id, [...(out.get(media.id) ?? []), [at(a), at(b)]]);
   }
@@ -368,11 +373,33 @@ export const inForceOf = (app: App, project: Pick<Project, "id" | "channel">): r
  */
 export const marksOnly = (project: Pick<Project, "channel">): boolean => removal.kinds(lessonOf(project)).blur.length > 0;
 
-/** One file's seconds to blur their text in, and the parts there (`wantedOf`). */
+/** One file's seconds to blur their text in, and the parts there (`wantedOf`); their watermark's boxes marked there. */
 interface Wanted {
   media: Media;
   spans: [number, number][];
   kinds: removal.Kind[];
+  marks: asks.BoxMark[];
+}
+
+/**
+ * Each of `spans` widened to the shots of the file it touches (`shown`, its seconds on the timeline): a mark covers the
+ * shot it's in. Detection reads a file a few times a second at most, so its stretches start and end up to a read late
+ * and a line shorter than a read is missed (Nov 19, the Boyfriends intro: "Wow", 0.3 s, never proposed; a subtitle
+ * showing 0.33 s before its mark began): the track reads the whole shot, and only their words there get anything.
+ */
+export function shotsOf(spans: [number, number][], shown: [number, number][]): [number, number][] {
+  return merged(spans.flatMap((span) => [span, ...shown.filter(([a, b]) => a < span[1] && b > span[0])]));
+}
+
+/**
+ * The file a slowed copy was made from (broll.ts's smoothing: "<its stem>-0.80x-<key>.mp4"), when the project has it:
+ * its subtitles' band and the camera's text stand for the copy's, a few seconds long and read too little to find them
+ * (Nov 19, the Boyfriends intro: their "No" in a 3 s copy read as none of theirs).
+ */
+export function slowedFrom(project: Pick<Project, "media">, media: Media): Media | null {
+  const stem = /^(.*)-\d+(?:\.\d+)?x-[0-9a-f]{6,}\.\w+$/u.exec(media.name)?.[1];
+  if (stem === undefined) return null;
+  return project.media.find((one) => one.id !== media.id && one.kind === "video" && one.cleans == null && fileStem(one.name) === stem) ?? null;
 }
 
 /**
@@ -398,9 +425,14 @@ function wantedOf(app: App, project: Project): Wanted[] {
       else proposals.set(id, spans);
     }
   }
-  const marks = marking ? asks.marked(app.store.home, project.id, proposals) : new Map<string, [number, number][]>();
+  // Each mark over the shots it touches (`shotsOf`).
+  const shots = shownSeconds(project, true);
+  const grow = (id: string, spans: [number, number][]) => shotsOf(spans, shots.get(id) ?? []);
+  const marks = marking ? asks.marked(app.store.home, project.id, proposals, grow) : new Map<string, [number, number][]>();
   // The agent's own in and out points, which never wait on detection (a file not read yet is still blurred where it marked it).
-  const explicit = marking ? asks.marked(app.store.home, project.id) : new Map<string, [number, number][]>();
+  const explicit = marking ? asks.marked(app.store.home, project.id, new Map(), grow) : new Map<string, [number, number][]>();
+  // Their watermark's boxes it marked: taken out with their words, whatever the file's detection says.
+  const boxes = marking ? asks.markedBoxes(app.store.home, project.id) : new Map<string, asks.BoxMark[]>();
   const ours = reusedMedia(project);
   const pointed = asks.pointedAt(app.store.home, project.id);
   for (const [id, shown] of shownSeconds(project, true)) {
@@ -427,13 +459,14 @@ function wantedOf(app: App, project: Project): Wanted[] {
       found.push(...mine);
       kinds.push(kind);
     }
-    if (unread) {
+    const marked = (boxes.get(id) ?? []).flatMap(([a, b, box]) => sections.intersect([[a, b]], shown).map(([x, y]): asks.BoxMark => [x, y, box]));
+    if (unread && marked.length === 0) {
       void burned.warm(app.media, media);
       continue;
     }
     if (marking && unreadIds.has(id)) void burned.warm(app.media, media);
-    const spans = merged(found);
-    if (spans.length > 0) wanted.push({ media, spans, kinds });
+    const spans = merged([...(unread ? [] : found), ...marked.map(([a, b]): [number, number] => [a, b])]);
+    if (spans.length > 0) wanted.push({ media, spans, kinds: unread ? [] : kinds, marks: marked });
   }
   return wanted;
 }
@@ -447,12 +480,15 @@ export async function blurPlan(app: App, project: Project): Promise<blur.BlurPla
   const wanted = wantedOf(app, project);
   if (wanted.length === 0) return out;
   const lesson = inForceOf(app, project);
-  for (const { media, spans, kinds } of wanted) {
+  for (const { media, spans, kinds, marks } of wanted) {
     const reads = burned.readsOf(media);
-    const camera = cameraFromReads(media, null);
+    // A slowed copy reads as the file it was made from (`slowedFrom`).
+    const parent = slowedFrom(project, media);
+    const camera = [...cameraFromReads(media, null), ...(parent === null ? [] : cameraFromReads(parent, null))];
     const keep = removal.keepBoxes(lesson);
     const labels = reads === null || !kinds.includes("text") ? [] : labelBoxes(reads.texts, reads.seconds, [...camera, ...keep], removal.exampleWords(lesson), true);
-    out.push({ media, source: await sourceOf(media), spans, band: burned.of(media)?.band ?? null, labels, avoid: [...camera, ...keep], subtitles: kinds.includes("subtitles"), text: kinds.includes("text") });
+    const band = burned.of(media)?.band ?? (parent === null ? null : (burned.of(parent)?.band ?? null));
+    out.push({ media, source: await sourceOf(media), spans, band, labels, avoid: [...camera, ...keep], subtitles: kinds.includes("subtitles"), text: kinds.includes("text"), marks: marks.map(([from, to, box]) => ({ from, to, box })) });
   }
   return out;
 }
@@ -514,7 +550,7 @@ export function inpaintPlan(project: Project, plans: blur.BlurPlan[]): inpaint.I
   return plans.flatMap((plan) => {
     const within = shown.get(plan.media.id) ?? [];
     const spans = plan.spans.filter((span) => sections.intersect([span], within).length > 0);
-    return spans.length === 0 ? [] : [{ media: plan.media, source: plan.source, spans }];
+    return spans.length === 0 ? [] : [{ media: plan.media, source: plan.source, spans, marks: plan.marks ?? [] }];
   });
 }
 
@@ -524,8 +560,31 @@ export async function ensure(app: App, id: string): Promise<void> {
   if (live === null) return;
   const plans = removal.kinds(inForceOf(app, live.project)).blur.length === 0 ? [] : await blurPlan(app, live.project);
   await blur.ensure(app, id, plans);
-  await inpaint.ensure(app, id, inpaintPlan(live.project, plans), (source, from, to, fps, first, frames) => blur.boxesOf(app, source, from, to, fps, first, frames));
+  const cleaned = inpaintPlan(live.project, plans);
+  await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned));
 }
+
+/**
+ * text_inpaint's masks: their words' boxes from the track (text_blur `boxesOf`), with their watermark's boxes marked
+ * there. Each mark's seconds cover the same whole frames as `framesOf` (Nov 19: a mark starting mid-frame left frame
+ * 0 unmasked, and the temporal model copied ARRESTFLIX from frame 0 back onto every masked frame).
+ */
+export function masksWithMarks(words: Box[][], marks: blur.Mark[], fps: number, first: number): Box[][] {
+  const covered = marks.map((one) => ({ ...inpaint.framesOf(one.from, one.to, fps), box: one.box }));
+  return words.map((boxes, k) => {
+    const frame = first + k;
+    return [...boxes, ...covered.filter((one) => frame >= one.first && frame < one.first + one.frames).map((one) => one.box)];
+  });
+}
+
+const masksOf =
+  (app: App, plans: inpaint.InpaintPlan[]): inpaint.MasksOf =>
+  (source, from, to, fps, first, frames) => {
+    const words = blur.boxesOf(app, source, from, to, fps, first, frames);
+    if (words === null) return null;
+    const marks = plans.filter((plan) => plan.source === source).flatMap((plan) => plan.marks ?? []);
+    return masksWithMarks(words, marks, fps, first);
+  };
 
 /** Each project's stretches cleaned as soon as their tracks are read (one look at a time a project). */
 const cleaning = new Map<string, Promise<void>>();
@@ -535,7 +594,8 @@ blur.whenTracked.push((app, id) => {
     const live = app.store.get(id);
     if (live === null) return;
     const plans = removal.kinds(inForceOf(app, live.project)).blur.length === 0 ? [] : await blurPlan(app, live.project);
-    await inpaint.ensure(app, id, inpaintPlan(live.project, plans), (source, from, to, fps, first, frames) => blur.boxesOf(app, source, from, to, fps, first, frames));
+    const cleaned = inpaintPlan(live.project, plans);
+    await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned));
   })()
     .catch(() => {})
     .finally(() => cleaning.delete(id));

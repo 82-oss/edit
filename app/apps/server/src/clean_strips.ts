@@ -11,14 +11,13 @@
 // of the footage new to the timeline gets it at once, and the export and
 // every player draw it as they draw any see-through video.
 //
-// Where a strip covers a clip, the blur over the band laid while waiting for
-// it (burned_subtitles.ts `cover`) gives way: blurring the clean picture would
-// undo it.
+// Where a strip covers a clip, a blur over the band (burned_subtitles.ts
+// `cover`) gives way: blurring the clean picture would undo it.
 //
-// Text strips are read-only now: none is made any more (Sphe, Nov 19, their
-// text gets text_blur.ts's tracked blur instead). Those already in projects,
-// made before then and kept on R2 (`edit/cleaned/…`), are still laid here so
-// finished edits don't change. Watermark strips are still made.
+// Text strips come from the model (text_inpaint.ts, where this machine has
+// it); Vmake's, made before Nov 19 and kept on R2 (`edit/cleaned/…`), are
+// still laid so finished edits don't change. Watermark strips come from the
+// engine (watermark_removal.ts).
 
 import type { Clip, Keyframe, Media, Project, Track, VideoClip } from "./model.ts";
 import { clipEnd, fps as fpsOf, freshId, sample, trackOf } from "./project.ts";
@@ -30,6 +29,9 @@ export const WATERMARK_NAME = "Watermark removed";
 export const TRACKED = "Text blur";
 /** burned_subtitles.ts's covers (`COVER`): kept here so the store needn't load it. */
 const COVER = "Burned-in cover";
+/** burned_subtitles.ts's `UNTIL_REMOVED`: a still blur over their band that stood in while removal ran; none is laid now. */
+const STAND_IN = `${COVER} · until removed`;
+const isStandIn = (clip: Clip): boolean => clip.type === "adjustment" && (clip.name ?? "").startsWith(STAND_IN);
 
 /** What a strip stands in for (`Media::cleans`). */
 export interface Cleans {
@@ -184,12 +186,14 @@ const keyOf = (clip: Wanted | VideoClip): string => {
   return JSON.stringify(rounded([one.start, one.duration, one.parent, one.media, one.source_in, one.speed, [x, y, scale, rotation ?? 0], one.opacity, one.crop ?? null, one.blend ?? "normal", one.fade_in, one.fade_out, keys]));
 };
 
-/** Whether `lane` is above `owner`'s track with only overlay lanes between (a watermark's under a text strip's). */
+/** Whether `lane` is above `owner`'s track with only overlay lanes between (a watermark's under a text strip's, a tracked blur's). */
 function laneAbove(project: Project, owner: string, lane: string): boolean {
   const at = project.tracks.findIndex((track) => track.id === owner);
   const there = project.tracks.findIndex((track) => track.id === lane);
   if (at < 0 || there <= at) return false;
-  return project.tracks.slice(at + 1, there).every((track) => project.clips.some((clip) => clip.track === track.id) && project.clips.filter((clip) => clip.track === track.id).every(isOverlay));
+  // Strips' lanes, and the tracked blurs' laid just above their clip (text_blur.ts), between.
+  const laidOver = (clip: Clip) => isOverlay(clip) || (clip.type === "adjustment" && (clip.name ?? "").startsWith(`${TRACKED} · `));
+  return project.tracks.slice(at + 1, there).every((track) => project.clips.some((clip) => clip.track === track.id) && project.clips.filter((clip) => clip.track === track.id).every(laidOver));
 }
 
 const isWatermarkOverlay = (clip: Clip | Wanted): boolean => (clip.name ?? "").startsWith(`${WATERMARK_NAME} · `);
@@ -297,6 +301,10 @@ function trimCovers(project: Project, stripped: Map<string, [number, number][]>)
  * back to waiting every few minutes, never catching up).
  */
 export function enforceCleanStrips(_before: Project | null, project: Project): void {
+  // The still blurs that stood in while their text was taken out go wherever they're left (Nov 19, the Boyfriends
+  // intro: over cleaned frames, over frames with none of their words, one on a clip re-cut since): the removal itself
+  // takes their words out of the picture or blurs them tight, and marks say where.
+  if (project.clips.some(isStandIn)) project.clips = project.clips.filter((clip) => !isStandIn(clip));
   const old = project.clips.filter((clip): clip is VideoClip => isOverlay(clip));
   const tracked = trackedFrames(project);
   if (old.length === 0 && !project.media.some(isStrip)) {

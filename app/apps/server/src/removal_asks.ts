@@ -17,6 +17,8 @@ import { join } from "./paths.ts";
 import * as removal from "./removal_lesson.ts";
 
 export type Spans = [number, number][];
+/** Their watermark marked where it sits: a file's source seconds [from, to) and its box there (shares of the file's picture). */
+export type BoxMark = [number, number, [number, number, number, number]];
 
 export interface Ask {
   at: number;
@@ -28,6 +30,8 @@ export interface Ask {
    * their text in, for a channel taught to take it out. Only marked seconds get the tracked blur there.
    */
   mark?: "add" | "remove";
+  /** With a mark: their watermark's box over each file's marked seconds (start_removal `marks` with `box`). */
+  boxes?: Record<string, BoxMark[]>;
 }
 
 const fileOf = (home: string) => join(home, "removal-asks.json");
@@ -164,10 +168,13 @@ export function marksProposed(home: string, id: string): boolean {
  * The source seconds of each footage file the agent marked in project `id`
  * (its marks in order, an unmark taking its seconds back out); a mark of
  * everything proposed takes `proposed`'s seconds (detection's, by file).
+ * `grow` widens the marks (text_removal: to the shots they're in); seconds
+ * unmarked and not marked again stay out of them.
  */
-export function marked(home: string, id: string, proposed: Map<string, Spans> = new Map()): Map<string, Spans> {
+export function marked(home: string, id: string, proposed: Map<string, Spans> = new Map(), grow: (media: string, spans: Spans) => Spans = (_media, spans) => spans): Map<string, Spans> {
   // The person's Stop doesn't undo them: they say where their text is, not what runs (asks' `scope` says that).
   const out = new Map<string, Spans>();
+  const unmarked = new Map<string, Spans>();
   for (const ask of asksOf(home, id)) {
     if (ask.mark === undefined) continue;
     if (ask.media === "all") {
@@ -178,6 +185,24 @@ export function marked(home: string, id: string, proposed: Map<string, Spans> = 
       if (given === "all") continue;
       const was = out.get(media) ?? [];
       out.set(media, ask.mark === "add" ? merged([...was, ...given]) : minus(was, given));
+      if (ask.mark === "remove") unmarked.set(media, merged([...(unmarked.get(media) ?? []), ...given]));
+    }
+  }
+  for (const [media, spans] of out) out.set(media, minus(grow(media, spans), minus(unmarked.get(media) ?? [], spans)));
+  return out;
+}
+
+/** Their watermark's boxes the agent marked in project `id`, by file (an unmark takes its seconds back out of them too). */
+export function markedBoxes(home: string, id: string): Map<string, BoxMark[]> {
+  const out = new Map<string, BoxMark[]>();
+  for (const ask of asksOf(home, id)) {
+    if (ask.mark === "add") for (const [media, boxes] of Object.entries(ask.boxes ?? {})) out.set(media, [...(out.get(media) ?? []), ...boxes]);
+    if (ask.mark !== "remove" || ask.media === "all") continue;
+    for (const [media, given] of Object.entries(ask.media)) {
+      const was = out.get(media);
+      if (was === undefined) continue;
+      if (given === "all") out.delete(media);
+      else out.set(media, was.flatMap(([from, to, box]) => minus([[from, to]], given).map(([a, b]): BoxMark => [a, b, box])));
     }
   }
   return out;

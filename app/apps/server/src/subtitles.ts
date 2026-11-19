@@ -1131,7 +1131,8 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
     seatedLines.clear();
     leftOff = 0;
     const shownNow = clashing.length > 0 ? burned.onTimeline(edited).shown : [];
-    covers = burnedIn !== "leave_off" && shownNow.length > 0 ? burned.cover(edited, shownNow, burnedIn === "remove") : 0;
+    // Taught to take theirs out: none, ours laid over theirs (removal takes them out of the picture, or blurs them tight).
+    covers = burnedIn === "cover" && shownNow.length > 0 ? burned.cover(edited, shownNow) : 0;
     // Stacked lines (overlap) go on tracks of their own under the
     // subtitles' track, made as needed; a re-run removes them by name.
     const tracks: string[] = [];

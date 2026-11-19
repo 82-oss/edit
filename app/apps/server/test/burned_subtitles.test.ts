@@ -240,15 +240,18 @@ test("the agent is told which footage has subtitles burned in; ours are left off
     expect(store.get(id)!.project.clips.filter((clip): clip is TextClip => clip.type === "text" && (clip.name ?? "").startsWith("Subtitle")).every((clip) => clip.style.label !== undefined && clip.style.label !== null)).toBe(true);
     // A wrong choice says the right ones.
     expect((await call(app, "add_subtitles", { project_id: id, burned_in: "hide" })).text).toBe('burned_in is "leave_off" (the default: none of ours over theirs) or "cover" (theirs blurred, ours on it)');
-    // A channel taught to take theirs out (its removal lesson): blurred the same until it's done, by itself (text_removal.ts).
+    // A channel taught to take theirs out (its removal lesson): no still blur over theirs (Nov 19: they stood over cleaned
+    // frames and frames with none of theirs); ours laid, and removal takes theirs out where they're marked.
     await store.update(id, "test", (p) => {
       p.clips = p.clips.filter((clip) => !(clip.name ?? "").startsWith(burned.COVER));
       p.channel = "ch-taught";
     });
     v2cloud.useSkillsForTests([{ name: removal.SKILL, key: v2cloud.ownKey("skill", "ch-taught--edit", removal.SKILL), text: removal.write({ remove: { subtitles: true, watermarks: false, text: false }, when: { subtitles: "automatic", watermarks: "automatic", text: "automatic" }, examples: [] }) }]);
     try {
-      expect((await call(app, "add_subtitles", { project_id: id, start: 0 })).text).toContain('"burned_in_subtitles_covered":1');
-      expect(store.get(id)!.project.clips.filter((clip) => (clip.name ?? "").startsWith(burned.COVER)).map((clip) => clip.name)).toEqual([`${burned.UNTIL_REMOVED} · f`]);
+      const laid = (await call(app, "add_subtitles", { project_id: id, start: 0 })).text;
+      expect(laid).not.toContain("burned_in_subtitles_covered");
+      expect(laid).not.toContain("left_to_the_burned_in_subtitles");
+      expect(store.get(id)!.project.clips.filter((clip) => (clip.name ?? "").startsWith(burned.COVER))).toEqual([]);
     } finally {
       v2cloud.useSkillsForTests([]);
     }

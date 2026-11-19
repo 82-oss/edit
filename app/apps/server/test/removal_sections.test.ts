@@ -163,13 +163,23 @@ test.skipIf(real === null)("only the agent's marks are blurred, in every section
       ["b", [[102, 103]]],
       ["c", [[2, 5], [20, 21]]],
     ]);
-    // Every marked stretch blurred, whatever its section; nothing else of the file (a's 0–60 s case, b's 0–60 s).
+    // Every marked stretch tracked over the shot it's in, whatever its section (detection's edges are a read late and
+    // it misses a line shorter than a read: the track finds their words there); nothing of the file's other shots
+    // (b's case 2 at 0–60 s, d's).
     const plan = async () => (await tr.blurPlan(app, saved())).map((one) => [one.media.id, near(one.spans), one.subtitles]).sort();
     expect(await plan()).toEqual([
-      ["a", [[1, 4]], true],
-      ["b", [[102, 103]], true],
-      ["c", [[2, 5], [20, 21]], true],
+      ["a", [[0, 60]], true],
+      ["b", [[100, 105]], true],
+      ["c", [[0, 50]], true],
     ]);
+    // Their watermark marked with its box (the frame's shares; c3 sits unmoved, so the file's too): its stretch and box.
+    const boxed = await call(app, p.id, { marks: [{ from: 160, to: 165, box: [0.1, 0.5, 0.3, 0.6] }] });
+    expect(boxed.isError).toBe(false);
+    expect((await tr.blurPlan(app, saved())).find((one) => one.media.id === "c")!.marks).toEqual([{ from: 10, to: 15, box: [0.1, 0.5, 0.3, 0.6] }]);
+    expect((await call(app, p.id, { marks: [{ from: 160, to: 165, box: [0.3, 0.5, 0.1, 0.6] }] })).content[0]!.text).toContain("box is [x0, y0, x1, y1]");
+    // Unmarked, its box goes with its seconds.
+    await call(app, p.id, { unmark: [{ from: 160, to: 165 }] });
+    expect((await tr.blurPlan(app, saved())).find((one) => one.media.id === "c")!.marks).toEqual([]);
     // Proposed and marked, as get_edit_context lists them for the agent.
     const listed = sections.outline(saved(), tr.proposed(app, saved()));
     expect(listed.marked).toContain("0:21.0–0:24.0 tape a");

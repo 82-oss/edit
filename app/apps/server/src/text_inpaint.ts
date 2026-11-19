@@ -50,6 +50,19 @@ export interface InpaintPlan {
   media: Media;
   source: string;
   spans: Spans;
+  /** Their watermark's boxes the agent marked (text_blur's `Mark`): in the masks, and in the strip's name. */
+  marks?: { from: number; to: number; box: Box }[];
+}
+
+/**
+ * What a stretch's strip was cleaned over and with: the watermark strips beneath (`beneathOf`'s hash) and the marked
+ * boxes there, as one hash ("" with neither): a mark added later makes the strip again.
+ */
+export function underWith(under: string, marks: { from: number; to: number; box: Box }[], from: number, to: number): string {
+  const mine = marks.filter((one) => one.from < to && one.to > from).map((one) => `${Math.round(one.from * 1000)}-${Math.round(one.to * 1000)}:${one.box.map((value) => Math.round(value * 1e4)).join(",")}`);
+  if (mine.length === 0) return under;
+  // "m3": whole-frame mark coverage + edge hold + tight padding and generous band context on tall logo boxes.
+  return createHash("sha256").update(["m3", under, ...mine.sort()].join("|")).digest("hex").slice(0, 10);
 }
 
 /** One stretch being cleaned or cleaned, as the waiting row lists it. */
@@ -98,9 +111,13 @@ export function available(): boolean {
 // ---------------------------------------------------------------------------
 // The stretch's frames and masks
 
-/** A stretch's frames at the file's rate: its first frame's number and how many (source seconds [from, to)). */
+/**
+ * A stretch's frames at the file's rate: its first frame's number and how many (source seconds [from, to)). The first is
+ * the frame on screen at `from`, not the next one: a clip whose start falls between two frames shows the one before
+ * (Nov 19, the Boyfriends intro: four clips showed their subtitles for a frame before the strip began).
+ */
 export function framesOf(from: number, to: number, fps: number): { first: number; frames: number } {
-  const first = Math.max(0, Math.ceil(from * fps - 1e-6));
+  const first = Math.max(0, Math.floor(from * fps + 1e-6));
   return { first, frames: Math.max(0, Math.ceil(to * fps - 1e-6) - first) };
 }
 
@@ -382,8 +399,9 @@ async function place(app: App, id: string, footage: Media, from: number, to: num
   await app.store.update(id, "text removal", (project) => {
     if (!project.media.some((one) => one.id === footage.id)) return;
     if (current(project, footage.id, from, to, under)) return;
-    // One of ours for the same seconds made before (another version, or over a watermark done again) gives way.
-    project.media = project.media.filter((one) => !(one.cleans?.media === footage.id && (one.cleans.what ?? "text") === "text" && Math.abs(one.cleans.from - from) < 0.01 && Math.abs(one.cleans.to - to) < 0.05 && OURS.test(one.name)));
+    // One of ours for these seconds made before (another version, over a watermark done again, a frame later, a
+    // marked watermark since) gives way to it.
+    project.media = project.media.filter((one) => !(one.cleans?.media === footage.id && (one.cleans.what ?? "text") === "text" && one.cleans.from >= from - 0.05 && one.cleans.to <= to + 0.05 && OURS.test(one.name)));
     project.media.push({
       id: freshId(project, "m"),
       name: nameOf(footage.name, from, to, under),
@@ -445,7 +463,9 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       const key = keyOf(plan.media.id, from, to);
       const piece: InpaintPiece = was?.get(key) ?? { key, media: plan.media.id, name: plan.media.name, from, to, state: "waiting" };
       mine.set(key, piece);
-      const { strips, under } = beneathOf(live.project, plan.media.id, from, to);
+      const beneath = beneathOf(live.project, plan.media.id, from, to);
+      const strips = beneath.strips;
+      const under = underWith(beneath.under, plan.marks ?? [], from, to);
       if (current(live.project, plan.media.id, from, to, under)) {
         piece.state = "done";
         continue;

@@ -2387,7 +2387,7 @@ function removalContext(app: App, p: Project): Args {
       ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "The person stopped it (the chat's Stop): what ran by itself doesn't now; only what's asked or marked since with start_removal (marks, from/to, media, or whole) is taken out." } : {}),
       note:
         (textRemoval.marksOnly(p)
-          ? "Their subtitles and text get a tight tracked blur only where you mark them (marks above), in the background; their watermarks come out by themselves as footage is cut. "
+          ? "Their subtitles and text get a tight tracked blur only where you mark them (marks above), in the background; their watermarks come out by themselves as footage is cut. A mark covers the shot it's in. Their watermark still there (a logo or name laid over the footage, never the camera's stamp or labels): mark its stretch with its box (marks: [{from, to, box}]), and it goes with their words. "
           : removalLesson.KINDS.some((kind) => lesson?.remove[kind] === true && lesson.when[kind] === "automatic")
           ? "Edit takes the parts that run by themselves out of the footage as it's cut, in the background (only the seconds the timeline shows; a re-cut does only what's new). "
           : "What's asked for with start_removal runs in the background on what was pointed to. ") +

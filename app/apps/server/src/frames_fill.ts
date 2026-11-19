@@ -3,7 +3,7 @@
 // importing everything they import.
 
 import type { AdjustmentClip, Clip, Project, VideoClip } from "./model.ts";
-import { mediaOf, sample } from "./project.ts";
+import { clipEnd, mediaOf, sample } from "./project.ts";
 
 /** A picture clip's framing (x, y, scale) at a frame of it, its keyframes applied. */
 export function framingAt(clip: VideoClip, frame: number): { x: number; y: number; scale: number } {
@@ -32,6 +32,26 @@ export function fillsFrame(project: Project, clip: Clip): boolean {
   const top = y - mh * fit * (0.5 - (crop.top ?? 0));
   const bottom = y + mh * fit * (0.5 - (crop.bottom ?? 0));
   return left <= -width / 2 + 2 && right >= width / 2 - 2 && top <= -height / 2 + 2 && bottom >= height / 2 - 2;
+}
+
+/**
+ * The frames [a, b) (timeline) where `clip` hides what's under it: where it fills the frame (`fillsFrame`) at full
+ * strength, not while it fades in or out or its opacity is below 1 (Nov 19, the Boyfriends intro: a white flash fading
+ * over five frames was taken as hiding the footage under it, and their "Wow" there was never looked for).
+ */
+export function hidingFrames(project: Project, clip: Clip): [number, number][] {
+  if (!fillsFrame(project, clip) || ((clip as { opacity?: number }).opacity ?? 1) < 0.999) return [];
+  const [start, end] = [clip.start + (clip.fade_in ?? 0), clipEnd(clip) - (clip.fade_out ?? 0)];
+  const keys = clip.keyframes?.opacity;
+  if (keys === undefined || keys.length === 0) return end > start ? [[start, end]] : [];
+  const out: [number, number][] = [];
+  for (let frame = start; frame < end; frame++) {
+    if ((sample(keys, frame - clip.start) ?? 1) < 0.999) continue;
+    const last = out.at(-1);
+    if (last !== undefined && last[1] === frame) last[1] = frame + 1;
+    else out.push([frame, frame + 1]);
+  }
+  return out;
 }
 
 /** A still rect blur (not tracked, not a face's): what blur_marks replaces and blur_off_shot judges. */

@@ -142,6 +142,45 @@ test("Axon's stamp and its logo are kept, Tulsa's 'Actual case footage' isn't, a
   expect(tr.labelSpans(stampOnly, seconds, 10, boxes)).toEqual([]);
 });
 
+test("a compilation's camera stamp is kept though it shows in only a few of the file's reads (Nov 19, the Boyfriends intro: 4PuH2FjxQJA's Axon stamp, learned by the watermark engine as their mark)", () => {
+  // 12 reads: the Axon stamp in 4 (one camera of several), a doorbell's in 8 with no clock.
+  const axon = TULSA[8]!.filter((line) => /^(2025|AXON)/u.test(line.t));
+  const doorbell: ScreenText[] = [{ b: [0.02, 0.92, 0.12, 0.97], t: "vivint" }];
+  const boxes = tr.cameraText([axon, axon, axon, axon, ...Array.from({ length: 8 }, () => doorbell)], null);
+  for (const line of axon) expect(kept(boxes, line)).toBe(true);
+  // A clock read once or twice is not a stamp that stays put.
+  expect(tr.cameraText([axon, axon, ...Array.from({ length: 10 }, () => doorbell)], null)).toEqual([]);
+});
+
+test("a mark covers the shot it's in; a slowed copy reads as the file it was made from; a fading flash hides nothing (Nov 19, the Boyfriends intro: 'Wow', a subtitle a read before its mark, 'No' in a 0.80x copy)", () => {
+  // A mark over the shots of the file it touches: [100, 102.06] shown, marked at 101.81–101.87.
+  expect(tr.shotsOf([[101.81, 101.87]], [[100, 102.06], [254.72, 256.49]])).toEqual([[100, 102.06]]);
+  // A mark outside every shot shown stays as it is.
+  expect(tr.shotsOf([[10, 12]], [[100, 102.06]])).toEqual([[10, 12]]);
+  const p = footageProject();
+  p.media.push({ id: "slow", name: "tape-0.80x-320728d208e1.mp4", path: "/slow.mp4", kind: "video", duration: 3, width: 1280, height: 720, fps: 30, has_audio: false } as Media);
+  p.media.find((one) => one.id === "m")!.name = "tape.mp4";
+  expect(tr.slowedFrom(p, p.media.find((one) => one.id === "slow")!)?.id).toBe("m");
+  expect(tr.slowedFrom(p, p.media.find((one) => one.id === "m")!)).toBeNull();
+  // A white flash over c1's first 6 frames, fading out over 5: only its first frame hides the tape.
+  p.tracks.push({ id: "v3", kind: "video", hidden: false, muted: false, locked: false });
+  p.clips.push({ id: "flash", track: "v3", start: 0, duration: 6, color: "blue", fade_in: 0, fade_out: 0, type: "solid", fill: [1, 1, 1, 1], opacity: 1, keyframes: { opacity: [{ frame: 0, value: 1, ease: "out" }, { frame: 5, value: 0, ease: "linear" }] } } as unknown as Project["clips"][number]);
+  expect(tr.shownSeconds(p).get("m")![0]![0]).toBeCloseTo(12 + 1 / 30, 5);
+  // At full strength throughout, it hides all six.
+  (p.clips.find((one) => one.id === "flash") as { keyframes?: unknown }).keyframes = undefined;
+  expect(tr.shownSeconds(p).get("m")![0]![0]).toBeCloseTo(12 + 6 / 30, 5);
+});
+
+test("a still blur left standing in for removal goes on the next save, its clip there or not (Nov 19, the Boyfriends intro: five over cleaned or empty frames, one on a clip re-cut since)", () => {
+  const p = footageProject();
+  p.media = p.media.filter((one) => one.cleans == null);
+  p.clips.push({ ...structuredClone(p.clips.find((one) => one.id === "blur")!), id: "orphan", start: 400, name: `${burned.UNTIL_REMOVED} · c13` } as Project["clips"][number]);
+  // A cover of ours ("cover": theirs blurred, ours on it) stays.
+  p.clips.push({ ...structuredClone(p.clips.find((one) => one.id === "blur")!), id: "taught", start: 500, name: `${burned.COVER} · c2` } as Project["clips"][number]);
+  enforceCleanStrips(null, p);
+  expect(p.clips.filter((one) => (one.name ?? "").startsWith(burned.COVER)).map((one) => one.id)).toEqual(["taught"]);
+});
+
 // ---------------------------------------------------------------------------
 // In the project
 
@@ -848,3 +887,13 @@ test("an export waits for pieces still out, and the agent looks at each watermar
     cleanup();
   }
 }, 120_000);
+
+test("masksWithMarks covers the first and last whole frames when a mark starts or ends mid-frame", () => {
+  // 278.952 s at 30 fps falls inside frame 8368 (278.933..278.967 s): frame 0 of the stretch must still carry the mark
+  // or the temporal inpaint model copies the unmasked watermark from frame 0 onto every masked frame after it.
+  const box: [number, number, number, number] = [0.3, 0.78, 0.49, 0.95];
+  const empty = Array.from({ length: 101 }, () => [] as [number, number, number, number][]);
+  const out = tr.masksWithMarks(empty, [{ from: 278.952, to: 282.285333, box }], 30, 8368);
+  expect(out[0]).toEqual([box]);
+  expect(out[100]).toEqual([box]);
+});
