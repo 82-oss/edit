@@ -2914,8 +2914,13 @@ async function footageToCloud(app: App, id: string, index: number, file: string)
     const live = app.store.get(id);
     const ranges = live === null ? [] : fileRanges(live.project, file);
     const cache = app.store.cacheDir();
+    // This very original on this Mac (Script mode brought it down, an earlier import here): its excerpts are cut from
+    // that copy, in seconds, never read back from the cloud's address (honest council change 8a, Nov 19: cutting over
+    // JJ's line is where Edit's three time limits stopped his files).
+    const here = local ?? seams.cloudMedia.localOriginal(cache, original.key, true);
+    if (here !== null && local === null) diag.info("script", `${original.name}: cut from its copy on ${THIS_MACHINE}`);
     const cutUp = await diag.timeOnAsync("script", "script: cloud excerpts", original.key, () =>
-      cloudExcerptLane.with(() => seams.cloudMedia.driveExcerpts(cache, original, ranges, local, cutProgress(app, id, index))),
+      cloudExcerptLane.with(() => seams.cloudMedia.driveExcerpts(cache, original, ranges, here, cutProgress(app, id, index))),
     );
     return [original.size, original.name, cutUp];
   } finally {

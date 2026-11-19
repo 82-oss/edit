@@ -531,3 +531,30 @@ test("an import an older build left waiting for the person over a file that pass
     fixture.cleanup();
   }
 });
+
+// Honest council change 8a, Nov 19: a file this Mac already has (Script mode brought it down, an earlier import here)
+// is cut from here, in seconds; reading it back over the network is where JJ's three time limits tripped.
+test("a footage file whose original is on this Mac is cut from that copy, never read back from the cloud's address", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-local-original", { services: { scripts } });
+  try {
+    const id = await twoFiles(fixture);
+    cloudFootage(SOUNDLESS);
+    const inputs: (string | null | undefined)[] = [];
+    mocked(
+      spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache: string, original, _ranges, input) => {
+        inputs.push(input);
+        const proxy = `edit/proxies/drive/${original.file}.mp4`;
+        const path = `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(proxy)}`;
+        return [{ path, from: 0, to: SOUNDLESS.duration, cloud: { path, name: original.name, probe: SOUNDLESS, cloud: { source: original.source, original: original.key, proxy, size: 100 } } }];
+      }),
+    );
+    mocked(spyOn(seams.cloudMedia, "localOriginal").mockImplementation((_cache: string, key: string) => (key.includes("FILEcase0002") ? "/here/FILEcase0002.mp4" : null)));
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    await start(fixture.app, id, false);
+    await settled(scripts, id);
+    expect(inputs.sort()).toEqual(["/here/FILEcase0002.mp4", null]);
+  } finally {
+    fixture.cleanup();
+  }
+});

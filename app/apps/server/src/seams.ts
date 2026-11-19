@@ -221,6 +221,8 @@ export interface CloudMediaSeam {
   resumeUpload(home: string, args: Record<string, unknown>): void;
   /** `<cache>/cloud/tmp`, for files on their way up (old leftovers removed). */
   scratchDir(cache: string): string;
+  /** The file on this machine that is still the original at `key`, if any (`use`: read now, so a copy Edit downloaded stays while it's used). */
+  localOriginal(cache: string, key: string, use?: boolean): string | null;
 }
 
 export interface CloudProjectsSeam {
