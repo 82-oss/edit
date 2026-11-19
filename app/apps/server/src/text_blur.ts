@@ -523,9 +523,10 @@ export async function ensure(app: App, id: string, given: BlurPlan[]): Promise<v
 /**
  * Tracks read at once: one on a Mac (its OCR beside the editor's own work), several on a Linux machine with cores to
  * spare (Nov 19, Sphe's Linux prod Edit: one at a time read 3.3 s for each second of footage, ~150 stretches of two
- * compilations' later cases would have taken all day; each read is single-threaded on the CPU).
+ * compilations' later cases would have taken all day; each read is single-threaded on the CPU). At most 3: six at once
+ * held ~21 FFmpeg decoders, 8 GB, and the server stalled at its memory limit.
  */
-export const AT_ONCE = process.platform === "linux" ? Math.min(6, Math.max(1, Math.floor(os.cpus().length / 4))) : 1;
+export const AT_ONCE = process.platform === "linux" ? Math.min(3, Math.max(1, Math.floor(os.cpus().length / 8))) : 1;
 
 function drain(): void {
   if (busy !== null) return;
