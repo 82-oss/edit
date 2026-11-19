@@ -26,19 +26,17 @@ function onDisk<T>(disk: { free: () => number; total: number; makeRoom?: (wanted
   }
 }
 
-test("Edit keeps a tenth of the disk free, at least 15 GB and at most 20 GB; copies kept to play sooner stop there, never under the cache's hard floor", () => {
-  // A 128 GB Mac 15 GB; kenobi's 245 GB 20 GB (a tenth would be 24.5); JJ's 494 GB and a 2 TB disk 20 GB (a tenth
-  // counted JJ's 41 GB free as full, Nov 19); a disk of unknown size the 15 GB.
-  onDisk({ free: () => 100 * GB, total: 128 * GB }, () => {
-    expect(storage.keepFreeBytes("/x")).toBe(15 * GB);
-    expect(storage.cacheFloor("/x")).toBe(15 * GB);
-  });
-  onDisk({ free: () => 100 * GB, total: 245 * GB }, () => expect(storage.keepFreeBytes("/x")).toBe(20 * GB));
-  onDisk({ free: () => 100 * GB, total: 494 * GB }, () => expect(storage.keepFreeBytes("/x")).toBe(20 * GB));
-  onDisk({ free: () => 100 * GB, total: 2000 * GB }, () => expect(storage.keepFreeBytes("/x")).toBe(20 * GB));
-  onDisk({ free: () => 100 * GB, total: Number.NaN }, () => expect(storage.keepFreeBytes("/x")).toBe(15 * GB));
-  // A whole copy on the M4 with 17 GB free of 245: short by 3 GB plus its size, so it streams.
-  onDisk({ free: () => 17 * GB, total: 245 * GB }, () => expect(storage.spare("/x", 0, storage.cacheFloor("/x"))).toBe(-3 * GB));
+test("Edit keeps 15 GB free on any disk; copies kept to play sooner stop there, never under the cache's hard floor", () => {
+  // A 128 GB Mac, kenobi's 245 GB, JJ's 494 GB, a 2 TB disk and one of unknown size: 15 GB each (a share of the disk
+  // counted JJ's 41 GB free as full, Nov 19, and broke the rule that a bigger disk is never worse off).
+  for (const total of [128 * GB, 245 * GB, 494 * GB, 2000 * GB, Number.NaN]) {
+    onDisk({ free: () => 100 * GB, total }, () => {
+      expect(storage.keepFreeBytes("/x")).toBe(15 * GB);
+      expect(storage.cacheFloor("/x")).toBe(15 * GB);
+    });
+  }
+  // A whole copy on the M4 with 12 GB free of 245: short by 3 GB plus its size, so it streams.
+  onDisk({ free: () => 12 * GB, total: 245 * GB }, () => expect(storage.spare("/x", 0, storage.cacheFloor("/x"))).toBe(-3 * GB));
   // The hard floors stay what writes in flight keep.
   expect(storage.CACHE_FLOOR_BYTES).toBe(storage.WORK_FLOOR_BYTES + 1 * GB);
   expect(storage.cacheFloor("/x")).toBeGreaterThanOrEqual(storage.CACHE_FLOOR_BYTES);

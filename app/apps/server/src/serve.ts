@@ -544,14 +544,15 @@ function optional(area: string, work: () => void): void {
  */
 function wakeAfterTrouble(app: App): void {
   // Work waiting for room starts again only once there's room for what it needs (jobs.ts `due`).
-  jobs.roomCheck.has = (bytes) => storage.roomFor(app.store.cacheDir(), bytes);
+  // The same rule as the line it said ("needs about N GB free": storage.admit), so doing what it says is enough.
+  jobs.roomCheck.has = (bytes) => storage.admit(app.store.cacheDir(), bytes, "This work") === null;
   wake.onWake((sleptMs) => {
     // Nothing that fell due is woken until the sign-in is back (its first tries can fail: the network comes back
     // seconds after a wake), up to two minutes; the table's own timer holds meanwhile (jobs.holdWaking).
     const renewed = (async () => {
       // Renewed only when the token is near its end: swapping a good sign-in at every wake, while the network is least
       // sure, is a chance to lose it (verify.md finding 10).
-      if (!accounts.hasSession() || accounts.tokenLeftMs() > 5 * 60_000) return;
+      if (!accounts.hasSession() || accounts.tokenLeftMs() > accounts.WAKE_RENEW_UNDER_MS) return;
       const until = Date.now() + 120_000;
       for (;;) {
         await accounts.renew().catch(() => undefined);

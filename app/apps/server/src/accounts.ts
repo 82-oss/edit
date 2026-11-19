@@ -131,9 +131,14 @@ export const email = (): string | null => state.person?.email || null;
 export function accessToken(): string | null {
   if (state.access === null) return null;
   const now = Date.now();
-  if (now >= state.expires - 30_000 && !renewing) void renew();
+  if (now >= state.expires - RENEW_BEFORE_MS && !renewing) void renew();
   return now < state.expires ? state.access : null;
 }
+
+/** A renewal is asked for this long before the token runs out (held with the relay's skew and the wake's renewal in test/signin_clock.test.ts). */
+export const RENEW_BEFORE_MS = 30_000;
+/** At a wake, the sign-in is renewed only with less than this left (serve.ts). */
+export const WAKE_RENEW_UNDER_MS = 5 * 60_000;
 
 /** How long the access token held has left, in ms (0 when there's none, or it has run out). */
 export function tokenLeftMs(): number {
@@ -417,7 +422,7 @@ const attempted: Array<() => void> = [];
  */
 export function renewalUnderWay(): boolean {
   if (!state.kept) return false;
-  return renewing || lapsed || state.access === null || Date.now() >= state.expires - 30_000;
+  return renewing || lapsed || state.access === null || Date.now() >= state.expires - RENEW_BEFORE_MS;
 }
 
 let running: Fiber.Fiber<never> | null = null;

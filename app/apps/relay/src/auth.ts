@@ -36,7 +36,7 @@ export type Caller = { kind: "person"; sub: string; perms: string[]; admin: bool
 
 const ISSUER = "https://accounts.spheceo.com";
 /** Allowed clock skew between the accounts site and here (the contract's 60 s). */
-const SKEW_SECONDS = 60;
+export const SKEW_SECONDS = 60;
 
 /**
  * What this copy of the relay last read of the accounts site: kept as data,

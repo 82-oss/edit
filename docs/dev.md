@@ -44,6 +44,14 @@ Dev and prod stay separate so dev work never touches team installs:
 - Linux builds/checks run on stable `v*` releases only; nightlies build Apple Silicon macOS (`aarch64-apple-darwin`).
 - The first clause of a commit message is what `scripts/nightly-notes.ts` surfaces in the team's nightly notes.
 
+## Rules that must hold on the team's Macs
+
+Most of the month's breakages were rules that sounded right and were wrong on one real Mac (Nov 19: Edit kept a tenth of every disk free, which counted JJ's 494 GB Mac with 41 GB free as full). Two rules for every change:
+
+- **A changed number comes with what it means on each Mac.** A free-space floor, a room check, a time limit, a size: add it to `apps/server/test/storage_machines.test.ts` (or a test beside it), which holds rules against every state a Mac can be in (empty to full) and the rules of scale (more free room, a bigger disk, a slower line or a bigger file is never worse off, only slower), and prints a plain line per Mac. Paste those lines into the commit message ("JJ: keeps 15 GB free, has 41; keeps here 2, 5.5 and 12 GB").
+- **Every wait names what ends it.** Work that waits (the job table, a dialog, a retry) says what it waits on, and a test shows that doing what its line says ends it. Only an import's question waits on the person (`apps/server/test/census.test.ts`); a wait that isn't moving after five minutes reports itself, and each Mac's report checks Edit's rules against its own disk and line (`remote_actions.ts` `selfCheck`).
+- **The bad-day run** (`just bad-day`, in `app/`) breaks the line, freezes and kills Edit, and fills the disk on purpose; run the cases a change touches before it ships.
+
 ## By hand on a Mac
 
 Before shipping a nightly that touches playback, sync, or imports:

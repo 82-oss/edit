@@ -153,3 +153,20 @@ describe("update when idle, and probing an import (Nov 1)", () => {
     expect(sent).toContain("sound decoded: exit 0, 0 error lines");
   });
 });
+
+test("each Mac checks itself in its report: a slow line, and work meeting the same failure again and again (honest council, Fable's checks 3 and 4)", async () => {
+  const { selfCheck } = await import("../src/remote_actions.ts");
+  const speeds = await import("../src/export_speeds.ts");
+  const home = fs.mkdtempSync(join(os.tmpdir(), "edit-self-check-"));
+  try {
+    const app = { store: { home } } as unknown as App;
+    speeds.noteDownload(home, 72_000 * 200, 200);
+    const key = jobs.begin(home, "script", "s1", { waiting_on: "import" }, "", "importing");
+    for (let time = 0; time < 3; time++) jobs.wait(home, key, "something nobody has seen before");
+    const said = selfCheck(app);
+    expect(said.some((line) => line.startsWith("Footage came down at 0.07 MB/s lately"))).toBe(true);
+    expect(said.some((line) => line.startsWith("Job script:s1: the same failure 3 times in a row"))).toBe(true);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});

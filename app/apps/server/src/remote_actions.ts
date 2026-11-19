@@ -32,6 +32,7 @@ import type { App } from "./app.ts";
 import { cleanCache, cleanCloudPreviews } from "./cache_cleanup.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as diag from "./diag.ts";
+import * as speeds from "./export_speeds.ts";
 import { memorySummary } from "./export_capacity.ts";
 import { useNow as memoryUse } from "./memory.ts";
 import * as jobs from "./jobs.ts";
@@ -40,6 +41,7 @@ import * as editTime from "./edit_time.ts";
 import * as logShip from "./log_ship.ts";
 import * as outages from "./outages.ts";
 import { join } from "./paths.ts";
+import * as storage from "./storage.ts";
 import * as presence from "./presence.ts";
 import * as problemReports from "./problem_reports.ts";
 import * as relay from "./relay.ts";
@@ -90,6 +92,50 @@ function diskFree(app: App): number | null {
   }
 }
 
+/** The disk's size where Edit keeps its data, or null. */
+function diskTotal(app: App): number | null {
+  try {
+    const stat = fs.statfsSync(app.store.home);
+    return stat.blocks * stat.bsize;
+  } catch {
+    return null;
+  }
+}
+
+/** The line's measured speeds, down and up (export_speeds.ts), or that none was measured yet. */
+function lineSaid(app: App): string {
+  const kept = speeds.read(app.store.home);
+  const said = (bps: number | undefined) => (bps === undefined || !(bps > 0) ? "?" : `${((bps * 8) / 1e6).toFixed(1)} Mbit/s`);
+  return `${said(kept.download_bps)} down · ${said(kept.upload_bps)} up (as Edit last measured)`;
+}
+
+/** A big file of the team's this week (JJ's Midland recording): what "footage is kept here" is checked against. */
+const TYPICAL_FILE_BYTES = 5.5e9;
+
+/**
+ * This Mac checked against Edit's own rules, as its report says them (honest council, Fable's check 3, Nov 19: the
+ * free-space floor counted JJ's Mac as full and his report said nothing, its warning only under 5 GB): what Edit keeps
+ * free here against what is, so whether footage is kept or streams, and how fast footage comes down. Plain lines.
+ */
+export function selfCheck(app: App): string[] {
+  const out: string[] = [];
+  const free = diskFree(app);
+  if (free !== null) {
+    const keep = storage.keepFreeBytes(app.store.home);
+    const room = free - keep;
+    if (room < 2e9) out.push(`Edit keeps ${gb(keep)} free here and ${gb(free)} are free: nothing new is kept on this Mac, footage streams.`);
+    else if (room < TYPICAL_FILE_BYTES) out.push(`Edit keeps ${gb(keep)} free here and ${gb(free)} are free: footage over ${gb(room)} streams instead of being kept.`);
+  }
+  const down = speeds.read(app.store.home).download_bps;
+  if (down !== undefined && down > 0 && down < 1e6) out.push(`Footage came down at ${(down / 1e6).toFixed(2)} MB/s lately: a ${gb(TYPICAL_FILE_BYTES)} file takes ${Math.round(TYPICAL_FILE_BYTES / down / 60)} min.`);
+  // Waits that aren't moving (Fable's check 4): the same failure three times in a row on a piece of work.
+  for (const job of jobs.list(app.store.home)) {
+    if (job.state !== "waiting" || typeof job.args.same_count !== "number" || job.args.same_count < 3) continue;
+    out.push(`Job ${job.key}: the same failure ${job.args.same_count} times in a row (${String(job.args.same_why ?? job.why ?? "").slice(0, 160)}).`);
+  }
+  return out;
+}
+
 /** The projects whose agent turn is running, with how long each chat has been quiet. */
 function turns(app: App): [project: string, quietMs: number][] {
   const running = (app.agents as { runningProjects?: () => string[] }).runningProjects?.() ?? [];
@@ -109,6 +155,7 @@ export async function attention(app: App, setup: { id: string; ok: boolean; titl
   const out: string[] = [];
   const free = diskFree(app);
   if (free !== null && free < LOW_DISK) out.push(`The disk has ${gb(free)} free: imports and exports fail under a few GB (unstick cleans the cache).`);
+  out.push(...selfCheck(app));
   const account = accounts.status() as { person?: { email?: string } | null };
   if (!account.person) out.push("Nobody is signed in: the cloud, transcription and voices are off.");
   if (!relayOk) out.push(`Edit's relay (${relay.url()}) doesn't answer: transcription, voices and the cloud are off.`);
@@ -335,7 +382,8 @@ export async function report(app: App, why = "Diagnostics asked for by an admin 
     ...(needs.length > 0 ? needs : ["nothing found"]),
     "",
     "Machine:",
-    `disk: ${free === null ? "?" : gb(free)} free · memory: ${memorySummary()} · load ${os.loadavg()[0]!.toFixed(2)} on ${os.availableParallelism()} cores`,
+    `disk: ${free === null ? "?" : gb(free)} free of ${diskTotal(app) === null ? "?" : gb(diskTotal(app)!)} · memory: ${memorySummary()} · load ${os.loadavg()[0]!.toFixed(2)} on ${os.availableParallelism()} cores`,
+    `line: ${lineSaid(app)}`,
     ...(use === null ? [] : [`memory use: ${use}`]),
     `signed in: ${account.person?.email ?? "nobody"}${account.admin ? " (admin)" : ""} · capabilities: ${(account.perms ?? []).join(", ") || "none"}`,
     `relay: ${relayOk ? `answers in ${relayMs} ms` : "doesn't answer"} (${relay.url()})`,
