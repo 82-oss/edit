@@ -1508,7 +1508,7 @@ export function wakeWhatPasses(home: string): string[] {
     const kept = (durable.args as CaseArgs).import;
     if (kept === undefined || !Array.isArray(kept.files)) continue;
     const asked = kept.files.filter((file) => file.state === "failed");
-    if (asked.length === 0 || asked.some((file) => steps.whyOf(file.error ?? "") === "person")) continue;
+    if (asked.length === 0 || asked.some((file) => !steps.waitsByItself(steps.whyOf(file.error ?? "")))) continue;
     const job = structuredClone(kept);
     for (const file of job.files) {
       if (file.state !== "failed") continue;
@@ -2527,21 +2527,21 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
       // and whatever passes (a dropped connection, a busy Google, a step past its time), tried again every
       // PASSING_RETRY_MS until it comes in (Nov 18, JJ's School Bookkeeper: his Wi-Fi dropped for a minute, the
       // interview's file was handed to him as "couldn't be downloaded", and his "Go on without it" lost it).
-      const byItself = whys.every((why) => why !== "person");
+      const byItself = whys.every(steps.waitsByItself);
       const now = nowMs();
       // Each file's own time (credit's half hour, the day's reset, Google's, a passing one's next try); the import is woken at the soonest.
       const fileAt = missing.map((index, n) => (whys[n] === "passing" ? now + steps.PASSING_RETRY_MS.value : steps.retryAt(whys[n]!, now, errors[index])));
       const times = fileAt.filter((at): at is number => at !== null);
       const retryAt = times.length > 0 ? Math.min(...times) : null;
-      const asked = whys.filter((why) => why === "person").length;
+      const asked = whys.filter((why) => !steps.waitsByItself(why)).length;
       app.scripts.set(app, id, (job) => {
         job.state = "waiting";
         for (const [n, index] of missing.entries()) {
           const entry = job.files[index];
           if (entry === undefined) continue;
           const at = fileAt[n];
-          // The person's stays `failed` (what the page asks about); the rest wait by themselves.
-          if (whys[n] !== "person") {
+          // The person's (and Edit's own bug) stays `failed` (what the page asks about); the rest wait by themselves.
+          if (steps.waitsByItself(whys[n]!)) {
             entry.state = "waiting";
             if (at !== null && at !== undefined) entry.retry_at = at;
             else delete entry.retry_at;

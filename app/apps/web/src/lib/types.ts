@@ -190,7 +190,8 @@ export interface ScriptJob {
   back?: boolean;
 }
 
-export type ImportWhy = "passing" | "person" | "quota" | "encoder" | "limit";
+/** What a file's failure is (the server's failure.ts): only "person" and "broken" are asked about; the rest wait by themselves. */
+export type ImportWhy = "passing" | "quota" | "limit" | "encoder" | "room" | "signin" | "person" | "broken";
 
 export interface ImportAfter {
   step: "voiceover" | "recording" | "research" | "words" | "reuse";

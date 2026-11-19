@@ -33,6 +33,8 @@
 
 import * as diag from "./diag.ts";
 import * as encoder from "./encoder.ts";
+import * as failure from "./failure.ts";
+import { CREDIT, DAILY, StepTimedOut } from "./failure.ts";
 
 /** How long each step may take before it's taken as stuck (ms). */
 export const LIMITS = {
@@ -59,116 +61,31 @@ export const RETRY_WAITS = { value: [60_000, 5 * 60_000] };
  * this long before the import is woken to try it again, and again, until it comes in: never handed to the person.
  */
 export const PASSING_RETRY_MS = { value: 10 * 60_000 };
-/** A file waiting on the transcription plan's credit is tried again this often. */
-export const QUOTA_RETRY_MS = { value: 30 * 60_000 };
-/** A file at Google Drive's download limit is tried again this long after, when Google gives no time of its own. */
-export const LIMIT_RETRY_MS = { value: 24 * 60 * 60_000 };
-/** After a daily allowance's reset, a moment for the relay's day to turn. */
-const AFTER_RESET_MS = 60_000;
+/** A file waiting on the transcription plan's credit is tried again this often (failure.ts's own). */
+export const QUOTA_RETRY_MS = failure.QUOTA_EVERY_MS;
+/** A file at Google Drive's download limit is tried again this long after, when Google gives no time of its own (failure.ts's own). */
+export const LIMIT_RETRY_MS = failure.LIMIT_WAIT_MS;
+/** What a failure is: failure.ts's kinds, the one rule both imports read. */
+export type Why = failure.Kind;
 
-export type Why = "passing" | "person" | "quota" | "encoder" | "limit";
+export { DriveLimit, NeedsPerson, nextMidnightUtc, StepTimedOut } from "./failure.ts";
 
-/** A failure only the person can fix: another link, or go on without it. */
-export class NeedsPerson extends Error {
-  override readonly name = "NeedsPerson";
-}
+/** What a failure is (failure.ts `kindOf`): the editor's import and Script mode's read the same answer. */
+export const whyOf = (error: unknown): Why => failure.kindOf(error);
 
-/** Google Drive's download limit for a file is used up for the day; `retryAfterMs` when Google said when it's back. */
-export class DriveLimit extends Error {
-  override readonly name = "DriveLimit";
-  constructor(
-    message: string,
-    readonly retryAfterMs: number | null = null,
-  ) {
-    super(message);
-  }
-}
+/** Whether Edit may try it again by itself, or Retry may help: anything but the person's and Edit's own bug. */
+export const passing = (error: unknown): boolean => failure.waitsByItself(failure.kindOf(error));
 
-/** A step past its time; `shared` when the hardware encoder was someone else's too when it ran out. */
-export class StepTimedOut extends Error {
-  override readonly name = "StepTimedOut";
-  constructor(
-    readonly what: string,
-    readonly afterMs: number,
-    readonly shared: boolean,
-  ) {
-    super(`${what} took more than ${minutes(afterMs)} and was stopped${shared ? " (the hardware encoder was busy with other work)" : ""}`);
-  }
-}
-
-function minutes(ms: number): string {
-  return ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`;
-}
-
-/** The transcription plan or the relay's allowance, in its own words (ElevenLabs' 401: "exceeds your quota … credits remaining"). */
-const QUOTA = /exceeds your quota|credits remaining|quota_exceeded|insufficient.credits|out of credit|transcription failed \(429\)|\ballowance\b|transcription budget[^.]*used up|hearing footage again[^.]*used up|rate.limit/i;
-/** A plan's credit spent, in ElevenLabs' words (or Edit's own line for it). */
-const CREDIT = /exceeds your quota|credits remaining|quota_exceeded|insufficient.credits|out of credit/i;
-/** A daily allowance's words: it comes back at midnight UTC. */
-const DAILY = /for today|today's|resets at midnight/i;
-/** Google Drive's download limit for one file (its page, Edit's own line for it, the API's reason). */
-const DRIVE_LIMIT = /download limit for this file|Too many users|downloadQuotaExceeded/i;
-/** Text from outside Edit that only the person can answer (Drive's pages; posts; older builds' words kept in a job). */
-const PERSON = /isn't shared|can't find this file|deleted, or in the trash|Private video|This video is private|confirm your age|age.restricted|members.only|Join this channel|not available in your country|blocked it in your country|Video unavailable|has been removed|has been terminated|no longer available|isn't a Drive file|isn't a YouTube video|has no bytes|A shared folder master|is not uploaded yet|pictures only, with no video|only shown to someone signed in/i;
-
-function tagOf(error: unknown): string | null {
-  const tag = (error as { _tag?: unknown } | null)?._tag;
-  return typeof tag === "string" ? tag : null;
-}
-
-/** What a failure means for the import (see the module notes); a job's saved words are read the same way. */
-export function whyOf(error: unknown): Why {
-  for (let at: unknown = error, depth = 0; at !== undefined && at !== null && depth < 4; at = (at as { cause?: unknown }).cause, depth++) {
-    if (at instanceof NeedsPerson) return "person";
-    if (at instanceof DriveLimit) return "limit";
-    if (at instanceof StepTimedOut) return at.shared ? "encoder" : "passing";
-    const tag = tagOf(at);
-    if (tag === "AllowanceUsedUp") return "quota";
-    if (tag === "DownloadFailed") {
-      const reason = (at as { reason?: unknown }).reason;
-      if (reason === "VideoGone" || reason === "NeedsSignIn") return "person";
-    }
-  }
-  const words = typeof error === "string" ? error : diag.messageOf(error);
-  if (DRIVE_LIMIT.test(words)) return "limit";
-  if (QUOTA.test(words)) return "quota";
-  if (PERSON.test(words)) return "person";
-  return "passing";
-}
-
-/** Whether Edit may try it again by itself, or Retry may help: anything but the person's. */
-export function passing(error: unknown): boolean {
-  return whyOf(error) !== "person";
-}
+/** Whether a failure of this kind waits by itself (everything but the person's and Edit's own bug). */
+export const waitsByItself = failure.waitsByItself;
 
 /**
- * When a failure of this kind is tried again by itself (ms since the epoch),
- * or null (the person's, or at once). Given the failure, a daily allowance
- * waits for its reset and Drive's limit for Google's own time when it gave one.
+ * When a failure of this kind is tried again by itself (ms since the epoch), or null: the encoder's while it's busy,
+ * Edit's own bug, or a passing one (the import's own retry loop times those). Read from failure.ts `nextTry`.
  */
 export function retryAt(why: Why, now: number, error?: unknown): number | null {
-  if (why === "limit") {
-    const hint = findHint(error);
-    return now + (hint !== null && hint > 0 ? hint : LIMIT_RETRY_MS.value);
-  }
-  if (why !== "quota") return null;
-  const words = error === undefined ? "" : typeof error === "string" ? error : diag.messageOf(error);
-  if (!CREDIT.test(words) && DAILY.test(words)) return nextMidnightUtc(now) + AFTER_RESET_MS;
-  return now + QUOTA_RETRY_MS.value;
-}
-
-/** Google's own wait, carried by a `DriveLimit` (or its cause). */
-function findHint(error: unknown): number | null {
-  for (let at: unknown = error, depth = 0; at !== undefined && at !== null && depth < 4; at = (at as { cause?: unknown }).cause, depth++) {
-    if (at instanceof DriveLimit) return at.retryAfterMs;
-  }
-  return null;
-}
-
-/** The next midnight UTC after `now` (ms). */
-export function nextMidnightUtc(now: number): number {
-  const day = new Date(now);
-  return Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1);
+  if (why === "passing") return null;
+  return failure.nextTry(why, 0, now, error);
 }
 
 /** "14:30": a time of day on this computer. */

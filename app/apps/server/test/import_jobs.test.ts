@@ -410,7 +410,9 @@ test("each wait has its own time: credit every half hour, a daily allowance at i
   expect(steps.retryAt("quota", now, "transcription failed (429): Edit's shared transcription budget for today is used up; it resets at midnight UTC.")).toBe(Date.UTC(2026, 10, 17) + 60_000);
   expect(steps.retryAt("limit", now, new steps.DriveLimit("limit"))).toBe(now + steps.LIMIT_RETRY_MS.value);
   expect(steps.retryAt("limit", now, new Error("wrapped", { cause: new steps.DriveLimit("limit", 3_600_000) }))).toBe(now + 3_600_000);
-  expect(steps.retryAt("person", now)).toBeNull();
+  // The person's is looked at again in half an hour, in case it was put right (failure.ts).
+  expect(steps.retryAt("person", now)).toBe(now + 30 * 60_000);
+  expect(steps.retryAt("broken", now)).toBeNull();
   expect(steps.hearingWaits("transcription failed (429): Edit's shared transcription budget for today is used up", now)).toStartWith("Today's transcription allowance is used up; Edit tries again by itself at");
 });
 
