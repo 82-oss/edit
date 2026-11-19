@@ -65,6 +65,14 @@ async function settled(context: Context, id: string, ms: number, whole: boolean)
 
 const signInWords = /sign(ed)? in|\b401\b|renew/i;
 
+/** Check 5: each recording came down from Drive about once (the bytes Edit got, at most 1.3 times the files). */
+function fetchedOnce(context: Context): void {
+  const files = IDS.map((id) => context.cloud.drive.get(id)).filter((file) => file !== undefined);
+  const sent = files.reduce((sum, file) => sum + context.line.sent(`/www.googleapis.com/drive/v3/files/${file!.id}`), 0);
+  const size = files.reduce((sum, file) => sum + file!.size, 0);
+  context.check("each recording fetched about once", sent <= size * 1.3, `${(sent / 1e6).toFixed(1)} MB came down from Drive for ${(size / 1e6).toFixed(1)} MB of recordings`);
+}
+
 export const scriptCases: Case[] = [
   {
     name: "signin-after-freeze",
@@ -133,6 +141,7 @@ export const scriptCases: Case[] = [
       const errors = [last.error ?? "", ...(last.missing ?? []).map((item) => item.error)].filter((text) => signInWords.test(text));
       context.check("no script holds a sign-in error", errors.length === 0, errors.length === 0 ? "none" : errors.join(" | "));
       context.log(`renewals at the accounts site: ${cloud.renewals}`);
+      fetchedOnce(context);
     },
   },
   {
@@ -157,6 +166,7 @@ export const scriptCases: Case[] = [
       context.check("the import finished whole by itself", end !== null && end.status === "ready" && (end.missing ?? []).length === 0, describe(last));
       const errors = [last.error ?? "", ...(last.missing ?? []).map((item) => item.error)].filter((text) => signInWords.test(text));
       context.check("nothing says sign in", errors.length === 0, errors.length === 0 ? "no sign-in error on the script" : errors.join(" | "));
+      fetchedOnce(context);
     },
   },
   {
@@ -207,7 +217,10 @@ export const scriptCases: Case[] = [
         during.status !== "error" && (spent === undefined || spent.tries === triesBefore),
         `${describe(during)}${spent !== undefined && spent.tries > triesBefore ? `: a try was spent signed out (${spent.error})` : ""}`,
       );
-      context.check("one sign-in screen", cloud.deviceCodes <= 1, `${cloud.deviceCodes} device code(s) asked for`);
+      // The person signs in on the sign-in screen: the page asks for a code (a headless Edit's way), the person types it.
+      const asked = await edit.api("POST", "/api/account/device", {});
+      context.log(`the sign-in screen asked for a code: ${asked.status}`);
+      await context.waitFor("the code to be asked of the accounts site", () => cloud.devices.size > 0 || null, 20_000);
       const signedIn = Date.now();
       context.log(`the person signs in (${cloud.approveDevices()} code(s) approved)`);
       const whole = await context.waitFor(
@@ -219,7 +232,9 @@ export const scriptCases: Case[] = [
         120_000,
       );
       const seconds = Math.round((Date.now() - signedIn) / 1000);
+      context.check("one sign-in screen", cloud.deviceCodes <= 1, `${cloud.deviceCodes} device code(s) asked for`);
       context.check("it carries on within 30 s of signing in", whole !== null && seconds <= 30, whole === null ? `not whole after ${seconds} s: ${describe(await script(context, id))}` : `whole ${seconds} s after signing in`);
+      fetchedOnce(context);
     },
   },
   {
@@ -254,6 +269,7 @@ export const scriptCases: Case[] = [
       );
       const whole = at.status === "ready" ? await settled(context, id, 420_000, true) : null;
       context.check("it came in by itself once the line was back", whole !== null, describe(whole ?? (await script(context, id))));
+      fetchedOnce(context);
     },
   },
   {
@@ -275,6 +291,7 @@ export const scriptCases: Case[] = [
         listed !== undefined && !/^Could not read/.test(listed.error),
         listed === undefined ? `not listed: ${describe(at)}` : `"${listed.error}"`,
       );
+      fetchedOnce(context);
     },
   },
 ];

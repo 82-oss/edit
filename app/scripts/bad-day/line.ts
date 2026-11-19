@@ -44,6 +44,7 @@ interface Pipe {
   sentDown: number;
   /** The path of the request the bytes toward Edit answer now. */
   path: string;
+  request: { bytes: number } | null;
   closed: boolean;
   /** The stand-in ended its side: what's queued still goes to Edit, then this closes. */
   closing: boolean;
@@ -62,6 +63,8 @@ export class Line {
   connections = 0;
   /** Bytes handed to Edit, by the path (no query) of the request they answered. */
   readonly byPath = new Map<string, number>();
+  /** Every request seen on the way in, and the bytes handed back for it. */
+  readonly requests: { at: number; pipe: number; line: string; range: string; bytes: number }[] = [];
   private pipes = new Set<Pipe>();
   private server: net.Server | null = null;
   private nextId = 1;
@@ -130,11 +133,15 @@ export class Line {
       return;
     }
     const server = net.connect(this.target, "127.0.0.1");
-    const pipe: Pipe = { id: this.nextId++, client, server, toServer: [], toClient: [], queuedServer: 0, queuedClient: 0, sentDown: 0, path: "", closed: false, closing: false };
+    const pipe: Pipe = { id: this.nextId++, client, server, toServer: [], toClient: [], queuedServer: 0, queuedClient: 0, sentDown: 0, path: "", request: null, closed: false, closing: false };
     this.pipes.add(pipe);
     client.on("data", (data: Buffer) => {
       const request = REQUEST.exec(data.toString("latin1", 0, Math.min(data.length, 2048)));
       if (request !== null) {
+        const head = data.toString("latin1", 0, Math.min(data.length, 4096));
+        const entry = { at: Date.now(), pipe: pipe.id, line: `${request[1]} ${request[2]!.split("?")[0]}`, range: /\r\nrange: *([^\r]*)/i.exec(head)?.[1] ?? "", bytes: 0 };
+        this.requests.push(entry);
+        pipe.request = entry;
         try {
           pipe.path = decodeURIComponent(request[2]!.split("?")[0]!);
         } catch {
@@ -224,6 +231,7 @@ export class Line {
         pipe.sentDown += chunk.length;
         pipe.queuedClient -= chunk.length;
         this.byPath.set(pipe.path, (this.byPath.get(pipe.path) ?? 0) + chunk.length);
+        if (pipe.request !== null) pipe.request.bytes += chunk.length;
         if (rate > 0) this.allowDown -= chunk.length;
         if (pipe.queuedClient < LOW) pipe.server.resume();
       }

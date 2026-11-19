@@ -55,12 +55,21 @@ function peakMemory(): string {
   }
 }
 
-/** The preload Edit starts with: the tests' stand-in model (ai_claude.standIn, a hook the server has), nothing else. */
-function preload(dir: string, modelUrl: string): string {
+/**
+ * The preload Edit starts with, through two hooks the server already has for its tests: Claude's questions go to the
+ * stand-in model (ai_claude.standIn), and, off the small disk, the disk is a roomy one (storage.diskHooks, as
+ * test/setup.ts sets it): this machine's own sits on Edit's keep-free line (a tenth of 468 GB), so whether a copy is
+ * kept here would turn on whatever else is on it that minute.
+ */
+function preload(dir: string, modelUrl: string, roomy: boolean): string {
   const path = join(dir, "preload.ts");
   fs.writeFileSync(
     path,
     `// Written by the bad-day harness: Claude's questions go to the stand-in, as under bun test.\n` +
+      (roomy
+        ? `import { diskHooks } from ${JSON.stringify(join(SERVER, "apps/server/src/storage.ts"))};\n` +
+          `diskHooks.free = () => 1e12;\ndiskHooks.total = () => 2e12;\n`
+        : "") +
       `import { standIn } from ${JSON.stringify(join(SERVER, "apps/server/src/ai_claude.ts"))};\n` +
       `standIn.post = async (body) => {\n` +
       `  const answer = await fetch(${JSON.stringify(`${modelUrl}/v1/chat/completions`)}, { method: "POST", headers: { "content-type": "application/json" }, body: require("node:fs").readFileSync(body) });\n` +
@@ -108,7 +117,7 @@ async function runCase(one: Case, made: ReturnType<typeof footage>, index: numbe
     server: SERVER,
     home: real,
     port: 7800 + index,
-    preload: preload(dir, cloud.base),
+    preload: preload(dir, cloud.base, one.smallDisk !== true),
     log,
     env: {
       PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -173,7 +182,9 @@ async function runCase(one: Case, made: ReturnType<typeof footage>, index: numbe
   try {
     log(`case ${one.name} on ${LABEL}`);
     await edit.start();
-    log(`Edit up on ${edit.url}`);
+    // A person starts work once the window shows them signed in (at 7b59f4e2 the server answers before its kept sign-in is back).
+    const signedIn = await context.waitFor("Edit signed in", async () => (await edit.api<{ signed_in: boolean }>("GET", "/api/account")).body.signed_in === true || null, 30_000);
+    log(`Edit up on ${edit.url}${signedIn === null ? ", NOT signed in after 30 s" : ", signed in"}`);
     await one.run(context);
   } catch (caught) {
     error = caught instanceof Error ? (caught.stack ?? caught.message) : String(caught);
@@ -189,6 +200,7 @@ async function runCase(one: Case, made: ReturnType<typeof footage>, index: numbe
   line.stop();
   cloud.stop();
   fs.writeFileSync(join(dir, "requests.json"), JSON.stringify(cloud.seen, null, 1));
+  fs.writeFileSync(join(dir, "line.json"), JSON.stringify(line.requests.map((one) => ({ ...one, at: one.at - started })), null, 1));
   logFile.end();
   const failed = checks.some((check) => !check.ok) || error !== undefined;
   return { name: one.name, verdict: failed ? "fail" : "pass", checks, seconds: Math.round((Date.now() - started) / 1000), error };

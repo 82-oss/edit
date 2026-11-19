@@ -174,7 +174,7 @@ export const cutCases: Case[] = [
     change: "5",
     spec:
       "A 150 MB Axon-shaped file (index at the end, keyframes every 8 s, B-frames), two 20-second ranges, time run 60 times faster. " +
-      "The line toward Edit runs at 8 kbit/s for the first 200 s of reading it from the cloud (its 616 kB index can't come in under today's 2-minute limit on reading its length or keyframe, at real speed), then 2 Mbit/s. " +
+      "The line toward Edit runs at 8 kbit/s for the first 330 s of reading it from the cloud (its 616 kB index can't come in under today's 2-minute limit on reading its length or keyframe, at real speed), then 2 Mbit/s. " +
       "Checks: both excerpts are cut; nothing 'was stopped'; bytes fetched are at most 1.3 times the excerpts' size.",
     env: { EDIT_BAD_DAY_SPEED: "60" },
     async run(context) {
@@ -184,14 +184,14 @@ export const cutCases: Case[] = [
       cloud.beforeR2Get = (key) => {
         if (slowed || key !== setup.originals[0]) return;
         slowed = true;
-        context.log("first read of the original from the cloud: the line toward Edit at 8 kbit/s for 200 s");
+        context.log("first read of the original from the cloud: the line toward Edit at 8 kbit/s for 330 s");
         line.reshape({ down: 8 * KBIT });
         setTimeout(() => {
           context.log("the line toward Edit at 2 Mbit/s");
           line.reshape({ down: 2000 * KBIT });
-        }, 200_000);
+        }, 330_000);
       };
-      const end = await done(context, setup.project, 540_000);
+      const end = await done(context, setup.project, 660_000);
       const last = end ?? (await job(context, setup.project));
       context.check("both excerpts are cut", end !== null, describe(last));
       nothingStopped(context);
