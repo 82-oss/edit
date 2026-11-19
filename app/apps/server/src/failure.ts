@@ -199,7 +199,7 @@ export function speed(): number {
 }
 
 /** A wait of `ms`, at the tests' speed. */
-export const scaled = (ms: number): number => Math.max(Math.round(ms / speed()), 1);
+export const scaled = (ms: number): number => Math.max(Math.round(ms / speed()), 0);
 
 /** Passing failures are tried again after these, then every `PASSING_EVERY_MS` for as long as it takes (tests set them). */
 export const PASSING_WAITS = { value: [60_000, 5 * 60_000, 15 * 60_000] };

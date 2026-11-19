@@ -645,14 +645,17 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
     return script;
   }
   const error = ran.failure;
-  const kind = failure.kindOf(error);
+  // Waited out only when it's surely trouble that passes (a dropped line, the relay busy, credit, a full disk): the
+  // import's own refusals ("A compilation needs new footage") are plain errors nothing recognises, and stop as before.
+  const known = failure.surely(error);
+  const kind: failure.Kind = known ?? "person";
   const key = durableJobs.keyOf("script", script.id);
   const spent = stageTimes(script.id);
   // Trouble that passes (a dropped line, the relay busy, a full disk, the plan out of credit, Drive's day): the
   // script stays importing with one line saying when Edit tries again, the row waits in the job table, and no "The
   // import stopped" goes out. Before, Script mode read an error it didn't know as the person's and stopped (JJ's
   // imports on the night of Nov 18, the same dropped line the editor's import waited out).
-  if (failure.waitsByItself(kind)) {
+  if (known !== null && failure.waitsByItself(known)) {
     const at = durableJobs.wait(app.store.home, key, error);
     // What it waits on, in the words the diagnostics and the waking read (`waiting_on`).
     durableJobs.patch(app.store.home, key, { waiting_on: kind === "limit" ? "drive" : kind });
@@ -677,7 +680,7 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
   script.status = "error";
   script.error = message;
   // Edit's own bug: Try again isn't offered until a new build (`Script.stuckOn`); Replace and Dismiss still are.
-  if (kind === "broken") script.stuckOn = BUILD;
+  if (known === "broken") script.stuckOn = BUILD;
   else delete script.stuckOn;
   delete script.decision;
   script.updatedAt = Date.now();
