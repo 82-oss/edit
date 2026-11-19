@@ -1477,14 +1477,25 @@ export function cutsBetterHere(error: unknown): boolean {
   return /came out wrong|Couldn't cut an excerpt/u.test(diag.messageOf(error));
 }
 
-/** Drive file `original` downloaded whole into the scratch folder (resuming a partial a stopped try left), when there's room. */
+/**
+ * Drive file `original` downloaded whole into the scratch folder (resuming a partial a stopped try left), when there's
+ * room. It's kept only while its excerpts are cut, so it needs Edit's least free space after it (15 GB), not the
+ * tenth of the disk kept for what stays (Nov 19, JJ's Midland recording: 5.5 GB refused on a 1 TB Mac with 50 GB free).
+ */
 async function wholeHere(cache: string, original: Original): Promise<string> {
   const dir = scratchDir(cache);
-  if (!storage.roomFor(dir, original.size)) {
+  const short = () => -storage.spare(dir, original.size, storage.KEEP_FREE_LEAST_BYTES);
+  if (short() > 0) storage.askForRoom(storage.freeBytes(dir) + short());
+  if (short() > 0) {
     throw new Error(`There isn't room on ${THIS_MACHINE} for ${original.name} (${(original.size / 1e9).toFixed(1)} GB) to cut its excerpts here.`);
   }
   const dest = join(dir, `whole-${original.key.split("/").slice(-2).join("-")}`);
-  await diag.timeOnAsync("cloud", "cloud: original here to cut", original.key, () => cloud.download(original.key, dest));
+  const held = storage.claim(original.size);
+  try {
+    await diag.timeOnAsync("cloud", "cloud: original here to cut", original.key, () => cloud.download(original.key, dest));
+  } finally {
+    held.release();
+  }
   return dest;
 }
 
