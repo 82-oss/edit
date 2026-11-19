@@ -268,6 +268,18 @@ function markHolds(app: App, projectId: string, name: string, text: string | nul
 }
 
 /**
+ * What's beneath a graphic is footage the effect draws again, then rendered and
+ * exported with it: three encodes more than V1's one. Made at the export's own
+ * rate (~9 Mbit/s at 1080p) and then again at CRF 18, bodycam's grain went soft
+ * under every effect drawn over it (Nov 19, V1's effects copied into V2: footage
+ * under a bridge flash at SSIM 0.986 to its source before the effect touched it).
+ * A span up to five minutes (nearly every graphic) is made at 40 Mbit/s and kept
+ * at CRF 12 (0.994, about twice the size); a longer one as before, for the disk.
+ */
+const BENEATH_FINE_SECONDS = 300;
+const BENEATH_FINE_RATE = 40_000_000;
+
+/**
  * Renders what's beneath effect `name`'s clip, for its span, into its folder
  * (`beneath.mp4`: no sound, a keyframe every third of a second for seeking),
  * unless it's already of what's there now. Answers whether it was made.
@@ -296,7 +308,8 @@ export async function beneath(app: App, projectId: string, name: string): Promis
     const exported = join(work, `${projectId}-${name}-${found.key}.mp4`);
     const partial = join(dir, `${BENEATH}.partial.mp4`);
     try {
-      const options = { ...native().exportDefaults(), format: "h264" as const, size: null, range: [found.start, found.end] as [number, number], quality: "high" as const, audio: false, loudness: null };
+      const fine = seconds <= BENEATH_FINE_SECONDS;
+      const options = { ...native().exportDefaults(), format: "h264" as const, size: null, range: [found.start, found.end] as [number, number], quality: "high" as const, audio: false, loudness: null, ...(fine ? { target_mb: (BENEATH_FINE_RATE * seconds) / (8_000_000 * 0.94) } : {}) };
       const input = { json: jsonForSerde(missingMedia.playable(app.store.home, found.project)) };
       const { plan } = native().exportPlan(input, options);
       const job = native().ExportJob.start({ project: input, options, plan, output: exported, cacheDir: app.store.cacheDir() }, () => {});
@@ -307,7 +320,7 @@ export async function beneath(app: App, projectId: string, name: string): Promis
         clearTimeout(timer);
       }
       // Seekable as the page plays it: a keyframe every third of a second, as effect_footage's.
-      await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", exported, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-g", "10", "-pix_fmt", "yuv420p", "-movflags", "+faststart", partial]);
+      await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-i", exported, "-an", "-c:v", "libx264", "-preset", "veryfast", "-crf", fine ? "12" : "18", "-g", "10", "-pix_fmt", "yuv420p", "-movflags", "+faststart", partial]);
       fs.renameSync(partial, join(dir, BENEATH));
       // The video alone when the mark still holds (it's never kept in the cloud: made again on each computer).
       if (!holds) writeAtomic(keyFile, JSON.stringify({ key: found.key }));
