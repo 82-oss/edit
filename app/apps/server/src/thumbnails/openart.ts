@@ -60,7 +60,7 @@ export const transport = {
   post: async (body: unknown, session: string | null, signal?: AbortSignal, account: Account = chosen): Promise<Response> =>
     fetch(`${relay.url()}${account.route}`, {
       method: "POST",
-      headers: { ...relay.authHeaders(), "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": PROTOCOL, ...(session ? { "mcp-session-id": session } : {}) },
+      headers: { ...(await relay.signedHeaders()), "content-type": "application/json", accept: "application/json, text/event-stream", "mcp-protocol-version": PROTOCOL, ...(session ? { "mcp-session-id": session } : {}) },
       body: JSON.stringify(body),
       signal: signal ?? AbortSignal.timeout(120_000),
     }),

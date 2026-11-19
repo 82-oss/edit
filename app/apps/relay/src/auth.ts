@@ -84,8 +84,20 @@ async function keysOf(env: AuthEnv, kid: string | undefined): Promise<JWTVerifyG
     }
   }
   const set = keySets.get(url);
-  if (set === undefined) throw new Error("the accounts site's keys couldn't be read");
+  if (set === undefined) throw new KeysUnread();
   return createLocalJWKSet(set.jwks);
+}
+
+/**
+ * The accounts site's keys couldn't be read: the token can't be checked
+ * either way. Answered 503 ("Edit asks again"), as a check too slow is, never
+ * 401: a 401 tells Edit the person is signed out (JJ's Mac, Nov 19: "the
+ * relay refused the sign-in's token" five times with a good token).
+ */
+export class KeysUnread extends Error {
+  constructor() {
+    super("the accounts site's keys couldn't be read");
+  }
 }
 
 /** Tests: forget the keys read, so the next request reads them again. */
@@ -175,7 +187,8 @@ export async function caller(request: Request, env: AuthEnv, audience = "edit"):
     if (email !== undefined) found.email = email;
     if (picture !== undefined && picture.startsWith("https://")) found.picture = picture;
     return found;
-  } catch {
+  } catch (error) {
+    if (error instanceof KeysUnread) throw error;
     return null;
   }
 }
@@ -205,10 +218,14 @@ export function who(found: Caller): string {
 export async function allow(request: Request, env: AuthEnv, permission: Permission, route: string, open = false, log = true): Promise<Caller | Response> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), CHECK_MS)));
-  const checked = await Promise.race([caller(request, env), late]).finally(() => clearTimeout(timer));
-  if (checked === "late") {
-    console.log(JSON.stringify({ route, late: CHECK_MS }));
-    return new Response(JSON.stringify({ error: "The relay couldn't check your sign-in in time; Edit asks again." }), { status: 503, headers: { "content-type": "application/json; charset=utf-8", "retry-after": "1" } });
+  const unread = (error: unknown) => {
+    if (error instanceof KeysUnread) return "unread" as const;
+    throw error;
+  };
+  const checked = await Promise.race([caller(request, env).catch(unread), late]).finally(() => clearTimeout(timer));
+  if (checked === "late" || checked === "unread") {
+    console.log(JSON.stringify({ route, ...(checked === "late" ? { late: CHECK_MS } : { keys: "unread" }) }));
+    return uncheckable();
   }
   const found = checked;
   const sent = request.headers.get("authorization") ?? "";
@@ -226,6 +243,11 @@ export async function allow(request: Request, env: AuthEnv, permission: Permissi
         : found;
   if (log) console.log(JSON.stringify({ route, who: result instanceof Response ? (found === null ? "none" : who(found)) : who(result), ...(result instanceof Response ? { refused: result.status } : {}) }));
   return result;
+}
+
+/** The sign-in couldn't be checked (too slow, or the accounts site's keys unread): Edit asks again in a second. */
+export function uncheckable(): Response {
+  return new Response(JSON.stringify({ error: "The relay couldn't check your sign-in in time; Edit asks again." }), { status: 503, headers: { "content-type": "application/json; charset=utf-8", "retry-after": "1" } });
 }
 
 function refuse(status: number, error: string): Response {

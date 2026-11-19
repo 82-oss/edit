@@ -703,7 +703,7 @@ export async function waitForSmoothing(projectId: string, limitMs: number): Prom
 async function fetchText(url: string): Promise<string> {
   try {
     // The relay's geocoding asks for this Edit's sign-in; other pages get none.
-    const signed = url.startsWith(`${relay.url()}/`) ? relay.authHeaders() : {};
+    const signed = url.startsWith(`${relay.url()}/`) ? (await relay.signedHeaders()) : {};
     const response = await fetch(url, {
       headers: { "user-agent": USER_AGENT, ...signed },
       signal: AbortSignal.timeout(30_000),

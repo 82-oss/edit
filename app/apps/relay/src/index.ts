@@ -1,4 +1,4 @@
-import { allow, budgetKey, burstKey, caller, mayVoice, type AuthEnv, type Caller } from "./auth";
+import { allow, budgetKey, burstKey, caller, KeysUnread, mayVoice, uncheckable, type AuthEnv, type Caller } from "./auth";
 import { exportDoc, listDocs } from "./docs";
 import { trelloCard, trelloCards } from "./trello";
 import { manifest } from "./manifest";
@@ -139,7 +139,11 @@ export default {
     // Google Docs exports of a script for the review page (moved from Writer's relay): anyone signed in to
     // the review site (aud "feedback"), a few a minute each; the team account's token stays here.
     if ((url.pathname === "/v1/docs/export" && request.method === "POST") || (url.pathname === "/v1/docs/exports" && request.method === "GET")) {
-      const found = await caller(request, env, "feedback");
+      const found = await caller(request, env, "feedback").catch((error: unknown) => {
+        if (error instanceof KeysUnread) return "unread" as const;
+        throw error;
+      });
+      if (found === "unread") return uncheckable();
       if (found === null) return json(401, { error: "Sign in to the review page (this route answers signed-in reviewers only)." });
       console.log(JSON.stringify({ route: url.pathname, who: found.kind === "person" ? found.sub : found.kind }));
       if (!(await env.DOCS_BURST.limit({ key: found.kind === "person" ? found.sub : "unknown" })).success) return json(429, { error: "Too many Docs requests at once; try again in a minute." });

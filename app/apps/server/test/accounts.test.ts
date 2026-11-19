@@ -177,8 +177,8 @@ test("signs in with PKCE through the loopback, keeps the refresh token in the ke
   expect(done).toEqual({ ok: true, message: "Signed in as someone@gmail.com." });
   expect(accounts.status()).toMatchObject({ signed_in: true, person: { email: "someone@gmail.com", name: "Someone" }, perms: ["use", "cloud"] });
   expect(Object.values(kept())).toEqual(["refresh-1-aaaaaaaa"]);
-  expect(relay.token()).toBe(accounts.accessToken());
-  expect(relay.authHeaders().authorization).toMatch(/^Bearer eyJ/);
+  expect(await relay.token()).toBe(accounts.accessToken());
+  expect((await relay.signedHeaders()).authorization).toMatch(/^Bearer eyJ/);
 });
 
 test.skipIf(process.platform === "darwin")("off macOS the sign-in is kept in the Edit home's sign-in.json, mode 600, one entry per home", async () => {
@@ -220,7 +220,7 @@ test("renews with the kept refresh token and keeps the rotated one; a refused on
   await accounts.renew(app.store.home);
   expect(accounts.status()).toMatchObject({ signed_in: false, problem: "Signed out elsewhere." });
   expect(Object.values(kept())).toEqual([]);
-  expect(relay.token()).toBe(relay.envToken());
+  expect(await relay.token()).toBe(relay.envToken());
 });
 
 test("signing out revokes the refresh token there and forgets it here", async () => {
@@ -552,6 +552,34 @@ test("a call while the renewal is still failing after the wait doesn't go: it co
   } finally {
     accounts.ACCOUNTS_MS.value = before.accounts;
     accounts.TOKEN_WAIT_MS.value = before.wait;
+    relayBack();
+    delete process.env.EDIT_TRIALS;
+  }
+});
+
+test("a token in its last 30 s is still sent, a renewal asked beside it; and after a sleep, Drive's library waits for the renewed token, never \"need you signed in\" (JJ's Script import, hourly from Nov 18 19:52)", async () => {
+  const own = ["GOOGLE_DRIVE_CLIENT_ID", "GOOGLE_DRIVE_CLIENT_SECRET", "GOOGLE_DOCS_REFRESH_TOKEN"].map((name) => [name, process.env[name]] as const);
+  for (const [name] of own) delete process.env[name];
+  process.env.EDIT_RELAY_URL = process.env.EDIT_ACCOUNTS_URL;
+  process.env.EDIT_TRIALS = "1";
+  try {
+    await keychain.set(app.store.home, "last-seconds-aaaaaaaa");
+    await accounts.start(app);
+    const held = accounts.accessToken();
+    expect(held).not.toBeNull();
+    // 10 s left: the relay allows 60 s of skew, so it's still good to send.
+    accounts.expireForTests(10_000);
+    expect(accounts.accessToken()).toBe(held);
+    await accounts.renew();
+    expect(accounts.accessToken()).not.toBe(held);
+    // Asleep past the hour: the library's next try lands as the Mac wakes, beside the renewal.
+    accounts.expireForTests();
+    const { Library } = await import("../src/library.ts");
+    const token = await new Library().accessToken();
+    expect(token).not.toBe(held);
+    expect(token).toBe(accounts.accessToken() ?? "");
+  } finally {
+    for (const [name, value] of own) if (value !== undefined) process.env[name] = value;
     relayBack();
     delete process.env.EDIT_TRIALS;
   }

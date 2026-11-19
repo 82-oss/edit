@@ -68,9 +68,14 @@ export async function answers(timeoutMs = 10_000): Promise<boolean> {
   }
 }
 
-/** The signed-in person's access token (accounts.ts), else `EDIT_RELAY_TOKEN` (tests, a local relay), else none. */
-export function token(): string | null {
-  return accounts.accessToken() ?? envToken();
+/** The signed-in person's access token (accounts.ts), waited for while it's restored or renewed (`tokenWhenReady`), else `EDIT_RELAY_TOKEN` (tests, a local relay), else none. */
+export async function token(): Promise<string | null> {
+  return accounts.accessToken() ?? (await accounts.tokenWhenReady()) ?? envToken();
+}
+
+/** The headers a call made with `fetch` itself sends: the token waited for as `ask` does (`token`). */
+export async function signedHeaders(): Promise<Record<string, string>> {
+  return authHeaders(await token());
 }
 
 /** `EDIT_RELAY_TOKEN`, when set and not empty: for tests and local relays (the team's relay takes only people). */
@@ -101,7 +106,7 @@ export function authConfig(value: string | null): string {
 }
 
 /** The relay's auth header (none without a token); refuses a token that could add headers. */
-export function authHeaders(value: string | null = token()): Record<string, string> {
+export function authHeaders(value: string | null): Record<string, string> {
   if (value === null || value === "") return {};
   if (CONTROL.test(value)) throw new Error("EDIT_RELAY_TOKEN contains a control character");
   return { authorization: `Bearer ${value}` };
@@ -186,7 +191,7 @@ const tilesComing = new Map<string, Promise<{ status: number; headers: Headers; 
 
 /** A tile from the relay, with the sign-in's token (waited for while it's restored or renewed, as `ask` does: a tile sent without one is refused "Sign in to Edit"). */
 async function askTile(request: Request, from: URL): Promise<Response> {
-  const used = accounts.accessToken() ?? (await accounts.tokenWhenReady()) ?? envToken();
+  const used = await token();
   return fetch(`${url()}${from.pathname}${from.search}`, {
     headers: { ...authHeaders(used), accept: request.headers.get("accept") ?? "*/*" },
     signal: AbortSignal.timeout(60_000),
@@ -247,7 +252,7 @@ async function sharedRoot(request: Request, from: URL): Promise<Response> {
   asking ??= (async () => {
     let got: Response;
     try {
-      got = await fetch(`${url()}${from.pathname}${from.search}`, { headers: { ...authHeaders(), accept: "application/json" }, signal: AbortSignal.timeout(60_000) });
+      got = await fetch(`${url()}${from.pathname}${from.search}`, { headers: { ...(await signedHeaders()), accept: "application/json" }, signal: AbortSignal.timeout(60_000) });
       noteAnswered();
     } catch (error) {
       noteUnreachable(`${UNREACHABLE}: ${messageOf(error)}`);

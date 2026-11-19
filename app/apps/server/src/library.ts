@@ -22,6 +22,7 @@
 
 import * as fs from "node:fs";
 
+import * as accounts from "./accounts.ts";
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
 import { google, googleProto, useGateway } from "./endpoints.ts";
@@ -232,9 +233,13 @@ export class Library implements seams.Library {
   async accessToken(): Promise<string> {
     const [id, secret, refresh] = ownGoogleSignIn();
     if (id === null || secret === null || refresh === null) {
-      const token = relay.token();
-      if (token === null) throw new Error("The sound library and Google Drive need you signed in to Edit.");
-      return token;
+      // Waited for while the sign-in is restored or renewed. A sign-in kept and still being renewed after the
+      // wait is a moment's, said as the relay out of reach (tried again by itself), never "signed in"
+      // (JJ's Script import, hourly from Nov 18 19:52, each try beside the renewal as his Mac woke).
+      const token = await relay.token();
+      if (token !== null) return token;
+      if (accounts.hasSession()) throw new Error(`${relay.UNREACHABLE}: the sign-in is being renewed`);
+      throw new Error("The sound library and Google Drive need you signed in to Edit.");
     }
     if (this.token !== null && this.now() < this.token[1]) return this.token[0];
     const config = (

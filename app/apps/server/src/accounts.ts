@@ -119,14 +119,20 @@ export function creator(): Creator | null {
 /** The signed-in person's email (the review page picks the reviewer's own computer by it); null signed out. */
 export const email = (): string | null => state.person?.email || null;
 
-/** The signed-in person's access token while it's good for another half minute, else null. */
+/**
+ * The signed-in person's access token until it has really run out, else null.
+ * In its last half minute it's still given (the relay allows 60 s of skew,
+ * relay/src/auth.ts `SKEW_SECONDS`) and a renewal is asked for beside it.
+ * Null for those 30 s sent every caller out with no token: "Sign in to Edit
+ * (401)" on Marc's project, and JJ's Script import tried hourly from Nov 18
+ * 19:52 on "need you signed in", each try landing in the same second as the
+ * renewal when his Mac woke.
+ */
 export function accessToken(): string | null {
   if (state.access === null) return null;
-  if (Date.now() >= state.expires - 30_000) {
-    void renew();
-    return null;
-  }
-  return state.access;
+  const now = Date.now();
+  if (now >= state.expires - 30_000 && !renewing) void renew();
+  return now < state.expires ? state.access : null;
 }
 
 /** What the UI shows: who's signed in (or not), what they may use, and why a sign-in failed. */
@@ -793,9 +799,9 @@ export function routes(router: Router<App>): void {
 
 /** Tests: back to signed out with nothing pending. */
 /** Tests: someone signed in with these perms (kinds.ts reads them). */
-/** The access token held run out, as after a Mac's sleep (tests). */
-export function expireForTests(): void {
-  state.expires = Date.now();
+/** The access token held run out, as after a Mac's sleep, or with `inMs` left (tests). */
+export function expireForTests(inMs = 0): void {
+  state.expires = Date.now() + inMs;
 }
 
 export function signedInForTests(perms: string[], admin = false): void {

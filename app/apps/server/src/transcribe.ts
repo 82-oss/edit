@@ -381,8 +381,9 @@ const ScribeAnswer = Schema.Struct({
 const askOnce = Effect.fn("transcribe.askOnce")(function* (audio: string, names: readonly string[], again: boolean) {
   const query = [...names.map((name) => `keyterm=${encodeURIComponent(name)}`), ...(again ? ["again=1"] : [])].join("&");
   const timeout = yield* RequestTimeoutMs;
+  const signed = yield* Effect.promise(() => relay.signedHeaders());
   const answer = yield* service
-    .request("the transcription relay", `${relay.url()}/v1/transcribe${query === "" ? "" : `?${query}`}`, { method: "POST", headers: { ...relay.authHeaders(), "content-type": "audio/ogg" }, body: Bun.file(audio) }, timeout)
+    .request("the transcription relay", `${relay.url()}/v1/transcribe${query === "" ? "" : `?${query}`}`, { method: "POST", headers: { ...signed, "content-type": "audio/ogg" }, body: Bun.file(audio) }, timeout)
     .pipe(
       Effect.catchTags({
         ServiceUnreachable: (error) => Effect.fail(new RelayUnreachable({ message: error.message })),
@@ -525,11 +526,12 @@ const JobStarted = Schema.Struct({ id: Schema.String, request: Schema.String });
 const JOB_KEPT_MS = 24 * 3600_000;
 
 const startJob = Effect.fn("transcribe.startJob")(function* (key: string, keyterms: readonly string[], again: boolean) {
+  const signed = yield* Effect.promise(() => relay.signedHeaders());
   const answer = yield* service
     .request(
       "the transcription relay",
       `${relay.url()}/v1/transcribe/jobs`,
-      { method: "POST", headers: { ...relay.authHeaders(), "content-type": "application/json" }, body: JSON.stringify({ key, again, ...(keyterms.length > 0 ? { keyterms } : {}) }) },
+      { method: "POST", headers: { ...signed, "content-type": "application/json" }, body: JSON.stringify({ key, again, ...(keyterms.length > 0 ? { keyterms } : {}) }) },
       120_000,
     )
     .pipe(
@@ -551,8 +553,9 @@ const startJob = Effect.fn("transcribe.startJob")(function* (key: string, keyter
 /** The job's transcript once Scribe has it; none while it's still hearing. */
 const pollJob = Effect.fn("transcribe.pollJob")(function* (job: KeptJob) {
   const query = new URLSearchParams({ request: job.request, key: job.key });
+  const signed = yield* Effect.promise(() => relay.signedHeaders());
   const answer = yield* service
-    .request("the transcription relay", `${relay.url()}/v1/transcribe/jobs/${encodeURIComponent(job.id)}?${query}`, { headers: relay.authHeaders() }, 120_000)
+    .request("the transcription relay", `${relay.url()}/v1/transcribe/jobs/${encodeURIComponent(job.id)}?${query}`, { headers: signed }, 120_000)
     .pipe(
       Effect.catchTags({
         ServiceUnreachable: (error) => Effect.fail(new RelayUnreachable({ message: error.message })),

@@ -363,7 +363,7 @@ async function picture(image: IdeaImage): Promise<Response> {
 
 /** A Trello attachment's bytes, through the relay (it holds the key). */
 async function relayImage(url: string): Promise<Response> {
-  const response = await fetch(`${relay.url()}/v1/ideas/trello/image?url=${encodeURIComponent(url)}`, { headers: relay.authHeaders(), signal: AbortSignal.timeout(30_000) });
+  const response = await fetch(`${relay.url()}/v1/ideas/trello/image?url=${encodeURIComponent(url)}`, { headers: await relay.signedHeaders(), signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new ApiError(502, `The board's picture: ${response.status}`);
   return response;
 }

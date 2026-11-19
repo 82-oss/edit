@@ -87,7 +87,7 @@ function readTurns(value: unknown): Turn[] {
 
 async function ask(path: string, init: RequestInit = {}): Promise<Response> {
   try {
-    return await fetch(`${relay.url()}${path}`, { ...init, headers: { ...relay.authHeaders(), "content-type": "application/json", ...(init.headers as Record<string, string> | undefined) }, signal: AbortSignal.timeout(120_000) });
+    return await fetch(`${relay.url()}${path}`, { ...init, headers: { ...(await relay.signedHeaders()), "content-type": "application/json", ...(init.headers as Record<string, string> | undefined) }, signal: AbortSignal.timeout(120_000) });
   } catch (error) {
     throw new Error(`${relay.UNREACHABLE} for the voices: ${diag.messageOf(error)}`);
   }

@@ -233,6 +233,24 @@ describe("relay sign-in gate", () => {
     }
   });
 
+  it("answers 503 (Edit asks again), never 401 \"Sign in\", when the accounts site's keys can't be read; a bad token is still 401", async () => {
+    // JJ's Mac, Nov 19 11:32 to 13:09: "the relay refused the sign-in's token" five times with a good token.
+    forgetKeys();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("down", { status: 502 })));
+      const found = await allow(asked(await token()), env(), "use", "convex");
+      expect(found).toBeInstanceOf(Response);
+      expect((found as Response).status).toBe(503);
+      expect((found as Response).headers.get("retry-after")).toBe("1");
+      useKeys(createLocalJWKSet({ keys: [jwk] }));
+      const bad = await allow(asked(await token({}, { key: other })), env(), "use", "convex");
+      expect((bad as Response).status).toBe(401);
+    } finally {
+      forgetKeys();
+    }
+  });
+
   it("keeps each person's budget apart, and connections apart for anyone else", async () => {
     const one = await budgetKey(asked(null), { kind: "person", sub: "a", perms: [], admin: false });
     const two = await budgetKey(asked(null), { kind: "person", sub: "b", perms: [], admin: false });
