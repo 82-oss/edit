@@ -40,8 +40,14 @@ import { CREDIT, DAILY, StepTimedOut } from "./failure.ts";
 
 /** How long each step may take before it's taken as stuck (ms). */
 export const LIMITS = {
-  /** ffprobe of a file or a presigned URL: its length, its keyframes (a few range reads). */
+  /** ffprobe of a file here: its length, its keyframes. */
   probe: 2 * 60_000,
+  /**
+   * The same over the network (a presigned URL): a few range reads, but on a slow line the index at a file's end is
+   * megabytes (JJ's Axon files: 616 kB; with the front of the file, 3.4 MB before a cut's output grows). A probe gives no
+   * progress to watch, so its bound is long: slow is never stuck (the bad-day run's slow-cut, Nov 19).
+   */
+  probeRemote: 15 * 60_000,
   /** Cutting an excerpt (picture copied, sound encoded) from a file here: a base plus a second per second cut. Over the network a cut runs for as long as it moves (`whileMoving`). */
   cut: (seconds: number) => 10 * 60_000 + Math.max(seconds, 0) * 1000,
   /** A proxy encode (~200 fps at 1080p on the M1; slower from R2, slower still beside an export): a base plus two seconds per second of footage. */
@@ -139,7 +145,9 @@ export const STILL_MS = { value: 5 * 60_000 };
  */
 export async function whileMoving<T>(what: string, progress: () => number, work: (signal: AbortSignal) => Promise<T>, stillMs = STILL_MS.value): Promise<T> {
   const stop = new AbortController();
-  const still = failure.scaled(stillMs);
+  // Never under half a minute, the bad-day speed switch included: FFmpeg reads a file's index and front (megabytes)
+  // before its output grows at all.
+  const still = Math.max(failure.scaled(stillMs), Math.min(stillMs, 30_000));
   const beat = Math.max(Math.min(5_000, Math.floor(still / 10)), 20);
   let seen = progress();
   let movedAt = Date.now();
@@ -171,6 +179,9 @@ export async function whileMoving<T>(what: string, progress: () => number, work:
     clearInterval(timer);
   }
 }
+
+/** A probe's bound for `path`: a file here, or over the network. */
+export const probeLimit = (path: string): number => (/^https?:\/\//u.test(path) ? LIMITS.probeRemote : LIMITS.probe);
 
 /** The size of `path` now, 0 while it isn't there: a cut's or a download's progress. */
 export function sizeOf(path: string): number {

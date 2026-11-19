@@ -81,7 +81,7 @@ interface Reader {
 }
 
 async function read(path: string): Promise<number[] | null> {
-  const ms = steps.LIMITS.probe;
+  const ms = steps.probeLimit(path);
   const signal = AbortSignal.timeout(ms);
   try {
     const reader = tools.isUrl(path) ? await urlReader(path, signal) : fileReader(path);

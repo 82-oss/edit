@@ -2058,7 +2058,7 @@ export async function durationOf(path: string): Promise<number> {
   try {
     output = await runTool(
       [tools.ffprobe(), "-v", "error", "-protocol_whitelist", tools.protocols(path), "-show_entries", "format=duration", "-of", "csv=p=0", ...tools.urlArgs(path), path],
-      steps.LIMITS.probe,
+      steps.probeLimit(path),
       "Reading the footage's length",
     );
   } catch (error) {
@@ -2100,7 +2100,7 @@ export async function keyframeBefore(path: string, time: number): Promise<number
         `${display(from)}%${display(time + 0.001)}`,
         ...tools.urlArgs(path),
         path,
-      ], steps.LIMITS.probe, "Finding the excerpt's keyframe");
+      ], steps.probeLimit(path), "Finding the excerpt's keyframe");
       text = output.stdout;
     } catch (error) {
       // Stuck reading the footage is a failure of its own (tried again), never "no keyframe": that would cut from the start.
@@ -2244,6 +2244,9 @@ export async function cut(source: string, start: number, to: number, out: string
   if (!output.ok) {
     // FFmpeg's words, without the URL (a credential) it may repeat.
     diag.warn("script", `cutting an excerpt: ${diag.scrub(trim(output.stderr))}`);
+    fs.rmSync(out, { force: true });
+    // A full disk is a wait of its own, said as such (failure.ts `room`), never a cut that "couldn't" be made.
+    if (/No space left on device/iu.test(output.stderr)) throw new failure.NoRoom(0, `This computer is out of room to cut the footage's excerpts: make room, and Edit goes on by itself.`);
     throw new Error("Couldn't cut an excerpt from the footage.");
   }
   const problem = await excerptProblem(source, start, to, out);
