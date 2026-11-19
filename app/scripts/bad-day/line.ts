@@ -63,6 +63,8 @@ export class Line {
   connections = 0;
   /** Bytes handed to Edit, by the path (no query) of the request they answered. */
   readonly byPath = new Map<string, number>();
+  /** Files (any text a request names: its path, query or body) whose every request is cut off, as a line cut for them alone: the connection drops as the request goes out. */
+  readonly cutOff = new Set<string>();
   /** Every request seen on the way in, and the bytes handed back for it. */
   readonly requests: { at: number; pipe: number; line: string; range: string; bytes: number }[] = [];
   private pipes = new Set<Pipe>();
@@ -136,6 +138,16 @@ export class Line {
     const pipe: Pipe = { id: this.nextId++, client, server, toServer: [], toClient: [], queuedServer: 0, queuedClient: 0, sentDown: 0, path: "", request: null, closed: false, closing: false };
     this.pipes.add(pipe);
     client.on("data", (data: Buffer) => {
+      if (this.cutOff.size > 0) {
+        const text = data.toString("latin1", 0, Math.min(data.length, 65536));
+        const named = [...this.cutOff].find((id) => text.includes(id));
+        if (named !== undefined) {
+          this.log(`line cut connection ${pipe.id}: its request names ${named}`);
+          client.resetAndDestroy();
+          this.close(pipe);
+          return;
+        }
+      }
       const request = REQUEST.exec(data.toString("latin1", 0, Math.min(data.length, 2048)));
       if (request !== null) {
         const head = data.toString("latin1", 0, Math.min(data.length, 4096));

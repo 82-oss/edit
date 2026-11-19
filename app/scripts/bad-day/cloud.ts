@@ -108,8 +108,6 @@ export class Cloud {
   copyRate = 40e6;
   /** The relay's copy job is offered (an older relay answers 404 and Edit streams it through itself). */
   relayCopies = true;
-  /** Drive files whose every request (Drive, R2, the relay about them) is cut off, as a cut line would. */
-  readonly cutOff = new Set<string>();
   /** Told of each R2 GET's key as it comes in (before it's answered). */
   beforeR2Get: ((key: string) => void) | null = null;
   private server: ReturnType<typeof Bun.serve> | null = null;
@@ -402,14 +400,7 @@ export class Cloud {
     const request = new Request(given.url, { method: given.method, headers: given.headers, body: raw });
     let answered: { response: Response; bytes: () => number } | null = null;
     try {
-      const about = `${path}${url.search}${raw !== undefined && raw.length < 65536 ? new TextDecoder().decode(raw) : ""}`;
-      const cutOff = [...this.cutOff].find((id) => about.includes(id));
       if (path.startsWith("/r2/") && given.method === "GET") this.beforeR2Get?.(decodeURIComponent(path.slice(4)));
-      if (cutOff !== undefined) {
-        // As a cut line looks for this one file: the connection closes under the request.
-        entry.status = -1;
-        return new Response(new ReadableStream({ start: (controller) => controller.error(new Error(`${cutOff} cut off`)) }), { status: 200 });
-      }
       if (path === "/app/token" || path === "/.well-known/jwks.json" || path.startsWith("/app/")) {
         answered = { response: await this.accounts(request, path), bytes: () => 0 };
       } else if (needsSignIn(path) && entry.auth !== "good") {

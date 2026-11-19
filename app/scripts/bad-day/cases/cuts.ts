@@ -302,7 +302,7 @@ export const cutCases: Case[] = [
     env: { EDIT_BAD_DAY_SPEED: "60" },
     async run(context) {
       const { cloud, edit, footage } = context;
-      cloud.cutOff.add(B);
+      context.line.cutOff.add(B);
       const setup = await editorImport(context, [
         { id: A, clip: footage.long2, ranges: [[10, 20]] },
         { id: B, clip: footage.axon, ranges: [[60, 70]] },
@@ -319,7 +319,7 @@ export const cutCases: Case[] = [
       );
       if (waiting === null) {
         context.check("the import waited on the cut-off file", false, describe(await job(context, setup.project)));
-        cloud.cutOff.delete(B);
+        context.line.cutOff.delete(B);
         return;
       }
       context.log(`waiting: ${describe(waiting)}`);
@@ -341,7 +341,7 @@ export const cutCases: Case[] = [
         before.ranges === after.ranges && after.gone === 0,
         `before ${before.ranges} (${before.gone} gone without), after ${after.ranges} (${after.gone} gone without), edit ${before.seconds.toFixed(1)} s → ${after.seconds.toFixed(1)} s`,
       );
-      cloud.cutOff.delete(B);
+      context.line.cutOff.delete(B);
       context.log("the line is back for the second file");
       const end = await done(context, setup.project, 900_000);
       const last = end ?? (await job(context, setup.project));
