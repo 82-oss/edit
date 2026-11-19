@@ -5,12 +5,12 @@ import { chatDraftKey, useChatDraft } from "./agent";
 import { AgentChat, Empty, ResetAsk, type ChatTimes } from "../components/AgentPanel";
 import { ChatDock } from "../components/ChatDock";
 import { useUntaughtLane } from "../components/Untaught";
-import { addQuote, useQuotesOf, type ChatQuote } from "../lib/chatQuotes";
+import { addQuote, inlineQuote, useQuotesOf, type ChatQuote } from "../lib/chatQuotes";
 import { scriptEntries } from "./chat/editor-entries";
 import { buildStatus, completeTranscription, correctWord, editProject, footageOnly, footageUploader, getChat, getResearch, getScript, importReuses, message, previewSrc, resetScript, resolveProposals, restoreVersion, resumeImport, retrySpeakers, saveClips, setHeading, startBuild, startEdit, startRevision, stopJob, uploadsOf } from "./api";
 import type { ChatFile } from "../lib/chatFiles";
 import { navigate } from "../lib/route";
-import { breathe, clock, insertAt, isCutIn, keptMs, purposes, splitClip } from "./clips";
+import { breathe, clock, insertAt, isCutIn, keptMs, markedQuote, purposes, splitClip } from "./clips";
 import { Avatar } from "./avatar";
 import { StatusChips } from "../components/MemoryChip";
 import { MissingCloud } from "../components/MissingCloud";
@@ -180,6 +180,8 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   const chatKey = `script:${script.id}`;
   const chatFiles = useMemo(() => ({ upload: footageUploader(script.id), accept: footageOnly }), [script.id]);
   const quoted = useQuotesOf(chatKey).length > 0;
+  // The clips marked in the script or timeline that are still there, which the next message is about.
+  const markedCount = selected.filter((id) => clips.some((clip) => clip.id === id)).length;
   const [resolving, setResolving] = useState(false);
   const split = useSplit();
 
@@ -512,12 +514,16 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
   };
 
   // Once the script is built, a message asks Opus for targeted edits, as
-  // Repack's chat does, with what the producer has selected as "this".
-  // What's quoted (in front of the words already) points it at those narrations.
-  const revise = async (given: string, quotes: ChatQuote[] = [], files: ChatFile[] = []) => {
-    const request = given.trim();
+  // Repack's chat does, with what the producer has marked as "this": the clips
+  // clicked in the script or the timeline (`marked`, the selection unless a
+  // clip's menu names them) and the narrations quoted. Claude changes only
+  // those (revise.ts `strays`), and the message shows them as a chip.
+  const revise = async (given: string, quotes: ChatQuote[] = [], files: ChatFile[] = [], marked: string[] = selected) => {
+    const quotedClips = quotes.flatMap((one) => (one.clip !== undefined ? [one.clip] : []));
+    const chip = markedQuote(clips, marked, script.parts);
+    const request = given.trim() === "" ? "" : chip ? `${inlineQuote(chip)} ${given.trim()}` : given.trim();
     if (!request) return false;
-    const clips = quotes.flatMap((one) => (one.clip !== undefined ? [one.clip] : []));
+    const pointed = [...new Set([...marked.filter((id) => clips.some((clip) => clip.id === id)), ...quotedClips])];
     const uploads = uploadsOf(files);
     setError(null);
     setStage(uploads.length > 0 ? "Adding the footage" : "Editing the script");
@@ -527,12 +533,15 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
     setStarted(Date.now());
     try {
       const focus = {
-        selected: clips.length > 0 ? clips : selected,
+        selected: pointed,
         picked: picked ? ([picked.startMs, picked.endMs] as [number, number]) : null,
         playheadMs: Math.round(playhead.ms),
+        ...(pointed.length > 0 ? { pointed: true } : {}),
       };
       const job = uploads.length > 0 ? await startRevision(script.id, request, focus, uploads) : await startRevision(script.id, request, focus);
       follow(job.startedAt);
+      // Asked about: the next message starts from nothing marked.
+      if (marked.length > 0) setSelected([]);
       return true;
     } catch (cause) {
       setStarted(null);
@@ -747,6 +756,19 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
               }}
               onNotes={(id, notes) => void persist(clips.map((item) => (item.id === id ? { ...item, notes: notes.length ? notes : undefined } : item)))}
               bands={bands}
+              selected={selected}
+              onSelect={setSelected}
+              onAsk={cueCount ? (request, ids) => { setAgentShown(true); void revise(request, [], [], ids); } : undefined}
+              onRemove={(ids) => {
+                void persist(clips.filter((clip) => !ids.includes(clip.id)));
+                setSelected([]);
+              }}
+              onAskAbout={cueCount ? (ids) => {
+                setSelected(ids);
+                setAgentShown(true);
+                // The composer, ready for what to do with them.
+                window.requestAnimationFrame(() => document.querySelector<HTMLElement>('.writer-root [aria-label="Message the agent"]')?.focus());
+              } : undefined}
             />
           )}
           {view === "split" && split.gutter("video")}
@@ -908,10 +930,14 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
                   ) : undefined,
                   placeholder: archived
                     ? "The footage is archived: restore it to change the script"
-                    : quoted
+                    : cueCount && markedCount > 0
+                      ? markedCount === 1
+                        ? "What should we do with this clip?"
+                        : `What should we do with these ${markedCount} clips?`
+                      : quoted
                       ? "What should we do with this passage?"
                       : cueCount
-                        ? "Ask for a change, e.g. tighten the intro, rewrite cut-in 4 shorter, fix the edges…"
+                        ? "Ask for a change, or click clips first and say what to do with them…"
                         : untaught !== null
                           ? `Tell the agent how to write ${untaught}'s script…`
                           : "Notes for the build (optional), e.g. aim for 30 minutes…",

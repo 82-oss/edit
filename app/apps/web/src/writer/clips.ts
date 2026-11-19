@@ -166,6 +166,17 @@ export function clipRange(clip: Pick<Clip, "startMs" | "endMs">, parts?: Part[],
   return `${index >= 0 && parts?.[index].audio ? "Audio " : ""}${range(clip, parts, dash)}`;
 }
 
+/**
+ * Clips marked in the script, as the message about them shows them (JJ, Nov 18: "mark clips inside of a script and say,
+ * 'Cut this down'"): a chip naming each by its timestamp or its narration's number. Null when none of them is there.
+ */
+export function markedQuote(clips: Clip[], ids: readonly string[], parts?: Part[]): { from: string; text: string } | null {
+  const numbered = blocks(clips);
+  const named = clips.filter((clip) => ids.includes(clip.id)).map((clip) => (isCutIn(clip) ? `Narration ${numbered.findIndex((block) => block.cue?.clip.id === clip.id) + 1}` : clipRange(clip, parts)));
+  if (named.length === 0) return null;
+  return { from: named.length === 1 ? "the marked clip" : "the marked clips", text: named.join(", ") };
+}
+
 /** How long the cut runs, as Repack states it under the assets: "38m12s", "1h2m5s". */
 export function duration(ms: number) {
   const seconds = Math.round(ms / 1000);

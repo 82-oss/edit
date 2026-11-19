@@ -3,8 +3,8 @@ import { createPortal } from "react-dom";
 import { portalRoot } from "./portal";
 import { Icon } from "./ui";
 
-/** Words selected in the script: in one narration (`id`, its characters), or across the page (`spans`: no one narration, so no comment). `input` is the narration's text or textarea, or the page. */
-export type ScriptSelection = { id: string; input: HTMLElement; start: number; end: number; quote: string; spans?: boolean };
+/** Words selected in the script: in one narration (`id`, its characters), or across the page (`spans`: no one narration, so no comment; `clips`: the timestamps and narrations it crosses, marked when it goes to the chat). `input` is the narration's text or textarea, or the page. */
+export type ScriptSelection = { id: string; input: HTMLElement; start: number; end: number; quote: string; spans?: boolean; clips?: string[] };
 
 /** Repack's selection mirror, measured in document pixels and then scaled once. */
 function selectionRect(selection: ScriptSelection) {

@@ -3,7 +3,7 @@ import { expect, test } from "bun:test";
 import type { Script } from "@edit/types/writer";
 
 import { formatOf } from "../../src/writer/formats.ts";
-import { apply, current, editNote, settle } from "../../src/writer/revise.ts";
+import { apply, current, editNote, seen, settle } from "../../src/writer/revise.ts";
 
 function script(): Script {
   const said = ["Hi,", "I'm", "Detective", "Smith.", "Where", "were", "you?", "Home.", "All", "night."];
@@ -117,4 +117,36 @@ test("lists the script for Claude", () => {
   expect(text).toContain('i1 clip [0:00–0:03] w0–w3 "Hi, I\'m Detective Smith."');
   expect(text).toContain('i2 cut-in (Intro): "He said he was home."');
   expect(text).toContain("i4 cut-in (Outro): (nothing written)");
+});
+
+// JJ, Nov 18: "mark clips inside of a script and say, 'Cut this down,' or 'Remove this'… It's pretty frustrating that you have to describe where you want a clip changed."
+test("a revision about marked clips changes only those clips", () => {
+  const marked = { pointed: ["c2"], beyond: false };
+  // Cut down: the marked clip trimmed, a word span taken out of it, a pause pass and an edge pass, nothing else moves.
+  const [clips] = apply(script(), [{ op: "trim", id: "i3", edge: "out", wordId: "w8" }, { op: "remove_words", firstWordId: "w5", lastWordId: "w5" }, { op: "tighten_pauses" }, { op: "polish_edges" }], [], false, marked);
+  const before = script().clips;
+  expect(clips.find((clip) => clip.id === "c1")).toEqual(before[0]!);
+  expect(clips.find((clip) => clip.id === "n1")).toEqual(before[1]!);
+  expect(clips.find((clip) => clip.id === "n2")).toEqual(before[3]!);
+  expect(clips.filter((clip) => clip.kind !== "cut-in" && clip.id !== "c1").every((clip) => clip.startMs >= 3_850 && clip.endMs <= 8_900)).toBe(true);
+  // Remove this: the marked clip goes, the rest stays as it was.
+  expect(apply(script(), [{ op: "delete", ids: ["i3"] }], [], false, marked)[0]).toEqual(before.filter((clip) => clip.id !== "c2"));
+  // A new item beside it, or moving it, is about it too.
+  expect(apply(script(), [{ op: "insert_cut_in", afterId: "i3", narration: "Then he changed his story." }, { op: "move", ids: ["i3"], beforeId: "i1" }], [], false, marked)[0].map((clip) => clip.id).slice(0, 2)).toEqual(["c2", "c1"]);
+  // Anything that reaches another item is refused, with what it touched, so the repair turn keeps to the marked ones.
+  expect(() => apply(script(), [{ op: "trim", id: "i1", edge: "out", wordId: "w2" }], [], false, marked)).toThrow("The producer marked i3 for this request, and these edits also changed i1");
+  expect(() => apply(script(), [{ op: "delete", ids: ["i3", "i4"] }], [], false, marked)).toThrow("removed i4");
+  expect(() => apply(script(), [{ op: "write", id: "i2", narration: "He swore he was home." }], [], false, marked)).toThrow("rewrote i2's narration");
+  expect(() => apply(script(), [{ op: "move", ids: ["i4"], beforeId: "i1" }], [], false, marked)).toThrow("moved other items around");
+  expect(() => apply(script(), [{ op: "remove_words", firstWordId: "w2", lastWordId: "w5" }], [], false, marked)).toThrow("changed i1");
+  // Unless the producer's words named more as well ("…and the intro"): the model says so with beyond.
+  expect(apply(script(), [{ op: "trim", id: "i1", edge: "out", wordId: "w2" }], [], false, { pointed: ["c2"], beyond: true })[0][0]!.endMs).toBeLessThan(3_900);
+  // Unmarked, as before: any item.
+  expect(apply(script(), [{ op: "trim", id: "i1", edge: "out", wordId: "w2" }], [], false)[0][0]!.endMs).toBeLessThan(3_900);
+});
+
+test("Claude is told which clips were marked, by the names it edits them by", () => {
+  expect(seen(script(), { selected: ["c2", "n2"], picked: null, playheadMs: null, pointed: true })).toContain("The producer marked i3, i4 in the script for this message");
+  // A timeline selection that the message isn't about stays a hint, as before.
+  expect(seen(script(), { selected: ["c2"], picked: null, playheadMs: null })).toContain("Selected in the timeline: i3.");
 });

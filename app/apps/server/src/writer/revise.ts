@@ -84,6 +84,7 @@ const SCHEMA = {
     },
     answer: { type: "string" },
     startOver: { type: "boolean" },
+    beyond: { type: "boolean" },
     lesson: LESSON_SCHEMA,
   },
   required: ["edits", "answer"],
@@ -196,8 +197,14 @@ export function current(script: Script, format: Format): string {
   return lines.join("\n");
 }
 
+/**
+ * Clips the producer marked in the script for this message (JJ, Nov 18: "mark clips inside of a script and say,
+ * 'Cut this down,' or 'Remove this'… It's pretty frustrating that you have to describe where you want a clip changed").
+ */
+const POINTED = "The producer marked {items} in the script for this message: \"this\", \"these\", \"it\" and \"here\" mean exactly those items, and the request is about them. Change only them (trim them, take words out of them, split, delete or move them, rewrite their narration, or add items right beside them); every other item stays exactly as it is, and tighten_pauses and polish_edges reach only them. Only when the producer's words plainly name other parts as well (\"the intro\", \"cut-in 4\", \"the whole script\") may edits reach those: then set beyond to true.";
+
 /** What the producer has in front of them. */
-function seen(script: Script, focus: Focus): string {
+export function seen(script: Script, focus: Focus): string {
   const lines: string[] = [];
   const number = (id: string) => {
     const at = script.clips.findIndex((clip) => clip.id === id);
@@ -218,7 +225,8 @@ function seen(script: Script, focus: Focus): string {
     const name = number(id);
     return name === null ? [] : [name];
   });
-  if (picked.length > 0) lines.push(`Selected in the timeline: ${picked.join(", ")}.`);
+  if (picked.length > 0 && focus.pointed === true) lines.push(POINTED.replace("{items}", picked.join(", ")));
+  else if (picked.length > 0) lines.push(`Selected in the timeline: ${picked.join(", ")}.`);
   if (focus.picked) {
     const [start, end] = focus.picked;
     const chosen = script.words.flatMap((word, i) => (word.startMs >= start && word.endMs <= end ? [i] : []));
@@ -251,11 +259,15 @@ class Work {
   /** The paragraphs written this turn, by cut-in id. */
   writes = new Map<string, string>();
   readonly format: Format;
+  /** The items the producer marked (and what an edit split off them), the only ones the whole-script passes reach; null when none were. */
+  readonly pointed: Set<string> | null;
 
   constructor(
     readonly script: Script,
     readonly peaks: ArrayLike<number>,
+    pointed: readonly string[] | null = null,
   ) {
+    this.pointed = pointed === null || pointed.length === 0 ? null : new Set(pointed);
     this.format = formatOfScript(script);
     this.clips = structuredClone(script.clips);
     this.names = new Map(script.clips.map((clip, index) => [clip.id, `i${index + 1}`]));
@@ -392,6 +404,7 @@ class Work {
         // The timestamp's comments stay with the first half.
         const second: Clip = { ...structuredClone(clip), id: crypto.randomUUID(), startMs: ms, notes: [] };
         clip.endMs = ms;
+        if (this.pointed?.has(clip.id)) this.pointed.add(second.id);
         this.nameNew(second);
         this.clips.splice(index + 1, 0, second);
         return;
@@ -444,12 +457,33 @@ class Work {
         const cutIns = this.clips.filter(isCutIn).length;
         const [from, to] = introRange(this.format, openingOf(this.clips, this.format), cutIns);
         const footage: tidy.Footage = { words, peaks: this.peaks, parts: this.script.parts ?? [], durationMs: this.script.durationMs, compilation: this.format.compilation, relaxed: this.format.kind === "courtroom" };
-        this.clips = tidy.tighten(footage, this.clips, tidy.PAUSE_BEAT_MS, (block) => block >= from && block < to).clips;
+        const intro = (block: number) => block >= from && block < to;
+        const pointed = this.pointed;
+        if (pointed === null) {
+          this.clips = tidy.tighten(footage, this.clips, tidy.PAUSE_BEAT_MS, intro).clips;
+          return;
+        }
+        // Only the marked clips, each by itself: the same moment played elsewhere (an intro's promise) keeps its pauses.
+        let block = 0;
+        this.clips = this.clips.flatMap((clip) => {
+          if (isCutIn(clip)) {
+            block++;
+            return [clip];
+          }
+          if (!pointed.has(clip.id)) return [clip];
+          const at = block;
+          const pieces = tidy.tighten(footage, [clip], tidy.PAUSE_BEAT_MS, () => intro(at)).clips;
+          for (const piece of pieces) pointed.add(piece.id);
+          return pieces;
+        });
         return;
       }
-      case "polish_edges":
-        this.clips = tidy.polish(this.clips, words, this.corrections, this.script.durationMs)[0];
+      case "polish_edges": {
+        const polished = tidy.polish(this.clips, words, this.corrections, this.script.durationMs)[0];
+        const pointed = this.pointed;
+        this.clips = pointed === null ? polished : this.clips.map((clip, at) => (pointed.has(clip.id) ? polished[at]! : clip));
         return;
+      }
       case "note": {
         const clip = this.clips[this.at(text("id") ?? "")]!;
         const body = editNote(text("text") ?? "");
@@ -476,17 +510,51 @@ export function settle(clips: Clip[], proposals: Proposal[]): Proposal[] {
 }
 
 /**
+ * What a turn's edits did to items the producer didn't mark: each one removed,
+ * changed, its narration rewritten, or the order among them changed. Empty
+ * when they kept to the marked items (and what was added beside them).
+ */
+export function strays(before: readonly Clip[], after: readonly Clip[], writes: Iterable<string>, pointed: ReadonlySet<string>): string[] {
+  const names = new Map(before.map((clip, index) => [clip.id, `i${index + 1}`]));
+  const now = new Map(after.map((clip) => [clip.id, clip]));
+  const out: string[] = [];
+  for (const clip of before) {
+    if (pointed.has(clip.id)) continue;
+    const kept = now.get(clip.id);
+    if (kept === undefined) out.push(`removed ${names.get(clip.id)}`);
+    else if (JSON.stringify(kept) !== JSON.stringify(clip)) out.push(`changed ${names.get(clip.id)}`);
+  }
+  for (const id of writes) if (names.has(id) && !pointed.has(id)) out.push(`rewrote ${names.get(id)}'s narration`);
+  const order = (clips: readonly Clip[]) => clips.filter((clip) => names.has(clip.id) && !pointed.has(clip.id) && now.has(clip.id)).map((clip) => clip.id).join(" ");
+  if (order(after) !== order(before)) out.push("moved other items around");
+  return out;
+}
+
+/** The items the producer marked for a turn, and whether the model said their words reach past them. */
+export type Scope = { pointed: readonly string[]; beyond: boolean };
+
+/**
  * Applies Claude's edits in order to the script as it stands; nothing is kept
  * unless every edit applies. `direct` writes every paragraph straight in, saved
  * or not: a fix from a review, which the producer checks afterwards by what it marked.
+ * `scope`: the clips the producer marked; edits that change any other item are
+ * refused, unless the model said the request names more (`beyond`).
  */
-export function apply(script: Script, edits: Edit[], peaks: ArrayLike<number>, direct: boolean): [Clip[], Record<string, string>, Proposal[]] {
-  const work = new Work(script, peaks);
+export function apply(script: Script, edits: Edit[], peaks: ArrayLike<number>, direct: boolean, scope: Scope | null = null): [Clip[], Record<string, string>, Proposal[]] {
+  const marked = scope === null ? [] : scope.pointed.filter((id) => script.clips.some((clip) => clip.id === id));
+  const work = new Work(script, peaks, marked);
   for (const [index, edit] of edits.entries()) {
     try {
       work.apply(edit);
     } catch (error) {
       throw new Error(`Edit ${index + 1} (${typeof edit.op === "string" ? edit.op : "?"}): ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (scope !== null && !scope.beyond && marked.length > 0) {
+    const past = strays(script.clips, work.clips, work.writes.keys(), new Set(marked));
+    if (past.length > 0) {
+      const names = marked.map((id) => `i${script.clips.findIndex((clip) => clip.id === id) + 1}`).join(", ");
+      throw new Error(`The producer marked ${names} for this request, and these edits also ${past.join(", ")}. Change only the marked items; if the producer's words plainly ask for those other parts too, send the same edits with beyond set to true.`);
     }
   }
   // Paragraphs: one on an empty or new cut-in is written straight in; one that changes narration saved before this turn waits for the producer.
@@ -559,7 +627,8 @@ export async function revise(script: Script, request: string, focus: Focus, chat
     }
     if (plan !== null) {
       try {
-        const done = apply(script, Array.isArray(plan.edits) ? (plan.edits as Edit[]) : [], peaks, direct);
+        const scope = focus.pointed === true && focus.selected.length > 0 ? { pointed: focus.selected, beyond: plan.beyond === true } : null;
+        const done = apply(script, Array.isArray(plan.edits) ? (plan.edits as Edit[]) : [], peaks, direct, scope);
         keepsLength(script, format, done);
         const answer = [...(typeof plan.answer === "string" ? plan.answer.trim() : "")].slice(0, 4_000).join("");
         return { clips: done[0], corrections: done[1], proposals: done[2], answer: answer === "" ? "Done." : answer, costUsd: cost, startOver: false, lesson: lessonOf(plan) };

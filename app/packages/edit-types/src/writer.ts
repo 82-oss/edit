@@ -510,8 +510,13 @@ export type ChatTurn = {
   files?: string[];
 };
 
-/** What the producer is looking at as they ask for a change. */
-export type Focus = { selected: string[]; picked: [number, number] | null; playheadMs: number | null };
+/**
+ * What the producer is looking at as they ask for a change. `pointed`: the
+ * selected clips are what the message is about (clicked or quoted in the
+ * script's chat, JJ, Nov 18: "mark clips… and say cut this down"), so the
+ * revision changes only those unless the words name more (revise.ts `strays`).
+ */
+export type Focus = { selected: string[]; picked: [number, number] | null; playheadMs: number | null; pointed?: boolean };
 
 /** A saved version of a footage script: who made it and what changed. */
 /** `kept`: a Mac's version the cloud overtook before it got there (writer/cloud.ts), kept here rather than as a "(conflicted copy)". */

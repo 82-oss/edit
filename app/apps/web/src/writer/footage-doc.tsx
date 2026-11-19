@@ -1,4 +1,6 @@
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from "react";
+import { MessageSquare, Scissors, Trash2 } from "lucide-react";
+import { openMenu } from "../components/ContextMenu";
 import { blocks, clipRange, duration, generatedHeading, heading, isCutIn, keptMs } from "./clips";
 import { BLUR_NOTE, caseStarts, COMMENT_AUTHOR, blurSpans, boundary, reuseNote } from "./doc-export";
 import { Grow, LETTER, Paper, pageInView, useScale, useZoom, ZoomTools } from "./paper";
@@ -31,6 +33,11 @@ export function FootageDoc({
   onNotes,
   onPreview,
   bands,
+  selected = [],
+  onSelect = () => {},
+  onAsk,
+  onRemove,
+  onAskAbout,
 }: {
   script: Script;
   clips: Clip[];
@@ -49,6 +56,20 @@ export function FootageDoc({
   onPreview: (index: number) => void;
   /** Review bands by block (a clip's ID): what each fix changed, and open notes' words. */
   bands?: Map<string, Band[]>;
+  /**
+   * The clips marked, shared with the timeline: a timestamp clicked, several
+   * with ⌘ or ⇧, a narration with ⌘ or ⇧, or a stretch dragged across. The
+   * chat's next message is about them (JJ, Nov 18: "mark clips… and say,
+   * 'Cut this down,' or 'Remove this'").
+   */
+  selected?: string[];
+  onSelect?: (ids: string[]) => void;
+  /** A clip's menu: asked of Claude about these clips at once (Cut down). */
+  onAsk?: (request: string, ids: string[]) => void;
+  /** A clip's menu: these clips taken out, as ⌫ does on the timeline. */
+  onRemove?: (ids: string[]) => void;
+  /** A clip's menu: these clips marked and the chat ready for what to do with them. */
+  onAskAbout?: (ids: string[]) => void;
 }) {
   const canvas = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useZoom(zoomKey);
@@ -78,7 +99,8 @@ export function FootageDoc({
       const [from, to] = [within(live.anchorNode), within(live.focusNode)];
       if (from !== null && from === to) return;
       const quote = live.toString().trim();
-      if (quote !== "") setSelection({ id: "", input: body, start: 0, end: 0, quote, spans: true });
+      const crossed = [...body.querySelectorAll<HTMLElement>("[data-range], [data-cue]")].filter((node) => live.containsNode(node, true)).map((node) => node.dataset.range ?? node.dataset.cue ?? "");
+      if (quote !== "") setSelection({ id: "", input: body, start: 0, end: 0, quote, spans: true, clips: crossed.filter((id) => id !== "") });
     };
     const up = () => window.setTimeout(across, 0);
     const key = (event: KeyboardEvent) => {
@@ -235,6 +257,20 @@ export function FootageDoc({
   // Repack's Script view, its blocks only lose the blank lines between them.
   const running = script.kind === "courtroom" && !script.compilation;
 
+  const many = (event: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => event.metaKey || event.ctrlKey || event.shiftKey;
+  const toggle = (id: string) => onSelect(selected.includes(id) ? selected.filter((one) => one !== id) : [...selected, id]);
+  /** A clip's own menu, for it and whatever else is marked with it. */
+  const clipMenu = (event: MouseEvent, id: string) => {
+    if (!onAsk && !onRemove && !onAskAbout) return;
+    const ids = selected.includes(id) ? selected : [id];
+    if (!selected.includes(id)) onSelect(ids);
+    openMenu(event, [
+      ...(onAsk ? [{ label: "Cut down", icon: <Scissors size={14} />, disabled, onSelect: () => onAsk("Cut this down.", ids) }] : []),
+      ...(onRemove ? [{ label: "Remove", icon: <Trash2 size={14} />, danger: true, disabled, onSelect: () => onRemove(ids) }] : []),
+      ...(onAskAbout ? [{ label: ids.length > 1 ? "Ask about these…" : "Ask about this…", icon: <MessageSquare size={14} />, onSelect: () => onAskAbout(ids) }] : []),
+    ]);
+  };
+
   /** A block's timestamps, each previewing its clip. */
   const ranges = (block: (typeof parts)[number]) =>
     block.clips.map(({ clip, index: at }, position) => (
@@ -247,18 +283,25 @@ export function FootageDoc({
           data-now={nowId === clip.id || undefined}
           data-state={active === clip.id ? "active" : undefined}
           data-plain={botNotes || clip.notes?.length ? undefined : ""}
+          data-selected={selected.includes(clip.id) || undefined}
           {...bandProps(bands?.get(clip.id))}
           onMouseEnter={() => setActive(clip.id)}
           onMouseLeave={() => setActive(null)}
+          onContextMenu={(event) => clipMenu(event, clip.id)}
         >
           (
           <button
             type="button"
             title="Play this clip"
             aria-label={`Preview ${clipRange(clip, script.parts, " to ")}`}
-            onClick={() => {
+            aria-pressed={selected.includes(clip.id)}
+            onMouseDown={(event) => { if (many(event)) event.preventDefault(); }}
+            onClick={(event) => {
+              // ⌘ or ⇧: one more marked (or one less), the playhead where it was.
+              if (many(event)) return toggle(clip.id);
               clicked.current = true;
               setChosen(clip.id);
+              onSelect([clip.id]);
               onPreview(at);
             }}
           >
@@ -295,7 +338,7 @@ export function FootageDoc({
         setChosen(id);
         setWriting({ id, text: "", anchor: { start, end, quote } });
         setSelection(null);
-      }} onChat={() => { quoteToChat(selection); setSelection(null); }} />}
+      }} onChat={() => { quoteToChat(selection); if (selection.clips?.length) onSelect(selection.clips); setSelection(null); }} />}
       <header className="doc-toolbar">
         <ZoomTools zoom={zoom} scale={scale} page={page} pages={pages} onZoom={setZoom} />
         <div className="doc-actions">
@@ -324,7 +367,17 @@ export function FootageDoc({
           <button type="button" className="tool accept-changes" disabled={disabled} onClick={() => onResolve(proposals.map((item) => item.id), true)}><Icon name="check" size={14} /> Accept changes</button>
         </div>
       </div>}
-      <div className="canvas" ref={canvas} onScroll={(event) => setPage(pageInView(event.currentTarget, scale, LETTER))}>
+      <div
+        className="canvas"
+        ref={canvas}
+        onScroll={(event) => setPage(pageInView(event.currentTarget, scale, LETTER))}
+        // A click on the page away from the clips lets go of the marked ones.
+        onMouseDown={(event) => {
+          if (selected.length === 0 || many(event) || event.button !== 0) return;
+          if ((event.target as Element).closest("[data-range], [data-cue], [data-card], .comment, button, textarea, input")) return;
+          onSelect([]);
+        }}
+      >
         <Paper sheet={LETTER} scale={scale} rail={rail} version={comments} onPages={setPages}>
           <h1 className="doc-title" data-block>
             <Grow
@@ -360,6 +413,20 @@ export function FootageDoc({
                   data-cue={block.cue.clip.id}
                   data-anchor={`cue-${block.cue.clip.id}`}
                   data-now={nowId === block.cue.clip.id || undefined}
+                  data-selected={selected.includes(block.cue.clip.id) || undefined}
+                  onContextMenu={(event) => {
+                    // Words selected in it keep the browser's own menu (copy).
+                    const live = window.getSelection();
+                    if (live && !live.isCollapsed && event.currentTarget.contains(live.anchorNode)) return;
+                    clipMenu(event, block.cue!.clip.id);
+                  }}
+                  // ⌘ or ⇧ on a narration marks it with the rest, instead of starting to type there.
+                  onMouseDownCapture={(event) => { if (many(event) && !(event.target instanceof HTMLTextAreaElement)) event.preventDefault(); }}
+                  onMouseUpCapture={(event) => {
+                    if (!many(event) || event.target instanceof HTMLTextAreaElement) return;
+                    event.stopPropagation();
+                    toggle(block.cue!.clip.id);
+                  }}
                 >
                   {narration(block.cue.clip, index)}
                 </div>
