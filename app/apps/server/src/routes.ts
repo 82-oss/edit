@@ -12,7 +12,6 @@ import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
 import * as folderAccess from "./folder_access.ts";
 import { importDrive } from "./drive_import.ts";
-import * as busyNow from "./busy.ts";
 import * as remoteActions from "./remote_actions.ts";
 import * as youtube from "./youtube.ts";
 import * as youtubeSignIn from "./youtube_signin.ts";
@@ -482,11 +481,10 @@ async function updateInstall({ app }: Context): Promise<Response> {
 
 /** Shared by the local update route and an explicitly enabled remote request. */
 export async function installUpdate(app: App, remote = false) {
-  // Only what wouldn't carry on after the restart holds an update (busy.wouldLose), asked here or from afar
-  // (Sphe, Nov 10: "be able to update mid import"): exports, imports, shares, fixes and agent turns pick up where they were.
-  // From afar it also waits for an agent turn, which someone may be watching as it's written.
+  // Nothing holds an update but, asked from afar, an agent turn someone may be watching as it's written (Sphe, Nov 10:
+  // "be able to update mid import"): every other kind of work carries on from the job table after the restart.
   const turns = () => (app.agents as { hasRunningTurns?: () => boolean }).hasRunningTurns?.() === true;
-  const busy = () => [...busyNow.wouldLose(app), ...(remote && turns() ? ["an agent turn"] : [])];
+  const busy = () => (remote && turns() ? ["an agent turn"] : []);
   const now = busy();
   if (now.length > 0) throw new ApiError(409, `${now.join(", ")} ${now.length === 1 ? "is" : "are"} running; update when it's done`);
   try {

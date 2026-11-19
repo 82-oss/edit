@@ -14,21 +14,6 @@ import * as thumbnailRuns from "./thumbnails/run.ts";
 import * as writerImports from "./writer/imports.ts";
 import * as writerJobs from "./writer/jobs.ts";
 
-/**
- * What an update would lose now: only work that doesn't yet carry on by
- * itself after Edit restarts (everything else in `busyWith` is a job that
- * picks up from what it kept, paid requests are answered first and the
- * programs Edit started are stopped before it: serve.ts's update.onPrepare).
- * An update waits for these alone (Sphe, Nov 10: "let Update go through at
- * any time"). A kind leaves this list once it carries on.
- */
-export function wouldLose(_app: App): string[] {
-  // Nothing, since Nov 10: an upload to Drive carries on from its kept session (drive.ts), footage from a Drive link
-  // from its job (drive_import.ts), Claude on a script, an idea or a thumbnail from what its job kept (writer/work.ts,
-  // ideas/run.ts, thumbnails/run.ts). A new kind of work that can't carry on is said here.
-  return [];
-}
-
 /** Others' work this computer is doing (reviews' fixes): each says what runs, or nothing. */
 const others = new Set<() => string | null>();
 
@@ -104,26 +89,35 @@ export function workingOn(app: App, key: string): boolean {
 }
 
 /**
- * What a restart would cut off now: an export, a share (from jobs.json, so one
- * a restart cut short and that is about to carry on counts too), an import,
- * Claude on a script, an agent turn, a fix. One list for everything that
- * restarts Edit from afar (a restart, an update), so none of them cuts off
- * what another waits for (Nov 1: an update waited only for agent turns, and
- * would have stopped an export part-way).
+ * What runs on this computer now, in a word each: the one answer that keeps the Mac awake (serve.ts), holds a restart
+ * from afar (remote_actions, reviews.busyHere) and that the diagnostics say (honest council change 7i, Nov 19: three
+ * hand-kept lists had grown apart; keeping the Mac awake missed Script mode's imports, Claude's runs and shares, and
+ * a restart's list missed effects' renders and removal, so Sphe's M4 slept 20 minutes mid-removal on Nov 18). An
+ * export, its cloud copy, a share running, an upload to Drive, an import of either kind, Claude on a script, an
+ * agent turn, Claude on a thumbnail or an idea, a fix, an effect's render, footage being cleaned. Work waiting in the
+ * job table for its next try isn't running: nothing is cut off by a restart, and the Mac may sleep.
  */
-export function busyWith(app: App, agentTurns = true): string[] {
+export function runningNow(app: App, agentTurns = true): string[] {
   let uploading = false;
   try {
     uploading = seams.drive.uploading();
   } catch (error) {
     if (!seams.isUnavailable(error)) throw error;
   }
-  const shares = jobs.list(app.store.home ?? null, "share").filter(jobs.live).length;
+  const shares = jobs.list(app.store.home ?? null, "share").filter((job) => job.state === "running" || job.state === "queued").length;
   const agents = app.agents as { hasRunningTurns?: () => boolean; runningProjects?: () => string[] } | undefined;
   const turns = agents?.hasRunningTurns?.() ?? (agents?.runningProjects?.().length ?? 0) > 0;
+  let exporting = false;
+  let archiving = false;
+  try {
+    exporting = app.exports.running();
+    archiving = app.exports.archiving?.() === true;
+  } catch {
+    // No exports here (tests).
+  }
   const said = [
-    app.exports.running() ? "an export" : "",
-    app.exports.archiving?.() ? "an export going up to the cloud" : "",
+    exporting ? "an export" : "",
+    archiving ? "an export going up to the cloud" : "",
     shares > 0 ? (shares === 1 ? "a share" : `${shares} shares`) : "",
     uploading ? "an upload to Drive" : "",
     (app.scripts as ScriptJobs | undefined)?.running?.() || importing() ? "a footage import" : "",
@@ -134,5 +128,31 @@ export function busyWith(app: App, agentTurns = true): string[] {
     agentTurns && ideaRuns.anyRunning() ? "Claude on an idea" : "",
   ];
   for (const what of others) said.push(what() ?? "");
+  // An effect's render or footage being cleaned, on any edit.
+  if (projectWork.size > 0) {
+    let projects: string[] = [];
+    try {
+      projects = (app.store.list?.() ?? []).map((one: { id: string }) => one.id);
+    } catch {
+      projects = [];
+    }
+    for (const id of projects) {
+      if ([...projectWork].some((runs) => safely(() => runs(id)))) {
+        said.push("an effect's render or footage being cleaned");
+        break;
+      }
+    }
+  }
   return [...new Set(said.filter(Boolean))];
 }
+
+function safely(check: () => boolean): boolean {
+  try {
+    return check();
+  } catch {
+    return false;
+  }
+}
+
+/** What a restart would cut off now (`runningNow`): one list for everything that restarts Edit from afar. */
+export const busyWith = (app: App, agentTurns = true): string[] => runningNow(app, agentTurns);

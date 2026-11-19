@@ -68,7 +68,7 @@ export const RESTART = "restart";
 export const IDLE_UPDATE = "update-when-idle";
 export const PROBE = "probe-";
 
-/** Idle: nobody has used the window this long (presence.ts), and an update would lose nothing (busy.wouldLose). */
+/** Idle: nobody has used the window this long (presence.ts); every kind of work carries on after an update. */
 export const IDLE_MS = 20 * 60_000;
 
 /** An agent turn whose chat hasn't changed this long is stuck, not thinking. */
@@ -495,12 +495,10 @@ export function restart(app: App): string {
 const idleIntent = (app: App) => join(app.store.home, "update-when-idle.json");
 const watchingIdle = new WeakSet<App>();
 
-/** Whether this Mac is idle now: nobody used the window for IDLE_MS (or since Edit started, that long ago) and nothing runs that an update would lose (an import carries on after it). */
-export function idleNow(app: App, now = Date.now(), started = now - process.uptime() * 1000): { idle: boolean; why: string } {
+/** Whether this Mac is idle now: nobody used the window for IDLE_MS (or since Edit started, that long ago); work carries on after an update. */
+export function idleNow(_app: App, now = Date.now(), started = now - process.uptime() * 1000): { idle: boolean; why: string } {
   const used = presence.lastUsedAt() ?? started;
   if (now - used < IDLE_MS) return { idle: false, why: `the window was used ${Math.round((now - used) / 60_000)} min ago` };
-  const running = busy.wouldLose(app);
-  if (running.length > 0) return { idle: false, why: `${running.join(", ")} running` };
   return { idle: true, why: "idle" };
 }
 

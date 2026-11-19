@@ -55,3 +55,22 @@ test("what's busy here is one answer: the lock, a restart, Ready for changes and
     cleanup();
   }
 });
+
+test("what runs now is one list: an effect's render or a removal on any edit keeps the Mac awake and holds a restart; a share waiting for its next try does neither (honest council 7i)", () => {
+  const root = fs.mkdtempSync(join(os.tmpdir(), "edit-running-"));
+  const app = { store: { home: root, get: () => null, list: () => [{ id: "p1" }, { id: "p2" }], cloud: () => null }, scripts: { get: () => null, running: () => false }, agents: { runningProjects: () => [] }, exports: { running: () => false } } as unknown as App;
+  try {
+    expect(busy.runningNow(app)).toEqual([]);
+    const undo = busy.registerProjectWork((id) => id === "p2");
+    expect(busy.runningNow(app)).toEqual(["an effect's render or footage being cleaned"]);
+    expect(busyWith(app)).toEqual(busy.runningNow(app));
+    undo();
+    // A share waiting in the job table isn't running.
+    fs.writeFileSync(join(root, "jobs.json"), JSON.stringify([{ key: "share:p1", kind: "share", project: "p1", args: {}, state: "waiting", attempts: 0, started_ms: 1, updated_ms: 1, retry_at: Date.now() + 60_000 }]));
+    expect(busy.runningNow(app)).toEqual([]);
+    fs.writeFileSync(join(root, "jobs.json"), JSON.stringify([{ key: "share:p1", kind: "share", project: "p1", args: {}, state: "running", attempts: 0, started_ms: 1, updated_ms: 1 }]));
+    expect(busy.runningNow(app)).toEqual(["a share"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

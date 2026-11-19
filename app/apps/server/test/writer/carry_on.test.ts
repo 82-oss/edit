@@ -8,7 +8,6 @@ import { join } from "node:path";
 
 import type { Script } from "@edit/types/writer";
 
-import * as busy from "../../src/busy.ts";
 import * as durable from "../../src/jobs.ts";
 import * as chat from "../../src/writer/chat.ts";
 import { adoptCutImports } from "../../src/writer/index.ts";
@@ -58,8 +57,6 @@ test("a job cut off by a restart stays running and written down, shows as carryi
       return ["never", 0];
     });
     await Bun.sleep(20);
-    // An update doesn't wait for it.
-    expect(busy.wouldLose({} as never)).toEqual([]);
     expect(await jobs.holdForRestart(2_000)).toEqual([ID]);
     // Left running on the script and in the job table, with what it was started with and kept; nothing said it failed.
     const kept = JSON.parse(fs.readFileSync(join(dir, "build.json"), "utf8"));

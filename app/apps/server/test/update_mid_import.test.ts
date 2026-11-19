@@ -50,8 +50,8 @@ test.skipIf(ffmpeg === null)("a script's import stopped for an update stays impo
     const script = await imports.fromFile(app, data, source, null, "Mid import", null, null, "started");
     for (let i = 0; i < 600 && mock.calls("/v1/transcribe").length === 0; i++) await Bun.sleep(50);
     expect(mock.calls("/v1/transcribe").length).toBeGreaterThan(0);
-    // An update doesn't wait for it.
-    expect(busy.wouldLose(app)).toEqual([]);
+    // Running, so it keeps the Mac awake and is said as running; an update doesn't wait for it (it carries on after).
+    expect(busy.runningNow(app)).toContain("a script's import");
 
     expect(await imports.stopAll()).toBe(1);
     expect(imports.importing(script.id)).toBe(false);

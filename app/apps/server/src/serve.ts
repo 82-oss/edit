@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 
 import * as accounts from "./accounts.ts";
 import { keepAwakeWhile } from "./awake.ts";
-import { importing, resumeImport } from "./drive_import.ts";
+import { resumeImport } from "./drive_import.ts";
 import { createApp, hostname, type App } from "./app.ts";
 import { pauseForExports, setListening, smoothsFast } from "./broll.ts";
 import { makeRoom, startCleaning } from "./cache_cleanup.ts";
@@ -481,24 +481,8 @@ function startHere(home: string, host: string | null, port: number): { app: App;
   }
   if (servers.length === 0) fail(`nothing to listen on (is port ${port} taken?)`);
   console.log(`edit: data in ${home}`);
-  keepAwakeWhile(() => {
-    if (app.exports.running()) return "an export";
-    if (app.exports.archiving?.()) return "an export going up to the cloud";
-    if (app.scripts.running() || importing()) return "a footage import";
-    try {
-      if (seams.drive.uploading()) return "a Drive upload";
-    } catch (error) {
-      if (!seams.isUnavailable(error)) throw error;
-    }
-    if ((app.agents as { hasRunningTurns?: () => boolean }).hasRunningTurns?.()) return "the agent";
-    // An effect's render or footage being cleaned, with no agent turn or export beside it (Nov 18, Sphe's M4: "nothing
-    // running" at 05:12 with removal still under way, and the Mac asleep for 20 minutes).
-    for (const { id } of app.store.list()) {
-      if (effects.renderingLine(id) !== null) return "an effect's render";
-      if (removalSchedule.progressOf(id).out > 0) return "footage being cleaned";
-    }
-    return null;
-  });
+  // What runs now, the one answer (busy.ts `runningNow`): Script mode's imports, Claude's runs and shares keep it awake too.
+  keepAwakeWhile(() => busy.runningNow(app)[0] ?? null);
   // Once listening (the agents reach Edit's MCP on this port) and signed in
   // again (or 20 s on, signed out): the jobs and agent turns a restart cut short.
   // An export holds the hardware encoder (encoder.ts): an import's encode beside it isn't called stuck, and one that waits for it is woken when it ends.
