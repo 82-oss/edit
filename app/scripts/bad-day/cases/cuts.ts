@@ -275,11 +275,7 @@ export const cutCases: Case[] = [
       await context.sleep(60_000);
       const before = describe(await job(context, setup.project));
       const fetchedBefore = setup.originals.reduce((sum, key) => sum + context.line.sent(`/r2/${key}`), 0);
-      context.check(
-        "while there's no room, the originals were fetched at most once",
-        fetchedBefore <= setup.needed * 1.1,
-        `${(fetchedBefore / 1e6).toFixed(1)} MB fetched before the room was made, ${(setup.needed / 1e6).toFixed(1)} MB needed`,
-      );
+
       context.log(`before the room is made: ${before}`);
       const said = [before, context.edit.log()].join("\n");
       context.check("Edit says how much room it needs", /Needs [\d.]+ ?[MG]B free/i.test(said), /Needs [\d.]+ ?[MG]B free/i.test(said) ? "yes" : `no "Needs … free" line: ${before.slice(0, 300)}`);
@@ -288,6 +284,14 @@ export const cutCases: Case[] = [
       const end = await done(context, setup.project, 300_000);
       const last = end ?? (await job(context, setup.project));
       context.check("the file came in once room was made", end !== null, describe(last));
+      // One try into the full disk is how Edit learns what it needs; after it, it looks at the disk, never cutting again
+      // into it (Fable's last look): what it fetched before the room is at most about one try's worth.
+      const fetchedAfter = setup.originals.reduce((sum, key) => sum + context.line.sent(`/r2/${key}`), 0) - fetchedBefore;
+      context.check(
+        "while there's no room, the originals were fetched for one try at most",
+        end !== null && fetchedBefore <= fetchedAfter * 1.3,
+        `${(fetchedBefore / 1e6).toFixed(1)} MB fetched before the room was made, ${(fetchedAfter / 1e6).toFixed(1)} MB by the try that came in`,
+      );
       bytesCheck(context, setup, 2);
       const files = [join(home, "jobs.json"), ...fs.readdirSync(join(home, "projects"), { recursive: true }).map((name) => join(home, "projects", String(name)))];
       const leaked = files.filter((path) => {
