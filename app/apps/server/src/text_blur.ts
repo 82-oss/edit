@@ -487,7 +487,8 @@ const plans = new Map<string, BlurPlan[]>();
 /** Tracks read, by file and seconds. */
 const tracks = new Map<string, Sample[]>();
 /** Tracks to read, one at a time (OCR on the CPU, beside everything else). */
-const queue: { key: string; run: () => Promise<void> }[] = [];
+/** Tracks to read, each with its project (a media id like "m6" is only unique within one). */
+const queue: { key: string; project: string; run: () => Promise<void> }[] = [];
 let busy: Promise<void> | null = null;
 
 const trackKey = (source: string, from: number, to: number) => `${source}|${Math.round(from * 1000)}|${Math.round(to * 1000)}`;
@@ -590,12 +591,13 @@ export async function ensure(app: App, id: string, given: BlurPlan[]): Promise<v
       if (had !== undefined && had.state !== "done") {
         mine.set(key, had);
         if (had.state === "failed") continue;
-        if (queue.some((one) => one.key === key) || had.state === "running") continue;
+        if (queue.some((one) => one.key === key && one.project === id) || had.state === "running") continue;
       }
       const piece: BlurPiece = { key, media: plan.media.id, name: plan.media.name, from, to, state: "queued" };
       mine.set(key, piece);
       queue.push({
         key,
+        project: id,
         run: async () => {
           piece.state = "running";
           try {
@@ -647,6 +649,17 @@ function drain(): void {
     busy = null;
     if (queue.length > 0) drain();
   });
+}
+
+/**
+ * The person's Stop (removal_schedule.ts `stop`): the project's tracks not started yet are let go, so nothing more
+ * is read for it (Nov 19: two stopped compilations' 190 queued tracks, ~2 h of footage, kept every other project's
+ * waiting behind them); what's tracked and laid stays, a track under way finishes.
+ */
+export function stop(id: string): void {
+  for (let at = queue.length - 1; at >= 0; at--) if (queue[at]!.project === id) queue.splice(at, 1);
+  const mine = pieces.get(id);
+  if (mine !== undefined) for (const [key, piece] of mine) if (piece.state === "queued") mine.delete(key);
 }
 
 /** Resolves once nothing is being tracked (tests). */

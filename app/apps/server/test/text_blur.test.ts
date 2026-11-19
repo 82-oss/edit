@@ -317,3 +317,41 @@ test("with the real engine, a 30 s subtitled clip at 1920: read in one pass the 
     cleanup();
   }
 }, 600_000);
+
+test("the person's Stop lets go of the project's tracks not started yet: another project's are read, the stopped one's never are (Nov 19: two stopped compilations kept a third waiting behind ~2 h of footage)", async () => {
+  const { app, cleanup } = fixtureHome("text-blur-stop");
+  const own = blur.reader.open;
+  try {
+    const read: string[] = [];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    blur.reader.open = (input) => {
+      read.push(input);
+      return {
+        read: async (times) => {
+          await gate;
+          return times.map(() => []);
+        },
+        close: () => {},
+      };
+    };
+    const footage = (name: string) => media({ id: "m6", name, path: join(app.store.home, name), kind: "video", duration: 600, width: 1920, height: 1080, fps: 30 }) as Media;
+    const planOf = (name: string, spans: [number, number][]): blur.BlurPlan => ({ media: footage(name), source: `sha256:${name}`, spans, band: [0.2, 0.8, 0.8, 0.95], labels: [], avoid: [], subtitles: true, text: false });
+    const stopped = app.store.create("Stopped", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const other = app.store.create("Other", { width: 1920, height: 1080, fps: 30 }).project.id;
+    // Many of the stopped one's first (more than read at once), then the other's: all behind the gate.
+    await blur.ensure(app, stopped, [planOf("a.mp4", Array.from({ length: 8 }, (_, k): [number, number] => [k * 10, k * 10 + 2]))]);
+    await blur.ensure(app, other, [planOf("b.mp4", [[0, 2]])]);
+    blur.stop(stopped);
+    expect(blur.piecesOf(stopped).every((one) => one.state === "running")).toBe(true);
+    release();
+    await blur.settled();
+    // Only those already under way when it stopped were read of the stopped one's; the other's was read.
+    expect(read.filter((one) => one.endsWith("a.mp4")).length).toBe(blur.AT_ONCE);
+    expect(read.filter((one) => one.endsWith("b.mp4")).length).toBe(1);
+    expect(blur.outOf(stopped)).toBe(0);
+  } finally {
+    blur.reader.open = own;
+    cleanup();
+  }
+});

@@ -454,6 +454,7 @@ export function backgroundOf(id: string): Status["background"] {
 export function stop(app: App, id: string): void {
   asks.setStopped(app.store.home, id, true);
   watermarkRemoval.stop(id);
+  textBlur.stop(id);
   textInpaint.stop(id);
   active.delete(id);
   diag.info("removal", `${id}: stopped by the person`);
