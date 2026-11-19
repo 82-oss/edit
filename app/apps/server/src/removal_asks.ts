@@ -66,7 +66,8 @@ function keep(file: string, value: unknown): void {
  * Whether the person stopped project `id`'s removal (the chat's Stop): what
  * runs by itself doesn't any more, and what was asked before it is done
  * with; an ask after it runs on just what it names (Sphe, Nov 17: stop the
- * whole video, then clean only the intro and the first case's start).
+ * whole video, then clean only the intro and the first case's start), the
+ * agent's marks too (Nov 19: marks made after a Stop sent nothing).
  */
 export function isStopped(home: string, id: string): boolean {
   return loaded(home).stopped[id] !== undefined;
@@ -99,10 +100,23 @@ export function add(home: string, id: string, ask: Ask): void {
   keep(fileOf(home), asks);
 }
 
+/**
+ * Whether `ask` asks for what it names: an ask does; the agent's marks say
+ * where their text is, not that it's asked for, but marks made after the
+ * person's Stop are the agent starting those seconds again (Nov 19).
+ */
+const asking = (home: string, id: string, ask: Ask): boolean => ask.mark === undefined || (ask.mark === "add" && isStopped(home, id));
+
 /** The parts asked for in project `id`. */
 export function askedKinds(home: string, id: string): removal.Kind[] {
-  // The agent's marks say where their text is, never that it's asked for.
-  return removal.KINDS.filter((kind) => liveAsks(home, id).some((ask) => ask.mark === undefined && ask.kinds.includes(kind)));
+  return removal.KINDS.filter((kind) => liveAsks(home, id).some((ask) => asking(home, id, ask) && ask.kinds.includes(kind)));
+}
+
+/** The footage files named in what was asked since the Stop (not the whole project). */
+export function pointedAt(home: string, id: string): Set<string> {
+  const out = new Set<string>();
+  for (const ask of liveAsks(home, id)) if (asking(home, id, ask) && ask.media !== "all") for (const media of Object.keys(ask.media)) out.add(media);
+  return out;
 }
 
 /** The lesson as it applies to project `id` now: the parts running by themselves (unless stopped), and those asked for. */
@@ -125,13 +139,14 @@ function merged(spans: Spans): Spans {
 /**
  * The seconds of footage file `media` that part `kind` covers, of `shown`
  * (what the timeline shows of it): all of them for a part taught to run by
- * itself, else only what was asked for.
+ * itself, else only what was asked for or marked (after a Stop, the seconds
+ * the agent marked since).
  */
 export function scope(lesson: removal.Lesson | null, home: string, id: string, kind: removal.Kind, media: string, shown: Spans): Spans {
   if (lesson?.remove[kind] === true && lesson.when[kind] === "automatic" && !isStopped(home, id)) return shown;
   const out: Spans = [];
   for (const ask of liveAsks(home, id)) {
-    if (ask.mark !== undefined || !ask.kinds.includes(kind)) continue;
+    if (!asking(home, id, ask) || !ask.kinds.includes(kind)) continue;
     const given = ask.media === "all" ? "all" : ask.media[media];
     if (given === undefined) continue;
     out.push(...(given === "all" ? shown : intersect(shown, given)));

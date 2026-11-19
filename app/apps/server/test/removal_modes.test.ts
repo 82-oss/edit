@@ -8,9 +8,11 @@
 import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 
+import { fillsFrame } from "../src/frames_fill.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import type { Project } from "../src/model.ts";
 import { findAddon, native, useNative, wrap, type Native } from "../src/native/index.ts";
+import { REUSE_LABEL, subtitledSpans } from "../src/project.ts";
 import * as asks from "../src/removal_asks.ts";
 import * as removal from "../src/removal_lesson.ts";
 import * as modes from "../src/removal_modes.ts";
@@ -251,4 +253,72 @@ test.skipIf(real === null)("only the agent's marks go: nothing before it marks; 
     await blur.settled();
     cleanup();
   }
+});
+
+test.skipIf(real === null)("the agent's marks go under our own see-through subtitles and on a finished video reused whole, after the person's Stop too, never waiting on detection; our subtitles then go where theirs came out (Nov 19, Sphe's Cuffed & Caught edit: 138 marks, nothing sent for cases 2, 5 and 6)", async () => {
+  const { app, store, cleanup } = fixtureHome("modes-marks-under");
+  teach();
+  tr.useProvider(null);
+  try {
+    const live = store.create("Compilation", { width: 1920, height: 1080, fps: 30 });
+    const p = compilation(live.project);
+    for (const one of p.media) {
+      one.path = `${app.store.home}/${one.id}.mp4`;
+      fs.writeFileSync(one.path, `footage ${one.id}`);
+    }
+    // Our subtitles: an effect's picture over its alpha, the whole edit long, filling the frame but see-through.
+    p.media.push(media({ id: "subs", name: "subs-01", path: `${app.store.home}/subs.mp4`, kind: "video", duration: 260, width: 1920, height: 1080, fps: 30, effect: "subs-01", effect_key: "k", stacked_alpha: true }));
+    p.tracks.push({ id: "v9", kind: "video", hidden: false, muted: false, locked: false });
+    p.clips.push(clip({ id: "s1", track: "v9", start: 0, duration: 260 * 30, type: "video", media: "subs", source_in: 0 }));
+    // Case 4 (tape d) is a finished video reused whole: its subtitles burned in.
+    for (const block of p.script!.blocks) if (block.kind === "footage" && block.media === "d") block.label = REUSE_LABEL;
+    await store.replace(p.id, null, p, "test");
+    tr.useShelf(tr.shelfIn(`${app.store.home}/shelf`, () => false));
+    const saved = () => store.get(p.id)!.project;
+    expect(fillsFrame(saved(), saved().clips.find((one) => one.id === "s1")!)).toBe(false);
+    // Left alone by itself: a reused video of ours isn't footage to clean until it's pointed at.
+    expect(tr.shownSeconds(saved()).has("d")).toBe(false);
+    blur.reader.read = async (_input, _size, _fps, _region, times) => times.map(() => []);
+    // The person stopped it; then the agent marks a's case 1 at 21–24 s (a 1–4 s) and the reused d's case 4 at 230–233 s (d 30–33 s), nothing read by detection.
+    removalSchedule.stop(app, p.id);
+    await Bun.sleep(5);
+    const marked = ((await dispatch(app, { id: 1, method: "tools/call", params: { name: "start_removal", arguments: { project_id: p.id, marks: [{ from: 21, to: 24 }, { from: 230, to: 233 }, { from: 300, to: 301 }] } } }, null)) as { result: { content: { text?: string }[]; isError: boolean } }).result;
+    expect(marked.isError).toBe(false);
+    expect(marked.content[0]!.text).toContain("on 2 files: a 3.0 s, d 3.0 s (no footage at 300–301)");
+    const near = (spans: [number, number][]) => spans.map(([a, b]) => [Math.round(a * 10) / 10, Math.round(b * 10) / 10]);
+    expect(Object.fromEntries((await tr.plan(app, saved())).files.map((file) => [`${file.media.id}:${file.mode}`, near(file.send)]))).toEqual({ "a:smart": [[0, 5]] });
+    expect((await tr.blurPlan(app, saved())).map((one) => [one.media.id, near(one.spans)])).toEqual([["d", [[30, 33]]]]);
+    // A piece of a already in vmake.ai's hands, cut another way by an earlier build: it goes on as sent, its seconds never sent again.
+    const source = await tr.sourceOf(saved().media.find((one) => one.id === "a")!);
+    fs.writeFileSync(`${app.store.home}/text-removal.json`, JSON.stringify({ accounts: {}, runs: [], out: { [`${source}|0|8|smart`]: { tries: 1, sent: true, at: Date.now() }, [`${source}|40|44|smart`]: { tries: 1, sent: false, at: Date.now() } } }));
+    expect(Object.fromEntries((await tr.plan(app, saved())).files.map((file) => [`${file.media.id}:${file.mode}`, near(file.send)]))).toEqual({ "a:smart": [[0, 8]] });
+    fs.rmSync(`${app.store.home}/text-removal.json`);
+    // What ran by itself stays stopped: unmarked seconds of a never go.
+    expect(asks.isStopped(app.store.home, p.id)).toBe(true);
+    // Where the blur took theirs out of the reused d, ours go; the rest of d keeps its own burned in.
+    const fps = 30;
+    const withBlur = structuredClone(saved());
+    withBlur.clips.push(clip({ id: "tb", track: "v9", start: 230 * fps, duration: 3 * fps, type: "adjustment", name: "Text blur · c4" }));
+    expect(subtitledSpans(withBlur, 200 * fps, 260 * fps)).toEqual([[230 * fps, 233 * fps]]);
+    expect(subtitledSpans(saved(), 200 * fps, 260 * fps)).toEqual([]);
+    // The blur's track is kept as a file, a folder an earlier build left in its place taken away (Nov 19: EISDIR, every blur piece failed).
+    await removalSchedule.ensure(app, p.id);
+    await blur.settled();
+    expect(blur.piecesOf(p.id).map((one) => [one.media, one.state, one.why ?? ""])).toEqual([["d", "done", ""]]);
+    const kept = `${app.store.home}/cache/cleaned/tracks`;
+    const files = fs.readdirSync(kept, { recursive: true, withFileTypes: true }).filter((one) => one.name.endsWith(".json"));
+    expect(files.length).toBe(1);
+    expect(files[0]!.isFile()).toBe(true);
+  } finally {
+    await blur.settled();
+    cleanup();
+  }
+});
+
+test("a mode's pieces pack only within its sections: never over another mode's seconds between them (Nov 19: an intro teaser's Smart Pro piece took case 1's Smart seconds)", () => {
+  // Smart Pro stretches at 10–12 s and 40–42 s of a file, case 1's Smart seconds at 20–30 s between them.
+  expect(tr.piecesFor([[10, 12], [40, 42]], 600, 30, [], true).send).toEqual([[9, 43]]);
+  expect(tr.piecesFor([[10, 12], [40, 42]], 600, 30, [], true, [[20, 30]]).send).toEqual([[9, 13], [39, 43]]);
+  // A wall outside the gap changes nothing.
+  expect(tr.piecesFor([[10, 12], [40, 42]], 600, 30, [], true, [[100, 110]]).send).toEqual([[9, 43]]);
 });

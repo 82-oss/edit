@@ -276,7 +276,8 @@ async function startRemoval({ app, args, projectId }: ToolCall): Promise<Content
   let scope: asks.Ask["media"];
   if (args.whole === true) scope = "all";
   else if (from !== null || to !== null) {
-    const between = shownBetween(project, from ?? 0, to ?? Number.MAX_SAFE_INTEGER / 1e6);
+    // What's on the timeline there, a finished video of ours reused included: the person pointed at it.
+    const between = shownBetween(project, from ?? 0, to ?? Number.MAX_SAFE_INTEGER / 1e6, true);
     scope = Object.fromEntries([...between].filter(([id]) => ids.length === 0 || ids.includes(id)));
   } else if (ids.length > 0) scope = Object.fromEntries(ids.map((id) => [id, "all" as const]));
   else throw new Error("say where: whole: true (the whole project, as it grows), case (its number), intro: true, media (footage files), or from/to (timeline seconds)");
@@ -324,10 +325,27 @@ async function markRemoval(app: App, projectId: string, args: Record<string, unk
     const given = stretches(args[name], name);
     if (given.length === 0) continue;
     const media: Record<string, [number, number][]> = {};
-    for (const [from, to] of given) for (const [id, spans] of shownBetween(project, from, to)) media[id] = [...(media[id] ?? []), ...spans];
+    const bare: [number, number][] = [];
+    for (const [from, to] of given) {
+      // Every footage file shown there, under our own see-through subtitles or a finished video of ours reused: the agent saw their text on it.
+      const shown = shownBetween(project, from, to, true);
+      if (shown.size === 0) bare.push([from, to]);
+      for (const [id, spans] of shown) media[id] = [...(media[id] ?? []), ...spans];
+    }
     if (Object.keys(media).length === 0) throw new Error(`${name}: no footage is on the timeline at ${given.map(([a, b]) => `${a}–${b}`).join(", ")}`);
     asks.add(app.store.home, projectId, { at: Date.now(), kinds, media, mark });
-    said.push(`${mark === "add" ? "Marked" : "Unmarked"} ${given.length} stretch${given.length === 1 ? "" : "es"} (${given.reduce((sum, [a, b]) => sum + b - a, 0).toFixed(1)} s)`);
+    // Which files the stretches landed on, so a file that should be there and isn't is seen at once.
+    const files = Object.entries(media)
+      .map(([id, spans]) => ({ name: project.media.find((one) => one.id === id)?.name ?? id, id, seconds: spans.reduce((sum, [a, b]) => sum + b - a, 0) }))
+      .sort((a, b) => b.seconds - a.seconds);
+    const listed = files
+      .slice(0, 8)
+      .map((one) => `${one.id} ${one.seconds.toFixed(1)} s`)
+      .join(", ");
+    said.push(
+      `${mark === "add" ? "Marked" : "Unmarked"} ${given.length} stretch${given.length === 1 ? "" : "es"} (${given.reduce((sum, [a, b]) => sum + b - a, 0).toFixed(1)} s) on ${files.length} file${files.length === 1 ? "" : "s"}: ${listed}${files.length > 8 ? `, and ${files.length - 8} more` : ""}` +
+        (bare.length > 0 ? ` (no footage at ${bare.map(([a, b]) => `${a}–${b}`).join(", ")})` : ""),
+    );
   }
   if (said.length === 0) throw new Error('marks: [{from, to}] (timeline seconds) where their text shows, or "proposed" for every stretch proposed; or unmark: [{from, to}]');
   await ensure(app, projectId);

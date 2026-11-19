@@ -26,6 +26,7 @@
 // count as gone (clean_strips.ts `strippedFrames`).
 
 import * as fs from "node:fs";
+import * as path from "node:path";
 
 import type { App } from "./app.ts";
 import { TRACKED } from "./clean_strips.ts";
@@ -495,7 +496,10 @@ export async function ensure(app: App, id: string, given: BlurPlan[]): Promise<v
             const started = Date.now();
             const samples = await track(plan, from, to, (times) => reader.read(input, size, plan.media.fps || 30, region, times));
             const file = fileOf(app, plan.source, from, to);
-            fs.mkdirSync(join(file, ".."), { recursive: true });
+            // Its folder (paths.join keeps ".." as a name: Nov 19, every track's file was made a folder and its write failed, EISDIR).
+            fs.mkdirSync(path.dirname(file), { recursive: true });
+            // A folder left in its place by a build before: empty, made by that mistake.
+            if (fs.statSync(file, { throwIfNoEntry: false })?.isDirectory() === true) fs.rmSync(file, { recursive: true, force: true });
             fs.writeFileSync(file, JSON.stringify(samples));
             tracks.set(trackKey(plan.source, from, to), samples);
             piece.state = "done";

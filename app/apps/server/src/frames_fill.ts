@@ -20,6 +20,8 @@ export function fillsFrame(project: Project, clip: Clip): boolean {
   if (clip.type !== "video") return false;
   const media = mediaOf(project, clip.media);
   if (media === undefined || (media.kind !== "video" && media.kind !== "image")) return false;
+  // A picture with see-through parts (an effect's subtitles or callouts over the footage: its picture over its alpha) hides nothing it isn't drawn on.
+  if (media.stacked_alpha === true) return false;
   const { width, height } = project.settings;
   const [mw, mh] = [media.width || width, media.height || height];
   const { x, y, scale } = framingAt(clip, 0);

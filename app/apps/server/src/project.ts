@@ -271,8 +271,8 @@ export function subtitledSpans(project: Project, start: number, end: number): [n
           .filter((segment) => segment.kind === "footage")
           .map((segment): [number, number] => [Math.max(segment.start, start), Math.min(segment.end, end)])
           .filter(([from, to]) => to > from);
-  // A reused finished video has its subtitles burned in, whatever the segments say.
-  const reused = reusedSpans(project);
+  // A reused finished video has its subtitles burned in, whatever the segments say; not where they were taken out (its stretch cleaned or blurred: ours go there).
+  const reused = reusedSpans(project).flatMap((span) => withoutCleaned(project, span));
   if (reused.length === 0) return spans;
   const out: [number, number][] = [];
   for (const span of spans) {
@@ -307,6 +307,18 @@ export function reusedMedia(project: Project): Set<string> {
   const out = new Set<string>();
   for (const block of project.script?.blocks ?? []) {
     if (block.kind === "footage" && reusedLabel(block.label) && typeof block.media === "string") out.add(block.media);
+  }
+  return out;
+}
+
+/** Frames [a, b) less those under removal's strips or tracked blurs (clean_strips.ts `NAME`, `TRACKED`: their text gone there). */
+function withoutCleaned(project: Project, [a, b]: [number, number]): [number, number][] {
+  let out: [number, number][] = [[a, b]];
+  for (const clip of project.clips) {
+    const name = clip.name ?? "";
+    if (!((clip.type === "video" && name.startsWith("Subtitles removed · ")) || (clip.type === "adjustment" && name.startsWith("Text blur · ")))) continue;
+    const [from, to] = [clip.start, clipEnd(clip)];
+    out = out.flatMap(([x, y]): [number, number][] => (to <= x || from >= y ? [[x, y]] : ([[x, Math.min(y, from)], [Math.max(x, to), y]] as [number, number][]).filter(([p, q]) => q > p)));
   }
   return out;
 }

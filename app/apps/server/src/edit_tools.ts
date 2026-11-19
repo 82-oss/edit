@@ -2384,7 +2384,7 @@ function removalContext(app: App, p: Project): Args {
       // How each section's text comes out, by itself (Sphe and JJ, Nov 18), the one call that changes it, and what detection proposes for the agent to mark.
       ...(removalLesson.kinds(lesson).vmake.length > 0 ? removalModes.outline(p, app.store.home, textRemoval.proposed(app, p)) : {}),
       pieces: `${done} done, ${out} still being done${waiting > 0 ? `, ${waiting} sent and waiting on vmake.ai (Edit looks again by itself)` : ""}${failed > 0 ? `, ${failed} not clean` : ""}`,
-      ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "The person stopped it (the chat's Stop): what ran by itself doesn't now; only what's asked with start_removal (from/to, media, or whole) is taken out." } : {}),
+      ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "The person stopped it (the chat's Stop): what ran by itself doesn't now; only what's asked or marked since with start_removal (marks, from/to, media, or whole) is taken out." } : {}),
       note:
         (textRemoval.marksOnly(p)
           ? "Their subtitles and text come out only where you mark them (marks above), in the background; their watermarks by themselves as footage is cut. "

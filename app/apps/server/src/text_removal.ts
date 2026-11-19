@@ -304,11 +304,14 @@ function minus(spans: [number, number][], holes: [number, number][]): [number, n
 /**
  * The source seconds of each footage file the timeline shows (visible clips,
  * not under a picture that fills the frame above), by media id: what of
- * `textOf`'s spans is worth cleaning.
+ * `textOf`'s spans is worth cleaning. A finished video of ours a script
+ * reuses (its subtitles burned in) only with `reused`: where the agent or
+ * the person points at it themselves (Nov 19: a compilation's cases 5 and 6,
+ * reused whole, were marked and never sent).
  */
-export function shownSeconds(project: Project): Map<string, [number, number][]> {
+export function shownSeconds(project: Project, reused = false): Map<string, [number, number][]> {
   const fps = fpsOf(project);
-  const ours = reusedMedia(project);
+  const ours = reused ? new Set<string>() : reusedMedia(project);
   const index = (track: string) => project.tracks.findIndex((one) => one.id === track);
   const out = new Map<string, [number, number][]>();
   for (const clip of project.clips) {
@@ -325,8 +328,8 @@ export function shownSeconds(project: Project): Map<string, [number, number][]> 
   return out;
 }
 
-/** The source seconds of each footage file the timeline shows between `from` and `to` (timeline seconds). */
-export function shownBetween(project: Project, from: number, to: number): Map<string, [number, number][]> {
+/** The source seconds of each footage file the timeline shows between `from` and `to` (timeline seconds); `reused` as `shownSeconds`. */
+export function shownBetween(project: Project, from: number, to: number, reused = false): Map<string, [number, number][]> {
   const fps = fpsOf(project);
   const [a, b] = [Math.round(from * fps), Math.round(Math.min(to, Number.MAX_SAFE_INTEGER / 1e6) * fps)];
   // Read only, so the clips alone are new (removal_modes asks this for every section of the edit).
@@ -337,7 +340,7 @@ export function shownBetween(project: Project, from: number, to: number): Map<st
     if (end <= start) return [];
     return [{ ...clip, start, duration: end - start, source_in: clip.source_in + ((start - clip.start) / fps) * clip.speed }];
   });
-  return shownSeconds({ ...project, clips });
+  return shownSeconds({ ...project, clips }, reused);
 }
 
 /** A cleaned piece kept: the file's seconds [from, to) it covers, by which provider, in which mode, where. */
@@ -359,7 +362,7 @@ export interface Cached {
  * small files, three days of the plan, are about 20), never across a piece
  * already cleaned (that's reused, never sent again).
  */
-export function piecesFor(wanted: [number, number][], duration: number, fps: number, cached: Cached[], pack = false): { send: [number, number][]; use: Cached[] } {
+export function piecesFor(wanted: [number, number][], duration: number, fps: number, cached: Cached[], pack = false, walls: [number, number][] = []): { send: [number, number][]; use: Cached[] } {
   const padded = merged(wanted.map(([a, b]): [number, number] => [Math.max(0, a - HANDLE), Math.min(duration, b + HANDLE)]).filter(([a, b]) => b > a));
   const use = cached.filter((one) => padded.some(([a, b]) => one.from < b && a < one.to));
   const left = minus(
@@ -382,15 +385,21 @@ export function piecesFor(wanted: [number, number][], duration: number, fps: num
       send.push([Math.round(from * 1000) / 1000, Math.round(to * 1000) / 1000]);
     }
   }
-  return { send: pack ? packed(send, cached) : send, use };
+  return { send: pack ? packed(send, cached, walls) : send, use };
 }
 
-/** Pieces joined into as few of at most PIECE_SECONDS as fit, the seconds between them sent too, never across a cached piece. */
-export function packed(pieces: [number, number][], cached: Cached[]): [number, number][] {
+/**
+ * Pieces joined into as few of at most PIECE_SECONDS as fit, the seconds
+ * between them sent too, never across a cached piece or a wall (seconds
+ * another section's mode takes: Nov 19, an intro teaser's Smart Pro piece
+ * packed over case 1's Smart seconds between them, so case 1 went in Smart
+ * Pro, out of its scarcer day's files).
+ */
+export function packed(pieces: [number, number][], cached: Cached[], walls: [number, number][] = []): [number, number][] {
   const out: [number, number][] = [];
   for (const [a, b] of [...pieces].sort((x, y) => x[0] - y[0])) {
     const last = out.at(-1);
-    const between = last !== undefined && cached.some((one) => one.from < a && one.to > last[1]);
+    const between = last !== undefined && (cached.some((one) => one.from < a && one.to > last[1]) || walls.some(([x, y]) => x < a && y > last[1]));
     if (last !== undefined && !between && b - last[0] <= PIECE_SECONDS + 1e-6) last[1] = Math.max(last[1], b);
     else out.push([a, b]);
   }
@@ -682,6 +691,23 @@ function writeKept(home: string, kept: Kept): void {
 function outstanding(home: string, key: string): Out | null {
   const one = readKept(home).out?.[key];
   return one === undefined || typeof one.tries !== "number" ? null : one;
+}
+
+/**
+ * The pieces of `source` in vmake.ai's hands now (sent, not given up on), by
+ * their seconds and mode: a plan keeps them as they are, so a change in how
+ * pieces are cut never sends their seconds again nor leaves a paid card
+ * behind (Nov 19: section walls cut a 267 s Smart Pro piece that was out).
+ */
+function inHandsOf(home: string, source: string): { from: number; to: number; mode: web.Mode }[] {
+  const out: { from: number; to: number; mode: web.Mode }[] = [];
+  for (const [key, one] of Object.entries(readKept(home).out ?? {})) {
+    if (!key.startsWith(`${source}|`) || one?.sent === false || one?.lost === true) continue;
+    const rest = key.slice(source.length + 1).split("|");
+    const [from, to] = [Number(rest[0]), Number(rest[1])];
+    if (Number.isFinite(from) && Number.isFinite(to) && to > from) out.push({ from, to, mode: rest[2] === "smart" ? "smart" : "pro" });
+  }
+  return out;
 }
 
 function setOutstanding(home: string, key: string, out: Omit<Out, "at"> | null): void {
@@ -1119,7 +1145,7 @@ export const stripMode = (strip: Pick<Media, "name">): web.Mode => (strip.name.e
 const SMART_STRIP = " · Smart";
 
 /** Each footage file's seconds by the mode they're cleaned in (removal_modes.ts). */
-export const modesOf = (app: App, project: Project): modes.ByMode => modes.byMode(project, app.store.home, (from, to) => shownBetween(project, from, to));
+export const modesOf = (app: App, project: Project): modes.ByMode => modes.byMode(project, app.store.home, (from, to) => shownBetween(project, from, to, true));
 
 /** The lesson as it applies to `project` now (its parts that run by themselves, and those asked for: removal_asks.ts). */
 export const inForceOf = (app: App, project: Pick<Project, "id" | "channel">): removal.Lesson | null => asks.inForce(lessonOf(project), app.store.home, project.id);
@@ -1164,17 +1190,25 @@ function wantedOf(app: App, project: Project): { wanted: Wanted[]; reading: stri
     }
   }
   const marks = marking ? asks.marked(app.store.home, project.id, proposals) : new Map<string, [number, number][]>();
-  for (const [id, shown] of shownSeconds(project)) {
+  // The agent's own in and out points, which never wait on detection (a file not read yet still sends what it marked there).
+  const explicit = marking ? asks.marked(app.store.home, project.id) : new Map<string, [number, number][]>();
+  const ours = reusedMedia(project);
+  const pointed = asks.pointedAt(app.store.home, project.id);
+  for (const [id, shown] of shownSeconds(project, true)) {
+    // A finished video of ours, reused: only where it's marked or asked for by name.
+    if (ours.has(id) && !(marking ? marks.has(id) : pointed.has(id))) continue;
     const media = project.media.find((one) => one.id === id)!;
     // Each part on the seconds it covers: all the timeline shows for one that runs by itself, what was asked for else.
     const found: [number, number][] = [];
     const kinds: removal.Kind[] = [];
-    let unread = marking && unreadIds.has(id);
+    // Waiting on detection's proposals only when the agent marked nothing of this file itself.
+    let unread = marking && unreadIds.has(id) && (explicit.get(id) ?? []).length === 0;
+    const marksHere = marking && unreadIds.has(id) ? explicit : marks;
     for (const kind of removal.kinds(lesson).vmake) {
       if (unread) break;
       const within = asks.scope(taught, app.store.home, project.id, kind, id, shown);
       if (within.length === 0) continue;
-      const spans = marking ? (marks.get(id) ?? []) : textOf(media, cameraFromReads(media, null), removal.only(lesson, [kind]));
+      const spans = marking ? (marksHere.get(id) ?? []) : textOf(media, cameraFromReads(media, null), removal.only(lesson, [kind]));
       if (spans === undefined) {
         unread = true;
         break;
@@ -1189,6 +1223,7 @@ function wantedOf(app: App, project: Project): { wanted: Wanted[]; reading: stri
       void burned.warm(app.media, media);
       continue;
     }
+    if (marking && unreadIds.has(id)) void burned.warm(app.media, media);
     const spans = merged(found);
     if (spans.length > 0) wanted.push({ media, spans, kinds });
   }
@@ -1266,11 +1301,14 @@ export async function plan(app: App, project: Project, provider: Provider | null
     // Their text's seconds by the mode their sections give them: Smart Pro's, Smart's; the blur's (a third case on) are text_blur.ts's.
     const by = sections.get(media.id) ?? { pro: [], smart: [], blur: [] };
     const asked = { pro: modes.intersect(wanted, by.pro), smart: modes.intersect(wanted, by.smart) };
+    // Each mode's pieces packed only within its own sections: never over the seconds another mode takes between them.
+    const walls = { pro: modes.intersect(wanted, [...by.smart, ...by.blur]), smart: modes.intersect(wanted, [...by.pro, ...by.blur]) };
     if (asked.pro.length === 0 && asked.smart.length === 0) continue;
     const source = await sourceOf(media);
     // A piece given up on (twice not clean) stays blurred: never sent again in this project.
     const given = [...(textPieces.get(project.id)?.values() ?? [])].filter((one) => one.media === media.id && one.state === "failed").map((one): Cached => ({ from: one.from, to: one.to, provider: "vmake-api", mode: "pro", key: "" }));
     const cached = [...(await listed(app, source)), ...given];
+    const inHands = inHandsOf(app.store.home, source);
     // Paid by the file: a short one goes whole (one file either way), in the better mode it needs; never past the agent's marks.
     const whole = provider?.wholeFiles === true && !marksOnly(project) && (media.duration ?? 0) <= PIECE_SECONDS;
     // Pieces already in the project as strips (or given up on) need nothing.
@@ -1283,10 +1321,14 @@ export async function plan(app: App, project: Project, provider: Provider | null
       // A Smart result never stands in for Smart Pro; Smart Pro's (every result from before) does for Smart.
       // A Smart result wholly inside a Smart Pro one adds nothing: the better one's laid.
       const inside = (one: Cached) => one.mode === "smart" && cached.some((other) => other.mode === "pro" && other.key !== "" && other.from <= one.from + 0.01 && other.to >= one.to - 0.05);
-      const fits = [...cached.filter((one) => one.key === "" || (serves(one, mode) && !inside(one))), ...planned];
-      const { send, use } = piecesFor(whole ? [[HANDLE, Math.max(HANDLE, (media.duration ?? 0) - HANDLE)]] : asked[mode], media.duration ?? 0, media.fps || fpsOf(project), fits, provider?.wholeFiles === true);
+      // What's out at vmake.ai for these seconds in this mode goes on as it was sent.
+      const out = inHands.filter((one) => one.mode === mode && modes.intersect([[one.from, one.to]], asked[mode]).length > 0 && !cached.some((done) => done.key !== "" && Math.abs(done.from - one.from) < 0.01 && Math.abs(done.to - one.to) < 0.05));
+      const going = out.map((one): Cached => ({ from: one.from, to: one.to, provider: "vmake-api", mode, key: "" }));
+      const fits = [...cached.filter((one) => one.key === "" || (serves(one, mode) && !inside(one))), ...planned, ...going];
+      const { send: fresh, use } = piecesFor(whole ? [[HANDLE, Math.max(HANDLE, (media.duration ?? 0) - HANDLE)]] : asked[mode], media.duration ?? 0, media.fps || fpsOf(project), fits, provider?.wholeFiles === true, walls[mode]);
       const used = use.filter((one) => one.key !== "" && !taken.has(one.key) && !have.some((strip) => Math.abs(strip.cleans!.from - one.from) < 0.01 && Math.abs(strip.cleans!.to - one.to) < 0.05 && serves({ mode: stripMode(strip) }, mode)));
       for (const one of used) taken.add(one.key);
+      const send = [...going.map((one): [number, number] => [one.from, one.to]), ...fresh].sort((a, b) => a[0] - b[0]);
       planned.push(...send.map(([from, to]): Cached => ({ from, to, provider: "vmake-api", mode, key: "" })));
       if (send.length > 0 || used.length > 0) files.push({ media, source, send, use: used, kinds, mode });
       if (whole) break;
