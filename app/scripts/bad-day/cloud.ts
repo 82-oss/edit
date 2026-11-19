@@ -110,6 +110,14 @@ export class Cloud {
   relayCopies = true;
   /** Told of each R2 GET's key as it comes in (before it's answered). */
   beforeR2Get: ((key: string) => void) | null = null;
+  /** Told of each R2 PUT's key (a part's too) as it comes in; a Response given answers it instead (an upload refused). */
+  beforeR2Put: ((key: string) => Response | null | void) | null = null;
+  /** Told of each Convex function a call through the relay names (`reviews:publish`…), before it's answered. */
+  beforeConvex: ((path: string) => void) | null = null;
+  /** Repack's reviews (the `reviews:` functions a share calls), by the project shared. */
+  readonly reviews = new Map<string, { reviewId: string; url: string; versions: { n: number; deleted: boolean; key: string; meta: Record<string, unknown> | null; at: number }[] }>();
+  /** Every `reviews:publish` answered, in order. */
+  readonly published: { at: number; project: string; version: number; key: string }[] = [];
   private server: ReturnType<typeof Bun.serve> | null = null;
   private objectsDir: string;
   /** The MP3 a voice is answered with. */
@@ -406,6 +414,10 @@ export class Cloud {
       } else if (needsSignIn(path) && entry.auth !== "good") {
         // As the live relay (and its Google gateway) answers a call without a good sign-in.
         answered = { response: Response.json({ error: "Sign in to Edit." }, { status: 401 }), bytes: () => 0 };
+      } else if (path === "/v1/cloud/convex" && raw !== undefined && (answered = this.convexHook(raw)) !== null) {
+        // Repack's reviews, answered here (the tests' mock takes edit: functions only).
+      } else if (path.startsWith("/r2/") && request.method === "PUT" && this.beforeR2Put !== null && (answered = this.putHook(path)) !== null) {
+        // An upload refused by the case.
       } else if (path === "/v1/speech" && this.speech !== "") {
         // A voice: two seconds of silence, a real MP3 (the tests' mock answers four bytes).
         answered = { response: new Response(Bun.file(this.speech), { headers: { "content-type": "audio/mpeg" } }), bytes: () => 0 };
@@ -441,6 +453,39 @@ export class Cloud {
     const bytes = answered.bytes;
     Object.defineProperty(entry, "bytes", { get: bytes, enumerable: true });
     return answered.response;
+  }
+
+  /** A Convex call through the relay: told to the case, and answered here when it's one of Repack's `reviews:`. */
+  private convexHook(raw: Uint8Array): { response: Response; bytes: () => number } | null {
+    let body: { path?: unknown; args?: Record<string, unknown> } = {};
+    try {
+      body = JSON.parse(new TextDecoder().decode(raw)) as typeof body;
+    } catch {
+      return null;
+    }
+    const path = typeof body.path === "string" ? body.path : "";
+    this.beforeConvex?.(path);
+    if (!path.startsWith("reviews:")) return null;
+    const args = body.args ?? {};
+    const project = String(args.sourceId ?? "");
+    const success = (value: unknown) => ({ response: Response.json({ status: "success", value }), bytes: () => 0 });
+    if (path === "reviews:get") return success(this.reviews.get(project) ?? null);
+    if (path === "reviews:publish") {
+      const review = this.reviews.get(project) ?? { reviewId: `review-${this.reviews.size + 1}`, url: `https://review.bad-day.invalid/r/${this.reviews.size + 1}`, versions: [] };
+      const version = review.versions.reduce((most, one) => Math.max(most, one.n), 0) + 1;
+      review.versions.push({ n: version, deleted: false, key: String(args.key ?? ""), meta: (args.meta ?? null) as Record<string, unknown> | null, at: Date.now() });
+      this.reviews.set(project, review);
+      this.published.push({ at: Date.now(), project, version, key: String(args.key ?? "") });
+      return success({ reviewId: review.reviewId, url: review.url, version });
+    }
+    // setMeta, compress, status, checkIn…: taken, nothing to say.
+    return success(null);
+  }
+
+  private putHook(path: string): { response: Response; bytes: () => number } | null {
+    const key = path.slice("/r2/".length).split("/").map(decodeURIComponent).join("/");
+    const answer = this.beforeR2Put?.(key);
+    return answer instanceof Response ? { response: answer, bytes: () => 0 } : null;
   }
 
   private mockPort(): number {

@@ -11,6 +11,14 @@
 // past HIGH bytes queued), so a slow line is slow end to end, and it counts
 // the bytes it hands Edit by the request they answer (read from each request
 // line on the way in): what Edit really fetched, not what a stand-in sent.
+//
+// A slowed line is shared fairly between the connections with bytes
+// waiting, as a router's queues share it. One limit of a program on
+// loopback: the kernel's buffers (here up to 32 MB a socket) take a big
+// upload's part in one gulp, so curl sees no progress for as long as the
+// line takes to carry it, and stops past its own 60 s (1 kB/s) limit. Slow
+// the way up only as far as a 16 MB part still crosses in well under a
+// minute (16 Mbit/s or more), or for uploads of a few megabytes.
 
 import * as net from "node:net";
 
@@ -44,10 +52,13 @@ interface Pipe {
   sentDown: number;
   /** The path of the request the bytes toward Edit answer now. */
   path: string;
-  request: { bytes: number } | null;
+  request: { bytes: number; up: number } | null;
   closed: boolean;
   /** The stand-in ended its side: what's queued still goes to Edit, then this closes. */
   closing: boolean;
+  /** Bytes moved each way this tick, against its fair share of a slowed line. */
+  usedUp: number;
+  usedDown: number;
 }
 
 const HIGH = 64 * 1024;
@@ -63,16 +74,22 @@ export class Line {
   connections = 0;
   /** Bytes handed to Edit, by the path (no query) of the request they answered. */
   readonly byPath = new Map<string, number>();
+  /** Bytes Edit sent through (an upload's body with its request), by the path of the request they belong to. */
+  readonly byPathUp = new Map<string, number>();
   /** Files (any text a request names: its path, query or body) whose every request is cut off, as a line cut for them alone: the connection drops as the request goes out. */
   readonly cutOff = new Set<string>();
   /** Every request seen on the way in, and the bytes handed back for it. */
-  readonly requests: { at: number; pipe: number; line: string; range: string; bytes: number }[] = [];
+  readonly requests: { at: number; pipe: number; line: string; range: string; bytes: number; up: number }[] = [];
   private pipes = new Set<Pipe>();
   private server: net.Server | null = null;
   private nextId = 1;
   private ticker: ReturnType<typeof setInterval>;
   private allowDown = 0;
   private allowUp = 0;
+  /** Each connection's share of a slowed line this tick: the bucket split between those with bytes waiting, as a router's queues share it. */
+  private fairDown = Number.POSITIVE_INFINITY;
+  private fairUp = Number.POSITIVE_INFINITY;
+  private turn = 0;
   private readonly tickMs = 20;
 
   constructor(
@@ -98,6 +115,13 @@ export class Line {
   sent(prefix: string): number {
     let sum = 0;
     for (const [path, bytes] of this.byPath) if (path.startsWith(prefix)) sum += bytes;
+    return sum;
+  }
+
+  /** Bytes Edit sent for requests whose path starts with `prefix` (uploads, counted as they cross). */
+  sentUp(prefix: string): number {
+    let sum = 0;
+    for (const [path, bytes] of this.byPathUp) if (path.startsWith(prefix)) sum += bytes;
     return sum;
   }
 
@@ -135,7 +159,7 @@ export class Line {
       return;
     }
     const server = net.connect(this.target, "127.0.0.1");
-    const pipe: Pipe = { id: this.nextId++, client, server, toServer: [], toClient: [], queuedServer: 0, queuedClient: 0, sentDown: 0, path: "", request: null, closed: false, closing: false };
+    const pipe: Pipe = { id: this.nextId++, client, server, toServer: [], toClient: [], queuedServer: 0, queuedClient: 0, sentDown: 0, path: "", request: null, closed: false, closing: false, usedUp: 0, usedDown: 0 };
     this.pipes.add(pipe);
     client.on("data", (data: Buffer) => {
       if (this.cutOff.size > 0) {
@@ -151,7 +175,7 @@ export class Line {
       const request = REQUEST.exec(data.toString("latin1", 0, Math.min(data.length, 2048)));
       if (request !== null) {
         const head = data.toString("latin1", 0, Math.min(data.length, 4096));
-        const entry = { at: Date.now(), pipe: pipe.id, line: `${request[1]} ${request[2]!.split("?")[0]}`, range: /\r\nrange: *([^\r]*)/i.exec(head)?.[1] ?? "", bytes: 0 };
+        const entry = { at: Date.now(), pipe: pipe.id, line: `${request[1]} ${request[2]!.split("?")[0]}`, range: /\r\nrange: *([^\r]*)/i.exec(head)?.[1] ?? "", bytes: 0, up: 0 };
         this.requests.push(entry);
         pipe.request = entry;
         try {
@@ -199,7 +223,18 @@ export class Line {
     // A bucket holds at most a quarter second's bytes, so a pause doesn't bank a burst.
     if (down > 0) this.allowDown = Math.min(this.allowDown + (down * this.tickMs) / 1000, Math.max(down / 4, 1500));
     if (up > 0) this.allowUp = Math.min(this.allowUp + (up * this.tickMs) / 1000, Math.max(up / 4, 1500));
-    for (const pipe of this.pipes) this.flush(pipe);
+    // Shared fairly: one connection's big upload never starves another's small request.
+    const pipes = [...this.pipes];
+    const waitingUp = pipes.filter((pipe) => pipe.toServer.length > 0).length;
+    const waitingDown = pipes.filter((pipe) => pipe.toClient.length > 0).length;
+    this.fairUp = Math.max(1500, this.allowUp / Math.max(1, waitingUp));
+    this.fairDown = Math.max(1500, this.allowDown / Math.max(1, waitingDown));
+    this.turn = (this.turn + 1) % Math.max(1, pipes.length);
+    for (const pipe of [...pipes.slice(this.turn), ...pipes.slice(0, this.turn)]) {
+      pipe.usedUp = 0;
+      pipe.usedDown = 0;
+      this.flush(pipe);
+    }
   }
 
   private flush(pipe: Pipe): void {
@@ -216,7 +251,7 @@ export class Line {
     const rate = way === "toServer" ? this.shape.up : this.shape.down;
     while (queue.length > 0 && !to.writableNeedDrain) {
       let chunk = queue[0]!;
-      let allow = rate > 0 ? Math.floor(way === "toServer" ? this.allowUp : this.allowDown) : chunk.length;
+      let allow = rate > 0 ? Math.floor(way === "toServer" ? Math.min(this.allowUp, this.fairUp - pipe.usedUp) : Math.min(this.allowDown, this.fairDown - pipe.usedDown)) : chunk.length;
       if (way === "toClient" && this.shape.cutAfter > 0) {
         if (pipe.sentDown >= this.shape.cutAfter) {
           this.log(`line cut connection ${pipe.id} after ${pipe.sentDown} bytes`);
@@ -235,8 +270,11 @@ export class Line {
       to.write(chunk);
       if (way === "toServer") {
         this.bytesUp += chunk.length;
+        this.byPathUp.set(pipe.path, (this.byPathUp.get(pipe.path) ?? 0) + chunk.length);
+        if (pipe.request !== null) pipe.request.up += chunk.length;
         pipe.queuedServer -= chunk.length;
         if (rate > 0) this.allowUp -= chunk.length;
+        pipe.usedUp += chunk.length;
         if (pipe.queuedServer < LOW) pipe.client.resume();
       } else {
         this.bytesDown += chunk.length;
@@ -245,6 +283,7 @@ export class Line {
         this.byPath.set(pipe.path, (this.byPath.get(pipe.path) ?? 0) + chunk.length);
         if (pipe.request !== null) pipe.request.bytes += chunk.length;
         if (rate > 0) this.allowDown -= chunk.length;
+        pipe.usedDown += chunk.length;
         if (pipe.queuedClient < LOW) pipe.server.resume();
       }
     }

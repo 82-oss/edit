@@ -7,6 +7,7 @@ import type { footage } from "../footage.ts";
 import type { Line } from "../line.ts";
 
 import { scriptCases } from "./script_mode.ts";
+import { change7Cases } from "./change7.ts";
 import { cutCases } from "./cuts.ts";
 import { stubs } from "./stubs.ts";
 
@@ -50,4 +51,4 @@ export interface Case {
   run(context: Context): Promise<void>;
 }
 
-export const cases: Case[] = [...scriptCases, ...cutCases, ...stubs];
+export const cases: Case[] = [...scriptCases, ...cutCases, ...change7Cases, ...stubs];

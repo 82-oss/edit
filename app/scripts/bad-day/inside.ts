@@ -113,6 +113,9 @@ async function runCase(one: Case, made: ReturnType<typeof footage>, index: numbe
   // Signed in before the case starts, as the team is: a refresh token kept as Edit keeps it off macOS.
   const account = `home-${new Bun.CryptoHasher("sha256").update(real).digest("hex").slice(0, 16)}`;
   fs.writeFileSync(join(real, "sign-in.json"), JSON.stringify({ [account]: cloud.newSignIn() }), { mode: 0o600 });
+  // Exports go into the home: the suggested ~/Videos/Edit is read-only in here, as the rest of the disk is.
+  fs.mkdirSync(join(real, "exports"), { recursive: true });
+  fs.writeFileSync(join(real, "export-folder.json"), `${JSON.stringify({ path: join(real, "exports") })}\n`);
   const edit = new Edit({
     server: SERVER,
     home: real,
