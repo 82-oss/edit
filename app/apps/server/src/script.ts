@@ -2052,8 +2052,23 @@ async function runMoving(command: string[], what: string, progress: () => number
   });
 }
 
-/** Seconds of a file (or a presigned URL's object). */
+/**
+ * Seconds of a file (or a presigned URL's object). Over the network a read that comes back empty or fails is asked
+ * once more a moment later: a connection the Mac's sleep (or a frozen process) left dead answers nothing the first
+ * time (the bad-day run's frozen-cut, Nov 19: "couldn't read the footage in the cloud" straight after the wake).
+ */
 export async function durationOf(path: string): Promise<number> {
+  if (!tools.isUrl(path)) return durationOnce(path);
+  try {
+    return await durationOnce(path);
+  } catch (error) {
+    if (error instanceof steps.StepTimedOut) throw error;
+    await timing.sleep(2_000);
+    return durationOnce(path);
+  }
+}
+
+async function durationOnce(path: string): Promise<number> {
   let output: { stdout: string };
   try {
     output = await runTool(
@@ -2246,7 +2261,11 @@ export async function cut(source: string, start: number, to: number, out: string
     diag.warn("script", `cutting an excerpt: ${diag.scrub(trim(output.stderr))}`);
     fs.rmSync(out, { force: true });
     // A full disk is a wait of its own, said as such (failure.ts `room`), never a cut that "couldn't" be made.
-    if (/No space left on device/iu.test(output.stderr)) throw new failure.NoRoom(0, `This computer is out of room to cut the footage's excerpts: make room, and Edit goes on by itself.`);
+    if (/No space left on device/iu.test(output.stderr)) {
+      // How much the cut needs, from the footage's bit rate (asked only now), so the line can say it.
+      const need = await bitRateOf(source).then((rate) => (rate === null ? 0 : Math.ceil(((to - start) * rate) / 8 / 1e6) * 1e6), () => 0);
+      throw new failure.NoRoom(need, need > 0 ? `Needs about ${need >= 1e9 ? `${(need / 1e9).toFixed(1)} GB` : `${Math.round(need / 1e6)} MB`} free on this computer to cut the footage's excerpts: make room, and Edit goes on by itself.` : "This computer is out of room to cut the footage's excerpts: make room, and Edit goes on by itself.");
+    }
     throw new Error("Couldn't cut an excerpt from the footage.");
   }
   const problem = await excerptProblem(source, start, to, out);
@@ -2278,6 +2297,13 @@ export async function excerptProblem(source: string, start: number, to: number, 
   const whole = await secondsOf(source);
   if (whole !== null && whole - start <= got + leeway) return null;
   return `it runs ${got.toFixed(1)} s, not ${asked.toFixed(1)} s`;
+}
+
+/** The footage's bit rate in bits a second (its container's), or null. */
+async function bitRateOf(path: string): Promise<number | null> {
+  const output = await runTool([tools.ffprobe(), "-v", "error", "-protocol_whitelist", tools.protocols(path), "-show_entries", "format=bit_rate", "-of", "csv=p=0", ...tools.urlArgs(path), path], steps.probeLimit(path), "Reading the footage's bit rate");
+  const rate = parseF64(trim(output.stdout));
+  return rate !== null && rate > 0 ? rate : null;
 }
 
 /** How far a cut's copied picture is shown after it's decoded (its first frame's pts less its dts), 0 with none. */
@@ -2551,7 +2577,7 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
             else delete entry.retry_at;
           } else delete entry.retry_at;
         }
-        if (byItself) job.error = waitingLine(whys, missing.length, files.length, retryAt);
+        if (byItself) job.error = waitingLine(whys, missing.length, files.length, retryAt, missing.map((index) => errors[index]));
         else job.error = `${asked} of ${files.length} footage files couldn't be downloaded`;
         if (retryAt !== null) job.retry_at = retryAt;
         else delete job.retry_at;
@@ -2637,7 +2663,7 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
 class CreditWait extends Error {}
 
 /** The import's line while it waits by itself. */
-function waitingLine(whys: steps.Why[], missing: number, total: number, retryAt: number | null): string {
+function waitingLine(whys: steps.Why[], missing: number, total: number, retryAt: number | null, errors: unknown[] = []): string {
   const files = `${missing} of ${total} footage files`;
   if (whys.includes("quota")) return `The transcription plan is out of credit: ${files} wait for it${retryAt === null ? "" : `; Edit tries again at ${clockTime(retryAt)}`}.`;
   if (whys.includes("limit")) {
@@ -2645,7 +2671,11 @@ function waitingLine(whys: steps.Why[], missing: number, total: number, retryAt:
     return `Google Drive's download limit is used up for today for ${one ? "a footage file" : "some footage files"}: Edit tries again by itself${retryAt === null ? "" : ` at ${when(retryAt)}`}. To go on sooner, replace ${one ? "it" : "them"} with a copy's link (Make a copy in Drive).`;
   }
   if (whys.includes("encoder")) return `The hardware encoder is busy with an export: ${files} wait until it's free.`;
-  if (whys.includes("room")) return `This computer is out of room: ${files} wait, and Edit tries again by itself once there's room${retryAt === null ? "" : ` (next at ${clockTime(retryAt)})`}.`;
+  if (whys.includes("room")) {
+    // The room asked for, when a cut said it ("Needs about 85 MB free on this computer…").
+    const needs = errors.map((error) => (error instanceof failure.NoRoom && error.needBytes > 0 ? error.message : null)).find((said) => said !== null);
+    return `${needs ?? "This computer is out of room."} ${files} wait, and Edit tries again by itself once there's room${retryAt === null ? "" : ` (next at ${clockTime(retryAt)})`}.`;
+  }
   // Whatever passes (a dropped connection, a busy Google): tried again by itself, nothing for the person to do.
   return `Trying ${missing === 1 ? "a file" : `${missing} files`} again${retryAt === null ? "" : ` at ${clockTime(retryAt)}`}`;
 }

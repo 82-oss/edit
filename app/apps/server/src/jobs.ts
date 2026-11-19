@@ -590,8 +590,21 @@ export function wakePassing(home: string, why: string): string[] {
 export const WAKE_MS = { value: 30_000 };
 const waking = new Map<string, ReturnType<typeof setInterval>>();
 
+/** What waking waits for first, by data folder: the sign-in's renewal after the machine woke (serve.ts). */
+const holds = new Map<string, Promise<unknown>>();
+
+/** The table's waking waits for `until` (a wake's renewal) before it starts anything that fell due meanwhile. */
+export function holdWaking(home: string, until: Promise<unknown>): void {
+  const held = until.catch(() => undefined).finally(() => {
+    if (holds.get(home) === held) holds.delete(home);
+  });
+  holds.set(home, held);
+}
+
 /** Starts the waiting jobs that are due now (the timer does this every `WAKE_MS`; tests call it). */
-export function wake(home: string, kinds?: readonly Kind[]): Promise<void> {
+export async function wake(home: string, kinds?: readonly Kind[]): Promise<void> {
+  const held = holds.get(home);
+  if (held !== undefined) await held;
   const resumers = registered.get(home);
   if (resumers === undefined) return Promise.resolve();
   const list = dueNow(home, kinds);
@@ -602,7 +615,16 @@ export function wake(home: string, kinds?: readonly Kind[]): Promise<void> {
 /** Wakes the waiting jobs as they fall due, from now until Edit quits. */
 function keepWaking(home: string): void {
   if (waking.has(home)) return;
-  const timer = setInterval(() => void wake(home).catch((error: unknown) => diag.warn("jobs", `waking waiting jobs: ${diag.messageOf(error)}`)), WAKE_MS.value);
+  let last = Date.now();
+  const timer = setInterval(() => {
+    const now = Date.now();
+    const gap = now - last;
+    last = now;
+    // Late by more than a beat: the machine slept or was frozen. The wake's own listener renews the sign-in first and
+    // then wakes what fell due (serve.ts); this tick leaves it to that, so nothing goes before the token is back.
+    if (gap > WAKE_MS.value * 2 + 10_000) return;
+    void wake(home).catch((error: unknown) => diag.warn("jobs", `waking waiting jobs: ${diag.messageOf(error)}`));
+  }, WAKE_MS.value);
   timer.unref?.();
   waking.set(home, timer);
 }

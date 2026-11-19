@@ -27,7 +27,6 @@ import * as scriptSync from "./script_sync.ts";
 import { registerEditingTools, unfinishedNote } from "./edit_tools.ts";
 import { archiveGoing, archiveJob, dropLeftSnapshot, ExportRegistry, room as exportRoom, resumeSnapshot, type ExportRecord, type StartExtra } from "./exports.ts";
 import * as encoder from "./encoder.ts";
-import * as failure from "./failure.ts";
 import * as jobs from "./jobs.ts";
 import * as missingMediaTries from "./missing_media.ts";
 import * as outages from "./outages.ts";
@@ -544,10 +543,19 @@ function optional(area: string, work: () => void): void {
  */
 function wakeAfterTrouble(app: App): void {
   wake.onWake((sleptMs) => {
-    void (async () => {
-      if (accounts.hasSession()) await Promise.race([accounts.renew().catch(() => undefined), Bun.sleep(failure.scaled(20_000))]);
-      jobs.wakePassing(app.store.home, `the machine woke after ${diag.human(sleptMs)}`);
+    // Nothing that fell due is woken until the sign-in is back (its first tries can fail: the network comes back
+    // seconds after a wake), up to two minutes; the table's own timer holds meanwhile (jobs.holdWaking).
+    const renewed = (async () => {
+      if (!accounts.hasSession()) return;
+      const until = Date.now() + 120_000;
+      for (;;) {
+        await accounts.renew().catch(() => undefined);
+        if (accounts.accessToken() !== null || Date.now() > until || !accounts.hasSession()) return;
+        await Bun.sleep(5_000);
+      }
     })();
+    jobs.holdWaking(app.store.home, renewed);
+    void renewed.then(() => jobs.wakePassing(app.store.home, `the machine woke after ${diag.human(sleptMs)}`));
   });
   outages.onBack((destination) => void jobs.wakePassing(app.store.home, `${destination === "relay" ? "Edit's relay" : "R2"} answers again`));
 }

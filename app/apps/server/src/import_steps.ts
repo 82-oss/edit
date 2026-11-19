@@ -145,9 +145,9 @@ export const STILL_MS = { value: 5 * 60_000 };
  */
 export async function whileMoving<T>(what: string, progress: () => number, work: (signal: AbortSignal) => Promise<T>, stillMs = STILL_MS.value): Promise<T> {
   const stop = new AbortController();
-  // Never under half a minute, the bad-day speed switch included: FFmpeg reads a file's index and front (megabytes)
-  // before its output grows at all.
-  const still = Math.max(failure.scaled(stillMs), Math.min(stillMs, 30_000));
+  // Never under two minutes, the bad-day speed switch included: FFmpeg reads a file's index and front (megabytes,
+  // shared by the cuts beside it on a slow line) before its output grows at all.
+  const still = Math.max(failure.scaled(stillMs), Math.min(stillMs, 120_000));
   const beat = Math.max(Math.min(5_000, Math.floor(still / 10)), 20);
   let seen = progress();
   let movedAt = Date.now();
