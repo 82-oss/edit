@@ -194,6 +194,9 @@ export async function removerJobs(request: Request, url: URL, env: RemoverEnv): 
     const backlog = typeof body.backlog === "number" && Number.isFinite(body.backlog) ? Math.min(Math.max(0, body.backlog), 86_400) : 0;
     const answer = await ask(queue, "/enqueue", { id, kind, out, worker: kind === "clean" ? body.worker : undefined, request: job, relay: url.origin, backlog });
     if (!answer.ok) return answer;
+    // The same job already queued or under way (Edit restarted mid-job and sent it again): that one, not a twin.
+    const twin = (await answer.json()) as { id?: string; out?: string };
+    if (typeof twin.id === "string" && typeof twin.out === "string") return json(202, { id: twin.id, out: twin.out });
     console.log(JSON.stringify({ route: "remover/jobs", queued: id, kind, input: job.input }));
     return json(202, { id, out });
   }
@@ -219,6 +222,8 @@ interface Job {
   startedAt?: number;
   output?: Record<string, unknown>;
   at: number;
+  /** Its request's hash: the same job sent again is this one while it's queued or under way. */
+  twin?: string;
 }
 
 interface Pod {
@@ -307,12 +312,20 @@ export class RemoverPods {
 
   private async enqueue(body: Record<string, unknown>): Promise<Response> {
     const kind = body.kind as Kind;
-    const job: Job = { id: String(body.id), kind, out: String(body.out), ...(typeof body.worker === "string" ? { worker: body.worker } : {}), request: body.request as Record<string, unknown>, state: "queued", tries: 0, at: Date.now() };
-    await this.storage().put(`j:${job.id}`, job);
-    await this.setOrder(poolOf(kind), [...(await this.order(poolOf(kind))), job.id]);
-    if (typeof body.relay === "string") await this.storage().put("relay", body.relay);
     // What Edit still holds back for the GPU (it sends a few at a time): what more GPUs are rented by.
     if (kind === "clean") await this.storage().put("backlog:gpu", { seconds: typeof body.backlog === "number" ? body.backlog : 0, at: Date.now() });
+    // A job the same as one queued or under way is that one (Nov 20: a restarted Edit sent SMART Cops' ten running
+    // cleans again, and the GPU did each twice, the first for nobody).
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([kind, body.worker ?? null, body.request])));
+    const twin = [...new Uint8Array(digest)].slice(0, 16).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    const earlier = await this.storage().get<string>(`twin:${twin}`);
+    const before = earlier === undefined ? undefined : await this.storage().get<Job>(`j:${earlier}`);
+    if (before !== undefined && (before.state === "queued" || before.state === "running")) return json(200, { ok: true, id: before.id, out: before.out });
+    const job: Job = { id: String(body.id), kind, out: String(body.out), ...(typeof body.worker === "string" ? { worker: body.worker } : {}), request: body.request as Record<string, unknown>, state: "queued", tries: 0, at: Date.now(), twin };
+    await this.storage().put(`j:${job.id}`, job);
+    await this.storage().put(`twin:${twin}`, job.id);
+    await this.setOrder(poolOf(kind), [...(await this.order(poolOf(kind))), job.id]);
+    if (typeof body.relay === "string") await this.storage().put("relay", body.relay);
     await this.tend();
     return json(200, { ok: true });
   }
@@ -488,7 +501,11 @@ export class RemoverPods {
     await this.storage().put("pods", pods);
     // Jobs a day old are forgotten (Edit has long taken what they made).
     const jobs = await this.storage().list<Job>({ prefix: "j:" });
-    for (const [key, job] of jobs) if ((job.state === "done" || job.state === "failed" || job.state === "cancelled") && now - job.at > 86400_000) await this.storage().delete(key);
+    for (const [key, job] of jobs) {
+      if (!((job.state === "done" || job.state === "failed" || job.state === "cancelled") && now - job.at > 86400_000)) continue;
+      await this.storage().delete(key);
+      if (job.twin !== undefined) await this.storage().delete(`twin:${job.twin}`);
+    }
     if (busy || Object.keys(pods).length > 0) await this.storage().setAlarm(now + 30_000);
     else await this.storage().deleteAlarm();
   }
