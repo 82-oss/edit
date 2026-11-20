@@ -35,6 +35,7 @@ import { clipEnd, fps as fpsOf, trackOf } from "./project.ts";
 import { isOverlay } from "./clean_strips.ts";
 import * as asks from "./removal_asks.ts";
 import * as removal from "./removal_lesson.ts";
+import * as removerCloud from "./remover_cloud.ts";
 import * as sections from "./removal_sections.ts";
 import { EDIT_EVENT } from "./edit_event.ts";
 import * as seams from "./seams.ts";
@@ -60,6 +61,9 @@ const RESUME_WITHIN_MS = 14 * 86_400_000;
  */
 export async function resume(app: App): Promise<number> {
   await removal.refresh().catch(() => {});
+  // The relay asked first: the queues choose rented machines or this computer synchronously, by its last answer, and
+  // before any there was none (Nov 20: SMART Cops' two longest blurs, picked up at a restart, read here for an hour).
+  await removerCloud.on().catch(() => false);
   const since = Date.now() - RESUME_WITHIN_MS;
   let count = 0;
   for (const summary of app.store.list()) {
