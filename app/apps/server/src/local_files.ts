@@ -237,7 +237,9 @@ export async function copyExport(app: App, path: string, folder: string): Promis
   if (!app.exports.exported(path) && !listed(app.store.home, path)) throw new Error("not one of Edit's exports");
   if (!isDir(folder)) throw new Error("pick a folder");
   const to = freePath(folder, fileName(path) ?? "export.mp4");
-  if (isFile(path)) fs.copyFileSync(path, to);
+  // Off the server's one thread: an export is gigabytes, and to another disk that's a minute in which Edit would
+  // answer nothing (thread.ts; on the Mac's own disk it's a clone, done at once either way).
+  if (isFile(path)) await fs.promises.copyFile(path, to);
   else {
     const key = cloudKeyFor(app.store.home, path);
     if (key === null) throw new Error(`that export isn't on ${THIS_MACHINE} or in the cloud any more`);
