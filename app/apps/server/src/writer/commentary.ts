@@ -15,13 +15,13 @@ import * as diag from "../diag.ts";
 import * as endpoints from "../endpoints.ts";
 import { safeFetch } from "../net_guard.ts";
 import { decodeEntities } from "../research.ts";
+import * as webPage from "../web_page.ts";
 import { isAlphanumeric, splitWhitespace } from "../rust.ts";
 import * as can from "./can.ts";
 import * as claude from "./claude.ts";
 import * as drive from "./drive.ts";
 import { scriptText } from "./lessons.ts";
 import { cites as citesOf, clock, draftWords, ensureIds, findIn, liveMarks, minutes, noteLines, parseTime, popupLine, said as saidOf, timing, WORDS_PER_MINUTE } from "./paragraphs.ts";
-import { pageTitle, paragraphs as pageText } from "./research.ts";
 import { editNote } from "./revise.ts";
 import { MAX_SOURCE_BYTES, MAX_SOURCES, putText, readText, removeText } from "./sources.ts";
 import { FEEDBACK_SCHEMA, feedbackOf, type Feedback } from "./fixing.ts";
@@ -283,11 +283,17 @@ export async function fetchSource(url: string): Promise<[string, string]> {
     if (found !== null && !found.html) return [found.name ?? "Drive file", found.text];
     return driveApi(id, false);
   }
-  const found = await getText(url);
-  if (!found.html) return [found.name ?? url, found.text];
-  const text = pageText(found.text);
-  if (text.trim().length < 200) throw new Error("That page has too little text to use. Copy its text and paste it instead.");
-  return [pageTitle(found.text) ?? url, text];
+  // A text file as it is; a web page or a PDF read for its main content (web_page.ts).
+  const found = await getText(url).catch((error: unknown) => {
+    if (error instanceof Error && error.message === NOT_TEXT) return null;
+    throw error;
+  });
+  if (found !== null && !found.html) return [found.name ?? url, found.text];
+  const page = await webPage.read(url).catch((error: unknown) => {
+    throw new Error(`Couldn't read that page (${diag.messageOf(error)}). Copy its text and paste it instead.`);
+  });
+  if (page.text.trim().length < 200) throw new Error("That page has too little text to use. Copy its text and paste it instead.");
+  return [page.title === "" ? url : page.title, page.text];
 }
 
 interface Fetched {

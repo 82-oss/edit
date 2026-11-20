@@ -28,6 +28,7 @@ node_modules/
 /app/ffmpeg/
 /app/ci-tools/
 /app/quickjs/
+/app/firecrawl/
 # RIFE for Linux's smoothing (scripts/rife.sh)
 /app/rife/
 

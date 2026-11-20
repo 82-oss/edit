@@ -1,5 +1,6 @@
 // research.ts's tests, plus the research tools against the mock
-// (pages and images served by it; the headless browser replaced by `hooks.dump`).
+// (images served by it; the headless browser replaced by `hooks.dump`, the
+// page reader by `webPage.hooks.scrape`).
 
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import * as fs from "node:fs";
@@ -8,17 +9,11 @@ import * as os from "node:os";
 import type { App } from "../src/app.ts";
 import { dispatch } from "../src/mcp/index.ts";
 import * as research from "../src/research.ts";
-import { articleBody, decode, hooks, imageHits, textOf } from "../src/research.ts";
+import { decode, hooks, imageHits, textOf } from "../src/research.ts";
 import * as tools from "../src/tools.ts";
+import * as webPage from "../src/web_page.ts";
 import { fixtureHome } from "./helpers/home.ts";
 import { MockServer } from "./mocks/server.ts";
-
-test("script_rendered_pages_read_their_json_ld", () => {
-  const story = "A little more than a week after the arrests, police said. ".repeat(20);
-  const page = `<html><head><script type="application/ld+json">{"@graph":[{"@type":"NewsArticle","headline":"H","articleBody":"${story}"}]}</script></head><body><div id="app"></div></body></html>`;
-  expect(articleBody(page)).toBe(story);
-  expect(articleBody("<html><body>nothing</body></html>")).toBeNull();
-});
 
 test("reads_bing_image_results", () => {
   const page =
@@ -38,6 +33,7 @@ const ffmpeg = Bun.which("ffmpeg");
 let mock: MockServer;
 let restore: () => void;
 const { dump, againAfterMs } = hooks;
+const { scrape } = webPage.hooks;
 // Never Claude's own search in tests unless one says so.
 hooks.claudeSearch = async () => {
   throw new Error("no Claude here");
@@ -72,7 +68,8 @@ afterAll(() => {
 
 afterEach(() => {
   Object.assign(hooks, { dump, againAfterMs, claudeSearch: noClaude });
-  research.forgetPages();
+  webPage.hooks.scrape = scrape;
+  webPage.forget();
 });
 
 async function call(app: App, name: string, args: Record<string, unknown>): Promise<{ text: string; isError: boolean }> {
@@ -123,24 +120,23 @@ test("search_web lists DuckDuckGo's results through its redirect links", async (
 const STORY = "Kent police said the teen drove the Prius into the crash on July 13. ".repeat(40);
 
 test.skipIf(ffmpeg === null || Bun.which("ffprobe") === null)(
-  "an article is read plainly, saved with its photos, and found again by its words",
+  "an article is read, saved with its photos, and found again by its words",
   async () => {
     const { app, cleanup, home } = fixtureHome("research-article");
     try {
       const id = app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project.id;
-      mock.on("GET", "/news/story", (_request, server) =>
-        new Response(
-          `<html><head><title>ignored</title><meta property="og:title" content="Teen charged in Kent crash"><meta property="og:site_name" content="Kent Reporter"><meta property="article:published_time" content="2024-07-20"><meta property="og:image" content="${server.url}/img/photo.jpg"></head><body><article><p>${STORY}</p><img src="${server.url}/img/tiny.jpg"><img src="${server.url}/img/logo.png"></article></body></html>`,
-          { headers: { "content-type": "text/html" } },
-        ),
-      );
-      hooks.dump = async () => {
-        throw new Error("the browser isn't needed for a server-rendered story");
-      };
+      // Firecrawl Local's answer for the story (web_page.test.ts reads a real one).
+      webPage.hooks.scrape = async () => ({
+        success: true,
+        data: {
+          markdown: `${STORY}\n\n![](${mock.url}/img/tiny.jpg)\n![logo](${mock.url}/img/logo.png)`,
+          metadata: { title: "ignored", "og:title": "Teen charged in Kent crash", "og:site_name": "Kent Reporter", "article:published_time": "2024-07-20", "og:image": `${mock.url}/img/photo.jpg`, statusCode: 200 },
+        },
+      });
       const url = `${mock.url}/news/story`;
       const read = await call(app, "read_page", { url, limit: 500 });
       expect(read.text.length).toBe(500);
-      expect(read.text.startsWith("ignored Kent police said")).toBe(true);
+      expect(read.text.startsWith("Kent police said")).toBe(true);
       const saved = await call(app, "add_article", { url, summary: "The teen was charged." });
       // The lead photo is kept; the small one is too small, the logo a decoration.
       expect(saved).toEqual({
@@ -320,7 +316,7 @@ test("a found picture is this case's only when its page names the case's people"
   const item = (title: string, page: string) => ({ id: "f1", file: "/f.jpg", width: 640, height: 480, title, page, image: "https://img.example/a.jpg", query: "q", status: "new" }) as Parameters<typeof research.tiedToCase>[0];
   expect(await research.tiedToCase(item("Courtney Clenney in court", "https://news.example/a"), words, [])).toMatchObject({ tied: true });
   expect(await research.tiedToCase(item("Anything", "https://news.example/saved"), words, ["https://news.example/saved"])).toMatchObject({ tied: true, why: "from a saved article" });
-  hooks.dump = async () => "<html><body><p>Gang members set a father on fire.</p></body></html>";
+  webPage.hooks.scrape = async () => ({ success: true, data: { markdown: "Gang members set a father on fire.", metadata: { statusCode: 200 } } });
   const other = await research.tiedToCase(item("Dad tortured and set on fire by gang", "https://www.dailystar.co.uk/news/dad-tortured"), words, []);
   expect(other?.tied).toBe(false);
   // Nothing to judge by yet (no names): left to the agent.

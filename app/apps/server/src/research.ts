@@ -7,11 +7,11 @@
 // Found images are collected per project in `<home>/research/<project>/` for
 // the user to review; the ones they keep go into the media bin.
 //
-// Plain fetches (article pages, image downloads) go through Bun's fetch; the
-// browser stays a child process (`hooks.dump`,
-// which tests replace).
+// Article pages are read by web_page.ts (Firecrawl Local); image downloads go
+// through Bun's fetch; the browser stays a child process (`hooks.dump`, which
+// tests replace).
 
-import { publicUrl, safeFetch } from "./net_guard.ts";
+import { safeFetch } from "./net_guard.ts";
 import { headlessBinary, headlessCommand } from "./chrome_devtools.ts";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
@@ -26,14 +26,13 @@ import { join } from "./paths.ts";
 import { byteLength, debugStrings, parseHex, serdeParse, splitWhitespace, takeChars, trim } from "./rust.ts";
 import * as seams from "./seams.ts";
 import type { Article, ResearchItem as Item, WebResult as Found } from "./seams.ts";
-import { compareKeys } from "./stable.ts";
 import * as tools from "./tools.ts";
+import * as webPage from "./web_page.ts";
+import { USER_AGENT } from "./web_page.ts";
 import type { RawImage } from "./native/index.ts";
 
 export type { Article, ResearchItem as Item, WebResult as Found } from "./seams.ts";
 
-const USER_AGENT =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
 /** Smaller than this on its short side isn't worth a look (thumbnails, icons). */
 const MIN_SIDE = 360;
 const MAX_BYTES = 25_000_000;
@@ -217,76 +216,6 @@ export function update(home: string, project: string, id: string, change: (item:
   return changed;
 }
 
-/** Pages fetched in the last ten minutes: read_page then add_article on the same story fetched it twice. */
-const PAGES: [url: string, at: number, page: string][] = [];
-const FRESH_MS = 600_000;
-
-/**
- * An article page: kept for a few minutes, fetched plainly first (most news
- * pages are rendered on the server, and a plain fetch takes a second where a
- * fresh headless Chrome takes ten or twenty), the browser only when the plain
- * page is a shell, a block or too thin to be the story. Script mode's case
- * research reads its pages with it too.
- */
-export async function articlePage(url: string): Promise<string> {
-  const now = performance.now();
-  // Public web pages only, for read_page and add_article alike (net_guard.ts).
-  await publicUrl(url);
-  const kept = PAGES.find(([own, at]) => own === url && now - at < FRESH_MS);
-  if (kept !== undefined) return kept[2];
-  const page = (await plain(url)) ?? (await hooks.dump(url));
-  for (let index = PAGES.length - 1; index >= 0; index--) {
-    const [own, at] = PAGES[index]!;
-    if (own === url || performance.now() - at >= FRESH_MS) PAGES.splice(index, 1);
-  }
-  if (PAGES.length >= 24) PAGES.shift();
-  PAGES.push([url, performance.now(), page]);
-  return page;
-}
-
-/** Forgets the pages kept (tests). */
-export function forgetPages(): void {
-  PAGES.length = 0;
-}
-
-/**
- * The page as the server sends it, when that's already the story: a 200 with
- * a couple of thousand characters of readable text and no sign of a bot check.
- */
-async function plain(url: string): Promise<string | null> {
-  let code: number;
-  let page: string;
-  try {
-    const response = await safeFetch(url, {
-      headers: { "user-agent": USER_AGENT, "accept-language": "en-US,en;q=0.9" },
-      signal: AbortSignal.timeout(15_000),
-    });
-    code = response.status;
-    page = new TextDecoder().decode(await response.arrayBuffer());
-  } catch {
-    return null;
-  }
-  if (code !== 200) {
-    // A Cloudflare challenge: headless Chrome doesn't get past it either (it
-    // waited the full timeout on one), so say so at once.
-    if ((code === 403 || code === 503) && (page.includes("cf_chl") || page.includes("challenge-platform"))) {
-      throw new Error("the site blocks readers with a bot check; use another source");
-    }
-    return null;
-  }
-  // Judged on the readable text: a <noscript> "enable JavaScript" note on a
-  // server-rendered story isn't a block.
-  const text = readable(page);
-  const lower = asciiLower(text);
-  if (botCheck(lower) || lower.includes("please enable javascript")) return null;
-  if (byteLength(text) >= 2000) return page;
-  // Pages rendered by script often carry the whole story as JSON-LD
-  // (`articleBody`, for search engines): read that rather than start a
-  // browser (a second instead of ten to forty).
-  const body = articleBody(page);
-  return body !== null && byteLength(body) >= 800 ? `${page}\n<div>${body}</div>` : null;
-}
-
 /** `to_ascii_lowercase`. */
 function asciiLower(text: string): string {
   return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
@@ -302,37 +231,6 @@ function botCheck(lower: string): boolean {
     "just a moment...",
     "enable javascript and cookies to continue",
   ].some((sign) => lower.includes(sign));
-}
-
-/** The `articleBody` of the page's JSON-LD (schema.org NewsArticle), if any. */
-export function articleBody(page: string): string | null {
-  const out: string[] = [];
-  const bodies = (value: unknown) => {
-    if (Array.isArray(value)) {
-      for (const item of value) bodies(item);
-    } else if (typeof value === "object" && value !== null) {
-      // serde_json's maps are sorted: the bodies come in key order.
-      const map = value as Record<string, unknown>;
-      for (const key of Object.keys(map).sort(compareKeys)) {
-        const inner = map[key];
-        if (key === "articleBody" && typeof inner === "string") out.push(inner);
-        else bodies(inner);
-      }
-    }
-  };
-  for (const block of page.split("application/ld+json").slice(1)) {
-    const close = block.indexOf(">");
-    if (close < 0) continue;
-    const json = block.slice(close + 1).split("</script>")[0] ?? "";
-    try {
-      bodies(JSON.parse(trim(json)));
-    } catch {
-      // Not JSON.
-    }
-  }
-  const unique = out.filter((body, index) => index === 0 || body !== out[index - 1]);
-  const body = unique.join("\n\n");
-  return trim(body) === "" ? null : body;
 }
 
 /** Chrome on this machine, headless: the page once it's rendered. */
@@ -472,11 +370,9 @@ async function duckDuckGo(query: string): Promise<Found[]> {
   return found;
 }
 
-/** A page's readable text (scripts, styles and tags dropped), cut at `limit` characters. */
+/** A page's main content as plain lines (web_page.ts), cut at `limit` characters. */
 export async function readPage(url: string, limit: number): Promise<string> {
-  // Public web pages only (net_guard.ts): never this Mac or its network.
-  await publicUrl(url);
-  return takeChars(readable(await articlePage(url)), limit);
+  return takeChars((await webPage.read(url)).text, limit);
 }
 
 /** A page's readable text: scripts, styles and tags dropped. */
@@ -539,31 +435,15 @@ function sha256Hex(bytes: string | Uint8Array): string {
  */
 export async function addArticle(home: string, project: string, url: string, summary: string): Promise<[Article, number]> {
   if (!url.startsWith("http://") && !url.startsWith("https://")) throw new Error("give a web address (http or https)");
-  const page = await articlePage(url);
-  const found = metas(page);
-  const meta = (names: string[]): string | null => {
-    for (const name of names) {
-      const hit = found.find(([key]) => key === name);
-      if (hit !== undefined) return hit[1];
-    }
-    return null;
-  };
-  let title = meta(["og:title", "twitter:title"]);
-  if (title === null) {
-    const after = page.split("<title")[1];
-    const close = after === undefined ? -1 : after.indexOf(">");
-    title = after === undefined || close < 0 ? "" : textOf(after.slice(close + 1).split("</title>")[0] ?? "");
-  }
-  const outlet = meta(["og:site_name", "application-name"]) ?? site(url);
-  const published = meta(["article:published_time", "datePublished", "pubdate"]);
+  const page = await webPage.read(url);
   const article: Article = {
     id: sha256Hex(url).slice(0, 16),
     url,
-    title,
-    outlet,
-    ...(published !== null ? { published } : {}),
+    title: page.title,
+    outlet: page.outlet,
+    ...(page.published !== null ? { published: page.published } : {}),
     summary,
-    text: takeChars(readable(page), 60_000),
+    text: takeChars(page.text, 60_000),
   };
   try {
     fs.mkdirSync(dir(home, project), { recursive: true });
@@ -574,43 +454,13 @@ export async function addArticle(home: string, project: string, url: string, sum
     throw new Error(ioMessage(error));
   }
   // Its photos: the lead image and the ones in the story itself.
-  const inside = page.split("<article")[1];
-  const body = inside === undefined ? page : (inside.split("</article>")[0] ?? inside);
-  const images: string[] = [];
-  const lead = meta(["og:image", "twitter:image"]);
-  if (lead !== null) images.push(lead);
-  for (const tag of body.split("<img").slice(1)) {
-    const source = attribute(` ${tag}`, "src") ?? attribute(` ${tag}`, "data-src") ?? "";
+  const images = page.images.filter((source) => {
     const lower = source.toLowerCase();
-    const decoration = ["logo", "icon", "avatar", "sprite", "pixel", "badge", ".svg", ".gif"].some((word) => lower.includes(word));
-    if (source.startsWith("http") && !decoration && !images.includes(source)) images.push(source);
-  }
-  const hits: Hit[] = images.slice(0, 12).map((image) => [image, url, title]);
-  const [added] = await storeHits(home, project, `article: ${outlet}`, hits);
+    return !["logo", "icon", "avatar", "sprite", "pixel", "badge", ".svg", ".gif"].some((word) => lower.includes(word));
+  });
+  const hits: Hit[] = images.slice(0, 12).map((image) => [image, url, page.title]);
+  const [added] = await storeHits(home, project, `article: ${page.outlet}`, hits);
   return [shownArticle(article), added];
-}
-
-/** `<meta>` tags: (property or name, content). */
-function metas(page: string): [string, string][] {
-  const out: [string, string][] = [];
-  for (const raw of page.split("<meta").slice(1)) {
-    const tag = ` ${raw}`;
-    const key = attribute(tag, "property") ?? attribute(tag, "name") ?? attribute(tag, "itemprop");
-    if (key === null) continue;
-    const content = attribute(tag, "content");
-    if (content === null) continue;
-    out.push([key, content]);
-  }
-  return out;
-}
-
-function site(url: string): string {
-  const rest = url.split("://")[1];
-  if (rest === undefined) return "";
-  const host = rest.split("/")[0]!;
-  let out = host;
-  while (out.startsWith("www.")) out = out.slice(4);
-  return out;
 }
 
 /** Removes the found images with a status (new: unreviewed, rejected) and their files. */
@@ -1065,7 +915,7 @@ export async function tiedToCase(item: Item, words: string[], articleUrls: strin
   const named = namesCase(`${item.title} ${item.page}`, words);
   if (named !== null) return { tied: true, why: `its page names ${named}` };
   try {
-    const page = readable(await articlePage(item.page));
+    const page = (await webPage.read(item.page)).text;
     const found = namesCase(page.slice(0, 60_000), words);
     if (found !== null) return { tied: true, why: `its page names ${found}` };
   } catch (error) {

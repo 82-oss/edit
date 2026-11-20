@@ -271,7 +271,7 @@ jobs:
           curl -fsS http://127.0.0.1:7799/api/health | grep -q '"name":"edit"'
           curl -fsS -X POST http://127.0.0.1:7799/mcp -H 'content-type: application/json' \
             -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' | grep -q '"serverInfo"'
-      # FFmpeg, qjs (yt-dlp's JavaScript runtime) and, on a Mac, edit-speech ship beside `edit`
+      # FFmpeg, qjs (yt-dlp's JavaScript runtime), edit-firecrawl and, on a Mac, edit-speech ship beside `edit`
       # (apps/server/src/tools.ts), pinned in scripts/ffmpeg.sh and
       # scripts/fetch-quickjs.sh; kept between runs so a build doesn't need
       # their hosts up (both scripts skip a matching copy).
@@ -284,6 +284,14 @@ jobs:
             app/ffmpeg
             app/quickjs
           key: ffmpeg-${{ matrix.target }}-${{ hashFiles('app/scripts/ffmpeg.sh', 'app/scripts/fetch-quickjs.sh') }}
+      # Firecrawl Local (the web page and PDF reader, apps/server/src/web_page.ts) is compiled from its crate, about
+      # 7 minutes, so engine-cache.yml builds it on main once per scripts/fetch-firecrawl.sh and it's restored here;
+      # compiled here only when it isn't there yet. Restored, never saved: a tag's cache is only readable by that tag.
+      - id: firecrawl-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: app/firecrawl
+          key: firecrawl-${{ matrix.target }}-${{ hashFiles('app/scripts/fetch-firecrawl.sh') }}
       # edit-speech compiled once for its source (20 s of Swift each build), and
       # dmgbuild installed once (scripts/make-dmg.sh), kept by the runner's image.
       - id: image
@@ -308,6 +316,11 @@ jobs:
           scripts/fetch-quickjs.sh "${{ matrix.target }}" quickjs
           cp "quickjs/qjs-${{ matrix.target }}" package/
           "package/qjs-${{ matrix.target }}" --version
+          # AGPL-3.0: shipped unmodified, as its own program, with its licence and where its source is (licenses/).
+          scripts/fetch-firecrawl.sh "${{ matrix.target }}" firecrawl
+          cp firecrawl/edit-firecrawl package/
+          cp licenses/firecrawl-local.txt package/edit-firecrawl-LICENSE.txt
+          package/edit-firecrawl --version
           # The Mac's on-device word source (apps/server/src/mac_speech.ts), built from scripts/edit-speech.swift.
           if [ "${{ runner.os }}" = macOS ]; then
             [ -x speech/edit-speech ] || scripts/build-speech.sh speech/edit-speech
@@ -336,7 +349,7 @@ jobs:
           NOTARY_ISSUER: ${{ secrets.NOTARY_ISSUER }}
         run: |
           set -euo pipefail
-          files=(edit edit-ffmpeg edit-ffprobe "qjs-${{ matrix.target }}")
+          files=(edit edit-ffmpeg edit-ffprobe "qjs-${{ matrix.target }}" edit-firecrawl edit-firecrawl-LICENSE.txt)
           if [ "${{ runner.os }}" = macOS ]; then files+=(edit-speech); fi
           (tar -czf "dist/$NAME" -C package "${files[@]}" && cd dist && { sha256sum "$NAME" > "$NAME.sha256" 2>/dev/null || shasum -a 256 "$NAME" > "$NAME.sha256"; }) &
           archive=$!

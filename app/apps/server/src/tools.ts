@@ -32,24 +32,45 @@ export function ffprobe(): string {
 export function qjs(): string | null {
   const given = process.env.EDIT_QJS;
   if (given !== undefined && given !== "") return given;
-  const triple =
-    process.platform === "darwin" && process.arch === "arm64"
-      ? "aarch64-apple-darwin"
-      : process.platform === "darwin" && process.arch === "x64"
-        ? "x86_64-apple-darwin"
-        : process.platform === "linux" && process.arch === "x64"
-          ? "x86_64-unknown-linux-gnu"
-          : null;
+  const triple = target();
   if (triple === null) return null;
-  let beside: string | null = null;
+  return beside(`qjs-${triple}`);
+}
+
+/**
+ * Firecrawl Local, the program Edit reads web pages and PDFs with
+ * (`web_page.ts`; AGPL-3.0, so only ever run, never linked in): a release's
+ * `edit-firecrawl` beside `edit` or in Edit.app's Resources; in a dev run, the
+ * checkout's `target/firecrawl/<target>/edit-firecrawl` (`just firecrawl`),
+ * else a `firecrawl-local` on PATH; null with none.
+ */
+export function firecrawl(): string | null {
+  const shipped = beside("edit-firecrawl");
+  if (shipped !== null) return shipped;
+  const triple = target();
+  const built = triple === null ? null : join(import.meta.dir, `../../../target/firecrawl/${triple}/edit-firecrawl`);
+  if (built !== null && isFile(built)) return built;
+  return Bun.which("firecrawl-local");
+}
+
+/** The Rust target this computer's programs are built for; null where Edit ships none. */
+function target(): string | null {
+  if (process.platform === "darwin" && process.arch === "arm64") return "aarch64-apple-darwin";
+  if (process.platform === "darwin" && process.arch === "x64") return "x86_64-apple-darwin";
+  if (process.platform === "linux" && process.arch === "x64") return "x86_64-unknown-linux-gnu";
+  return null;
+}
+
+/** `name` shipped beside the running `edit`, or in Edit.app's Resources; null when it isn't. */
+function beside(name: string): string | null {
+  let dir: string | null;
   try {
-    beside = parent(fs.realpathSync(process.execPath));
+    dir = parent(fs.realpathSync(process.execPath));
   } catch {
-    beside = null;
+    return null;
   }
-  if (beside === null) return null;
-  const name = `qjs-${triple}`;
-  for (const candidate of [join(beside, name), join(beside, "../Resources", name)]) {
+  if (dir === null) return null;
+  for (const candidate of [join(dir, name), join(dir, "../Resources", name)]) {
     if (isFile(candidate)) return candidate;
   }
   return null;

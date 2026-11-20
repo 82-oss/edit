@@ -91,12 +91,15 @@ window profile="debug":
 # Edit.app (target/release/bundle/macos): the window helper (crates/edit-window)
 # is the app, with the Bun `edit`, FFmpeg, qjs and edit-speech in its Resources; opened, it
 # runs `Resources/edit serve`. Like `release`, it doesn't update itself.
-bundle: web ffmpeg quickjs speech (native "release")
+# Firecrawl Local (edit-firecrawl) goes in too, with its licence beside it.
+bundle: web ffmpeg quickjs firecrawl speech (native "release")
     #!/usr/bin/env bash
     set -euo pipefail
     host="$(rustc -vV | sed -n 's/^host: //p')"
     dir="$PWD/target/ffmpeg/$host"
     qjs="$PWD/target/quickjs/$host/qjs-$host"
+    firecrawl="$PWD/target/firecrawl/$host/edit-firecrawl"
+    notice="$PWD/licenses/firecrawl-local.txt"
     mkdir -p target/bundle-edit
     bun apps/server/scripts/embed.ts --native crates/edit-native/edit-native.node
     bun build apps/server/src/embedded.gen.ts --compile --outfile target/bundle-edit/edit
@@ -108,7 +111,7 @@ bundle: web ffmpeg quickjs speech (native "release")
     # FFmpeg, qjs (yt-dlp's JavaScript runtime) and edit-speech go into
     # Edit.app/Contents/Resources beside edit (apps/server/src/tools.ts).
     (cd crates/edit-window && bunx @tauri-apps/cli@2 build --bundles app \
-        --config "{\"bundle\":{\"resources\":{\"$dir/ffmpeg\":\"edit-ffmpeg\",\"$dir/ffprobe\":\"edit-ffprobe\",\"$qjs\":\"qjs-$host\",\"$speech\":\"edit-speech\",\"$edit\":\"edit\"}}}")
+        --config "{\"bundle\":{\"resources\":{\"$dir/ffmpeg\":\"edit-ffmpeg\",\"$dir/ffprobe\":\"edit-ffprobe\",\"$qjs\":\"qjs-$host\",\"$firecrawl\":\"edit-firecrawl\",\"$notice\":\"edit-firecrawl-LICENSE.txt\",\"$speech\":\"edit-speech\",\"$edit\":\"edit\"}}}")
     # Signed as a whole, as package-app.sh does: unsigned, the window keeps the
     # linker's signature (edit_window-<hash>), and macOS refuses notifications
     # from a program whose signature isn't the bundle's com.spheceo.edit.
@@ -132,6 +135,14 @@ quickjs:
     #!/usr/bin/env bash
     host="$(rustc -vV | sed -n 's/^host: //p')"
     scripts/fetch-quickjs.sh "$host" "target/quickjs/$host"
+
+# Firecrawl Local, the program Edit reads web pages and PDFs with
+# (apps/server/src/web_page.ts), for this computer
+# (target/firecrawl/<target>/edit-firecrawl): compiled once, about 7 minutes
+firecrawl:
+    #!/usr/bin/env bash
+    host="$(rustc -vV | sed -n 's/^host: //p')"
+    scripts/fetch-firecrawl.sh "$host" "target/firecrawl/$host"
 
 # Release binary (package/edit) with the UI, addon and window helper embedded,
 # as the release workflow builds it (doesn't update itself; see `publish`)
@@ -296,7 +307,7 @@ nightly *args:
 # The Bun server on :7700 (restarted on TS changes, and when the addon is
 # rebuilt on engine changes) plus Vite with hot reload on :5173. Over
 # Tailscale, open http://<machine>:5173 (redirects to HTTPS).
-dev: wasm web-install (native "debug")
+dev: wasm web-install firecrawl (native "debug")
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p apps/web/dist

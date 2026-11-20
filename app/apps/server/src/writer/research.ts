@@ -12,8 +12,8 @@ import type { Article, Research, Script } from "@edit/types/writer";
 
 import { writeAtomic } from "../files.ts";
 import { join } from "../paths.ts";
-import { articlePage, searchWeb, textOf } from "../research.ts";
-import { splitWhitespace } from "../rust.ts";
+import { searchWeb } from "../research.ts";
+import * as webPage from "../web_page.ts";
 import * as claude from "./claude.ts";
 
 /** What the producer's notes are filed as among the research. */
@@ -194,53 +194,12 @@ interface Page {
   text: string;
 }
 
-/** A page's readable paragraphs and what its metadata says it is. */
+/** A page's main content and what its metadata says it is (web_page.ts); null when there's too little to be a report. */
 export async function read(url: string): Promise<Page | null> {
-  const html = await articlePage(url);
-  const text = paragraphs(html);
-  if (text.length < 400) return null;
-  return {
-    url,
-    title: pageTitle(html) ?? "",
-    outlet: meta(html, "og:site_name") ?? host(url).replace(/^www\./, ""),
-    published: meta(html, "article:published_time") ?? meta(html, "datePublished"),
-    text: [...text].slice(0, PAGE_CHARS).join(""),
-  };
+  const page = await webPage.read(url);
+  if (page.text.length < 400) return null;
+  return { url, title: page.title, outlet: page.outlet, published: page.published, text: [...page.text].slice(0, PAGE_CHARS).join("") };
 }
 
 export const host = (url: string): string => (url.split("://")[1] ?? url).split(/[/?#]/)[0] ?? "";
 
-/** A `<meta property|name="key" content="…">` value. */
-export function meta(html: string, key: string): string | null {
-  for (const tag of html.split("<meta").slice(1)) {
-    const inside = tag.split(">")[0] ?? "";
-    if (!inside.includes(`"${key}"`)) continue;
-    const content = inside.split('content="')[1]?.split('"')[0];
-    if (content === undefined) return null;
-    const value = textOf(content);
-    return value.trim() === "" ? null : value;
-  }
-  return null;
-}
-
-/** A page's own title. */
-export function pageTitle(html: string): string | null {
-  const own = meta(html, "og:title") ?? (/<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1] ?? null);
-  const title = own === null ? "" : textOf(own).trim();
-  return title === "" ? null : title;
-}
-
-/** The paragraphs of a page (`<p>` blocks of over 40 characters), without scripts, styles, navigation or markup. */
-export function paragraphs(html: string): string {
-  let clean = html;
-  for (const tag of ["script", "style", "noscript", "svg", "nav", "footer", "header", "aside"]) clean = clean.replace(new RegExp(`<${tag}[\\s\\S]*?(</${tag}>|$)`, "gi"), "");
-  const out: string[] = [];
-  for (const chunk of clean.split("<p").slice(1)) {
-    const close = chunk.indexOf(">");
-    if (close < 0) continue;
-    const body = chunk.slice(close + 1).split("</p>")[0] ?? "";
-    const text = splitWhitespace(textOf(body)).join(" ");
-    if (text.length > 40) out.push(text);
-  }
-  return out.join("\n");
-}

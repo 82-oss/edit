@@ -6,6 +6,8 @@ name: Engine cache
 # caches but not another tag's (each nightly used to compile from scratch and
 # save a 429 MB cache no later nightly could read). A release whose engine
 # isn't here yet (its Rust changed in the same push) compiles it itself.
+# Firecrawl Local (edit-firecrawl, the web page and PDF reader) is kept the
+# same way: it's compiled from its crate, about 7 minutes.
 
 on:
   push:
@@ -17,6 +19,7 @@ on:
       - "app/crates/**"
       - "app/scripts/build-native.sh"
       - "app/scripts/build-wasm.sh"
+      - "app/scripts/fetch-firecrawl.sh"
       - ".github/workflows/engine-cache.yml"
   workflow_dispatch:
 
@@ -82,3 +85,26 @@ jobs:
           workspaces: app
       - if: steps.wasm.outputs.cache-hit != 'true'
         run: scripts/build-wasm.sh
+
+  firecrawl:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - id: firecrawl
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: app/firecrawl
+          key: firecrawl-${{ matrix.target }}-${{ hashFiles('app/scripts/fetch-firecrawl.sh') }}
+      - if: steps.firecrawl.outputs.cache-hit != 'true'
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: steps.firecrawl.outputs.cache-hit != 'true'
+        run: scripts/fetch-firecrawl.sh ${{ matrix.target }} firecrawl

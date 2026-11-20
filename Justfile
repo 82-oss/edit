@@ -25,6 +25,9 @@ ffmpeg *args:
 quickjs *args:
     @just --justfile app/Justfile quickjs {{args}}
 
+firecrawl *args:
+    @just --justfile app/Justfile firecrawl {{args}}
+
 native *args:
     @just --justfile app/Justfile native {{args}}
 
