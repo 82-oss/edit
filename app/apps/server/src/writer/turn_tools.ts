@@ -19,6 +19,7 @@ import type { Script } from "@edit/types/writer";
 
 import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
+import * as lanes from "../lanes.ts";
 import { empty, json } from "../http/errors.ts";
 import { readJson, type Router } from "../http/router.ts";
 import { native } from "../native/index.ts";
@@ -39,6 +40,8 @@ export interface Session {
   given: string[] | null;
   /** The notes pull_feedback handed on, by id. */
   pulled: Map<string, reviews.Note>;
+  /** A channel's script: its Script lane, which the lane's tools (remember, read_skill, other_channels) keep and read. */
+  place: lanes.Place | null;
 }
 
 const sessions = new Map<string, Session>();
@@ -46,7 +49,13 @@ const sessions = new Map<string, Session>();
 /** Opens a turn's tools; `close` with the token when the turn ends. */
 export function open(data: string, id: string, given: string[] | null = null): [string, string, Session] {
   const token = crypto.randomUUID();
-  const session: Session = { data, id, given, pulled: new Map() };
+  let channel: string | null = null;
+  try {
+    channel = store.read(store.scriptDir(data, id)).channel ?? null;
+  } catch {
+    // Unreadable now: the turn reads it again and says so.
+  }
+  const session: Session = { data, id, given, pulled: new Map(), place: channel === null ? null : { channel, lane: "script" } };
   sessions.set(token, session);
   return [token, toolsAddress(`/mcp/writer-turn/${token}`), session];
 }
@@ -61,13 +70,13 @@ export const TOOLS_NOTE = `TOOLS. Before your answer you can use these tools; th
 - search_web, read_page: research on the web: news reports, court records, the case's facts and dates.
 - search_youtube, read_youtube: find videos on YouTube and read what's said in them (their captions), e.g. another channel's video on this case ("Red File Stephanie Lazarus") to see which details they give their viewers. Use the facts that hold up; never copy their wording. Bringing footage into the script is the footage search's job, not yours.
 - find_images: pictures of the case (its people, places, evidence, documents, news photos), shown to you as a numbered sheet with each one's link and page. The editor places pictures: each picture worth showing goes on the script as a note for the editor on the words it belongs under: "edit: show this photo of Sherri Rasmussen <image link> (from <page link>)". Only pictures of this case (their page is about it) and never stock. A reviewer asking for assets, images or visuals is asking for these notes, as many as the script can use, spread through it.
-A fact you add from the web or a video comes from a page or video you read in this turn; say where in your reply.`;
+A fact you add from the web or a video comes from a page or video you read in this turn; say where in your reply.\n- A channel's script also has remember, read_skill and other_channels: its lessons (below, where it has them).`;
 
 type Args = Record<string, unknown>;
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
 
 const TOOLS = [
-  { name: "pull_feedback", description: "The open notes reviewers left on this script's review link (feedback.spheceo.com), taken for you to fix: each with its id, who left it, where it is (the words it's on), what kind of note it is and what that lets you change, the replies under it, and its words. Fix them all in this answer and report each in feedback.", inputSchema: { type: "object", properties: {} } },
+  { name: "pull_feedback", description: "The open notes reviewers left on this script's review link (feedback.spheceo.com), taken for you to fix: each with its id, who left it, where it is (the words it's on), what kind of note it is and what that lets you change, the replies under it, and its words. Fix them all in this answer and report each in feedback. done: true reads back the notes already fixed instead, each with what was done, taking nothing (for \"remember all of this for the future\").", inputSchema: { type: "object", properties: { done: { type: "boolean" } } } },
   { name: "search_web", description: "Search the web privately from this machine. Returns titles, links and snippets.", inputSchema: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } },
   { name: "read_page", description: "The readable text of a web page (a news story from search_web).", inputSchema: { type: "object", properties: { url: { type: "string" }, limit: { type: "integer", description: "Characters, 500 to 60,000 (default 12,000)." } }, required: ["url"] } },
   { name: "search_youtube", description: "Search YouTube: each video's title, channel, link, length and views. Name the channel in the query for its video on the case (\"Red File Stephanie Lazarus\"); results vary, so when a named channel's video isn't among them, search again with other words (the channel with the victim's name, the case's headline words, count 15) before saying it isn't there.", inputSchema: { type: "object", properties: { query: { type: "string" }, count: { type: "integer", description: "Videos, 1 to 15 (default 8)." } }, required: ["query"] } },
@@ -99,7 +108,7 @@ export async function answerTo(token: string, message: unknown): Promise<unknown
     case "ping":
       return reply({});
     case "tools/list":
-      return session === undefined ? failure(-32001, "This turn has ended.") : reply({ tools: TOOLS });
+      return session === undefined ? failure(-32001, "This turn has ended.") : reply({ tools: session.place === null ? TOOLS : [...TOOLS, ...lanes.toolsFor("script")] });
     case "tools/call": {
       if (session === undefined) return id === undefined ? null : failure(-32001, "This turn has ended.");
       const name = typeof params?.name === "string" ? params.name : "";
@@ -124,7 +133,7 @@ const homeOf = (session: Session): string => parent(session.data) ?? session.dat
 async function call(session: Session, name: string, args: Args): Promise<Content[]> {
   switch (name) {
     case "pull_feedback":
-      return said(await pullFeedback(session));
+      return said(args.done === true ? await doneFeedback(session) : await pullFeedback(session));
     case "search_web": {
       const query = str(args.query);
       if (query === null) throw new Error("query is required");
@@ -148,6 +157,11 @@ async function call(session: Session, name: string, args: Args): Promise<Content
       return said(await readYoutube(session, args));
     case "find_images":
       return findImages(session, args);
+    case "remember":
+    case "read_skill":
+    case "other_channels":
+      if (session.place === null) throw new Error("This script isn't a channel's, so it has no lessons to keep or read.");
+      return said(await lanes.call(name, args, session.place));
     default:
       throw new Error(`There's no tool ${name} here.`);
   }
@@ -251,4 +265,15 @@ async function pullFeedback(session: Session): Promise<string> {
   if (notes.length === 0) return "No notes are open on the review. Say so.";
   diag.info("writer", `${id}: the chat's agent pulled ${notes.length} review ${notes.length === 1 ? "note" : "notes"}`);
   return fixing.brief(data, script, notes);
+}
+
+/** The review's notes already fixed, each with what was done for it: read back, taking nothing (teaching.ts ROUND_RULE). */
+async function doneFeedback(session: Session): Promise<string> {
+  const { data, id } = session;
+  const script: Script = store.read(store.scriptDir(data, id));
+  if (!script.review) return "This script hasn't been shared for review, so no review notes were fixed on it.";
+  await reviews.poll(data).catch((error: unknown) => diag.warn("writer", `${id}: reading the review's notes back: ${diag.messageOf(error)}`));
+  const notes = reviews.notesOf(data, id).filter((note) => reviews.isRoot(note) && !note.fromApp && !note.deleted && note.status === "done");
+  if (notes.length === 0) return "No notes on this script's review have been fixed yet.";
+  return fixing.doneBrief(data, script, notes);
 }

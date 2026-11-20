@@ -786,10 +786,12 @@ export async function revise(dir: string, script: Script, request: string, lesso
   const sources = sourcesOf(dir, script);
   let system = systemPrompt(script.title, commentary.pacing ?? "channel");
   if (lessons.trim() !== "") system += `\n\nLESSONS FROM PAST REVIEWS (follow them as you follow the guide)\n${lessons.trim()}`;
-  system += `\n\n${REVISE_NOTE}\n${TOOLS_NOTE}\n${LESSON_RULE}`;
+  // A channel's script with the turn's tools keeps lessons with remember, as every other agent does (revise.ts systemPrompt).
+  const teach = tools && script.channel ? "tools" : "lesson";
+  system += `\n\n${REVISE_NOTE}${tools ? `\n${TOOLS_NOTE}` : ""}${teach === "lesson" ? `\n${LESSON_RULE}` : ""}`;
   if (script.channel) {
     await lanes.refresh();
-    system += lanes.section(script.channel, "script", "lesson");
+    system += lanes.section(script.channel, "script", teach);
   }
   // The sources close the system prompt, which Claude caches, so one revision after another reads them at a
   // tenth of the price; the script, which changes, stays in the message (as revise.ts, Nov 5).

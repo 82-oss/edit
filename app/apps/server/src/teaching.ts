@@ -29,12 +29,22 @@ export function groupRule(): string {
  * that only answers once keeps only what's said outright. `grouped`: the
  * channel is in a group (`groupRule`).
  */
+/**
+ * A round of feedback applied, kept whole when asked (Sphe, Nov 20: "you've
+ * just applied all these changes. Please remember this for the future"; many
+ * lessons, or whole skills where they belong together). Every area's agent
+ * has it, in keepRule.
+ */
+export const ROUND_RULE = (word: string): string =>
+  `A ROUND OF FEEDBACK KEPT WHOLE: when they ask you to remember feedback you've applied ("remember all of this for the future", "keep these for next time"), that's their yes to every note of it. Read it back first if it isn't all in front of you (pull_feedback with done: true, where you have it). Then go through every note: each lasting point is its own lesson (one remember each, the rule in general terms, the reviewer's words as reason); where several notes are one part of the work (how a section opens, how pictures are found and placed), keep them as one longer part with a note on when to read it, its rules whole. A note only about this ${word} is kept as the rule behind it, or left when there's none. One that repeats what's taught changes that lesson (the same name). End with the list of what you kept, by name, and what you left and why.`;
+
 export function keepRule(word: string, how: string, asks = true, grouped = false): string {
   const line = grouped ? `"I'll remember this for the group: …", or "I'll remember this for this channel only: …"` : `"I'll remember this for future ${word}s: …"`;
   const sure =
     `KEEPING WHAT YOU'RE TAUGHT: when feedback says it holds beyond this ${word} ("always", "never", "every ${word}", "from now on", "make this a rule", "we don't do that for any…"), ${how} at once, the rule in general terms with their words, ` +
     `and end your reply with a line saying so (${line}). A fix for this ${word} only (this clip, this name, this moment) is never kept.` +
-    (grouped ? ` ${groupRule()}` : "");
+    (grouped ? ` ${groupRule()}` : "") +
+    ` ${ROUND_RULE(word)}`;
   if (!asks) return `${sure} Anything less sure than that, leave.`;
   return (
     `${sure} When it could hold beyond this ${word} but doesn't say so (a taste that sounds general; "throughout the entire ${word}" or "everywhere", which mean this ${word}), don't keep it: ` +

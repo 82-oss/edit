@@ -2647,7 +2647,29 @@ registerTool("feedback_answer", async ({ app, args, projectId }: ToolCall) => {
   return text(`answered ${note} on the review`);
 });
 
-registerTool("pull_feedback", async ({ app, args, projectId }: ToolCall) => text(await pullFeedback(app, projectId, args.again === true)));
+registerTool("pull_feedback", async ({ app, args, projectId }: ToolCall) => text(args.done === true ? await doneFeedback(app, projectId) : await pullFeedback(app, projectId, args.again === true)));
+
+/**
+ * The review's notes already fixed, each with what was done for it, taking
+ * nothing: what the agent reads back when asked to remember a round of
+ * feedback (teaching.ts ROUND_RULE).
+ */
+export async function doneFeedback(app: App, projectId: string): Promise<string> {
+  if (app.store.get(projectId) === null) throw new Error("no such project");
+  if (cloud.enabled()) await poll(app).catch((error: unknown) => diag.warn("review", `${projectId}: reading the review's notes back: ${diag.messageOf(error)}`));
+  const state = read(app.store.home);
+  const roots = Object.values(state.notes)
+    .filter((note) => note.project === projectId && note.parentId === null && note.fromApp !== true && (note.status === "done" || note.fix !== undefined))
+    .sort((a, b) => a.createdAt - b.createdAt);
+  if (roots.length === 0) return "No notes on this project's review have been fixed yet.";
+  const replies = (id: string) => Object.values(state.notes).filter((note) => note.parentId === id).sort((a, b) => a.createdAt - b.createdAt);
+  const one = (note: Note) => {
+    const at = note.ms === null ? "the whole video" : `${clock(note.ms / 1000)} on v${note.version}`;
+    const thread = replies(note.id).map((reply) => `\n  - ${reply.fromApp ? "Edit" : reply.author}: ${reply.text.trim()}`).join("");
+    return `[${note.id}] ${note.author}, at ${at}${note.asks?.intent ? ` (${note.asks.intent})` : ""}: ${note.text.trim()}${note.fix ? `\n  Done: ${note.fix.summary}` : ""}${thread}`;
+  };
+  return `${roots.length} ${roots.length === 1 ? "note" : "notes"} fixed on the review, oldest first (read only: nothing was taken):\n\n${roots.map(one).join("\n\n")}`;
+}
 
 registerTool("share_for_review", async ({ app, args, projectId }: ToolCall) => {
   const shared = await share(app, projectId, str(args.path));
