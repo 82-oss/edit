@@ -167,6 +167,21 @@ test("laid through the clip: a push-in carries the box with it, the blur is off 
   expect(laid.clips.some((c) => c.name === one!.name)).toBe(false);
 });
 
+test("a moving blur read back from its project file is the one blursFor makes again: laid again, nothing changes (Nov 20: none ever matched its saved self, and Boyfriends' ~690 were laid again after every track)", async () => {
+  const p = project();
+  const samples = await blur.track(plan, 0, 4, async (times) => times.map(screen));
+  const fresh = () => blur.blursFor(p, p.clips[0] as VideoClip, p.media[0]!, [{ from: 0, to: 4, samples }]);
+  expect(Object.keys(fresh()[0]!.keyframes ?? {}).length).toBeGreaterThan(1);
+  const laid = structuredClone(p);
+  expect(blur.lay(laid, fresh())).toBe(true);
+  // As the saved file reads back: its keyframes in the file's order (blur.height, blur.width, blur.x, blur.y, opacity), not blursFor's.
+  for (const one of laid.clips) {
+    if (one.keyframes === undefined) continue;
+    one.keyframes = Object.fromEntries(Object.entries(one.keyframes).sort(([a], [b]) => a.localeCompare(b)));
+  }
+  expect(blur.lay(laid, fresh())).toBe(false);
+});
+
 test("Nov 19, Cuffed & Caught's m10 at 7.57 s: only the subtitle line is blurred, never the cage's Pro-gard sticker beside it; lines stacked tight are one box, words apart never", async () => {
   // As read off the frame (shares of 1920×1080): the camera's stamp, the sticker on the cage, their yellow line.
   const stamp: ScreenText[] = [{ b: [0.636, 0.002, 0.946, 0.044], t: "2025-08-08 12:50:28 -0600" }, { b: [0.636, 0.03, 0.9, 0.07], t: "AXON BODY 4 D01A0653Y" }];
