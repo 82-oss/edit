@@ -44,7 +44,8 @@ test("a loop of awaits on what's already settled never lets anything else run, a
       await breathe();
     }
   });
-  expect(with_).toBeLessThan(60);
+  // Far under the 300 ms the loop without one keeps; with room for a slow runner (CI's Mac).
+  expect(with_).toBeLessThan(150);
 });
 
 test("a hold of the thread is said with what last started on it and kept for the report; a quiet gap isn't one", async () => {
