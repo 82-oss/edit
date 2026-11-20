@@ -202,4 +202,3 @@ export async function read(url: string): Promise<Page | null> {
 }
 
 export const host = (url: string): string => (url.split("://")[1] ?? url).split(/[/?#]/)[0] ?? "";
-

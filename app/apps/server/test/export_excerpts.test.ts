@@ -178,7 +178,7 @@ test("an excerpt cut over HTTP that stalls is stopped by cutTiming.stillMs inste
     expect(Date.now() - started).toBeLessThan(10_000);
   } finally {
     cutTiming.stillMs = prevStill;
-    server.stop(true);
+    void server.stop(true);
     cleanup();
   }
 });

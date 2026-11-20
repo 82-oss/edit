@@ -1271,11 +1271,11 @@ test("an excerpt the cloud's address can't cut is cut from the original download
       if (source.startsWith("http")) throw new Error("The excerpt cut from the footage came out wrong (it runs 29.8 s, not 29.2 s).");
       return real(source, start, to, out);
     });
+    const storage = await import("../src/storage.ts");
+    const disk = { free: storage.diskHooks.free, total: storage.diskHooks.total };
     try {
       const original = { file: "MartyFile1", source: "drive:MartyFile1", key, name: "MartyBlank.mp4", size: bytes.length };
       // A 1 TB Mac with 50 GB free (JJ's, Nov 19): a copy kept only while it's cut needs 15 GB left after it, not 100.
-      const storage = await import("../src/storage.ts");
-      const disk = { free: storage.diskHooks.free, total: storage.diskHooks.total };
       storage.diskHooks.free = () => 50e9;
       storage.diskHooks.total = () => 1e12;
       // Two stretches (22–27 s and 250–252 s, each with its 10 s handles): a sixth of the file, cut as excerpts.
@@ -1292,9 +1292,9 @@ test("an excerpt the cloud's address can't cut is cut from the original download
       expect(cloudMedia.cutsBetterHere(new Error("could not reach Edit's relay: The socket connection was closed unexpectedly"))).toBe(false);
       expect(cloudMedia.cutsBetterHere(new steps.StepTimedOut("Finding the excerpt's keyframe", 120_000, false))).toBe(true);
       expect(cloudMedia.cutsBetterHere(new steps.StepTimedOut("Cutting an excerpt", 600_000, true))).toBe(false);
+    } finally {
       storage.diskHooks.free = disk.free;
       storage.diskHooks.total = disk.total;
-    } finally {
       cut.mockRestore();
     }
   } finally {
@@ -1384,7 +1384,7 @@ test("forExport aborts in-flight ffmpeg sound-copy and excerpt-cut subprocesses 
     cloudMedia.soundCopyTiming.timeoutMs = prevSoundTimeout;
     presign.mockRestore();
     head.mockRestore();
-    server.stop(true);
+    void server.stop(true);
     cleanup();
   }
 });
