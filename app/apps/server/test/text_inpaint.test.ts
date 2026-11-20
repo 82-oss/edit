@@ -52,9 +52,88 @@ test("a stretch's frames are the file's own at its rate; a kept strip's name giv
   expect(inpaint.current({ media: [strip("tape.mp4 · their subtitles out 1–3 s")] }, "m1", 1, 3, "")).toBe(false);
   // Another's (Vmake's, from before Nov 19) stays as it was.
   expect(inpaint.current({ media: [strip("tape.mp4 · their text out 1–3 s · Smart")] }, "m1", 1, 3, "")).toBe(true);
+  // Legacy v2 strip: stays current when its box covers the tracked y-range, re-cleans when mid-screen captions sit above it.
+  const v2Clipped = { ...strip(inpaint.nameOf("tape.mp4", 1, 3, "", 2)), cleans: { media: "m1", from: 1, to: 3, box: [0, 0.5167, 1, 1] as Box, what: "text" as const } } as unknown as Media;
+  expect(inpaint.current({ media: [v2Clipped] }, "m1", 1, 3, "", [0.85, 0.96])).toBe(true);
+  expect(inpaint.current({ media: [v2Clipped] }, "m1", 1, 3, "", [0.42, 0.96])).toBe(false);
+  // Newly produced v3 strip stays current even if its box is narrower than yRange (never re-enqueues on subsequent saves).
+  const v3Narrow = { ...strip(inpaint.nameOf("tape.mp4", 1, 3, "", 3)), cleans: { media: "m1", from: 1, to: 3, box: [0, 0.6, 1, 0.9] as Box, what: "text" as const } } as unknown as Media;
+  expect(inpaint.current({ media: [v3Narrow] }, "m1", 1, 3, "", [0.42, 0.96])).toBe(true);
   // Another version's or another kind's isn't this one's.
   expect(inpaint.parseStrip("1000-3000.watermark-abc-none.json")).toBeNull();
   expect(inpaint.pixelsOf([[[0.1, 0.8, 0.9, 0.9]], []], 1920, 1080)).toEqual([[[192, 864, 1728, 972]], []]);
+});
+
+test("migration & save-time fast path: current strips never expand masksOf, v2 shelf hits preserve v2 tag until tracked, narrow v3 never re-enqueues, and reject clears v2+v3 shelf entries", async () => {
+  const { app, cleanup } = fixtureHome("text-inpaint-migration");
+  try {
+    let cleanCalls = 0;
+    let maskCalls = 0;
+    let returnBox: Box = [0, 0.6, 1, 0.9];
+    inpaint.useCleaner({
+      async clean(request) {
+        cleanCalls++;
+        await fakeStrip(request.out, request.masks.length, 64, 20, request.fps);
+        return { ok: true, box: returnBox, inferred: request.masks.length };
+      },
+    });
+    const source = "r2:footage/smartcops.mp4";
+    const footage = media({ id: "m1", name: "bodycam.mp4", path: join(app.store.home, "bodycam.mp4"), kind: "video", duration: 10, width: 64, height: 36, fps: 30, cloud: { source, original: "", size: 0 } }) as Media;
+    const created = app.store.create("M", { width: 1280, height: 720, fps: 30 }).project as Project;
+    await app.store.update(created.id, "test", (project) => {
+      project.media.push(footage);
+      project.clips.push(clip({ id: "c1", type: "video", media: "m1", track: project.tracks[0]!.id, start: 0, duration: 300, source_in: 0, speed: 1 }));
+    });
+    const plan = [{ media: footage, source, spans: [[1, 3]] as [number, number][] }];
+    const masksOf: inpaint.MasksOf = (_s, _f, _t, _fps, _first, frames) => {
+      maskCalls++;
+      return Array.from({ length: frames }, (): Box[] => [[0.1, 0.42, 0.9, 0.95]]);
+    };
+    // Put a legacy v2 strip with box [0, 0.5167, 1, 1] on the shelf before tracking completes.
+    const { createHash } = await import("node:crypto");
+    const folder = createHash("sha256").update(source).digest("hex").slice(0, 32);
+    const shelfDir = join(app.store.cacheDir(), "cleaned", folder);
+    fs.mkdirSync(shelfDir, { recursive: true });
+    const v2File = join(shelfDir, "1000-3000.minimax-v2-0-5167-10000-10000.mp4");
+    await fakeStrip(v2File, 60, 64, 20, 30);
+
+    // 1. While track range is undefined, v2 shelf hit is placed AND keeps its v2 tag (never promoted to v3).
+    await inpaint.ensure(app, created.id, plan, masksOf, () => undefined);
+    await inpaint.settled();
+    expect(cleanCalls).toBe(0);
+    expect(maskCalls).toBe(0);
+    const placedV2 = app.store.get(created.id)!.project.media.find((one) => one.cleans != null)!;
+    expect(placedV2.name).toContain(" · v2");
+    expect(placedV2.name).not.toContain(" · v3");
+
+    // 2. If track range fits inside v2 box, save-time ensure skips masksOf completely (no frame expansion stall).
+    await inpaint.ensure(app, created.id, plan, masksOf, () => [0.8, 0.95]);
+    await inpaint.settled();
+    expect(cleanCalls).toBe(0);
+    expect(maskCalls).toBe(0);
+
+    // 3. Once track finishes with mid-screen captions [0.42, 0.95] above v2's 0.5167, it upgrades to v3.
+    //    Even if the cleaner returns a box narrower than [0.42, 0.95], subsequent saves NEVER re-enqueue it or call masksOf!
+    returnBox = [0, 0.6, 1, 0.9];
+    await inpaint.ensure(app, created.id, plan, masksOf, () => [0.42, 0.95]);
+    await inpaint.settled();
+    expect(cleanCalls).toBe(1);
+    expect(maskCalls).toBe(1);
+    const placedV3 = app.store.get(created.id)!.project.media.find((one) => one.cleans != null)!;
+    expect(placedV3.name).toContain(" · v3");
+    await inpaint.ensure(app, created.id, plan, masksOf, () => [0.42, 0.95]);
+    await inpaint.settled();
+    expect(cleanCalls).toBe(1);
+    expect(maskCalls).toBe(1);
+
+    // 4. reject() clears BOTH v2 and v3 shelf entries so a rejected strip cannot be restored from the v2 shelf entry.
+    const pieceKey = inpaint.piecesOf(created.id)[0]!.key;
+    await inpaint.reject(app, created.id, pieceKey, "still has captions");
+    expect(fs.existsSync(v2File)).toBe(false);
+    expect(fs.readdirSync(shelfDir)).toEqual([]);
+  } finally {
+    cleanup();
+  }
 });
 
 /** A stacked strip of `frames` frames, `width` × 2·`height` (what the worker writes). */

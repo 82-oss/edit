@@ -55,7 +55,7 @@ export function theirs(plan: TrackPlan, line: ScreenText): boolean {
   if (plan.avoid.some((keep) => overlap(box, keep) > 0.3 * area(box))) return false;
   // A subtitle has words (a read of digits alone in their band is the picture's: a plate, a shirt's number).
   if (plan.subtitles && (line.t.match(/\p{L}/gu) ?? []).length >= 2) {
-    if (plan.band !== null ? overlap(box, grow(plan.band, 0.03)) > 0.5 * area(box) : box[1] > 0.66 && Math.abs((box[0] + box[2]) / 2 - 0.5) < 0.25) return true;
+    if (plan.band !== null ? overlap(box, grow(plan.band, 0.03)) > 0.5 * area(box) : box[1] > 0.38 && Math.abs((box[0] + box[2]) / 2 - 0.5) < 0.25) return true;
   }
   if (plan.text) {
     // No label of theirs known: none (words anywhere were taken as theirs, a cage's sticker among them, Nov 19).
@@ -84,15 +84,23 @@ function besides(a: Box, b: Box): boolean {
 /** A read much shorter than their tallest line beside it is the picture's speckle read as a letter ("0", "90"), never theirs. */
 const SPECK = 0.55;
 
-/** Their lines among those read: `theirs`, and the words on the same row beside one of them (never the camera's or what's kept). */
+/** Their lines among those read: `theirs`, words on the same row beside one of them, and multi-line subtitle rows stacked tight against one (never the camera's or what's kept). */
 export function theirLines(plan: Parameters<typeof theirs>[0], lines: ScreenText[]): ScreenText[] {
   const mine = lines.filter((line) => theirs(plan, line));
+  const isSubtitle = (line: ScreenText) =>
+    plan.subtitles &&
+    (line.t.match(/\p{L}/gu) ?? []).length >= 2 &&
+    (plan.band !== null ? overlap(line.b, grow(plan.band, 0.03)) > 0.5 * area(line.b) : line.b[1] > 0.38 && Math.abs((line.b[0] + line.b[2]) / 2 - 0.5) < 0.25);
+  const subtitleLines = new Set(mine.filter(isSubtitle));
   const rest = lines.filter((line) => !mine.includes(line) && area(line.b) > 0 && /\p{L}|\p{N}/u.test(line.t) && !plan.avoid.some((keep) => overlap(line.b, keep) > 0.3 * area(line.b)));
   for (let grew = true; grew; ) {
     grew = false;
     for (const line of [...rest]) {
-      if (!mine.some((one) => besides(one.b, line.b))) continue;
+      const side = mine.some((one) => besides(one.b, line.b));
+      const over = plan.subtitles && (line.t.match(/\p{L}/gu) ?? []).length >= 2 && [...subtitleLines].some((one) => stacked(one.b, line.b));
+      if (!side && !over) continue;
       mine.push(line);
+      if (over || [...subtitleLines].some((one) => besides(one.b, line.b))) subtitleLines.add(line);
       rest.splice(rest.indexOf(line), 1);
       grew = true;
     }

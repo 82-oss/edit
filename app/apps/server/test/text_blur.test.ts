@@ -110,6 +110,16 @@ test("the track: read three times a second, halved twice at each change; between
   // OCR reads a line in pieces: "THE" off to the left joins "SUSPECT RAN" beside it; the stamp never does.
   const pieces = blur.theirLines({ ...plan, band: null }, [{ b: [0.15, 0.84, 0.24, 0.9], t: "THE" }, { b: [0.25, 0.84, 0.6, 0.9], t: "SUSPECT RAN" }, { b: [0.65, 0.02, 0.95, 0.06], t: "2024-01-23" }]);
   expect(pieces.map((line) => line.t).sort()).toEqual(["SUSPECT RAN", "THE"]);
+  // Mid-screen captions (SMART Cops: "You guys are just too little" at y ~ 0.45, and two-line "Mom said she was" stacked above "going to come back").
+  expect(blur.theirs({ ...plan, band: null }, { b: [0.19, 0.454, 0.81, 0.559], t: "You guys are just too little" })).toBe(true);
+  expect(blur.regionOf({ ...plan, band: null })[1]).toBeLessThanOrEqual(0.35);
+  expect(blur.regionOf({ ...plan, band: [0.04, 0.614, 0.96, 0.979] })[1]).toBeLessThanOrEqual(0.515);
+  const stackedLines = blur.theirLines({ ...plan, band: [0.04, 0.614, 0.96, 0.979] }, [
+    { b: [0.13, 0.515, 0.566, 0.602], t: "Mom said she was" },
+    { b: [0.117, 0.617, 0.584, 0.73], t: "going to come back" },
+    { b: [0.05, 0.05, 0.42, 0.13], t: "Actual case footage" },
+  ]);
+  expect(stackedLines.map((line) => line.t)).toEqual(["going to come back", "Mom said she was"]);
 });
 
 test("keys follow a value within a tolerance: a ramp is two keys, a jump two keys a frame apart", () => {

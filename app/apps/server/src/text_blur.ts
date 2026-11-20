@@ -63,9 +63,10 @@ const PAD_ACROSS = 0.3;
 /**
  * A new way of tracking is a new file. 2: a box for each line of theirs (or adjacent lines), never one over words far
  * apart; scene text (a sticker, a sign) never a label of theirs (Nov 19: a cage's "Pro-gard" sticker joined the subtitle
- * line into one box over half a woman's body).
+ * line into one box over half a woman's body). 3: mid-screen burned-in captions (~35–58% down) and upper stacked lines
+ * above the sampled subtitle band are included in the OCR region and track (SMART Cops).
  */
-const VERSION = 2;
+const VERSION = 3;
 
 /** What one file's marked seconds need (text_removal.ts `plan`). */
 export interface BlurPlan {
@@ -136,10 +137,19 @@ export const reader = {
 // ---------------------------------------------------------------------------
 // Which words are theirs
 
-/** Where their text may be: their band and labels, grown; the lower part of the picture for subtitles not found yet; else all of it. */
+/** Where their text may be: their band (with extra upper headroom for mid-screen/multi-line captions) and labels, grown; else mid-to-lower frame for subtitles not found yet, or all of it. */
 export function regionOf(plan: Pick<BlurPlan, "band" | "labels" | "subtitles" | "text">): Box {
   const boxes: Box[] = [];
-  if (plan.subtitles) boxes.push(plan.band !== null ? grow(plan.band, 0.06) : [0.04, 0.6, 0.96, 1]);
+  if (plan.subtitles) {
+    if (plan.band !== null) {
+      const [x0, y0, x1, y1] = grow(plan.band, 0.06);
+      // When captions already sit above the bottom quarter, allow extra headroom above the sampled band for taller upper lines.
+      const top = plan.band[1] < 0.75 ? Math.max(0, Math.min(y0, plan.band[1] - 0.1)) : y0;
+      boxes.push([x0, top, x1, y1]);
+    } else {
+      boxes.push([0.04, 0.35, 0.96, 1]);
+    }
+  }
   if (plan.text) boxes.push(...plan.labels.map((box) => grow(box, 0.05)));
   return boxes.length === 0 ? [0, 0, 1, 1] : boxes.reduce(union);
 }
@@ -413,6 +423,31 @@ function known(app: App, source: string, from: number, to: number): Sample[] | n
 
 /** Called when one of a project's stretches is tracked (text_removal.ts cleans it then, where it's cleaned). */
 export const whenTracked: ((app: App, id: string) => void)[] = [];
+
+/** Cached vertical bounds [minY, maxY] of each tracked stretch's surviving slots (null: no words). */
+const yRanges = new WeakMap<Sample[], [number, number] | null>();
+
+/**
+ * Vertical extent [minY, maxY] of a tracked stretch's surviving slots (cached per track in O(1), never expanding per-frame
+ * masks). Returns undefined while untracked, null when tracked with no surviving text.
+ */
+export function yRangeOf(app: App, source: string, from: number, to: number): [number, number] | null | undefined {
+  const samples = known(app, source, from, to);
+  if (samples === null) return undefined;
+  if (yRanges.has(samples)) return yRanges.get(samples)!;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const slot of slotsOf(samples).values()) {
+    for (const sample of slot) {
+      if (sample.box === null) continue;
+      if (sample.box[1] < minY) minY = sample.box[1];
+      if (sample.box[3] > maxY) maxY = sample.box[3];
+    }
+  }
+  const range: [number, number] | null = Number.isFinite(minY) ? [minY, maxY] : null;
+  yRanges.set(samples, range);
+  return range;
+}
 
 /**
  * Their words' boxes (shares) at each of a stretch's frames, from its track: frame k at source second (first + k) / fps,

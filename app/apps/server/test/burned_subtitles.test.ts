@@ -73,10 +73,16 @@ test("a line low and centred that changes is a subtitle; a credit, a stamp or wo
   // Changing words nobody says (a ticker, a sign at a crossing) aren't the footage's subtitles.
   const other = transcript(SAID.map(([at]) => [at, "mumbling something quiet here"]));
   expect(burned.judge(texts, seconds, 40, other.words)).toBeNull();
-  // Higher in the picture, only what's said counts (a subtitle set at two thirds down).
+  // Higher in the picture, only what's said counts (two-thirds down, and mid-screen emphasis captions at ~40–55% down like SMART Cops).
   const higher = Object.fromEntries(SAID.map(([at, words]) => [at + 1, [line(words, 0.62)]]));
   expect(burned.judge(higher, seconds, 40, transcript().words)?.band[1]).toBe(0.61);
   expect(burned.judge(higher, seconds, 40, null)).toBeNull();
+  const midScreen = Object.fromEntries(SAID.map(([at, words], i) => [at + 1, [line(words, i % 2 === 0 ? 0.42 : 0.91)]]));
+  expect(burned.judge(midScreen, seconds, 40, transcript().words)?.band[1]).toBe(0.41);
+  // Without a transcript (or when unspoken), mid-screen text is NOT treated as subtitles.
+  const midOnly = Object.fromEntries(SAID.map(([at, words]) => [at + 1, [line(words, 0.42)]]));
+  expect(burned.judge(midOnly, seconds, 40, null)).toBeNull();
+  expect(burned.judge(midOnly, seconds, 40, other.words)).toBeNull();
   // Subtitled in its first half only: spans where they show.
   const half = Object.fromEntries([...SAID.slice(0, 5).map(([at, words]): [number, ScreenText[]] => [at + 1, [line(words)]]), ...[23, 27, 31, 35].map((second): [number, ScreenText[]] => [second, []])]);
   expect(burned.judge(half, [...SAID.slice(0, 5).map(([at]) => at + 1), 23, 27, 31, 35], 40, null)?.spans).toEqual([[0, 22]]);

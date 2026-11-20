@@ -186,14 +186,22 @@ const keyOf = (clip: Wanted | VideoClip): string => {
   return JSON.stringify(rounded([one.start, one.duration, one.parent, one.media, one.source_in, one.speed, [x, y, scale, rotation ?? 0], one.opacity, one.crop ?? null, one.blend ?? "normal", one.fade_in, one.fade_out, keys]));
 };
 
-/** Whether `lane` is above `owner`'s track with only overlay lanes between (a watermark's under a text strip's, a tracked blur's). */
+/** Whether `track` is a visible, non-subtitle video lane holding only clean-strip overlays (at least one). */
+function isOverlayLane(project: Project, track: Track): boolean {
+  if (track.kind !== "video" || track.subtitles === true || track.hidden === true) return false;
+  const clips = project.clips.filter((clip) => clip.track === track.id);
+  return clips.length > 0 && clips.every(isOverlay);
+}
+
+/** Whether `lane` sits in the contiguous pure-overlay stack directly above `owner`'s track (including `lane` itself). */
 function laneAbove(project: Project, owner: string, lane: string): boolean {
   const at = project.tracks.findIndex((track) => track.id === owner);
   const there = project.tracks.findIndex((track) => track.id === lane);
   if (at < 0 || there <= at) return false;
-  // Strips' lanes, and the tracked blurs' laid just above their clip (text_blur.ts), between.
-  const laidOver = (clip: Clip) => isOverlay(clip) || (clip.type === "adjustment" && (clip.name ?? "").startsWith(`${TRACKED} · `));
-  return project.tracks.slice(at + 1, there).every((track) => project.clips.some((clip) => clip.track === track.id) && project.clips.filter((clip) => clip.track === track.id).every(laidOver));
+  // Every lane from just above the footage up through `lane` itself must be a dedicated overlay lane:
+  // an overlay on a mixed track (e.g. one that also holds cut-ins or covers) or above a tracked blur
+  // would be invisible to `laneFor` and could end up stacked above a text strip covering the same clip.
+  return project.tracks.slice(at + 1, there + 1).every((track) => isOverlayLane(project, track));
 }
 
 const isWatermarkOverlay = (clip: Clip | Wanted): boolean => (clip.name ?? "").startsWith(`${WATERMARK_NAME} · `);
@@ -210,25 +218,35 @@ function laneFor(project: Project, track: string, watermark: boolean, start: num
   // The overlay lanes right above the footage's, bottom first.
   const stack: Track[] = [];
   for (const lane of project.tracks.slice(at + 1)) {
-    if (lane.kind !== "video" || lane.subtitles === true || lane.hidden === true) break;
-    const there = project.clips.filter((clip) => clip.track === lane.id);
-    if (there.length === 0 || !there.every(isOverlay)) break;
+    if (!isOverlayLane(project, lane)) break;
     stack.push(lane);
   }
-  const meets = (lane: Track) => project.clips.filter((clip) => clip.track === lane.id && clip.start < end && start < clipEnd(clip));
+  const onLane = (lane: Track) => project.clips.filter((clip) => clip.track === lane.id);
+  const meets = (lane: Track) => onLane(lane).filter((clip) => clip.start < end && start < clipEnd(clip));
   let lo = 0;
   let hi = stack.length - 1;
+  let lastWatermark = -1;
+  let firstText = stack.length;
   stack.forEach((lane, index) => {
+    const clips = onLane(lane);
+    if (clips.some(isWatermarkOverlay)) lastWatermark = Math.max(lastWatermark, index);
+    if (clips.some((clip) => !isWatermarkOverlay(clip))) firstText = Math.min(firstText, index);
     for (const clip of meets(lane)) {
       if (watermark && !isWatermarkOverlay(clip)) hi = Math.min(hi, index - 1);
       if (!watermark && isWatermarkOverlay(clip)) lo = Math.max(lo, index + 1);
     }
   });
-  for (let index = lo; index <= hi; index++) if (meets(stack[index]!).length === 0) return stack[index]!.id;
+  // Prefer a same-kind lane (strictly below text lanes for watermarks, strictly above watermark lanes for text),
+  // so watermark and text overlays don't share a lane and can never invert when laid incrementally.
+  const sameKind = (lane: Track) => onLane(lane).every((clip) => isWatermarkOverlay(clip) === watermark);
+  const prefLo = watermark ? lo : Math.max(lo, lastWatermark + 1);
+  const prefHi = watermark ? Math.min(hi, firstText - 1) : hi;
+  for (let index = prefLo; index <= prefHi; index++) if (sameKind(stack[index]!) && meets(stack[index]!).length === 0) return stack[index]!.id;
+  for (let index = lo; index <= hi; index++) if (sameKind(stack[index]!) && meets(stack[index]!).length === 0) return stack[index]!.id;
   const id = freshId(project, "v");
   const lane: Track = { id, kind: "video", hidden: false, muted: false, locked: false };
-  // A watermark's new lane at the bottom (under every text overlay); a text strip's just above the watermarks it meets.
-  project.tracks.splice(at + 1 + (watermark ? 0 : lo), 0, lane);
+  // A watermark's new lane at the bottom (under every text overlay); a text strip's above every watermark it meets (and existing watermark lanes).
+  project.tracks.splice(at + 1 + (watermark ? 0 : Math.max(lo, lastWatermark + 1)), 0, lane);
   return id;
 }
 
@@ -322,11 +340,32 @@ export function enforceCleanStrips(_before: Project | null, project: Project): v
     standing.set(keyOf(one), [...(standing.get(keyOf(one)) ?? []), one]);
   }
   const kept = new Set<string>();
+  const keptEntries: { clip: VideoClip; want: Wanted; ownerTrack: string }[] = [];
   const missing: Wanted[] = [];
   for (const one of want) {
     const match = standing.get(keyOf(one))?.shift();
-    if (match !== undefined) kept.add(match.id);
-    else missing.push(one);
+    if (match !== undefined) {
+      kept.add(match.id);
+      keptEntries.push({ clip: match, want: one, ownerTrack: owners.get(match.parent!)!.track });
+    } else missing.push(one);
+  }
+  // Never keep a watermark overlay stacked at or above an overlapping text overlay of the same footage clip/track.
+  const trackIndex = new Map(project.tracks.map((track, index) => [track.id, index]));
+  const keptText = keptEntries.filter((one) => !isWatermarkOverlay(one.clip));
+  for (const one of keptEntries) {
+    if (!isWatermarkOverlay(one.clip)) continue;
+    const wi = trackIndex.get(one.clip.track) ?? -1;
+    const aboveText = keptText.some(
+      (text) =>
+        (text.clip.parent === one.clip.parent || text.ownerTrack === one.ownerTrack) &&
+        one.clip.start < clipEnd(text.clip) &&
+        text.clip.start < clipEnd(one.clip) &&
+        wi >= (trackIndex.get(text.clip.track) ?? -1),
+    );
+    if (aboveText) {
+      kept.delete(one.clip.id);
+      missing.push(one.want);
+    }
   }
   const gone = new Set(old.filter((clip) => !kept.has(clip.id)).map((clip) => clip.id));
   if (gone.size > 0 || missing.length > 0) {

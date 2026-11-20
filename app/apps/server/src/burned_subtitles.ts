@@ -42,6 +42,8 @@ import * as tools from "./tools.ts";
 
 /** The file in the media's cache dir; a new method is a new file. */
 const FILE = "subtitles-burned-v1.json";
+/** Judging version: older cached files are rejudged from cached OCR reads with no new OCR. */
+const JUDGE_VERSION = 2;
 /** Frames looked at first, spread over the file. */
 const PROBES = 24;
 /** Probes with a subtitle-like line before the file is read on its grid. */
@@ -51,7 +53,7 @@ const MOST = 200;
 const LEAST_STEP = 4;
 /** A subtitle line's top is below this share of the height (one the transcript says may sit higher, to LOW_HEARD)… */
 const LOW = 0.72;
-const LOW_HEARD = 0.58;
+const LOW_HEARD = 0.35;
 /** …its middle within this share of the centre… */
 const CENTRE = 0.2;
 /** Samples with a subtitle line, and different lines among them, before a file counts as subtitled. */
@@ -110,6 +112,8 @@ export interface Burned {
 }
 
 interface State {
+  /** Judging version (`JUDGE_VERSION`): older cached states are rejudged from cached OCR reads. */
+  v?: number;
   /** The seconds read (indexes of screen_text's samples). */
   read: number[];
   /** What was read from: the file, or its whole copy here. */
@@ -369,8 +373,8 @@ export function warm(reader: Reader, media: Footage): Promise<void> {
   if (!isReal() || media.kind !== "video" || (media.duration ?? 0) < 2 || (media as { cleans?: unknown }).cleans != null) return Promise.resolve();
   const state = load(media.path);
   if (state !== null) {
-    // Judged again from what's read once a transcript comes (no new OCR).
-    if (!state.transcript) rejudge(reader, media, state);
+    // Judged again from what's read once a transcript comes or judging rules update (no new OCR).
+    if (!state.transcript || (state.v ?? 1) < JUDGE_VERSION) rejudge(reader, media, state);
     return Promise.resolve();
   }
   if (Date.now() - (failedAt.get(media.path) ?? 0) < RETRY_MS) return Promise.resolve();
@@ -420,15 +424,16 @@ async function read(reader: Reader, media: Footage, input: string): Promise<void
   }
   const words = wordsOf(reader.paths(media.path).transcript);
   const found = judge(all, seconds, duration, words);
-  save(media.path, { read: seconds.sort((a, b) => a - b), input, transcript: words !== null, found });
+  save(media.path, { v: JUDGE_VERSION, read: seconds.sort((a, b) => a - b), input, transcript: words !== null, found });
   if (found !== null) diag.info("media", `${media.name}: burned-in subtitles at ${found.spans.map(([a, b]) => `${a}–${b}s`).join(", ")} (band ${found.band.join(" ")})`);
 }
 
 function rejudge(reader: Reader, media: Footage, state: State): void {
   const words = wordsOf(reader.paths(media.path).transcript);
-  if (words === null) return;
-  const texts = native().screenTextCached(state.input) ?? {};
-  save(media.path, { ...state, transcript: true, found: judge(texts, state.read, media.duration ?? 0, words) });
+  if (words === null && (state.v ?? 1) >= JUDGE_VERSION) return;
+  const texts = native().screenTextCached(state.input);
+  if (texts === null) return;
+  save(media.path, { ...state, v: JUDGE_VERSION, transcript: words !== null, found: judge(texts, state.read, media.duration ?? 0, words) });
 }
 
 /** The words read off a file's frames to find its subtitles (second → lines), once it's read: what subtitle_removal.ts looks for other burned-in text in. */

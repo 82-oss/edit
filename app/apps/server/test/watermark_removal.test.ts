@@ -105,6 +105,77 @@ test("a watermark strip lies under a text strip of the same frames, both stuck t
   expect(alone.clips.filter((clip) => (clip.name ?? "").startsWith(`${WATERMARK_NAME} · `)).length).toBe(1);
 });
 
+test("a watermark strip is always strictly beneath an overlapping subtitle strip, even when previously on a mixed track, inverted, or laid incrementally", () => {
+  const lane = (project: Project, id: string) => project.tracks.findIndex((track) => track.id === id);
+  const assertOrdered = (project: Project) => {
+    const subs = project.clips.filter((clip): clip is VideoClip => (clip.name ?? "").startsWith(`${NAME} · `));
+    const wms = project.clips.filter((clip): clip is VideoClip => (clip.name ?? "").startsWith(`${WATERMARK_NAME} · `));
+    for (const s of subs) {
+      for (const w of wms) {
+        if (s.parent === w.parent && s.start < w.start + w.duration && w.start < s.start + s.duration) {
+          expect(lane(project, w.track)).toBeLessThan(lane(project, s.track));
+        }
+      }
+    }
+  };
+
+  // Case 1 (SMART Cops): watermark overlay sitting on a mixed track (`v9584`, with a cut-in) ABOVE `Subtitles removed`.
+  const mixed = stacked();
+  enforceCleanStrips(null, mixed);
+  const oldSub = mixed.clips.find((clip) => (clip.name ?? "").startsWith(`${NAME} · `)) as VideoClip;
+  const oldWm = mixed.clips.find((clip) => (clip.name ?? "").startsWith(`${WATERMARK_NAME} · `)) as VideoClip;
+  mixed.tracks.push({ id: "v_mixed", kind: "video", hidden: false, muted: false, locked: false });
+  oldWm.track = "v_mixed";
+  mixed.clips.push({ id: "cutin", track: "v_mixed", start: 400, duration: 60, color: "green", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as VideoClip);
+  expect(lane(mixed, oldWm.track)).toBeGreaterThan(lane(mixed, oldSub.track));
+  enforceCleanStrips(null, mixed);
+  assertOrdered(mixed);
+  const afterMixed = structuredClone(mixed);
+  enforceCleanStrips(mixed, afterMixed);
+  expect(afterMixed).toEqual(mixed);
+
+  // Case 2: watermark overlay on a pure-overlay lane stacked ABOVE an overlapping `Subtitles removed` lane.
+  const inverted = stacked();
+  enforceCleanStrips(null, inverted);
+  const subTrackIdx = lane(inverted, inverted.clips.find((c) => (c.name ?? "").startsWith(`${NAME} · `))!.track);
+  const wmTrackIdx = lane(inverted, inverted.clips.find((c) => (c.name ?? "").startsWith(`${WATERMARK_NAME} · `))!.track);
+  // Swap the two pure-overlay lanes so watermark is above subtitles.
+  const [wmTrack] = inverted.tracks.splice(wmTrackIdx, 1);
+  inverted.tracks.splice(subTrackIdx, 0, wmTrack!);
+  enforceCleanStrips(null, inverted);
+  assertOrdered(inverted);
+  const afterInverted = structuredClone(inverted);
+  enforceCleanStrips(inverted, afterInverted);
+  expect(afterInverted).toEqual(inverted);
+
+  // Case 3: incremental saves across two clips where clip 1 gets watermark first, clip 2 gets subtitles first, then both get the other strip.
+  const inc = stacked();
+  inc.clips = [
+    { id: "c1", track: "v1", start: 0, duration: 150, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: 0, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as VideoClip,
+    { id: "c2", track: "v1", start: 150, duration: 150, color: "blue", fade_in: 0, fade_out: 0, type: "video", media: "m", source_in: 10, speed: 1, transform: { x: 0, y: 0, scale: 1, rotation: 0 }, opacity: 1 } as VideoClip,
+  ];
+  const fullMedia = structuredClone(inc.media);
+  // Save 1: only watermark on [0, 5) (covers c1) and text on [10, 15) (covers c2).
+  inc.media = [
+    fullMedia[0]!,
+    { ...fullMedia[2]!, id: "w1", cleans: { media: "m", from: 0, to: 5, box: [0.37, 0.61, 0.63, 0.84], what: "watermark" } },
+    { ...fullMedia[1]!, id: "t2", cleans: { media: "m", from: 10, to: 15, box: [0, 0.4, 1, 1], what: "text" } },
+  ];
+  enforceCleanStrips(null, inc);
+  // Save 2: now text arrives for c1 and watermark arrives for c2.
+  inc.media.push(
+    { ...fullMedia[1]!, id: "t1", cleans: { media: "m", from: 0, to: 5, box: [0, 0.4, 1, 1], what: "text" } },
+    { ...fullMedia[2]!, id: "w2", cleans: { media: "m", from: 10, to: 15, box: [0.37, 0.61, 0.63, 0.84], what: "watermark" } },
+  );
+  enforceCleanStrips(null, inc);
+  assertOrdered(inc);
+  expect(inc.clips.filter((c) => (c.name ?? "").startsWith(`${NAME} · `)).length).toBe(2);
+  expect(inc.clips.filter((c) => (c.name ?? "").startsWith(`${WATERMARK_NAME} · `)).length).toBe(2);
+  const afterInc = structuredClone(inc);
+  enforceCleanStrips(inc, afterInc);
+  expect(afterInc).toEqual(inc);
+});
+
 /** A stand-in engine: a mark learned from any file but one named "plain" (none there); each piece a small stacked strip as long as the piece, or nothing where `absent` says. */
 function standIn(calls: WatermarkPiece[], absent: (from: number) => boolean = () => false, learned: string[] = []): wm.Engine {
   return {

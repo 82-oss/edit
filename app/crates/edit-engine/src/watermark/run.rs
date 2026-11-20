@@ -1200,62 +1200,55 @@ pub fn remove(
         }
         if end2 > next2 {
             let block: Vec<usize> = (next2..end2).collect();
-            let results: Vec<(usize, Option<Restored>)> = parallel(threads, block, |k| {
+            let results = parallel(threads, block, |k| {
                 let Some(own) = slots.get(k).and_then(Option::as_ref) else {
-                    return (k, None);
+                    return None;
                 };
-                let (Some(holes), Some(first)) = (&own.holes, &own.first) else {
-                    return (k, None);
+                let second = match (&own.holes, &own.first) {
+                    (Some(holes), Some(first)) => {
+                        let neighbours: Vec<Neighbour> = neighbours_of(k)
+                            .into_iter()
+                            .filter_map(|(step, j, shift)| {
+                                let slot = slots.get(j).and_then(Option::as_ref)?;
+                                let (Some(first), Some(bad)) = (&slot.first, &slot.second_bad)
+                                else {
+                                    return None;
+                                };
+                                Some(Neighbour {
+                                    step,
+                                    shift,
+                                    prep: &slot.prep,
+                                    source: first,
+                                    bad,
+                                })
+                            })
+                            .collect();
+                        let mut flows = Flows::default();
+                        if let Some(kept) = &own.flows {
+                            flows.pairs = kept.pairs.clone();
+                        }
+                        restore(
+                            &own.prep,
+                            first,
+                            &neighbours,
+                            &mut flows,
+                            Some(holes),
+                            work,
+                            curve,
+                        )
+                    }
+                    _ => None,
                 };
-                let neighbours: Vec<Neighbour> = neighbours_of(k)
-                    .into_iter()
-                    .filter_map(|(step, j, shift)| {
-                        let slot = slots.get(j).and_then(Option::as_ref)?;
-                        let (Some(first), Some(bad)) = (&slot.first, &slot.second_bad) else {
-                            return None;
-                        };
-                        Some(Neighbour {
-                            step,
-                            shift,
-                            prep: &slot.prep,
-                            source: first,
-                            bad,
-                        })
-                    })
-                    .collect();
-                let mut flows = Flows::default();
-                // The first pass's flows (moved out would need a lock; they're cloned per frame with holes only).
-                if let Some(kept) = &own.flows {
-                    flows.pairs = kept.pairs.clone();
-                }
-                (
-                    k,
-                    restore(
-                        &own.prep,
-                        first,
-                        &neighbours,
-                        &mut flows,
-                        Some(holes),
-                        work,
-                        curve,
-                    ),
-                )
-            });
-            for (k, second) in results {
-                let Some(Some(slot)) = slots.get(k) else {
-                    continue;
-                };
-                let mut finished = slot.first.clone().unwrap_or_else(|| slot.picture.clone());
-                let mut weight = slot.weight.clone();
-                if let (Some(second), Some(region)) = (&second, slot.prep.region) {
+                let mut finished = own.first.clone().unwrap_or_else(|| own.picture.clone());
+                let mut weight = own.weight.clone();
+                if let (Some(second), Some(region)) = (&second, own.prep.region) {
                     paste(&mut finished, second, region, work);
                     weight =
                         weight.map(|w1| w1.zip(&second.weight, |a, b| 1.0 - (1.0 - a) * (1.0 - b)));
-                    // What no neighbour could give is the inverse alone, which leaves the letters' outlines: thin
-                    // leftovers (within 4 px of a filled pixel) are filled smoothly from round them; a wide one keeps
-                    // the inverse (smoothing it over would be the plastic look).
-                    if let Some(holes) = &slot.holes {
-                        let left = Mask {
+                }
+                if let (Some(holes), Some(region)) = (&own.holes, own.prep.region) {
+                    let left = match &second {
+                        Some(second) => Mask {
                             w: holes.w,
                             h: holes.h,
                             data: holes
@@ -1264,26 +1257,29 @@ pub fn remove(
                                 .zip(&second.valid.data)
                                 .map(|(&h, &v)| h && !v)
                                 .collect(),
-                        };
-                        let thin = super::find::distance(&left).mask(|d| d > 0.0 && d <= 4.0);
-                        if thin.any() {
-                            inpaint(&mut finished, &thin, region, work);
-                        }
+                        },
+                        None => holes.clone(),
+                    };
+                    let fill =
+                        leftovers_to_inpaint(&finished, &own.prep, &left, region, work, curve);
+                    if fill.any() {
+                        inpaint(&mut finished, &fill, region, work);
                     }
                 }
-                if let Some(region) = slot.prep.region {
-                    let reg = &slot.prep.reg;
-                    mark_px += reg.count();
-                    let first_valid = slot
-                        .holes
-                        .as_ref()
-                        .map_or(reg.count(), |h| reg.count() - h.count());
-                    let second_valid = second.as_ref().map_or(0, |s| s.valid.count());
-                    filled_px += first_valid + second_valid;
-                    let _ = region;
-                }
-                if (k - k0).is_multiple_of(6) {
-                    if let Some(place) = places.get(k).filter(|p| p.c > 0.0) {
+                let (frame_mark_px, frame_filled_px) = match own.prep.region {
+                    Some(_) => {
+                        let reg = &own.prep.reg;
+                        let first_valid = own
+                            .holes
+                            .as_ref()
+                            .map_or(reg.count(), |h| reg.count() - h.count());
+                        let second_valid = second.as_ref().map_or(0, |s| s.valid.count());
+                        (reg.count(), first_valid + second_valid)
+                    }
+                    None => (0, 0),
+                };
+                let check = if (k - k0).is_multiple_of(6) {
+                    places.get(k).filter(|p| p.c > 0.0).map(|place| {
                         let at = (place.x - work.x as f32, place.y - work.y as f32);
                         let score = |picture: &Picture| {
                             checker
@@ -1298,19 +1294,32 @@ pub fn remove(
                                 )
                                 .map_or(0.0, |s| s.score.max(0.0))
                         };
-                        before.push(score(&slot.picture));
-                        after.push(score(&finished));
-                    }
-                }
+                        (score(&own.picture), score(&finished))
+                    })
+                } else {
+                    None
+                };
                 let frame = strip_frame(
-                    &slot.picture,
+                    &own.picture,
                     &finished,
                     weight.as_ref(),
-                    slot.prep.region,
+                    own.prep.region,
                     strip_local,
                     &kept,
                     work,
                 );
+                Some((frame, frame_mark_px, frame_filled_px, check))
+            });
+            for item in results {
+                let Some((frame, frame_mark_px, frame_filled_px, check)) = item else {
+                    continue;
+                };
+                mark_px += frame_mark_px;
+                filled_px += frame_filled_px;
+                if let Some((b, a)) = check {
+                    before.push(b);
+                    after.push(a);
+                }
                 encoder.write(&frame)?;
             }
             next2 = end2;
@@ -1346,6 +1355,90 @@ pub fn remove(
         },
         took: started.elapsed().as_secs_f64(),
     }))
+}
+
+/// Unfilled pixels of `left` (over `region`) that should be smoothly filled from
+/// the clean pixels around them rather than left as the raw mathematical inverse:
+/// - crushed darks (low blend slope, where H.264 discarded texture and the inverse
+///   amplifies quantization noise and stroke-edge ringing several-fold),
+/// - smooth / blurred backgrounds (low high-frequency texture in the surrounding
+///   clean pixels, where harmonic interpolation is faithful and avoids embossed edges),
+/// - genuinely thin holes (not a 4 px rim around an un-inpainted interior), and
+/// - the narrow stroke-edge transition band where H.264 rings.
+fn leftovers_to_inpaint(
+    finished: &Picture,
+    prep: &Prep,
+    left: &Mask,
+    region: Rect,
+    work: Work,
+    curve: Curve,
+) -> Mask {
+    let (rw, rh) = (region.w(), region.h());
+    let peak = prep.alpha.data.iter().copied().fold(0.0f32, f32::max);
+    if peak <= 0.0 || !left.any() {
+        return Mask::new(rw, rh);
+    }
+    // High-frequency texture measured strictly on clean pixels (!left) via normalized
+    // convolution, so smooth gradients (blurred faces/rooms) measure near 0 while sharp
+    // textured surfaces (fabric, brick) measure high without leaking inverse noise in.
+    let y = Plane::from_window(
+        &finished.y,
+        work.w,
+        work.h,
+        region.x0 as isize,
+        region.y0 as isize,
+        rw,
+        rh,
+    );
+    let yh = y.half();
+    let ch = left.plane().map(|v| 1.0 - v).half();
+    let smooth_den = ch.gaussian(1.2);
+    let smooth_y = yh
+        .zip(&ch, |v, c| v * c)
+        .gaussian(1.2)
+        .zip(&smooth_den, |n, d| if d > 0.05 { n / d } else { 0.0 });
+    let hf = yh.zip(&smooth_y, |a, b| (a - b).abs());
+    let tex_num = hf.zip(&ch, |h, c| h * c).gaussian(5.0);
+    let tex_den = ch.gaussian(5.0);
+    let tex = tex_num
+        .zip(&tex_den, |n, d| if d > 0.05 { n / d } else { 0.0 })
+        .resized(rw, rh);
+
+    // Genuinely thin holes: pixels in `left` with no deep core (> 4 px from any clean pixel) nearby.
+    let dist = super::find::distance(left);
+    let deep = dist.mask(|d| d > 4.0).dilate(9);
+
+    // Narrow stroke-edge transition band where alpha changes steeply and H.264 rings.
+    let edge = prep
+        .alpha
+        .mask(|a| a > 0.002 && a < 0.85 * peak)
+        .dilate(3);
+
+    let mut out = Mask::new(rw, rh);
+    // When optical flow filled almost nothing (<15% of the mark, e.g. a static or blurred background),
+    // scattered single-pixel flow matches inside crushed/smooth strokes are noise that would anchor
+    // harmonic_fill to ghosty values; fill the whole crushed/smooth stroke cleanly from outside `reg`.
+    let sparse_fill = left.count() * 100 >= 85 * prep.reg.count().max(1);
+    for i in 0..rw * rh {
+        let in_left = left.data.get(i).copied().unwrap_or(false);
+        let in_reg = prep.reg.data.get(i).copied().unwrap_or(false);
+        if !in_left && !(sparse_fill && in_reg) {
+            continue;
+        }
+        let j = prep.my.data.get(i).copied().unwrap_or(16.0);
+        // Evaluate slope at the stroke's peak alpha so the H.264 ringing halo right outside
+        // a dark stroke (where alpha itself is small) is filled together with the stroke.
+        let crushed = curve.slope(j, peak) < 0.62;
+        let smooth = tex.data.get(i).copied().unwrap_or(0.0) < 2.2;
+        let thin = in_left && !deep.data.get(i).copied().unwrap_or(false);
+        let on_edge = in_left && edge.data.get(i).copied().unwrap_or(false);
+        if crushed || smooth || thin || on_edge {
+            if let Some(slot) = out.data.get_mut(i) {
+                *slot = true;
+            }
+        }
+    }
+    out
 }
 
 /// Fills `holes` (over `region`) of a picture smoothly from the pixels round them, brightness and colour.
@@ -1676,6 +1769,104 @@ mod tests {
         assert_eq!(frame.get(6), Some(&16), "the stamp's colour is none");
         assert_eq!(frame.get(4 * 8), Some(&235), "alpha 1 is white");
         assert_eq!(frame.get(4 * 8 + 6), Some(&16), "the stamp is see-through");
+    }
+
+    #[test]
+    fn leftovers_inpaint_clears_crushed_dark_and_smooth_ghosts_while_keeping_bright_texture() {
+        let curve = Curve {
+            gamma: 1.98,
+            white: 0.89,
+        };
+        let (w, h) = (160usize, 100usize);
+        let work = Work {
+            x: 0,
+            y: 0,
+            w,
+            h,
+            frame_w: w,
+            frame_h: h,
+        };
+        // Wide 24 px stroke across the middle (much wider than the old 4 px thin-only threshold).
+        let mut matte = Plane::new(w, h, 0.0);
+        for y in 38..62 {
+            for x in 30..130 {
+                matte.set(x, y, 0.095);
+            }
+        }
+        let matte = matte.gaussian(0.8);
+
+        // Case 1: Smooth dark background (like blurred bodycam footage) with H.264-like ringing inside the stroke.
+        let mut dark_orig = Picture {
+            y: vec![34u8; w * h],
+            u: vec![128u8; (w / 2) * (h / 2)],
+            v: vec![128u8; (w / 2) * (h / 2)],
+        };
+        for y in 0..h {
+            for x in 0..w {
+                let bg = 28.0 + 14.0 * (x as f32 / w as f32);
+                let a = matte.at(x, y);
+                // Simulate H.264 ringing / quantization error (+3 inside stroke edge) that raw inverse amplifies.
+                let ring = if a > 0.03 && a < 0.092 { 3.0 } else { 0.0 };
+                let marked = (curve.mark(bg, a) + ring).round().clamp(16.0, 235.0) as u8;
+                dark_orig.y[y * w + x] = marked;
+            }
+        }
+        let prepared = prep(&dark_orig, work, Some((&matte, 0, 0)), curve);
+        let region = prepared.region.unwrap();
+        let mut finished = dark_orig.clone();
+        // Simulate raw inverse fallback (no neighbour filled any pixel of the wide stroke).
+        for py in 0..region.h() {
+            for px in 0..region.w() {
+                if prepared.reg.at(px, py) {
+                    finished.y[(region.y0 + py) * w + region.x0 + px] =
+                        prepared.my.at(px, py).round().clamp(16.0, 235.0) as u8;
+                }
+            }
+        }
+        let max_err_before = (38..62)
+            .flat_map(|y| (30..130).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let bg = 28.0 + 14.0 * (x as f32 / w as f32);
+                (f32::from(finished.y[y * w + x]) - bg).abs()
+            })
+            .fold(0.0f32, f32::max);
+        let fill = leftovers_to_inpaint(&finished, &prepared, &prepared.reg, region, work, curve);
+        assert!(fill.count() >= prepared.reg.count() * 9 / 10);
+        inpaint(&mut finished, &fill, region, work);
+        let max_err_after = (38..62)
+            .flat_map(|y| (30..130).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let bg = 28.0 + 14.0 * (x as f32 / w as f32);
+                (f32::from(finished.y[y * w + x]) - bg).abs()
+            })
+            .fold(0.0f32, f32::max);
+        assert!(
+            max_err_before > 5.0 && max_err_after < 1.5,
+            "expected ringing ghost cleared: before={max_err_before}, after={max_err_after}"
+        );
+
+        // Case 2: Bright, high-texture background: core of the wide stroke stays untouched by harmonic fill.
+        let mut bright_orig = Picture {
+            y: vec![170u8; w * h],
+            u: vec![128u8; (w / 2) * (h / 2)],
+            v: vec![128u8; (w / 2) * (h / 2)],
+        };
+        for y in 0..h {
+            for x in 0..w {
+                let tex = if ((x / 3) + (y / 3)) % 2 == 0 { 22.0 } else { -22.0 };
+                let bg = 175.0 + tex;
+                bright_orig.y[y * w + x] =
+                    curve.mark(bg, matte.at(x, y)).round().clamp(16.0, 235.0) as u8;
+            }
+        }
+        let bprep = prep(&bright_orig, work, Some((&matte, 0, 0)), curve);
+        let bregion = bprep.region.unwrap();
+        let bfill = leftovers_to_inpaint(&bright_orig, &bprep, &bprep.reg, bregion, work, curve);
+        // Deep interior center of the 24 px stroke (x=80, y=50) must NOT be smoothed over on bright texture.
+        assert!(
+            !bfill.at(80 - bregion.x0, 50 - bregion.y0),
+            "bright textured stroke interior should keep well-conditioned inverse"
+        );
     }
 }
 

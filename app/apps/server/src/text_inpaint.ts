@@ -38,8 +38,10 @@ import workerSource from "./minimax_worker.py" with { type: "text" };
 
 /** Where the model is installed (its Python, weights and code): a machine without it blurs. */
 export const REMOVER = join(os.homedir(), ".local", "share", "edit-remover");
-/** A new way of cleaning is a new name on the shelf. 2: cleaned from the picture with their watermark out (`beneath`). */
-const VERSION = 2;
+/** A new way of cleaning is a new name on the shelf. 2: cleaned over their watermark (`beneath`); 3: mid-screen subtitle band coverage. */
+const VERSION = 3;
+/** Previous version still accepted without re-cleaning when its strip box already covers the tracked vertical range. */
+const PREV_VERSION = 2;
 /** The worker is let go (its GPU memory freed) after this long with nothing to do. */
 const IDLE_MS = 5 * 60_000;
 /** A stretch the model failed on is tried once more, then left blurred. */
@@ -83,6 +85,8 @@ export interface InpaintPiece {
 
 /** The track's boxes of their words over a stretch: text_blur hands it (its samples, per place). */
 export type MasksOf = (source: string, from: number, to: number, fps: number, first: number, frames: number) => Box[][] | null;
+/** Cached vertical bounds [minY, maxY] of a stretch's masks (undefined: untracked; null: no text): cheap check for legacy v2 strips without expanding per-frame masks. */
+export type RangeOf = (source: string, from: number, to: number) => [number, number] | null | undefined;
 
 // ---------------------------------------------------------------------------
 // Whether this machine can
@@ -149,9 +153,9 @@ const boxPart = (box: Box) => box.map((value) => String(Math.round(value * 1e4))
 export const stripName = (from: number, to: number, box: Box | null, under = "") =>
   `${Math.round(from * 1000)}-${Math.round(to * 1000)}.minimax-v${VERSION}${under === "" ? "" : `-u${under}`}-${box === null ? "none.json" : `${boxPart(box)}.mp4`}`;
 
-/** A kept strip's name read back: its seconds, what it was cleaned over, and its box (null: nothing of theirs was there). */
-export function parseStrip(name: string): { from: number; to: number; box: Box | null; under: string } | null {
-  const match = new RegExp(`^(\\d+)-(\\d+)\\.minimax-v${VERSION}(?:-u([0-9a-f]+))?-(?:none\\.json|(\\d+)-(\\d+)-(\\d+)-(\\d+)\\.mp4)$`, "u").exec(name);
+/** A kept strip's name read back: its seconds, what it was cleaned over, its box (null: nothing of theirs was there), and its version. */
+export function parseStrip(name: string, version: number = VERSION): { from: number; to: number; box: Box | null; under: string } | null {
+  const match = new RegExp(`^(\\d+)-(\\d+)\\.minimax-v${version}(?:-u([0-9a-f]+))?-(?:none\\.json|(\\d+)-(\\d+)-(\\d+)-(\\d+)\\.mp4)$`, "u").exec(name);
   if (match === null) return null;
   const box = match[4] === undefined ? null : ([match[4], match[5], match[6], match[7]].map((value) => Number(value) / 1e4) as Box);
   return { from: Number(match[1]) / 1000, to: Number(match[2]) / 1000, box, under: match[3] ?? "" };
@@ -190,13 +194,36 @@ const PREFIX = "edit/cleaned";
 /** text_removal's `folderOf` (that file imports this one). */
 const folderOf = (source: string) => createHash("sha256").update(source).digest("hex").slice(0, 32);
 
-/** A stretch's strip on the shelf, brought here (null: not cleaned yet). */
-async function shelved(app: App, source: string, from: number, to: number, under: string): Promise<{ file: string | null; box: Box | null } | null> {
+/** Whether a legacy v2 strip's vertical box covers a tracked vertical range [minY, maxY]. */
+export function coversRange(stripBox: Box | null, yRange: [number, number] | null | undefined): boolean {
+  if (yRange === undefined || yRange === null) return true;
+  if (stripBox === null) return false;
+  return stripBox[1] <= yRange[0] + 0.005 && stripBox[3] >= yRange[1] - 0.005;
+}
+
+type LazyRange = [number, number] | null | undefined | (() => [number, number] | null | undefined);
+const resolveRange = (yRange: LazyRange): [number, number] | null | undefined => (typeof yRange === "function" ? yRange() : yRange);
+
+/** A stretch's strip on the shelf, brought here (null: not cleaned yet). Prefers current VERSION; accepts PREV_VERSION when its box covers `yRange`, preserving its actual version so `place` never promotes an unchecked v2 strip to v3. */
+async function shelved(app: App, source: string, from: number, to: number, under: string, yRange: LazyRange = undefined): Promise<{ file: string | null; box: Box | null; version: number } | null> {
   const folder = folderOf(source);
   const dir = join(app.store.cacheDir(), "cleaned", folder);
-  const want = (name: string) => {
-    const one = parseStrip(name);
-    return one !== null && one.under === under && Math.abs(one.from - from) < 0.001 && Math.abs(one.to - to) < 0.001 ? one : null;
+  const matchOf = (name: string, version: number) => {
+    const one = parseStrip(name, version);
+    if (one === null || one.under !== under || Math.abs(one.from - from) >= 0.001 || Math.abs(one.to - to) >= 0.001) return null;
+    if (version !== VERSION && !coversRange(one.box, resolveRange(yRange))) return null;
+    return { ...one, version };
+  };
+  const pick = (list: string[]) => {
+    for (const one of list) {
+      const m = matchOf(one, VERSION);
+      if (m !== null) return { name: one, ...m };
+    }
+    for (const one of list) {
+      const m = matchOf(one, PREV_VERSION);
+      if (m !== null) return { name: one, ...m };
+    }
+    return null;
   };
   let names: string[] = [];
   try {
@@ -204,18 +231,17 @@ async function shelved(app: App, source: string, from: number, to: number, under
   } catch {
     /* Nothing here yet. */
   }
-  let name = names.find((one) => want(one) !== null);
-  if (name === undefined && cloud.enabled()) {
+  let hit = pick(names);
+  if (hit === null && cloud.enabled()) {
     const listed = await cloud.list(`${PREFIX}/${folder}/`).catch(() => []);
-    name = listed.map((object) => object.key.slice(object.key.lastIndexOf("/") + 1)).find((one) => want(one) !== null);
-    if (name !== undefined && name.endsWith(".mp4")) {
+    hit = pick(listed.map((object) => object.key.slice(object.key.lastIndexOf("/") + 1)));
+    if (hit !== null && hit.name.endsWith(".mp4")) {
       fs.mkdirSync(dir, { recursive: true });
-      await cloud.download(`${PREFIX}/${folder}/${name}`, join(dir, name));
+      await cloud.download(`${PREFIX}/${folder}/${hit.name}`, join(dir, hit.name));
     }
   }
-  if (name === undefined) return null;
-  const box = want(name)!.box;
-  return { file: box === null ? null : join(dir, name), box };
+  if (hit === null) return null;
+  return { file: hit.box === null ? null : join(dir, hit.name), box: hit.box, version: hit.version };
 }
 
 async function keep(app: App, source: string, from: number, to: number, file: string | null, box: Box | null, under: string): Promise<string | null> {
@@ -466,31 +492,48 @@ export function stripCovers(project: { media: Media[] }, media: string, from: nu
  * and a strip from before the watermark fix was taken as current).
  */
 const OURS = / · their subtitles out \d+–\d+ s(?: · (v\d+(?:\.[0-9a-f]+)?))?$/u;
-export const tagOf = (under: string) => `v${VERSION}${under === "" ? "" : `.${under}`}`;
-export const nameOf = (footage: string, from: number, to: number, under: string) => `${footage} · their subtitles out ${Math.round(from)}–${Math.round(to)} s · ${tagOf(under)}`;
+export const tagOf = (under: string, version: number = VERSION) => `v${version}${under === "" ? "" : `.${under}`}`;
+export const nameOf = (footage: string, from: number, to: number, under: string, version: number = VERSION) =>
+  `${footage} · their subtitles out ${Math.round(from)}–${Math.round(to)} s · ${tagOf(under, version)}`;
 
-/** A strip of ours for [from, to) made as it'd be made now (this version, over these watermark strips), or another's (a Vmake one from before Nov 19, kept as it was): one of ours that isn't is made again. */
-export function current(project: { media: Media[] }, media: string, from: number, to: number, under: string): boolean {
+/**
+ * A strip of ours for [from, to) made as it'd be made now (current VERSION with this `under`, or PREV_VERSION whose
+ * box already covers `yRange`), or another's (a Vmake one from before Nov 19, kept as it was). A newly produced
+ * current-VERSION strip always counts as current even if its box is narrower than `yRange`, so it can never re-enqueue itself.
+ */
+export function current(project: { media: Media[] }, media: string, from: number, to: number, under: string, yRange: LazyRange = undefined): boolean {
+  const curTag = tagOf(under, VERSION);
+  const prevTag = tagOf(under, PREV_VERSION);
   return project.media.some((one) => {
     if (one.cleans == null || one.cleans.media !== media || (one.cleans.what ?? "text") !== "text" || Math.abs(one.cleans.from - from) > 0.01 || Math.abs(one.cleans.to - to) > 0.05) return false;
     const ours = OURS.exec(one.name);
-    return ours === null || ours[1] === tagOf(under);
+    if (ours === null || ours[1] === curTag) return true;
+    return ours[1] === prevTag && coversRange(one.cleans.box, resolveRange(yRange));
   });
 }
 
 /** Puts a stretch's strip in the project (clean_strips.ts lays it over the clips there). */
-async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string, under: string): Promise<void> {
+async function place(app: App, id: string, footage: Media, from: number, to: number, box: Box, file: string, under: string, version: number = VERSION, yRange: LazyRange = undefined): Promise<void> {
   const probed = await probe(file);
   await playing.whenIdle();
   await app.store.update(id, "text removal", (project) => {
     if (!project.media.some((one) => one.id === footage.id)) return;
-    if (current(project, footage.id, from, to, under)) return;
+    // A current-VERSION strip always replaces an older PREV_VERSION strip; only skip if current-VERSION (or legacy Vmake) is already placed.
+    const already =
+      version === VERSION
+        ? project.media.some((one) => {
+            if (one.cleans == null || one.cleans.media !== footage.id || (one.cleans.what ?? "text") !== "text" || Math.abs(one.cleans.from - from) > 0.01 || Math.abs(one.cleans.to - to) > 0.05) return false;
+            const ours = OURS.exec(one.name);
+            return ours === null || ours[1] === tagOf(under, VERSION);
+          })
+        : current(project, footage.id, from, to, under, yRange);
+    if (already) return;
     // One of ours for these seconds made before (another version, over a watermark done again, a frame later, a
     // marked watermark since) gives way to it.
     project.media = project.media.filter((one) => !(one.cleans?.media === footage.id && (one.cleans.what ?? "text") === "text" && one.cleans.from >= from - 0.05 && one.cleans.to <= to + 0.05 && OURS.test(one.name)));
     project.media.push({
       id: freshId(project, "m"),
-      name: nameOf(footage.name, from, to, under),
+      name: nameOf(footage.name, from, to, under, version),
       path: file,
       kind: "video",
       duration: probed.duration,
@@ -519,10 +562,10 @@ const matrixOf = (height: number) => (height >= 720 ? "bt709" : "bt601");
  * (text_blur calls back, `tracked`), and what's no longer wanted is forgotten (its strip, if laid, stays: a strip is
  * only ever what was there).
  */
-export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf): Promise<void> {
+export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf = () => undefined): Promise<void> {
   // One at a time a project: two at once (an edit resting as a track finished) each queued the same stretch, and it
   // was cleaned twice (Nov 19, four of the Boyfriends intro's 13).
-  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => ensureNow(app, id, given, masksOf));
+  const run = (ensuring.get(id) ?? Promise.resolve()).then(() => ensureNow(app, id, given, masksOf, rangeOf));
   const settledRun = run.catch(() => {});
   ensuring.set(id, settledRun);
   void settledRun.finally(() => {
@@ -533,7 +576,7 @@ export function ensure(app: App, id: string, given: InpaintPlan[], masksOf: Mask
 
 const ensuring = new Map<string, Promise<void>>();
 
-async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf): Promise<void> {
+async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: MasksOf, rangeOf: RangeOf): Promise<void> {
   if (!available()) return;
   const live = app.store.get(id);
   if (live === null) return;
@@ -552,7 +595,9 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
       const beneath = beneathOf(live.project, plan.media.id, from, to);
       const strips = beneath.strips;
       const under = underWith(beneath.under, plan.marks ?? [], from, to);
-      if (current(live.project, plan.media.id, from, to, under)) {
+      const getRange = () => rangeOf(plan.source, from0, to0);
+      // Fast O(1) path: current-version strips never inspect tracks; legacy v2 strips only check the cached y-range (never expanding per-frame masks).
+      if (current(live.project, plan.media.id, from, to, under, getRange)) {
         piece.state = "done";
         continue;
       }
@@ -563,12 +608,13 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
         piece.state = "waiting";
         continue;
       }
-      const kept = await shelved(app, plan.source, from, to, under).catch(() => null);
+      const kept = await shelved(app, plan.source, from, to, under, getRange).catch(() => null);
       if (kept !== null) {
         piece.state = "done";
-        if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under);
+        if (kept.file !== null && kept.box !== null) await place(app, id, plan.media, from, to, kept.box, kept.file, under, kept.version, getRange);
         continue;
       }
+      // Only expand per-frame masks when we actually need to queue work.
       const boxes = masksOf(plan.source, from0, to0, fps, first, frames);
       if (boxes === null) {
         piece.state = "waiting";
@@ -645,18 +691,28 @@ export async function reject(app: App, id: string, key: string, why: string): Pr
   const strip = live!.project.media.find((one) => one.cleans?.media === piece.media && (one.cleans.what ?? "text") === "text" && Math.abs(one.cleans.from - piece.from) < 0.01);
   const folder = folderOf(source);
   const dir = join(app.store.cacheDir(), "cleaned", folder);
-  for (const name of (() => {
-    try {
-      return fs.readdirSync(dir);
-    } catch {
-      return [];
+  const names = new Set<string>(
+    (() => {
+      try {
+        return fs.readdirSync(dir);
+      } catch {
+        return [];
+      }
+    })(),
+  );
+  if (cloud.enabled()) {
+    for (const object of await cloud.list(`${PREFIX}/${folder}/`).catch(() => [])) {
+      names.add(object.key.slice(object.key.lastIndexOf("/") + 1));
     }
-  })()) {
-    const one = parseStrip(name);
+  }
+  const cloudKeys: string[] = [];
+  for (const name of names) {
+    const one = parseStrip(name, VERSION) ?? parseStrip(name, PREV_VERSION);
     if (one === null || Math.abs(one.from - piece.from) > 0.001 || Math.abs(one.to - piece.to) > 0.001) continue;
     fs.rmSync(join(dir, name), { force: true });
-    if (cloud.enabled()) await cloud.remove([`${PREFIX}/${folder}/${name}`]).catch(() => {});
+    if (cloud.enabled()) cloudKeys.push(`${PREFIX}/${folder}/${name}`);
   }
+  if (cloudKeys.length > 0) await cloud.remove(cloudKeys).catch(() => {});
   await app.store.update(id, "text removal", (project) => {
     project.media = project.media.filter((one) => one.id !== strip?.id);
   });

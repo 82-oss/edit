@@ -563,7 +563,7 @@ export async function ensure(app: App, id: string): Promise<void> {
   const plans = removal.kinds(inForceOf(app, live.project)).blur.length === 0 ? [] : await blurPlan(app, live.project);
   await blur.ensure(app, id, plans);
   const cleaned = inpaintPlan(live.project, plans);
-  await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned));
+  await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned), rangeOf(app, cleaned));
 }
 
 /**
@@ -588,6 +588,25 @@ const masksOf =
     return masksWithMarks(words, marks, fps, first);
   };
 
+const rangeOf =
+  (app: App, plans: inpaint.InpaintPlan[]): inpaint.RangeOf =>
+  (source, from, to) => {
+    const trackRange = blur.yRangeOf(app, source, from, to);
+    if (trackRange === undefined) return undefined;
+    let minY = trackRange === null ? Infinity : trackRange[0];
+    let maxY = trackRange === null ? -Infinity : trackRange[1];
+    for (const plan of plans) {
+      if (plan.source !== source) continue;
+      for (const mark of plan.marks ?? []) {
+        if (mark.from < to && mark.to > from) {
+          if (mark.box[1] < minY) minY = mark.box[1];
+          if (mark.box[3] > maxY) maxY = mark.box[3];
+        }
+      }
+    }
+    return Number.isFinite(minY) ? [minY, maxY] : null;
+  };
+
 /** Each project's stretches cleaned as soon as their tracks are read (one look at a time a project). */
 const cleaning = new Map<string, Promise<void>>();
 blur.whenTracked.push((app, id) => {
@@ -597,7 +616,7 @@ blur.whenTracked.push((app, id) => {
     if (live === null) return;
     const plans = removal.kinds(inForceOf(app, live.project)).blur.length === 0 ? [] : await blurPlan(app, live.project);
     const cleaned = inpaintPlan(live.project, plans);
-    await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned));
+    await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned), rangeOf(app, cleaned));
   })()
     .catch(() => {})
     .finally(() => cleaning.delete(id));
