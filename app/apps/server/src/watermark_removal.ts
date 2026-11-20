@@ -101,8 +101,12 @@ export interface Model {
 export type Mark = Model | { none: true; hint: Box | null };
 
 const noneOf = (hint: Box | null) => JSON.stringify({ none: true, hint });
-/** The engine's answers that mean the file has no mark to learn (anything else is tried again later). */
-const NO_MARK = /no see-through watermark|too thin to learn|too small to find a watermark/u;
+/**
+ * The engine's answers that mean the file has no mark to learn (anything else is tried again later). "Too little of
+ * the footage could be read" is a short clip's every time (Nov 20: SMART Cops' and Boyfriends' ~0.80x excerpts, a few
+ * seconds each, failed the same way after every restart, and the cleaning waited on their looks each time).
+ */
+const NO_MARK = /no see-through watermark|too thin to learn|too small to find a watermark|too little of the footage could be read/u;
 
 const hashOf = (text: string) => createHash("sha256").update(text).digest("hex").slice(0, 10);
 const modelFile = (app: App, source: string) => join(app.store.cacheDir(), "watermarks", `${folderOf(source)}.json`);
