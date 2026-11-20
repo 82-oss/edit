@@ -109,3 +109,52 @@ test("a script shared before Nov 4 (or pulled from an older Edit) names its fold
     cleanup();
   }
 });
+
+// Nov 20: Start the edit sent a folder case's recordings up inside its request, one by one, before it made the project:
+// on an 8 Mbit/s line a few GB kept its spinner up for hours, and a drop past the quick retries ended it with nothing.
+test("Start the edit answers at once with its project while the folder master's upload never ends; the edit cuts from the master here", async () => {
+  const { spyOn } = await import("bun:test");
+  const cloud = await import("../../src/cloud.ts");
+  const jobs = await import("../../src/jobs.ts");
+  const seams = await import("../../src/seams.ts");
+  const streamed = await import("../../src/writer/streamed.ts");
+  const { importScript } = await import("../../src/writer_handoff.ts");
+  const { fixtureHome } = await import("../helpers/home.ts");
+  const { app, cleanup } = fixtureHome("folder-case-start");
+  const undo: (() => void)[] = [];
+  try {
+    const { dir } = imported(app.store.home);
+    // A master of its own (the mock cloud keeps what the tests above sent up).
+    const master = new Uint8Array(4096).map((_, at) => (at * 7) % 253);
+    fs.writeFileSync(join(dir, "compilation", "00.mp4"), master);
+    const hash = createHash("sha256").update(master).digest("hex");
+    streamed.start(app);
+    // The upload never finishes (the line gone mid-way).
+    const up = spyOn(cloud, "uploadFile").mockImplementation(() => new Promise(() => {}));
+    undo.push(() => up.mockRestore());
+    const inputs: (string | null | undefined)[] = [];
+    const cut = spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache, _original, _ranges, input) => {
+      inputs.push(input);
+      return new Promise(() => {});
+    });
+    undo.push(() => cut.mockRestore());
+    const tube = spyOn(seams.cloudMedia, "youtubeOriginal").mockImplementation(() => new Promise(() => {}));
+    undo.push(() => tube.mockRestore());
+    const began = Date.now();
+    const made = await importScript(app, ID);
+    expect(Date.now() - began).toBeLessThan(1_000);
+    expect(app.store.get(made.project)).not.toBeNull();
+    // Going up behind it, in the job table (resumable, carried on after a quit).
+    for (let i = 0; i < 100 && jobs.list(app.store.home, "upload").length === 0; i++) await Bun.sleep(10);
+    expect(jobs.list(app.store.home, "upload").map((job) => job.args.originalKey)).toEqual([`edit/originals/sha256/${hash}/00.mp4`]);
+    // The edit's file is cut from the master on this Mac, not waited on.
+    for (let i = 0; i < 200 && inputs.length === 0; i++) await Bun.sleep(10);
+    expect(inputs).toEqual([join(dir, "compilation", "00.mp4")]);
+    // Every Mac's script is named only once the master is up.
+    expect(store.read(dir).parts?.[0]?.mediaSource).toBeUndefined();
+  } finally {
+    for (const one of undo) one();
+    streamed.reset();
+    cleanup();
+  }
+});

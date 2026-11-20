@@ -1,4 +1,5 @@
 import type { ImportProgress } from "./types";
+import { timeOfDay } from "../lib/import_progress";
 import { THIS_MACHINE } from "../lib/platform";
 
 /** An import's steps, in order, as imports.ts reports them (its stage, and the words of its detail). */
@@ -27,17 +28,25 @@ export function elapsed(ms: number): string {
 }
 
 /**
- * An import's percentage as shown: what the server says, crept forward while
- * it says the same thing (a long step, like joining a 10-hour preview, reports
- * no progress of its own), so it never sits still (the user, Oct 30: "we always
- * get stuck at 60% visually", then "now we're kinda stuck on 67"). It slows as
- * it goes but never stops: about 3 points in the first minute, 7 by five, 12 by
- * twenty, never past 99 and never back. A new number from the server carries on
- * from whichever is further.
+ * An import's percentage as shown: the server's number, eased a few points
+ * ahead of it only while the server is moving (a byte, a frame or a step in
+ * the last `MOVING_MS`), so a long step that reports no percent of its own
+ * still shows life (the user, Oct 30: "we always get stuck at 60% visually").
+ * It never goes back and never past 99. Nov 20: it crept to 99 on a log curve
+ * whatever the server did, so an import waiting on a dropped line for an hour
+ * read as nearly done ("Imports just freeze out of nowhere"): now a number the
+ * server didn't move stays where it is, and the line says since when
+ * (`stillLine`).
  */
 const CREEP = new Map<string, { said: number; from: number; since: number; shown: number }>();
 const SCALE = 4;
 const MINUTE = 60_000;
+/** The server moved this recently: the number may ease ahead of what it said. */
+const MOVING_MS = 20_000;
+/** At most this many points ahead of the server's own number. */
+const AHEAD = 4;
+/** Not moved for this long: the import's line says nothing has come in since (a slow line still moves bytes every few seconds). */
+export const STILL_MS = 5 * 60_000;
 /** Kept on this browser, so a reload carries on rather than dropping back to the server's number. */
 const KEPT = "edit.import.creep";
 function kept(id: string): { said: number; from: number; since: number; shown: number } | undefined {
@@ -59,7 +68,8 @@ function keep(id: string, entry: { said: number; from: number; since: number }):
     // Private mode or full: kept for this page only.
   }
 }
-export function creeping(id: string, said: number, now = Date.now()): number {
+/** `said` as shown for import `id`; `movedAt`: when the server last saw it move (none known: it never eases ahead). */
+export function creeping(id: string, said: number, now = Date.now(), movedAt?: number): number {
   let seen = CREEP.get(id);
   if (seen === undefined) {
     seen = kept(id);
@@ -73,8 +83,20 @@ export function creeping(id: string, said: number, now = Date.now()): number {
     keep(id, { said, from, since: now });
     return from;
   }
+  // Still on the server: where it is.
+  if (movedAt === undefined || !Number.isFinite(movedAt) || now - movedAt > MOVING_MS) return seen.shown;
   // A clock read before `since` (the dialog's, ticking once a second, or one from before it opened) creeps nothing:
   // log1p of under -1 is NaN, and it stuck (JJ, Nov 10: "NaN%" on a 9-hour import's dialog).
-  seen.shown = Math.min(99, Math.max(seen.shown, seen.from + SCALE * Math.log1p(Math.max(0, now - seen.since) / MINUTE)));
+  const ahead = seen.from + SCALE * Math.log1p(Math.max(0, now - seen.since) / MINUTE);
+  seen.shown = Math.max(seen.shown, Math.min(99, said + AHEAD, ahead));
   return seen.shown;
+}
+
+/**
+ * The line an import shows once the server hasn't seen it move for `STILL_MS` (no byte, frame or step), in place of
+ * its own: since when, and that Edit keeps at it by itself; null while it moves, or when the server didn't say.
+ */
+export function stillLine(movedAt: number | undefined, now = Date.now()): string | null {
+  if (movedAt === undefined || !Number.isFinite(movedAt) || now - movedAt < STILL_MS) return null;
+  return `Nothing has come in since ${timeOfDay(movedAt)}. Edit keeps trying by itself.`;
 }

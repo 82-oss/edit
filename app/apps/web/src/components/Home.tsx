@@ -18,7 +18,7 @@ import { ago, shortDuration } from "../lib/time";
 import { NARRATION, STYLES, type Creator, type ProjectSummary, type Style } from "../lib/types";
 import { CardTableRow, IdeaTableRow, ideaStage, NewIdea, NoIdeas, useIdeasHome } from "../ideas/home";
 import { makesIdeas } from "../lib/ideas";
-import { creeping, elapsed, STEPS, stepOf } from "../writer/import-steps";
+import { creeping, elapsed, STEPS, stepOf, stillLine } from "../writer/import-steps";
 import { prefetchScript } from "../writer/opened";
 import { CAN, useGrants } from "../writer/can";
 import { SHAPES, type Shape, shapeOf } from "../writer/several";
@@ -314,7 +314,11 @@ export function Home() {
     // In, but its first prompt not started yet: still importing until the workflow is under way.
     else if (one.firstBuild) importingNow.set(one.id, { word: "Starting the workflow", stopped: false });
   }
-  for (const one of writing) importingNow.set(one.id, { word: `Importing ${Math.floor(creeping(one.id, one.percent))}%`, stopped: false, percent: creeping(one.id, one.percent), step: one.detail || one.stage });
+  // The server's own number, eased ahead only while it moves; still for five minutes, the line says since when (Nov 20).
+  for (const one of writing) {
+    const percent = creeping(one.id, one.percent, Date.now(), one.movedAt);
+    importingNow.set(one.id, { word: `Importing ${Math.floor(percent)}%`, stopped: false, percent, step: (one.retryAt === undefined ? stillLine(one.movedAt) : null) ?? (one.detail || one.stage) });
+  }
 
   const all = projects ?? [];
   // Newest change first, local and cloud-only projects and scripts together.
@@ -1248,7 +1252,8 @@ export function importShare(importing: NonNullable<ProjectStatus["importing"]>) 
 
 /** A script being written from its videos (Script mode's import): what it's on and how far. */
 /** `startedAt`: when the import began, as the server says. */
-export type Writing = { id: string; title: string; stage: string; percent: number; detail: string; startedAt?: number };
+/** A Script import as the server follows it (writer/imports.ts `progress`): `movedAt`, when it last moved; `retryAt`, when one waiting by itself goes again. */
+export type Writing = { id: string; title: string; stage: string; percent: number; detail: string; startedAt?: number; movedAt?: number; retryAt?: number };
 
 /** When each import and each of its steps was first seen here, by script: kept while Home is open, so reopening its dialog doesn't start the clock again. */
 const SEEN = new Map<string, Record<string, number>>();
@@ -1556,7 +1561,9 @@ export function ImportDialog({ id, writing, issues, onClose }: { id: string | nu
   const problem = stopped ? explain(stopped.decision?.summary ?? stopped.error ?? "", "finish the import") : null;
   const why = problem ? `${problem.title}. ${problem.fix}`.trim() : null;
   const at = done ? STEPS.length : STEPS.findIndex((candidate) => candidate.key === step);
-  const percent = done ? 100 : Math.floor(Math.max(0, Math.min(100, live ? creeping(live.id, live.percent, now) : (shown?.percent ?? 0))));
+  const percent = done ? 100 : Math.floor(Math.max(0, Math.min(100, live ? creeping(live.id, live.percent, now, live.movedAt) : (shown?.percent ?? 0))));
+  // Not moved for five minutes (and not waiting on a time of its own): said in place of a clock that kept counting.
+  const still = live && live.retryAt === undefined ? stillLine(live.movedAt, now) : null;
   // A folder an older Edit stopped as over a case's limits: its recordings to choose, all ticked, in place of the steps (nothing has come down yet).
   const tooMuch = stopped?.decision?.kind === "too_much" ? stopped.decision : null;
   return (
@@ -1608,7 +1615,7 @@ export function ImportDialog({ id, writing, issues, onClose }: { id: string | nu
             {/* One row: Close, and only what fits where it is (stopped: Replace and Retry; in: Open the script). */}
             <div className="flex items-center gap-2">
               <span className="mr-auto text-[12px] text-faint" title={stopped?.retryHelps === false ? NEEDS_A_FIX : undefined}>
-                {began.start && !stopped && !done ? `Running for ${elapsed(now - began.start)}` : stopped?.retryHelps === false ? "Needs a fix in Edit before Retry." : ""}
+                {still ?? (began.start && !stopped && !done ? `Running for ${elapsed(now - began.start)}` : stopped?.retryHelps === false ? "Needs a fix in Edit before Retry." : "")}
               </span>
               <Button variant="ghost" onClick={onClose}>
                 Close

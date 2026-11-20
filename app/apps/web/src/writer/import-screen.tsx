@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ImportProgress } from "./types";
 import { Dialog } from "./ui";
-import { elapsed, STEPS, stepOf } from "./import-steps";
+import { elapsed, STEPS, stepOf, stillLine } from "./import-steps";
 
 /**
  * A script's import, shown over its project in the middle of the screen:
@@ -9,15 +9,19 @@ import { elapsed, STEPS, stepOf } from "./import-steps";
  * import keeps going after the producer leaves; Home follows it. Its clock
  * is the server's (startedAt), so reopening it doesn't start it again, and
  * none shows when that's unknown; what it's doing is said once, over the
- * meter (Astra, Nov 18).
+ * meter (Astra, Nov 18). Once the server hasn't seen it move for five minutes
+ * (and it isn't waiting on a time of its own), the clock gives way to since
+ * when nothing has come in (Nov 20: "Running for" kept counting through an
+ * hour of nothing).
  */
-export function ImportScreen({ item, onLeave }: { item: ImportProgress | null; onLeave: () => void }) {
+export function ImportScreen({ item, onLeave }: { item: (ImportProgress & { movedAt?: number; retryAt?: number }) | null; onLeave: () => void }) {
   const shown = useRef(item);
   if (item) shown.current = item;
   const current = shown.current;
   const [now, setNow] = useState(() => Date.now());
   const step = current ? stepOf(current) : "download";
   const startedAt = current?.startedAt;
+  const still = current && current.retryAt === undefined ? stillLine(current.movedAt, now) : null;
   const showing = item !== null;
   useEffect(() => {
     if (!showing) return;
@@ -35,7 +39,7 @@ export function ImportScreen({ item, onLeave }: { item: ImportProgress | null; o
       width={720}
       footer={
         <>
-          <span className="faint">{startedAt ? `Running for ${elapsed(now - startedAt)}` : ""}</span>
+          <span className="faint">{still ?? (startedAt ? `Running for ${elapsed(now - startedAt)}` : "")}</span>
           <span className="spacer" />
           <button type="button" className="primary" data-autofocus onClick={onLeave}>
             Back to projects

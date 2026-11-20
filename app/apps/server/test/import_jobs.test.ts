@@ -16,7 +16,7 @@ import { Processor } from "../src/media.ts";
 import type { MediaStatus, Probe, ScriptJob } from "../src/model.ts";
 import * as relay from "../src/relay.ts";
 import { waitingByItself } from "../src/remote_actions.ts";
-import { carryOn, Jobs, skipFootage, start, timing, wakeWhatPasses } from "../src/script.ts";
+import { carryOn, copiesHere, Jobs, keyframeBefore, skipFootage, start, timing, wakeWhatPasses } from "../src/script.ts";
 import * as seams from "../src/seams.ts";
 import type { Excerpt } from "../src/seams.ts";
 import { fixtureHome, type Fixture } from "./helpers/home.ts";
@@ -578,6 +578,177 @@ test("a file on a dropped line is tried again after 1 minute, then 5, then 15, t
       note(await settled(scripts, id));
     }
     expect(seen).toEqual([[1, 1], [2, 5], [3, 15], [4, 30]]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// Nov 20: nothing told the table an import got further, so each quit or crash added a try, and from the third the
+// import was put off as crashy (1, 5, 15, then 30 minutes) while its page still read "Downloading…".
+test("an import cut short three times, each after another file came in, is never put off; one put off reads back as waiting with its time", () => {
+  const fixture = fixtureHome("import-gets-further");
+  try {
+    const id = "p-further";
+    const key = jobs.keyOf("case", id);
+    const files = ["a", "b", "c", "d"].map((file) => ({ file, bytes: 0, state: "queued" as const }));
+    for (let run = 0; run < 3; run++) {
+      // A new process each time: its import claimed again, one more file in, then Edit quits mid-way.
+      const scripts = new Jobs(fixture.home);
+      const prior = scripts.get(id);
+      expect(scripts.claim(fixture.app, id, prior ?? { state: "downloading", files })).toBe(true);
+      scripts.set(fixture.app, id, (job) => {
+        job.files[run]!.state = "downloading";
+        job.files[run]!.bytes = 10;
+      });
+      scripts.set(fixture.app, id, (job) => void (job.files[run]!.state = "done"));
+      expect(scripts.get(id) as ScriptJob & { moved_ms?: number }).toHaveProperty("moved_ms");
+      // The next start takes it over as cut short.
+      expect(jobs.takeOver(fixture.home, ["case"]).map((job) => job.key)).toEqual([key]);
+    }
+    expect(caseJob(fixture.home, id)).toMatchObject({ state: "running" });
+    expect(caseJob(fixture.home, id)!.put_off).toBeUndefined();
+
+    // Cut short with nothing further, it's put off: read back, it says it waits and when it goes again.
+    jobs.wait(fixture.home, key, "cut short by 3 restarts in a row");
+    const at = caseJob(fixture.home, id)!.retry_at!;
+    const shown = new Jobs(fixture.home).get(id)!;
+    expect(shown.state).toBe("waiting");
+    expect(shown.retry_at).toBe(at);
+    expect(shown.files.map((file) => [file.state, file.retry_at ?? null])).toEqual([["done", null], ["done", null], ["done", null], ["waiting", at]]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// Nov 20: the editor's import waited, unbounded and silent, on Script mode's upload of a recording whose whole copy was
+// on this Mac all along (looked at only after the wait): "downloading 0 B" for hours on an 8 Mbit/s line.
+test("a recording Script mode keeps on this Mac is cut from that copy at once, its upload still going: never waited on", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-script-mode-copy", { services: { scripts } });
+  const find = copiesHere.find;
+  try {
+    const id = await twoFiles(fixture);
+    // The upload behind Script mode's import never finishes: asking the cloud for this original waits for good.
+    const asked: string[] = [];
+    mocked(
+      spyOn(seams.cloudMedia, "driveOriginal").mockImplementation(async (file: string) => {
+        asked.push(file);
+        if (file === "FILEcase0002") return new Promise(() => {});
+        return { file, source: `drive:${file}`, key: `edit/originals/drive/${file}/a.mp4`, name: `${file}.mp4`, size: 100 };
+      }),
+    );
+    const inputs: (string | null | undefined)[] = [];
+    mocked(
+      spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache: string, original, _ranges, input) => {
+        inputs.push(input);
+        const proxy = `edit/proxies/drive/${original.file}.mp4`;
+        const path = `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(proxy)}`;
+        return [{ path, from: 0, to: SOUNDLESS.duration, cloud: { path, name: original.name, probe: SOUNDLESS, cloud: { source: original.source, original: original.key, proxy, size: 100 } } }];
+      }),
+    );
+    let released = 0;
+    copiesHere.find = (source) =>
+      source === "drive:FILEcase0002" ? { copy: { path: "/scripts/s1/.originals/FILEcase0002/b.mp4", key: "edit/originals/drive/FILEcase0002/b.mp4", name: "b.mp4", size: 5_000_000_000, release: () => void released++ } } : null;
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    await start(fixture.app, id, false);
+    const job = await settled(scripts, id);
+    expect(job.state).toBe("done");
+    expect(asked).toEqual(["FILEcase0001"]);
+    expect(inputs).toContain("/scripts/s1/.originals/FILEcase0002/b.mp4");
+    // Held while it was cut from, let go after: Script mode removes it once its upload is done.
+    expect(released).toBe(1);
+  } finally {
+    copiesHere.find = find;
+    fixture.cleanup();
+  }
+});
+
+// Nov 20: one lane for every project's cuts, held through a whole file's cuts and uploads, and the files waiting for it
+// kept their download slots: one slow file held every project's import on "cutting" and stopped every download.
+test("one project's cut standing still holds no other project's import, and its waiting files let go of their download slots", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-cut-lanes", { services: { scripts } });
+  try {
+    const a = await twoFiles(fixture);
+    await fixture.store.update(a, "test", (p) => {
+      // Four files, so a held slot would show: three slots in all.
+      p.script!.blocks.push(
+        { kind: "footage", file: "FILEcase0003", url: "https://drive.google.com/file/d/FILEcase0003/view", start: 0, end: 4, label: "00:00–00:04", words: ["where", "you"], notes: ["Case 3: link"] },
+        { kind: "footage", file: "FILEcase0004", url: "https://drive.google.com/file/d/FILEcase0004/view", start: 0, end: 4, label: "00:00–00:04", words: ["where", "you"], notes: ["Case 4: link"] },
+      );
+    });
+    const b = await twoFiles(fixture);
+    await fixture.store.update(b, "test", (p) => {
+      for (const block of p.script!.blocks) if (block.kind === "footage") block.file = block.file.replace("FILEcase", "FILEbbbb");
+    });
+    const { fetched } = cloudFootage(SOUNDLESS);
+    mocked(
+      spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache: string, original) => {
+        // Project A's cuts never end (its line gone mid-upload).
+        if (original.file.startsWith("FILEcase")) return new Promise(() => {});
+        const proxy = `edit/proxies/drive/${original.file}.mp4`;
+        const path = `http://127.0.0.1:7700/api/cloud/preview?key=${encodeURIComponent(proxy)}`;
+        return [{ path, from: 0, to: SOUNDLESS.duration, cloud: { path, name: original.name, probe: SOUNDLESS, cloud: { source: original.source, original: original.key, proxy, size: 100 } } }];
+      }),
+    );
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    void start(fixture.app, a, false);
+    await Bun.sleep(20);
+    await start(fixture.app, b, false);
+    expect((await settled(scripts, b)).state).toBe("done");
+    // Every one of A's files came down (no slot held by a file waiting for its cut); one is cut, the rest wait their turn.
+    expect(fetched.filter((file) => file.startsWith("FILEcase")).sort()).toEqual(["FILEcase0001", "FILEcase0002", "FILEcase0003", "FILEcase0004"]);
+    expect(scripts.get(a)!.files.map((file) => file.state).sort()).toEqual(["cutting", "queued", "queued", "queued"]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// Nov 20: past its half hour `bounded` gave up on the voice-over but couldn't stop it, and the retry started a second
+// paid voice-over beside the first.
+test("a voice-over past its time is waited on by the next try, never started a second time beside it", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-one-voiceover", { services: { scripts } });
+  const limit = steps.LIMITS.voiceover;
+  try {
+    const id = await twoFiles(fixture);
+    cloudFootage(SOUNDLESS);
+    let running = 0;
+    let most = 0;
+    let calls = 0;
+    mocked(
+      spyOn(seams.voiceover, "generate").mockImplementation(async () => {
+        calls++;
+        running++;
+        most = Math.max(most, running);
+        await Bun.sleep(150);
+        running--;
+        return {};
+      }),
+    );
+    steps.LIMITS.voiceover = 40;
+    timing.retryWaits = [0, 0, 0, 0, 0];
+    await start(fixture.app, id, false);
+    const job = await settled(scripts, id);
+    expect(most).toBe(1);
+    expect(calls).toBe(1);
+    expect(job.after?.find((line) => line.step === "voiceover")?.state).toBe("done");
+  } finally {
+    steps.LIMITS.voiceover = limit;
+    fixture.cleanup();
+  }
+});
+
+// Nov 20: ffprobe failing read as "no keyframe", so the excerpt was cut from the file's start and the long wrong
+// excerpt sent up.
+test("a keyframe that can't be read is a failure tried again, never the file's start", async () => {
+  const fixture = fixtureHome("import-keyframe-unread");
+  try {
+    const path = `${fixture.home}/noise.mp4`;
+    fs.writeFileSync(path, new Uint8Array(200_000).map((_, at) => (at * 31) % 256));
+    const failed = await keyframeBefore(path, 30).then(() => null, (error: unknown) => error as Error);
+    expect(failed?.message).toStartWith("Finding the excerpt's keyframe: the footage couldn't be read");
+    expect(steps.whyOf(failed)).toBe("passing");
   } finally {
     fixture.cleanup();
   }

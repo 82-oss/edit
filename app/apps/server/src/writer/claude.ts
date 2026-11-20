@@ -105,6 +105,31 @@ const waitsTold = new AsyncLocalStorage<Waiting>();
  */
 export const sayingWaits = <T>(say: Waiting, work: () => Promise<T>): Promise<T> => waitsTold.run(say, work);
 
+/**
+ * For an extra an import can do without (who says each line, a case folder's PDFs): its questions never wait for the
+ * Claude plan's reset. The moment one would (the plan used up, or used up as it asks), `signal` is aborted and `held`
+ * says until when, so the import goes on without the rest and says why. Nov 20: `ask` waited up to six hours, and
+ * `askPatiently` twice, while the import sat on "Reading who says each line: 3 of 12" with its row running.
+ */
+export function passingOverLimit(given?: AbortSignal): { signal: AbortSignal; held: () => number | null; run: <T>(work: () => Promise<T>) => Promise<T>; end: () => void } {
+  const stop = new AbortController();
+  const onAbort = () => stop.abort();
+  given?.addEventListener("abort", onAbort, { once: true });
+  let until: number | null = null;
+  const hold = () => {
+    until ??= planLimit.until() ?? Date.now();
+    stop.abort();
+  };
+  if (planLimit.until() !== null) hold();
+  return {
+    signal: stop.signal,
+    // A limit past what `ask` waits for (six hours) is refused at once, never told: still the plan's.
+    held: () => until ?? planLimit.until(),
+    run: (work) => sayingWaits((line) => void (line !== null && hold()), work),
+    end: () => given?.removeEventListener("abort", onAbort),
+  };
+}
+
 /** "Waiting for your Claude plan (back at 11:51 PM)": the stage while the plan's limit is waited out. */
 export function waitingLine(until: number, now: number = Date.now()): string {
   const time = new Date(until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });

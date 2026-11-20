@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 import * as diag from "../diag.ts";
 import { isFile } from "../paths.ts";
 import * as encoder from "../encoder.ts";
+import * as wake from "../wake.ts";
 import { ffmpeg, ffprobe, hardwareDecode, isUrl, protocols, urlArgs, videoHardware } from "../tools.ts";
 import { ProgramTimedOut, run } from "./proc.ts";
 
@@ -204,13 +205,31 @@ async function encode(args: string[], dest: string, totalMs: number, onPercent: 
   // encode isn't its pace: JJ's Mac, Nov 8, two imports stopped as "too slow" while a 51-minute export held it.
   const hold = encoder.hold("a script's preview piece");
   let sharedMs = 0;
+  // Time the machine was away (asleep, frozen) isn't its pace either, nor its time: a gap between the judge's looks
+  // over three of its periods, or a wake (wake.ts), counts as away. Nov 20: a lid closed for two hours at 40% was judged
+  // "too slow" on opening, and the join then encoded every recording again, the cloud ones over the network.
+  let awayMs = 0;
   let lastLook = began;
+  const away = () => {
+    const now = Date.now();
+    awayMs += now - lastLook;
+    lastLook = now;
+  };
+  const woke = wake.onWake(away);
   const judge = setInterval(() => {
     const now = Date.now();
-    if (encoder.shared(hold.token)) sharedMs += now - lastLook;
+    const gap = now - lastLook;
+    if (gap > PACE.everyMs * 3) awayMs += gap;
+    else if (encoder.shared(hold.token)) sharedMs += gap;
     lastLook = now;
+    // Its own time, counted awake (FFmpeg's own timer would run on through a sleep): a stretch has its length's.
+    if (now - began - sharedMs - awayMs > toolTime(totalMs)) {
+      why = `FFmpeg took more than ${Math.round(toolTime(totalMs) / 60_000)} min and was stopped.`;
+      slow.abort();
+      return;
+    }
     if (encoder.shared(hold.token)) return;
-    const ran = (paced?.ranMs ?? 0) + now - began - sharedMs;
+    const ran = (paced?.ranMs ?? 0) + now - began - sharedMs - awayMs;
     const done = (paced?.doneMs ?? 0) + doneMs;
     if (judgedMs <= 0 || ran < PACE.afterMs) return;
     const projected = done <= 0 ? Number.POSITIVE_INFINITY : (ran * judgedMs) / done;
@@ -224,8 +243,9 @@ async function encode(args: string[], dest: string, totalMs: number, onPercent: 
   }, PACE.everyMs);
   try {
     await run(...lowered(ffmpeg(), args), {
-      // A stretch has its own length's time, as any encode; the whole piece's pace is the judge's.
-      timeoutMs: toolTime(totalMs),
+      // A stretch has its own length's time, as any encode, counted awake by the judge; the whole piece's pace is the
+      // judge's too. This bound is only a last stop for a judge that never ran (a week).
+      timeoutMs: 7 * 24 * 3_600_000,
       signal: signal ? AbortSignal.any([signal, slow.signal]) : slow.signal,
       onLine: (line) => {
         const micros = /^out_time_(?:us|ms)=(\d+)/.exec(line)?.[1];
@@ -240,11 +260,12 @@ async function encode(args: string[], dest: string, totalMs: number, onPercent: 
     throw error;
   } finally {
     clearInterval(judge);
+    woke();
     hold.release();
   }
   if (!fs.existsSync(dest)) throw new Error("The footage was not written.");
   if (paced !== undefined) {
-    paced.ranMs += Date.now() - began - sharedMs;
+    paced.ranMs += Date.now() - began - sharedMs - awayMs;
     paced.doneMs += totalMs;
   }
 }

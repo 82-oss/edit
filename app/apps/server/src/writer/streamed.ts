@@ -41,8 +41,9 @@ import * as youtube from "../youtube.ts";
 import { title as titleOf } from "./youtube.ts";
 import * as driveFiles from "./drive.ts";
 import type { Recording } from "./drive.ts";
-import { keepShared, originalKey, segment } from "./handoff.ts";
+import { keepShared, originalKey, segment, sending, sharedHere } from "./handoff.ts";
 import { readable, streams } from "./media.ts";
+import { copiesHere, type CopyHere } from "../script.ts";
 import * as store from "./store.ts";
 import { THIS_MACHINE } from "../machine.ts";
 
@@ -113,6 +114,12 @@ async function driveHere(dir: string, recording: Recording, onBytes: (bytes: num
   });
   // Nobody may wait on it (its upload already going from an earlier call): never an unhandled rejection.
   local.catch(() => {});
+  // Edit mode here waits on this download (growing on this disk) rather than on the upload behind it (`copyHere`).
+  landing.set(source, { dir, path, size: recording.size, name, done: local });
+  local.then(
+    () => landing.delete(source),
+    () => landing.delete(source),
+  );
   goUp(dir, one, local);
   try {
     if (!(await whole(path, recording))) {
@@ -223,7 +230,8 @@ function settle(dir: string, source: string, change: (one: Held) => void): void 
   const one = list.find((kept) => kept.source === source);
   if (one === undefined) return;
   change(one);
-  if (one.up && one.piece) {
+  // Edit mode cutting from it (`copyHere`): kept until it lets go, then looked at again.
+  if (one.up && one.piece && !(inUse.get(source) ?? 0)) {
     drop(dir, one);
     diag.info("writer", `${source}: in the cloud and its piece made, so its copy here (${Math.round(one.size / 1e6)} MB) is removed`);
     return;
@@ -231,11 +239,72 @@ function settle(dir: string, source: string, change: (one: Held) => void): void 
   writeHeld(dir, list);
 }
 
+// ---------------------------------------------------------------------------
+// Edit mode's import cutting from a copy here (Nov 20).
+
+/** Downloads into `.originals/` under way, by source: where the file grows, and when it's whole. */
+const landing = new Map<string, { dir: string; path: string; size: number; name: string; done: Promise<string> }>();
+/** Copies Edit mode is cutting from now, by source: never removed under it. */
+const inUse = new Map<string, number>();
+
+/**
+ * This Mac's whole copy of `source`'s original that a script keeps (Script mode brought it down; its upload may still
+ * be going), held for the caller until it lets go; else the download of it under way here; else null. Edit mode's
+ * import cuts from the copy at once, the upload going on behind it (honest council change 8a's intent): it waited,
+ * unbounded and silent, on the upload (Nov 20: "downloading 0 B" for hours on an 8 Mbit/s line, the copy on disk
+ * looked at only after the upload).
+ */
+export function copyHere(source: string): CopyHere | null {
+  if (home === null) return null;
+  const going = landing.get(source);
+  const data = store.dataDir(home);
+  for (const id of store.ids(data)) {
+    const dir = store.scriptDir(data, id);
+    const one = readHeld(dir).find((kept) => kept.source === source && kept.landed);
+    if (one === undefined || !isFile(join(dir, one.path))) continue;
+    inUse.set(source, (inUse.get(source) ?? 0) + 1);
+    let gone = false;
+    const release = () => {
+      if (gone) return;
+      gone = true;
+      const left = (inUse.get(source) ?? 1) - 1;
+      if (left > 0) inUse.set(source, left);
+      else inUse.delete(source);
+      // Its upload may have finished meanwhile: it goes now if the import is done with it too.
+      settle(dir, source, () => {});
+    };
+    return { copy: { path: join(dir, one.path), key: one.key, name: one.name, size: one.size, release } };
+  }
+  if (going !== undefined) return { landing: { path: going.path, size: going.size, name: going.name, done: going.done } };
+  // A folder case's joined master (or a file the script was made from), named in Edit's originals as going up from
+  // here (handoff.ts `nameShared`): the script's own file, never removed under the cut.
+  for (const id of store.ids(data)) {
+    const found = sharedHere(store.scriptDir(data, id), source);
+    if (found === null) continue;
+    const name = found.key.split("/").pop() ?? "footage.mp4";
+    return { copy: { path: found.path, key: found.key, name, size: fs.statSync(found.path).size, release: () => {} } };
+  }
+  return null;
+}
+copiesHere.find = copyHere;
+
+/** Whether `source`'s original is on its way up from this Mac behind an import (its copy here not up yet). */
+function goingUpFrom(source: string): boolean {
+  if (home === null) return false;
+  if (landing.has(source)) return true;
+  const data = store.dataDir(home);
+  return store.ids(data).some((id) => readHeld(store.scriptDir(data, id)).some((one) => one.source === source && !one.up));
+}
+sending.goingUp = goingUpFrom;
+
 /** Seams for tests: how long a copy waits before asking again whether its upload from here got there. */
 export const timing = { recheckMs: 10 * 60_000 };
 
 /** Edit's home, where this Mac's uploads are noted (`start`). */
 let home: string | null = null;
+
+/** Edit's home once Script mode has started here (imports.ts `progress` reads the job table there), else null. */
+export const homeNow = (): string | null => home;
 
 /** The uploads going on, by script folder and source. */
 const going = new Map<string, Promise<void>>();

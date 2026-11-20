@@ -1458,8 +1458,15 @@ const RUNNING: JobState[] = ["downloading", "transcribing", "placing", "voicing"
 /** What an import waiting by itself waits on (the job table's `waiting_on`): the transcription plan's credit, the encoder, ElevenLabs' voice credit or the day's voice allowance, Google Drive's download limit, or a failure that passes (a dropped connection) tried again. */
 export type WaitingOn = "quota" | "encoder" | "voice" | "drive" | "passing" | "room";
 
+/**
+ * A job with when it last moved (`moved_ms`: a byte, an excerpt cut, a file's state): the page eases its number only
+ * while it moves, and says since when once it hasn't for five minutes (Nov 20: the owner's "imports just freeze out
+ * of nowhere" was a bar that read the same moving or not).
+ */
+type Moving = ScriptJob & { moved_ms?: number };
+
 /** A job as it's always been written: its fields in order, the unset ones left out. */
-function shownJob(job: ScriptJob): ScriptJob {
+function shownJob(job: Moving): Moving {
   const files = job.files.map((file) => {
     const shown: Record<string, unknown> = { file: file.file };
     if (file.name !== undefined) shown.name = file.name;
@@ -1473,7 +1480,8 @@ function shownJob(job: ScriptJob): ScriptJob {
     if (file.cut !== undefined) shown.cut = file.cut;
     return shown as unknown as FileJob;
   });
-  const out: ScriptJob = { state: job.state, files };
+  const out: Moving = { state: job.state, files };
+  if (job.moved_ms !== undefined) out.moved_ms = job.moved_ms;
   if (job.error !== undefined) out.error = job.error;
   if (job.retry_at !== undefined) out.retry_at = job.retry_at;
   if (job.after !== undefined && job.after.length > 0) out.after = job.after.map((one) => ({ ...one }));
@@ -1540,7 +1548,7 @@ const KEEP_EVERY_MS = 1000;
  * restart cut it short) is shown until its resumer claims it.
  */
 export class Jobs {
-  private jobs = new Map<string, ScriptJob>();
+  private jobs = new Map<string, Moving>();
   private made = new Map<string, Record<string, Kept>>();
   private active = new Set<string>();
   private written = new Map<string, string>();
@@ -1557,12 +1565,13 @@ export class Jobs {
       const args = durable.args as CaseArgs;
       const kept = args.import;
       if (kept === undefined || !Array.isArray(kept.files)) continue;
-      const job = structuredClone(kept);
+      const job: Moving = structuredClone(kept);
       // Cut short too often (jobs.ts gave it up): it stopped, and says why; Retry starts it again.
       if (durable.state === "given_up" && RUNNING.includes(job.state)) {
         job.state = "failed";
         job.error = `The import was cut short by restarts (${durable.given_up ?? "given up"}). Retry carries it on from what it has.`;
       }
+      asWaiting(job, durable);
       this.jobs.set(durable.project, job);
       if (args.made !== undefined) this.made.set(durable.project, structuredClone(args.made));
       this.written.set(durable.project, signature(job));
@@ -1577,7 +1586,11 @@ export class Jobs {
   get(project: string): ScriptJob | null {
     this.restore();
     const job = this.jobs.get(project);
-    return job === undefined ? null : shownJob(job);
+    if (job === undefined) return null;
+    // Read back as it was running (a restart cut it short) and not claimed here yet: the table may have put it off
+    // since (cut short too often), so it's said as the table holds it, never as "Downloading…" with nothing moving.
+    if (!this.active.has(project) && job.state === "downloading") asWaiting(job, durableJobs.get(this.home, durableJobs.keyOf("case", project)));
+    return shownJob(job);
   }
 
   /** Whether any project's import is still working in this process. */
@@ -1595,7 +1608,7 @@ export class Jobs {
   claim(app: App, project: string, job: ScriptJob, request?: string): boolean {
     this.know(app);
     if (this.working(project)) return false;
-    this.jobs.set(project, structuredClone(job));
+    this.jobs.set(project, { ...structuredClone(job), moved_ms: nowMs() });
     this.active.add(project);
     durableJobs.begin(this.home, "case", project, { ...(request === undefined ? {} : { request }), import: shownJob(job), made: this.made.get(project) ?? {} });
     this.written.set(project, signature(job));
@@ -1611,12 +1624,33 @@ export class Jobs {
       job = { state: "downloading", files: [] };
       this.jobs.set(project, job);
     }
+    const was = movesOf(job);
     edit(job);
+    this.moved(project, job, was);
     // When it got there, once (Home's New); a sweep's footage coming back isn't the work done again.
     if (job.state === "done" && job.done_at === undefined && job.back !== true) job.done_at = Date.now();
     else if (job.state !== "done" && job.back !== true) delete job.done_at;
     app.store.emit({ type: "script", id: project, job: shownJob(job) });
     this.keep(project);
+  }
+
+  /**
+   * What moved, told: the job's `moved_ms` (the page's), the table's row a beat (it's still going: jobs.ts `beat`, at
+   * most every 30 s), and a step when it got further than it ever had: a file in, or a file's cut begun. A step this
+   * row never reached forgives its restarts so far (jobs.ts `step`), so an import a quit or a crash cut short after
+   * each file is never put off as crashy (Nov 20: nothing told the table, so each quit added a try and from the third
+   * the import waited up to half an hour, its page still on "Downloading…").
+   */
+  private moved(project: string, job: Moving, was: ReturnType<typeof movesOf>): void {
+    const now = movesOf(job);
+    if (now.mark === was.mark) return;
+    job.moved_ms = nowMs();
+    if (this.home === null || !this.active.has(project)) return;
+    const key = durableJobs.keyOf("case", project);
+    durableJobs.beat(this.home, key);
+    const total = job.files.length;
+    if (now.done > was.done) durableJobs.step(this.home, key, `${now.done} of ${total} ${total === 1 ? "file" : "files"} in`);
+    for (const index of now.cutting) if (!was.cutting.includes(index)) durableJobs.step(this.home, key, `cutting file ${index + 1} of ${total}`);
   }
 
   /** The excerpts a fetched file gave, kept with the job. */
@@ -1676,6 +1710,37 @@ export class Jobs {
       this.pending.set(project, timer);
     }
   }
+}
+
+/** What counts as moving: each file's bytes, state and excerpts cut, and the job's state; with the files in and being cut. */
+function movesOf(job: ScriptJob): { mark: string; done: number; cutting: number[] } {
+  return {
+    mark: JSON.stringify([job.state, job.files.map((file) => [file.state, file.bytes, file.cut?.done ?? null])]),
+    done: job.files.filter((file) => file.state === "done").length,
+    cutting: job.files.flatMap((file, index) => (file.state === "cutting" ? [index] : [])),
+  };
+}
+
+/**
+ * A job read back as running whose row the table holds waiting (put off after being cut short, or settled waiting
+ * since): said as waiting, with when it goes again, its files not in yet waiting by themselves on the same time, so the
+ * page reads "Trying 3 files again at 14:32" (or "now"), never "Downloading…" with nothing moving for half an hour.
+ */
+function asWaiting(job: Moving, durable: durableJobs.Job | undefined): void {
+  // Only while it was fetching: one cut short laying out or voicing carries on from that state when woken (`start`).
+  if (durable === undefined || durable.state !== "waiting" || job.state !== "downloading" || durable.until === "person") return;
+  job.state = "waiting";
+  if (durable.retry_at !== undefined) job.retry_at = durable.retry_at;
+  else delete job.retry_at;
+  for (const file of job.files) {
+    if (file.state === "done" || file.state === "failed") continue;
+    file.state = "waiting";
+    file.why ??= "passing";
+    if (durable.retry_at !== undefined) file.retry_at = durable.retry_at;
+    delete file.cut;
+  }
+  if (durable.until === "encoder") job.error = "The hardware encoder is busy with an export: the footage waits until it's free.";
+  else delete job.error;
 }
 
 /** What's worth writing at once: the job's and each file's state, and what follows. */
@@ -2119,10 +2184,13 @@ export async function keyframeBefore(path: string, time: number): Promise<number
         ...tools.urlArgs(path),
         path,
       ], steps.probeLimit(path), "Finding the excerpt's keyframe");
+      // FFprobe couldn't read it (a dropped line, a cloud address gone stale): a failure of its own, tried again, never
+      // "no keyframe", which cut from the file's start and sent a long wrong excerpt up at 8 Mbit/s (Nov 20).
+      if (!output.ok) throw new Error(`Finding the excerpt's keyframe: the footage couldn't be read (${diag.gist(output.stderr.trim() || "ffprobe failed")})`);
       text = output.stdout;
     } catch (error) {
       // Stuck reading the footage is a failure of its own (tried again), never "no keyframe": that would cut from the start.
-      if (error instanceof steps.StepTimedOut) throw error;
+      if (error instanceof steps.StepTimedOut || (error instanceof Error && error.message.startsWith("Finding the excerpt's keyframe:"))) throw error;
       text = "";
     }
     let best: number | null = null;
@@ -2413,7 +2481,26 @@ export const RESEARCH =
 // Across projects, at most three downloads (Drive→R2 jobs, or to this Mac) at once. Local
 // excerpt encodes keep a lane of their own rather than fighting for the Mac.
 const cloudDownloads = new mediaModule.Semaphore(3);
-const cloudExcerptLane = new mediaModule.Semaphore(1);
+/**
+ * One file's excerpts cut at a time per project (each cut reads its file a few spans at once: cloud_media
+ * `EXCERPTS_AT_ONCE`). Nov 20: one lane for every project, held through a whole file's cuts and each excerpt's upload
+ * at 8 Mbit/s, while the file waiting for it kept its download slot: one slow file held every project's import on
+ * "cutting" for hours, and three such files stopped every download on the Mac. A lane per project keeps a project's
+ * own files from splitting its line three ways, and never holds another project's import; a file lets go of its
+ * download slot before it waits here. (Cutting under the lane with the uploads outside it would keep one lane for
+ * all, but the cut and the upload are one call in cloud_media `driveExcerpts`.)
+ */
+const cutLanes = new Map<string, mediaModule.Semaphore>();
+function cutLane(project: string): mediaModule.Semaphore {
+  let lane = cutLanes.get(project);
+  if (lane === undefined) cutLanes.set(project, (lane = new mediaModule.Semaphore(1)));
+  return lane;
+}
+
+/** A copy of an original Script mode keeps on this Mac (`copy`, held until released), or its download under way here (`landing`). */
+export type CopyHere = { copy: { path: string; key: string; name: string; size: number; release: () => void } } | { landing: { path: string; size: number; name: string; done: Promise<string> } };
+/** Where Edit mode finds those copies: writer/streamed.ts sets it (Script mode's own). */
+export const copiesHere: { find: (source: string) => CopyHere | null } = { find: () => null };
 
 /**
  * Downloads the script's footage and lays the edit out. Safe to call again:
@@ -2485,6 +2572,16 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
     diag.info("script", `${title}: getting ${files.length} footage ${files.length === 1 ? "file" : "files"} ready (${cloudEnabled() ? "from the cloud" : `to ${THIS_MACHINE}`})${fresh < files.length ? `, ${files.length - fresh} kept from before` : ""}`);
     const errors: (unknown | undefined)[] = new Array(files.length);
     const fetchOne = async (index: number, file: string) => {
+      // Its download slot, let go as soon as it no longer brings bytes (its original in hand, or waiting on another's
+      // download or cut), so a file waiting never holds the Mac's downloads (Nov 20).
+      const letGo = await cloudDownloads.acquire();
+      try {
+        await fetchHolding(index, file, letGo);
+      } finally {
+        letGo();
+      }
+    };
+    const fetchHolding = async (index: number, file: string, letGo: () => void) => {
       app.scripts.set(app, id, (job) => {
         const entry = job.files[index];
         if (entry === undefined) return;
@@ -2512,7 +2609,7 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
       try {
         if (file.startsWith("sha256:") && !cloudEnabled()) throw new steps.NeedsPerson("A shared folder master needs Edit's cloud connection. Sign in and retry.");
         if (reviewOf(file) !== null && !cloudEnabled()) throw new steps.NeedsPerson("A finished video from its review link needs Edit's cloud connection: sign in to Edit.");
-        const [bytes, name, cut] = cloudEnabled() ? await footageToCloud(app, id, index, file) : await footageToDisk(app, id, index, file);
+        const [bytes, name, cut] = cloudEnabled() ? await footageToCloud(app, id, index, file, letGo) : await footageToDisk(app, id, index, file);
         const ranges = fileRanges(app.store.get(id)?.project ?? live.project, file);
         app.scripts.keepMade(id, file, ranges, cut);
         app.scripts.set(app, id, (job) => {
@@ -2548,7 +2645,7 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
     };
     const toFetch = (index: number) => fetched[index] === undefined;
     // A few at once (ten files took the sum of their times, the bar sitting on the first).
-    await Promise.all(files.map((file, index) => (toFetch(index) ? cloudDownloads.with(() => fetchOne(index, file)) : Promise.resolve())));
+    await Promise.all(files.map((file, index) => (toFetch(index) ? fetchOne(index, file) : Promise.resolve())));
     // Still missing: the edit isn't laid out with a hole in it. Nothing sleeps in here between tries (it did, a minute
     // and then five, while the import counted as working and every answer was refused): each file is settled at
     // once by failure.ts and the import waits in the job table, woken at its soonest try, at once when the
@@ -2774,11 +2871,22 @@ async function followOn(app: App, id: string, inserting: string | null, recut: b
   // the takes already spoken are kept (voiceover.ts `generateMissing`).
   say("voiceover", "running");
   let credit: { at: number; line: string } | null = null;
+  // One voice-over at a time: past its half hour the next try waits on the one still running rather than starting a
+  // second beside it (Nov 20: `bounded` can't stop the voice service's calls, so a second paid voice-over began next to
+  // the first). It's let go once it ends either way.
+  let speaking: Promise<unknown> | null = null;
+  const speak = (): Promise<unknown> => {
+    if (speaking !== null) return speaking;
+    const run = (inserting !== null ? seams.voiceover.generateCase(app, id, inserting) : seams.voiceover.generate(app, id, true)).finally(() => {
+      if (speaking === run) speaking = null;
+    });
+    run.catch(() => {});
+    speaking = run;
+    return run;
+  };
   for (let attempt = 0; ; attempt++) {
     try {
-      await diag.timeAsync("script", "script: voice-over", () =>
-        steps.bounded("the voice-over", steps.LIMITS.voiceover, () => (inserting !== null ? seams.voiceover.generateCase(app, id, inserting) : seams.voiceover.generate(app, id, true))),
-      );
+      await diag.timeAsync("script", "script: voice-over", () => steps.bounded("the voice-over", steps.LIMITS.voiceover, () => speak()));
       say("voiceover", "done");
       break;
     } catch (error) {
@@ -2942,9 +3050,11 @@ async function footageToDisk(app: App, id: string, index: number, file: string):
 /**
  * Cloud mode: streams the Drive file to R2 (never to this disk; skipped when
  * the registry has it already), then cuts the script's excerpts from R2 and
- * keeps only their proxies here (`cloud_media`).
+ * keeps only their proxies here (`cloud_media`). A copy Script mode keeps on
+ * this Mac is cut from first, its upload going on behind (`scriptModeCopy`).
+ * `letGo` lets go of the file's download slot once its bytes are in hand.
  */
-async function footageToCloud(app: App, id: string, index: number, file: string): Promise<Fetched> {
+async function footageToCloud(app: App, id: string, index: number, file: string, letGo: () => void = () => {}): Promise<Fetched> {
   const progress = fileProgress(app, id, index);
   const live = app.store.get(id);
   if (live !== null && live !== undefined && isEssay(live.project.style) && youtube.idOf(file) !== null) {
@@ -2954,8 +3064,14 @@ async function footageToCloud(app: App, id: string, index: number, file: string)
   const scratch = seams.cloudMedia.scratchDir(app.store.cacheDir());
   const shared = file.startsWith("sha256:");
   const expectedKey = live?.project.script?.blocks.find((block) => block.kind === "footage" && block.file === file)?.notes?.find((note) => note.startsWith("Shared original: "))?.slice("Shared original: ".length);
-  const [original, local] =
-    shared
+  // Script mode's copy here first: a recording it brought down, or a folder case's master it joined (Start the edit
+  // sends that up behind the edit: writer/handoff.ts `nameShared`).
+  const held = reviewOf(file) !== null || posts.urlOf(file) !== null ? null : await scriptModeCopy(file, progress, letGo);
+  if (held !== null) progress(held.size, held.size, held.name);
+  const [original, local]: [Original, string | null] =
+    held !== null
+      ? [{ file, source: sourceOf(file), key: held.key, name: held.name, size: held.size }, null]
+      : shared
       ? [await seams.cloudMedia.registeredOriginal(file, expectedKey), null]
       : reviewOf(file) !== null
         ? await diag.timeOnAsync("script", "script: finished video to cloud", file, () => seams.cloudMedia.reviewOriginal(file, scratch, progress))
@@ -2971,24 +3087,69 @@ async function footageToCloud(app: App, id: string, index: number, file: string)
           ),
           null,
         ];
+  // Its bytes are in: the slot goes to the next file's download before this one waits for its turn to be cut.
+  letGo();
   try {
-    setFileState(app, id, index, "cutting");
     const live = app.store.get(id);
     const ranges = live === null ? [] : fileRanges(live.project, file);
     const cache = app.store.cacheDir();
     // This very original on this Mac (Script mode brought it down, an earlier import here): its excerpts are cut from
     // that copy, in seconds, never read back from the cloud's address (honest council change 8a, Nov 19: cutting over
     // JJ's line is where Edit's three time limits stopped his files).
-    const here = local ?? seams.cloudMedia.localOriginal(cache, original.key, true);
-    if (here !== null && local === null) diag.info("script", `${original.name}: cut from its copy on ${THIS_MACHINE}`);
+    const here = held?.path ?? local ?? seams.cloudMedia.localOriginal(cache, original.key, true);
+    if (here !== null && local === null) diag.info("script", `${original.name}: cut from its copy on ${THIS_MACHINE}${held !== null ? " (Script mode's; its upload goes on behind)" : ""}`);
+    // In line behind this project's other file being cut: said as waiting its turn, its bytes kept, never "cutting"
+    // with no count.
+    setFileState(app, id, index, "queued");
     const cutUp = await diag.timeOnAsync("script", "script: cloud excerpts", original.key, () =>
-      cloudExcerptLane.with(() => seams.cloudMedia.driveExcerpts(cache, original, ranges, here, cutProgress(app, id, index))),
+      cutLane(id).with(() => {
+        setFileState(app, id, index, "cutting");
+        return seams.cloudMedia.driveExcerpts(cache, original, ranges, here, cutProgress(app, id, index));
+      }),
     );
     return [original.size, original.name, cutUp];
   } finally {
+    held?.release();
     // A YouTube download is on R2 now: its copy here goes.
     if (local !== null) fs.rmSync(parent(local) ?? local, { recursive: true, force: true });
   }
+}
+
+type Original = Awaited<ReturnType<typeof seams.cloudMedia.driveOriginal>>;
+
+/** The registry's source for a footage file: a YouTube video or a shared master by its own name, a Drive file by its id. */
+const sourceOf = (file: string): string => (youtube.idOf(file) !== null || file.startsWith("sha256:") ? file : `drive:${file}`);
+
+/**
+ * Script mode's whole copy of this file's original on this Mac (writer/streamed.ts), held while it's cut from; null when
+ * there's none. One still coming down there is waited for while it grows (its download slot let go: those are Script
+ * mode's bytes, in its own slot), for as long as it moves: still for five minutes, the file fails as passing and waits
+ * in the table, never for ever inside the import. On an 8 Mbit/s line (~1 MB/s down on a bad day) a recording grows
+ * every few seconds, so five minutes without a byte is a line that's gone, or a lid closed (the clock starts again
+ * after a wake: `whileMoving`). Its download failing there, the file is fetched as before.
+ */
+async function scriptModeCopy(file: string, progress: (bytes: number, total: number | null, name: string) => void, letGo: () => void): Promise<{ path: string; key: string; name: string; size: number; release: () => void } | null> {
+  const source = sourceOf(file);
+  let found = copiesHere.find(source);
+  if (found !== null && "landing" in found) {
+    const { path, size, name, done } = found.landing;
+    letGo();
+    diag.info("script", `${name}: coming down for Script mode on ${THIS_MACHINE}; cut from that copy once it's whole`);
+    await steps.whileMoving(
+      `Script mode's download of ${name}`,
+      () => {
+        const at = steps.sizeOf(path);
+        progress(at, size, name);
+        return at;
+      },
+      () => done.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    found = copiesHere.find(source);
+  }
+  return found !== null && "copy" in found ? found.copy : null;
 }
 
 /**

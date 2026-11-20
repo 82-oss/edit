@@ -109,7 +109,7 @@ export const DAILY = /for today|today's|resets at midnight/i;
 /** Google Drive's download limit for one file (its page, Edit's own line for it, the API's reason). */
 const DRIVE_LIMIT = /download limit for this file|Too many users|downloadQuotaExceeded/i;
 /** Text from outside Edit that only the person can answer (Drive's pages; posts; older builds' words kept in a job). */
-const PERSON = /isn't shared|can't find this file|deleted, or in the trash|Private video|This video is private|confirm your age|age.restricted|members.only|Join this channel|not available in your country|blocked it in your country|Video unavailable|has been removed|has been terminated|no longer available|isn't a Drive file|isn't a YouTube video|has no bytes|A shared folder master|is not uploaded yet|pictures only, with no video|only shown to someone signed in/i;
+const PERSON = /isn't shared|can't find this file|deleted, or in the trash|Private video|This video is private|confirm your age|age.restricted|members.only|Join this channel|not available in your country|blocked it in your country|Video unavailable|has been removed|has been terminated|no longer available|isn't a Drive file|isn't a Google Drive|isn't a YouTube video|has no bytes|A shared folder master|is not uploaded yet|pictures only, with no video|only shown to someone signed in/i;
 /** The disk full, in the system's words or Edit's own (older builds' "There isn't room on this Mac for …"). */
 const ROOM = /no space left on device|ENOSPC|There isn't room on this|needs? (about )?[\d.]+ ?[MG]B free|out of room/i;
 /** A connection, a timeout or a busy service, in the words a job keeps (Edit's own, FFmpeg's, Bun's fetch; macOS yt-dlp's for a dead line, Nov 20). */

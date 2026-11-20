@@ -28,6 +28,8 @@ import { isUrl } from "../tools.ts";
 import * as brief from "./brief.ts";
 import * as can from "./can.ts";
 import * as casefiles from "./casefiles.ts";
+import * as claude from "./claude.ts";
+import * as planLimit from "../plan_limit.ts";
 import { fix as fixSpills } from "./spills.ts";
 import * as drive from "./drive.ts";
 import * as handoff from "./handoff.ts";
@@ -57,7 +59,13 @@ const DOWNLOADS = 3;
 const MAX_IMPORTS = 3;
 
 const running = new Set<string>();
-const latest = new Map<string, ImportProgress>();
+/**
+ * An import as the page follows it: `movedAt`, when it last moved (a byte, a frame, a step: the page eases its number
+ * only while it moves, and says since when once it hasn't for five minutes); `retryAt`, when one waiting by itself goes
+ * again (Nov 20: Home's "Importing 37%" crept to 99 through an hour's wait, the owner's "freeze out of nowhere").
+ */
+export type Followed = ImportProgress & { movedAt?: number; retryAt?: number };
+const latest = new Map<string, Followed>();
 /** When each running import began. */
 const started = new Map<string, number>();
 /** Each running import's fiber, so a delete can stop it (`stop`). */
@@ -101,8 +109,45 @@ export async function stopAll(): Promise<number> {
   return ids.length;
 }
 
-/** Every import running now, so the page can follow them. */
-export const progress = (): ImportProgress[] => [...latest.values(), ...[...waitingNow.values()].filter((one) => !latest.has(one.id))];
+/**
+ * Every import running now, and every one waiting in the job table to go on by itself, so the page can follow them. A
+ * wait is read from its row (what it waits on, when it goes again), never from memory alone: a restart during a wait
+ * emptied the map that held it, and Home showed the import creeping with no line until its next try, up to half an
+ * hour (Nov 20). `home`: Edit's, where the table is (streamed.ts learns it at start).
+ */
+export function progress(home: string | null = streamed.homeNow() ?? seenHome, now = Date.now()): Followed[] {
+  const out: Followed[] = [...latest.values()];
+  for (const row of home === null ? [] : scriptRows(home, now)) {
+    if (row.state !== "waiting" || row.key !== durableJobs.keyOf("script", row.project) || latest.has(row.project)) continue;
+    const args = row.args;
+    if (args.waiting_on === "exact") continue;
+    const kind: failure.Kind = args.waiting_on === "drive" ? "limit" : typeof args.waiting_on === "string" && KINDS.has(args.waiting_on) ? (args.waiting_on as failure.Kind) : failure.kindOf(row.why ?? "");
+    const at = row.retry_at ?? null;
+    out.push({
+      id: row.project,
+      title: typeof args.title === "string" ? args.title : "",
+      stage: typeof args.stage === "string" ? args.stage : "",
+      percent: typeof args.percent === "number" ? args.percent : 0,
+      detail: waitLine(kind, row.why ?? "", at, now),
+      ...(typeof args.moved_ms === "number" ? { movedAt: args.moved_ms } : {}),
+      ...(at === null ? {} : { retryAt: at }),
+    });
+  }
+  return out;
+}
+
+/** The table's Script rows, read at most every two seconds (the page asks every second or so). */
+let rowsRead: { home: string; at: number; rows: durableJobs.Job[] } | null = null;
+function scriptRows(home: string, now: number): durableJobs.Job[] {
+  if (rowsRead === null || rowsRead.home !== home || Math.abs(now - rowsRead.at) >= 2_000) rowsRead = { home, at: now, rows: durableJobs.list(home, "script") };
+  return rowsRead.rows;
+}
+
+/** Edit's home as the last import here saw it, should Script mode's start not have said (tests, a trial server). */
+let seenHome: string | null = null;
+
+/** The kinds a row's `waiting_on` may name as they are. */
+const KINDS = new Set<string>(["passing", "quota", "limit", "encoder", "room", "signin"]);
 
 function busy(id: string): () => void {
   if (jobs.running(id)) throw new Error("Wait for this project's current job to finish before retrying its import.");
@@ -196,7 +241,13 @@ function say(script: Script, detail: string, stage = script.stage, percent = scr
     stepped.set(script.id, stage);
     durableJobs.step(home, durableJobs.keyOf("script", script.id), stage);
   }
-  if (running.has(script.id)) latest.set(script.id, { id: script.id, title: script.title, stage, percent, detail, ...(started.has(script.id) ? { startedAt: started.get(script.id)! } : {}) });
+  if (!running.has(script.id)) return;
+  // Moved when what it says changed (a byte's percent, a recording's count, a step); the same words again aren't a move.
+  const before = latest.get(script.id);
+  const moved = before === undefined || before.detail !== detail || before.percent !== percent || before.stage !== stage;
+  const movedAt = moved ? Date.now() : (before.movedAt ?? Date.now());
+  if (moved && home !== undefined) durableJobs.beat(home, durableJobs.keyOf("script", script.id));
+  latest.set(script.id, { id: script.id, title: script.title, stage, percent, detail, movedAt, ...(started.has(script.id) ? { startedAt: started.get(script.id)! } : {}) });
 }
 
 /**
@@ -626,10 +677,10 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
   yield* Effect.logInfo(`${name}: importing from ${from}`);
   // One row in the job table from its start to "ready" (honest council change 7c): a restart carries it on from it,
   // and a wait sits in it, never on a timer in memory.
-  durableJobs.begin(app.store.home, "script", script.id, { waiting_on: "import" }, "", "importing");
+  durableJobs.begin(app.store.home, "script", script.id, { waiting_on: "import", title: script.title }, "", "importing");
   homes.set(script.id, app.store.home);
+  seenHome = app.store.home;
   stepped.delete(script.id);
-  waitingNow.delete(script.id);
   say(script, "Starting.");
   let ran = yield* pipeline(app, dir, script).pipe(Effect.scoped, Effect.result);
   // Footage Edit made or fetched itself whose sound can't be read is made again, once (Nov 1, Mathias's "Mom
@@ -670,10 +721,10 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
   // The same failure four times in a row is Edit's to fix (jobs.ts `postpone`): its row is failed, and the import stops.
   const repeated = known !== null && failure.waitsByItself(known) && (durableJobs.wait(app.store.home, key, error), durableJobs.get(app.store.home, key)?.state === "failed");
   if (known !== null && failure.waitsByItself(known) && !repeated) {
-    const at = durableJobs.get(app.store.home, key)?.retry_at ?? null;
-    // What it waits on, in the words the diagnostics and the waking read (`waiting_on`).
-    durableJobs.patch(app.store.home, key, { waiting_on: kind === "limit" ? "drive" : kind });
-    const line = waitLine(kind, error, at);
+    // What it waits on, in the words the diagnostics and the waking read (`waiting_on`), and where it had got to and
+    // when it last moved: the page reads its wait from this row (`progress`), so a restart doesn't lose it.
+    const last = latest.get(script.id);
+    durableJobs.patch(app.store.home, key, { waiting_on: kind === "limit" ? "drive" : kind, title: script.title, stage: last?.stage ?? script.stage, percent: last?.percent ?? script.progress, moved_ms: last?.movedAt ?? Date.now() });
     yield* Effect.logWarning(`${jobs.named(script.id, script.title)}: waiting by itself after ${Math.round((Date.now() - began) / 1000)} s${spent ? ` (${spent})` : ""} (${kind}): ${diag.messageOf(error)}`);
     script.status = "processing";
     script.error = null;
@@ -685,7 +736,6 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
     } catch {
       // Said either way.
     }
-    waitingNow.set(script.id, { id: script.id, title: script.title, stage: script.stage, percent: script.progress, detail: line });
     return script;
   }
   const message = diag.messageOf(error);
@@ -708,17 +758,15 @@ const importScript = Effect.fn("writer.import")(function* (app: App, dir: string
   return yield* new ImportStopped({ message, kind: service.kindOf(error) });
 });
 
-/** Imports waiting in the job table to try again by themselves, as the page follows them (`progress`). */
-const waitingNow = new Map<string, ImportProgress>();
-
-/** The one line a waiting import shows: what it waits on, and when Edit tries again. */
-function waitLine(kind: failure.Kind, error: unknown, at: number | null): string {
-  const when = at === null ? "" : ` at ${steps.clock(at)}`;
-  if (kind === "quota") return steps.hearingWaits(error, at ?? Date.now());
+/** The one line a waiting import shows: what it waits on, and when Edit tries again (a time gone by reads "now"). */
+function waitLine(kind: failure.Kind, error: unknown, at: number | null, now = Date.now()): string {
+  const when = at === null ? "" : at <= now ? " now" : ` at ${steps.clock(at)}`;
+  if (kind === "quota") return steps.hearingWaits(error, at ?? now, now);
   if (kind === "limit") return `Google Drive's download limit is used up for today for a recording: Edit tries again by itself${when}.`;
   if (kind === "room") return `${diag.messageOf(error).replace(/\s*Retry[^.]*\.?\s*$/u, "").replace(/\.?\s*$/u, ".")} Edit goes on by itself once there's room${when === "" ? "" : ` (it looks again${when})`}.`;
   if (kind === "encoder") return "The hardware encoder is busy with an export: the import goes on once it's free.";
   if (kind === "signin") return "Sign in to Edit, and the import goes on by itself.";
+  if (/^cut short by/u.test(typeof error === "string" ? error : "")) return `Edit was closed part-way through this import: it goes on by itself${when}.`;
   return `Waiting for the connection: Edit tries again by itself${when}.`;
 }
 
@@ -933,7 +981,7 @@ async function words(app: App, dir: string, script: Script, waitOn: (words: stri
   // transcription heard and YouTube's caption turns alike. Not watched: Gemini watching every minute of the
   // footage cost about $0.70 an hour of it, $17 on Oct 30 for scripts that use well under an hour each (the
   // user: "we can still replace this with just opus"). A failure is a note: the voices stay as heard.
-  await readTurns(script, dir, (detail, percent) => say(script, detail, "transcribing", percent), signal);
+  await readTurns(script, dir, (detail, percent) => say(script, detail, "transcribing", percent), signal, true);
   signal?.throwIfAborted();
   // Words that spilled across a change of speaker go back to who said them.
   say(script, "Putting each word with its speaker.");
@@ -949,7 +997,18 @@ const notesOf = (dir: string): string => (research.load(dir)?.articles ?? []).ma
  * failure is a note: the turns stay unnamed, and Retry unfinished speaker
  * checks reads them again, paying only for what wasn't answered.
  */
-export async function readTurns(script: Script, dir: string, onStep: ((detail: string, percent: number) => void) | null, signal?: AbortSignal): Promise<boolean> {
+export async function readTurns(script: Script, dir: string, onStep: ((detail: string, percent: number) => void) | null, signal?: AbortSignal, passOver = false): Promise<boolean> {
+  // An import's own pass is an extra it can finish without: one that would wait for the Claude plan's reset is passed
+  // over at once and said, never held for hours on "Reading who says each line" (Nov 20). Retry unfinished speaker
+  // checks waits for the plan as Claude's other work does.
+  const plan = passOver ? claude.passingOverLimit(signal) : null;
+  const planNote = (until: number) => `Who says each line waits for your Claude plan (back at ${planLimit.when(until)}): the turns stay unnamed for now. Retry unfinished speaker checks reads them once it's back.`;
+  if (plan?.held() != null) {
+    plan.end();
+    note(script, planNote(plan.held()!));
+    diag.info("writer", `${jobs.named(script.id, script.title)}: who says each line passed over: the Claude plan is used up until ${new Date(plan.held()!).toLocaleString()}`);
+    return false;
+  }
   onStep?.("Reading who says each line.", 90);
   const names = await caseNames(dir, script).catch(() => []);
   // Caption turns replace visual speaker checks, including warnings left by an earlier audio import.
@@ -958,16 +1017,31 @@ export async function readTurns(script: Script, dir: string, onStep: ((detail: s
   const before = structuredClone(script);
   const began = Date.now();
   try {
-    const report = await caption_turns.run(script, dir, names, notesOf(dir), (done, count) => onStep?.(`Reading who says each line: ${done} of ${count} stretches.`, 90 + Math.floor((done * 8) / Math.max(count, 1))), signal);
+    const read = () => caption_turns.run(script, dir, names, notesOf(dir), (done, count) => onStep?.(`Reading who says each line: ${done} of ${count} stretches.`, 90 + Math.floor((done * 8) / Math.max(count, 1))), plan?.signal ?? signal);
+    const report = plan === null ? await read() : await plan.run(read);
+    const held = plan?.held() ?? null;
+    if (held !== null) {
+      note(script, planNote(held));
+      diag.info("writer", `${jobs.named(script.id, script.title)}: who says each line passed over part-way: the Claude plan is used up until ${new Date(held).toLocaleString()}`);
+      return false;
+    }
     diag.info("writer", `${jobs.named(script.id, script.title)}: who says each line read in ${Math.round((Date.now() - began) / 1000)} s: ${report.lines} lines, ${report.windows} stretches (${report.cached} kept, ${report.failed} unfinished), ${report.people} people`);
     if (report.failed > 0) note(script, `Who says each line couldn't be read for ${report.failed} of ${report.windows} stretches; their lines keep the speaker before them. Retry unfinished speaker checks to read them again.`);
     return true;
   } catch (error) {
     if (signal?.aborted) throw error;
     Object.assign(script, before);
+    const held = plan?.held() ?? null;
+    if (held !== null) {
+      note(script, planNote(held));
+      diag.info("writer", `${jobs.named(script.id, script.title)}: who says each line passed over: the Claude plan is used up until ${new Date(held).toLocaleString()}`);
+      return false;
+    }
     diag.warn("writer", `${jobs.named(script.id, script.title)}: who says each line couldn't be read: ${diag.messageOf(error)}`);
     note(script, `Who says each line couldn't be read (${diag.messageOf(error)}): the transcript is YouTube's captions, its turns unnamed. Retry unfinished speaker checks to read them again.`);
     return false;
+  } finally {
+    plan?.end();
   }
 }
 
@@ -1630,8 +1704,22 @@ export async function joinPreview(dir: string, script: Script, given: JoinItem[]
     const partial = making(proxy);
     const began = Date.now();
     try {
-      const whole = await Promise.all(pieces.map((piece, index) => previewFits(piece, made[index]!.durationMs)));
+      let whole = await Promise.all(pieces.map((piece, index) => previewFits(piece, made[index]!.durationMs)));
       diag.info("writer", `${label}: joining ${items.length} ${what} into the preview (${clock(startMs)}), ${whole.filter(Boolean).length} of ${pieces.length} already encoded as pieces`);
+      // Some pieces made and some not (one stopped, a lid closed under it): only those missing are encoded, each as
+      // its own piece, never every recording again because one failed (Nov 20: a two-hour lid close at 40% made
+      // "Finishing the preview" encode the whole case again, the cloud recordings over the network). One that still
+      // won't make waits by itself and is tried again, the rest kept.
+      if (pieces.length > 1 && whole.some(Boolean) && !whole.every(Boolean)) {
+        for (const [index, fits] of whole.entries()) {
+          if (fits) continue;
+          signal?.throwIfAborted();
+          await encodePiece(dir, toJoin[index]!.path, `${label} · ${made[index]!.title}`, items[index]!.path);
+        }
+        whole = await Promise.all(pieces.map((piece, index) => previewFits(piece, made[index]!.durationMs)));
+        const still = whole.flatMap((fits, index) => (fits ? [] : [made[index]!.title]));
+        if (still.length > 0) throw new Error(`The preview's piece of ${still[0]}${still.length > 1 ? ` and ${still.length - 1} more` : ""} couldn't be made yet; Edit tries again by itself`, { cause: new failure.StoodStill("Making the preview", 0) });
+      }
       const copied =
         pieces.length > 1 && whole.every(Boolean)
           ? await media.append(pieces[0]!, pieces.slice(1), partial, onPercent, signal, false, label)

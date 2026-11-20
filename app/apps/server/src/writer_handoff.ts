@@ -22,6 +22,7 @@ import * as beta from "./beta.ts";
 import * as channels from "./channels.ts";
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
+import { THIS_MACHINE } from "./machine.ts";
 import { ApiError } from "./http/errors.ts";
 import * as kinds from "./kinds.ts";
 import * as caseNames from "./names.ts";
@@ -422,11 +423,14 @@ export async function importScript(app: App, id: string, asked: ImportFor = {}):
     if (shared.length > 0) diag.info("script", `${id}: before its edit: ${shared.join("; ")}`);
   }
   let given = await fetchScript(id, app.store.home);
-  // A Drive folder case not yet in Edit's originals: sent up now (or the send under way joined), so Start the edit goes on rather than stopping on it.
+  // A Drive folder case not yet in Edit's originals: its master named now and sent up behind the edit (resumable, in
+  // the job table), the edit cutting from the copy here meanwhile. The request answers at once with the project (Nov
+  // 20: it uploaded every recording inside this request first, the spinner up for hours on a slow line, no project).
   if (writerShare.unsharedFolder(given) && writerStore.idOk(id) && fs.existsSync(join(writerStore.scriptDir(data, id), "script.json"))) {
-    diag.info("script", `${given.title}: sending its Drive folder cases to Edit's cloud before the edit starts`);
-    await writerShare.shareNow(data, id);
-    given = await fetchScript(id, app.store.home);
+    diag.info("script", `${given.title}: its Drive folder cases go up to Edit's cloud behind the edit, cut from ${THIS_MACHINE}'s copies meanwhile`);
+    await writerShare.nameShared(data, id);
+    writerShare.shareSoon(data, id);
+    given = writerShare.withSharedKeys(writerStore.scriptDir(data, id), (await fetchScript(id, app.store.home)) as never, true) as unknown as typeof given;
   }
   const channel = await channelOfImport(app, given, asked);
   // A channel's edit runs the way its videos are narrated (channels.styleOf), as New edit's channel projects do.

@@ -18,14 +18,14 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function show(item: ImportProgress) {
+function show(item: ImportProgress & { movedAt?: number; retryAt?: number }) {
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   act(() => root!.render(<ImportScreen item={item} onLeave={() => {}} />));
 }
 
-const item = (extra: Partial<ImportProgress>): ImportProgress => ({ id: "s1", title: "A case", stage: "transcribing", percent: 60, detail: "Transcribing 3 of 9 recordings", ...extra });
+const item = (extra: Partial<ImportProgress & { movedAt: number; retryAt: number }>): ImportProgress & { movedAt?: number; retryAt?: number } => ({ id: "s1", title: "A case", stage: "transcribing", percent: 60, detail: "Transcribing 3 of 9 recordings", ...extra });
 
 describe("ImportScreen", () => {
   it("opened twelve minutes into an import: Running for counts from its start, and the detail shows once", () => {
@@ -39,5 +39,13 @@ describe("ImportScreen", () => {
   it("no start known: no clock at all", () => {
     show(item({}));
     expect(document.body.textContent).not.toContain("Running for");
+  });
+
+  it("nothing moved for five minutes: the clock gives way to since when (Nov 20)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-20T12:00:00Z"));
+    show(item({ startedAt: Date.now() - 40 * 60_000, movedAt: Date.now() - 6 * 60_000 }));
+    expect(document.body.textContent).not.toContain("Running for");
+    expect(document.body.textContent).toContain("Nothing has come in since");
   });
 });

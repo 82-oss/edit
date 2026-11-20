@@ -14,11 +14,12 @@ import { createHash } from "node:crypto";
 import type { Script } from "@edit/types/writer";
 
 import * as editCloud from "../cloud.ts";
+import * as cloudMedia from "../cloud_media.ts";
 import * as diag from "../diag.ts";
 import * as log from "../hearing_log.ts";
 import * as sharedWords from "../shared_words.ts";
 import { writeAtomic } from "../files.ts";
-import { isFile, join } from "../paths.ts";
+import { isFile, join, parent } from "../paths.ts";
 import { hearsAll, MODEL as SCRIBE, serialize, type Transcript } from "../transcribe.ts";
 import * as drive from "./drive.ts";
 import * as hearing from "./hearing.ts";
@@ -150,9 +151,9 @@ export const unsharedFolder = (script: Cases): boolean =>
  * ("751) Predator Teacher Gets the Surprise of His Life" has no Drive or
  * YouTube link).
  */
-export function withSharedKeys(dir: string, script: Script): Script {
+export function withSharedKeys(dir: string, script: Script, pending = false): Script {
   if (!unsharedFolder(script)) return script;
-  let kept: { source?: unknown; key?: unknown; file?: unknown }[];
+  let kept: { source?: unknown; key?: unknown; file?: unknown; pending?: unknown }[];
   try {
     kept = JSON.parse(fs.readFileSync(join(dir, "edit-shared.json"), "utf8")) as typeof kept;
   } catch {
@@ -164,7 +165,9 @@ export function withSharedKeys(dir: string, script: Script): Script {
     const target = targets[index];
     if (part.mediaSource !== undefined || !folderPart(script, index) || target == null || !target.startsWith(`${dir}/`)) return part;
     // Only a master the handoff takes: a sha256 source and its own key under Edit's originals.
-    const entry = kept.find((one) => one.file === target.slice(dir.length + 1) && typeof one.source === "string" && /^sha256:[a-fA-F0-9]{64}$/u.test(one.source) && typeof one.key === "string" && one.key.startsWith(`edit/originals/sha256/${one.source.slice(7)}/`) && !one.key.includes(".."));
+    // A master named but still going up (`nameShared`) only for this Mac's own Start the edit, which cuts from it here;
+    // the script's body (every Mac's) is named once it's up.
+    const entry = kept.find((one) => (pending || one.pending !== true) && one.file === target.slice(dir.length + 1) && typeof one.source === "string" && /^sha256:[a-fA-F0-9]{64}$/u.test(one.source) && typeof one.key === "string" && one.key.startsWith(`edit/originals/sha256/${one.source.slice(7)}/`) && !one.key.includes(".."));
     if (entry === undefined) return part;
     changed = true;
     return { ...part, mediaSource: entry.source as string, originalKey: entry.key as string };
@@ -192,16 +195,52 @@ function streamedSources(dir: string): Set<string> {
 }
 
 /** What of the script is in Edit's originals: its file (by its path in the script's folder; null for one streamed there, never here), source and key. */
-export function keepShared(dir: string, file: string | null, source: string, key: string): void {
+export function keepShared(dir: string, file: string | null, source: string, key: string, pending = false): void {
   const path = join(dir, "edit-shared.json");
-  let kept: { source: string; key: string; file: string | null }[] = [];
+  let kept: { source: string; key: string; file: string | null; pending?: true }[] = [];
   try {
     kept = JSON.parse(fs.readFileSync(path, "utf8")) as typeof kept;
   } catch {
     kept = [];
   }
   const relative = file !== null && file.startsWith(`${dir}/`) ? file.slice(dir.length + 1) : null;
-  writeAtomic(path, JSON.stringify([...kept.filter((entry) => entry.source !== source), { source, key, file: relative }], null, 2));
+  writeAtomic(path, JSON.stringify([...kept.filter((entry) => entry.source !== source), { source, key, file: relative, ...(pending ? { pending: true as const } : {}) }], null, 2));
+}
+
+/** The script's footage on this Mac that Edit's originals know by `source` (its file, the key it goes up to), or null. */
+export function sharedHere(dir: string, source: string): { path: string; key: string } | null {
+  try {
+    const kept = JSON.parse(fs.readFileSync(join(dir, "edit-shared.json"), "utf8")) as { source?: unknown; key?: unknown; file?: unknown }[];
+    const one = kept.find((entry) => entry.source === source && typeof entry.file === "string" && typeof entry.key === "string" && !entry.file.split("/").includes(".."));
+    return one === undefined || !isFile(join(dir, one.file as string)) ? null : { path: join(dir, one.file as string), key: one.key as string };
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `source`'s original is on its way up from this Mac already (writer/streamed.ts says): never sent twice beside it. */
+export const sending = { goingUp: (_source: string): boolean => false };
+
+/**
+ * Each recording of the script on this Mac named as Edit's originals will hold it, without sending it: the registry
+ * told its key, `edit-shared.json` noting it as still going up. Start the edit then makes its edit at once and cuts
+ * from the copies here, the upload going on behind (`shareSoon`). Nov 20: Start the edit sent every recording up
+ * inside its request first, one by one, so on an 8 Mbit/s line a few GB kept its spinner up for hours with no project,
+ * a drop past the quick retries ended in a 400 after hours, and the next press started again from nothing.
+ */
+export async function nameShared(data: string, id: string): Promise<void> {
+  if (!editCloud.enabled()) return;
+  const dir = store.scriptDir(data, id);
+  const script = store.read(dir);
+  for (const recording of await shared(dir, script)) {
+    if (recording.file === null) continue;
+    const record = (await editCloud.query("edit:getMedia", { source: recording.source })) as Record<string, unknown> | null;
+    const key = typeof record?.originalKey === "string" ? record.originalKey : originalKey(recording.source, recording.name);
+    if (record === null) await editCloud.mutation("edit:putMedia", { source: recording.source, name: recording.name, originalKey: key, size: fs.statSync(recording.file).size });
+    // Already whole there: named for every Mac, as `share` does.
+    keepShared(dir, recording.file, recording.source, key, record?.originalReady !== true);
+  }
+  stampShared(dir);
 }
 
 /**
@@ -226,10 +265,19 @@ export async function share(data: string, id: string): Promise<string> {
     let record = (await editCloud.query("edit:getMedia", { source: recording.source })) as Record<string, unknown> | null;
     if (record?.originalReady !== true) {
       const key = typeof record?.originalKey === "string" ? record.originalKey : originalKey(recording.source, recording.name);
+      // Going up from this Mac already (Script mode's import sends its recordings behind it): never a second copy beside it.
+      if (sending.goingUp(recording.source)) {
+        done.push(`${recording.name} is on its way up behind the import`);
+        await shareWords(dir, script, recording, done);
+        continue;
+      }
       if (record === null) await editCloud.mutation("edit:putMedia", { source: recording.source, name: recording.name, originalKey: key, size });
       diag.info("writer", `${name}: uploading ${recording.name} (${recording.source}, ${Math.round(size / 1e6)} MB) to Edit's originals`);
-      await editCloud.uploadFile(recording.file, key);
-      record = (await editCloud.mutation("edit:putMedia", { source: recording.source, originalReady: true, size, ...(duration !== null ? { duration } : {}) })) as Record<string, unknown> | null;
+      // This Mac's resumable upload, noted in the job table (cloud_media `uploadLater`: one at a time, carried on after
+      // a quit, tried again by itself), not a plain upload that started from nothing after every drop (Nov 20).
+      cloudMedia.uploadLater(parent(data) ?? data, { file: recording.file, source: recording.source, size, duration: duration ?? 0, originalKey: key, uploadOriginal: true, proxy: null, local: null });
+      if (!(await cloudMedia.uploaded(recording.file))) throw new Error(`${recording.name} didn't go up yet; Edit tries again by itself`);
+      record = (await editCloud.query("edit:getMedia", { source: recording.source })) as Record<string, unknown> | null;
       done.push(`uploaded ${recording.name}`);
     }
     keepShared(dir, recording.file, recording.source, typeof record?.originalKey === "string" ? record.originalKey : originalKey(recording.source, recording.name));

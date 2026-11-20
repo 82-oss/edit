@@ -37,6 +37,7 @@ import * as diag from "./diag.ts";
 import * as encoder from "./encoder.ts";
 import * as failure from "./failure.ts";
 import { CREDIT, DAILY, StepTimedOut } from "./failure.ts";
+import * as wake from "./wake.ts";
 
 /** How long each step may take before it's taken as stuck (ms). */
 export const LIMITS = {
@@ -100,11 +101,13 @@ export function clock(ms: number): string {
  * service, that an admin adds credit (or the day's reset), and when Edit
  * tries again by itself. For a person and the agent alike.
  */
-export function hearingWaits(error: unknown, at: number): string {
+export function hearingWaits(error: unknown, at: number, now?: number): string {
   const words = typeof error === "string" ? error : diag.messageOf(error);
-  if (CREDIT.test(words)) return `The transcription plan (ElevenLabs) is out of credit: an admin adds credit, and Edit tries again by itself at ${clock(at)}.`;
-  if (DAILY.test(words)) return `Today's transcription allowance is used up; Edit tries again by itself at ${clock(at)}, when it resets.`;
-  return `Transcription is busy right now; Edit tries again by itself at ${clock(at)}.`;
+  // A time already gone (read back after a restart, a lid closed past it) is never shown: it's now (Nov 20).
+  const when = now !== undefined && at <= now ? "now" : `at ${clock(at)}`;
+  if (CREDIT.test(words)) return `The transcription plan (ElevenLabs) is out of credit: an admin adds credit, and Edit tries again by itself ${when}.`;
+  if (DAILY.test(words)) return `Today's transcription allowance is used up; Edit tries again by itself ${when}${when === "now" ? "" : ", when it resets"}.`;
+  return `Transcription is busy right now; Edit tries again by itself ${when}.`;
 }
 
 /**
@@ -117,17 +120,35 @@ export function hearingWaits(error: unknown, at: number): string {
 export async function bounded<T>(what: string, ms: number, work: (signal: AbortSignal) => Promise<T>, self?: number): Promise<T> {
   const stop = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let fail: (error: unknown) => void = () => {};
   const late = new Promise<never>((_, reject) => {
+    fail = reject;
+  });
+  // The time it's had, counted while the machine is awake: a lid closed mid-step gives the step its time back on
+  // waking (Nov 20: a timer runs on through a sleep, so a two-hour lid close ended a step that was fine). Its end is
+  // set again from what's left.
+  let left = ms;
+  let since = Date.now();
+  const arm = () => {
+    clearTimeout(timer);
     timer = setTimeout(() => {
       const shared = encoder.shared(self);
       stop.abort();
-      reject(new StepTimedOut(what, ms, shared));
-    }, ms);
+      fail(new StepTimedOut(what, ms, shared));
+    }, Math.max(left, 0));
+  };
+  arm();
+  const away = wake.onWake((sleptMs) => {
+    const now = Date.now();
+    left -= Math.max(now - since - sleptMs, 0);
+    since = now;
+    arm();
   });
   try {
     return await Promise.race([work(stop.signal), late]);
   } finally {
     clearTimeout(timer);
+    away();
   }
 }
 
@@ -174,8 +195,16 @@ export async function whileMoving<T>(what: string, progress: () => number, work:
     }
   }, beat);
   timer.unref?.();
+  // Raced against its own stop, as `bounded` is (Nov 20): work that doesn't end on its signal (a wait on another's
+  // download) is stopped all the same, its answer ignored. Work that does end on it (an FFmpeg killed) is given a
+  // moment to, so what it leaves is cleaned up before this returns.
+  let grace: ReturnType<typeof setTimeout> | undefined;
+  const ended = new Promise<never>((_, reject) => {
+    stop.signal.addEventListener("abort", () => (grace = setTimeout(() => reject(new Error("stopped")), STOP_GRACE_MS)), { once: true });
+  });
+  ended.catch(() => {});
   try {
-    const result = await work(stop.signal);
+    const result = await Promise.race([work(stop.signal), ended]);
     if (signal?.aborted) throw new Error("cancelled");
     return result;
   } catch (error) {
@@ -184,9 +213,13 @@ export async function whileMoving<T>(what: string, progress: () => number, work:
     throw error;
   } finally {
     clearInterval(timer);
+    clearTimeout(grace);
     signal?.removeEventListener("abort", onAbort);
   }
 }
+
+/** How long work stopped by `whileMoving` has to end on its signal before it's left behind. */
+const STOP_GRACE_MS = 2_000;
 
 /** A probe's bound for `path`: a file here, or over the network. */
 export const probeLimit = (path: string): number => (/^https?:\/\//u.test(path) ? LIMITS.probeRemote : LIMITS.probe);

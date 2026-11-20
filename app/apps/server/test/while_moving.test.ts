@@ -58,3 +58,36 @@ test("slow but moving runs to the end, however long; standing still is stopped a
   await expect(cancelled).rejects.toThrow("cancelled");
   expect(cleaned).toBe(true);
 });
+
+// Nov 20: work that never ends on its signal (a wait on another's download) held whileMoving for good.
+test("work that ignores its stop is left behind once it stands still, never waited on for ever", async () => {
+  const began = Date.now();
+  const deaf = whileMoving("Script mode's download of a.mp4", () => 0, () => new Promise<string>(() => {}), 200);
+  const error = await deaf.then(() => null, (failed: unknown) => failed);
+  expect(error).toBeInstanceOf(StoodStill);
+  expect(Date.now() - began).toBeLessThan(5_000);
+});
+
+// Nov 20: `bounded` was a plain timer, so a lid closed mid-step ended a step that was fine.
+test("a bounded step gets back the time the machine was away", async () => {
+  const { bounded } = await import("../src/import_steps.ts");
+  const wake = await import("../src/wake.ts");
+  let woken = false;
+  const step = bounded("Finding the excerpt's keyframe", 400, async () => {
+    // 300 ms in, the machine is said to have been away for 250 of them; the step's own work takes 600 ms in all.
+    await Bun.sleep(300);
+    wake.woke(250);
+    woken = true;
+    await Bun.sleep(300);
+    return "found";
+  });
+  expect(await step).toBe("found");
+  expect(woken).toBe(true);
+  // Without a wake the same work is stopped at its time.
+  const late = bounded("Finding the excerpt's keyframe", 400, async () => {
+    await Bun.sleep(600);
+    return "found";
+  });
+  await expect(late).rejects.toThrow("took more than");
+  wake.stopForTests();
+});

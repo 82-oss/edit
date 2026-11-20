@@ -9,6 +9,7 @@ import * as fs from "node:fs";
 
 import type { Article, Research } from "@edit/types/writer";
 
+import * as diag from "../diag.ts";
 import { writeAtomic } from "../files.ts";
 import { join } from "../paths.ts";
 import * as claude from "./claude.ts";
@@ -118,8 +119,12 @@ export async function run(
   const wanted = small.slice(0, MAX_PDFS);
   const folder = join(dir, "documents");
   fs.mkdirSync(folder, { recursive: true });
+  // The import's own read never waits for the Claude plan's reset (up to six hours, twice, with the import on "case
+  // files" saying nothing: Nov 20): the PDFs left are read by the next run once the plan is back, the import goes on.
+  const plan = claude.passingOverLimit(signal);
   for (const [index, pdf] of wanted.entries()) {
     if (documents.done.includes(pdf.id)) continue;
+    if (plan.held() !== null) break;
     onProgress(index, wanted.length);
     const path = join(folder, `${String(index).padStart(2, "0")}.pdf`);
     let answer: Record<string, unknown> | null = null;
@@ -127,7 +132,7 @@ export async function run(
     try {
       await download(pdf, path);
       const ask = `Read the PDF at ${path} (the case folder's "${pdf.name}") and report what it states.`;
-      const read = await claude.askPatiently({ model: "haiku", system: SYSTEM, prompt: ask, schema: SCHEMA, read: folder, label: "Claude haiku reading a case file", ...(signal ? { signal } : {}) });
+      const read = await plan.run(() => claude.askPatiently({ model: "haiku", system: SYSTEM, prompt: ask, schema: SCHEMA, read: folder, label: "Claude haiku reading a case file", signal: plan.signal }));
       answer = claude.planOf(read);
       if (answer === null) problem = "Claude did not answer in the expected shape.";
     } catch (error) {
@@ -136,6 +141,8 @@ export async function run(
     } finally {
       fs.rmSync(path, { force: true });
     }
+    // Held for the plan: not read, and not passed over for good.
+    if (plan.held() !== null) break;
     documents.done.push(pdf.id);
     if (answer === null) {
       documents.skipped.push(`${pdf.name}: ${problem}`);
@@ -149,6 +156,13 @@ export async function run(
     save(dir, documents);
   }
   fs.rmSync(folder, { recursive: true, force: true });
+  plan.end();
+  const held = plan.held();
+  if (held !== null) {
+    diag.info("writer", `case files: ${wanted.filter((pdf) => !documents.done.includes(pdf.id)).length} left to read once the Claude plan is back (${new Date(held).toLocaleString()}); the import goes on without them`);
+    save(dir, documents);
+    return documents;
+  }
   onProgress(wanted.length, wanted.length);
   documents.complete = true;
   save(dir, documents);
