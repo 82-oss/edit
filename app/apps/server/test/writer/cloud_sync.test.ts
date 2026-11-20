@@ -361,3 +361,48 @@ test("a file gone because the script was saved again is fetched from the newer r
   expect(rows.get(ID)!.rev).toBe(6);
   expect(cloudFiles().find((file) => file.name === "chat.json")?.key).toBe(`writer/scripts/${ID}/files/r6/chat.json`);
 });
+
+// Nov 20, Sphe's Linux Edit: `GET /api/health` took 27.6 s with nothing running. Every round with a pull wrote the
+// whole ledger (3.9 MB there, the team's 126 scripts and their 14,176 files) and synced it to disk once for every row
+// of the cloud's list, changed or not: hundreds of full writes, 20 to 30 seconds of every minute in which the server
+// answered nothing. It had since Oct 29, on every Mac.
+test("a round in which nothing changed doesn't write the ledger, and never keeps the server's thread", async () => {
+  const body = script({ title: "Quiet Script" });
+  inCloud(3, body, []);
+  const data = here(body, null);
+  // A team's worth in the ledger: 120 other scripts with 100 files each, and 400 rows in the cloud's list that were deleted long ago.
+  const others: Record<string, unknown> = {};
+  for (let n = 0; n < 120; n++) {
+    const files: Record<string, { key: string; size: number; mtime: number }> = {};
+    for (let f = 0; f < 100; f++) files[`recordings/${f}.mp4`] = { key: `writer/scripts/other-${n}/files/r1/recordings/${f}.mp4`, size: 1_000_000 + f, mtime: 1_700_000_000_000 + f };
+    others[`00000000-0000-4000-8000-${String(n).padStart(12, "0")}`] = { rev: 1, body: "x".repeat(64), files, summary: 2 };
+  }
+  fs.writeFileSync(join(data, "cloud", "ledger.json"), JSON.stringify({ scripts: others }));
+  for (let n = 0; n < 400; n++) {
+    const id = `11111111-1111-4111-8111-${String(n).padStart(12, "0")}`;
+    rows.set(id, { scriptId: id, title: `Deleted ${n}`, rev: 2, bodyKey: `writer/scripts/${id}/body/2.json`, files: [], deletedAt: 1_700_000_000_000 });
+  }
+  try {
+    // The first rounds bring the script down and settle; then nothing is left to change.
+    await cloud.syncOnceForTests(data);
+    await cloud.syncOnceForTests(data);
+    const path = join(data, "cloud", "ledger.json");
+    const before = fs.statSync(path, { bigint: true });
+    let longest = 0;
+    let last = performance.now();
+    const beat = setInterval(() => {
+      const now = performance.now();
+      longest = Math.max(longest, now - last - 10);
+      last = now;
+    }, 10);
+    await cloud.syncOnceForTests(data);
+    clearInterval(beat);
+    const after = fs.statSync(path, { bigint: true });
+    // The file is the one that was there (a save replaces it with a new one), untouched.
+    expect(`${after.ino}:${after.mtimeNs}`).toBe(`${before.ino}:${before.mtimeNs}`);
+    // And everything else in Edit had its turn throughout: no stretch of the round kept the thread a quarter second.
+    expect(longest).toBeLessThan(250);
+  } finally {
+    fs.rmSync(data, { recursive: true, force: true });
+  }
+});

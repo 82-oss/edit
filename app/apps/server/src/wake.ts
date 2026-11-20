@@ -7,6 +7,7 @@
 // only then starts the work that fell due (serve.ts).
 
 import * as diag from "./diag.ts";
+import * as thread from "./thread.ts";
 
 /** A gap between beats longer than this is a sleep or a freeze (tests shorten it). */
 export const GAP_MS = { value: 10_000 };
@@ -56,7 +57,10 @@ function start(): void {
     // Asleep or frozen, the process used almost no processor time across the gap; a server that was only busy (a
     // long synchronous step) used most of it, and isn't a wake (verify.md finding 10: 10–12 s stalls taken as sleeps).
     if (gap > GAP_MS.value && busy < gap * 0.25) woke(gap);
-    else if (gap > GAP_MS.value) diag.info("wake", `the server was busy for ${diag.human(gap)} (${Math.round(busy)} ms of processor time): not a sleep`);
+    // Anything else that kept the beat two seconds or more late kept all of Edit that long: said, with what last
+    // started (thread.ts), and kept for this Mac's report (Nov 20: 247 such holds of 20 to 46 s in an evening were
+    // one INFO line each, naming nothing).
+    else if (gap - BEAT_MS >= thread.HELD_MS) thread.held(gap - BEAT_MS, busy);
   }, BEAT_MS);
   timer.unref?.();
 }

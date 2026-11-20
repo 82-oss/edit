@@ -40,6 +40,7 @@ import * as cloudBlocks from "../cloud_blocks.ts";
 import * as archive from "./archive.ts";
 import * as storage from "./storage.ts";
 import { writeAtomic } from "../files.ts";
+import { breather, note as noteThread } from "../thread.ts";
 import { isFile, join, parent } from "../paths.ts";
 import * as machine from "../machine.ts";
 import { displayName } from "../sync_core.ts";
@@ -203,27 +204,49 @@ function writeJson(path: string, value: unknown): void {
 
 const loadLedger = (data: string): Ledger => readJson<Ledger>(ledgerPath(data), { scripts: {} });
 
+/** The ledger file as it is now (inode, size, mtime in ns), or "none". */
+function ledgerStamp(path: string): string {
+  try {
+    const stats = fs.statSync(path, { bigint: true });
+    return `${stats.ino}:${stats.size}:${stats.mtimeNs}`;
+  } catch {
+    return "none";
+  }
+}
+
 /**
- * The ledger to look in, never to change: parsed again only when its file
- * has changed (inode, size, mtime in ns). Each lookup parsed the whole file
- * (Nov 7, Sphe's Mac: 2.6 MB, looked up per script by Home's routes), and
- * with Edit's other state it held the server 7–20 s at a time.
+ * The ledger, parsed again only when its file has changed (inode, size,
+ * mtime in ns). Each lookup parsed the whole file (Nov 7, Sphe's Mac: 2.6 MB,
+ * looked up per script by Home's routes), and with Edit's other state it held
+ * the server 7–20 s at a time. The rounds work on this same one too (Nov 20:
+ * each round read and parsed all 3.9 MB of it again, every three seconds):
+ * whoever changes it saves it (`saveLedger`), and a round that throws lets it
+ * go (`tick`), so what's kept here is never ahead of the file for long.
  */
 let seen: { path: string; stamp: string; ledger: Ledger } | null = null;
 function ledgerNow(data: string): Ledger {
   const path = ledgerPath(data);
-  let stamp = "none";
-  try {
-    const stats = fs.statSync(path, { bigint: true });
-    stamp = `${stats.ino}:${stats.size}:${stats.mtimeNs}`;
-  } catch {
-    return { scripts: {} };
-  }
+  const stamp = ledgerStamp(path);
+  if (stamp === "none") return { scripts: {} };
   if (seen !== null && seen.path === path && seen.stamp === stamp) return seen.ledger;
   const ledger = loadLedger(data);
   seen = { path, stamp, ledger };
   return ledger;
 }
+
+/** How many times the ledger's file has been written (tests: a round that changes nothing writes nothing). */
+export const ledgerWrites = { count: 0 };
+
+/** Writes the ledger, and keeps it as the one in hand: the next look doesn't parse the file it just wrote. */
+function saveLedger(data: string, ledger: Ledger): void {
+  const path = ledgerPath(data);
+  writeJson(path, ledger);
+  ledgerWrites.count++;
+  seen = { path, stamp: ledgerStamp(path), ledger };
+}
+
+/** What the ledger holds of one script, as text: whether a step changed it. */
+const entryOf = (ledger: Ledger, id: string): string => JSON.stringify([ledger.scripts[id] ?? null, ledger.copied?.[id] ?? null, ledger.attempts?.[id] ?? null]);
 
 /** Footage cleared from this Mac once the cloud held it, or left there by a pull, by script: still the script's files in the cloud. */
 const storagePath = (data: string) => join(data, "cloud", "storage.json");
@@ -535,11 +558,11 @@ export async function fetchFile(data: string, id: string, name: string): Promise
   if (kept === null || kept.key === "") throw new Error(`This script's ${name} isn't on ${THIS_MACHINE} or in the cloud.`);
   await download(id, name, kept.key, kept.size, path);
   // Its time as kept here now, so the next push sees it unchanged.
-  const ledger = loadLedger(data);
+  const ledger = ledgerNow(data);
   const known = ledger.scripts[id]?.files[name];
-  if (known !== undefined) {
+  if (known !== undefined && known.mtime !== mtime(path)) {
     known.mtime = mtime(path);
-    writeJson(ledgerPath(data), ledger);
+    saveLedger(data, ledger);
   }
   forgetPurged(data, id, name);
   return path;
@@ -804,7 +827,7 @@ const footageLeft = (data: string): number => Object.values(footageOf(data)).fil
 
 /** Whether `key` is named by a revision this Mac committed, or one it sent whose answer hasn't come: then it's the script's, never deleted from here. */
 function committed(data: string, id: string, key: string): boolean {
-  const ledger = loadLedger(data);
+  const ledger = ledgerNow(data);
   const named = (files: Record<string, Kept> | undefined) => Object.values(files ?? {}).some((file) => file.key === key);
   return named(ledger.scripts[id]?.files) || named(ledger.attempts?.[id]?.known.files);
 }
@@ -963,10 +986,26 @@ export function resetFootageForTests(): void {
   footageWait.clear();
 }
 
-/** One round: deletions, then what came from other Macs, then what changed here. Answers how many scripts still wait. */
+/**
+ * One round: deletions, then what came from other Macs, then what changed here. Answers how many scripts still wait.
+ * A round that throws lets go of the ledger in hand: what it changed and hadn't saved is dropped, as when each round
+ * read the file afresh.
+ */
 async function tick(data: string, pull: boolean): Promise<number> {
-  const ledger = loadLedger(data);
-  const save = () => writeJson(ledgerPath(data), ledger);
+  try {
+    return await round(data, pull);
+  } catch (error) {
+    seen = null;
+    throw error;
+  }
+}
+
+async function round(data: string, pull: boolean): Promise<number> {
+  noteThread(`Script mode's cloud round${pull ? " (with a pull)" : ""}`);
+  const ledger = ledgerNow(data);
+  const save = () => saveLedger(data, ledger);
+  // The rest of Edit gets its turn between scripts: a round is hundreds of them, each a few file reads on the server's one thread.
+  const breathe = breather();
   let waiting = 0;
   for (const id of deleting(data)) {
     let answer: Awaited<ReturnType<typeof convex>>;
@@ -981,8 +1020,10 @@ async function tick(data: string, pull: boolean): Promise<number> {
     if (!answer.ok) continue;
     const keys = (((answer.value as { keys?: unknown } | null)?.keys ?? []) as unknown[]).filter((key): key is string => typeof key === "string");
     await remove(keys);
-    delete ledger.scripts[id];
-    save();
+    if (ledger.scripts[id] !== undefined) {
+      delete ledger.scripts[id];
+      save();
+    }
     writeJson(deletingPath(data), deleting(data).filter((other) => other !== id));
   }
   const gone = deleting(data);
@@ -996,7 +1037,13 @@ async function tick(data: string, pull: boolean): Promise<number> {
     // Archived from Repack's page, or asked back: archive.ts acts on it.
     archive.keepStates(data, rows);
     for (const row of rows) {
-      if (gone.includes(String(row.scriptId))) continue;
+      const id = String(row.scriptId);
+      if (gone.includes(id)) continue;
+      // Saved only when this row changed what the ledger holds (Nov 20, Sphe's Linux Edit: the whole ledger, 3.9 MB
+      // by then, was written and synced to disk after every row of the cloud's list, changed or not, hundreds of
+      // times a round, every 30 seconds: 20 to 30 seconds each minute in which Edit answered nothing, no page, no
+      // play, no progress; `GET /api/health` took 27.6 s. So since Oct 29, on every Mac, worse with every script).
+      const before = entryOf(ledger, id);
       try {
         await pullOne(data, ledger, row);
       } catch (error) {
@@ -1004,7 +1051,8 @@ async function tick(data: string, pull: boolean): Promise<number> {
         diag.warn("writer", `the cloud: ${String(row.title ?? row.scriptId)} didn't come down: ${diag.messageOf(error)}`);
         waiting++;
       }
-      save();
+      if (entryOf(ledger, id) !== before) save();
+      await breathe();
     }
   }
   // What changed here, found first so the count of what's left can be shown.
@@ -1013,7 +1061,10 @@ async function tick(data: string, pull: boolean): Promise<number> {
   // Footage of a script no longer here has nothing to go up.
   const present = new Set(ids);
   for (const slot of Object.keys(footageOf(data))) if (!present.has(nameOf(slot)[0]) && slot !== footageNow) retire(data, slot);
+  // What was cleared from here, read once a round (it was read and parsed again for every script).
+  const cleared = readJson<Record<string, string[]>>(storagePath(data), {});
   for (const id of ids) {
+    await breathe();
     const until = backoff.get(id)?.until ?? 0;
     // Worked on here: its lock is taken and kept meanwhile; pushed once done.
     if (busy(id)) locks.touch(id);
@@ -1036,7 +1087,7 @@ async function tick(data: string, pull: boolean): Promise<number> {
     // What this Mac's ledger already recorded as the cloud's. The row itself is
     // read again at the push: a ledger from an older Edit can be at the cloud's
     // rev and still be missing the preview (Nov 3, Predator Dad).
-    carryCloudFiles(dir, files, known?.files ?? {}, new Set(purgedNames(data, id)));
+    carryCloudFiles(dir, files, known?.files ?? {}, new Set(cleared[id] ?? []));
     // Its words go now; footage that changed goes up beside the rounds and is named once it's there.
     footageFirst(data, id, files, known);
     if (known !== undefined && known.body === hash(body) && sameFiles(known.files, files) && (known.summary ?? 0) >= SUMMARY_VERSION) continue;
