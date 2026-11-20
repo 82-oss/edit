@@ -114,6 +114,11 @@ watermarkRemoval.hintsFor.project = hintsOf;
 // A stretch the model cleans waits while their watermark there is still being taken out (it's cleaned over the result):
 // its own file's cells there, and its own file still being looked at for a mark, never another file's (Nov 19, the
 // Boyfriends intro: every stretch waited on the engine's look at each of the project's eleven files in turn).
+watermarkRemoval.looked.then = async (app, id) => {
+  const live = app.store.get(id);
+  if (live === null) return;
+  if (removal.kinds(asks.inForce(removal.lessonOf(live.project), app.store.home, id)).blur.length > 0) await textRemoval.ensure(app, id);
+};
 textInpaint.watermarks.pending = (id, media, from, to) =>
   watermarkRemoval.piecesOf(id).some((one) => one.media === media && (one.state === "queued" || one.state === "running") && one.from < to && one.to > from) || watermarkRemoval.lookingAtMedia(id, media);
 
