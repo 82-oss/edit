@@ -131,6 +131,32 @@ function ledger(data: string, rev: number, files: Record<string, { key: string; 
 
 const cloudFiles = (): { name: string; key: string }[] => (rows.get(ID)?.files as { name: string; key: string }[] | undefined) ?? [];
 
+// Nov 20, the same Edit: with the ledger's writes gone, the rounds still used 38% of the server's thread, reading
+// 5.3 GB a minute: every round read, parsed and hashed every script's body (126 of them, 381 MB) to find the ones
+// that changed, and every pull read each twice and parsed it twice more.
+test("a script that hasn't been saved since the last round isn't read again, and one that has is", async () => {
+  const body = script({ title: "Read Once" });
+  inCloud(3, body, []);
+  const data = here(body, null);
+  try {
+    await cloud.syncOnceForTests(data);
+    await cloud.syncOnceForTests(data);
+    const before = cloud.bodyReads.count;
+    for (let round = 0; round < 5; round++) await cloud.syncOnceForTests(data);
+    expect(cloud.bodyReads.count - before).toBe(0);
+    // Saved here: the next round reads it, and sends it.
+    const revBefore = Number(rows.get(ID)?.rev);
+    const file = join(store.scriptDir(data, ID), "script.json");
+    fs.writeFileSync(file, JSON.stringify({ ...(JSON.parse(fs.readFileSync(file, "utf8")) as Script), title: "Read Once, Saved", updatedAt: 1 }));
+    await cloud.syncOnceForTests(data);
+    expect(cloud.bodyReads.count - before).toBeGreaterThan(0);
+    expect(Number(rows.get(ID)?.rev)).toBe(revBefore + 1);
+    expect(String(rows.get(ID)?.title)).toBe("Read Once, Saved");
+  } finally {
+    fs.rmSync(data, { recursive: true, force: true });
+  }
+});
+
 // Nov 3, Predator Dad: playback 404'd because a Mac that didn't hold the
 // preview pushed the script, and the commit took the preview out of the
 // cloud's list (then deleted it from R2). The local copy was already gone.

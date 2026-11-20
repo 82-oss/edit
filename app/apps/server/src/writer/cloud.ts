@@ -702,7 +702,7 @@ function inside(dir: string, name: string): string | null {
  * (`edit-shared.json`), are left out (the preview is what another Mac
  * plays), as is a build's state and a commentary's clip footage (each Mac's own).
  */
-function localFiles(dir: string, script: Script): Record<string, Kept> {
+function localFiles(dir: string, script: Pick<Script, "originalPath">): Record<string, Kept> {
   const shared = new Set(readJson<{ file?: unknown }[]>(join(dir, "edit-shared.json"), []).flatMap((entry) => (typeof entry?.file === "string" ? [entry.file] : [])));
   const found: Record<string, Kept> = {};
   const stack = [dir];
@@ -737,8 +737,6 @@ function localFiles(dir: string, script: Script): Record<string, Kept> {
 const sameFiles = (known: Record<string, Kept>, here: Record<string, Kept>): boolean =>
   Object.keys(known).length === Object.keys(here).length && Object.entries(here).every(([name, file]) => known[name]?.size === file.size && known[name]?.mtime === file.mtime);
 
-/** Whether this Mac has changed a script since it last synced it. */
-const changedHere = (dir: string, known: Known | undefined): boolean => known === undefined || known.body !== hash(fs.readFileSync(join(dir, "script.json")));
 
 /** Scripts deleted on another Mac whose version here couldn't be kept yet (`keepDeleted`): left as they are, not pushed, until it is. */
 const unkeptDeletes = new Set<string>();
@@ -768,6 +766,59 @@ function keepDeleted(data: string, id: string, dir: string): void {
 }
 
 /** Parses a script body; null when it can't be read. */
+/**
+ * What a round needs to know of a script's body here, kept for as long as the file is the one it was (inode, size,
+ * mtime in ns): its hash, and the few fields the rounds read. Nov 20, Sphe's Linux Edit: every round, every three
+ * seconds, read, parsed and hashed every script's body to find the ones that changed, and every pull read each twice
+ * and parsed it twice more: 126 scripts, 381 MB of JSON (the largest 12.9 MB), 5.3 GB read a minute and 38% of the
+ * server's one thread, for good, on every Mac that has the team's scripts. Now a script that hasn't been saved since
+ * the last look costs one stat.
+ */
+interface BodyFacts {
+  stamp: string;
+  hash: string;
+  /** Whether it reads as JSON (one that doesn't is passed over by a round, and is neither built nor unfinished). */
+  readable: boolean;
+  status: string;
+  updatedAt: number;
+  originalPath: string;
+  built: boolean;
+  unfinished: boolean;
+}
+const bodies = new Map<string, BodyFacts>();
+/** How many times a script's body was read for its facts (tests: one not saved since isn't read again). */
+export const bodyReads = { count: 0 };
+
+/** The facts of the script body at `path` as it is now; null when there's none. */
+function bodyFacts(path: string): BodyFacts | null {
+  const stamp = ledgerStamp(path);
+  if (stamp === "none") {
+    bodies.delete(path);
+    return null;
+  }
+  const known = bodies.get(path);
+  if (known !== undefined && known.stamp === stamp) return known;
+  let body: Uint8Array;
+  try {
+    body = fs.readFileSync(path);
+    bodyReads.count++;
+  } catch {
+    bodies.delete(path);
+    return null;
+  }
+  const facts: BodyFacts = { stamp, hash: hash(body), readable: false, status: "", updatedAt: 0, originalPath: "", built: builtIn(body), unfinished: unfinished(body) };
+  const script = parsed(body);
+  if (script !== null && typeof script === "object") {
+    facts.readable = true;
+    facts.status = typeof script.status === "string" ? script.status : "";
+    facts.updatedAt = typeof script.updatedAt === "number" ? script.updatedAt : 0;
+    facts.originalPath = typeof script.originalPath === "string" ? script.originalPath : "";
+  }
+  // Kept only for the file it was read from: one saved while it was being read is read again next time.
+  if (ledgerStamp(path) === stamp) bodies.set(path, facts);
+  return facts;
+}
+
 function parsed(body: Uint8Array | null): Script | null {
   if (body === null) return null;
   try {
@@ -1070,6 +1121,23 @@ async function round(data: string, pull: boolean): Promise<number> {
     if (busy(id)) locks.touch(id);
     if (busy(id) || until > Date.now() || archive.archived(data, id) || unkeptDeletes.has(id)) continue;
     const dir = store.scriptDir(data, id);
+    // Its body as last read, for as long as the file is the one it was (`bodyFacts`): read again only once it's saved.
+    const facts = bodyFacts(join(dir, "script.json"));
+    if (facts === null || !facts.readable) continue;
+    if (facts.status === "processing" || Date.now() - facts.updatedAt < settleMs) {
+      waiting++;
+      continue;
+    }
+    const known = ledger.scripts[id];
+    const files = localFiles(dir, facts);
+    // What this Mac's ledger already recorded as the cloud's. The row itself is
+    // read again at the push: a ledger from an older Edit can be at the cloud's
+    // rev and still be missing the preview (Nov 3, Predator Dad).
+    carryCloudFiles(dir, files, known?.files ?? {}, new Set(cleared[id] ?? []));
+    // Its words go now; footage that changed goes up beside the rounds and is named once it's there.
+    footageFirst(data, id, files, known);
+    if (known !== undefined && known.body === facts.hash && sameFiles(known.files, files) && (known.summary ?? 0) >= SUMMARY_VERSION) continue;
+    // Changed: its body is read now, as it is (one saved again since the look is the newer, and is what goes).
     let body: Uint8Array;
     let script: Script;
     try {
@@ -1078,19 +1146,10 @@ async function round(data: string, pull: boolean): Promise<number> {
     } catch {
       continue;
     }
-    if (script.status === "processing" || Date.now() - script.updatedAt < settleMs) {
+    if (script.status === "processing") {
       waiting++;
       continue;
     }
-    const known = ledger.scripts[id];
-    const files = localFiles(dir, script);
-    // What this Mac's ledger already recorded as the cloud's. The row itself is
-    // read again at the push: a ledger from an older Edit can be at the cloud's
-    // rev and still be missing the preview (Nov 3, Predator Dad).
-    carryCloudFiles(dir, files, known?.files ?? {}, new Set(cleared[id] ?? []));
-    // Its words go now; footage that changed goes up beside the rounds and is named once it's there.
-    footageFirst(data, id, files, known);
-    if (known !== undefined && known.body === hash(body) && sameFiles(known.files, files) && (known.summary ?? 0) >= SUMMARY_VERSION) continue;
     changed.push([id, dir, script, body, known, files]);
   }
   let left = changed.length;
@@ -1276,13 +1335,15 @@ async function pullOne(data: string, ledger: Ledger, row: Record<string, unknown
   const known = ledger.scripts[id];
   const title = String(row.title ?? "");
   const bodyPath = join(dir, "script.json");
-  const ours = isFile(bodyPath) ? fs.readFileSync(bodyPath) : null;
+  // This Mac's body by its facts (`bodyFacts`: a stat unless it was saved since the last look); its bytes are read
+  // only once the cloud's revision is being taken (below).
+  const ours = bodyFacts(bodyPath);
   const seen = (theirs: Uint8Array | null | undefined): PullSeen => ({
     deleted: row.deletedAt != null,
     knownRev: known === undefined ? null : known.rev,
     rev,
     // A folder with no body (a pull cut short) has no version here to keep (Nov 4, JJ's Mac: 12,032 copies of one).
-    here: ours === null ? null : { same: theirs != null && hash(ours) === hash(theirs), changed: changedHere(dir, known), built: builtIn(ours), unfinished: unfinished(ours) },
+    here: ours === null ? null : { same: theirs != null && ours.hash === hash(theirs), changed: known === undefined || known.body !== ours.hash, built: ours.built, unfinished: ours.unfinished },
     theirs: theirs === undefined ? undefined : theirs === null ? null : { built: builtIn(theirs) },
     copiedRev: ledger.copied?.[id] ?? null,
   });
@@ -1347,14 +1408,15 @@ async function pullOne(data: string, ledger: Ledger, row: Record<string, unknown
     return;
   }
   if (body === null || decision.do !== "take") return;
-  const atStart = ours === null ? null : hash(ours);
+  const oursNow = isFile(bodyPath) ? fs.readFileSync(bodyPath) : null;
+  const atStart = oursNow === null ? null : hash(oursNow);
   // An import that never finished here (or Writer's copy of one, brought in by Edit) has nothing to keep: theirs
   // replaces it (Oct 31, M's Mac: four stale imports became conflicted copies that showed as stopped imports). This
   // Mac's version is kept once, when the pull is through: a pull that failed after keeping a copy and was tried again
   // kept another every minute (Oct 31, Predator Tutor: 294 copies from Mathias's Mac).
   if (decision.why === "ours-unfinished") diag.warn("writer", `${jobs.named(id, title)}: ${THIS_MACHINE}'s copy is an import that never finished, so rev ${rev} replaces it`);
   // This Mac's version, overtaken: kept in the script's versions once the cloud's is in (below), not as a script of its own.
-  let overtaken = decision.keepOurs ? parsed(ours) : null;
+  let overtaken = decision.keepOurs ? parsed(oursNow) : null;
   // This Mac's "Not synced" versions not pushed yet: the cloud's index coming down doesn't drop them.
   const keptHere = versions.list(dir).filter((version) => version.author === "kept");
   fs.mkdirSync(dir, { recursive: true });
