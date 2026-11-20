@@ -28,7 +28,7 @@ import { Timeline } from "./timeline";
 import { type Picked, ResearchList, Transcript, useSpeakers } from "./transcript";
 import type { BuildStatus, ChatTurn, Clip, Highlight, Research, Script } from "./types";
 import { FOOTAGE_SHORTCUTS, Shortcuts } from "./shortcuts";
-import { BandTip, bandsOf, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
+import { bandsOf, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
 import { Icon, Menu } from "./ui";
 import { MOD, SHIFT_MOD, THE_MACHINE } from "../lib/platform";
 
@@ -1023,18 +1023,12 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
       <ReviewDialog
         open={reviewOpen}
         script={script}
-        notes={review.notes}
         approved={review.approved}
         busy={busy}
         onClose={() => setReviewOpen(false)}
         onChange={onChange}
-        onJob={(job) => {
-          setReviewOpen(false);
-          follow(job.startedAt);
-        }}
         onRefresh={review.refresh}
       />
-      <BandTip notes={review.notes} />
       <DocsDialog
         open={docsOpen}
         script={script}

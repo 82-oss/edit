@@ -22,6 +22,8 @@ export interface AgentEntry {
   status?: "running" | "done" | "failed" | "stopped";
   /** Tool arguments (JSON) for the expanded view. */
   detail?: string;
+  /** A tool's title as its own chat names it (the script chat's: writer/chat/turn.ts), over what Edit would make of it. */
+  title?: string;
   at?: number;
   updated?: number;
   /** A person's message: the files attached to it (the server's chat_attachments.ts), shown above it. */

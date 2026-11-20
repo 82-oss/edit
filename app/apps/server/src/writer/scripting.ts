@@ -31,7 +31,10 @@ import { clock, ensureIds } from "./paragraphs.ts";
 import { compile, isTaught, type Plan } from "./plan.ts";
 import * as research from "./research.ts";
 import * as reuse from "./reuse.ts";
-import { revise } from "./revise.ts";
+import { revise, type Tools } from "./revise.ts";
+import * as fixing from "./fixing.ts";
+import * as reviews from "./reviews.ts";
+import * as turnTools from "./turn_tools.ts";
 import * as stamp from "./stamp.ts";
 import * as store from "./store.ts";
 import { keepPeaks, readPeaks } from "./tidy.ts";
@@ -273,7 +276,7 @@ export async function buildAndReview(app: App, data: string, id: string, note: s
   job.stage("Reading it with fresh eyes");
   try {
     const built = store.read(store.scriptDir(data, id));
-    const [again, more] = await reviseWith(data, id, freshEyesRequest(built.kind === "courtroom", isTaught(built)), "Fresh eyes: the final read.", { selected: [], picked: null, playheadMs: null }, true, job);
+    const [again, more] = await reviseWith(data, id, freshEyesRequest(built.kind === "courtroom", isTaught(built)), "Fresh eyes: the final read.", { selected: [], picked: null, playheadMs: null }, true, job, { given: null, tools: false });
     return [`${report}\n\nFresh eyes: ${again}`, cost + more];
   } catch (error) {
     checkStopped(job);
@@ -361,77 +364,114 @@ async function cutExactly(app: App, data: string, dir: string, script: Script, p
   return [cut.filter((_, index) => !silent.has(index)), exact.said(heard, silent.size)];
 }
 
-/** Claude revises a built script on the producer's request (`said` is what the chat shows of it); `direct` (a fix from a review) writes saved narration straight in rather than proposing it. */
-export async function reviseWith(data: string, id: string, request: string, said: string, focus: Focus, direct: boolean, job: Job): Promise<Outcome> {
+/**
+ * A turn with the chat's tools (turn_tools.ts): `work` gets their address and
+ * whether it has taken review notes (its fixes for them are written straight
+ * in). The notes it pulled are settled on the review after it saves; a turn
+ * that fails or starts over lets them go, unfixed.
+ */
+async function withTools<T extends Outcome>(data: string, id: string, turn: fixing.Turn | undefined, work: (tools: Tools | undefined, settle: (before: Script, feedback: fixing.Feedback[]) => Promise<string>) => Promise<T>): Promise<T> {
+  // A pass of Edit's own (the fresh read) works from what it has.
+  if (turn?.tools === false) return work(undefined, async () => "");
+  const [token, url, session] = turnTools.open(data, id, turn?.given ?? null);
+  let settled = false;
+  const settle = async (before: Script, feedback: fixing.Feedback[]): Promise<string> => {
+    settled = true;
+    if (session.pulled.size === 0) return "";
+    const done = await fixing.settle(data, id, before, store.read(store.scriptDir(data, id)), [...session.pulled.values()], feedback);
+    if (turn) turn.settled = done;
+    const open = done.lines.filter((line) => line.startsWith("Left "));
+    return open.length === 0 ? "" : `\n\n${open.length === 1 ? "One note is still open on the review" : `${open.length} notes are still open on the review`}, with why under ${open.length === 1 ? "it" : "each"}.`;
+  };
+  try {
+    return await work({ url, pulled: () => session.pulled.size > 0 }, settle);
+  } finally {
+    turnTools.close(token);
+    if (!settled && session.pulled.size > 0) {
+      const ids = [...session.pulled.keys()];
+      await reviews.release(ids).catch((error: unknown) => diag.warn("writer", `${id}: letting go of ${ids.length} review notes after the turn: ${diag.messageOf(error)}`));
+    }
+  }
+}
+
+/** Claude revises a built script on the producer's request (`said` is what the chat shows of it); `direct` (a fix from a review) writes saved narration straight in rather than proposing it. `turn`: the review notes a Ready for changes took for it. */
+export async function reviseWith(data: string, id: string, request: string, said: string, focus: Focus, direct: boolean, job: Job, turn?: fixing.Turn): Promise<Outcome> {
   const dir = store.scriptDir(data, id);
   let script = store.read(dir);
-  if (script.commentary) return reviseCommentary(data, dir, script, request, said, job);
+  if (script.commentary) return reviseCommentary(data, dir, script, request, said, job, turn);
   if (!script.clips.some((clip) => clip.kind === "cut-in")) throw new Error("Build the script first; then ask for changes.");
   const earlier = chat.recent(dir);
   chat.asked(dir, said, job.resumed);
   script = await pickReused(dir, script, job);
   const peaks = await peaksOf(dir, script, job.signal);
   const found = casefiles.withDocuments(dir, research.load(dir) ?? { articles: [], queries: [], at: 0 });
-  let done: Awaited<ReturnType<typeof revise>>;
-  try {
-    done = await revise(script, withMissing(request, script), focus, earlier, found, peaks, direct, job.signal);
-  } catch (error) {
-    failed(dir, job, error);
-  }
-  checkStopped(job);
-  const noted = await lessonNote.keep(script, done.lesson, data);
-  // Starting over waits for the producer to confirm it in the chat.
-  if (done.startOver) {
-    chat.askReset(dir, done.answer + noted, done.costUsd);
-    return [done.answer + noted, done.costUsd];
-  }
-  // Edits made by hand while Claude worked would be lost: ask again instead.
-  const now = store.read(dir);
-  if (now.revision !== script.revision) failed(dir, job, new Error(CHANGED));
-  const before = structuredClone(now);
-  const answer = done.answer;
-  const clips = done.clips;
-  try {
-    now.clips = checkClips(clips, now.durationMs);
-  } catch (error) {
-    failed(dir, job, new Error(`Claude's edits left the timeline unusable (${diag.messageOf(error)}), so nothing was applied. Ask again.`));
-  }
-  now.corrections = done.corrections;
-  now.proposals = done.proposals;
-  // Footage a revision brings in gets the editor's mute notes too (loop 7: the fresh read's new clips had none).
-  house.withMuteNotes(now);
-  save(dir, before, now);
-  chat.add(dir, "editor", answer + noted, done.costUsd);
-  // Footage it brought in is heard exactly after it's done, its cuts moved onto those times a moment later (exact_after.ts).
-  hearSoon(data, id);
-  return [answer + noted, done.costUsd];
+  return withTools(data, id, turn, async (tools, settle) => {
+    let done: Awaited<ReturnType<typeof revise>>;
+    try {
+      done = await revise(script, withMissing(request, script), focus, earlier, found, peaks, direct, job.signal, tools);
+    } catch (error) {
+      failed(dir, job, error);
+    }
+    checkStopped(job);
+    const noted = await lessonNote.keep(script, done.lesson, data);
+    // Starting over waits for the producer to confirm it in the chat.
+    if (done.startOver) {
+      chat.askReset(dir, done.answer + noted, done.costUsd);
+      return [done.answer + noted, done.costUsd];
+    }
+    // Edits made by hand while Claude worked would be lost: ask again instead.
+    const now = store.read(dir);
+    if (now.revision !== script.revision) failed(dir, job, new Error(CHANGED));
+    const before = structuredClone(now);
+    const clips = done.clips;
+    try {
+      now.clips = checkClips(clips, now.durationMs);
+    } catch (error) {
+      failed(dir, job, new Error(`Claude's edits left the timeline unusable (${diag.messageOf(error)}), so nothing was applied. Ask again.`));
+    }
+    now.corrections = done.corrections;
+    now.proposals = done.proposals;
+    // Footage a revision brings in gets the editor's mute notes too (loop 7: the fresh read's new clips had none).
+    house.withMuteNotes(now);
+    save(dir, before, now);
+    const open = await settle(before, done.feedback);
+    const answer = done.answer + noted + open;
+    chat.add(dir, "editor", answer, done.costUsd);
+    // Footage it brought in is heard exactly after it's done, its cuts moved onto those times a moment later (exact_after.ts).
+    hearSoon(data, id);
+    return [answer, done.costUsd];
+  });
 }
 
 /** A change to a written commentary: Opus edits the paragraphs the request is about and nothing else, written straight in (undo and the versions bring back what was there). */
-export async function reviseCommentary(data: string, dir: string, given: Script, request: string, said: string, job: Job): Promise<Outcome> {
+export async function reviseCommentary(data: string, dir: string, given: Script, request: string, said: string, job: Job, turn?: fixing.Turn): Promise<Outcome> {
   // Edits name paragraphs by id: a script never shared gets them now.
   const script = structuredClone(given);
   if (script.commentary?.draft && ensureIds(script.commentary.draft)) store.write(dir, script);
   chat.asked(dir, said, job.resumed);
-  let done: commentary.Revised;
-  try {
-    done = await commentary.revise(dir, script, request, lessonsText(data), job.signal);
-  } catch (error) {
-    failed(dir, job, error);
-  }
-  checkStopped(job);
-  const noted = await lessonNote.keep(script, done.lesson, data);
-  if (done.startOver) {
-    chat.askReset(dir, done.answer + noted, done.costUsd);
-    return [done.answer + noted, done.costUsd];
-  }
-  const now = store.read(dir);
-  if (now.revision !== script.revision) failed(dir, job, new Error(CHANGED));
-  if (now.commentary && JSON.stringify(now.commentary.draft) !== JSON.stringify(done.draft)) {
+  return withTools(data, script.id, turn, async (tools, settle) => {
+    let done: commentary.Revised;
+    try {
+      done = await commentary.revise(dir, script, request, lessonsText(data), job.signal, tools);
+    } catch (error) {
+      failed(dir, job, error);
+    }
+    checkStopped(job);
+    const noted = await lessonNote.keep(script, done.lesson, data);
+    if (done.startOver) {
+      chat.askReset(dir, done.answer + noted, done.costUsd);
+      return [done.answer + noted, done.costUsd];
+    }
+    const now = store.read(dir);
+    if (now.revision !== script.revision) failed(dir, job, new Error(CHANGED));
     const before = structuredClone(now);
-    now.commentary.draft = done.draft;
-    save(dir, before, now);
-  }
-  chat.add(dir, "editor", done.answer + noted, done.costUsd);
-  return [done.answer + noted, done.costUsd];
+    if (now.commentary && JSON.stringify(now.commentary.draft) !== JSON.stringify(done.draft)) {
+      now.commentary.draft = done.draft;
+      save(dir, before, now);
+    }
+    const open = await settle(before, done.feedback);
+    const answer = done.answer + noted + open;
+    chat.add(dir, "editor", answer, done.costUsd);
+    return [answer, done.costUsd];
+  });
 }

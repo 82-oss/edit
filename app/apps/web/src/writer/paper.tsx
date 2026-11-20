@@ -1,6 +1,6 @@
 import { type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { hoverNote, openNote } from "./comments";
-import { type Band, showTip } from "./review";
+import { openNote } from "./comments";
+import { type Band } from "./review";
 import { Icon, Select } from "./ui";
 
 /** A sheet as Docs lays out the export, at 96 dpi with one-inch margins. */
@@ -282,23 +282,6 @@ export function Grow({
           // Tabbed to: typing starts at its end.
           if (!disabled && event.target === event.currentTarget && !event.currentTarget.matches(":active")) setEditing(true);
         }}
-        onPointerMove={
-          banded
-            ? (event) => {
-                const ids = markAt(event.clientX, event.clientY);
-                showTip(ids.length ? { ids, x: event.clientX, y: event.clientY } : null);
-                hoverNote(ids[0] ?? null);
-              }
-            : undefined
-        }
-        onPointerLeave={
-          banded
-            ? () => {
-                showTip(null);
-                hoverNote(null);
-              }
-            : undefined
-        }
         onMouseUp={(event) => {
           const node = event.currentTarget;
           const selection = window.getSelection();
@@ -339,23 +322,6 @@ export function Grow({
         if (text !== value) onCommit(text);
         setEditing(false);
       }}
-      onPointerMove={
-        banded
-          ? (event) => {
-              const ids = markAt(event.clientX, event.clientY);
-              showTip(ids.length ? { ids, x: event.clientX, y: event.clientY } : null);
-              hoverNote(ids[0] ?? null);
-            }
-          : undefined
-      }
-      onPointerLeave={
-        banded
-          ? () => {
-              showTip(null);
-              hoverNote(null);
-            }
-          : undefined
-      }
       onMouseUp={(event) => {
         const node = event.currentTarget;
         if (node.selectionStart !== node.selectionEnd) return picked(node);
@@ -395,7 +361,7 @@ export function Grow({
   }
   if (!banded || !bands) return textarea;
   return (
-    <div className="grow-banded" data-band-text>
+    <div className="grow-banded">
       <div className="grow-mirror" ref={mirror} aria-hidden="true">
         {marked(text, bands)}
         {"\u200b"}

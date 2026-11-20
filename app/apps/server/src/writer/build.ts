@@ -461,7 +461,7 @@ let port = 7700;
 
 /** One Opus turn on a draft's tools, asked twice more (20 s, then a minute later) when it failed before any tool call: Claude busy, or the connection lost for a moment. */
 async function ask(system: string, prompt: string, token: string, effort: claude.Question["effort"] | null, maxTurns: number, label: string, signal?: AbortSignal, resume: string | null = null): Promise<claude.Answer> {
-  const question: claude.Question = { model: claude.OPUS, system, prompt, tools: `http://127.0.0.1:${port}/mcp/writer/${token}`, maxTurns, label, ...(effort ? { effort } : {}), ...(signal ? { signal } : {}), ...(resume ? { resume } : {}) };
+  const question: claude.Question = { model: claude.OPUS, system, prompt, tools: toolsAddress(`/mcp/writer/${token}`), maxTurns, label, ...(effort ? { effort } : {}), ...(signal ? { signal } : {}), ...(resume ? { resume } : {}) };
   for (const wait of [20_000, 60_000, null]) {
     try {
       return await claude.ask(question);
@@ -837,6 +837,9 @@ export function routes(router: Router<App>): void {
 export function usePort(given: number): void {
   port = given;
 }
+
+/** An address on Edit's own server for a question's tools (this file's, turn_tools.ts's). */
+export const toolsAddress = (path: string): string => `http://127.0.0.1:${port}${path}`;
 
 function answerTo(token: string, message: unknown): unknown {
   if (typeof message !== "object" || message === null) return null;

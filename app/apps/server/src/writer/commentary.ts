@@ -24,7 +24,10 @@ import { cites as citesOf, clock, draftWords, ensureIds, findIn, liveMarks, minu
 import { pageTitle, paragraphs as pageText } from "./research.ts";
 import { editNote } from "./revise.ts";
 import { MAX_SOURCE_BYTES, MAX_SOURCES, putText, readText, removeText } from "./sources.ts";
+import { FEEDBACK_SCHEMA, feedbackOf, type Feedback } from "./fixing.ts";
 import { LESSON_RULE, LESSON_SCHEMA, lessonOf } from "./lesson_note.ts";
+import type { Tools } from "./revise.ts";
+import { TOOLS_NOTE } from "./turn_tools.ts";
 import * as spelling from "./spelling.ts";
 import * as store from "./store.ts";
 
@@ -739,9 +742,11 @@ export interface Revised {
   startOver: boolean;
   /** A lasting lesson the request carried, for the team's inbox (lesson_note.ts), or null. */
   lesson: Record<string, unknown> | null;
+  /** What it did for each review note it pulled (turn_tools.ts), by id. */
+  feedback: Feedback[];
 }
 
-const REVISE_NOTE = "THIS TURN IS A REVISION, NOT A NEW SCRIPT. The script is written; the producer asks for a change to it. Instead of the whole script, answer ONCE with the edits that carry the change out, in order, and a short reply. Paragraphs are named by their IDs in THE SCRIPT. Change only what is asked: every paragraph, clip, heading and note that no edit names stays exactly as it is, and a paragraph you rewrite keeps every word the request doesn't touch. New clips follow the build's rules: copied from a source and checked against it. The edits:\n- {\"op\":\"replace\",\"id\":\"p1a2b3c4d\",\"paragraph\":{\"pieces\":[…],\"notes\":[…],\"quotes\":[…]}}: the paragraph's new content, pieces in reading order, its notes and quote pop-ups included if it keeps them.\n- {\"op\":\"insert_after\",\"id\":\"p1a2b3c4d\",\"paragraph\":{…}} (or \"insert_before\"): a new paragraph next to that one.\n- {\"op\":\"delete\",\"id\":\"p1a2b3c4d\"}: take the paragraph out.\n- {\"op\":\"heading\",\"id\":\"p1a2b3c4d\",\"heading\":\"2. The Lawsuit\"}: rename the section that paragraph is in.\n- {\"op\":\"note\",\"id\":\"p1a2b3c4d\",\"note\":\"edit: a blue waveform under this call\",\"on\":\"the call came in at 2 a.m.\"}: add a note for the video editor to the paragraph, only when asked for one. It starts \"edit:\" and says what to do in that section; the editor follows it over their usual plan. on is the paragraph's words it goes under, copied exactly.\n- {\"op\":\"montage\",\"open\":[…]}: every clip of the montage, when the change is to the montage.\nA request that needs no change, or that you can't carry out from the sources, gets no edits and a reply that says why. START OVER: only when the producer asks to start the script over, rebuild it from scratch or throw it away, set startOver to true and send no edits. Nothing is cleared until the producer confirms it in the app; the transcript, speakers, sources and research stay. The reply says you have asked them to confirm. Never set it otherwise. The reply is for the producer: one to three short sentences on what you changed.";
+const REVISE_NOTE = "THIS TURN IS A REVISION, NOT A NEW SCRIPT. The script is written; the producer asks for a change to it. Instead of the whole script, answer ONCE with the edits that carry the change out, in order, and a short reply. Paragraphs are named by their IDs in THE SCRIPT. Change only what is asked: every paragraph, clip, heading and note that no edit names stays exactly as it is, and a paragraph you rewrite keeps every word the request doesn't touch. New clips follow the build's rules: copied from a source and checked against it. The edits:\n- {\"op\":\"replace\",\"id\":\"p1a2b3c4d\",\"paragraph\":{\"pieces\":[…],\"notes\":[…],\"quotes\":[…]}}: the paragraph's new content, pieces in reading order, its notes and quote pop-ups included if it keeps them.\n- {\"op\":\"insert_after\",\"id\":\"p1a2b3c4d\",\"paragraph\":{…}} (or \"insert_before\"): a new paragraph next to that one.\n- {\"op\":\"delete\",\"id\":\"p1a2b3c4d\"}: take the paragraph out.\n- {\"op\":\"heading\",\"id\":\"p1a2b3c4d\",\"heading\":\"2. The Lawsuit\"}: rename the section that paragraph is in.\n- {\"op\":\"note\",\"id\":\"p1a2b3c4d\",\"note\":\"edit: a blue waveform under this call\",\"on\":\"the call came in at 2 a.m.\"}: add a note for the video editor to the paragraph, only when asked for one (a reviewer asking for pictures or assets is: TOOLS). It starts \"edit:\" and says what to do in that section; the editor follows it over their usual plan. on is the paragraph's words it goes under, copied exactly.\n- {\"op\":\"montage\",\"open\":[…]}: every clip of the montage, when the change is to the montage.\nA request that needs no change, or that you can't carry out from the sources, gets no edits and a reply that says why. START OVER: only when the producer asks to start the script over, rebuild it from scratch or throw it away, set startOver to true and send no edits. Nothing is cleared until the producer confirms it in the app; the transcript, speakers, sources and research stay. The reply says you have asked them to confirm. Never set it otherwise. The reply is for the producer: one to three short sentences on what you changed.";
 
 const REVISE_SCHEMA = {
   type: "object",
@@ -749,7 +754,7 @@ const REVISE_SCHEMA = {
   properties: {
     edits: {
       type: "array",
-      maxItems: 60,
+      maxItems: 120,
       items: {
         type: "object",
         additionalProperties: false,
@@ -768,19 +773,20 @@ const REVISE_SCHEMA = {
     answer: { type: "string" },
     startOver: { type: "boolean" },
     lesson: LESSON_SCHEMA,
+    feedback: FEEDBACK_SCHEMA,
   },
   required: ["edits", "answer"],
 };
 
 /** Opus carries out one request on a written script with edits to named paragraphs, so nothing it doesn't name can change; up to two repair turns. */
-export async function revise(dir: string, script: Script, request: string, lessons: string, signal?: AbortSignal): Promise<Revised> {
+export async function revise(dir: string, script: Script, request: string, lessons: string, signal?: AbortSignal, tools?: Tools): Promise<Revised> {
   const commentary = commentaryOf(script);
   const draft = commentary.draft;
   if (!draft) throw new Error("There's no script to change yet. Write it first.");
   const sources = sourcesOf(dir, script);
   let system = systemPrompt(script.title, commentary.pacing ?? "channel");
   if (lessons.trim() !== "") system += `\n\nLESSONS FROM PAST REVIEWS (follow them as you follow the guide)\n${lessons.trim()}`;
-  system += `\n\n${REVISE_NOTE}\n${LESSON_RULE}`;
+  system += `\n\n${REVISE_NOTE}\n${TOOLS_NOTE}\n${LESSON_RULE}`;
   if (script.channel) {
     await lanes.refresh();
     system += lanes.section(script.channel, "script", "lesson");
@@ -793,7 +799,7 @@ export async function revise(dir: string, script: Script, request: string, lesso
   const pick = claude.revision();
   const ask = async (text: string, resume: string | null) => {
     try {
-      return await claude.askPatiently({ model: pick.model, effort: pick.effort, system, prompt: text, schema: REVISE_SCHEMA, label: `${pick.label} revising a commentary${resume ? " (repair turn)" : ""}`, ...(resume ? { resume } : {}), ...(signal ? { signal } : {}) });
+      return await claude.askPatiently({ model: pick.model, effort: pick.effort, system, prompt: text, schema: REVISE_SCHEMA, label: `${pick.label} revising a commentary${resume ? " (repair turn)" : ""}`, ...(tools ? { tools: tools.url } : {}), ...(resume ? { resume } : {}), ...(signal ? { signal } : {}) });
     } catch (error) {
       throw tooLong(error);
     }
@@ -805,13 +811,13 @@ export async function revise(dir: string, script: Script, request: string, lesso
     let refusal: string;
     if (plan !== null && plan.startOver === true) {
       const answer = [...(typeof plan.answer === "string" ? plan.answer.trim() : "")].slice(0, 2_000).join("");
-      return { draft, answer: answer === "" ? "Start the script over? Confirm it below." : answer, costUsd: cost, startOver: true, lesson: lessonOf(plan) };
+      return { draft, answer: answer === "" ? "Start the script over? Confirm it below." : answer, costUsd: cost, startOver: true, lesson: lessonOf(plan), feedback: [] };
     }
     if (plan !== null) {
       try {
         const next = applyEdits(draft, Array.isArray(plan.edits) ? (plan.edits as Record<string, unknown>[]) : [], corpus);
         const answer = [...(typeof plan.answer === "string" ? plan.answer.trim() : "")].slice(0, 2_000).join("");
-        return { draft: next, answer: answer === "" ? "Done." : answer, costUsd: cost, startOver: false, lesson: lessonOf(plan) };
+        return { draft: next, answer: answer === "" ? "Done." : answer, costUsd: cost, startOver: false, lesson: lessonOf(plan), feedback: feedbackOf(plan) };
       } catch (error) {
         refusal = `The app refused your edits: ${error instanceof Error ? error.message : String(error)} Nothing was saved. Send the complete corrected answer, every edit again in order.`;
       }

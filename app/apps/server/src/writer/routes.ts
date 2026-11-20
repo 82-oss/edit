@@ -15,6 +15,7 @@ import { readJson, type RouteContext, type Router } from "../http/router.ts";
 import { isFile, join } from "../paths.ts";
 import { creator } from "../accounts.ts";
 import * as build from "./build.ts";
+import * as turnTools from "./turn_tools.ts";
 import * as can from "./can.ts";
 import * as chat from "./chat.ts";
 import * as cloud from "./cloud.ts";
@@ -441,19 +442,6 @@ export function routes(router: Router<App>): void {
         return reviewState(data, id(context));
       });
     })
-    // Fixes a script's open notes now, by hand: on any computer, not only the fixing one.
-    .post("/api/writer/scripts/{id}/review/fix", (context) =>
-      answer(() => {
-        const data = dataOf(context.app);
-        checkFor(data, id(context));
-        const approved = reviews.approval(data, id(context));
-        if (approved !== null) throw new Error(`v${approved.version} is approved, so its notes aren't fixed. Take the approval back to fix them.`);
-        const notes = reviews.openNotes(data, id(context));
-        if (notes.length === 0) throw new Error("No notes are open.");
-        reviews.markTried(data, notes);
-        return startJob(context.app, id(context), { kind: "review", notes, ready: null });
-      }),
-    )
     .get("/api/writer/scripts/{id}/review/fix", (context) =>
       answer(() => {
         checkFor(dataOf(context.app), id(context));
@@ -820,6 +808,8 @@ export function routes(router: Router<App>): void {
     });
   // Claude's tools while it builds a script in steps (build.ts), on this server.
   build.routes(router);
+  // Its tools while it carries out a request in the chat (turn_tools.ts).
+  turnTools.routes(router);
 }
 
 /** A script's review as the page shows it: its notes, its blocks as shared, its approval. */

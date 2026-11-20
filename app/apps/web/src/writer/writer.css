@@ -1135,7 +1135,7 @@
 .writer-root .count-badge { flex: none; display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 7px; border-radius: 999px; background: var(--accent-soft); color: var(--text); font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .writer-root .review-button { gap: 6px; }
 .writer-root .share-stack { display: flex; flex-direction: column; gap: 8px; }
-.writer-root .share-stack .review-flags, .writer-root .share-stack .review-approved, .writer-root .share-stack .review-auto { margin: 0; }
+.writer-root .share-stack .review-flags, .writer-root .share-stack .review-approved { margin: 0; }
 .writer-root .share-card, .writer-root .share-row { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .writer-root .share-url { display: flex; align-items: center; gap: 10px; padding: 10px 12px; }
 .writer-root .share-url > svg { flex: none; color: var(--muted); }
@@ -1157,7 +1157,6 @@
 .writer-root .share-row .share-copy a { color: var(--text); font-size: 12px; text-decoration: none; }
 .writer-root .share-row .share-copy a:hover { text-decoration: underline; }
 .writer-root .share-row button { flex: none; }
-.writer-root .review-auto { margin: 12px 0 4px; align-items: flex-start; line-height: 1.4; }
 /* Bands on the page: green where a fix changed the script, orange on an open note's words. */
 .writer-root .grow-banded { position: relative; }
 .writer-root .grow-banded > textarea { position: relative; background: transparent !important; }
@@ -1169,12 +1168,6 @@
 .writer-root [data-band] { border-radius: 2px; background: color-mix(in srgb, #2fbf71 22%, transparent); box-shadow: 0 0 0 2px color-mix(in srgb, #2fbf71 22%, transparent); }
 /* A comment's words: soft yellow at rest, as the review page marks them; brighter when lit (comments.tsx LitStyle). */
 .writer-root [data-band][data-band-kind="open"] { background: #fdf1c7; box-shadow: 0 0 0 2px #fdf1c7; }
-.writer-root .band-tip { position: fixed; z-index: 60; width: 320px; display: flex; flex-direction: column; gap: 10px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 24px #0008; font-size: 12.5px; pointer-events: none; }
-.writer-root .band-tip-note { display: flex; flex-direction: column; gap: 3px; }
-.writer-root .band-tip-head { display: flex; justify-content: space-between; gap: 8px; }
-.writer-root .band-tip-head .faint { font-size: 11.5px; }
-.writer-root .band-tip q { color: var(--text); }
-.writer-root .band-tip-fix { color: var(--text-2); }
 /* An approved review: done, the link closed to notes. */
 .writer-root .review-approved { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 4px; padding: 8px 10px; border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent); border-radius: 8px; color: var(--text); line-height: 1.45; }
 .writer-root .review-approved svg { flex: none; margin-top: 2px; color: var(--ok); }

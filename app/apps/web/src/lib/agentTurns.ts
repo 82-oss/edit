@@ -330,6 +330,7 @@ export function agentSpot(entries: readonly AgentEntry[], project: Project | nul
 
 /** A short, human title for one call. */
 export function callTitle(entry: AgentEntry): string {
+  if (entry.title) return entry.title;
   if (entry.tool !== undefined && SCRIPT_TOOLS.has(entry.tool) && entry.text) return entry.text;
   // Claude Code's Read is a picture to the thumbnail agent; a file of code to Edit V2's.
   const thumb = entry.tool !== undefined && !(entry.tool === "Read" && readsCode(entry)) ? THUMB_TOOLS[entry.tool] : undefined;

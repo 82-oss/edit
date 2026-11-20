@@ -1557,7 +1557,7 @@
     }
   },
   {
-    "description": "The feedback to fix, for the user's \"implement the new feedback\". Two kinds: the team's own notes left in Edit at the playhead ([app:id]: their moment now, the clip there, a box drawn on the picture), and the review's open notes from Repack (feedback.spheceo.com), when Edit hasn't handed them to you ([id], as Ready for changes gives them). Load the feedback skill, fix them, and call feedback_done / feedback_unfixed / feedback_answer after each, with the id as given. When your turn ends, a review's fixes are exported and shared on it as the next version; the team's own notes share nothing, and any you didn't answer go back in their queue.",
+    "description": "The feedback to fix: call it first whenever the user mentions feedback, notes, comments or the review, in any words (\"do you see any feedback?\", \"apply the feedback\", \"implement the new feedback\"). Two kinds: the team's own notes left in Edit at the playhead ([app:id]: their moment now, the clip there, a box drawn on the picture), and the review's open notes from Repack (feedback.spheceo.com), when Edit hasn't handed them to you ([id], as Ready for changes gives them). Load the feedback skill, fix them, and call feedback_done / feedback_unfixed / feedback_answer after each, with the id as given. When your turn ends, a review's fixes are exported and shared on it as the next version; the team's own notes share nothing, and any you didn't answer go back in their queue.",
     "inputSchema": {
       "properties": {
         "again": {

@@ -6,7 +6,7 @@ import * as path from "node:path";
 import type { Clip, Script } from "@edit/types/writer";
 
 import { blocksOf, outline, targetMs, type Block } from "../../src/writer/blocks.ts";
-import { acted, editorNote, intentOf, outside, paragraphId, placeName, replaceId, rules, suggested } from "../../src/writer/fixing.ts";
+import { acted, editorNote, intentOf, paragraphId, placeName, replaceId, rules, suggested } from "../../src/writer/fixing.ts";
 import { isSuggestion, type Note } from "../../src/writer/reviews.ts";
 
 function script(): Script {
@@ -89,17 +89,10 @@ test("a note for the editor goes on the words it's about, as written", () => {
   expect(blocksOf(again).find((block) => block.id === "n1")).toMatchObject({ editNotes: ["edit: zoom in"], editMarks: [{ note: 0, start: 10, end: 25, quote: "he was home all" }] });
 });
 
-test("intents limit what a fix may change", () => {
+test("a note's kind says what a fix may change", () => {
   expect(intentOf(note({ intent: "for_editor" }))).toBe("editor");
   expect(intentOf(note({ intent: "FYI/praise" }))).toBe("fyi");
-  const before = script();
-  const trimmed = structuredClone(before);
-  trimmed.clips[0]!.endMs = 3_000;
-  expect(outside("wording", before, trimmed)).not.toBeNull();
-  expect(outside("cut", before, trimmed)).toBeNull();
-  const reworded = structuredClone(before);
-  reworded.clips[1]!.narration = "He said so.";
-  expect(outside("cut", before, reworded)).not.toBeNull();
+  expect(rules("wording", note({}))).toContain("change narration only");
   expect(rules("question", note({}))).toContain("Make no edits");
 });
 
