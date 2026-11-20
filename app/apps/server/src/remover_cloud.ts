@@ -11,7 +11,7 @@ import * as diag from "./diag.ts";
 import type { Media } from "./model.ts";
 import type { Box, WatermarkPiece, WatermarkRemoved } from "./native/index.ts";
 import * as relay from "./relay.ts";
-import type { Sample, TrackPlan } from "./text_track.ts";
+import { CHUNK, type Sample, type TrackPlan } from "./text_track.ts";
 
 /** The relay's `remover` flag, asked at most once a minute; the last answer meanwhile. */
 const remote = { on: false, at: 0, relay: "", asking: null as Promise<boolean> | null, forced: null as boolean | null };
@@ -184,12 +184,33 @@ export function watermarkEngine(key: string) {
 // ---------------------------------------------------------------------------
 // The blur's tracks
 
-/** text_blur's track of a file on R2 over source seconds [from, to), read on a rented CPU machine (text_track.ts there). */
+/**
+ * Longest stretch one rented machine reads at a time: a long file's track is read in parts, several machines at once,
+ * and a part that fails is read again alone (Nov 20: SMART Cops' 1,295 s file read as one job for 25 minutes, then
+ * failed "could not decode" near its end, and the whole case's blur with it). A whole number of text_track's chunks.
+ */
+export const TRACK_PART_S = 16 * CHUNK;
+
+/** text_blur's track of a file on R2 over source seconds [from, to), read on rented CPU machines (text_track.ts there). */
 export async function track(key: string, size: [number, number], fps: number, region: Box, plan: TrackPlan, from: number, to: number): Promise<Sample[]> {
-  const job = await start("track", { input: key, size, fps, region, plan: { band: plan.band, labels: plan.labels, avoid: plan.avoid, subtitles: plan.subtitles, text: plan.text }, from, to });
-  const answer = await wait<{ ok: boolean; error?: string }>(job);
-  if (!answer.ok) throw new Error(answer.error ?? "their words couldn't be read");
-  const samples = JSON.parse(await take(job.out)) as Sample[];
-  diag.info("removal", `track ${from.toFixed(1)}–${to.toFixed(1)} s read on a rented machine (${samples.length} reads)`);
+  const parts: [number, number][] = [];
+  for (let at = from; at < to - 1e-6; at += TRACK_PART_S) parts.push([at, Math.min(to, at + TRACK_PART_S)]);
+  const read = async ([a, b]: [number, number]): Promise<Sample[]> => {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const job = await start("track", { input: key, size, fps, region, plan: { band: plan.band, labels: plan.labels, avoid: plan.avoid, subtitles: plan.subtitles, text: plan.text }, from: a, to: b });
+        const answer = await wait<{ ok: boolean; error?: string }>(job);
+        if (!answer.ok) throw new Error(answer.error ?? "their words couldn't be read");
+        return JSON.parse(await take(job.out)) as Sample[];
+      } catch (error) {
+        if (attempt >= 2) throw error;
+        diag.warn("removal", `track ${a.toFixed(1)}–${b.toFixed(1)} s on a rented machine: ${diag.messageOf(error)}; read again`);
+      }
+    }
+  };
+  // In time order, a moment two parts both read (their shared edge) once.
+  const samples = (await Promise.all(parts.map(read))).flat().sort((x, y) => x.t - y.t);
+  for (let at = samples.length - 1; at > 0; at--) if (samples[at]!.t === samples[at - 1]!.t) samples.splice(at, 1);
+  diag.info("removal", `track ${from.toFixed(1)}–${to.toFixed(1)} s read on rented machines in ${parts.length} part${parts.length === 1 ? "" : "s"} (${samples.length} reads)`);
   return samples;
 }
