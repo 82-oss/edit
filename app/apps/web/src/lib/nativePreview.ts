@@ -46,7 +46,8 @@ const call = async (command: string, args?: Record<string, unknown>): Promise<un
   const run = invoke();
   if (run === null) throw new Error("not in Edit.app");
   const ms = SLOW.has(command) ? nativeTiming.slowMs : nativeTiming.quickMs;
-  return bounded(Promise.resolve().then(() => run(command, args)), ms, () => new NativeTimeout(`the window didn't answer ${command} in ${ms / 1000} s`));
+  // Asked now, in this same turn (a jump's frame is asked at once, a close as the player is let go), then bounded.
+  return bounded(Promise.resolve(run(command, args)), ms, () => new NativeTimeout(`the window didn't answer ${command} in ${ms / 1000} s`));
 };
 
 /**

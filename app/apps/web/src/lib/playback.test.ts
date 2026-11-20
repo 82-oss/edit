@@ -891,7 +891,8 @@ describe("preview seeks and lifetime", () => {
     // Playing as far as the person can see, the window not yet asked, a spinner on its way.
     expect(playhead.playing).toBe(true);
     expect(sent("preview_play")).toEqual([]);
-    expect(nativeApi.warmPlayback).toHaveBeenLastCalledWith("p1", 10, true);
+    // Said as a play that's held: the footage it waits for keeps coming as at rest (Nov 20: a hold stopped it).
+    expect(nativeApi.warmPlayback).toHaveBeenLastCalledWith("p1", 10, true, true);
     await new Promise((resolve) => setTimeout(resolve, 650));
     expect(preview.buffering).toBe(true);
     // In: played from there, the spinner gone.

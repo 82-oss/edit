@@ -1,7 +1,7 @@
 // Workers decode source frames and PCM. Web Audio owns the timeline clock;
 // the shared WASM compositor still evaluates and renders each complete scene.
 import init, { createEngine, type Engine } from "../engine/pkg/edit_wasm";
-import { api, fetchRetrying, mediaHost, mediaUrl, request } from "./api";
+import { api, fetchRetrying, mediaHost, mediaUrl } from "./api";
 import { Decoder, videoTime } from "./decoder";
 import { note, recordTiming, tell } from "./diagnostics";
 import { AUDIO_CHUNK_SECONDS } from "./decoder.protocol";
@@ -515,9 +515,10 @@ class Preview {
     const playing = playhead.playing;
     const holding = playing && this.holding !== null;
     this.toldPlaying = playing;
-    const body = holding ? { frame: Math.floor(frame), playing, holding } : { frame: Math.floor(frame), playing };
+    const at = Math.floor(frame);
+    const id = project.id;
     // In order: a play's word and its hold's, sent a moment apart, must not cross on the way.
-    this.warmLine = this.warmLine.then(() => bounded(request<{ ok: boolean }>("POST", `/api/projects/${project.id}/playback/warm`, body), ASK_MS, () => new Error("the footage's ask wasn't answered in time"))).catch(() => {});
+    this.warmLine = this.warmLine.then(() => bounded(holding ? api.warmPlayback(id, at, playing, true) : api.warmPlayback(id, at, playing), ASK_MS, () => new Error("the footage's ask wasn't answered in time"))).catch(() => {});
     clearTimeout(this.readyTimer);
     this.readyTimer = setTimeout(() => this.askReady(true), 400);
   }
