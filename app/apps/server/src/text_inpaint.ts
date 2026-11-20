@@ -384,7 +384,7 @@ class RunPod implements Cleaner {
     if (beneath.some((one) => one === null)) return { ok: false, error: "a watermark strip under it isn't in the cloud yet" };
     const { from, fps, width, height, matrix, masks } = request;
     const started = Date.now();
-    const job = (await removerCloud.call<{ id: string; out: string }>("POST", "/v1/remover/jobs", { kind: "clean", worker: workerSource, request: { input: request.inputKey, beneath, from, fps, width, height, matrix, masks } })).value;
+    const job = (await removerCloud.call<{ id: string; out: string }>("POST", "/v1/remover/jobs", { kind: "clean", worker: workerSource, backlog: Math.round(waitingSeconds()), request: { input: request.inputKey, beneath, from, fps, width, height, matrix, masks } })).value;
     if (request.piece !== undefined) this.jobs.set(request.piece, job.id);
     let misses = 0;
     try {
@@ -437,7 +437,9 @@ export const runPodForTests: Cleaner = remoteCleaner;
 
 const pieces = new Map<string, Map<string, InpaintPiece>>();
 const tries = new Map<string, number>();
-const queue: { key: string; run: () => Promise<void> }[] = [];
+const queue: { key: string; seconds: number; run: () => Promise<void> }[] = [];
+/** Footage seconds still waiting here to be sent: the relay rents more GPUs when there's a lot (apps/relay/src/remover.ts). */
+const waitingSeconds = (): number => queue.reduce((sum, one) => sum + one.seconds, 0);
 let busy: Promise<void> | null = null;
 /** Stretches cleaned at once: RunPod's workers (the account's 10), or this machine's one GPU. */
 const AT_ONCE_CLOUD = 10;
@@ -573,7 +575,7 @@ async function ensureNow(app: App, id: string, given: InpaintPlan[], masksOf: Ma
         continue;
       }
       piece.state = "queued";
-      queue.push({ key, run: () => work(app, id, plan, piece, from, to, first, boxes, strips, under) });
+      queue.push({ key, seconds: to - from, run: () => work(app, id, plan, piece, from, to, first, boxes, strips, under) });
     }
   }
   drain();
