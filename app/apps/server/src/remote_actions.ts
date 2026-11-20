@@ -42,6 +42,7 @@ import * as logShip from "./log_ship.ts";
 import * as outages from "./outages.ts";
 import { join } from "./paths.ts";
 import * as storage from "./storage.ts";
+import * as thread from "./thread.ts";
 import * as presence from "./presence.ts";
 import * as problemReports from "./problem_reports.ts";
 import * as relay from "./relay.ts";
@@ -119,6 +120,9 @@ const TYPICAL_FILE_BYTES = 5.5e9;
  */
 export function selfCheck(app: App): string[] {
   const out: string[] = [];
+  // The server's one thread kept for seconds: every page, play and progress line waited (thread.ts).
+  const holds = thread.report();
+  if (holds !== null) out.push(holds);
   const free = diskFree(app);
   if (free !== null) {
     const keep = storage.keepFreeBytes(app.store.home);
