@@ -309,7 +309,13 @@ test("what the agent remembers: a line or two each, the global skill first and n
     // A part of the edit's skill: named with when it fits, read when needed, longer than a memory and still short.
     expect((await call(app, id, "remember", { skill: "subtitles", text: "y".repeat(500), reason: "the house's, cut down", note: "Subtitles after the intro." })).content[0]!.text).toContain("version 1");
     expect((await call(app, id, "remember", { skill: "subtitles", text: "y".repeat(2_401), reason: "too long" })).content[0]!.text).toContain("at most 2400 characters");
-    await call(app, id, "remember", { skill: "subtitles", text: "- Locked bottom middle.", reason: "JJ" });
+    await call(app, id, "remember", { skill: "subtitles", text: "- Locked bottom middle.\n- One line each.", reason: "JJ" });
+    await v2cloud.refreshSkills();
+    // One line changed in place, as a diff (Sphe, Nov 20): the rest stays word for word; words not there change nothing.
+    expect((await call(app, id, "remember", { skill: "subtitles", change: [{ old: "- One line each.", new: "- Two lines at most." }], reason: "JJ: two lines is fine" })).content[0]!.text).toContain("Changed subtitles");
+    expect((await call(app, id, "remember", { skill: "subtitles", change: [{ old: "nowhere in it", new: "x" }], reason: "JJ" })).content[0]!.text).toContain("doesn't have those words");
+    expect((await call(app, id, "remember", { skill: "unknown-one", change: [{ old: "a", new: "b" }], reason: "JJ" })).content[0]!.text).toContain("there's no unknown-one to change");
+    await call(app, id, "remember", { skill: "subtitles", change: [{ old: "\n- Two lines at most.", new: "" }], reason: "JJ: drop that line" });
     await v2cloud.refreshSkills();
     expect(v2cloud.skill("subtitles", place)).toMatchObject({ name: "subtitles", text: "- Locked bottom middle.", note: "Subtitles after the intro." });
     const withParts = agentInstructions(project);

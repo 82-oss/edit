@@ -12,7 +12,7 @@
 // share other_channels' reach into another channel from here.
 
 import * as channels from "./channels.ts";
-import { groupRule, keepRule } from "./teaching.ts";
+import { CHANGE_ARG, changeLesson, changedMost, groupRule, keepRule } from "./teaching.ts";
 import * as teachingConflicts from "./teaching_conflicts.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
@@ -173,18 +173,19 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
   const tools: { name: string; description: string; inputSchema: Record<string, unknown> }[] = [
     {
       name: "remember",
-      description: `Keep a lesson for this channel's ${MANY[lane]}: what the person said holds beyond this one, or said yes to keeping when you asked (never what they let pass unanswered), in their words. A lesson is a line or two, always in your instructions from the next turn; a longer part (at most 2,400 characters) with a note (when to read it) is read with read_skill when it fits. The same name changes the lesson. A teacher's to do.`,
+      description: `Keep a lesson for this channel's ${MANY[lane]}: what the person said holds beyond this one, or said yes to keeping when you asked (never what they let pass unanswered), in their words. A lesson is a line or two, always in your instructions from the next turn; a longer part (at most 2,400 characters) with a note (when to read it) is read with read_skill when it fits. The same name changes the lesson: with change, just the lines that change (any lesson, however long). A teacher's to do.`,
       inputSchema: {
         type: "object",
         properties: {
           skill: { type: "string", description: "Its name: lower-case letters, digits and hyphens (titles, hooks, pacing…)" },
-          text: { type: "string", description: "The lesson, whole: in the person's words, general (never about this one only)" },
+          text: { type: "string", description: "The lesson, whole: in the person's words, general (never about this one only). Leave it out with change" },
+          change: CHANGE_ARG,
           note: { type: "string", description: "Only for a longer part read when needed: when to read it (at most 160 characters)" },
           reason: { type: "string", description: "What the person said, quoted" },
           settled: { type: "string", description: "Only after a remember was refused for contradicting what's taught: the person's answer on which holds, quoted" },
           for: FOR_ARG,
         },
-        required: ["skill", "text", "reason"],
+        required: ["skill", "reason"],
       },
     },
     {
@@ -257,28 +258,32 @@ async function remember(args: Record<string, unknown>, place: Place): Promise<st
   // Its group as it is now, not as it was when the turn began (a group made since: kept for it).
   await channels.refresh();
   const skill = nameArg(args.skill, "skill");
-  if (typeof args.text !== "string" || args.text.trim() === "") throw new Error("text is required");
+  if (args.change === undefined && (typeof args.text !== "string" || args.text.trim() === "")) throw new Error("text is required (or change, for part of a lesson that's there)");
   if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");
   const note = typeof args.note === "string" && args.note.trim() !== "" ? args.note.trim() : undefined;
   if (note !== undefined && note.length > 160) throw new Error("note is at most 160 characters: when to read it");
   const kept = channels.keptIn(place.channel, place.lane, args.for);
   const key = v2cloud.ownKey("skill", kept.place, skill);
   const before = lessonsOf(place).find((one) => one.name === skill && one.key === key) ?? lessonsOf(place).find((one) => one.name === skill);
-  // A guide brought over whole (longer than a part can be) is never written over by a short lesson: what's new is a lesson of its own, which wins where they differ.
-  if (before !== undefined && before.text.length > PART_MOST) throw new Error(`${skill} is a guide brought over whole (${before.text.length} characters): keep this as a lesson of its own, under its own name, and it wins where they differ`);
+  // Part of one that's there, changed in place (any length): the rest stays word for word.
+  const changing = args.change !== undefined;
+  if (changing && before === undefined) throw new Error(`there's no ${skill} to change: give its text to keep it as a new lesson`);
+  const changed = changing ? changeLesson(skill, before!.text, args.change) : { text: String(args.text).trim(), added: String(args.text).trim() };
+  // A guide brought over whole (longer than a part can be) is never written over by a short lesson: its lines are changed with change, or what's new is a lesson of its own, which wins where they differ.
+  if (!changing && before !== undefined && before.text.length > PART_MOST) throw new Error(`${skill} is a guide brought over whole (${before.text.length} characters): change its lines with change, or keep this as a lesson of its own`);
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
-  const most = part ? PART_MOST : MEMORY_MOST;
-  if (args.text.length > most) throw new Error(`at most ${most} characters (this is ${args.text.length}): ${part ? "keep the part short: its rules, not their history" : "a line or two, in the person's words"}`);
-  // What it contradicts is said first, and kept only once the person says which holds (teaching_conflicts.ts).
+  const most = changing ? changedMost(part ? PART_MOST : MEMORY_MOST, before!.text.length) : part ? PART_MOST : MEMORY_MOST;
+  if (changed.text.length > most) throw new Error(`at most ${most} characters (this is ${changed.text.length}): ${part ? "keep the part short: its rules, not their history" : "a line or two, in the person's words"}`);
+  // What it contradicts is said first, and kept only once the person says which holds (teaching_conflicts.ts): for a change, the words it puts in.
   const settled = typeof args.settled === "string" && args.settled.trim() !== "";
-  const clashes = settled ? [] : await teachingConflicts.conflicts(skill, args.text.trim(), lessonsOf(place));
+  const clashes = settled || changed.added === "" ? [] : await teachingConflicts.conflicts(skill, changed.added, lessonsOf(place));
   if (clashes !== null && clashes.length > 0) throw new teachingConflicts.Clash(clashes);
   const reason = settled ? `${args.reason.trim()} (settled against what was taught: ${String(args.settled).trim()})` : args.reason.trim();
-  const saved = await v2cloud.saveSkill(skill, args.text.trim(), reason, note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
+  const saved = await v2cloud.saveSkill(skill, changed.text, reason, note ?? before?.note, { key, ...(before?.key === key && before.latest !== undefined ? { latest: before.latest } : {}) });
   // Kept for the group while this channel has its own of that name: the channel's still wins here.
   const shadowed = kept.place !== v2cloud.laneKey(place.channel, place.lane) && lessonsOf(place).some((one) => one.name === skill && ownLesson(one, place));
   v2cloud.forgetSkills();
-  return `Kept as ${skill} (version ${saved.n}) in ${nameOf(place.channel)}'s ${WORD[place.lane]} style${kept.words === "" ? "" : `, ${kept.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}${clashes === null ? teachingConflicts.UNCHECKED : ""}`;
+  return `${changing ? "Changed" : "Kept as"} ${skill} (version ${saved.n}) in ${nameOf(place.channel)}'s ${WORD[place.lane]} style${kept.words === "" ? "" : `, ${kept.words}`}: its agents have it from their next turn.${shadowed ? ` This channel's own ${skill} still wins here: change that one (for: "channel") to change it for this channel.` : ""}${clashes === null ? teachingConflicts.UNCHECKED : ""}`;
 }
 
 // ---------------------------------------------------------------- another channel's style

@@ -115,7 +115,7 @@ export function refusal(found: readonly Conflict[]): string {
   return (
     `Not kept yet: it contradicts what's taught already:\n${found.map((one) => `- ${one.skill}: "${one.line}"${one.why ? ` (${one.why})` : ""}`).join("\n")}\n` +
     "Tell the person, quoting both in a line each, and ask which holds, in one short question. " +
-    "Keep it only once they answer: remember it again with settled (their words), then change the other to match (remember it again without that line, or archive_in_library if it all goes), so the two never stand together. " +
+    "Keep it only once they answer: remember it again with settled (their words), then change the other to match (remember it with change on just that line, or archive_in_library if it all goes), so the two never stand together. " +
     "If they say the old one holds, don't keep the new one."
   );
 }
