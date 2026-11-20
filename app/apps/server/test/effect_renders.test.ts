@@ -787,7 +787,7 @@ test.skipIf(chrome === null)("a render an export waits on goes on while footage 
       project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
     });
     expect(playing.isIdle()).toBe(false);
-    await seams.broll.waitForMaps(app, id, 60_000);
+    await seams.broll.waitForMaps(app, id, 150_000);
     expect(app.store.get(id)!.project.media.find((one) => one.id === added.media)!.effect_key).toBe(effects.list(app.store, id)[0]!.key);
   } finally {
     clearInterval(renew);
@@ -798,4 +798,5 @@ test.skipIf(chrome === null)("a render an export waits on goes on while footage 
     void server.stop(true);
     cleanup();
   }
-});
+  // Its own limit, as the file's other renders in Chrome have: CI's Mac drew it inside the default 30 s once in three runs.
+}, 180_000);
