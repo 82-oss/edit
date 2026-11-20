@@ -1201,9 +1201,7 @@ pub fn remove(
         if end2 > next2 {
             let block: Vec<usize> = (next2..end2).collect();
             let results = parallel(threads, block, |k| {
-                let Some(own) = slots.get(k).and_then(Option::as_ref) else {
-                    return None;
-                };
+                let own = slots.get(k).and_then(Option::as_ref)?;
                 let second = match (&own.holes, &own.first) {
                     (Some(holes), Some(first)) => {
                         let neighbours: Vec<Neighbour> = neighbours_of(k)
@@ -1409,10 +1407,7 @@ fn leftovers_to_inpaint(
     let deep = dist.mask(|d| d > 4.0).dilate(9);
 
     // Narrow stroke-edge transition band where alpha changes steeply and H.264 rings.
-    let edge = prep
-        .alpha
-        .mask(|a| a > 0.002 && a < 0.85 * peak)
-        .dilate(3);
+    let edge = prep.alpha.mask(|a| a > 0.002 && a < 0.85 * peak).dilate(3);
 
     let mut out = Mask::new(rw, rh);
     // When optical flow filled almost nothing (<15% of the mark, e.g. a static or blurred background),
@@ -1853,7 +1848,11 @@ mod tests {
         };
         for y in 0..h {
             for x in 0..w {
-                let tex = if ((x / 3) + (y / 3)) % 2 == 0 { 22.0 } else { -22.0 };
+                let tex = if ((x / 3) + (y / 3)) % 2 == 0 {
+                    22.0
+                } else {
+                    -22.0
+                };
                 let bg = 175.0 + tex;
                 bright_orig.y[y * w + x] =
                     curve.mark(bg, matte.at(x, y)).round().clamp(16.0, 235.0) as u8;
