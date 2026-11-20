@@ -22,6 +22,8 @@ export const HALVINGS = 2;
 const SAME = 0.5;
 /** Reads asked of the engine at once, each chunk halved before the next (it gives way to a play between them; the frames a halving may read are held through one chunk). */
 export const CHUNK = 15;
+/** How far before a file's end its picture is read again when a read past its last frame fails. */
+export const END_GRACE_S = 0.25;
 /** A subtitle's words change as it's spoken: a line read the same for this long (seconds) is the picture's (a decal, a sign). */
 export const STILL = 8;
 
@@ -181,7 +183,20 @@ export async function track(plan: TrackPlan, from: number, to: number, read: (ti
     return [mid, ...between(a, mid, depth - 1), ...between(mid, b, depth - 1)];
   };
   const readAll = async (at: number[], keep: number[]): Promise<Sample[]> => {
-    const lines = await read(at, keep);
+    let lines: ScreenText[][];
+    try {
+      lines = await read(at, keep);
+    } catch (error) {
+      // A moment past the picture's last frame (a file whose sound runs a little longer: Nov 20, SMART Cops'
+      // IYerNFnlSmI, its picture 0.05 s short of its 1,295.37 s, "failed to fill whole buffer" each time and its
+      // whole case's blur with it): read where the picture still is, its last quarter second as that frame.
+      if (!/fill whole buffer/u.test(String((error as Error)?.message ?? error))) throw error;
+      const end = Math.max(from, to - END_GRACE_S);
+      lines = await read(
+        at.map((t) => Math.min(t, end)),
+        keep.map((t) => Math.min(t, end)),
+      );
+    }
     return at.map((t, j) => sampleOf(plan, t, lines[j] ?? []));
   };
   const out: Sample[] = [];
