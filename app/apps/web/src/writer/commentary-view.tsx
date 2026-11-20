@@ -20,7 +20,7 @@ import { FeedbackPanel } from "./feedback-panel";
 import { CommentsPanel, type Draft as CommentDraft, useLit } from "./comments";
 import { DocsDialog } from "./docs-dialog";
 import { COMMENTARY_SHORTCUTS, Shortcuts } from "./shortcuts";
-import { type Band, BandTip, bandProps, bandsOf, pieceBands, pieceOffset, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
+import { type Band, bandProps, bandsOf, pieceBands, pieceOffset, ReviewButton, ReviewDialog, useReview, ArchivedBanner } from "./review";
 import { Avatar } from "./avatar";
 import { StatusChips } from "../components/MemoryChip";
 import { ProblemView } from "../components/ProblemView";
@@ -836,18 +836,12 @@ export function CommentaryEditor({
       <ReviewDialog
         open={reviewOpen}
         script={script}
-        notes={review.notes}
         approved={review.approved}
         busy={busy}
         onClose={() => setReviewOpen(false)}
         onChange={onChange}
-        onJob={(job) => {
-          setReviewOpen(false);
-          follow(job.startedAt);
-        }}
         onRefresh={review.refresh}
       />
-      <BandTip notes={review.notes} />
       <DocsDialog
         open={docsOpen}
         script={script}

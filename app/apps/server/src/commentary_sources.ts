@@ -17,6 +17,7 @@ import * as cloud from "./cloud.ts";
 import * as seams from "./seams.ts";
 import * as progress from "./progress.ts";
 import * as youtube from "./youtube.ts";
+import { run, search as searchYoutube, source as youtubeSource } from "./youtube_research.ts";
 import * as posts from "./posts.ts";
 import { download as driveDownload, driveFileId } from "./script.ts";
 import { stableStringify } from "./stable.ts";
@@ -68,23 +69,6 @@ export function rangeOf(value: unknown): BrollRange {
     throw new Error("each B-roll range needs a YouTube url, start/end in source seconds (at most 240 s), and its narration purpose");
   }
   return { url: one.url, start: one.start, end: one.end, purpose: one.purpose.trim() };
-}
-
-/**
- * A research question for YouTube (a search, a video's details or captions, a
- * channel), `args` ending in what's asked about. Other channels' videos, so
- * asked as every question is (youtube.ts `ask`) and sparing of the person's
- * address as an idea is: through the proxy first, each try from an address of
- * its own, this Mac's only when that's refused (Sphe, Nov 16).
- */
-async function run(home: string, args: string[], ms = 100_000): Promise<string> {
-  const target = args.at(-1)!;
-  try {
-    return (await youtube.ask(home, target, ["--no-warnings", "--socket-timeout", "20", ...args.slice(0, -1)], ["proxy", "straight"], (one) => one.code === 0, { area: "broll", sparing: true, timeoutMs: ms })).stdout;
-  } catch (error) {
-    if (error instanceof youtube.Unanswered && !error.gone) throw new Error("YouTube turned Edit away just now; try again in a few minutes, or use an already supplied source");
-    throw new Error("YouTube research failed or timed out; try another query or use an already supplied source");
-  }
 }
 
 /**
@@ -159,11 +143,7 @@ registerTool("search_broll", async ({ app, args, projectId }) => {
   for (let i = 0; i < args.queries.length; i += 2) {
     results.push(...await Promise.all(args.queries.slice(i, i + 2).map(async (query) => {
       try {
-        const data = JSON.parse(await run(app.store.home, ["--flat-playlist", "--dump-single-json", `ytsearch${limit}:${String(query)}`])) as { entries?: Args[] };
-        const videos = (data.entries ?? []).filter((e) => typeof e.id === "string" && !["is_live", "is_upcoming"].includes(String(e.live_status))).map((e) => ({
-          id: e.id, url: `https://www.youtube.com/watch?v=${String(e.id)}`, title: e.title, channel: e.channel ?? e.uploader,
-          duration: e.duration, views: e.view_count, thumbnail: `https://i.ytimg.com/vi/${String(e.id)}/hqdefault.jpg`,
-        }));
+        const videos = await searchYoutube(app.store.home, String(query), limit);
         keep(app, projectId, `query:${String(query)}`, { at: Date.now(), videos });
         // Horror: another channel's upload about the story is never footage (its guide).
         if (app.store.get(projectId)?.project.style === "horror") {
@@ -180,28 +160,13 @@ registerTool("search_broll", async ({ app, args, projectId }) => {
 registerTool("read_broll_source", async ({ app, args, projectId }) => {
   const id = typeof args.url === "string" ? youtube.videoId(args.url) : null;
   if (id === null) throw new Error("url must be a YouTube video");
-  const dir = join(app.store.home, "research", projectId, "youtube", id);
-  fs.mkdirSync(dir, { recursive: true });
-  const cached = join(dir, "source.json");
-  let source: Args;
-  try { source = JSON.parse(fs.readFileSync(cached, "utf8")) as Args; }
-  catch {
-    const answer = await run(app.store.home, ["--skip-download", "--write-subs", "--write-auto-subs", "--sub-langs", "en,en-orig", "--sub-format", "json3", "--dump-single-json", "-o", join(dir, "captions.%(ext)s"), `https://www.youtube.com/watch?v=${id}`]);
-    const info = JSON.parse(answer) as Args;
-    const file = fs.readdirSync(dir).find((name) => name.endsWith(".json3"));
-    const data = file === undefined ? { events: [] } : JSON.parse(fs.readFileSync(join(dir, file), "utf8")) as { events?: { tStartMs?: number; segs?: { utf8?: string }[] }[] };
-    const lines = (data.events ?? []).flatMap((e) => {
-      const said = (e.segs ?? []).map((s) => s.utf8 ?? "").join("").trim();
-      return said === "" ? [] : [{ at: (e.tStartMs ?? 0) / 1000, text: said }];
-    });
-    source = { url: `https://www.youtube.com/watch?v=${id}`, title: info.title, channel: info.channel ?? info.uploader, date: info.upload_date, duration: info.duration, lines };
-    writeAtomic(cached, JSON.stringify(source));
-    keep(app, projectId, `source:${id}`, { url: source.url, title: source.title, channel: source.channel, date: source.date });
-  }
+  const [read, fresh] = await youtubeSource(app.store.home, id, join(app.store.home, "research", projectId, "youtube", id));
+  const { description: _description, ...source } = read;
+  if (fresh) keep(app, projectId, `source:${id}`, { url: source.url, title: source.title, channel: source.channel, date: source.date });
   const from = typeof args.start === "number" ? args.start : 0;
   const until = typeof args.end === "number" ? args.end : Infinity;
   const query = typeof args.phrase === "string" ? args.phrase.toLowerCase().split(/\s+/).filter(Boolean) : [];
-  const lines = ((source.lines ?? []) as { at: number; text: string }[]).filter((line) => line.at >= from && line.at <= until && (query.length === 0 || query.some((q) => line.text.toLowerCase().includes(q))));
+  const lines = source.lines.filter((line) => line.at >= from && line.at <= until && (query.length === 0 || query.some((q) => line.text.toLowerCase().includes(q))));
   return text(stableStringify({ ...source, lines: lines.slice(0, 140), omitted: Math.max(0, lines.length - 140), note: "Automatic captions guide the search; they do not prove what is visible. Narrow by phrase/start/end, then inspect an imported range." }));
 });
 

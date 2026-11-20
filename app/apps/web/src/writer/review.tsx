@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { askConfirm } from "./confirm";
-import { CommentsPanel, hoverNote } from "./comments";
-import { approveReview, cancelScriptShare, compressReview, deleteReviewLink, fixNotes, getScript, restoreScript, message, onReviews, reviewCounts, reviewNotes, scriptAudit, shareScript } from "./api";
+import { approveReview, cancelScriptShare, compressReview, deleteReviewLink, getScript, restoreScript, message, onReviews, reviewNotes, scriptAudit, shareScript } from "./api";
 import { makeDoc } from "./docs-dialog";
 import type { BuildStatus, Cite, DocFile, Paragraph, ReviewApproval, ReviewBlock, ReviewNote, Script } from "./types";
 import { useGrants } from "./can";
@@ -10,9 +9,10 @@ import { formatBytes } from "../lib/time";
 import { THIS_MACHINE } from "../lib/platform";
 
 /**
- * Review on a Repack link (reviews.rs): Share, the notes reviewers leave,
- * and what Claude changed for each, drawn as bands on the script. Hovering
- * a band says whose note it was, what they asked, and what Claude did.
+ * Review on a Repack link (reviews.rs): Share, and what Claude changed for
+ * the notes reviewers leave there, drawn as bands on the script. The notes
+ * themselves are the chat agent's to pull and fix (Sphe, Nov 20: no comments
+ * in the share dialog, nothing popping up on hover).
  */
 
 /** A note for the video editor: Edit's agent follows it in that section (a line starting "edit:"). */
@@ -101,71 +101,13 @@ export function pieceOffset(paragraph: Paragraph, index: number) {
   return at;
 }
 
-/** What an element-wide band carries for the tooltip (a timestamp, a clip, a heading). */
+/** What an element-wide band carries (a timestamp, a clip, a heading): its notes, for their colour and lighting. */
 export function bandProps(bands: Band[] | undefined) {
   if (!bands?.length) return {};
   return { "data-band": bands.flatMap((band) => band.notes).join(" "), "data-band-kind": bands.some((band) => band.kind === "fix") ? "fix" : "open" };
 }
 
-// ---- The tooltip --------------------------------------------------------------
-
-type Tip = { ids: string[]; x: number; y: number } | null;
-let tipListener: ((tip: Tip) => void) | null = null;
-
-/** Shows the notes behind a band at the pointer; null hides it. */
-export function showTip(tip: Tip) {
-  tipListener?.(tip);
-}
-
-/**
- * The card a band shows on hover: the reviewer's words and name, Claude's
- * summary of what it changed, and the version. Elements marked with
- * `data-band` (bandProps) show it by themselves; text bands call showTip.
- */
-export function BandTip({ notes }: { notes: ReviewNote[] }) {
-  const [tip, setTip] = useState<Tip>(null);
-  useEffect(() => {
-    tipListener = setTip;
-    const over = (event: PointerEvent) => {
-      const target = (event.target as HTMLElement | null)?.closest?.<HTMLElement>("[data-band]");
-      if (target) {
-        const ids = (target.dataset.band ?? "").split(" ").filter(Boolean);
-        setTip({ ids, x: event.clientX, y: event.clientY });
-        hoverNote(ids[0] ?? null);
-      } else if ((event.target as HTMLElement | null)?.closest?.("[data-band-text]") == null) setTip(null);
-    };
-    window.addEventListener("pointermove", over);
-    return () => {
-      window.removeEventListener("pointermove", over);
-      if (tipListener === setTip) tipListener = null;
-    };
-  }, []);
-  const shown = tip ? notes.filter((note) => tip.ids.includes(note.id)) : [];
-  if (!tip || !shown.length) return null;
-  const left = Math.min(tip.x + 14, window.innerWidth - 340);
-  const top = tip.y + 16 + 220 > window.innerHeight ? Math.max(8, tip.y - 230) : tip.y + 16;
-  return (
-    <div className="band-tip" style={{ left, top }} role="tooltip">
-      {shown.map((note) => (
-        <div key={note.id} className="band-tip-note">
-          <span className="band-tip-head">
-            <b>{note.author}</b>
-            <span className="faint">{note.status === "done" ? `Fixed in v${note.doneInVersion ?? "?"}` : `Open · on v${note.version}`}</span>
-          </span>
-          <q>{note.text}</q>
-          {note.fixSummary && (
-            <span className="band-tip-fix">
-              <span className="faint">Claude: </span>
-              {note.fixSummary}
-            </span>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ---- Share and the notes -------------------------------------------------------
+// ---- Share -------------------------------------------------------
 
 const when = (ms: number) => new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
@@ -270,32 +212,27 @@ export function ReviewButton({ script, open, approved, onClick }: { script: Scri
 }
 
 /**
- * Sharing and the notes, in the same box as the edit page's Share: the link,
- * a Google Doc export, and a progress line (the stage, with a percent while
- * the footage goes up). Close leaves a share running. Notes, approve, and
- * fixing stay in the box.
+ * Sharing, in the same box as the edit page's Share: the link, a Google Doc
+ * export, and a progress line (the stage, with a percent while the footage
+ * goes up). Close leaves a share running. The notes left on the link are the
+ * chat agent's to pull and fix ("apply the feedback"), never shown here.
  */
 export function ReviewDialog({
   open,
   script,
-  notes,
   approved,
   busy,
   onClose,
   onChange,
-  onJob,
   onRefresh,
 }: {
   open: boolean;
   script: Script;
-  notes: ReviewNote[];
   /** The approved version, made here or on Repack's page. */
   approved: ReviewApproval | null;
   busy: boolean;
   onClose: () => void;
   onChange: (script: Script) => void;
-  /** A fix started from here, for the editor to follow. */
-  onJob: (job: BuildStatus) => void;
   onRefresh: () => void;
 }) {
   const [sharing, setSharing] = useState(false);
@@ -303,7 +240,6 @@ export function ReviewDialog({
   const [stopped, setStopped] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  const [fixesHere, setFixesHere] = useState<boolean | null>(null);
   // The share's stage while this dialog follows it, and whether the last one here just landed.
   const [stage, setStage] = useState<string | null>(null);
   const [landed, setLanded] = useState(false);
@@ -321,7 +257,6 @@ export function ReviewDialog({
     setLanded(false);
     said.current = script.review ? `${script.review.url}#${script.review.version}` : "";
     onRefresh();
-    void reviewCounts().then((counts) => setFixesHere(counts.fixesHere), () => {});
   }, [open]);
   useEffect(() => {
     if (!open) return;
@@ -461,18 +396,6 @@ export function ReviewDialog({
       setApproving(false);
     }
   };
-  const fix = async () => {
-    setProblem(null);
-    try {
-      onJob(await fixNotes(script.id));
-    } catch (cause) {
-      setProblem(message(cause));
-    }
-  };
-
-  const roots = notes.filter((note) => !note.parentId);
-  const openNotes = roots.filter((note) => note.status !== "done");
-  const waiting = openNotes.length;
   const behind = link && link.revision !== script.revision;
   const spinning = sharing || sharingNow;
   const shownStage = spinning ? (stage ?? script.sharing?.stage ?? "sharing") : null;
@@ -563,11 +486,6 @@ export function ReviewDialog({
                 {behind ? " · the script has changed since" : ""}
                 {approved && <span className="ok"> · v{approved.version} approved by {approved.by}</span>}
               </span>
-              {mayShare && waiting > 0 && !approved && (
-                <button type="button" className="sm ghost" disabled={busy} onClick={() => void fix()}>
-                  Fix {waiting} {waiting === 1 ? "note" : "notes"}
-                </button>
-              )}
               {mayShare && link.version > 1 && !approved && (
                 <button type="button" className="sm ghost" disabled={spinning || busy} title="The script as it is now becomes the link's only version, v1; every note is kept" onClick={() => void makeFirst()}>
                   Make this v1
@@ -623,25 +541,6 @@ export function ReviewDialog({
               </button>
             )}
           </p>
-        )}
-        {mayShare && link && fixesHere !== null && !approved && (
-          <p className="faint review-auto">
-            {fixesHere
-              ? `When a reviewer clicks Ready for changes, Claude fixes the notes on ${THIS_MACHINE} and shares the next version.`
-              : "When a reviewer clicks Ready for changes, the fixing computer chosen on accounts.spheceo.com fixes the notes and shares the next version."}
-          </p>
-        )}
-        {link && (
-          <CommentsPanel
-            scriptId={script.id}
-            reviewId={link.reviewId}
-            notes={notes}
-            version={link.version}
-            shared
-            canWrite={mayShare && !approved}
-            onRefresh={onRefresh}
-            onError={setProblem}
-          />
         )}
       </div>
     </Dialog>

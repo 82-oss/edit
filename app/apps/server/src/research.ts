@@ -690,7 +690,7 @@ export async function collect(home: string, project: string, queries: string[], 
 }
 
 /** One Bing image result: (image, page, title). */
-type Hit = [image: string, page: string, title: string];
+export type Hit = [image: string, page: string, title: string];
 
 /**
  * Stock libraries' pictures: never this case, and watermarked (the comp's
@@ -711,32 +711,42 @@ export function isStock([image, page]: Hit): boolean {
   return STOCK.test(`${host(image)}.`) || STOCK.test(`${host(page)}.`);
 }
 
+/**
+ * What an image search finds for `query` (Bing, privately from this machine),
+ * stock libraries left out: at most `perQuery` hits, nothing downloaded.
+ * collect_images keeps them in a project's Research review; the script agent's
+ * find_images hands their links on as notes for the editor.
+ */
+export async function imageSearch(query: string, perQuery: number): Promise<Hit[]> {
+  const hits: Hit[] = [];
+  let first = 1;
+  while (hits.length < perQuery) {
+    const encoded = seams.library.encode(query);
+    const url =
+      first === 1
+        ? `https://www.bing.com/images/search?q=${encoded}&first=1`
+        : `https://www.bing.com/images/async?q=${encoded}&first=${first}&count=${PAGE}&mmasync=1`;
+    // A page that ran out of time (a busy Mac, Bing slow) is asked once more before the query gives up.
+    const page = await hooks.dump(url).catch(async (error: unknown) => {
+      if (isBug(error)) throw error;
+      await Bun.sleep(hooks.againAfterMs);
+      return hooks.dump(url);
+    });
+    const before = hits.length;
+    hits.push(...imageHits(page));
+    if (hits.length === before) break;
+    first += PAGE;
+  }
+  return hits.filter((hit) => !isStock(hit)).slice(0, perQuery);
+}
+
 async function collectInner(home: string, project: string, queries: string[], perQuery: number): Promise<[number, number, number]> {
   const seen = new Set(items(home, project).flatMap((item) => [item.id, item.image]));
   // Queries three at a time: each is a browser search and its downloads, and
   // one after another they made a research step wait minutes.
   const one = async (query: string): Promise<[number, number, number]> => {
     let had = 0;
-    const hits: Hit[] = [];
-    let first = 1;
-    while (hits.length < perQuery) {
-      const encoded = seams.library.encode(query);
-      const url =
-        first === 1
-          ? `https://www.bing.com/images/search?q=${encoded}&first=1`
-          : `https://www.bing.com/images/async?q=${encoded}&first=${first}&count=${PAGE}&mmasync=1`;
-      // A page that ran out of time (a busy Mac, Bing slow) is asked once more before the query gives up.
-      const page = await hooks.dump(url).catch(async (error: unknown) => {
-        if (isBug(error)) throw error;
-        await Bun.sleep(hooks.againAfterMs);
-        return hooks.dump(url);
-      });
-      const before = hits.length;
-      hits.push(...imageHits(page));
-      if (hits.length === before) break;
-      first += PAGE;
-    }
-    const fresh = hits.filter((hit) => !isStock(hit)).slice(0, perQuery).filter(([image]) => {
+    const fresh = (await imageSearch(query, perQuery)).filter(([image]) => {
       const isNew = !seen.has(image);
       if (!isNew) had += 1;
       return isNew;
@@ -832,8 +842,8 @@ export function imageHits(page: string): Hit[] {
   return out;
 }
 
-/** Downloads one found image, if it's a real image big enough to use. */
-async function download(folder: string, [image, page, title]: Hit, query: string): Promise<Item | null> {
+/** Downloads one found image into `folder`, if it's a real image big enough to use. */
+export async function download(folder: string, [image, page, title]: Hit, query: string): Promise<Item | null> {
   let bytes: Uint8Array;
   try {
     const headers: Record<string, string> = { "user-agent": USER_AGENT };

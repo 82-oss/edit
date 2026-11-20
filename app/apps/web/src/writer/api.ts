@@ -1,4 +1,4 @@
-import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Choice, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewCounts, ReviewNote, ImportProgress, Role, Script, Snapshot, Summary, Version, VideoCheck, Footage, TrelloCard } from "./types";
+import type { Adding, BuildStatus, ChatTurn, DocComment, DocFile, Choice, Draft, Feedback, Finds, Focus, LearnStep, Lesson, Pacing, Kind, Research, ReviewApproval, ReviewBlock, ReviewNote, ImportProgress, Role, Script, Snapshot, Summary, Version, VideoCheck, Footage, TrelloCard } from "./types";
 import type { CutSource } from "@edit/types/script_cut";
 import { byPerson } from "../lib/api";
 import { kindOf, postFile, type Accept, type ChatFile, type Uploader } from "../lib/chatFiles";
@@ -317,10 +317,6 @@ export const shareScript = (id: string) =>
 export const cancelScriptShare = (id: string) =>
   http<{ cancelled: boolean }>(`/api/writer/scripts/${id}/share/cancel`, json({}));
 
-/** Open review notes per script, for the cards' badges, and whether Claude fixes new ones by itself. */
-export const reviewCounts = () =>
-  http<ReviewCounts>("/api/writer/reviews");
-
 /** A script's review notes, and its blocks as they now read. */
 export type ReviewState = { notes: ReviewNote[]; blocks: ReviewBlock[]; approved: ReviewApproval | null };
 
@@ -330,10 +326,6 @@ export const reviewNotes = (id: string) =>
 /** Approves the latest shared version (Repack deletes the other versions' files; the notes stay), or takes the approval back. */
 export const approveReview = (id: string, approve: boolean) =>
   http<ReviewState>(`/api/writer/scripts/${id}/review/approval`, { ...json({ approve }), method: "PUT" });
-
-/** Has Claude fix the script's open notes now; followed as a build. */
-export const fixNotes = (id: string) =>
-  http<BuildStatus>(`/api/writer/scripts/${id}/review/fix`, json({}));
 
 /** Calls `then` whenever review notes change (in the app; the dev page asks every half minute). */
 export function onReviews(then: () => void): () => void {

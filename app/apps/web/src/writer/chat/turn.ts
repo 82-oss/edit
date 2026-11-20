@@ -67,6 +67,13 @@ const TOOLS: Record<string, [doing: string, did: string]> = {
   replace_items: ["Rewriting clips and cut-ins", "Rewrote clips and cut-ins"],
   remove_items: ["Removing clips", "Removed clips"],
   finish: ["Finishing the script", "Finished the script"],
+  // The chat's own tools (server/src/writer/turn_tools.ts).
+  pull_feedback: ["Pulling the review's feedback", "Pulled the review's feedback"],
+  search_web: ["Searching the web", "Searched the web"],
+  read_page: ["Reading a page", "Read a page"],
+  search_youtube: ["Searching YouTube", "Searched YouTube"],
+  read_youtube: ["Reading a video's captions", "Read a video's captions"],
+  find_images: ["Finding pictures", "Found pictures"],
 };
 
 /** A tool's name for the producer: what it is doing, or what it did. */
