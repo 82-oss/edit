@@ -60,7 +60,14 @@ const poolOf = (kind: Kind): Pool => (kind === "clean" ? "gpu" : "cpu");
  * each pays its ~1.5 min boot and a minute idle after). Two 32-core CPU machines: a video's watermarks and tracks
  * (~21 core-hours, measured Nov 20) in ~20 minutes for ~$0.75; more were barely quicker for more.
  */
-export const MAX_PODS: Record<Pool, number> = { gpu: 1, cpu: 2 };
+export const MAX_PODS: Record<Pool, number> = { gpu: 4, cpu: 2 };
+/**
+ * GPU work one rented GPU is given before another is rented: its boot and idle minute (~2.5 min paid) stay a few
+ * percent of what it does, so more GPUs cost about the same as one and finish sooner (Nov 20: SMART Cops' ~2,300 s
+ * to clean was ~3.5 h on one 4090). A clean's work: ~5 s of GPU a footage second (a 4090, measured Nov 20).
+ */
+const GPU_WORK_EACH_S = 45 * 60;
+const GPU_S_A_FOOTAGE_S = 5;
 /** Jobs a CPU machine does at once (cpu.ts LANES on 32 cores): how many waiting jobs one machine covers. */
 const CPU_LANES = 5;
 /** A rented machine that hasn't asked for work by now (booting: pulling the image, installing, loading) is let go. */
@@ -274,6 +281,21 @@ export class RemoverPods {
     return (await this.storage().get<string[]>(`order:${pool}`)) ?? (pool === "gpu" ? ((await this.storage().get<string[]>("order")) ?? []) : []);
   }
 
+  /** GPU seconds the waiting cleans come to (their frames, at ~5 s a footage second). */
+  private async gpuWork(): Promise<number> {
+    const ids = await this.order("gpu");
+    let seconds = 0;
+    for (let at = 0; at < ids.length; at += 128) {
+      const jobs = await this.storage().get<Job>(ids.slice(at, at + 128).map((id) => `j:${id}`));
+      for (const job of jobs.values()) {
+        const frames = Array.isArray(job.request.masks) ? job.request.masks.length : 0;
+        const fps = typeof job.request.fps === "number" && job.request.fps > 0 ? job.request.fps : 30;
+        seconds += (frames / fps) * GPU_S_A_FOOTAGE_S;
+      }
+    }
+    return seconds;
+  }
+
   private async setOrder(pool: Pool, order: string[]): Promise<void> {
     await this.storage().put(`order:${pool}`, order);
     if (pool === "gpu") await this.storage().delete("order");
@@ -443,7 +465,13 @@ export class RemoverPods {
       // A GPU does one job at a time; a CPU machine CPU_LANES.
       const lanes = pool === "gpu" ? 1 : CPU_LANES;
       const free = mine.reduce((sum, pod) => sum + Math.max(0, lanes - pod.jobs.length), 0);
-      const want = Math.min(MAX_PODS[pool] - mine.length, Math.ceil(Math.max(0, waiting - free) / lanes));
+      const needed =
+        pool === "gpu"
+          ? waiting > free
+            ? Math.max(1, Math.ceil((await this.gpuWork()) / GPU_WORK_EACH_S)) - mine.length
+            : 0
+          : Math.ceil(Math.max(0, waiting - free) / lanes);
+      const want = Math.min(MAX_PODS[pool] - mine.length, needed);
       for (let n = 0; n < want; n++) {
         const rented = await this.rent(pool);
         if (rented === null) break;

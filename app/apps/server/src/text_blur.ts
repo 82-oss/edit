@@ -427,7 +427,7 @@ export async function ensure(app: App, id: string, given: BlurPlan[]): Promise<v
             // Read on a rented CPU machine when the relay does removal there (remover_cloud.ts, the same text_track.ts), else here.
             const key = removerCloud.keyOf(plan.media);
             let samples: Sample[];
-            if (key !== undefined && removerCloud.now()) samples = await removerCloud.track(key, size, plan.media.fps || 30, region, plan, from, to);
+            if (key !== undefined && (await removerCloud.on())) samples = await removerCloud.track(key, size, plan.media.fps || 30, region, plan, from, to);
             else {
               const input = await cloudMedia.originalInput(app.store.cacheDir(), plan.media);
               const reading = reader.open(input, size, plan.media.fps || 30, region);
