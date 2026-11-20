@@ -69,8 +69,7 @@ test("a pushed chat takes its pictures this computer has that the cloud hasn't",
     fs.writeFileSync(fixture.store.chatPath("p2~review"), JSON.stringify({ savedAt: 1, entries: [{ text: `Here: ![the frame](/api/projects/p2/chat-pictures/${name}) and ![gone](/api/projects/p2/chat-pictures/fedcba9876543210.png)` }] }));
     expect(mock.objects.has(pictureKey("p2", name))).toBe(false);
     schedulePush(fixture.store, "p2~review");
-    await until(() => mock.objects.has(pictureKey("p2", name)));
-    expect(mock.objects.has("edit/chats/p2~review.json")).toBe(true);
+    await until(() => mock.objects.has("edit/chats/p2~review.json") && mock.objects.has(pictureKey("p2", name)));
     expect(mock.objects.has(pictureKey("p2", "fedcba9876543210.png"))).toBe(false);
   } finally {
     fixture.cleanup();
