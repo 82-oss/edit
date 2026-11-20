@@ -218,6 +218,7 @@ export function Select<T extends string | number>({
 export function Switch({ checked, onChange }: { checked: boolean; onChange: (value: boolean) => void }) {
   return (
     <button
+      type="button"
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}

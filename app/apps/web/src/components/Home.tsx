@@ -2032,6 +2032,8 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   const [picked, setPicked] = useState(false);
   const v2 = useBeta((beta) => beta.v2);
   const [prompt, setPrompt] = useState("");
+  /** Whether the agent starts automatically once footage import finishes (default on, matching normal usage). */
+  const [autoStart, setAutoStart] = useState(true);
   // A channel: with V2 on, every edit and script is made for one, and no niche is picked (Sphe, Nov 16); V1 picks the
   // niche (today's kinds) and never sees channels. Whether it's a compilation: the channel's unless changed here.
   const channels = useChannels((state) => state.channels);
@@ -2089,6 +2091,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     setTitle(start?.title ?? "");
     setText(start?.text ?? "");
     setPrompt("");
+    setAutoStart(true);
     setSources(null);
     setShape(null);
     checkedLines.current.clear();
@@ -2240,6 +2243,9 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, 60);
   const pickedScript = (scripts ?? []).find((one) => one.id === scriptId) ?? null;
+  const existingEdit = listed && pickedScript?.project != null;
+  // Whether creation runs a footage import whose agent workflow would normally start right after.
+  const canAutoStart = writing ? !commentary : listed ? !existingEdit : input !== "";
   const ready = !unpicked && (listed ? pickedScript !== null : title.trim() !== "" &&
     (writing
       ? commentary
@@ -2268,6 +2274,14 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     const extra = prompt.trim();
     try {
       if (made !== null) {
+        if (canAutoStart && !autoStart) {
+          const done = made;
+          setMade(null);
+          onClose();
+          if (done.then === "open") navigate(`/p/${done.project}`);
+          else toast(`“${title.trim()}”: importing its footage`, "info");
+          return;
+        }
         // Made already: only its first message again, never a second project.
         await begin(made.project, made.message, made.then);
         return;
@@ -2280,27 +2294,40 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
           return;
         }
         const { project } = await api.importWriter(pickedScript.id, channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}) } : {});
-        // The edit workflow starts once its footage is in, as a pasted Doc's does.
-        await begin(project, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`, "open");
+        if (autoStart) {
+          // The edit workflow starts once its footage is in, as a pasted Doc's does.
+          await begin(project, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`, "open");
+        } else {
+          onClose();
+          navigate(`/p/${project}`);
+        }
         return;
       }
       if (writing) {
         const writer = await import("../writer/api");
-        // The script workflow starts once the footage is in: the first message is its note.
+        // The script workflow starts once the footage is in when `build` is given; omitted, the import stops ready to script.
+        const buildNote = autoStart ? extra : undefined;
         const work = commentary
           ? writer.createCommentary(title.trim(), links)
           : footage.length === 1 && footage.length === sources!.length
             ? DRIVE.test(footage[0]!.url)
-              ? writer.importDrive(footage[0]!.url, undefined, title.trim(), writerKind, extra, channel?.key)
-              : writer.importYoutube(footage[0]!.url, undefined, title.trim(), writerKind, extra, channel?.key)
-            : writer.importCompilation(title.trim(), sources!.map((one) => (one.reuse ? ["REUSE", one.url, one.earlier].filter(Boolean).join(" ") : one.url)), videos.shape === "case", writerKind, extra, channel?.key);
+              ? writer.importDrive(footage[0]!.url, undefined, title.trim(), writerKind, buildNote, channel?.key)
+              : writer.importYoutube(footage[0]!.url, undefined, title.trim(), writerKind, buildNote, channel?.key)
+            : writer.importCompilation(title.trim(), sources!.map((one) => (one.reuse ? ["REUSE", one.url, one.earlier].filter(Boolean).join(" ") : one.url)), videos.shape === "case", writerKind, buildNote, channel?.key);
         // The server answers once the script exists, or refuses (a bad link, no access, three imports running);
         // the import then runs on Home. It used to answer only when the whole import ended, so this guessed with a
         // 1.5 s timer and a busy Mac's refusal after it was lost (JJ, Nov 1: a compilation started twice, no row and
         // no error). A refusal now stays in this dialog.
         await work;
         onClose();
-        toast(`“${title.trim()}”: importing its footage, then writing the script`, "info");
+        toast(
+          commentary
+            ? `“${title.trim()}”: ready to script`
+            : autoStart
+              ? `“${title.trim()}”: importing its footage, then writing the script`
+              : `“${title.trim()}”: importing its footage`,
+          "info",
+        );
         return;
       }
       // A channel's edit is its channel's kind, which the server checks.
@@ -2327,8 +2354,13 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         await api.deleteProject(project.id).catch(() => undefined);
         throw refused;
       }
-      // The edit workflow starts once the import is in, with what was added to it.
-      await begin(project.id, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`, "importing");
+      if (autoStart) {
+        // The edit workflow starts once the import is in, with what was added to it.
+        await begin(project.id, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`, "importing");
+      } else {
+        onClose();
+        toast(`“${title.trim()}”: importing its footage`, "info");
+      }
     } catch (cause) {
       setError(cause ?? new Error("Can't reach Edit's server"));
     } finally {
@@ -2377,7 +2409,36 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   };
   // Compilation is a channel's edit's, set as the channel has it unless changed here.
   const compiles = !writing && channel !== null;
-  const action = busy ? "Starting…" : made !== null ? "Try again" : writing ? "Write the script" : listed ? (pickedScript?.project ? "Open its edit" : "Start the edit") : input === "" ? "Create" : "Start the edit";
+  const showCompiles = compiles && !existingEdit;
+  const showPrompt = !commentary && !existingEdit && (!canAutoStart || autoStart);
+  const moreNames = [
+    ...(showCompiles ? ["compilation"] : []),
+    ...(canAutoStart ? ["start after import"] : []),
+    ...(showPrompt ? ["first message"] : []),
+  ].join(", ");
+  const action = busy
+    ? canAutoStart && !autoStart
+      ? "Importing…"
+      : "Starting…"
+    : made !== null
+      ? "Try again"
+      : writing
+        ? commentary
+          ? "Create"
+          : autoStart
+            ? "Write the script"
+            : "Import footage"
+        : listed
+          ? pickedScript?.project
+            ? "Open its edit"
+            : autoStart
+              ? "Start the edit"
+              : "Import footage"
+          : input === ""
+            ? "Create"
+            : autoStart
+              ? "Start the edit"
+              : "Import footage";
 
   const footageList = writing && !commentary && (reading || sources !== null) && (
     <div className="mt-2 max-h-[220px] divide-y divide-line overflow-y-auto rounded-lg border border-line">
@@ -2591,25 +2652,40 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         </>
       )}
 
-      <More names={compiles ? "compilation, first message" : "first message"} set={prompt !== "" || compilation !== null}>
-        {compiles && channel !== null && (
-          <label className="flex items-center justify-between gap-3">
-            <span>
-              <span className="block text-[13px]">Compilation</span>
-              <span className="block text-[12px] text-faint">{channel.title} {channel.compilation ? "makes compilations" : "makes one case a video"}; this one can differ</span>
-            </span>
-            <Switch checked={compilation ?? channel.compilation} onChange={setCompilation} />
-          </label>
-        )}
-        <Field label="First message" hint="optional">
-          <input
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            placeholder={writing ? "Added to “Start the script workflow” once the footage is in" : listed || input !== "" ? "Added to “Start the editing workflow” once the footage is in" : "Sent to the agent as the project opens: the footage’s links, and what you want"}
-            className={FIELD}
-          />
-        </Field>
-      </More>
+      {moreNames !== "" && (
+        <More names={moreNames} set={(showPrompt && prompt !== "") || (showCompiles && compilation !== null) || (canAutoStart && !autoStart)}>
+          {showCompiles && channel !== null && (
+            <label className="flex cursor-pointer items-center justify-between gap-3">
+              <span>
+                <span className="block text-[13px]">Compilation</span>
+                <span className="block text-[12px] text-faint">{channel.title} {channel.compilation ? "makes compilations" : "makes one case a video"}; this one can differ</span>
+              </span>
+              <Switch checked={compilation ?? channel.compilation} onChange={setCompilation} />
+            </label>
+          )}
+          {canAutoStart && (
+            <label className="flex cursor-pointer items-center justify-between gap-3">
+              <span>
+                <span className="block text-[13px]">{writing ? "Start writing after import" : "Start editing after import"}</span>
+                <span className="block text-[12px] text-faint">
+                  {writing ? "Off imports the footage and waits for you to write the script" : "Off imports the footage and waits for you to start the edit"}
+                </span>
+              </span>
+              <Switch checked={autoStart} onChange={setAutoStart} />
+            </label>
+          )}
+          {showPrompt && (
+            <Field label="First message" hint="optional">
+              <input
+                value={prompt}
+                onChange={(event) => setPrompt(event.target.value)}
+                placeholder={writing ? "Added to “Start the script workflow” once the footage is in" : listed || input !== "" ? "Added to “Start the editing workflow” once the footage is in" : "Sent to the agent as the project opens: the footage’s links, and what you want"}
+                className={FIELD}
+              />
+            </Field>
+          )}
+        </More>
+      )}
     </NewShell>
   );
 }

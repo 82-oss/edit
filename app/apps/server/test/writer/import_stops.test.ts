@@ -123,6 +123,14 @@ test.skipIf(ffmpeg === null)("an import asked for by a route is answered once it
     const hook = imports.hooks.build;
     imports.hooks.build = (_app, id, note) => void built.push({ id, note, importing: imports.importing(id) });
     try {
+      // Without a first build (auto-start opted out): finishes ready without triggering a build.
+      const paused = await imports.fromFile(app, data, source, null, "Import only", null, null, "started");
+      for (let i = 0; i < 600 && imports.importing(paused.id); i++) await Bun.sleep(50);
+      await Bun.sleep(100);
+      expect(store.read(store.scriptDir(data, paused.id)).status).toBe("ready");
+      expect(store.read(store.scriptDir(data, paused.id)).firstBuild).toBeUndefined();
+      expect(built).toEqual([]);
+
       const third = await imports.fromFile(app, data, source, null, "Builds after", null, { note: "the first message" }, "started");
       for (let i = 0; i < 600 && built.length === 0; i++) await Bun.sleep(50);
       expect(built).toEqual([{ id: third.id, note: "the first message", importing: false }]);
