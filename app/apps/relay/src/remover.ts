@@ -176,7 +176,7 @@ export async function removerJobs(request: Request, url: URL, env: RemoverEnv): 
   const queue = queueOf(env);
 
   if (url.pathname === "/v1/remover/jobs" && request.method === "POST") {
-    let body: { kind?: unknown; worker?: unknown; request?: unknown };
+    let body: { kind?: unknown; worker?: unknown; request?: unknown; backlog?: unknown };
     try {
       body = (await request.json()) as typeof body;
     } catch {
@@ -191,7 +191,8 @@ export async function removerJobs(request: Request, url: URL, env: RemoverEnv): 
     if (env.CLOUD_BURST !== undefined && !(await env.CLOUD_BURST.limit({ key: `remover:${burstKey(request, found)}` })).success) return json(429, { error: "Too many jobs at once; try again in a minute." });
     const id = crypto.randomUUID();
     const out = `${OUT_PREFIX}${id}.${kind === "learn" || kind === "track" ? "json" : "mp4"}`;
-    const answer = await ask(queue, "/enqueue", { id, kind, out, worker: kind === "clean" ? body.worker : undefined, request: job, relay: url.origin });
+    const backlog = typeof body.backlog === "number" && Number.isFinite(body.backlog) ? Math.min(Math.max(0, body.backlog), 86_400) : 0;
+    const answer = await ask(queue, "/enqueue", { id, kind, out, worker: kind === "clean" ? body.worker : undefined, request: job, relay: url.origin, backlog });
     if (!answer.ok) return answer;
     console.log(JSON.stringify({ route: "remover/jobs", queued: id, kind, input: job.input }));
     return json(202, { id, out });
@@ -232,6 +233,8 @@ interface Pod {
 
 interface Storage {
   get<T>(key: string): Promise<T | undefined>;
+  /** Up to 128 keys at once (Durable Objects' own limit). */
+  get<T>(keys: string[]): Promise<Map<string, T>>;
   put(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<boolean>;
   list<T>(options: { prefix: string }): Promise<Map<string, T>>;
@@ -281,10 +284,11 @@ export class RemoverPods {
     return (await this.storage().get<string[]>(`order:${pool}`)) ?? (pool === "gpu" ? ((await this.storage().get<string[]>("order")) ?? []) : []);
   }
 
-  /** GPU seconds the waiting cleans come to (their frames, at ~5 s a footage second). */
+  /** GPU seconds the waiting cleans come to (their frames, and what Edit said it holds back, at ~5 s a footage second). */
   private async gpuWork(): Promise<number> {
     const ids = await this.order("gpu");
-    let seconds = 0;
+    const held = await this.storage().get<{ seconds: number; at: number }>("backlog:gpu");
+    let seconds = held !== undefined && Date.now() - held.at < 5 * 60_000 ? held.seconds * GPU_S_A_FOOTAGE_S : 0;
     for (let at = 0; at < ids.length; at += 128) {
       const jobs = await this.storage().get<Job>(ids.slice(at, at + 128).map((id) => `j:${id}`));
       for (const job of jobs.values()) {
@@ -307,6 +311,8 @@ export class RemoverPods {
     await this.storage().put(`j:${job.id}`, job);
     await this.setOrder(poolOf(kind), [...(await this.order(poolOf(kind))), job.id]);
     if (typeof body.relay === "string") await this.storage().put("relay", body.relay);
+    // What Edit still holds back for the GPU (it sends a few at a time): what more GPUs are rented by.
+    if (kind === "clean") await this.storage().put("backlog:gpu", { seconds: typeof body.backlog === "number" ? body.backlog : 0, at: Date.now() });
     await this.tend();
     return json(200, { ok: true });
   }
