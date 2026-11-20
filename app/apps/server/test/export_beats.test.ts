@@ -15,9 +15,10 @@ import { clip } from "./helpers/model.ts";
 const was = { stall: { ...stall }, still: jobs.STILL_MS.value, beat: jobs.BEAT_MS.value, most: process.env.EDIT_LOCAL_EXPORTS };
 beforeEach(() => {
   process.env.EDIT_LOCAL_EXPORTS = "1";
-  // Still after 150 ms, a beat written at most every 20 ms; no stall stops the render that says nothing.
-  jobs.STILL_MS.value = 150;
-  jobs.BEAT_MS.value = 20;
+  // Still after 600 ms, a beat written at most every 60 ms; no stall stops the render that says nothing. (150 and 20
+  // at first: CI's Mac, Check on 291562fd, went quiet for longer than that once and a moving row read as still.)
+  jobs.STILL_MS.value = 600;
+  jobs.BEAT_MS.value = 60;
   Object.assign(stall, { ms: 60_000, everyMs: 10 });
 });
 afterEach(() => {
@@ -65,7 +66,7 @@ function engine(name: string, ms: number, silent: Set<string>) {
 }
 
 test("a render whose engine reports progress for longer than the still time is never listed as still, nor the export waiting behind it; one that says nothing is", async () => {
-  const t = engine("export-beats", 600, new Set(["Silent"]));
+  const t = engine("export-beats", 2400, new Set(["Silent"]));
   try {
     const options = t.native.exportDefaults();
     const moving = await t.project("Moving");
@@ -75,7 +76,7 @@ test("a render whose engine reports progress for longer than the still time is n
     expect(t.registry.activity().find((one) => one.id === behind.id)?.state).toBe("queued");
     // Four still times over its render: looked at throughout, never still.
     const seen = new Set<string>();
-    const end = Date.now() + 550;
+    const end = Date.now() + 2200;
     while (Date.now() < end) {
       for (const row of jobs.still(t.home)) seen.add(row.project);
       await Bun.sleep(15);
@@ -84,12 +85,12 @@ test("a render whose engine reports progress for longer than the still time is n
 
     // The engine that reports nothing for as long: its row is still, as it should be.
     const silent = await t.project("Silent");
-    for (let tries = 0; t.registry.running() && tries < 400; tries++) await Bun.sleep(10);
+    for (let tries = 0; t.registry.running() && tries < 1200; tries++) await Bun.sleep(10);
     await t.registry.start(t.store, t.app.library, silent, options, `${t.dir}/silent.mp4`, { drive: false, keepLocal: true });
-    await Bun.sleep(300);
+    await Bun.sleep(1200);
     expect(jobs.still(t.home).map((row) => row.project)).toEqual([silent.id]);
   } finally {
-    for (let tries = 0; t.registry.running() && tries < 400; tries++) await Bun.sleep(10);
+    for (let tries = 0; t.registry.running() && tries < 1200; tries++) await Bun.sleep(10);
     t.cleanup();
   }
 });
@@ -100,9 +101,9 @@ test("an export's cloud copy going up for longer than the still time is never li
   fs.writeFileSync(output, "x".repeat(50));
   const head = spyOn(exportCloud, "head").mockResolvedValue({ size: 50 });
   const upload = spyOn(exportCloud, "upload").mockImplementation(async (_path, _key, _signal, moving) => {
-    for (let n = 0; n < 40; n++) {
+    for (let n = 0; n < 60; n++) {
       moving?.();
-      await Bun.sleep(15);
+      await Bun.sleep(40);
     }
   });
   try {
