@@ -11,6 +11,7 @@ import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
 import { savedExportFolder } from "../export_folder.ts";
 import * as folderAccess from "../folder_access.ts";
+import * as thread from "../thread.ts";
 import * as mapTiles from "../map_tiles.ts";
 import { isBug, panicResponse } from "../guard.ts";
 import * as mcp from "../mcp/index.ts";
@@ -147,6 +148,8 @@ export async function respond(
           projectMedia: (id) => app.store.footageOf(id),
           exportFolder: () => savedExportFolder(app.store.home),
         });
+        // Said as it starts: a handler that keeps the server's thread is named by the hold's line (thread.ts).
+        thread.note(`${method} ${route}`);
         const answer = await match.route.handler({
           app,
           request,

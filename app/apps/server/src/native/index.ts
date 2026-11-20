@@ -400,6 +400,9 @@ function load(path: string): Native {
  * The addon with the conventions above applied on this side: every function's
  * error has presigned URLs scrubbed out (its text otherwise as native wrote it).
  */
+/** A native call that keeps the server's thread this long before it returns is said in the log. */
+const NATIVE_KEPT_MS = 250;
+
 export function wrap(raw: Native): Native {
   const scrubbed = (error: unknown): unknown => {
     if (error instanceof Error) {
@@ -421,8 +424,13 @@ export function wrap(raw: Native): Native {
     }
     const fn = value as (...args: unknown[]) => unknown;
     out[key] = (...args: unknown[]) => {
+      // What it does before it returns runs on the server's one thread (all of a synchronous call, the start of an
+      // asynchronous one): said when it kept it (thread.ts; Nov 20: holds of the thread named nothing).
+      const began = performance.now();
       try {
         const result = fn.apply(raw, args);
+        const kept = performance.now() - began;
+        if (kept >= NATIVE_KEPT_MS) warn("thread", `native ${key} kept the server's thread for ${Math.round(kept)} ms`);
         if (result instanceof Promise) {
           return result.catch((error: unknown) => {
             throw scrubbed(error);
