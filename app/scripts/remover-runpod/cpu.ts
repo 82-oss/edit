@@ -26,6 +26,9 @@ const tmp = fs.mkdtempSync(join(os.tmpdir(), "remover-"));
 addon.init({ home: tmp, cacheDir: tmp, ffmpeg: join(OPT, "edit-ffmpeg"), ffprobe: join(OPT, "edit-ffprobe"), log: () => {} });
 const log = (...parts: unknown[]) => console.log("[cpu]", ...parts);
 
+/** An error's words without the presigned links in them (a link is ~600 characters: the reason after it was cut off). */
+const said = (error: unknown): string => String((error as Error)?.message ?? error).replace(/https?:\/\/\S+/gu, "<the footage>").slice(0, 400);
+
 async function call(route: string, body: Record<string, unknown>): Promise<any> {
   for (let attempt = 0; ; attempt++) {
     try {
@@ -63,7 +66,7 @@ async function run(job: any): Promise<Record<string, unknown>> {
       return { ok: true, seconds: (Date.now() - started) / 1000 };
     } catch (error) {
       // The engine's own words ("no see-through watermark", …): Edit reads them as from its own engine.
-      return { ok: false, error: String((error as Error).message ?? error).slice(0, 400) };
+      return { ok: false, error: said(error) };
     }
   }
   if (job.kind === "watermark") {
@@ -116,7 +119,7 @@ async function lane(n: number): Promise<void> {
     try {
       output = await run(job);
     } catch (error) {
-      output = { ok: false, error: String((error as Error).message ?? error).slice(0, 400) };
+      output = { ok: false, error: said(error) };
     } finally {
       active -= 1;
     }
