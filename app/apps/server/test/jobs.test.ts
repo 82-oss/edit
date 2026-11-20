@@ -548,3 +548,141 @@ test("a wait due sooner than the table's next look goes when it's due, not at th
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Nov 20: the fault-injection run's storm and the rows left "running" with nothing running.
+test("the same kind of signal again within seconds wakes nothing it just woke; another kind still wakes it at once", () => {
+  const dir = home();
+  try {
+    jobs.begin(dir, "archive", "p1", {});
+    jobs.wait(dir, "archive:p1", "could not reach Edit's relay: The socket connection was closed unexpectedly");
+    expect(jobs.wakePassing(dir, "signed in")).toEqual(["archive:p1"]);
+    // Its try failed again at once (the line still down): the next sign-ins of a storm leave it to its schedule.
+    jobs.wait(dir, "archive:p1", "could not reach Edit's relay: The socket connection was closed unexpectedly");
+    for (let n = 0; n < 5; n++) expect(jobs.wakePassing(dir, "signed in")).toEqual([]);
+    expect(jobs.wakePassing(dir, "the machine woke after 3 s")).toEqual(["archive:p1"]);
+    jobs.wait(dir, "archive:p1", "could not reach Edit's relay: The socket connection was closed unexpectedly");
+    expect(jobs.wakePassing(dir, "the machine woke after 9 s")).toEqual([]);
+    // The line coming back is its own signal: it goes at once.
+    expect(jobs.wakePassing(dir, "Edit's relay answers again")).toEqual(["archive:p1"]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a resumer that fails after RESUME_MS still settles its row: it waits and is tried again by itself", async () => {
+  const dir = home();
+  const before = jobs.RESUME_MS.value;
+  jobs.RESUME_MS.value = 50;
+  try {
+    jobs.begin(dir, "media", "p1", {});
+    jobs.begin(dir, "smooth", "p2", {});
+    const order: string[] = [];
+    await jobs.resume(dir, {
+      media: async () => {
+        await Bun.sleep(200);
+        order.push("media failed");
+        throw new Error("could not reach Edit's relay: The socket connection was closed unexpectedly");
+      },
+      smooth: () => void order.push("smooth"),
+    }, ["media", "smooth"]);
+    expect(order).toEqual(["smooth"]);
+    expect(jobs.owned(dir, "media:p1")).toBe(true);
+    await Bun.sleep(300);
+    expect(order).toEqual(["smooth", "media failed"]);
+    expect(jobs.get(dir, "media:p1")).toMatchObject({ state: "waiting", put_off: 1 });
+    expect(jobs.get(dir, "media:p1")?.retry_at).toBeGreaterThan(Date.now());
+    expect(jobs.owned(dir, "media:p1")).toBe(false);
+  } finally {
+    jobs.RESUME_MS.value = before;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a row said running that nothing in this run holds waits after UNOWNED_MS and is tried again; a held one is left however long it takes", () => {
+  const dir = home();
+  try {
+    const old = Date.now() - jobs.UNOWNED_MS.value - 60_000;
+    // Held: begun in this run, working for an hour without a note.
+    jobs.begin(dir, "export", "held", {});
+    // Nothing holds it: left running by work that ended without a word (as another run, or a late step, leaves it).
+    const rows = read(dir);
+    rows.push({ key: "media:lost", kind: "media", project: "lost", args: {}, state: "running", attempts: 0, started_ms: old, updated_ms: old, step: "fetching" });
+    rows[0]!.updated_ms = Date.now() - 60 * 60_000;
+    fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify(rows));
+    // Not yet old enough: left.
+    expect(jobs.cutShortUnowned(dir, old + 60_000)).toEqual([]);
+    expect(jobs.cutShortUnowned(dir)).toEqual(["media:lost"]);
+    const lost = jobs.get(dir, "media:lost")!;
+    expect(lost).toMatchObject({ state: "waiting", put_off: 1, why: "cut short: nothing was running" });
+    expect(lost.retry_at).toBeGreaterThan(Date.now());
+    expect(jobs.get(dir, "export:held")).toMatchObject({ state: "running" });
+    // Cut short again and again (woken, and again left running by work that ended without a word): never counted as
+    // the same failure, never failed for it.
+    for (let n = 0; n < 6; n++) {
+      const again = read(dir);
+      Object.assign(again.find((job) => job.key === "media:lost")!, { state: "running", updated_ms: old });
+      fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify(again));
+      expect(jobs.cutShortUnowned(dir)).toEqual(["media:lost"]);
+    }
+    // A step held it: a row someone notes is someone's, left however still it then goes.
+    jobs.step(dir, "media:lost", "fetching");
+    const noted = read(dir);
+    noted.find((job) => job.key === "media:lost")!.updated_ms = old;
+    fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify(noted));
+    expect(jobs.cutShortUnowned(dir)).toEqual([]);
+    jobs.wait(dir, "media:lost", "could not reach Edit's relay");
+    expect(jobs.get(dir, "media:lost")).toMatchObject({ state: "waiting" });
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a running row nothing has noted for 15 minutes is reported once, held or not; a beat moves it without a write per call", () => {
+  const dir = home();
+  try {
+    jobs.begin(dir, "footage", "p1", {}, "", "downloading");
+    jobs.begin(dir, "export", "p2", {});
+    const rows = read(dir);
+    rows[0]!.updated_ms = Date.now() - 20 * 60_000;
+    fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify(rows));
+    const listed = jobs.still(dir);
+    expect(listed.map((job) => job.key)).toEqual(["footage:p1"]);
+    expect(jobs.stillLine(listed[0]!)).toBe("Job footage:p1: running, nothing noted for 20 min (step downloading)");
+    // A beat notes it; a second beat within BEAT_MS doesn't write.
+    jobs.beat(dir, "footage:p1");
+    expect(jobs.still(dir)).toEqual([]);
+    const written = fs.statSync(`${dir}/jobs.json`).mtimeMs;
+    const noted = jobs.get(dir, "footage:p1")!.updated_ms;
+    jobs.beat(dir, "footage:p1");
+    expect(jobs.get(dir, "footage:p1")!.updated_ms).toBe(noted);
+    expect(fs.statSync(`${dir}/jobs.json`).mtimeMs).toBe(written);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a fourth Script import behind three running is refused by Edit's own queue and stays waiting however often it's woken, a minute apart (Nov 20)", async () => {
+  const dir = home();
+  try {
+    jobs.begin(dir, "script", "s4", {});
+    jobs.wait(dir, "script:s4", new Error("3 imports are already running. Try again when one finishes."));
+    jobs.useResumers(dir, {
+      script: (job) => {
+        jobs.wait(dir, job.key, new Error("3 imports are already running. Try again when one finishes."));
+      },
+    });
+    for (let n = 0; n < 5; n++) {
+      const rows = read(dir);
+      rows[0]!.retry_at = Date.now() - 1;
+      fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify(rows));
+      await jobs.wake(dir, ["script"]);
+    }
+    const row = jobs.get(dir, "script:s4")!;
+    expect(row.state).toBe("waiting");
+    expect(row.args.same_count).toBeUndefined();
+    expect(row.retry_at! - Date.now()).toBeGreaterThan(50_000);
+    expect(row.retry_at! - Date.now()).toBeLessThanOrEqual(60_000);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 
 import type { ScriptBlock } from "../src/model.ts";
 import { parse, REUSE } from "../src/script.ts";
-import { afterFailure, download, downloadRange, fileOf, forgetRefusals, idOf, PROXY_TRIES, reasonOf, session, startOf, timing, videoId, waiting } from "../src/youtube.ts";
+import { afterFailure, download, downloadRange, downloadSound, fileOf, forgetRefusals, idOf, PROXY_TRIES, reasonOf, session, startOf, timing, videoId, waiting } from "../src/youtube.ts";
 import { scratch } from "./helpers/home.ts";
 import { Database } from "bun:sqlite";
 import { keyring, status as signInStatus, where as signInWhere } from "../src/youtube_signin.ts";
@@ -393,6 +393,47 @@ echo "EDIT-FILE $out/Some title [abcdefghijk].mp4"
     cleanup();
   }
 });
+
+// Nov 20: a lid shut over the quiet limit killed the try the moment it opened and spent a route, the paid proxy too.
+test("a wake starts the quiet clock again, and a try a sleep cut goes again the same way, never on to the proxy", async () => {
+  const wake = await import("../src/wake.ts");
+  const { dir, cleanup } = scratch("youtube-wake");
+  const quiet = timing.quiet;
+  timing.quiet = 2000;
+  try {
+    const script = `${dir}/yt-dlp`;
+    const count = `${dir}/calls`;
+    fs.writeFileSync(
+      script,
+      `#!/bin/sh
+n=$(cat "${count}" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "${count}"
+echo "$*" >> "${dir}/calls.log"
+for arg in "$@"; do case "$prev" in -P) out="$arg";; esac; prev="$arg"; done
+echo "EDIT 100 1024 NA Some title"
+# The first run: quiet for 5 s (frozen with the Mac), then the line it had is dead.
+if [ $n -eq 1 ]; then sleep 5; echo "ERROR: unable to download video data: <urlopen error [Errno 8] nodename nor servname provided, or not known>" >&2; exit 1; fi
+echo "EDIT 1024 1024 NA Some title"
+printf 'video' > "$out/Some title [abcdefghijk].mp4"
+echo "EDIT-FILE $out/Some title [abcdefghijk].mp4"
+`,
+      { mode: 0o755 },
+    );
+    process.env.EDIT_YTDLP = script;
+    process.env.PROXY_URL = "http://user:secret@proxy.example:8080";
+    // The machine wakes three times while the first run is quiet: never stopped for standing still.
+    const wakes = [1500, 3000, 4500].map((ms) => setTimeout(() => wake.woke(15 * 60_000), ms));
+    // Its sound alone: one try straight, then the paid proxy.
+    const got = await downloadSound(dir, "abcdefghijk", `${dir}/out`);
+    wakes.forEach(clearTimeout);
+    expect(fs.readFileSync(got.path, "utf8")).toBe("video");
+    const calls = fs.readFileSync(`${dir}/calls.log`, "utf8").trim().split("\n");
+    expect(calls).toHaveLength(2);
+    expect(calls.some((one) => one.includes("--proxy"))).toBe(false);
+  } finally {
+    timing.quiet = quiet;
+    cleanup();
+  }
+}, 30_000);
 
 test("the YouTube sign-in from Chrome is only for a video that needs it: an age-restricted video goes straight to it, a bot check never does", async () => {
   const { dir, cleanup } = scratch("youtube-signin");

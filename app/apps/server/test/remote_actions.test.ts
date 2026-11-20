@@ -166,6 +166,13 @@ test("each Mac checks itself in its report: a slow line, and work meeting the sa
     const said = selfCheck(app);
     expect(said.some((line) => line.startsWith("Footage came down at 0.07 MB/s lately"))).toBe(true);
     expect(said.some((line) => line.startsWith("Job script:s1: the same failure 3 times in a row"))).toBe(true);
+    // Running, held, and nothing noted for 20 minutes (Nov 20): said too, held or not; it stops nothing.
+    jobs.begin(home, "export", "p1", {}, "", "uploading");
+    const rows = JSON.parse(fs.readFileSync(join(home, "jobs.json"), "utf8")) as jobs.Job[];
+    rows.find((job) => job.key === "export:p1")!.updated_ms = Date.now() - 20 * 60_000;
+    fs.writeFileSync(join(home, "jobs.json"), JSON.stringify(rows));
+    expect(selfCheck(app)).toContain("Job export:p1: running, nothing noted for 20 min (step uploading).");
+    expect(jobs.get(home, "export:p1")?.state).toBe("running");
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }

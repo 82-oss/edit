@@ -204,6 +204,8 @@ export async function tryAgain(app: App, id: string): Promise<EditMissing> {
       });
       if (files.length > 0) {
         await cloudMedia.fetchFootageAgain(app, id, files, (source, now) => {
+          // Each word of how it goes notes the row (at most every 30 s): a long fetch never reads as still.
+          jobs.beat(app.store.home, keyOf(id));
           if (now.state === "failed") diag.warn("cloud", `${id}: ${source} still didn't come in: ${now.error}`);
         });
       }
@@ -214,8 +216,18 @@ export async function tryAgain(app: App, id: string): Promise<EditMissing> {
       trying.delete(id);
     }
   }
-  const now = await state(app, id, false);
-  const still = (await missingOf(app.store.home, (app.store.get(id) ?? live).project, true)).missing;
+  let now: EditMissing;
+  let still: Awaited<ReturnType<typeof missingOf>>["missing"];
+  try {
+    now = await state(app, id, false);
+    still = (await missingOf(app.store.home, (app.store.get(id) ?? live).project, true)).missing;
+  } catch (error) {
+    // Its row never stays "running" with nothing running (Nov 20): the project deleted meanwhile ends it, anything
+    // else waits its next try.
+    if (app.store.get(id) === null) jobs.end(app.store.home, keyOf(id));
+    else waitToTry(app, id, before + 1);
+    throw error;
+  }
   if (still.length === 0) {
     jobs.end(app.store.home, keyOf(id));
     return now;

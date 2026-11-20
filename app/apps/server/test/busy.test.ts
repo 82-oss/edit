@@ -83,3 +83,27 @@ test("what runs now is one list: an effect's render or a removal on any edit kee
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a footage import from New project, the chat or the file browser keeps the Mac awake while it runs, and not after (Nov 20)", async () => {
+  const importing = await import("../src/import.ts");
+  const root = fs.mkdtempSync(join(os.tmpdir(), "edit-running-import-"));
+  const app = { store: { home: root, get: () => null, list: () => [], cloud: () => null }, scripts: { get: () => null, running: () => false }, agents: { runningProjects: () => [] }, exports: { running: () => false } } as unknown as App;
+  // Held at its folder look (a drive macOS asks about): running all that time.
+  const folders = await import("../src/folder_access.ts");
+  const { probe, platform } = folders.hooks;
+  let answer: () => void = () => {};
+  folders.hooks.platform = "darwin";
+  folders.hooks.probe = () => new Promise<void>((resolve) => (answer = resolve));
+  try {
+    const going = importing.importPaths(app, "p1", ["/Volumes/Footage/a.mp4"], false, "").catch(() => undefined);
+    await Bun.sleep(20);
+    expect(busy.runningNow(app)).toEqual(["a footage import"]);
+    answer();
+    await going;
+    expect(busy.runningNow(app)).toEqual([]);
+  } finally {
+    Object.assign(folders.hooks, { probe, platform });
+    folders.resetForTests();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

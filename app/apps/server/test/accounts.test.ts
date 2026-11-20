@@ -250,6 +250,32 @@ test("session observers see sign-in and sign-out and can unsubscribe", async () 
   } finally { unsubscribe(); }
 });
 
+test("observers are told a sign-in only where there was no good token: routine renewals are \"renewed\", a token after one ran out or was refused is \"signed-in\" (Nov 20)", async () => {
+  fs.writeFileSync(join(dir, "keychain.json"), JSON.stringify({}));
+  const told: accounts.SessionChange[] = [];
+  const unsubscribe = accounts.onSessionChange((what) => told.push(what));
+  try {
+    const authorize = new URL(accounts.begin(app));
+    challenges.set("change-code", authorize.searchParams.get("code_challenge")!);
+    await accounts.finish(app, new URLSearchParams({ code: "change-code", state: authorize.searchParams.get("state")! }));
+    // Five routine renewals while the token is still good: what serve.ts wakes waiting work on never comes.
+    for (let n = 0; n < 5; n++) await accounts.renew(app.store.home);
+    expect(told).toEqual(["signed-in", "renewed", "renewed", "renewed", "renewed", "renewed"]);
+    // The token ran out (a Mac's sleep): the next one is a sign-in where there was none good.
+    accounts.expireForTests(0);
+    await accounts.renew(app.store.home);
+    expect(told.at(-1)).toBe("signed-in");
+    // The relay refused the one held: the token after it is a sign-in too.
+    expect(await accounts.renewRefused(accounts.accessToken())).toBe(true);
+    expect(told.at(-1)).toBe("signed-in");
+    await accounts.signOut(app);
+    expect(told.at(-1)).toBe("signed-out");
+    expect(told.filter((what) => what === "signed-in")).toHaveLength(3);
+  } finally {
+    unsubscribe();
+  }
+});
+
 test("a refusal from the site (not on the list) is said, not signed in", async () => {
   const authorize = new URL(accounts.begin(app));
   const done = await accounts.finish(app, new URLSearchParams({ error: "access_denied", error_description: "Ask an admin to add you.", state: authorize.searchParams.get("state")! }));

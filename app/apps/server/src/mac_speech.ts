@@ -15,15 +15,27 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 import * as diag from "./diag.ts";
+import * as failure from "./failure.ts";
 import { writeAtomic } from "./files.ts";
 import { parent } from "./paths.ts";
 import * as tools from "./tools.ts";
 import { serialize, type Transcript, type Word } from "./transcribe.ts";
+import * as wake from "./wake.ts";
 
 export const MODEL = "apple-speech";
 
-/** Test hooks: `helper` in place of the one tools.speech() finds (a path, or null for none). */
+/** Test hooks: `helper` in place of the one tools.speech() finds (a path, or null for none), on any system. */
 export const timing = { helper: undefined as string | null | undefined };
+
+/**
+ * When a hearing that hangs is stopped (Nov 20: a helper stuck on its first model download with the Wi-Fi gone held
+ * every Script import on this Mac behind it on "Transcribing" until a restart). `quietMs`: nothing said ("speech: …")
+ * for this long; the model coming down says its percent every few seconds even on a slow home line (8 Mbit/s: 1% of
+ * a few hundred MB is under ten seconds). `perAudio` × the audio's length, at least `leastMs`: it hears ~45× real
+ * time, so twice the length is far past any Mac's. A lid closed meanwhile isn't counted: both clocks start again on
+ * a wake. Stopped, the caller hears it another way (Scribe) and the queue goes on.
+ */
+export const LIMITS = { quietMs: 5 * 60_000, leastMs: 10 * 60_000, perAudio: 2 };
 
 const ready = new Map<string, Promise<string | null>>();
 
@@ -70,16 +82,45 @@ interface Heard {
 
 async function run(path: string, file: string, target: string, signal?: AbortSignal, onProgress?: (said: string) => void): Promise<Transcript> {
   signal?.throwIfAborted();
+  const lengthMs = await audioMs(file);
   const child = Bun.spawn([path, file, "--ffmpeg", tools.ffmpeg()], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const abort = () => child.kill();
   signal?.addEventListener("abort", abort, { once: true });
+  // The watch: stopped when it says nothing for `quietMs`, or runs past its cap; rejected even if the helper never
+  // exits, so the queue behind it never waits on it.
+  let said = Date.now();
+  let awakeSince = Date.now();
+  let awakeBefore = 0;
+  const capMs = lengthMs === null ? null : Math.max(LIMITS.leastMs, lengthMs * LIMITS.perAudio);
+  let stopWith: (error: Error) => void = () => {};
+  const stopped = new Promise<never>((_, reject) => (stopWith = reject));
+  const offWake = wake.onWake((sleptMs) => {
+    said = Date.now();
+    awakeBefore += Math.max(Date.now() - sleptMs - awakeSince, 0);
+    awakeSince = Date.now();
+  });
+  const watch = setInterval(() => {
+    const now = Date.now();
+    const error = now - said >= LIMITS.quietMs ? new failure.StoodStill("Apple's recogniser", LIMITS.quietMs) : capMs !== null && awakeBefore + now - awakeSince >= capMs ? new failure.StepTimedOut("Apple's recogniser", capMs, false) : null;
+    if (error === null) return;
+    clearInterval(watch);
+    child.kill();
+    setTimeout(() => child.kill(9), 5_000).unref?.();
+    stopWith(error);
+  }, Math.min(LIMITS.quietMs, capMs ?? LIMITS.quietMs, 5_000));
+  watch.unref?.();
   try {
-    const [out, err, code] = await Promise.all([
-      new Response(child.stdout).text(),
-      lines(child.stderr, (line) => {
-        if (onProgress !== undefined && line.startsWith("speech: ")) onProgress(line.slice("speech: ".length));
-      }),
-      child.exited,
+    const [out, err, code] = await Promise.race([
+      Promise.all([
+        new Response(child.stdout).text(),
+        lines(child.stderr, (line) => {
+          if (!line.startsWith("speech: ")) return;
+          said = Date.now();
+          onProgress?.(line.slice("speech: ".length));
+        }),
+        child.exited,
+      ]),
+      stopped,
     ]);
     signal?.throwIfAborted();
     if (code !== 0) throw new Error(reason(err) ?? `edit-speech exited ${code}`);
@@ -101,7 +142,23 @@ async function run(path: string, file: string, target: string, signal?: AbortSig
     diag.info("speech", `${file}: ${clock(length)}, ${words.length} words in ${((heard.ms ?? 0) / 1000).toFixed(1)} s`);
     return transcript;
   } finally {
+    clearInterval(watch);
+    offWake();
     signal?.removeEventListener("abort", abort);
+  }
+}
+
+/** The length of `file`'s audio in ms, by ffprobe; null when it can't say (then only the quiet watch stops a hang). */
+async function audioMs(file: string): Promise<number | null> {
+  try {
+    const probe = Bun.spawn([tools.ffprobe(), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", file], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+    const timer = setTimeout(() => probe.kill(), 30_000);
+    const [text] = await Promise.all([new Response(probe.stdout).text(), probe.exited]);
+    clearTimeout(timer);
+    const seconds = Number.parseFloat(text.trim());
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+  } catch {
+    return null;
   }
 }
 
@@ -143,8 +200,8 @@ function clock(seconds: number): string {
 
 /** The helper's path once it's known to start here (built first in a dev run), else null; cached per path. */
 function helper(): Promise<string | null> {
-  if (process.platform !== "darwin" || Number(os.release().split(".")[0]) < 25) return Promise.resolve(null);
   const given = timing.helper;
+  if (given === undefined && (process.platform !== "darwin" || Number(os.release().split(".")[0]) < 25)) return Promise.resolve(null);
   const found = given === undefined ? tools.speech() : given === null ? null : { path: given, build: null };
   if (found === null) return Promise.resolve(null);
   let known = ready.get(found.path);

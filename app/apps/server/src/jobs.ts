@@ -185,6 +185,32 @@ export function keyOf(kind: Kind, project: string, part = ""): string {
   return part === "" ? `${kind}:${project}` : `${kind}:${project}:${part}`;
 }
 
+// ---------------------------------------------------------------- owned
+//
+// Which rows code in this run is holding, in memory (Nov 20: rows said "running" with nothing running for the rest
+// of a run, a resumer's failure dropped or its work ended without a word, and only the next start looked at them).
+// A row is held from `begin` (or a resumer's start, or a step or beat: code that notes it is holding it) until it is
+// ended, settled or put to wait. Work in any module that goes through `begin` is counted with no change of its own.
+// What nothing holds and nothing has noted for `UNOWNED_MS` is put to wait by itself (`cutShortUnowned`).
+
+const owners = new Map<string, Set<string>>();
+
+function own(home: string, key: string): void {
+  let held = owners.get(home);
+  if (held === undefined) owners.set(home, (held = new Set()));
+  held.add(key);
+}
+
+function disown(home: string, key: string): void {
+  owners.get(home)?.delete(key);
+  beats.get(home)?.delete(key);
+}
+
+/** Whether code in this run holds `key` (its work began or was started again here, and hasn't ended, settled or waited). */
+export function owned(home: string, key: string): boolean {
+  return owners.get(home)?.has(key) === true;
+}
+
 /** How many of a row's steps are kept to tell getting further from reaching a step again (a step's words may change as it goes). */
 const STEPS_KEPT = 30;
 
@@ -210,6 +236,7 @@ function fresh(kind: Kind, project: string, args: Record<string, unknown>, part:
 export function begin(home: string | null, kind: Kind, project: string, args: Record<string, unknown>, part = "", step?: string): string {
   const key = keyOf(kind, project, part);
   if (home === null) return key;
+  own(home, key);
   change(home, (jobs) => {
     const at = jobs.findIndex((job) => job.key === key);
     const job = fresh(kind, project, args, part, jobs[at], step);
@@ -222,6 +249,7 @@ export function begin(home: string | null, kind: Kind, project: string, args: Re
 /** Crosses a job off: it ended (done with nothing to show, or cancelled). */
 export function end(home: string | null, key: string): void {
   if (home === null) return;
+  disown(home, key);
   change(home, (jobs) => {
     const at = jobs.findIndex((job) => job.key === key);
     if (at < 0) return false;
@@ -239,6 +267,7 @@ export function step(home: string | null, key: string, step: string, args: Recor
   change(home, (jobs) => {
     const job = jobs.find((one) => one.key === key);
     if (job === undefined) return false;
+    own(home, key);
     // Getting further forgives its waits and restarts so far (verify.md finding 3: otherwise every blip waited longer):
     // a step this row has never reached before, not one it reaches again after a wait (Fable's last look, Nov 19: a
     // file the relay refused every time was tried every minute for good, each start's first step read as progress).
@@ -279,6 +308,7 @@ export interface Settled {
  */
 export function settle(home: string | null, key: string, state: "done" | "failed" | "waiting", fields: Settled = {}): void {
   if (home === null) return;
+  disown(home, key);
   change(home, (jobs) => {
     const job = jobs.find((one) => one.key === key);
     if (job === undefined) return false;
@@ -317,6 +347,7 @@ function settled(job: Job, state: "done" | "failed" | "waiting", fields: Settled
  */
 export function wait(home: string | null, key: string, error: unknown, step?: string): number | null {
   if (home === null) return null;
+  disown(home, key);
   return (
     change(home, (jobs) => {
       const job = jobs.find((one) => one.key === key);
@@ -342,7 +373,7 @@ const SAME_TIMES = 4;
  * try, and six kills in a row failed work on "cut short by 3 restarts", giving up for restarts again).
  */
 function counts(error: unknown, why: string): boolean {
-  if (why.startsWith("cut short by")) return false;
+  if (why.startsWith("cut short")) return false;
   return /Invalid data found/i.test(why) || failure.surely(error) === null;
 }
 
@@ -410,6 +441,8 @@ function postpone(job: Job, error: unknown): number | null {
 export function handOff(home: string | null, from: string, next: { kind: Kind; project: string; args: Record<string, unknown>; part?: string; step?: string }, keep?: { state: "done"; step?: string; args?: Record<string, unknown> }): string {
   const key = keyOf(next.kind, next.project, next.part ?? "");
   if (home === null) return key;
+  disown(home, from);
+  own(home, key);
   change(home, (jobs) => {
     const at = jobs.findIndex((job) => job.key === from);
     if (at >= 0) {
@@ -427,6 +460,8 @@ export function handOff(home: string | null, from: string, next: { kind: Kind; p
 /** A job that got further this run than the last (a big upload sending parts past those already up): its restarts so far don't count against it. */
 export function progressed(home: string | null, key: string): void {
   if (home === null) return;
+  // Getting further is moving: noted as a beat too, so an hour's upload never reads as still.
+  beat(home, key);
   change(home, (jobs) => {
     const job = jobs.find((one) => one.key === key);
     if (job === undefined || (!(job.attempts > 0) && job.put_off === undefined && job.args.same_count === undefined)) return false;
@@ -445,10 +480,35 @@ export function touch(home: string | null, key: string): void {
   change(home, (jobs) => {
     const job = jobs.find((one) => one.key === key);
     if (job === undefined) return false;
+    own(home, key);
     job.updated_ms = nowMs();
     job.attempts = 0;
     delete job.put_off;
     delete job.crashy;
+  });
+}
+
+/** When each row's beat was last written, by data folder (`beat`). */
+const beats = new Map<string, Map<string, number>>();
+/** A beat is written at most this often per row: the row says it's moving without a disk write per byte. */
+export const BEAT_MS = { value: 30_000 };
+
+/**
+ * Still moving (bytes coming down, a percent): its time noted, at most every `BEAT_MS` per row, so a row that works
+ * for an hour never reads as still (`still`). Nothing else changes: its counts are forgiven only by a new step.
+ */
+export function beat(home: string | null, key: string): void {
+  if (home === null) return;
+  const now = nowMs();
+  let last = beats.get(home);
+  if (last === undefined) beats.set(home, (last = new Map()));
+  if (now - (last.get(key) ?? 0) < BEAT_MS.value) return;
+  last.set(key, now);
+  change(home, (jobs) => {
+    const job = jobs.find((one) => one.key === key);
+    if (job === undefined || job.state !== "running") return false;
+    own(home, key);
+    job.updated_ms = now;
   });
 }
 
@@ -643,9 +703,16 @@ export function dueNow(home: string, kinds?: readonly Kind[]): Job[] {
 export function wakePassing(home: string, why: string): string[] {
   const now = nowMs();
   const keys: string[] = [];
+  // The same kind of signal again within seconds wakes nothing it just woke (Nov 20: twelve sign-ins in six seconds
+  // tried a refused recording 80 ms apart and spent its schedule). Another kind of signal still wakes it at once.
+  const signal = signalOf(why);
+  let woken = lastWoken.get(home);
+  if (woken === undefined) lastWoken.set(home, (woken = new Map()));
+  for (const [key, at] of woken) if (now - at.at >= WAKE_AGAIN_MS()) woken.delete(key);
   change(home, (jobs) => {
     for (const job of jobs) {
       if (job.state !== "waiting" || job.retry_at === undefined || job.retry_at <= now) continue;
+      if (woken.get(job.key)?.signal === signal) continue;
       // What it waits on: its put-off reason, or the import's own word for it (`waiting_on`); a wait with neither (credit, Drive's day) is left.
       const on = typeof job.args.waiting_on === "string" ? job.args.waiting_on : undefined;
       const said = job.why ?? on;
@@ -657,11 +724,29 @@ export function wakePassing(home: string, why: string): string[] {
     }
     return keys.length > 0;
   });
+  for (const key of keys) woken.set(key, { signal, at: now });
   if (keys.length > 0) diag.info("jobs", `${why}: ${keys.length} waiting job${keys.length === 1 ? "" : "s"} woken (${keys.join(", ")})`);
   // Also what fell due since the table's last look (a try due a few seconds ago waited for the next 30-second tick:
   // the bad-day wifi-drop-editor-import case, done 29 s after the line came back).
   void wake(home).catch((error: unknown) => diag.warn("jobs", `waking waiting jobs: ${diag.messageOf(error)}`));
   return keys;
+}
+
+/** What a job was last woken by (`wakePassing`), and when, by data folder. */
+const lastWoken = new Map<string, Map<string, { signal: string; at: number }>>();
+
+/**
+ * A job woken by a kind of signal isn't woken by the same kind again for this long: longer than a storm of one
+ * signal (a sign-in renewed a dozen times in six seconds), much shorter than the passing schedule's first minute, so
+ * a line that drops and comes back twice a few seconds apart still gets its job going the second time, at worst at
+ * its own minute. Nothing to do with the line's speed; after a lid close the wake is a new kind of signal.
+ */
+const WAKE_AGAIN_MS = (): number => Math.max(failure.scaled(10_000), 1_000);
+
+/** The kind of a waking signal, from its words: the machine woke (whatever it slept), signed in, or which service answers again. */
+function signalOf(why: string): string {
+  if (why.startsWith("the machine woke")) return "woke";
+  return why;
 }
 
 /** How often the waiting jobs are looked at (a quota's 30 min, an export's end). */
@@ -722,10 +807,73 @@ function keepWaking(home: string): void {
     // Late by more than a beat: the machine slept or was frozen. The wake's own listener renews the sign-in first and
     // then wakes what fell due (serve.ts); this tick leaves it to that, so nothing goes before the token is back.
     if (gap > WAKE_MS.value * 2 + 10_000) return;
+    try {
+      cutShortUnowned(home);
+      still(home);
+    } catch (error) {
+      diag.warn("jobs", `looking for rows nothing is moving: ${diag.messageOf(error)}`);
+    }
     void wake(home).catch((error: unknown) => diag.warn("jobs", `waking waiting jobs: ${diag.messageOf(error)}`));
   }, WAKE_MS.value);
   timer.unref?.();
   waking.set(home, timer);
+}
+
+/**
+ * A row said running that nothing in this run holds is put to wait after this long since it was last noted: no code
+ * holds it, so nothing can be moving it, and minutes are enough to be sure (a resumer's queue owns every row it was
+ * handed from the start, however long the queue is). Its wait then follows the passing schedule, the first try a
+ * minute on. Nothing to do with the line or a lid close: a held row is never taken, however slow, and after a wake
+ * a row nobody holds is as still as before it.
+ */
+export const UNOWNED_MS = { value: 5 * 60_000 };
+
+/** Rows nothing in this run holds that say running (Nov 20): put to wait, tried again by themselves. Returns their keys. */
+export function cutShortUnowned(home: string, now = nowMs()): string[] {
+  const kept = held(home);
+  const keys: string[] = [];
+  change(home, (jobs) => {
+    for (const job of jobs) {
+      // An agent's turn is carried on only within minutes of a restart (agent.ts): its own minute's note holds it.
+      if (job.state !== "running" || job.kind === "turn" || kept.includes(job.kind) || owned(home, job.key)) continue;
+      if (now - job.updated_ms < failure.scaled(UNOWNED_MS.value)) continue;
+      postpone(job, "cut short: nothing was running");
+      keys.push(job.key);
+    }
+    return keys.length > 0;
+  });
+  if (keys.length > 0) diag.warn("jobs", `${keys.length} row${keys.length === 1 ? "" : "s"} said running with nothing running, put to wait (${keys.join(", ")})`);
+  return keys;
+}
+
+/** A running row with nothing noted for this long is reported (remote_actions.ts selfCheck, the log): it only says so. */
+export const STILL_MS = { value: 15 * 60_000 };
+/** The rows already said in the log as still, with the time they were last noted: said again only once they moved. */
+const saidStill = new Map<string, Map<string, number>>();
+
+/**
+ * The running rows nothing has noted for `STILL_MS` (a step, a beat), oldest first; each logged once as it crosses
+ * the line. It stops nothing: slow isn't stuck, and the row's owner is the one to end it.
+ */
+export function still(home: string | null, now = nowMs()): Job[] {
+  if (home === null) return [];
+  const rows = read(home)
+    .filter((job) => job.state === "running" && now - job.updated_ms > STILL_MS.value)
+    .sort((a, b) => a.updated_ms - b.updated_ms);
+  let said = saidStill.get(home);
+  if (said === undefined) saidStill.set(home, (said = new Map()));
+  for (const job of rows) {
+    if (said.get(job.key) === job.updated_ms) continue;
+    said.set(job.key, job.updated_ms);
+    diag.warn("jobs", `${stillLine(job, now)}${owned(home, job.key) ? "" : " (nothing holds it)"}`);
+  }
+  for (const key of said.keys()) if (!rows.some((job) => job.key === key)) said.delete(key);
+  return rows;
+}
+
+/** A still row's line: "Job export:p1: running, nothing noted for 20 min (step uploading)". */
+export function stillLine(job: Job, now = nowMs()): string {
+  return `Job ${job.key}: running, nothing noted for ${Math.round((now - job.updated_ms) / 60_000)} min${job.step === undefined ? "" : ` (step ${job.step})`}`;
 }
 
 // ---------------------------------------------------------------- held
@@ -783,6 +931,8 @@ export const RESUME_MS = { value: 60_000 };
 const registered = new Map<string, Resumers>();
 
 function startAll(home: string, list: Job[], resumers: Resumers, why: "restart" | "waited" = "restart"): Promise<void> {
+  // Every row handed over is held from now, the last in the queue too (each before it may take up to `RESUME_MS`).
+  for (const job of list) if (resumers[job.kind] !== undefined) own(home, job.key);
   return runPromise(
     Effect.forEach(
       list,
@@ -790,22 +940,52 @@ function startAll(home: string, list: Job[], resumers: Resumers, why: "restart" 
         const run = resumers[job.kind];
         if (run === undefined) return Effect.void;
         return Effect.logInfo(`starting ${job.key} again${job.step ? ` from ${job.step}` : ""} (${why === "restart" ? "cut short by a restart" : "its wait is over"})`).pipe(
-          Effect.andThen(Effect.tryPromise(async () => run(job))),
-          Effect.timeoutOrElse({ duration: RESUME_MS.value, orElse: () => Effect.logWarning(`${job.key} is still starting after ${Math.round(RESUME_MS.value / 1000)} s; the others go on`) }),
-          Effect.catch((error) => {
-            const cause = error instanceof Error && !(error instanceof Gone) && (error as { cause?: unknown }).cause !== undefined ? (error as { cause?: unknown }).cause : error;
-            if (cause instanceof Gone) {
-              return Effect.sync(() => end(home, job.key)).pipe(Effect.andThen(Effect.logInfo(`not starting ${job.key} again: ${cause.message}`)));
-            }
-            // Failed as it starts (an outage, a sign-in lapse, a full disk): waits by what it is and is tried again by itself.
-            if (job.kind !== "turn") return Effect.sync(() => void wait(home, job.key, cause));
-            return Effect.logWarning(`couldn't start ${job.key} again (kept for the next start): ${diag.messageOf(cause)}`);
-          }),
+          Effect.andThen(Effect.promise(() => started(home, job, run))),
         );
       },
       { discard: true },
     ).pipe(inArea("jobs")),
   );
+}
+
+/**
+ * Runs one resumer; still starting after `RESUME_MS`, it's left to it and the next goes on, its failure, however
+ * late, settled all the same (Nov 20: one past the minute that then failed left its row "running" for the run).
+ */
+async function started(home: string, job: Job, run: (job: Job) => Promise<void> | void): Promise<void> {
+  const going = (async () => run(job))();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), RESUME_MS.value)));
+  const outcome = await Promise.race([going.then(() => "done" as const, (error: unknown) => ({ error })), late]);
+  clearTimeout(timer);
+  if (outcome === "done") return;
+  if (outcome === "late") {
+    diag.warn("jobs", `${job.key} is still starting after ${Math.round(RESUME_MS.value / 1000)} s; the others go on`);
+    going.catch((error: unknown) => failedToStart(home, job, error));
+    return;
+  }
+  failedToStart(home, job, outcome.error);
+}
+
+/** A resumer failed: crossed off when what it needs is `Gone`, else it waits by what it is (a turn is kept for the next start). */
+function failedToStart(home: string, job: Job, error: unknown): void {
+  try {
+    const cause = error instanceof Error && !(error instanceof Gone) && (error as { cause?: unknown }).cause !== undefined ? (error as { cause?: unknown }).cause : error;
+    if (cause instanceof Gone) {
+      end(home, job.key);
+      diag.info("jobs", `not starting ${job.key} again: ${cause.message}`);
+      return;
+    }
+    // Failed as it starts (an outage, a sign-in lapse, a full disk): waits by what it is and is tried again by itself.
+    if (job.kind !== "turn") {
+      wait(home, job.key, cause);
+      return;
+    }
+    disown(home, job.key);
+    diag.warn("jobs", `couldn't start ${job.key} again (kept for the next start): ${diag.messageOf(cause)}`);
+  } catch (failed) {
+    diag.warn("jobs", `settling ${job.key} after its start failed: ${diag.messageOf(failed)}`);
+  }
 }
 
 /**

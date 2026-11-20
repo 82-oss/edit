@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 import { folderId, importDrive, importKey, removeStagedCopy, resumeImport } from "../src/drive_import.ts";
+import * as failure from "../src/failure.ts";
 import * as jobs from "../src/jobs.ts";
 import * as uploads from "../src/uploads.ts";
 import { fixtureHome } from "./helpers/home.ts";
@@ -80,6 +81,44 @@ test.skipIf(ffmpeg === null)("a Drive import a restart cut short carries on by i
     expect(footage()).toEqual([]);
     expect(fx.app.store.get(id)!.project.clips.length).toBe(placed);
   } finally {
+    fx.cleanup();
+    restore();
+    mock.stop();
+  }
+}, 60_000);
+
+test("a Drive import whose download drops waits in the table and is tried again by itself, never ended with only a log line (Nov 20)", async () => {
+  const mock = MockServer.start();
+  const restore = mock.useEnv();
+  const fx = fixtureHome("drive-import-drop");
+  const waits = failure.PASSING_WAITS.value;
+  failure.PASSING_WAITS.value = [0, 0, 0];
+  try {
+    let asked = 0;
+    mock.on("GET", "/drive.usercontent.google.com/download", () => {
+      asked += 1;
+      return new Response("upstream connect error or disconnect/reset before headers. reset reason: connection reset", { status: 503 });
+    });
+    const url = "https://drive.google.com/file/d/1DropDropDropDropDrop/view";
+    const id = fx.app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const home = fx.app.store.home;
+    const key = importKey(id, url);
+    // Cut short by a restart mid-download, then the line drops as it carries on.
+    jobs.begin(home, "footage", id, { url, place: true, origin: "" }, key.split(":").at(-1)!, "downloading");
+    resumeImport(fx.app, jobs.get(home, key)!);
+    for (let i = 0; i < 200 && jobs.get(home, key)?.state === "running"; i++) await Bun.sleep(25);
+    const row = jobs.get(home, key)!;
+    expect(row).toMatchObject({ state: "waiting", put_off: 1 });
+    expect(typeof row.retry_at).toBe("number");
+    // Its wait over, the table's resumer carries it on: tried again, and waits again while the line is down.
+    const before = asked;
+    jobs.useResumers(home, { footage: (job) => resumeImport(fx.app, job) });
+    await jobs.wake(home, ["footage"]);
+    for (let i = 0; i < 200 && jobs.get(home, key)?.put_off !== 2; i++) await Bun.sleep(25);
+    expect(asked).toBeGreaterThan(before);
+    expect(jobs.get(home, key)).toMatchObject({ state: "waiting", put_off: 2 });
+  } finally {
+    failure.PASSING_WAITS.value = waits;
     fx.cleanup();
     restore();
     mock.stop();

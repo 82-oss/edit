@@ -151,6 +151,28 @@ test("an edit's missing footage waits in the job table, its tries counted there,
   }
 });
 
+test("a project deleted while its missing footage is tried ends its row, never left \"running\" for the run (Nov 20)", async () => {
+  const { app, store, id, cleanup } = await withProject("edit-missing-deleted");
+  try {
+    await missingMedia.state(app, id);
+    const key = jobs.keyOf("media", id);
+    // Woken by the table: running, as its resumer starts it.
+    jobs.step(app.store.home, key, "trying again by itself");
+    let calls = 0;
+    const going = new Proxy(store, {
+      get(target, prop) {
+        if (prop === "get") return (one: string) => (calls++ === 0 ? target.get(one) : null);
+        const value = (target as unknown as Record<string | symbol, unknown>)[prop];
+        return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      },
+    });
+    await expect(missingMedia.tryAgain({ ...app, store: going } as typeof app, id)).rejects.toThrow(/no such project/);
+    expect(jobs.get(app.store.home, key)).toBeUndefined();
+  } finally {
+    cleanup();
+  }
+});
+
 // Nov 18, JJ: after "Go on without it" the edit must still play and export. Its export failed on the file it no longer
 // had ("the edit uses files that aren't on this machine"): now that footage plays nothing, its time kept.
 test("footage gone without plays nothing in what's rendered, its time kept: its pictures empty cards, its sound left out", async () => {

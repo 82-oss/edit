@@ -32,6 +32,14 @@ export const hooks = {
 /** What an import did: the project's rev after it, the media ids added (or found), and what couldn't come in. */
 export type Imported = [rev: number, added: string[], errors: string[]];
 
+/**
+ * Footage imports going now (New project, the chat, the file browser): no row of their own, so counted here for as
+ * long as `importPaths` runs, hash, lookup and a proxy encode of up to 45 minutes. busy.ts reads it: the Mac is kept
+ * awake for it and a restart from afar sees it (Nov 20: it could idle-sleep mid-encode).
+ */
+let going = 0;
+export const importingNow = (): boolean => going > 0;
+
 export async function importPaths(
   app: App,
   id: string,
@@ -39,6 +47,15 @@ export async function importPaths(
   place: boolean,
   origin: string,
 ): Promise<Imported> {
+  going += 1;
+  try {
+    return await importNow(app, id, paths, place, origin);
+  } finally {
+    going -= 1;
+  }
+}
+
+async function importNow(app: App, id: string, paths: string[], place: boolean, origin: string): Promise<Imported> {
   const probed: [string, media.Probe][] = [];
   const errors: string[] = [];
   const names = new Map<string, string>();

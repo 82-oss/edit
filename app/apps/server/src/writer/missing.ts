@@ -137,6 +137,12 @@ export async function tryAgain(id: string, all = false): Promise<void> {
     durable.end(home, keyOf(id));
     return;
   }
+  // Written already: nothing that comes now can be joined (imports.ts `rejoin` refuses), so it isn't fetched every
+  // minute for good (Nov 20). Its row ends, and each recording is left out with a note: it's added from the footage list.
+  if (written(script)) {
+    leaveOut(app, data, id, missing.map((one) => one.id));
+    return;
+  }
   const now = Date.now();
   const wanted = missing.filter((one) => all || one.nextAt <= now);
   if (wanted.length === 0) {
@@ -178,6 +184,11 @@ export async function tryAgain(id: string, all = false): Promise<void> {
     try {
       imports.rejoin(app, data, id, arrived);
     } catch (error) {
+      // Written while it came down: left out, as above, never tried again every minute.
+      if (written(script)) {
+        leaveOut(app, data, id, (script.missing ?? []).map((one) => one.id));
+        return;
+      }
       diag.warn("writer", `${jobs.named(id, script.title)}: what came in wasn't joined into the case yet: ${diag.messageOf(error)}`);
       schedule(id, nextAt(1, error));
       return;
@@ -231,6 +242,39 @@ export async function answer(app: App, data: string, id: string, choice: Choice 
   }
   return saved;
 }
+
+/** Whether the script is written (imports.ts `rejoin`'s own test): footage that comes now can't be joined into it. */
+function written(script: Script): boolean {
+  return script.clips.some((clip) => clip.kind === "cut-in" || (clip.narration ?? "") !== "");
+}
+
+/** Recordings that came too late for a written script: off the missing list (in its list's skipped), each with a note, and the row ended. */
+function leaveOut(app: App, data: string, id: string, ids: string[]): void {
+  const dir = store.scriptDir(data, id);
+  try {
+    const videos = parts.readVideos(dir);
+    if (videos !== null) parts.writeVideos(dir, { ...videos, missing: (videos.missing ?? []).filter((item) => !ids.includes(item)), skipped: [...new Set([...videos.skipped, ...ids])] });
+    const manifest = parts.readManifest(dir);
+    if (manifest !== null) parts.writeManifest(dir, { ...manifest, missing: (manifest.missing ?? []).filter((item) => !ids.includes(item)), skipped: [...new Set([...manifest.skipped, ...ids])] });
+    const saved = store.update(dir, (fresh) => {
+      const out = (fresh.missing ?? []).filter((item) => ids.includes(item.id));
+      const left = (fresh.missing ?? []).filter((item) => !ids.includes(item.id));
+      if (left.length > 0) fresh.missing = left;
+      else delete fresh.missing;
+      fresh.notes ??= [];
+      for (const one of out) {
+        const said = tooLateNote(one.title);
+        if (!fresh.notes.includes(said)) fresh.notes.push(said);
+      }
+    }, true);
+    diag.info("writer", `${jobs.named(id, saved.title)}: written already, so ${ids.length} recording${ids.length === 1 ? "" : "s"} that didn't come in ${ids.length === 1 ? "is" : "are"} left out (to add from the footage list)`);
+  } catch (error) {
+    diag.warn("writer", `${id}: leaving out what came too late: ${diag.messageOf(error)}`);
+  }
+  durable.end(app.store.home, keyOf(id));
+}
+
+const tooLateNote = (title: string): string => `${title} didn't come in before the script was written: add it from the footage list.`;
 
 const LEFT_OUT = "Left out at the producer's word: ";
 const leftOutNote = (title: string): string => `${LEFT_OUT}${title} didn't come in.`;

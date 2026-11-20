@@ -112,12 +112,26 @@ const DRIVE_LIMIT = /download limit for this file|Too many users|downloadQuotaEx
 const PERSON = /isn't shared|can't find this file|deleted, or in the trash|Private video|This video is private|confirm your age|age.restricted|members.only|Join this channel|not available in your country|blocked it in your country|Video unavailable|has been removed|has been terminated|no longer available|isn't a Drive file|isn't a YouTube video|has no bytes|A shared folder master|is not uploaded yet|pictures only, with no video|only shown to someone signed in/i;
 /** The disk full, in the system's words or Edit's own (older builds' "There isn't room on this Mac for …"). */
 const ROOM = /no space left on device|ENOSPC|There isn't room on this|needs? (about )?[\d.]+ ?[MG]B free|out of room/i;
-/** A connection, a timeout or a busy service, in the words a job keeps (Edit's own, FFmpeg's, Bun's fetch). */
-const PASSING = /could not reach|unreachable|socket connection was closed|connection (reset|refused|timed out)|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|getaddrinfo|timed out|didn't answer|took more than|made no progress|being renewed|network|Server returned 5(\d\d|XX)|\(5\d\d\)|busy|Input\/output error|No route to host|Failed to resolve hostname|Could not resolve host|Failed to connect|Stream ends prematurely|Invalid data found when processing input|Unable to connect|transfer closed with|SSL_ERROR_SYSCALL|was not closed cleanly|Broken pipe/i;
+/** A connection, a timeout or a busy service, in the words a job keeps (Edit's own, FFmpeg's, Bun's fetch; macOS yt-dlp's for a dead line, Nov 20). */
+const PASSING = /could not reach|unreachable|socket connection was closed|connection (reset|refused|timed out)|ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|getaddrinfo|timed out|didn't answer|took more than|made no progress|being renewed|network|Server returned 5(\d\d|XX)|\(5\d\d\)|busy|Input\/output error|No route to host|Failed to resolve hostname|Could not resolve host|Failed to connect|Stream ends prematurely|Invalid data found when processing input|Unable to connect|transfer closed with|SSL_ERROR_SYSCALL|was not closed cleanly|Broken pipe|nodename nor servname provided|\[Errno 8\]|Temporary failure in name resolution|Name or service not known|urlopen error|stood still/i;
 /** The codes Bun, Node and curl give a connection that failed or dropped: passing, whatever the words say. */
 const PASSING_CODES = new Set(["ConnectionRefused", "ConnectionClosed", "FailedToOpenSocket", "ECONNRESET", "ECONNREFUSED", "ETIMEDOUT", "ENOTFOUND", "EAI_AGAIN", "EPIPE", "ENETUNREACH", "EHOSTUNREACH", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"]);
 /** No sign-in at all, in an older build's words kept in a job. */
 const SIGNIN = /Sign in to Edit to go on|needs? you signed in to Edit/i;
+
+/**
+ * Edit's own queue, in writer/imports.ts `busy`'s words: three imports already running, or the project's job not
+ * finished. Not trouble: passing, never counted as the same failure in a row, tried again in a minute (Nov 20: a
+ * fourth Script import woken four times behind three others was failed for good, Home showing "Importing" for ever).
+ */
+const OUR_QUEUE = /imports are already running|Wait for this project's current job/i;
+/** How soon work refused by Edit's own queue is tried again: about when one of the three running may have finished its step. */
+const QUEUE_WAIT_MS = 60_000;
+
+/** Whether `error` is Edit's own queue saying not yet (`OUR_QUEUE`). */
+export function ourQueue(error: unknown): boolean {
+  return OUR_QUEUE.test(typeof error === "string" ? error : diag.messageOf(error));
+}
 
 /** Tagged errors only the person can answer: a Drive file not shared with Edit, footage no longer where it was. */
 const PERSON_TAGS = new Set(["DriveNotShared", "FootageMissing"]);
@@ -178,6 +192,7 @@ export function surely(error: unknown): Kind | null {
   }
   if (typeof error !== "string" && isBug(error)) return "broken";
   const words = typeof error === "string" ? error : diag.messageOf(error);
+  if (OUR_QUEUE.test(words)) return "passing";
   if (ROOM.test(words)) return "room";
   if (DRIVE_LIMIT.test(words)) return "limit";
   if (QUOTA.test(words)) return "quota";
@@ -225,6 +240,7 @@ const AFTER_RESET_MS = 60_000;
 export function nextTry(kind: Kind, tries: number, now: number, error?: unknown): number | null {
   switch (kind) {
     case "passing": {
+      if (error !== undefined && ourQueue(error)) return now + scaled(QUEUE_WAIT_MS);
       const waits = PASSING_WAITS.value;
       return now + scaled(waits[Math.max(tries, 0)] ?? PASSING_EVERY_MS.value);
     }

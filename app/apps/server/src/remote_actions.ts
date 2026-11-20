@@ -133,6 +133,8 @@ export function selfCheck(app: App): string[] {
     if (job.state !== "waiting" || typeof job.args.same_count !== "number" || job.args.same_count < 3) continue;
     out.push(`Job ${job.key}: the same failure ${job.args.same_count} times in a row (${String(job.args.same_why ?? job.why ?? "").slice(0, 160)}).`);
   }
+  // Running and nothing noted for 15 minutes (Nov 20): said here and once in the log as it crosses the line; it stops nothing.
+  for (const job of jobs.still(app.store.home)) out.push(`${jobs.stillLine(job)}.`);
   return out;
 }
 

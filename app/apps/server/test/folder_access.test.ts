@@ -270,3 +270,15 @@ test("the export folder saved on a drive isn't looked at while macOS is asked ab
     cleanup();
   }
 });
+
+test("a place that never answers is given up on after its time, so the start's resume goes on; one that answers in time is waited for (Nov 20)", async () => {
+  const probe = heldProbe();
+  const began = Date.now();
+  expect(await folderAccess.reachRootsWithin(["/Volumes/Dead"], 200)).toBe(false);
+  expect(Date.now() - began).toBeGreaterThanOrEqual(190);
+  expect(probe.asked).toEqual(["/Volumes/Dead"]);
+  const asked = folderAccess.reachRootsWithin(["/Volumes/Alive"], 5_000);
+  await Bun.sleep(20);
+  probe.answer("/Volumes/Alive");
+  expect(await asked).toBe(true);
+});

@@ -119,3 +119,28 @@ test("the editor's import keeps the most room its files said they need, so the t
   expect(roomFor([new failure.NoRoom(2e9), new Error("could not reach Edit's relay"), Object.assign(new Error("wrapped"), { cause: new failure.NoRoom(5.5e9) }), undefined])).toBe(5.5e9);
   expect(roomFor([new Error("could not reach Edit's relay")])).toBe(0);
 });
+
+test("Edit's own import queue is passing, known (never counted as the same failure), and tried again in a minute (Nov 20)", () => {
+  for (const words of ["3 imports are already running. Try again when one finishes.", "Wait for this project's current job to finish before retrying its import."]) {
+    expect(failure.surely(new Error(words))).toBe("passing");
+    expect(failure.ourQueue(words)).toBe(true);
+    expect(failure.nextTry("passing", 7, 1_000_000, new Error(words))).toBe(1_060_000);
+  }
+  expect(failure.ourQueue("could not reach Edit's relay")).toBe(false);
+});
+
+test("a dead line in macOS yt-dlp's words, and a YouTube download that stopped part-way or stood still, are passing, never the person's (Nov 20)", async () => {
+  const { DownloadFailed } = await import("../src/youtube.ts");
+  for (const words of [
+    "ERROR: unable to download video data: <urlopen error [Errno 8] nodename nor servname provided, or not known>",
+    "[Errno -3] Temporary failure in name resolution",
+    "[Errno -2] Name or service not known",
+    "ERROR: The download stood still (nothing for 10 minutes).",
+  ]) {
+    expect(failure.surely(words)).toBe("passing");
+  }
+  for (const reason of ["StoppedPartWay", "StoodStill", "RouteRefused"]) {
+    expect(failure.surely(new DownloadFailed({ reason, message: "YouTube video abcdefghijk couldn't be downloaded: something new" }))).toBe("passing");
+  }
+  expect(failure.surely(new DownloadFailed({ reason: "VideoGone", message: "YouTube video abcdefghijk couldn't be downloaded: Video unavailable" }))).toBe("person");
+});

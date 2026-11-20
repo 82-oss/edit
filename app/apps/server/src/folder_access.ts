@@ -214,6 +214,21 @@ export function reachRoots(roots: Iterable<string>): Promise<void> {
   return open.length === 0 ? Promise.resolve() : Promise.all(open.map(ask)).then(() => undefined);
 }
 
+/**
+ * `reachRoots`, but given up on after `ms`: true when every place answered in time. A dead network mount or a
+ * question nobody answers must not hold what waits on it for good (Nov 20: every resume and wake of the run sat
+ * behind one); places that answer later are fine, and work there waits for them by itself (`reach`).
+ */
+export async function reachRootsWithin(roots: Iterable<string>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<false>((resolve) => (timer = setTimeout(() => resolve(false), ms)));
+  try {
+    return await Promise.race([reachRoots(roots).then(() => true as const), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** The places `paths` are in (their links followed) that haven't answered. */
 export function unanswered(paths: Iterable<string>): string[] {
   const roots = new Set<string>();

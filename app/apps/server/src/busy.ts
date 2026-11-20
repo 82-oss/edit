@@ -6,6 +6,7 @@
 
 import type { App } from "./app.ts";
 import { importing } from "./drive_import.ts";
+import { importingNow } from "./import.ts";
 import * as ideaRuns from "./ideas/run.ts";
 import * as jobs from "./jobs.ts";
 import * as progress from "./progress.ts";
@@ -147,7 +148,7 @@ export function runningNow(app: App, agentTurns = true): string[] {
     archiving ? "an export going up to the cloud" : "",
     shares > 0 ? (shares === 1 ? "a share" : `${shares} shares`) : "",
     uploading ? "an upload to Drive" : "",
-    (app.scripts as ScriptJobs | undefined)?.running?.() || importing() ? "a footage import" : "",
+    (app.scripts as ScriptJobs | undefined)?.running?.() || importing() || importingNow() ? "a footage import" : "",
     writerImports.anyImporting() ? "a script's import" : "",
     writerJobs.runningList().length > 0 ? "Claude on a script" : "",
     agentTurns && turns ? "an agent turn" : "",

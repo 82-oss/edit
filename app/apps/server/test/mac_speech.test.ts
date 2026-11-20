@@ -85,3 +85,56 @@ test.skipIf(!here)("an aborted hearing stops and rejects", async () => {
   await expect(heard).rejects.toThrow();
   expect(fs.existsSync(`${dir.dir}/long.json`)).toBe(false);
 }, 60_000);
+
+// Nov 20: a helper stuck (its first model download with the Wi-Fi gone) held every Script import behind it.
+test("a helper that hangs is stopped after the quiet limit with a passing error, and the next hearing in the queue goes", async () => {
+  const failure = await import("../src/failure.ts");
+  const wake = await import("../src/wake.ts");
+  const hung = `${dir.dir}/hung-edit-speech`;
+  fs.writeFileSync(hung, '#!/bin/sh\necho "speech: downloading the en-US model" >&2\nexec sleep 600\n');
+  fs.chmodSync(hung, 0o755);
+  const good = `${dir.dir}/good-edit-speech`;
+  fs.writeFileSync(good, '#!/bin/sh\nprintf \'{"words":[{"text":"Hello","start":0,"end":0.4}],"language":"en-US","ms":10,"seconds":1}\'\n');
+  fs.chmodSync(good, 0o755);
+  const before = { ...macSpeech.LIMITS };
+  macSpeech.LIMITS.quietMs = 400;
+  macSpeech.timing.helper = hung;
+  try {
+    const began = Date.now();
+    const first = macSpeech.hear(`${dir.dir}/none.wav`, `${dir.dir}/hung.json`);
+    // A wake while it hangs starts its clock again: not stopped for the time the lid was shut.
+    await Bun.sleep(250);
+    wake.woke(15 * 60_000);
+    const error = await first.then(() => null, (failed: unknown) => failed);
+    expect(error).toBeInstanceOf(failure.StoodStill);
+    expect(failure.kindOf(error)).toBe("passing");
+    expect(Date.now() - began).toBeGreaterThanOrEqual(600);
+    macSpeech.timing.helper = good;
+    const heard = await macSpeech.hear(`${dir.dir}/none.wav`, `${dir.dir}/good.json`);
+    expect(heard.words.map((word) => word.text)).toEqual(["Hello"]);
+  } finally {
+    Object.assign(macSpeech.LIMITS, before);
+    macSpeech.timing.helper = undefined;
+  }
+}, 20_000);
+
+const ffmpeg = Bun.which("ffmpeg");
+test.skipIf(ffmpeg === null)("a helper that keeps talking but never finishes is stopped at twice the audio's length (at least the floor)", async () => {
+  const failure = await import("../src/failure.ts");
+  const chatty = `${dir.dir}/chatty-edit-speech`;
+  fs.writeFileSync(chatty, '#!/bin/sh\nwhile true; do echo "speech: read 1%" >&2; sleep 0.1; done\n');
+  fs.chmodSync(chatty, 0o755);
+  const audio = `${dir.dir}/short.wav`;
+  expect(Bun.spawnSync([ffmpeg!, "-v", "error", "-y", "-f", "lavfi", "-i", "sine=d=0.2", audio]).exitCode).toBe(0);
+  const before = { ...macSpeech.LIMITS };
+  Object.assign(macSpeech.LIMITS, { quietMs: 5_000, leastMs: 700, perAudio: 2 });
+  macSpeech.timing.helper = chatty;
+  try {
+    const error = await macSpeech.hear(audio, `${dir.dir}/chatty.json`).then(() => null, (failed: unknown) => failed);
+    expect(error).toBeInstanceOf(failure.StepTimedOut);
+    expect(failure.kindOf(error)).toBe("passing");
+  } finally {
+    Object.assign(macSpeech.LIMITS, before);
+    macSpeech.timing.helper = undefined;
+  }
+}, 20_000);

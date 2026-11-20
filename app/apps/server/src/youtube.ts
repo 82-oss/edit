@@ -36,6 +36,8 @@ import { compiled } from "./update.ts";
 import { cookieArgs, supported as signInSupported } from "./youtube_signin.ts";
 import { join, parent } from "./paths.ts";
 import { THIS_MACHINE } from "./machine.ts";
+import * as service from "./effect/service.ts";
+import * as wake from "./wake.ts";
 
 /** The prefix of a script file that's a YouTube video. */
 export const PREFIX = "youtube:";
@@ -269,6 +271,12 @@ export type TryFailure = VideoGone | NeedsSignIn | YtdlpOutdated | RouteRefused 
 
 /** Every route was tried, or none could help: the reason the last one failed. */
 export class DownloadFailed extends Schema.TaggedError<DownloadFailed>()("DownloadFailed", { reason: Schema.String, message: Schema.String }) {}
+
+// The last reason is what the download's failure is (Nov 20: a dropped line under a single video in Script mode
+// read as "The import stopped"): stopped part-way, stood still or refused on every route passes; the rest is read
+// by its words (failure.ts), the gone and the signed-in-only being the person's.
+const PASSING_REASONS = new Set(["StoppedPartWay", "StoodStill", "RouteRefused"]);
+service.kinds({ DownloadFailed: (error) => (PASSING_REASONS.has((error as { reason?: unknown }).reason as string) ? "temporary" : "later") });
 
 /** Whether yt-dlp's words say YouTube refused this Mac (worth the proxy). */
 function refused(stderr: string): boolean {
@@ -517,6 +525,8 @@ const overRoutes = Effect.fn("youtube.overRoutes")(function* (
       return at < 0 ? null : at;
     };
     let tries = 0;
+    // The routes tried again once after a sleep cut their try.
+    const wokeAgain = new Set<number>();
     // Whether every try of this pass was YouTube refusing an address (a wave), and nothing else.
     let refusedEvery = true;
     let ended = false;
@@ -525,6 +535,13 @@ const overRoutes = Effect.fn("youtube.overRoutes")(function* (
       tries++;
       const began = Date.now();
       const tried = yield* tryRoute(binary, url, dir, route, progress, range, format);
+      // The machine slept during the try and it failed: the sleep cut it (a dropped line, a frozen download), not the
+      // route. The same route again, once, never the next one (the paid proxy) spent on it (Nov 20).
+      if (tried.path === null && tried.woke === true && !wokeAgain.has(attempt)) {
+        wokeAgain.add(attempt);
+        yield* Effect.logWarning(`${id}: the machine slept during the try (${errorLine(tried.stderr)}); the same way again`);
+        continue;
+      }
       diag.record("youtube", "youtube: download", Date.now() - began, tried.path === null ? `${id}${said(route)}: ${errorLine(tried.stderr)}` : null);
       if (tried.path !== null) {
         if (route === "straight") straightRefusedAt = -Infinity;
@@ -735,6 +752,8 @@ const tryRoute = Effect.fn("youtube.tryRoute")(function* (
   let largest = 0;
   let path: string | null = null;
   let heard = Date.now();
+  /** The machine slept while this try ran (`overRoutes` tries the same route again). */
+  let woke = false;
   const line = (text: string) => {
     heard = Date.now();
     const said = text.trim();
@@ -780,17 +799,32 @@ const tryRoute = Effect.fn("youtube.tryRoute")(function* (
   );
   // Nothing said for this long (no progress, no merge finishing): stopped, and
   // the try counts as a failed one, never a download frozen for good.
+  // Its clock starts again when the machine wakes (Nov 20: a lid shut over ten minutes killed the try the moment it
+  // opened, yt-dlp frozen with it, and spent a route, the paid proxy too): seen by wake.ts, or by this watch's own
+  // look coming late (whichever is first).
+  const every = Math.min(timing.quiet, 5000);
+  let looked = Date.now();
+  const offWake = wake.onWake(() => {
+    heard = Date.now();
+    woke = true;
+  });
   const quiet = Effect.gen(function* () {
     for (;;) {
-      yield* Effect.sleep(Math.min(timing.quiet, 5000));
-      if (Date.now() - heard >= timing.quiet) return { code: -1, stderr: `${STOOD_STILL} (nothing for ${Math.round(timing.quiet / 60_000)} minutes).` };
+      yield* Effect.sleep(every);
+      const now = Date.now();
+      if (now - looked > every + wake.GAP_MS.value) {
+        heard = now;
+        woke = true;
+      }
+      looked = now;
+      if (now - heard >= timing.quiet) return { code: -1, stderr: `${STOOD_STILL} (nothing for ${Math.round(timing.quiet / 60_000)} minutes).` };
     }
   });
-  const watched = Effect.raceFirst(run, quiet);
+  const watched = Effect.raceFirst(run, quiet).pipe(Effect.ensuring(Effect.sync(offWake)));
   const ran = yield* range === null
     ? watched
     : watched.pipe(Effect.timeoutOrElse({ duration: EXCERPT_MS, orElse: () => Effect.succeed({ code: -1, stderr: "ERROR: The excerpt took more than 12 minutes and was stopped." }) }));
-  if (ran.code !== 0) return { path: null, stderr: ran.stderr };
+  if (ran.code !== 0) return { path: null, stderr: ran.stderr, woke };
   // yt-dlp said yes and made nothing (a route withholding formats can hand
   // back only storyboards): say so in words `reasonOf` reads.
   // Set by `line` as the output came: the type checker can't see into it.

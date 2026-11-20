@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
+import * as failure from "./failure.ts";
 import { NoRoom } from "./failure.ts";
 import * as jobs from "./jobs.ts";
 import { importPaths, placeAtEnd, type Imported } from "./import.ts";
@@ -107,21 +108,26 @@ export function resumeImport(app: App, job: jobs.Job): void {
     finish(app, job.key, job.project, media as string[], paths as string[], whole === true, true);
     return;
   }
-  void run(app, job.key, job.project, url, place !== false, from, true).catch((error: unknown) =>
-    diag.warn("drive", `${job.project}: the Drive footage a restart cut off didn't come in: ${diag.messageOf(error)}`),
-  );
+  void run(app, job.key, job.project, url, place !== false, from, true).catch((error: unknown) => {
+    const waiting = jobs.get(app.store.home, job.key)?.state === "waiting";
+    diag.warn("drive", `${job.project}: the Drive footage a restart cut off didn't come in${waiting ? " yet (tried again by itself)" : ""}: ${diag.messageOf(error)}`);
+  });
 }
 
 function run(app: App, key: string, id: string, url: string, place: boolean, origin: string, resumed: boolean): Promise<Imported> {
   // Failed, it ends (the person is told); cut by Edit restarting itself, the table is frozen and it stays for the next run.
   // At Google Drive's download limit for the day, it waits in the table instead and the table wakes it once Google
   // allows it (import_steps.ts `retryAt`): "try later" was said, and Edit never did (Nov 16 audit).
+  // Anything else that passes (a dropped line, "Download stopped", a full disk) waits in the table too and is tried again
+  // by itself on failure.ts's schedule, its downloads resuming (Nov 20: it ended the row, so after a restart the
+  // footage never came and nothing said so). Only the person's (not shared, deleted) or Edit's own bug ends it.
   const work = importDriveNow(app, key, id, url, place, origin, resumed).catch((error: unknown) => {
     if (steps.whyOf(error) === "limit") {
       const at = steps.retryAt("limit", Date.now(), error)!;
       diag.warn("drive", `${id}: Google Drive's download limit is used up for ${url}; tried again by itself at ${new Date(at).toLocaleString()}`);
       jobs.settle(app.store.home, key, "waiting", { step: "waiting for Google Drive", retry_at: at });
-    } else jobs.end(app.store.home, key);
+    } else if (failure.waitsByItself(failure.kindOf(error))) jobs.wait(app.store.home, key, error);
+    else jobs.end(app.store.home, key);
     throw error;
   });
   going.set(key, work);
@@ -147,7 +153,8 @@ async function importDriveNow(app: App, key: string, id: string, url: string, pl
   const paths: string[] = [];
   for (const one of files) {
     const dir = join(app.store.uploadsDir(id), "drive", one.id);
-    const path = await diag.timeOnAsync("drive", "drive: download footage", one.name, () => script.download(dir, one.id, () => {}));
+    // Its bytes coming down note the row (at most every 30 s), so a long download never reads as still.
+    const path = await diag.timeOnAsync("drive", "drive: download footage", one.name, () => script.download(dir, one.id, () => jobs.beat(home, key)));
     paths.push(path);
   }
   jobs.step(home, key, "importing", { paths });

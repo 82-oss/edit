@@ -312,3 +312,32 @@ test("a hearing moves with its recording when one joins before it; what nobody k
     cleanup();
   }
 });
+
+test("a script written already isn't fetched again every minute for good: its row ends and the recording is left out with a note (Nov 20)", async () => {
+  const { app, cleanup } = fixtureHome("missing-written");
+  try {
+    const data = store.dataDir(app.store.home);
+    const id = crypto.randomUUID();
+    const dir = store.scriptDir(data, id);
+    fs.mkdirSync(join(dir, "pieces"), { recursive: true });
+    parts.writeManifest(dir, { recordings: names.map((name, n) => ({ id: ids[n]!, name, size: 1000, audio: false, claimedMs: (2 + n) * 1000, md5: null })), skipped: [], missing: [ids[1]!] });
+    const now = Date.now();
+    store.write(dir, {
+      id, title: "Written case", sourceKind: "drive", sourceUrl: URL_, originalPath: "", status: "ready", stage: "ready", progress: 100, error: null,
+      durationMs: 5000, words: [], clips: [{ id: "c1", kind: "cut-in", narration: "" }], overview: [], parts: [], notes: [], kind: "interrogation", revision: 1, createdAt: now, updatedAt: now, proxyPath: null,
+      missing: [{ id: ids[1]!, title: "CH02.mp4", error: "no", tries: 3, nextAt: now - 1000 }],
+    } as unknown as Script);
+    missing.start(app, data);
+    missing.schedule(id, now - 1000);
+    const fetched = mock.calls(`/www.googleapis.com/drive/v3/files/${ids[1]}`).length;
+    await missing.tryAgain(id, true);
+    expect(durable.get(app.store.home, durable.keyOf("missing", id))).toBeUndefined();
+    expect(mock.calls(`/www.googleapis.com/drive/v3/files/${ids[1]}`).length).toBe(fetched);
+    const after = store.read(dir);
+    expect(after.missing).toBeUndefined();
+    expect(after.notes).toEqual(["CH02.mp4 didn't come in before the script was written: add it from the footage list."]);
+    expect(parts.readManifest(dir)).toMatchObject({ missing: [], skipped: [ids[1]!] });
+  } finally {
+    cleanup();
+  }
+});

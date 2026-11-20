@@ -565,8 +565,10 @@ function wakeAfterTrouble(app: App): void {
   });
   outages.onBack((destination) => void jobs.wakePassing(app.store.home, `${destination === "relay" ? "Edit's relay" : "R2"} answers again`));
   // Someone signed in (or back in): work waiting on a sign-in goes now, not at its next look (verify.md finding 4).
-  accounts.onSessionChange(() => {
-    if (accounts.hasSession()) void jobs.wakePassing(app.store.home, "signed in");
+  // Only when there was no good token before: a routine renewal ends no wait (Nov 20: each one woke every waiting
+  // job and spent the passing schedule's tries, three in six seconds on the fault-injection run).
+  accounts.onSessionChange((what) => {
+    if (what === "signed-in" && accounts.hasSession()) void jobs.wakePassing(app.store.home, "signed in");
   });
 }
 
@@ -575,6 +577,9 @@ function wakeAfterTrouble(app: App): void {
  * exports, archives, shares, fixes, agent turns, Ideas and Thumbnails runs,
  * uploads, smoothing, watches and map renders.
  */
+/** How long resuming waits for the jobs' folders to answer before it goes on without them. */
+const RESUME_FOLDERS_MS = 60_000;
+
 async function resumeJobs(app: App): Promise<void> {
   // A job reads its files synchronously as it starts (an upload's original, an export's folder, its project's
   // footage): the places those are in that macOS may ask about answer first, off the event loop.
@@ -587,7 +592,9 @@ async function resumeJobs(app: App): Promise<void> {
     const roots = folderAccess.unanswered(paths);
     if (roots.length > 0) {
       diag.info("jobs", `resuming once ${roots.join(", ")} answer${roots.length === 1 ? "s" : ""} (macOS may be asking)`);
-      await folderAccess.reachRoots(roots);
+      // At most a minute (Nov 20: one hung network mount held every resume and wake of the run): a minute is long
+      // enough for someone at the Mac to answer macOS's question; after it, the work goes on and what's there waits.
+      if (!(await folderAccess.reachRootsWithin(roots, RESUME_FOLDERS_MS))) diag.warn("jobs", `${roots.join(", ")} didn't answer within ${RESUME_FOLDERS_MS / 1000} s (a drive gone, or macOS still asking): resuming the work anyway; what's there waits for it`);
     }
   } catch (error) {
     diag.warn("jobs", `looking at the jobs' folders before resuming them: ${diag.messageOf(error)}`);
@@ -663,7 +670,7 @@ async function resumeJobs(app: App): Promise<void> {
       // A review version's full-quality file for its Download button: the rest of its parts.
       const { name, path, key, version } = job.args as { name: string; path: string; key: string; version?: number };
       if (!fs.existsSync(path)) throw new jobs.Gone(`${path} is gone`);
-      void reviews.fullBehind(app.store.home, job.project, name, path, key, version);
+      void reviews.fullBehind(app.store.home, job.project, name, path, key, version).catch(settleBehind(app.store.home, job.key, "review", `${job.project}: its full-quality file`, () => !fs.existsSync(path)));
     },
     share: (job) => reviews.resumeShareJob(app, job),
     fix: (job) => reviews.resumeFix(app, job),
@@ -684,19 +691,33 @@ async function resumeJobs(app: App): Promise<void> {
       // Its row stays from start to "ready" (the import ends it, or waits in it again); one that can't even start waits too.
       void writerImports.resume(app, data, job.project, { kind: "retry" }).catch((error: unknown) => {
         diag.warn("writer", `trying ${job.project}'s import again: ${diag.messageOf(error)}`);
-        if (!writerImports.importing(job.project)) jobs.wait(app.store.home, job.key, error);
+        if (writerImports.importing(job.project)) return;
+        try {
+          jobs.wait(app.store.home, job.key, error);
+          // Its row failed (the same refusal four times): the script says it stopped, never "Importing" for ever (Nov 20).
+          const after = jobs.get(app.store.home, job.key);
+          if (after === undefined || after.state === "failed") {
+            writerStore.update(writerStore.scriptDir(data, job.project), (script) => {
+              if (script.status !== "processing") return;
+              script.status = "error";
+              script.error = diag.messageOf(error);
+            }, true);
+          }
+        } catch (failed) {
+          diag.warn("writer", `settling ${job.project}'s import: ${diag.messageOf(failed)}`);
+        }
       });
     },
     // An edit's footage that isn't here: fetched again from where it came from.
     media: (job) => {
       project(job.project);
-      void missingMediaTries.tryAgain(app, job.project).catch((error: unknown) => diag.warn("cloud", `${job.project}: trying its missing footage again: ${diag.messageOf(error)}`));
+      void missingMediaTries.tryAgain(app, job.project).catch(settleBehind(app.store.home, job.key, "cloud", `${job.project}: trying its missing footage again`, () => app.store.get(job.project) === null));
     },
     // A script's recordings that didn't come in: every one tried now (its row woke at the soonest's time, or as the connection came back).
     missing: (job) => {
       const data = writerStore.dataDir(app.store.home);
       if (!writerStore.ids(data).includes(job.project)) throw new jobs.Gone("the script is gone");
-      void writerMissing.tryAgain(job.project, true);
+      void writerMissing.tryAgain(job.project, true).catch(settleBehind(app.store.home, job.key, "writer", `${job.project}: trying its missing recordings again`, () => !writerStore.ids(data).includes(job.project)));
     },
     // Claude on a Writer script (a build, a revision, review fixes…): started again from what it was started with and kept.
     writer: async (job) => (await import("./writer/work.ts")).carryOn(app, job),
@@ -717,6 +738,23 @@ async function resumeJobs(app: App): Promise<void> {
       if (!seams.broll.resumeMap?.(app, job.project, first)) throw new jobs.Gone("its stand-in or job file is gone");
     },
   });
+}
+
+/**
+ * Settles a row whose work a resumer left going in the background, once that work fails (Nov 20: a `void` promise
+ * with no catch left its row "running" for the rest of the run, nothing trying it again): crossed off when what it
+ * needs is gone, else it waits by what the failure is, unless its own work settled it first.
+ */
+function settleBehind(home: string, key: string, area: string, what: string, gone: () => boolean): (error: unknown) => void {
+  return (error) => {
+    diag.warn(area, `${what}: ${diag.messageOf(error)}`);
+    try {
+      if (error instanceof jobs.Gone || gone()) jobs.end(home, key);
+      else if (jobs.get(home, key)?.state === "running") jobs.wait(home, key, error);
+    } catch (failed) {
+      diag.warn("jobs", `settling ${key}: ${diag.messageOf(failed)}`);
+    }
+  };
 }
 
 /** The absolute paths among a job's arguments (two levels down: `options.output` too). */

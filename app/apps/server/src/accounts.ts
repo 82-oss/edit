@@ -81,17 +81,28 @@ async function checkAvailable(): Promise<void> {
 
 const state: State = { home: null, access: null, expires: 0, person: null, perms: [], admin: false, kept: false, pending: null, device: null, problem: null };
 
+/**
+ * What changed: a sign-in where there was no good token (someone signed in, or a token came after the last one ran
+ * out or was refused), a routine renewal while the old token was still good, or signed out. Only "signed-in" can end
+ * a wait: work never failed for a token that was good (Nov 20: every hourly renewal woke every waiting job, and the
+ * fault-injection run's 20-second sign-ins spent a refused recording's tries 80 ms apart).
+ */
+export type SessionChange = "signed-in" | "renewed" | "signed-out";
+
 /** Session observers close authenticated connections on sign-out or account changes. */
-const sessionObservers = new Set<() => void>();
-export function onSessionChange(observer: () => void): () => void {
+const sessionObservers = new Set<(what: SessionChange) => void>();
+export function onSessionChange(observer: (what: SessionChange) => void): () => void {
   sessionObservers.add(observer);
   return () => sessionObservers.delete(observer);
 }
-function sessionChanged(): void {
+function sessionChanged(what: SessionChange): void {
   for (const observer of sessionObservers) {
-    try { observer(); } catch (error) { diag.warn("accounts", diag.messageOf(error)); }
+    try { observer(what); } catch (error) { diag.warn("accounts", diag.messageOf(error)); }
   }
 }
+
+/** The token the relay last refused (`renewRefused`): a token after it comes where there was none good. */
+let refusedToken: string | null = null;
 
 /** Whether this Edit has a sign-in (signed in, or a kept one being renewed): the cloud is on. */
 export function hasSession(): boolean {
@@ -247,6 +258,9 @@ async function take(home: string, value: Tokens): Promise<void> {
   const seconds = typeof value.expires_in === "number" && value.expires_in > 0 ? value.expires_in : 3600;
   // Kept before it's used: a rotated token lost here would sign the person out.
   await keychain.set(home, refreshToken);
+  // Read before it's replaced: a good token held (not run out, not refused) makes this a routine renewal.
+  const hadGood = state.access !== null && Date.now() < state.expires && state.access !== refusedToken;
+  refusedToken = null;
   state.kept = true;
   const found = claims(access);
   state.access = access;
@@ -263,7 +277,7 @@ async function take(home: string, value: Tokens): Promise<void> {
   state.problem = null;
   // The renewer renews this token five minutes before it runs out.
   ask(home, null);
-  sessionChanged();
+  sessionChanged(hadGood ? "renewed" : "signed-in");
 }
 
 function forget(problem: string | null): void {
@@ -274,7 +288,8 @@ function forget(problem: string | null): void {
   state.perms = [];
   state.admin = false;
   state.problem = problem;
-  sessionChanged();
+  refusedToken = null;
+  sessionChanged("signed-out");
 }
 
 // ── Renewing (in Effect since Nov 1) ───────────
@@ -499,6 +514,7 @@ export async function renewRefused(used: string | null): Promise<boolean> {
   if (accessToken() !== used) return accessToken() !== null;
   if (Date.now() - lastRefused < 60_000) return false;
   lastRefused = Date.now();
+  refusedToken = used;
   diag.info("accounts", "the relay refused the sign-in's token; renewing it");
   await renew();
   const now = accessToken();
@@ -824,6 +840,7 @@ export function signedInForTests(perms: string[], admin = false): void {
 export function resetForTests(): void {
   renewing = false;
   lapsed = false;
+  lastRefused = 0;
   attempted.splice(0);
   if (running !== null) runtime.runFork(Fiber.interrupt(running));
   running = null;
