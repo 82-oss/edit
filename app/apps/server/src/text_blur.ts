@@ -285,13 +285,28 @@ export function blursFor(project: Project, clip: VideoClip, media: Media, tracks
 }
 
 const isTracked = (clip: Project["clips"][number]) => clip.type === "adjustment" && (clip.name ?? "").startsWith(`${TRACKED} · `);
+/** `value` without the fields a saved project leaves out: 0, false, "", null and empty lists or objects (at every depth). */
+function written(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(written);
+  if (value === null || typeof value !== "object") return value;
+  const out: Record<string, unknown> = {};
+  for (const [key, one] of Object.entries(value)) {
+    const kept = written(one);
+    const empty = kept === 0 || kept === false || kept === "" || kept === null || kept === undefined
+      || (Array.isArray(kept) && kept.length === 0) || (typeof kept === "object" && kept !== null && !Array.isArray(kept) && Object.keys(kept).length === 0);
+    if (!empty) out[key] = kept;
+  }
+  return out;
+}
+
 /**
- * What a tracked blur is, apart from its id and lane: keys sorted, since a saved project's keyframes come back in the
- * file's order (blur.height, blur.width, blur.x, blur.y) and a fresh one's in blursFor's (Nov 20, prod Edit: no moving
- * blur ever matched its saved self, so each track done took out and laid again all of Boyfriends' ~690, a 3.7 MB
- * revision every 20-50 s, and the server's one thread stayed busy with them and the page with it).
+ * What a tracked blur is, apart from its id and lane, as its saved self reads back: keys sorted (a saved project's
+ * keyframes come back in the file's order, blur.height, blur.width, blur.x, blur.y, a fresh one's in blursFor's) and
+ * its empty fields left out (the file drops a centred blur's x of 0). Nov 20, prod Edit: no moving or centred blur ever
+ * matched its saved self, so each track done took out and laid again all of Boyfriends' ~690, a 3.7 MB revision
+ * every 20-50 s, and the server's one thread stayed busy with them and the page with it.
  */
-const shapeOf = (clip: Project["clips"][number]) => stableStringify({ ...clip, id: "", track: "" });
+const shapeOf = (clip: Project["clips"][number]) => stableStringify(written({ ...clip, id: "", track: "" }));
 /** The footage clip a tracked blur is over (its name ends with the clip's id). */
 const ownerOf = (clip: Project["clips"][number]) => (clip.name ?? "").slice(`${TRACKED} · `.length);
 
