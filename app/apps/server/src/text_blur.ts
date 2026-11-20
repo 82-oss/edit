@@ -41,16 +41,16 @@ import type { AdjustmentClip, Keyframe, Media, Project, VideoClip } from "./mode
 import { native, type Box, type ScreenText } from "./native/index.ts";
 import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
+import * as removerCloud from "./remover_cloud.ts";
 import { clipEnd, fps as fpsOf, freshId, sample } from "./project.ts";
 import { round } from "./rust.ts";
 import { stripCovers } from "./text_inpaint.ts";
+import { grow, same, slotsOf, track as trackRead, union, type Sample, type TrackPlan } from "./text_track.ts";
 
 export { TRACKED };
+export { RATE, partsOf, same, slotsOf, theirLines, theirs, type Part, type Sample, type TrackPlan } from "./text_track.ts";
 export type Spans = [number, number][];
 
-/** Reads a second; and the steps of halving between two that differ. */
-export const RATE = 3;
-const HALVINGS = 2;
 /** The house text blur: strong enough that no letter can be read, its edge feathered (at 1080 lines; scaled). */
 const RADIUS_AT_1080 = 28;
 const FEATHER_AT_1080 = 8;
@@ -59,33 +59,12 @@ const PAD = 0.12;
 const PAD_LEAST = 6;
 /** More each side across, as a share of the box's height. */
 const PAD_ACROSS = 0.3;
-/** Two reads say the same words when their words share this much. */
-const SAME = 0.5;
-/** Reads asked of the engine at once, each chunk halved before the next (it gives way to a play between them; the frames a halving may read are held through one chunk). */
-const CHUNK = 15;
 /**
  * A new way of tracking is a new file. 2: a box for each line of theirs (or adjacent lines), never one over words far
  * apart; scene text (a sticker, a sign) never a label of theirs (Nov 19: a cage's "Pro-gard" sticker joined the subtitle
  * line into one box over half a woman's body).
  */
 const VERSION = 2;
-/** A subtitle's words change as it's spoken: a line read the same for this long (seconds) is the picture's (a decal, a sign). */
-const STILL = 8;
-
-/** Their words in one place at a read: a line, or lines stacked tight; `slot` says which it is from read to read ("s" their subtitle, "l<n>" their nth label). */
-export interface Part {
-  slot: string;
-  box: Box;
-  words: string;
-}
-
-/** One read: a source second, and the box of their words there (shares of the picture), null with none; each place's own in `parts`. */
-export interface Sample {
-  t: number;
-  box: Box | null;
-  words: string;
-  parts?: Part[];
-}
 
 /** What one file's marked seconds need (text_removal.ts `plan`). */
 export interface BlurPlan {
@@ -140,11 +119,6 @@ export const reader = {
 // ---------------------------------------------------------------------------
 // Which words are theirs
 
-const area = (box: Box) => Math.max(0, box[2] - box[0]) * Math.max(0, box[3] - box[1]);
-const overlap = (a: Box, b: Box) => area([Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.min(a[3], b[3])]);
-const grow = (box: Box, by: number): Box => [Math.max(0, box[0] - by), Math.max(0, box[1] - by), Math.min(1, box[2] + by), Math.min(1, box[3] + by)];
-const union = (a: Box, b: Box): Box => [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
-
 /** Where their text may be: their band and labels, grown; the lower part of the picture for subtitles not found yet; else all of it. */
 export function regionOf(plan: Pick<BlurPlan, "band" | "labels" | "subtitles" | "text">): Box {
   const boxes: Box[] = [];
@@ -153,164 +127,10 @@ export function regionOf(plan: Pick<BlurPlan, "band" | "labels" | "subtitles" | 
   return boxes.length === 0 ? [0, 0, 1, 1] : boxes.reduce(union);
 }
 
-/** Whether a line read is theirs: in their band (or low and centred, for subtitles not found yet) or on a label of theirs; never the camera's or what's kept. */
-export function theirs(plan: Pick<BlurPlan, "band" | "labels" | "avoid" | "subtitles" | "text">, line: ScreenText): boolean {
-  const box = line.b;
-  if (area(box) <= 0 || !/\p{L}|\p{N}/u.test(line.t)) return false;
-  if (plan.avoid.some((keep) => overlap(box, keep) > 0.3 * area(box))) return false;
-  // A subtitle has words (a read of digits alone in their band is the picture's: a plate, a shirt's number).
-  if (plan.subtitles && (line.t.match(/\p{L}/gu) ?? []).length >= 2) {
-    if (plan.band !== null ? overlap(box, grow(plan.band, 0.03)) > 0.5 * area(box) : box[1] > 0.66 && Math.abs((box[0] + box[2]) / 2 - 0.5) < 0.25) return true;
-  }
-  if (plan.text) {
-    // No label of theirs known: none (words anywhere were taken as theirs, a cage's sticker among them, Nov 19).
-    if (plan.labels.some((label) => overlap(box, grow(label, 0.02)) > 0.5 * area(box))) return true;
-  }
-  return false;
-}
-
-const tokens = (words: string) => new Set(words.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((one) => one.length >= 2));
-/** Whether two reads show the same words (OCR reads a line a little differently each time). */
-export function same(a: Sample, b: Sample): boolean {
-  if (a.box === null || b.box === null) return a.box === b.box;
-  const [x, y] = [tokens(a.words), tokens(b.words)];
-  if (x.size === 0 || y.size === 0) return overlap(a.box, b.box) > 0.5 * Math.min(area(a.box), area(b.box));
-  const both = [...x].filter((one) => y.has(one)).length;
-  return both >= SAME * (x.size + y.size - both);
-}
-
-/** Whether two lines read sit on one row, side by side (OCR reads a subtitle's words in pieces: "THE" apart from "SUSPECT RAN"). */
-function besides(a: Box, b: Box): boolean {
-  const high = Math.max(a[3] - a[1], b[3] - b[1]);
-  const gap = Math.max(a[0], b[0]) - Math.min(a[2], b[2]);
-  return Math.abs((a[1] + a[3]) / 2 - (b[1] + b[3]) / 2) < 0.5 * high && gap < 1.5 * high && Math.min(a[3] - a[1], b[3] - b[1]) >= SPECK * high;
-}
-
-/** A read much shorter than their tallest line beside it is the picture's speckle read as a letter ("0", "90"), never theirs. */
-const SPECK = 0.55;
-
-/** Their lines among those read: `theirs`, and the words on the same row beside one of them (never the camera's or what's kept). */
-export function theirLines(plan: Parameters<typeof theirs>[0], lines: ScreenText[]): ScreenText[] {
-  const mine = lines.filter((line) => theirs(plan, line));
-  const rest = lines.filter((line) => !mine.includes(line) && area(line.b) > 0 && /\p{L}|\p{N}/u.test(line.t) && !plan.avoid.some((keep) => overlap(line.b, keep) > 0.3 * area(line.b)));
-  for (let grew = true; grew; ) {
-    grew = false;
-    for (const line of [...rest]) {
-      if (!mine.some((one) => besides(one.b, line.b))) continue;
-      mine.push(line);
-      rest.splice(rest.indexOf(line), 1);
-      grew = true;
-    }
-  }
-  const high = (box: Box) => box[3] - box[1];
-  // Near a line of theirs over SPECK taller (its row, or just above or below it): speckle.
-  return mine.filter((line) => !mine.some((other) => high(line.b) < SPECK * high(other.b) && Math.abs((line.b[1] + line.b[3]) / 2 - (other.b[1] + other.b[3]) / 2) < 1.5 * high(other.b)));
-}
-
-/** Whether two lines sit one over the other, close: a subtitle's two lines (never a line and words far above or below it). */
-function stacked(a: Box, b: Box): boolean {
-  const high = Math.max(a[3] - a[1], b[3] - b[1]);
-  const gap = Math.max(a[1], b[1]) - Math.min(a[3], b[3]);
-  const across = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
-  return gap < 0.6 * high && across > 0 && Math.min(a[3] - a[1], b[3] - b[1]) >= 0.6 * high;
-}
-
-const letters = (words: string) => (words.match(/\p{L}/gu) ?? []).length;
-
-/**
- * Their lines in places: lines beside each other on a row or stacked tight are one place, words apart are never one.
- * A place on a label of theirs is that label's ("l<n>"); of the rest the one with the most letters is their subtitle
- * ("s"), any other in its band its own place by height ("s@<twentieths down>").
- */
-export function partsOf(plan: Pick<BlurPlan, "labels">, mine: ScreenText[]): Part[] {
-  const group = mine.map((_, at) => at);
-  const root = (at: number): number => (group[at] === at ? at : (group[at] = root(group[at]!)));
-  for (let a = 0; a < mine.length; a++) for (let b = a + 1; b < mine.length; b++) if (besides(mine[a]!.b, mine[b]!.b) || stacked(mine[a]!.b, mine[b]!.b)) group[root(a)] = root(b);
-  const places = new Map<number, ScreenText[]>();
-  mine.forEach((line, at) => places.set(root(at), [...(places.get(root(at)) ?? []), line]));
-  const parts: (Part & { label: number })[] = [...places.values()].map((lines) => {
-    lines.sort((a, b) => a.b[1] - b.b[1] || a.b[0] - b.b[0]);
-    const box = lines.map((line) => line.b).reduce(union);
-    const label = plan.labels.findIndex((one) => lines.some((line) => overlap(line.b, grow(one, 0.02)) > 0.5 * area(line.b)));
-    return { slot: "", box, words: lines.map((line) => line.t).join(" "), label };
-  });
-  const subtitles = parts.filter((one) => one.label < 0).sort((a, b) => letters(b.words) - letters(a.words) || b.box[3] - a.box[3]);
-  subtitles.forEach((one, at) => (one.slot = at === 0 ? "s" : `s@${Math.round(((one.box[1] + one.box[3]) / 2) * 20)}`));
-  for (const one of parts) if (one.label >= 0) one.slot = `l${one.label}`;
-  return parts.map(({ slot, box, words }) => ({ slot, box, words })).sort((a, b) => a.slot.localeCompare(b.slot));
-}
-
-function sampleOf(plan: Parameters<typeof theirs>[0], t: number, lines: ScreenText[]): Sample {
-  const parts = partsOf(plan, theirLines(plan, lines));
-  return { t, box: parts.length === 0 ? null : parts.map((one) => one.box).reduce(union), words: parts.map((one) => one.words).join(" "), parts };
-}
-
-/**
- * A track by place (`partsOf`'s slots), each its own samples: a box over each, never one spanning them. A place of
- * subtitles whose words never change over STILL seconds is the picture's (a decal, a sign), dropped.
- */
-export function slotsOf(samples: Sample[]): Map<string, Sample[]> {
-  const out = new Map<string, Sample[]>();
-  const names = new Set(samples.flatMap((one) => (one.parts ?? (one.box === null ? [] : [{ slot: "s" }])).map((part) => part.slot)));
-  for (const slot of [...names].sort()) {
-    const mine = samples.map((one): Sample => {
-      const part = one.parts === undefined ? (one.box === null ? undefined : { slot: "s", box: one.box, words: one.words }) : one.parts.find((p) => p.slot === slot);
-      return { t: one.t, box: part?.box ?? null, words: part?.words ?? "" };
-    });
-    const shown = mine.filter((one) => one.box !== null);
-    if (slot.startsWith("s") && shown.length > 1 && shown.at(-1)!.t - shown[0]!.t >= STILL && shown.every((one) => same(one, shown[0]!))) continue;
-    out.set(slot, mine);
-  }
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// The track
-
-/**
- * Their text's box over source seconds [from, to): read RATE a second, then
- * between each two reads that differ (words changed, came or went) halved
- * HALVINGS times. Read in time order, CHUNK at a time, each chunk halved
- * before the next is read; `read` gives the lines at each of the times asked,
- * holding the frames at `keep` (where a halving may read next).
- */
-export async function track(plan: Parameters<typeof theirs>[0], from: number, to: number, read: (times: number[], keep: number[]) => Promise<ScreenText[][]>): Promise<Sample[]> {
-  const ms = (t: number) => round(t * 1000) / 1000;
-  const step = 1 / RATE;
-  const base: number[] = [];
-  for (let t = from; t < to - 1e-6; t += step) base.push(ms(t));
-  base.push(ms(Math.max(from, to - 0.01)));
-  const times = [...new Set(base)].sort((a, b) => a - b);
-  // The times halving may read between a and b, `depth` deep.
-  const between = (a: number, b: number, depth: number): number[] => {
-    if (depth === 0) return [];
-    const mid = ms((a + b) / 2);
-    return [mid, ...between(a, mid, depth - 1), ...between(mid, b, depth - 1)];
-  };
-  const readAll = async (at: number[], keep: number[]): Promise<Sample[]> => {
-    const lines = await read(at, keep);
-    return at.map((t, j) => sampleOf(plan, t, lines[j] ?? []));
-  };
-  const out: Sample[] = [];
-  for (let i = 0; i < times.length; i += CHUNK) {
-    await playing.whenIdle();
-    const part = times.slice(i, i + CHUNK);
-    // The read before this chunk (the last chunk's last): the change between them is halved here.
-    const last = out.at(-1);
-    const bounds = last === undefined ? part : [last.t, ...part];
-    let samples = [...(last === undefined ? [] : [last]), ...(await readAll(part, bounds.slice(1).flatMap((t, j) => between(bounds[j]!, t, HALVINGS))))];
-    for (let halving = 0; halving < HALVINGS; halving++) {
-      const pairs: [Sample, Sample][] = [];
-      for (let j = 0; j + 1 < samples.length; j++) if (!same(samples[j]!, samples[j + 1]!)) pairs.push([samples[j]!, samples[j + 1]!]);
-      if (pairs.length === 0) break;
-      const mids = pairs.map(([a, b]) => ms((a.t + b.t) / 2));
-      const deeper = pairs.flatMap(([a, b]) => between(a.t, b.t, HALVINGS - halving).slice(1));
-      samples = [...samples, ...(await readAll(mids, deeper))].sort((a, b) => a.t - b.t);
-    }
-    out.push(...(last === undefined ? samples : samples.slice(1)));
-  }
-  return out;
-}
+/** Their text's reads over source seconds [from, to) (text_track.ts `track`), giving way to a play between chunks. */
+export const track = (plan: TrackPlan, from: number, to: number, read: (times: number[], keep: number[]) => Promise<ScreenText[][]>): Promise<Sample[]> => trackRead(plan, from, to, read, async () => {
+  await playing.whenIdle();
+});
 
 /** Their text's box at source second `t` of a track (see the top), null where there's none. */
 export function boxAt(samples: Sample[], t: number): Box | null {
@@ -601,12 +421,18 @@ export async function ensure(app: App, id: string, given: BlurPlan[]): Promise<v
         run: async () => {
           piece.state = "running";
           try {
-            const input = await cloudMedia.originalInput(app.store.cacheDir(), plan.media);
             const size: [number, number] = [plan.media.width || 1920, plan.media.height || 1080];
             const region = regionOf(plan);
             const started = Date.now();
-            const reading = reader.open(input, size, plan.media.fps || 30, region);
-            const samples = await track(plan, from, to, (times, keep) => reading.read(times, keep)).finally(() => reading.close());
+            // Read on a rented CPU machine when the relay does removal there (remover_cloud.ts, the same text_track.ts), else here.
+            const key = removerCloud.keyOf(plan.media);
+            let samples: Sample[];
+            if (key !== undefined && removerCloud.now()) samples = await removerCloud.track(key, size, plan.media.fps || 30, region, plan, from, to);
+            else {
+              const input = await cloudMedia.originalInput(app.store.cacheDir(), plan.media);
+              const reading = reader.open(input, size, plan.media.fps || 30, region);
+              samples = await track(plan, from, to, (times, keep) => reading.read(times, keep)).finally(() => reading.close());
+            }
             const file = fileOf(app, plan.source, from, to);
             // Its folder (paths.join keeps ".." as a name: Nov 19, every track's file was made a folder and its write failed, EISDIR).
             fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -639,13 +465,15 @@ export async function ensure(app: App, id: string, given: BlurPlan[]): Promise<v
  * server stalled at its memory limit (each is one decoder now, its reads on 3 or 4 threads, screen_text.rs `Stretch`).
  */
 export const AT_ONCE = process.platform === "linux" ? Math.min(3, Math.max(1, Math.floor(os.cpus().length / 8))) : 1;
+/** Tracks read at once on rented CPU machines (each a few of a machine's cores there). */
+const CLOUD_AT_ONCE = 16;
 
 function drain(): void {
   if (busy !== null) return;
   const worker = async () => {
     for (let next = queue.shift(); next !== undefined; next = queue.shift()) await next.run();
   };
-  busy = Promise.all(Array.from({ length: AT_ONCE }, worker)).then(() => {}).finally(() => {
+  busy = Promise.all(Array.from({ length: removerCloud.now() ? CLOUD_AT_ONCE : AT_ONCE }, worker)).then(() => {}).finally(() => {
     busy = null;
     if (queue.length > 0) drain();
   });

@@ -40,6 +40,7 @@ import type { Media, Probe, Project } from "./model.ts";
 import { native, type Box, type WatermarkPiece, type WatermarkRemoved } from "./native/index.ts";
 import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
+import * as removerCloud from "./remover_cloud.ts";
 import { freshId } from "./project.ts";
 import * as seams from "./seams.ts";
 import { folderOf, PREFIX, shownSeconds, sourceOf, stampOf } from "./text_removal.ts";
@@ -69,6 +70,23 @@ function engine(): Engine | null {
   if (addon.watermarkLearn === undefined || addon.watermarkRemove === undefined) return null;
   return { learn: addon.watermarkLearn.bind(addon), remove: addon.watermarkRemove.bind(addon) };
 }
+
+/**
+ * The engine for one file: rented CPU machines when the relay does removal there and the file is on R2
+ * (remover_cloud.ts: the same engine, many cells at once), else this computer's.
+ */
+function engineFor(media: Media): Engine | null {
+  if (engineOverride !== null) return engineOverride;
+  const key = removerCloud.keyOf(media);
+  if (key !== undefined && removerCloud.now()) return removerCloud.watermarkEngine(key);
+  return engine();
+}
+
+/** Cells and looks at once: this computer's few, or many on rented machines (each a machine's few cores there). */
+const CLOUD_CELLS = 24;
+const CLOUD_LOOKS = 8;
+const cellsAtOnce = () => (engineOverride === null && removerCloud.now() ? CLOUD_CELLS : limits.cells);
+const looksAtOnce = () => (engineOverride === null && removerCloud.now() ? CLOUD_LOOKS : 1);
 
 // ---------------------------------------------------------------------------
 // Each source's mark
@@ -144,7 +162,7 @@ async function keepMark(app: App, source: string, text: string): Promise<Mark> {
  * what the lesson keeps are never taken for a mark (`keep`).
  */
 export async function learn(app: App, media: Media, hint: Box | null = null, keep: Box[] = []): Promise<Mark> {
-  const run = engine();
+  const run = engineFor(media);
   if (run === null) throw new ApiError(409, "This Edit can't take watermarks out yet: update it.");
   const source = await sourceOf(media);
   const input = await cloudMedia.originalInput(app.store.cacheDir(), media);
@@ -312,9 +330,9 @@ const lookFailed = new Map<string, number>();
  * looks, never started).
  */
 const LOOK_AGAIN_AFTER_MS = 12 * 3600_000;
-/** Cells being cleaned now, and whether a file is being looked at for its mark (one at a time). */
+/** Cells being cleaned now, and files being looked at for their mark (one at a time here, several on rented machines). */
 let running = 0;
-let lookingNow = false;
+let lookingNow = 0;
 
 /**
  * Cells at once: each takes about 1.7 GB, so one on a Mac under 12 GB, up to
@@ -444,7 +462,7 @@ export function lookingAt(id: string): number {
 
 /** The queue: up to `limits.cells` at once, a file's cells first (its mark known), the next file to look at beside them (one at a time). */
 function drain(app: App): void {
-  while (running < limits.cells) {
+  while (running < cellsAtOnce()) {
     const job = queue.shift();
     if (job !== undefined) {
       running += 1;
@@ -454,14 +472,14 @@ function drain(app: App): void {
       });
       continue;
     }
-    if (lookingNow) break;
+    if (lookingNow >= looksAtOnce()) break;
     const look = looks.shift();
     if (look === undefined) break;
     running += 1;
-    lookingNow = true;
+    lookingNow += 1;
     void lookAt(app, look).finally(() => {
       running -= 1;
-      lookingNow = false;
+      lookingNow -= 1;
       drain(app);
     });
   }
@@ -483,7 +501,7 @@ async function lookAt(app: App, look: Look): Promise<void> {
 }
 
 async function work(app: App, job: Job): Promise<void> {
-  const run = engine();
+  const run = engineFor(job.media);
   const label = `${job.media.name} ${job.from}–${job.to} s`;
   const tries = (pieces.get(job.project)?.get(pieceKey(job.media.id, job.from))?.tries ?? 0) + 1;
   const piece: Piece = { media: job.media.id, name: job.media.name, from: job.from, to: job.to, state: "running", tries };
@@ -613,7 +631,7 @@ export function reset(): void {
   lookFailed.clear();
   // A fresh server's queue: what was under way is gone with the one that stopped.
   running = 0;
-  lookingNow = false;
+  lookingNow = 0;
 }
 
 export function routes(router: Router<App>): void {

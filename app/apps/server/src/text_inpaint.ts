@@ -31,7 +31,7 @@ import type { Box } from "./native/index.ts";
 import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
 import { freshId } from "./project.ts";
-import * as relay from "./relay.ts";
+import * as removerCloud from "./remover_cloud.ts";
 import * as seams from "./seams.ts";
 import * as tools from "./tools.ts";
 import workerSource from "./minimax_worker.py" with { type: "text" };
@@ -82,39 +82,11 @@ const isFile = (path: string) => {
   }
 };
 
-/** The relay's `remover` flag (RunPod), asked at most once a minute; the last answer meanwhile. */
-const remote = { on: false, at: 0, relay: "", asking: null as Promise<boolean> | null };
-export const timing = { healthMs: 60_000, pollMs: 5_000, deadlineMs: 3 * 3600_000 };
-
-/** Whether the relay cleans on RunPod now (asked again once its answer is a minute old). */
-export async function cloudOn(): Promise<boolean> {
-  if (override !== null) return false;
-  if (!cloud.enabled()) return false;
-  const asked = relay.url();
-  if (remote.relay === asked && Date.now() - remote.at < timing.healthMs) return remote.on;
-  remote.asking ??= (async () => {
-    let on = false;
-    try {
-      const answer = await fetch(`${asked}/health`, { signal: AbortSignal.timeout(20_000) });
-      on = answer.ok && ((await answer.json()) as { remover?: unknown }).remover === true;
-    } catch {
-      // Unreachable: as it was.
-      on = remote.relay === asked && remote.on;
-    }
-    Object.assign(remote, { on, at: Date.now(), relay: asked });
-    return on;
-  })().finally(() => {
-    remote.asking = null;
-  });
-  return remote.asking;
-}
-
-/** For tests: the relay's flag as given. */
-export function setCloudOnForTests(on: boolean): void {
-  Object.assign(remote, { on, at: Number.MAX_SAFE_INTEGER / 2, relay: relay.url() });
-}
-
-const cloudNow = (): boolean => override === null && cloud.enabled() && remote.on;
+/** Whether the relay cleans on RunPod (remover_cloud.ts: one flag for cleaning, watermarks and the blur's tracks). */
+export const timing = removerCloud.timing;
+export const cloudOn = async (): Promise<boolean> => override === null && (await removerCloud.on());
+export const setCloudOnForTests = (value: boolean): void => removerCloud.setOnForTests(value);
+const cloudNow = (): boolean => override === null && removerCloud.now();
 
 let availableHere: boolean | null = null;
 /** Whether stretches are cleaned with the model: on RunPod (the relay's flag), or on this machine (Linux, the model installed, an NVIDIA GPU). */
@@ -384,32 +356,6 @@ class Worker implements Cleaner {
 let worker: Worker | null = null;
 const cleaner = (app: App): Cleaner => override ?? (cloudNow() ? remoteCleaner : (worker ??= new Worker(join(app.store.cacheDir(), "cleaned", "minimax"))));
 
-/** The relay refusing a stretch (its own words): the stretch failed, unlike the relay out of reach a moment. */
-class RelaySaid extends Error {}
-
-/**
- * A remover call to the relay. Not relay.json: that takes only a 200, and the relay answers a stretch started, or
- * still going, with a 202 (Nov 20, Sphe's Boyfriends edit: all 105 stretches sent to RunPod were taken as failures the
- * moment they started, and left blurred).
- */
-async function removerCall<T>(method: string, route: string, body?: unknown): Promise<{ status: number; value: T }> {
-  const headers = relay.authHeaders();
-  if (body !== undefined) headers["content-type"] = "application/json";
-  const answer = await fetch(`${relay.url()}${route}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(120_000) });
-  const text = await answer.text();
-  let value: unknown = null;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    // Below: said by its status.
-  }
-  if (answer.status !== 200 && answer.status !== 202) {
-    const said = (value as { error?: unknown } | null)?.error;
-    throw new RelaySaid(typeof said === "string" ? said : `the relay answered ${answer.status}`);
-  }
-  return { status: answer.status, value: value as T };
-}
-
 /** RunPod's GPUs, through the relay (apps/relay/src/remover.ts): the stretch's R2 keys go, its strip comes back by R2. */
 class RunPod implements Cleaner {
   /** Each running piece's RunPod job (a Stop cancels it: the GPU is paid by the second). */
@@ -421,7 +367,7 @@ class RunPod implements Cleaner {
     if (beneath.some((one) => one === null)) return { ok: false, error: "a watermark strip under it isn't in the cloud yet" };
     const { from, fps, width, height, matrix, masks } = request;
     const started = Date.now();
-    const job = (await removerCall<{ id: string; out: string }>("POST", "/v1/remover/jobs", { worker: workerSource, request: { input: request.inputKey, beneath, from, fps, width, height, matrix, masks } })).value;
+    const job = (await removerCloud.call<{ id: string; out: string }>("POST", "/v1/remover/jobs", { kind: "clean", worker: workerSource, request: { input: request.inputKey, beneath, from, fps, width, height, matrix, masks } })).value;
     if (request.piece !== undefined) this.jobs.set(request.piece, job.id);
     let misses = 0;
     try {
@@ -434,13 +380,13 @@ class RunPod implements Cleaner {
         }
         let answer: Answer & { pending?: boolean };
         try {
-          const asked = await removerCall<Answer & { pending?: boolean }>("GET", `/v1/remover/jobs/${job.id}`);
+          const asked = await removerCloud.call<Answer & { pending?: boolean }>("GET", `/v1/remover/jobs/${job.id}`);
           answer = asked.value;
           misses = 0;
           if (asked.status === 202) continue;
         } catch (error) {
           // The model's own failure (502 with its words) ends it; the relay out of reach a moment is waited out.
-          if (error instanceof RelaySaid || ++misses >= 6) throw error;
+          if (error instanceof removerCloud.RelaySaid || ++misses >= 6) throw error;
           continue;
         }
         if (answer.box != null) await cloud.download(job.out, request.out);
@@ -461,7 +407,7 @@ class RunPod implements Cleaner {
   }
 
   private async cancel(job: string): Promise<void> {
-    await removerCall("DELETE", `/v1/remover/jobs/${job}`).catch(() => {});
+    await removerCloud.call("DELETE", `/v1/remover/jobs/${job}`).catch(() => {});
   }
 }
 
