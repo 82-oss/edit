@@ -424,6 +424,7 @@ export async function archiveExportFile(
   signal?: AbortSignal,
   carriedOn = false,
   moving?: () => void,
+  wanted?: () => boolean,
 ): Promise<boolean> {
   let size: number;
   try { size = fs.statSync(output).size; } catch { return false; }
@@ -442,8 +443,11 @@ export async function archiveExportFile(
   if (signal?.aborted) return false;
   // Archived; while the disk keeps its room it stays here too: it's the project's newest.
   if (room(output) > KEEP_NEWEST_FREE) return true;
-  // A copy being read stays until the reading's done.
-  if (reading.has(output)) {
+  // A copy being read stays until the reading's done; so does one a share's full-quality upload still has to send
+  // (`wanted`: its row in the job table). After a restart that upload's own hold isn't taken yet when this carries on,
+  // and on a Mac under 20 GB free the file went from under it: it then tried a file that wasn't there twenty times
+  // over an hour and a half and gave up with a line in the log (the bad-day run on Sphe's MacBook Air, Nov 21).
+  if (reading.has(output) || wanted?.() === true) {
     archivedMeanwhile.add(output);
     return true;
   }
@@ -494,7 +498,8 @@ export async function archiveFinished(home: string, id: string, output: string, 
   const carriedOn = (listed?.started_ms ?? Infinity) < performance.timeOrigin || listed?.put_off !== undefined;
   // Its bytes going up are its row's beat (Nov 21): noted only as it began, an upload of hours read as still.
   const moving = () => jobs.beat(home, jobs.keyOf("archive", id));
-  if (await archiveExportFile(output, key, exportCloud, freeBytes, signal, carriedOn, moving)) {
+  const wanted = () => jobs.list(home, "full").some((job) => jobs.live(job) && job.args.path === output);
+  if (await archiveExportFile(output, key, exportCloud, freeBytes, signal, carriedOn, moving, wanted)) {
     try {
       remember(home, id, record);
     } catch { /* the list keeps the local-only record */ }

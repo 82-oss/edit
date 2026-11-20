@@ -80,3 +80,42 @@ test("the review page is told how the full-quality upload goes, and the version 
   expect(told.at(-1)!.meta).toEqual({ fullKey: "edit/reviews/p2/t/full.mp4", fullUpload: null });
   expect(listed(home)).toEqual([]);
 });
+
+// Nov 21, the bad-day run on Sphe's MacBook Air (7 GB free): after a restart the export's cloud copy carried on first
+// and, the disk short, removed the file from here; the full-quality upload then tried a file that wasn't there twenty
+// times over an hour and a half and gave up with a line in the log: a review with no Download and nothing said.
+test("an export gone from here is fetched back from its cloud copy and sent, once; with no cloud copy it's said once, not tried twenty times", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "edit-full-gone-"));
+  const file = path.join(home, "Killer Pastor.mp4");
+  fs.writeFileSync(path.join(home, "exports.json"), JSON.stringify({ p3: [{ path: file, name: "Killer Pastor.mp4", frames: 1, whole: true, finished_ms: 1, bytes: 6, cloudKey: "edit/exports/p3/Killer Pastor.mp4" }] }));
+  const fetched: string[] = [];
+  const sent: string[] = [];
+  spies.push(
+    spyOn(cloud, "download").mockImplementation(async (key: string, dest: string) => {
+      fetched.push(key);
+      fs.writeFileSync(dest, "export");
+    }),
+    spyOn(cloud, "uploadFile").mockImplementation(async (from: string, key: string) => {
+      sent.push(`${fs.readFileSync(from, "utf8")} -> ${key}`);
+    }),
+    spyOn(cloud, "mutation").mockImplementation(async () => null as never),
+  );
+  await fullBehind(home, "p3", "Killer Pastor", file, "edit/reviews/p3/t/full.mp4", 2);
+  expect(fetched).toEqual(["edit/exports/p3/Killer Pastor.mp4"]);
+  expect(sent).toEqual(["export -> edit/reviews/p3/t/full.mp4"]);
+  expect(listed(home)).toEqual([]);
+
+  // Nowhere any more: one line to the review, nothing sent, and it ends at once.
+  const gone = path.join(home, "Never Archived.mp4");
+  const told: Record<string, unknown>[] = [];
+  spies.push(spyOn(cloud, "mutation").mockImplementation(async (_name: string, args: unknown) => {
+    told.push((args as { meta: Record<string, unknown> }).meta);
+    return null as never;
+  }));
+  const began = Date.now();
+  await fullBehind(home, "p3", "Never Archived", gone, "edit/reviews/p3/u/full.mp4", 3);
+  expect(Date.now() - began).toBeLessThan(2_000);
+  expect(sent.length).toBe(1);
+  expect((told.at(-1)!.fullUpload as { failed?: string }).failed).toContain("Share again");
+  expect(listed(home)).toEqual([]);
+}, 20_000);

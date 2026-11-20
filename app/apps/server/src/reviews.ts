@@ -42,7 +42,7 @@ import { DEFAULT_RELAY, url as relayUrl } from "./relay.ts";
 import { ApiError } from "./http/errors.ts";
 import { readJson, type Router } from "./http/router.ts";
 import * as busy from "./busy.ts";
-import { chunkFolder, clipMap, deleteExport, heldByReview, lastChunks, listExports, mapFile, optionsKey, timelineHash, withExport, withWatermarkKey } from "./exports.ts";
+import { chunkFolder, clipMap, cloudKeyFor, deleteExport, heldByReview, lastChunks, listExports, mapFile, optionsKey, timelineHash, withExport, withWatermarkKey } from "./exports.ts";
 import { shareLine } from "./export_prep.ts";
 import * as speeds from "./export_speeds.ts";
 import * as effects from "./effects.ts";
@@ -533,6 +533,20 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
       // Said at once, before a part's gone (a run that carries on a restart says how far it is with its first part).
       if (attempt === 1) void tell({ fullUpload: { ...last, at: Date.now(), since: Date.now(), from: last.sent } }).catch(() => undefined);
       try {
+        // Not on this computer any more (its cloud copy went up and the disk was short, before this was carried on):
+        // fetched back from that copy, the same bytes, rather than tried twenty times as a file that isn't there
+        // (Nov 21). With no copy in the cloud either there's nothing to send, and that's said once.
+        if (!fs.existsSync(path)) {
+          const archived = cloudKeyFor(home, path);
+          if (archived === null) {
+            diag.warn("review", `${name}: the full-quality file isn't on this computer or in the cloud any more, so the review has no Download; export and share again for one`);
+            await tell({ fullUpload: { ...last, at: Date.now(), failed: "The export isn't on this computer any more. Share again for a download." } }).catch(() => undefined);
+            return;
+          }
+          diag.info("review", `${name}: the export isn't here any more; fetching it back from its cloud copy to send the review's full-quality file`);
+          await restoreArchived({ path, bytes: null, cloudKey: archived });
+          last = { sent: 0, total: fs.statSync(path).size };
+        }
         // Up already (a restart came after its last part, before the cloud was told): straight to telling it, not sent
         // again (Sphe, Nov 10: an update goes through at any time, and nothing it cuts is uploaded twice).
         const there = attempt === 1 ? await cloud.head(key).catch(() => null) : null;
