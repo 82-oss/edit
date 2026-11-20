@@ -17,6 +17,7 @@ import { Cloud } from "./cloud.ts";
 import { Edit } from "./edit.ts";
 import { footage } from "./footage.ts";
 import { Line } from "./line.ts";
+import { macProbes } from "./mac_probes.ts";
 
 const RUN = process.env.BAD_DAY_RUN ?? "";
 const ROOT = process.env.BAD_DAY_ROOT ?? "";
@@ -381,7 +382,7 @@ if (MAC) {
 await sandboxed();
 const made = footage(ROOT);
 const asked = process.argv.slice(2);
-const chosen = asked.length === 0 ? cases.filter((one) => one.stub !== true) : asked.map((name) => cases.find((one) => one.name === name) ?? stop(`no case "${name}" (cases: ${cases.map((one) => one.name).join(", ")})`));
+const chosen = asked.length === 0 ? cases.filter((one) => one.stub !== true) : asked.map((name) => cases.find((one) => one.name === name) ?? macProbes.find((one) => one.name === name) ?? stop(`no case "${name}" (cases: ${cases.map((one) => one.name).join(", ")})`));
 console.log(`bad-day: ${chosen.length} case(s) on ${LABEL}`);
 const outcomes: Outcome[] = [];
 for (const [index, one] of chosen.entries()) {

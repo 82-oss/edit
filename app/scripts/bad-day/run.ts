@@ -253,6 +253,18 @@ if (MAC) {
     killLeftovers();
     canary.close();
     detach();
+    // A Mac's disk is small (this one had 7 GB free): the run's media go (the stand-in R2, Edit's copies and exports),
+    // its logs, tables and requests stay.
+    const prune = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory() && !entry.isSymbolicLink()) prune(path);
+        else if (entry.isFile() && !/\.(log(\.\d+)?|json|out|txt|sb)$/.test(entry.name) && fs.statSync(path).size > 1024 ** 2) fs.rmSync(path, { force: true });
+      }
+    };
+    try {
+      prune(RUN);
+    } catch {}
     if (lock !== null) fs.rmSync(lock, { force: true });
   };
   fs.writeFileSync(join(RUN, "sandbox.sb"), profile());
