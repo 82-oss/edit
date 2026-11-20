@@ -2077,7 +2077,9 @@ export async function keyframeBefore(path: string, time: number): Promise<number
         "-skip_frame",
         "nokey",
         "-show_entries",
-        "frame=pts_time",
+        // Its presentation time, or FFmpeg's best guess where there's none: a DVR's AVI has no times on its pictures
+        // (pts N/A, a keyframe every 3 s), so every excerpt of JJ's CH03 recordings was cut from the file's start (Nov 20).
+        "frame=best_effort_timestamp_time",
         "-of",
         "csv=p=0",
         "-read_intervals",
