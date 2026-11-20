@@ -113,3 +113,23 @@ test("a review piece encoded unlike the rest is found before they're joined", as
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a share's Cancel ends the copy's checks at once, and never reads as a copy with no picture (Nov 21)", async () => {
+  // An address that never answers: FFmpeg and ffprobe wait on it until they're ended (they used to run on to their end).
+  const server = Bun.serve({ port: 0, fetch: () => new Promise<Response>(() => {}) });
+  try {
+    const stuck = `http://127.0.0.1:${server.port}/copy.mp4`;
+    const cancelledSoon = () => {
+      const stop = new AbortController();
+      setTimeout(() => stop.abort(), 200);
+      return stop.signal;
+    };
+    const within = <T>(work: Promise<T>) => Promise.race([work, Bun.sleep(4_000).then(() => "still running" as const)]);
+    await expect(within(lengthsOf(stuck, cancelledSoon()))).rejects.toThrow("cancelled");
+    await expect(within(reviewCopyProblem(stuck, { video: 60, frames: 1800, audio: 60 }, 30, cancelledSoon()))).rejects.toThrow("cancelled");
+    await expect(within(decodeProblem(stuck, 60, cancelledSoon()))).rejects.toThrow("cancelled");
+    await expect(within(oddPieces([stuck, stuck], cancelledSoon()))).rejects.toThrow("cancelled");
+  } finally {
+    await server.stop(true);
+  }
+});

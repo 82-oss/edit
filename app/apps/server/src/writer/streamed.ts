@@ -297,9 +297,6 @@ function goingUpFrom(source: string): boolean {
 }
 sending.goingUp = goingUpFrom;
 
-/** Seams for tests: how long a copy waits before asking again whether its upload from here got there. */
-export const timing = { recheckMs: 10 * 60_000 };
-
 /** Edit's home, where this Mac's uploads are noted (`start`). */
 let home: string | null = null;
 
@@ -308,8 +305,6 @@ export const homeNow = (): string | null => home;
 
 /** The uploads going on, by script folder and source. */
 const going = new Map<string, Promise<void>>();
-/** Counted up by `reset` (tests' restarts): a wait from before it stops. */
-let generation = 0;
 
 /**
  * `one`'s original to the cloud behind the import: the relay's copy for a
@@ -321,8 +316,18 @@ let generation = 0;
 function goUp(dir: string, one: Held, local: Promise<string>): void {
   const id = `${dir}\n${one.source}`;
   if (going.has(id)) return;
+  // How far it's got, for Edit mode waiting on it here (cloud_media `waitGoingUp`): the relay's count while it copies,
+  // then this Mac's upload's bytes (and the slot's: the upload ahead of it moving is this one moving towards its turn).
+  let relaySent = 0;
+  let file: string | null = null;
+  const watch: cloudMedia.GoingUp = {
+    sent: () => (file === null ? relaySent : cloudMedia.sentOf(file)),
+    moved: () => relaySent + (file === null ? 0 : cloudMedia.upMoving(file)),
+    total: one.size,
+    name: one.name,
+  };
   const up = (async (): Promise<cloudMedia.Original> => {
-    const sent = one.drive !== undefined ? await cloudMedia.copyInTheCloud(one.drive, one.key, one.size) : null;
+    const sent = one.drive !== undefined ? await cloudMedia.copyInTheCloud(one.drive, one.key, one.size, (bytes) => (relaySent = bytes)) : null;
     if (sent !== null) {
       const path = await local.catch(() => null);
       const duration = await streams(path ?? (await cloud.presign(one.key, "GET", READ_SECONDS))).then((found) => found.durationMs / 1000, () => null);
@@ -331,9 +336,10 @@ function goUp(dir: string, one: Held, local: Promise<string>): void {
       await cloudMedia.originalIsReady(one.source, size, duration);
       return { file: one.drive ?? one.source, source: one.source, key: one.key, name: one.name, size };
     }
-    return upFromHere(one, await local);
+    file = await local;
+    return upFromHere(one, file);
   })();
-  cloudMedia.goingUpBehind(one.source, up);
+  cloudMedia.goingUpBehind(one.source, up, watch);
   const began = Date.now();
   const run = up
     .then(
@@ -347,7 +353,13 @@ function goUp(dir: string, one: Held, local: Promise<string>): void {
   going.set(id, run);
 }
 
-/** `one` uploaded from this Mac (cloud_media `uploadLater`: one at a time, resumable, carried on after a restart), until the registry has it. */
+/**
+ * `one` uploaded from this Mac (cloud_media `uploadLater`: one at a time, resumable, carried on after a restart), until
+ * the registry has it. What ends the wait is the job table's upload landing, at whichever try (Nov 21): a try that
+ * fails is put off and started again by the table's own waits (jobs.ts `putOff`: a minute, 5, 15, then every half
+ * hour, sooner when the line comes back), never by a loop here (it asked every ten minutes for ever, outside the
+ * table, and sent it again). Its copy gone, or Edit's restart (`reset`), ends it too.
+ */
 async function upFromHere(one: Held, path: string): Promise<cloudMedia.Original> {
   const size = fs.statSync(path).size;
   const duration = await streams(path).then((found) => found.durationMs / 1000, () => 0);
@@ -357,20 +369,25 @@ async function upFromHere(one: Held, path: string): Promise<cloudMedia.Original>
     await cloudMedia.originalIsReady(one.source, size, duration);
   } else {
     diag.info("writer", `${one.source}: the relay can't copy it, so ${THIS_MACHINE} uploads its original (${Math.round(size / 1e6)} MB) behind the import`);
+    const landed = cloudMedia.landed(path);
+    landed.catch(() => {});
     cloudMedia.uploadLater(home, upload);
+    let stop: (error: Error) => void = () => {};
+    const stopped = new Promise<never>((_, reject) => (stop = reject));
+    stopped.catch(() => {});
+    stops.add(stop);
+    try {
+      await Promise.race([landed, stopped]);
+    } finally {
+      stops.delete(stop);
+    }
   }
-  for (;;) {
-    await cloudMedia.uploaded(path);
-    const record = await cloudMedia.getRecord(one.source).catch(() => null);
-    if (cloudMedia.readyOriginal(record) !== null) return { file: one.drive ?? one.source, source: one.source, key: one.key, name: one.name, size };
-    // Put off (offline, signed out): asked again in a while, and sent again if nothing is sending it.
-    const run = generation;
-    await Bun.sleep(timing.recheckMs);
-    if (run !== generation) throw new Error("stopped");
-    if (!isFile(path)) throw new Error("its copy here is gone");
-    if (home !== null && !cloudMedia.uploadingNow(path)) cloudMedia.uploadLater(home, upload);
-  }
+  // Landed means the registry was told it's ready (cloud_media `runUpload` does that before its upload ends).
+  return { file: one.drive ?? one.source, source: one.source, key: one.key, name: one.name, size };
 }
+
+/** What ends the waits of `upFromHere` from before a `reset` (tests' restarts). */
+const stops = new Set<(error: Error) => void>();
 
 /** Every script's uploads a restart cut off, carried on; copies an import stopped for good no longer needs, let go. */
 export function start(app: App): void {
@@ -408,7 +425,8 @@ export async function settled(): Promise<void> {
 export function reset(): void {
   home = null;
   going.clear();
-  generation++;
+  for (const stop of stops) stop(new Error("stopped"));
+  stops.clear();
 }
 
 /**

@@ -3079,11 +3079,11 @@ async function footageToCloud(app: App, id: string, index: number, file: string,
         ? await diag.timeOnAsync("script", "script: post to cloud", file, () => seams.cloudMedia.postOriginal(app.store.home, file, scratch, progress))
         : youtube.idOf(file) !== null
       ? await diag.timeOnAsync("script", "script: youtube to cloud", file, () =>
-          seams.cloudMedia.youtubeOriginal(app.store.home, file, scratch, progress),
+          seams.cloudMedia.youtubeOriginal(app.store.home, file, scratch, progress, letGo),
         )
       : [
           await diag.timeOnAsync("script", "script: download to cloud", `Drive file ${file}`, () =>
-            seams.cloudMedia.driveOriginal(file, scratch, progress),
+            seams.cloudMedia.driveOriginal(file, scratch, progress, letGo),
           ),
           null,
         ];

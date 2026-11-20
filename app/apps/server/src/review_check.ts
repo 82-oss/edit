@@ -34,14 +34,25 @@ export function asLengths(value: unknown): Lengths | null {
   return { video: numberOf(video), frames: numberOf(frames), audio: numberOf(audio) };
 }
 
-export async function lengthsOf(path: string): Promise<Lengths> {
+/**
+ * Ends the checks below when a share is cancelled (Nov 21: each FFmpeg here ran on to its end, up to a minute a point,
+ * after the share's Cancel; reviews.ts passes the share's signal).
+ */
+function stopped(signal: AbortSignal | undefined): void {
+  if (signal?.aborted === true) throw new Error("the share was cancelled");
+}
+
+/** `path`'s lengths (none when it can't be read); `signal` ends the probe and throws, so a cancel never reads as "no picture". */
+export async function lengthsOf(path: string, signal?: AbortSignal): Promise<Lengths> {
+  stopped(signal);
   try {
-    const out = new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-print_format", "json", "-show_streams", path]));
+    const out = new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-print_format", "json", "-show_streams", path], { signal }));
     const streams = (JSON.parse(out) as { streams?: Record<string, unknown>[] }).streams ?? [];
     const video = streams.find((one) => one.codec_type === "video");
     const audio = streams.find((one) => one.codec_type === "audio");
     return { video: numberOf(video?.duration), frames: numberOf(video?.nb_frames), audio: numberOf(audio?.duration) };
   } catch {
+    stopped(signal);
     return NONE;
   }
 }
@@ -80,32 +91,39 @@ const DECODE_MS = 60_000;
  * it's short), FFmpeg stopping at the first error (`-xerror`). A few seconds
  * on a 60-minute copy: each point seeks to the keyframe before it.
  */
-export async function decodeProblem(path: string, seconds: number): Promise<string | null> {
+export async function decodeProblem(path: string, seconds: number, signal?: AbortSignal): Promise<string | null> {
+  stopped(signal);
   const points = seconds <= WHOLE ? [null] : [0, seconds / 4, seconds / 2, (3 * seconds) / 4, Math.max(0, seconds - SPAN)];
   const failures = await Promise.all(
     points.map(async (at) => {
       const input = at === null ? ["-i", path] : ["-ss", at.toFixed(3), "-i", path, "-t", String(SPAN)];
       try {
-        await tools.run([tools.ffmpeg(), "-v", "error", "-nostdin", "-xerror", ...input, "-map", "0:v:0?", "-map", "0:a:0?", "-f", "null", "-"], { timeoutMs: DECODE_MS });
+        await tools.run([tools.ffmpeg(), "-v", "error", "-nostdin", "-xerror", ...input, "-map", "0:v:0?", "-map", "0:a:0?", "-f", "null", "-"], { timeoutMs: DECODE_MS, signal });
         return null;
       } catch (error) {
+        if (signal?.aborted === true) return null;
         return `it doesn't decode ${at === null ? "" : `at ${at.toFixed(1)} s `}(${ffmpegSaid(error)})`;
       }
     }),
   );
+  stopped(signal);
   return failures.find((one) => one !== null) ?? null;
 }
 
 /** Why the review copy at `path` can't stand for the export (`exported`): its lengths, then whether it decodes. */
-export async function reviewCopyProblem(path: string, exported: Lengths, fps: number): Promise<string | null> {
-  const copy = await lengthsOf(path);
-  return copyProblem(copy, exported, fps) ?? (await decodeProblem(path, copy.video ?? 0));
+export async function reviewCopyProblem(path: string, exported: Lengths, fps: number, signal?: AbortSignal): Promise<string | null> {
+  const copy = await lengthsOf(path, signal);
+  return copyProblem(copy, exported, fps) ?? (await decodeProblem(path, copy.video ?? 0, signal));
 }
 
 /** A piece's encoder setup: its codec, profile, level, size, pixel format and SPS/PPS (extradata). */
-export async function setupOf(path: string): Promise<string> {
+export async function setupOf(path: string, signal?: AbortSignal): Promise<string> {
+  stopped(signal);
   const out = new TextDecoder().decode(
-    await tools.run([tools.ffprobe(), "-v", "error", "-select_streams", "v:0", "-show_data_hash", "md5", "-show_entries", "stream=codec_name,profile,level,width,height,pix_fmt,extradata_hash", "-of", "json", path]),
+    await tools.run([tools.ffprobe(), "-v", "error", "-select_streams", "v:0", "-show_data_hash", "md5", "-show_entries", "stream=codec_name,profile,level,width,height,pix_fmt,extradata_hash", "-of", "json", path], { signal }).catch((error: unknown) => {
+      stopped(signal);
+      throw error;
+    }),
   );
   const stream = (JSON.parse(out) as { streams?: Record<string, unknown>[] }).streams?.[0] ?? {};
   return ["codec_name", "profile", "level", "width", "height", "pix_fmt", "extradata_hash"].map((key) => String(stream[key] ?? "")).join(" ");
@@ -116,9 +134,9 @@ export async function setupOf(path: string): Promise<string> {
  * re-encoding, every piece plays with the first's SPS/PPS, so one made on
  * libx264 among Video Toolbox ones (encodeReview's fallback) can't decode.
  */
-export async function oddPieces(paths: string[]): Promise<string[]> {
+export async function oddPieces(paths: string[], signal?: AbortSignal): Promise<string[]> {
   const setups: string[] = [];
-  for (let at = 0; at < paths.length; at += 8) setups.push(...(await Promise.all(paths.slice(at, at + 8).map(setupOf))));
+  for (let at = 0; at < paths.length; at += 8) setups.push(...(await Promise.all(paths.slice(at, at + 8).map((path) => setupOf(path, signal)))));
   const counts = new Map<string, number>();
   for (const one of setups) counts.set(one, (counts.get(one) ?? 0) + 1);
   const common = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0];

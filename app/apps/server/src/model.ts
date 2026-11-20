@@ -139,6 +139,11 @@ export interface ScriptJob {
   back?: boolean;
   /** When it got to `done` (ms): Home's New is work done since its person last opened it. */
   done_at?: number;
+  /**
+   * When it last moved (ms: a byte, an excerpt cut, a file's state): the page eases its number only while it moves, and
+   * says since when once it hasn't for five minutes (Nov 20: Home's "Importing N%" climbed on a curve whatever the server did).
+   */
+  moved_ms?: number;
 }
 
 /** What a file's failure is (the server's failure.ts): only "person" and "broken" are asked about; the rest wait by themselves. */

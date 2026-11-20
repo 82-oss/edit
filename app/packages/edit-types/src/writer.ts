@@ -247,6 +247,13 @@ export type ImportProgress = {
   detail: string;
   /** When this run of the import began, so its dialog's clock starts there, not when it's opened. */
   startedAt?: number;
+  /**
+   * When it last moved (a byte, a frame, a step), ms since the epoch: the page eases its number only while it moves, and
+   * says since when once it hasn't for five minutes (Nov 20: Home's "Importing 37%" crept to 99 through an hour's wait).
+   */
+  movedAt?: number;
+  /** When one waiting by itself goes again (ms since the epoch); a time already gone reads "now". */
+  retryAt?: number;
 };
 
 export type ClaudeStatus = {

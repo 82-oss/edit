@@ -612,7 +612,8 @@ export function routes(router: Router<App>): void {
       return serveFile(context.request, path);
     })
     // With the imports waiting in the job table to try again by themselves, each saying when.
-    .get("/api/writer/progress", ({ app }) => json(imports.progress().filter((one) => seesScript(dataOf(app), one.id))))
+    // This Edit's own home, never one learned at start (Nov 21: a progress ask before Script mode started read no table).
+    .get("/api/writer/progress", ({ app }) => json(imports.progress(app.store.home).filter((one) => seesScript(dataOf(app), one.id))))
     // Brings an archived script's footage back; followed as a build.
     .post("/api/writer/scripts/{id}/restore", (context) =>
       answer(() => {

@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 import * as editCloud from "../../src/cloud.ts";
 import * as cloudMedia from "../../src/cloud_media.ts";
+import * as jobs from "../../src/jobs.ts";
 import * as macSpeech from "../../src/mac_speech.ts";
 import * as room from "../../src/storage.ts";
 import * as tools from "../../src/tools.ts";
@@ -41,7 +42,6 @@ let relayCopies = false;
 const hooksBuild = imports.hooks.build;
 const disk = { free: room.diskHooks.free, total: room.diskHooks.total };
 const cloudTiming = { sleep: editCloud.timing.sleep, filePart: editCloud.timing.filePart, resumableFrom: editCloud.timing.resumableFrom };
-const recheck = streamed.timing.recheckMs;
 
 const originalPuts = () => mock.calls(/^\/r2\/edit\/originals\//, "PUT");
 const originalGets = () => mock.calls(/^\/r2\/edit\/originals\//, "GET");
@@ -111,7 +111,6 @@ beforeEach(() => {
   mock.cloud.objects.clear();
   mock.cloud.convex.media.clear();
   mock.requests.length = 0;
-  streamed.timing.recheckMs = 50;
 });
 
 afterAll(() => {
@@ -121,7 +120,6 @@ afterAll(() => {
   Object.assign(editCloud.timing, cloudTiming);
   editCloud.keepUploadJournalsIn(null);
   Object.assign(room.diskHooks, disk);
-  streamed.timing.recheckMs = recheck;
   streamed.reset();
   restore();
   mock.stop();
@@ -236,7 +234,6 @@ test("an upload a restart cut off carries on from the parts already up, the impo
 
     // The first run: the relay can't copy it (no such route), so it goes from here, and the line drops at part 3.
     dropFrom = 3;
-    streamed.timing.recheckMs = 3_600_000;
     streamed.start(app);
     for (let waited = 0; mock.calls(/^\/r2\/edit\/originals\/drive\/1LocalFirstRestart/, "PUT").filter((call) => call.query.get("partNumber") === "3").length < 2 && waited < 20_000; waited += 50) await Bun.sleep(50);
     await Bun.sleep(200);
@@ -266,6 +263,49 @@ test("an upload a restart cut off carries on from the parts already up, the impo
   } finally {
     Object.assign(editCloud.timing, { filePart: cloudTiming.filePart, resumableFrom: cloudTiming.resumableFrom });
     editCloud.keepUploadJournalsIn(null);
+    cleanup();
+  }
+}, 60_000);
+
+test("an upload from here that fails waits in the job table, is sent again only by the table, and the wait behind the import ends when the table's try lands (Nov 21)", async () => {
+  const { app, cleanup } = fixtureHome("local-first-table-waits");
+  try {
+    const data = store.dataDir(app.store.home);
+    const dir = store.scriptDir(data, "0c0ffee0-0000-4000-8000-000000000003");
+    const id = "1LocalFirstTable0000000001";
+    const source = `drive:${id}`;
+    const key = `edit/originals/drive/${id}/table.mp4`;
+    const path = join(dir, ".originals", id, "table.mp4");
+    const footage = new Uint8Array(200_000).map((_, at) => (at * 13) % 251);
+    fs.mkdirSync(join(dir, ".originals", id), { recursive: true });
+    fs.writeFileSync(path, footage);
+    fs.writeFileSync(join(dir, "script.json"), JSON.stringify({ status: "processing" }));
+    fs.writeFileSync(join(dir, ".originals", "held.json"), JSON.stringify([{ source, key, name: "table.mp4", size: footage.length, path: `.originals/${id}/table.mp4`, landed: true, up: false, piece: false }]));
+    await editCloud.mutation("edit:putMedia", { source, name: "table.mp4", originalKey: key, size: footage.length });
+    const puts = () => mock.calls(new RegExp(`^/r2/edit/originals/drive/${id}/`), "PUT").length;
+    const row = () => jobs.list(app.store.home, "upload").find((job) => job.args.source === source);
+
+    // The line drops: every try at it refused. Put off in the table, waiting its turn there.
+    dropFrom = 0;
+    streamed.start(app);
+    for (let waited = 0; row()?.state !== "waiting" && waited < 10_000; waited += 20) await Bun.sleep(20);
+    expect(row()?.state).toBe("waiting");
+    expect(row()?.retry_at).toBeGreaterThan(Date.now());
+    const sent = puts();
+    expect(sent).toBeGreaterThan(0);
+    // Nothing outside the table sends it again meanwhile (it was asked again and sent every ten minutes, for ever).
+    await Bun.sleep(600);
+    expect(puts()).toBe(sent);
+    expect(mock.cloud.convex.media.get(source)?.originalReady).toBe(false);
+
+    // The table's own try, its wait over (serve.ts's resumer): it lands, and the wait behind the import ends with it.
+    dropFrom = null;
+    cloudMedia.resumeUpload(app.store.home, row()!.args);
+    await streamed.settled();
+    expect(mock.cloud.objects.get(key)).toEqual(footage);
+    expect(mock.cloud.convex.media.get(source)?.originalReady).toBe(true);
+    expect((JSON.parse(fs.readFileSync(join(dir, ".originals", "held.json"), "utf8")) as { up: boolean }[])[0]?.up).toBe(true);
+  } finally {
     cleanup();
   }
 }, 60_000);

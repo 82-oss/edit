@@ -337,8 +337,11 @@ export const api = {
   /**
    * The viewer is at `frame` (an open, a jump, a play under way): its footage from there comes first. `playing`
    * (true while a play runs, false at its pause): the server's background work gives way to it (playing.ts).
+   * `holding`: that play is held on its spinner for its footage, so the footage's own downloads don't give way to it
+   * (Nov 20: nothing is shown, so the fills run as at rest).
    */
-  warmPlayback: (id: string, frame: number, playing?: boolean) => request<{ ok: boolean }>("POST", `/api/projects/${id}/playback/warm`, playing === undefined ? { frame } : { frame, playing }),
+  warmPlayback: (id: string, frame: number, playing?: boolean, holding?: boolean) =>
+    request<{ ok: boolean }>("POST", `/api/projects/${id}/playback/warm`, playing === undefined ? { frame } : holding === true ? { frame, playing, holding } : { frame, playing }),
   /**
    * The stretches of the timeline (frames) whose every picture and sound is here to play from, and whether this Mac
    * can keep footage at all (`keeping` false: its disk is at Edit's floor, so a play waits for nothing).

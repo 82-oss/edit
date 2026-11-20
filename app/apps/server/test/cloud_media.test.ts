@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
+import { afterAll, beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -11,7 +11,9 @@ import * as cloudMedia from "../src/cloud_media.ts";
 import * as effectCloud from "../src/effect_cloud.ts";
 import { pinned } from "../src/export_excerpts.ts";
 import * as hearingLog from "../src/hearing_log.ts";
+import * as failure from "../src/failure.ts";
 import * as steps from "../src/import_steps.ts";
+import * as wake from "../src/wake.ts";
 import { playbackKey, playbackPath } from "../src/cloud_playback.ts";
 import { buildRouter } from "../src/routes.ts";
 import { respond } from "../src/http/server.ts";
@@ -274,7 +276,26 @@ test("Writer folder masters resolve by content identity and require the matching
   mock.cloud.convex.media.set(source, { source, name: "Folder master", originalKey: key, originalReady: true, proxyReady: false, size: 100, createdAt: 1, updatedAt: 1 });
   expect(await cloudMedia.registeredOriginal(source, key)).toEqual({ source, file: source, key, name: "Folder master", size: 100 });
   await expect(cloudMedia.registeredOriginal(source, "edit/originals/wrong.mp4")).rejects.toThrow("does not match");
-  await expect(cloudMedia.registeredOriginal(`sha256:${"c".repeat(64)}`)).rejects.toThrow("not uploaded yet");
+  await expect(cloudMedia.registeredOriginal(`sha256:${"c".repeat(64)}`)).rejects.toThrow("still going up");
+});
+
+test("a folder master still going up from another Mac is trouble that passes, never a question for a person (Nov 21)", async () => {
+  // On another Mac, while the master is still going up from the Mac that started the edit: the page asked someone to
+  // finish syncing, and nothing woke the file once the upload landed.
+  const source = `sha256:${"e".repeat(64)}`;
+  const key = `edit/originals/sha256/${"e".repeat(64)}/00.mp4`;
+  mock.cloud.convex.media.set(source, { source, name: "Folder master", originalKey: key, originalReady: false, proxyReady: false, size: 100, createdAt: 1, updatedAt: 1 });
+  const error = await cloudMedia.registeredOriginal(source, key).then(() => null, (thrown: unknown) => thrown);
+  expect(error).not.toBeNull();
+  expect(error).not.toBeInstanceOf(steps.NeedsPerson);
+  // By its class, and by its words alone (what a job keeps across a restart): passing, surely so, never counted as the
+  // same unknown failure in a row (which fails an import for good on the fourth).
+  expect(failure.kindOf(error)).toBe("passing");
+  expect(failure.surely(error)).toBe("passing");
+  expect(failure.surely((error as Error).message)).toBe("passing");
+  // Once it's up, the same ask answers.
+  mock.cloud.convex.media.set(source, { source, name: "Folder master", originalKey: key, originalReady: true, proxyReady: false, size: 100, createdAt: 1, updatedAt: 2 });
+  expect(await cloudMedia.registeredOriginal(source, key)).toMatchObject({ key, size: 100 });
 });
 
 test("exports_fetch_only_what_the_span_uses", async () => {
@@ -921,6 +942,113 @@ test("a Drive file is copied in the cloud when the relay can, with its progress;
   }
 });
 
+test("an original going up from this Mac is waited on only while its bytes move, its bytes said meanwhile, its download slot let go first (Nov 21)", async () => {
+  const fixture = home("cloud-going-up-still");
+  const still = steps.STILL_MS.value;
+  steps.STILL_MS.value = 300;
+  try {
+    const scratch = cloudMedia.scratchDir(fixture.store.cacheDir());
+    // An upload that never sends another byte (a line gone, an upload put off): it never lands.
+    cloudMedia.goingUpBehind("drive:GoingUpStill01", new Promise(() => {}), { sent: () => 1_234, moved: () => 0, total: 5_000, name: "Still.mp4" });
+    const said: [number, number | null, string][] = [];
+    let letGo = 0;
+    const began = Date.now();
+    const waited = await Promise.race([
+      cloudMedia.driveOriginal("GoingUpStill01", scratch, (bytes, total, name) => said.push([bytes, total, name]), () => letGo++).then(() => "answered", (error: unknown) => error),
+      Bun.sleep(10_000).then(() => "still waiting"),
+    ]);
+    expect(waited).toBeInstanceOf(steps.StoodStill);
+    // Trouble that passes: the file waits in the job table and is tried again by itself.
+    expect(failure.kindOf(waited)).toBe("passing");
+    expect(Date.now() - began).toBeLessThan(5_000);
+    expect(said).toContainEqual([1_234, 5_000, "Still.mp4"]);
+    expect(letGo).toBe(1);
+
+    // One whose bytes keep moving is waited on for as long as it takes, and lands.
+    let moved = 0;
+    const ticker = setInterval(() => (moved += 1_000), 50);
+    let land: (one: cloudMedia.Original) => void = () => {};
+    const original = { file: "GoingUpMoving01", source: "drive:GoingUpMoving01", key: "edit/originals/drive/GoingUpMoving01/Moving.mp4", name: "Moving.mp4", size: 9_000 };
+    cloudMedia.goingUpBehind("drive:GoingUpMoving01", new Promise((resolve) => (land = resolve)), { sent: () => moved, moved: () => moved, total: 9_000, name: "Moving.mp4" });
+    const moving = cloudMedia.driveOriginal("GoingUpMoving01", scratch, () => {});
+    await Bun.sleep(900);
+    land(original);
+    clearInterval(ticker);
+    expect(await moving).toEqual(original);
+  } finally {
+    steps.STILL_MS.value = still;
+    fixture.cleanup();
+  }
+});
+
+/** A relay copy of `file` followed through `answers` (one per status ask: a status, or "down" for a relay that doesn't answer), `between(ask)` run in each wait. */
+async function relayCopy(name: string, file: string, answers: (Record<string, unknown> | "down")[], between: (ask: number) => void, poll = 2_000) {
+  const fixture = home(name);
+  const timing = { ...cloudMedia.jobTiming };
+  const gap = wake.GAP_MS.value;
+  // Only the test says when the machine slept: the beat never takes the clock's jumps below as one.
+  wake.GAP_MS.value = Number.POSITIVE_INFINITY;
+  let asks = 0;
+  cloudMedia.jobTiming.poll = poll;
+  cloudMedia.jobTiming.sleep = async () => between(asks);
+  try {
+    const bytes = new Uint8Array(150_000).map((_, n) => n % 233);
+    mock.driveFile(file, bytes, "Bodycam.mp4");
+    const key = `edit/originals/drive/${file}/Bodycam.mp4`;
+    mock.on("POST", "/v1/cloud/jobs/drive", () => Response.json({ id: `drive-${file}`, status: "queued", total: bytes.length }));
+    mock.on("POST", "/v1/cloud/jobs/status", () => {
+      const answer = answers[Math.min(asks++, answers.length - 1)]!;
+      if (answer === "down") return new Response("the relay is down", { status: 400 });
+      if (answer.status === "complete") mock.cloud.put(key, bytes);
+      return Response.json({ id: `drive-${file}`, ...answer });
+    });
+    const cancels = mock.calls("/v1/cloud/jobs/cancel").length;
+    const downloads = mock.calls("/drive.usercontent.google.com/download").length;
+    const original = await cloudMedia.driveOriginal(file, cloudMedia.scratchDir(fixture.store.cacheDir()), () => {});
+    const through = mock.calls("/drive.usercontent.google.com/download").slice(downloads);
+    return { original, cancelled: mock.calls("/v1/cloud/jobs/cancel").length - cancels, streamedHere: !through.every((call) => call.headers.get("range") === "bytes=0-0"), asks };
+  } finally {
+    Object.assign(cloudMedia.jobTiming, timing);
+    wake.GAP_MS.value = gap;
+    setSystemTime();
+    fixture.cleanup();
+  }
+}
+
+test("a lid shut during the relay's Drive copy isn't the copy standing still: this Mac never takes over a copy that was fine (Nov 21)", async () => {
+  // 11 minutes away, then the Wi-Fi not up yet on waking (the first ask fails), then the copy carries on and lands.
+  const slept = await relayCopy("cloud-drive-job-lid", "DriveLid01", [{ status: "running", bytes: 64_000 }, "down", { status: "running", bytes: 100_000 }, { status: "complete", bytes: 150_000 }], (ask) => {
+    if (ask !== 1) return;
+    setSystemTime(new Date(Date.now() + 11 * 60_000));
+    wake.woke(11 * 60_000);
+  });
+  expect(slept.cancelled).toBe(0);
+  expect(slept.streamedHere).toBe(false);
+  expect(slept.original.size).toBe(150_000);
+  // A gap between two asks of more than five polls with no wake heard (the process frozen, its timers napped) is time away too.
+  const frozen = await relayCopy("cloud-drive-job-frozen", "DriveLid02", [{ status: "running", bytes: 64_000 }, "down", { status: "running", bytes: 64_000 }, { status: "running", bytes: 100_000 }, { status: "complete", bytes: 150_000 }], (ask) => {
+    if (ask === 1) setSystemTime(new Date(Date.now() + 11 * 60_000));
+  });
+  expect(frozen.cancelled).toBe(0);
+  expect(frozen.streamedHere).toBe(false);
+});
+
+test("a relay that doesn't answer for ten minutes while this Mac is awake is still taken over, and one that says its copy failed at once", async () => {
+  // A minute between asks (the poll's own period, so none of it is time away): the relay never answers again.
+  let now = Date.now();
+  const gone = await relayCopy("cloud-drive-job-gone", "DriveGone01", [{ status: "running", bytes: 64_000 }, "down"], () => {
+    now += 60_000;
+    setSystemTime(new Date(now));
+  }, 60_000);
+  expect(gone.cancelled).toBe(1);
+  expect(gone.streamedHere).toBe(true);
+  expect(gone.asks).toBeGreaterThanOrEqual(11);
+  expect(gone.asks).toBeLessThanOrEqual(13);
+  const failed = await relayCopy("cloud-drive-job-errored", "DriveGone02", [{ status: "running", bytes: 64_000 }, { status: "errored", error: "Google said no" }], () => {});
+  expect(failed.streamedHere).toBe(true);
+  expect(failed.asks).toBe(2);
+});
+
 test("an excerpt takes its words from its recording's shared transcript instead of being heard again", async () => {
   // Writer heard the whole recording (youtube:OVITtAlFG6M) Edit's way and shared it beside the source.
   const whole = {
@@ -1049,6 +1177,77 @@ test("the preview reads a medium not on this Mac through the server: ranges from
   // Not a playback file, or no proxy in the cloud: nothing to stream.
   expect(await cloudMedia.streamFromCloud(new Request("http://127.0.0.1/x"), { proxy: key }, "thumbs")).toBeNull();
   expect(await cloudMedia.streamFromCloud(new Request("http://127.0.0.1/x"), null, "proxy")).toBeNull();
+});
+
+/**
+ * An addon whose proxy encode writes as the engine's does (media.rs `make_cloud_proxy`): into a `<stem>.<pid>-<n>.partial.mp4`
+ * beside its output, renamed to it at the end, and never stopped. `step()` writes a little more; `finish()` ends it.
+ */
+function slowProxies(fixture: Fixture) {
+  const raw = createStub();
+  raw.init({ home: fixture.home, cacheDir: `${fixture.home}/cache`, ffmpeg: "ffmpeg", ffprobe: "ffprobe", log: () => {} });
+  const encodes: { out: string; partial: string; step: () => void; finish: () => void }[] = [];
+  raw.makeCloudProxy = (_source: string, _probe: Probe, out: string) =>
+    new Promise<void>((resolve) => {
+      const partial = out.replace(/\.mp4$/u, `.${process.pid}-${encodes.length}.partial.mp4`);
+      fs.writeFileSync(partial, "x");
+      encodes.push({ out, partial, step: () => fs.appendFileSync(partial, "x"), finish: () => (fs.renameSync(partial, out), resolve()) });
+    });
+  useNative(wrap(raw));
+  return encodes;
+}
+
+test("a whole-file proxy read over the network runs for as long as it moves, and a retry never starts a second encode beside one still running (Nov 21)", async () => {
+  const fixture = home("cloud-proxy-while-moving");
+  const [limit, still] = [steps.LIMITS.proxy, steps.STILL_MS.value];
+  // The fixed clock far shorter than the encode: a 1.2 GB file read at ~1 Mbit/s needs hours, past any limit set ahead.
+  steps.LIMITS.proxy = () => 50;
+  steps.STILL_MS.value = 400;
+  const timers: ReturnType<typeof setInterval>[] = [];
+  try {
+    const encodes = slowProxies(fixture);
+    const dir = `${fixture.store.cacheDir()}/cloud/proxies/drive`;
+    fs.mkdirSync(dir, { recursive: true });
+    const url = "https://r2.example/edit/originals/drive/Slow01/Bodycam.mp4?X-Amz-Signature=abc";
+    // Growing slowly for a second, twenty times the fixed limit: never stopped, and made.
+    const growing = cloudMedia.makeProxy(url, VIDEO, `${dir}/Slow01.mp4`);
+    await Bun.sleep(20);
+    timers.push(setInterval(() => encodes[0]!.step(), 50));
+    await Bun.sleep(1_000);
+    clearInterval(timers.pop());
+    encodes[0]!.finish();
+    await growing;
+    expect(fs.readFileSync(`${dir}/Slow01.mp4`, "utf8").length).toBeGreaterThan(5);
+    expect(fs.readdirSync(dir)).toEqual(["Slow01.mp4"]);
+
+    // One that stops growing is stopped after the time with nothing new, as trouble that passes.
+    const stuck = cloudMedia.makeProxy(url.replace(/Slow01/gu, "Slow02"), VIDEO, `${dir}/Slow02.mp4`).then(() => null, (error: unknown) => error);
+    const error = await stuck;
+    expect(error).toBeInstanceOf(steps.StoodStill);
+    expect(encodes).toHaveLength(2);
+    // Tried again while the first encode (which can't be stopped) still runs: waited on, never a second beside it.
+    const retry = cloudMedia.makeProxy(url.replace(/Slow01/gu, "Slow02"), VIDEO, `${dir}/Slow02.mp4`);
+    await Bun.sleep(100);
+    expect(encodes).toHaveLength(2);
+    encodes[1]!.step();
+    encodes[1]!.finish();
+    await retry;
+    expect(fs.existsSync(`${dir}/Slow02.mp4`)).toBe(true);
+    expect(fs.readdirSync(dir).sort()).toEqual(["Slow01.mp4", "Slow02.mp4"]);
+
+    // A file on this disk keeps its fixed limit; what its late encode leaves goes.
+    const local = `${fixture.dir}/here.mp4`;
+    fs.writeFileSync(local, "footage");
+    await expect(cloudMedia.makeProxy(local, VIDEO, `${dir}/Here01.mp4`)).rejects.toBeInstanceOf(steps.StepTimedOut);
+    encodes[2]!.finish();
+    await Bun.sleep(20);
+    expect(fs.readdirSync(dir).sort()).toEqual(["Slow01.mp4", "Slow02.mp4"]);
+  } finally {
+    for (const timer of timers) clearInterval(timer);
+    steps.LIMITS.proxy = limit;
+    steps.STILL_MS.value = still;
+    fixture.cleanup();
+  }
 });
 
 test("a proxy made here and not uploaded yet is read from here: the import's analysis never waits on R2's 404", async () => {

@@ -71,6 +71,7 @@ import * as cloud from "./cloud.ts";
 import * as effectCloud from "./effect_cloud.ts";
 import { PLAYBACK_ROUTE, playbackKey, playbackPath } from "./cloud_playback.ts";
 import * as diag from "./diag.ts";
+import * as encoder from "./encoder.ts";
 import * as log from "./hearing_log.ts";
 import * as sharedWords from "./shared_words.ts";
 import { serveFile } from "./http/files.ts";
@@ -81,6 +82,7 @@ import * as jobs from "./jobs.ts";
 import * as steps from "./import_steps.ts";
 import { forgetKeyVerdict, mediaHooks, mediaKey, Semaphore } from "./media.ts";
 import * as finished from "./finished.ts";
+import * as wake from "./wake.ts";
 import * as youtube from "./youtube.ts";
 import * as posts from "./posts.ts";
 import type { Clip, Media, Probe, Project } from "./model.ts";
@@ -101,48 +103,114 @@ import { THIS_MACHINE } from "./machine.ts";
  * MP4 (Serial Predator's Tarrytown_PD_call.m4a failed its import: "only
  * footage gets a cloud proxy").
  *
- * Held on the hardware encoder while it runs (encoder.ts) and bounded by
- * `LIMITS.proxy` (import_steps.ts): past it the step fails, saying whether
- * an export or another encode had the encoder too (then the file waits for
- * it to be free instead of failing). It's made under a name of its own and
- * moved to `out` only when it finished in time: an addon encode can't be
- * stopped, and one that answers late must never leave a file a retry takes
- * as made.
+ * Held on the hardware encoder while it runs (encoder.ts). From a file on this
+ * disk it's bounded by `LIMITS.proxy` (import_steps.ts): past it the step fails,
+ * saying whether an export or another encode had the encoder too (then the file
+ * waits for it to be free instead of failing). Read over the network (a presigned
+ * URL) it runs for as long as its output grows (`whileMoving`: stopped only after
+ * five minutes with nothing new, the time a lid was shut given back), as cuts over
+ * the network do (honest council change 5a, Nov 21): a 1.2 GB recording read at
+ * ~1 Mbit/s needs about 2.7 hours, and a limit of at most 55 minutes stopped it
+ * every time while the encode, which can't be stopped, kept reading R2 beside each
+ * retry. It's made under a name of its own and moved to `out` only when a step
+ * still waiting on it sees it finish: one that answers late, with nobody waiting,
+ * never leaves a file a retry takes as made.
  */
-async function makeProxy(source: string, probe: Probe, out: string): Promise<void> {
-  const temp = out.replace(/(\.[^./]+)?$/, (ext) => `.making-${process.pid}-${nextFileId()}${ext}`);
-  let late = false;
-  try {
-    await steps.encoding("Making the footage's proxy", steps.LIMITS.proxy(probe.duration), async (signal) => {
-      const made =
-        probe.kind !== "audio"
-          ? native().makeCloudProxy(source, probe, temp)
-          : tools
-              .run([
-                tools.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", "-y",
-                "-protocol_whitelist", tools.protocols(source), ...tools.urlArgs(source),
-                "-i", source, "-vn", "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-f", "mp4", temp,
-              ], { signal })
-              .then(
-                () => undefined,
-                (error: unknown) => {
-                  throw new Error(`the sound's proxy: ${diag.scrub(diag.messageOf(error))}`);
-                },
-              );
-      // Finishing after its time ran out: what it wrote goes.
-      void made.then(
-        () => late && fs.rmSync(temp, { force: true }),
-        () => fs.rmSync(temp, { force: true }),
-      );
-      await made;
-    });
-    if (!isFile(temp)) throw new Error(probe.kind === "audio" ? "the sound's proxy wasn't made" : "the proxy wasn't made");
-    fs.renameSync(temp, out);
-  } catch (error) {
-    late = true;
-    fs.rmSync(temp, { force: true });
-    throw error;
+export async function makeProxy(source: string, probe: Probe, out: string): Promise<void> {
+  const what = "Making the footage's proxy";
+  let one: Making | undefined;
+  const work = async (signal: AbortSignal) => {
+    const running = proxiesMaking.get(out);
+    if (running !== undefined) diag.info("cloud", `${out}: its proxy's encode from an earlier try is still going (it can't be stopped), so it's waited on rather than started again beside it`);
+    const mine = (one = running ?? startProxy(source, probe, out, signal));
+    mine.waiting += 1;
+    try {
+      await mine.made;
+      // Stopped meanwhile: what it wrote goes (`leftBehind`), never taken as made.
+      if (signal.aborted) return;
+      if (!isFile(mine.temp)) throw new Error(probe.kind === "audio" ? "the sound's proxy wasn't made" : "the proxy wasn't made");
+      fs.renameSync(mine.temp, out);
+    } finally {
+      mine.waiting -= 1;
+      leftBehind(mine);
+    }
+  };
+  if (!/^https?:\/\//u.test(source)) {
+    await steps.encoding(what, steps.LIMITS.proxy(probe.duration), work);
+    return;
   }
+  const hold = encoder.hold(what);
+  try {
+    await steps.whileMoving(what, () => (one === undefined ? 0 : writtenBy(one.temp)), work);
+  } finally {
+    hold.release();
+  }
+}
+
+/** A proxy encode under way: where it writes, when it ends, and how many steps wait on it now. */
+interface Making {
+  temp: string;
+  made: Promise<void>;
+  waiting: number;
+  settled: boolean;
+}
+
+/**
+ * The addon's proxy encodes under way, by their output (Nov 21): it can't be stopped, so a retry of a step that was
+ * stopped waits on the one still running instead of starting a second beside it, reading the same file from R2 twice
+ * over a slow line. The sound's own FFmpeg is stopped with its step, so it's never kept here.
+ */
+const proxiesMaking = new Map<string, Making>();
+
+function startProxy(source: string, probe: Probe, out: string, signal: AbortSignal): Making {
+  const temp = out.replace(/(\.[^./]+)?$/, (ext) => `.making-${process.pid}-${nextFileId()}${ext}`);
+  const made =
+    probe.kind !== "audio"
+      ? native().makeCloudProxy(source, probe, temp)
+      : tools
+          .run([
+            tools.ffmpeg(), "-hide_banner", "-nostdin", "-v", "error", "-y",
+            "-protocol_whitelist", tools.protocols(source), ...tools.urlArgs(source),
+            "-i", source, "-vn", "-c:a", "aac", "-b:a", "160k", "-ac", "2", "-f", "mp4", temp,
+          ], { signal })
+          .then(
+            () => undefined,
+            (error: unknown) => {
+              throw new Error(`the sound's proxy: ${diag.scrub(diag.messageOf(error))}`);
+            },
+          );
+  const one: Making = { temp, made, waiting: 0, settled: false };
+  const settle = () => {
+    one.settled = true;
+    if (proxiesMaking.get(out) === one) proxiesMaking.delete(out);
+    leftBehind(one);
+  };
+  made.then(settle, settle);
+  if (probe.kind !== "audio") proxiesMaking.set(out, one);
+  return one;
+}
+
+/** An encode that ended with no step waiting on it any more: what it wrote goes. */
+function leftBehind(one: Making): void {
+  if (one.settled && one.waiting === 0) fs.rmSync(one.temp, { force: true });
+}
+
+/**
+ * What an encode writing `temp` has written so far: the file itself, or the engine's own partial beside it (media.rs
+ * `make_cloud_proxy` writes `<stem>.<pid>-<n>.partial.mp4` and renames it at the end), so a step watching it sees it
+ * grow. A listing of one folder every few seconds.
+ */
+function writtenBy(temp: string): number {
+  const dir = parent(temp);
+  const name = temp.slice((dir?.length ?? -1) + 1);
+  const stem = `${name.replace(/\.[^.]+$/u, "")}.`;
+  let total = 0;
+  try {
+    for (const entry of fs.readdirSync(dir ?? ".")) if (entry === name || entry.startsWith(stem)) total += sizeOf(join(dir ?? ".", entry));
+  } catch {
+    return total;
+  }
+  return total;
 }
 
 export { isLocalCopy } from "./media.ts";
@@ -353,11 +421,25 @@ export async function getRecord(source: string): Promise<Record_ | null> {
   }
 }
 
+/**
+ * A folder master the registry doesn't have ready yet: still going up from the Mac that started the edit (Start the
+ * edit sends it behind the edit, writer/handoff.ts `nameShared`). Trouble that passes (Nov 21): it was the person's
+ * (`NeedsPerson`), so on another Mac the file waited for someone to "finish syncing", and nothing woke it once the
+ * upload landed. Now the file waits in the job table and is tried again by itself. Its words read as passing on their
+ * own too (failure.ts's PASSING: "network"), since a job keeps only the words across a restart.
+ */
+export class MasterNotUpYet extends Error {
+  override readonly name = "MasterNotUpYet";
+  constructor() {
+    super("The folder master is still going up over the network from the Mac that started the edit; Edit tries again by itself once it's there.");
+  }
+}
+
 /** Writer's full-quality folder master, already shared in the registry. */
 export async function registeredOriginal(source: string, expectedKey?: string): Promise<Original> {
   if (!/^sha256:[a-fA-F0-9]{64}$/u.test(source)) throw new Error("invalid shared master source");
   const record = await getRecord(source);
-  if (record === null || !record.originalReady || !cloud.validKey(record.originalKey)) throw new steps.NeedsPerson("The folder master is not uploaded yet. Finish syncing the script in Writer, then retry.");
+  if (record === null || !record.originalReady || !cloud.validKey(record.originalKey)) throw new MasterNotUpYet();
   if (expectedKey !== undefined && record.originalKey !== expectedKey) throw new Error("Writer's folder master does not match its shared original. Sync the script again.");
   return { file: source, source, key: record.originalKey, name: record.name, size: record.size };
 }
@@ -760,6 +842,51 @@ export function uploaded(file: string): Promise<boolean> {
   return uploading.get(file)?.done ?? Promise.resolve(true);
 }
 
+/** The bytes of `file` up so far, by its upload under way now (0 while it waits its turn or isn't going). */
+const upSent = new Map<string, number>();
+/** Every byte the imports' uploads sent this run, one at a time in their slot: a count that grows while the slot moves. */
+let slotSent = 0;
+
+/** How much of `file` is up, by the upload going now (`uploadLater`). */
+export function sentOf(file: string): number {
+  return upSent.get(file) ?? 0;
+}
+
+/**
+ * A count that grows while `file`'s upload, or the one ahead of it in the slot, sends bytes (one goes at a time); still
+ * while it's put off in the job table or not going at all. What a wait on it (`waitGoingUp`) reads as moving.
+ */
+export function upMoving(file: string): number {
+  return uploading.has(file) ? slotSent + sentOf(file) : 0;
+}
+
+/** Waits on `file`'s upload landing, at whichever try (the table's own), by file. */
+const landedWaits = new Map<string, Set<{ resolve: () => void; reject: (error: unknown) => void }>>();
+
+/**
+ * Resolves once an upload of `file` (`uploadLater`) lands, at this try or a later one the job table starts by itself
+ * after putting it off (jobs.ts `putOff`: its passing waits); rejects once it's crossed off because its file is gone.
+ * Nothing loops here: what ends the wait is the table's upload. (Nov 21: Script mode's upload behind an import asked
+ * every ten minutes for ever and sent it again outside the table.)
+ */
+export function landed(file: string): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let waits = landedWaits.get(file);
+    if (waits === undefined) landedWaits.set(file, (waits = new Set()));
+    waits.add({ resolve, reject });
+  });
+}
+
+function tellLanded(file: string, error: unknown | null): void {
+  const waits = landedWaits.get(file);
+  if (waits === undefined) return;
+  landedWaits.delete(file);
+  for (const wait of waits) {
+    if (error === null) wait.resolve();
+    else wait.reject(error);
+  }
+}
+
 /**
  * Removes `file` (Edit's own copy of a browser upload) once its upload is
  * safely in the cloud: now if nothing is uploading it, else when that
@@ -795,6 +922,7 @@ export function uploadLater(home: string, upload: Upload): void {
       () => {
         jobs.end(home, key);
         if (upload.removeAfter === true) fs.rmSync(upload.file, { force: true });
+        tellLanded(upload.file, null);
         return true;
       },
       (error: unknown) => {
@@ -802,13 +930,16 @@ export function uploadLater(home: string, upload: Upload): void {
         // down) is put off and tried again by itself, an hour and then a day later (jobs.ts putOff), or at the next start.
         const gone = (upload.uploadOriginal && !isFile(upload.file)) || (upload.local !== null && !isFile(upload.local));
         diag.error("cloud", `uploading ${upload.file}: ${scrub(failure(error))}${gone ? " (its file is gone: not tried again)" : ""}`);
-        if (gone) jobs.end(home, key);
-        else jobs.putOff(home, key, `its upload failed: ${scrub(failure(error))}`);
+        if (gone) {
+          jobs.end(home, key);
+          tellLanded(upload.file, new Error("its copy here is gone"));
+        } else jobs.putOff(home, key, `its upload failed: ${scrub(failure(error))}`);
         return false;
       },
     )
     .finally(() => {
       if (uploading.get(upload.file) === entry) uploading.delete(upload.file);
+      upSent.delete(upload.file);
     });
   uploading.set(upload.file, entry);
 }
@@ -827,8 +958,12 @@ async function runUpload(upload: Upload, progressed: () => void): Promise<void> 
     } else {
       // The first report is what's up already; any later one is new.
       let reports = 0;
-      await cloud.uploadFile(upload.file, upload.originalKey, () => {
+      let before = 0;
+      await cloud.uploadFile(upload.file, upload.originalKey, (sent) => {
         if (++reports === 2) progressed();
+        upSent.set(upload.file, sent);
+        if (reports > 1) slotSent += Math.max(sent - before, 0);
+        before = sent;
       });
     }
     await putRecord({ source: upload.source, originalReady: true, size: upload.size, duration: upload.duration });
@@ -849,8 +984,11 @@ export function resumeUpload(home: string, args: Record<string, unknown>): void 
   if (typeof upload.file !== "string" || typeof upload.source !== "string" || typeof upload.originalKey !== "string") {
     throw new jobs.Gone("not an upload");
   }
-  if (upload.uploadOriginal && !isFile(upload.file)) throw new jobs.Gone(`${upload.file} is gone`);
-  if (upload.local !== null && !isFile(upload.local)) throw new jobs.Gone(`${upload.local} is gone`);
+  const gone = upload.uploadOriginal && !isFile(upload.file) ? upload.file : upload.local !== null && !isFile(upload.local) ? upload.local : null;
+  if (gone !== null) {
+    tellLanded(upload.file, new Error("its copy here is gone"));
+    throw new jobs.Gone(`${gone} is gone`);
+  }
   uploadLater(home, upload);
 }
 
@@ -1015,6 +1153,7 @@ export async function driveOriginal(
   file: string,
   scratch: string,
   progress: (bytes: number, total: number | null, name: string) => void,
+  letGo: () => void = () => {},
 ): Promise<Original> {
   if (!driveIdOk(file)) throw new steps.NeedsPerson(`${debugStr(file)} isn't a Drive file id`);
   const source = `drive:${file}`;
@@ -1026,7 +1165,7 @@ export async function driveOriginal(
     return { file, source, key: ready, name: record.name, size };
   }
   // On its way up from a script's import here (writer/streamed.ts): waited for, not copied again beside it.
-  const behind = await waitGoingUp(source, progress);
+  const behind = await waitGoingUp(source, progress, letGo);
   if (behind !== null) return behind;
   const [url, head] = await scriptParts.resolve(file, join(scratch, `.probe-${file}`));
   const name = scriptParts.safeName(head.name ?? `${file}.mp4`);
@@ -1056,35 +1195,60 @@ export async function driveOriginal(
 // relay's copy or this Mac's upload while the import goes on. Edit mode on
 // this Mac waits for one rather than copying it a second time beside it.
 
-/** Originals on their way up from this Mac's imports, by source: each resolves once the registry has it ready. */
-const goingUp = new Map<string, Promise<Original>>();
+/** How far an original going up from here has got: its bytes up, a count that grows while its way up moves, its size and name. */
+export interface GoingUp {
+  sent: () => number;
+  moved: () => number;
+  total: number | null;
+  name: string;
+}
 
-/** Notes that `source`'s original is on its way up from here: `done` resolves once the registry has it ready. */
-export function goingUpBehind(source: string, done: Promise<Original>): void {
-  goingUp.set(source, done);
+/** Originals on their way up from this Mac's imports, by source: each resolves once the registry has it ready. */
+const goingUp = new Map<string, { done: Promise<Original>; watch: GoingUp }>();
+
+/** Notes that `source`'s original is on its way up from here: `done` resolves once the registry has it ready; `watch` says how far it's got. */
+export function goingUpBehind(source: string, done: Promise<Original>, watch: GoingUp = { sent: () => 0, moved: () => 0, total: null, name: source }): void {
+  const entry = { done, watch };
+  goingUp.set(source, entry);
   const forget = () => {
-    if (goingUp.get(source) === done) goingUp.delete(source);
+    if (goingUp.get(source) === entry) goingUp.delete(source);
   };
   done.then(forget, forget);
 }
 
-/** The original of `source` once its upload from here is done (null: none going, or it failed, so the caller copies it as before). */
-async function waitGoingUp(source: string, progress: (bytes: number, total: number | null, name: string) => void): Promise<Original | null> {
+/**
+ * The original of `source` once its upload from here is done (null: none going, or it failed, so the caller copies it
+ * as before). Its download slot let go first (`letGo`): it brings no bytes down. Waited on only while its way up moves
+ * (`whileMoving`: this Mac's upload sending bytes, or the one ahead of it in the slot, or the relay's copy counting up),
+ * its bytes up said as it goes; five minutes with nothing new (on an 8 Mbit/s uplink a part of the upload lands every
+ * few seconds, so that's a line that's gone or an upload put off; a lid closed starts the clock again) and it fails as
+ * trouble that passes, so the file waits in the job table and is tried again by itself (Nov 21: an unbounded wait that
+ * said nothing until it was over).
+ */
+async function waitGoingUp(source: string, progress: (bytes: number, total: number | null, name: string) => void, letGo: () => void = () => {}): Promise<Original | null> {
   const pending = goingUp.get(source);
   if (pending === undefined) return null;
+  letGo();
+  const { watch } = pending;
   diag.info("cloud", `${source}: waiting for its original, on its way up from a script's import on ${THIS_MACHINE}`);
-  try {
-    const one = await pending;
-    progress(one.size, one.size, one.name);
-    return one;
-  } catch {
-    return null;
-  }
+  const one = await steps.whileMoving(
+    `${watch.name} going up from ${THIS_MACHINE}`,
+    () => {
+      progress(watch.sent(), watch.total, watch.name);
+      return watch.moved();
+    },
+    () => pending.done.then(
+      (up): Original | null => up,
+      () => null,
+    ),
+  );
+  if (one !== null) progress(one.size, one.size, one.name);
+  return one;
 }
 
 /** Drive file `file` copied to `key` by the relay, without this Mac: its size, or null when the relay can't or stopped (`driveInTheCloud`). */
-export function copyInTheCloud(file: string, key: string, total: number | null): Promise<number | null> {
-  return driveInTheCloud(file, key, () => {}, total);
+export function copyInTheCloud(file: string, key: string, total: number | null, progress: (sent: number) => void = () => {}): Promise<number | null> {
+  return driveInTheCloud(file, key, progress, total);
 }
 
 /** The registry told `source`'s original is whole at its key. */
@@ -1105,6 +1269,7 @@ export async function youtubeOriginal(
   file: string,
   scratch: string,
   progress: (bytes: number, total: number | null, name: string) => void,
+  letGo: () => void = () => {},
 ): Promise<[Original, string | null]> {
   const id = youtube.idOf(file);
   if (id === null) throw new steps.NeedsPerson(`${debugStr(file)} isn't a YouTube video`);
@@ -1116,7 +1281,7 @@ export async function youtubeOriginal(
     progress(size, size, record.name);
     return [{ file, source, key: ready, name: record.name, size }, null];
   }
-  const behind = await waitGoingUp(source, progress);
+  const behind = await waitGoingUp(source, progress, letGo);
   if (behind !== null) return [behind, null];
   const dir = join(scratch, `youtube-${id}`);
   const got = await youtube.download(home, id, dir, progress);
@@ -1283,10 +1448,25 @@ async function driveInTheCloud(file: string, key: string, progress: (sent: numbe
     return null;
   }
   diag.info("cloud", `copying Drive file ${file} to the cloud there (job ${id})`);
+  // Every clock here counts only the time this Mac was awake (Nov 21): a lid shut for more than ten minutes during a
+  // relay copy read as the copy standing still on waking (the Wi-Fi not up yet, the first ask failed), so this Mac took
+  // over a copy that was fine and streamed it through its own uplink (8 Mbit/s on a home line, no resume: a 6 GB file
+  // with a drop each hour never lands). Time away is a wake (wake.ts), or a gap between two asks over five times the
+  // poll's period with none heard (the process frozen, its timers napped); either moves every clock forward by as much.
+  let away = 0;
+  /** When the last stretch of time away counted here ended, so a wake heard just after the same gap isn't counted twice. */
+  let countedUntil = Number.NEGATIVE_INFINITY;
+  const awake = () => Date.now() - away;
+  const heard = wake.onWake((sleptMs) => {
+    const now = Date.now();
+    if (now - countedUntil < 5_000) return;
+    away += sleptMs;
+    countedUntil = now;
+  });
   let last = -1;
-  let moved = Date.now();
-  // Bounded in all (import_steps.ts): a copy that never ends is taken over by this Mac, as one standing still is.
-  const deadline = Date.now() + steps.LIMITS.relayCopy(total);
+  let moved = awake();
+  // Bounded in all (import_steps.ts), in time awake: a copy that never ends is taken over by this Mac.
+  const deadline = awake() + steps.LIMITS.relayCopy(total);
   let unreachableSince: number | null = null;
   const takeOver = async (why: string): Promise<null> => {
     diag.warn("cloud", `the cloud copy of ${file} ${why}; streaming it through ${THIS_MACHINE}`);
@@ -1297,38 +1477,52 @@ async function driveInTheCloud(file: string, key: string, progress: (sent: numbe
     }
     return null;
   };
-  for (;;) {
-    let status: Record<string, unknown>;
-    try {
-      status = await cloud.relayJson("jobs/status", { id, key });
-      unreachableSince = null;
-    } catch (error) {
-      // The relay unreachable for a moment: the job carries on there. For long, it's no different from the copy standing still.
-      diag.warn("cloud", `asking about job ${id}: ${scrub(diag.messageOf(error))}`);
-      unreachableSince ??= Date.now();
-      if (Date.now() - unreachableSince > steps.LIMITS.relayUnreachable) return takeOver(`couldn't be asked about for ${Math.round(steps.LIMITS.relayUnreachable / 60_000)} minutes (the relay didn't answer)`);
-      status = { status: "running" };
+  try {
+    for (;;) {
+      let status: Record<string, unknown> | null;
+      try {
+        status = await cloud.relayJson("jobs/status", { id, key });
+        unreachableSince = null;
+      } catch (error) {
+        // The relay unreachable for a moment: the job carries on there. Taken over only once it has been unreachable
+        // for the full time while this Mac was awake; meanwhile nothing it hasn't said is read as standing still.
+        diag.warn("cloud", `asking about job ${id}: ${scrub(diag.messageOf(error))}`);
+        unreachableSince ??= awake();
+        if (awake() - unreachableSince > steps.LIMITS.relayUnreachable) return await takeOver(`couldn't be asked about for ${Math.round(steps.LIMITS.relayUnreachable / 60_000)} minutes (the relay didn't answer)`);
+        status = null;
+      }
+      if (status !== null) {
+        const state = String(status.status);
+        const bytes = typeof status.bytes === "number" ? status.bytes : null;
+        if (state === "complete") {
+          const size = bytes ?? 0;
+          progress(size);
+          return size;
+        }
+        if (state === "errored" || state === "terminated" || state === "unknown") {
+          diag.warn("cloud", `the cloud copy of ${file} ${state === "unknown" ? "was lost" : `failed (${String(status.error ?? state)})`}; streaming it through ${THIS_MACHINE}`);
+          return null;
+        }
+        // Only forward: the parts' list empties as they're joined into the file.
+        if (bytes !== null && bytes > last) {
+          last = bytes;
+          moved = awake();
+          progress(bytes);
+        }
+        // Standing still by the relay's own count, as it answered just now.
+        if (awake() - moved > jobTiming.stall) return await takeOver(`stood still for ${jobTiming.stall / 60_000} minutes`);
+      }
+      if (awake() > deadline) return await takeOver(`ran past ${Math.round(steps.LIMITS.relayCopy(total) / 60_000)} minutes`);
+      const before = Date.now();
+      await jobTiming.sleep(jobTiming.poll);
+      const after = Date.now();
+      if (after - before > 5 * jobTiming.poll && countedUntil < before) {
+        away += after - before - jobTiming.poll;
+        countedUntil = after;
+      }
     }
-    const state = String(status.status);
-    const bytes = typeof status.bytes === "number" ? status.bytes : null;
-    if (state === "complete") {
-      const size = bytes ?? 0;
-      progress(size);
-      return size;
-    }
-    if (state === "errored" || state === "terminated" || state === "unknown") {
-      diag.warn("cloud", `the cloud copy of ${file} ${state === "unknown" ? "was lost" : `failed (${String(status.error ?? state)})`}; streaming it through ${THIS_MACHINE}`);
-      return null;
-    }
-    // Only forward: the parts' list empties as they're joined into the file.
-    if (bytes !== null && bytes > last) {
-      last = bytes;
-      moved = Date.now();
-      progress(bytes);
-    }
-    if (Date.now() - moved > jobTiming.stall) return takeOver(`stood still for ${jobTiming.stall / 60_000} minutes`);
-    if (Date.now() > deadline) return takeOver(`ran past ${Math.round(steps.LIMITS.relayCopy(total) / 60_000)} minutes`);
-    await jobTiming.sleep(jobTiming.poll);
+  } finally {
+    heard();
   }
 }
 

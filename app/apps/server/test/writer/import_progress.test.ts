@@ -40,3 +40,29 @@ test("a wait read back after a restart still says what it waits on and when it g
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("the page's progress reads this Edit's own job table, even before Script mode has started here (Nov 21)", async () => {
+  const { fixtureHome } = await import("../helpers/home.ts");
+  const { Router } = await import("../../src/http/router.ts");
+  const { respond } = await import("../../src/http/server.ts");
+  const store = await import("../../src/writer/store.ts");
+  const writerRoutes = await import("../../src/writer/routes.ts");
+  const fx = fixtureHome("import-progress-route");
+  try {
+    const id = "0c0ffee0-0000-4000-8000-0000000000aa";
+    const dir = store.scriptDir(store.dataDir(fx.app.store.home), id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(join(dir, "script.json"), JSON.stringify({ id, title: "Waiting case", sourceKind: "drive", status: "processing", stage: "downloading", progress: 20, words: [], clips: [], createdAt: 0, updatedAt: 0 }));
+    const key = jobs.begin(fx.app.store.home, "script", id, { waiting_on: "import", title: "Waiting case" }, "", "importing");
+    jobs.wait(fx.app.store.home, key, new Error("could not reach Edit's relay: The socket connection was closed unexpectedly."));
+    // Nothing has told Script mode where home is (streamed.start, an import here): the route says it.
+    const router = new Router<typeof fx.app>();
+    writerRoutes.routes(router);
+    const response = (await respond(fx.app, router, new Request("http://localhost:7700/api/writer/progress", { headers: { host: "localhost:7700" } }), null))!;
+    expect(response.status).toBe(200);
+    const shown = (await response.json()) as { id: string; detail: string }[];
+    expect(shown.find((one) => one.id === id)?.detail).toStartWith("Waiting for the connection: Edit tries again by itself");
+  } finally {
+    fx.cleanup();
+  }
+});

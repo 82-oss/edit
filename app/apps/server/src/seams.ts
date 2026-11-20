@@ -120,8 +120,11 @@ export interface Exports {
   runningFor?(id: string): { output: string; timeline: string; options: string } | null;
   /** Whether an export is rendering on this Mac (smooth playback's render isn't one). */
   localRunning?(): boolean;
-  /** A place for smooth playback's render, ahead of the exports in line (ExportRegistry.takeTurn). */
-  takeTurn?(ready: (release: () => void) => void): { release: (() => void) | null; cancel: () => void };
+  /**
+   * A place for smooth playback's render, ahead of the exports in line (ExportRegistry.takeTurn). `giveWay`: called when
+   * an Export someone asked for wants the encoder, so the render lets go and carries on from its chunks after.
+   */
+  takeTurn?(ready: (release: () => void) => void, giveWay?: () => void): { release: (() => void) | null; cancel: () => void };
   /** Whether `path` is a file exported since the server started (only those are handed out). */
   exported(path: string): boolean;
   /** All active jobs and recent outcomes on this Mac. */
@@ -195,6 +198,7 @@ export interface CloudMediaSeam {
     file: string,
     scratch: string,
     progress: (bytes: number, total: number | null, name: string) => void,
+    letGo?: () => void,
   ): Promise<[Original, string | null]>;
   /** Puts post `file` (`post:<url>`, posts.ts) on R2 unless the registry has it; the local download, for the caller to remove. */
   postOriginal(
@@ -203,8 +207,11 @@ export interface CloudMediaSeam {
     scratch: string,
     progress: (bytes: number, total: number | null, name: string) => void,
   ): Promise<[Original, string | null]>;
-  /** Puts Drive file `file` on R2, streamed from Drive into the upload, unless the registry has it. */
-  driveOriginal(file: string, scratch: string, progress: (bytes: number, total: number | null, name: string) => void): Promise<Original>;
+  /**
+   * Puts Drive file `file` on R2, streamed from Drive into the upload, unless the registry has it. `letGo`: the file's
+   * download slot, let go before it waits on its original going up from this Mac (it brings nothing down meanwhile).
+   */
+  driveOriginal(file: string, scratch: string, progress: (bytes: number, total: number | null, name: string) => void, letGo?: () => void): Promise<Original>;
   /** A finished video of ours (`review:<project>/<version>`) among the originals, fetched from its review once; the local copy too (the caller removes it). */
   reviewOriginal(file: string, scratch: string, progress: (bytes: number, total: number | null, name: string) => void): Promise<[Original, string | null]>;
   /** `project` as an export of frames start..end reads it: cloud media pointing at their originals (presigned URLs). */
