@@ -38,7 +38,7 @@ beforeAll(() => {
 });
 
 afterAll(() => {
-  server.stop(true);
+  void server.stop(true);
   delete process.env.EDIT_RELAY_URL;
   delete process.env.EDIT_RELAY_TOKEN;
 });
