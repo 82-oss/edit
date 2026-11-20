@@ -11,7 +11,7 @@ import * as diag from "./diag.ts";
 import type { Media } from "./model.ts";
 import type { Box, WatermarkPiece, WatermarkRemoved } from "./native/index.ts";
 import * as relay from "./relay.ts";
-import { CHUNK, type Sample, type TrackPlan } from "./text_track.ts";
+import { CHUNK, END_GRACE_S, type Sample, type TrackPlan } from "./text_track.ts";
 
 /** The relay's `remover` flag, asked at most once a minute; the last answer meanwhile. */
 const remote = { on: false, at: 0, relay: "", asking: null as Promise<boolean> | null, forced: null as boolean | null };
@@ -196,14 +196,17 @@ export async function track(key: string, size: [number, number], fps: number, re
   const parts: [number, number][] = [];
   for (let at = from; at < to - 1e-6; at += TRACK_PART_S) parts.push([at, Math.min(to, at + TRACK_PART_S)]);
   const read = async ([a, b]: [number, number]): Promise<Sample[]> => {
+    let end = b;
     for (let attempt = 1; ; attempt++) {
       try {
-        const job = await start("track", { input: key, size, fps, region, plan: { band: plan.band, labels: plan.labels, avoid: plan.avoid, subtitles: plan.subtitles, text: plan.text }, from: a, to: b });
+        const job = await start("track", { input: key, size, fps, region, plan: { band: plan.band, labels: plan.labels, avoid: plan.avoid, subtitles: plan.subtitles, text: plan.text }, from: a, to: end });
         const answer = await wait<{ ok: boolean; error?: string }>(job);
         if (!answer.ok) throw new Error(answer.error ?? "their words couldn't be read");
         return JSON.parse(await take(job.out)) as Sample[];
       } catch (error) {
         if (attempt >= 2) throw error;
+        // Read past the picture's last frame (its sound a little longer; text_track.ts END_GRACE_S): the part ends before it.
+        if (b === to && /fill whole buffer/u.test(diag.messageOf(error))) end = Math.max(a, b - END_GRACE_S);
         diag.warn("removal", `track ${a.toFixed(1)}–${b.toFixed(1)} s on a rented machine: ${diag.messageOf(error)}; read again`);
       }
     }
