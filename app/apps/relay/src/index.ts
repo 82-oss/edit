@@ -10,6 +10,7 @@ import { fromOtherRelay, openartReady, openartRoute, openartToken, type OpenArtE
 import { MAX_JOB_BYTES, transcribeJobs, type JobsEnv } from "./transcribe_jobs";
 import { diarizeJobs, diarizeOn, voicesOf, type DiarizeEnv } from "./diarize_jobs";
 import { removerJobs, removerOn, type RemoverEnv } from "./remover";
+export { RemoverPods } from "./remover";
 import { google, mayUseDrive } from "./google";
 
 export { DriveToR2 } from "./jobs";
@@ -221,7 +222,7 @@ export default {
     }
     if (url.pathname.startsWith("/v1/transcribe/jobs") || url.pathname === "/v1/transcribe/webhook") return transcribeJobs(request, url, env);
     if (url.pathname.startsWith("/v1/diarize/jobs")) return diarizeJobs(request, url, env);
-    if (url.pathname.startsWith("/v1/remover/jobs")) return removerJobs(request, url, env);
+    if (url.pathname.startsWith("/v1/remover/")) return removerJobs(request, url, env);
     if (url.pathname !== "/v1/transcribe") return json(404, { error: "not found" });
     if (request.method !== "POST") return json(405, { error: "POST audio to /v1/transcribe" });
 

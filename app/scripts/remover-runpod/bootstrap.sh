@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A RunPod worker's setup (endpoint.ts puts this and handler.py in the endpoint's env): the model's Python packages
-# and weights, then the handler. ~20 s on a fresh worker, ~5 s on a restart.
+# A rented RunPod pod's setup (kit.ts puts this and pod.py in apps/relay/src/remover_kit.ts; the relay hands both to
+# each pod it rents): the model's Python packages and weights, then pod.py. ~20 s once the image is on the machine.
 set -euo pipefail
 t0=$(date +%s)
 # Ubuntu 24.04's pip refuses system installs without this; the container is ours alone.
@@ -19,4 +19,4 @@ from huggingface_hub import snapshot_download
 snapshot_download(repo_id="zibojia/minimax-remover", local_dir="/tmp/remover/weights", allow_patterns=["vae/*", "transformer/*", "scheduler/*"])
 PY
 echo "[bootstrap] ready in $(( $(date +%s) - t0 )) s"
-exec python3 -u /tmp/remover/handler.py
+exec python3 -u /tmp/remover/pod.py
