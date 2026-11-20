@@ -2579,7 +2579,31 @@ export function renderSoon(app: App, project: string): void {
   if (waiting !== undefined) clearTimeout(waiting);
   const timer = setTimeout(() => {
     settling.delete(project);
-    void readyToRender(app, project).then(() => {
+    prepareAndRender(app, project);
+  }, SETTLE_MS);
+  timer.unref?.();
+  settling.set(project, timer);
+}
+
+/**
+ * Projects being made ready to render (`readyToRender`), and whether they
+ * changed again meanwhile. One pass a project at a time: each change starting
+ * its own pass piled them up in the one line what's beneath is made in (Nov 20:
+ * Boyfriends' cleaned strips landing one after another queued pass on pass over
+ * its 40 keylines, and no project's effect rendered for two hours).
+ */
+const preparing = new Map<string, { again: boolean }>();
+
+function prepareAndRender(app: App, project: string): void {
+  const running = preparing.get(project);
+  if (running !== undefined) {
+    running.again = true;
+    return;
+  }
+  const pass = { again: false };
+  preparing.set(project, pass);
+  void readyToRender(app, project)
+    .then(() => {
       // Drawn by itself only where the project is being edited: its render is written into the project (an export asked
       // for here waits for it all the same, `waitForRenders`).
       if (!editingHere(app, project)) return;
@@ -2587,10 +2611,12 @@ export function renderSoon(app: App, project: string): void {
         if (effect.fresh || effect.current === null) continue;
         renderNow(app, project, effect.name).catch(() => {});
       }
+    })
+    .catch((error: unknown) => diag.warn("effects", `${project}: its renders didn't start: ${diag.messageOf(error)}`))
+    .finally(() => {
+      preparing.delete(project);
+      if (pass.again) prepareAndRender(app, project);
     });
-  }, SETTLE_MS);
-  timer.unref?.();
-  settling.set(project, timer);
 }
 
 /** What the agent is told of an effect's render: null while the effect isn't on the timeline (nothing renders it then). */
