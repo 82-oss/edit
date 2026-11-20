@@ -501,8 +501,19 @@ async function lookAt(app: App, look: Look): Promise<void> {
   } finally {
     looking.delete(look.source);
   }
-  for (const project of waiting) await ensure(app, project).catch((error: unknown) => diag.warn("watermark", `${project}: ${diag.messageOf(error)}`));
+  for (const project of waiting) {
+    await ensure(app, project).catch((error: unknown) => diag.warn("watermark", `${project}: ${diag.messageOf(error)}`));
+    await looked.then(app, project).catch((error: unknown) => diag.warn("watermark", `${project}: ${diag.messageOf(error)}`));
+  }
 }
+
+/**
+ * The rest of a project waiting on a file's look, brought up to date after its cells (removal_schedule.ts: its
+ * cleaning, whose stretches wait on the look). Nov 20: after a restart SMART Cops' 106 stretches
+ * waited on their files' looks and nothing asked again once they were done; a project's saves had always asked
+ * (its blurs laid again and again), until those stopped.
+ */
+export const looked = { then: async (_app: App, _id: string): Promise<void> => {} };
 
 async function work(app: App, job: Job): Promise<void> {
   const run = engineFor(job.media);
