@@ -122,6 +122,7 @@ test("Start the edit answers at once with its project while the folder master's 
   const { fixtureHome } = await import("../helpers/home.ts");
   const { app, cleanup } = fixtureHome("folder-case-start");
   const undo: (() => void)[] = [];
+  const hung: ((error: Error) => void)[] = [];
   try {
     const { dir } = imported(app.store.home);
     // A master of its own (the mock cloud keeps what the tests above sent up).
@@ -129,16 +130,19 @@ test("Start the edit answers at once with its project while the folder master's 
     fs.writeFileSync(join(dir, "compilation", "00.mp4"), master);
     const hash = createHash("sha256").update(master).digest("hex");
     streamed.start(app);
-    // The upload never finishes (the line gone mid-way).
-    const up = spyOn(cloud, "uploadFile").mockImplementation(() => new Promise(() => {}));
+    // The upload never finishes (the line gone mid-way). Each wait that never ends is ended as the test does: left
+    // open, the upload kept Edit's one upload lane for the rest of the run, and every upload in the test files after
+    // this one waited behind it for good (CI's Check, Nov 21: writer/local_first's four timed out).
+    const never = <T>(): Promise<T> => new Promise<T>((_, reject) => hung.push(reject));
+    const up = spyOn(cloud, "uploadFile").mockImplementation(() => never());
     undo.push(() => up.mockRestore());
     const inputs: (string | null | undefined)[] = [];
     const cut = spyOn(seams.cloudMedia, "driveExcerpts").mockImplementation(async (_cache, _original, _ranges, input) => {
       inputs.push(input);
-      return new Promise(() => {});
+      return never();
     });
     undo.push(() => cut.mockRestore());
-    const tube = spyOn(seams.cloudMedia, "youtubeOriginal").mockImplementation(() => new Promise(() => {}));
+    const tube = spyOn(seams.cloudMedia, "youtubeOriginal").mockImplementation(() => never());
     undo.push(() => tube.mockRestore());
     const began = Date.now();
     const made = await importScript(app, ID);
@@ -153,6 +157,9 @@ test("Start the edit answers at once with its project while the folder master's 
     // Every Mac's script is named only once the master is up.
     expect(store.read(dir).parts?.[0]?.mediaSource).toBeUndefined();
   } finally {
+    for (const end of hung) end(new Error("the test ended"));
+    // A turn for what waited on them to let go of its lanes before the folder goes.
+    await Bun.sleep(50);
     for (const one of undo) one();
     streamed.reset();
     cleanup();
