@@ -401,6 +401,32 @@ class Worker implements Cleaner {
 let worker: Worker | null = null;
 const cleaner = (app: App): Cleaner => override ?? (cloudNow() ? remoteCleaner : (worker ??= new Worker(join(app.store.cacheDir(), "cleaned", "minimax"))));
 
+/** The relay refusing a stretch (its own words): the stretch failed, unlike the relay out of reach a moment. */
+class RelaySaid extends Error {}
+
+/**
+ * A remover call to the relay. Not relay.json: that takes only a 200, and the relay answers a stretch started, or
+ * still going, with a 202 (Nov 20, Sphe's Boyfriends edit: all 105 stretches sent to RunPod were taken as failures the
+ * moment they started, and left blurred).
+ */
+async function removerCall<T>(method: string, route: string, body?: unknown): Promise<{ status: number; value: T }> {
+  const headers = await relay.signedHeaders();
+  if (body !== undefined) headers["content-type"] = "application/json";
+  const answer = await fetch(`${relay.url()}${route}`, { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(120_000) });
+  const text = await answer.text();
+  let value: unknown = null;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    // Below: said by its status.
+  }
+  if (answer.status !== 200 && answer.status !== 202) {
+    const said = (value as { error?: unknown } | null)?.error;
+    throw new RelaySaid(typeof said === "string" ? said : `the relay answered ${answer.status}`);
+  }
+  return { status: answer.status, value: value as T };
+}
+
 /** RunPod's GPUs, through the relay (apps/relay/src/remover.ts): the stretch's R2 keys go, its strip comes back by R2. */
 class RunPod implements Cleaner {
   /** Each running piece's RunPod job (a Stop cancels it: the GPU is paid by the second). */
@@ -412,7 +438,7 @@ class RunPod implements Cleaner {
     if (beneath.some((one) => one === null)) return { ok: false, error: "a watermark strip under it isn't in the cloud yet" };
     const { from, fps, width, height, matrix, masks } = request;
     const started = Date.now();
-    const job = await relay.json<{ id: string; out: string }>("POST", "/v1/remover/jobs", { worker: workerSource, request: { input: request.inputKey, beneath, from, fps, width, height, matrix, masks } }, "subtitle removal", 120);
+    const job = (await removerCall<{ id: string; out: string }>("POST", "/v1/remover/jobs", { worker: workerSource, request: { input: request.inputKey, beneath, from, fps, width, height, matrix, masks } })).value;
     if (request.piece !== undefined) this.jobs.set(request.piece, job.id);
     let misses = 0;
     try {
@@ -425,14 +451,15 @@ class RunPod implements Cleaner {
         }
         let answer: Answer & { pending?: boolean };
         try {
-          answer = await relay.json<Answer & { pending?: boolean }>("GET", `/v1/remover/jobs/${job.id}`, null, "subtitle removal", 60);
+          const asked = await removerCall<Answer & { pending?: boolean }>("GET", `/v1/remover/jobs/${job.id}`);
+          answer = asked.value;
           misses = 0;
+          if (asked.status === 202) continue;
         } catch (error) {
           // The model's own failure (502 with its words) ends it; the relay out of reach a moment is waited out.
-          if (++misses >= 6 || !/could not reach|didn't answer/u.test(diag.messageOf(error))) throw error;
+          if (error instanceof RelaySaid || ++misses >= 6) throw error;
           continue;
         }
-        if (answer.pending === true) continue;
         if (answer.box != null) await cloud.download(job.out, request.out);
         await cloud.remove([job.out]).catch(() => {});
         return { ok: true, box: answer.box ?? null, inferred: answer.inferred, seconds: answer.seconds };
@@ -451,11 +478,13 @@ class RunPod implements Cleaner {
   }
 
   private async cancel(job: string): Promise<void> {
-    await relay.json("DELETE", `/v1/remover/jobs/${job}`, null, "subtitle removal", 30).catch(() => {});
+    await removerCall("DELETE", `/v1/remover/jobs/${job}`).catch(() => {});
   }
 }
 
 const remoteCleaner = new RunPod();
+/** For tests: the RunPod cleaner itself. */
+export const runPodForTests: Cleaner = remoteCleaner;
 
 // ---------------------------------------------------------------------------
 // Each project's stretches, one at a time
