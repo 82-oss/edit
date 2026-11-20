@@ -1,0 +1,67 @@
+;; The bad-day sandbox on macOS (run.ts fills in the @…@ names and runs
+;; inside.ts under it with sandbox-exec). What bwrap gives on Linux, as near as
+;; a Mac allows without root; inside.ts proves each part before a case runs.
+;; Everything else is allowed: VideoToolbox, Metal and the other system
+;; services Edit's engine talks to are what this run is here to test.
+(version 1)
+(allow default)
+
+;; No network but loopback. Loopback is the host's on a Mac (Linux gets one of
+;; its own), so Edit's own ports (7700-7799: a dev server, the app, the window
+;; harness) are shut too; the run's stand-ins and Edit listen above them. DNS
+;; goes through mDNSResponder's Unix socket: shut with every Unix socket but
+;; the run's own. Tried on macOS 26, and the shape matters:
+;; - only a send naming an address is refused (`remote ip "*:*"`), never a
+;;   bare `(deny network-outbound)`: sendfile on a connected socket is checked
+;;   with no address, and Bun sends a Bun.file body that way (Edit's hearings);
+;; - the ports' deny comes after loopback's allow, as a rule of its own.
+(deny network-outbound (remote ip "*:*"))
+(allow network-outbound (remote ip "localhost:*"))
+(deny network-outbound @EDIT_PORTS@)
+(deny network-outbound
+  (require-all
+    (remote unix-socket)
+    (require-not (remote unix-socket (subpath @ROOT@)))))
+
+;; Edit's own folders, the app's, its signing keys, Writer's, and Chrome's
+;; (YouTube's cookies) can't be read or written; nor can Claude Code (Edit's
+;; model questions go to the stand-in) or the Keychain's files.
+(deny file-read* file-write*
+  (subpath (string-append @HOME@ "/.edit"))
+  (subpath (string-append @HOME@ "/.edit-dev"))
+  (subpath (string-append @HOME@ "/.edit-prod"))
+  (subpath (string-append @HOME@ "/.edit-trials"))
+  (subpath (string-append @HOME@ "/.edit-audit"))
+  (subpath (string-append @HOME@ "/.edit-perf"))
+  (subpath (string-append @HOME@ "/Library/Application Support/edit"))
+  (subpath (string-append @HOME@ "/Library/Application Support/Edit"))
+  (subpath (string-append @HOME@ "/Library/Application Support/com.spheceo.writer"))
+  (subpath (string-append @HOME@ "/Library/Application Support/Google/Chrome"))
+  (regex #"^/Users/[^/]+/Library/[^/]+/com\.spheceo\.")
+  (subpath (string-append @HOME@ "/Library/Keychains"))
+  (subpath (string-append @HOME@ "/.claude"))
+  (literal (string-append @HOME@ "/.claude.json"))
+  (subpath (string-append @HOME@ "/.local/bin")))
+
+;; The Keychain's services: nothing in here can read or keep a secret (Edit's
+;; sign-in is the home's sign-in.json, through EDIT_KEYCHAIN_FILE).
+(deny mach-lookup
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.securityd.xpc")
+  (global-name "com.apple.secd")
+  (global-name-prefix "com.apple.security."))
+
+;; Written: only the run's root (the runs, the footage, the small disk), the
+;; devices, and this user's own temporary folder (the system's frameworks keep
+;; their caches there: Metal's shaders, VideoToolbox's).
+(deny file-write*
+  (require-not
+    (require-any
+      (subpath @ROOT@)
+      (subpath "/dev")
+      (subpath @DARWIN_USER@))))
+
+;; A sandboxed program can't start a setuid one, and Edit reads the process
+;; table with ps and top (serve.ts's leftovers, memory.ts; edit.ts here): those
+;; two, which only read and print it, run outside the sandbox.
+(allow process-exec (literal "/bin/ps") (literal "/usr/bin/top") (with no-sandbox))

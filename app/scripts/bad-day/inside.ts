@@ -5,9 +5,12 @@
 //
 //   bun scripts/bad-day/inside.ts [case…]      (only ever from run.ts)
 
+import { spawnSync } from "node:child_process";
+import { promises as dns } from "node:dns";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { cases, type Case, type Context, type Verdict } from "./cases/index.ts";
 import { Cloud } from "./cloud.ts";
@@ -20,15 +23,93 @@ const ROOT = process.env.BAD_DAY_ROOT ?? "";
 const SERVER = process.env.BAD_DAY_SERVER ?? "";
 const LABEL = process.env.BAD_DAY_LABEL ?? SERVER;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const MAC = process.platform === "darwin";
 
 function stop(message: string): never {
   console.error(`bad-day: ${message}`);
   process.exit(2);
 }
 
+/** Whether a TCP connection to `host:port` is taken within 1.5 s. */
+function connects(host: string, port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host, port });
+    const done = (ok: boolean) => {
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.once("connect", () => done(true));
+    socket.once("error", () => done(false));
+    setTimeout(() => done(false), 1500);
+  });
+}
+
+/** macOS: that sandbox-exec shut what bwrap shuts on Linux (macos.sb); each part tried, not assumed. */
+async function sandboxedMac(): Promise<void> {
+  const home = homedir();
+  // No public address, no name looked up, not the live relay or accounts site.
+  for (const address of ["http://1.1.1.1/", "http://8.8.8.8/", "https://edit-relay.sphe-g-personal.workers.dev/", "https://accounts.spheceo.com/"]) {
+    try {
+      await fetch(address, { signal: AbortSignal.timeout(3000) });
+      stop(`${address} answered from inside: the sandbox isn't shut`);
+    } catch {}
+  }
+  for (const host of ["edit-relay.sphe-g-personal.workers.dev", "accounts.spheceo.com", "apple.com"]) {
+    const found = await dns.lookup(host).then(
+      () => true,
+      () => false,
+    );
+    if (found) stop(`${host} was looked up from inside: the sandbox isn't shut`);
+  }
+  for (const [host, port] of [["1.1.1.1", 443], ["17.253.144.10", 80]] as const) if (await connects(host, port)) stop(`${host}:${port} took a connection from inside`);
+  // Loopback is the host's here: Edit's own ports are shut, proved on one run.ts listens on outside.
+  const canary = (process.env.BAD_DAY_CANARY ?? "").split(":");
+  if (canary.length !== 2) stop("no canary port from run.ts");
+  if (await connects(canary[0]!, Number(canary[1]))) stop(`the host's ${canary.join(":")} answered from inside: Edit's ports aren't shut`);
+  // And the run's own loopback does work (a port above Edit's).
+  const own = net.createServer((socket) => socket.end());
+  await new Promise<void>((resolve) => own.listen(0, "127.0.0.1", resolve));
+  const reached = await connects("127.0.0.1", (own.address() as net.AddressInfo).port);
+  own.close();
+  if (!reached) stop("the run's own loopback doesn't work in here");
+  for (const port of [7700, 7710, 7790]) if (await connects("127.0.0.1", port)) stop(`127.0.0.1:${port} (an Edit of the host's) answered from inside`);
+  // Edit's folders, the app's, the Keychain's files and Claude Code can't be read.
+  for (const dir of [".edit", ".edit-dev", ".edit-prod", ".edit-trials", "Library/Application Support/edit", "Library/Application Support/com.spheceo.writer", "Library/Keychains", ".claude", ".local/bin"]) {
+    try {
+      fs.readdirSync(join(home, dir));
+      stop(`~/${dir} can be read in here: the sandbox isn't shut`);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "EPERM" && code !== "EACCES" && code !== "ENOENT") stop(`~/${dir}: ${String(error)}`);
+    }
+  }
+  // Nothing written outside the run's root.
+  for (const path of [join(home, `.bad-day-probe-${process.pid}`), join(home, ".edit", `bad-day-probe-${process.pid}`), `/private/tmp/bad-day-probe-${process.pid}`]) {
+    let wrote = false;
+    try {
+      fs.writeFileSync(path, "probe");
+      wrote = true;
+    } catch {}
+    if (wrote) {
+      fs.rmSync(path, { force: true });
+      stop(`${path} could be written in here: the sandbox isn't shut`);
+    }
+  }
+  fs.writeFileSync(join(RUN, "probe"), "probe");
+  fs.rmSync(join(RUN, "probe"));
+  // The Keychain doesn't answer (the same command lists the login keychain outside).
+  if (spawnSync("/usr/bin/security", ["list-keychains"], { encoding: "utf8" }).status === 0) stop("the Keychain answered from inside");
+  if (spawnSync("claude", ["--version"], { encoding: "utf8" }).status === 0) stop("Claude Code runs in here");
+  // The small disk is a disk of its own, of 256 MB.
+  const disk = fs.statfsSync(join(RUN, "small-disk"));
+  const size = disk.blocks * disk.bsize;
+  if (fs.statSync(join(RUN, "small-disk")).dev === fs.statSync(RUN).dev || size > 300 * 1024 ** 2) stop(`the small disk isn't a 256 MB disk of its own (${Math.round(size / 1024 ** 2)} MB)`);
+}
+
 /** That this is the sandbox: no public address answers, prod's folder is empty, our own process numbers. */
 async function sandboxed(): Promise<void> {
   if (RUN === "" || SERVER === "") stop("run me through run.ts (`just bad-day`), never by hand");
+  if (MAC) return sandboxedMac();
   if (process.pid > 50) stop(`not in a process namespace of its own (pid ${process.pid})`);
   for (const dir of [".edit-prod", ".edit-dev", ".edit", ".edit-trials"]) {
     const path = join(homedir(), dir);
@@ -44,8 +125,10 @@ async function sandboxed(): Promise<void> {
   if (fs.existsSync("/run/tailscale") || fs.existsSync("/run/user")) stop("the host's sockets are visible in here");
 }
 
-/** The cgroup's highest memory use so far (the scope's), in MB. */
+/** The cgroup's highest memory use so far (the scope's), in MB; on macOS, Edit's tree's most at once over the cases. */
+let macPeak = 0;
 function peakMemory(): string {
+  if (MAC) return macPeak > 0 ? `${Math.round(macPeak / 1024 ** 2)} MB (Edit's tree)` : "unknown";
   try {
     const path = fs.readFileSync("/proc/self/cgroup", "utf8").trim().split(":").pop() ?? "";
     const bytes = Number(fs.readFileSync(join("/sys/fs/cgroup", path, "memory.peak"), "utf8").trim());
@@ -140,11 +223,15 @@ async function runCase(one: Case, made: ReturnType<typeof footage>, index: numbe
       EDIT_YOUTUBE_SIGNIN: "0",
       EDIT_NO_BROWSER: "1",
       EDIT_CLOUD_HOLDER: "bad-day",
+      // macOS: the sign-in kept in the home's sign-in.json as off macOS, never the Keychain (shut in here anyway), and
+      // the FFmpeg Edit.app ships (scripts/ffmpeg.sh), not Homebrew's.
+      ...(MAC ? { EDIT_KEYCHAIN_FILE: join(real, "sign-in.json"), ...shippedFfmpeg() } : {}),
       ...(process.env.EDIT_BAD_DAY_SPEED !== undefined ? { EDIT_BAD_DAY_SPEED: process.env.EDIT_BAD_DAY_SPEED } : {}),
       ...(one.env ?? {}),
     },
   });
   fs.mkdirSync(join(dir, "tmp"), { recursive: true });
+  current = edit;
   const context: Context = {
     dir,
     home: real,
@@ -204,6 +291,9 @@ async function runCase(one: Case, made: ReturnType<typeof footage>, index: numbe
     log(`the common checks threw: ${String(caught)}`);
   }
   await edit.stop();
+  current = null;
+  macPeak = Math.max(macPeak, edit.peakRss);
+  if (MAC) log(`Edit's tree held at most ${Math.round(edit.peakRss / 1024 ** 2)} MB`);
   // The small disk goes with the sandbox: its log and table are kept with the case's.
   if (one.smallDisk === true) {
     for (const name of ["logs", "jobs.json", "projects"]) {
@@ -265,6 +355,27 @@ function table(outcomes: Outcome[]): string {
     return `${one.verdict === "pass" ? "PASS" : one.verdict === "stub" ? "STUB" : "FAIL"}  ${one.name.padEnd(26)} ${String(one.seconds).padStart(4)} s${why === "" ? "" : `\n      ${why}`}`;
   });
   return rows.join("\n");
+}
+
+/** macOS: Edit.app's FFmpeg (`just ffmpeg`), when this checkout has it. */
+function shippedFfmpeg(): Record<string, string> {
+  const dir = resolve(SERVER, "target/ffmpeg", process.arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin");
+  return fs.existsSync(join(dir, "ffmpeg")) ? { EDIT_FFMPEG: join(dir, "ffmpeg"), EDIT_FFPROBE: join(dir, "ffprobe") } : {};
+}
+
+/** The case's Edit, ended if this process is stopped (macOS: no namespace takes it down with us). */
+let current: Edit | null = null;
+if (MAC) {
+  const end = async (code: number) => {
+    await current?.kill();
+    process.exit(code);
+  };
+  for (const name of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(name, () => void end(130));
+  // run.ts gone (as bwrap's --die-with-parent).
+  const parent = process.ppid;
+  setInterval(() => {
+    if (process.ppid !== parent) void end(1);
+  }, 1000).unref();
 }
 
 await sandboxed();
