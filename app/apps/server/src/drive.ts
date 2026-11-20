@@ -153,7 +153,8 @@ export function start(store: Store, library: Library, project: Project, path: st
     try {
       file = await diag.timeOnAsync("drive", "drive upload", subject, () =>
         catchBugsAsync("the Drive upload", () =>
-          upload(library, path, name, into, replacing, (progress) => emit("uploading", { progress }), keep),
+          // Each percent notes the row as moving (Nov 21): `patch` doesn't, and a long upload on a slow line was reported still.
+          upload(library, path, name, into, replacing, (progress) => (jobs.beat(store.home, job), emit("uploading", { progress })), keep),
         ),
       );
       if (uploads.get(id) === number) {

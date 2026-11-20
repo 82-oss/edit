@@ -4,11 +4,45 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
 
-import { rife, smooth } from "../src/rife.ts";
+import { forgetForTests, rife, smooth, warm } from "../src/rife.ts";
 import * as tools from "../src/tools.ts";
 
 const home = fs.mkdtempSync(join(os.tmpdir(), "rife-"));
-const gpu = process.platform === "linux" ? rife(home) : null;
+const gpu = process.platform === "linux" ? await warm(home) : null;
+
+// Nov 21: the look ran its three programs with spawnSync the first time anything asked (broll.ts's smoothing key,
+// whether smoothing is offered), and nothing else in Edit ran until RIFE answered (14 s in the bad-day sandbox).
+test("RIFE is looked for off the server's thread: asked before the look is done it's null and runs nothing; after it, what the look found", async () => {
+  const dir = fs.mkdtempSync(join(os.tmpdir(), "rife-look-"));
+  try {
+    forgetForTests();
+    // A RIFE that takes a second to answer, and says it ran.
+    const ran = join(dir, "ran");
+    const program = join(dir, "rife-ncnn-vulkan");
+    fs.writeFileSync(program, `#!/bin/sh\ntouch '${ran}'\nsleep 1\necho '[0 NVIDIA GeForce RTX 4060]  queueC=2[8]  queueG=0[16]'\n`, { mode: 0o755 });
+    const fake = { program, model: join(dir, "rife-v4.6") };
+    // Asked before any look: nothing run, null at once.
+    expect(rife(dir)).toBeNull();
+    expect(fs.existsSync(ran)).toBe(false);
+    // The look runs beside the thread: its timers keep their turns meanwhile.
+    let ticks = 0;
+    const tick = setInterval(() => (ticks += 1), 50);
+    const began = performance.now();
+    const looking = warm(dir, fake);
+    expect(performance.now() - began).toBeLessThan(100);
+    expect(rife(dir)).toBeNull();
+    expect(await looking).toEqual(fake);
+    clearInterval(tick);
+    expect(ticks).toBeGreaterThanOrEqual(10);
+    expect(fs.existsSync(ran)).toBe(true);
+    expect(rife(dir)).toEqual(fake);
+    // Looked at once: a second warm is the first's answer.
+    expect(await warm(dir)).toEqual(fake);
+  } finally {
+    forgetForTests();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test.skipIf(gpu === null)("a stretch slowed to a half at 30 fps comes out twice as long, every frame there, in H.264 at the picture's size", async () => {
   try {

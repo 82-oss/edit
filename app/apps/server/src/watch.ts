@@ -1240,11 +1240,11 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
   }
   // Every window of every part, a few at a time.
   const title = project.name;
-  const jobs: [number, number][] = [];
-  parts.forEach((part, p) => part.windows.forEach((_, w) => jobs.push([p, w])));
+  const windowsToWatch: [number, number][] = [];
+  parts.forEach((part, p) => part.windows.forEach((_, w) => windowsToWatch.push([p, w])));
   let watched = 0;
-  progress.step("watch", projectId, "watch", 0, jobs.length);
-  const results = await limited(jobs, AT_ONCE, async ([p, w]) => {
+  progress.step("watch", projectId, "watch", 0, windowsToWatch.length);
+  const results = await limited(windowsToWatch, AT_ONCE, async ([p, w]) => {
     const part = parts[p]!;
     const window = part.windows[w]!;
     const lines = part.lines.slice(window.lines[0], window.lines[1]);
@@ -1256,7 +1256,10 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
       const input = await app.media.analysisInput(part.source);
       return await diag.timeAsync("watch", "watch window", () => watchWindow(part.source, dir, title, window, lines, names, options.force, input));
     } finally {
-      progress.step("watch", projectId, "watch", ++watched, jobs.length);
+      progress.step("watch", projectId, "watch", ++watched, windowsToWatch.length);
+      // Each window watched notes the background watch's row as moving (Nov 21): a long tape's watch noted nothing
+      // between its start and its end, and was reported still after 15 minutes while it worked.
+      jobs.beat(app.store.home, jobs.keyOf("watch", projectId));
     }
   });
   const answers = new Map<string, [number, number, Answer]>();
@@ -1268,7 +1271,7 @@ async function watchNow(app: App, projectId: string, options: WatchOptions): Pro
       const [answer, spent, wasCached] = result.value;
       cost += spent;
       if (wasCached) cached += 1;
-      const [p, w] = jobs[index]!;
+      const [p, w] = windowsToWatch[index]!;
       answers.set(`${p}/${w}`, [p, w, answer]);
     } else {
       if (isBug(result.reason)) throw result.reason;

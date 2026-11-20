@@ -90,9 +90,19 @@ async function importNow(app: App, id: string, paths: string[], place: boolean, 
         const name = fileName(path) ?? "file";
         const files = join(dir, "files");
         fs.mkdirSync(files, { recursive: true });
+        // Copied off the server's thread (Nov 21: it can be a video of gigabytes in a format Edit converts, and from
+        // another disk copyFileSync was a minute in which Edit answered nothing). Never over a file of the same name,
+        // even one another import is copying meanwhile: the next free name instead.
         let kept = join(files, name);
-        for (let n = 2; fs.existsSync(kept); n++) kept = join(files, name.replace(/(\.[^.]+)?$/, (ext) => ` ${n}${ext}`));
-        fs.copyFileSync(path, kept);
+        for (let n = 2; ; n++) {
+          try {
+            await fs.promises.copyFile(path, kept, fs.constants.COPYFILE_EXCL);
+            break;
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+            kept = join(files, name.replace(/(\.[^.]+)?$/, (ext) => ` ${n}${ext}`));
+          }
+        }
         uploads.remember(dir, { at: Date.now(), name, media: null, file: kept });
         continue;
       }

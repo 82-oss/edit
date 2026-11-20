@@ -9,6 +9,7 @@ import { join } from "node:path";
 
 import { kindOf } from "../../src/effect/service.ts";
 import { ranged } from "../../src/ranged_download.ts";
+import * as wake from "../../src/wake.ts";
 import * as drive from "../../src/writer/drive.ts";
 
 const VIDEO = Buffer.alloc(200_000, 7);
@@ -203,3 +204,69 @@ test("a big recording comes down in parts at once, a failed part asked again, an
     Object.assign(ranged, was);
   }
 });
+
+// Nov 21: a download took its token once and measured stalls by the clock on the wall. More than an hour into a big
+// recording, or after a sleep, Drive answered 401 and the recording turned "missing" ("Drive won't let … download"),
+// and a lid shut for a minute called a healthy download stalled the moment it opened.
+
+/** Drive's media answer for a request signed with `good`, a 401 for anything else. */
+const signedMedia = (good: string, request: Request, body: Uint8Array) =>
+  request.headers.get("authorization") === `Bearer ${good}` ? media(request, body) : new Response("Request had invalid authentication credentials.", { status: 401 });
+
+test("a token that runs out mid-download is renewed from the sign-in: the download goes on, nothing missing", async () => {
+  const before = drive.hooks.accessToken;
+  // The caller asked for "old"; by the second try the sign-in holds a fresh one.
+  drive.hooks.accessToken = async () => "fresh";
+  try {
+    handler = (request, n) => (n === 1 ? media(request, VIDEO.subarray(0, 80_000)) : signedMedia("fresh", request, VIDEO.subarray(from(request))));
+    const dest = join(dir, "renewed.mp4");
+    await drive.download("old", recording, dest);
+    expect(Buffer.compare(fs.readFileSync(dest), VIDEO)).toBe(0);
+    expect(seen.map((request) => request.headers.get("authorization"))).toEqual(["Bearer old", "Bearer fresh"]);
+  } finally {
+    drive.hooks.accessToken = before;
+  }
+});
+
+test("a 401 is asked again once with a fresh token before Drive is said to refuse; a second 401 is a refusal", async () => {
+  const given = ["old", "old", "fresh"];
+  handler = (request, n) => (n === 1 ? media(request, VIDEO.subarray(0, 80_000)) : signedMedia("fresh", request, VIDEO.subarray(from(request))));
+  const dest = join(dir, "renewed-once.mp4");
+  await drive.download(async () => given.shift() ?? "fresh", recording, dest);
+  expect(Buffer.compare(fs.readFileSync(dest), VIDEO)).toBe(0);
+  expect(seen.map((request) => request.headers.get("authorization"))).toEqual(["Bearer old", "Bearer old", "Bearer fresh"]);
+
+  seen = [];
+  handler = () => new Response("no", { status: 401 });
+  const refused = await drive.download(async () => "old", recording, join(dir, "unsigned.mp4")).catch((error: unknown) => error);
+  expect(refused).toBeInstanceOf(drive.DriveNotShared);
+  expect(seen.length).toBe(2);
+});
+
+test("a wake mid-download starts the stall clock again: the download isn't called stalled", async () => {
+  drive.STALL_MS.value = 1_000;
+  let sendRest: () => void = () => {};
+  handler = (request) =>
+    media(
+      request,
+      new ReadableStream({
+        start(controller) {
+          sendRest = () => {
+            controller.enqueue(VIDEO);
+            controller.close();
+          };
+        },
+      }),
+    );
+  const dest = join(dir, "woke.mp4");
+  const done = drive.download("token", recording, dest);
+  // Quiet for 1.4 s, more than the stall time, with a wake at 0.7 s: the clock counts from the wake, so the look at
+  // 1 s finds 0.3 s of quiet (before: a second of it, and the try was abandoned).
+  await Bun.sleep(700);
+  wake.woke(60_000);
+  await Bun.sleep(700);
+  sendRest();
+  await done;
+  expect(Buffer.compare(fs.readFileSync(dest), VIDEO)).toBe(0);
+  expect(seen.length).toBe(1);
+}, 30_000);

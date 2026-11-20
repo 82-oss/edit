@@ -13,6 +13,7 @@ import { inArea, runPromise } from "../effect/runtime.ts";
 import * as service from "../effect/service.ts";
 import * as endpoints from "../endpoints.ts";
 import * as ranged from "../ranged_download.ts";
+import * as wake from "../wake.ts";
 
 const API = "https://www.googleapis.com/drive/v3";
 const MAX_ENTRIES = 1_000;
@@ -22,6 +23,39 @@ const FIELDS = "id,name,mimeType,size,md5Checksum,shortcutDetails,trashed,videoM
 
 /** The team's Drive sign-in, an access token good for about an hour (Edit's library, set on start). */
 export const hooks = { accessToken: (): Promise<string> => Promise.reject(new Error("Google Drive needs the team's sign-in.")) };
+const unsigned = hooks.accessToken;
+
+/**
+ * A Drive token, or how to get one. A download asks for it once per try and never holds one for its length
+ * (Nov 21): a token lasts about an hour, and a big recording, or one a sleep stopped half-way, outlived it, Drive
+ * answered 401, and the recording was crossed off as "Drive won't let … download", then heard again (paid). A string
+ * is the token its caller just asked for: the first try uses it, each later try asks the sign-in (`hooks`) afresh,
+ * unless no sign-in is set (tests), when the string is all there is.
+ */
+export type Token = string | (() => Promise<string>);
+
+/** How one download signs its tries: `next` asks for a token (once a try); `renew` says whether a 401 may be tried once more with a fresh one. */
+function signer(token: Token) {
+  let first: string | null = typeof token === "string" ? token : null;
+  const ask = (): Promise<string> => (typeof token === "function" ? token() : hooks.accessToken === unsigned ? Promise.resolve(token) : hooks.accessToken());
+  let renewed = false;
+  return {
+    // A sign-in that can't be had fails the download as the caller's own ask would have (a wait for the sign-in, the relay out of reach), not as Drive's refusal.
+    next: Effect.tryPromise({
+      try: () => {
+        const given = first;
+        first = null;
+        return given !== null ? Promise.resolve(given) : ask();
+      },
+      catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+    }),
+    renew: (): boolean => (renewed ? false : (renewed = true)),
+  };
+}
+type Signer = ReturnType<typeof signer>;
+
+/** A 401 the first time in a download: the token, not the file, so asked again with a fresh one (a temporary failure, tried again by itself). */
+const staleToken = () => new service.ServiceUnreachable({ service: SERVICE, message: "Google Drive refused the sign-in (401: a token over an hour old, or from before a sleep): asking again with a fresh one" });
 
 export type Link = { kind: "file"; id: string } | { kind: "folder"; id: string };
 
@@ -244,24 +278,33 @@ const sizeOf = (path: string) => (fs.existsSync(path) ? fs.statSync(path).size :
  * its end. Fails when the connection drops, Drive refuses, or nothing comes
  * for `STALL_MS`; whatever came down stays, for the next try.
  */
-const downloadTry = (token: string, recording: Recording, dest: string, onBytes: (bytes: number) => void) =>
+const downloadTry = (sign: Signer, recording: Recording, dest: string, onBytes: (bytes: number) => void) =>
   Effect.gen(function* () {
+    const token = yield* sign.next;
     const have = sizeOf(dest);
     // A big one in parts at once (ranged_download.ts: 70 MB/s from Drive, one connection 12-16): begun so, or begun now.
     if (recording.size >= ranged.ranged.from && (ranged.partlyDone(dest) || have === 0)) {
+      // Whether a part's refusal was the token's (401) and not the file's (403, 404).
+      let unsignedPart = false;
       return yield* Effect.tryPromise({
         try: (signal) =>
           ranged.download({
             url: endpoints.google(`${API}/files/${recording.id}?alt=media&supportsAllDrives=true`),
             size: recording.size,
             dest,
-            fetch: (url, init) => fetch(url, { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` } }),
+            fetch: async (url, init) => {
+              const answer = await fetch(url, { ...init, headers: { ...(init.headers as Record<string, string>), authorization: `Bearer ${token}` } });
+              if (answer.status === 401) unsignedPart = true;
+              return answer;
+            },
             onBytes,
             signal,
           }),
         catch: (error) =>
           error instanceof ranged.Refused
-            ? new DriveNotShared({ message: `Drive won't let Repack's account download ${recording.name}.` })
+            ? unsignedPart && sign.renew()
+              ? staleToken()
+              : new DriveNotShared({ message: `Drive won't let Repack's account download ${recording.name}.` })
             : new service.ServiceUnreachable({ service: SERVICE, message: diag.messageOf(error) }),
       });
     }
@@ -274,7 +317,7 @@ const downloadTry = (token: string, recording: Recording, dest: string, onBytes:
           signal,
         });
         if (answer.status === 416) return null;
-        if ([401, 403, 404].includes(answer.status)) return { kind: "refused" } as const;
+        if ([401, 403, 404].includes(answer.status)) return { kind: "refused", status: answer.status } as const;
         if (!answer.ok || answer.body === null) {
           return { kind: "failed", error: new service.ServiceRefused({ service: SERVICE, status: answer.status, retryAfterMs: service.retryAfterOf(answer.headers), message: `Google Drive answered ${answer.status}` }) } as const;
         }
@@ -312,16 +355,29 @@ const downloadTry = (token: string, recording: Recording, dest: string, onBytes:
       },
       catch: (error) => new service.ServiceUnreachable({ service: SERVICE, message: diag.messageOf(error) }),
     });
+    // The stall clock starts again when the machine wakes (Nov 21: a lid shut for a minute called a healthy download
+    // stalled the moment it opened, before the line was even back): seen by wake.ts, or by this look coming more than
+    // three of its periods late (a sleep wake.ts hasn't said yet, or a held thread, in which nothing could be heard).
+    // A minute of nothing is still a stall on any line: an 8 Mbit/s home line sends a chunk many times a second.
+    const every = Math.min(STALL_MS.value, 5000);
+    let looked = Date.now();
+    const offWake = wake.onWake(() => {
+      heard = Date.now();
+    });
     const stalled = Effect.gen(function* () {
       for (;;) {
-        yield* Effect.sleep(Math.min(STALL_MS.value, 5000));
-        if (Date.now() - heard >= STALL_MS.value) {
+        yield* Effect.sleep(every);
+        const now = Date.now();
+        if (now - looked > every * 3) heard = now;
+        looked = now;
+        if (now - heard >= STALL_MS.value) {
           return yield* new service.ServiceTimedOut({ service: SERVICE, afterMs: STALL_MS.value, message: `nothing came from Google Drive for ${Math.round(STALL_MS.value / 1000)} s` });
         }
       }
     });
-    const said = yield* Effect.raceFirst(pull, stalled);
+    const said = yield* Effect.raceFirst(pull, stalled).pipe(Effect.ensuring(Effect.sync(offWake)));
     if (said === null) return;
+    if (said.kind === "refused" && said.status === 401 && sign.renew()) return yield* staleToken();
     if (said.kind === "refused") return yield* new DriveNotShared({ message: `Drive won't let Repack's account download ${recording.name}.` });
     if (said.kind === "failed") return yield* said.error;
     return yield* new service.ServiceUnreachable({ service: SERVICE, message: `the connection closed at ${said.written} of ${recording.size} bytes` });
@@ -332,9 +388,10 @@ const downloadTry = (token: string, recording: Recording, dest: string, onBytes:
  * A connection that drops, stalls or that Drive refuses for a moment is
  * resumed, up to four more times. `onBytes` gets the bytes written so far.
  */
-export const downloading = Effect.fn("drive.download")(function* (token: string, recording: Recording, dest: string, onBytes: (bytes: number) => void = () => {}) {
+export const downloading = Effect.fn("drive.download")(function* (token: Token, recording: Recording, dest: string, onBytes: (bytes: number) => void = () => {}) {
+  const sign = signer(token);
   let problem = "";
-  yield* downloadTry(token, recording, dest, onBytes).pipe(
+  yield* downloadTry(sign, recording, dest, onBytes).pipe(
     Effect.tapError((error) => Effect.sync(() => (problem = error.message))),
     Effect.retry(service.temporaryRetries(`downloading ${recording.name} from Google Drive`, timing.instant ? { base: 1, times: 4 } : { base: "2 seconds", times: 4 })),
     // Out of tries on a temporary failure: what came down is said below, and kept for Try again.
@@ -353,11 +410,11 @@ export const downloading = Effect.fn("drive.download")(function* (token: string,
     if (head === "{" || head === "<") return yield* new DrivePage({ message: `Drive sent a page instead of ${recording.name}.` });
   }
   // Whole, but is it Drive's file? Checked against Drive's MD5; one that isn't is fetched again from scratch, once.
-  if (yield* intactNow(token, recording, dest)) return;
+  if (yield* intactNow(sign.next, recording, dest)) return;
   diag.warn("writer", `${recording.name} came down damaged (its MD5 isn't Drive's): fetching it again from the start`);
   fs.rmSync(dest, { force: true });
-  yield* downloadTry(token, recording, dest, onBytes).pipe(Effect.retry(service.temporaryRetries(`downloading ${recording.name} again from Google Drive`, timing.instant ? { base: 1, times: 4 } : { base: "2 seconds", times: 4 })));
-  if (!(yield* intactNow(token, recording, dest))) {
+  yield* downloadTry(sign, recording, dest, onBytes).pipe(Effect.retry(service.temporaryRetries(`downloading ${recording.name} again from Google Drive`, timing.instant ? { base: 1, times: 4 } : { base: "2 seconds", times: 4 })));
+  if (!(yield* intactNow(sign.next, recording, dest))) {
     fs.rmSync(dest, { force: true });
     return yield* new DownloadCorrupt({ message: `${recording.name} came down damaged twice (it isn't the file Drive holds). Try again later.` });
   }
@@ -389,13 +446,13 @@ const proofOf = (dest: string) => `${dest}.verified`;
  * manifest from before Nov 1). Size alone let a damaged copy of the right
  * length be used at every retry.
  */
-const intactNow = (token: string, recording: Recording, dest: string) =>
+const intactNow = (token: Effect.Effect<string, Error>, recording: Recording, dest: string) =>
   Effect.gen(function* () {
     if (!fs.existsSync(dest)) return false;
     const size = fs.statSync(dest).size;
     if (recording.size > 0 ? size !== recording.size : size === 0) return false;
     // null: Drive has none. Absent: not known yet (a manifest from before Nov 1), so asked.
-    const md5 = recording.md5 !== undefined ? recording.md5 : (yield* getJson(token, `${API}/files/${recording.id}?fields=md5Checksum&supportsAllDrives=true`, Schema.Struct({ md5Checksum: Schema.optional(Schema.String) })).pipe(
+    const md5 = recording.md5 !== undefined ? recording.md5 : (yield* Effect.flatMap(token, (signed) => getJson(signed, `${API}/files/${recording.id}?fields=md5Checksum&supportsAllDrives=true`, Schema.Struct({ md5Checksum: Schema.optional(Schema.String) }))).pipe(
       Effect.map((file) => file.md5Checksum ?? null),
       Effect.orElseSucceed(() => null),
     ));
@@ -411,11 +468,11 @@ const intactNow = (token: string, recording: Recording, dest: string) =>
 
 /** `intactNow` for code that isn't Effect yet. */
 export function intact(token: string, recording: Recording, dest: string): Promise<boolean> {
-  return runPromise(intactNow(token, recording, dest).pipe(inArea("writer")));
+  return runPromise(intactNow(Effect.succeed(token), recording, dest).pipe(inArea("writer")));
 }
 
 /** `downloading` for code that isn't Effect yet; a stop (`signal`) abandons the request, keeping what came down. */
-export function download(token: string, recording: Recording, dest: string, onBytes: (bytes: number) => void = () => {}, signal?: AbortSignal): Promise<void> {
+export function download(token: Token, recording: Recording, dest: string, onBytes: (bytes: number) => void = () => {}, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(new Error("Stopped."));
   return runPromise(downloading(token, recording, dest, onBytes).pipe(inArea("writer")), signal ? { signal } : undefined).catch((error: unknown) => {
     if (signal?.aborted) throw new Error("Stopped.");

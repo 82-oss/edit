@@ -31,7 +31,7 @@ import * as seams from "./seams.ts";
 import * as seats from "./seats.ts";
 import type { Store } from "./store.ts";
 import { stableStringify } from "./stable.ts";
-import { rife, smooth as smoothWithRife } from "./rife.ts";
+import { type Rife, rife, smooth as smoothWithRife } from "./rife.ts";
 import * as tools from "./tools.ts";
 import type { Transcript } from "./transcribe.ts";
 import mapPageText from "./map_page.html" with { type: "text" };
@@ -309,7 +309,9 @@ export async function smoothSlowMotion(app: App, projectId: string, clipId: stri
     throw new Error(ioMessage(error));
   }
   const stem = fileStem(source.name) ?? "clip";
-  const smoother = currentSmoother(app);
+  // Read once for the whole job, so its key, its note and what makes it agree.
+  const gpu = app.native.smoothSupported() ? null : rife(app.store.home);
+  const smoother = currentSmoother(app, gpu);
   const key = fingerprint([
     // VideoToolbox's frame rate conversion where the Mac has it: another render than FFmpeg's.
     smoother,
@@ -328,6 +330,9 @@ export async function smoothSlowMotion(app: App, projectId: string, clipId: stri
   if (!isFile(out)) {
     // A few renders at a time (see `smoothingSlots`); the rest wait their turn.
     const slot = await smoothingSlots.acquire();
+    // Its turn came, and each stage below (each up to `smoothLimitMs`) notes the row as moving (Nov 21).
+    const moving = () => jobs.beat(app.store.home, jobs.keyOf("smooth", projectId, clipId));
+    moving();
     let local: string | null = null;
     try {
       {
@@ -370,6 +375,7 @@ export async function smoothSlowMotion(app: App, projectId: string, clipId: stri
         // VideoToolbox's frame rate conversion first (the GPU and Neural
         // Engine: 6 s of slowed bodycam in 8 s, FFmpeg's minterpolate 54 s),
         // FFmpeg's when it can't (an older macOS, a rotated phone video).
+        moving();
         if (app.native.smoothSupported()) {
           try {
             const bitrate = Math.max(4_000_000, Math.round((20_000_000 * width * height) / (1920 * 1080) * (fps / 30)));
@@ -384,8 +390,10 @@ export async function smoothSlowMotion(app: App, projectId: string, clipId: stri
             diag.warn("broll", `smoothing ${source.name} on VideoToolbox: ${diag.messageOf(error)}; FFmpeg's optical flow instead`);
           }
         }
-        // RIFE on Linux's GPU where there's one (rife.ts), FFmpeg's when it fails.
-        const gpu = rife(app.store.home);
+        // RIFE on Linux's GPU where there's one (rife.ts), FFmpeg's when it fails: the one its key was made for, never
+        // one found since (rife.ts looks for it once, in the first seconds after start: a job begun before that is
+        // FFmpeg's from its key to its file).
+        moving();
         if (gpu !== null) {
           try {
             await diag.timeOnAsync("broll", "smooth: RIFE", source.name, () =>
@@ -399,6 +407,7 @@ export async function smoothSlowMotion(app: App, projectId: string, clipId: stri
             diag.warn("broll", `smoothing ${source.name} with RIFE: ${diag.messageOf(error)}; FFmpeg's optical flow instead`);
           }
         }
+        moving();
         const filter = `scale=w='min(${width},iw)':h='min(${height},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setpts=PTS/${fixed(speed, 6)},minterpolate=fps=${display(fps)}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1,format=yuv420p`;
         const made = await ffmpeg(
           [
@@ -458,9 +467,9 @@ export async function smoothSlowMotion(app: App, projectId: string, clipId: stri
 }
 
 /** The smoother renders are made with now: a new one makes every older render stale. */
-function currentSmoother(app: App): string {
+function currentSmoother(app: App, gpu: Rife | null = app.native.smoothSupported() ? null : rife(app.store.home)): string {
   if (app.native.smoothSupported()) return "vt-frame-rate-conversion-v2";
-  return rife(app.store.home) !== null ? "rife-v4.6-v1" : "bounded-optical-flow-v2";
+  return gpu !== null ? "rife-v4.6-v1" : "bounded-optical-flow-v2";
 }
 
 /** Whether slowed shots smooth in seconds here (VideoToolbox on a Mac, RIFE on Linux's GPU), so they're smoothed unless asked not to. */
@@ -677,6 +686,9 @@ export function smoothInBackground(app: App, projectId: string, clipIds: string[
         pending.delete(clipId);
         if (pending.size === 0) smoothing.delete(projectId);
       }
+      // One clip smooths at a time (`smoothingSlots`), each up to a few minutes: the ones still waiting their turn
+      // moved up the queue, and say so (Nov 21: a dozen clips queued were reported still after 15 minutes).
+      for (const [project, clips] of smoothing) for (const clip of clips) jobs.beat(app.store.home, jobs.keyOf("smooth", project, clip));
     })();
   }
   return started;
@@ -1688,7 +1700,11 @@ async function renderMoving(app: App, job: MapShotJob, render: MapRender): Promi
       let had = config.have.length;
       frameListeners.set(shots, () => {
         had += 1;
-        for (const project of render.projects) progress.step("map", project, job.key, had, job.frames);
+        for (const project of render.projects) {
+          progress.step("map", project, job.key, had, job.frames);
+          // A frame made notes the row as moving (Nov 21): a long moving shot noted nothing from its start to its end, and was reported still after 15 minutes while it rendered.
+          jobs.beat(app.store.home, jobs.keyOf("map", project, job.key));
+        }
       });
       const early = new Once<Json>();
       const page = renderMap(app, config, job.width, job.height, shots, early);

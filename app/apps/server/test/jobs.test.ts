@@ -686,3 +686,39 @@ test("a fourth Script import behind three running is refused by Edit's own queue
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// Nov 21: after a wake the rows that fell due started one after another, each given up to RESUME_MS to start, and
+// an archive's resumer waits on its whole cloud copy: a Script import behind N of them started N minutes late.
+test("rows woken together start together, however long each takes to settle; a row put off for restarts in a row still waits its turn", async () => {
+  const dir = home();
+  try {
+    for (const [kind, project] of [["archive", "p1"], ["share", "p2"], ["writer", "p3"], ["media", "p4"]] as const) {
+      jobs.begin(dir, kind, project, {});
+      jobs.wait(dir, `${kind}:${project}`, "could not reach Edit's relay: The socket connection was closed unexpectedly");
+    }
+    const rows = read(dir);
+    for (const row of rows) row.retry_at = Date.now() - 1;
+    // Cut short by restarts in a row: it may be what brings the server down.
+    Object.assign(rows.find((row) => row.key === "media:p4")!, { crashy: true, put_off: 1, why: "cut short by 3 restarts in a row" });
+    fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify(rows));
+    const started: string[] = [];
+    let settle: () => void = () => {};
+    const settled = new Promise<void>((resolve) => (settle = resolve));
+    // Each takes "30 s" to settle: until the test lets them.
+    const slow = async (job: jobs.Job) => {
+      started.push(job.key);
+      await settled;
+      jobs.end(dir, job.key);
+    };
+    jobs.useResumers(dir, { archive: slow, share: slow, writer: slow, media: slow });
+    const waking = jobs.wake(dir);
+    await Bun.sleep(300);
+    expect(started.sort()).toEqual(["archive:p1", "share:p2", "writer:p3"]);
+    expect(["archive:p1", "share:p2", "writer:p3", "media:p4"].every((key) => jobs.owned(dir, key))).toBe(true);
+    settle();
+    await waking;
+    expect(started.at(-1)).toBe("media:p4");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -161,3 +161,35 @@ test("Drive's 308 says how much it has", () => {
   expect(drive.received("HTTP/1.1 308 Resume Incomplete\r\nRange: bytes=0-1023\r\ncontent-length: 0\r\n\r\n")).toBe(1024);
   expect(drive.received("HTTP/1.1 308 Resume Incomplete\r\ncontent-length: 0\r\n\r\n")).toBe(0);
 });
+
+// Nov 21: a running row nothing notes for 15 minutes is reported as still (jobs.still). An upload only patched its
+// row (its session), which doesn't move its time, so a long upload on a slow line was reported while it sent.
+test("an upload's progress notes its row as moving", async () => {
+  const fx = setUp("drive-upload-beats");
+  const was = jobs.BEAT_MS.value;
+  jobs.BEAT_MS.value = 0;
+  try {
+    fakeDrive("beats", {});
+    const old = Date.now() - 20 * 60_000;
+    const noted: number[] = [];
+    fx.app.store.subscribe((event) => {
+      if (event.type !== "drive" || event.state !== "uploading") return;
+      const file = `${fx.app.store.home}/jobs.json`;
+      if (event.progress === 0) {
+        // As if the upload had begun 20 minutes ago.
+        const rows = JSON.parse(fs.readFileSync(file, "utf8")) as { key: string; updated_ms: number }[];
+        for (const row of rows) row.updated_ms = old;
+        fs.writeFileSync(file, JSON.stringify(rows));
+      } else {
+        noted.push(jobs.get(fx.app.store.home, jobs.keyOf("drive", fx.project.id))!.updated_ms);
+      }
+    });
+    drive.start(fx.app.store, new Library(), fx.project, fx.path);
+    expect((await settled(fx.events)).state).toBe("done");
+    expect(noted.length).toBeGreaterThan(0);
+    expect(noted.at(-1)!).toBeGreaterThan(Date.now() - 60_000);
+  } finally {
+    jobs.BEAT_MS.value = was;
+    fx.cleanup();
+  }
+});

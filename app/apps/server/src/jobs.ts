@@ -930,21 +930,28 @@ export const RESUME_MS = { value: 60_000 };
 /** The resumers this run was started with, by data folder, so unstick can start given-up jobs without a restart. */
 const registered = new Map<string, Resumers>();
 
+/**
+ * Starts the rows handed over. Those that may be what brings the server down (put off for restarts in a row, or cut
+ * short by two in a row) go one at a time, after the rest have started; the rest start together, none waiting on
+ * another's work (Nov 21: after a wake each was given up to `RESUME_MS` in turn, and an archive's resumer waits on its
+ * whole cloud copy, minutes on an 8 Mbit/s line: a Script import behind three of them started three minutes late).
+ */
 function startAll(home: string, list: Job[], resumers: Resumers, why: "restart" | "waited" = "restart"): Promise<void> {
   // Every row handed over is held from now, the last in the queue too (each before it may take up to `RESUME_MS`).
   for (const job of list) if (resumers[job.kind] !== undefined) own(home, job.key);
+  const one = (job: Job) => {
+    const run = resumers[job.kind];
+    if (run === undefined) return Effect.void;
+    return Effect.logInfo(`starting ${job.key} again${job.step ? ` from ${job.step}` : ""} (${why === "restart" ? "cut short by a restart" : "its wait is over"})`).pipe(
+      Effect.andThen(Effect.promise(() => started(home, job, run))),
+    );
+  };
+  const alone = (job: Job) => job.crashy === true || job.attempts >= IN_A_ROW;
   return runPromise(
-    Effect.forEach(
-      list,
-      (job) => {
-        const run = resumers[job.kind];
-        if (run === undefined) return Effect.void;
-        return Effect.logInfo(`starting ${job.key} again${job.step ? ` from ${job.step}` : ""} (${why === "restart" ? "cut short by a restart" : "its wait is over"})`).pipe(
-          Effect.andThen(Effect.promise(() => started(home, job, run))),
-        );
-      },
-      { discard: true },
-    ).pipe(inArea("jobs")),
+    Effect.forEach(list.filter((job) => !alone(job)), one, { discard: true, concurrency: "unbounded" }).pipe(
+      Effect.andThen(Effect.forEach(list.filter(alone), one, { discard: true })),
+      inArea("jobs"),
+    ),
   );
 }
 
@@ -989,10 +996,10 @@ function failedToStart(home: string, job: Job, error: unknown): void {
 }
 
 /**
- * Starts again what the last run left unfinished, one after another: a
- * handler that fails is logged and skipped (its job kept), one still
- * starting after `RESUME_MS` is left running and the next goes on. Only
- * `kinds`, when given (tests).
+ * Starts again what the last run left unfinished (together, but for work cut
+ * short by restarts in a row: `startAll`): a handler that fails is logged and
+ * skipped (its job kept), one still starting after `RESUME_MS` is left
+ * running. Only `kinds`, when given (tests).
  */
 export function resume(home: string, resumers: Resumers, kinds?: readonly Kind[]): Promise<void> {
   if (kinds === undefined) {

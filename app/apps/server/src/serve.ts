@@ -57,6 +57,7 @@ import * as removalSchedule from "./removal_schedule.ts";
 import * as remoteAsk from "./remote_ask.ts";
 import * as reviews from "./reviews.ts";
 import * as retryAfterUpdate from "./retry_after_update.ts";
+import { warm as warmRife } from "./rife.ts";
 import { buildRouter } from "./routes.ts";
 import * as seams from "./seams.ts";
 import { Store } from "./store.ts";
@@ -338,8 +339,14 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     pauseForExports(() => app.exports.localRunning?.() ?? app.exports.running());
     // Slowed cut-in shots are smoothed unless asked not to, where it takes seconds.
     setSmoothByDefault(app.native.smoothSupported());
-    // On Linux, RIFE on the GPU (rife.ts), looked for just after start (it runs a two-frame check).
-    if (process.platform === "linux") setTimeout(() => setSmoothByDefault(smoothsFast(app)), 2_000).unref();
+    // On Linux, RIFE on the GPU (rife.ts), looked for at start (a two-frame check, its programs awaited: Nov 21, run
+    // synchronously two seconds in it kept the server's thread for as long as RIFE took to answer, 14 s seen).
+    if (process.platform === "linux") {
+      void warmRife(app.store.home).then(
+        () => setSmoothByDefault(smoothsFast(app)),
+        (error: unknown) => diag.warn("broll", `looking for RIFE: ${diag.messageOf(error)}`),
+      );
+    }
     // The cache kept by each project's state; a project with an effect rendering or removal pieces out is in work.
     busy.registerProjectWork((id) => effects.renderingLine(id) !== null || removalSchedule.progressOf(id).out > 0);
     startCleaning(app);

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 
 import * as fs from "node:fs";
 
@@ -191,4 +191,24 @@ test("a subtitled video takes its footage's rate (NTSC ones exactly) or one it d
   expect([23.976023976023978, 24, 25, 29.97002997, 30, 50, 59.94005994, 60, 15, 12.5, 0, Number.NaN].map(rate)).toEqual([
     "24n", "24", "25", "30n", "30", "25", "30n", "30", "30", "30", "30", "30",
   ]);
+});
+
+// Nov 21: a file that isn't footage (it can be a video of gigabytes in a format Edit converts, or a big PDF) was copied
+// into the project's files with copyFileSync: from another disk, a minute in which Edit answered nothing.
+test("a file kept as the project's file is copied off the server's thread; two of the same name at once are both kept", async () => {
+  const { dir, app, store, cleanup } = fixtureHome("import-file-copy");
+  const sync = spyOn(fs, "copyFileSync").mockImplementation(() => {
+    throw new Error("copied on the server's thread");
+  });
+  try {
+    fs.writeFileSync(`${dir}/notes.txt`, "hi");
+    const id = store.create("p", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const [[, , first], [, , second]] = await Promise.all([importPaths(app, id, [`${dir}/notes.txt`], false, "ui"), importPaths(app, id, [`${dir}/notes.txt`], false, "ui")]);
+    expect([...first, ...second]).toEqual([]);
+    expect(fs.readdirSync(`${store.uploadsDir(id)}/files`).sort()).toEqual(["notes 2.txt", "notes.txt"]);
+    expect(fs.readFileSync(`${store.uploadsDir(id)}/files/notes 2.txt`, "utf8")).toBe("hi");
+  } finally {
+    sync.mockRestore();
+    cleanup();
+  }
 });

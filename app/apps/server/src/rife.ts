@@ -22,31 +22,31 @@ export interface Rife {
   model: string;
 }
 
-/** Writes `from` to `to` unless it's there already with the same bytes. */
-function keep(from: string, to: string, mode: number): void {
-  const bytes = new Uint8Array(fs.readFileSync(from));
+/** Writes `from` to `to` unless it's there already with the same bytes (the model is 10 MB: read off the server's thread). */
+async function keep(from: string, to: string, mode: number): Promise<void> {
+  const bytes = new Uint8Array(await fs.promises.readFile(from));
   try {
-    if (Buffer.from(fs.readFileSync(to)).equals(Buffer.from(bytes))) return;
+    if (Buffer.from(await fs.promises.readFile(to)).equals(Buffer.from(bytes))) return;
   } catch {
     // Not there yet.
   }
-  fs.mkdirSync(parent(to) ?? ".", { recursive: true });
+  await fs.promises.mkdir(parent(to) ?? ".", { recursive: true });
   const next = `${to}.${process.pid}.next`;
-  fs.writeFileSync(next, bytes, { mode });
-  fs.chmodSync(next, mode);
-  fs.renameSync(next, to);
+  await fs.promises.writeFile(next, bytes, { mode });
+  await fs.promises.chmod(next, mode);
+  await fs.promises.rename(next, to);
 }
 
 /** RIFE's files: written out of the binary (a release) or app/rife (a dev run); null off Linux or without them. */
-function files(home: string): Rife | null {
+async function files(home: string): Promise<Rife | null> {
   if (process.platform !== "linux") return null;
   const inside = embedded()?.rife ?? null;
   if (inside !== null) {
     const dir = join(home, "bin", "rife");
     const model = join(dir, "rife-v4.6");
-    keep(inside.program, join(dir, "rife-ncnn-vulkan"), 0o755);
-    keep(inside.param, join(model, "flownet.param"), 0o644);
-    keep(inside.bin, join(model, "flownet.bin"), 0o644);
+    await keep(inside.program, join(dir, "rife-ncnn-vulkan"), 0o755);
+    await keep(inside.param, join(model, "flownet.param"), 0o644);
+    await keep(inside.bin, join(model, "flownet.bin"), 0o644);
     return { program: join(dir, "rife-ncnn-vulkan"), model };
   }
   const repo = join(import.meta.dir, "../../../rife");
@@ -54,45 +54,68 @@ function files(home: string): Rife | null {
   return isFile(program) && isFile(join(repo, "rife-v4.6", "flownet.bin")) ? { program, model: join(repo, "rife-v4.6") } : null;
 }
 
-let found: Rife | null | undefined;
+let found: Rife | null = null;
+let looking: Promise<Rife | null> | null = null;
 
 /**
- * RIFE when it can smooth here: on Linux, its files there, and Vulkan's
- * first device a GPU (rife-ncnn-vulkan takes device 0; a machine with none
- * lists only the software one, llvmpipe or SwiftShader). Looked at once.
+ * RIFE when it can smooth here, as `warm` found it: on Linux, its files there, and Vulkan's first device a GPU.
+ * Never looks itself (Nov 21: the look ran three programs on the server's one thread the first time anything asked,
+ * rife-ncnn-vulkan given up to 30 s, and nothing else in Edit ran meanwhile: 14 s seen in the bad-day sandbox, read
+ * by wake.ts as the machine being away). Until the look started at launch is done it answers null: a smoothing that
+ * starts in the first seconds after launch is FFmpeg's, from its key to its file (broll.ts reads this once a job).
  */
-export function rife(home: string): Rife | null {
-  if (found !== undefined) return found;
+export function rife(_home: string): Rife | null {
+  return found;
+}
+
+/**
+ * Looks for RIFE once (serve.ts, at start; not awaited): two tiny frames through it, to see what device it runs on
+ * and that it runs at all, with the programs awaited, never run on the server's thread. `have` is for tests: RIFE's
+ * files to look at instead of this machine's.
+ */
+export function warm(home: string, have?: Rife | null): Promise<Rife | null> {
+  looking ??= look(home, have).then((rife) => (found = rife));
+  return looking;
+}
+
+/** Tests: as before any look. */
+export function forgetForTests(): void {
   found = null;
+  looking = null;
+}
+
+async function look(home: string, given?: Rife | null): Promise<Rife | null> {
   try {
-    const have = files(home);
+    const have = given !== undefined ? given : await files(home);
     if (have === null) return null;
     // Two tiny frames: what devices it sees, and that it runs at all.
-    const dir = fs.mkdtempSync(join(home, ".rife-check-"));
+    const dir = await fs.promises.mkdtemp(join(home, ".rife-check-"));
     try {
-      fs.mkdirSync(join(dir, "in"));
-      fs.mkdirSync(join(dir, "out"));
+      await fs.promises.mkdir(join(dir, "in"));
+      await fs.promises.mkdir(join(dir, "out"));
       for (const name of ["1", "2"]) {
-        Bun.spawnSync([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=gray:s=64x64", "-frames:v", "1", join(dir, "in", `${name}.png`)], { stdout: "ignore", stderr: "ignore" });
+        await Bun.spawn([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=gray:s=64x64", "-frames:v", "1", join(dir, "in", `${name}.png`)], { stdout: "ignore", stderr: "ignore" }).exited;
       }
-      const ran = Bun.spawnSync([have.program, "-i", join(dir, "in"), "-o", join(dir, "out"), "-m", have.model, "-n", "3"], { stdout: "pipe", stderr: "pipe", timeout: 30_000 });
-      const said = `${ran.stdout.toString()}${ran.stderr.toString()}`;
+      // Up to 30 s (a GPU's first start can take seconds), on its own process: nothing in Edit waits on it.
+      const ran = Bun.spawn([have.program, "-i", join(dir, "in"), "-o", join(dir, "out"), "-m", have.model, "-n", "3"], { stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+      const [out, err, exitCode] = await Promise.all([new Response(ran.stdout).text(), new Response(ran.stderr).text(), ran.exited]);
+      const said = `${out}${err}`;
       const first = /^\[0 ([^\]]+)\]/mu.exec(said)?.[1] ?? "";
-      if (ran.exitCode !== 0 || first === "") {
-        diag.warn("broll", `RIFE didn't run here (${said.trim().split("\n").pop() ?? `exit ${ran.exitCode}`}); smoothing stays FFmpeg's`);
+      if (exitCode !== 0 || first === "") {
+        diag.warn("broll", `RIFE didn't run here (${said.trim().split("\n").pop() ?? `exit ${exitCode}`}); smoothing stays FFmpeg's`);
       } else if (/llvmpipe|swiftshader|software/iu.test(first)) {
         diag.info("broll", `RIFE would run on Vulkan's software device (${first}); smoothing stays FFmpeg's`);
       } else {
         diag.info("broll", `smoothing slow motion with RIFE on ${first}`);
-        found = have;
+        return have;
       }
     } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
+      await fs.promises.rm(dir, { recursive: true, force: true });
     }
   } catch (error) {
     diag.warn("broll", `looking for RIFE: ${diag.messageOf(error)}`);
   }
-  return found;
+  return null;
 }
 
 /** FFmpeg's `-framerate` for `fps`: NTSC rates as their exact fraction. */
