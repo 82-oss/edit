@@ -206,7 +206,8 @@ export async function track(key: string, size: [number, number], fps: number, re
       } catch (error) {
         if (attempt >= 2) throw error;
         // Read past the picture's last frame (its sound a little longer; text_track.ts END_GRACE_S): the part ends before it.
-        if (b === to && /fill whole buffer/u.test(diag.messageOf(error))) end = Math.max(a, b - END_GRACE_S);
+        // The machine's words can stop short at the footage's long link ("could not decode https://…"), so any decode failure.
+        if (b === to && /fill whole buffer|could not decode/u.test(diag.messageOf(error))) end = Math.max(a, b - END_GRACE_S);
         diag.warn("removal", `track ${a.toFixed(1)}–${b.toFixed(1)} s on a rented machine: ${diag.messageOf(error)}; read again`);
       }
     }
