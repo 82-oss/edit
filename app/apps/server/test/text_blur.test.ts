@@ -138,6 +138,12 @@ test("a moving blur read back from its project file is the one blursFor makes ag
     one.keyframes = Object.fromEntries(Object.entries(one.keyframes).sort(([a], [b]) => a.localeCompare(b)));
   }
   expect(blur.lay(laid, fresh())).toBe(false);
+  // A centred blur: the file leaves its x of 0 out.
+  const centred = { ...fresh()[0]!, blur: { ...fresh()[0]!.blur!, x: 0 } } as AdjustmentClip;
+  const once = structuredClone(p);
+  expect(blur.lay(once, [structuredClone(centred)])).toBe(true);
+  for (const one of once.clips) if (one.type === "adjustment" && one.blur !== undefined) delete (one.blur as { x?: number }).x;
+  expect(blur.lay(once, [centred])).toBe(false);
 });
 
 test("Nov 19, Cuffed & Caught's m10 at 7.57 s: only the subtitle line is blurred, never the cage's Pro-gard sticker beside it; lines stacked tight are one box, words apart never", async () => {
