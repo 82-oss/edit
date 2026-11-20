@@ -258,3 +258,59 @@ test("a share cancelled before a restart carried it on is crossed off, not left 
     cleanup();
   }
 });
+
+/** The review copy's FFmpeg as one that never ends by itself (a VideoToolbox session dead under it): only its signal ends it. */
+function hangingCopy(): { entered: () => number } {
+  const real = tools.run;
+  let entered = 0;
+  spies.push(spyOn(tools, "run").mockImplementation((command: string[], options?: { signal?: AbortSignal }) => {
+    if (!command.some((arg) => arg.endsWith(".partial.mp4"))) return real(command, options);
+    entered += 1;
+    return new Promise<Uint8Array>((_, reject) => options?.signal?.addEventListener("abort", () => reject(new Error("killed")), { once: true }));
+  }));
+  return { entered: () => entered };
+}
+
+test("Cancel ends a share whose review copy never ends by itself, at once", async () => {
+  // Nov 20: the share's FFmpeg runs had no Cancel and four hours each; "cancelling" sat on the dialog all that time.
+  const { app, home, id, cleanup } = await exported("share-cancel-copy");
+  fakeCloud();
+  const copy = hangingCopy();
+  try {
+    const shared = reviews.share(app, id, null);
+    shared.catch(() => {});
+    for (let tries = 0; copy.entered() === 0 && tries < 500; tries++) await Bun.sleep(10);
+    expect(copy.entered()).toBe(1);
+    const asked = Date.now();
+    expect(reviews.cancelShare(app, id)).toBe(true);
+    await expect(shared).rejects.toThrow("the share was cancelled");
+    expect(Date.now() - asked).toBeLessThan(5000);
+    // Not tried again on libx264 after the Cancel, and crossed off.
+    expect(copy.entered()).toBe(1);
+    expect(jobs.get(home, `share:${id}`)).toBeUndefined();
+  } finally {
+    cleanup();
+  }
+});
+
+test("a review copy that stands still is stopped, and the share waits and goes on by itself, never \"Sharing stopped\"", async () => {
+  const { app, home, id, cleanup } = await exported("share-still-copy");
+  fakeCloud();
+  const copy = hangingCopy();
+  const still = reviews.shareTools.stillMs;
+  reviews.shareTools.stillMs = 300;
+  try {
+    const shared = reviews.share(app, id, null);
+    await expect(shared).rejects.toBeInstanceOf(reviews.ShareWaits);
+    // The hardware's, then libx264's: both stood still.
+    expect(copy.entered()).toBeGreaterThanOrEqual(1);
+    expect(jobs.get(home, jobs.keyOf("share", id))).toMatchObject({ state: "waiting" });
+    expect(reviews.shareNow(home, id).share).toMatchObject({ state: "running", step: expect.stringMatching(/^Making the review copy made no progress .* The link comes by itself\.$/) });
+    // A longer video has longer; none has less than ten minutes.
+    expect(reviews.shareTools.ms(3600)).toBeGreaterThan(reviews.shareTools.ms(60));
+    expect(reviews.shareTools.ms(0)).toBe(10 * 60_000);
+  } finally {
+    reviews.shareTools.stillMs = still;
+    cleanup();
+  }
+});

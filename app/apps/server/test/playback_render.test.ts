@@ -184,3 +184,62 @@ test("a render of the same picture any Mac put in R2 is played at once; one not 
     cleanup();
   }
 });
+
+test("a person's Export takes smooth playback's place at once, even from a render stuck in the engine, and the render is asked again for after", async () => {
+  // Nov 20: on a one-encoder Mac Export sat at 0% behind smooth playback's render for minutes, for ever when it hung.
+  const fs = await import("node:fs");
+  const { spyOn } = await import("bun:test");
+  const { fixtureHome } = await import("./helpers/home.ts");
+  const { clip } = await import("./helpers/model.ts");
+  const playback = await import("../src/playback_render.ts");
+  const { ExportRegistry, exportCloud, abandon, stall, resetAbandoned } = await import("../src/exports.ts");
+  const { app, store, native, home, dir, cleanup } = fixtureHome("playback-gives-way");
+  const most = process.env.EDIT_LOCAL_EXPORTS;
+  process.env.EDIT_LOCAL_EXPORTS = "1";
+  const was = { stall: { ...stall }, abandon: { ...abandon }, hooks: { ...playback.hooks } };
+  Object.assign(stall, { ms: 60_000, everyMs: 10 });
+  Object.assign(abandon, { ms: 60 });
+  const registry = new ExportRegistry(home);
+  app.exports = registry;
+  playback.hooks.inCloud = async () => false;
+  playback.hooks.waitForRest = async () => true;
+  const plan = spyOn(native, "exportPlan").mockReturnValue({ plan: { start: 0, end: 30, width: 64, height: 36, audio: false }, fps: 30 });
+  const archive = spyOn(exportCloud, "enabled").mockReturnValue(false);
+  const renders: string[] = [];
+  const render = spyOn(native.ExportJob, "start").mockImplementation((job, progress) => {
+    const id = JSON.parse(job.project.json).id as string;
+    renders.push(id);
+    // Smooth playback's render: stuck in the engine, its cancel does nothing.
+    if (id.endsWith(".playback")) {
+      progress(0.1);
+      return { cancel: () => {}, wait: () => new Promise<never>(() => {}) };
+    }
+    return { cancel: () => {}, wait: async () => { fs.writeFileSync(job.output, "export"); return { seconds: 1, bytes: 6 }; } };
+  });
+  try {
+    const id = store.create("watched", { width: 64, height: 36, fps: 30 }).project.id;
+    await store.update(id, "test", (p) => p.clips.push(clip({ id: "solid", track: p.tracks[0]!.id, start: 0, duration: 30, type: "solid" })));
+    playback.request(app, id);
+    for (let tries = 0; !renders.includes(`${id}.playback`) && tries < 400; tries++) await Bun.sleep(5);
+    expect(playback.status(app, id).state).toBe("rendering");
+    const asked = Date.now();
+    await registry.start(store, app.library, structuredClone(store.get(id)!.project), native.exportDefaults(), `${dir}/watched.mp4`, { drive: false, keepLocal: true });
+    for (let tries = 0; registry.activity().find((one) => one.id === id)?.state !== "done" && tries < 400; tries++) await Bun.sleep(5);
+    expect(registry.activity().find((one) => one.id === id)?.state).toBe("done");
+    expect(Date.now() - asked).toBeLessThan(1000);
+    // Asked again: it renders once the export is done (stuck again here, so cancelled at the end).
+    for (let tries = 0; renders.filter((one) => one === `${id}.playback`).length < 2 && tries < 400; tries++) await Bun.sleep(5);
+    expect(renders.filter((one) => one === `${id}.playback`).length).toBe(2);
+  } finally {
+    playback.request(app, store.create("elsewhere", { width: 64, height: 36, fps: 30 }).project.id);
+    await Bun.sleep(150);
+    Object.assign(stall, was.stall);
+    Object.assign(abandon, was.abandon);
+    Object.assign(playback.hooks, was.hooks);
+    resetAbandoned();
+    if (most === undefined) delete process.env.EDIT_LOCAL_EXPORTS;
+    else process.env.EDIT_LOCAL_EXPORTS = most;
+    render.mockRestore(); archive.mockRestore(); plan.mockRestore();
+    cleanup();
+  }
+});

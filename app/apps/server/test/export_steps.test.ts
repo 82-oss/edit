@@ -134,3 +134,56 @@ test("the queue's one number weighs each job by its whole time, and says the tim
   expect(overall([{ state: "running", progress: 0.25 }]).progress).toBeCloseTo(0.25, 5);
   expect(overall([])).toEqual({ progress: 0, left_s: null });
 });
+
+test("a video whose engine stands still holds the bar where it is and says for how long and what ends it", async () => {
+  // Nov 20: the bar crept on by the clock (`left_s` counting down) to 99% after the engine had stopped.
+  const { app, home, id, cleanup } = await project();
+  try {
+    speeds.noteExport(home, 1800, 180);
+    const job = { id, name: "Welfare check", path: "/x/out.mp4", state: "running" as const, progress: 0.3, updated_ms: 0, started_ms: 1_000_000, seconds: 60 };
+    const t0 = 1_000_000;
+    const first = steps.stepsOf(app, id, job, t0)!;
+    // 30 s later, the engine on: the bar has moved.
+    const moving = steps.stepsOf(app, id, { ...job, progress: 0.35 }, t0 + 30_000)!;
+    expect(moving.progress).toBeGreaterThan(first.progress);
+    // Then nothing new for three minutes: it stops where it was a minute in, and the video's line says so.
+    const at = (s: number) => steps.stepsOf(app, id, { ...job, progress: 0.35 }, t0 + 30_000 + s * 1000)!;
+    // Looked at as the page does (every second or so; 10 s here).
+    for (let s = 10; s <= 60; s += 10) at(s);
+    const held = at(61);
+    for (let s = 70; s <= 200; s += 10) expect(at(s).progress).toBe(held.progress);
+    const later = at(210);
+    expect(later.progress).toBe(held.progress);
+    expect(later.left_s).toBeNull();
+    const video = later.steps.find((one) => one.kind === "video")!;
+    expect(video.note).toBe("nothing new for 3 min: Edit starts it again by itself at 8 min");
+    // It moves again: the line goes, the bar goes on.
+    const again = steps.stepsOf(app, id, { ...job, progress: 0.4 }, t0 + 30_000 + 215_000)!;
+    expect(again.steps.find((one) => one.kind === "video")!.note).toBeUndefined();
+  } finally {
+    cleanup();
+  }
+});
+
+test("an export the job table holds waiting to start again (an update's, that couldn't start) is in the queue with its line", async () => {
+  // Nov 20: after an update, the export the person asked for was gone from the Exports queue with nothing said.
+  const jobs = await import("../src/jobs.ts");
+  const { app, home, id, cleanup } = await project();
+  try {
+    const key = jobs.begin(home, "export", id, { options: {}, output: "/x/Welfare check.mp4" });
+    jobs.wait(home, key, "the cutfx-21 effect is still rendering: export again in a minute or two");
+    const rows = steps.activity(app, new Set([id]));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id, name: "Welfare check", state: "queued", path: "/x/Welfare check.mp4" });
+    expect(rows[0]!.waiting).toMatch(/^waiting to start again at \d\d:\d\d \(the cutfx-21 effect is still rendering: export again in a minute or two\)$/);
+    // Failed and kept (until the project's next export): said with why.
+    jobs.settle(home, key, "failed", { error: "Your disk is full" });
+    expect(steps.activity(app, new Set([id]))[0]).toMatchObject({ state: "failed", error: "Your disk is full" });
+    // A share's export is its share's row, not this.
+    jobs.end(home, key);
+    jobs.wait(home, jobs.begin(home, "export", id, { share: true, output: "/x/y.mp4" }), "the line dropped");
+    expect(steps.activity(app, new Set([id]))).toEqual([]);
+  } finally {
+    cleanup();
+  }
+});

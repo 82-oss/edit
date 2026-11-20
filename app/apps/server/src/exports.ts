@@ -10,6 +10,7 @@ import { Effect } from "effect";
 
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
+import * as failure from "./failure.ts";
 import { cachePath } from "./effect_cloud.ts";
 import * as filePins from "./file_pins.ts";
 import * as folderAccess from "./folder_access.ts";
@@ -31,6 +32,7 @@ import * as seams from "./seams.ts";
 import * as storage from "./storage.ts";
 import type { Store } from "./store.ts";
 import { BUILD } from "./version.ts";
+import * as wake from "./wake.ts";
 
 /** How many finished exports are remembered (handed out, revealed). */
 const KEEP_FINISHED = 50;
@@ -121,6 +123,8 @@ interface Running {
   ahead?: boolean;
   /** Settled once it has ended, however it ended. */
   ended?: Promise<void>;
+  /** Made ahead: gives its place back and drops it from the registry, when it won't end (`stopAhead`). */
+  letGo?: () => void;
   /** A batch's stretch (`StartExtra.stretch`). */
   stretch?: boolean;
   /** About how big its file is (`exportBytes`), and a share's review copy beside it: what the disks are asked for again as it starts. */
@@ -261,6 +265,126 @@ export function withExport<T>(path: string, use: () => Promise<T>): Promise<T> {
 
 /** An export with no progress for `ms` has stalled: it's started again, `tries` times at most (looked at every `everyMs`). */
 export const stall = { ms: 8 * 60_000, tries: 3, everyMs: 15_000 };
+
+/**
+ * How long the engine has, once its job is told to stop (a Cancel, a stall, a person's export wanting the place), to
+ * end it before the server stops waiting for it (Nov 20). A job that ends at all ends within a second or two of a
+ * cancel; one that doesn't is stuck inside the engine (a VideoToolbox session or GPU lost across a lid close, a
+ * writer's cancel that never returns), and before this it held its export, the encoder's place, the share behind it
+ * and every export in line for ever. On a slow home line nothing here waits on the line (the engine reads from the
+ * excerpts cut before it started); after a lid close the clock starts again at the wake. Looked at every
+ * `stall.everyMs`, so it's given up 60 to 75 s after the stop.
+ */
+export const abandon = { ms: 60_000 };
+
+/** Engine jobs given up on in this run (`EngineWatch`): the second means the engine itself is stuck, and only a new Edit frees it. */
+let abandonedJobs = 0;
+
+/** An engine job told to stop that never ended (`abandon`): passing trouble, tried again by itself on a fresh job. */
+export class EngineAbandoned extends failure.StoodStill {}
+
+/** The engine gave up on twice in this run: only quitting Edit frees it, so nothing tries again by itself. */
+export const STUCK_ENGINE = "The video encoder stopped answering. Quit Edit and open it again, then press Retry.";
+
+/**
+ * Watches an engine job to its end (an export's or smooth playback's render): no progress for `stall.ms` stops it
+ * (`stalled`), and once it's been told to stop (that, or `cancelled()`), it has `abandon.ms` to end before it's left
+ * to itself. A wake starts both clocks again: a closed lid is no stall (Nov 20, finding 10: `performance.now()` may
+ * count the sleep on a Mac, and three lid closes failed a healthy export).
+ */
+export class EngineWatch {
+  private moved = performance.now();
+  private sentAt: number | null = null;
+  stalled = false;
+  constructor(
+    private readonly what: string,
+    private readonly cancelled: () => boolean,
+  ) {}
+
+  /** Progress heard: any change is movement. */
+  move(): void {
+    this.moved = performance.now();
+  }
+
+  /** The job's end ("ended"), its error, or "abandoned" when it was told to stop and didn't end in time. */
+  async wait(job: { cancel(): void; wait(): Promise<unknown> }): Promise<"ended" | "abandoned"> {
+    const ending = job.wait();
+    let give!: () => void;
+    const given = new Promise<"abandoned">((resolve) => {
+      give = () => resolve("abandoned");
+    });
+    const look = () => {
+      const now = performance.now();
+      if (this.cancelled() || this.stalled) {
+        this.sentAt ??= now;
+        if (now - this.sentAt >= abandon.ms) give();
+        return;
+      }
+      if (now - this.moved < stall.ms) return;
+      this.stalled = true;
+      this.sentAt = now;
+      job.cancel();
+    };
+    const timer = setInterval(look, stall.everyMs);
+    const offWake = wake.onWake(() => {
+      const now = performance.now();
+      this.moved = now;
+      if (this.sentAt !== null) this.sentAt = now;
+    });
+    try {
+      const how = await Promise.race([ending.then(() => "ended" as const), given]);
+      if (how === "abandoned") {
+        abandonedJobs += 1;
+        diag.warn("export", `${this.what}: the engine didn't end its job within ${Math.round(abandon.ms / 1000)} s of being stopped; left to itself. It may still hold a thread and the encoder: quitting and reopening Edit (or restarting the Mac) frees them${abandonedJobs > 1 ? ` (${abandonedJobs} in this run)` : ""}`);
+      }
+      return how;
+    } finally {
+      clearInterval(timer);
+      offWake();
+      // An abandoned job's late end (or error) is nobody's now.
+      ending.catch(() => {});
+    }
+  }
+}
+
+/**
+ * How long an export waits for an effect's render it found missing or unreadable to be made again (`remake`), as long
+ * as an export asked for waits for its effects at the start (routes.ts `READY_WAIT_MS`). It's drawn here from its code
+ * (a slow home line doesn't slow it; a copy in the cloud is only a quicker way back); a lid closed meanwhile may count.
+ * Past it the export waits and goes again by itself, the render carrying on meanwhile.
+ */
+export const REMAKE_MS = { value: 20 * 60_000 };
+
+/** An effect's render made again for an export took past `REMAKE_MS`: passing, the export tried again by itself. */
+export class RemakeTimedOut extends failure.StepTimedOut {}
+
+/** `work`, unless `signal` stops it ("cancelled") or `ms` runs out first (`late()` is thrown); `work` itself goes on. */
+async function untilDone<T>(work: Promise<T>, signal: AbortSignal, ms: number, late: () => Error): Promise<T> {
+  if (signal.aborted) throw new Error("cancelled");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const stopped = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(late()), ms);
+    onAbort = () => reject(new Error("cancelled"));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([work, stopped]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+  }
+}
+
+/** Whether the engine was given up on more than once in this run (`STUCK_ENGINE`). */
+export function engineStuck(): boolean {
+  return abandonedJobs > 1;
+}
+
+/** For tests: no engine job given up on yet. */
+export function resetAbandoned(): void {
+  abandonedJobs = 0;
+}
 
 /** Free space where `path` is (bytes); 0 when it can't be told. */
 function freeBytes(path: string): number {
@@ -817,7 +941,7 @@ export class ExportRegistry implements seams.Exports {
   /** Of those, the places exports made ahead hold (`startAhead`): not exports either, and they give theirs up to anything that wants it. */
   private aheadActive = 0;
   /** Smooth playback's renders waiting for a place: served before the exports in line (Sphe, Nov 3: "cut the line"). */
-  private ahead: ((release: () => void) => void)[] = [];
+  private ahead: (((release: () => void) => void) & { giveWay?: (() => void) | undefined })[] = [];
   private localQueue: { running: Running; start: () => void; notify: () => void }[] = [];
   /** A look again at the line when an export waits for room (memory, the CPU) rather than for one to end. */
   private recheck: ReturnType<typeof setTimeout> | null = null;
@@ -878,14 +1002,32 @@ export class ExportRegistry implements seams.Exports {
   /** Stops exports made ahead (all, or `project`'s), for something someone wants; resolves once they've let go. */
   async stopAhead(project?: string): Promise<void> {
     const ended: Promise<void>[] = [];
+    const stopped: [string, Running][] = [];
     for (const [id, job] of this.jobs) {
       if (job.ahead !== true || (project !== undefined && id !== project)) continue;
       job.cancelled = true;
       job.stop.abort();
       job.job?.cancel();
+      stopped.push([id, job]);
       if (job.ended !== undefined) ended.push(job.ended);
     }
-    await Promise.all(ended);
+    if (ended.length === 0) return;
+    // Never for ever (Nov 20): a person's Export waited here, its request unanswered, on one made ahead stuck in the
+    // engine. Its render is given up on after `abandon.ms` (EngineWatch); this bound is for the rest of it (a watermark
+    // being put on). Then it's dropped and its place given back, whatever it's still doing.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<"late">((resolve) => {
+      timer = setTimeout(() => resolve("late"), abandon.ms + stall.everyMs + 5_000);
+    });
+    const how = await Promise.race([Promise.all(ended).then(() => "ended" as const), late]);
+    clearTimeout(timer);
+    if (how === "ended") return;
+    for (const [id, job] of stopped) {
+      if (this.jobs.get(id) !== job) continue;
+      diag.warn("export", `${id}: its export made ahead didn't stop within ${Math.round((abandon.ms + stall.everyMs) / 1000)} s; left to itself`);
+      this.jobs.delete(id);
+      job.letGo?.();
+    }
   }
 
   /**
@@ -928,6 +1070,7 @@ export class ExportRegistry implements seams.Exports {
       this.aheadActive = Math.max(0, this.aheadActive - 1);
       this.releaseOne();
     };
+    running.letGo = release;
     void (async () => {
       let marked = edit;
       if (watermark !== undefined) marked = await seams.channelMarks.addWatermark({ library }, store.cacheDir(), edit, plan, watermark);
@@ -954,23 +1097,30 @@ export class ExportRegistry implements seams.Exports {
    * waits only for the export rendering, and on a Max or an Ultra it renders
    * beside them. `cancel` drops a wait.
    */
-  takeTurn(ready: (release: () => void) => void): { release: (() => void) | null; cancel: () => void } {
-    if (this.ahead.length === 0 && capacity.noRoom(this.localActive) === null) return { release: this.lend(), cancel: () => {} };
+  takeTurn(ready: (release: () => void) => void, giveWay?: () => void): { release: (() => void) | null; cancel: () => void } {
+    if (this.ahead.length === 0 && this.localQueue.length === 0 && capacity.noRoom(this.localActive) === null) return { release: this.lend(giveWay), cancel: () => {} };
     // Someone is watching: an export made ahead gives its place up (it carries on later from its chunks).
     if (this.aheadActive > 0) void this.stopAhead();
-    this.ahead.push(ready);
+    const turn = (release: () => void) => ready(release);
+    this.ahead.push(Object.assign(turn, { giveWay }));
     this.drain();
-    return { release: null, cancel: () => { this.ahead = this.ahead.filter((one) => one !== ready); } };
+    return { release: null, cancel: () => { this.ahead = this.ahead.filter((one) => one !== turn); } };
   }
 
+  /** Smooth playback's places now, each with how it gives way to an export someone asked for (`takeTurn`'s `giveWay`). */
+  private lentTo = new Set<{ giveWay: (() => void) | undefined; asked: boolean }>();
+
   /** Takes a place for smooth playback; its release gives it back (once). */
-  private lend(): () => void {
+  private lend(giveWay?: () => void): () => void {
     this.localActive++;
     this.lent++;
+    const place = { giveWay, asked: false };
+    this.lentTo.add(place);
     let held = true;
     return () => {
       if (!held) return;
       held = false;
+      this.lentTo.delete(place);
       this.lent = Math.max(0, this.lent - 1);
       this.releaseOne();
     };
@@ -1019,6 +1169,27 @@ export class ExportRegistry implements seams.Exports {
         void this.stopAhead();
         return;
       }
+      if (room !== null && this.localQueue.length > 0 && this.lentTo.size > 0) {
+        // Smooth playback's render holds a place an export someone asked for wants: it gives way (Nov 20: Export sat at
+        // 0% for minutes behind it on a one-encoder Mac, for ever when it hung), and carries on from its chunks after.
+        // Its release drains again; a render that won't stop is given up on within `abandon.ms` (EngineWatch).
+        const why = "waiting for smooth playback's render to stop";
+        for (const one of this.localQueue) {
+          if (one.running.waiting === why) continue;
+          one.running.waiting = why;
+          one.notify();
+        }
+        for (const place of this.lentTo) {
+          if (place.asked || place.giveWay === undefined) continue;
+          place.asked = true;
+          try {
+            place.giveWay();
+          } catch (error) {
+            diag.warn("export", `smooth playback giving way: ${diag.messageOf(error)}`);
+          }
+        }
+        if ([...this.lentTo].some((place) => place.giveWay !== undefined)) return;
+      }
       if (room !== null) {
         // Only smooth playback's render holds the Mac: it's that they wait for.
         const why = this.lent > 0 && this.localActive === this.lent ? "waiting for smooth playback's render to finish" : room;
@@ -1038,9 +1209,11 @@ export class ExportRegistry implements seams.Exports {
         }
         return;
       }
-      const turn = this.ahead.shift();
-      if (turn !== undefined) {
-        turn(this.lend());
+      // An export someone asked for goes before smooth playback's render: given the place first, the render would only
+      // be told to give way to it at once (Nov 20). With nothing in line, the render goes before anything made ahead.
+      if (this.localQueue.length === 0) {
+        const turn = this.ahead.shift()!;
+        turn(this.lend(turn.giveWay));
         continue;
       }
       const next = this.localQueue.shift()!;
@@ -1345,6 +1518,8 @@ export class ExportRegistry implements seams.Exports {
     // A speed sample (`fresh_fps`): rendered here from the start, every frame new, never restarted.
     let fresh = !quiet && options.format === "h264" && nothingToReuse(store.cacheDir(), running.chunks ?? id);
     let result: { ok: true } | { ok: false; error: string };
+    /** What it failed on: an engine job given up on waits and is tried again by itself (`EngineAbandoned`). */
+    let failedWith: unknown = null;
     try {
       await catchBugsAsync("the export", async () => {
         // Fetched back to reuse its chunks; gone again after if this export writes elsewhere.
@@ -1359,7 +1534,11 @@ export class ExportRegistry implements seams.Exports {
             remakes += 1;
             fresh = false;
             diag.warn("export", `${project.name}: the ${effect.name} effect's render ${effect.unreadable ? "couldn't be read" : "isn't there"} (${effect.path}); making it again and carrying on from the chunks made`);
-            await seams.broll.remakeEffect(id, effect.name, effect.key, effect.unreadable);
+            // Never for ever, and never past a Cancel (Nov 20: an export that met a missing render waited at its prep for
+            // as long as the render took, its Cancel too). The render goes on by itself either way: the edit plays it.
+            const making = seams.broll.remakeEffect(id, effect.name, effect.key, effect.unreadable);
+            making.catch(() => {});
+            await untilDone(making, running.stop.signal, REMAKE_MS.value, () => new RemakeTimedOut(`making the ${effect.name} effect's render again`, REMAKE_MS.value, false));
             remade.add(effect.name);
           };
           // Its first start of the engine: room asked for again and the last export fetched back, once.
@@ -1368,6 +1547,8 @@ export class ExportRegistry implements seams.Exports {
           // export sat at 28% for seven minutes, Oct 29) is stopped and started
           // again by itself; the chunks it made are kept, so it carries on.
           let attempt = 0;
+          // The engine's last progress, for the line said as a stalled render starts again.
+          let engineAt = 0;
           for (;;) {
             let stalled = false;
             // Its renders read from where the edit has them now, should one have moved since it was taken (file_pins.ts
@@ -1425,7 +1606,7 @@ export class ExportRegistry implements seams.Exports {
                 prepRatio = 1;
                 emit("running", shownProgress(1, null), { phase: "starting the export" });
               } else emit("running", 0, { phase: "starting the export" });
-              let moved = performance.now();
+              const watch = new EngineWatch(project.name, () => running.cancelled);
               let last = -1;
               const job = native().ExportJob.start(
                 { project: { json: jsonForSerde(exported) }, options, plan, output, cacheDir: store.cacheDir(), sounds: originals?.sounds ?? {}, excerpts: originals?.excerpts ?? [], ...(quiet ? { background: true } : {}) },
@@ -1434,7 +1615,8 @@ export class ExportRegistry implements seams.Exports {
                   // Kroger's retry rendered 11 chunks yet "nothing new for 8 minutes", and was started over).
                   if (progress !== last) {
                     last = progress;
-                    moved = performance.now();
+                    engineAt = progress;
+                    watch.move();
                   }
                   try {
                     // No phase: the line goes back to the percent, and a stale "cutting the footage" doesn't stick.
@@ -1446,24 +1628,24 @@ export class ExportRegistry implements seams.Exports {
               );
               running.job = job;
               if (running.cancelled) job.cancel();
-              const watch = setInterval(() => {
-                if (performance.now() - moved < stall.ms) return;
-                stalled = true;
-                job.cancel();
-              }, stall.everyMs);
+              let how: "ended" | "abandoned" = "ended";
               try {
-                await job.wait();
+                how = await watch.wait(job);
               } catch (error) {
                 if (running.cancelled) throw error;
-                if (!stalled) {
+                if (!watch.stalled) {
                   // An effect's render it couldn't read is Edit's own file: made again, and the export carries on.
                   unread = effectIn(diag.messageOf(error), exported);
                   if (unread === null) throw error;
                 }
               } finally {
-                clearInterval(watch);
+                stalled = watch.stalled;
               }
               if (running.cancelled) throw new Error("cancelled");
+              // Stopped and never ended (Nov 20): the export ends here, from the server's side, its place given back and
+              // the work behind it free to go on. A fresh engine job may well go (a stuck VideoToolbox session is the
+              // old job's), so it waits and is tried again by itself; twice in a run and it's the engine: quit Edit.
+              if (how === "abandoned") throw engineStuck() ? new Error(STUCK_ENGINE) : new EngineAbandoned("the video's render", stall.ms);
               if (!stalled && unread === null) break;
             } finally {
               originals?.release();
@@ -1476,6 +1658,8 @@ export class ExportRegistry implements seams.Exports {
             attempt += 1;
             if (attempt >= stall.tries) throw new Error(`the export stopped moving ${stall.tries} times (nothing new for ${Math.round(stall.ms / 60_000)} minutes each)`);
             diag.warn("export", `${project.name}: nothing new for ${Math.round(stall.ms / 60_000)} minutes; starting it again (the chunks made are kept)`);
+            // Said, so the bar's line isn't the percent it stood still at (Nov 20).
+            emit("running", shownProgress(prepared ? 1 : null, Math.max(0, engineAt)), { phase: "starting the render again" });
           }
         } finally {
           if (restored !== null && restored !== output) fs.rmSync(restored, { force: true });
@@ -1491,6 +1675,7 @@ export class ExportRegistry implements seams.Exports {
       // The disk ran out under it: said as what to free (the room it needed less what's free now).
       const short = (running.bytes ?? 0) + (running.review ?? 0) - freeOn(store.cacheDir());
       result = { ok: false, error: outOfSpace(error) && !running.cancelled && !diag.messageOf(error).startsWith("Your disk is full") ? diskFull(short) : diag.messageOf(error) };
+      failedWith = error;
     } finally {
       // Archiving/uploading a completed file doesn't occupy the renderer, nor hold what it read.
       running.unpin?.();
@@ -1578,8 +1763,11 @@ export class ExportRegistry implements seams.Exports {
     } else {
       diag.record("export", "export", took, `${project.name}: ${result.error}`);
       emit("failed", 0, { error: result.error });
+      // The engine never ended a job it was told to stop, or an effect's render took too long to make again: it waits
+      // and goes again by itself, a fresh job (jobs.ts `wait`, the export resumer), as trouble that passes.
+      if (failedWith instanceof EngineAbandoned || failedWith instanceof RemakeTimedOut) jobs.wait(this.home, running.key, failedWith);
       // Kept, failed, for the next build to try again (retry_after_update.ts).
-      jobs.settle(this.home, running.key, "failed", { error: result.error, build: BUILD, args: { name: project.name, ...(upload ? { drive: true } : {}) } });
+      else jobs.settle(this.home, running.key, "failed", { error: result.error, build: BUILD, args: { name: project.name, ...(upload ? { drive: true } : {}) } });
     }
     this.jobs.delete(id);
     if (!(result.ok === false && !running.cancelled)) jobs.end(this.home, running.key);

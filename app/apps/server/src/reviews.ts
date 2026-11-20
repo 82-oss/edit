@@ -62,6 +62,7 @@ import * as seams from "./seams.ts";
 import { stableStringify } from "./stable.ts";
 import { deepFreeze } from "./store.ts";
 import * as tools from "./tools.ts";
+import { bounded, whileMoving } from "./import_steps.ts";
 import { putOff } from "./put_off.ts";
 import { BUILD } from "./version.ts";
 import { ANOTHER_MACHINE } from "./machine.ts";
@@ -656,8 +657,18 @@ export async function exportAndShare(app: App, projectId: string, options: Parti
 
 /** Whether a share waits out `error` by itself: only what's surely passing, never one of its own refusals. */
 function waitsOn(error: unknown): boolean {
+  if (stillRendering(error)) return true;
   const kind = failure.surely(error);
   return kind !== null && failure.waitsByItself(kind);
+}
+
+/**
+ * Its graphics still rendering after the share's 20 minutes (effects.ts `waitForRenders`), or behind another
+ * project's (Nov 20): they finish by themselves, so the share waits and goes on, never "Sharing stopped" with
+ * "export again in a minute or two" for the person to do by hand. failure.ts reads none of these words as passing.
+ */
+function stillRendering(error: unknown): boolean {
+  return /effect is (still rendering|waiting behind)|map view is still rendering/iu.test(diag.messageOf(error));
 }
 
 /** A share that met trouble that passes: it waits in the job table and goes on by itself (nothing to tell the person). */
@@ -772,16 +783,15 @@ async function runShare(app: App, projectId: string): Promise<{ url: string; ver
         }, 10_000);
   ticker?.unref?.();
   try {
-    // The line out is the share's from its export to its link: the export's own copy for the cloud, which starts the
-    // moment the export ends, and any full-quality file still going up wait behind it (cloud.first).
-    return await cloud.first(async () => {
-      if (first.export !== undefined && first.path === undefined) {
-        const path = await exportStep(app, projectId, first);
-        haltShare(projectId);
-        jobs.step(home, key, "review copy", { path });
-      }
-      return await publishSteps(app, projectId);
-    });
+    if (first.export !== undefined && first.path === undefined) {
+      const path = await exportStep(app, projectId, first);
+      haltShare(projectId);
+      jobs.step(home, key, "review copy", { path });
+    }
+    // The line out is the share's from its export's end to its link: the export's own copy for the cloud, which starts
+    // the moment the export ends, and any full-quality file still going up wait behind it (cloud.first). Not during
+    // the export (Nov 20): an export of an hour or more held every cloud copy on this Mac for all of it.
+    return await cloud.first(() => publishSteps(app, projectId));
   } catch (error) {
     const message = diag.messageOf(error);
     const cancelled = message === "the share was cancelled" || message === "the export was cancelled" || droppedShares.has(projectId);
@@ -790,7 +800,9 @@ async function runShare(app: App, projectId: string): Promise<{ url: string; ver
       // Trouble that passes (the line dropped, the relay busy, a full disk): the share waits and goes on from its step
       // by itself; nothing says "Sharing stopped", and the link's notice comes when it's up (honest council change 7f).
       const kind = failure.surely(error) ?? "passing";
-      const at = jobs.wait(home, key, error, kind === "passing" ? "Waiting for the connection. The link comes by itself." : `${failure.waitLine(kind, error, null)} The link comes by itself.`);
+      // Said as what it waits on: its graphics, a review copy that stood still (Edit makes it again), the connection.
+      const own = error instanceof failure.StoodStill || error instanceof failure.StepTimedOut ? `${message.charAt(0).toUpperCase()}${message.slice(1).replace(/\.?$/u, ".")} The link comes by itself.` : null;
+      const at = jobs.wait(home, key, error, stillRendering(error) ? "Waiting for its graphics to render. The link comes by itself." : own ?? (kind === "passing" ? "Waiting for the connection. The link comes by itself." : `${failure.waitLine(kind, error, null)} The link comes by itself.`));
       diag.warn("review", `${app.store.get(projectId)?.project.name ?? projectId}: sharing waits (${failure.surely(error)}): ${message}; it goes on by itself${at === null ? "" : ` at ${new Date(at).toISOString()}`}`);
       throw new ShareWaits(message);
     } else {
@@ -920,6 +932,8 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
     const prefix = `edit/reviews/${projectId}/${timeline}`;
     const fullKey = fullKeyOf(prefix, chosen.path);
     const seconds = chosen.frames / fps;
+    // Its FFmpeg runs end on its Cancel, past their time or standing still (`shareRun`).
+    const run = shareRun(projectId, seconds);
     const made = fs.existsSync(copy) && fs.existsSync(poster);
     if (!(args.checked === true && made)) {
       const copying = Date.now();
@@ -933,11 +947,12 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       if (!fs.existsSync(copy)) {
         let pieced = false;
         try {
-          pieced = await reviewCopyFromChunks(app.store.cacheDir(), projectId, chosen.path, copy);
+          pieced = await reviewCopyFromChunks(app.store.cacheDir(), projectId, chosen.path, copy, run);
         } catch (error) {
+          haltShare(projectId);
           diag.warn("review", `${projectId}: the review copy from the export's chunks: ${diag.messageOf(error)}; making it whole`);
         }
-        if (!pieced) await reviewCopy(chosen.path, copy);
+        if (!pieced) await reviewCopy(chosen.path, copy, run);
       }
       // Never shared unless it plays as the export and decodes (review_check.ts): one
       // that doesn't (from pieces, or kept from before) is made whole again,
@@ -949,14 +964,14 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       if (problem !== null) {
         diag.warn("review", `${projectId}: the review copy doesn't match its export (${problem}); making it whole`);
         fs.rmSync(copy, { force: true });
-        await reviewCopy(chosen.path, copy);
+        await reviewCopy(chosen.path, copy, run);
         problem = await reviewCopyProblem(copy, exportedLengths, fps);
         if (problem !== null) {
           fs.rmSync(copy, { force: true });
           throw new Error(`the review copy came out wrong (${problem}), so nothing was shared`);
         }
       }
-      await tools.run([tools.ffmpeg(), "-v", "error", "-nostdin", "-y", "-ss", fixed(posterSecond(live.project, seconds), 2), "-i", chosen.path, "-frames:v", "1", "-vf", "scale=1280:-2", poster]);
+      await run([tools.ffmpeg(), "-v", "error", "-nostdin", "-y", "-ss", fixed(posterSecond(live.project, seconds), 2), "-i", chosen.path, "-frames:v", "1", "-vf", "scale=1280:-2", poster]);
       // How long a copy takes here, for the next share's time.
       speeds.noteCopy(home, seconds, (Date.now() - copying) / 1000);
       haltShare(projectId);
@@ -981,7 +996,7 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
     // censoring, a waveform and the files' details (Fields), and the clips
     // under each moment (a note is pinned to its footage as it's written).
     sharing.set(projectId, "describing it");
-    const extra = await describe(app, live.project, chosen.path, copy, prefix, clips);
+    const extra = await describe(app, live.project, chosen.path, copy, prefix, clips, run);
     haltShare(projectId);
     const durationMs = Math.round((chosen.frames / fps) * 1000);
     // Published: noted done in the same write that lists its full-quality upload (the export itself, for the page's
@@ -1160,9 +1175,9 @@ export function posterSecond(project: Project, seconds: number): number {
 }
 
 /** A file's video and sound as ffprobe reads them, for the page's Fields. */
-async function probe(path: string): Promise<Record<string, unknown>> {
+async function probe(path: string, run: ShareRun = plainRun): Promise<Record<string, unknown>> {
   try {
-    const out = new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path]));
+    const out = new TextDecoder().decode(await run([tools.ffprobe(), "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path]));
     const parsed = JSON.parse(out) as { format?: Record<string, string>; streams?: Record<string, unknown>[] };
     const video = parsed.streams?.find((one) => one.codec_type === "video");
     const audio = parsed.streams?.find((one) => one.codec_type === "audio");
@@ -1183,12 +1198,12 @@ async function probe(path: string): Promise<Record<string, unknown>> {
  * beside the video its words (export time, with who says them) and a
  * waveform; plus the picture clips, so a note can be pinned to its footage.
  */
-async function describe(app: App, project: Project, exported: string, copy: string, prefix: string, clips: [string, number, number][]): Promise<Record<string, unknown>> {
+async function describe(app: App, project: Project, exported: string, copy: string, prefix: string, clips: [string, number, number][], run: ShareRun = plainRun): Promise<Record<string, unknown>> {
   const fps = fpsOf(project);
   const ms = (frame: number) => Math.round((frame / fps) * 1000);
   const out: Record<string, unknown> = {
-    export: { renderedAt: Date.now(), ...(await probe(exported)) },
-    review: await probe(copy),
+    export: { renderedAt: Date.now(), ...(await probe(exported, run)) },
+    review: await probe(copy, run),
     clipMap: clips,
   };
   // Chapters: the intro, each cut-in, the story, the outro.
@@ -1239,7 +1254,7 @@ async function describe(app: App, project: Project, exported: string, copy: stri
   }
   // A waveform of the review copy's sound: its loudest sample every 100 ms, 0–100.
   try {
-    const pcm = await tools.run([tools.ffmpeg(), "-v", "error", "-nostdin", "-i", copy, "-ac", "1", "-ar", "8000", "-f", "s16le", "-"]);
+    const pcm = await run([tools.ffmpeg(), "-v", "error", "-nostdin", "-i", copy, "-ac", "1", "-ar", "8000", "-f", "s16le", "-"]);
     const samples = new Int16Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 2));
     const peaks: number[] = [];
     for (let at = 0; at < samples.length; at += 800) {
@@ -1270,7 +1285,7 @@ const PIECES_AT_ONCE = new Semaphore(2);
  * intro (card 1, Oct 29). False when the export wasn't made of chunks (or
  * isn't the file they were joined into): then it's made whole.
  */
-async function reviewCopyFromChunks(cache: string, project: string, source: string, dest: string): Promise<boolean> {
+async function reviewCopyFromChunks(cache: string, project: string, source: string, dest: string, run: ShareRun = plainRun): Promise<boolean> {
   const last = lastChunks(cache, project);
   if (last === null || last.output !== source || !fs.existsSync(source) || fs.statSync(source).size !== last.size) return false;
   const dir = join(chunkFolder(cache, project), "review");
@@ -1285,7 +1300,7 @@ async function reviewCopyFromChunks(cache: string, project: string, source: stri
         const partial = `${piece}.partial.mp4`;
         // No chapters: the export's run to its end and would count in the piece's length (review_runtime.py).
         const common = ["-v", "error", "-nostdin", "-y", "-ss", (chunk.at / last.fps).toFixed(6), "-i", source, "-frames:v", String(chunk.frames), "-an", "-map_chapters", "-1", "-vf", "scale=-2:720"];
-        await encodeReview(common, partial);
+        await encodeReview(common, partial, run);
         fs.renameSync(partial, piece);
         made += 1;
       }),
@@ -1302,7 +1317,7 @@ async function reviewCopyFromChunks(cache: string, project: string, source: stri
   const list = join(dir, "pieces.txt");
   fs.writeFileSync(list, last.chunks.map((chunk) => `file '${pieceOf(chunk.key).replaceAll("'", "'\\''")}'`).join("\n"));
   const partial = `${dest}.partial.mp4`;
-  await tools.run([tools.ffmpeg(), "-v", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", list, "-i", source, "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", partial]);
+  await run([tools.ffmpeg(), "-v", "error", "-nostdin", "-y", "-f", "concat", "-safe", "0", "-i", list, "-i", source, "-map", "0:v:0", "-map", "1:a:0?", "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", partial], partial);
   fs.renameSync(partial, dest);
   // Pieces of chunks the edit no longer has go.
   const kept = new Set(last.chunks.map((chunk) => `${chunk.key}.mp4`));
@@ -1312,25 +1327,70 @@ async function reviewCopyFromChunks(cache: string, project: string, source: stri
 }
 
 /** The review copy made whole from `source` (720p, its sound): picture and sound only. */
-export async function reviewCopy(source: string, dest: string): Promise<void> {
+export async function reviewCopy(source: string, dest: string, run: ShareRun = plainRun): Promise<void> {
   const partial = `${dest}.partial.mp4`;
   const common = ["-v", "error", "-nostdin", "-y", "-i", source, "-map_chapters", "-1", "-vf", "scale=-2:720", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"];
-  await encodeReview(common, partial);
+  await encodeReview(common, partial, run);
   fs.renameSync(partial, dest);
 }
 
 /** A review copy's picture at 3 Mbit/s on the video hardware, else libx264 at CRF 26. */
-async function encodeReview(common: string[], partial: string): Promise<void> {
+async function encodeReview(common: string[], partial: string, run: ShareRun = plainRun): Promise<void> {
   const hardware = tools.hardwareH264();
   if (hardware !== null) {
     try {
-      await tools.run([tools.ffmpeg(), ...common, ...hardware, "-b:v", "3M", partial]);
+      await run([tools.ffmpeg(), ...common, ...hardware, "-b:v", "3M", partial], partial);
       return;
-    } catch {
-      // libx264 below
+    } catch (error) {
+      // Cancelled: nothing more. Else libx264 below (a hardware session that stood still too).
+      if (diag.messageOf(error) === "the share was cancelled") throw error;
     }
   }
-  await tools.run([tools.ffmpeg(), ...common, "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", partial]);
+  await run([tools.ffmpeg(), ...common, "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", partial], partial);
+}
+
+/** Runs a share's FFmpeg (`output`: the file it writes, watched for progress). */
+type ShareRun = (command: string[], output?: string) => Promise<Uint8Array>;
+const plainRun: ShareRun = (command) => tools.run(command);
+
+/**
+ * How long one of a share's FFmpeg runs may take (Nov 20; they had tools.ts's four hours, no stall watch and no
+ * Cancel, so "making the review copy" could sit for hours, Cancel said "cancelling" throughout, and every export's
+ * cloud copy waited behind it): ten minutes and a second per second of video. A review copy runs at 15–30× the
+ * video's speed on the hardware and 3–5× on libx264 on the slowest Mac, so this is three times the slowest. They read
+ * and write files here only: a slow home line doesn't slow them; a lid closed meanwhile gives the time back
+ * (import_steps.ts `bounded`). Past it, or standing still (`stillMs`), the share waits and goes on by itself.
+ */
+export const shareTools = {
+  ms: (seconds: number) => 10 * 60_000 + Math.max(seconds, 0) * 1000,
+  /** A run whose file stops growing for this long has stood still (a VideoToolbox session that died under it): stopped. The front of a 720p copy is written within seconds; its +faststart pass rewrites it in under a minute. */
+  stillMs: 5 * 60_000,
+};
+
+/** The share's runner for `projectId`, a video of `seconds`: ended by its Cancel, `shareTools.ms`, and its file standing still. */
+function shareRun(projectId: string, seconds: number): ShareRun {
+  return async (command, output) => {
+    const signal = shareSignal(projectId);
+    const what = command[0] === tools.ffprobe() ? "reading the export" : "making the review copy";
+    try {
+      return await bounded(what, shareTools.ms(seconds), (limit) => {
+        if (output === undefined) return tools.run(command, { signal: AbortSignal.any([limit, signal]) });
+        const size = () => {
+          try {
+            return fs.statSync(output).size;
+          } catch {
+            return 0;
+          }
+        };
+        return whileMoving(what, size, (still) => tools.run(command, { signal: AbortSignal.any([still, limit]) }), shareTools.stillMs, signal);
+      });
+    } catch (error) {
+      // A Cancel ends it as the share's cancel, whatever the tool said as it was ended.
+      haltShare(projectId);
+      if (signal.aborted) throw new Error("the share was cancelled");
+      throw error;
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------

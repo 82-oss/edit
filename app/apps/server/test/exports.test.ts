@@ -672,8 +672,10 @@ test("a finished export's upload is a job of its own: a restart meanwhile sends 
   }
 });
 
-test("smooth playback's render waits only for the export rendering, goes before the ones in line, and isn't an export itself", async () => {
+test("smooth playback's render gives its place to an export someone asks for, waits behind the ones in line, and isn't an export itself", async () => {
   // Sphe, Nov 3: with three exports queued, the edit open here got no smooth playback until all were done ("cut the line").
+  // Nov 20: on a one-encoder Mac the export then sat at 0% behind the render for minutes (for ever when it hung), and
+  // the render, given the place before an export in line, was only told to give way to it at once: an export goes first.
   const most = process.env.EDIT_LOCAL_EXPORTS;
   process.env.EDIT_LOCAL_EXPORTS = "1";
   const { dir, home, store, app, native, cleanup } = fixtureHome("playback-turn");
@@ -695,48 +697,57 @@ test("smooth playback's render waits only for the export rendering, goes before 
   const unsubscribe = store.subscribe((event) => { if (event.type === "export") events.push(event as never); });
   try {
     // Nothing exporting: a place at once, and nothing waits on it as on an export.
-    const alone = registry.takeTurn(() => { throw new Error("given at once"); });
+    let gaveWay = 0;
+    const alone = registry.takeTurn(() => { throw new Error("given at once"); }, () => { gaveWay += 1; setTimeout(() => alone.release!(), 5); });
     expect(alone.release).not.toBeNull();
     expect(registry.localRunning()).toBe(false);
     expect(registry.running()).toBe(false);
-    // An export asked for meanwhile waits for it, saying so.
     const projects: Project[] = [];
-    for (const name of ["one", "two"]) {
+    for (const name of ["one", "two", "three"]) {
       const id = store.create(name, { width: 64, height: 36, fps: 30 }).project.id;
       await store.update(id, "test", p => p.clips.push(clip({ id: "solid", track: p.tracks[0]!.id, start: 0, duration: 30, type: "solid" })));
       projects.push(structuredClone(store.get(id)!.project));
     }
     const options = native.exportDefaults();
+    // An export asked for meanwhile: the render is told to give way, and the export starts as it lets go (within a second).
+    const asked = Date.now();
     await registry.start(store, app.library, projects[0]!, options, `${dir}/one.mp4`, { drive: false, keepLocal: true });
-    expect(started).toEqual([]);
-    expect(registry.activity().find(one => one.name === "one")).toMatchObject({ state: "queued", waiting: "waiting for smooth playback's render to finish" });
-    alone.release!();
-    alone.release!();
-    for (let tries = 0; started.length < 1 && tries < 100; tries++) await Bun.sleep(1);
+    expect(gaveWay).toBe(1);
+    expect(registry.activity().find(one => one.name === "one")).toMatchObject({ state: "queued", waiting: "waiting for smooth playback's render to stop" });
+    for (let tries = 0; started.length < 1 && tries < 200; tries++) await Bun.sleep(5);
     expect(started).toEqual(["one"]);
+    expect(Date.now() - asked).toBeLessThan(1000);
     expect(registry.localRunning()).toBe(true);
-    // "two" in line behind "one"; playback asks after it and still goes first.
+    alone.release!();
+    // "two" in line behind "one"; playback asks after it and waits behind it now.
     await registry.start(store, app.library, projects[1]!, options, `${dir}/two.mp4`, { drive: false, keepLocal: true });
     expect(registry.activity().find(one => one.name === "two")).toMatchObject({ state: "queued", waiting: `waiting for the encoder (${THIS_MACHINE} has one)` });
     expect(events.find(one => one.id === projects[1]!.id && one.state === "queued")).toMatchObject({ waiting: `waiting for the encoder (${THIS_MACHINE} has one)` });
     expect(events.some(one => one.id === projects[0]!.id && one.phase === "starting the export")).toBe(true);
     let given: (() => void) | null = null;
-    const turn = registry.takeTurn((release) => { given = release; });
+    const turn = registry.takeTurn((release) => { given = release; }, () => {});
     expect(turn.release).toBeNull();
-    // A wait dropped is never served; the one after it is.
+    // A wait dropped is never served.
     const dropped = registry.takeTurn(() => { throw new Error("dropped"); });
     dropped.cancel();
     releases.get("one")!();
-    for (let tries = 0; given === null && tries < 100; tries++) await Bun.sleep(1);
-    expect(given).not.toBeNull();
-    expect(started).toEqual(["one"]);
-    // The queued one's reason was said again as it changed.
-    expect(registry.activity().find(one => one.name === "two")?.waiting).toBe("waiting for smooth playback's render to finish");
-    expect(events.filter(one => one.id === projects[1]!.id && one.state === "queued").length).toBeGreaterThan(1);
-    given!();
     for (let tries = 0; started.length < 2 && tries < 100; tries++) await Bun.sleep(1);
     expect(started).toEqual(["one", "two"]);
+    expect(given).toBeNull();
     releases.get("two")!();
+    for (let tries = 0; given === null && tries < 100; tries++) await Bun.sleep(1);
+    expect(given).not.toBeNull();
+    // A render that can't give way (no way to stop it) is waited for, saying so.
+    given!();
+    const stuck = registry.takeTurn(() => { throw new Error("given at once"); });
+    expect(stuck.release).not.toBeNull();
+    await registry.start(store, app.library, projects[2]!, options, `${dir}/three.mp4`, { drive: false, keepLocal: true });
+    expect(registry.activity().find(one => one.name === "three")).toMatchObject({ state: "queued", waiting: "waiting for smooth playback's render to finish" });
+    // Its release lets the export go.
+    stuck.release!();
+    for (let tries = 0; started.length < 3 && tries < 100; tries++) await Bun.sleep(1);
+    expect(started).toEqual(["one", "two", "three"]);
+    releases.get("three")!();
     for (let tries = 0; registry.running() && tries < 100; tries++) await Bun.sleep(1);
     expect(registry.running()).toBe(false);
   } finally {

@@ -3,7 +3,9 @@ import type { Project } from "./types";
 
 const connection = vi.hoisted(() => ({ down: false }));
 const api = vi.hoisted(() => ({ saveProject: vi.fn(), saveChanges: vi.fn(), project: vi.fn(), mediaStatus: vi.fn(), scriptJob: vi.fn() }));
-vi.mock("./api", () => ({ api, ApiError: class extends Error { status = 409; body: unknown; }, useConnection: { setState: vi.fn(), getState: () => connection } }));
+// GET /api/projects/{id}/export (store.ts `syncExport`): what the server says the export is now.
+const request = vi.hoisted(() => vi.fn(async (): Promise<unknown> => ({ export: null })));
+vi.mock("./api", () => ({ api, request, ApiError: class extends Error { status = 409; body: unknown; }, useConnection: { setState: vi.fn(), getState: () => connection } }));
 vi.mock("./agent", () => ({ applyAgentEvent: vi.fn(), openAgent: vi.fn() }));
 // This browser's copy of unsaved edits (unsaved.ts), as a map; `failing` is storage that's full or blocked.
 const unsaved = vi.hoisted(() => {
@@ -334,5 +336,53 @@ describe("media statuses from the events socket", () => {
     useEditor.getState().close();
     flushMediaEvents();
     expect(useEditor.getState().media).toEqual({});
+  });
+});
+
+// Nov 20: an export that failed (or finished) while the socket was down (a wake closes it at once, a restart) left the
+// Export dialog on "Exporting 40%", Export and Share greyed out, until a reload.
+describe("the export's state after a reconnect", () => {
+  beforeEach(() => {
+    vi.resetModules(); vi.useFakeTimers();
+    vi.stubGlobal("window", new EventTarget());
+    vi.stubGlobal("localStorage", { getItem: () => null, setItem: () => {} });
+    vi.stubGlobal("location", { protocol: "http:", host: "localhost" });
+    api.project.mockResolvedValue({ rev: 1, project: project("p1") });
+    api.mediaStatus.mockResolvedValue({ media: {} });
+    api.scriptJob.mockResolvedValue({ job: null });
+  });
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  const connect = async () => {
+    const { useEditor, connectEvents } = await import("./store");
+    const sockets: { onopen?: () => void; onclose?: () => void; onmessage?: (message: { data: string }) => void; readyState: number }[] = [];
+    vi.stubGlobal("WebSocket", class { static OPEN = 1; readyState = 1; constructor() { sockets.push(this as never); } });
+    useEditor.getState().load(1, project("p1"));
+    connectEvents();
+    sockets[0]!.onopen!();
+    sockets[0]!.onmessage!({ data: JSON.stringify({ type: "export", id: "p1", state: "running", progress: 0.4, path: "/x.mp4" }) });
+    expect(useEditor.getState().exportState?.state).toBe("running");
+    // Down; the export's end goes while it is.
+    sockets[0]!.onclose!();
+    return { useEditor, reopen: async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      sockets.at(-1)!.onopen!();
+      await vi.advanceTimersByTimeAsync(0);
+    } };
+  };
+
+  it("takes the failure it missed", async () => {
+    request.mockResolvedValue({ export: { state: "failed", progress: 0, path: "/x.mp4", error: "the video's render made no progress for 8 min and was stopped; Edit tries again by itself" } });
+    const { useEditor, reopen } = await connect();
+    await reopen();
+    await vi.waitFor(() => expect(useEditor.getState().exportState).toMatchObject({ state: "failed", error: expect.stringContaining("tries again by itself") }));
+    expect(request).toHaveBeenCalledWith("GET", "/api/projects/p1/export");
+  });
+
+  it("drops a running one the server no longer has", async () => {
+    request.mockResolvedValue({ export: null });
+    const { useEditor, reopen } = await connect();
+    await reopen();
+    await vi.waitFor(() => expect(useEditor.getState().exportState).toBeNull());
   });
 });

@@ -1742,6 +1742,26 @@ function waitOn(project: string, name: string): () => void {
   };
 }
 
+/**
+ * How long a render someone waits on (an export, a tool) gives way to a play before each chunk and before it's put in
+ * (Nov 20). Nobody waits on it: it waits for nothing to play and nobody to wait on footage (`playing.whenIdle`), as
+ * before. Waited on, that froze an export's graphic at "40 of 300 frames" for as long as anything played, or for hours
+ * while a cloud project's footage was still coming down (its page renews `holdLink` every 3 s), and the export failed
+ * at 20 minutes. Now footage waited on doesn't stop it at all, and a play gets the machine for up to this long between
+ * its chunks: a chunk is a few seconds' drawing, so the export's graphic keeps going at about half speed through a play
+ * and the play stays smooth between. Ends at this time or when the play stops.
+ */
+export const PLAY_FIRST_MS = { value: 5_000 };
+
+/** A play (and footage waited on) first, as long as nobody waits on `project`'s effect `name`; then a play, for a few seconds at most. */
+async function giveWayToPlay(project: string, name: string): Promise<void> {
+  const waited = () => waitedFor.has(`${project}/${name}`);
+  if (!waited()) await playing.whenIdle(waited);
+  if (!waited()) return;
+  const until = Date.now() + PLAY_FIRST_MS.value;
+  await playing.whenNotPlaying(() => Date.now() >= until);
+}
+
 const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 const id = (project: string, name: string, key: string) => `${project}/${name}/${key}`;
 
@@ -2035,7 +2055,7 @@ async function place(app: App, render: Render): Promise<void> {
   const stacked = probe.width > 0 && Math.abs(probe.height / probe.width - (2 * frame.height) / frame.width) < 0.01;
   // Put in once nobody's watching: swapped in under a play, the page playing it live gave way to a video still opening,
   // a blink in the picture (Sphe, Nov 17: the agent's work goes on "as if it's not even happening").
-  await playing.whenIdle();
+  await giveWayToPlay(project, name);
   // Code changed while the video was made: the next render takes over.
   if (keyOf(app.store, project, folder(app.store, project, name), frame) !== key) throw new Outdated();
   let placed = false;
@@ -2390,8 +2410,8 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
         }
         const n = queue.shift()!;
         // A play on this Mac comes first: the next chunk waits for it to stop (kenobi, Nov 17: a render's FFmpeg at
-        // 160–400% CPU beside a cold play of Cops Found 3 Bodies).
-        await playing.whenIdle();
+        // 160–400% CPU beside a cold play of Cops Found 3 Bodies); for a few seconds only when an export waits on it.
+        await giveWayToPlay(render.project, render.name);
         await drawChunk(n);
         drawnThisTurn += 1;
         await encoding;

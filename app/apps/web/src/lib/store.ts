@@ -4,7 +4,7 @@ import { create } from "zustand";
 
 import { useAccount, type Account } from "./account";
 import { applyAgentEvent, openAgent } from "./agent";
-import { api, ApiError, useConnection } from "./api";
+import { api, ApiError, request, useConnection } from "./api";
 import { readOnly, type CloudStatus } from "./cloud";
 import { type Help, useRemoteHelp } from "../components/RemoteHelp";
 import { note } from "./diagnostics";
@@ -707,6 +707,8 @@ const sameStatus = (a: MediaStatus | undefined, b: MediaStatus) => a !== undefin
 /** Applies the media statuses heard so far now (tests). */
 export const flushMediaEvents = () => mediaEvents.flush();
 
+/** `export` events heard for the open project: a catch-up's answer older than one is dropped (`syncExport`). */
+let exportsHeard = 0;
 let dropped = false;
 /**
  * When the events socket last heard anything, and whether this server sends
@@ -740,6 +742,25 @@ export async function syncScriptJob(id: string) {
   }
 }
 
+/**
+ * The project's export as the server has it now (Nov 20): an `export` event sent while the socket was down (a wake
+ * closes it at once, a restart mid-export) was lost, and the dialog sat on "Exporting 40%" with Export and Share
+ * greyed out until a reload. None there: nothing is under way, so a stale queued or running one goes.
+ */
+export async function syncExport(id: string) {
+  const heard = exportsHeard;
+  try {
+    const { export: now } = await request<{ export: ExportState | null }>("GET", `/api/projects/${encodeURIComponent(id)}/export`);
+    const state = useEditor.getState();
+    // An event heard meanwhile is newer than this answer.
+    if (state.project?.id !== id || exportsHeard !== heard) return;
+    if (now !== null) useEditor.setState({ exportState: now });
+    else if (state.exportState?.state === "queued" || state.exportState?.state === "running") useEditor.setState({ exportState: null });
+  } catch {
+    // Offline: the next reconnect asks again.
+  }
+}
+
 /** After the server was away (restart, sleep), fetch whatever we missed. */
 function catchUp() {
   const state = useEditor.getState();
@@ -762,6 +783,7 @@ function catchUp() {
     .catch(() => {});
   void openAgent(project.id);
   void syncScriptJob(project.id);
+  void syncExport(project.id);
   // A coded effect changed while the socket was down: its page and render are read again (lib/effects.ts).
   void import("./effects").then((effects) => effects.loadEffects(project.id)).catch(() => {});
 }
@@ -838,6 +860,7 @@ export function connectEvents() {
       // A coded effect's files changed (the agent saved one): the viewer loads its page again (lib/effects.ts).
       window.dispatchEvent(new CustomEvent("edit:effects", { detail: { id: event.id, effects: event.effects } }));
     } else if (event.type === "export" && project && event.id === project.id) {
+      exportsHeard += 1;
       useEditor.setState({ exportState: event });
     } else if (event.type === "playback" && project && event.id === project.id) {
       useEditor.setState({ playback: event.status });

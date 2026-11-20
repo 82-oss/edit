@@ -19,7 +19,8 @@ import type { App } from "./app.ts";
 import * as effects from "./effects.ts";
 import * as removalSchedule from "./removal_schedule.ts";
 import * as speeds from "./export_speeds.ts";
-import { reviewBytes, type ExportActivity } from "./exports.ts";
+import { reviewBytes, stall as exportsStall, type ExportActivity } from "./exports.ts";
+import * as jobs from "./jobs.ts";
 import { homePath, parent } from "./paths.ts";
 import { duration, fps as rateOf } from "./project.ts";
 import * as reviews from "./reviews.ts";
@@ -65,7 +66,20 @@ interface Run {
   stageAt: number;
   video: [number, number] | null;
   shown: Map<string, { value: number; at: number }>;
+  /** Its real progress as last seen (frames drawn, the engine's share, bytes up, the prep's line), and since when it stood so. */
+  real?: string;
+  realAt?: number;
+  /** The bar as last shown, and where it's held while the real progress stands still (`STILL_MS`). */
+  last?: number;
+  held?: number | null;
 }
+
+/**
+ * Nothing real (frames, bytes, the prep's line) new for this long: the bar stops where it is and its step says so (Nov
+ * 20: it crept on by the clock to 99% after the engine had stopped). A minute: the engine reports at least every few
+ * seconds, a slow home line's upload moves its bytes within that, and a lid's sleep stops the clock with the server.
+ */
+export const STILL_MS = 60_000;
 const runs = new Map<string, Run>();
 /** Looked at within this long: the same run (a wait that became its export). */
 const SAME_RUN_MS = 15_000;
@@ -238,7 +252,7 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
   }
 
   const ahead = steps.filter((step) => step.state !== "done");
-  const left = ahead.every((step) => step.left_s !== null) ? ahead.reduce((sum, step) => sum + step.left_s!, 0) : null;
+  let left = ahead.every((step) => step.left_s !== null) ? ahead.reduce((sum, step) => sum + step.left_s!, 0) : null;
   const elapsed = queued ? 0 : Math.max(0, (now - run.since) / 1000);
   let progress: number;
   if (queued) progress = 0;
@@ -248,6 +262,30 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
     const counted = steps.reduce((sum, step) => sum + (step.state === "done" ? 1 : step.state === "current" ? (step.progress ?? 0) : 0), 0);
     progress = counted / steps.length;
   }
+  // Standing still (`STILL_MS`): held where it is, no time said, and its step says for how long and what ends it. Only
+  // where Edit hears real progress: the graphics' frames, the video (the engine, or its prep's line), the upload's bytes.
+  const current = steps.find((step) => step.state === "current");
+  const heard = !queued && current !== undefined && (current.kind === "graphic" || current.kind === "video" || (current.kind === "upload" && line !== null && line.startsWith("uploading")));
+  const real = JSON.stringify([stage, job?.progress ?? 0, job?.phase ?? "", graphics.map((one) => one.drawn), removing.done, speeds.uploadOf(id)?.done ?? 0, line]);
+  if (run.real !== real) {
+    run.real = real;
+    run.realAt = now;
+    run.held = null;
+  }
+  const still = now - (run.realAt ?? now);
+  if (heard && still > STILL_MS) {
+    run.held ??= run.last ?? progress;
+    progress = run.held;
+    left = null;
+    if (current.note === undefined) {
+      const minutes = Math.floor(still / 60_000);
+      // The engine encoding (no prep line): a stall starts it again by itself (exports.ts `stall`).
+      const restarts = current.kind === "video" && job?.state === "running" && (job.phase ?? "") === "" && job.progress > 0;
+      const by = Math.round(exportsStall.ms / 60_000);
+      current.note = restarts && minutes < by ? `nothing new for ${minutes} min: Edit starts it again by itself at ${by} min` : `nothing new for ${minutes} min`;
+    }
+  }
+  run.last = progress;
   return { where: feedback ? "feedback" : "here", steps, queued, elapsed_s: Math.round(elapsed), left_s: left === null ? null : Math.round(left), progress: Math.min(0.99, Math.max(0, progress)) };
 }
 
@@ -268,8 +306,14 @@ export function activity(app: App, visible: Set<string>, now = clock.now()): (Ex
   } catch (error) {
     if (!seams.isUnavailable(error)) throw error;
   }
+  const table = tableRows(app);
   for (const job of registry) {
     if (!visible.has(job.id)) continue;
+    const kept = newerInTable(table, job.id, job);
+    if (kept !== undefined) {
+      rows.set(job.id, kept);
+      continue;
+    }
     if (job.state !== "done") {
       rows.set(job.id, job);
       continue;
@@ -279,6 +323,7 @@ export function activity(app: App, visible: Set<string>, now = clock.now()): (Ex
     else if (share?.state === "failed" && share.at >= job.updated_ms) rows.set(job.id, { ...job, state: "failed", error: share.error ?? "the share failed" });
     else rows.set(job.id, job);
   }
+  for (const [id, row] of table) if (visible.has(id) && !rows.has(id) && !waits.has(id)) rows.set(id, row);
   // Asked for, not yet exporting: waiting for its graphics, or a share before its export.
   const asked = new Map<string, number>();
   for (const [id, wait] of waits) asked.set(id, wait.since);
@@ -305,6 +350,79 @@ export function activity(app: App, visible: Set<string>, now = clock.now()): (Ex
     const steps = stepsOf(app, row.id, row, now);
     return steps === null ? row : { ...row, steps };
   });
+}
+
+/**
+ * Project exports the job table holds that nothing here runs (Nov 20): one a restart (an update) carried on that
+ * couldn't start (an effect rendering again, footage not here yet, a folder macOS asks about) waits there to go
+ * again, and one that failed is kept until the project's next export. Both were gone from the Exports queue after an
+ * update, the export the person asked for vanished with nothing said. A share's export is its share's row.
+ */
+function tableRows(app: App): Map<string, ExportActivity> {
+  const rows = new Map<string, ExportActivity>();
+  let listed: jobs.Job[] = [];
+  try {
+    listed = jobs.list(app.store.home, "export");
+  } catch {
+    return rows;
+  }
+  for (const job of listed) {
+    if (job.args.share === true || (job.state !== "waiting" && job.state !== "failed")) continue;
+    const live = app.store.get(job.project);
+    if (live === null) continue;
+    const base = { id: job.project, name: live.project.name, path: typeof job.args.output === "string" ? job.args.output : "", progress: 0, updated_ms: job.updated_ms, ...(typeof job.args.note === "string" ? { note: job.args.note } : {}) };
+    if (job.state === "failed") rows.set(job.project, { ...base, state: "failed", error: job.error ?? "the export failed" });
+    else rows.set(job.project, { ...base, state: "queued", waiting: waitingLine(job) });
+  }
+  return rows;
+}
+
+/** A waiting export job's line: when it goes again, and why it waits ("waiting to start again at 14:05 (…)"). */
+function waitingLine(job: jobs.Job): string {
+  const at = job.retry_at;
+  const clock = (ms: number) => {
+    const day = new Date(ms);
+    return `${String(day.getHours()).padStart(2, "0")}:${String(day.getMinutes()).padStart(2, "0")}`;
+  };
+  const when = job.until === "encoder" ? " once the encoder is free" : at === undefined ? "" : ` at ${clock(at)}`;
+  const why = job.why ?? job.error;
+  return `waiting to start again${when}${why === undefined || why === "" ? "" : ` (${why.replace(/\.$/u, "")})`}`;
+}
+
+/** The job table's row for a project, when it says more than the registry's (none, or one that ended before it was put off). */
+function newerInTable(table: Map<string, ExportActivity>, id: string, registry: ExportActivity | undefined): ExportActivity | undefined {
+  const row = table.get(id);
+  if (row === undefined) return undefined;
+  if (registry === undefined) return row;
+  if (registry.state === "queued" || registry.state === "running") return undefined;
+  return row.state === "queued" && row.updated_ms >= registry.updated_ms ? row : undefined;
+}
+
+/**
+ * Project `id`'s export as its `export` events said it last (GET /api/projects/{id}/export), for a page whose socket
+ * was down when one went (Nov 20: a lid's wake closed it, the export failed in the second before it reconnected, and
+ * the dialog sat on "Exporting 40%" with Export greyed out until a reload). Null when there's none to say.
+ */
+export function exportNow(app: App, id: string): { state: ExportActivity["state"]; progress: number; path: string; error?: string; waiting?: string; phase?: string } | null {
+  const shown = (row: ExportActivity) => ({
+    state: row.state,
+    progress: row.progress,
+    path: row.path,
+    ...(row.error === undefined ? {} : { error: row.error }),
+    ...(row.waiting === undefined ? {} : { waiting: row.waiting }),
+    ...(row.phase === undefined ? {} : { phase: row.phase }),
+  });
+  const wait = waits.get(id);
+  if (wait !== undefined) return { state: "queued", progress: 0, path: wait.output, waiting: effects.renderingLine(id) ?? removalSchedule.exportLine(id) ?? "waiting for its effects to render" };
+  let registry: ExportActivity | undefined;
+  try {
+    registry = (app.exports.activity?.() ?? []).find((one) => one.id === id);
+  } catch (error) {
+    if (!seams.isUnavailable(error)) throw error;
+  }
+  const table = newerInTable(tableRows(app), id, registry);
+  if (table !== undefined) return shown(table);
+  return registry === undefined ? null : shown(registry);
 }
 
 /** For tests: forget the waits and the runs. */

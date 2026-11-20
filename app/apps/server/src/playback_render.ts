@@ -50,6 +50,7 @@ import { duration, fps } from "./project.ts";
 import { readState, writeAtomic } from "./files.ts";
 import { jsonForSerde } from "./rust.ts";
 import * as exportExcerpts from "./export_excerpts.ts";
+import { EngineWatch } from "./exports.ts";
 import * as playbackStream from "./playback_stream.ts";
 import { playbackKey } from "./cloud_playback.ts";
 import * as player from "./player.ts";
@@ -223,8 +224,18 @@ async function turn(app: App, current: Running): Promise<(() => void) | null> {
   let given: ((release: () => void) => void) | undefined;
   const ready = new Promise<() => void>((resolve) => { given = resolve; });
   let taken: ReturnType<NonNullable<typeof app.exports.takeTurn>> | undefined;
+  // An export someone asks for while this renders takes the place: this render stops and is asked again, so it
+  // carries on from its chunks once the export is done (Nov 20: Export sat at 0% behind it on a one-encoder Mac).
+  const giveWay = () => {
+    if (current.cancelled) return;
+    diag.info("playback", `${current.project}: smooth playback gives its place to an export; it carries on after`);
+    if (!asked.has(current.project)) asked.set(current.project, current.rev);
+    stop(current);
+  };
+  // `takeTurn`'s second argument is the registry's (ExportRegistry.takeTurn); seams.Exports doesn't name it yet.
+  const exports = app.exports as typeof app.exports & { takeTurn?: (ready: (release: () => void) => void, giveWay?: () => void) => { release: (() => void) | null; cancel: () => void } };
   try {
-    taken = app.exports.takeTurn?.((one) => given!(one));
+    taken = exports.takeTurn?.((one) => given!(one), giveWay);
   } catch (error) {
     // A registry without turns (a stub's).
     if (!seams.isUnavailable(error)) throw error;
@@ -502,8 +513,12 @@ async function render(app: App, project: Project, current: Running): Promise<voi
   const at = focus.get(project.id);
   focus.delete(project.id);
   let job: ExportJob;
+  // Stopped when it stands still, and never waited on for ever once stopped (exports.ts EngineWatch, Nov 20): it holds
+  // an export's place, and a render stuck in the engine held it, and every export behind it, until Edit quit.
+  const watch = new EngineWatch(`${project.name}'s smooth playback`, () => current.cancelled);
   try {
     job = native().ExportJob.start({ project: input, options, plan: at === undefined ? plan : { ...plan, focus: at }, output, cacheDir: app.store.cacheDir(), sounds, excerpts, background: true }, (progress) => {
+      if (progress !== current.progress) watch.move();
       current.progress = progress;
       publishSoon(app, project.id);
     });
@@ -513,14 +528,18 @@ async function render(app: App, project: Project, current: Running): Promise<voi
   }
   current.job = job;
   if (current.cancelled) job.cancel();
+  let how: "ended" | "abandoned";
   try {
-    await job.wait();
+    how = await watch.wait(job);
   } catch (error) {
     if (current.cancelled) return;
+    if (watch.stalled) throw new Error("its render stopped moving; it's made again when watched");
     throw error;
   } finally {
     unpin();
   }
+  if (current.cancelled) return;
+  if (how === "abandoned" || watch.stalled) throw new Error("its render stopped moving; it's made again when watched");
 }
 
 /** Only the KEEP renders made last stay; the others' files go (their next render starts over). */

@@ -761,3 +761,41 @@ window.seek = () => {};
     cleanup();
   }
 }, 180_000);
+
+test.skipIf(chrome === null)("a render an export waits on goes on while footage is waited on and a play goes on: neither holds it for ever", async () => {
+  // Nov 20: the graphic step sat at "rendering the cutfx-3 effect · 40 of 300 frames" for as long as anything played, or
+  // for hours while a cloud project's footage came down (its page renews holdLink every 3 s), and the export failed.
+  const { app, cleanup, id } = hq("effects-render-busy");
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  const first = effects.PLAY_FIRST_MS.value;
+  effects.PLAY_FIRST_MS.value = 200;
+  // Footage waited on, renewed as the page renews it; a play that never stops.
+  playing.holdLink(id, 10_000);
+  const renew = setInterval(() => playing.holdLink(id, 10_000), 50);
+  playing.note("busy-play", true);
+  const beat = setInterval(() => playing.note("busy-play", true), 50);
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    write(app, id, "bar", { "scene.html": GOOD });
+    const added = await effects.add(app, id, "bar");
+    await app.store.update(id, "test", (project) => {
+      project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    expect(playing.isIdle()).toBe(false);
+    await seams.broll.waitForMaps(app, id, 60_000);
+    expect(app.store.get(id)!.project.media.find((one) => one.id === added.media)!.effect_key).toBe(effects.list(app.store, id)[0]!.key);
+  } finally {
+    clearInterval(renew);
+    clearInterval(beat);
+    playing.note("busy-play", false);
+    playing.releaseLink(id);
+    effects.PLAY_FIRST_MS.value = first;
+    void server.stop(true);
+    cleanup();
+  }
+});

@@ -192,6 +192,8 @@ export function buildRouter(): Router<App> {
     .get("/api/projects/{id}/native-sources", (context) => nativeSources(context.app, liveOr404(context.app, context.params.id!).project))
     .get("/api/projects/{id}/frame/{frame}", framePng)
     .post("/api/projects/{id}/export", startExport)
+    // The export as its events said it last, for a page that was away when one went (export_steps.ts `exportNow`).
+    .get("/api/projects/{id}/export", ({ app, params }) => json({ export: exportSteps.exportNow(app, params.id!) }))
     .post("/api/projects/{id}/export/cancel", cancelExport)
     .post("/api/projects/{id}/export/retry", retryExport)
     .get("/api/projects/{id}/exports", projectExports)
@@ -1067,7 +1069,14 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
     try {
       // Cancelled in its first seconds: nothing to start.
       if (held.cancelled) return json({ path: expected, cancelled: true });
-      return json({ path: await go() });
+      const path = await go();
+      // Cancelled while it was starting (an export made ahead stopping, the watermark going on): it was said
+      // cancelled then, so it's stopped now it's there (Nov 20: it started anyway).
+      if (held.cancelled) {
+        app.exports.cancel(id);
+        return json({ path, cancelled: true });
+      }
+      return json({ path });
     } catch (error) {
       throw bad(diag.messageOf(error));
     } finally {
@@ -1097,6 +1106,8 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
       if (held.cancelled) return;
       await go();
       exportSteps.waitEnds(id, held);
+      // Cancelled while it was starting: stopped now it's there.
+      if (held.cancelled) app.exports.cancel(id);
     } catch (error) {
       clearInterval(ticking);
       exportSteps.waitEnds(id, held);
