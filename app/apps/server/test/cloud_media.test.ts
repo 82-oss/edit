@@ -1273,6 +1273,11 @@ test("an excerpt the cloud's address can't cut is cut from the original download
     });
     try {
       const original = { file: "MartyFile1", source: "drive:MartyFile1", key, name: "MartyBlank.mp4", size: bytes.length };
+      // A 1 TB Mac with 50 GB free (JJ's, Nov 19): a copy kept only while it's cut needs 15 GB left after it, not 100.
+      const storage = await import("../src/storage.ts");
+      const disk = { free: storage.diskHooks.free, total: storage.diskHooks.total };
+      storage.diskHooks.free = () => 50e9;
+      storage.diskHooks.total = () => 1e12;
       // Two stretches (22–27 s and 250–252 s, each with its 10 s handles): a sixth of the file, cut as excerpts.
       const made = await cloudMedia.driveExcerpts(store.cacheDir(), original, [[22, 27], [250, 252]]);
       // Each starts on its keyframe (from the index), the first tried in the cloud, every cut after it made here.
@@ -1287,6 +1292,8 @@ test("an excerpt the cloud's address can't cut is cut from the original download
       expect(cloudMedia.cutsBetterHere(new Error("could not reach Edit's relay: The socket connection was closed unexpectedly"))).toBe(false);
       expect(cloudMedia.cutsBetterHere(new steps.StepTimedOut("Finding the excerpt's keyframe", 120_000, false))).toBe(true);
       expect(cloudMedia.cutsBetterHere(new steps.StepTimedOut("Cutting an excerpt", 600_000, true))).toBe(false);
+      storage.diskHooks.free = disk.free;
+      storage.diskHooks.total = disk.total;
     } finally {
       cut.mockRestore();
     }
@@ -1378,6 +1385,71 @@ test("forExport aborts in-flight ffmpeg sound-copy and excerpt-cut subprocesses 
     presign.mockRestore();
     head.mockRestore();
     server.stop(true);
+    cleanup();
+  }
+});
+
+// Nov 20, JJ's "34-Year-Old Woman": two 100 MB DVR AVIs read in place over his ~1 Mbit/s line (an AVI's index is at its
+// end, its reads many) had their length, keyframe and proxy past their time on every try for 19 hours. A container
+// other than an MP4 or MOV comes down whole first; one whose length can't be read in place in time comes down then.
+test("an AVI is read from a copy downloaded here, and a file whose length the cloud's address can't give in time too", async () => {
+  const fixture = home("cloud-avi-here");
+  const { store, cleanup } = fixture;
+  const tools = await import("../src/tools.ts");
+  try {
+    const avi = `${fixture.dir}/CH03.avi`;
+    await tools.run([
+      tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=5:duration=300",
+      "-c:v", "mpeg4", "-g", "50", avi,
+    ]);
+    const mp4 = `${fixture.dir}/Slow.mp4`;
+    await tools.run([
+      tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=5:duration=300",
+      "-c:v", "libx264", "-preset", "ultrafast", "-g", "50", mp4,
+    ]);
+    const raw = createStub();
+    raw.init({ home: fixture.home, cacheDir: `${fixture.home}/cache`, ffmpeg: "ffmpeg", ffprobe: "ffprobe", log: () => {} });
+    raw.probe = async () => ({ ...VIDEO, duration: 300 });
+    raw.makeCloudProxy = async (source: string, _probe: Probe, out: string) => void fs.copyFileSync(source, out);
+    useNative(wrap(raw));
+    const read: string[] = [];
+    const where = (source: string) => (source.startsWith("http") ? "cloud" : "here");
+    const realLength = cloudMedia.scriptParts.durationOf;
+    const length = spyOn(cloudMedia.scriptParts, "durationOf").mockImplementation(async (source) => {
+      read.push(`length ${where(source)}`);
+      // The slow line: the MP4's length doesn't come from the cloud's address in time.
+      if (source.startsWith("http") && source.includes("Slow.mp4")) throw new steps.StepTimedOut("Reading the footage's length", 120_000, false);
+      return realLength(source);
+    });
+    const realCut = cloudMedia.scriptParts.cut;
+    const cut = spyOn(cloudMedia.scriptParts, "cut").mockImplementation(async (source, start, to, out) => {
+      read.push(`cut ${where(source)}`);
+      return realCut(source, start, to, out);
+    });
+    try {
+      for (const [file, name, path] of [["DvrFile1", "CH03.avi", avi], ["SlowFile1", "Slow.mp4", mp4]] as const) {
+        read.length = 0;
+        const bytes = new Uint8Array(fs.readFileSync(path));
+        const key = `edit/originals/drive/${file}/${name}`;
+        mock.cloud.put(key, bytes);
+        const original = { file, source: `drive:${file}`, key, name, size: bytes.length };
+        const made = await cloudMedia.driveExcerpts(store.cacheDir(), original, [[22, 27], [250, 252]]);
+        expect(made).toHaveLength(2);
+        for (const one of made) expect(mock.cloud.objects.has(one.cloud!.cloud!.original)).toBe(true);
+        // The AVI is never read in place; the MP4 only for the length that didn't come, then here.
+        expect(read).toEqual(name === "CH03.avi" ? ["length here", "cut here", "cut here"] : ["length cloud", "length here", "cut here", "cut here"]);
+        // The copy here is gone once they're cut.
+        expect(fs.readdirSync(cloudMedia.scratchDir(store.cacheDir())).filter((one) => !one.endsWith(".etag"))).toEqual([]);
+      }
+      expect(cloudMedia.readsInPlace("MartyBlank.mp4")).toBe(true);
+      expect(cloudMedia.readsInPlace("911_CALL_wav.m4a")).toBe(true);
+      expect(cloudMedia.readsInPlace("CH03-2022-03-12-09-35-17_09-50-59.avi")).toBe(false);
+      expect(cloudMedia.readsInPlace("dashcam.MKV")).toBe(false);
+    } finally {
+      length.mockRestore();
+      cut.mockRestore();
+    }
+  } finally {
     cleanup();
   }
 });

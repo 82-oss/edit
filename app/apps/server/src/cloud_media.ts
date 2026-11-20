@@ -1417,11 +1417,60 @@ export async function driveExcerpts(
   input: string | null = null,
   onCut: (done: number, total: number) => void = () => {},
 ): Promise<Excerpt[]> {
-  // A copy still on this disk (a YouTube download on its way up) is cut from here.
-  const url = input ?? (await getUrl(original.key, 6 * HOUR));
-  // Read here even when the registry knows it: a URL FFmpeg can't read would
-  // otherwise only show as keyframes not found (excerpts from the start).
-  const duration = await scriptParts.durationOf(url);
+  // A copy still on this disk (a YouTube download on its way up) is cut from here; one this call brought down whole
+  // (`copied`) goes once its excerpts are cut.
+  let copied: string | null = null;
+  try {
+    let url = input;
+    if (url === null && !readsInPlace(original.name)) {
+      url = await wholeHere(cache, original).then(
+        (copy) => (copied = copy),
+        (error: unknown) => {
+          if (isBug(error)) throw error;
+          diag.warn("cloud", `${original.name}: downloading it here to read: ${scrub(diag.messageOf(error))}; read from the cloud instead`);
+          return null;
+        },
+      );
+    }
+    url ??= await getUrl(original.key, 6 * HOUR);
+    // Read here even when the registry knows it: a URL FFmpeg can't read would
+    // otherwise only show as keyframes not found (excerpts from the start).
+    let duration: number;
+    try {
+      duration = await scriptParts.durationOf(url);
+    } catch (error) {
+      // Too slow to read in place (a slow line): the rest is read from the whole file brought here.
+      if (isBug(error) || input !== null || copied !== null || !cutsBetterHere(error)) throw error;
+      diag.warn("cloud", `${original.name}: ${scrub(diag.messageOf(error)).replace(/\.$/u, "")}; it's read from a copy downloaded here`);
+      url = copied = await wholeHere(cache, original);
+      duration = await scriptParts.durationOf(url);
+    }
+    return await excerptsOf(cache, original, ranges, url, input !== null || copied !== null, duration, onCut);
+  } finally {
+    if (copied !== null) fs.rmSync(copied, { force: true });
+  }
+}
+
+/**
+ * Whether a file is read from the cloud's address where it is: an MP4 or MOV's index is read once and an excerpt
+ * fetches only its own bytes, and a sound file is small. Any other container (an AVI, MKV or TS) comes down whole
+ * first (Nov 20, JJ's "34-Year-Old Woman": two 100 MB DVR AVIs, read in place over his ~1 Mbit/s line, had their
+ * length, keyframe and proxy past their time on every try for 19 hours; the same read takes 3 s on a fast line).
+ */
+export function readsInPlace(name: string): boolean {
+  return ["mp4", "m4v", "mov", "m4a", "mp3", "wav", "aac"].includes(extensionOf(name));
+}
+
+/** `original`'s excerpts (or itself whole), read from `url`: the cloud's address, or a copy on this disk (`onDisk`). */
+async function excerptsOf(
+  cache: string,
+  original: Original,
+  ranges: [number, number][],
+  url: string,
+  onDisk: boolean,
+  duration: number,
+  onCut: (done: number, total: number) => void,
+): Promise<Excerpt[]> {
   const spans = scriptParts.spans(ranges, duration);
   const used = spans.reduce((sum, [from, to]) => sum + (to - from), 0);
   if (spans.length === 0 || used >= duration * 0.6) {
@@ -1455,7 +1504,7 @@ export async function driveExcerpts(
       try {
         await one(index, from);
       } catch (error) {
-        if (isBug(error) || from !== url || input !== null || !cutsBetterHere(error)) throw error;
+        if (isBug(error) || from !== url || onDisk || !cutsBetterHere(error)) throw error;
         if (here === null) {
           diag.warn("cloud", `${original.name}: ${scrub(diag.messageOf(error)).replace(/\.$/u, "")}; its excerpts are cut from a copy downloaded here`);
           here = wholeHere(cache, original);
@@ -1496,14 +1545,25 @@ export function cutsBetterHere(error: unknown): boolean {
   return /came out wrong|Couldn't cut an excerpt/u.test(diag.messageOf(error));
 }
 
-/** Drive file `original` downloaded whole into the scratch folder (resuming a partial a stopped try left), when there's room. */
+/**
+ * Drive file `original` downloaded whole into the scratch folder (resuming a partial a stopped try left), when there's
+ * room. It's kept only while its excerpts are cut, so it needs Edit's least free space after it (15 GB), not the
+ * tenth of the disk kept for what stays (Nov 19, JJ's Midland recording: 5.5 GB refused on a 1 TB Mac with 50 GB free).
+ */
 async function wholeHere(cache: string, original: Original): Promise<string> {
   const dir = scratchDir(cache);
-  if (!storage.roomFor(dir, original.size)) {
+  const short = () => -storage.spare(dir, original.size, storage.KEEP_FREE_LEAST_BYTES);
+  if (short() > 0) storage.askForRoom(storage.freeBytes(dir) + short());
+  if (short() > 0) {
     throw new Error(`There isn't room on ${THIS_MACHINE} for ${original.name} (${(original.size / 1e9).toFixed(1)} GB) to cut its excerpts here.`);
   }
   const dest = join(dir, `whole-${original.key.split("/").slice(-2).join("-")}`);
-  await diag.timeOnAsync("cloud", "cloud: original here to cut", original.key, () => cloud.download(original.key, dest));
+  const held = storage.claim(original.size);
+  try {
+    await diag.timeOnAsync("cloud", "cloud: original here to cut", original.key, () => cloud.download(original.key, dest));
+  } finally {
+    held.release();
+  }
   return dest;
 }
 
