@@ -130,6 +130,11 @@ def main():
         output = clean(job)
         call("/v1/remover/pod/done", {"id": job["id"], "output": output})
         log(f"stretch {job['id']}: {'done' if output.get('ok') else 'failed'} in {output.get('seconds', '?')} s")
+        if not output.get("ok") and "CUDA unknown error" in output.get("error", ""):
+            # This worker's CUDA context is unusable. Give the relay's requeued job to another pod.
+            log("CUDA unavailable: goodbye")
+            call("/v1/remover/pod/bye", {})
+            return
         idle_since = time.time()
 
 
