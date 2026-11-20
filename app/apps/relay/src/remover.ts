@@ -42,8 +42,12 @@ const URL_SECONDS = 6 * 3600;
 const OUT_PREFIX = "edit/cleaned/work/";
 const MAX_FRAMES = 36_000;
 const MAX_WORKER = 200_000;
-/** Pods rented at once (the account's limit is about GPUs, not pods; ten keeps a project's intro quick). */
-export const MAX_PODS = 10;
+/**
+ * Pods rented at once: one, the cheapest way (Sphe, Nov 20: "lets go ahead and do it the cheap way"): each pod pays its
+ * ~1.5 min boot and its minute idle after, so one pod working through a project costs least; ten were ~8x quicker
+ * for ~40% more.
+ */
+export const MAX_PODS = 1;
 /** A rented pod that hasn't asked for work by now (booting: pulling the image, installing, loading) is let go. */
 const BOOT_MS = 15 * 60_000;
 /** A pod that has gone quiet this long (mid-stretch it asks again only when done: the longest stretch's time). */
