@@ -44,6 +44,7 @@ import * as playing from "./playing.ts";
 import * as removerCloud from "./remover_cloud.ts";
 import { clipEnd, fps as fpsOf, freshId, sample } from "./project.ts";
 import { round } from "./rust.ts";
+import { stableStringify } from "./stable.ts";
 import { stripCovers } from "./text_inpaint.ts";
 import { grow, same, slotsOf, track as trackRead, union, type Sample, type TrackPlan } from "./text_track.ts";
 
@@ -268,7 +269,13 @@ export function blursFor(project: Project, clip: VideoClip, media: Media, tracks
 }
 
 const isTracked = (clip: Project["clips"][number]) => clip.type === "adjustment" && (clip.name ?? "").startsWith(`${TRACKED} · `);
-const shapeOf = (clip: Project["clips"][number]) => JSON.stringify({ ...clip, id: "", track: "" });
+/**
+ * What a tracked blur is, apart from its id and lane: keys sorted, since a saved project's keyframes come back in the
+ * file's order (blur.height, blur.width, blur.x, blur.y) and a fresh one's in blursFor's (Nov 20, prod Edit: no moving
+ * blur ever matched its saved self, so each track done took out and laid again all of Boyfriends' ~690, a 3.7 MB
+ * revision every 20-50 s, and the server's one thread stayed busy with them and the page with it).
+ */
+const shapeOf = (clip: Project["clips"][number]) => stableStringify({ ...clip, id: "", track: "" });
 
 /**
  * Lays exactly `want` (from `blursFor`) in `project`: those already there as
