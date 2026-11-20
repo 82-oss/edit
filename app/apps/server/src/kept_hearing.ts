@@ -112,6 +112,8 @@ export function union(spans: readonly Span[]): Span[] {
   return out;
 }
 
+const joinings = new Map<string, Promise<void>>();
+
 /**
  * The stretches (ms into `footage`) joined into one recording, a second of
  * quiet between them, and heard by Scribe once, whole: each stretch's words,
@@ -121,6 +123,35 @@ export function union(spans: readonly Span[]): Span[] {
 export async function hearJoined(root: string, footage: string, spans: Span[], keyterms: string[], signal?: AbortSignal): Promise<Word[][]> {
   const name = new Bun.CryptoHasher("sha256").update(JSON.stringify(spans)).digest("hex").slice(0, 16);
   const work = join(root, `joined-${name}`);
+  // Manual and background hearings share the cache, including the temporary cuts. Wait for a
+  // hearing already using it, then check the cache again before paying for another transcription.
+  for (let pending = joinings.get(work); pending !== undefined; pending = joinings.get(work)) {
+    if (signal?.aborted) throw new Error(STOPPED);
+    if (signal === undefined) {
+      await pending;
+    } else {
+      await new Promise<void>((resolve) => {
+        const done = () => {
+          signal.removeEventListener("abort", done);
+          resolve();
+        };
+        signal.addEventListener("abort", done, { once: true });
+        void pending.then(done);
+      });
+    }
+  }
+  if (signal?.aborted) throw new Error(STOPPED);
+  const { promise, resolve } = Promise.withResolvers<void>();
+  joinings.set(work, promise);
+  try {
+    return await hearJoinedIn(work, footage, spans, keyterms, signal);
+  } finally {
+    joinings.delete(work);
+    resolve();
+  }
+}
+
+async function hearJoinedIn(work: string, footage: string, spans: Span[], keyterms: string[], signal?: AbortSignal): Promise<Word[][]> {
   const lengthsFile = join(work, "lengths.json");
   const audio = join(work, "joined.wav");
   fs.mkdirSync(work, { recursive: true });

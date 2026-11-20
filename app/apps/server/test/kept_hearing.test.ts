@@ -189,6 +189,28 @@ async function settled(app: { media: { status(path: string): { transcript: strin
   return app.media.status(path).transcript;
 }
 
+test.skipIf(ffmpeg === null)("overlapping hearings reuse the same paid result without racing on temporary sound files", async () => {
+  const { dir, cleanup } = scratch("kept-hearing-overlap");
+  try {
+    const media = tape(dir, "tape");
+    const work = join(dir, "exact");
+    const spans: [number, number][] = [[2_000, 6_000], [12_000, 16_000]];
+    const paid = () => relay.calls("/v1/transcribe", "POST").length;
+    const before = paid();
+    relay.on("POST", "/v1/transcribe", () => Response.json(scribeAnswer(["Hello", "there."])));
+    const first = kept.hearJoined(work, media.path, spans, []);
+    const second = kept.hearJoined(work, media.path, spans, []);
+    const controller = new AbortController();
+    const stopped = kept.hearJoined(work, media.path, spans, [], controller.signal);
+    controller.abort();
+    const [one, two] = await Promise.all([first, second, expect(stopped).rejects.toThrow("Stopped by you")]);
+    expect(one).toEqual(two);
+    expect(paid() - before).toBe(1);
+  } finally {
+    cleanup();
+  }
+});
+
 test.skipIf(ffmpeg === null)("a long import is given free words, Scribe hears only what the cut keeps, and a cut that grows hears only its new footage", async () => {
   const { app, dir, cleanup } = fixtureHome("kept-edit");
   apple.on = true;
