@@ -50,7 +50,7 @@ import { duration, fps } from "./project.ts";
 import { readState, writeAtomic } from "./files.ts";
 import { jsonForSerde } from "./rust.ts";
 import * as exportExcerpts from "./export_excerpts.ts";
-import { EngineWatch } from "./exports.ts";
+import { EngineWatch, planExport } from "./exports.ts";
 import * as playbackStream from "./playback_stream.ts";
 import { playbackKey } from "./cloud_playback.ts";
 import * as player from "./player.ts";
@@ -472,9 +472,12 @@ async function render(app: App, project: Project, current: Running): Promise<voi
   if (current.cancelled) return;
   const options = playbackOptions();
   // Its own chunk folder and file, so the real export's are never touched.
-  const own = { ...missingMedia.playable(app.store.home, project), id: `${project.id}.playback` };
+  const playable = missingMedia.playable(app.store.home, project);
+  const own = { ...playable, id: `${project.id}.playback` };
   const input = { json: jsonForSerde(own) };
-  const { plan } = native().exportPlan(input, options);
+  // Planned by reference to the revision it renders, and kept (exports.ts `planExport`, Nov 21): sent as JSON, the
+  // plan alone kept the server's thread for a fifth of a second on a long edit. Its own id names only its chunks.
+  const { plan } = playable === project ? planExport(project, options, current.rev) : native().exportPlan(input, options);
   if (plan.end <= plan.start) throw new ApiError(400, "nothing on the timeline to play");
   current.heard = plan.audio;
   // The proxies it reads, cut to this Mac first as an export's originals are

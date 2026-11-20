@@ -49,13 +49,68 @@ export function waitEnds(project: string, wait: Wait): void {
   if (waits.get(project) === wait) waits.delete(project);
 }
 
-/** Cancels a project's export still waiting for its graphics; whether one was. */
-export function cancelWait(project: string): boolean {
+/** Cancels a project's export still waiting for its graphics (in memory, or written down before a restart); whether one was. */
+export function cancelWait(project: string, home: string | null = null): boolean {
   const wait = waits.get(project);
-  if (wait === undefined) return false;
+  const written = graphicsRow(home, project) !== undefined;
+  if (written) jobs.end(home, jobs.keyOf("export", project));
+  if (wait === undefined) return written;
   wait.cancelled = true;
   waits.delete(project);
   return true;
+}
+
+// ---------------------------------------------------------------- written down
+//
+// An Export waiting for its graphics was kept in memory alone (Nov 21): no row in jobs.json until it started, so after
+// an update or a crash the export the person asked for simply wasn't there. Its row is written as the wait goes on in
+// the background (routes.ts `whenReady`), with what it was asked with, and carried on after a restart as the same wait
+// (routes.ts `carryOnAsked`, from serve.ts's export resumer). The export's own row takes its place as it starts.
+
+/** The step of an export's row while it waits for its graphics. */
+export const GRAPHICS_STEP = "waiting for its graphics";
+
+/** An Export as it was asked for: what `app.exports.start` is given once what it shows is ready. */
+export interface Asked {
+  options: import("./model.ts").ExportOptions;
+  output: string;
+  extra: import("./exports.ts").StartExtra;
+}
+
+/** Whether `job` is an Export written down while it waited for its graphics. */
+export function waitsForGraphics(job: jobs.Job): boolean {
+  return job.kind === "export" && job.args.graphics === true && typeof job.args.output === "string" && typeof job.args.options === "object" && job.args.options !== null;
+}
+
+/** Project `project`'s row waiting for its graphics, when that's what its export row is. */
+function graphicsRow(home: string | null, project: string): jobs.Job | undefined {
+  const job = jobs.get(home, jobs.keyOf("export", project));
+  return job !== undefined && jobs.live(job) && waitsForGraphics(job) ? job : undefined;
+}
+
+/**
+ * Writes down `project`'s Export waiting for its graphics, as `asked`. Not over another export's row (one running, or
+ * failed or waiting to go again: the start that follows is refused, or takes that row's place, as before).
+ */
+export function waitWritten(home: string | null, project: string, asked: Asked): void {
+  const listed = jobs.get(home, jobs.keyOf("export", project));
+  if (listed !== undefined && jobs.live(listed) && !waitsForGraphics(listed)) return;
+  jobs.begin(home, "export", project, { graphics: true, options: asked.options, output: asked.output, extra: asked.extra, ...(asked.extra.note === undefined ? {} : { note: asked.extra.note }) }, "", GRAPHICS_STEP);
+}
+
+/** What it waits on moved (a render's frames): its row is noted as moving. */
+export function waitMoved(home: string | null, project: string): void {
+  jobs.beat(home, jobs.keyOf("export", project));
+}
+
+/** It started (its row is the export's now), failed or was cancelled: its row as a wait is crossed off. */
+export function waitDone(home: string | null, project: string): void {
+  if (graphicsRow(home, project) !== undefined) jobs.end(home, jobs.keyOf("export", project));
+}
+
+/** What a written-down wait was asked with. */
+export function askedOf(job: jobs.Job): Asked {
+  return { options: job.args.options as Asked["options"], output: job.args.output as string, extra: (job.args.extra ?? {}) as Asked["extra"] };
 }
 
 /** What's kept between looks at one run of a project's export: when it began, its stage's start, the video's first progress, the times shown. */
@@ -367,11 +422,14 @@ function tableRows(app: App): Map<string, ExportActivity> {
     return rows;
   }
   for (const job of listed) {
-    if (job.args.share === true || (job.state !== "waiting" && job.state !== "failed")) continue;
+    // A wait for its graphics written down and not yet carried on here (just after a restart) is in the queue too.
+    const graphics = job.state === "running" && waitsForGraphics(job) && !waits.has(job.project);
+    if (job.args.share === true || (job.state !== "waiting" && job.state !== "failed" && !graphics)) continue;
     const live = app.store.get(job.project);
     if (live === null) continue;
     const base = { id: job.project, name: live.project.name, path: typeof job.args.output === "string" ? job.args.output : "", progress: 0, updated_ms: job.updated_ms, ...(typeof job.args.note === "string" ? { note: job.args.note } : {}) };
     if (job.state === "failed") rows.set(job.project, { ...base, state: "failed", error: job.error ?? "the export failed" });
+    else if (graphics) rows.set(job.project, { ...base, state: "queued", waiting: effects.renderingLine(job.project) ?? "waiting for its effects to render" });
     else rows.set(job.project, { ...base, state: "queued", waiting: waitingLine(job) });
   }
   return rows;

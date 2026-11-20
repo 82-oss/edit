@@ -542,6 +542,8 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
             // Parts going up this run: the restarts before don't count against it.
             if (!moved) jobs.progressed(home, job);
             moved = true;
+            // Each part's bytes note it as moving (Nov 21: noted once, a 4.6 GB file's hours up read as still).
+            jobs.beat(home, job);
             if (run === null || Date.now() - toldAt >= fullUpload.tellMs) say(sent, total);
             else last = { sent, total };
           }, undefined, true);
@@ -947,7 +949,7 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       if (!fs.existsSync(copy)) {
         let pieced = false;
         try {
-          pieced = await reviewCopyFromChunks(app.store.cacheDir(), projectId, chosen.path, copy, run);
+          pieced = await reviewCopyFromChunks(app.store.cacheDir(), projectId, chosen.path, copy, run, signal);
         } catch (error) {
           haltShare(projectId);
           diag.warn("review", `${projectId}: the review copy from the export's chunks: ${diag.messageOf(error)}; making it whole`);
@@ -959,13 +961,14 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       // and if that's wrong too the share stops and says why.
       sharing.set(projectId, "checking the review copy");
       jobs.step(home, key, "copy check");
-      const exportedLengths = await lengthsOf(chosen.path);
-      let problem = await reviewCopyProblem(copy, exportedLengths, fps);
+      // Its decodes end on the share's Cancel too (Nov 21: they ran on through it, up to the video's length).
+      const exportedLengths = await lengthsOf(chosen.path, signal);
+      let problem = await reviewCopyProblem(copy, exportedLengths, fps, signal);
       if (problem !== null) {
         diag.warn("review", `${projectId}: the review copy doesn't match its export (${problem}); making it whole`);
         fs.rmSync(copy, { force: true });
         await reviewCopy(chosen.path, copy, run);
-        problem = await reviewCopyProblem(copy, exportedLengths, fps);
+        problem = await reviewCopyProblem(copy, exportedLengths, fps, signal);
         if (problem !== null) {
           fs.rmSync(copy, { force: true });
           throw new Error(`the review copy came out wrong (${problem}), so nothing was shared`);
@@ -985,6 +988,7 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       // Kept at through a network that comes and goes, for minutes, each try from the parts already up (cloud.ts).
       if (!(resumed && !replace && (await alreadyUp(`${prefix}/video.mp4`, copy)))) await cloud.uploadFileKeptAt(copy, `${prefix}/video.mp4`, (done, total) => {
         tick("uploading")(done, total);
+        jobs.beat(home, key);
         speeds.uploadTick(home, projectId, done, total);
       }, signal);
       haltShare(projectId);
@@ -1089,6 +1093,8 @@ const exportOnceEffect = Effect.fn("reviews.exportOnce")(function* (app: App, pr
               const one = event as { type?: string; id?: string; state?: string; progress?: number; path?: string; error?: string; waiting?: string; phase?: string };
               if (one.type !== "export" || one.id !== projectId) return;
               noteShare(projectId, one);
+              // Its export moving is the share moving (Nov 21): the share's row said "exporting" for the whole render, noted as it began.
+              if (one.state === "running") jobs.beat(app.store.home, shareKey(projectId));
               if (one.state === "done" && one.path !== undefined) Deferred.doneUnsafe(end, Exit.succeed({ file: one.path }));
               else if (one.state === "failed" || one.state === "cancelled") Deferred.doneUnsafe(end, Exit.succeed({ failed: one.state === "cancelled" ? "the export was cancelled" : `the export failed: ${one.error ?? "see the log"}` }));
             }),
@@ -1285,7 +1291,7 @@ const PIECES_AT_ONCE = new Semaphore(2);
  * intro (card 1, Oct 29). False when the export wasn't made of chunks (or
  * isn't the file they were joined into): then it's made whole.
  */
-async function reviewCopyFromChunks(cache: string, project: string, source: string, dest: string, run: ShareRun = plainRun): Promise<boolean> {
+async function reviewCopyFromChunks(cache: string, project: string, source: string, dest: string, run: ShareRun = plainRun, signal?: AbortSignal): Promise<boolean> {
   const last = lastChunks(cache, project);
   if (last === null || last.output !== source || !fs.existsSync(source) || fs.statSync(source).size !== last.size) return false;
   const dir = join(chunkFolder(cache, project), "review");
@@ -1309,7 +1315,7 @@ async function reviewCopyFromChunks(cache: string, project: string, source: stri
   // Joined as they are, every piece plays with the first's encoder setup: an
   // odd one (libx264 where the rest are on the hardware) goes, to be made again
   // next time, and this copy is made whole.
-  const odd = await oddPieces(last.chunks.map((chunk) => pieceOf(chunk.key)));
+  const odd = await oddPieces(last.chunks.map((chunk) => pieceOf(chunk.key)), signal);
   if (odd.length > 0) {
     for (const piece of odd) fs.rmSync(piece, { force: true });
     throw new Error(`${odd.length} of ${last.chunks.length} pieces were encoded unlike the rest`);

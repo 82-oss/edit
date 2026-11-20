@@ -76,6 +76,7 @@ import * as channelMarks from "./channel_marks.ts";
 import * as beta from "./beta.ts";
 import * as effects from "./effects.ts";
 import * as exportSteps from "./export_steps.ts";
+import * as jobs from "./jobs.ts";
 import * as removalSchedule from "./removal_schedule.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
 import * as effectCloud from "./effect_cloud.ts";
@@ -1026,9 +1027,34 @@ async function startExport(context: Context): Promise<Response> {
   // Taken once what it shows is ready (the edit as it is then), however long its effects and map shots take.
   // A channel's project carries its channel's own logo, or none (channels.watermarkFor).
   const mark = await channels.watermarkOf(liveOr404(app, id).project, watermark === null || watermark === "" ? undefined : watermark);
-  return whenReady(app, id, app.native.withExtension(output, options.format), () =>
-    app.exports.start(app.store, app.library, liveOr404(app, id).project, options, output, { ...(drive === null ? {} : { drive }), ...(keepLocal === true ? { keepLocal: true } : {}), ...(mark === undefined ? {} : { watermark: mark }) }),
-  );
+  const extra = { ...(drive === null ? {} : { drive }), ...(keepLocal === true ? { keepLocal: true } : {}), ...(mark === undefined ? {} : { watermark: mark }) };
+  return whenReady(app, id, app.native.withExtension(output, options.format), { options, output, extra });
+}
+
+/**
+ * Carries on an Export written down while it waited for its graphics (export_steps.ts `waitsForGraphics`), or a batch
+ * of marked stretches (ranges.ts `isBatch`), after a restart: as it was asked, the same wait first. serve.ts's export
+ * resumer calls this first; false when `job` is neither, and the resumer goes on as before.
+ */
+export async function carryOnAsked(app: App, job: jobs.Job): Promise<boolean> {
+  if (ranges.isBatch(job)) {
+    ranges.carryOn(app, job);
+    return true;
+  }
+  if (!exportSteps.waitsForGraphics(job)) return false;
+  const live = app.store.get(job.project);
+  if (live === null) throw new jobs.Gone("the project is gone");
+  const asked = exportSteps.askedOf(job);
+  diag.info("export", `${live.project.name}: its export waits for its graphics again after the restart`);
+  try {
+    await whenReady(app, job.project, app.native.withExtension(asked.output, asked.options.format), asked);
+  } catch (error) {
+    // Said in the dialog and the queue as when it was asked (whenReady crossed its row off).
+    const said = error instanceof ApiError ? error.message : diag.messageOf(error);
+    diag.warn("export", `${job.project}: ${said}`);
+    app.store.emit({ type: "export", id: job.project, state: "failed", progress: 0, path: asked.output, error: said });
+  }
+  return true;
 }
 
 /** How long an export asked for here waits for its effects' renders and map shots: as long as a share waits (reviews.ts `exportStep`). */
@@ -1045,7 +1071,9 @@ const READY_QUICK_MS = 5000;
  * done (or says why it can't). The answer is the file (`expected` while it
  * waits), and `started` when it went on waiting.
  */
-async function whenReady(app: App, id: string, expected: string, go: () => Promise<string>): Promise<Response> {
+async function whenReady(app: App, id: string, expected: string, asked: exportSteps.Asked): Promise<Response> {
+  const go = () => app.exports.start(app.store, app.library, liveOr404(app, id).project, asked.options, asked.output, asked.extra);
+  const home = app.store.home;
   // What it waits on is what isn't rendered now: its steps count those (export_steps.ts).
   effects.noteWait(app, id);
   // In the Exports queue from now, with its graphics' steps, until it starts.
@@ -1061,6 +1089,7 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
     // Only what's still being made is waited for; a render that failed says why at once.
     if (!/still rendering|waiting behind/.test(diag.messageOf(error))) {
       exportSteps.waitEnds(id, held);
+      exportSteps.waitDone(home, id);
       throw bad(diag.messageOf(error));
     }
     waiting = true;
@@ -1068,7 +1097,10 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
   if (!waiting) {
     try {
       // Cancelled in its first seconds: nothing to start.
-      if (held.cancelled) return json({ path: expected, cancelled: true });
+      if (held.cancelled) {
+        exportSteps.waitDone(home, id);
+        return json({ path: expected, cancelled: true });
+      }
       const path = await go();
       // Cancelled while it was starting (an export made ahead stopping, the watermark going on): it was said
       // cancelled then, so it's stopped now it's there (Nov 20: it started anyway).
@@ -1078,17 +1110,24 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
       }
       return json({ path });
     } catch (error) {
+      // Carried on after a restart, it was written down: crossed off as it fails (its start never took the row).
+      exportSteps.waitDone(home, id);
       throw bad(diag.messageOf(error));
     } finally {
       exportSteps.waitEnds(id, held);
     }
   }
+  // Written down as it waits on (Nov 21): kept in memory alone, an update or a crash lost the export it was.
+  exportSteps.waitWritten(home, id, asked);
   const row = (state: "queued" | "failed", extra: Record<string, unknown>) => app.store.emit({ type: "export", id, state, progress: 0, path: expected, ...extra });
   // How far its effects' renders are, said as they go (Sphe, Nov 16: "I don't know how long that's going to take").
   let said = "";
   const tell = () => {
     const line = effects.renderingLine(id) ?? removalSchedule.exportLine(id) ?? "waiting for its effects to render";
-    if (line !== said) row("queued", { waiting: (said = line) });
+    if (line === said) return;
+    row("queued", { waiting: (said = line) });
+    // Its renders moving is its row moving.
+    exportSteps.waitMoved(home, id);
   };
   tell();
   const ticking = setInterval(() => {
@@ -1103,7 +1142,10 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
       await wait(READY_WAIT_MS);
       clearInterval(ticking);
       // Cancelled while it waited: nothing to start.
-      if (held.cancelled) return;
+      if (held.cancelled) {
+        exportSteps.waitDone(home, id);
+        return;
+      }
       await go();
       exportSteps.waitEnds(id, held);
       // Cancelled while it was starting: stopped now it's there.
@@ -1111,6 +1153,7 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
     } catch (error) {
       clearInterval(ticking);
       exportSteps.waitEnds(id, held);
+      exportSteps.waitDone(home, id);
       if (held.cancelled) return;
       const said = diag.messageOf(error);
       diag.warn("export", `${id}: ${said}`);
@@ -1123,7 +1166,7 @@ async function whenReady(app: App, id: string, expected: string, go: () => Promi
 function cancelExport({ app, params }: Context): Response {
   const id = params.id!;
   // Still waiting for its graphics: it never starts (the renders go on: the edit plays them).
-  if (exportSteps.cancelWait(id)) {
+  if (exportSteps.cancelWait(id, app.store.home)) {
     app.store.emit({ type: "export", id, state: "cancelled", progress: 0 });
     return json({ cancelled: true });
   }
@@ -1159,7 +1202,7 @@ async function retryExport({ app, params }: Context): Promise<Response> {
     return json(first === null ? { started: true } : first.done);
   }
   // Waited for as the first try was: what it shows ready, then the edit as it is.
-  return whenReady(app, id, held!.output, () => app.exports.start(app.store, app.library, liveOr404(app, id).project, held!.options, held!.output, held!.extra));
+  return whenReady(app, id, held!.output, { options: held!.options, output: held!.output, extra: held!.extra });
 }
 
 /** The project's exports, newest first (this machine's: each downloads from Edit, on the Mac or over Tailscale). */

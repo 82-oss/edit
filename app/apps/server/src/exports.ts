@@ -24,7 +24,7 @@ import { ioMessage, nowMs, writeAtomic } from "./files.ts";
 import { subtitleVideo } from "./drive.ts";
 import { catchBugsAsync } from "./guard.ts";
 import type { ExportOptions, Plan, Project } from "./model.ts";
-import { native } from "./native/index.ts";
+import { native, withProject } from "./native/index.ts";
 import { canonical, fileName, homePath, isFile, join, parent } from "./paths.ts";
 import { duration } from "./project.ts";
 import { fixed, jsonForSerde } from "./rust.ts";
@@ -57,6 +57,8 @@ export interface StartExtra {
    * ahead of the whole edit isn't spent by it.
    */
   stretch?: boolean;
+  /** A stretch's batch's row in jobs.json (ranges.ts): noted as moving as the stretch's render moves, as an export's own row is. */
+  beats?: string;
 }
 
 /**
@@ -127,6 +129,8 @@ interface Running {
   letGo?: () => void;
   /** A batch's stretch (`StartExtra.stretch`). */
   stretch?: boolean;
+  /** The row in jobs.json its progress notes as moving (`beatRows`): its own, or a stretch's batch's; none made ahead. */
+  beats?: string;
   /** About how big its file is (`exportBytes`), and a share's review copy beside it: what the disks are asked for again as it starts. */
   bytes?: number;
   review?: number;
@@ -206,7 +210,8 @@ export function exportCloudKey(project: string, name: string): string {
 export const exportCloud = {
   enabled: (): boolean => cloud.enabled(),
   // Behind whatever someone waits on (cloud.first: a share on its way to its link): nobody waits for this copy.
-  upload: (path: string, key: string, signal?: AbortSignal): Promise<void> => cloud.uploadFile(path, key, undefined, signal, true),
+  // `moving` hears each part's bytes: the archive's row is noted as moving by them (an upload of hours on a home line).
+  upload: (path: string, key: string, signal?: AbortSignal, moving?: () => void): Promise<void> => cloud.uploadFile(path, key, moving === undefined ? undefined : () => moving(), signal, true),
   head: (key: string): Promise<{ size: number } | null> => cloud.head(key),
 };
 
@@ -418,6 +423,7 @@ export async function archiveExportFile(
   room: (path: string) => number = freeBytes,
   signal?: AbortSignal,
   carriedOn = false,
+  moving?: () => void,
 ): Promise<boolean> {
   let size: number;
   try { size = fs.statSync(output).size; } catch { return false; }
@@ -427,7 +433,7 @@ export async function archiveExportFile(
     // after an export, what's under its name is the one it writes over, whose size could happen to be the same.
     const there = carriedOn ? await io.head(key).catch(() => null) : null;
     if (there === null || there.size !== size) {
-      await io.upload(output, key, signal);
+      await io.upload(output, key, signal, moving);
       const found = await io.head(key);
       if (found === null || found.size !== size) return false;
     }
@@ -486,7 +492,9 @@ export async function archiveFinished(home: string, id: string, output: string, 
   // Its job begun by an earlier run, or tried before and put off: carried on (what's up already isn't sent again).
   const listed = jobs.get(home, jobs.keyOf("archive", id));
   const carriedOn = (listed?.started_ms ?? Infinity) < performance.timeOrigin || listed?.put_off !== undefined;
-  if (await archiveExportFile(output, key, exportCloud, freeBytes, signal, carriedOn)) {
+  // Its bytes going up are its row's beat (Nov 21): noted only as it began, an upload of hours read as still.
+  const moving = () => jobs.beat(home, jobs.keyOf("archive", id));
+  if (await archiveExportFile(output, key, exportCloud, freeBytes, signal, carriedOn, moving)) {
     try {
       remember(home, id, record);
     } catch { /* the list keeps the local-only record */ }
@@ -932,6 +940,55 @@ export function optionsKey(options: ExportOptions): string {
   return JSON.stringify(sorted(options));
 }
 
+/** What `native().exportPlan` answers. */
+export type Planned = { plan: Plan; fps: number; chunks?: string | null };
+
+/** Plans kept, by project: the revision they're of, and each by its options' text (`planExport`). */
+const plans = new Map<string, { rev: number; byOptions: Map<string, Planned> }>();
+/** Projects, and plans of one revision, kept at most (a plan is a few numbers). */
+const PLANS_KEPT = 32;
+
+/**
+ * `native().exportPlan` of `project` as `options` ask, on the server's one thread (Nov 21: on a 2-hour edit one kept
+ * it 716 ms; measured on 4,000 clips, 190 ms of a plan sent as JSON is the native side reading the project again, and
+ * 2 ms is the plan). `rev` is the store's revision `project` is (`revOf`), or null when it isn't one (a clone, a kept
+ * snapshot, an edit with its watermark over it): then it's sent as JSON as before. With one, it's planned by reference
+ * to what native already holds of that revision, and kept by the options' text while that revision is the one
+ * planned, so the same plan asked again (an export made ahead looked at after each rest, a stretch of a batch again)
+ * costs nothing. A plan is of the project and the options alone (render.rs `export_plan`, `chunk_name`).
+ */
+export function planExport(project: Project, options: ExportOptions, rev: number | null): Planned {
+  if (rev === null) return native().exportPlan({ json: jsonForSerde(project) }, options);
+  let kept = plans.get(project.id);
+  if (kept === undefined || kept.rev !== rev) {
+    kept = { rev, byOptions: new Map() };
+    plans.delete(project.id);
+    plans.set(project.id, kept);
+    for (const old of plans.keys()) {
+      if (plans.size <= PLANS_KEPT) break;
+      plans.delete(old);
+    }
+  }
+  const text = optionsKey(options);
+  const found = kept.byOptions.get(text);
+  if (found !== undefined) return structuredClone(found);
+  const made = withProject(project.id, rev, () => jsonForSerde(project), (input) => native().exportPlan(input, options));
+  if (kept.byOptions.size >= PLANS_KEPT) kept.byOptions.delete(kept.byOptions.keys().next().value!);
+  kept.byOptions.set(text, structuredClone(made));
+  return made;
+}
+
+/** The revision `project` is in `store`: the very object the store holds for it (a revision's object is frozen), else null. */
+export function revOf(store: Pick<Store, "get">, project: Project): number | null {
+  const live = store.get(project.id);
+  return live !== null && live.project === project ? live.rev : null;
+}
+
+/** For tests: no plan kept. */
+export function forgetPlans(): void {
+  plans.clear();
+}
+
 export class ExportRegistry implements seams.Exports {
   private jobs = new Map<string, Running>();
   /** Exports rendering on this Mac now: as many at once as it has room for (export_capacity.ts). */
@@ -1038,8 +1095,7 @@ export class ExportRegistry implements seams.Exports {
   startAhead(store: Store, library: seams.Library, project: Project, options: ExportOptions, output: string, watermark?: string): boolean {
     if (this.jobs.size > 0 || this.localQueue.length > 0 || this.ahead.length > 0) return false;
     if (capacity.noRoom(this.localActive) !== null) return false;
-    const addon = native();
-    const { plan, fps, chunks } = addon.exportPlan({ json: jsonForSerde(project) }, options);
+    const { plan, fps, chunks } = planExport(project, options, revOf(store, project));
     if (plan.end <= plan.start) return false;
     const folder = parent(output) ?? ".";
     try {
@@ -1124,6 +1180,21 @@ export class ExportRegistry implements seams.Exports {
       this.lent = Math.max(0, this.lent - 1);
       this.releaseOne();
     };
+  }
+
+  /**
+   * Progress heard of `running` notes its row as moving, and every export waiting in line here, whose wait moves with
+   * it (Nov 21: an export's row was noted only between its steps, so a 2-hour edit's 30-minute render, and each export
+   * queued behind it, read as still in the log and the Mac's report). `jobs.beat` writes a row at most every 30 s.
+   */
+  private beatRows(running: Running): void {
+    if (this.home === null) return;
+    try {
+      if (running.beats !== undefined) jobs.beat(this.home, running.beats);
+      for (const one of this.localQueue) if (one.running.beats !== undefined && !one.running.cancelled) jobs.beat(this.home, one.running.beats);
+    } catch (error) {
+      diag.warn("export", `noting an export as moving: ${diag.messageOf(error)}`);
+    }
   }
 
   activity(): ExportActivity[] {
@@ -1268,8 +1339,7 @@ export class ExportRegistry implements seams.Exports {
     if (missing !== null) throw new Error(missing);
     // This project's export made ahead stops first (it writes the same chunk folder); what it made is reused.
     await this.stopAhead(project.id);
-    const addon = native();
-    const { plan, fps, chunks } = addon.exportPlan({ json: jsonForSerde(project) }, options);
+    const { plan, fps, chunks } = planExport(project, options, revOf(store, project));
     // The edit it's handed, whoever asked: a coded effect not rendered from its code, or a map shot still its first
     // frame, would go out as its stand-in (a Retry, a retry after an update and a stretch never waited for them).
     let notReady: string | null = null;
@@ -1407,7 +1477,8 @@ export class ExportRegistry implements seams.Exports {
     project = structuredClone(project);
     options = structuredClone(options);
     const review = extra.share === true ? reviewBytes(Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1)) : 0;
-    const running: Running = { output: path, ...(chunks ? { chunks } : {}), key, cancelled: false, stop: new AbortController(), job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review, seconds: Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1), started_ms: nowMs(), unpin, ...(letReuseGo === null ? {} : { letReuseGo }) };
+    const beats = extra.stretch === true ? extra.beats : key;
+    const running: Running = { output: path, ...(chunks ? { chunks } : {}), key, ...(beats === undefined ? {} : { beats }), cancelled: false, stop: new AbortController(), job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review, seconds: Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1), started_ms: nowMs(), unpin, ...(letReuseGo === null ? {} : { letReuseGo }) };
     this.jobs.set(project.id, running);
     let upload = false;
     try {
@@ -1439,6 +1510,7 @@ export class ExportRegistry implements seams.Exports {
         ...(extra.watermark === undefined ? {} : { watermark: extra.watermark }),
         ...(extra.replace === true ? { replace: true } : {}),
         ...(extra.stretch === true ? { stretch: true } : {}),
+        ...(extra.beats === undefined ? {} : { beats: extra.beats }),
       },
     });
     this.localQueue.push({ running, start: () => {
@@ -1473,17 +1545,21 @@ export class ExportRegistry implements seams.Exports {
     const emit = (state: ExportActivity["state"], progress: number, extra: Record<string, unknown> = {}) => {
       if (!quiet) this.publish(store, project, running, state, progress, extra);
     };
+    // Real progress heard (the prep's line, the last export's bytes, the engine's frames) is its row's beat (`beatRows`).
+    const moving = () => this.beatRows(running);
     // Cutting excerpts, copying sound, and fetching the last export fill the first slice of the bar.
     // "preparing the footage" alone does not count: a local export, and a stills fetch, stay on the 0–1 bar.
     let prepared = false;
     let prepRatio = 0;
     const tell = (phase: string, ratio: number) => {
+      moving();
       prepared = true;
       prepRatio = Math.max(prepRatio, ratio);
       emit("running", shownProgress(prepRatio, null), { phase });
     };
     const onPrep = (phase: string, ratio: number) => {
       if (phase === "preparing the footage") {
+        moving();
         emit("running", shownProgress(prepared ? prepRatio : null, null), { phase });
         return;
       }
@@ -1617,6 +1693,9 @@ export class ExportRegistry implements seams.Exports {
                     last = progress;
                     engineAt = progress;
                     watch.move();
+                    // Where EngineWatch knows the render moves, the job table hears it too (Nov 21): a 2-hour edit's
+                    // 30-minute render was noted only as it began, and read as still for most of it.
+                    moving();
                   }
                   try {
                     // No phase: the line goes back to the percent, and a stale "cutting the footage" doesn't stick.

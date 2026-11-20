@@ -8,7 +8,8 @@ import type { App } from "../src/app.ts";
 import { chunkFolder, listExports, listMade } from "../src/exports.ts";
 import type { Project, Range } from "../src/model.ts";
 import { fileName, join } from "../src/paths.ts";
-import { batchOf, exportRanges, forgetBatches, latestBatch, tidy, timing, type Batch } from "../src/ranges.ts";
+import { batchOf, cancel, carryOn, exportRanges, forgetBatches, isBatch, latestBatch, tidy, timing, type Batch } from "../src/ranges.ts";
+import * as jobs from "../src/jobs.ts";
 import * as tools from "../src/tools.ts";
 import { fixtureHome, write, type Fixture } from "./helpers/home.ts";
 
@@ -70,7 +71,7 @@ function exportsHome(name: string, ranges: Range[]) {
  * it as the registry does, and writes the project's chunk manifest naming it;
  * one `fails` says leaves its file as it was.
  */
-function fakeExports(app: App, home: string, project: Project, how: { silent?: (index: number) => boolean; fails?: (index: number) => boolean } = {}) {
+function fakeExports(app: App, home: string, project: Project, how: { silent?: (index: number) => boolean; fails?: (index: number) => boolean; hangs?: (index: number) => boolean } = {}) {
   const asked: [number, number][] = [];
   let running = false;
   (app as unknown as { exports: unknown }).exports = {
@@ -80,6 +81,8 @@ function fakeExports(app: App, home: string, project: Project, how: { silent?: (
       const index = asked.length;
       asked.push(options.range);
       running = true;
+      // Edit stops here (a crash, an update): nothing after it in this run.
+      if (how.hangs?.(index) === true) await new Promise<never>(() => {});
       if (how.fails?.(index) !== true) {
         const sound = how.silent?.(index) === true ? [] : ["-f", "lavfi", "-i", "sine=duration=1", "-c:a", "aac", "-shortest"];
         await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=1", ...sound, "-c:v", "libx264", "-pix_fmt", "yuv420p", output]);
@@ -198,4 +201,50 @@ test("taking out most of the edit is refused until the person, asked, says so", 
   const quoted = await call({ start: 30, end: 300, asked: "remove the rest on this timeline" });
   expect(quoted.isError).toBe(true);
   expect(store.get(id)!.project.clips[0]!.duration).toBe(9000);
+});
+
+test("a batch of three cut short by a restart after its first stretch carries on with the other two, the first kept and not made again", async () => {
+  const { app, home, folder, project } = exportsHome("ranges-restart", [{ start: 0, end: 30, name: "One" }, { start: 60, end: 90, name: "Two" }, { start: 120, end: 150, name: "Three" }]);
+  const manifest = join(chunkFolder(app.store.cacheDir(), project.id), "manifest-v1.json");
+  write(manifest, "the last whole export's");
+  // The second stretch's export is under way when Edit stops.
+  const first = fakeExports(app, home, project, { hangs: (index) => index === 1 });
+  const batch = exportRanges(app, project, { range: null, format: "h264" } as never, "each", null);
+  const key = jobs.keyOf("export", project.id, "ranges");
+  for (let tries = 0; first.length < 2 && tries < 300; tries++) await Bun.sleep(20);
+  expect(first).toEqual([[0, 30], [60, 90]]);
+  expect(batch.done).toBe(1);
+  // Written down as the first ended: what's made, where, and that it's on the second.
+  const row = jobs.get(home, key)!;
+  expect(isBatch(row)).toBe(true);
+  expect(row).toMatchObject({ state: "running", step: "Two, 2 of 3", args: { mode: "each", made: [join(folder, "Joined - One.mp4")] } });
+
+  // The restart: nothing in memory. The dialog still shows the batch, one made of three.
+  forgetBatches();
+  expect(batchOf(app, project.id)).toMatchObject({ finished: false, done: 1, total: 3, outputs: [join(folder, "Joined - One.mp4")] });
+  const again = fakeExports(app, home, project);
+  carryOn(app, jobs.get(home, key)!);
+  const carried = batchOf(app, project.id)!;
+  await ended(carried);
+  expect(carried.error).toBeNull();
+  // Only the two left were made.
+  expect(again).toEqual([[60, 90], [120, 150]]);
+  expect(carried.outputs).toEqual([join(folder, "Joined - One.mp4"), join(folder, "Joined - Two.mp4"), join(folder, "Joined - Three.mp4")]);
+  expect(jobs.get(home, key)).toBeUndefined();
+  // The edit's own chunk list is put back, after the restart too.
+  expect(fs.readFileSync(manifest, "utf8")).toBe("the last whole export's");
+  forgetBatches();
+  expect(batchOf(app, project.id)?.outputs).toEqual(carried.outputs);
+});
+
+test("a batch written down before a restart and not carried on yet is cancelled from its row", async () => {
+  const { app, home, project } = exportsHome("ranges-restart-cancel", [{ start: 0, end: 30, name: "One" }, { start: 60, end: 90, name: "Two" }]);
+  fakeExports(app, home, project, { hangs: (index) => index === 0 });
+  exportRanges(app, project, { range: null, format: "h264" } as never, "joined", null);
+  const key = jobs.keyOf("export", project.id, "ranges");
+  for (let tries = 0; jobs.get(home, key)?.step !== "One, 1 of 2" && tries < 300; tries++) await Bun.sleep(20);
+  forgetBatches();
+  expect(cancel(app, project.id)).toBe(true);
+  expect(jobs.get(home, key)).toBeUndefined();
+  expect(batchOf(app, project.id)).toBeNull();
 });

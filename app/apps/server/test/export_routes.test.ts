@@ -103,3 +103,63 @@ test("a page back from away reads the export as its events said it: failed, runn
     cleanup();
   }
 });
+
+test("an Export waiting for its graphics is written down, found again after a restart, waits again and starts as it was asked", async () => {
+  const { carryOnAsked } = await import("../src/routes.ts");
+  const broll = await import("../src/broll.ts");
+  const { dir, app, store, home, cleanup } = fixtureHome("route-graphics-restart", { services: { exports: new ExportRegistry() } });
+  // Before the restart its graphics never come in (the run ends); after it, once `rendered` is called.
+  let restarted = false;
+  let rendered!: () => void;
+  const done = new Promise<void>((resolve) => (rendered = resolve));
+  const wait = spyOn(broll, "waitForMaps").mockImplementation(async (_app, _id, limit) => {
+    if (limit <= 5000) throw new Error("The board effect is still rendering (12 of 60 frames): export again in a minute or two.");
+    await (restarted ? done : new Promise<never>(() => {}));
+  });
+  try {
+    const id = store.create("Graphics", { width: 64, height: 36, fps: 30 }).project.id;
+    const asked = await client(app).post(`/api/projects/${id}/export`, { path: `${dir}/graphics.mp4`, keepLocal: true, options: { format: "h264", quality: "high" } });
+    expect(await asked.json()).toMatchObject({ started: true });
+    const key = jobs.keyOf("export", id);
+    expect(jobs.get(home, key)).toMatchObject({ state: "running", step: exportSteps.GRAPHICS_STEP, args: { graphics: true, output: `${dir}/graphics.mp4`, options: { format: "h264", quality: "high" }, extra: { keepLocal: true } } });
+
+    // The restart: nothing in memory, a new registry. The queue still has it.
+    restarted = true;
+    exportSteps.reset();
+    const registry = new ExportRegistry(home);
+    app.exports = registry;
+    const started: { options: ExportOptions; output: string; extra: unknown }[] = [];
+    const start = spyOn(registry, "start").mockImplementation(async (_store, _library, _project, options, output, extra) => {
+      started.push({ options, output, extra });
+      return output;
+    });
+    expect(exportSteps.activity(app, new Set([id]))).toMatchObject([{ id, state: "queued", waiting: "waiting for its effects to render" }]);
+    expect(await carryOnAsked(app, jobs.get(home, key)!)).toBe(true);
+    // Waiting again, in the queue as it was, until its graphics are in.
+    expect(exportSteps.activity(app, new Set([id]))).toMatchObject([{ id, state: "running", waiting: "waiting for its effects to render" }]);
+    expect(started).toEqual([]);
+    rendered();
+    for (let tries = 0; started.length === 0 && tries < 200; tries++) await Bun.sleep(5);
+    expect(started).toHaveLength(1);
+    expect(started[0]!.options).toMatchObject({ format: "h264", quality: "high" });
+    expect(started[0]!).toMatchObject({ output: `${dir}/graphics.mp4`, extra: { keepLocal: true } });
+    // Its row is the export's from here (the registry's start writes it; mocked here): the wait's is crossed off.
+    start.mockRestore();
+  } finally {
+    wait.mockRestore();
+    exportSteps.reset();
+    cleanup();
+  }
+});
+
+test("an Export written down waiting for its graphics is cancelled from its row after a restart", async () => {
+  const { dir, app, store, home, cleanup } = fixtureHome("route-graphics-cancel", { services: { exports: new ExportRegistry() } });
+  try {
+    const id = store.create("Graphics", { width: 64, height: 36, fps: 30 }).project.id;
+    exportSteps.waitWritten(home, id, { options: { format: "h264" } as ExportOptions, output: `${dir}/g.mp4`, extra: {} });
+    expect(await (await client(app).send(`/api/projects/${id}/export/cancel`, { method: "POST" })).json()).toEqual({ cancelled: true });
+    expect(jobs.get(home, jobs.keyOf("export", id))).toBeUndefined();
+  } finally {
+    cleanup();
+  }
+});

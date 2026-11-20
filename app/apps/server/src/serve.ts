@@ -58,7 +58,7 @@ import * as remoteAsk from "./remote_ask.ts";
 import * as reviews from "./reviews.ts";
 import * as retryAfterUpdate from "./retry_after_update.ts";
 import { warm as warmRife } from "./rife.ts";
-import { buildRouter } from "./routes.ts";
+import { buildRouter, carryOnAsked } from "./routes.ts";
 import * as seams from "./seams.ts";
 import { Store } from "./store.ts";
 import * as tools from "./tools.ts";
@@ -625,6 +625,9 @@ async function resumeJobs(app: App): Promise<void> {
       if (did === "finished" || did === "nothing") throw new jobs.Gone("its import has nothing left to do");
     },
     export: async (job) => {
+      // An Export that was waiting for its graphics, or a batch of marked stretches, when Edit stopped: carried on as it
+      // was asked (routes.ts; Nov 21: both lived in memory, and after an update the export someone asked for was gone).
+      if (await carryOnAsked(app, job)) return;
       const { options, output, drive, keepLocal, share, note, watermark, replace } = job.args as unknown as { options: ExportOptions; output: string } & StartExtra;
       // The timeline it was started with, not edits made since.
       const current = project(job.project);
