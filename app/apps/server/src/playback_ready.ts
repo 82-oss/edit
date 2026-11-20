@@ -121,7 +121,7 @@ export async function hereOf(cache: string, root: string | null, media: Media): 
 }
 
 /** `spans` (sorted, apart) with every stretch of `gaps` taken out. */
-function without(spans: Spans, gaps: Spans): Spans {
+export function without(spans: Spans, gaps: Spans): Spans {
   const sorted = [...gaps].sort((a, b) => a[0] - b[0]);
   const out: Spans = [];
   for (const [start, end] of spans) {
@@ -242,11 +242,12 @@ export function routes(router: Router<App>): void {
       return json({ ready: await readyStretches(app.store.cacheDir(), live.project), keeping: keeping() });
     })
     // The viewer is here (an open, a jump, a play): what's next comes first. Answers at once; the reads carry on.
-    // `playing` (true while a play runs, false at its pause) is what background work gives way to (playing.ts).
+    // `playing` (true while a play runs, false at its pause) is what background work gives way to (playing.ts);
+    // `holding` (with it) is a play held on its spinner for its footage, which the footage's own fills don't give way to.
     .post("/api/projects/{id}/playback/warm", async ({ app, params, request }) => {
-      const body = (await request.json().catch(() => ({}))) as { frame?: unknown; playing?: unknown };
+      const body = (await request.json().catch(() => ({}))) as { frame?: unknown; playing?: unknown; holding?: unknown };
       const frame = typeof body.frame === "number" && Number.isFinite(body.frame) ? body.frame : 0;
-      if (typeof body.playing === "boolean") playing.note(params.id ?? "", body.playing);
+      if (typeof body.playing === "boolean") playing.note(params.id ?? "", body.playing, body.holding === true);
       void warm(app, params.id ?? "", frame).catch((error: unknown) => diag.warn("cloud", `${params.id}: warming from ${frame}: ${diag.messageOf(error)}`));
       return json({ ok: true });
     });

@@ -55,7 +55,10 @@ export function keepFreeFor(_total: number): number {
  * hard while Edit plays (kenobi, Nov 17: free space fell from 1.94 GB to 1.02 GB in 40 s, none of it Edit's, as
  * `swapfile4` came; 4.1 of 5.1 GB of swap in use). Two gigabytes on a Mac of 8 GB or less, one above.
  */
-export const SWAP_ROOM_BYTES = os.totalmem() <= 8 * 2 ** 30 ? 2_000_000_000 : 1_000_000_000;
+export function swapRoomFor(memory: number): number {
+  return memory <= 8 * 2 ** 30 ? 2_000_000_000 : 1_000_000_000;
+}
+export const SWAP_ROOM_BYTES = swapRoomFor(os.totalmem());
 
 /** What the work that fills the disk as it goes (blocks read for a play, an effect's render) leaves free: the floor and the swap's room. */
 export const WORK_FLOOR_BYTES = FREE_FLOOR_BYTES + SWAP_ROOM_BYTES;
@@ -65,6 +68,11 @@ export const WORK_FLOOR_BYTES = FREE_FLOOR_BYTES + SWAP_ROOM_BYTES;
  * can't stream (an effect's render, an export). They keep to `cacheFloor`, which is never less.
  */
 export const CACHE_FLOOR_BYTES = WORK_FLOOR_BYTES + 1_000_000_000;
+
+/** `CACHE_FLOOR_BYTES` on a Mac with `memory` bytes of memory (the team's Macs held in test/storage_machines.test.ts). */
+export function cacheFloorBytesFor(memory: number): number {
+  return FREE_FLOOR_BYTES + swapRoomFor(memory) + 1_000_000_000;
+}
 
 /** The nearest folder of `dir` that's there (a folder not made yet is on its parent's disk), or null. */
 function statfsOf(dir: string): fs.StatsFs | null {
@@ -100,6 +108,49 @@ export const diskHooks = {
  */
 export function cacheFloor(dir: string): number {
   return Math.max(CACHE_FLOOR_BYTES, keepFreeBytes(dir));
+}
+
+// ---------------------------------------------------------------------------
+// The open project's footage is work (Sphe, Nov 20)
+//
+// Whole copies, a long video's pieces and their joins kept only to play sooner keep the cache's floor (15 GB): Sphe's
+// M4 at 12–18 GB free kept none of an open project's footage, so it streamed for the whole session, every jump and
+// cold stretch waiting on R2. The footage of a project open here and being watched is the work at hand, as an import or
+// an export is: it is kept down to the floor work keeps (`CACHE_FLOOR_BYTES`: macOS's last gigabyte, its swap's room,
+// and a gigabyte for the work that can't stream, an effect's render or an export), and the cleaner lets go of the
+// projects that aren't open first (cache_cleanup.ts `makeRoom`, asked through `askForRoom` where it's short). Every
+// other copy keeps the cache's floor as before.
+
+/** A project is open here while its page warms its footage, or the editor said it's open, within this long (cache_cleanup.ts keeps it as long). */
+const OPEN_MS = 10 * 60_000;
+/** Each open project's footage (stream keys and long videos' bases), and when its page last asked for it. */
+const openFootage = new Map<string, { keys: Set<string>; at: number }>();
+/** Seams: whether the editor says project `id` is open now (opened.ts, set at the server's start), and the clock. */
+export const openHooks = { isOpen: (_id: string): boolean => false, now: () => Date.now() };
+
+/** Project `id` is being watched here, and plays `keys` (its stream keys and long videos' bases): kept as work while it's open. */
+export function noteOpenFootage(id: string, keys: Iterable<string>): void {
+  openFootage.set(id, { keys: new Set(keys), at: openHooks.now() });
+}
+
+/** Whether `key` (a stream key or a long video's base) is the footage of a project open here now. */
+export function isOpenFootage(key: string): boolean {
+  const now = openHooks.now();
+  for (const [id, one] of openFootage) {
+    const open = now - one.at < OPEN_MS || openHooks.isOpen(id);
+    if (!open && now - one.at > 24 * 3_600_000) openFootage.delete(id);
+    else if (open && one.keys.has(key)) return true;
+  }
+  return false;
+}
+
+/**
+ * What a copy of `key` kept to play sooner leaves free on the disk holding `dir`: the open project's footage the
+ * work's floor and a gigabyte (`CACHE_FLOOR_BYTES`: 3 GB on a Mac of more than 8 GB, 4 GB on an 8 GB M1), anything else
+ * the cache's (`cacheFloor`: 15 GB). Never more than the cache's floor, so the open project is never worse off.
+ */
+export function footageFloor(dir: string, key: string | null | undefined): number {
+  return key !== null && key !== undefined && isOpenFootage(key) ? CACHE_FLOOR_BYTES : cacheFloor(dir);
 }
 
 /** Bytes free on the disk holding `dir` (unknown: as good as endless). */
@@ -221,4 +272,5 @@ export function roomFor(dir: string, bytes: number): boolean {
 export function resetRoom(): void {
   claims.clear();
   roomAsked = 0;
+  openFootage.clear();
 }

@@ -2,9 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import * as cloudBlocks from "../src/cloud_blocks.ts";
 import { NoRoom } from "../src/cloud_blocks.ts";
 import { localPath } from "../src/cloud_media.ts";
 import * as localPreviews from "../src/local_previews.ts";
+import * as outages from "../src/outages.ts";
 import * as playing from "../src/playing.ts";
 import * as storage from "../src/storage.ts";
 import { scratch } from "./helpers/home.ts";
@@ -211,23 +213,114 @@ test("a whole copy's exact size is checked again once its first block says it: o
   }
 });
 
-test("no whole copy starts while a play is watched; what waited starts once it stops", async () => {
+test("while a play is shown on a slow line only what it needs next starts: the next minute's files and a jump's (`hurry`); on a fast line or held on its spinner everything does; the rest once it stops (Nov 20: nothing started while anything played or held)", async () => {
   const home = scratch("local-previews");
+  const realSpeed = cloudBlocks.laneHooks.downloadBytesPerSecond;
   try {
     disk(Number.POSITIVE_INFINITY);
     const started: string[] = [];
     localPreviews.hooks.fetch = (key) => new Promise<void>(() => { started.push(key); });
+    // Three files a minute and a half apart (30 fps): only the first plays in the next minute from 0.
+    const files = [own("now", 10_000_000), own("later", 10_000_000), own("last", 10_000_000)];
+    const project = projectOf(files);
+    project.clips.forEach((clip, n) => Object.assign(clip, { start: n * 2700, duration: 2700 }));
+    // A line of 4 Mbit/s: no fills beside a play but the play's own next files.
+    cloudBlocks.laneHooks.downloadBytesPerSecond = () => 4_000_000 / 8;
     playing.note("p", true);
-    const one = own("one", 10_000_000);
-    localPreviews.fetchInPlayheadOrder(home.dir, projectOf([one]), 0);
-    // A jump in the window (`hurry`) doesn't start one either.
-    localPreviews.hurry(one.key);
+    localPreviews.fetchInPlayheadOrder(home.dir, project, 0);
     await Bun.sleep(5);
-    expect(started).toEqual([]);
+    expect(started).toEqual([files[0]!.key]);
+    // A jump in the window to the last file (`hurry`): it starts, during the play.
+    localPreviews.hurry(files[2]!.key);
+    await Bun.sleep(5);
+    expect(started).toEqual([files[0]!.key, files[2]!.key]);
+    // The play held on its spinner: everything, as at rest.
+    playing.note("p", true, true);
+    await Bun.sleep(5);
+    expect(started).toEqual([files[0]!.key, files[2]!.key, files[1]!.key]);
+    // A fast line while shown: what's queued starts too.
+    localPreviews.reset();
+    started.length = 0;
+    cloudBlocks.laneHooks.downloadBytesPerSecond = () => 50_000_000 / 8;
+    playing.note("p", true);
+    localPreviews.fetchInPlayheadOrder(home.dir, project, 0);
+    await Bun.sleep(5);
+    expect(started.sort()).toEqual(files.map((one) => one.key).sort());
+    // A slow line again, and the play stopping: what waited starts.
+    localPreviews.reset();
+    started.length = 0;
+    cloudBlocks.laneHooks.downloadBytesPerSecond = () => null;
+    localPreviews.fetchInPlayheadOrder(home.dir, project, 0);
+    await Bun.sleep(5);
+    expect(started).toEqual([files[0]!.key]);
     playing.note("p", false);
     await Bun.sleep(5);
-    expect(started).toEqual([one.key]);
+    expect(started).toEqual(files.map((one) => one.key));
   } finally {
+    cloudBlocks.laneHooks.downloadBytesPerSecond = realSpeed;
+    home.cleanup();
+  }
+});
+
+test("a Wi-Fi drop doesn't make a copy one that won't come: a network error is asked again in seconds (at once when the cloud answers again), only a 4xx is a failure for 10 minutes", async () => {
+  const home = scratch("local-previews-drop");
+  const waits = localPreviews.retryHooks.waits;
+  localPreviews.retryHooks.waits = [20, 50, 100];
+  try {
+    disk(Number.POSITIVE_INFINITY);
+    // The line down for 300 ms: every read resets (ECONNRESET), then works.
+    const down = Date.now() + 300;
+    let asked = 0;
+    localPreviews.hooks.fetch = async (_key, local) => {
+      asked++;
+      if (Date.now() < down) throw Object.assign(new Error("The socket connection was closed unexpectedly"), { code: "ECONNRESET" });
+      fs.mkdirSync(path.dirname(local), { recursive: true });
+      fs.writeFileSync(local, "mp4");
+    };
+    const local = localPath(home.dir, KEY);
+    let saidStuck = false;
+    localPreviews.fetchWhole(KEY, local);
+    for (let tries = 0; tries < 200 && !fs.existsSync(local); tries++) {
+      saidStuck ||= localPreviews.wontCome(local);
+      await Bun.sleep(5);
+    }
+    expect(fs.existsSync(local)).toBe(true);
+    expect(saidStuck).toBe(false);
+    expect(asked).toBeGreaterThan(1);
+    // The cloud answering again wakes one waiting its next try at once.
+    localPreviews.retryHooks.waits = [60_000];
+    const other = "edit/proxies/youtube/def/0-1000.mp4";
+    const otherLocal = localPath(home.dir, other);
+    let fail = true;
+    localPreviews.hooks.fetch = async (_key, at) => {
+      if (fail) throw new TypeError("fetch failed");
+      fs.mkdirSync(path.dirname(at), { recursive: true });
+      fs.writeFileSync(at, "mp4");
+    };
+    localPreviews.fetchWhole(other, otherLocal);
+    await Bun.sleep(5);
+    expect(localPreviews.coming(otherLocal)).toBe(true);
+    expect(localPreviews.wontCome(otherLocal)).toBe(false);
+    fail = false;
+    // The cloud back after an outage (three failures in a row began it).
+    outages.failed("r2", "fetch failed");
+    outages.failed("r2", "fetch failed");
+    outages.failed("r2", "fetch failed");
+    outages.answered("r2");
+    await Bun.sleep(5);
+    expect(fs.existsSync(otherLocal)).toBe(true);
+    // R2 saying it isn't there: failed for good, and not asked again on every frame.
+    const gone = "edit/proxies/youtube/gone/0-1000.mp4";
+    const goneLocal = localPath(home.dir, gone);
+    localPreviews.hooks.fetch = async () => {
+      throw Object.assign(new Error("R2 answered 404 to a block read"), { status: 404 });
+    };
+    localPreviews.fetchWhole(gone, goneLocal);
+    await Bun.sleep(5);
+    expect(localPreviews.wontCome(goneLocal)).toBe(true);
+  } finally {
+    localPreviews.retryHooks.waits = waits;
+    outages.forgetForTests();
     home.cleanup();
   }
 });

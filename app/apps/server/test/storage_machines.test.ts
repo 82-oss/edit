@@ -91,3 +91,75 @@ test("on the team's Macs: what Edit keeps free, and whether each kind of work is
   expect(kept(494 * GB, 41 * GB, 5.5 * GB)).toBe(true);
   console.log(lines.join("\n"));
 });
+
+/**
+ * The footage of the project open here is work (Nov 20): kept down to the work's floor and a gigabyte, every other
+ * copy down to the cache's 15 GB. The team's Macs as their reports said (Sphe's M4 ran at 12–18 GB free all week, so
+ * every open project streamed for the whole session), an 8 GB M1 and a nearly full disk.
+ */
+const OPEN_MACS = [
+  { who: "JJ's MacBook Pro", disk: 494 * GB, free: 41 * GB, memory: 16 * 2 ** 30 },
+  { who: "Sphe's M4 Air at its lowest", disk: 245 * GB, free: 12 * GB, memory: 16 * 2 ** 30 },
+  { who: "Sphe's M4 Air at its highest", disk: 245 * GB, free: 18 * GB, memory: 16 * 2 ** 30 },
+  { who: "an 8 GB M1", disk: 245 * GB, free: 10 * GB, memory: 8 * 2 ** 30 },
+  { who: "a nearly full disk", disk: 245 * GB, free: 4 * GB, memory: 16 * 2 ** 30 },
+];
+const FOOTAGE = [2 * GB, 5.5 * GB, 12 * GB];
+
+test("an open project's footage is kept down to the work's floor, every other copy to the cache's; more free room never keeps less, and the open project is never worse off", () => {
+  storage.openHooks.now = () => 1_000_000;
+  try {
+    storage.noteOpenFootage("open", ["edit/proxies/open.mp4"]);
+    // On this machine: the open project's floor is the work's and a gigabyte, the rest the cache's.
+    expect(storage.footageFloor("/d", "edit/proxies/open.mp4")).toBe(storage.CACHE_FLOOR_BYTES);
+    expect(storage.footageFloor("/d", "edit/proxies/other.mp4")).toBe(storage.cacheFloor("/d"));
+    expect(storage.footageFloor("/d", "edit/proxies/open.mp4")).toBeLessThanOrEqual(storage.footageFloor("/d", "edit/proxies/other.mp4"));
+    // Closed for longer than ten minutes (the editor says nothing of it): back to the cache's floor.
+    storage.openHooks.now = () => 1_000_000 + 11 * 60_000;
+    expect(storage.footageFloor("/d", "edit/proxies/open.mp4")).toBe(storage.cacheFloor("/d"));
+    // Still open by the editor's word (opened.ts): kept as work.
+    storage.openHooks.isOpen = (id) => id === "open";
+    expect(storage.footageFloor("/d", "edit/proxies/open.mp4")).toBe(storage.CACHE_FLOOR_BYTES);
+  } finally {
+    storage.openHooks.now = () => Date.now();
+    storage.openHooks.isOpen = () => false;
+  }
+  // Rules of scale, on Macs of 8 GB and of more: more free room never keeps less of either.
+  for (const memory of [8 * 2 ** 30, 16 * 2 ** 30]) {
+    const open = storage.cacheFloorBytesFor(memory);
+    expect(open).toBeLessThanOrEqual(storage.keepFreeFor(245 * GB));
+    let before = -1;
+    for (let free = 0; free <= 150 * GB; free += GB) {
+      const kept = Math.max(0, free - open);
+      expect([memory, free, kept >= before]).toEqual([memory, free, true]);
+      before = kept;
+    }
+  }
+  const lines: string[] = [];
+  for (const mac of OPEN_MACS) {
+    const open = storage.cacheFloorBytesFor(mac.memory);
+    const other = storage.keepFreeFor(mac.disk);
+    const roomOpen = Math.max(0, mac.free - open);
+    const roomOther = Math.max(0, mac.free - other);
+    const fits = (room: number) => FOOTAGE.filter((bytes) => bytes <= room).map((bytes) => `${bytes / GB} GB`);
+    const said = (room: number) => (fits(room).length > 0 ? `${fits(room).join(", ")} fit` : "nothing (it streams)");
+    lines.push(`${mac.who} (${mac.disk / GB} GB disk, ${mac.free / GB} free): the open project's footage kept down to ${open / GB} GB free, ${(roomOpen / GB).toFixed(1)} GB of room, ${said(roomOpen)}; other projects' down to ${other / GB} GB, ${(roomOther / GB).toFixed(1)} GB, ${said(roomOther)}`);
+  }
+  // The M4 at its lowest keeps an open project's whole 2 GB and 5.5 GB edits (it kept none before).
+  expect(Math.max(0, 12 * GB - storage.cacheFloorBytesFor(16 * 2 ** 30))).toBeGreaterThanOrEqual(5.5 * GB);
+  console.log(lines.join("\n"));
+});
+
+test("whole copies' fills beside a play, by the line's measured speed: four at rest and while a play holds, fewer while one is shown, the next minute's files always", async () => {
+  const { fillsWhilePlaying } = await import("../src/cloud_blocks.ts");
+  const lines: string[] = [];
+  let before = -1;
+  for (const mbit of [0, 4, 8, 20, 50, 200]) {
+    const playing = fillsWhilePlaying(mbit === 0 ? null : mbit * 1e6);
+    // A faster line never gets fewer.
+    expect([mbit, playing >= before]).toEqual([mbit, true]);
+    before = playing;
+    lines.push(`${mbit === 0 ? "not measured" : `${mbit} Mbit/s`}: at rest 4 fills, held on its spinner 4, playing ${playing}${playing === 0 ? " (only the next minute's files, one at a time)" : " (and the next minute's files, at least one)"}`);
+  }
+  console.log(lines.join("\n"));
+});

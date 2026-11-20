@@ -20,8 +20,27 @@ import { Button, escapeCloses, IconButton, Modal, ProgressRing } from "./ui";
  * nearly.
  */
 
-/** How long the first answer may take before the project opens anyway, and how long a project nearly ready is given before the dialog shows. */
-export const timing = { firstMs: 1_500, graceMs: 2_000, dialogMs: 1_000, cardMs: 3_000, roomMs: 10_000 };
+/**
+ * How long the first answer may take before the project opens anyway, and how long a project nearly ready is given
+ * before the dialog shows; how long any later ask may take before it's counted as no answer (`askMs`), and how long
+ * the dialog stays up with nothing it waits for moving (`stillMs`: not a byte more here). Past that it opens the
+ * project, the top bar's cloud following the rest, and a play holds on its own spinner for what it needs, as it
+ * would anyway (Nov 20: a dialog waiting on footage nothing would bring stayed up for good; on an 8 Mbit/s line a
+ * block lands every 2 s or so, so a minute with none is a line that's down or a wait that won't end).
+ */
+export const timing = { firstMs: 1_500, graceMs: 2_000, dialogMs: 1_000, cardMs: 3_000, roomMs: 10_000, askMs: 5_000, stillMs: 60_000 };
+
+/** When what the dialog waits for last moved: its bytes here, and when they last changed (`answer` the latest, `now` ms). */
+export function lastMoved(mark: { bytes: number; at: number } | null, answer: Ready | null, now: number): { bytes: number; at: number } {
+  if (mark === null) return { bytes: answer?.bytes_done ?? 0, at: now };
+  if (answer !== null && answer.bytes_done !== mark.bytes) return { bytes: answer.bytes_done, at: now };
+  return mark;
+}
+
+/** Whether the dialog has waited `timing.stillMs` with nothing moving, and opens the project by itself. */
+export function stillTooLong(mark: { bytes: number; at: number }, now: number): boolean {
+  return now - mark.at >= timing.stillMs;
+}
 
 export type Phase = "checking" | "dialog" | "open";
 
@@ -50,7 +69,10 @@ export function useFootage(id: string, loaded: boolean) {
     let alive = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const began = Date.now();
-    const ask = (waiting: boolean) => api.footageReady(id, waiting).catch(() => null);
+    // Every ask bounded: one the server never answers is no answer (the editor opens), never a blank screen for good.
+    const ask = (waiting: boolean) =>
+      Promise.race([api.footageReady(id, waiting).catch(() => null), new Promise<null>((resolve) => setTimeout(() => resolve(null), timing.askMs))]);
+    let moved: { bytes: number; at: number } | null = null;
     const open = (withCard: boolean) => {
       if (!alive) return;
       setPhase("open");
@@ -61,7 +83,9 @@ export function useFootage(id: string, loaded: boolean) {
       const now = await ask(true);
       if (!alive || phaseRef.current !== "dialog") return;
       if (now !== null) setAnswer(now);
+      moved = lastMoved(moved, now, Date.now());
       if (now?.ready) open(!now.done || now.room !== null);
+      else if (stillTooLong(moved, Date.now())) open(true);
       else timer = setTimeout(() => void follow(), timing.dialogMs);
     };
     void (async () => {
@@ -87,6 +111,7 @@ export function useFootage(id: string, loaded: boolean) {
         return;
       }
       setAnswer(second);
+      moved = lastMoved(null, second, Date.now());
       setPhase("dialog");
       phaseRef.current = "dialog";
       timer = setTimeout(() => void follow(), timing.dialogMs);
@@ -105,7 +130,7 @@ export function useFootage(id: string, loaded: boolean) {
     const shownAt = Date.now();
     const tick = async () => {
       // Opened by itself, the rest is still waited on (background work gives way); after Open now it isn't.
-      const now = await api.footageReady(id, !pressed).catch(() => null);
+      const now = await Promise.race([api.footageReady(id, !pressed).catch(() => null), new Promise<null>((resolve) => setTimeout(() => resolve(null), timing.askMs))]);
       if (!alive) return;
       if (now !== null) setAnswer(now);
       const over = now !== null && now.done && (now.room === null || Date.now() - shownAt >= timing.roomMs);

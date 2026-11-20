@@ -19,11 +19,44 @@ const invoke = (): Invoke | null => {
 /** Whether this page is in Edit.app's window, which can draw the preview itself. */
 export const nativeAvailable = (): boolean => invoke() !== null && /Mac/.test(navigator.platform);
 
+/**
+ * How long the window may take to answer before the page counts it as not answering (ms): a quick ask (where it is,
+ * a pause, a hint, the speed, the volume, its place, sources, a patch) 3 s, and one that may read or decode first (its
+ * open, the whole edit, a frame, a play's start, its close) 10 s, past a cold first frame (1.5–3 s through R2 on an
+ * 8 Mbit/s line). Until Nov 20 nothing bounded them: a read stuck in the window queued every Position, Pause and Frame
+ * behind it for good, none of it counted as a failure, so the page never fell back to its own player (5 failures:
+ * playback.ts `nativeFailed`).
+ */
+export const nativeTiming = { quickMs: 3_000, slowMs: 10_000 };
+const SLOW = new Set(["preview_open", "preview_project", "preview_frame", "preview_play", "preview_close"]);
+
+/** The window didn't answer in its time (`nativeTiming`). */
+export class NativeTimeout extends Error {}
+
+/** `promise`, or a rejection with `error()` once `ms` have passed without it settling. */
+export function bounded<T>(promise: Promise<T>, ms: number, error: () => Error): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(error()), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
 const call = async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   const run = invoke();
   if (run === null) throw new Error("not in Edit.app");
-  return run(command, args);
+  const ms = SLOW.has(command) ? nativeTiming.slowMs : nativeTiming.quickMs;
+  return bounded(Promise.resolve().then(() => run(command, args)), ms, () => new NativeTimeout(`the window didn't answer ${command} in ${ms / 1000} s`));
 };
+
+/**
+ * How long before the window's sources are asked again after the server didn't answer them (`attempt`: 0 the first
+ * time): 1, 2, 4, 8, then every 15 s. Until Nov 20 a failed ask was never asked again, so the window had no picture
+ * until the next edit.
+ */
+export function sourcesRetryMs(attempt: number): number {
+  return Math.min(15_000, 1_000 * 2 ** Math.max(0, attempt));
+}
 
 /** Seconds `from..to` of a streamed source in a file here (a pieced proxy's piece): the window reads it instead. */
 export interface NativeExcerpt { from: number; to: number; path: string }

@@ -40,3 +40,28 @@ test("footage someone waits on holds the link like a play: background work waits
     off();
   }
 });
+
+test("a play held on its spinner is a play to the CPU work (subtitle reads, censor checks, renders wait: whenIdle) but shows nothing, so the footage's fills run as at rest (Nov 20)", async () => {
+  const shown: boolean[] = [];
+  const off = playing.onShowChange((now) => shown.push(now));
+  try {
+    playing.note("p", true, true);
+    expect(playing.isPlaying()).toBe(true);
+    expect(playing.isIdle()).toBe(false);
+    expect(playing.showing()).toBe(false);
+    let idle = false;
+    void playing.whenIdle().then(() => (idle = true));
+    // The hold over, the play shown: still not idle.
+    playing.note("p", true);
+    expect(playing.showing()).toBe(true);
+    await Bun.sleep(playing.hooks.pollMs + 10);
+    expect(idle).toBe(false);
+    playing.note("p", false);
+    await Bun.sleep(playing.hooks.pollMs + 10);
+    expect(idle).toBe(true);
+    expect(playing.showing()).toBe(false);
+    expect(shown).toEqual([true, false]);
+  } finally {
+    off();
+  }
+});

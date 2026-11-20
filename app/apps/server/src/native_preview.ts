@@ -269,8 +269,9 @@ export const hooks = { cut: cutWhole };
 
 /**
  * Starts the cuts waiting, two at a time, each only with room for it: a cut is a copy kept only to play sooner, so
- * it claims what it writes (storage.ts) and starts only while the disk keeps the cache's floor beside every other
- * write under way (storage.ts `cacheFloor`), its claim let go however it ends. With no room, or the disk's free space
+ * it claims what it writes (storage.ts) and starts only while the disk keeps its floor beside every other write under
+ * way (storage.ts `footageFloor`: an open project's footage down to the work's floor, else the cache's), its claim let
+ * go however it ends. With no room, or the disk's free space
  * not measurable, the piece streams on and is looked at again at the page's next ask; the cleaner is asked for room.
  * Until Nov 18 cuts claimed nothing, and two of 955 MB could start together on a nearly full disk.
  */
@@ -285,7 +286,7 @@ function cutNext(): void {
     if (need === null) continue;
     dir = next.out.slice(0, next.out.lastIndexOf("/"));
     const free = storage.freeBytes(dir);
-    const room = Number.isFinite(free) ? storage.spare(dir, need, storage.cacheFloor(dir)) : -1;
+    const room = Number.isFinite(free) ? storage.spare(dir, need, storage.footageFloor(dir, next.base)) : -1;
     if (room < 0) {
       if (!cutShort.has(next.out)) {
         cutShort.add(next.out);

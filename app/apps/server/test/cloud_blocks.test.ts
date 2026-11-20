@@ -8,7 +8,7 @@ import * as playing from "../src/playing.ts";
 import * as storage from "../src/storage.ts";
 import * as vbr from "./helpers/vbr_mp4.ts";
 
-import { BLOCK, blocksHere, fetchWhole, HELD_BYTES, heldInMemory, keeping, NoRoom, hedgeHooks, noteViewerMiss, retryHooks, serve, viewerBusy, viewerHooks, waitForViewerRest, warm } from "../src/cloud_blocks.ts";
+import { BLOCK, blocksHere, fetchWhole, HELD_BYTES, heldInMemory, keeping, laneHooks, NoRoom, hedgeHooks, noteViewerMiss, retryHooks, serve, setSoon, signHooks, viewerBusy, viewerHooks, waitForViewerRest, warm } from "../src/cloud_blocks.ts";
 
 // R2 stood in for: a 5½-block object, every range read counted.
 const size = BLOCK * 5 + BLOCK / 2;
@@ -332,8 +332,9 @@ test("at the disk's floor a block read is answered from memory and not kept, a w
     expect(keeping(floorRoot)).toBe(true);
     const again = reads.length;
     await serve(floorRoot, key, `bytes=0-99`, url).then(bytes);
-    // Read from memory, not R2 again, and kept on disk now there's room.
+    // Read from memory, not R2 again, and kept on disk now there's room (written off the server's thread: soon after).
     expect(reads.length).toBe(again);
+    for (let tries = 0; tries < 100 && !fs.existsSync(join(folderFor(floorRoot, key), "0")); tries++) await Bun.sleep(5);
     expect(fs.existsSync(join(folderFor(floorRoot, key), "0"))).toBe(true);
   } finally {
     storage.diskHooks.free = realFree;
@@ -362,7 +363,7 @@ test("a whole copy is told what's left to write as its blocks land, stops where 
   expect(fs.existsSync(join(wholeRoot, "refused.mp4"))).toBe(false);
 });
 
-test("whole copies' fills get no slot while a play is watched, and carry on once it stops; a read someone waits on still goes", async () => {
+test("on a line too slow (or not measured), a shown play gives whole copies' fills no slot but the next minute's files'; they carry on once it stops; a read someone waits on still goes", async () => {
   const playRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-play-"));
   const at = (name: string) => async () => `http://127.0.0.1:${r2.port}/${name}`;
   try {
@@ -375,12 +376,174 @@ test("whole copies' fills get no slot while a play is watched, and carry on once
     // The page's own read isn't held.
     expect((await serve(playRoot, "edit/proxies/watched.mp4", "bytes=0-99", at("watched")))!.status).toBe(206);
     expect(done).toBe(false);
+    // A file the play needs next comes down whole during it.
+    setSoon(new Set(["edit/proxies/next.mp4"]));
+    await fetchWhole(playRoot, "edit/proxies/next.mp4", join(playRoot, "next.mp4"), at("next"));
+    expect(new Uint8Array(fs.readFileSync(join(playRoot, "next.mp4")))).toEqual(object);
+    expect(done).toBe(false);
     playing.note("p", false);
     await copy;
     expect(new Uint8Array(fs.readFileSync(join(playRoot, "paused.mp4")))).toEqual(object);
   } finally {
+    setSoon(new Set());
     playing.reset();
   }
+});
+
+test("how many whole copies' fills read at once: four at rest and while a play holds on its spinner, two beside a shown play on a fast line, one on an 8 Mbit/s one, none under it (Nov 20: none at all while anything played or held)", async () => {
+  // An R2 that holds every read until let go, counting how many are open at once.
+  let open = 0;
+  let most = 0;
+  const gates: (() => void)[] = [];
+  const held = Bun.serve({
+    port: 0,
+    async fetch(request) {
+      const [, a, b] = /bytes=(\d+)-(\d+)/.exec(request.headers.get("range") ?? "") ?? [];
+      open++;
+      most = Math.max(most, open);
+      await new Promise<void>((resolve) => gates.push(resolve));
+      open--;
+      const [from, to] = [Number(a), Math.min(Number(b), size - 1)];
+      return new Response(object.subarray(from, to + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${from}-${to}/${size}` } });
+    },
+  });
+  const realSpeed = laneHooks.downloadBytesPerSecond;
+  const at = (name: string) => async () => `http://127.0.0.1:${held.port}/${name}`;
+  /** The most fill reads open at once over six copies, with `setup` said of the play and the line. */
+  const fillsAtOnce = async (name: string, setup: () => void): Promise<number> => {
+    const fillRoot = fs.mkdtempSync(join(os.tmpdir(), `edit-blocks-${name}-`));
+    open = 0;
+    most = 0;
+    setup();
+    const copies = Array.from({ length: 6 }, (_, n) => fetchWhole(fillRoot, `edit/proxies/${name}${n}.mp4`, join(fillRoot, `${name}${n}.mp4`), at(`${name}${n}`)));
+    await Bun.sleep(60);
+    const seen = most;
+    laneHooks.downloadBytesPerSecond = realSpeed;
+    // The play's stop is heard (its reads let go), as a page's pause is.
+    playing.note("p", false);
+    const drain = setInterval(() => gates.splice(0).forEach((go) => go()), 2);
+    await Promise.all(copies);
+    clearInterval(drain);
+    return seen;
+  };
+  try {
+    expect(await fillsAtOnce("rest", () => {})).toBe(4);
+    expect(await fillsAtOnce("held", () => {
+      laneHooks.downloadBytesPerSecond = () => 1_000_000 / 8;
+      playing.note("p", true, true);
+    })).toBe(4);
+    expect(await fillsAtOnce("fast", () => {
+      laneHooks.downloadBytesPerSecond = () => 50_000_000 / 8;
+      playing.note("p", true);
+    })).toBe(2);
+    expect(await fillsAtOnce("eight", () => {
+      laneHooks.downloadBytesPerSecond = () => 8_000_000 / 8;
+      playing.note("p", true);
+    })).toBe(1);
+    expect(await fillsAtOnce("slow", () => {
+      laneHooks.downloadBytesPerSecond = () => 4_000_000 / 8;
+      playing.note("p", true);
+    })).toBe(0);
+  } finally {
+    laneHooks.downloadBytesPerSecond = realSpeed;
+    playing.reset();
+    void held.stop(true);
+  }
+});
+
+test("a key slow to sign holds no read slot: an asked block of a key already signed is served at once beside six that wait on the relay; one someone waits on gives up signing after its bound, in passing", async () => {
+  const signRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-sign-"));
+  const hang: (() => void)[] = [];
+  let signedAll = false;
+  // Six keys whose signing takes 30 s (the relay renewing a sign-in): read ahead of a jump, each wanting a slot.
+  const slowSign = (name: string) => () => {
+    const signedUrl = `http://127.0.0.1:${r2.port}/${name}`;
+    return signedAll ? Promise.resolve(signedUrl) : new Promise<string>((resolve) => hang.push(() => resolve(signedUrl)));
+  };
+  const warming = Array.from({ length: 6 }, (_, n) => warm(signRoot, `edit/proxies/unsigned${n}.mp4`, 0, 0.1, 1, slowSign(`unsigned${n}`)).catch(() => 0));
+  await Bun.sleep(20);
+  const began = performance.now();
+  const read = await serve(signRoot, "edit/proxies/signed.mp4", "bytes=0-99", url);
+  expect(await bytes(read)).toEqual(object.subarray(0, 100));
+  expect(performance.now() - began).toBeLessThan(1_000);
+  // Someone waiting on a read of a key the relay won't sign: refused after the bound, with no status (a passing failure).
+  const bound = signHooks.askedMs;
+  signHooks.askedMs = 100;
+  try {
+    const failing = serve(signRoot, "edit/proxies/never.mp4", "bytes=0-99", () => new Promise<string>(() => {}));
+    const error = await failing.then(() => null, (thrown: unknown) => thrown);
+    expect(String(error)).toContain("to sign a read");
+    expect((error as { status?: number }).status).toBeUndefined();
+  } finally {
+    signHooks.askedMs = bound;
+    signedAll = true;
+    hang.splice(0).forEach((go) => go());
+    await Promise.all(warming);
+  }
+});
+
+test("joining a whole copy and reading a file to its end give the server's thread a turn between blocks (Nov 20: a 1.26 GB join held a 50 ms timer for 1.86 s)", async () => {
+  const joinRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-join-"));
+  const key = "edit/proxies/long.mp4";
+  const blocks = 32;
+  const total = blocks * BLOCK;
+  const folder = folderFor(joinRoot, key);
+  fs.mkdirSync(folder, { recursive: true });
+  // Every block on disk already: nothing read from R2, so all of it is the disk's.
+  fs.writeFileSync(join(folder, "meta.json"), JSON.stringify({ size: total, type: "video/mp4", key }));
+  const one = new Uint8Array(BLOCK);
+  for (let n = 0; n < blocks; n++) fs.writeFileSync(join(folder, `${n}`), one.fill(n));
+  /** Turns the event loop took (a timer chain at 0 ms) and the longest gap of a 20 ms timer while `work` ran. */
+  const watched = async (work: () => Promise<unknown>) => {
+    let turns = 0;
+    let going = true;
+    const turn = () => {
+      turns++;
+      if (going) setTimeout(turn, 0);
+    };
+    setTimeout(turn, 0);
+    let last = performance.now();
+    let gap = 0;
+    const timer = setInterval(() => {
+      const now = performance.now();
+      gap = Math.max(gap, now - last);
+      last = now;
+    }, 20);
+    // The work starts on a turn of its own, as a request's would.
+    await Bun.sleep(25);
+    turns = 0;
+    last = performance.now();
+    await work();
+    gap = Math.max(gap, performance.now() - last);
+    going = false;
+    clearInterval(timer);
+    return { turns, gap };
+  };
+  const local = join(joinRoot, "long-whole.mp4");
+  const joined = await watched(() => fetchWhole(joinRoot, key, local, url));
+  expect(fs.statSync(local).size).toBe(total);
+  // At least a turn every other block (it was none: the whole join one stretch).
+  expect(joined.turns).toBeGreaterThanOrEqual(blocks / 2);
+  expect(joined.gap).toBeLessThan(100);
+  // A read to the end of a file kept in blocks (the window's FFmpeg): the same.
+  const other = "edit/proxies/streamed.mp4";
+  const otherFolder = folderFor(joinRoot, other);
+  fs.mkdirSync(otherFolder, { recursive: true });
+  fs.writeFileSync(join(otherFolder, "meta.json"), JSON.stringify({ size: total, type: "video/mp4", key: other }));
+  for (let n = 0; n < blocks; n++) fs.writeFileSync(join(otherFolder, `${n}`), one.fill(n));
+  const streamed = await watched(async () => {
+    const response = await serve(joinRoot, other, "bytes=0-", url);
+    const reader = response!.body!.getReader();
+    let got = 0;
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      got += next.value.length;
+    }
+    expect(got).toBe(total);
+  });
+  expect(streamed.turns).toBeGreaterThanOrEqual(blocks / 2);
+  expect(streamed.gap).toBeLessThan(100);
 });
 
 /** An R2 holding `bytes`, every block read counted by its start. */

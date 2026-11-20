@@ -137,6 +137,27 @@ describe("FootageReady", () => {
     expect(cardOn()).toBe(false);
   });
 
+  it("a dialog whose footage stands still (not a byte more) for its minute opens the project by itself, the card following; an ask never answered counts as no answer (Nov 20: it waited for good)", async () => {
+    Object.assign(timing, { stillMs: 80, askMs: 20 });
+    let bytes = 6.1e9;
+    let hang = false;
+    vi.spyOn(api, "footageReady").mockImplementation(async () => (hang ? new Promise<Ready>(() => {}) : answer({ bytes_done: bytes })));
+    mount();
+    await wait(60);
+    expect(dialog()).not.toBeNull();
+    // Bytes still coming: it stays up past the minute.
+    for (let n = 0; n < 6; n++) {
+      bytes += 1e6;
+      await wait(25);
+    }
+    expect(dialog()).not.toBeNull();
+    // The server stops answering and nothing moves: it opens by itself.
+    hang = true;
+    await wait(160);
+    expect(dialog()).toBeNull();
+    expect(document.body.textContent).toContain("The project");
+  });
+
   it("Open now opens it at once, the card keeping the same progress until everything's here, then going", async () => {
     let done = false;
     vi.spyOn(api, "footageReady").mockImplementation(async () => (done ? answer({ ready: true, done: true, files_done: 32 }) : answer({ files_done: 23 })));

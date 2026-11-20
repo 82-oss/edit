@@ -26,10 +26,11 @@
 // "ahead": behind only what a person waits on); then whole copies, the first
 // minutes' files, the rest of the footage, then the graphics (effects'
 // renders), in the fill's lane (local_previews.ts `fetchInPlayheadOrder` with
-// `head`). All of it gives way to a play on this Mac and to nothing else. The
+// `head`). All of it comes down more thinly beside a play shown on this Mac
+// (cloud_blocks.ts `fillsWhilePlaying`) and gives way to nothing else. The
 // disk's floors hold as everywhere (storage.ts): blocks to the work's floor,
-// whole copies to the cache's. When the footage can't all fit it says so, and
-// the start comes first.
+// the open project's whole copies to the work's floor and a gigabyte. When the
+// footage can't all fit it says so, and the start comes first.
 
 import type { FootageComing, FootageReady, FootageStep } from "@edit/types/footage_ready";
 
@@ -109,6 +110,11 @@ interface FileState {
   here: boolean;
   /** Won't come whole for now (no room, or its fetch failed lately): it streams. */
   stuck: boolean;
+  /**
+   * Nothing will bring it before a play reads it: a long video's pieces with no room to keep them (the first minutes'
+   * walk reads blocks, never pieces), or a file R2 refused. A play streams it; the dialog doesn't wait on it.
+   */
+  never: boolean;
 }
 
 /** About how big `media`'s file `key` is when nothing here says. */
@@ -148,7 +154,7 @@ async function filesOf(cache: string, project: Project, root: string | null): Pr
         // Gone between the two looks: counted as here, its size a guess.
         size = guessBytes(media, key);
       }
-      out.push({ media, key, graphic, size, done: size, here: true, stuck: false });
+      out.push({ media, key, graphic, size, done: size, here: true, stuck: false, never: false });
       continue;
     }
     const size = (root === null ? null : cloudBlocks.sizeOf(root, key)) ?? guessBytes(media, key);
@@ -157,11 +163,13 @@ async function filesOf(cache: string, project: Project, root: string | null): Pr
       const seconds = has === "all" ? media.duration : has.reduce((sum, [a, b]) => sum + (b - a), 0);
       const share = media.duration > 0 ? Math.min(1, seconds / media.duration) : 0;
       const here = has === "all" || share >= 0.999;
-      out.push({ media, key, graphic, size, done: here ? size : share * size, here, stuck: !here && storage.spare(cache, 150_000_000, storage.cacheFloor(cache)) < 0 });
+      // Its pieces keep to the open project's floor (storage.ts `footageFloor`), as the fill keeps them (cloud_media.ts `fillPieces`).
+      const stuck = !here && storage.spare(cache, 150_000_000, storage.footageFloor(cache, pieces.baseOf(key))) < 0;
+      out.push({ media, key, graphic, size, done: here ? size : share * size, here, stuck, never: stuck });
       continue;
     }
     const done = root === null ? 0 : Math.min(size, cloudBlocks.bytesHere(root, key));
-    out.push({ media, key, graphic, size, done, here: false, stuck: localPreviews.wontCome(local) });
+    out.push({ media, key, graphic, size, done, here: false, stuck: localPreviews.wontCome(local), never: localPreviews.failedLately(local) });
   }
   return out;
 }
@@ -169,18 +177,31 @@ async function filesOf(cache: string, project: Project, root: string | null): Pr
 /** Seconds of the timeline each need covers. */
 const NEED_S = 5;
 
-/** The stretches a play from the start needs that aren't here, as `smooth` reads them. */
+/**
+ * The stretches a play from the start needs that aren't here, as `smooth` reads them. A stretch of a file is counted
+ * once however many clips play it: a footage item's picture on V1 and its own sound on A1 are two clips of the same
+ * seconds of one file, read once (until Nov 20 each was costed the whole file's bytes, so the footage counted twice and
+ * an 8 Mbit/s line never got smooth). A file nothing will bring before a play reads it (`never`) isn't waited on.
+ */
 async function needsOf(cache: string, project: Project, root: string | null, files: FileState[]): Promise<Need[]> {
   const fps = projectFps(project);
   const byKey = new Map(files.map((file) => [file.media.id, file]));
   const missing = await playbackReady.missingOf(cache, project, root);
   const started = new Set<string>();
+  const counted = new Map<string, [number, number][]>();
   const needs: Need[] = [];
   for (const one of [...missing].sort((a, b) => a.frames[0] - b.frames[0])) {
     const file = byKey.get(one.media.id);
+    if (file?.never === true) continue;
     const size = file?.size ?? guessBytes(one.media, cloudMedia.streamKey(one.media.cloud, "proxy") ?? "");
     const perSecond = one.media.duration > 0 ? size / one.media.duration : 0;
-    const bytes = Math.max(0, one.seconds[1] - one.seconds[0]) * perSecond;
+    // Only what no clip before it already counted of this file.
+    const before = counted.get(one.media.id) ?? [];
+    const fresh = playbackReady.without([one.seconds], before);
+    counted.set(one.media.id, [...before, one.seconds].sort((a, b) => a[0] - b[0]));
+    const seconds = fresh.reduce((sum, [a, b]) => sum + Math.max(0, b - a), 0);
+    if (seconds <= 0) continue;
+    const bytes = seconds * perSecond;
     // A long stretch is played, and read ahead, a little at a time: one need every `NEED_S` of the timeline.
     const length = Math.max(0, one.frames[1] - one.frames[0]) / fps;
     const count = Math.max(1, Math.ceil(length / NEED_S));
@@ -280,6 +301,12 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
     return empty;
   }
   const cache = app.store.cacheDir();
+  // Asked by its editor: it's open, so its footage is kept as work (storage.ts `footageFloor`), before anything is looked at.
+  storage.noteOpenFootage(id, project.media.flatMap((media) => {
+    const key = cloudMedia.streamKey(media.cloud, "proxy");
+    const base = key === null ? null : pieces.baseOf(key);
+    return key === null ? [] : base === null ? [key] : [key, base];
+  }));
   const files = await filesOf(cache, project, root);
   if (files.length === 0) {
     playing.releaseLink(id);
@@ -298,10 +325,12 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
   let room: string | null = null;
   const keeping = cloudBlocks.keeping(root);
   const left = files.filter((file) => !file.here).reduce((sum, file) => sum + (file.size - file.done), 0);
-  let spare = storage.spare(cache, 0, storage.cacheFloor(cache)) + storage.claimedBytes();
+  // The open project's footage keeps to the work's floor and a gigabyte (storage.ts `footageFloor`); this is asked by its editor.
+  const floor = storage.CACHE_FLOOR_BYTES;
+  let spare = storage.spare(cache, 0, floor) + storage.claimedBytes();
   // Short of room for it: projects not in work make room first (oldest first, whole: cache_cleanup.ts `makeRoom`), at
   // most every few minutes however often this is asked; what still doesn't fit plays from the cloud, said below.
-  if (keeping && left > spare && storage.askForRoom(storage.freeBytes(cache) + left - spare) > 0) spare = storage.spare(cache, 0, storage.cacheFloor(cache)) + storage.claimedBytes();
+  if (keeping && left > spare && storage.askForRoom(storage.freeBytes(cache) + left - spare) > 0) spare = storage.spare(cache, 0, floor) + storage.claimedBytes();
   if (!keeping) room = "This Mac's disk is too full to keep the footage, so it plays from the cloud.";
   else if (left > spare) room = `Only ${GB(Math.max(0, spare) + bytes_done)} of the ${GB(bytes_total)} GB fits on this Mac. The start of the edit comes first; the rest plays from the cloud.`;
 

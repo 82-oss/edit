@@ -326,8 +326,9 @@ test("the disk's floors hold: footage that can't all fit is said so plainly, and
     project.clips.push(clip("ca", "a", 0, 18000));
     keep(root, key, 2000, [0]);
     const app = appOf(cache, project);
-    // Room for a gigabyte over what whole copies leave free (what Edit keeps free on the tests' 100 GB disk), of a 4.2 GB file.
-    storage.diskHooks.free = () => storage.cacheFloor(cache) + 1e9;
+    // Room for a gigabyte over what the open project's whole copies leave free (the work's floor and a gigabyte: storage.ts
+    // `footageFloor`, Nov 20), of a 4.2 GB file.
+    storage.diskHooks.free = () => storage.CACHE_FLOOR_BYTES + 1e9;
     const short = await readiness(app, project.id, false);
     expect(short.room).toBe("Only 1.0 of the 4.2 GB fits on this Mac. The start of the edit comes first; the rest plays from the cloud.");
     expect(short.ready).toBe(false);
@@ -533,4 +534,64 @@ test("a footage dialog saying the same for five minutes while someone waits is l
   expect(watchStill("still-1", false, "2100 80", now + 70 * 60_000, "reopened")).toBe(false);
   expect(watchStill("still-1", false, "2100 80", now + 70 * 60_000 + 20_000, "reopened")).toBe(false);
   expect(watchStill("still-1", true, "", now + 20 * 60_000, "ready")).toBe(false);
+});
+
+test("a file's picture and its own sound are one file read once: not counted twice, so a line fast enough for it is ready (Nov 20: on an 8 Mbit/s line the double count alone kept the dialog up)", async () => {
+  const home = scratch("footage-ready-once");
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    footageReady.hooks.root = () => root;
+    let now = 1_000_000;
+    footageReady.hooks.now = () => now;
+    let received = 0;
+    footageReady.hooks.received = () => received;
+    const key = "edit/proxies/drive/talk.mp4";
+    const project = newProject();
+    project.settings.fps = 30;
+    // Ten minutes, 300 blocks (1.05 MB a second of it), its first 72 s here; its picture on V1 and its sound on A1.
+    project.media.push(media({ id: "a", name: "a", path: stream(key), kind: "video", duration: 600, cloud: { proxy: key } } as never));
+    project.clips.push(clip("cv", "a", 0, 18000), { ...(clip("ca", "a", 0, 18000) as object), type: "audio", track: "a1" } as never);
+    keep(root, key, 300, Array.from({ length: 36 }, (_, n) => n));
+    const app = appOf(cache, project);
+    await readiness(app, project.id, false);
+    // 2.5 MB/s measured (1.5 of it a play's: more than the file's 1.05, less than twice it).
+    received += 5_000_000;
+    now += 2_000;
+    const answer = await readiness(app, project.id, false);
+    expect(answer.speed_bps).toBeCloseTo(2_500_000, -3);
+    expect(answer.ready).toBe(true);
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("a long video's pieces the disk has no room to keep (nothing will bring them before a play) aren't waited on: the dialog is ready on a slow line, not up for good (docs/fix-next.md, JJ's case)", async () => {
+  const home = scratch("footage-ready-pieced");
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    footageReady.hooks.root = () => root;
+    let now = 1_000_000;
+    footageReady.hooks.now = () => now;
+    let received = 0;
+    footageReady.hooks.received = () => received;
+    // Blocks are kept (over the work's floor and its margin) but there's no room for a piece over the open project's floor.
+    storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES + 512 * MB;
+    const key = "edit/pieces/drive/long/proxy.mp4";
+    const project = newProject();
+    project.settings.fps = 30;
+    project.media.push(media({ id: "a", name: "a", path: stream(key), kind: "video", duration: 1800, cloud: { proxy: key } } as never));
+    project.clips.push(clip("ca", "a", 0, 54_000));
+    const app = appOf(cache, project);
+    await readiness(app, project.id, false);
+    // 1 MB/s: far too slow to stream a 30-minute proxy smoothly.
+    received += 2_000_000;
+    now += 2_000;
+    const answer = await readiness(app, project.id, true);
+    expect(answer.ready).toBe(true);
+    expect(answer.steps.find((step) => step.kind === "rest")).toMatchObject({ state: "done", streams: true });
+  } finally {
+    home.cleanup();
+  }
 });

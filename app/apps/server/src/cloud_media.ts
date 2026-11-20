@@ -64,6 +64,8 @@ import * as storage from "./storage.ts";
 import * as exportExcerpts from "./export_excerpts.ts";
 import * as filePins from "./file_pins.ts";
 import { prepLine } from "./export_prep.ts";
+import * as speeds from "./export_speeds.ts";
+import { openedTimes } from "./opened.ts";
 import * as pieces from "./proxy_pieces.ts";
 import * as cloud from "./cloud.ts";
 import * as effectCloud from "./effect_cloud.ts";
@@ -194,6 +196,12 @@ export function configurePlayback(app: App): void {
   playbackPorts.set(app.store.cacheDir(), app.port);
   playbackBlocks = join(app.store.cacheDir(), "cloud", "blocks");
   const cache = app.store.cacheDir();
+  // How many whole copies come down beside a play goes by the line's measured speed (cloud_blocks.ts `fillsWhilePlaying`).
+  cloudBlocks.laneHooks.downloadBytesPerSecond = () => speeds.read(app.store.home).download_bps ?? null;
+  // And the blocks themselves say how fast the line is, whether or not the footage dialog ever showed here.
+  cloudBlocks.laneHooks.measured = (bytes, seconds) => speeds.noteDownload(app.store.home, bytes, seconds);
+  // A project the editor says is open keeps its footage as work (storage.ts `footageFloor`), as the cleaner keeps it.
+  storage.openHooks.isOpen = (id) => Date.now() - (openedTimes(app.store.home)[id] ?? 0) < 10 * 60_000;
   piecesContexts.set(cache, pieces.cloudContext(cache, (key) => localPath(cache, key), (key) => originalFor(cache, key), fetchKey, () => app.exports.localRunning?.() ?? false));
   // A pieced proxy's thumbnails, waveform and censored stretches come from its original: reading the proxy would make every piece.
   mediaHooks.analysisInput = async (source) => {
@@ -2064,6 +2072,9 @@ export function fillPieces(app: App, id: string, from = 0): void {
   const project = live.project;
   const fps = project.settings.fps > 0 ? project.settings.fps : 30;
   const wants: { base: string; seconds: number }[] = [];
+  // The pieces the timeline plays in the next minute from `from` (the playhead, as a play warms every 5 s): they come
+  // during a play however slow the line, as the next minute's whole copies do (local_previews.ts `SOON_SECONDS`).
+  const soon: { base: string; seconds: number }[] = [];
   for (const clip of [...project.clips].sort((a, b) => a.start - b.start)) {
     if ((clip.type !== "video" && clip.type !== "audio") || clip.start + clip.duration <= from) continue;
     const media = mediaOf(project, clip.media);
@@ -2073,10 +2084,11 @@ export function fillPieces(app: App, id: string, from = 0): void {
     // Half a piece of the source at a time (a fast clip passes through more of it): every piece it plays, once.
     const step = Math.max(1, Math.floor((pieces.PIECE_SECONDS / 2 / Math.max(speed, 1)) * fps));
     for (let frame = Math.max(clip.start, from); frame < clip.start + clip.duration; frame += step) {
-      wants.push({ base, seconds: (clip.source_in ?? 0) + ((frame - clip.start) / fps) * speed });
+      const want = { base, seconds: (clip.source_in ?? 0) + ((frame - clip.start) / fps) * speed };
+      (frame < from + SOON_PIECES_SECONDS * fps ? soon : wants).push(want);
     }
   }
-  if (wants.length === 0) {
+  if (wants.length === 0 && soon.length === 0) {
     fills.delete(id);
     return;
   }
@@ -2084,22 +2096,32 @@ export function fillPieces(app: App, id: string, from = 0): void {
   fills.set(id, mine);
   const stop = () => mine.stopped;
   const cache = app.store.cacheDir();
-  // Behind the viewer like the block prefetch: making pieces reads R2 too, so it starts only once the viewer rests;
-  // between pieces it gives way to a play (playing.ts) and carries on once it stops, and it stops where a piece would
-  // take the disk under the cache's floor (storage.ts), as whole copies do.
+  const floorKey = (soon[0] ?? wants[0])!.base;
+  // Behind the viewer like the block prefetch: making pieces reads R2 too, so it starts only once the viewer rests.
+  // While a play is shown the next minute's pieces still come; the rest come only where the line has room beside the
+  // play (cloud_blocks.ts `fillsAllowed`), else wait between pieces until it has, or the play stops or holds (until
+  // Nov 20 every piece waited for a pause). It stops where a piece would take the disk under its floor (storage.ts
+  // `footageFloor`: the open project's footage down to the work's floor), as whole copies do.
+  const thin = () => playing.showing() && cloudBlocks.fillsAllowed() === 0;
   void (async () => {
     for (;;) {
-      if (!(await cloudBlocks.waitForViewerRest(stop)) || !(await playing.whenNotPlaying(stop))) return;
+      if (!(await cloudBlocks.waitForViewerRest(stop))) return;
       let paused = false;
       let full = false;
-      await fillHooks.fill(piecesContext(cache), wants, () => {
+      const enough = (later: boolean) => () => {
         if (mine.stopped) return true;
-        if (playing.isPlaying()) return (paused = true);
-        if (storage.spare(cache, PIECE_ROOM, storage.cacheFloor(cache)) < 0) return (full = true);
+        if (later && thin()) return (paused = true);
+        if (storage.spare(cache, PIECE_ROOM, storage.footageFloor(cache, floorKey)) < 0) return (full = true);
         return false;
-      });
+      };
+      // At rest, one fill in the timeline's order; beside a play on a thin line, the next minute's first, on their own.
+      const first = thin() ? soon : [];
+      const rest = first.length > 0 ? wants : [...soon, ...wants];
+      if (first.length > 0) await fillHooks.fill(piecesContext(cache), first, enough(false));
+      if (!full && !mine.stopped && rest.length > 0) await fillHooks.fill(piecesContext(cache), rest, enough(true));
       if (full) diag.info("pieces", `${id}: its long videos' pieces stream on, the disk too full to keep them`);
       if (!paused || mine.stopped) return;
+      while (!mine.stopped && thin()) await Bun.sleep(playing.hooks.pollMs);
     }
   })()
     .catch((error: unknown) => diag.warn("pieces", `${id}: ${diag.messageOf(error)}`))
@@ -2107,6 +2129,9 @@ export function fillPieces(app: App, id: string, from = 0): void {
       if (fills.get(id) === mine) fills.delete(id);
     });
 }
+
+/** Seconds of the timeline from the playhead whose long videos' pieces come during a play however slow the line. */
+const SOON_PIECES_SECONDS = 60;
 
 /**
  * Projects being got ready to open on this Mac (footage_ready.ts, while its dialog is up): the frames its first step
@@ -2147,6 +2172,8 @@ export async function prefetchProject(app: App, id: string, from?: number): Prom
   fillPieces(app, id, at);
   const live = app.store.get(id);
   if (live === null) return 0;
+  // Being watched here: its footage is work, kept down to the work's floor (storage.ts `footageFloor`).
+  storage.noteOpenFootage(id, footageKeys(live.project));
   // Being got ready to open (footage_ready.ts): its first minutes first, in the timeline's order, the graphics last.
   const getting = preparing.get(id);
   const head = getting !== undefined && getting.until > Date.now() ? getting.head : undefined;
@@ -2157,6 +2184,19 @@ export async function prefetchProject(app: App, id: string, from?: number): Prom
     diag.info("cloud", `${id}: ${queued} files of its footage queued to come down whole as the disk has room, from frame ${at}`);
   }
   return queued;
+}
+
+/** Every stream key `project`'s footage is read by, and each long video's base (its pieces'). */
+function footageKeys(project: Project): string[] {
+  const out: string[] = [];
+  for (const media of project.media) {
+    const key = streamKey(media.cloud, "proxy");
+    if (key === null) continue;
+    out.push(key);
+    const base = pieces.baseOf(key);
+    if (base !== null) out.push(base);
+  }
+  return out;
 }
 
 /** Where cloud previews' 2 MiB blocks are kept (cloud_blocks.ts), once playback is configured. */

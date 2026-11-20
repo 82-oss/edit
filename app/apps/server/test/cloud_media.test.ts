@@ -1237,6 +1237,45 @@ test("a long video's pieces come down behind the viewer for a project Edit.app's
   }
 });
 
+test("beside a play shown on a slow line a long video's next minute of pieces still comes, the rest waits for the line or the play's end; on a fast line it all comes (Nov 20: every piece waited for a pause)", async () => {
+  const playing = await import("../src/playing.ts");
+  const fixture = home("fill-pieces-playing");
+  const { app, store, cleanup } = fixture;
+  cloudBlocks.noteViewerMiss(1);
+  const realSpeed = cloudBlocks.laneHooks.downloadBytesPerSecond;
+  const asked: { wants: number[]; stop: () => boolean; done: () => void }[] = [];
+  const filling = spyOn(cloudMedia.fillHooks, "fill").mockImplementation((_context, wants, stop) => new Promise<number>((resolve) => asked.push({ wants: wants.map((want) => Math.round(want.seconds)), stop, done: () => resolve(0) })));
+  try {
+    const key = pieces.proxyKeyOf("youtube:longVIDEO02");
+    const id = store.create("p", SETTINGS).project.id;
+    await store.update(id, "test", (p) => {
+      p.media.push(media("long", playbackPath(key, app.port), { duration: 7200, cloud: { source: "youtube:longVIDEO02", original: "edit/originals/youtube/longVIDEO02/a.mp4", proxy: key, size: 3 } }));
+      p.clips.push({ type: "video", id: "c1", track: "v1", media: "long", start: 0, duration: 3600, source_in: 0, speed: 1 } as never);
+    });
+    // A play shown, the line not measured: the next minute's pieces on their own, nothing holding them.
+    cloudBlocks.laneHooks.downloadBytesPerSecond = () => null;
+    playing.note(id, true);
+    cloudMedia.fillPieces(app, id, 0);
+    for (let tries = 0; tries < 100 && asked.length < 1; tries++) await Bun.sleep(5);
+    expect(asked[0]!.wants).toEqual([0, 30]);
+    expect(asked[0]!.stop()).toBe(false);
+    // Then the rest, which gives way between pieces while the line has no room beside the play.
+    asked[0]!.done();
+    for (let tries = 0; tries < 100 && asked.length < 2; tries++) await Bun.sleep(5);
+    expect(asked[1]!.wants).toEqual([60, 90]);
+    expect(asked[1]!.stop()).toBe(true);
+    // A fast line: they go on beside the play.
+    cloudBlocks.laneHooks.downloadBytesPerSecond = () => 50_000_000 / 8;
+    expect(asked[1]!.stop()).toBe(false);
+  } finally {
+    cloudBlocks.laneHooks.downloadBytesPerSecond = realSpeed;
+    playing.reset();
+    for (const one of asked) one.done();
+    filling.mockRestore();
+    cleanup();
+  }
+});
+
 // Nov 18–19, JJ's Axon bodycam (its index after 6.3 GB of footage): its excerpt's keyframe took over two minutes to
 // find over the cloud's address, and a cut came out "wrong", so the file was handed to him as one that couldn't be
 // downloaded. A cut the cloud's address can't give is made from the original downloaded here whole, once.

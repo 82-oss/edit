@@ -808,7 +808,8 @@ const kept = (file: string): PieceFile => ({ file, release: () => {} });
  * of its picture and its sound (made, or fetched, apart), joined here; a
  * piece with no sound is its picture's. The join is a copy kept only to
  * play sooner, so it keeps to the same floor as the others (storage.ts
- * `cacheFloor`): kept in `joined/` while the disk has room for it, else a
+ * `footageFloor`: an open project's down to the work's floor, else the
+ * cache's): kept in `joined/` while the disk has room for it, else a
  * scratch copy held only while it's read (and a few seconds after). kenobi,
  * Nov 18: with 3.40 GB free, under the floor, every piece of a 24-minute
  * video was joined and kept (~600 MB in 38 s), and the disk fell to
@@ -836,7 +837,7 @@ export function ensurePiece(context: Context, base: string, layout: Layout, n: n
     }
     return to;
   };
-  if (!passing.has(key) && (inFlight.has(key) || storage.spare(context.cache, pieceSize(layout), storage.cacheFloor(context.cache)) >= 0)) {
+  if (!passing.has(key) && (inFlight.has(key) || storage.spare(context.cache, pieceSize(layout), storage.footageFloor(context.cache, base)) >= 0)) {
     return once(key, () => joinInto(out)).then(kept);
   }
   return borrow(key, () => joinInto(scratch(context, "m4s")));
@@ -1112,7 +1113,7 @@ export async function serve(context: Context, request: Request, base: string, pa
   };
   // Everything this range needs, made or fetched first: then the answer streams without waiting.
   const each = covered.map(async (region) => {
-    if (region.kind === "head") return { bytes: fs.readFileSync(await ensureHead(context, base)) };
+    if (region.kind === "head") return { bytes: new Uint8Array(await fs.promises.readFile(await ensureHead(context, base))) };
     if (region.kind === "tail") return { bytes: tail(layout) };
     if (region.kind === "index") return { bytes: index(layout) };
     if (Math.max(from, region.at) - region.at >= region.size - QUIET && !made(context, base, layout, region.n)) return { quiet: true as const };
@@ -1180,22 +1181,26 @@ export async function serve(context: Context, request: Request, base: string, pa
         if (chunk < part.zeros) parts.splice(next, 0, { zeros: part.zeros - chunk });
         return;
       }
-      // A file's stretch, a few MB at a time.
-      const fd = fs.openSync(part.file, "r");
-      try {
-        const chunk = Math.min(part.length, 4 * MIB);
-        const buffer = new Uint8Array(chunk);
-        const got = fs.readSync(fd, buffer, 0, chunk, part.at);
-        if (got <= 0) {
-          controller.error(new Error(`${part.file} ended early`));
-          letGo();
-          return;
+      // A file's stretch, a few MB at a time, read off the server's thread: until Nov 20 each 4 MiB was read with
+      // readSync, and an answer of up to 16 MiB (sent whole) read every part of it in one stretch, nothing else in Edit
+      // running meanwhile (cloud_blocks.ts `fetchWhole` has the measure).
+      return (async () => {
+        const handle = await fs.promises.open(part.file, "r");
+        try {
+          const chunk = Math.min(part.length, 4 * MIB);
+          const buffer = new Uint8Array(chunk);
+          const { bytesRead: got } = await handle.read(buffer, 0, chunk, part.at);
+          if (got <= 0) {
+            controller.error(new Error(`${part.file} ended early`));
+            letGo();
+            return;
+          }
+          controller.enqueue(buffer.subarray(0, got));
+          if (got < part.length) parts.splice(next, 0, { file: part.file, at: part.at + got, length: part.length - got });
+        } finally {
+          await handle.close();
         }
-        controller.enqueue(buffer.subarray(0, got));
-        if (got < part.length) parts.splice(next, 0, { file: part.file, at: part.at + got, length: part.length - got });
-      } finally {
-        fs.closeSync(fd);
-      }
+      })();
     },
   });
   const partial = request.headers.get("range") !== null || to < layout.total;

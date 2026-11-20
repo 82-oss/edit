@@ -9,6 +9,12 @@
 // The page says so (`POST …/playback/warm` with `playing`): at a play, every
 // few seconds while it plays, and at a pause. A play nobody has spoken of for
 // `STALE_MS` is over (a page closed mid-play never says it paused).
+//
+// A play held on its spinner for its footage (`holding`) is a play to the CPU
+// work above (it starts any moment), but not to the footage coming down: while
+// it holds nothing is shown, and what it waits for is that very footage
+// (`showing`; Nov 20: a hold counted as a play stopped the whole copies, so the
+// hold waited on the play's own reads alone).
 
 import * as diag from "./diag.ts";
 import * as tools from "./tools.ts";
@@ -16,24 +22,33 @@ import * as tools from "./tools.ts";
 /** A play last heard of this long ago is over (the page says so every 5 s while it plays). */
 export const hooks = { staleMs: 12_000, pollMs: 250, now: () => Date.now() };
 
-/** Each project playing, and when its page last said so. */
-const plays = new Map<string, number>();
+/** Each project playing, when its page last said so, and whether it's held on its spinner for footage. */
+const plays = new Map<string, { at: number; holding: boolean }>();
 const listeners = new Set<(playing: boolean) => void>();
+const showListeners = new Set<(showing: boolean) => void>();
 let was = false;
+let showWas = false;
 let timer: ReturnType<typeof setTimeout> | undefined;
 
-/** Project `id`'s page says it plays now (`playing`), or that it stopped. */
-export function note(id: string, playing: boolean): void {
-  if (playing) plays.set(id, hooks.now());
+/** Project `id`'s page says it plays now (`playing`; `holding`: held on its spinner for its footage), or that it stopped. */
+export function note(id: string, playing: boolean, holding = false): void {
+  if (playing) plays.set(id, { at: hooks.now(), holding });
   else plays.delete(id);
   changed();
 }
 
-/** Whether anything plays on this Mac now. */
+/** Whether anything plays on this Mac now, held on its spinner or not. */
 export function isPlaying(): boolean {
   const now = hooks.now();
-  for (const [id, at] of plays) if (now - at >= hooks.staleMs) plays.delete(id);
+  for (const [id, play] of plays) if (now - play.at >= hooks.staleMs) plays.delete(id);
   return plays.size > 0;
+}
+
+/** Whether a play is being shown now: playing, not held on its spinner for its footage (what the footage's fills thin out for: cloud_blocks.ts). */
+export function showing(): boolean {
+  if (!isPlaying()) return false;
+  for (const play of plays.values()) if (!play.holding) return true;
+  return false;
 }
 
 /** Told each time playing starts or stops (true: it started). */
@@ -42,14 +57,25 @@ export function onChange(listener: (playing: boolean) => void): () => void {
   return () => listeners.delete(listener);
 }
 
+/** Told each time a play starts or stops being shown (a hold's start and end included). */
+export function onShowChange(listener: (showing: boolean) => void): () => void {
+  showListeners.add(listener);
+  return () => showListeners.delete(listener);
+}
+
 function changed(): void {
   const now = isPlaying();
   clearTimeout(timer);
   // A play nobody speaks of again ends by itself.
   if (now) {
-    const oldest = Math.min(...plays.values());
+    const oldest = Math.min(...[...plays.values()].map((play) => play.at));
     timer = setTimeout(changed, Math.max(10, oldest + hooks.staleMs - hooks.now()));
     (timer as { unref?: () => void }).unref?.();
+  }
+  const shown = showing();
+  if (shown !== showWas) {
+    showWas = shown;
+    for (const listener of showListeners) listener(shown);
   }
   if (now === was) return;
   was = now;
@@ -67,7 +93,7 @@ function changed(): void {
 // the footage is here or they press Open now), the link is theirs as much as during a play: on kenobi (Nov 17, 1
 // MB/s) thumbnail strips, effect renders and backfill uploads took half of it while the dialog waited. Background
 // work gives way to it through the same gate as to a play (`whenIdle`, `isIdle`); the footage itself (whole copies,
-// its blocks, a long video's pieces) gives way only to a play (`isPlaying`, `whenNotPlaying`).
+// its blocks, a long video's pieces) only comes down more thinly while a play is shown (`showing`: cloud_blocks.ts).
 
 /** Each project whose footage someone waits on, and until when that holds (its page asks again within it). */
 const holds = new Map<string, number>();
@@ -130,7 +156,7 @@ export async function whenIdle(stop: () => boolean = () => false): Promise<boole
   return !stop();
 }
 
-/** Resolves once nothing plays: for the footage being waited on itself, which gives way only to a play. */
+/** Resolves once nothing plays, held or not. */
 export async function whenNotPlaying(stop: () => boolean = () => false): Promise<boolean> {
   while (isPlaying() && !stop()) await new Promise((resolve) => setTimeout(resolve, hooks.pollMs));
   return !stop();
@@ -246,6 +272,7 @@ export function reset(): void {
   plays.clear();
   clearTimeout(timer);
   was = false;
+  showWas = false;
   holds.clear();
   clearTimeout(holdTimer);
   idleWas = true;

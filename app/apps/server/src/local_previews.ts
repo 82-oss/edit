@@ -20,6 +20,7 @@ import * as cloudMedia from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import { objectOf } from "./export_excerpts.ts";
 import type { Media, Project } from "./model.ts";
+import * as outages from "./outages.ts";
 import { isFile, parent } from "./paths.ts";
 import * as playing from "./playing.ts";
 import * as pieces from "./proxy_pieces.ts";
@@ -32,9 +33,26 @@ const HURRIED_AT_ONCE = 2;
 type Waiting = { key: string; local: string; bytes: number; sized?: boolean };
 const waiting: Waiting[] = [];
 const fetching = new Set<string>();
-/** When a fetch last failed, so it isn't asked again on every frame (again after `RETRY_MS`). */
+/**
+ * When a fetch last failed for good (R2 said the object isn't there, or refused it: a 4xx), so it isn't asked again on
+ * every frame (again after `RETRY_MS`). A failure in passing (the network's: a reset, a timeout, a name not found, a
+ * read cut off; R2's 5xx) is no such thing: `passing`.
+ */
 const failed = new Map<string, number>();
 const RETRY_MS = 10 * 60_000;
+/**
+ * Copies whose fetch failed in passing, asked again after a short wait that grows with each failure in a row
+ * (`retryHooks`), or at once when the cloud answers again (outages.ts `onBack`). Until Nov 20 every failure was one
+ * for 10 minutes: a 3 s Wi-Fi drop threw every copy under way (a block is tried only 0.5 s and 2 s later), and for
+ * 10 minutes they streamed and the footage dialog counted them as never coming.
+ */
+const passing = new Map<string, { one: Waiting; tries: number; timer: ReturnType<typeof setTimeout> | undefined }>();
+/**
+ * Waits before a copy that failed in passing is asked again (ms), the last for every failure after: a Wi-Fi drop of
+ * seconds costs a copy 2–5 s, an outage of minutes is tried once a minute (and at once when it's over). The same on an
+ * 8 Mbit/s line or a 50 Mbit/s one: what's waited for is the line coming back, not the bytes.
+ */
+export const retryHooks = { waits: [2_000, 5_000, 15_000, 30_000, 60_000] };
 /** Each object's exact size, once its first block has said it (a copy stopped for room keeps it). */
 const sizes = new Map<string, number>();
 /** Files waiting that the disk has no room for now, already said in the log (said again once they've come). */
@@ -45,12 +63,22 @@ const short = new Set<string>();
  * lately. What the footage's readiness counts as not coming (footage_ready.ts).
  */
 export function wontCome(local: string): boolean {
-  return short.has(local) || Date.now() - (failed.get(local) ?? 0) < RETRY_MS;
+  return short.has(local) || failedLately(local);
+}
+
+/** Whether `local`'s fetch failed for good lately (a 4xx), so it isn't asked again yet: nothing will bring it whole for now. */
+export function failedLately(local: string): boolean {
+  return Date.now() - (failed.get(local) ?? 0) < RETRY_MS;
+}
+
+/** Whether `local`'s fetch failed in passing and waits to be asked again (it's queued then by itself). */
+function backingOff(local: string): boolean {
+  return passing.get(local)?.timer !== undefined;
 }
 
 /** Whether `local`'s whole copy is coming down now, or waits its turn with room for it: what Home counts as footage coming (footage_ready.ts `coming`). */
 export function coming(local: string): boolean {
-  return fetching.has(local) || (!short.has(local) && waiting.some((one) => one.local === local));
+  return fetching.has(local) || backingOff(local) || (!short.has(local) && waiting.some((one) => one.local === local));
 }
 
 /** Seams for tests. */
@@ -97,20 +125,27 @@ function sizeOf(one: Waiting): number {
 /**
  * Starts what's waiting, in its order, while slots are free (`most`) and the disk has room for each: one check,
  * here, of the disk's free space less what every copy under way still has to write (storage.ts claims) less this
- * file's own size, kept over the cache's floor (storage.ts `cacheFloor`: never under what Edit keeps free); checked again with what's left
+ * file's own size, kept over its floor (storage.ts `footageFloor`: the open project's footage down to the work's floor,
+ * every other copy over the cache's, never under what Edit keeps free); checked again with what's left
  * to write exactly once its first block says its size (`start`). Until Nov 17 the check was made when the files
  * were queued, counting nothing under way or queued, made again at every warm, and the window's own queue had
  * none: on kenobi 3.3 GB came down in a minute, to ENOSPC. A file with no room waits (it streams on) and is
- * looked at again as the queue moves: a copy ending, a new ask, the cleaner freeing room. Nothing new starts
- * while a play is watched (playing.ts); what's waiting starts once it stops.
+ * looked at again as the queue moves: a copy ending, a new ask, the cleaner freeing room.
+ *
+ * While a play is shown, copies keep starting as the line allows them reads (cloud_blocks.ts `fillsWhilePlaying`);
+ * a file the play needs next (`soon`: the timeline's next minute, a jump's file) always starts, with a slot or two of
+ * its own beside the others. Until Nov 20 nothing started while anything played or held, so a jump's copy waited for a
+ * pause, and nothing but the play's next seconds came down for the whole of a long watch.
  */
 function fetchNext(most = AT_ONCE, only?: Waiting): void {
-  if (playing.isPlaying() || waiting.length === 0 || fetching.size >= most) return;
+  if (waiting.length === 0) return;
   const dir = parent(waiting[0]!.local) ?? waiting[0]!.local;
-  let room = storage.spare(dir, 0, storage.cacheFloor(dir));
+  // Free less every claim: each file's own floor is taken off it below.
+  let room = storage.spare(dir, 0, 0);
+  const others = cloudBlocks.fillsAllowed() > 0;
   let newlyShort = 0;
   let wanted = 0;
-  for (let at = 0; at < waiting.length && fetching.size < most; ) {
+  for (let at = 0; at < waiting.length && fetching.size < Math.max(most, AT_ONCE + HURRIED_AT_ONCE); ) {
     const one = waiting[at]!;
     if (only !== undefined && one !== only) {
       at++;
@@ -120,15 +155,22 @@ function fetchNext(most = AT_ONCE, only?: Waiting): void {
       waiting.splice(at, 1);
       continue;
     }
+    // What the play needs next has slots of its own; the rest wait for a free one, and for the line to allow them reads.
+    const soon = cloudBlocks.isSoon(one.key);
+    if (!soon && (fetching.size >= most || !others)) {
+      at++;
+      continue;
+    }
     // Its size not known yet (the window queues by key): its first block at least, where the exact size is said.
     const need = Math.max(sizeOf(one), cloudBlocks.BLOCK);
-    if (need > room) {
+    const floor = storage.footageFloor(dir, one.key);
+    if (need > room - floor) {
       if (!short.has(one.local)) {
         short.add(one.local);
         newlyShort++;
         for (const listener of failedListeners) listener(one.key, NO_ROOM);
       }
-      wanted = Math.max(wanted, need - room);
+      wanted = Math.max(wanted, need - (room - floor));
       at++;
       continue;
     }
@@ -162,11 +204,12 @@ function start(next: Waiting, need: number): void {
     claim.bytes = left;
     if (checked) return true;
     checked = true;
-    return storage.spare(dir, left, storage.cacheFloor(dir), claim) >= 0;
+    return storage.spare(dir, left, storage.footageFloor(dir, next.key), claim) >= 0;
   };
   void hooks
     .fetch(next.key, next.local, room)
     .then(() => {
+      passing.delete(next.local);
       diag.info("preview", `${next.key}: whole preview here in ${diag.human(performance.now() - started)}`);
       storage.ledger.note(next.local);
       for (const listener of landedListeners) listener(next.key);
@@ -182,9 +225,15 @@ function start(next: Waiting, need: number): void {
         }
         return;
       }
+      // What waits on it now (the censor check) reads the stream; the copy itself comes once the line's back.
+      for (const listener of failedListeners) listener(next.key, diag.messageOf(error));
+      if (!lasting(error)) {
+        askAgain(next, error);
+        return;
+      }
+      passing.delete(next.local);
       failed.set(next.local, Date.now());
       diag.warn("preview", `${next.key}: whole preview not fetched: ${diag.messageOf(error)}`);
-      for (const listener of failedListeners) listener(next.key, diag.messageOf(error));
     })
     .finally(() => {
       claim.release();
@@ -193,14 +242,46 @@ function start(next: Waiting, need: number): void {
     });
 }
 
-// What waited for a play to stop starts once it does.
-playing.onChange((now) => {
-  if (!now) fetchNext();
+/** Whether a fetch's failure is for good: R2 said the object isn't there or refused it (a 4xx but a timeout's or too-many's). Anything without a status is the network's. */
+function lasting(error: unknown): boolean {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" && status >= 400 && status < 500 && status !== 408 && status !== 429;
+}
+
+/** A copy that failed in passing, asked again after its wait (`retryHooks`): never counted as one that won't come. */
+function askAgain(one: Waiting, error: unknown): void {
+  const tries = (passing.get(one.local)?.tries ?? 0) + 1;
+  const waits = retryHooks.waits;
+  const wait = waits[Math.min(tries, waits.length) - 1] ?? 60_000;
+  // Said once, and every tenth after (an outage of an hour says it six times, not sixty).
+  if (tries === 1 || tries % 10 === 0) diag.info("preview", `${one.key}: whole preview interrupted (${diag.messageOf(error)}): asked again in ${Math.round(wait / 1000)} s${tries > 1 ? ` (${tries} in a row)` : ""}`);
+  const entry = { one, tries, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+  entry.timer = setTimeout(() => queueAgain(entry), wait);
+  (entry.timer as { unref?: () => void }).unref?.();
+  passing.set(one.local, entry);
+}
+
+/** A copy that failed in passing back in the queue, at its front (it had started before what waits). */
+function queueAgain(entry: { one: Waiting; timer: ReturnType<typeof setTimeout> | undefined }): void {
+  clearTimeout(entry.timer);
+  entry.timer = undefined;
+  const { one } = entry;
+  if (isFile(one.local) || fetching.has(one.local) || waiting.some((other) => other.local === one.local)) return;
+  waiting.unshift({ ...one, bytes: sizes.get(one.key) ?? one.bytes });
+  fetchNext();
+}
+
+// The cloud answering again (an outage over): every copy that failed in passing is asked again now, not at its next try.
+outages.onBack(() => {
+  for (const entry of passing.values()) if (entry.timer !== undefined) queueAgain(entry);
 });
+
+// A play's start, hold or stop changes what may start (`fetchNext`).
+playing.onShowChange(() => fetchNext());
 
 /** Queues `key`'s whole preview into `local`, once (`bytes`: about how big it is, when known). */
 export function fetchWhole(key: string, local: string, bytes = 0): void {
-  if (Date.now() - (failed.get(local) ?? 0) < RETRY_MS || fetching.has(local) || waiting.some((one) => one.local === local) || isFile(local)) return;
+  if (failedLately(local) || backingOff(local) || fetching.has(local) || waiting.some((one) => one.local === local) || isFile(local)) return;
   waiting.push({ key, local, bytes });
   fetchNext();
 }
@@ -226,7 +307,7 @@ export function whenHere(key: string, local: string, waitMs = 15 * 60_000): Prom
     const offFailed = onFailed((failedKey, error) => {
       if (failedKey === key) done(new Error(error));
     });
-    if (Date.now() - (failed.get(local) ?? 0) < RETRY_MS) {
+    if (failedLately(local)) {
       done(new Error("its fetch failed lately"));
       return;
     }
@@ -251,13 +332,34 @@ function onFailed(listener: (key: string, error: string) => void): () => void {
 
 /** A file the page's player is reading from R2 this moment (a jump past what's here) comes down whole at once, as a jump in the window's does (`hurry`). */
 export function fetchNow(key: string, local: string): void {
-  if (pieces.baseOf(key) !== null || isFile(local) || fetching.has(local) || Date.now() - (failed.get(local) ?? 0) < RETRY_MS) return;
+  if (pieces.baseOf(key) !== null || isFile(local) || fetching.has(local) || failedLately(local) || backingOff(local)) return;
   if (!waiting.some((one) => one.local === local)) waiting.push({ key, local, bytes: 0 });
   hurry(key);
 }
 
 /** Seconds after the playhead whose files come first, and seconds of the edit's start and of each part's start next. */
 const NEXT_SECONDS = 30;
+/**
+ * Seconds after the playhead whose files come down during a play however slow the line (cloud_blocks.ts `setSoon`):
+ * what the play is about to need, and stalls without. A minute of a proxy is 15–33 MB: on an 8 Mbit/s line about
+ * 15–35 s to bring whole beside the play, on a 50 Mbit/s one 3–6 s.
+ */
+const SOON_SECONDS = 60;
+/** The files each project's playhead plays next, and files read now from a jump (`hurry`), by when (kept `SOON_SECONDS`). */
+const soonByProject = new Map<string, Set<string>>();
+const hurried = new Map<string, number>();
+
+/** Tells the block reads which copies the play needs next (cloud_blocks.ts `setSoon`). */
+function tellSoon(): void {
+  const keys = new Set<string>();
+  for (const one of soonByProject.values()) for (const key of one) keys.add(key);
+  const now = Date.now();
+  for (const [key, at] of hurried) {
+    if (now - at < SOON_SECONDS * 1000) keys.add(key);
+    else hurried.delete(key);
+  }
+  cloudBlocks.setSoon(keys);
+}
 const START_SECONDS = 30;
 const PART_SECONDS = 15;
 
@@ -274,7 +376,8 @@ const PART_SECONDS = 15;
  * timeline's from the playhead alone, and a jump to a part waited behind
  * everything between. A pieced proxy is no file (its pieces come instead:
  * `fillPieces`). Asked again from another frame (a jump), the files from there
- * move to the front.
+ * move to the front. The files of the next minute from `from` are the play's
+ * `soon` (see `fetchNext`).
  */
 export function fetchInPlayheadOrder(cache: string, project: Project, from: number, starts: number[] = [], head?: number): number {
   const fps = project.settings.fps > 0 ? project.settings.fps : 30;
@@ -302,6 +405,17 @@ export function fetchInPlayheadOrder(cache: string, project: Project, from: numb
   }
   ranked.sort((a, b) => a.rank - b.rank || a.start - b.start);
   const byId = new Map(project.media.map((media) => [media.id, media]));
+  // What plays in the next minute from the playhead: its copies come during a play however slow the line.
+  if (head === undefined) {
+    const next = new Set<string>();
+    for (const clip of project.clips) {
+      if ((clip.type !== "video" && clip.type !== "audio") || !overlaps(clip, from, SOON_SECONDS)) continue;
+      const key = cloudMedia.streamKey(byId.get(clip.media)?.cloud, "proxy");
+      if (key !== null && pieces.baseOf(key) === null) next.add(key);
+    }
+    soonByProject.set(project.id, next);
+    tellSoon();
+  }
   const wanted: Waiting[] = [];
   const seen = new Set<string>();
   for (const { media: id } of ranked) {
@@ -310,7 +424,7 @@ export function fetchInPlayheadOrder(cache: string, project: Project, from: numb
     if (media === undefined || key === null || pieces.baseOf(key) !== null || isFile(media.path) || seen.has(key)) continue;
     seen.add(key);
     const local = cloudMedia.localPath(cache, key);
-    if (isFile(local) || fetching.has(local) || Date.now() - (failed.get(local) ?? 0) < RETRY_MS) continue;
+    if (isFile(local) || fetching.has(local) || failedLately(local) || backingOff(local)) continue;
     const queued = waiting.find((one) => one.local === local);
     wanted.push(queued ?? { key, local, bytes: previewBytes(media, key) });
   }
@@ -333,6 +447,9 @@ export function fetchInPlayheadOrder(cache: string, project: Project, from: numb
 export function hurry(key: string): void {
   const at = waiting.findIndex((one) => one.key === key);
   if (at < 0) return;
+  // What a play is reading now: it comes down during a play however slow the line.
+  hurried.set(key, Date.now());
+  tellSoon();
   const [one] = waiting.splice(at, 1);
   waiting.unshift(one!);
   fetchNext(AT_ONCE + HURRIED_AT_ONCE, one);
@@ -391,6 +508,11 @@ export function reset(): void {
   waiting.length = 0;
   fetching.clear();
   failed.clear();
+  for (const entry of passing.values()) clearTimeout(entry.timer);
+  passing.clear();
+  soonByProject.clear();
+  hurried.clear();
+  cloudBlocks.setSoon(new Set());
   sizes.clear();
   short.clear();
 }

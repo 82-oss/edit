@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 
 import * as diag from "./diag.ts";
 import { outOfSpace } from "./export_prep.ts";
-import { writeAtomic } from "./files.ts";
+import { nextFileId } from "./files.ts";
 import * as mp4 from "./mp4_index.ts";
 import { join } from "./paths.ts";
 import * as playing from "./playing.ts";
@@ -86,18 +86,97 @@ let inFlight = 0;
  */
 export type Priority = "asked" | "ahead" | "fill";
 const ORDER: Priority[] = ["asked", "ahead", "fill"];
-type Waiter = { go: () => void; priority: Priority; filling?: boolean };
+type Waiter = { go: () => void; priority: Priority; filling?: boolean; key?: string };
 const lanes: Record<Priority, Waiter[]> = { asked: [], ahead: [], fill: [] };
 /** The block reads still waiting for a slot, by id: one someone now waits on moves up. */
 const queued = new Map<string, Waiter>();
 
 let fillsInFlight = 0;
+
 /**
- * Whole copies' fills get no slot while a play is watched (playing.ts): only the blocks a person waits on and the
- * seconds ahead of the playhead are read, and the fills carry on from the block they stopped at once it stops
- * (kenobi, Nov 17: a cold play on an M1 passed over 515 frames in 23 s with every whole copy coming down beside it).
+ * How many whole copies' fills may read at once while a play is shown, by the line's measured speed down (bits a
+ * second; null: not measured). Until Nov 20 a play (or a play held on its spinner) gave the fills no slot at all, so
+ * nothing but the play's own next seconds came down until someone paused for 10–30 minutes ("only working after we
+ * have waited a substantial amount of time", Sphe). A play gives way to the CPU and disk work (playing.ts `whenIdle`:
+ * subtitle reads, censor checks, renders), not to the line: the fills sit behind every read asked and read ahead in
+ * the lanes, and a fill read takes one 2 MiB block. A proxy plays at 2–4.4 Mbit/s (0.25–0.55 MB/s), a page's play
+ * reads 2–3 files at once:
+ * - an 8 Mbit/s home line: one fill beside the play (a block every ~2 s), the play keeping the rest;
+ * - 20 Mbit/s and up (a 50 Mbit/s line): two, each read ~2–3× faster than the play's own blocks are needed;
+ * - under 8 Mbit/s, or not measured yet: none, but for the files the timeline plays in the next minute (`soon`),
+ *   which the play is about to need and stalls without.
+ * Nothing here takes the CPU or the disk an 8 GB M1 plays with: a fill is a network read written as it lands (the
+ * joins off the server's thread, `fetchWhole`).
  */
-const full = (priority: Priority) => inFlight >= AT_ONCE || (priority === "fill" && (fillsInFlight >= FILLS_AT_ONCE || playing.isPlaying()));
+export function fillsWhilePlaying(bps: number | null): number {
+  if (bps === null || !(bps > 0)) return 0;
+  if (bps >= 20_000_000) return 2;
+  if (bps >= 8_000_000) return 1;
+  return 0;
+}
+
+/** Seams: the line's measured speed down (export_speeds.ts `download_bps`, in bytes a second: set at the server's start). */
+export const laneHooks = {
+  downloadBytesPerSecond: (): number | null => null,
+  /** `bytes` of blocks landed in `seconds` with reads in flight throughout: the line's speed, as measured here (`measure`). */
+  measured: (_bytes: number, _seconds: number): void => {},
+};
+
+/**
+ * The line's speed, from the blocks themselves (Nov 21): only the footage dialog measured it, so a Mac that never showed
+ * the dialog counted as unmeasured and brought down nothing but the next minute's files during a play. While reads are
+ * in flight without a break, what lands in five seconds or more (8 MB at least) is the line's speed, or a little
+ * under it; a break in the reads starts the clock again, so quiet time between a play's own reads is never counted as
+ * a slow line.
+ */
+let meter: { from: number; bytes: number } | null = null;
+function measure(bytes: number): void {
+  const now = performance.now();
+  if (meter === null) {
+    // The first block starts the clock: how long it took itself isn't known here.
+    meter = { from: now, bytes: 0 };
+    return;
+  }
+  meter.bytes += bytes;
+  const seconds = (now - meter.from) / 1000;
+  if (seconds < 5 || meter.bytes < 8_000_000) return;
+  laneHooks.measured(meter.bytes, seconds);
+  meter = { from: now, bytes: 0 };
+}
+
+/**
+ * Keys whose whole copies the play needs next (the timeline's next minute from the playhead, or a jump's file being read
+ * now: local_previews.ts), so their fills go during a play however slow the line (one at a time on a line too slow for
+ * any other). Set again as the playhead moves.
+ */
+let soon: ReadonlySet<string> = new Set();
+export function setSoon(keys: ReadonlySet<string>): void {
+  soon = keys;
+  pump();
+}
+export function isSoon(key: string): boolean {
+  return soon.has(key);
+}
+
+/** How many whole copies' fills may read at once now, of copies the play doesn't need next (local_previews.ts starts none of those while it's 0). */
+export function fillsAllowed(): number {
+  return fillLimit(undefined);
+}
+
+/** The fills that may read at once now (`key`: the copy asking), by whether a play is shown (playing.ts `showing`: a play held on its spinner shows nothing, so the fills run as at rest). */
+function fillLimit(key: string | undefined): number {
+  if (!playing.showing()) return FILLS_AT_ONCE;
+  const bps = laneHooks.downloadBytesPerSecond();
+  const most = fillsWhilePlaying(bps === null ? null : bps * 8);
+  return key !== undefined && soon.has(key) ? Math.max(1, most) : most;
+}
+
+/**
+ * Whether a read in `priority` waits: every slot taken, or (a fill) the fills' share taken. Until Nov 20 a fill got no
+ * slot at all while anything played or held (kenobi, Nov 17: a cold play on an M1 passed over 515 frames in 23 s with
+ * every whole copy coming down beside it; the CPU work beside it is what's gated now, the fills only thinned).
+ */
+const full = (priority: Priority, key?: string) => inFlight >= AT_ONCE || (priority === "fill" && fillsInFlight >= fillLimit(key));
 
 /** A read given its slot: counted as what it is now (one moved up while it waited counts as what it was moved to). */
 function take(waiter: Waiter): void {
@@ -106,24 +185,31 @@ function take(waiter: Waiter): void {
   if (waiter.filling) fillsInFlight++;
 }
 
-/** Waiting reads let go into the slots free, the most wanted lane first. */
+/** Waiting reads let go into the slots free, the most wanted lane first (a fill of a file the play needs next ahead of other fills). */
 function pump(): void {
   for (;;) {
-    const lane = ORDER.find((one) => lanes[one].length > 0 && !full(one));
-    if (lane === undefined) return;
-    const waiter = lanes[lane].shift()!;
+    if (inFlight >= AT_ONCE) return;
+    let waiter: Waiter | undefined;
+    for (const lane of ORDER) {
+      const at = lanes[lane].findIndex((one) => !full(lane, one.key));
+      if (at < 0) continue;
+      // A fill of a file the play needs next goes before the other fills.
+      const first = lane === "fill" ? lanes.fill.findIndex((one) => one.key !== undefined && soon.has(one.key) && !full(lane, one.key)) : -1;
+      waiter = lanes[lane].splice(first >= 0 ? first : at, 1)[0];
+      break;
+    }
+    if (waiter === undefined) return;
     take(waiter);
     waiter.go();
   }
 }
 
-playing.onChange((now) => {
-  if (!now) pump();
-});
+// A play's start, hold or stop changes the fills' share.
+playing.onShowChange(() => pump());
 
-async function slot<T>(id: string, priority: Priority, work: () => Promise<T>): Promise<T> {
-  const waiter: Waiter = { go: () => {}, priority };
-  if (full(priority)) {
+async function slot<T>(id: string, priority: Priority, work: () => Promise<T>, key?: string): Promise<T> {
+  const waiter: Waiter = { go: () => {}, priority, key };
+  if (full(priority, key)) {
     await new Promise<void>((resolve) => {
       waiter.go = resolve;
       queued.set(id, waiter);
@@ -137,11 +223,16 @@ async function slot<T>(id: string, priority: Priority, work: () => Promise<T>): 
     inFlight--;
     if (waiter.filling === true) fillsInFlight--;
     pump();
+    // Nothing reading: what lands next isn't measured against the quiet before it.
+    if (inFlight === 0) meter = null;
   }
 }
 
 /** A block read waiting in a lane below `priority` that's now wanted sooner: up to it. */
 function hurryBlock(id: string, priority: Priority): void {
+  // Still being signed: it takes its slot as the sooner one.
+  const want = signing.get(id);
+  if (want !== undefined && ORDER.indexOf(want.priority) > ORDER.indexOf(priority)) want.priority = priority;
   const waiter = queued.get(id);
   if (waiter === undefined || ORDER.indexOf(waiter.priority) <= ORDER.indexOf(priority)) return;
   const at = lanes[waiter.priority].indexOf(waiter);
@@ -225,14 +316,56 @@ export function heldInMemory(): { blocks: number; bytes: number } {
   return { blocks: held.size, bytes: heldBytes };
 }
 
-/** Writes a block's file (or its meta); false when the disk refused it (ENOSPC): the read is answered from memory. */
-function keep(path: string, bytes: string | Uint8Array): boolean {
+/** Writes a small file (a block's meta) whole; false when the disk refused it (ENOSPC). A few bytes: written on the thread. */
+function keepSmall(path: string, text: string): boolean {
+  const tmp = `${path}.${process.pid}-${nextFileId()}.tmp`;
   try {
-    writeAtomic(path, bytes);
+    fs.writeFileSync(tmp, text);
+    fs.renameSync(tmp, path);
     return true;
   } catch (error) {
+    fs.rmSync(tmp, { force: true });
     if (outOfSpace(error)) return false;
     throw error;
+  }
+}
+
+/**
+ * Writes a block's file whole (to the side, synced, then renamed: a block is there whole or not at all); false when the
+ * disk refused it (ENOSPC): the read is answered from memory. Off the server's thread (Nov 20: written, synced and read
+ * back synchronously, a block's 2 MiB held every answer, timer and websocket behind it; see `fetchWhole`).
+ */
+async function keep(path: string, bytes: Uint8Array): Promise<boolean> {
+  const tmp = `${path}.${process.pid}-${nextFileId()}.tmp`;
+  let handle: fs.promises.FileHandle | null = null;
+  try {
+    handle = await fs.promises.open(tmp, "wx");
+    await handle.writeFile(bytes);
+    await handle.sync();
+    await handle.close();
+    handle = null;
+    await fs.promises.rename(tmp, path);
+    return true;
+  } catch (error) {
+    await handle?.close().catch(() => {});
+    await fs.promises.rm(tmp, { force: true }).catch(() => {});
+    if (outOfSpace(error)) return false;
+    throw error;
+  }
+}
+
+/** A block kept on disk, read off the server's thread and touched (so the cleaner keeps what's being played longest); null when it isn't there. */
+async function readKept(path: string): Promise<Uint8Array | null> {
+  // A look first (a stat, microseconds): most asks of a block not here never open it.
+  if (!fs.existsSync(path)) return null;
+  try {
+    const bytes = await fs.promises.readFile(path);
+    const now = new Date();
+    void fs.promises.utimes(path, now, now).catch(() => {});
+    return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  } catch {
+    // Gone between the look and the read (the cleaner took it).
+    return null;
   }
 }
 
@@ -243,23 +376,23 @@ function keep(path: string, bytes: string | Uint8Array): boolean {
 const joining = new Map<string, { path: string; blocks: number }>();
 const joined = new Map<string, string>();
 
-/** Block `index` of `key` from its whole copy here (being joined, or joined), or null. */
-function fromCopy(key: string, index: number): Uint8Array | null {
+/** Block `index` of `key` from its whole copy here (being joined, or joined), or null; read off the server's thread. */
+async function fromCopy(key: string, index: number): Promise<Uint8Array | null> {
   const under = joining.get(key);
   const path = under !== undefined && index < under.blocks ? under.path : joined.get(key);
   if (path === undefined) return null;
-  let fd: number | null = null;
+  let handle: fs.promises.FileHandle | null = null;
   try {
-    fd = fs.openSync(path, "r");
+    handle = await fs.promises.open(path, "r");
     const out = new Uint8Array(BLOCK);
-    const read = fs.readSync(fd, out, 0, BLOCK, index * BLOCK);
-    return read > 0 ? out.subarray(0, read) : null;
+    const { bytesRead } = await handle.read(out, 0, BLOCK, index * BLOCK);
+    return bytesRead > 0 ? out.subarray(0, bytesRead) : null;
   } catch {
-    // The copy gone (the cleaner took it): read again.
-    joined.delete(key);
+    // The copy gone (the cleaner took it, or a join that failed): read again.
+    if (joined.get(key) === path) joined.delete(key);
     return null;
   } finally {
-    if (fd !== null) fs.closeSync(fd);
+    await handle?.close().catch(() => {});
   }
 }
 
@@ -276,59 +409,97 @@ function isHere(root: string, key: string, index: number): boolean {
 }
 
 /** Block `index` of `key` if it's here (disk, memory, whole copy) without reading R2; null if not. */
-function blockHere(root: string, key: string, index: number): Uint8Array | null {
-  try {
-    const bytes = fs.readFileSync(join(folderOf(root, key), `${index}`));
-    return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  } catch {
-    return heldBlock(`${key}#${index}`) ?? fromCopy(key, index);
-  }
+async function blockHere(root: string, key: string, index: number): Promise<Uint8Array | null> {
+  return (await readKept(join(folderOf(root, key), `${index}`))) ?? heldBlock(`${key}#${index}`) ?? (await fromCopy(key, index));
 }
+
+/** Block reads being signed (before they take a slot), by id: one hurried meanwhile takes its slot as the sooner one. */
+const signing = new Map<string, { priority: Priority }>();
 
 /**
  * One block of the object, from disk or R2 (once, however many ask), read as soon as `priority` says (`slot`).
  * One someone waits on ("asked": a page's range, the window's FFmpeg) that misses marks the viewer busy; a hit never does.
+ * Every read of the disk is off the server's thread, so a loop over blocks (a join, a read to the end) gives the
+ * other work a turn between them (Nov 20: a 1.26 GB join held a 50 ms timer for 1.86 s).
  */
-function block(root: string, key: string, index: number, url: BlockSource, priority: Priority = "ahead", hedge = priority === "asked"): Promise<Uint8Array> {
-  const viewer = priority === "asked";
+async function block(root: string, key: string, index: number, url: BlockSource, priority: Priority = "ahead", hedge = priority === "asked"): Promise<Uint8Array> {
+  const id = `${key}#${index}`;
+  // Being read now (from R2): not on disk yet, so not looked for there.
+  const reading0 = reading.get(id);
+  if (reading0 !== undefined) {
+    hurryBlock(id, priority);
+    return reading0;
+  }
   const folder = folderOf(root, key);
   const path = join(folder, `${index}`);
-  try {
-    const bytes = fs.readFileSync(path);
-    // Touched, so the cleaner keeps what's being played longest.
-    const now = new Date();
-    fs.utimesSync(path, now, now);
-    return Promise.resolve(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-  } catch {
-    // Not here yet.
-  }
-  const id = `${key}#${index}`;
+  const kept = await readKept(path);
+  if (kept !== null) return kept;
   const inMemory = heldBlock(id);
   if (inMemory !== null) {
     // Room on the disk again: kept there, and let go from memory.
-    if (keepable(root) && fs.existsSync(folder) && keep(path, inMemory)) unhold(id);
-    return Promise.resolve(inMemory);
+    if (keepable(root) && fs.existsSync(folder)) void keep(path, inMemory).then((done) => done && unhold(id), () => {});
+    return inMemory;
   }
-  const copied = fromCopy(key, index);
-  if (copied !== null) return Promise.resolve(copied);
-  if (viewer) noteViewerMiss();
+  const copied = await fromCopy(key, index);
+  if (copied !== null) return copied;
+  // Another ask may have started its read while this one looked.
   const known = reading.get(id);
   if (known !== undefined) {
     hurryBlock(id, priority);
     return known;
   }
-  const read = slot(id, priority, async () => {
-    const start = index * BLOCK;
-    const { answer, bytes } = await fetchBlock(url, start, hedge);
-    const total = Number(/\/(\d+)$/.exec(answer.headers.get("content-range") ?? "")?.[1] ?? NaN);
-    fs.mkdirSync(folder, { recursive: true });
-    // Its size is a few bytes, kept even at the floor: a read answered from memory still knows how big the object is.
-    if (Number.isFinite(total) && metaOf(folder) === null) keep(join(folder, "meta.json"), JSON.stringify({ size: total, type: answer.headers.get("content-type") ?? "video/mp4", key }));
-    if (!keepable(root) || !keep(path, bytes)) hold(id, bytes);
-    return bytes;
-  }).finally(() => reading.delete(id));
+  if (priority === "asked") noteViewerMiss();
+  const read = (async () => {
+    // Signed before it takes a slot: the slot is for R2's read, and a relay slow to sign (or a sign-in being
+    // renewed, up to 120 s) held all six while reads of keys already signed waited behind them.
+    const want = { priority };
+    signing.set(id, want);
+    let edge: string;
+    try {
+      edge = await signed(url, priority === "asked");
+    } finally {
+      signing.delete(id);
+    }
+    return slot(
+      id,
+      want.priority,
+      async () => {
+        const start = index * BLOCK;
+        const { answer, bytes } = await fetchBlock(edge, url.direct, start, hedge);
+        const total = Number(/\/(\d+)$/.exec(answer.headers.get("content-range") ?? "")?.[1] ?? NaN);
+        await fs.promises.mkdir(folder, { recursive: true });
+        // Its size is a few bytes, kept even at the floor: a read answered from memory still knows how big the object is.
+        if (Number.isFinite(total) && metaOf(folder) === null) keepSmall(join(folder, "meta.json"), JSON.stringify({ size: total, type: answer.headers.get("content-type") ?? "video/mp4", key }));
+        if (!keepable(root) || !(await keep(path, bytes))) hold(id, bytes);
+        return bytes;
+      },
+      key,
+    );
+  })().finally(() => reading.delete(id));
   reading.set(id, read);
   return read;
+}
+
+/**
+ * How long a read someone waits on lets its URL be signed (ms): past it the read fails in passing (a whole copy is
+ * asked again shortly: local_previews.ts), where the relay's own wait is 120 s (cloud.ts). A signing is one round trip
+ * to the relay (0.2–0.5 s from South Africa) and kept 5 h after (cloud_media.ts `streamingUrl`), so 10 s is a relay
+ * that isn't answering, on an 8 Mbit/s line or a 50 Mbit/s one alike.
+ */
+export const signHooks = { askedMs: 10_000 };
+
+/** `source` signed; bounded by `signHooks.askedMs` when someone waits on it. */
+async function signed(source: () => Promise<string>, asked: boolean): Promise<string> {
+  if (!asked) return source();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`the relay took more than ${diag.human(signHooks.askedMs)} to sign a read`)), signHooks.askedMs);
+  });
+  try {
+    return await Promise.race([source(), late]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Waits before a block read is tried again (ms): a passing failure is tried twice more, then it fails its read. */
@@ -355,18 +526,20 @@ async function readOnce(url: string, start: number, signal: AbortSignal): Promis
   throw Object.assign(new Error(`R2 answered ${answer.status} to a block read`), { status: answer.status });
 }
 
-/** From the edge, and for someone waiting, from R2's own URL too once the edge is slow: the first answer wins, the other's dropped. */
-async function readHedged(source: BlockSource, start: number, hedge: boolean): Promise<{ answer: Response; bytes: Uint8Array }> {
+/**
+ * From the edge, and for someone waiting, from R2's own URL too once the edge is slow: the first answer wins, the
+ * other's dropped. R2's own URL is signed only then, and the edge's read never waits on that signing.
+ */
+async function readHedged(edgeUrl: string, direct: (() => Promise<string>) | undefined, start: number, hedge: boolean): Promise<{ answer: Response; bytes: Uint8Array }> {
   const stop = new AbortController();
-  const edge = readOnce(await source(), start, stop.signal);
-  if (!hedge || source.direct === undefined) return edge;
-  const direct = source.direct;
+  const edge = readOnce(edgeUrl, start, stop.signal);
+  if (!hedge || direct === undefined) return edge;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), hedgeHooks.ms)));
   const early = await Promise.race([edge.then((value) => ({ value }), (error: unknown) => ({ error })), late]);
   clearTimeout(timer);
   if (early !== "late" && "value" in early) return early.value;
-  const other = readOnce(await direct(), start, stop.signal);
+  const other = signed(direct, true).then((url) => readOnce(url, start, stop.signal));
   try {
     // The edge failing outright: R2's alone.
     return early !== "late" ? await other : await Promise.any([edge, other]);
@@ -387,11 +560,12 @@ export function receivedBytes(): number {
  * A block's bytes, tried again on a passing failure (the network's, a timeout, R2's 5xx or 429): a read to the
  * end that failed one block ended its answer short, which FFmpeg reads as "Input/output error".
  */
-async function fetchBlock(source: BlockSource, start: number, hedge: boolean): Promise<{ answer: Response; bytes: Uint8Array }> {
+async function fetchBlock(edge: string, direct: (() => Promise<string>) | undefined, start: number, hedge: boolean): Promise<{ answer: Response; bytes: Uint8Array }> {
   for (let attempt = 0; ; attempt++) {
     try {
-      const read = await readHedged(source, start, hedge);
+      const read = await readHedged(edge, direct, start, hedge);
       received += read.bytes.length;
+      measure(read.bytes.length);
       return read;
     } catch (error) {
       const status = (error as { status?: number }).status;
@@ -470,7 +644,7 @@ async function indexFrom(root: string, key: string, url?: BlockSource, priority:
     remember(key, size, known.index);
     return known.index;
   }
-  const read = async (index: number) => (url === undefined ? blockHere(root, key, index) : await block(root, key, index, url, priority));
+  const read = async (index: number) => (url === undefined ? await blockHere(root, key, index) : await block(root, key, index, url, priority));
   const first = await read(0);
   if (first === null) return undefined;
   let parsed = mp4.parse(first, size);
@@ -641,7 +815,7 @@ const PEEK = 512 * 1024;
 
 /** Bytes `from..to` of the object from `direct`, as they arrive, and its size and type; rejects unless R2 answers 206. */
 async function peekAt(direct: () => Promise<string>, from: number, to: number): Promise<{ reader: ReadableStreamDefaultReader<Uint8Array>; size: number; type: string }> {
-  const answer = await fetch(await direct(), { headers: { range: `bytes=${from}-${to}` }, signal: AbortSignal.timeout(30_000) });
+  const answer = await fetch(await signed(direct, true), { headers: { range: `bytes=${from}-${to}` }, signal: AbortSignal.timeout(30_000) });
   const size = Number(/\/(\d+)$/.exec(answer.headers.get("content-range") ?? "")?.[1] ?? NaN);
   if (answer.status !== 206 || answer.body === null || !Number.isFinite(size)) {
     void answer.body?.cancel();
@@ -662,8 +836,9 @@ export class NoRoom extends Error {
 
 /**
  * `key` whole into `local`, through its blocks: each read in the fill's lane, behind every read a person waits on
- * and every read ahead of the playhead, so a copy coming down never holds up the picture (see `Priority`), and none
- * while a play is watched; then joined into `local` (whole or not at all), each block let go as it goes in, so a copy
+ * and every read ahead of the playhead, so a copy coming down never holds up the picture (see `Priority`), and fewer
+ * beside a play that's shown (`fillsWhilePlaying`); then joined into `local` (whole or not at all, off the server's
+ * thread), each block let go as it goes in, so a copy
  * takes its own size on the disk, not twice it (until Nov 17 its blocks stayed a minute beside it). Its stretches
  * are ready to play as their blocks land (playback_ready.ts), not only once the whole copy is in.
  *
@@ -694,9 +869,13 @@ export async function fetchWhole(root: string, key: string, local: string, url: 
     }
   };
   await Promise.all(Array.from({ length: FILL_EACH }, worker));
+  // Joined through a file handle, each block read and written off the server's thread: until Nov 20 the join was one
+  // synchronous stretch (a block on disk read with readFileSync, written with writeSync, unlinked, the next at once),
+  // and nothing else in Edit ran for its length: 1.26 GB held a 50 ms timer for 1.86 s on mandalorian's SSD, warm,
+  // and a cold open joins every file's copy exactly while the person is trying to play.
   const part = `${local}.${process.pid}.part`;
-  fs.mkdirSync(local.slice(0, local.lastIndexOf("/")), { recursive: true });
-  const fd = fs.openSync(part, "w");
+  await fs.promises.mkdir(local.slice(0, local.lastIndexOf("/")), { recursive: true });
+  const handle = await fs.promises.open(part, "w");
   const into = { path: part, blocks: 0 };
   joining.set(key, into);
   let written = 0;
@@ -704,31 +883,42 @@ export async function fetchWhole(root: string, key: string, local: string, url: 
     for (let index = 0; index <= last; index++) {
       // From disk (a block the cleaner took meanwhile is read again).
       const bytes = await block(root, key, index, url, "fill");
-      fs.writeSync(fd, bytes);
+      await writeAll(handle, bytes, index * BLOCK);
       written += bytes.length;
+      // Readable from the copy from here on, so the block can go.
       into.blocks = index + 1;
-      fs.rmSync(join(folder, `${index}`), { force: true });
+      await fs.promises.rm(join(folder, `${index}`), { force: true });
     }
+    await handle.close();
   } catch (error) {
-    fs.closeSync(fd);
+    await handle.close().catch(() => {});
     joining.delete(key);
-    fs.rmSync(part, { force: true });
+    await fs.promises.rm(part, { force: true }).catch(() => {});
     throw outOfSpace(error) ? new NoRoom() : error;
   }
-  fs.closeSync(fd);
   if (written !== meta.size) {
     joining.delete(key);
-    fs.rmSync(part, { force: true });
+    await fs.promises.rm(part, { force: true }).catch(() => {});
     throw new Error(`${key}: ${written} bytes joined of ${meta.size}`);
   }
-  fs.renameSync(part, local);
+  await fs.promises.rename(part, local);
   joined.set(key, local);
   joining.delete(key);
-  fs.rmSync(folder, { recursive: true, force: true });
+  await fs.promises.rm(folder, { recursive: true, force: true });
+}
+
+/** `bytes` written whole at `at` (a write may take fewer than it's given). */
+async function writeAll(handle: fs.promises.FileHandle, bytes: Uint8Array, at: number): Promise<void> {
+  for (let done = 0; done < bytes.length; ) {
+    const { bytesWritten } = await handle.write(bytes, done, bytes.length - done, at + done);
+    if (bytesWritten <= 0) throw new Error("the disk took nothing of a block");
+    done += bytesWritten;
+  }
 }
 
 /** For tests: nothing queued or in flight. */
 export function resetForTests(): void {
+  meter = null;
   reading.clear();
   held.clear();
   heldBytes = 0;
@@ -737,6 +927,8 @@ export function resetForTests(): void {
   joining.clear();
   joined.clear();
   queued.clear();
+  signing.clear();
+  soon = new Set();
   for (const lane of ORDER) lanes[lane].length = 0;
   inFlight = 0;
   fillsInFlight = 0;

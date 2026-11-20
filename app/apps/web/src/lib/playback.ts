@@ -1,7 +1,7 @@
 // Workers decode source frames and PCM. Web Audio owns the timeline clock;
 // the shared WASM compositor still evaluates and renders each complete scene.
 import init, { createEngine, type Engine } from "../engine/pkg/edit_wasm";
-import { api, fetchRetrying, mediaHost, mediaUrl } from "./api";
+import { api, fetchRetrying, mediaHost, mediaUrl, request } from "./api";
 import { Decoder, videoTime } from "./decoder";
 import { note, recordTiming, tell } from "./diagnostics";
 import { AUDIO_CHUNK_SECONDS } from "./decoder.protocol";
@@ -9,7 +9,7 @@ import { crossfadeGain, crossfades, type SoundEdges } from "@edit/types/crossfad
 import { clipEnd, paramAt, projectDuration, validateClips, validateProject } from "./edit";
 import { peopleProblem } from "./people";
 import { mutePoints } from "./mutes";
-import { heardRun, nativeAvailable, nativePreview, playLine, type NativeDrawn, type NativeExcerpt, type NativeRun, type NativeWhere } from "./nativePreview";
+import { bounded, heardRun, nativeAvailable, nativePreview, NativeTimeout, playLine, sourcesRetryMs, type NativeDrawn, type NativeExcerpt, type NativeRun, type NativeWhere } from "./nativePreview";
 import * as patches from "./patch";
 import { SmoothStream } from "./smoothStream";
 import { savedFrame, saveFrame } from "./storage";
@@ -182,6 +182,13 @@ const READY_REST_MS = 3000;
 const WARM_PLAYING_MS = 5000;
 /** A jump farther than this (seconds) from where the footage was last asked for asks again. */
 const WARM_JUMP = 5;
+/**
+ * How long an ask of what's here (`/playback/ready`) or of the window's sources may take before it's given up and
+ * asked again (ms): the server answers either in milliseconds, so 5 s is one that won't (Nov 20: a hung ask left the
+ * grey never updated again, and the window's sources never asked again).
+ */
+const ASK_MS = 5_000;
+const SOURCES_ASK_MS = 10_000;
 
 /** Whether `change` touches the edit's media: what each one is, or where it's read from. */
 function touchesMedia(change: patches.Patch): boolean {
@@ -365,6 +372,10 @@ class Preview {
   private windowSkips: [number, number][] = [];
   /** Whether the server was last told a play is on (`api.warmPlayback`'s `playing`), and the timer saying so again. */
   private toldPlaying = false;
+  /** The page's word to the server on the play (`warmFrom`), sent one after another so they arrive in order. */
+  private warmLine: Promise<unknown> = Promise.resolve();
+  /** The window's sources asks that failed in a row (asked again after `sourcesRetryMs`). */
+  private nativeSourcesTries = 0;
   private playingTimer: ReturnType<typeof setInterval> | undefined;
   /** The window's playhead last moved (frame, when), and since when the page's own play has missed a picture or its sound. */
   private windowMoved = { frame: -1, at: 0 };
@@ -479,7 +490,7 @@ class Preview {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") { this.askReady(); return; }
       this.readyAsking = true;
       Promise.resolve()
-        .then(() => api.playbackReady(project.id))
+        .then(() => bounded(api.playbackReady(project.id), ASK_MS, () => new Error("what's here wasn't said in time")))
         .then(({ ready, keeping }) => {
           if (this.project?.id !== project.id || !Array.isArray(ready)) return;
           this.ready = { project: project.id, stretches: ready };
@@ -493,7 +504,8 @@ class Preview {
 
   /**
    * The footage from `frame` asked to come first (an open, a jump, a play under way), and what's here asked soon after.
-   * Whether a play is on goes with it (the server's background work gives way to one: playing.ts).
+   * Whether a play is on goes with it (the server's background work gives way to one: playing.ts), and whether it's
+   * held on its spinner for its footage (`holding`: the footage's own downloads don't give way to a hold, Nov 20).
    */
   private warmFrom(frame: number) {
     const project = this.project;
@@ -501,8 +513,11 @@ class Preview {
     this.warmedFrame = frame;
     this.warmedAt = performance.now();
     const playing = playhead.playing;
+    const holding = playing && this.holding !== null;
     this.toldPlaying = playing;
-    void Promise.resolve().then(() => api.warmPlayback(project.id, Math.floor(frame), playing)).catch(() => {});
+    const body = holding ? { frame: Math.floor(frame), playing, holding } : { frame: Math.floor(frame), playing };
+    // In order: a play's word and its hold's, sent a moment apart, must not cross on the way.
+    this.warmLine = this.warmLine.then(() => bounded(request<{ ok: boolean }>("POST", `/api/projects/${project.id}/playback/warm`, body), ASK_MS, () => new Error("the footage's ask wasn't answered in time"))).catch(() => {});
     clearTimeout(this.readyTimer);
     this.readyTimer = setTimeout(() => this.askReady(true), 400);
   }
@@ -529,7 +544,7 @@ class Preview {
     if (!this.toldPlaying || project === null) return;
     this.toldPlaying = false;
     const frame = Math.floor(playhead.frame);
-    void Promise.resolve().then(() => api.warmPlayback(project.id, frame, false)).catch(() => {});
+    this.warmLine = this.warmLine.then(() => bounded(api.warmPlayback(project.id, frame, false), ASK_MS, () => new Error("the pause wasn't answered in time"))).catch(() => {});
   }
 
   /**
@@ -545,7 +560,8 @@ class Preview {
     this.holding = hold;
     // At once: the spinner's own fade-in (`appear-late`, 350 ms) keeps a hold that's over sooner from flashing it.
     this.setBuffering(true, true);
-    if (Math.abs(from - this.warmedFrame) > 1 || performance.now() - this.warmedAt > WARM_PLAYING_MS) this.warmFrom(from);
+    // Told at once, as a hold: the footage it waits for comes down as at rest (the server's playing.ts `showing`).
+    this.warmFrom(from);
     recordTiming(stalled ? "preview: holding for footage (stalled)" : "preview: holding for footage", 0);
     if (this.native) {
       // Behind the pause sent before it: the two cross on the way otherwise, and the pause let go of the hold.
@@ -563,6 +579,8 @@ class Preview {
       recordTiming("preview: held for footage", waited);
       this.endHold();
       this.setBuffering(false);
+      // The play shown now: the server's told (its footage's downloads thin out beside it).
+      this.warmFrom(from);
       go();
       return true;
     };
@@ -1066,8 +1084,9 @@ class Preview {
     this.nativeKey = key;
     if (this.nativeAgain !== null) clearTimeout(this.nativeAgain);
     this.nativeAgain = null;
-    api.nativeSources(project.id).then(({ coming, of, ...given }) => {
+    bounded(api.nativeSources(project.id), SOURCES_ASK_MS, () => new Error("the server didn't say them in time")).then(({ coming, of, ...given }) => {
       if (this.nativeKey !== key) return;
+      this.nativeSourcesTries = 0;
       const found = { cache: given.cache, sources: { ...given.sources }, sounds: { ...given.sounds }, excerpts: { ...given.excerpts } };
       // The server reads its edit as it is now, which can be ahead of the page's (an effect's render landed there,
       // and its patch is still on its way here): a media it names otherwise keeps what it was read from (or its file
@@ -1109,8 +1128,17 @@ class Preview {
         }, ahead && this.nativeAhead <= 3 ? 1000 : 15_000);
       }
     }).catch((error: unknown) => {
-      if (this.nativeKey === key) this.nativeKey = "";
-      note("warn", "preview", `the window's preview sources: ${error}`);
+      if (this.nativeKey !== key) return;
+      this.nativeKey = "";
+      if (this.nativeSourcesTries === 0) note("warn", "preview", `the window's preview sources: ${error}`);
+      // Asked again, a little later each time: until Nov 20 a failed ask left the window without a picture until the next edit.
+      const wait = sourcesRetryMs(this.nativeSourcesTries++);
+      if (this.nativeAgain !== null) clearTimeout(this.nativeAgain);
+      this.nativeAgain = setTimeout(() => {
+        this.nativeAgain = null;
+        if (this.nativeKey !== "" || this.project?.id !== project.id) return;
+        this.nativeSourcesFor(project, this.versions);
+      }, wait);
     });
   }
 
@@ -1317,6 +1345,9 @@ class Preview {
         }, (error: unknown) => {
           this.nativePolling = false;
           if (!playhead.playing || generation !== this.nativePlay) return;
+          // Not answering in time (a read stuck in it): a failure counted, the spinner up, asked again; five in a row and
+          // the page draws instead (`nativeFailed`). A refusal stops the play.
+          if (error instanceof NativeTimeout) { this.nativeFailed(error); return; }
           this.nativeFailed(error);
           this.pause();
           this.stoppedBecause(`the window's player didn't say where it was: ${error}`);
