@@ -130,9 +130,11 @@ def main():
         output = clean(job)
         call("/v1/remover/pod/done", {"id": job["id"], "output": output})
         log(f"stretch {job['id']}: {'done' if output.get('ok') else 'failed'} in {output.get('seconds', '?')} s")
-        if not output.get("ok") and "CUDA unknown error" in output.get("error", ""):
-            # This worker's CUDA context is unusable. Give the relay's requeued job to another pod.
-            log("CUDA unavailable: goodbye")
+        if not output.get("ok") and "CUDA" in output.get("error", ""):
+            # Any CUDA error (unknown error, out of memory) leaves this pod failing every stretch in seconds while
+            # healthy pods take minutes, so it takes most of the queue and spends both tries of each (Nov 20: one
+            # card out of memory failed ~40 Boyfriends stretches in 15 min). Go, and the retry lands on another pod.
+            log("CUDA unusable: goodbye")
             call("/v1/remover/pod/bye", {})
             return
         idle_since = time.time()
