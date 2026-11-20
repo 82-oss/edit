@@ -4,8 +4,9 @@
 //
 //   infisical run --projectId=979fe56c-c4d0-4809-b64f-5ebc75eeaf05 --env=prod --path=/edit-relay -- bun app/scripts/remover-runpod/endpoint.ts
 //
-// GPUs, fastest first (Sphe, Nov 19): 5090, 4090, L40 group, A40 group, 3090 group, A4000 group; each card measured on
-// the same 8 s clip (16–52 s, about a cent each). The model needs ~13 GB, so the 16 GB cards are the smallest.
+// GPUs, cheapest a clip first (Nov 20: Boyfriends' cleaning cost ~4x the estimate, mostly on $1.89/h RTX PRO 6000
+// shares): 4090, A4000 group, 3090 group, 5090, then the L40 group (RTX PRO 6000 shares) and A40 group last. Each card
+// measured on the same 8 s clip (16–52 s, about a cent each); the model needs ~13 GB, so 16 GB cards are the smallest.
 import * as fs from "node:fs";
 import { join } from "node:path";
 
@@ -30,9 +31,9 @@ const config = {
   cmd: ['mkdir -p /tmp/remover && echo "$BOOTSTRAP_B64" | base64 -d > /tmp/remover/bootstrap.sh && echo "$HANDLER_B64" | base64 -d > /tmp/remover/handler.py && exec bash /tmp/remover/bootstrap.sh'],
   disk: 25,
   // The image is built on CUDA 12.8: a host with an older driver can't start it (Nov 19: workers looped there).
-  gpu: { pools: ["ADA_32_PRO", "ADA_24", "ADA_48_PRO", "AMPERE_48", "AMPERE_24", "AMPERE_16"], count: 1, minCudaVersion: "12.8" },
-  // The account's 10; a worker stays a minute after its last stretch, so a project's next ones find it warm.
-  workers: { min: 0, max: 10, idleTimeout: 60 },
+  gpu: { pools: ["ADA_24", "AMPERE_16", "AMPERE_24", "ADA_32_PRO", "ADA_48_PRO", "AMPERE_48"], count: 1, minCudaVersion: "12.8" },
+  // The account's 10; a worker goes 5 s after its last stretch (a minute idle each was paid for nothing, Nov 20).
+  workers: { min: 0, max: 10, idleTimeout: 5 },
   scaling: { type: "QUEUE_DELAY", queueDelay: 1 },
   // The plan allows 3 FlashBoot endpoints; this one starts in ~20 s without it.
   flashboot: "OFF",
@@ -42,5 +43,7 @@ const config = {
 
 const listed = await rp("GET", "/v2/serverless");
 const existing = (listed.endpoints ?? []).find((one: { name: string }) => one.name === NAME);
-const endpoint = existing === undefined ? await rp("POST", "/v2/serverless", config) : await rp("PATCH", `/v2/serverless/${existing.id}`, config);
+// An update takes everything but its type (RunPod refuses `type` on a PATCH).
+const { type: _type, ...update } = config;
+const endpoint = existing === undefined ? await rp("POST", "/v2/serverless", config) : await rp("PATCH", `/v2/serverless/${existing.id}`, update);
 console.log(`${existing === undefined ? "made" : "updated"} ${NAME}: ${endpoint.id}`);
