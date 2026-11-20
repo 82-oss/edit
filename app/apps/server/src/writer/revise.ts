@@ -52,13 +52,16 @@ const REVISE_EDITS = "Edits name timeline items by their IDs in CURRENT SCRIPT (
 const TAUGHT_HEAD = `${REVISE_HEAD.slice(0, REVISE_HEAD.indexOf("\nEditorial priority:"))}\nHow this channel's scripts are shaped and how they read is what the channel has been taught, below, and nothing else: there is no house style beside it. Where it says nothing, do plainly what the producer asks.`;
 const TAUGHT_EDGES = "Anchor clip edges to exact words; the app adds breathing room. An edge the producer puts on something seen (a walk-up, a door), or at a time they give, goes at that time, words or not. CURRENT SCRIPT lists what the edge review flags on each clip.";
 
-function systemPrompt(script: Script, format: Format): string {
-  if (format.taught) return `${TAUGHT_HEAD}\n${TAUGHT_EDGES}\n${REVISE_EDITS}\n${TOOLS_NOTE}\n${LESSON_RULE}\nProject title: ${script.title}${lanes.section(script.channel, "script", "lesson", false)}`;
+/** A channel's script with the turn's tools keeps lessons with remember (lanes.ts, teaching.ts keepRule), as every other agent does; otherwise its one answer carries one (lesson_note.ts). */
+function systemPrompt(script: Script, format: Format, tools: boolean): string {
+  const teach = tools && script.channel ? "tools" : "lesson";
+  const rule = teach === "lesson" ? `\n${LESSON_RULE}` : "";
+  if (format.taught) return `${TAUGHT_HEAD}\n${TAUGHT_EDGES}\n${REVISE_EDITS}${tools ? `\n${TOOLS_NOTE}` : ""}${rule}\nProject title: ${script.title}${lanes.section(script.channel, "script", teach, false)}`;
   const cases = format.compilation ? Math.max(caseCount(script.parts), 1) : 1;
   const [shape, length, sequence] = formats.shapeLengthSequence(format, cases);
-  let prompt = `${REVISE_HEAD}\n${shape}\n${length}\n${sequence} ${EDITOR_WRITING.replace("{document}", formats.documentOf(format))}\n${REVISE_EDGES}\n${REVISE_EDITS}\n${TOOLS_NOTE}\n${LESSON_RULE}\nProject title: ${script.title}\n\nPRODUCER'S CUT-IN GUIDE\n${formats.plain(formats.CUT_IN_GUIDE)}\n\nPRODUCER'S JUDGMENT CALLS\n${formats.plain(formats.JUDGMENT_GUIDE)}`;
+  let prompt = `${REVISE_HEAD}\n${shape}\n${length}\n${sequence} ${EDITOR_WRITING.replace("{document}", formats.documentOf(format))}\n${REVISE_EDGES}\n${REVISE_EDITS}${tools ? `\n${TOOLS_NOTE}` : ""}${rule}\nProject title: ${script.title}\n\nPRODUCER'S CUT-IN GUIDE\n${formats.plain(formats.CUT_IN_GUIDE)}\n\nPRODUCER'S JUDGMENT CALLS\n${formats.plain(formats.JUDGMENT_GUIDE)}`;
   for (const [label, guide] of formats.extraGuides(format)) prompt += `\n\n${label}\n${guide}`;
-  return prompt + lanes.section(script.channel, "script", "lesson");
+  return prompt + lanes.section(script.channel, "script", teach);
 }
 
 const SCHEMA = {
@@ -619,7 +622,7 @@ export async function revise(script: Script, request: string, focus: Focus, chat
   // The evidence closes the system prompt, which Claude caches: one revision after another (fresh eyes'
   // two passes, the producer's next request) reads it at a tenth of the price instead of paying for it
   // whole each time (Nov 5, JJ's Mac: $62 of a week's $430 on revisions). What changes, the script, stays in the message.
-  const system = `${systemPrompt(script, format).replace("the complete transcript is in the message", "the complete transcript is at the end of these instructions")}\n\nTHE EVIDENCE\n\n${evidence(script, research)}`;
+  const system = `${systemPrompt(script, format, tools !== undefined).replace("the complete transcript is in the message", "the complete transcript is at the end of these instructions")}\n\nTHE EVIDENCE\n\n${evidence(script, research)}`;
   const earlier = chat.trim() === "" ? "" : `THE CONVERSATION SO FAR\n${chat}\n\n`;
   // A fixing or fresh-eyes pass writes rewrites of saved narration straight in: its report says what changed, never "proposed".
   const writes = direct ? "\n\nThis pass writes every edit straight into the script, rewrites of saved narration included (no proposals): say what you changed." : "";

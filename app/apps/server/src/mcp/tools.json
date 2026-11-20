@@ -1567,6 +1567,10 @@
         "project_id": {
           "description": "Defaults to the project open in the UI.",
           "type": "string"
+        },
+        "done": {
+          "description": "Read back the review's notes already fixed, each with what was done for it, taking nothing: for \"remember all of this for the future\".",
+          "type": "boolean"
         }
       },
       "type": "object"

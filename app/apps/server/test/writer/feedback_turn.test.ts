@@ -9,7 +9,8 @@ import { join } from "node:path";
 
 import type { Script } from "@edit/types/writer";
 
-import { brief, feedbackOf, settle } from "../../src/writer/fixing.ts";
+import { brief, doneBrief, feedbackOf, settle } from "../../src/writer/fixing.ts";
+import { keepRule } from "../../src/teaching.ts";
 import type { Note } from "../../src/writer/reviews.ts";
 import * as store from "../../src/writer/store.ts";
 import * as turnTools from "../../src/writer/turn_tools.ts";
@@ -153,6 +154,42 @@ test("a turn's tools: listed over MCP, and pull_feedback hands on the notes a Re
     turnTools.close(token);
     const closed = (await turnTools.answerTo(token, { jsonrpc: "2.0", id: 4, method: "tools/list" })) as { error: { message: string } };
     expect(closed.error.message).toBe("This turn has ended.");
+  } finally {
+    cleanup();
+  }
+});
+
+test("a round of feedback applied is read back whole, and every area's agent is told how to keep it", () => {
+  const { home, cleanup } = fixtureHome("feedback-done");
+  try {
+    const data = store.dataDir(home);
+    const said = doneBrief(data, script(), [note("a", { status: "done", doneInVersion: 2, fixSummary: "Added the missing BMW.", text: "Read Red File's video.", anchor: { kind: "text", blockId: "n1", start: 0, end: 9, quote: "He swears" } })]);
+    expect(said).toContain("1 note fixed on the review");
+    expect(said).toContain("read only");
+    expect(said).toContain("done in v2");
+    expect(said).toContain("Done: Added the missing BMW.");
+  } finally {
+    cleanup();
+  }
+  // The rule every agent keeps lessons by (edit, ideas, thumbnails, a channel's script).
+  const rule = keepRule("script", "keep it with remember");
+  expect(rule).toContain("A ROUND OF FEEDBACK KEPT WHOLE");
+  expect(rule).toContain("pull_feedback with done: true");
+  expect(rule).toContain("one remember each");
+});
+
+test("a channel's script turn has the channel's lesson tools", async () => {
+  const { home, cleanup } = fixtureHome("feedback-lane-tools");
+  try {
+    const data = store.dataDir(home);
+    const dir = store.scriptDir(data, ID);
+    fs.mkdirSync(dir, { recursive: true });
+    store.write(dir, { ...script(), channel: "ch-test" });
+    const [token, , session] = turnTools.open(data, ID);
+    expect(session.place).toEqual({ channel: "ch-test", lane: "script" });
+    const listed = (await turnTools.answerTo(token, { jsonrpc: "2.0", id: 1, method: "tools/list" })) as { result: { tools: { name: string }[] } };
+    expect(listed.result.tools.map((tool) => tool.name)).toEqual(["pull_feedback", "search_web", "read_page", "search_youtube", "read_youtube", "find_images", "remember", "read_skill", "other_channels"]);
+    turnTools.close(token);
   } finally {
     cleanup();
   }
