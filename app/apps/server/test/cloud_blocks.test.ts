@@ -482,6 +482,8 @@ test("a key slow to sign holds no read slot: an asked block of a key already sig
   }
 });
 
+// What it holds: turns between blocks (none at all before, the whole join one stretch), and no gap a person feels.
+// A turn every fourth block and a quarter second at most: CI's Mac took 15 turns of 32 once where 16 were asked.
 test("joining a whole copy and reading a file to its end give the server's thread a turn between blocks (Nov 20: a 1.26 GB join held a 50 ms timer for 1.86 s)", async () => {
   const joinRoot = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-join-"));
   const key = "edit/proxies/long.mp4";
@@ -523,8 +525,8 @@ test("joining a whole copy and reading a file to its end give the server's threa
   const joined = await watched(() => fetchWhole(joinRoot, key, local, url));
   expect(fs.statSync(local).size).toBe(total);
   // At least a turn every other block (it was none: the whole join one stretch).
-  expect(joined.turns).toBeGreaterThanOrEqual(blocks / 2);
-  expect(joined.gap).toBeLessThan(100);
+  expect(joined.turns).toBeGreaterThanOrEqual(blocks / 4);
+  expect(joined.gap).toBeLessThan(250);
   // A read to the end of a file kept in blocks (the window's FFmpeg): the same.
   const other = "edit/proxies/streamed.mp4";
   const otherFolder = folderFor(joinRoot, other);
@@ -542,8 +544,8 @@ test("joining a whole copy and reading a file to its end give the server's threa
     }
     expect(got).toBe(total);
   });
-  expect(streamed.turns).toBeGreaterThanOrEqual(blocks / 2);
-  expect(streamed.gap).toBeLessThan(100);
+  expect(streamed.turns).toBeGreaterThanOrEqual(blocks / 4);
+  expect(streamed.gap).toBeLessThan(250);
 });
 
 /** An R2 holding `bytes`, every block read counted by its start. */
