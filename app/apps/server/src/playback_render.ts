@@ -96,6 +96,7 @@ interface Running {
   progress: number;
   job: ExportJob | null;
   cancelled: boolean;
+  stop: AbortController;
   key?: string;
   /** When it started (ms since 1970): a chunk plan older than this is another render's. */
   started: number;
@@ -320,6 +321,7 @@ export function request(app: App, id: string, frame?: number): Status {
 /** Stops a render, or its wait for a place. */
 function stop(current: Running): void {
   current.cancelled = true;
+  current.stop.abort();
   current.job?.cancel();
   current.waiting?.();
 }
@@ -359,7 +361,7 @@ async function next(app: App): Promise<void> {
   }
   const project = live.project;
   asked.delete(id);
-  const current: Running = { project: id, rev: live.rev, hash: pictureHash(project), progress: 0, job: null, cancelled: false, started: Date.now() };
+  const current: Running = { project: id, rev: live.rev, hash: pictureHash(project), progress: 0, job: null, cancelled: false, stop: new AbortController(), started: Date.now() };
   running = current;
   failed.delete(id);
   publish(app, id);
@@ -485,14 +487,14 @@ async function render(app: App, project: Project, current: Running): Promise<voi
   }
   current.preparing = urls.size > 0;
   publish(app, project.id);
-  const cut = urls.size === 0 ? [] : await exportExcerpts.prepare(own, plan.start, plan.end, app.store.cacheDir(), urls, keys, () => current.cancelled, { atOnce: PLAYBACK_CELLS_AT_ONCE, behindViewer: true, restMaxMs: 60_000 }).catch((error: unknown) => {
+  const cut = urls.size === 0 ? [] : await exportExcerpts.prepare(own, plan.start, plan.end, app.store.cacheDir(), urls, keys, () => current.cancelled, { atOnce: PLAYBACK_CELLS_AT_ONCE, behindViewer: true, restMaxMs: 60_000, signal: current.stop.signal }).catch((error: unknown) => {
     // Stopped for a newer revision: nothing went wrong (JJ's Mac, Nov 5: 15 such warnings in a day).
     if (!current.cancelled) diag.warn("playback", `${project.name}: its proxies are read over the preview URL (${diag.messageOf(error)})`);
     return [];
   });
   const excerpts = [...whole, ...cut];
   // Its sound from copies on this Mac, as an export's, never decoded over the network (playbackSounds).
-  const sounds = plan.audio ? await playbackSounds(project, plan.start, plan.end, app.store.cacheDir(), () => current.cancelled) : {};
+  const sounds = plan.audio ? await playbackSounds(project, plan.start, plan.end, app.store.cacheDir(), () => current.cancelled, current.stop.signal) : {};
   current.preparing = false;
   if (current.cancelled) return;
   const unpin = exportExcerpts.pin(excerpts.map((one) => one.path));

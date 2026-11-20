@@ -478,8 +478,8 @@ function scratchFile(dir: string, ext: string): string {
 /** `text` with every URL replaced: presigned URLs are credentials, never shown or logged. */
 export const scrub = diag.scrub;
 
-function getUrl(key: string, lasting: number): Promise<string> {
-  return cloud.presign(key, "GET", lasting);
+function getUrl(key: string, lasting: number, signal?: AbortSignal): Promise<string> {
+  return cloud.presign(key, "GET", lasting, false, signal);
 }
 
 /** Probes the object at a presigned URL (the addon scrubs its errors). */
@@ -490,16 +490,35 @@ function probeUrl(url: string): Promise<Probe> {
 /** Downloads in progress, by destination: a second ask for the same file waits for the first and finds it. */
 const fetching = new Map<string, Promise<void>>();
 
+/** Waits for `pending` or stops waiting as soon as `signal` aborts. */
+function raceAbort(pending: Promise<void>, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const done = () => {
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    signal.addEventListener("abort", done, { once: true });
+    void pending.finally(done);
+  });
+}
+
 /** Downloads `key` to `local` unless it's there already, one download per file at a time. */
-export async function fetchKey(key: string, local: string): Promise<void> {
+export async function fetchKey(key: string, local: string, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new Error("cancelled");
   for (;;) {
     const running = fetching.get(local);
     if (running === undefined) break;
     // Only to wait it out: that fetch's own caller hears how it ended, and this one looks again.
-    await running.catch(() => {});
+    if (signal === undefined) {
+      await running.catch(() => {});
+    } else {
+      await raceAbort(running.catch(() => {}), signal);
+      if (signal.aborted) throw new Error("cancelled");
+    }
   }
   if (isFile(local)) return;
-  const job = cloud.download(key, local);
+  const job = cloud.download(key, local, undefined, signal);
   fetching.set(local, job);
   try {
     await job;
@@ -2358,14 +2377,29 @@ export async function forExport(
   cancelled: () => boolean = () => false,
   /** How far the excerpts and sound copies are (0–1), so the card moves before a frame is encoded. */
   onPrep?: (phase: string, ratio: number) => void,
+  /** Aborts any in-flight prep subprocesses or fetches immediately on cancel/preempt. */
+  signal?: AbortSignal,
 ): Promise<[Project, Originals]> {
+  const stop = new AbortController();
+  const isCancelled = () => stop.signal.aborted || cancelled();
+  const onAbort = () => stop.abort();
+  if (signal?.aborted || cancelled()) stop.abort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
+  const watch = setInterval(() => {
+    if (cancelled()) stop.abort();
+  }, 250);
+  watch.unref?.();
   const originals = new ExportOriginals();
   try {
-    return await prepareForExport(project, start, end, cache, originals, cancelled, onPrep);
+    if (isCancelled()) throw new Error("cancelled");
+    return await prepareForExport(project, start, end, cache, originals, isCancelled, onPrep, stop.signal);
   } catch (error) {
     // What it held for the export it didn't hand over goes back to the cleaner.
     originals.release();
     throw error;
+  } finally {
+    clearInterval(watch);
+    signal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -2376,7 +2410,8 @@ async function prepareForExport(
   cache: string,
   originals: ExportOriginals,
   cancelled: () => boolean,
-  onPrep?: (phase: string, ratio: number) => void,
+  onPrep: ((phase: string, ratio: number) => void) | undefined,
+  signal: AbortSignal,
 ): Promise<[Project, Originals]> {
   const out = structuredClone(project) as Project;
   const needed: [string, string][] = [];
@@ -2441,20 +2476,22 @@ async function prepareForExport(
     stills.map(async ([mediaId, key]): Promise<string | null> => {
       const release = await fetching.acquire();
       try {
+        if (cancelled() || signal.aborted) return null;
         const local = localPath(cache, key);
         originals.hold([local]);
-        await fetchKey(key, local);
+        await fetchKey(key, local, signal);
         const media = out.media.find((item) => item.id === mediaId);
         if (media !== undefined) media.path = local;
         return mediaId;
       } catch (error) {
-        diag.warn("export", `${project.id}: fetching the still ${mediaOf(project, mediaId)?.name ?? mediaId}: ${failure(error)}`);
+        if (!cancelled() && !signal.aborted) diag.warn("export", `${project.id}: fetching the still ${mediaOf(project, mediaId)?.name ?? mediaId}: ${failure(error)}`);
         return null;
       } finally {
         release();
       }
     }),
   );
+  if (cancelled() || signal.aborted) throw new Error("cancelled");
   const local = new Set(fetchedStills.filter((one): one is string => one !== null));
   const missingStills = stills.filter(([mediaId]) => !local.has(mediaId)).map(([mediaId]) => mediaOf(project, mediaId)?.name ?? mediaId);
   if (missingStills.length > 0) throw new Error(`the edit's pictures couldn't be fetched from the cloud (${missingStills.join(", ")}): try again`);
@@ -2462,12 +2499,14 @@ async function prepareForExport(
   if (needed.length === 0) return [out, originals];
   const urls = new Map<string, string>();
   for (const [mediaId, key] of needed) {
+    if (cancelled() || signal.aborted) throw new Error("cancelled");
     // Long enough for any export (the relay's most for footage).
-    const url = await getUrl(key, 6 * HOUR);
+    const url = await getUrl(key, 6 * HOUR, signal);
     urls.set(mediaId, url);
     const media = out.media.find((item) => item.id === mediaId);
     if (media !== undefined) media.path = url;
   }
+  if (cancelled() || signal.aborted) throw new Error("cancelled");
   // The picture is read from excerpts cut to this machine (export_excerpts.ts),
   // made while the sound copies come. Both report in, and the card names whichever has more left.
   const heard = needed.filter(([mediaId]) => mediaOf(project, mediaId)?.has_audio === true);
@@ -2486,11 +2525,13 @@ async function prepareForExport(
     onPrep(line.phase, line.ratio);
   };
   const excerpts = exportExcerpts.prepare(project, start, end, cache, urls, new Map(needed), cancelled, {
+    signal,
     onStep: (done, total) => {
       cut = { done, total };
       say();
     },
   }).catch((error: unknown) => {
+    if (cancelled() || signal.aborted) return [];
     diag.warn("export", `${project.id}: excerpts: ${diag.messageOf(error)}; the originals are read from the cloud`);
     return [];
   });
@@ -2500,17 +2541,23 @@ async function prepareForExport(
     heard.map(async ([mediaId, key]) => {
       const release = await copies.acquire();
       try {
+        if (cancelled() || signal.aborted) return;
         // Held from before it's had: one fetched or made now is never taken while the mix reads it.
         originals.hold([localPath(cache, soundKey(key))]);
-        const copy = await soundCopy(cache, key, urls.get(mediaId)!);
+        const copy = await soundCopy(cache, key, urls.get(mediaId)!, signal);
         if (copy !== null) originals.sounds[mediaId] = copy;
       } finally {
-        soundsDone += 1;
-        say();
+        if (!cancelled() && !signal.aborted) {
+          soundsDone += 1;
+          say();
+        }
         release();
       }
     }),
   );
+  // Wait for any in-flight excerpt subprocesses to exit before throwing cancelled or returning.
+  const readyExcerpts = await excerpts;
+  if (cancelled() || signal.aborted) throw new Error("cancelled");
   // Waveforms read their levels from the proxy's cache: the originals share them.
   out.media.forEach((media, index) => {
     const before = project.media[index];
@@ -2526,7 +2573,7 @@ async function prepareForExport(
       // Drawn without levels.
     }
   });
-  originals.excerpts = await excerpts;
+  originals.excerpts = readyExcerpts;
   originals.unpin = exportExcerpts.pin(originals.excerpts.map((one) => one.path));
   diag.info("export", `${project.id}: reading ${needed.length} cloud originals from ${originals.excerpts.length} excerpts here, the rest from the cloud`);
   return [out, originals];
@@ -2545,6 +2592,14 @@ export function soundKey(original: string): string {
   return `edit/sound/${original.startsWith("edit/") ? original.slice("edit/".length) : original}.mov`;
 }
 
+/** Bounds for copying an original's sound out of the cloud (tests shorten them). */
+export const soundCopyTiming = {
+  /** Maximum total wall time for one `copySound` FFmpeg pass (ms): bounds slow trickles / reconnect loops. */
+  timeoutMs: 15 * 60_000,
+  /** How long the partial file may stand still (no new bytes) over HTTP(S) before stopping (ms). */
+  stillMs: 3 * 60_000,
+};
+
 /**
  * Copies the first sound of `input` (a file or URL) into `out` as it is (MOV:
  * AVFoundation reads it). A sound MOV can't carry as it is becomes PCM: a 911
@@ -2552,13 +2607,16 @@ export function soundKey(original: string): string {
  * of the edit it was in failed on it (Nov 12, the bodycam HQ test); ADPCM won't
  * go into a MOV at all.
  */
-export async function copySound(input: string, out: string): Promise<void> {
+export async function copySound(input: string, out: string, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new Error("cancelled");
   fs.mkdirSync(parent(out) ?? ".", { recursive: true });
-  const partial = `${out}.partial.mov`;
-  const write = (codec: string) =>
-    tools.run([
+  const partial = `${out}.partial-${process.pid}-${nextFileId()}.mov`;
+  const write = (codec: string) => {
+    fs.rmSync(partial, { force: true });
+    const command = [
       tools.ffmpeg(),
       "-hide_banner",
+      "-nostdin",
       "-loglevel",
       "error",
       "-y",
@@ -2575,16 +2633,38 @@ export async function copySound(input: string, out: string): Promise<void> {
       "-f",
       "mov",
       partial,
-    ]);
+    ];
+    if (tools.isUrl(input)) {
+      return steps.whileMoving(
+        "Copying the sound",
+        () => steps.sizeOf(partial),
+        (runSignal) => tools.run(command, { timeoutMs: soundCopyTiming.timeoutMs, signal: runSignal }),
+        soundCopyTiming.stillMs,
+        signal,
+      );
+    }
+    return tools.run(command, { timeoutMs: soundCopyTiming.timeoutMs, ...(signal ? { signal } : {}) });
+  };
   try {
-    const copied = await write("copy").then(
-      () => true,
-      () => false,
-    );
-    if (!copied || (await soundReadable(partial)) !== "yes") await write("pcm_s16le");
+    let copied = true;
+    try {
+      await write("copy");
+    } catch (error) {
+      if (signal?.aborted) throw new Error("cancelled");
+      // A stalled or timed-out network read won't succeed by transcoding to PCM over the same hung connection.
+      if (error instanceof steps.StoodStill || (error as { _tag?: unknown } | null)?._tag === "ProcessTimedOut") throw error;
+      copied = false;
+    }
+    if (signal?.aborted) throw new Error("cancelled");
+    if (!copied || (await soundReadable(partial, signal)) !== "yes") {
+      if (signal?.aborted) throw new Error("cancelled");
+      await write("pcm_s16le");
+    }
+    if (signal?.aborted) throw new Error("cancelled");
     fs.renameSync(partial, out);
   } catch (error) {
     fs.rmSync(partial, { force: true });
+    if (signal?.aborted) throw new Error("cancelled");
     throw new Error(scrub(diag.messageOf(error)));
   }
 }
@@ -2597,7 +2677,8 @@ const readable = new Map<string, string>();
  * has no name for it reads as "unknown"): "no" only when FFprobe said so, or
  * said it can't read the file; "unsure" when it didn't run to an answer.
  */
-async function soundReadable(path: string): Promise<"yes" | "no" | "unsure"> {
+async function soundReadable(path: string, signal?: AbortSignal): Promise<"yes" | "no" | "unsure"> {
+  if (signal?.aborted) return "unsure";
   let stamp: string;
   try {
     const stat = fs.statSync(path);
@@ -2607,7 +2688,7 @@ async function soundReadable(path: string): Promise<"yes" | "no" | "unsure"> {
   }
   if (readable.get(path) === stamp) return "yes";
   try {
-    const codec = new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", path], { timeoutMs: 30_000 })).trim();
+    const codec = new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", path], { timeoutMs: 30_000, ...(signal ? { signal } : {}) })).trim();
     if (codec === "" || codec === "unknown") return "no";
     readable.set(path, stamp);
     return "yes";
@@ -2638,25 +2719,32 @@ function shareSound(cache: string, path: string, original: string): void {
  * kept from before, the cloud's, or made now from the original at `url` (and
  * then shared). Null when none can be had (the mix reads the original).
  */
-export async function soundCopy(cache: string, key: string, url: string): Promise<string | null> {
+export async function soundCopy(cache: string, key: string, url: string, signal?: AbortSignal): Promise<string | null> {
+  if (signal?.aborted) return null;
   const copy = soundKey(key);
   const local = localPath(cache, copy);
   // One kept or shared before copySound made PCM of what MOV can't carry is made again (and shared over it).
-  if (isFile(local) && (await soundReadable(local)) !== "no") return local;
+  if (isFile(local) && (await soundReadable(local, signal)) !== "no") return signal?.aborted ? null : local;
+  if (signal?.aborted) return null;
   try {
-    if ((await cloud.head(copy)) !== null) {
-      await fetchKey(copy, local);
-      if ((await soundReadable(local)) !== "no") return local;
+    if ((await cloud.head(copy, signal)) !== null) {
+      await fetchKey(copy, local, signal);
+      if (signal?.aborted) return null;
+      if ((await soundReadable(local, signal)) !== "no") return signal?.aborted ? null : local;
     }
   } catch (error) {
+    if (signal?.aborted) return null;
     diag.warn("export", `fetching a sound copy: ${diag.messageOf(error)}`);
   }
+  if (signal?.aborted) return null;
   try {
-    await diag.timeOnAsync("export", "export: sound copy", copy, () => copySound(url, local));
+    await diag.timeOnAsync("export", "export: sound copy", copy, () => copySound(url, local, signal));
   } catch (error) {
+    if (signal?.aborted) return null;
     diag.warn("export", `copying the sound out of a cloud original: ${diag.messageOf(error)}`);
     return null;
   }
+  if (signal?.aborted) return null;
   void cloud.uploadFile(local, copy).catch((error: unknown) => {
     diag.warn("cloud", `sharing a sound copy: ${diag.messageOf(error)}`);
   });
@@ -2672,9 +2760,16 @@ export async function soundCopy(cache: string, key: string, url: string): Promis
  * 26 to 38 minutes "decoding", where an export's from its copies took 2 s.
  * A media whose copy can't be had is left out (the render reads it as before).
  */
-export async function playbackSounds(project: Project, start: number, end: number, cache: string, cancelled: () => boolean = () => false): Promise<Record<string, string>> {
+export async function playbackSounds(project: Project, start: number, end: number, cache: string, cancelled: () => boolean = () => false, signal?: AbortSignal): Promise<Record<string, string>> {
   const sounds: Record<string, string> = {};
-  if (!cloud.enabled()) return sounds;
+  if (!cloud.enabled() || signal?.aborted || cancelled()) return sounds;
+  const stop = new AbortController();
+  const onAbort = () => stop.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const watch = setInterval(() => {
+    if (cancelled()) stop.abort();
+  }, 250);
+  watch.unref?.();
   const heard = usedMedia(project, start, end).flatMap((mediaId) => {
     const media = mediaOf(project, mediaId);
     const where = media?.cloud;
@@ -2683,42 +2778,50 @@ export async function playbackSounds(project: Project, start: number, end: numbe
   const began = Date.now();
   let made = 0;
   const copies = new Semaphore(3);
-  await Promise.all(
-    heard.map(async ([mediaId, where]) => {
-      const release = await copies.acquire();
-      try {
-        if (cancelled()) return;
-        const original = localPath(cache, soundKey(where.original));
-        // A copy made before copySound made PCM of what MOV can't carry isn't mixed (the proxy's is, below).
-        if (isFile(original) && (await soundReadable(original)) !== "no") {
-          sounds[mediaId] = original;
-          return;
-        }
-        const up = await cloud.head(soundKey(where.original)).catch((error: unknown) => {
-          diag.warn("export", `${mediaId}: R2 didn't say whether its original's sound is there, so its proxy's is used: ${diag.messageOf(error)}`);
-          return null;
-        });
-        if (up !== null) {
-          await fetchKey(soundKey(where.original), original);
-          if ((await soundReadable(original)) !== "no") {
-            sounds[mediaId] = original;
+  try {
+    await Promise.all(
+      heard.map(async ([mediaId, where]) => {
+        const release = await copies.acquire();
+        try {
+          if (cancelled() || stop.signal.aborted) return;
+          const original = localPath(cache, soundKey(where.original));
+          // A copy made before copySound made PCM of what MOV can't carry isn't mixed (the proxy's is, below).
+          if (isFile(original) && (await soundReadable(original, stop.signal)) !== "no") {
+            if (!stop.signal.aborted) sounds[mediaId] = original;
             return;
           }
+          if (cancelled() || stop.signal.aborted) return;
+          const up = await cloud.head(soundKey(where.original), stop.signal).catch((error: unknown) => {
+            if (!cancelled() && !stop.signal.aborted) diag.warn("export", `${mediaId}: R2 didn't say whether its original's sound is there, so its proxy's is used: ${diag.messageOf(error)}`);
+            return null;
+          });
+          if (cancelled() || stop.signal.aborted) return;
+          if (up !== null) {
+            await fetchKey(soundKey(where.original), original, stop.signal);
+            if (cancelled() || stop.signal.aborted) return;
+            if ((await soundReadable(original, stop.signal)) !== "no") {
+              if (!stop.signal.aborted) sounds[mediaId] = original;
+              return;
+            }
+          }
+          if (where.proxy === undefined || cancelled() || stop.signal.aborted) return;
+          const proxy = await soundCopy(cache, where.proxy, await getUrl(where.proxy, HOUR, stop.signal), stop.signal);
+          if (proxy !== null && !stop.signal.aborted) {
+            sounds[mediaId] = proxy;
+            made += 1;
+          }
+        } catch (error) {
+          if (!cancelled() && !stop.signal.aborted) diag.warn("playback", `${project.id}: a sound copy for ${mediaOf(project, mediaId)?.name ?? mediaId}: ${failure(error)}; its sound is read from the cloud`);
+        } finally {
+          release();
         }
-        if (where.proxy === undefined) return;
-        const proxy = await soundCopy(cache, where.proxy, await getUrl(where.proxy, HOUR));
-        if (proxy !== null) {
-          sounds[mediaId] = proxy;
-          made += 1;
-        }
-      } catch (error) {
-        diag.warn("playback", `${project.id}: a sound copy for ${mediaOf(project, mediaId)?.name ?? mediaId}: ${failure(error)}; its sound is read from the cloud`);
-      } finally {
-        release();
-      }
-    }),
-  );
-  if (heard.length > 0) diag.info("playback", `${project.id}: ${Object.keys(sounds).length} of ${heard.length} sounds from copies on ${THIS_MACHINE} (${made} made from proxies) in ${Math.round((Date.now() - began) / 1000)} s`);
+      }),
+    );
+  } finally {
+    clearInterval(watch);
+    signal?.removeEventListener("abort", onAbort);
+  }
+  if (heard.length > 0 && !cancelled() && !stop.signal.aborted) diag.info("playback", `${project.id}: ${Object.keys(sounds).length} of ${heard.length} sounds from copies on ${THIS_MACHINE} (${made} made from proxies) in ${Math.round((Date.now() - began) / 1000)} s`);
   return sounds;
 }
 

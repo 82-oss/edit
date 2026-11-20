@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
-import { archiveExportFile, archiveFinished, beingRead, chunkFolder, deleteExport, dropKept, exportCloud, ExportRegistry, holdExport, listExports, restorePrevious, resumeSnapshot, room, roomWanted, stall, withExport } from "../src/exports.ts";
+import { aheadFile, archiveExportFile, archiveFinished, beingRead, chunkFolder, deleteExport, dropKept, exportCloud, ExportRegistry, holdExport, listExports, restorePrevious, resumeSnapshot, room, roomWanted, stall, withExport } from "../src/exports.ts";
 import type { Project } from "../src/model.ts";
 import * as capacity from "../src/export_capacity.ts";
 import * as seams from "../src/seams.ts";
@@ -827,4 +827,182 @@ test("a report's memory is the share macOS calls available, not the free pages",
   const given = { chip: "Apple M4 Pro", totalBytes: 25.8e9, cores: 12, availablePercent: () => 46, load: () => 1 };
   expect(capacity.memorySummary(given)).toBe("46% available of 25.8 GB");
   expect(capacity.memorySummary({ ...given, availablePercent: () => null })).toBe("? available of 25.8 GB");
+});
+
+test("cancelling a running export while forExport is in flight aborts prep, releases the slot, and starts the next queued export", async () => {
+  const most = process.env.EDIT_LOCAL_EXPORTS;
+  process.env.EDIT_LOCAL_EXPORTS = "1";
+  const { dir, home, store, app, native, cleanup } = fixtureHome("cancel-in-prep");
+  const registry = new ExportRegistry(home);
+  app.exports = registry;
+  const plan = spyOn(native, "exportPlan").mockReturnValue({ plan: { start: 0, end: 30, width: 64, height: 36, audio: false }, fps: 30 });
+  const archive = spyOn(exportCloud, "enabled").mockReturnValue(false);
+  const started: string[] = [];
+  const render = spyOn(native.ExportJob, "start").mockImplementation((job) => {
+    const name = JSON.parse(job.project.json).name as string;
+    started.push(name);
+    return {
+      cancel: () => {},
+      wait: async () => {
+        fs.writeFileSync(job.output, "export");
+        return { seconds: 1, bytes: 6 };
+      },
+    };
+  });
+  let inPrep!: () => void;
+  const entered = new Promise<void>((resolve) => { inPrep = resolve; });
+  let firstSignal: AbortSignal | undefined;
+  const firstId = store.create("First", { width: 64, height: 36, fps: 30 }).project.id;
+  const secondId = store.create("Second", { width: 64, height: 36, fps: 30 }).project.id;
+  await store.update(firstId, "test", (p) => p.clips.push(clip({ id: "s1", track: p.tracks[0]!.id, start: 0, duration: 30, type: "solid" })));
+  await store.update(secondId, "test", (p) => p.clips.push(clip({ id: "s2", track: p.tracks[0]!.id, start: 0, duration: 30, type: "solid" })));
+  const prep = spyOn(seams.cloudMedia, "forExport").mockImplementation(async (project, _start, _end, _cache, _cancelled, _onPrep, signal) => {
+    if (project.id === firstId) {
+      firstSignal = signal;
+      inPrep();
+      await new Promise<void>((resolve) => {
+        if (signal?.aborted) return resolve();
+        signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      throw new Error("cancelled");
+    }
+    return [project, { release: () => {} }];
+  });
+  try {
+    const options = native.exportDefaults();
+    await registry.start(store, app.library, structuredClone(store.get(firstId)!.project), options, `${dir}/first.mp4`, { drive: false, keepLocal: true });
+    await entered;
+    await registry.start(store, app.library, structuredClone(store.get(secondId)!.project), options, `${dir}/second.mp4`, { drive: false, keepLocal: true });
+    expect(registry.activity().find((one) => one.id === secondId)?.state).toBe("queued");
+
+    expect(registry.cancel(firstId)).toBe(true);
+    expect(firstSignal?.aborted).toBe(true);
+
+    for (let tries = 0; (registry.running() || registry.activity().find((one) => one.id === secondId)?.state !== "done") && tries < 200; tries++) await Bun.sleep(5);
+    expect(started).toEqual(["Second"]);
+    expect(registry.activity().find((one) => one.id === firstId)?.state).toBe("cancelled");
+    expect(registry.activity().find((one) => one.id === secondId)?.state).toBe("done");
+  } finally {
+    prep.mockRestore();
+    render.mockRestore();
+    archive.mockRestore();
+    plan.mockRestore();
+    if (most === undefined) delete process.env.EDIT_LOCAL_EXPORTS;
+    else process.env.EDIT_LOCAL_EXPORTS = most;
+    cleanup();
+  }
+});
+
+test("preempting export_ahead while forExport is in flight aborts its prep signal, publishes a waiting reason, and starts the user's export", async () => {
+  const most = process.env.EDIT_LOCAL_EXPORTS;
+  process.env.EDIT_LOCAL_EXPORTS = "1";
+  const { dir, home, store, app, native, cleanup } = fixtureHome("ahead-prep-preempt");
+  const registry = new ExportRegistry(home);
+  app.exports = registry;
+  const plan = spyOn(native, "exportPlan").mockReturnValue({ plan: { start: 0, end: 30, width: 64, height: 36, audio: false }, fps: 30 });
+  const archive = spyOn(exportCloud, "enabled").mockReturnValue(false);
+  const started: string[] = [];
+  const render = spyOn(native.ExportJob, "start").mockImplementation((job) => {
+    const name = JSON.parse(job.project.json).name as string;
+    started.push(name);
+    return {
+      cancel: () => {},
+      wait: async () => {
+        fs.writeFileSync(job.output, "export");
+        return { seconds: 1, bytes: 6 };
+      },
+    };
+  });
+  const bgId = store.create("Background", { width: 64, height: 36, fps: 30 }).project.id;
+  const userId = store.create("UserExport", { width: 64, height: 36, fps: 30 }).project.id;
+  await store.update(bgId, "test", (p) => p.clips.push(clip({ id: "s1", track: p.tracks[0]!.id, start: 0, duration: 30, type: "solid" })));
+  await store.update(userId, "test", (p) => p.clips.push(clip({ id: "s2", track: p.tracks[0]!.id, start: 0, duration: 30, type: "solid" })));
+  const bgProject = structuredClone(store.get(bgId)!.project);
+  const userProject = structuredClone(store.get(userId)!.project);
+
+  let prepEntered!: () => void;
+  const inPrep = new Promise<void>((resolve) => { prepEntered = resolve; });
+  let releasePrep!: () => void;
+  const prepCanExit = new Promise<void>((resolve) => { releasePrep = resolve; });
+  let aheadSignal: AbortSignal | undefined;
+  let aheadPrepCalls = 0;
+  const prep = spyOn(seams.cloudMedia, "forExport").mockImplementation(async (project, _start, _end, _cache, _cancelled, _onPrep, signal) => {
+    if (project.id === bgId && aheadPrepCalls === 0) {
+      aheadPrepCalls += 1;
+      aheadSignal = signal;
+      prepEntered();
+      await new Promise<void>((resolve) => {
+        if (signal?.aborted) return resolve();
+        signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      await prepCanExit;
+      throw new Error("cancelled");
+    }
+    return [project, { release: () => {} }];
+  });
+  try {
+    const options = native.exportDefaults();
+    expect(registry.startAhead(store, app.library, bgProject, options, aheadFile(store.cacheDir(), bgId))).toBe(true);
+    await inPrep;
+    expect(aheadSignal).toBeDefined();
+    expect(aheadSignal!.aborted).toBe(false);
+    expect(started).toEqual([]);
+
+    const events: { id?: unknown; state?: unknown; waiting?: unknown }[] = [];
+    const off = store.subscribe((event) => {
+      if (event.type === "export" && event.id === userId) events.push(event);
+    });
+    await registry.start(store, app.library, userProject, options, `${dir}/user.mp4`, { drive: false, keepLocal: true });
+
+    // Preemption aborted export_ahead's prep signal immediately and gave the queued export a visible waiting reason.
+    expect(aheadSignal!.aborted).toBe(true);
+    expect(registry.activity().find((one) => one.id === userId)).toMatchObject({
+      state: "queued",
+      waiting: "waiting for a background export to stop",
+    });
+    expect(events.some((one) => one.state === "queued" && one.waiting === "waiting for a background export to stop")).toBe(true);
+    off();
+
+    // Once export_ahead unwinds forExport, it releases its slot without ever encoding, and UserExport runs.
+    releasePrep();
+    for (let tries = 0; (registry.running() || registry.activity().find((one) => one.id === userId)?.state !== "done") && tries < 200; tries++) await Bun.sleep(5);
+    expect(started).toEqual(["UserExport"]);
+    expect(registry.aheadFor()).toBeNull();
+    expect(registry.activity().find((one) => one.id === userId)?.state).toBe("done");
+
+    // Same-project export while export_ahead is in forExport: stopAhead(bgId) aborts prep immediately and resolves.
+    aheadPrepCalls = 0;
+    aheadSignal = undefined;
+    let sameEntered!: () => void;
+    const inSamePrep = new Promise<void>((resolve) => { sameEntered = resolve; });
+    prep.mockImplementation(async (project, _start, _end, _cache, _cancelled, _onPrep, signal) => {
+      if (project.id === bgId && aheadPrepCalls === 0) {
+        aheadPrepCalls += 1;
+        aheadSignal = signal;
+        sameEntered();
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) return resolve();
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        throw new Error("cancelled");
+      }
+      return [project, { release: () => {} }];
+    });
+    expect(registry.startAhead(store, app.library, bgProject, options, aheadFile(store.cacheDir(), bgId))).toBe(true);
+    await inSamePrep;
+    await registry.start(store, app.library, bgProject, options, `${dir}/bg.mp4`, { drive: false, keepLocal: true });
+    expect(aheadSignal!.aborted).toBe(true);
+    for (let tries = 0; (registry.running() || registry.activity().find((one) => one.id === bgId)?.state !== "done") && tries < 200; tries++) await Bun.sleep(5);
+    expect(started).toEqual(["UserExport", "Background"]);
+    expect(registry.activity().find((one) => one.id === bgId)?.state).toBe("done");
+  } finally {
+    releasePrep();
+    prep.mockRestore();
+    render.mockRestore();
+    archive.mockRestore();
+    plan.mockRestore();
+    if (most === undefined) delete process.env.EDIT_LOCAL_EXPORTS;
+    else process.env.EDIT_LOCAL_EXPORTS = most;
+    cleanup();
+  }
 });

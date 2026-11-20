@@ -89,8 +89,8 @@ export function enabled(): boolean {
 }
 
 /** POSTs `body` to the relay's `/v1/cloud/<path>` and returns its JSON answer. */
-export function relayJson(path: string, body: unknown): Promise<Record<string, unknown>> {
-  return relay.json<Record<string, unknown>>("POST", `/v1/cloud/${path}`, body, "cloud storage", 120);
+export function relayJson(path: string, body: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  return relay.json<Record<string, unknown>>("POST", `/v1/cloud/${path}`, body, "cloud storage", 120, signal);
 }
 
 const CONTROL_OR_BACKSLASH = /[\u0000-\u001f\u007f-\u009f\\]/u;
@@ -129,12 +129,12 @@ export type Method = "GET" | "PUT" | "HEAD";
  * excerpts, sounds), which FFmpeg reads through one URL for a whole excerpt
  * or export.
  */
-export async function presign(key: string, method: Method, expires: number | null = null, edge = false): Promise<string> {
+export async function presign(key: string, method: Method, expires: number | null = null, edge = false, signal?: AbortSignal): Promise<string> {
   // Writer's script files are read for the handoff (the relay allows that too), never written.
   if (!(method !== "PUT" && key.startsWith("writer/scripts/") && validKey(`edit/${key.slice("writer/".length)}`))) checkKey(key);
   const body: Record<string, unknown> = { key, method, ...(edge ? { edge: true } : {}) };
   if (expires !== null) body.expires = Math.max(Math.floor(expires), 1);
-  const answer = await relayJson("r2/url", body);
+  const answer = await relayJson("r2/url", body, signal);
   if (typeof answer.url !== "string") throw lacking("the relay gave no URL");
   return answer.url;
 }
@@ -152,9 +152,9 @@ function asU64(value: unknown): number | null {
 }
 
 /** The object at `key`, or null when there isn't one. */
-export function head(key: string): Promise<Head | null> {
+export function head(key: string, signal?: AbortSignal): Promise<Head | null> {
   checkKey(key);
-  return diag.timeOnAsync("cloud", "cloud: head", key, async () => parseHead(await relayJson("r2/head", { key })));
+  return diag.timeOnAsync("cloud", "cloud: head", key, async () => parseHead(await relayJson("r2/head", { key }, signal)));
 }
 
 export function parseHead(answer: Record<string, unknown>): Head | null {
@@ -976,10 +976,12 @@ export async function has(key: string): Promise<boolean> {
   return (await head(key)) !== null;
 }
 
-export function download(key: string, dest: string, progress: Report = () => {}): Promise<void> {
+export function download(key: string, dest: string, progress: Report = () => {}, signal?: AbortSignal): Promise<void> {
   checkKey(key);
+  if (signal?.aborted) return Promise.reject(new Error("download was cancelled"));
   return diag.timeOnAsync("cloud", "cloud: download", key, async () => {
-    const object = await head(key);
+    const object = await head(key, signal);
+    if (signal?.aborted) throw new Error("download was cancelled");
     if (object === null) throw new Error(`${key} isn't in the cloud`);
     const dir = parent(dest);
     try {
@@ -1007,7 +1009,8 @@ export function download(key: string, dest: string, progress: Report = () => {})
     } catch (error) {
       throw new Error(ioMessage(error));
     }
-    await retry(`download of ${key}`, () => fetchRest(key, object, partial, progress));
+    await retry(`download of ${key}`, () => fetchRest(key, object, partial, progress, signal));
+    if (signal?.aborted) throw new Error("download was cancelled");
     const got = sizeOf(partial);
     if (got !== object.size) {
       fs.rmSync(partial, { force: true });
@@ -1056,14 +1059,16 @@ export function strongEtag(etag: string): string {
 }
 
 /** One try at getting the rest of `object` into `partial`. */
-async function fetchRest(key: string, object: Head, partial: string, progress: Report): Promise<void> {
+async function fetchRest(key: string, object: Head, partial: string, progress: Report, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new Error("download was cancelled");
   let have = sizeOf(partial);
   if (have > object.size) {
     fs.rmSync(partial, { force: true });
     have = 0;
   }
   if (have === object.size && exists(partial)) return;
-  const url = await presign(key, "GET", 3600);
+  const url = await presign(key, "GET", 3600, false, signal);
+  if (signal?.aborted) throw new Error("download was cancelled");
   const headers: Record<string, string> = {};
   if (have > 0) {
     headers.range = `bytes=${have}-`;
@@ -1072,11 +1077,13 @@ async function fetchRest(key: string, object: Head, partial: string, progress: R
     if (object.etag !== null) headers["if-range"] = object.etag;
   }
   const stall = new Stall(timing.connectMs);
+  const stop = signal === undefined ? stall.signal : AbortSignal.any([stall.signal, signal]);
   try {
     let response: Response;
     try {
-      response = await fetch(url, { headers, signal: stall.signal });
+      response = await fetch(url, { headers, signal: stop });
     } catch (error) {
+      if (signal?.aborted) throw new Error("download was cancelled");
       const said = `downloading ${key} (000): ${diag.scrub(stall.why(error))}`;
       outages.failed("r2", said);
       throw unreached(said, stall.reason !== null);
@@ -1111,6 +1118,7 @@ async function fetchRest(key: string, object: Head, partial: string, progress: R
     try {
       if (response.body !== null) {
         for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+          if (signal?.aborted) throw new Error("download was cancelled");
           fs.writeSync(fd, chunk);
           stall.moved(chunk.length);
           const now = performance.now();
@@ -1121,6 +1129,7 @@ async function fetchRest(key: string, object: Head, partial: string, progress: R
         }
       }
     } catch (error) {
+      if (signal?.aborted) throw new Error("download was cancelled");
       if (isBug(error)) throw error;
       throw unreached(`downloading ${key} (${code}): ${diag.scrub(stall.why(error))}`, stall.reason !== null);
     } finally {

@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 
 import * as cloudBlocks from "../src/cloud_blocks.ts";
-import { behind, CELL, cellKey, cellSpan, cellsOf, objectOf, pin, pinned, prepare, TO_THE_END } from "../src/export_excerpts.ts";
+import { behind, CELL, cellKey, cellSpan, cellsOf, cut, cutTiming, objectOf, pin, pinned, prepare, TO_THE_END } from "../src/export_excerpts.ts";
+import { StoodStill } from "../src/failure.ts";
 import type { Project } from "../src/model.ts";
 import * as tools from "../src/tools.ts";
 import { scratch } from "./helpers/home.ts";
@@ -159,4 +160,25 @@ test("a background render's reads of this server's preview path say they're behi
   expect(behind(preview)).toBe(`${preview}&behind=1`);
   expect(behind("/footage/a.mp4")).toBe("/footage/a.mp4");
   expect(behind("https://r2.example/edit/originals/a.mp4?X-Amz-Signature=x")).toBe("https://r2.example/edit/originals/a.mp4?X-Amz-Signature=x");
+});
+
+test("an excerpt cut over HTTP that stalls is stopped by cutTiming.stillMs instead of hanging", async () => {
+  const { dir, cleanup } = scratch("excerpts-stall");
+  const prevStill = cutTiming.stillMs;
+  cutTiming.stillMs = 300;
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => new Promise<Response>(() => {}),
+  });
+  try {
+    const out = `${dir}/cell.mp4`;
+    const started = Date.now();
+    const error = await cut(`http://127.0.0.1:${server.port}/hung.mp4`, 0, 30, out, new AbortController().signal).then(() => null, (failed: unknown) => failed);
+    expect(error).toBeInstanceOf(StoodStill);
+    expect(Date.now() - started).toBeLessThan(10_000);
+  } finally {
+    cutTiming.stillMs = prevStill;
+    server.stop(true);
+    cleanup();
+  }
 });

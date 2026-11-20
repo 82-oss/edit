@@ -1295,3 +1295,89 @@ test("an excerpt the cloud's address can't cut is cut from the original download
     cleanup();
   }
 });
+
+test("forExport aborts in-flight ffmpeg sound-copy and excerpt-cut subprocesses immediately on signal abort, and soundCopy bounds hung HTTP reads", async () => {
+  const fixture = home("cloud-for-export-cancel");
+  const { store, cleanup } = fixture;
+  const cache = store.cacheDir();
+  const prevSoundStill = cloudMedia.soundCopyTiming.stillMs;
+  const prevSoundTimeout = cloudMedia.soundCopyTiming.timeoutMs;
+  let requests = 0;
+  let sawRequest!: () => void;
+  const requested = new Promise<void>((resolve) => { sawRequest = resolve; });
+  const server = Bun.serve({
+    port: 0,
+    fetch: () => {
+      requests += 1;
+      if (requests === 1) sawRequest();
+      // Hold the socket open forever without answering: reproduces a wedged R2/HTTP read.
+      return new Promise<Response>(() => {});
+    },
+  });
+  const hungUrl = `http://127.0.0.1:${server.port}/hung.mp4`;
+  const key = "edit/originals/drive/HungFile1/hung.mp4";
+  const presign = spyOn(cloud, "presign").mockResolvedValue(hungUrl);
+  const head = spyOn(cloud, "head").mockResolvedValue(null);
+  try {
+    const project = {
+      id: "p-hung",
+      name: "Hung",
+      settings: { width: 1920, height: 1080, fps: 30 },
+      media: [
+        {
+          id: "m1",
+          name: "hung.mp4",
+          path: "http://127.0.0.1:7700/api/cloud/preview?key=edit%2Fproxies%2Fdrive%2FHungFile1.mp4",
+          kind: "video",
+          duration: 60,
+          width: 1920,
+          height: 1080,
+          fps: 30,
+          has_audio: true,
+          cloud: { source: "drive:HungFile1", original: key, proxy: "edit/proxies/drive/HungFile1.mp4", size: 1000 },
+        },
+      ],
+      clips: [{ id: "c1", track: "v1", type: "video", media: "m1", source_in: 0, start: 0, duration: 30 }],
+    } as unknown as Project;
+
+    // 1. Aborting forExport kills both in-flight ffmpeg subprocesses (excerpt cut + sound copy) immediately.
+    const stop = new AbortController();
+    const started = Date.now();
+    const prep = cloudMedia.forExport(project, 0, 30, cache, () => stop.signal.aborted, undefined, stop.signal);
+    await requested;
+    stop.abort();
+    await expect(prep).rejects.toThrow("cancelled");
+    expect(Date.now() - started).toBeLessThan(10_000);
+    // No leftover partial sound or scratch excerpt files.
+    const soundDir = `${cache}/cloud/sound/originals/drive/HungFile1`;
+    if (fs.existsSync(soundDir)) expect(fs.readdirSync(soundDir)).toEqual([]);
+    expect(fs.readdirSync(cloudMedia.scratchDir(cache))).toEqual([]);
+
+    // 2. A hung HTTP sound copy without cancel hits soundCopyTiming.stillMs and does NOT fall back to a second PCM pass.
+    requests = 0;
+    cloudMedia.soundCopyTiming.stillMs = 300;
+    const stallStart = Date.now();
+    expect(await cloudMedia.soundCopy(cache, key, hungUrl)).toBeNull();
+    expect(Date.now() - stallStart).toBeLessThan(10_000);
+    // Only the initial stream-copy pass ran (no pcm_s16le retry after a stall).
+    expect(requests).toBe(1);
+    if (fs.existsSync(soundDir)) expect(fs.readdirSync(soundDir)).toEqual([]);
+
+    // 3. Hard duration bound (soundCopyTiming.timeoutMs) stops a slow trickle without retrying PCM.
+    requests = 0;
+    cloudMedia.soundCopyTiming.stillMs = 60_000;
+    cloudMedia.soundCopyTiming.timeoutMs = 400;
+    const timeoutStart = Date.now();
+    expect(await cloudMedia.soundCopy(cache, key, hungUrl)).toBeNull();
+    expect(Date.now() - timeoutStart).toBeLessThan(10_000);
+    expect(requests).toBe(1);
+    if (fs.existsSync(soundDir)) expect(fs.readdirSync(soundDir)).toEqual([]);
+  } finally {
+    cloudMedia.soundCopyTiming.stillMs = prevSoundStill;
+    cloudMedia.soundCopyTiming.timeoutMs = prevSoundTimeout;
+    presign.mockRestore();
+    head.mockRestore();
+    server.stop(true);
+    cleanup();
+  }
+});

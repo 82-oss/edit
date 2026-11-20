@@ -99,6 +99,8 @@ interface Running {
   /** Its entry in the jobs a restart resumes. */
   key: string;
   cancelled: boolean;
+  /** Aborts in-flight export prep (cloud sound copies, excerpts, downloads) immediately on cancel or preemption. */
+  stop: AbortController;
   job: { cancel(): void } | null;
   /** The timeline kept for a restart (`snapshotFile`), removed when it ends. */
   snapshot: string | null;
@@ -456,7 +458,8 @@ export function chunkFolders(cache: string, project: string): string[] {
  * whole video again: 30–40 minutes for a fix in the intro (Oct 29). Its
  * manifest gets the fetched copy's time. The path fetched, else null.
  */
-export async function restorePrevious(cache: string, home: string, project: string, fetch: (key: string, dest: string) => Promise<void> = (key, dest) => cloud.download(key, dest)): Promise<string | null> {
+export async function restorePrevious(cache: string, home: string, project: string, fetch: (key: string, dest: string) => Promise<void> = (key, dest) => cloud.download(key, dest), signal?: AbortSignal): Promise<string | null> {
+  if (signal?.aborted) return null;
   const manifest = join(chunkFolder(cache, project), "manifest-v1.json");
   let text: string;
   let output: string;
@@ -476,7 +479,7 @@ export async function restorePrevious(cache: string, home: string, project: stri
     fs.mkdirSync(parent(output) ?? ".", { recursive: true });
     await fetch(key, output);
   } catch (error) {
-    diag.warn("export", `fetching the last export back to reuse its chunks: ${diag.messageOf(error)}; it renders whole`);
+    if (!signal?.aborted) diag.warn("export", `fetching the last export back to reuse its chunks: ${diag.messageOf(error)}; it renders whole`);
     fs.rmSync(output, { force: true });
     return null;
   }
@@ -878,6 +881,7 @@ export class ExportRegistry implements seams.Exports {
     for (const [id, job] of this.jobs) {
       if (job.ahead !== true || (project !== undefined && id !== project)) continue;
       job.cancelled = true;
+      job.stop.abort();
       job.job?.cancel();
       if (job.ended !== undefined) ended.push(job.ended);
     }
@@ -910,7 +914,7 @@ export class ExportRegistry implements seams.Exports {
       reads.reuse();
     };
     const running: Running = {
-      output, ...(chunks ? { chunks } : {}), key: "", cancelled: false, job: null, snapshot: null, timeline: timelineHash(edit),
+      output, ...(chunks ? { chunks } : {}), key: "", cancelled: false, stop: new AbortController(), job: null, snapshot: null, timeline: timelineHash(edit),
       options: withWatermarkKey(optionsKey(options), watermark), keepLocal: true, queued: false, ahead: true,
       ended: new Promise<void>((resolve) => { finish = resolve; }), unpin, ...(reads.reusable ? { letReuseGo: reads.reuse } : {}),
     };
@@ -927,13 +931,14 @@ export class ExportRegistry implements seams.Exports {
     void (async () => {
       let marked = edit;
       if (watermark !== undefined) marked = await seams.channelMarks.addWatermark({ library }, store.cacheDir(), edit, plan, watermark);
+      if (running.cancelled) return;
       await this.run(store, library, marked, structuredClone(options), plan, output, running, false, release);
     })()
       .catch((error: unknown) => {
         diag.warn("export", `${project.name}: making its export ahead: ${diag.messageOf(error)}`);
-        if (this.jobs.get(project.id) === running) this.jobs.delete(project.id);
       })
       .finally(() => {
+        if (this.jobs.get(project.id) === running) this.jobs.delete(project.id);
         unpin();
         release();
         finish();
@@ -1005,6 +1010,12 @@ export class ExportRegistry implements seams.Exports {
       const room = capacity.noRoom(this.localActive);
       if (room !== null && this.aheadActive > 0) {
         // An export made ahead holds the place something asked for wants: it gives it up, and its release drains again.
+        const why = "waiting for a background export to stop";
+        for (const one of this.localQueue) {
+          if (one.running.waiting === why) continue;
+          one.running.waiting = why;
+          one.notify();
+        }
         void this.stopAhead();
         return;
       }
@@ -1036,6 +1047,7 @@ export class ExportRegistry implements seams.Exports {
       if (this.localActive > 0) diag.info("export", `starting another export beside ${this.localActive} running (${capacity.standing()})`);
       this.localActive++;
       next.running.queued = false;
+      next.running.waiting = undefined;
       next.start();
     }
   }
@@ -1050,6 +1062,7 @@ export class ExportRegistry implements seams.Exports {
     const running = this.jobs.get(project);
     if (running === undefined) return false;
     running.cancelled = true;
+    running.stop.abort();
     if (running.queued) running.cancelQueued?.();
     running.job?.cancel();
     return true;
@@ -1221,7 +1234,7 @@ export class ExportRegistry implements seams.Exports {
     project = structuredClone(project);
     options = structuredClone(options);
     const review = extra.share === true ? reviewBytes(Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1)) : 0;
-    const running: Running = { output: path, ...(chunks ? { chunks } : {}), key, cancelled: false, job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review, seconds: Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1), started_ms: nowMs(), unpin, ...(letReuseGo === null ? {} : { letReuseGo }) };
+    const running: Running = { output: path, ...(chunks ? { chunks } : {}), key, cancelled: false, stop: new AbortController(), job: null, snapshot, timeline: timelineHash(edit), options: withWatermarkKey(optionsKey(options), extra.watermark), clips: clipMap(edit), keepLocal: extra.keepLocal === true, queued: true, ...(extra.share === true ? { share: true } : {}), ...(extra.note === undefined ? {} : { note: extra.note }), ...(extra.stretch === true ? { stretch: true } : {}), bytes: size, review, seconds: Math.max(plan.end - plan.start, 0) / Math.max(options.fps ?? fps, 1), started_ms: nowMs(), unpin, ...(letReuseGo === null ? {} : { letReuseGo }) };
     this.jobs.set(project.id, running);
     let upload = false;
     try {
@@ -1365,7 +1378,7 @@ export class ExportRegistry implements seams.Exports {
             let exported = reading;
             let originals: seams.Originals | null = null;
             try {
-              [exported, originals] = await seams.cloudMedia.forExport(reading, plan.start, plan.end, store.cacheDir(), () => running.cancelled, onPrep);
+              [exported, originals] = await seams.cloudMedia.forExport(reading, plan.start, plan.end, store.cacheDir(), () => running.cancelled, onPrep, running.stop.signal);
             } catch (error) {
               if (!seams.isUnavailable(error)) throw error;
             }
@@ -1375,6 +1388,7 @@ export class ExportRegistry implements seams.Exports {
             const gone = exported.media.find((media) => shown.has(media.id) && typeof media.effect === "string" && typeof media.effect_key === "string" && !media.path.includes("://") && !isFile(media.path));
             if (gone !== undefined) {
               originals?.release();
+              if (running.cancelled) throw new Error("cancelled");
               await remake({ name: gone.effect!, key: gone.effect_key!, path: gone.path, unreadable: false });
               continue;
             }
@@ -1403,7 +1417,8 @@ export class ExportRegistry implements seams.Exports {
                   if (pct === fetched) return;
                   fetched = pct;
                   tell(`fetching the last export, ${pct}%`, 0.85 + 0.15 * ratio);
-                }));
+                }, running.stop.signal), running.stop.signal);
+                if (running.cancelled) throw new Error("cancelled");
               }
               // Prep is over. The encode fills from there to 1; leaving the ratio at the footage's 0.85 would end the bar at 97%.
               if (prepared) {

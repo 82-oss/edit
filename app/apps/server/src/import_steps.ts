@@ -69,7 +69,7 @@ export const LIMIT_RETRY_MS = failure.LIMIT_WAIT_MS;
 /** What a failure is: failure.ts's kinds, the one rule both imports read. */
 export type Why = failure.Kind;
 
-export { DriveLimit, NeedsPerson, nextMidnightUtc, StepTimedOut } from "./failure.ts";
+export { DriveLimit, NeedsPerson, nextMidnightUtc, StepTimedOut, StoodStill } from "./failure.ts";
 
 /** What a failure is (failure.ts `kindOf`): the editor's import and Script mode's read the same answer. */
 export const whyOf = (error: unknown): Why => failure.kindOf(error);
@@ -143,8 +143,11 @@ export const STILL_MS = { value: 5 * 60_000 };
  * away). A pause longer than a beat (the machine asleep, the process frozen) starts its clock again: a step isn't
  * stuck for the time the lid was shut.
  */
-export async function whileMoving<T>(what: string, progress: () => number, work: (signal: AbortSignal) => Promise<T>, stillMs = STILL_MS.value): Promise<T> {
+export async function whileMoving<T>(what: string, progress: () => number, work: (signal: AbortSignal) => Promise<T>, stillMs = STILL_MS.value, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) throw new Error("cancelled");
   const stop = new AbortController();
+  const onAbort = () => stop.abort();
+  signal?.addEventListener("abort", onAbort, { once: true });
   // Never under two minutes, the bad-day speed switch included: FFmpeg reads a file's index and front (megabytes,
   // shared by the cuts beside it on a slow line) before its output grows at all.
   const still = Math.max(failure.scaled(stillMs), Math.min(stillMs, 120_000));
@@ -152,31 +155,36 @@ export async function whileMoving<T>(what: string, progress: () => number, work:
   let seen = progress();
   let movedAt = Date.now();
   let tickedAt = movedAt;
-  let timer: ReturnType<typeof setInterval> | undefined;
-  const stood = new Promise<never>((_, reject) => {
-    timer = setInterval(() => {
-      const now = Date.now();
-      // Asleep or frozen between beats: the clock starts again.
-      if (now - tickedAt > Math.max(10_000, beat * 3)) movedAt = now;
-      tickedAt = now;
-      const at = progress();
-      if (at !== seen) {
-        seen = at;
-        movedAt = now;
-        return;
-      }
-      if (now - movedAt >= still) {
-        clearInterval(timer);
-        // Said first, so the race ends on why it stopped, not on the work's own "aborted".
-        reject(new failure.StoodStill(what, still));
-        stop.abort();
-      }
-    }, beat);
-  });
+  let stalled: failure.StoodStill | null = null;
+  const timer = setInterval(() => {
+    const now = Date.now();
+    // Asleep or frozen between beats: the clock starts again.
+    if (now - tickedAt > Math.max(10_000, beat * 3)) movedAt = now;
+    tickedAt = now;
+    const at = progress();
+    if (at !== seen) {
+      seen = at;
+      movedAt = now;
+      return;
+    }
+    if (now - movedAt >= still) {
+      clearInterval(timer);
+      stalled = new failure.StoodStill(what, still);
+      stop.abort();
+    }
+  }, beat);
+  timer.unref?.();
   try {
-    return await Promise.race([work(stop.signal), stood]);
+    const result = await work(stop.signal);
+    if (signal?.aborted) throw new Error("cancelled");
+    return result;
+  } catch (error) {
+    if (signal?.aborted) throw new Error("cancelled");
+    if (stalled !== null) throw stalled;
+    throw error;
   } finally {
     clearInterval(timer);
+    signal?.removeEventListener("abort", onAbort);
   }
 }
 

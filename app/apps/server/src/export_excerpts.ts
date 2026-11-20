@@ -31,6 +31,7 @@ import * as fs from "node:fs";
 import * as cloudBlocks from "./cloud_blocks.ts";
 import { localPath, scratchDir } from "./cloud_media.ts";
 import * as diag from "./diag.ts";
+import * as steps from "./import_steps.ts";
 import { Semaphore } from "./media.ts";
 import type { Media, Project } from "./model.ts";
 import { PLAYBACK_ROUTE } from "./cloud_playback.ts";
@@ -147,10 +148,10 @@ export function cellsOf(project: Project, start: number, end: number, media: Set
  * ends sooner than its project says): the engine reads past its end from the
  * cloud.
  */
-async function lengthOf(path: string, seconds: number): Promise<number | string> {
+async function lengthOf(path: string, seconds: number, signal?: AbortSignal): Promise<number | string> {
   let text = "";
   try {
-    text = new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path], { timeoutMs: 60_000 }));
+    text = new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path], { timeoutMs: 60_000, ...(signal ? { signal } : {}) }));
   } catch (error) {
     return `it can't be read back (${diag.messageOf(error)})`;
   }
@@ -160,35 +161,51 @@ async function lengthOf(path: string, seconds: number): Promise<number | string>
   return got;
 }
 
+/** Bounds for cutting one 30 s excerpt cell over the network (tests shorten them). */
+export const cutTiming = {
+  /** Maximum total wall time for one 30 s cell cut (ms): bounds slow trickles / reconnect loops. */
+  timeoutMs: 10 * 60_000,
+  /** How long the cell file may stand still (no new bytes) over HTTP(S) before stopping (ms). */
+  stillMs: 3 * 60_000,
+};
+
 /** Cuts seconds `from..to` of `url`'s picture into `out`, copied; `signal` ends FFmpeg. */
 export async function cut(url: string, from: number, to: number, out: string, signal: AbortSignal): Promise<void> {
-  await tools.run(
-    [
-      tools.ffmpeg(),
-      "-v",
-      "error",
-      "-nostdin",
-      "-y",
-      "-ss",
-      from.toFixed(6),
-      "-protocol_whitelist",
-      tools.protocols(url),
-      ...tools.urlArgs(url),
-      "-i",
-      url,
-      "-t",
-      (to - from).toFixed(6),
-      "-map",
-      "0:v:0",
-      "-c:v",
-      "copy",
-      "-an",
-      "-sn",
-      "-dn",
-      out,
-    ],
-    { timeoutMs: 20 * 60_000, signal },
-  );
+  const command = [
+    tools.ffmpeg(),
+    "-v",
+    "error",
+    "-nostdin",
+    "-y",
+    "-ss",
+    from.toFixed(6),
+    "-protocol_whitelist",
+    tools.protocols(url),
+    ...tools.urlArgs(url),
+    "-i",
+    url,
+    "-t",
+    (to - from).toFixed(6),
+    "-map",
+    "0:v:0",
+    "-c:v",
+    "copy",
+    "-an",
+    "-sn",
+    "-dn",
+    out,
+  ];
+  if (tools.isUrl(url)) {
+    await steps.whileMoving(
+      "Cutting an export excerpt",
+      () => steps.sizeOf(out),
+      (runSignal) => tools.run(command, { timeoutMs: cutTiming.timeoutMs, signal: runSignal }),
+      cutTiming.stillMs,
+      signal,
+    );
+    return;
+  }
+  await tools.run(command, { timeoutMs: cutTiming.timeoutMs, signal });
 }
 
 /** Excerpts an export is reading: the cache's cleaner leaves them (cache_cleanup.ts); one registry for every file an export holds (file_pins.ts). */
@@ -196,6 +213,7 @@ export { pin, pinned } from "./file_pins.ts";
 
 /** One cell as a local file and the seconds it holds: this Mac's copy, or cut now from `url`. Null when it can't be had. */
 async function cellFile(cache: string, key: string, url: string, cell: Cell, signal: AbortSignal): Promise<{ path: string; seconds: number; how: "here" | "cut" } | null> {
+  if (signal.aborted) return null;
   const local = localPath(cache, key);
   const wanted = cell.to - cell.from;
   if (isFile(local)) {
@@ -206,7 +224,8 @@ async function cellFile(cache: string, key: string, url: string, cell: Cell, sig
     } catch {
       // Read-only: kept as it is.
     }
-    const seconds = await lengthOf(local, wanted);
+    const seconds = await lengthOf(local, wanted, signal);
+    if (signal.aborted) return null;
     if (typeof seconds === "number") return { path: local, seconds, how: "here" };
     diag.warn("export", `the excerpt ${key} here won't do (${seconds}); cut again`);
     fs.rmSync(local, { force: true });
@@ -214,7 +233,9 @@ async function cellFile(cache: string, key: string, url: string, cell: Cell, sig
   const scratch = join(scratchDir(cache), `cell-${process.pid}-${crypto.randomUUID().slice(0, 8)}.${extension(key) ?? "mp4"}`);
   try {
     await cut(url, cell.from, cell.to, scratch, signal);
-    const seconds = await lengthOf(scratch, wanted);
+    if (signal.aborted) return null;
+    const seconds = await lengthOf(scratch, wanted, signal);
+    if (signal.aborted) return null;
     if (typeof seconds === "string") {
       diag.warn("export", `an excerpt of ${key} came out wrong (${seconds}); that stretch is read from the cloud`);
       return null;
@@ -250,8 +271,9 @@ export async function prepare(
   urls: Map<string, string>,
   originals: Map<string, string>,
   cancelled: () => boolean = () => false,
-  options: { atOnce?: number; behindViewer?: boolean; restMaxMs?: number; onStep?: (done: number, total: number) => void } = {},
+  options: { atOnce?: number; behindViewer?: boolean; restMaxMs?: number; onStep?: (done: number, total: number) => void; signal?: AbortSignal } = {},
 ): Promise<ExportExcerpt[]> {
+  if (options.signal?.aborted || cancelled()) throw new Error("cancelled");
   const cells = cellsOf(project, start, end, new Set(urls.keys()));
   if (cells.length === 0) return [];
   const began = performance.now();
@@ -262,27 +284,31 @@ export async function prepare(
   const counts = { here: 0, cut: 0, failed: 0 };
   // A cancel ends the cuts under way, not just the ones not started.
   const stop = new AbortController();
+  const onAbort = () => stop.abort();
+  if (options.signal?.aborted || cancelled()) stop.abort();
+  else options.signal?.addEventListener("abort", onAbort, { once: true });
   const watch = setInterval(() => {
     if (cancelled()) stop.abort();
   }, CANCEL_LOOK_MS);
+  watch.unref?.();
   const media = new Map<string, Media>(project.media.map((item) => [item.id, item]));
   // A background render's cuts pull the same link the page does: they wait
   // for the viewer once, briefly, before the first uncached cell — never
   // per cell (a render that waited per cell sat at 0% for as long as the
   // viewer kept watching, the very lag it exists to cure). Two at a time
   // (the caller's `atOnce`) bounds what they take after that.
-  if (options.behindViewer === true) {
-    const needsCut = cells.some((cell) => {
-      const original = originals.get(cell.media);
-      const item = media.get(cell.media);
-      if (original === undefined || item === undefined) return false;
-      const key = cellKey(original, item.fps, cell.index);
-      return key !== null && !isFile(localPath(cache, key));
-    });
-    if (needsCut) await cloudBlocks.waitForViewerRest(() => cancelled() || stop.signal.aborted, options.restMaxMs ?? 60_000);
-  }
   let made: (ExportExcerpt | null)[];
   try {
+    if (options.behindViewer === true) {
+      const needsCut = cells.some((cell) => {
+        const original = originals.get(cell.media);
+        const item = media.get(cell.media);
+        if (original === undefined || item === undefined) return false;
+        const key = cellKey(original, item.fps, cell.index);
+        return key !== null && !isFile(localPath(cache, key));
+      });
+      if (needsCut) await cloudBlocks.waitForViewerRest(() => cancelled() || stop.signal.aborted, options.restMaxMs ?? 60_000);
+    }
     const count = (): void => {
       finished += 1;
       options.onStep?.(finished, cells.length);
@@ -321,13 +347,14 @@ export async function prepare(
           counts[file.how] += 1;
           return { object: objectOf(url), from: cell.from, to: last ? TO_THE_END : cell.to, path: file.path };
         } finally {
-          count();
+          if (!stop.signal.aborted && !cancelled()) count();
           release();
         }
       }),
     );
   } finally {
     clearInterval(watch);
+    options.signal?.removeEventListener("abort", onAbort);
   }
   if (stop.signal.aborted || cancelled()) throw new Error("cancelled");
   const excerpts = made.filter((one): one is ExportExcerpt => one !== null);

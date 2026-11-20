@@ -355,6 +355,6 @@ export const askJson = <S extends Schema.Top = typeof Schema.Unknown>(method: st
   }) as Effect.Effect<S["Type"], service.ServiceError, S["DecodingServices"] | ChildProcessSpawner.ChildProcessSpawner>;
 
 /** A relay request whose answer is JSON. `timeout` is in seconds. */
-export function json<T = unknown>(method: string, route: string, body: unknown, feature: string, timeout: number): Promise<T> {
-  return runPromise(askJson(method, route, body, feature, timeout * 1000)) as Promise<T>;
+export function json<T = unknown>(method: string, route: string, body: unknown, feature: string, timeout: number, signal?: AbortSignal): Promise<T> {
+  return runPromise(askJson(method, route, body, feature, timeout * 1000), signal ? { signal } : undefined) as Promise<T>;
 }

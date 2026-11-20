@@ -36,4 +36,25 @@ test("slow but moving runs to the end, however long; standing still is stopped a
   expect(error).toBeInstanceOf(StoodStill);
   expect(String(error)).toContain("made no progress");
   expect(aborted).toBe(true);
+
+  const stop = new AbortController();
+  let cleaned = false;
+  const cancelled = whileMoving(
+    "Copying the sound",
+    () => 0,
+    (signal) =>
+      new Promise<string>((_, reject) => {
+        signal.addEventListener("abort", () => {
+          setTimeout(() => {
+            cleaned = true;
+            reject(new Error("aborted"));
+          }, 20);
+        });
+      }),
+    5_000,
+    stop.signal,
+  );
+  setTimeout(() => stop.abort(), 30);
+  await expect(cancelled).rejects.toThrow("cancelled");
+  expect(cleaned).toBe(true);
 });

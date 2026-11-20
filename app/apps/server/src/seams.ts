@@ -208,7 +208,7 @@ export interface CloudMediaSeam {
   /** A finished video of ours (`review:<project>/<version>`) among the originals, fetched from its review once; the local copy too (the caller removes it). */
   reviewOriginal(file: string, scratch: string, progress: (bytes: number, total: number | null, name: string) => void): Promise<[Original, string | null]>;
   /** `project` as an export of frames start..end reads it: cloud media pointing at their originals (presigned URLs). */
-  forExport(project: Project, start: number, end: number, cache: string, cancelled?: () => boolean, onPrep?: (phase: string, ratio: number) => void): Promise<[Project, Originals]>;
+  forExport(project: Project, start: number, end: number, cache: string, cancelled?: () => boolean, onPrep?: (phase: string, ratio: number) => void, signal?: AbortSignal): Promise<[Project, Originals]>;
   /** The cloud stills a render of `project` reads, fetched again where the cache dropped them. */
   restoreStills(app: App, project: Project): Promise<void>;
   /** Puts a file from this machine in the cloud (deduplicated by content) and returns the media to add; footage's uploads finish in the background. */
