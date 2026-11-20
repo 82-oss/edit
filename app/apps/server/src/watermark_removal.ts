@@ -303,8 +303,15 @@ const queue: Job[] = [];
 const looks: Look[] = [];
 /** Sources being looked at for their mark now or queued to be, and the projects waiting on each. */
 const looking = new Map<string, Set<string>>();
-/** When looking at a source last failed (tried again after half an hour). */
+/** When looking at a source last failed (tried again after LOOK_AGAIN_AFTER_MS). */
 const lookFailed = new Map<string, number>();
+/**
+ * How long a file whose look failed is left before it's looked at again. Not 30 minutes (Nov 20, Sphe's Boyfriends
+ * edit: ~50 sped-up excerpts each failed in ~40 s, "too little of the footage could be read", so the first were due
+ * again before the last was reached; the queue never emptied, and the project's cleaning, which waits on its files'
+ * looks, never started).
+ */
+const LOOK_AGAIN_AFTER_MS = 12 * 3600_000;
 /** Cells being cleaned now, and whether a file is being looked at for its mark (one at a time). */
 let running = 0;
 let lookingNow = false;
@@ -402,7 +409,7 @@ export async function ensure(app: App, id: string, hints: Hints = hintsFor.proje
       waiting.add(id);
       continue;
     }
-    if (Date.now() - (lookFailed.get(source) ?? 0) < 30 * 60_000) continue;
+    if (Date.now() - (lookFailed.get(source) ?? 0) < LOOK_AGAIN_AFTER_MS) continue;
     looking.set(source, new Set([id]));
     looks.push({ project: id, media, source, hint: hints.hint(source), keep: hints.keep });
   }
