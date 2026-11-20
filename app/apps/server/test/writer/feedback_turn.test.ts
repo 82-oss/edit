@@ -10,7 +10,7 @@ import { join } from "node:path";
 import type { Script } from "@edit/types/writer";
 
 import { brief, doneBrief, feedbackOf, settle } from "../../src/writer/fixing.ts";
-import { keepRule } from "../../src/teaching.ts";
+import { changeLesson, changedMost, keepRule } from "../../src/teaching.ts";
 import type { Note } from "../../src/writer/reviews.ts";
 import * as store from "../../src/writer/store.ts";
 import * as turnTools from "../../src/writer/turn_tools.ts";
@@ -193,4 +193,20 @@ test("a channel's script turn has the channel's lesson tools", async () => {
   } finally {
     cleanup();
   }
+});
+
+test("a lesson is changed in place, a line at a time, however long it is (Sphe, Nov 20: \"almost like a git diff\")", () => {
+  const guide = `${"A rule. ".repeat(900)}A case opening runs no more than 65 words. ${"Another rule. ".repeat(10)}`;
+  const done = changeLesson("house-rules", guide, [{ old: "A case opening runs no more than 65 words.", new: "A case opening runs longer where the story needs it." }]);
+  expect(done.text).toContain("A case opening runs longer where the story needs it.");
+  expect(done.text).not.toContain("no more than 65");
+  expect(done.text.replace("A case opening runs longer where the story needs it.", "")).toBe(guide.replace("A case opening runs no more than 65 words.", "").trim());
+  expect(done.added).toBe("A case opening runs longer where the story needs it.");
+  // Words not there, or there twice, change nothing.
+  expect(() => changeLesson("house-rules", guide, [{ old: "not in it", new: "x" }])).toThrow("doesn't have those words");
+  expect(() => changeLesson("house-rules", guide, [{ old: "A rule.", new: "x" }])).toThrow("900 times");
+  expect(() => changeLesson("house-rules", "Only line.", [{ old: "Only line.", new: "" }])).toThrow("empty");
+  // A guide past a part's length may grow a little when changed; a short one keeps its kind's most.
+  expect(changedMost(2_400, 7_000)).toBe(7_400);
+  expect(changedMost(2_400, 300)).toBe(2_400);
 });

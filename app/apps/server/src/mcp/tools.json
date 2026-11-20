@@ -4236,7 +4236,7 @@
     "name": "archive_in_library"
   },
   {
-    "description": "Keep what the person said holds beyond this video, or said yes to keeping when you asked (never what they let pass unanswered), as one of your skills in V2's cloud (a teacher's; Edit V2). A memory is a line or two, in the person's words (at most 400 characters). A part of the edit's skill (one with a note, read with read_skill) is changed by saving the whole of it again with the change (at most 2,400 characters). The same name replaces it, so a line is forgotten by saving the skill again without it (a whole memory: archive_in_library). It's kept in this channel's edit style (a channel's project only): its group's when it's in one, unless for says this channel alone.",
+    "description": "Keep what the person said holds beyond this video, or said yes to keeping when you asked (never what they let pass unanswered), as one of your skills in V2's cloud (a teacher's; Edit V2). A memory is a line or two, in the person's words (at most 400 characters). A part of the edit's skill (one with a note, read with read_skill) is at most 2,400 characters. To change one that's there, any length, give change: just its lines that change, the rest kept word for word (a line goes with new \"\"; a whole memory: archive_in_library). It's kept in this channel's edit style (a channel's project only): its group's when it's in one, unless for says this channel alone.",
     "inputSchema": {
       "properties": {
         "project_id": {
@@ -4252,7 +4252,7 @@
           "type": "string"
         },
         "text": {
-          "description": "What to remember: at most 400 characters for a memory, 2,400 for a part's skill.",
+          "description": "What to remember: at most 400 characters for a memory, 2,400 for a part's skill. Leave it out with change.",
           "type": "string"
         },
         "note": {
@@ -4270,11 +4270,30 @@
         "settled": {
           "description": "Only after a remember was refused for contradicting what's taught: the person's answer on which holds, quoted.",
           "type": "string"
+        },
+        "change": {
+          "type": "array",
+          "maxItems": 20,
+          "description": "Instead of text, to change part of a skill that's there (any length): [{old: its exact words now, found once; new: what they become, \"\" takes them out}].",
+          "items": {
+            "type": "object",
+            "properties": {
+              "old": {
+                "type": "string"
+              },
+              "new": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "old",
+              "new"
+            ]
+          }
         }
       },
       "required": [
         "skill",
-        "text",
         "reason"
       ],
       "type": "object"

@@ -30,13 +30,48 @@ export function groupRule(): string {
  * channel is in a group (`groupRule`).
  */
 /**
+ * A lesson changed in place, as a diff (Sphe, Nov 20: "agents can't change one
+ * line… almost like a git diff… across the board for any sort of V2 cloud
+ * teaching"): each change's `old` words, found exactly once in what's taught
+ * now, become its `new` ("" takes them out), in order; everything else stays
+ * word for word, however long the lesson is. What comes back: the whole new
+ * text, and the words put in (what a clash is checked on).
+ */
+export function changeLesson(name: string, text: string, given: unknown): { text: string; added: string } {
+  if (!Array.isArray(given) || given.length === 0 || given.length > 20) throw new Error(`change is a list of 1 to 20 {old, new}: the exact words in ${name} as it is now, and what they become`);
+  let out = text;
+  const added: string[] = [];
+  for (const [at, one] of given.entries()) {
+    const { old, new: next } = (typeof one === "object" && one !== null ? one : {}) as { old?: unknown; new?: unknown };
+    if (typeof old !== "string" || old === "" || typeof next !== "string") throw new Error(`change ${at + 1} is {old: words in ${name}, new: what they become ("" takes them out)}`);
+    const found = out.split(old).length - 1;
+    if (found !== 1) throw new Error(`change ${at + 1}: ${found === 0 ? `${name} doesn't have those words as written` : `those words are in ${name} ${found} times`}: copy them exactly from your instructions${found > 1 ? ", with enough around them to be found once" : ""}. Nothing was changed.`);
+    out = out.replace(old, () => next);
+    if (next.trim() !== "") added.push(next.trim());
+  }
+  if (out.trim() === "") throw new Error(`that would leave ${name} empty: put it away instead`);
+  return { text: out.trim(), added: added.join("\n") };
+}
+
+/** How long a changed lesson may be: its kind's most, or for one already past it (a guide brought over whole), a little more than it was. */
+export const changedMost = (most: number, before: number): number => (before > most ? before + 400 : most);
+
+/** The `change` argument every remember takes, as its schema says it. */
+export const CHANGE_ARG = {
+  type: "array",
+  maxItems: 20,
+  description: 'Instead of text, to change part of a lesson that\'s there (any length, a guide brought over whole too; read a part with read_skill first): [{old: its exact words now, found once; new: what they become, "" takes them out}]. The rest stays word for word.',
+  items: { type: "object", properties: { old: { type: "string" }, new: { type: "string" } }, required: ["old", "new"] },
+};
+
+/**
  * A round of feedback applied, kept whole when asked (Sphe, Nov 20: "you've
  * just applied all these changes. Please remember this for the future"; many
  * lessons, or whole skills where they belong together). Every area's agent
  * has it, in keepRule.
  */
 export const ROUND_RULE = (word: string): string =>
-  `A ROUND OF FEEDBACK KEPT WHOLE: when they ask you to remember feedback you've applied ("remember all of this for the future", "keep these for next time"), that's their yes to every note of it. Read it back first if it isn't all in front of you (pull_feedback with done: true, where you have it). Then go through every note: each lasting point is its own lesson (one remember each, the rule in general terms, the reviewer's words as reason); where several notes are one part of the work (how a section opens, how pictures are found and placed), keep them as one longer part with a note on when to read it, its rules whole. A note only about this ${word} is kept as the rule behind it, or left when there's none. One that repeats what's taught changes that lesson (the same name). End with the list of what you kept, by name, and what you left and why.`;
+  `A ROUND OF FEEDBACK KEPT WHOLE: when they ask you to remember feedback you've applied ("remember all of this for the future", "keep these for next time"), that's their yes to every note of it. Read it back first if it isn't all in front of you (pull_feedback with done: true, where you have it). Then go through every note: each lasting point is its own lesson (one remember each, the rule in general terms, the reviewer's words as reason); where several notes are one part of the work (how a section opens, how pictures are found and placed), keep them as one longer part with a note on when to read it, its rules whole. A note only about this ${word} is kept as the rule behind it, or left when there's none. One that repeats or changes what's taught changes that lesson (the same name): its changed lines with change, never by writing a long one out again. End with the list of what you kept, by name, and what you left and why.`;
 
 export function keepRule(word: string, how: string, asks = true, grouped = false): string {
   const line = grouped ? `"I'll remember this for the group: …", or "I'll remember this for this channel only: …"` : `"I'll remember this for future ${word}s: …"`;
