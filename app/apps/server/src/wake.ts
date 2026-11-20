@@ -60,7 +60,10 @@ function start(): void {
     // Anything else that kept the beat two seconds or more late kept all of Edit that long: said, with what last
     // started (thread.ts), and kept for this Mac's report (Nov 20: 247 such holds of 20 to 46 s in an evening were
     // one INFO line each, naming nothing).
-    else if (gap - BEAT_MS >= thread.HELD_MS) thread.held(gap - BEAT_MS, busy);
+    // A gap in which the process hardly worked isn't counted as one: a short sleep, a Mac napping its timers, or the
+    // thread waiting on a program it started; said plainly, so that last one can still be found.
+    else if (gap - BEAT_MS >= thread.HELD_MS && busy >= (gap - BEAT_MS) * 0.25) thread.held(gap - BEAT_MS, busy);
+    else if (gap - BEAT_MS >= thread.HELD_MS) diag.info("wake", `the server's thread had no turn for ${diag.human(gap - BEAT_MS)} with little work done (${Math.round(busy)} ms of processor time): asleep, napping, or waiting on a program it started`);
   }, BEAT_MS);
   timer.unref?.();
 }
