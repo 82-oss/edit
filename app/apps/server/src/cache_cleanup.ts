@@ -51,6 +51,7 @@ import * as cloud from "./cloud.ts";
 import { playbackPath } from "./cloud_playback.ts";
 import { Semaphore } from "./media.ts";
 import * as diag from "./diag.ts";
+import * as thread from "./thread.ts";
 import * as drive from "./drive.ts";
 import { aheadFile, beingRead } from "./exports.ts";
 import * as retention from "./export_retention.ts";
@@ -968,7 +969,11 @@ export async function cleanPass(app: App, now = Date.now(), head?: (key: string)
   ledger.useRoots(ledgerOf.rootsOf(app.store.home, cache));
   const entries = await ledger.rebuild();
   const confirmed = await confirmOriginals(app, entries, done, now, head);
+  // Each said as it starts: on a home of 14,000 cached files a pass keeps the server's thread about three seconds
+  // (mandalorian, Nov 21, each hour), and the hold's line should name which part (thread.ts).
+  thread.note("the hourly cache clean (the cache)");
   const report = cleanCache(app, false, now, { freeBytes: keepFreeBytes(cache), entries, confirmed }, done);
+  thread.note("the hourly cache clean (old exports)");
   const old = cleanExports(app, false, now);
   report.bytes += old.bytes + previews.bytes;
   report.files += old.files + previews.files;
