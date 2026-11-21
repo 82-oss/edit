@@ -1029,7 +1029,10 @@ export function useWindowLayer(wrapRef: React.RefObject<HTMLElement | null>, nat
       const box = wrap.getBoundingClientRect();
       // After the screen's 160 ms fade-in, so the picture doesn't show ahead of the page around it.
       const visible = shownRef.current && now - opened > 200;
-      const key = `${box.left},${box.top},${box.width},${box.height},${visible}`;
+      // Hidden, where it is doesn't matter: a geometry change while a cold first frame is on its way (the timeline or a
+      // panel filling in) sent hidden placements again, and the window rested its player on each, stopping the play
+      // ("stopped by itself at frame 0", the Nov 21 audit, P11c). It's placed where the viewer is once it shows.
+      const key = visible ? `${box.left},${box.top},${box.width},${box.height}` : "hidden";
       if (key !== last) {
         last = key;
         moved = now;

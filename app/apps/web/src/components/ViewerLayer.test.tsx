@@ -29,6 +29,31 @@ afterEach(() => {
 });
 
 describe("the window's layer under the viewer", () => {
+  it("isn't placed again while hidden when only the viewer's size or place changes (a panel filling in during a cold first frame): each hidden placement rested the window's player, stopping a play starting (the Nov 21 audit, P11c)", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame", "performance"] });
+    const container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    let width = 800;
+    const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(() => ({ left: 0, top: 0, width, height: 450, right: width, bottom: 450, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect);
+    try {
+      act(() => root!.render(<Layer native shown={false} />));
+      act(() => { vi.advanceTimersByTime(300); });
+      const hidden = placed.filter((one) => !one.visible).length;
+      expect(hidden).toBe(1);
+      // The timeline fills in, then a panel: the viewer moves twice while the first frame is still coming.
+      width = 700; act(() => { vi.advanceTimersByTime(100); });
+      width = 640; act(() => { vi.advanceTimersByTime(100); });
+      expect(placed.filter((one) => !one.visible).length).toBe(hidden);
+      // Shown: placed where it is now.
+      act(() => root!.render(<Layer native shown />));
+      act(() => { vi.advanceTimersByTime(100); });
+      expect(placed.at(-1)).toEqual({ width: 640, visible: true });
+    } finally {
+      rect.mockRestore();
+    }
+  });
+
   it("is moved, never taken down, when its first frame shows: a hidden placement rests the window's player and stopped a play pressed at once on a cold open (the MacBook Air, Nov 21)", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame", "performance"] });
     const container = document.createElement("div");
