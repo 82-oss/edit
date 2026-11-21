@@ -168,8 +168,9 @@ export async function removerJobs(request: Request, url: URL, env: RemoverEnv): 
 
   const found = await allow(request, env, "use", "remover/jobs");
   if (found instanceof Response) return found;
-  // Someone whose work is editing (or an admin): the machines are paid by the minute.
-  if (found.kind === "person" && !found.admin && !found.perms.some((perm) => perm.startsWith("edit."))) {
+  // Someone whose work is editing (or an admin): the machines are paid by the minute. A channel given is editing work
+  // (Sphe, Nov 21: "a channel I've given a person access to should be all they need"), and removal runs on channels' edits.
+  if (found.kind === "person" && !found.admin && !found.perms.some((perm) => perm.startsWith("edit.") || perm.startsWith("channel."))) {
     return json(403, { error: "Your account can't clean footage: an admin can give you an editing permission at accounts.spheceo.com." });
   }
   if (!removerOn(env)) return json(503, { error: "Removal on RunPod isn't on for this relay.", remover: false });

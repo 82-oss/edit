@@ -52,11 +52,32 @@ export function shapeOf(summary: unknown): Shape {
   };
 }
 
-/** Whether someone with `given` may see and change a project of this shape (kinds.ts `mayWork`). */
+/** Whether work names a channel (Edit V2's); null, undefined and "" are no channel's (V1), as Edit's kinds.ts `onChannel`. */
+export const onChannel = (channel: unknown): channel is string => typeof channel === "string" && channel !== "";
+
+/** Whether `perms` hold this channel, in full or by its label (kinds.ts `mayChannel`, channels.ts in mamagi). */
+export const holdsChannel = (perms: Iterable<string>, channel: string): boolean => {
+  for (const perm of perms) if (perm === `channel.${channel}` || perm === `channel.${channel}.label`) return true;
+  return false;
+};
+
+/** Whether `perms` hold any channel, in full or by its label: each is work of its own, whatever kinds they hold (kinds.ts `anyChannel`). */
+export const holdsAnyChannel = (perms: Iterable<string>): boolean => {
+  for (const perm of perms) if (perm.startsWith("channel.")) return true;
+  return false;
+};
+
+/**
+ * Whether someone with `given` may see and change a project of this shape
+ * (kinds.ts `mayWork`). A channel's is the channel's alone (Sphe, Nov 21: "a
+ * channel I've given a person access to should be all they need"), in full or
+ * by its label, a subtitled one too: it had needed `edit.<style>` beside the
+ * channel, so Edit let someone holding only the channel make its edit and this
+ * refused every save of it. Work of no channel keeps the kinds rule exactly.
+ */
 export function mayWork(shape: Shape, given: Set<string> | null): boolean {
   if (given === null) return true;
-  // A channel's work is only for who may see that channel (Sphe, Nov 15), in full or by its label (channels.ts in mamagi).
-  if (typeof shape.channel === "string" && shape.channel !== "" && !given.has(`channel.${shape.channel}`) && !given.has(`channel.${shape.channel}.label`)) return false;
+  if (onChannel(shape.channel)) return holdsChannel(given, shape.channel);
   if (!shape.subtitles && given.has(`edit.${shape.style}`)) return true;
   return given.has("video.subtitles") && (shape.subtitles || shape.footageOnly);
 }
@@ -118,9 +139,16 @@ export const IDEAS = "edit/ideas/";
 /** A thumbnail's pictures and the team's overlays (Nov 2): the same people as ideas, the repackagers. */
 export const THUMBNAILS = "edit/thumbnails/";
 
-/** Why `found` may not touch `key` when it's an idea's or a thumbnail's picture (null: they may). */
+/**
+ * Why `found` may not touch `key` when it's an idea's or a thumbnail's picture
+ * (null: they may). Who works on ideas at all: an `ideas.*` capability, or a
+ * channel given to them, whose ideas and thumbnails are theirs with it (Sphe,
+ * Nov 21; Edit's ideas/routes.ts `mayIdeas`). A picture's key names its idea
+ * or thumbnail, not a channel or a workspace, so it's judged as `ideas.*`
+ * always was: by working on ideas at all, not by whose idea it is.
+ */
 export function ideaRefused(found: Caller, key: string): string | null {
-  if ((!key.startsWith(IDEAS) && !key.startsWith(THUMBNAILS)) || found.kind !== "person" || found.admin || found.perms.some((perm) => perm.startsWith("ideas."))) return null;
+  if ((!key.startsWith(IDEAS) && !key.startsWith(THUMBNAILS)) || found.kind !== "person" || found.admin || found.perms.some((perm) => perm.startsWith("ideas.")) || holdsAnyChannel(found.perms)) return null;
   return "Your account can't work on ideas yet: an admin can give you Interrogation ideas at accounts.spheceo.com.";
 }
 

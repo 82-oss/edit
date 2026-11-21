@@ -29,6 +29,7 @@
 
 import { forbiddenOf, withCaller, type Caller } from "./auth";
 import { actorOf, convexPaused, isObject, PAUSED_MESSAGE, r2Config, r2Fetch, Upstream, type CloudEnv } from "./cloud";
+import { holdsAnyChannel, holdsChannel, onChannel } from "./authz";
 import { channelsLive } from "./live_channels";
 
 export interface IdeasEnv extends CloudEnv {
@@ -134,9 +135,15 @@ function workspaceOf(given: unknown, found: Caller): Board {
   return board;
 }
 
-/** Whether someone may work on ideas: an `ideas.*` capability, or an admin. */
+/**
+ * Whether someone may work on ideas: an `ideas.*` capability, a channel given
+ * to them (its ideas and thumbnails are theirs with it: Sphe, Nov 21, "a
+ * channel I've given a person access to should be all they need"; Edit's
+ * ideas/routes.ts `mayIdeas`), or an admin. Which ideas is each idea's own
+ * check (`mayIdea`), and a workspace's board still needs `ideas.<workspace>`.
+ */
 export function mayIdeas(found: Caller): boolean {
-  return found.kind === "person" && (found.admin || found.perms.some((perm) => perm.startsWith("ideas.")));
+  return found.kind === "person" && (found.admin || found.perms.some((perm) => perm.startsWith("ideas.")) || holdsAnyChannel(found.perms));
 }
 
 export const NO_IDEAS = "Your account can't work on ideas yet: an admin can give you Interrogation or bodycam ideas at accounts.spheceo.com.";
@@ -226,12 +233,13 @@ async function convex(body: Record<string, unknown>, env: IdeasEnv, found: Calle
   const { actor: _sent, ...args } = (body.args ?? {}) as Record<string, unknown>;
   // An idea is its workspace's (Nov 4: an `ideas.bodycam` person could read and change Interrogation's ideas here):
   // a commit names one the caller works in, and an idea already in the cloud is changed or removed only in its own.
+  // A channel's idea is the channel's alone (Nov 21, `mayIdea`): saved onto a channel the caller holds, whatever workspace it says.
   if (!isAdmin(found) && (path === "ideas:commit" || path === "ideas:remove")) {
     if (typeof args.ideaId !== "string") return json(400, { error: "args.ideaId must be a string." });
-    if (path === "ideas:commit" && !mayWorkspace(found, args.workspace)) return json(403, { error: NOT_THIS_WORKSPACE });
+    if (path === "ideas:commit" && !mayIdea(found, { workspace: args.workspace, summary: args.summary })) return json(403, { error: NOT_THIS_WORKSPACE });
     const existing = await convexValue(env, "ideas:get", { ideaId: args.ideaId });
     if (existing === undefined) return json(502, { error: "Convex couldn't say whose idea that is; Edit asks again." });
-    if (existing !== null && !mayWorkspace(found, workspaceOfIdea(existing))) return json(403, { error: NOT_THIS_WORKSPACE });
+    if (existing !== null && !mayIdea(found, existing)) return json(403, { error: NOT_THIS_WORKSPACE });
   }
   // Who started an idea, and who changed it, come from the token, never the caller.
   if (kind === "mutation") {
@@ -256,8 +264,8 @@ async function convex(body: Record<string, unknown>, env: IdeasEnv, found: Calle
     if (forbidden !== null) return forbidden;
     if (isObject(parsed) && parsed.status === "success" && !isAdmin(found)) {
       // Reads: only the workspaces the caller works in.
-      if (path === "ideas:list" && Array.isArray(parsed.value)) return json(200, { ...parsed, value: parsed.value.filter((row) => mayWorkspace(found, workspaceOfIdea(row))) });
-      if (path === "ideas:get" && parsed.value !== null && parsed.value !== undefined && !mayWorkspace(found, workspaceOfIdea(parsed.value))) return json(403, { error: NOT_THIS_WORKSPACE });
+      if (path === "ideas:list" && Array.isArray(parsed.value)) return json(200, { ...parsed, value: parsed.value.filter((row) => mayIdea(found, row)) });
+      if (path === "ideas:get" && parsed.value !== null && parsed.value !== undefined && !mayIdea(found, parsed.value)) return json(403, { error: NOT_THIS_WORKSPACE });
     }
     if (isObject(parsed) && (parsed.status === "success" || parsed.status === "error")) return json(200, parsed);
   } catch {
@@ -276,6 +284,19 @@ function mayWorkspace(found: Caller, workspace: unknown): boolean {
   if (found.admin) return true;
   const named = workspace === undefined || workspace === null || workspace === "" ? "interrogation" : workspace;
   return typeof named === "string" && Object.hasOwn(BOARDS, named) && found.perms.includes(`ideas.${named}`);
+}
+
+/**
+ * Whether the caller may work on this idea (a list row, a get's value, or a
+ * commit's args): a channel's by the channel alone, in full or by its label
+ * (Sphe, Nov 21; Edit's ideas/routes.ts `mayIdea`), any other by its
+ * workspace. Its channel is its summary's.
+ */
+function mayIdea(found: Caller, row: unknown): boolean {
+  if (found.kind !== "person") return false;
+  if (found.admin) return true;
+  const channel = isObject(row) && isObject(row.summary) ? row.summary.channel : undefined;
+  return onChannel(channel) ? holdsChannel(found.perms, channel) : mayWorkspace(found, workspaceOfIdea(row));
 }
 
 /** The workspace an idea's row or body says it's in (a list row's own, else its body's). */
@@ -840,7 +861,7 @@ function channelAccess(given: unknown, found: Caller): { key: string; full: bool
   if (found.kind !== "person") throw new Refused(403, NO_IDEAS);
   const full = found.admin || (found.perms.includes(`channel.${given}`) && !found.perms.includes(`channel.${given}.label`));
   if (!full && !found.perms.includes(`channel.${given}.label`)) throw new Refused(403, "That channel isn't available to your account: an admin can give it to you at accounts.spheceo.com.");
-  if (!mayIdeas(found)) throw new Refused(403, NO_IDEAS);
+  // The channel given is all its board takes (Nov 21): no `ideas.*` beside it.
   return { key: given, full };
 }
 

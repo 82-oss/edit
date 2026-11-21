@@ -455,12 +455,13 @@ describe("a channel's own board (Nov 18)", () => {
     expect((await ask("/v1/ideas/trello/send", { body: { channel: TED, lane: "sphe", name: "A Title", desc: "" }, claims: ted })).status).toBe(400);
   });
 
-  it("refuses who can't see the channel or work on ideas, and a channel with no board; a label is enough, its board's name left out", async () => {
+  it("refuses who can't see the channel, and a channel with no board; the channel alone is enough, a label too, its board's name left out", async () => {
     stand(routes());
     const refused = await ask(`/v1/ideas/lanes?channel=${TED}`, { claims: { perms: ["use", "ideas.bodycam", "channel.other"] } });
     expect(refused.status).toBe(403);
     expect(((await refused.json()) as { error: string }).error).toContain("That channel isn't available");
-    expect((await ask(`/v1/ideas/lanes?channel=${TED}`, { claims: { perms: ["use", `channel.${TED}`] } })).status).toBe(403);
+    // The channel given is all its board takes (Nov 21): no `ideas.*` beside it.
+    expect((await ask(`/v1/ideas/lanes?channel=${TED}`, { claims: { perms: ["use", `channel.${TED}`] } })).status).toBe(200);
     expect((await ask("/v1/ideas/lanes?channel=../x", { claims: ted })).status).toBe(400);
     const label = await ask(`/v1/ideas/lanes?channel=${TED}`, { claims: { perms: ["use", "ideas.interrogation", `channel.${TED}.label`] } });
     expect(label.status).toBe(200);
