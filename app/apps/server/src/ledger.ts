@@ -115,6 +115,9 @@ export function classifyCache(relative: string): Class {
     if (parts.length === 3 && /^(manifest|plan)-v\d+\.json$/.test(third ?? "")) return keep("other");
     return own("chunks", id);
   }
+  // The timeline's pictures (timeline_media.ts, `timeline/<key>/<height>/<ms>.jpg`): a few kB each, made again in a moment, so
+  // the cleaner may take them like any other derived file (Nov 21; uncounted, they would only ever pile up).
+  if (top === "timeline") return own("derived");
   if (top === "ahead" && second !== undefined) return own("ahead", second.replace(/\.mp4(\.json)?$/, ""));
   if (top === "playback" && second !== undefined) return own("derived", second.replace(/\.mp4$/, ""));
   if ((top === "reviews" || top === "range-exports") && second !== undefined && parts.length >= 3) return own("derived", second);
@@ -206,6 +209,38 @@ export function walkSync(roots: Root[]): Entry[] {
         const path = join(at, name);
         try {
           const stat = fs.lstatSync(path);
+          if (root.enter !== undefined && !root.enter(path.slice(root.dir.length + 1), stat.isDirectory())) continue;
+          if (stat.isDirectory()) stack.push(path);
+          else if (stat.isFile()) out.push(entryOf(root, path, stat));
+        } catch {
+          // Gone meanwhile.
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * `walkSync` off the server's thread: the same files in the same order (the cleaner takes files of equal age in the
+ * order it was given them, so a pass that walks for itself takes the same ones either way), each folder and file read
+ * with fs.promises, one at a time.
+ */
+export async function walkInOrder(roots: Root[]): Promise<Entry[]> {
+  const out: Entry[] = [];
+  for (const root of roots) {
+    const stack = [root.dir];
+    for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
+      let names: string[];
+      try {
+        names = await fs.promises.readdir(at);
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        const path = join(at, name);
+        try {
+          const stat = await fs.promises.lstat(path);
           if (root.enter !== undefined && !root.enter(path.slice(root.dir.length + 1), stat.isDirectory())) continue;
           if (stat.isDirectory()) stack.push(path);
           else if (stat.isFile()) out.push(entryOf(root, path, stat));
@@ -333,6 +368,9 @@ export class Ledger {
   /** A file or a folder removed: it and everything under it. */
   forget(path: string): void {
     if (this.entries.delete(path)) return;
+    // Outside every root nothing of it is kept: no look through every entry (Nov 21: the cleaner forgets each history
+    // save it takes, and each looked through all 14,000 of a big home's).
+    if (this.roots.length > 0 && !this.roots.some((root) => path === root.dir || path.startsWith(`${root.dir}/`) || root.dir.startsWith(`${path}/`))) return;
     const under = `${path}/`;
     for (const key of this.entries.keys()) if (key.startsWith(under)) this.entries.delete(key);
   }

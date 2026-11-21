@@ -10,7 +10,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:te
 import * as fs from "node:fs";
 import { join } from "node:path";
 
-import { cleanCache, makeRoom } from "../../src/cache_cleanup.ts";
+import { cleanCache, makeRoom, makeRoomAsync } from "../../src/cache_cleanup.ts";
 import * as editCloud from "../../src/cloud.ts";
 import { rootsOf, walkSync } from "../../src/ledger.ts";
 import * as room from "../../src/storage.ts";
@@ -141,10 +141,19 @@ test("a copy that's in the cloud and has its piece stays here with room to keep 
     // cleaner is asked for the room and gives up what may go (both, these being a few bytes each).
     room.diskHooks.free = () => 14 * GB;
     room.diskHooks.makeRoom = (wanted) => makeRoom(app, wanted);
+    // The room is asked for off the thread and not waited on (Nov 21): the test waits for each ask itself.
+    const asks: Promise<number>[] = [];
+    room.diskHooks.makeRoomAsync = (wanted) => {
+      const ask = makeRoomAsync(app, wanted);
+      asks.push(ask);
+      return ask;
+    };
     fs.writeFileSync(join(dir, "script.json"), JSON.stringify({ status: "ready" }));
     const other = landed(dir, "2", { piece: false });
     pieceMade(dir, other);
     await streamed.settled();
+    expect(asks.length).toBeGreaterThan(0);
+    await Promise.all(asks);
     expect(fs.existsSync(other.path)).toBe(false);
     expect(fs.existsSync(copy.path)).toBe(false);
     expect(held(dir)).toEqual([]);

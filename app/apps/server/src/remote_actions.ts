@@ -29,7 +29,7 @@ import * as os from "node:os";
 import * as accounts from "./accounts.ts";
 import * as busy from "./busy.ts";
 import type { App } from "./app.ts";
-import { cleanCache, cleanCloudPreviews } from "./cache_cleanup.ts";
+import { cleanCacheGently, cleanCloudPreviews } from "./cache_cleanup.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as diag from "./diag.ts";
 import * as speeds from "./export_speeds.ts";
@@ -518,7 +518,7 @@ export async function unstick(app: App): Promise<string> {
   for (const key of revived.keys) done.push(`job ${key}: started again`);
   const free = disk.free(app);
   if (free !== null && free < LOW_DISK) {
-    const cleaned = (await cleanCloudPreviews(app, false)).bytes + cleanCache(app, false).bytes;
+    const cleaned = (await cleanCloudPreviews(app, false)).bytes + (await cleanCacheGently(app, false)).bytes;
     done.push(`the disk had ${gb(free)} free: ${gb(cleaned)} of cache cleaned`);
   }
   const said = done.length > 0 ? done.join("; ") : "nothing was stuck";

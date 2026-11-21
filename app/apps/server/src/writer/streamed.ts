@@ -285,11 +285,11 @@ function settle(dir: string, source: string, change: (one: Held) => void): void 
   writeHeld(dir, list);
   if (one.landed && one.up && one.checked !== true) confirm(dir, one);
   else if (mayGo(one) && short(dir)) {
-    try {
-      room.diskHooks.makeRoom(room.keepFreeBytes(dir));
-    } catch (error) {
+    // Not waited on, and off the thread (Nov 21): nothing here needs the room this instant, and the pass run at once
+    // kept the server's thread for as long as it took.
+    void room.diskHooks.makeRoomAsync(room.keepFreeBytes(dir)).catch((error: unknown) => {
       diag.warn("writer", `${source}: room for what Edit keeps free wasn't made: ${diag.messageOf(error)}`);
-    }
+    });
   }
 }
 
