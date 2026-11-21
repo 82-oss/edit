@@ -25,6 +25,7 @@ import { isFile, parent } from "./paths.ts";
 import * as playing from "./playing.ts";
 import * as pieces from "./proxy_pieces.ts";
 import * as storage from "./storage.ts";
+import * as thread from "./thread.ts";
 
 /** Whole previews fetched at once, and how many more may start for ones read now (`hurry`). */
 const AT_ONCE = 4;
@@ -184,7 +185,12 @@ function fetchNext(most = AT_ONCE, only?: Waiting): void {
   // The cleaner asked for the room the next one needs (a few minutes apart, never what an open project plays): what it frees may take it.
   if (wanted > 0) {
     setTimeout(() => {
-      if (storage.askForRoom(storage.freeBytes(dir) + wanted) > 0) fetchNext();
+      // The cleaner's pass runs here, on the thread, when it's asked (cache_cleanup.ts `makeRoom`): said, so a hold
+      // names it rather than whatever page ask came last (Nov 21).
+      thread.note("whole copies: asking the cache cleaner for room (cache_cleanup.ts makeRoom)");
+      const freed = storage.askForRoom(storage.freeBytes(dir) + wanted);
+      thread.note("whole copies: starting what's waiting (local_previews.ts fetchNext)");
+      if (freed > 0) fetchNext();
     }, 0).unref?.();
   }
 }

@@ -26,11 +26,12 @@ import { writeAtomic } from "./files.ts";
 import { Semaphore } from "./media.ts";
 import * as missingMedia from "./missing_media.ts";
 import type { Media, Project } from "./model.ts";
-import { native } from "./native/index.ts";
+import { native, planOffThread } from "./native/index.ts";
 import { join } from "./paths.ts";
 import { clipContains, clipEnd, fps as fpsOf, mediaOf } from "./project.ts";
 import { jsonForSerde } from "./rust.ts";
 import { stableStringify } from "./stable.ts";
+import * as thread from "./thread.ts";
 import * as tools from "./tools.ts";
 
 type Box = [number, number, number, number];
@@ -310,8 +311,11 @@ export async function beneath(app: App, projectId: string, name: string): Promis
     try {
       const fine = seconds <= BENEATH_FINE_SECONDS;
       const options = { ...native().exportDefaults(), format: "h264" as const, size: null, range: [found.start, found.end] as [number, number], quality: "high" as const, audio: false, loudness: null, ...(fine ? { target_mb: (BENEATH_FINE_RATE * seconds) / (8_000_000 * 0.94) } : {}) };
+      thread.note(`beneath ${name}: the project as JSON for its render`);
       const input = { json: jsonForSerde(missingMedia.playable(app.store.home, found.project)) };
-      const { plan } = native().exportPlan(input, options);
+      // Planned off the server's thread (native/index.ts `planOffThread`, Nov 21): sent as JSON, a long edit's plan
+      // reads the whole project again, and a process's first plan ran FFmpeg for the encoders, all on the thread.
+      const { plan } = await planOffThread(input, options);
       const job = native().ExportJob.start({ project: input, options, plan, output: exported, cacheDir: app.store.cacheDir() }, () => {});
       const timer = setTimeout(() => job.cancel(), 10 * 60_000);
       try {

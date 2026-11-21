@@ -33,6 +33,7 @@ import { isFile } from "./paths.ts";
 import { duration as projectDuration, fps as projectFps } from "./project.ts";
 import * as playing from "./playing.ts";
 import * as pieces from "./proxy_pieces.ts";
+import { breather } from "./thread.ts";
 
 /** Seconds of the timeline from a jump (or the playhead, as it plays) whose streamed footage is read into blocks at once. */
 export const WARM_SECONDS = 20;
@@ -52,8 +53,16 @@ export function played(project: Project) {
   }) as (Project["clips"][number] & { media: string; source_in: number; speed?: number })[];
 }
 
-/** The seconds here last worked out from an index, by key, while the same blocks are here (the page asks often). */
-const secondsMemo = new Map<string, { index: mp4.Mp4Index; signature: string; spans: Spans }>();
+/**
+ * The seconds here last worked out from an index, by key, while the same blocks of the same object are here: the page
+ * asks every 0.7 s while a play is on or held, every 3 s at rest, the footage dialog every second, and the same blocks
+ * give the same seconds. Looked up before the index is (Nov 21): keyed by the index itself, every ask of the longest
+ * real edit read all 374 files' indexes again (cloud_blocks.ts keeps 32 MB of them, and its 6 h of footage is more),
+ * each a 2 MiB block read and parsed, and scanned every sample of every file: 350 ms and 750 MB read an ask with nothing
+ * new, on mandalorian. Kept for more files than any edit has.
+ */
+const secondsMemo = new Map<string, { signature: string; spans: Spans }>();
+const SECONDS_KEPT = 4096;
 
 /** Seconds of `media` that are here to play from: "all", or stretches of it (sorted). */
 export async function hereOf(cache: string, root: string | null, media: Media): Promise<"all" | Spans> {
@@ -81,6 +90,14 @@ export async function hereOf(cache: string, root: string | null, media: Media): 
   }
   const blocks = root === null ? null : cloudBlocks.blocksHere(root, key);
   if (blocks === null || !blocks.here.has(0) || !(media.duration > 0)) return [];
+  // The same blocks of the same object (its size) and the same length as last time: the same seconds.
+  const signature = `${blocks.size} ${media.duration} ${[...blocks.here].sort((a, b) => a - b).join(",")}`;
+  const known = secondsMemo.get(key);
+  if (known !== undefined && known.signature === signature) {
+    secondsMemo.delete(key);
+    secondsMemo.set(key, known);
+    return known.spans;
+  }
   // From its index (mp4_index.ts): the seconds whose every sample, picture and sound, lies in blocks here, a frame
   // with every frame since its keyframe. Until Nov 17 a run of blocks was taken for an even share of the file's
   // length, and a proxy's bitrate follows its picture: ready said 6.7 s and then 160 s ahead were here on kenobi while
@@ -88,16 +105,13 @@ export async function hereOf(cache: string, root: string | null, media: Media): 
   const index = await cloudBlocks.indexHere(root!, key);
   if (index === undefined) return [];
   if (index !== null) {
-    const signature = [...blocks.here].sort((a, b) => a - b).join(",");
-    const known = secondsMemo.get(key);
-    if (known !== undefined && known.index === index && known.signature === signature) return known.spans;
     const spans = mp4
       .secondsHere(index, (one) => blocks.here.has(one), cloudBlocks.BLOCK)
       .map(([a, b]) => [Math.max(0, a), Math.min(media.duration, b)] as [number, number])
       .filter(([a, b]) => b > a);
     secondsMemo.delete(key);
-    secondsMemo.set(key, { index, signature, spans });
-    if (secondsMemo.size > 512) secondsMemo.delete(secondsMemo.keys().next().value!);
+    secondsMemo.set(key, { signature, spans });
+    if (secondsMemo.size > SECONDS_KEPT) secondsMemo.delete(secondsMemo.keys().next().value!);
     return spans;
   }
   // No index to read (not a faststart MP4): each run of blocks here as seconds of the file, laid out evenly, a
@@ -161,7 +175,11 @@ export async function missingOf(cache: string, project: Project, root = cloudMed
   const media = new Map(project.media.map((one) => [one.id, one]));
   const here = new Map<string, "all" | Spans>();
   const missing: Missing[] = [];
+  // A turn for the rest of Edit every few ms: each file's look is a stat, a folder read and its blocks' list, and an
+  // `await` on one already known gives nothing else a turn (thread.ts).
+  const breathe = breather();
   for (const clip of played(project)) {
+    await breathe();
     const one = media.get(clip.media);
     if (one === undefined) continue;
     let has = here.get(one.id);

@@ -13,7 +13,7 @@ import { keepAwakeWhile } from "./awake.ts";
 import { resumeImport } from "./drive_import.ts";
 import { createApp, hostname, type App } from "./app.ts";
 import { pauseForExports, setListening, smoothsFast } from "./broll.ts";
-import { makeRoom, startCleaning } from "./cache_cleanup.ts";
+import { makeRoomAsync, startCleaning } from "./cache_cleanup.ts";
 import * as cloud from "./cloud.ts";
 import { setSmoothByDefault } from "./cutin.ts";
 import * as diag from "./diag.ts";
@@ -43,7 +43,7 @@ import * as effects from "./effects.ts";
 import { prepareShell } from "./chrome_devtools.ts";
 import { messageContext, registerMediaTools } from "./media_tools.ts";
 import { allowedHosts } from "./http/host.ts";
-import { initNative, native } from "./native/index.ts";
+import { encodersListed, initNative, native } from "./native/index.ts";
 import { join } from "./paths.ts";
 import * as archive from "./archive.ts";
 import * as firstPrompt from "./first_prompt.ts";
@@ -340,6 +340,9 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     pauseForExports(() => app.exports.localRunning?.() ?? app.exports.running());
     // Slowed cut-in shots are smoothed unless asked not to, where it takes seconds.
     setSmoothByDefault(app.native.smoothSupported());
+    // The encoders are listed once now, off the thread (Nov 21): the first export plan of a process listed them by
+    // running FFmpeg synchronously, 0.7 s of nothing else answered, whoever asked first.
+    void encodersListed();
     // On Linux, RIFE on the GPU (rife.ts), looked for at start (a two-frame check, its programs awaited: Nov 21, run
     // synchronously two seconds in it kept the server's thread for as long as RIFE took to answer, 14 s seen).
     if (process.platform === "linux") {
@@ -351,7 +354,7 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     // The cache kept by each project's state; a project with an effect rendering or removal pieces out is in work.
     busy.registerProjectWork((id) => effects.renderingLine(id) !== null || removalSchedule.progressOf(id).out > 0);
     startCleaning(app);
-    exportRoom.make = (wanted) => void makeRoom(app, wanted);
+    exportRoom.make = (wanted) => makeRoomAsync(app, wanted).then(() => {});
     seams.broll.stopLeftoverMaps?.();
     // Tools register here; the subtitles' and captions' register as their modules load (through seams).
     registerEditingTools();
