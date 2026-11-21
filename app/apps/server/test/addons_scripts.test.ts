@@ -9,6 +9,7 @@
 // channel without it writes footage scripts, and a commentary asked there is
 // refused in words.
 
+import * as fs from "node:fs";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 
 import type { Clip, Script, Word } from "@edit/types/writer";
@@ -86,7 +87,7 @@ function setItems(): void {
 }
 
 function signedIn(app: { store: { home: string } }): void {
-  Bun.write(`${app.store.home}/beta.json`, JSON.stringify({ v2: true }));
+  fs.writeFileSync(`${app.store.home}/beta.json`, JSON.stringify({ v2: true }));
   mock.cloud.convex.channels = ALL;
   accounts.signedInForTests(["use", "cloud", ...ALL.map((one) => `channel.${one.key}`)]);
   setItems();
