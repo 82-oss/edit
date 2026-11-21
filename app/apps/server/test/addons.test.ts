@@ -18,7 +18,8 @@ import { apply, audit, hooks } from "../src/edit_plan.ts";
 import { desktopsSparse, introLong, introWithoutArrest, windowsUnderused } from "../src/edit_tools.ts";
 import { interrogationIssues } from "../src/framing.ts";
 import { fillReels, groundsWithCards, mosaicCensors, soundEdges, textOnTop } from "../src/horror_look.ts";
-import { isEssay, STYLES, type Project, type Style } from "../src/model.ts";
+import { isEssay, NARRATION, STYLES, type Project, type Style } from "../src/model.ts";
+import { narrationOf } from "../src/script.ts";
 import { styleTerms } from "../src/subtitles.ts";
 import type { Transcript } from "../src/transcribe.ts";
 import { project as newProject, stubNative } from "./helpers/model.ts";
@@ -105,6 +106,8 @@ const RESTATED: Restated[] = [
   { site: "subtitles.ts houseWords: the style's words", file: "subtitles.ts", text: "extra = [...styleTerms(project.style), ...extra];", today: (s) => styleTerms(s).length > 0, names: ["muted-words"] },
   { site: "subtitles.ts muteHouseWords: the style's words", file: "subtitles.ts", text: "extra = [...styleTerms(live.project.style), ...extra];", today: (s) => styleTerms(s).length > 0, names: ["muted-words"] },
   { site: "house_words_pass.ts effectLine: the style's words", file: "house_words_pass.ts", text: "const extra = styleTerms(live.project.style);", today: (s) => styleTerms(s).length > 0, names: ["muted-words"] },
+  // Slice 9: a Short is its footage's own sound, so its import fetches and places no recording (script.ts narrationOf).
+  { site: "script.ts followOn: a Short narrated by no one", file: "script.ts", text: 'NARRATION[app.store.get(id)?.project.style ?? "bodycam"] === "recording"', today: (s) => NARRATION[s] === "none", names: ["short-form"] },
 ];
 
 /** The site still asks as it did, or asks the add-on (`has(…, "name")`) instead. */
@@ -261,6 +264,10 @@ describe("the V1 table, site by site (the site's own code)", () => {
     expect(styleTerms("horror").length).toBeGreaterThan(styleTerms("commentary").length);
   });
 
+  test("script.ts narrationOf: a V1 project's narration is its style's, whatever its frame", () => {
+    for (const style of ALL) for (const frame of [WIDE, TALL]) expect([style, frame.height, narrationOf(v1(style, frame))]).toEqual([style, frame.height, NARRATION[style]]);
+  });
+
   test("model.ts isEssay: the sites built on it", () => {
     for (const style of ALL) expect([style, addons.has(v1(style), "essay-checks")]).toEqual([style, isEssay(style)]);
   });
@@ -272,7 +279,7 @@ describe("the catalogue", () => {
       bodycam: ["bodycam-intro", "windows-screens", "intro-captions", "case-research"],
       interrogation: ["intro-captions", "held-broll", "interrogation-music", "interrogation-structure", "case-research"],
       courtroom: ["held-broll", "courtroom-text", "case-research", "court-script"],
-      commentary: ["essay-checks", "post-details", "reverb-out", "youtube-excerpts", "muted-words"],
+      commentary: ["essay-checks", "post-details", "reverb-out", "youtube-excerpts", "muted-words", "essay-script"],
       horror: ["essay-checks", "horror-look", "no-competitor-footage", "post-details", "reverb-out", "youtube-excerpts", "muted-words"],
       shorts: ["short-form"],
     });
@@ -357,7 +364,7 @@ describe("a channel's project with no add-ons set", () => {
     expect(onOf("not-read-yet")).toEqual(EDIT_LANE("bodycam"));
     expect(addons.ofChannel("recorded", "edit").every((one) => one.from === "default")).toBe(true);
     // The script lane: none by default.
-    for (const key of ["recorded", "voiced"]) expect(addons.ofChannel(key, "script").map((one) => [one.name, one.on])).toEqual([["court-script", false]]);
+    for (const key of ["recorded", "voiced"]) expect(addons.ofChannel(key, "script").map((one) => [one.name, one.on])).toEqual([["court-script", false], ["essay-script", false]]);
   });
 });
 
@@ -373,7 +380,7 @@ describe("form filtering", () => {
     const by = (form: addons.Form) => addons.NAMES.filter((name) => addons.CATALOGUE[name].form === form);
     expect(by("short")).toEqual(["short-form"]);
     expect(by("long")).toEqual(["bodycam-intro", "windows-screens", "intro-captions", "held-broll", "interrogation-music", "interrogation-structure", "courtroom-text", "essay-checks", "case-research"]);
-    expect(by("any")).toEqual(["horror-look", "no-competitor-footage", "post-details", "reverb-out", "youtube-excerpts", "muted-words", "court-script"]);
+    expect(by("any")).toEqual(["horror-look", "no-competitor-footage", "post-details", "reverb-out", "youtube-excerpts", "muted-words", "court-script", "essay-script"]);
     for (const name of addons.NAMES) {
       const form = addons.CATALOGUE[name].form;
       expect([name, addons.fits(form, v1("bodycam", WIDE)), addons.fits(form, v1("bodycam", TALL))]).toEqual([name, form !== "short", form !== "long"]);

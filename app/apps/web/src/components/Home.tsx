@@ -30,7 +30,7 @@ import { explain } from "@edit/types/problems";
 import { ChannelAvatar } from "./Channels";
 import { ChannelsActions, ChannelsTitle, ChannelsView, useChannelsNav, type ChannelWork } from "./ChannelsHome";
 import { AREA, Aside, ChannelField, FIELD, Field, More, NewShell, useChannelNeeded } from "./NewWork";
-import { loadChannels, useChannels } from "../lib/channels";
+import { loadChannels, useChannels, type Channel, type Form, type ScriptKind } from "../lib/channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { BY, Category, CATEGORY, CHIP, COLUMNS, contextMenu, CreatorCell, DoneContext, DoneStatus, FreshMark, KindMark, LENGTH, LengthCell, layoutFor, NAME, NoteMark, PILL, ROW, RowButtons, StatusCell, TableShape, Updated, useDoneRow, useNote, withDone } from "./HomeTable";
 import { ExportsActions, ExportsView, useWatchExports } from "./ExportsView";
@@ -2025,6 +2025,11 @@ const LINK = /https?:\/\/\S+/gi;
 const WRITER_KIND: Partial<Record<Style, "foia" | "interrogation" | "courtroom">> = { bodycam: "foia", interrogation: "interrogation", courtroom: "courtroom" };
 
 /** One source of a script to write, as Script mode checked it: a video or a reused case. */
+/** The forms a channel's new edits take: long form alone unless its add-on says (its row's `forms`). */
+const formsOf = (channel: Channel | null): Form[] => channel?.forms ?? ["long"];
+/** What a channel's new scripts are: from a case's footage alone unless its add-on says (its row's `scripts`). */
+const scriptsOf = (channel: Channel | null): ScriptKind[] => channel?.scripts ?? ["footage"];
+
 type Source = { url: string; title: string; durationMs: number | null; reuse: boolean; earlier?: string; problem: string | null; warning?: string | null; again?: boolean };
 
 /**
@@ -2054,8 +2059,10 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   const channels = useChannels((state) => state.channels);
   const [channelKey, setChannelKey] = useState<string | null>(null);
   const [compilation, setCompilation] = useState<boolean | null>(null);
-  /** A channel's script written as a commentary (an essay from sources) rather than from a case's footage. */
+  /** A channel's script written as a commentary (an essay from sources) rather than from a case's footage, where its add-on offers both. */
   const [essay, setEssay] = useState(false);
+  /** A channel's new edit as a Short rather than long form, where its add-on offers both. */
+  const [form, setForm] = useState<Form>("long");
   const [sources, setSources] = useState<Source[] | null>(null);
   /** Several videos: one case or a compilation, as the person said (null: not yet). */
   const [shape, setShape] = useState<Shape | null>(null);
@@ -2099,9 +2106,15 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   // Scripts too (Sphe, Nov 14): an edit's, a script's, an idea's and a thumbnail's agent is taught its channel's lane.
   const channel = v2 ? (channels?.find((one) => one.key === channelKey) ?? null) : null;
   const unpicked = useChannelNeeded(channel?.key ?? null);
-  // A channel's script is its footage's (its kind from the channel), or a commentary when picked (Nov 21: commentary's
-  // home is the InternetJanitor channel; the channel given is all either takes); with no channel, the Kind says.
-  const commentary = writing && (channel === null ? kind === "commentary" : essay);
+  // What a channel's work can be is its channel's, from its add-ons (Sphe, Nov 21: "because of the add-on it literally
+  // changes the ui and allows you two paths"): a choice shows only where the channel offers two, and the one thing it
+  // makes is made without asking. Its scripts: from a case's footage, or commentaries (`essay-script`); with no
+  // channel, the Kind says. Its edits: long form, Shorts (`short-form`), or either; the server sets the frame.
+  const scriptKinds = scriptsOf(channel);
+  const forms = formsOf(channel);
+  const commentary = writing && (channel === null ? kind === "commentary" : scriptKinds.length > 1 ? essay : scriptKinds[0] === "commentary");
+  /** The form asked for, sent only where the channel offers both. */
+  const asked = !writing && channel !== null && forms.length > 1 ? { form } : {};
 
   // A fresh dialog each time.
   useEffect(() => {
@@ -2123,6 +2136,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     setChannelKey(start?.channel ?? null);
     setCompilation(null);
     setEssay(start?.style === "commentary");
+    setForm("long");
     setFrom("list");
     setQuery("");
     setScriptId(null);
@@ -2314,7 +2328,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
           navigate(`/p/${pickedScript.project}`);
           return;
         }
-        const { project } = await api.importWriter(pickedScript.id, channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}) } : {});
+        const { project } = await api.importWriter(pickedScript.id, channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}), ...asked } : {});
         if (autoStart) {
           // The edit workflow starts once its footage is in, as a pasted Doc's does.
           await begin(project, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`, "open");
@@ -2358,8 +2372,8 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
       const { project } = await api.createProject({
         name: title.trim(),
         style: kind,
-        ...(channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}) } : {}),
-        ...(kind === "shorts" && channel === null ? SHORTS_FORMAT : FORMAT),
+        // A channel's frame is the server's, from its add-ons: only the form picked goes.
+        ...(channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}), ...asked } : kind === "shorts" ? SHORTS_FORMAT : FORMAT),
       });
       if (input === "") {
         // A blank project: the first message, if there is one, goes to its agent at once (a V2 edit's footage comes in the chat).
@@ -2418,18 +2432,18 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         </div>
   );
 
-  // A channel's script: from a case's footage (the channel's usual) or a commentary, as today's Kind pills look.
-  const essayBlock = (
+  /** Two ways the channel's work can go, as today's Kind pills look: shown only on a channel that offers both. */
+  const pills = <T,>(options: readonly (readonly [T, string, string])[], value: T, set: (value: T) => void) => (
     <div className="flex flex-wrap gap-1.5">
-      {([[false, "Footage", "A case's footage, written as the channel was taught"], [true, "Commentary", "A narrated essay written from sources: videos, articles, posts"]] as const).map(([value, name, note]) => (
+      {options.map(([one, name, note]) => (
         <button
           type="button"
           key={name}
           title={note}
-          onClick={() => setEssay(value)}
+          onClick={() => set(one)}
           className={cx(
             "flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition-colors",
-            essay === value ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
+            value === one ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
           )}
         >
           {name}
@@ -2437,10 +2451,21 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
       ))}
     </div>
   );
+  const choice =
+    channel === null
+      ? undefined
+      : writing
+        ? scriptKinds.length > 1
+          ? pills([[false, "Footage", "A case's footage, written as the channel was taught"], [true, "Commentary", "A narrated essay written from sources: videos, articles, posts"]] as const, essay, setEssay)
+          : undefined
+        : forms.length > 1 && !existingEdit
+          ? pills([["long", "Long form", "16:9"], ["short", "Short form", "A 9:16 Short"]] as const, form, setForm)
+          : undefined;
 
   const pickChannel = (key: string | null) => {
     setChannelKey(key);
     setCompilation(null);
+    setForm("long");
     // A script of another channel is no longer one of the list's.
     const chosenNow = (channels ?? []).find((one) => one.key === key) ?? null;
     if (chosenNow !== null && pickedScript?.channel && pickedScript.channel !== chosenNow.key) setScriptId(null);
@@ -2590,7 +2615,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         onChange={pickChannel}
         // An edit from a script is the script's kind: today's kinds are a pasted Doc's or a script's to write.
         other={listed ? undefined : kindBlock(false)}
-        also={writing && channel !== null ? essayBlock : undefined}
+        also={choice}
       />
 
       {listed ? (

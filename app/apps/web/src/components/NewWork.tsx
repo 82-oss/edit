@@ -104,8 +104,9 @@ export function Field({ label, hint, children, className }: { label: string; hin
  */
 /**
  * The channel (Edit V2), or today's kinds (`other`) with it off. `also`: what
- * the work on the channel picked may be, under its picker (New script's
- * Footage or Commentary, Nov 21), with V2 on only.
+ * the work on the channel picked may be, under its picker, with V2 on only;
+ * only a channel whose add-ons offer two ways has it (Nov 21: New edit's Long
+ * form or Short form, New script's Footage or Commentary).
  */
 export function ChannelField({ kind, channels, value, onChange, other, also }: { kind: WorkKind; channels: Channel[]; value: string | null; onChange: (key: string | null) => void; other?: ReactNode; also?: ReactNode }) {
   const v2 = useBeta((beta) => beta.v2);

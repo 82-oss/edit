@@ -237,7 +237,8 @@ export interface RemovalRun {
 export const api = {
   projects: () => request<{ projects: ProjectSummary[] }>("GET", "/api/projects"),
   /** Home's New project: a person's (`byPerson`). */
-  createProject: (body: { name: string; style: Style; channel?: string; compilation?: boolean; width: number; height: number; fps: number }) =>
+  /** On a channel, its frame is the server's to decide (its add-ons), from `form` where it offers both; no frame is sent. */
+  createProject: (body: { name: string; style: Style; channel?: string; compilation?: boolean; form?: "long" | "short"; width?: number; height?: number; fps?: number }) =>
     request<Live>("POST", "/api/projects", { ...body, ...byPerson() }),
   project: (id: string) => request<Live>("GET", `/api/projects/${id}`),
   saveProject: (id: string, baseRev: number, project: Project, origin: string) =>
@@ -428,7 +429,7 @@ export const api = {
   /** Writer's scripts in the cloud, newest first, each with the project made from it here. */
   writerScripts: () => request<{ scripts: WriterScriptRow[] }>("GET", "/api/writer/handoff"),
   /** Makes an Edit project from a Writer script and starts its import: the channel's (V2) when one is given, else the script's own channel's while V2 is on. */
-  importWriter: (id: string, made: { channel?: string; compilation?: boolean } = {}) => request<{ project: string }>("POST", `/api/writer/handoff/${id}/import`, made),
+  importWriter: (id: string, made: { channel?: string; compilation?: boolean; form?: "long" | "short" } = {}) => request<{ project: string }>("POST", `/api/writer/handoff/${id}/import`, made),
 };
 
 export interface WriterScriptRow {

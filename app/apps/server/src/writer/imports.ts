@@ -12,6 +12,7 @@ import { Cause, Effect, Fiber, Schema } from "effect";
 
 import type { Choice, Decision, ImportProgress, Kind, Label, Research, Reuse, Script, VideoCheck } from "@edit/types/writer";
 
+import * as addons from "../addons.ts";
 import type { App } from "../app.ts";
 import { creator } from "../accounts.ts";
 import * as diag from "../diag.ts";
@@ -482,9 +483,14 @@ export type Made = { test?: boolean; channel?: string };
 async function start(app: App, data: string, script: Script, found: Research | null, kind: Kind | null, then: Script["firstBuild"] | null = null, answer: Answer = "finished", made: Made = {}): Promise<Script> {
   if (then !== null) script.firstBuild = then;
   if (made.channel) script.channel = made.channel;
-  // A channel's script has no kind: it's written from what the channel was taught (formats.ts `taught`), one case or a compilation.
+  // A channel's script has no kind: it's written from what the channel was taught (formats.ts `taught`), one case or a
+  // compilation. Unless the channel's add-on makes its scripts courtroom cases (`court-script`, Nov 21): then its kind
+  // is "courtroom", for the code a courtroom script runs (formats.ts), its words still its lane's alone. Decided once,
+  // as it's made: one made before the add-on keeps its kind.
   if (can.isChannelScript(script)) {
-    delete script.kind;
+    await addons.ready(undefined, `a new script for ${script.title}`);
+    if (addons.courtScripts(script.channel!)) script.kind = "courtroom";
+    else delete script.kind;
     can.requireShape(script.compilation);
   } else if (script.sourceKind === "compilation" && !script.compilation) {
     if (kind !== null && kind !== "courtroom") throw new Error("Videos of one Courtroom case must use the Courtroom format.");

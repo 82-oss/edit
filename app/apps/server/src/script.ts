@@ -2895,6 +2895,19 @@ function afterLine(after: ScriptJob["after"], step: NonNullable<ScriptJob["after
 }
 
 /**
+ * Who narrates a project's video, for its import: its style's (model.ts
+ * `NARRATION`), but never anyone on a Short, which is its footage's own sound.
+ * V1's Short is style "shorts" (NARRATION "none"), and `has` gives it the add-on
+ * by that style; a Short made on a channel has its channel narration's style
+ * (Nov 21: as interrogation, a recorded channel's Short fetched and placed the
+ * team's recording, as its long edits do), so the add-on says it instead.
+ */
+export function narrationOf(project: Project | undefined): (typeof NARRATION)[keyof typeof NARRATION] {
+  if (project === undefined) return NARRATION.bodycam;
+  return addons.has(project, "short-form") ? "none" : NARRATION[project.style];
+}
+
+/**
  * What follows the layout: the team's recording placed, the voice-over
  * spoken and split across the cut-ins, the case's research. Each says how it
  * went on its own line of the job (`after`); none fails the import, which
@@ -2909,10 +2922,12 @@ async function followOn(app: App, id: string, inserting: string | null, recut: b
     app.scripts.set(app, id, (job) => {
       job.after = afterLine(job.after, step, state, note);
     });
+  // Whether it's a Short is its channel's add-on (`narrationOf`): read fresh first, a few seconds at most.
+  await addons.ready(app.store.get(id)?.project ?? null, title);
   // A kind of video narrated by the team's recording: the one given with
   // the script (audio in the project, not on the timeline) is placed on
   // the cut-ins it reads; only what it doesn't read is voiced, as a stand-in.
-  if (inserting === null && NARRATION[app.store.get(id)?.project.style ?? "bodycam"] === "recording") {
+  if (inserting === null && narrationOf(app.store.get(id)?.project) === "recording") {
     try {
       await fetchRecording(app, id);
     } catch (error) {
@@ -2921,7 +2936,7 @@ async function followOn(app: App, id: string, inserting: string | null, recut: b
     }
   }
   const project = app.store.get(id)?.project;
-  if (inserting === null && project !== undefined && NARRATION[project.style] === "recording" && unplacedAudio(project)) {
+  if (inserting === null && project !== undefined && narrationOf(project) === "recording" && unplacedAudio(project)) {
     say("recording", "running");
     try {
       await diag.timeAsync("script", "script: place the recording", () => seams.voiceover.place(app, id, null));

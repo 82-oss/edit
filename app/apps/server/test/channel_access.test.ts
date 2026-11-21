@@ -11,6 +11,7 @@ import { join } from "node:path";
 import type { Idea } from "@edit/types/ideas";
 
 import * as accounts from "../src/accounts.ts";
+import * as addons from "../src/addons.ts";
 import * as ideasCloud from "../src/ideas/cloud.ts";
 import { mayIdea, mayIdeas } from "../src/ideas/routes.ts";
 import * as run from "../src/ideas/run.ts";
@@ -214,6 +215,9 @@ test("a script: a channel's footage script and a commentary made on it, opened a
     const call = routes(app);
     accounts.signedInForTests(CHANNEL_ONLY);
     // A commentary on the channel (Nov 21: commentary's home is the InternetJanitor channel), with no commentary grant.
+    // Only on a channel whose add-on writes them (Sphe, Nov 21: what New script offers comes from the channel's add-ons).
+    const both = addons.write("essay-script", true, { scripts: "both" });
+    v2cloud.useSkillsForTests([{ name: addons.skillOf("essay-script"), text: both, key: v2cloud.ownKey("skill", v2cloud.laneKey(TED.key, "script"), addons.skillOf("essay-script")), latest: 1 }]);
     const essay = await call("POST", "/api/writer/scripts/commentary", { title: "Why he's hated", links: [], channel: TED.key });
     expect(essay.status).toBe(200);
     expect(essay.body).toMatchObject({ channel: TED.key, sourceKind: "commentary" });

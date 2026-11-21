@@ -81,7 +81,8 @@ export type Name =
   | "youtube-excerpts"
   | "muted-words"
   | "short-form"
-  | "court-script";
+  | "court-script"
+  | "essay-script";
 
 /** Which projects an add-on holds on: a long (16:9) one, a Short (taller than wide), or either. */
 export type Form = "long" | "short" | "any";
@@ -139,6 +140,7 @@ export interface Settings {
   "courtroom-text": { smallest: number };
   "muted-words": { list: "commentary" | "horror"; words: string[] };
   "short-form": { forms: "short" | "both" };
+  "essay-script": { scripts: "commentary" | "both" };
 }
 
 const words = (value: unknown) => Array.isArray(value) && value.every((one) => typeof one === "string" && one.trim() !== "");
@@ -272,6 +274,17 @@ export const CATALOGUE: Record<Name, BuiltIn> = {
     description: "A script made in this channel is a courtroom case: the Doc's running time and total clip length, and court clip names.",
     lane: "script", trigger: "made", does: { shapes: true }, form: "any", settings: {},
     v1: ["courtroom"],
+  },
+  // What New script makes on the channel, and the script routes' refusal of the other kind (writer/routes.ts
+  // `madeOf`): a commentary is the writer/commentary.ts essay, from the channel's Script lane. V1's: New script's
+  // Commentary kind, whose edit is a commentary one (writer_handoff.ts `scriptStyle`). Horror wrote no scripts of
+  // its own kind in Edit, so it has none.
+  "essay-script": {
+    title: "Commentary script",
+    description: "A script made in this channel is a commentary: a narrated essay written from sources (videos, articles, posts), not from a case's footage.",
+    lane: "script", trigger: "made", does: { shapes: true }, form: "any",
+    settings: { scripts: { default: "commentary", words: '"commentary" (every script is a commentary) or "both" (New script offers a footage script or a commentary)', check: (value) => value === "commentary" || value === "both" } },
+    v1: ["commentary"],
   },
 };
 
@@ -487,6 +500,46 @@ export function formMade(channel: string, asked?: "long" | "short"): "long" | "s
   if (set?.on !== true) return "long";
   const forms = set.settings.forms ?? CATALOGUE["short-form"].settings.forms!.default;
   return forms === "short" || asked === "short" ? "short" : "long";
+}
+
+/**
+ * The forms a new edit on a channel can take, for New edit (Sphe, Nov 21: "because of the add-on it literally changes
+ * the ui and allows you two paths, short form or long form"): `["long", "short"]` offers both, a single one is made
+ * without asking. As `formMade` decides it; sync, from what's cached (`ready` first).
+ */
+export function formsOf(channel: string): ("long" | "short")[] {
+  if (formMade(channel, "short") === "long") return ["long"];
+  return formMade(channel, "long") === "short" ? ["short"] : ["long", "short"];
+}
+
+/** A script-lane add-on as it stands on a channel now (its defaults its narration's: none of them for any narration). */
+const scriptLane = (channel: string, name: Name): Effective | undefined => ofChannel(channel, "script").find((one) => one.name === name && one.on);
+
+/**
+ * What a new script on a channel can be, for New script and the script routes: a footage script, a commentary
+ * (`essay-script`), or either when its setting is "both". Nothing set: a footage script, as every channel's was.
+ */
+export function scriptsOf(channel: string): ("footage" | "commentary")[] {
+  const essay = scriptLane(channel, "essay-script");
+  if (essay === undefined) return ["footage"];
+  return essay.settings.scripts === "both" ? ["footage", "commentary"] : ["commentary"];
+}
+
+/** Whether a footage script made on a channel now is a courtroom case (`court-script`): its kind "courtroom" (writer/imports.ts). */
+export const courtScripts = (channel: string): boolean => scriptLane(channel, "court-script") !== undefined;
+
+/**
+ * The add-ons set for a channel (its own or its group's) that run on its projects and scripts made now, by lane, by
+ * their plain names: the channel page's one line. What every channel runs unset (its narration's defaults) isn't
+ * named: the same four on every page would say nothing (AGENTS.md: nothing on screen that states the obvious). Those
+ * of a form it never makes are left out too (a long edit's checks on a channel making only Shorts): they never run
+ * there (`holding`).
+ */
+export function namesOn(channel: string): Record<BuiltIn["lane"], string[]> {
+  const forms = formsOf(channel);
+  const runs = (form: Form) => form === "any" || forms.includes(form);
+  const titles = (which: BuiltIn["lane"]) => ofChannel(channel, which).filter((one) => one.on && one.from !== "default" && runs(CATALOGUE[one.name].form)).map((one) => CATALOGUE[one.name].title);
+  return { edit: titles("edit"), script: titles("script") };
 }
 
 /** Whether a project has an add-on: by its style without a channel, by its channel's with one. Sync, from what's cached. */

@@ -27,13 +27,18 @@ export interface Format {
    * A channel's script (Edit V2): written only from what the channel was
    * taught (lanes.ts), none of the house's guides or checks (Sphe, Nov 18: "if
    * you haven't taught the scripting agents… it should just be empty"). Its
-   * kind is the plain one, never picked from the channel's narration.
+   * kind is the plain one, never picked from the channel's narration or
+   * from what it's stored as, but a courtroom case where both say so: made as
+   * one by its channel's `court-script` add-on (Nov 21, writer/imports.ts),
+   * on a channel that still has it (`court`). That kind brings only the code a
+   * courtroom script runs (its relaxed second half), never the house's
+   * courtroom guide, shape or checks, which a taught script never reads.
    */
   taught: boolean;
 }
 
-export function formatOf(kind: Kind, compilation: boolean, title: string, taught = false): Format {
-  return { kind: taught ? "interrogation" : kind, compilation, style: style(title), taught };
+export function formatOf(kind: Kind, compilation: boolean, title: string, taught = false, court = false): Format {
+  return { kind: taught && !(court && kind === "courtroom") ? "interrogation" : kind, compilation, style: style(title), taught };
 }
 
 export const isFoia = (format: Format): boolean => format.kind === "foia" && !format.compilation;

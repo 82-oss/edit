@@ -518,9 +518,10 @@ async function createChannelProject(context: Context, given: Record<string, unkn
   if (!(await channels.tokenCarries([channel.key], context.app.store.home))) throw new ApiError(403, `${channel.title} isn't given to your account yet: ask an admin to give it to you on accounts.spheceo.com.`);
   const compilation = field<boolean>(given, "compilation", "boolean");
   const person = devProjects.madeForPerson(context.request, field<boolean>(given, "person", "boolean"));
+  const frame = await channels.frameOf(channel, field<string>(given, "form", "string"), settings);
   let live;
   try {
-    live = context.app.store.createAs(name, style, settings, true, !person);
+    live = context.app.store.createAs(name, style, frame, true, !person);
   } catch (error) {
     throw bad(diag.messageOf(error));
   }

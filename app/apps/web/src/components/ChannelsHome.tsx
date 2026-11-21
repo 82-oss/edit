@@ -27,6 +27,7 @@ import {
   narrationShort,
   rowsOf,
   taughtWords,
+  useAddonsOf,
   useChannels,
   useTaughtOf,
   channelApi,
@@ -508,6 +509,21 @@ const kindWord = (one: Taught, lane: Lane) => (one.kind === "template" && lane =
 const SUB = "mb-1.5 text-[11.5px] font-medium text-faint";
 
 /**
+ * The add-ons set for the channel in a lane, by their plain names (Nov 21: Edit's own code switched on for it; what
+ * every channel runs unset isn't named): one line, nothing to click, none at all on most channels; they're set by
+ * telling the agent.
+ */
+function AddonsLine({ names }: { names: string[] | undefined }) {
+  if (names === undefined || names.length === 0) return null;
+  return (
+    <p className="text-[12.5px] leading-relaxed text-muted">
+      <span className="text-faint">Add-ons: </span>
+      {names.join(", ")}
+    </p>
+  );
+}
+
+/**
  * A group's page: their pictures over the first channel's banner, the lanes
  * they share (a teacher writes each one's line; what's been taught builds up
  * as the team works) and a card a channel, each with its own voice and
@@ -741,6 +757,8 @@ function ChannelPage({ channel, group, work }: { channel: Channel; group: { grou
   const which = useChannelsNav((state) => state.dialog);
   const ownTaught = useTaughtOf(`channel:${channel.key}`, true);
   const groupTaught = useTaughtOf(group === null ? null : `group:${group.group.key}`);
+  const addons = useAddonsOf(channel.key);
+  const addonsOf = (lane: Lane) => (lane === "edit" || lane === "script" ? addons?.[lane] : undefined);
   const own = countsOf(ownTaught);
   const shared = group === null ? null : countsOf(groupTaught);
   const mine = work.filter((one) => one.channel === channel.key);
@@ -764,7 +782,13 @@ function ChannelPage({ channel, group, work }: { channel: Channel; group: { grou
         description: <InPlace value={channel.lanes[lane.key]} editable={teacher} placeholder={teacher ? "Add a line about its style" : ""} onSave={saveLane(lane)} className="text-[13px] leading-[22px] text-muted" />,
         count: own === null ? "·" : mineCount,
         empty: mineCount === 0,
-        body: ownTaught === null ? null : <TaughtItems items={ownTaught[lane.key]} lane={lane.key} />,
+        body:
+          ownTaught === null ? null : (
+            <div className="flex flex-col gap-2.5">
+              <TaughtItems items={ownTaught[lane.key]} lane={lane.key} />
+              <AddonsLine names={addonsOf(lane.key)} />
+            </div>
+          ),
       };
     const fromGroup = shared?.[lane.key] ?? 0;
     const line = group.group.lanes[lane.key];
@@ -818,6 +842,7 @@ function ChannelPage({ channel, group, work }: { channel: Channel; group: { grou
               )}
             </div>
           )}
+          <AddonsLine names={addonsOf(lane.key)} />
         </div>
       ),
     };

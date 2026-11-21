@@ -104,10 +104,19 @@ async function name(title: string, words: Word[], courtroom: boolean, narrated: 
   return [labels, suspects];
 }
 
-/** Names every voice the script doesn't have a name for yet (`watched`: after the watcher, read again for the suspects and names it couldn't see). */
-export async function nameVoices(script: Script, watched: boolean, signal?: AbortSignal): Promise<void> {
+/**
+ * How a script's voices are named: a hearing's roles (judge, defendant…) for a courtroom case, a channel's made one
+ * by its `court-script` add-on included (Nov 21), and a narrator looked for over a courtroom case or a compilation.
+ */
+export function rolesOf(script: Pick<Script, "kind" | "compilation">): { courtroom: boolean; narrated: boolean; system: string } {
   const courtroom = script.kind === "courtroom";
   const narrated = courtroom || (script.compilation ?? false);
+  return { courtroom, narrated, system: system(courtroom, narrated) };
+}
+
+/** Names every voice the script doesn't have a name for yet (`watched`: after the watcher, read again for the suspects and names it couldn't see). */
+export async function nameVoices(script: Script, watched: boolean, signal?: AbortSignal): Promise<void> {
+  const { courtroom, narrated } = rolesOf(script);
   const parts = script.parts ?? [];
   const known = script.speakers ?? {};
   let groups: [string, Word[]][];

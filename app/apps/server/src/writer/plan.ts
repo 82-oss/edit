@@ -7,6 +7,7 @@
 // FOIA cut's ten minutes).
 
 import { stampText } from "./stamp.ts";
+import * as addons from "../addons.ts";
 import * as lanes from "../lanes.ts";
 import type { Clip, Part, Research, Script, Word } from "@edit/types/writer";
 
@@ -28,7 +29,8 @@ export const EDITOR_WRITING = "Everything after the intro is in the past tense, 
 
 const EDITOR_FOOT = "Clip edges decide whether a cut feels finished. Start each clip on the first word of a thought (the whole question, \"Do you feel any remorse?\", never \"remorse?\") and end it on the word that completes it: the end of the answer or sentence, with its full stop or question mark (\"…but for killing them, no.\"). Never end on what follows a finished thought (the speaker's own \"Yeah, so\", the other speaker's \"Okay.\", \"Now,\" or \"And\") or on a hesitation (\"um\", \"so\"), and never start on one. Anchor to exact words; the app adds breathing room (a short lead-in and tail that never reaches another word).\nThe guides below were written for Repack, where the editor has tools (read_script, write_cut_ins, build_script, curate_assets and others). Here there are none and you need none: the complete transcript is in the message, your answer is the build_script plan. Research found for the case, if any, is in the evidence under RESEARCH: use it for dates, names, places and outcomes the footage doesn't give, and say in the report when a fact you needed was found nowhere.\nThe plan: items in timeline order. A clip is {\"kind\":\"clip\",\"firstWordId\":\"w12\",\"lastWordId\":\"w40\"}, an inclusive range of word IDs from the transcript, first before last. A cut-in is {\"kind\":\"cut-in\",\"narration\":\"the finished paragraph\"}. {shape_rule} The report is for the producer: one to three short sentences, under 80 words, naming any judgment call that changed the usual shape or any shortfall. Never show milliseconds or word IDs in it; give moments in the footage as [m:ss].";
 
-export const formatOfScript = (script: Pick<Script, "kind" | "compilation" | "title" | "channel">): Format => formats.formatOf(script.kind ?? "interrogation", script.compilation ?? false, script.title, isTaught(script));
+export const formatOfScript = (script: Pick<Script, "kind" | "compilation" | "title" | "channel">): Format =>
+  formats.formatOf(script.kind ?? "interrogation", script.compilation ?? false, script.title, isTaught(script), isTaught(script) && addons.courtScripts(script.channel!));
 
 /** A channel's script: written from its Script lane alone (formats.ts `taught`). */
 export const isTaught = (script: Pick<Script, "channel">): boolean => typeof script.channel === "string" && script.channel !== "";
@@ -379,7 +381,8 @@ export function compile(script: Script, plan: Plan, peaks: ArrayLike<number> = [
       );
     }
   }
-  if (formats.isCourtroom(format) && cutIns > 1 && !(narrations[0] ?? "").includes("\n\n")) {
+  // The house's courtroom shape (formats.ts COURTROOM_SHAPE), which a channel's courtroom script isn't given: its shape is its lane's.
+  if (formats.isCourtroom(format) && !format.taught && cutIns > 1 && !(narrations[0] ?? "").includes("\n\n")) {
     throw new Error(
       "A Courtroom script's first cut-in holds two paragraphs separated by a blank line: the intro (one or two sentences), then the case opening (the backstory). Nothing was saved. Write the first cut-in as the intro, a blank line, then the case opening, and send the whole plan again.",
     );
@@ -433,8 +436,9 @@ export function introRange(format: Format, opening: Opening, cutIns: number): [n
 /** How many footage blocks open the video (the intro), by format. */
 function introBlocks(format: Format, opening: Opening, cutIns: number): number {
   if (cutIns < 2) return 0;
-  if (formats.isCourtroom(format)) return 1;
+  // A channel's script opens as its plan says, a courtroom case's too (its shape is its lane's, not the house's).
   if (formats.isFoia(format) || format.taught) return opening === "two-split" && cutIns >= 3 ? 2 : 1;
+  if (formats.isCourtroom(format)) return 1;
   return cutIns >= 3 ? 2 : 1;
 }
 
@@ -460,13 +464,14 @@ export function purposes(clips: Clip[], format: Format, opening: Opening): strin
       return index === count - 1 || bare[index + 1] === true ? "outro" : "story-development";
     }
     if (index === count - 1 && index > 0) return "conclusion";
-    if (formats.isCourtroom(format)) return index === 0 ? "intro-and-case-opening" : "story-development";
-    // A channel's script opens as its plan says: an intro first (two-split), or the case opening (one-run).
+    // A channel's script opens as its plan says: an intro first (two-split), or the case opening (one-run); a
+    // courtroom case's too (the page reads a channel's script so: apps/web/src/writer/clips.ts).
     if (formats.isFoia(format) || format.taught) {
       if (index === 0) return opening === "two-split" ? "intro" : "case-opening";
       if (index === 1 && opening === "two-split") return "case-opening";
       return "story-development";
     }
+    if (formats.isCourtroom(format)) return index === 0 ? "intro-and-case-opening" : "story-development";
     return index === 0 ? "intro" : index === 1 ? "case-opening" : "story-development";
   });
 }

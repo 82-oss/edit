@@ -40,6 +40,7 @@ import { markReusedScript, parseScriptText } from "./compilation_input.ts";
 import type { Parsed } from "./seams.ts";
 import { writeAtomic } from "./files.ts";
 import { join } from "./paths.ts";
+import { DEFAULT_SETTINGS } from "./project.ts";
 import { stableStringify } from "./stable.ts";
 import { THE_MACHINE } from "./machine.ts";
 import * as v2cloud from "./v2_cloud.ts";
@@ -416,9 +417,10 @@ export function carryResearch(app: App, scriptId: string, projectId: string): vo
  * What an edit made from a script is for: `channel`, the channel picked in New
  * edit (its project is that channel's, V2's: channels.channelFor); none
  * picked, the script's own channel when it has one, else today's kind of edit.
- * `compilation`: the channel's unless this one differs.
+ * `compilation`: the channel's unless this one differs. `form`: long or short,
+ * on a channel whose `short-form` offers both (channels.frameOf).
  */
-export type ImportFor = { channel?: unknown; compilation?: unknown };
+export type ImportFor = { channel?: unknown; compilation?: unknown; form?: unknown };
 
 /** The channel an edit of `given` is made for: the one asked for, else the script's own, whatever Edit V2's switch says here. */
 async function channelOfImport(app: App, given: { channel?: string }, asked: ImportFor): Promise<channels.Channel | null> {
@@ -481,8 +483,11 @@ export async function importScript(app: App, id: string, asked: ImportFor = {}):
   if (channel !== null ? !(await channels.tokenCarries([channel.key], app.store.home)) : !kinds.mayEdit(style)) {
     throw new Error(channel !== null ? `${channel.title} isn't given to your account yet: ask an admin to give it to you on accounts.spheceo.com.` : kinds.cantMake(`edit.${style}`));
   }
+  // Its frame as New edit's on the channel (Nov 21: the channel's `short-form` decides, the person's pick where it
+  // offers both); 16:9 with no channel, or on a channel without it, as always.
+  const frame = channel === null ? DEFAULT_SETTINGS : await channels.frameOf(channel, asked.form === undefined || asked.form === null ? null : String(asked.form), DEFAULT_SETTINGS);
   const parsed = toParsed(await resolveWriterCases(given));
-  const live = app.store.createAs(given.title, style, { width: 1920, height: 1080, fps: 30 }, channel !== null);
+  const live = app.store.createAs(given.title, style, frame, channel !== null);
   if (channel !== null) {
     // Made with no channel, then given it: the moment between is the channel's (kinds.ts `startingOn`).
     await kinds.startingOn(channel.key, () =>

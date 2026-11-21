@@ -52,6 +52,7 @@ import * as cloud from "./cloud.ts";
 import * as kinds from "./kinds.ts";
 import * as diag from "./diag.ts";
 import { STYLES, type Style } from "./model.ts";
+import { DEFAULT_SETTINGS, SHORTS_SETTINGS } from "./project.ts";
 import { voiceFor } from "./styles.ts";
 import { HOUSE_VOICE } from "./voice.ts";
 import { ApiError, bad, json } from "./http/errors.ts";
@@ -371,8 +372,47 @@ export async function channelFor(given: unknown, home: string): Promise<Channel 
   return channel;
 }
 
+/**
+ * What New project offers on a channel, from its add-ons (Sphe, Nov 21: "because of the add-on it literally changes
+ * the ui"): `forms`, the forms its edits take (`short-form`), and `scripts`, what its scripts are (`essay-script`),
+ * each only where it isn't today's one choice (long form; a script from a case's footage), so a channel with nothing
+ * set is served exactly as before.
+ */
+export interface Made {
+  forms?: ("long" | "short")[];
+  scripts?: ("footage" | "commentary")[];
+}
+
+/** A channel as the page reads it: with what New project offers on it, when that isn't the usual (`Made`). */
+export function withMade(channel: Channel): Channel & Made {
+  const forms = addons.formsOf(channel.key);
+  const scripts = addons.scriptsOf(channel.key);
+  return {
+    ...channel,
+    ...(forms.length === 1 && forms[0] === "long" ? {} : { forms }),
+    ...(scripts.length === 1 && scripts[0] === "footage" ? {} : { scripts }),
+  };
+}
+
 /** Who reads a channel's scripts, as Edit's tools take it: a voice (the house's voice-over pipeline, bodycam's) or the editor's recording (interrogation's). */
 export const styleOf = (channel: Channel): "bodycam" | "interrogation" => (channel.narration?.kind === "recorded" ? "interrogation" : "bodycam");
+
+/**
+ * The frame of a new edit on `channel` (Sphe, Nov 21: "for this channel we want 9:16 (for shorts for example) or, we
+ * want long form and short form"): its `short-form` add-on decides (addons.ts `formMade`), a Short 9:16 and the
+ * rest 16:9, `asked` the person's pick where it offers both; the page sends the pick, never a frame. A channel without
+ * it makes what it always made, the frame given (16:9 unless asked otherwise). Refused in words when the form asked is
+ * one the channel doesn't make (a page read before its add-on changed).
+ */
+export async function frameOf(channel: Channel, asked: string | null, given: { width: number; height: number; fps: number }): Promise<{ width: number; height: number; fps: number }> {
+  if (asked !== null && asked !== "long" && asked !== "short") throw bad('form is "long" or "short"');
+  await addons.ready(undefined, `a new edit on ${channel.title}`);
+  const forms = addons.formsOf(channel.key);
+  if (asked !== null && !forms.includes(asked)) throw bad(asked === "short" ? `${channel.title} doesn't make Shorts: its edits are long form.` : `${channel.title} makes Shorts only.`);
+  if (!forms.includes("short")) return given;
+  const shape = addons.formMade(channel.key, asked ?? undefined) === "short" ? SHORTS_SETTINGS : DEFAULT_SETTINGS;
+  return { width: shape.width, height: shape.height, fps: given.fps };
+}
 
 export async function get(key: string): Promise<Channel | null> {
   return (await cloud.query("channels:getChannel", { key })) as Channel | null;
@@ -553,7 +593,8 @@ export function routes(router: Router<App>): void {
       const listed = await asked(() => list());
       // One given since this token was issued: a fresh token, so its work isn't refused meanwhile.
       void tokenCarries(listed.map((one) => one.key), app.store.home);
-      return json({ channels: listed, groups: knownGroups(), teacher: v2cloud.teacher() });
+      await addons.ready(undefined, "the channels for New project");
+      return json({ channels: listed.map(withMade), groups: knownGroups(), teacher: v2cloud.teacher() });
     })
     // A Trello board from a link pasted on a channel's page: its name, and the lists its ideas would be sent to.
     .get("/api/channels/board", async ({ url }: RouteContext<App>) => {
@@ -637,8 +678,9 @@ export function routes(router: Router<App>): void {
       // Found with its put-away channels (this one may be), shown without them.
       const found = typeof channel.group === "string" ? ((await listGroups(true)).find((one) => one.key === channel.group) ?? null) : null;
       const group = found === null ? null : { ...found, channels: found.channels.filter((key) => key === channel.key || !putAway(key)) };
-      const [taught, shared] = await asked(() => Promise.all([taughtOf(channel.key), group === null ? null : taughtOf(group.key)]));
-      return json({ channel, taught, group: group === null ? null : { ...group, taught: shared }, teacher: v2cloud.teacher() });
+      const [taught, shared] = await asked(() => Promise.all([taughtOf(channel.key), group === null ? null : taughtOf(group.key), addons.ready(undefined, `${channel.title}'s page`)]));
+      // The add-ons set for it, by name (addons.ts `namesOn`): the page's one line, nothing to click, none on a channel with nothing set.
+      return json({ channel: withMade(channel), taught, group: group === null ? null : { ...group, taught: shared }, addons: addons.namesOn(channel.key), teacher: v2cloud.teacher() });
     })
     .put("/api/channels/{key}", async (context: RouteContext<App>) => {
       needTeacher();

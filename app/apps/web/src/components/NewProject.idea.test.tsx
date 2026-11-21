@@ -158,22 +158,42 @@ describe("New script from an idea", () => {
   });
 });
 
-// Nov 21: commentary's home is the InternetJanitor channel. With Edit V2 on, a channel's script had to be its
-// footage's ("a commentary is V1's alone"); now the channel picked offers Footage or Commentary.
+// Nov 21: commentary's home is the InternetJanitor channel. ae65d903 offered Footage or Commentary on every channel
+// picked; the owner's rule the same day: what New script offers on a channel comes from the channel's add-ons, so
+// Inspector Ted is never offered a commentary. A channel with `essay-script` makes commentaries with no choice shown;
+// one set to "both" shows the two pills.
 describe("New script on a channel: a commentary", () => {
-  it("is offered only once a channel is picked, and footage is what it starts as", async () => {
+  it("a channel with nothing set offers no choice: its script is from a case's footage, as before", async () => {
     await fromIdea({ title: "Why He's Hated", text: "", style: "bodycam" });
-    expect(() => findButton("Commentary")).toThrow("Button not found");
     await act(async () => {
       findButton(/Inspector Ted/).click();
     });
-    expect(findButton("Commentary")).toBeDefined();
+    expect(() => findButton("Commentary")).toThrow("Button not found");
+    expect(() => findButton("Footage")).toThrow("Button not found");
     expect(document.querySelector("textarea")?.placeholder).toContain("Paste the footage");
   });
 
-  it("is made on the channel picked, from its sources", async () => {
+  it("a channel whose add-on writes commentaries makes one from its sources, with no choice shown", async () => {
+    CHANNELS.list = [channel("ch-ted", "Inspector Ted"), { ...channel("ch-janitor", "InternetJanitor"), scripts: ["commentary"] }];
     mocks.createCommentary.mockResolvedValue({ id: "c-1" });
-    await fromIdea({ title: "Why He's Hated", text: "https://example.com/the-brief", style: "bodycam", channel: "ch-ted" });
+    await fromIdea({ title: "Why He's Hated", text: "https://example.com/the-brief", style: "bodycam", channel: "ch-janitor" });
+    await flush();
+    expect(() => findButton("Commentary")).toThrow("Button not found");
+    expect(document.querySelector("textarea")?.placeholder).toContain("The first is the brief");
+    await act(async () => {
+      findButton("Create").click();
+    });
+    await flush();
+    expect(mocks.createCommentary).toHaveBeenCalledWith("Why He's Hated", ["https://example.com/the-brief"], "ch-janitor");
+    expect(mocks.importYoutube).not.toHaveBeenCalled();
+  });
+
+  it('a channel set to "both" shows the two, footage first, and a commentary is made on it when picked', async () => {
+    CHANNELS.list = [channel("ch-ted", "Inspector Ted"), { ...channel("ch-mixed", "Mixed"), scripts: ["footage", "commentary"] }];
+    mocks.createCommentary.mockResolvedValue({ id: "c-1" });
+    await fromIdea({ title: "Why He's Hated", text: "https://example.com/the-brief", style: "bodycam", channel: "ch-mixed" });
+    expect(findButton("Footage")).toBeDefined();
+    expect(document.querySelector("textarea")?.placeholder).toContain("Paste the footage");
     await act(async () => {
       findButton("Commentary").click();
     });
@@ -183,7 +203,7 @@ describe("New script on a channel: a commentary", () => {
       findButton("Create").click();
     });
     await flush();
-    expect(mocks.createCommentary).toHaveBeenCalledWith("Why He's Hated", ["https://example.com/the-brief"], "ch-ted");
+    expect(mocks.createCommentary).toHaveBeenCalledWith("Why He's Hated", ["https://example.com/the-brief"], "ch-mixed");
     expect(mocks.importYoutube).not.toHaveBeenCalled();
   });
 });
