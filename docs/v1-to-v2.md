@@ -179,7 +179,14 @@ A proposal, each step small enough for one nightly, each with what proves it.
 - **The timeline** is built for V2, read only, turned on from the player (`T`), off until then.
 - **Who has the switch on** (asked Nov 21): Sphe's Linux Edit, yes; JJ's Mac, no (nightly-96); Marc's Mac and the M4 weren't open to ask.
 
-Still open: whether V1 projects get a converter (see "What V2 can't do yet", converting existing work); a Trello board per channel; watermarks for Cuffed & Caught, Snax Dirt, GTA 6, InternetJanitor and Female Felons; when the switch goes on for everyone.
+- **A converter is built**: with Edit V2 turned on, a V1 project is clicked, a channel picked, and it becomes that channel's V2 project, its clips untouched so its video is the same frame for frame. It stays behind the Beta switch.
+- **Commentary goes on InternetJanitor**, not on a placeholder: its lessons and its graphics recreated frame by frame.
+- **The lessons inbox is removed** once its lessons are in the lanes: V2's cloud holds the lessons, and V1 is on its way out.
+- **Not now**: Trello boards and watermarks per channel are left as they are, and nobody's switch is turned on for them.
+
+What the four kinds need beyond teaching and graphics (investigated Nov 21): a channel's projects only ever get the style bodycam or interrogation (`apps/server/src/channels.ts` `styleOf`), so the code that runs only for a kind never runs for a channel: courtroom's audits, relaxed pacing and Doc layout; commentary's essay import, research and extra house words; horror's passes after every plan and its list of words to mute; shorts' tall shape, `reframe` and its allowance to cut most of the source. The smallest change that brings all of it back is a channel that carries its kind (a field in the accounts cloud, read by `styleOf`), with four tools given back to V2 that aren't graphics (`reframe`, `youtube_reference`, `tweet_reference`, `commentary_reverb_out`) and Akwe Pro added to the effects' fonts. Graphics still to recreate: courtroom 6, shorts 1 or 2, commentary about 21, horror about 13. Only courtroom is in real use (16 edits and 22 scripts, nearly all Marc's).
+
+Still open: whether a channel carries a kind; when the switch goes on for everyone.
 
 ## For Sphe to decide
 
