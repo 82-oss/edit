@@ -2207,8 +2207,12 @@ export class ExportRegistry implements seams.Exports {
         `${project.name} exported ${frames} frames in ${diag.human(took)} (${fixed(frames / Math.max(took / 1000, 1e-3), 1)} frames/s) to ${output}`,
       );
       diag.record("export", "export", took, null);
-      // This computer's pace, for the next export's time (export_speeds.ts).
-      if (this.home !== null && running.stretch !== true) speeds.noteExport(this.home, frames, took / 1000);
+      // This computer's pace, for the next export's time (export_speeds.ts): from the frames this run rendered alone.
+      // Counted whole, an export that reused its chunks (2,400 frames "in 1.6 s") taught it a pace three times too
+      // fast, and the next export's time and percent were wrong from its first second (Nov 22, a MacBook Air). One
+      // that rendered under half says too little of rendering (its time is mostly the join) and isn't counted.
+      const before = Math.min(1, Math.max(0, running.made ?? 0));
+      if (this.home !== null && running.stretch !== true && before <= 0.5) speeds.noteExport(this.home, Math.round(frames * (1 - before)), took / 1000);
       let bytes: number | null = null;
       try {
         bytes = fs.statSync(output).size;

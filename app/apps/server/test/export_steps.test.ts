@@ -268,3 +268,36 @@ test("a run first looked at long after it began says no time for the step it was
     cleanup();
   }
 });
+
+// Nov 22, a MacBook Air, the new dialog's big percent: after two exports that reused every chunk (2,400 frames "in
+// 1.6 s") this computer's pace read three times too fast, so the next export's video was guessed at 5 s; 5.4 s in, the
+// percent read 99% "almost done" with the video 37% made, and stood at 99% for the rest of the export, since it never
+// goes back. A step's time is trusted for the whole's percent only once that step has said its own pace.
+test("a pace learnt wrong never puts the percent ahead of the video: it goes by the video's real share until the engine's own pace is heard", async () => {
+  const { app, home, id, cleanup } = await project();
+  try {
+    // Far too fast: a 60 s video (1,800 frames) guessed at 1.2 s.
+    speeds.noteExport(home, 2400, 1.6);
+    const t0 = 7_000_000;
+    const job = { id, name: "Welfare check", path: "/x/out.mp4", state: "running" as const, progress: 0, updated_ms: t0, started_ms: t0, seconds: 60 };
+    const at = (s: number, progress: number) => steps.stepsOf(app, id, { ...job, progress }, t0 + s * 1000)!;
+    at(0, 0);
+    at(1, 0.05);
+    at(3, 0.2);
+    // The engine's own pace isn't heard yet (under 5 s of it): never ahead of the video's real share.
+    const early = at(5.4, 0.37);
+    expect(early.progress).toBeLessThanOrEqual(0.37);
+    // Heard: 7% a second, so about 6 s are left at 58%, said as that, not as the guess's "a moment".
+    const heard = at(8, 0.58);
+    expect(heard.progress).toBeGreaterThan(early.progress);
+    expect(heard.progress).toBeLessThan(0.8);
+    const video = heard.steps.find((one) => one.kind === "video")!;
+    expect(video.left_s!).toBeGreaterThan(4);
+    expect(video.left_s!).toBeLessThan(9);
+    // And it ends near the end, not long before it.
+    const late = at(13, 0.93);
+    expect(late.progress).toBeGreaterThan(0.85);
+  } finally {
+    cleanup();
+  }
+});

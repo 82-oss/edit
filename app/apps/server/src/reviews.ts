@@ -1127,6 +1127,13 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
         const one = state.shared[projectId]?.versions.find((version) => version.n === latest.n);
         if (one !== undefined) Object.assign(one, { path: chosen.path, clips, fps, durationMs });
       });
+      // The page's details of the version are this video's now: its length, its clips under each moment, its words and
+      // chapters (Nov 22, a MacBook Air: a replace sent the new video and left the old one's details, so the page showed
+      // the old length and chapters and pinned new notes to the wrong footage; since Oct 23, and a replace is what a
+      // share is whenever no one has commented). A failure here fails the share, which carries on from this step.
+      sharing.set(projectId, "publishing");
+      await cloud.mutation("reviews:setMeta", { sourceId: projectId, version: latest.n, meta: { fps, durationMs, timeline, share: args.id, ...extra } });
+      haltShare(projectId);
       diag.info("review", `${live.project.name}: v${latest.n} replaced with ${chosen.name} at ${shared.url}`);
       return published(latest.n, shared.url, carries);
     }

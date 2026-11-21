@@ -245,6 +245,11 @@ test("with no notes on the latest version, a share replaces it, and the fixes it
     expect(named("reviews:publish")).toEqual([]);
     expect(named("reviews:resolve")).toEqual([expect.objectContaining({ noteId: "n1", version: 2 })]);
     expect(reviews.read(home).notes.n1).toMatchObject({ status: "done" });
+    // The page's details of v2 are the new video's (Nov 22, a MacBook Air: a replace left the old length and clips on
+    // the page, so new notes were pinned to the wrong footage): its length, rate and clips, said to the cloud for v2.
+    const told = named("reviews:setMeta").filter((one) => typeof (one.meta as { durationMs?: unknown }).durationMs === "number");
+    expect(told).toHaveLength(1);
+    expect(told[0]).toMatchObject({ sourceId: id, version: 2, meta: { fps: expect.any(Number), durationMs: expect.any(Number), timeline: expect.anything() } });
   } finally {
     cleanup();
   }

@@ -139,6 +139,8 @@ interface Run {
   took?: Map<string, number>;
   /** The steps as last said, for its end (`doneSteps`). */
   said?: ExportSteps;
+  /** Which steps' times are from their own pace by now (`ownPace`). */
+  own?: Set<string>;
 }
 
 /**
@@ -197,6 +199,21 @@ export function smooth(run: { shown: Map<string, { value: number; at: number }> 
   }
   run.shown.set(key, { value, at: now });
   return value;
+}
+
+/**
+ * A step's time left, from its own pace once that's heard (`own`), else from this computer's measured speeds (`guess`).
+ * The first time its own pace is heard the time shown starts again from it: `smooth` never lets a time rise by a
+ * little, so a guess that was far too short ("a moment") stood through a step of ten seconds and more (Nov 22).
+ */
+function ownPace(run: Run, key: string, own: number | null, guess: number | null, now: number): number | null {
+  if (own === null) return smooth(run, key, guess, now);
+  run.own ??= new Set();
+  if (!run.own.has(key)) {
+    run.own.add(key);
+    run.shown.delete(key);
+  }
+  return smooth(run, key, own, now);
 }
 
 /** "41:12", "1:48:29": a place or a length on the timeline. */
@@ -268,6 +285,14 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
   const measured = speeds.read(home);
   const queued = stage === 2 && job?.state === "queued";
   const steps: ExportStep[] = [];
+  /**
+   * Whether the step under way has said its own pace yet (the engine's frames over some seconds, the copy's percent,
+   * this upload's bytes a second, a graphic's own rate). Until it has, the whole's percent goes by the steps done and
+   * the current one's real share, never by a time guessed from another run (Nov 22, a MacBook Air: after two exports
+   * that reused every chunk the guess for the video was 5 s; the percent read 99% "almost done" at 5.4 s with the
+   * video 37% made, and stood there for the rest of the export and its share, since it never goes back).
+   */
+  let grounded = false;
 
   // The graphics: in the order they're done. One waiting behind another project's render is the current one, said so.
   const graphics = effects.graphicsOf(app, id, now);
@@ -281,6 +306,7 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
     const state = stage > 1 ? "done" : graphic.state;
     const rate = graphic.rate ?? fpsFor(graphic.map) ?? null;
     const left = state === "done" ? 0 : rate === null ? null : (graphic.frames - (state === "current" ? graphic.drawn : 0)) / rate;
+    if (state === "current" && graphic.rate !== null) grounded = true;
     const step: ExportStep = {
       kind: "graphic",
       state,
@@ -303,19 +329,21 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
   // The video.
   const p = exporting && job.state === "running" ? Math.min(1, Math.max(0, job.progress)) : 0;
   if (stage === 2 && p > 0 && run.video === null) run.video = [now, p];
-  let videoLeft: number | null = null;
-  if (stage > 2) videoLeft = 0;
+  let videoOwn: number | null = null;
+  let videoGuess: number | null = null;
+  if (stage > 2) videoGuess = 0;
   else {
     const own = run.video !== null && now - run.video[0] >= 5000 && p - run.video[1] >= 0.005 ? (p - run.video[1]) / ((now - run.video[0]) / 1000) : null;
-    if (own !== null) videoLeft = (1 - p) / own;
-    else if (measured.export_spf !== undefined) videoLeft = frames * measured.export_spf * (1 - p);
+    if (own !== null) videoOwn = (1 - p) / own;
+    else if (measured.export_spf !== undefined) videoGuess = frames * measured.export_spf * (1 - p);
   }
+  if (stage === 2 && videoOwn !== null) grounded = true;
   const video: ExportStep = {
     kind: "video",
     state: stage > 2 ? "done" : stage === 2 && !queued ? "current" : "waiting",
     label: clockOf(seconds),
     progress: stage === 2 && !queued ? p : null,
-    left_s: smooth(run, "video", videoLeft, now),
+    left_s: ownPace(run, "video", videoOwn, videoGuess, now),
   };
   // What it waits on before its first frame: the encoder, another export, slowed shots, map shots that aren't graphics.
   const before = job?.state === "queued" ? job.waiting : stage === 1 && graphics.length === 0 ? "waiting for the map shots" : line === "waiting for slowed shots" ? "waiting for the slowed shots" : line === "waiting for this project's other export" ? "waiting for its other export" : undefined;
@@ -337,8 +365,9 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
     const copied = stage === 3 ? copyShare(line) : null;
     const inCopy = (now - run.stageAt) / 1000;
     const copyOwn = copied !== null && copied >= 0.02 && inCopy >= 3 ? (inCopy * (1 - copied)) / copied : null;
-    const copyLeft = stage > 3 ? 0 : copyOwn !== null ? copyOwn : copyGuess === null ? null : stage === 3 ? Math.max(1, copyGuess - inCopy) : copyGuess;
-    steps.push({ kind: "copy", state: stage > 3 ? "done" : stage === 3 ? "current" : "waiting", label: "", progress: copied, left_s: smooth(run, "copy", copyLeft, now) });
+    const copyLeft = stage > 3 ? 0 : copyGuess === null ? null : stage === 3 ? Math.max(1, copyGuess - inCopy) : copyGuess;
+    if (stage === 3 && copyOwn !== null) grounded = true;
+    steps.push({ kind: "copy", state: stage > 3 ? "done" : stage === 3 ? "current" : "waiting", label: "", progress: copied, left_s: ownPace(run, "copy", stage === 3 ? copyOwn : null, copyLeft, now) });
     const upload = speeds.uploadOf(id);
     const bytes = upload?.total ?? reviewBytes(seconds);
     const sent = stage === 4 ? (upload?.done ?? 0) : 0;
@@ -346,7 +375,10 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
     // Up: the page's details and the publish, seconds.
     const up = stage === 4 && line !== null && !line.startsWith("uploading");
     const uploadLeft = up ? 3 : bps === null ? null : (bytes - sent) / bps;
-    steps.push({ kind: "upload", state: stage === 4 ? "current" : "waiting", label: "", progress: stage === 4 ? (up ? 1 : bytes > 0 ? sent / bytes : 0) : null, left_s: smooth(run, "upload", uploadLeft, now) });
+    // Its own pace: this upload's measured bytes a second, or the last seconds once its bytes are up.
+    const uploadOwn = stage === 4 && (up || (upload?.bps ?? null) !== null);
+    if (uploadOwn) grounded = true;
+    steps.push({ kind: "upload", state: stage === 4 ? "current" : "waiting", label: "", progress: stage === 4 ? (up ? 1 : bytes > 0 ? sent / bytes : 0) : null, left_s: ownPace(run, "upload", uploadOwn ? uploadLeft : null, uploadLeft, now) });
   } else {
     const output = job?.path || wait?.output || "";
     steps.push({ kind: "save", state: "waiting", label: output === "" ? "" : homePath(parent(output) ?? output), progress: null, left_s: 0 });
@@ -360,13 +392,18 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
   const made = exporting ? Math.min(1, Math.max(0, job.made ?? 0)) : 0;
   if (stage === 2 && made > 0 && video.left_s !== null && p < 0.999) run.credit = made * (video.left_s / (1 - p));
   const credit = stage >= 2 ? (run.credit ?? 0) : 0;
+  // By its steps, the current one's real share counted: the whole's percent when no time can be said, and its ceiling
+  // while the step under way hasn't said its own pace (`grounded`).
+  const bySteps = steps.reduce((sum, step) => sum + (step.state === "done" ? 1 : step.state === "current" ? (step.progress ?? 0) : 0), 0) / steps.length;
   let progress: number;
   if (queued) progress = 0;
   else if (left !== null && elapsed + credit + left > 0) progress = (elapsed + credit) / (elapsed + credit + left);
-  else {
-    // Untimed: by its steps, the current one's share counted.
-    const counted = steps.reduce((sum, step) => sum + (step.state === "done" ? 1 : step.state === "current" ? (step.progress ?? 0) : 0), 0);
-    progress = counted / steps.length;
+  else progress = bySteps;
+  if (!queued && !grounded) {
+    // The save takes no time of its own, so it isn't one of the shares here (an export carried on a third made reads a third).
+    const timed = steps.filter((step) => step.kind !== "save");
+    const share = (step: ExportStep) => (step.state === "done" ? 1 : step.state === "current" ? (step.progress ?? 0) : 0);
+    if (timed.length > 0) progress = Math.min(progress, timed.reduce((sum, step) => sum + share(step), 0) / timed.length);
   }
   // Standing still (`STILL_MS`): held where it is, no time said, and its step says for how long and what ends it. Only
   // where Edit hears real progress: the graphics' frames, the video (the engine, or its prep's line), the upload's bytes.
