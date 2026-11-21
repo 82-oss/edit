@@ -254,6 +254,8 @@ class Preview {
   private nativeAccepted = 0;
   private nativeHas: { project: Project; sources: NativeSources; revision: number } | null = null;
   private nativeSending = false;
+  /** Plays waiting for the window to take this project's edit (`windowHasEdit`). */
+  private nativeTakers: (() => void)[] = [];
   /** The window takes where media are read from without the edit (`preview_sources`); off once one refuses it. */
   private nativeSourcesAlone = true;
   /** How the window's frames went (`diagnostics.nativeFrames`, and the once-a-minute `ui:` timings). */
@@ -987,6 +989,11 @@ class Preview {
         this.nativeOff("refused open", "the window can't draw it on this Mac");
         return;
       }
+      // A play pressed while the window was opening (a cold open's Play at once) goes on there, as `leaveNative` hands
+      // one back: the page's own player had played on behind the window for a minute, nothing drawn and a spinner over
+      // it all (the MacBook Air, Nov 21: pressed 0.3 s before the window opened).
+      const playing = playhead.playing;
+      if (playing) this.pause();
       this.native = true;
       this.nativeOpenedAt = performance.now();
       this.nativeVolume = null;
@@ -1002,6 +1009,7 @@ class Preview {
       recordTiming("preview: native", 0);
       // A new window plays at 1×: told the speed now, the sound it makes ready at rest is at that speed, so the first play starts at once.
       if (this.speed !== 1) void this.sendSpeed();
+      if (playing) this.play();
     } catch (error) {
       this.nativeRefused = true;
       // Where the page was and what it was, for a refusal by the window's permissions (Nov 16: one on the M4 that a
@@ -1054,6 +1062,8 @@ class Preview {
       else this.nativeAgainIn(NATIVE_BACK_MS * 2 ** (this.nativeLeft - 1));
     }
     void nativePreview.close().catch(() => {});
+    // Plays waiting for the window's edit go on: each finds the window gone and plays nothing there.
+    for (const take of this.nativeTakers.splice(0)) take();
     this.nativeBusy = false;
     this.renderedFrame = null;
     this.copied.clear();
@@ -1219,6 +1229,7 @@ class Preview {
       this.nativeAccepted = accepted;
       const first = this.nativeHas?.project.id !== project.id;
       this.nativeHas = { project, sources, revision: accepted };
+      if (this.project?.id === project.id) for (const take of this.nativeTakers.splice(0)) take();
       // The first edit of this project taken: the frame the playhead's on can be drawn now.
       if (this.nativeStale || first) this.invalidate();
     }, (error: unknown) => {
@@ -1319,11 +1330,22 @@ class Preview {
     this.startNative(generation, from);
   }
 
+  /**
+   * Settles once the window has this project's edit. A play sent before it had it was refused ("no edit to play yet")
+   * and stopped with "the footage here didn't load" (the MacBook Air, Nov 21: Play pressed as a cold open's window opened).
+   */
+  private windowHasEdit(): Promise<void> {
+    if (this.project !== null && this.nativeHas?.project.id === this.project.id) return Promise.resolve();
+    const taken = new Promise<void>((resolve) => this.nativeTakers.push(resolve));
+    this.syncNative();
+    return taken;
+  }
+
   /** The window plays from `from`: the speed first, then the play at it; a pause meanwhile, and nothing is played. */
   private startNative(generation: number, from: number) {
     this.windowMoved = { frame: from, at: performance.now() + START_GRACE_MS };
     this.windowSkips = [];
-    this.sendSpeed().then(() => (generation === this.nativePlay && playhead.playing && this.native ? nativePreview.play(from) : null)).then(() => {
+    this.windowHasEdit().then(() => this.sendSpeed()).then(() => (generation === this.nativePlay && playhead.playing && this.native ? nativePreview.play(from) : null)).then(() => {
       if (generation !== this.nativePlay || !playhead.playing) return;
       this.windowMoved = { frame: from, at: performance.now() + START_GRACE_MS };
       this.followNative(generation);

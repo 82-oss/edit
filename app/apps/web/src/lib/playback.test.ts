@@ -1135,6 +1135,34 @@ describe("preview seeks and lifetime", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it("a Play pressed just before the window's player opens goes on in the window (the MacBook Air, Nov 21: pressed 0.3 s before it opened, the page's own player played on behind it for a minute, nothing drawn, a spinner over it all)", async () => {
+    let opened: (value: boolean) => void = () => {};
+    const calls: [string, Record<string, unknown>][] = [];
+    const invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+      calls.push([command, args]);
+      if (command === "preview_open") return new Promise<boolean>((resolve) => { opened = resolve; });
+      if (command === "preview_project" || command === "preview_patch") return args.revision;
+      if (command === "preview_frame") return { revision: 0, drawn: true, skipped: false, ms: 4, decode: 3, composite: 0.5, present: 0.3, opens: 0, seeks: 0, ffmpeg: 0 };
+      if (command === "preview_position") return { frame: 0, playing: true, ended: false, drawn: 1, skipped: 0, slow: 0, draws: [2.5], starved: 0 };
+      return null;
+    });
+    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = { invoke };
+    vi.stubGlobal("navigator", { gpu: {}, platform: "MacIntel" });
+    preview.detach();
+    const attached = preview.attach({ width: 320, height: 180 } as HTMLCanvasElement);
+    preview.setProject(fixture(), {});
+    for (let i = 0; i < 20 && !calls.some(([name]) => name === "preview_open"); i++) await settle();
+    preview.seek(10); preview.play();
+    expect(preview.native).toBe(false);
+    expect(playhead.playing).toBe(true);
+    opened(true); await attached; await settle(); draw(); await settle(); await settle();
+    expect(preview.native).toBe(true);
+    expect(calls.filter(([name]) => name === "preview_play")).toHaveLength(1);
+    // Only once the window has the edit: before it, the window refuses the play ("no edit to play yet").
+    expect(calls.findIndex(([name]) => name === "preview_play")).toBeGreaterThan(calls.findIndex(([name]) => name === "preview_project"));
+    expect(playhead.playing).toBe(true);
+  });
+
   it("in full screen while the window plays, the page plays on from where it was", async () => {
     await inWindow();
     preview.setProject(fixture(), {}); await settle(); draw(); await settle();

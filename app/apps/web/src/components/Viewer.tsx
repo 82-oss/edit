@@ -257,62 +257,7 @@ export function Viewer() {
   // The window's layer under the viewer, where the picture is (lib/nativePreview.ts), shown once
   // its first frame is drawn and the screen's fade-in is over; the page turns see-through there.
   const nativeShown = native && framed && !error && !fullscreen;
-  useEffect(() => {
-    if (!native) return;
-    const root = document.documentElement;
-    root.classList.add("native-preview");
-    // index.html paints <html> itself (inline, before the app loads): see-through too.
-    const painted = root.style.getPropertyValue("background");
-    root.style.setProperty("background", "transparent");
-    const wrap = wrapRef.current!;
-    const opened = performance.now();
-    let last = "";
-    let frame = 0;
-    let timer = 0;
-    // Where the viewer is, followed once an animation frame for two seconds after anything moved, then four times a
-    // second: once an animation frame for as long as the window drew, it kept the page busy at rest, 60 to 120 times
-    // a second. A resize, a scroll, a press or a transition looks at once and follows closely again.
-    let moved = opened;
-    const place = () => {
-      frame = 0;
-      timer = 0;
-      const now = performance.now();
-      const box = wrap.getBoundingClientRect();
-      // After the screen's 160 ms fade-in, so the picture doesn't show ahead of the page around it.
-      const visible = nativeShown && now - opened > 200;
-      const key = `${box.left},${box.top},${box.width},${box.height},${visible}`;
-      if (key !== last) {
-        last = key;
-        moved = now;
-        // The viewer's top corners: its box's radius (12 px) inside its 1 px border.
-        void nativePreview.place({ x: box.left, y: box.top, width: box.width, height: box.height }, 11, visible).catch(() => {});
-      }
-      if (now - moved < 2000) frame = requestAnimationFrame(place);
-      else timer = window.setTimeout(place, 250);
-    };
-    const wake = () => {
-      moved = performance.now();
-      if (timer) {
-        window.clearTimeout(timer);
-        place();
-      }
-    };
-    const sizes = new ResizeObserver(wake);
-    sizes.observe(wrap);
-    sizes.observe(root);
-    const events = ["resize", "scroll", "pointerdown", "transitionrun", "transitionend", "animationend"] as const;
-    for (const event of events) window.addEventListener(event, wake, true);
-    place();
-    return () => {
-      cancelAnimationFrame(frame);
-      window.clearTimeout(timer);
-      sizes.disconnect();
-      for (const event of events) window.removeEventListener(event, wake, true);
-      root.classList.remove("native-preview");
-      root.style.setProperty("background", painted);
-      void nativePreview.place({ x: 0, y: 0, width: 1, height: 1 }, 0, false).catch(() => {});
-    };
-  }, [native, nativeShown]);
+  useWindowLayer(wrapRef, native, nativeShown);
 
   const empty = project && project.clips.length === 0;
   // An effect being made plays on an empty timeline (EffectLayer's bench): nothing to say over it.
@@ -1019,4 +964,76 @@ function ScrubPreview({ at, duration, chapter, stretch }: { at: { x: number; wid
       )}
     </div>
   );
+}
+
+/**
+ * The window's layer under the viewer (`wrap`), where the picture is (lib/nativePreview.ts), while the window draws
+ * (`native`), shown once its first frame is drawn and the screen's fade-in is over (`shown`); the page turns
+ * see-through there. Showing it moves the layer, never takes it down first: a hidden placement rests the window's
+ * player, which stops a play, so the first frame of a play pressed at once on a cold open stopped it ("the window's
+ * player stopped by itself at frame 0", the MacBook Air, Nov 21).
+ */
+export function useWindowLayer(wrapRef: React.RefObject<HTMLElement | null>, native: boolean, shown: boolean) {
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  const wakeRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    const wrap = wrapRef.current;
+    if (!native || wrap === null) return;
+    const root = document.documentElement;
+    root.classList.add("native-preview");
+    // index.html paints <html> itself (inline, before the app loads): see-through too.
+    const painted = root.style.getPropertyValue("background");
+    root.style.setProperty("background", "transparent");
+    const opened = performance.now();
+    let last = "";
+    let frame = 0;
+    let timer = 0;
+    // Where the viewer is, followed once an animation frame for two seconds after anything moved, then four times a
+    // second: once an animation frame for as long as the window drew, it kept the page busy at rest, 60 to 120 times
+    // a second. A resize, a scroll, a press or a transition looks at once and follows closely again.
+    let moved = opened;
+    const place = () => {
+      frame = 0;
+      timer = 0;
+      const now = performance.now();
+      const box = wrap.getBoundingClientRect();
+      // After the screen's 160 ms fade-in, so the picture doesn't show ahead of the page around it.
+      const visible = shownRef.current && now - opened > 200;
+      const key = `${box.left},${box.top},${box.width},${box.height},${visible}`;
+      if (key !== last) {
+        last = key;
+        moved = now;
+        // The viewer's top corners: its box's radius (12 px) inside its 1 px border.
+        void nativePreview.place({ x: box.left, y: box.top, width: box.width, height: box.height }, 11, visible).catch(() => {});
+      }
+      if (now - moved < 2000) frame = requestAnimationFrame(place);
+      else timer = window.setTimeout(place, 250);
+    };
+    const wake = () => {
+      moved = performance.now();
+      if (timer) {
+        window.clearTimeout(timer);
+        place();
+      }
+    };
+    const sizes = new ResizeObserver(wake);
+    sizes.observe(wrap);
+    sizes.observe(root);
+    const events = ["resize", "scroll", "pointerdown", "transitionrun", "transitionend", "animationend"] as const;
+    for (const event of events) window.addEventListener(event, wake, true);
+    place();
+    wakeRef.current = wake;
+    return () => {
+      wakeRef.current = () => {};
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+      sizes.disconnect();
+      for (const event of events) window.removeEventListener(event, wake, true);
+      root.classList.remove("native-preview");
+      root.style.setProperty("background", painted);
+      void nativePreview.place({ x: 0, y: 0, width: 1, height: 1 }, 0, false).catch(() => {});
+    };
+  }, [native, wrapRef]);
+  useEffect(() => { wakeRef.current(); }, [shown]);
 }
