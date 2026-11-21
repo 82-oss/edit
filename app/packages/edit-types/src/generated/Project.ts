@@ -114,4 +114,12 @@ compilation?: boolean,
  * down, no box or label; the intro's words in each speaker's colour).
  * None: the house look (words in a box, the speaker's label above).
  */
-subtitle_look?: string, };
+subtitle_look?: string, 
+/**
+ * Its channel's removal doesn't start by itself here: only what's asked
+ * for in the chat is taken out. Set when an edit made the old way is
+ * moved onto a channel (Sphe, Nov 21: the move changes nothing in the
+ * video, and blurring it unasked would), and kept in the project so it
+ * holds on every computer that opens it, not only the one that moved it.
+ */
+removal_held?: boolean, };

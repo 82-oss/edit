@@ -109,6 +109,13 @@ pub struct Project {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub subtitle_look: Option<String>,
+    /// Its channel's removal doesn't start by itself here: only what's asked
+    /// for in the chat is taken out. Set when an edit made the old way is
+    /// moved onto a channel (Sphe, Nov 21: the move changes nothing in the
+    /// video, and blurring it unasked would), and kept in the project so it
+    /// holds on every computer that opens it, not only the one that moved it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub removal_held: bool,
 }
 
 /// The account that started a project (accounts.spheceo.com).
@@ -1992,6 +1999,7 @@ impl Project {
             channel: None,
             compilation: None,
             subtitle_look: None,
+            removal_held: false,
         };
         for kind in [
             TrackKind::Video,

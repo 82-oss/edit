@@ -14,6 +14,7 @@ import * as fs from "node:fs";
 import * as diag from "./diag.ts";
 import { writeAtomic } from "./files.ts";
 import { join } from "./paths.ts";
+import * as removalHeld from "./removal_held.ts";
 import * as removal from "./removal_lesson.ts";
 
 export type Spans = [number, number][];
@@ -66,10 +67,12 @@ function keep(file: string, value: unknown): void {
  * runs by itself doesn't any more, and what was asked before it is done
  * with; an ask after it runs on just what it names (Sphe, Nov 17: stop the
  * whole video, then clean only the intro and the first case's start), the
- * agent's marks too (Nov 19: marks made after a Stop did nothing).
+ * agent's marks too (Nov 19: marks made after a Stop did nothing). An edit
+ * moved onto a channel says the same of itself, on every computer
+ * (`Project.removal_held`, Nov 21): nothing by itself, what's asked for runs.
  */
 export function isStopped(home: string, id: string): boolean {
-  return loaded(home).stopped[id] !== undefined;
+  return loaded(home).stopped[id] !== undefined || removalHeld.held(home, id);
 }
 
 /** The asks that count: those since the person's Stop, if any. */

@@ -20,8 +20,8 @@ import { agentCalls } from "./store.ts";
 /** Changes kept a project. */
 const MOST = 300;
 
-/** What says which kind of project it is and whose channel: never changed by undo_changes. */
-const IDENTITY = ["hq", "channel"] as const;
+/** What says which kind of project it is, whose channel, and that its removal waits to be asked (set with them by a move onto a channel): never changed by undo_changes. */
+const IDENTITY = ["hq", "channel", "removal_held"] as const;
 
 export interface Change {
   rev: number;
@@ -190,7 +190,7 @@ function keptLines(app: App, id: string): string {
 export async function bringBack(app: App, id: string, name: string): Promise<string> {
   if (app.store.get(id) === null) throw new Error("no such project");
   const kept = app.store.keptVersion(id, name);
-  const own = ["id", "name", "drive", "created_by", "origin", "shown", "note", "hq", "channel"] as const;
+  const own = ["id", "name", "drive", "created_by", "origin", "shown", "note", "hq", "channel", "removal_held"] as const;
   await app.store.update(id, "agent", (project) => {
     const restored = structuredClone(kept) as unknown as Record<string, unknown>;
     const current = project as unknown as Record<string, unknown>;
