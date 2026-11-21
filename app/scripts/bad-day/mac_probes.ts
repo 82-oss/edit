@@ -62,11 +62,18 @@ async function activity(context: Context): Promise<Activity[]> {
 
 /**
  * Every 2 s: the job table, the exports' queue and /api/health's "busy". A row that says it runs while nothing of it
- * changes (its row, or its export's progress and phase) for `stillMs` is noted, once a stretch.
+ * changes (its row, its time `updated_ms`, or its export's progress, phase and wait) for `stillMs` is noted, once a
+ * stretch. Each row's time is followed too (`ticking`: the longest it went with nothing in it changed but its time, and
+ * the longest it went with its time not moving), and each export's words in the queue are kept.
  */
 class Watch {
   readonly still: string[] = [];
   readonly busySeen = new Set<string>();
+  /** Per running row: the longest stretch with nothing but its time changed, and the longest with its time still (ms). */
+  readonly ticking = new Map<string, { onlyTime: number; gap: number; moves: number }>();
+  /** Per export file: what the queue said of it (state, phase, wait), in order, each once. */
+  readonly said = new Map<string, string[]>();
+  private times = new Map<string, { ms: number | undefined; at: number; body: string; bodySince: number }>();
   private last = new Map<string, { look: string; since: number; noted: boolean }>();
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -88,12 +95,42 @@ class Watch {
     if (context.edit.frozen || context.edit.child === null) {
       // A freeze isn't Edit sitting still: the clocks start again at the wake.
       for (const one of this.last.values()) one.since = Date.now();
+      for (const one of this.times.values()) one.at = one.bodySince = Date.now();
       return;
     }
     const now = Date.now();
     const looks = new Map<string, string>();
-    for (const row of rows(context).filter((one: Row) => one.state === "running")) looks.set(`row ${row.key}`, JSON.stringify({ ...row, updated_ms: undefined }));
-    for (const one of (await activity(context)).filter((row) => row.state === "running")) looks.set(`export ${one.path.split("/").pop()}`, `${one.progress.toFixed(4)} ${one.phase ?? ""}`);
+    for (const row of rows(context).filter((one: Row) => one.state === "running")) {
+      const body = JSON.stringify({ ...row, updated_ms: undefined });
+      looks.set(`row ${row.key}`, `${row.updated_ms ?? ""} ${body}`);
+      const was = this.times.get(row.key);
+      const tick = this.ticking.get(row.key) ?? { onlyTime: 0, gap: 0, moves: 0 };
+      if (was === undefined) this.times.set(row.key, { ms: row.updated_ms, at: now, body, bodySince: now });
+      else {
+        if (was.body !== body) {
+          was.body = body;
+          was.bodySince = now;
+        }
+        if (was.ms !== row.updated_ms) {
+          tick.moves++;
+          was.ms = row.updated_ms;
+          was.at = now;
+        }
+        tick.gap = Math.max(tick.gap, now - was.at);
+        tick.onlyTime = Math.max(tick.onlyTime, now - was.bodySince);
+      }
+      this.ticking.set(row.key, tick);
+    }
+    const running = new Set(rows(context).filter((one: Row) => one.state === "running").map((one: Row) => one.key));
+    for (const key of [...this.times.keys()]) if (!running.has(key)) this.times.delete(key);
+    for (const one of await activity(context)) {
+      const file = one.path.split("/").pop() ?? one.path;
+      const words = `${one.state}${one.phase === undefined ? "" : ` · ${one.phase.replace(/\d+/g, "N")}`}${one.waiting === undefined ? "" : ` · waiting: ${one.waiting}`}`;
+      const list = this.said.get(file) ?? [];
+      if (!list.includes(words)) list.push(words);
+      this.said.set(file, list);
+      if (one.state === "running" || one.state === "queued") looks.set(`export ${file}`, `${one.state} ${one.progress.toFixed(4)} ${one.phase ?? ""} ${one.waiting ?? ""}`);
+    }
     try {
       const health = await context.edit.api<{ busy?: string[] }>("GET", "/api/health");
       for (const one of health.body.busy ?? []) this.busySeen.add(one);
@@ -212,6 +249,29 @@ const exportProbe: Case = {
       );
       context.check("(ii) the export killed mid-render finished by itself", killed !== null, describeRows(rows(context).filter((row) => row.kind === "export")));
 
+      // ── (ii-b) The FFmpeg joining the chunks killed once (the export's last seconds): joined again, or rendered again?
+      logAt = context.edit.log().length;
+      fs.rmSync(chunks, { recursive: true, force: true });
+      from = Date.now();
+      await startExport(context, a, "join.mp4", true);
+      // Looked for every 100 ms: a join of 3 minutes takes about 4 s here.
+      let joiner: string | null = null;
+      for (const until = Date.now() + 600_000; joiner === null && Date.now() < until; ) {
+        joiner = programs(context).find((one) => /ffmpeg/.test(one) && / concat /.test(one)) ?? null;
+        if (joiner === null) await context.sleep(100);
+      }
+      if (joiner !== null) {
+        try {
+          process.kill(Number(joiner.split(" ")[0]), "SIGKILL");
+        } catch {}
+        context.log(`probe: (ii-b) killed the join ${seconds(Date.now() - from)} s in: ${joiner.slice(0, 140)}`);
+      } else context.log("probe: (ii-b) no FFmpeg joining chunks seen");
+      const joined = await finished(context, a, "join.mp4", from, 900_000);
+      context.log(
+        `probe: (ii-b) the export ${joined === null ? "never finished" : `finished in ${(joined / 1000).toFixed(1)} s (clean ${((clean ?? 0) / 1000).toFixed(1)} s)`}; its log: ${logSince(context, logAt, /already made|join took|exported \d+ frames in|chunked export failed|frames composited/i).map((one) => one.slice(11, 200)).join(" | ")}`,
+      );
+      context.check("(ii-b) the export whose join was killed finished by itself", joined !== null, describeRows(rows(context).filter((row) => row.kind === "export")));
+
       // ── (iii) Two exports of two projects at once, with an import cutting excerpts.
       logAt = context.edit.log().length;
       fs.rmSync(chunks, { recursive: true, force: true });
@@ -227,6 +287,12 @@ const exportProbe: Case = {
       ]);
       context.log(`probe: (iii) export A ${ta === null ? "never finished" : `${(ta / 1000).toFixed(1)} s`}, export B ${tb === null ? "never finished" : `${(tb / 1000).toFixed(1)} s`}, import ${tc === null ? "never finished" : `${(tc / 1000).toFixed(1)} s`}; waits said: ${[...new Set(logSince(context, logAt, /encoder|waiting for/i).map((one) => one.slice(24, 160)))].slice(0, 6).join(" | ")}`);
       context.check("(iii) both exports and the import finished side by side", ta !== null && tb !== null && tc !== null, describeRows(rows(context)));
+      const tickOf = (key: string) => {
+        const one = watch.ticking.get(key);
+        return one === undefined ? "never running" : `its time moved ${one.moves} times, still at most ${(one.gap / 1000).toFixed(1)} s; nothing but its time changed for at most ${(one.onlyTime / 1000).toFixed(1)} s`;
+      };
+      context.log(`probe: (iii) row export:${b} (B): ${tickOf(`export:${b}`)}; the queue said of both-b.mp4: ${(watch.said.get("both-b.mp4") ?? []).join(" → ").slice(0, 700)}`);
+      context.log(`probe: (iii) row export:${a} (A): ${tickOf(`export:${a}`)}; the queue said of both-a.mp4: ${(watch.said.get("both-a.mp4") ?? []).join(" → ").slice(0, 400)}`);
     } finally {
       watch.stop();
       context.log(`probe: busy said by /api/health: ${[...watch.busySeen].join(" | ").slice(0, 600)}`);
