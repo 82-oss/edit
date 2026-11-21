@@ -50,7 +50,7 @@ import * as accounts from "./accounts.ts";
 import * as cloud from "./cloud.ts";
 import * as kinds from "./kinds.ts";
 import * as diag from "./diag.ts";
-import { STYLES } from "./model.ts";
+import { STYLES, type Style } from "./model.ts";
 import { voiceFor } from "./styles.ts";
 import { HOUSE_VOICE } from "./voice.ts";
 import { ApiError, bad, json } from "./http/errors.ts";
@@ -272,6 +272,23 @@ export function groupText(channel: string, word: string): string {
 /** A project's channel, as last read (null: none, or not read yet). */
 export function channelOf(project: { channel?: string | null }): Channel | null {
   return typeof project.channel === "string" && project.channel !== "" ? (known.find((one) => one.key === project.channel) ?? null) : null;
+}
+
+/**
+ * The voice a project's voice-overs are made in: its channel's narrator when the channel narrates with a voice, else
+ * its style's (styles.ts `voiceFor`, null for the house voice). Nov 21: every voice-over took its style's voice, so a
+ * channel set up with its own narrator was voiced by the courtroom's or the house's. Only the voice's id: the channel
+ * keeps no settings of its own (model, speed), so they're the house's, as a style's voice has them. A channel's
+ * project whose channel isn't read yet is read first (bounded, `refresh`); one still not found keeps its style's.
+ */
+export async function voiceOf(project: { style: Style; channel?: string | null }): Promise<string | null> {
+  if (typeof project.channel === "string" && project.channel !== "") {
+    await refresh();
+    const channel = channelOf(project);
+    if (channel?.narration?.kind === "voice") return channel.narration.id;
+    if (channel === null) diag.warn("channels", `channel ${project.channel} isn't known here: its voice-over is made in its style's voice`);
+  }
+  return voiceFor(project.style);
 }
 
 /** A channel's watermark as its exports carry it (channel_marks.ts' mark: its picture, uploaded or Drive's, and its look); undefined: it has none. */
