@@ -876,8 +876,8 @@ function HomeList({ groups, solo, cross, lengthLabel }: { groups: { key: string;
   );
 }
 
-/** New project opened with a title, its links and a kind (an approved idea's Write the script). */
-export type NewProjectStart = { title: string; text: string; style: Style };
+/** New project opened with a title, its links, a kind and the idea's channel (an approved idea's Write the script). */
+export type NewProjectStart = { title: string; text: string; style: Style; channel?: string };
 
 /** A row of Home's table: a project on this Mac, one only in the cloud, or a script with no edit yet; `script`: the script it's made from. */
 export type Listed =
@@ -2107,7 +2107,9 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     setError(null);
     setMade(null);
     setPicked(start !== null);
-    setChannelKey(null);
+    // An idea's channel is its script's (Nov 21: the dialog started on none, and an idea made for a channel became a
+    // V1 script unless the person picked it again); still theirs to change.
+    setChannelKey(start?.channel ?? null);
     setCompilation(null);
     setFrom("list");
     setQuery("");

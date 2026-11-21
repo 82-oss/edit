@@ -18,12 +18,11 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
-import * as beta from "./beta.ts";
 import * as channels from "./channels.ts";
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
 import { THIS_MACHINE } from "./machine.ts";
-import { ApiError } from "./http/errors.ts";
+import { ApiError, bad } from "./http/errors.ts";
 import * as kinds from "./kinds.ts";
 import * as caseNames from "./names.ts";
 import { withDocuments } from "./writer/casefiles.ts";
@@ -43,6 +42,7 @@ import { writeAtomic } from "./files.ts";
 import { join } from "./paths.ts";
 import { stableStringify } from "./stable.ts";
 import { THE_MACHINE } from "./machine.ts";
+import * as v2cloud from "./v2_cloud.ts";
 
 /** A producer's comment on a Writer clip: on a cut-in's narration words, or a footage clip's timestamp (or its spoken words). */
 type WriterNote = { id?: string; text: string; anchor?: { quote: string } };
@@ -391,24 +391,45 @@ export function carryResearch(app: App, scriptId: string, projectId: string): vo
   if (reports.length > 0 || names.length > 0) diag.info("script", `${projectId}: the script's research came along (${reports.length} reports, ${names.length} case names)`);
 }
 
-/** Makes an Edit project from a Writer script and starts its import (footage, transcripts, voice-over, layout). */
 /**
  * What an edit made from a script is for: `channel`, the channel picked in New
  * edit (its project is that channel's, V2's: channels.channelFor); none
- * picked, the script's own channel when it has one and V2 is on here, else
- * today's kind of edit. `compilation`: the channel's unless this one differs.
+ * picked, the script's own channel when it has one, else today's kind of edit.
+ * `compilation`: the channel's unless this one differs.
  */
 export type ImportFor = { channel?: unknown; compilation?: unknown };
 
-/** The channel an edit of `given` is made for: the one asked for, else the script's own while V2 is on and it's still there. */
+/** The channel an edit of `given` is made for: the one asked for, else the script's own, whatever Edit V2's switch says here. */
 async function channelOfImport(app: App, given: { channel?: string }, asked: ImportFor): Promise<channels.Channel | null> {
   if (asked.channel !== undefined && asked.channel !== null && asked.channel !== "") return channels.channelFor(asked.channel, app.store.home);
-  if (!given.channel || !beta.read(app.store.home).v2) return null;
-  // Never quietly today's kind of edit instead (Nov 16 audit): a V2 edit can't be made from one afterwards, so a blip,
-  // a channel put away or one not given to this person is said, and nothing is made.
-  return channels.channelFor(given.channel, app.store.home);
+  if (!given.channel) return null;
+  return scriptsChannel(given.channel);
 }
 
+/**
+ * A channel's script's own channel, read without Edit V2's switch (Nov 21, docs/v1-to-v2.md step 1: with the switch
+ * off on a Mac, Start edit on a channel's script quietly made a V1 edit, out of its channel, its teaching and its
+ * tools). The switch decides what a person may start fresh on this computer (channels.channelFor), not what a
+ * channel's own script turns into; opening a V2 project never looks at it. Never quietly today's kind of edit
+ * instead (Nov 16 audit): a V2 edit can't be made from one afterwards, so signed out, a blip, a channel put away or
+ * one not given to this person is said, and nothing is made.
+ */
+async function scriptsChannel(key: string): Promise<channels.Channel> {
+  if (!v2cloud.enabled()) throw bad("This script is a channel's: sign in to Edit on this computer, then start its edit again.");
+  let channel: channels.Channel;
+  try {
+    // Signed in: a connection that fails is said by channels.read in its own words, with what to do.
+    channel = await channels.read(key);
+  } catch (error) {
+    // Its 404 names the channel by its key, which means nothing to the person.
+    if (error instanceof ApiError && error.status === 404) throw bad("This script's channel isn't in Edit, or isn't shown to your account: ask an admin to give it to you, then start its edit again.");
+    throw error;
+  }
+  if (channel.archived) throw bad(`${channel.title} was put away: an admin can bring it back (add it again), then start its edit again.`);
+  return channel;
+}
+
+/** Makes an Edit project from a Writer script and starts its import (footage, transcripts, voice-over, layout). */
 export async function importScript(app: App, id: string, asked: ImportFor = {}): Promise<{ project: string }> {
   const data = writerStore.dataDir(app.store.home);
   // Footage a revision brought in and still being heard exactly (writer/exact_after.ts): the edit is made from its exact times, not the captions'.
