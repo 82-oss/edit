@@ -334,9 +334,10 @@ test("an export whose progress falls back (the engine trying its chunks again) a
   const registry = new ExportRegistry(home);
   app.exports = registry;
   const was = { ...stall };
-  // A 200 ms window, moves every 50 ms and 350 ms below the best after the fall: the old rule (stalled unless
-  // past the best) would restart it; room for a loaded runner's sleeps (CI's Mac, Nov 11: 25 ms in a 60 ms window failed).
-  Object.assign(stall, { ms: 200, everyMs: 20 });
+  // A 600 ms window, moves every 100 ms and 700 ms below the best after the fall: the old rule (stalled unless
+  // past the best) would restart it; room for a loaded runner's sleeps (CI's Mac, Nov 11: 25 ms in a 60 ms window
+  // failed; Nov 21: 50 ms in a 200 ms window failed once).
+  Object.assign(stall, { ms: 600, everyMs: 40 });
   const plan = spyOn(native, "exportPlan").mockReturnValue({ plan: { start: 0, end: 30, width: 64, height: 36, audio: false }, fps: 30 });
   const archive = spyOn(exportCloud, "enabled").mockReturnValue(false);
   let starts = 0;
@@ -348,7 +349,7 @@ test("an export whose progress falls back (the engine trying its chunks again) a
         // Up to 0.8, then the engine's retry: back to 0.1 and on, never past 0.8 within the watch's time.
         for (const at of [0.4, 0.8, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]) {
           progress(at);
-          await Bun.sleep(50);
+          await Bun.sleep(100);
         }
         fs.writeFileSync(job.output, "export");
         return { seconds: 1, bytes: 6 };
@@ -359,7 +360,7 @@ test("an export whose progress falls back (the engine trying its chunks again) a
     const id = store.create("retried", { width: 64, height: 36, fps: 30 }).project.id;
     await store.update(id, "test", (p) => p.clips.push(clip({ id: "solid", track: p.tracks[0]!.id, start: 0, duration: 30, type: "solid" })));
     await registry.start(store, app.library, structuredClone(store.get(id)!.project), native.exportDefaults(), `${dir}/retried.mp4`, { drive: false, keepLocal: true });
-    for (let tries = 0; registry.running() && tries < 500; tries++) await Bun.sleep(5);
+    for (let tries = 0; registry.running() && tries < 1000; tries++) await Bun.sleep(5);
     expect(starts).toBe(1);
     expect(registry.activity().find((one) => one.id === id)?.state).toBe("done");
   } finally {
