@@ -205,7 +205,7 @@ Every one of those moments already exists in the code as a fixed hook for one ki
 
 Two rules he set the same day:
 
-- **An add-on at the end of a turn wakes the agent by itself, and no prompt is ever shown.** It runs in the background with the waiting line subtitle removal has (`apps/web/src/components/RemovalRow.tsx`); when it is done the line goes, the agent works, and its answer is all the chat shows. This is how removal already wakes the agent. It is the one exception to "only the team prompts a V2 agent" (Nov 13).
+- **An add-on at the end of a turn wakes the agent by itself, and no prompt is ever shown.** It runs in the background with the waiting line subtitle removal has (`apps/web/src/components/RemovalRow.tsx`); when it is done the line goes, the agent works, and its answer is all the chat shows. That waiting line is the only add-on UI there is (Sphe: "I like this UI and only this UI"): what was found and fixed is said by the agent in its own answer, never by a panel of its own, and an add-on that finds nothing wakes nobody. This is how removal already wakes the agent. It is the one exception to "only the team prompts a V2 agent" (Nov 13).
 - **A channel a person has been given is all they need** to work on it: no bodycam or interrogation permission beside it (`apps/server/src/kinds.ts`, `routes.ts` and `writer_handoff.ts` ask for one today).
 
 The design, from the code: `~/.cache/edit-addons/design.md` on mandalorian (17 built-in add-ons, kept in V2's library beside lessons and effects, twelve slices).
