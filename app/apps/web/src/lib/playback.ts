@@ -178,6 +178,13 @@ const HOLD_LOOK_MS = 250;
 const STALL_MS = 400;
 /** A play just (re)started has this long more before a clock that hasn't moved is a stall (the speaker starting up). */
 const START_GRACE_MS = 600;
+/**
+ * A play whose first frame the window hasn't drawn yet isn't stalled for this long: a cold first frame through R2
+ * takes 1 to 2.5 s, and held as a stall the play then waited for 2 s more to be read (the MacBook Air, Nov 21, cold
+ * opens with only the window's player: 1.3 to 2.2 s first frames, then 1.7 s more held). The page's own player,
+ * busy alongside it before, happened not to see it in time.
+ */
+const FIRST_FRAME_MS = 4000;
 /** The page's own play, its picture or sound missing this long: the clock holds until they're in. */
 const LIVE_HOLD_MS = 300;
 /** What's here is asked this often while playing or holding, and at rest; a play asks for what's ahead this often. */
@@ -219,6 +226,8 @@ class Preview {
   private rules: Rules | null = null;
   /** A play asked for while the window's player was opening or opening again: it plays there once it's open. */
   private playWhenOpen = false;
+  /** When the window was last asked to play (`startNative`): its first frame is waited for (`FIRST_FRAME_MS`). */
+  private runStartedAt = 0;
   /**
    * Edit.app's window draws the picture (lib/nativePreview.ts): the page's
    * engine still reads the edit (its sections) but draws nothing, and nothing
@@ -1419,6 +1428,7 @@ class Preview {
 
   /** The window plays from `from`: the speed first, then the play at it; a pause meanwhile, and nothing is played. */
   private startNative(generation: number, from: number) {
+    this.runStartedAt = performance.now();
     this.windowMoved = { frame: from, at: performance.now() + START_GRACE_MS };
     this.windowSkips = [];
     this.windowHasEdit().then(() => this.sendSpeed()).then(() => (generation === this.nativePlay && playhead.playing && this.native ? nativePreview.play(from) : null)).then(() => {
@@ -1482,6 +1492,8 @@ class Preview {
     s.playedSkipped += at.skipped;
     s.playedSlow += at.slow;
     s.starved += at.starved;
+    // The answer with a play's first frame: what it passed over catching up with its clock after a cold read isn't skipping.
+    const catchingUp = this.nativeRun !== null && this.nativeRun.shown === 0 && at.drawn > 0;
     if (this.nativeRun !== null) heardRun(this.nativeRun, at);
     for (const ms of at.draws) {
       s.drawn++;
@@ -1511,8 +1523,10 @@ class Preview {
     // spinner until the window has read on, whatever the server says is here, rather than passing over more.
     const now = performance.now();
     if (at.frame !== this.windowMoved.frame) this.windowMoved = { frame: at.frame, at: Math.max(now, this.windowMoved.at) };
-    const stalled = now - this.windowMoved.at > STALL_MS;
-    if (at.skipped > 0) this.windowSkips.push([now, at.skipped]);
+    // Its first frame still on the way (a cold read): waited for, not held as a stall, up to `FIRST_FRAME_MS`.
+    const first = this.nativeRun !== null && this.nativeRun.shown === 0 && now - this.runStartedAt < FIRST_FRAME_MS;
+    const stalled = !first && now - this.windowMoved.at > STALL_MS;
+    if (at.skipped > 0 && !catchingUp) this.windowSkips.push([now, at.skipped]);
     while (this.windowSkips.length > 0 && now - this.windowSkips[0]![0] > 1000) this.windowSkips.shift();
     const skipped = this.windowSkips.reduce((sum, [, count]) => sum + count, 0);
     if (stalled || skipped >= SKIP_HOLD) {
@@ -2712,11 +2726,11 @@ export const preview = new Preview();
 // The server's cleaner took a copy the window reads (lib/store.ts hears it): asked again before the next jump fails on it.
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") window.addEventListener("edit:native-sources", () => preview.refreshNativeSources());
 /**
- * Hidden for this long before a play pauses: macOS hides the page for about half a second while a window goes in or
- * out of full screen, and every play paused there (the MacBook Air, Nov 21: F in Edit.app, 3 runs out of 3; with
- * the page's element full screen, now and then).
+ * Hidden for this long before a play pauses: macOS hides the page for 0.5 to 1.1 s while a window goes in or out of
+ * full screen, and every play paused there (the MacBook Air, Nov 21: F in Edit.app, 3 runs out of 3; with the page's
+ * element full screen, now and then; a 1 s grace still lost one exit of 1.07 s).
  */
-export const HIDDEN_PAUSE_MS = 1000;
+export const HIDDEN_PAUSE_MS = 2500;
 let hiding: ReturnType<typeof setTimeout> | undefined;
 document.addEventListener("visibilitychange", () => {
   clearTimeout(hiding);

@@ -618,10 +618,10 @@ describe("preview seeks and lifetime", () => {
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
   // The window's clock, as the page sees it: `preview_position` says this frame while playing. A window that says what
   // it read for a hold (`says`: crates/edit-window's `Where.ahead`/`sound`) says `ahead` and `sound` while `held`.
-  const windowClock = { frame: 0, playing: false, ended: false, says: false, held: null as number | null, ahead: 0, sound: 0 };
+  const windowClock = { frame: 0, playing: false, ended: false, says: false, held: null as number | null, ahead: 0, sound: 0, drawn: 1, skipped: 0 };
   const inWindow = async (refuse: (command: string) => string | null = () => null) => {
     const calls: [string, Record<string, unknown>][] = [];
-    Object.assign(windowClock, { frame: 0, playing: false, ended: false, says: false, held: null, ahead: 0, sound: 0 });
+    Object.assign(windowClock, { frame: 0, playing: false, ended: false, says: false, held: null, ahead: 0, sound: 0, drawn: 1, skipped: 0 });
     const invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
       calls.push([command, args]);
       const refused = refuse(command);
@@ -636,7 +636,7 @@ describe("preview seeks and lifetime", () => {
       if (command === "preview_hint" && args.hold === true) { windowClock.playing = false; windowClock.held = Number(args.frame); return null; }
       if (command === "preview_position") {
         const said = windowClock.says && windowClock.held !== null ? { ahead: windowClock.ahead, sound: windowClock.sound } : {};
-        return { frame: windowClock.frame, playing: windowClock.playing, ended: windowClock.ended, drawn: 1, skipped: 0, slow: 0, draws: [2.5], starved: 0, ...said };
+        return { frame: windowClock.frame, playing: windowClock.playing, ended: windowClock.ended, drawn: windowClock.drawn, skipped: windowClock.skipped, slow: 0, draws: windowClock.drawn > 0 ? [2.5] : [], starved: 0, ...said };
       }
       return null;
     });
@@ -965,6 +965,32 @@ describe("preview seeks and lifetime", () => {
     }
   });
 
+  it("waits out a play's cold first frame in the window (1 to 2.5 s through R2) without holding it as a stall, and holds a clock that stops after it has drawn (the MacBook Air, Nov 21)", async () => {
+    const sent = await inWindow();
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    hereNow([[0, 90]]);
+    const time = clockFrom();
+    try {
+      windowClock.drawn = 0;
+      preview.play(); await settle();
+      time.at.ms = 300; draw(); await settle();
+      time.at.ms = 2200; draw(); await settle(); await settle();
+      expect(sent("preview_hint").filter((hint) => hint.hold === true)).toHaveLength(0);
+      expect(sent("preview_pause")).toHaveLength(0);
+      // Its first frame drawn, the clock moves on, past what it read late (that catching up isn't skipping): on.
+      windowClock.drawn = 1; windowClock.skipped = 30; windowClock.frame = 35; time.at.ms = 2400; draw(); await settle();
+      windowClock.skipped = 0; windowClock.frame = 40; time.at.ms = 2600; draw(); await settle();
+      expect(sent("preview_hint").filter((hint) => hint.hold === true)).toHaveLength(0);
+      expect(playhead.frame).toBe(40);
+      windowClock.frame = 5; time.at.ms = 2700; draw(); await settle();
+      // A clock that stops once it has drawn is a stall, as before.
+      time.at.ms = 3800; draw(); await settle(); await settle(); await settle();
+      expect(sent("preview_hint").at(-1)).toEqual({ frame: 5, hold: true });
+    } finally {
+      time.restore();
+    }
+  });
+
   it("holds a play in the window where it passes over frames, and asks the window to hold only once its pause is in", async () => {
     const calls: string[] = [];
     const sent = await inWindow((command) => { calls.push(command); return null; });
@@ -983,6 +1009,8 @@ describe("preview seeks and lifetime", () => {
     preview.play(); await settle(); await settle();
     // 3 frames passed over: on it plays; 9 in a second: held.
     const answered = async () => { for (let n = 0; n < 4; n++) await settle(); };
+    // Playing (its first frames drawn), then frames passed over.
+    windowClock.frame = 2; draw(); await answered();
     windowClock.frame = 5; skipped = 3; draw(); await answered();
     expect(sent("preview_pause")).toHaveLength(0);
     windowClock.frame = 12; skipped = 6; draw(); await answered();
@@ -1188,13 +1216,13 @@ describe("preview seeks and lifetime", () => {
       expect(playhead.playing).toBe(true);
       const doc = document as unknown as EventTarget & { visibilityState: string };
       doc.visibilityState = "hidden"; doc.dispatchEvent(new Event("visibilitychange"));
-      await vi.advanceTimersByTimeAsync(530);
+      await vi.advanceTimersByTimeAsync(1_070);
       doc.visibilityState = "visible"; doc.dispatchEvent(new Event("visibilitychange"));
       await vi.advanceTimersByTimeAsync(2000);
       expect(playhead.playing).toBe(true);
       expect(sent("preview_pause")).toHaveLength(0);
       doc.visibilityState = "hidden"; doc.dispatchEvent(new Event("visibilitychange"));
-      await vi.advanceTimersByTimeAsync(1100);
+      await vi.advanceTimersByTimeAsync(2_600);
       expect(playhead.playing).toBe(false);
       doc.visibilityState = "visible";
     } finally { vi.useRealTimers(); }
