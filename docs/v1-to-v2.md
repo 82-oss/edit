@@ -171,6 +171,16 @@ A proposal, each step small enough for one nightly, each with what proves it.
 9. **Remove the switch and the ways to make V1 work.** V1 projects still open until none has been touched for some weeks.
 10. **Remove V1's agent text, tools and tests last.** Proof: a green Check with `agent/` trimmed, and the release build starts.
 
+## Decided (Sphe, Nov 21)
+
+- **Courtroom, commentary, shorts and horror each get a placeholder channel** ("Courtroom Placeholder" and so on). Their teachings for scripts, edits and the rest move there, and their V1 graphics are recreated by V2's agent frame by frame and kept on those channels, as was done for bodycam and interrogation on Nov 18 to 20 (the tools: `~/.cache/v1fx` on mandalorian). Subtitled videos are left out: "we barely do those anymore".
+- **No narration voice on Female Felons and InternetJanitor, and no house graphics on GTA 6 and InternetJanitor, are fine as they are.**
+- **The inbox's lessons are sorted by channel and drafted as lessons for his approval.**
+- **The timeline** is built for V2, read only, turned on from the player (`T`), off until then.
+- **Who has the switch on** (asked Nov 21): Sphe's Linux Edit, yes; JJ's Mac, no (nightly-96); Marc's Mac and the M4 weren't open to ask.
+
+Still open: whether V1 projects get a converter (see "What V2 can't do yet", converting existing work); a Trello board per channel; watermarks for Cuffed & Caught, Snax Dirt, GTA 6, InternetJanitor and Female Felons; when the switch goes on for everyone.
+
 ## For Sphe to decide
 
 - What happens to the 105 V1 edits (18 touched this week) and 113 V1 scripts: finish as V1, convert, or archive.
