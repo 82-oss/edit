@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { askConfirm } from "./confirm";
 import { approveReview, cancelScriptShare, compressReview, deleteReviewLink, getScript, restoreScript, message, onReviews, reviewNotes, scriptAudit, shareScript } from "./api";
 import { makeDoc } from "./docs-dialog";
-import type { BuildStatus, Cite, DocFile, Paragraph, ReviewApproval, ReviewBlock, ReviewNote, Script } from "./types";
+import type { BuildStatus, Cite, DocFile, Paragraph, ReviewApproval, ReviewBlock, ReviewNote, Script, ShareFailed, ShareStep, Sharing } from "./types";
 import { useGrants } from "./can";
 import { Dialog, Icon } from "./ui";
 import { formatBytes } from "../lib/time";
 import { THIS_MACHINE } from "../lib/platform";
+import { ShareRunning, ShareSteps } from "./share-progress";
+import { failedLine, runningTitle } from "./share-steps";
 
 /**
  * Review on a Repack link (reviews.rs): Share, and what Claude changed for
@@ -111,9 +113,6 @@ export function bandProps(bands: Band[] | undefined) {
 
 const when = (ms: number) => new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 
-/** A share's stage, as the edit dialog prints one: first letter up, then an ellipsis. */
-const stageLine = (stage: string) => `${stage.charAt(0).toUpperCase()}${stage.slice(1)}…`;
-
 const docWhen = (value: string | number) => new Date(value).toLocaleString(undefined, { day: "numeric", month: "short", hour: "numeric", minute: "2-digit" });
 
 /** The script can become a Doc: a commentary once it has a draft, a footage script once it has a cut-in. */
@@ -212,10 +211,15 @@ export function ReviewButton({ script, open, approved, onClick }: { script: Scri
 }
 
 /**
- * Sharing, in the same box as the edit page's Share: the link, a Google Doc
- * export, and a progress line (the stage, with a percent while the footage
- * goes up). Close leaves a share running. The notes left on the link are the
- * chat agent's to pull and fix ("apply the feedback"), never shown here.
+ * Sharing, in the same box as the edit page's Share: the link and a Google
+ * Doc export. While a share runs, those make way for its progress, as the
+ * edit's Export dialog shows one (Sphe, Nov 22: "I don't have a very good
+ * breakdown in the UI of the progress, as well as I do with the editing"):
+ * what is happening, one number and bar, and each step the server goes
+ * through with its own state. Close leaves a share running; opened again,
+ * it shows where it is. One that stops says where and why, in words. The
+ * notes left on the link are the chat agent's to pull and fix ("apply the
+ * feedback"), never shown here.
  */
 export function ReviewDialog({
   open,
@@ -236,13 +240,16 @@ export function ReviewDialog({
   onRefresh: () => void;
 }) {
   const [sharing, setSharing] = useState(false);
+  const [making, setMaking] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [stopped, setStopped] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
-  // The share's stage while this dialog follows it, and whether the last one here just landed.
-  const [stage, setStage] = useState<string | null>(null);
+  // The share as the server last said it while this dialog follows it, the last that stopped, and the steps of one that just landed.
+  const [live, setLive] = useState<Sharing | null>(null);
+  const [failed, setFailed] = useState<ShareFailed | null>(script.shareFailed ?? null);
   const [landed, setLanded] = useState(false);
+  const [landedSteps, setLandedSteps] = useState<{ version: number; steps: ShareStep[] } | null>(null);
   const said = useRef("");
   const sawShare = useRef(false);
   const change = useRef(onChange);
@@ -255,6 +262,9 @@ export function ReviewDialog({
     if (!open) return;
     setProblem(null);
     setLanded(false);
+    setLandedSteps(null);
+    // Opened again on one that stopped: it still says why, until the next share.
+    setFailed(script.shareFailed ?? null);
     said.current = script.review ? `${script.review.url}#${script.review.version}` : "";
     onRefresh();
   }, [open]);
@@ -266,6 +276,10 @@ export function ReviewDialog({
   // A share runs on its own (JJ, Nov 1: "so we're not freezed on that screen"): this can close, and other scripts share meanwhile.
   const sharingNow = script.sharing !== undefined;
   const shareId = script.id;
+  // The share this dialog saw end (by its start): the page's copy of the script can still say it's running until its next look.
+  const [ended, setEnded] = useState<number | null>(null);
+  const followedStart = useRef<number | null>(null);
+  followedStart.current = script.sharing?.startedAt ?? null;
   useEffect(() => {
     if (!open || !sharingNow) return;
     let live = true;
@@ -274,21 +288,26 @@ export function ReviewDialog({
         if (!live) return;
         if (fresh.sharing) {
           sawShare.current = true;
-          if (fresh.sharing.stage) setStage(fresh.sharing.stage);
+          setLive(fresh.sharing);
+          // One started again elsewhere (Home's row): the last stop no longer stands.
+          setFailed(null);
           return;
         }
         const saw = sawShare.current;
         sawShare.current = false;
-        setStage(null);
+        setLive(null);
+        setEnded(followedStart.current);
         if (fresh.shareFailed) {
           setLanded(false);
           setStopped(false);
-          setProblem(`Sharing failed: ${fresh.shareFailed.error}`);
+          setFailed(fresh.shareFailed);
         } else if (fresh.review) {
           const key = `${fresh.review.url}#${fresh.review.version}`;
           if (key !== said.current) {
             said.current = key;
             setLanded(true);
+            setLandedSteps(fresh.shared ?? null);
+            setFailed(null);
             setStopped(false);
             void navigator.clipboard?.writeText(fresh.review.url).catch(() => {});
           } else if (saw) setStopped(true);
@@ -303,31 +322,35 @@ export function ReviewDialog({
     };
   }, [open, sharingNow, shareId]);
   useEffect(() => {
-    if (script.shareFailed) setProblem(`Sharing failed: ${script.shareFailed.error}`);
+    if (script.shareFailed) setFailed(script.shareFailed);
   }, [script.shareFailed?.at]);
 
   const link = script.review;
   const share = async () => {
     setSharing(true);
     setProblem(null);
+    setFailed(null);
     setLanded(false);
+    setLandedSteps(null);
     setStopped(false);
-    setStage("checking the preview");
+    setLive(null);
     try {
       const fresh = await shareScript(script.id);
-      if (fresh.sharing?.stage) setStage(fresh.sharing.stage);
+      if (fresh.sharing) setLive(fresh.sharing);
       else if (fresh.review && !fresh.shareFailed) {
         const key = `${fresh.review.url}#${fresh.review.version}`;
         if (key !== said.current) {
           said.current = key;
           setLanded(true);
+          setLandedSteps(fresh.shared ?? null);
           void navigator.clipboard?.writeText(fresh.review.url).catch(() => {});
         }
       }
       change.current(fresh);
     } catch (cause) {
-      setProblem(message(cause));
-      setStage(null);
+      // Refused before it began (Claude is on it, it's still importing): said as a stopped share is.
+      setFailed({ error: message(cause), at: Date.now() });
+      setLive(null);
     } finally {
       setSharing(false);
     }
@@ -336,10 +359,10 @@ export function ReviewDialog({
   const makeFirst = async () => {
     if (!link) return;
     if (!(await askConfirm(`v1 to v${link.version} are removed from the link and every note is kept on v1. The script's own version history is untouched.`, { title: "Make the script as it is now v1?", ok: "Make this v1" }))) return;
-    setSharing(true);
+    setMaking(true);
     setProblem(null);
     setLanded(false);
-    setStage("making this v1");
+    setLandedSteps(null);
     try {
       const fresh = await compressReview(script.id);
       if (fresh.review) {
@@ -351,8 +374,7 @@ export function ReviewDialog({
     } catch (cause) {
       setProblem(message(cause));
     } finally {
-      setSharing(false);
-      setStage(null);
+      setMaking(false);
     }
   };
   const copy = async () => {
@@ -397,9 +419,10 @@ export function ReviewDialog({
     }
   };
   const behind = link && link.revision !== script.revision;
-  const spinning = sharing || sharingNow;
-  const shownStage = spinning ? (stage ?? script.sharing?.stage ?? "sharing") : null;
-  const cancelling = stopping || shownStage === "cancelling";
+  // What the dialog shows of a share under way: the server's last word, else the script's (opened mid-share), else its start.
+  const stale = script.sharing !== undefined && script.sharing.startedAt === ended;
+  const running: Sharing | null = sharing ? (live ?? { startedAt: Date.now() }) : sharingNow && !stale ? (live ?? script.sharing ?? null) : null;
+  const cancelling = stopping || running?.stage === "cancelling";
   const stopShare = async () => {
     setStopping(true);
     setProblem(null);
@@ -413,59 +436,64 @@ export function ReviewDialog({
       setStopping(false);
     }
   };
-  const progress = shownStage ? stageLine(shownStage) : null;
+  const busyHere = running !== null || making;
 
   return (
     <Dialog
       open={open}
       onClose={onClose}
       className="share-dialog"
-      title="Share"
+      title={running ? runningTitle(running) : "Share"}
       description={
-        link
-          ? "Each share publishes the script as it is now and adds it to this link as a new version. Only people signed in can open the link, read the script and leave notes."
-          : "Publishes the script and makes a review link. Only people signed in can open it, read the script and leave notes. Later shares go on the same link as new versions."
+        running
+          ? undefined
+          : link
+            ? "Each share publishes the script as it is now and adds it to this link as a new version. Only people signed in can open the link, read the script and leave notes."
+            : "Publishes the script and makes a review link. Only people signed in can open it, read the script and leave notes. Later shares go on the same link as new versions."
       }
       width={500}
       footer={
         <>
           <span className="share-progress">
-            {progress && (
-              <span className="faint tabular" title="It carries on if you close this, and other scripts can be shared meanwhile.">
-                {progress}
-              </span>
-            )}
-            {!progress && problem && <span className="bad">{problem}</span>}
-            {!progress && !problem && stopped && <span className="faint">Cancelled</span>}
-            {!progress && !problem && !stopped && landed && link && (
+            {running && <span className="faint">It carries on if you close this.</span>}
+            {!running && making && <span className="faint">Making this v1…</span>}
+            {!running && !making && problem && <span className="bad">{problem}</span>}
+            {!busyHere && !problem && stopped && <span className="faint">Cancelled</span>}
+            {!busyHere && !problem && !stopped && landed && link && (
               <span className="up">
                 <Icon name="check" size={13} /> Up on the link
               </span>
             )}
-            {!progress && !problem && !stopped && !(landed && link) && !mayShare && <span className="faint">Sign in to share.</span>}
+            {!busyHere && !problem && !stopped && !(landed && link) && !mayShare && <span className="faint">Sign in to share.</span>}
           </span>
-          {spinning && shownStage !== "making this v1" && (
+          {running && (
             <button type="button" className="ghost" disabled={cancelling} onClick={() => void stopShare()}>
               {cancelling ? "Stopping…" : "Cancel"}
-            </button>
-          )}
-          {!spinning && (stopped || script.shareFailed !== undefined) && mayShare && (
-            <button type="button" className="ghost" disabled={busy} onClick={() => void share()}>
-              Retry
             </button>
           )}
           <button type="button" className="ghost" onClick={onClose}>
             Close
           </button>
-          {mayShare && (
-            <button type="button" className="primary share-go" disabled={spinning || busy} onClick={() => void share()}>
-              {spinning ? "Sharing…" : link ? `Share v${link.version + 1}` : "Share"}
+          {/* While it runs there is nothing to press but Cancel and Close; after a stop, this is the try again. */}
+          {mayShare && !running && (
+            <button type="button" className="primary share-go" disabled={making || busy} onClick={() => void share()}>
+              {failed ? "Share again" : link ? `Share v${link.version + 1}` : "Share"}
             </button>
           )}
         </>
       }
     >
+      {running ? (
+        <ShareRunning sharing={running} durationMs={script.durationMs} />
+      ) : (
       <div className="share-stack">
+        {failed && (
+          <p className="share-failed" role="status">
+            <b>{failedLine(failed) || "Not shared."}</b>
+            <span>{failed.error}</span>
+          </p>
+        )}
+        {landed && link && landedSteps && landedSteps.steps.length > 0 && <ShareSteps steps={landedSteps.steps} version={landedSteps.version} durationMs={script.durationMs} />}
         {link && (
           <div className="share-card">
             <div className="share-url">
@@ -487,12 +515,12 @@ export function ReviewDialog({
                 {approved && <span className="ok"> · v{approved.version} approved by {approved.by}</span>}
               </span>
               {mayShare && link.version > 1 && !approved && (
-                <button type="button" className="sm ghost" disabled={spinning || busy} title="The script as it is now becomes the link's only version, v1; every note is kept" onClick={() => void makeFirst()}>
+                <button type="button" className="sm ghost" disabled={busyHere || busy} title="The script as it is now becomes the link's only version, v1; every note is kept" onClick={() => void makeFirst()}>
                   Make this v1
                 </button>
               )}
               {mayShare && deleting === null && (
-                <button type="button" className="sm ghost" disabled={spinning || busy} title={spinning ? "It's being shared: delete the link once that's done" : busy ? "Claude is working on this script: delete the link once that's done" : "Delete this review link for good"} onClick={() => setDeleting("ask")}>
+                <button type="button" className="sm ghost" disabled={busyHere || busy} title={busyHere ? "It's being shared: delete the link once that's done" : busy ? "Claude is working on this script: delete the link once that's done" : "Delete this review link for good"} onClick={() => setDeleting("ask")}>
                   <Icon name="trash" size={13} /> Delete link
                 </button>
               )}
@@ -510,7 +538,7 @@ export function ReviewDialog({
                 <button type="button" className="sm ghost" disabled={deleting === "running"} onClick={() => setDeleting(null)}>
                   Cancel
                 </button>
-                <button type="button" className="sm danger-fill" disabled={deleting === "running" || spinning || busy} onClick={() => void removeLink()}>
+                <button type="button" className="sm danger-fill" disabled={deleting === "running" || busyHere || busy} onClick={() => void removeLink()}>
                   {deleting === "running" ? "Deleting…" : "Delete link"}
                 </button>
               </div>
@@ -543,6 +571,7 @@ export function ReviewDialog({
           </p>
         )}
       </div>
+      )}
     </Dialog>
   );
 }

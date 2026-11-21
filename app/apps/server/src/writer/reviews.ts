@@ -16,7 +16,7 @@
 
 import * as fs from "node:fs";
 
-import type { Script } from "@edit/types/writer";
+import type { Script, ShareFailed, ShareStep, Sharing } from "@edit/types/writer";
 
 import type { App } from "../app.ts";
 import { creator, email } from "../accounts.ts";
@@ -383,10 +383,35 @@ export async function share(app: App, data: string, id: string): Promise<Script>
  * of exporting multiple scripts at once then? so we're not freezed on that
  * screen and cant do anything else").
  */
-const sharing = new Map<string, { startedAt: number; stage: string; name?: string }>();
-const shareFailed = new Map<string, { error: string; at: number }>();
+const sharing = new Map<string, Running>();
+const shareFailed = new Map<string, ShareFailed>();
+/** The last share of each script that landed here, with its steps' times, for the dialog's "done" (cleared by the next share). */
+const landed = new Map<string, { at: number; version: number; steps: ShareStep[] }>();
 /** A share the person stopped. The step it's in lets go, and nothing is published. */
 const dropped = new Set<string>();
+
+/**
+ * A share's steps as they go (Sphe, Nov 22: a script's share should show its
+ * progress "as well as I do with the editing"): each one's start and end,
+ * and for one that moves bytes its real total and how many have gone, with
+ * the first reading kept so its rate is measured from its own bytes (an
+ * upload resuming from parts already up starts high, and that start isn't
+ * speed).
+ */
+type Step = { kind: ShareStep["kind"]; state: ShareStep["state"]; total?: number; done?: number; startedAt?: number; endedAt?: number; first?: { at: number; done: number }; skipped?: boolean };
+type Running = { startedAt: number; stage: string; name?: string; version?: number; steps: Step[] };
+
+/** The stage word each step prints, as the export queue and older pages read it. */
+const STAGE: Record<ShareStep["kind"], string> = {
+  check: "checking the preview",
+  script: "uploading the script",
+  fetch: "bringing its preview here",
+  footage: "uploading the footage",
+  publish: "publishing",
+};
+
+/** A rate is said only after this long of a step's own bytes: the first seconds of a transfer are its handshake, not its speed. */
+const RATE_AFTER_MS = 3_000;
 
 /** A share stopped on purpose: not a failure, and not kept on the script. */
 export class ShareCancelled extends Error {
@@ -412,14 +437,85 @@ export function cancelShare(id: string): boolean {
 /** Where a running share has got to, for the dialog's progress line. No-op once it has finished. */
 function mark(id: string, stage: string) {
   const running = sharing.get(id);
-  if (running !== undefined && running.stage !== stage) sharing.set(id, { ...running, stage });
+  if (running !== undefined && running.stage !== stage && running.stage !== "cancelling") running.stage = stage;
+}
+
+/** The steps a share will go through, and the version it makes. No-op when it isn't one started here (a fix's share). */
+function plan(id: string, version: number, steps: { kind: ShareStep["kind"]; total?: number }[]) {
+  const running = sharing.get(id);
+  if (running === undefined) return;
+  running.version = version;
+  running.steps = steps.map((one) => ({ kind: one.kind, state: "waiting", ...(one.total === undefined ? {} : { total: one.total }) }));
+}
+
+/** The step under way now: the one before it is done, and the stage word follows. */
+function begin(id: string, kind: ShareStep["kind"]) {
+  const running = sharing.get(id);
+  if (running === undefined) return;
+  mark(id, STAGE[kind]);
+  // A step this share doesn't have (a commentary has no preview to check) leaves the others as they are.
+  const at = running.steps.findIndex((one) => one.kind === kind);
+  if (at < 0) return;
+  const now = Date.now();
+  for (const one of running.steps.slice(0, at)) if (one.state !== "done") Object.assign(one, { state: "done", endedAt: now, startedAt: one.startedAt ?? now });
+  const step = running.steps[at]!;
+  if (step.state === "waiting") Object.assign(step, { state: "current", startedAt: now });
+}
+
+/** Bytes a step has moved of its total, as the transfer says them. */
+function moved(id: string, kind: ShareStep["kind"], done: number, total: number) {
+  const running = sharing.get(id);
+  const step = running?.steps.find((one) => one.kind === kind);
+  if (running === undefined || step === undefined) return;
+  if (total > 0) step.total = total;
+  step.done = Math.max(0, Math.min(done, step.total ?? done));
+  step.first ??= { at: Date.now(), done: step.done };
+  if (kind === "footage" && total > 0) mark(id, `${STAGE.footage} ${Math.round((step.done / total) * 100)}%`);
+}
+
+/** A step done with nothing to move: the review link already had this preview. */
+function skip(id: string, kind: ShareStep["kind"]) {
+  begin(id, kind);
+  const step = sharing.get(id)?.steps.find((one) => one.kind === kind);
+  if (step !== undefined) Object.assign(step, { state: "done", skipped: true, endedAt: Date.now() });
+}
+
+/** A step as the page reads it: its seconds so far or in all, and its time left from its measured rate. */
+function shown(step: Step, now: number): ShareStep {
+  const out: ShareStep = { kind: step.kind, state: step.state };
+  if (step.total !== undefined) out.total = step.total;
+  if (step.state === "current" && step.done !== undefined) out.done = step.done;
+  if (step.skipped === true) out.skipped = true;
+  if (step.startedAt !== undefined && step.state !== "waiting") out.seconds = Math.max(0, ((step.state === "done" ? (step.endedAt ?? now) : now) - step.startedAt) / 1000);
+  if (step.state === "current" && step.first !== undefined && step.done !== undefined && step.total !== undefined && now - step.first.at >= RATE_AFTER_MS && step.done > step.first.done) {
+    const rate = (step.done - step.first.done) / (now - step.first.at);
+    out.leftS = Math.max(0, (step.total - step.done) / rate / 1000);
+  }
+  return out;
+}
+
+/**
+ * The whole share 0–1 by the bytes it moves (the footage is nearly all of
+ * them), null for one that moves none worth counting (a commentary's
+ * script); its time left once the step under way has a measured rate and no
+ * step still to come moves bytes (publishing is one call).
+ */
+function overall(steps: ShareStep[]): { progress: number | null; leftS: number | null } {
+  const counted = steps.filter((one) => one.total !== undefined && one.skipped !== true);
+  if (!steps.some((one) => (one.kind === "footage" || one.kind === "fetch") && one.total !== undefined && one.skipped !== true)) return { progress: null, leftS: null };
+  const total = counted.reduce((sum, one) => sum + (one.total ?? 0), 0);
+  const done = counted.reduce((sum, one) => sum + (one.state === "done" ? (one.total ?? 0) : one.state === "current" ? (one.done ?? 0) : 0), 0);
+  const current = steps.find((one) => one.state === "current");
+  const after = current === undefined ? [] : steps.slice(steps.indexOf(current) + 1).filter((one) => one.total !== undefined && one.skipped !== true);
+  const leftS = current?.leftS !== undefined && after.length === 0 ? current.leftS : null;
+  return { progress: total > 0 ? Math.min(1, done / total) : null, leftS };
 }
 
 /** The script's name on the shared queue, once the share has read it. */
 function titleShare(id: string, title: string) {
   const running = sharing.get(id);
   const name = title.trim() || "Script";
-  if (running !== undefined && running.name !== name) sharing.set(id, { ...running, name });
+  if (running !== undefined && running.name !== name) running.name = name;
 }
 
 /**
@@ -439,21 +535,29 @@ export function shareProgress(stage: string): number {
 
 /** Script shares running now, for the export queue beside the edit exports. Finished shares leave; a script has no file to keep. */
 export function shareQueue(): { id: string; name: string; stage: string; progress: number; startedAt: number }[] {
+  const now = Date.now();
   return [...sharing.entries()].map(([id, one]) => ({
     id,
     name: one.name?.trim() || "Script",
     stage: one.stage,
-    progress: shareProgress(one.stage),
+    // The bytes' share when it moves footage, so the queue and the script's row say the same number.
+    progress: one.stage === "cancelling" ? 0 : (overall(one.steps.map((step) => shown(step, now))).progress ?? shareProgress(one.stage)),
     startedAt: one.startedAt,
   }));
 }
 
-/** A script's share as it stands now, for its detail and its row. */
-export function shareState(id: string): { sharing?: { startedAt: number; stage: string }; shareFailed?: { error: string; at: number } } {
+/** A script's share as it stands now, for its detail and its row: under way with its steps, or the last that failed or landed. */
+export function shareState(id: string, now = Date.now()): { sharing?: Sharing; shareFailed?: ShareFailed; shared?: { at: number; version: number; steps: ShareStep[] } } {
   const running = sharing.get(id);
-  if (running !== undefined) return { sharing: { startedAt: running.startedAt, stage: running.stage } };
+  if (running !== undefined) {
+    const steps = running.steps.map((step) => shown(step, now));
+    const whole = overall(steps);
+    return { sharing: { startedAt: running.startedAt, stage: running.stage, ...(running.version === undefined ? {} : { version: running.version }), steps, progress: whole.progress, leftS: whole.leftS } };
+  }
   const failed = shareFailed.get(id);
-  return failed === undefined ? {} : { shareFailed: failed };
+  if (failed !== undefined) return { shareFailed: failed };
+  const done = landed.get(id);
+  return done === undefined ? {} : { shared: done };
 }
 
 /** The share itself (tests give their own). */
@@ -464,17 +568,27 @@ export function startShare(app: App, data: string, id: string): Promise<Script> 
   if (sharing.has(id)) return Promise.reject(new Error("This script is already being shared: it carries on if you close this."));
   if (removing.has(id)) return Promise.reject(new Error("This script's review link is being deleted: share it again once that's done."));
   if (jobs.running(id)) return Promise.reject(new Error("Claude is still working on this script. Share it when that's done."));
-  sharing.set(id, { startedAt: Date.now(), stage: "checking the preview" });
+  sharing.set(id, { startedAt: Date.now(), stage: STAGE.check, steps: [] });
   shareFailed.delete(id);
+  landed.delete(id);
+  // The lists hear it at once: Home's row says it's sharing without waiting for its next look.
+  store.libraryChanged();
   return shareWork
     .run(app, data, id)
     .then((script) => {
       if (dropped.has(id)) throw new ShareCancelled();
+      const running = sharing.get(id);
+      if (running !== undefined && running.steps.length > 0) {
+        const now = Date.now();
+        for (const step of running.steps) if (step.state !== "done") Object.assign(step, { state: "done", endedAt: now, startedAt: step.startedAt ?? now });
+        landed.set(id, { at: now, version: script.review?.version ?? running.version ?? 1, steps: running.steps.map((step) => shown(step, now)) });
+      }
       return script;
     })
     .catch((error: unknown) => {
       if (dropped.has(id) || error instanceof ShareCancelled) throw new ShareCancelled();
-      shareFailed.set(id, { error: diag.messageOf(error), at: Date.now() });
+      const step = sharing.get(id)?.steps.find((one) => one.state === "current")?.kind;
+      shareFailed.set(id, { error: diag.messageOf(error), at: Date.now(), ...(step === undefined ? {} : { step }) });
       throw error;
     })
     .finally(() => {
@@ -492,22 +606,33 @@ export async function shareNext(app: App, data: string, id: string): Promise<Scr
   titleShare(id, script.title);
   const found = shareable(dir, script);
   halt(id);
-  mark(id, "checking the preview");
+  const next = (script.review?.version ?? 0) + 1;
+  const snapshot = JSON.stringify(script);
+  // The steps it will go through, with the bytes each moves: the preview's size from this Mac's copy, else as the cloud keeps it.
+  const isFootage = !script.commentary;
+  const here = isFootage && isFile(store.proxyPath(dir));
+  const previewBytes = !isFootage ? undefined : here ? fs.statSync(store.proxyPath(dir)).size : cloud.fileKey(data, id, "proxy.mp4")?.size;
+  const sized = (kind: ShareStep["kind"]) => (previewBytes === undefined ? { kind } : { kind, total: previewBytes });
+  plan(id, next, [...(isFootage ? [{ kind: "check" as const }] : []), { kind: "script", total: Buffer.byteLength(snapshot) }, ...(isFootage && !here ? [sized("fetch")] : []), ...(isFootage ? [sized("footage")] : []), { kind: "publish" }]);
+  begin(id, "check");
   await previewInCloud(data, id, dir, script);
   halt(id);
-  const next = (script.review?.version ?? 0) + 1;
   // The review's id is Repack's to give, on the first publish: snapshots are kept by the script's id instead.
   const key = `writer/reviews/${id}/v${next}/script.json`;
-  mark(id, "uploading the script");
+  begin(id, "script");
   halt(id);
-  await cloud.putBytes(key, JSON.stringify(script));
+  await cloud.putBytes(key, snapshot);
   halt(id);
-  const meta = await metaOf(data, id, script, found, (stage) => {
-    halt(id);
-    mark(id, stage);
+  const meta = await metaOf(data, id, script, found, {
+    begin: (kind) => begin(id, kind),
+    skip: (kind) => skip(id, kind),
+    moved: (kind, done, total) => {
+      halt(id);
+      moved(id, kind, done, total);
+    },
   });
   halt(id);
-  mark(id, "publishing");
+  begin(id, "publish");
   let value: Record<string, unknown>;
   try {
     value = await call("mutation", "reviews:publish", { sourceId: id, title: script.title, kind: "script", key, meta, sourceRev: script.revision, by: by() });
@@ -626,13 +751,16 @@ function forget(data: string, scriptId: string, reviewId: string): void {
   });
 }
 
+/** A share's steps as metaOf goes through them (shareNext's; compress follows none). */
+type Track = { begin: (kind: ShareStep["kind"]) => void; skip: (kind: ShareStep["kind"]) => void; moved: (kind: ShareStep["kind"], done: number, total: number) => void };
+
 /**
  * What the review page shows and plays: the blocks, the outline rail with
  * running times against the format's target, and the preview the clips play
  * from. Word timings that would take it past Repack's cap go in a file of
  * their own (`wordsKey`).
  */
-async function metaOf(data: string, id: string, script: Script, found: Block[], onStage?: (stage: string) => void): Promise<Record<string, unknown>> {
+async function metaOf(data: string, id: string, script: Script, found: Block[], track?: Track): Promise<Record<string, unknown>> {
   const isFootage = !script.commentary;
   const meta: Record<string, unknown> = { format: isFootage ? "footage" : "commentary", revision: script.revision, outline: outline(script, found) };
   const target = targetMs(script);
@@ -642,13 +770,15 @@ async function metaOf(data: string, id: string, script: Script, found: Block[], 
   }
   if (isFootage) {
     // The preview the clips play from, put under the review (the review page serves only writer/reviews/ keys); sent again only when it changed.
-    const proxy = await cloud.fetchPreview(data, id);
+    if (!isFile(store.proxyPath(store.scriptDir(data, id)))) track?.begin("fetch");
+    const proxy = await cloud.fetchPreview(data, id, (done, total) => track?.moved("fetch", done, total));
     const size = fs.statSync(proxy).size;
     const key = `writer/reviews/${id}/preview.mp4`;
+    // Its step from the look at what the link has: that look is part of sending it (or finding it there already).
+    track?.begin("footage");
     if ((await cloud.head(key)) !== size) {
-      onStage?.("uploading the footage");
-      await cloud.putFile(id, key, proxy, (done, total) => onStage?.(total ? `uploading the footage ${Math.round((done / total) * 100)}%` : "uploading the footage"));
-    }
+      await cloud.putFile(id, key, proxy, (done, total) => track?.moved("footage", done, total));
+    } else track?.skip("footage");
     meta.preview = { key, durationMs: script.durationMs, sizeBytes: size };
   }
   meta.blocks = found;

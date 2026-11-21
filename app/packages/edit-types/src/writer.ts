@@ -170,9 +170,11 @@ export type Script = {
   /** The case's names every exact hearing listened for (those heard with fewer keep only theirs), handed to Edit with the stretches' words (handoff.ts). */
   exactKeyterms?: string[];
   /** Being shared for review now (it runs on its own: the dialog can close, other scripts can share meanwhile). `stage` is how far it is, as the share dialog prints it. */
-  sharing?: { startedAt: number; stage?: string };
-  /** The last share failed: why. */
-  shareFailed?: { error: string; at: number };
+  sharing?: Sharing;
+  /** The last share failed: why, and the step it stopped in. */
+  shareFailed?: ShareFailed;
+  /** The last share here that landed, while this Edit runs: its steps and how long each took. */
+  shared?: { at: number; version: number; steps: ShareStep[] };
   revision: number;
   createdAt: number;
   updatedAt: number;
@@ -180,6 +182,36 @@ export type Script = {
   /** Made on another Mac whose preview hasn't reached the cloud yet (its words go first): the server's, never saved. */
   footageComing?: boolean;
 };
+
+/**
+ * A script share's steps as the server goes through them (writer/reviews.ts;
+ * Sphe, Nov 22: "I don't have a very good breakdown in the UI of the
+ * progress, as well as I do with the editing"): its preview checked in the
+ * cloud, the script's snapshot sent, its preview brought here when only the
+ * cloud has it, the preview sent to the review link, then published. Bytes
+ * are the real ones moved; `leftS` is said only from a rate measured over a
+ * few seconds of this step's own bytes, never guessed.
+ */
+export type ShareStep = {
+  kind: "check" | "script" | "fetch" | "footage" | "publish";
+  state: "waiting" | "current" | "done";
+  /** Bytes the step moves, when it moves any. */
+  total?: number;
+  /** Bytes moved so far, while it runs and they're measured. */
+  done?: number;
+  /** Seconds it has run (current) or took (done). */
+  seconds?: number;
+  /** Seconds left of this step, from its measured rate. */
+  leftS?: number;
+  /** Done without moving anything: the review link already had this preview. */
+  skipped?: boolean;
+};
+
+/** A share under way: its stage word, its steps, and the whole of it 0–1 by the bytes it moves (null when it moves none worth counting, a commentary's). */
+export type Sharing = { startedAt: number; stage?: string; version?: number; steps?: ShareStep[]; progress?: number | null; leftS?: number | null };
+
+/** A share that stopped: why (its own words say what to do), and the step it was in. */
+export type ShareFailed = { error: string; at: number; step?: ShareStep["kind"] };
 
 /** A script archived from Repack's page to free space: footage deleted, the script and its words kept. */
 export type Archive = { at: number; by: string; freedBytes: number; restoring: boolean; missing: string[] };
@@ -194,9 +226,9 @@ export type Summary = {
   dismissedAt?: number;
   archive?: Archive;
   /** Being shared for review now (it runs on its own: the dialog can close, other scripts can share meanwhile). `stage` is how far it is. */
-  sharing?: { startedAt: number; stage?: string };
-  /** The last share failed: why. */
-  shareFailed?: { error: string; at: number };
+  sharing?: Sharing;
+  /** The last share failed: why, and the step it stopped in. */
+  shareFailed?: ShareFailed;
   createdBy?: Creator;
   /** A note someone left on it from Home's ⋯ ("goes on Sam's channel"): the team's, shown beside its name. */
   note?: string;

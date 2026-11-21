@@ -488,7 +488,7 @@ async function fetchBytes(key: string): Promise<Uint8Array | null> {
 }
 
 /** Downloads a file beside its place, then moves it in whole. */
-async function download(script: string, name: string, key: string, size: number, path: string): Promise<void> {
+async function download(script: string, name: string, key: string, size: number, path: string, onProgress?: (done: number, total: number) => void): Promise<void> {
   // A body that stops arriving must not wedge the sync forever: 60 s
   // without a chunk aborts it (a total deadline would kill slow big files).
   const stall = new AbortController();
@@ -521,6 +521,7 @@ async function download(script: string, name: string, key: string, size: number,
       fs.writeSync(out, chunk);
       done += chunk.length;
       status.transfer = { script, name, up: false, done, total: size };
+      onProgress?.(done, size);
     }
   } catch (error) {
     throw new Problem(`${name} stopped coming down (${diag.messageOf(error)}).`, true);
@@ -533,7 +534,10 @@ async function download(script: string, name: string, key: string, size: number,
 
 /** Puts bytes at a key Script mode may write (its own, or Edit's shared prefixes). */
 export async function putBytes(key: string, bytes: Uint8Array | string, contentType = "application/json"): Promise<void> {
-  const answer = await fetch(await presign(key, "PUT"), { method: "PUT", body: bytes, headers: { "content-type": contentType }, signal: AbortSignal.timeout(60_000) }).catch((error: unknown) => {
+  // A minute, or what a slow line takes for its size, as uploadBytes: a share's snapshot of a 26-hour case is ~22 MB, which a
+  // flat minute cut off on a line under 3 Mbit/s and the share failed (Nov 22).
+  const size = typeof bytes === "string" ? Buffer.byteLength(bytes) : bytes.length;
+  const answer = await fetch(await presign(key, "PUT"), { method: "PUT", body: bytes, headers: { "content-type": contentType }, signal: AbortSignal.timeout(Math.max(60_000, size / SLOW_BYTES_PER_MS)) }).catch((error: unknown) => {
     throw transferProblem(error, key.split("/").pop() ?? "file");
   });
   if (!answer.ok) throw new Problem(`The cloud refused ${key.split("/").pop()} (${answer.status}).`);
@@ -555,13 +559,13 @@ export const getBytes = (key: string): Promise<Uint8Array | null> => fetchBytes(
  * A script's file (by its path in the folder) on this Mac, brought down from
  * the cloud first when it was cleared from here or made on another Mac.
  */
-export async function fetchFile(data: string, id: string, name: string): Promise<string> {
+export async function fetchFile(data: string, id: string, name: string, onProgress?: (done: number, total: number) => void): Promise<string> {
   const path = inside(store.scriptDir(data, id), name);
   if (path === null) throw new Error(`${name} isn't a script's file.`);
   if (isFile(path)) return path;
   const kept = fileKey(data, id, name);
   if (kept === null || kept.key === "") throw new Error(`This script's ${name} isn't on ${THIS_MACHINE} or in the cloud.`);
-  await download(id, name, kept.key, kept.size, path);
+  await download(id, name, kept.key, kept.size, path, onProgress);
   // Its time as kept here now, so the next push sees it unchanged.
   const ledger = ledgerNow(data);
   const known = ledger.scripts[id]?.files[name];
@@ -573,8 +577,8 @@ export async function fetchFile(data: string, id: string, name: string): Promise
   return path;
 }
 
-/** The script's preview on this Mac, brought down from the cloud first when it was cleared from here or made on another Mac. */
-export const fetchPreview = (data: string, id: string): Promise<string> => fetchFile(data, id, "proxy.mp4");
+/** The script's preview on this Mac, brought down from the cloud first when it was cleared from here or made on another Mac; `onProgress` hears the bytes coming down. */
+export const fetchPreview = (data: string, id: string, onProgress?: (done: number, total: number) => void): Promise<string> => fetchFile(data, id, "proxy.mp4", onProgress);
 
 /** Presigned read addresses, kept until they near their hour: a block read costs R2's round trip, not the relay's too. */
 const signedReads = new Map<string, { url: string; until: number }>();

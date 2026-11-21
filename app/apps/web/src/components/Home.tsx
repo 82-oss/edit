@@ -22,7 +22,8 @@ import { creeping, elapsed, STEPS, stepOf, stillLine } from "../writer/import-st
 import { prefetchScript } from "../writer/opened";
 import { CAN, useGrants } from "../writer/can";
 import { SHAPES, type Shape, shapeOf } from "../writer/several";
-import type { Choice, Decision, Kind } from "../writer/types";
+import type { Choice, Decision, Kind, ShareFailed, Sharing } from "../writer/types";
+import { failedLine, nowWords } from "../writer/share-steps";
 import { useKept } from "../lib/kept";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
@@ -328,7 +329,7 @@ export function Home() {
   const projectRows: Listed[] = [
     ...all.filter((project) => !project.subtitles).map((project): Listed => ({ at: project.modified_ms, local: project, cloud: null, script: scriptOf.get(project.id) ?? null })),
     ...cloudOnly.filter((project) => project.summary?.subtitles !== true).map((project): Listed => ({ at: project.updated_ms, local: null, cloud: project, script: scriptOf.get(project.id) ?? null })),
-    ...scriptOnly.filter((one) => !issues.some((issue) => issue.id === one.id && !writing.some((going) => going.id === one.id))).map((one): Listed => ({ at: one.updatedAt, local: null, cloud: null, script: withKind(one), importing: importingNow.get(one.id), writing: localScripts.some((local) => local.id === one.id && local.building === true), sharing: localScripts.some((local) => local.id === one.id && local.sharing !== undefined), here: localScripts.some((local) => local.id === one.id) })),
+    ...scriptOnly.filter((one) => !issues.some((issue) => issue.id === one.id && !writing.some((going) => going.id === one.id))).map((one): Listed => ({ at: one.updatedAt, local: null, cloud: null, script: withKind(one), importing: importingNow.get(one.id), writing: localScripts.some((local) => local.id === one.id && local.building === true), sharing: localScripts.find((local) => local.id === one.id)?.sharing ?? null, shareFailed: localScripts.find((local) => local.id === one.id)?.shareFailed ?? null, here: localScripts.some((local) => local.id === one.id) })),
   ].sort((a, b) => b.at - a.at);
   const subtitledRows: Listed[] = [
     ...all.filter((project) => project.subtitles).map((project): Listed => ({ at: project.modified_ms, local: project, cloud: null, script: null })),
@@ -381,7 +382,7 @@ export function Home() {
         fresh: fresh(row),
         kind: script.style,
         channel: script.channel ?? null,
-        row: () => <ScriptTableRow script={script} importing={row.importing} writing={row.writing === true} sharing={row.sharing === true} here={row.here === true} fresh={status} onChanged={refresh} onImport={row.importing ? () => setWatching(script.id) : undefined} />,
+        row: () => <ScriptTableRow script={script} importing={row.importing} writing={row.writing === true} sharing={row.sharing ?? null} shareFailed={row.shareFailed ?? null} here={row.here === true} fresh={status} onChanged={refresh} onImport={row.importing ? () => setWatching(script.id) : undefined} />,
       });
       continue;
     }
@@ -886,7 +887,7 @@ export type NewProjectStart = { title: string; text: string; style: Style; chann
 export type Listed =
   | { at: number; local: ProjectSummary; cloud: null; script: WriterScriptRow | null }
   | { at: number; local: null; cloud: CloudProject; script: WriterScriptRow | null }
-  | { at: number; local: null; cloud: null; script: WriterScriptRow; importing?: Importing; writing?: boolean; sharing?: boolean; here?: boolean };
+  | { at: number; local: null; cloud: null; script: WriterScriptRow; importing?: Importing; writing?: boolean; sharing?: Sharing | null; shareFailed?: ShareFailed | null; here?: boolean };
 
 /** A script's import while it isn't done: its word for it ("Importing 40%", "Stopped"). */
 export type Importing = { word: string; stopped: boolean; percent?: number; step?: string };
@@ -1293,8 +1294,9 @@ export type ScriptIssueRow = {
   runFailed?: { at: number; error: string } | null;
   /** When it was started. */
   createdAt?: number;
-  /** Being shared for review on this Mac (it runs on its own). */
-  sharing?: { startedAt: number };
+  /** Being shared for review on this Mac (it runs on its own), with its steps; and the last share that stopped, why. */
+  sharing?: Sharing;
+  shareFailed?: ShareFailed;
   /** Its script being written (a build running on this Mac). */
   building?: boolean;
   /** Its footage clips (more than one: written), its length, when it last changed and its channel, as this Mac has them. */
@@ -1721,8 +1723,34 @@ const KIND_LABEL: Record<Kind, string> = { interrogation: "Interrogation", foia:
 const kindOfStyle = (style: Style | null): Kind | null => (style === "bodycam" ? "foia" : style === "interrogation" || style === "courtroom" ? style : null);
 
 /** A script with no edit yet: opening it opens the script; once written, Start the edit makes its video project. */
-function ScriptTableRow({ script, importing, writing, sharing, here, fresh, onChanged, onImport }: { script: WriterScriptRow; importing?: Importing; writing: boolean; sharing: boolean; here: boolean; fresh: Fresh; onChanged: () => void; onImport?: () => void }) {
+export function ScriptTableRow({ script, importing, writing, sharing: given, shareFailed, here, fresh, onChanged, onImport }: { script: WriterScriptRow; importing?: Importing; writing: boolean; sharing: Sharing | null; shareFailed: ShareFailed | null; here: boolean; fresh: Fresh; onChanged: () => void; onImport?: () => void }) {
   const [starting, setStarting] = useState(false);
+  // Shared for review from its ⋯, as an edit's row is (Sphe, Nov 22: "a very weird thing around sharing multiple
+  // scripts"): each script its own share on its own link, side by side, its row saying how far. The server's answer
+  // stands until Home's next look (every 4 s) has the row's own; one refused before it began is said here in words.
+  const [started, setStarted] = useState<Sharing | null>(null);
+  const [refused, setRefused] = useState<string | null>(null);
+  useEffect(() => {
+    if (started === null) return;
+    const timer = window.setTimeout(() => setStarted(null), 5_000);
+    return () => window.clearTimeout(timer);
+  }, [started]);
+  const sharing = given ?? started;
+  const stopped: ShareFailed | null = refused !== null ? { error: refused, at: Date.now() } : sharing === null ? shareFailed : null;
+  const shareNow = async (event?: React.MouseEvent) => {
+    event?.stopPropagation();
+    setRefused(null);
+    try {
+      const writer = await import("../writer/api");
+      const fresh = await writer.shareScript(script.id);
+      if (fresh.sharing) setStarted(fresh.sharing);
+      onChanged();
+    } catch (error) {
+      setRefused(error instanceof Error ? error.message : String(error));
+    }
+  };
+  // Only a written script this Mac has, not already going: one still to write has nothing for a reviewer yet.
+  const mayShare = useGrants().shares && here && script.built && !importing && !writing && sharing === null;
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const failed = script.runFailed ?? null;
@@ -1767,6 +1795,7 @@ function ScriptTableRow({ script, importing, writing, sharing, here, fresh, onCh
     [
       { label: "Open script", icon: <FileText size={14} />, onSelect: () => navigate(`/scripts/${script.id}`) },
       ...(failed !== null ? ([{ label: "Run again", icon: <RotateCw size={14} />, onSelect: () => void write() }] satisfies MenuItem[]) : []),
+      ...(mayShare ? ([{ label: "Share for review", icon: <Share2 size={14} />, onSelect: () => void shareNow() }] satisfies MenuItem[]) : []),
       ...(here
         ? ([
             { label: "Rename", icon: <Pencil size={14} />, onSelect: () => setRenaming(script.title) },
@@ -1873,12 +1902,31 @@ function ScriptTableRow({ script, importing, writing, sharing, here, fresh, onCh
             <Pulse size={12} />
             Writing
           </span>
-        ) : sharing ? (
-          // Shared for review on its own, as an edit's share is (JJ, Nov 1): other scripts can be shared meanwhile.
-          <span className={cx(CHIP, "text-info")} title="Its footage is going up to the review link">
-            <Pulse size={12} />
-            Sharing
+        ) : sharing !== null && typeof sharing.progress === "number" ? (
+          // Shared for review on its own, as an edit's share is (JJ, Nov 1): how far by the bytes it sends, as an import's row says it (Sphe, Nov 22).
+          <span className={cx(CHIP, "w-32 text-info tabular")} title={nowWords(sharing)}>
+            <span className="h-1 min-w-10 flex-1 overflow-hidden rounded-full bg-line-strong">
+              <span className="block h-full rounded-full bg-info transition-[width] duration-500" style={{ width: `${Math.round(Math.max(0, Math.min(1, sharing.progress)) * 100)}%` }} />
+            </span>
+            {Math.floor(Math.max(0, Math.min(1, sharing.progress)) * 100)}%
           </span>
+        ) : sharing !== null ? (
+          // A step with no bytes to count (checking, publishing, a commentary's): the step, in words.
+          <span className={cx(CHIP, "text-info")}>
+            <Pulse size={12} />
+            <span className="truncate">{nowWords(sharing)}</span>
+          </span>
+        ) : stopped !== null ? (
+          // Its share stopped: said on the row in words, what happened and what to do; the chip shares it again.
+          <>
+            <button title="Share it again" onClick={(event) => void shareNow(event)} className={cx(CHIP, "cursor-pointer text-warning transition-colors hover:bg-hover")}>
+              <RotateCw size={12} />
+              Share again
+            </button>
+            <span className="basis-full text-[12px] leading-snug text-muted">
+              {[failedLine(stopped), stopped.error].filter(Boolean).join(" ")}
+            </span>
+          </>
         ) : failed !== null ? (
           // Its last run failed: said in orange, and a click runs it again (why, plainly, in its tooltip).
           <button disabled={starting} title={`${explain(failed.error, "finish the script").title}. Click to run it again.`} onClick={(event) => void write(event)} className={cx(CHIP, "cursor-pointer text-warning transition-colors hover:bg-hover disabled:opacity-60")}>

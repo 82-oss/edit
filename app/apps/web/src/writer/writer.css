@@ -1157,6 +1157,28 @@
 .writer-root .share-row .share-copy a { color: var(--text); font-size: 12px; text-decoration: none; }
 .writer-root .share-row .share-copy a:hover { text-decoration: underline; }
 .writer-root .share-row button { flex: none; }
+/* A script share under way (share-progress.tsx; Sphe, Nov 22, the Export dialog's mock): one number and one bar, then each step on its own line. */
+.writer-root .share-run { display: flex; flex-direction: column; gap: 10px; }
+.writer-root .share-big { display: flex; align-items: baseline; gap: 10px; }
+.writer-root .share-big .pct { font-size: 28px; font-weight: 600; letter-spacing: -0.5px; }
+.writer-root .share-big .left { color: var(--muted); font-size: 12.5px; }
+.writer-root .share-bar, .writer-root .step-bar { display: block; overflow: hidden; border-radius: 999px; background: var(--active); }
+.writer-root .share-bar { height: 6px; }
+.writer-root .share-bar i, .writer-root .step-bar i { display: block; height: 100%; border-radius: inherit; background: var(--primary); transition: width 0.5s ease-out; }
+.writer-root .share-steps { margin: 0; padding: 4px 0; list-style: none; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.writer-root .share-steps li { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; font-size: 13px; }
+.writer-root .share-steps li[data-state="waiting"] { color: var(--muted); }
+.writer-root .share-steps .step-line { display: flex; align-items: center; gap: 10px; }
+.writer-root .share-steps .step-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.writer-root .share-steps .step-right { flex: none; color: var(--muted); font-size: 12px; }
+.writer-root .share-steps li[data-state="current"] .step-right { color: var(--text); }
+.writer-root .share-steps .step-dot { flex: none; display: grid; place-items: center; width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--line-strong); }
+.writer-root .share-steps li[data-state="done"] .step-dot { border-color: var(--ok); background: var(--ok); color: var(--bg, #000); }
+.writer-root .share-steps li[data-state="current"] .step-dot { border-color: color-mix(in srgb, var(--primary) 35%, transparent); border-top-color: var(--primary); animation: step-spin 0.9s linear infinite; }
+.writer-root .share-steps .step-bar { height: 3px; margin-left: 26px; }
+/* A share that stopped: what happened and what to do, in plain words (Sphe, Nov 15: no red boxes). */
+.writer-root .share-failed { display: flex; flex-direction: column; gap: 2px; font-size: 13px; line-height: 1.45; }
+.writer-root .share-failed span { color: var(--muted); }
 /* Bands on the page: green where a fix changed the script, orange on an open note's words. */
 .writer-root .grow-banded { position: relative; }
 .writer-root .grow-banded > textarea { position: relative; background: transparent !important; }
