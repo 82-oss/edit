@@ -55,6 +55,8 @@
 // `shareAnalysis` puts them in the cloud.
 
 import * as fs from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import * as http from "node:http";
 
 import type { App } from "./app.ts";
 import * as cloudBlocks from "./cloud_blocks.ts";
@@ -66,6 +68,7 @@ import * as filePins from "./file_pins.ts";
 import { prepLine } from "./export_prep.ts";
 import * as speeds from "./export_speeds.ts";
 import { openedTimes } from "./opened.ts";
+import * as mp4 from "./mp4_index.ts";
 import * as pieces from "./proxy_pieces.ts";
 import * as cloud from "./cloud.ts";
 import * as effectCloud from "./effect_cloud.ts";
@@ -1622,6 +1625,8 @@ export async function driveExcerpts(
   // A copy still on this disk (a YouTube download on its way up) is cut from here; one this call brought down whole
   // (`copied`) goes once its excerpts are cut.
   let copied: string | null = null;
+  // The cloud's address as FFmpeg reads it: through this Mac's reader (`readerFor`), so it fetches only what it needs.
+  let reader: Reader | null = null;
   try {
     let url = input;
     if (url === null && !readsInPlace(original.name)) {
@@ -1634,21 +1639,27 @@ export async function driveExcerpts(
         },
       );
     }
-    url ??= await getUrl(original.key, 6 * HOUR);
+    if (url === null) {
+      url = await getUrl(original.key, 6 * HOUR);
+      reader = await readerFor(original, url);
+    }
     // Read here even when the registry knows it: a URL FFmpeg can't read would
     // otherwise only show as keyframes not found (excerpts from the start).
     let duration: number;
     try {
-      duration = await scriptParts.durationOf(url);
+      duration = await scriptParts.durationOf(reader?.url ?? url);
     } catch (error) {
       // Too slow to read in place (a slow line): the rest is read from the whole file brought here.
       if (isBug(error) || input !== null || copied !== null || !cutsBetterHere(error)) throw error;
       diag.warn("cloud", `${original.name}: ${scrub(diag.messageOf(error)).replace(/\.$/u, "")}; it's read from a copy downloaded here`);
       url = copied = await wholeHere(cache, original);
+      reader?.release();
+      reader = null;
       duration = await scriptParts.durationOf(url);
     }
-    return await excerptsOf(cache, original, ranges, url, input !== null || copied !== null, duration, onCut);
+    return await excerptsOf(cache, original, ranges, url, input !== null || copied !== null, duration, onCut, reader);
   } finally {
+    reader?.release();
     if (copied !== null) fs.rmSync(copied, { force: true });
   }
 }
@@ -1663,7 +1674,10 @@ export function readsInPlace(name: string): boolean {
   return ["mp4", "m4v", "mov", "m4a", "mp3", "wav", "aac"].includes(extensionOf(name));
 }
 
-/** `original`'s excerpts (or itself whole), read from `url`: the cloud's address, or a copy on this disk (`onDisk`). */
+/**
+ * `original`'s excerpts (or itself whole), read from `url`: the cloud's address (FFmpeg given `reader`'s for it), or a
+ * copy on this disk (`onDisk`).
+ */
 async function excerptsOf(
   cache: string,
   original: Original,
@@ -1672,6 +1686,7 @@ async function excerptsOf(
   onDisk: boolean,
   duration: number,
   onCut: (done: number, total: number) => void,
+  reader: Reader | null = null,
 ): Promise<Excerpt[]> {
   const spans = scriptParts.spans(ranges, duration);
   const used = spans.reduce((sum, [from, to]) => sum + (to - from), 0);
@@ -1690,11 +1705,16 @@ async function excerptsOf(
   // handed to the person for how the cloud serves it.
   let source = url;
   let here: Promise<string> | null = null;
+  // Cut from the cloud's address one at a time (their uploads and proxies still go on beside the next cut): three at
+  // once shared the line three ways, so each took three times as long to finish and every one a stop threw away was
+  // three times the bytes (Nov 21, the bad-day run's no-room case; JJ's 8 Mbit/s line). From a file here, three.
+  const overTheLine = new Semaphore(1);
   const one = async (index: number, from: string) => {
     const [at, to] = spans[index]!;
-    const start = await scriptParts.keyframeBefore(from, at);
+    const through = from === url && reader !== null ? reader : null;
+    const start = await scriptParts.keyframeBefore(through?.url ?? from, at);
     const made = await diag.timeOnAsync("cloud", "cloud: excerpt", `${original.name} ${scriptParts.clock(start)}–${scriptParts.clock(to)}`, () =>
-      excerptMedia(cache, original, from, start, to, stem, ext),
+      excerptMedia(cache, original, through?.at(start, to) ?? from, start, to, stem, ext, through === null ? undefined : (cut) => overTheLine.with(cut)),
     );
     out[index] = { path: made.path, from: start, to, cloud: made };
   };
@@ -1769,7 +1789,432 @@ async function wholeHere(cache: string, original: Original): Promise<string> {
   return dest;
 }
 
-/** Excerpts of one file made at once. */
+// ---------------------------------------------------------------------------
+// The cloud's address as FFmpeg reads it for excerpts: through a reader on this Mac.
+//
+// Nov 21, the bad-day run's no-room case, on Linux and on a Mac: 98 to 109 MB fetched for 20 MB of excerpts. FFmpeg
+// reads an address in open-ended ranges (`bytes=N-`) and drops each one when it seeks, and every byte the line had
+// handed over by then was paid for and thrown away. For an Axon-shaped file (its index at its end) the length probe
+// and each cut read its start (0.3 to 0.5 MB thrown away), its index (0.6 MB, again for every cut), its first pictures
+// (2.8 MB thrown away), then the excerpt and about 4 MB past its end: 18 MB fetched for a 10 MB excerpt, 3.8 more for
+// the probe. FFmpeg is given this reader's address instead, which answers an open-ended read with only what's known
+// to be needed: the index whole (fetched once a file and kept in memory: the probe's, the keyframe's and every cut's
+// reads of it come from here), the stretch of samples the cut reads (from that index), and anything else in small
+// pieces that grow while the reads run on. Where an answer ends FFmpeg asks again from there (its `-reconnect`, as
+// after a dropped line, at once), FFmpeg 8 and 9 both. Past the excerpt only a piece is read, and the index only once.
+// Measured on the bad-day run's Axon file (two excerpts, unthrottled loopback): 42.0 MB fetched before, 23.1 after,
+// for 22.3 MB of excerpts and index.
+
+/** An open-ended read outside what's known to be needed is answered this much at a time: the most one drop throws away. */
+const READER_PIECE = 256 * 1024;
+/** Pieces read one after another grow to this (a file with no index to say what's needed: a sound file). */
+const READER_PIECE_MOST = 8 * 1024 * 1024;
+/** Stretches a cut needs this close together are read as one. */
+const READER_GAP = 64 * 1024;
+/** An index this big or bigger isn't kept (it's read through as asked; a 52-minute Axon file's is 5 MB). */
+const READER_INDEX_MOST = 64 * 1024 * 1024;
+/** The small pieces kept a file (its start, its first pictures: every open reads them), the least lately used let go first. */
+const READER_PIECES_KEPT = 4 * 1024 * 1024;
+/**
+ * Files whose index is kept after their excerpts are cut (a retry reads it from here), and the most their indexes take
+ * in all: past either, the least lately used no cut is reading let go first.
+ */
+const READER_FILES = 8;
+const READER_KEPT_MOST = 64 * 1024 * 1024;
+
+interface Kept {
+  at: number;
+  bytes: Uint8Array;
+  /** Part of the index: kept while the file is. */
+  index: boolean;
+  /** When it was kept, against the file's other pieces. */
+  seq: number;
+}
+
+interface Layout {
+  size: number;
+  type: string;
+  moov: [number, number] | null;
+}
+
+interface ReadFile {
+  /** The cloud's address, signed again at each `readerFor`. */
+  url: string;
+  users: number;
+  /** The object's size, its type as the cloud says it, and where its index box lies ([start, end)), from its boxes' headers (`layoutOf`). */
+  layout: Promise<Layout> | null;
+  index: mp4.Mp4Index | null;
+  /** In memory, sorted by where they start. */
+  kept: Kept[];
+  seq: number;
+  /** Where the last open-ended answer outside the known ended, and how big it was (`reach`). */
+  next: number;
+  piece: number;
+  /** The stretches each cut reads, by its window. */
+  windows: Map<string, [number, number][]>;
+}
+
+/** What `readerFor` gives: the address to read the file at, one for a cut of `from..to` seconds, and its letting go. */
+interface Reader {
+  url: string;
+  at(from: number, to: number): string;
+  release(): void;
+}
+
+/** Files by id: a hash of the key with this process's own secret, so the reader answers only addresses it gave. */
+const readFiles = new Map<string, ReadFile>();
+const readerSecret = randomUUID();
+let readerPort: Promise<number> | null = null;
+
+/** The reader's address for `original` (read from `url`, R2's signed address), held until `release`. */
+async function readerFor(original: Original, url: string): Promise<Reader> {
+  const id = createHash("sha256").update(`${readerSecret}\u0000${original.key}`).digest("hex").slice(0, 32);
+  let file = readFiles.get(id);
+  if (file === undefined) {
+    file = { url, users: 0, layout: null, index: null, kept: [], seq: 0, next: -1, piece: READER_PIECE / 2, windows: new Map() };
+  } else {
+    readFiles.delete(id);
+  }
+  // The most lately used last; files no cut is reading let go past the few kept.
+  readFiles.set(id, file);
+  file.url = url;
+  file.users++;
+  let kept = 0;
+  for (const one of readFiles.values()) for (const piece of one.kept) kept += piece.bytes.length;
+  for (const [other, one] of readFiles) {
+    if (readFiles.size <= READER_FILES && kept <= READER_KEPT_MOST) break;
+    if (one.users > 0) continue;
+    for (const piece of one.kept) kept -= piece.bytes.length;
+    readFiles.delete(other);
+  }
+  const port = await (readerPort ??= startReader());
+  // The name kept, so what FFmpeg says (and a test) still names the file.
+  const base = `http://127.0.0.1:${port}/${id}/${encodeURIComponent(original.name.split(/[\\/]/u).pop() || "footage")}`;
+  let released = false;
+  const held = file;
+  return {
+    url: base,
+    at: (from, to) => `${base}?from=${from}&to=${to}`,
+    release() {
+      if (released) return;
+      released = true;
+      // Its index stays for a retry; the small pieces go (a few hundred kB, read again if it's cut again).
+      if (--held.users === 0) held.kept = held.kept.filter((piece) => piece.index);
+    },
+  };
+}
+
+function startReader(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((request, response) => {
+      void answerRead(request, response).catch((error: unknown) => {
+        diag.warn("cloud", `reading footage for a cut: ${scrub(diag.messageOf(error))}`);
+        response.destroy();
+      });
+    });
+    server.on("error", (error) => {
+      readerPort = null;
+      reject(error);
+    });
+    server.listen(0, "127.0.0.1", () => {
+      // Never what keeps the process alive.
+      server.unref();
+      resolve((server.address() as { port: number }).port);
+    });
+  });
+}
+
+/** A read of the cloud's address failed before or while it answered: what FFmpeg would have seen from R2's. */
+class Upstream extends Error {
+  constructor(
+    message: string,
+    readonly status: number | null,
+  ) {
+    super(message);
+  }
+}
+
+/** A bounded read of the cloud's address, `from..to` (inclusive): its answer, 206 or thrown. */
+async function upstream(url: string, from: number, to: number, signal?: AbortSignal): Promise<Response> {
+  let answer: Response;
+  try {
+    answer = await fetch(url, { headers: { range: `bytes=${from}-${to}` }, signal });
+  } catch (error) {
+    throw new Upstream(`couldn't read the footage in the cloud: ${diag.messageOf(error)}`, null);
+  }
+  if (answer.status !== 206) {
+    await answer.body?.cancel().catch(() => {});
+    throw new Upstream(`the cloud answered ${answer.status}`, answer.status);
+  }
+  return answer;
+}
+
+/**
+ * The object's size and where its index lies, from the headers of its top-level boxes (16 bytes each, as
+ * keyframe_index.ts walks them): one round trip a box, a few a file, and once a file. A file that isn't an MP4 or
+ * MOV (a sound file) has no index to say: its size only.
+ */
+function layoutOf(file: ReadFile): Promise<Layout> {
+  file.layout ??= (async () => {
+    let size: number | null = null;
+    let type = "application/octet-stream";
+    let moov: [number, number] | null = null;
+    let at = 0;
+    for (let boxes = 0; boxes < 64; boxes++) {
+      const answer = await upstream(file.url, at, at + 15);
+      const head = new Uint8Array(await answer.arrayBuffer());
+      if (size === null) {
+        size = Number(/\/(\d+)$/u.exec(answer.headers.get("content-range") ?? "")?.[1] ?? NaN);
+        // What FFmpeg was told by the cloud's own address (a hint to what the file is).
+        type = answer.headers.get("content-type") ?? type;
+      }
+      if (!Number.isFinite(size)) throw new Upstream("the cloud didn't say the footage's size", null);
+      if (head.length < 8) break;
+      const view = new DataView(head.buffer, head.byteOffset, head.byteLength);
+      let length = view.getUint32(0);
+      const box = String.fromCharCode(...head.subarray(4, 8));
+      if (length === 1 && head.length >= 16) length = Number(view.getBigUint64(8));
+      else if (length === 0) length = size - at;
+      if (length < 8 || box === "moof" || (boxes === 0 && !["ftyp", "moov", "mdat", "wide", "free", "skip", "pnot"].includes(box))) break;
+      if (box === "moov") {
+        if (length < READER_INDEX_MOST) moov = [at, at + length];
+        break;
+      }
+      at += length;
+      if (at + 8 > size) break;
+    }
+    if (size === null) throw new Upstream("the cloud didn't say the footage's size", null);
+    return { size, type, moov };
+  })().catch((error: unknown) => {
+    // Asked again by the next read (a dropped line comes back).
+    file.layout = null;
+    throw error;
+  });
+  return file.layout;
+}
+
+/** The stretches (sorted, apart) a cut of `from..to` seconds reads: its samples' bytes, a second either side, from the index. */
+function windowOf(file: ReadFile, window: string | null): [number, number][] {
+  if (file.index === null || window === null) return [];
+  const known = file.windows.get(window);
+  if (known !== undefined) return known;
+  const [from, to] = window.split("-").map(Number) as [number, number];
+  const out: [number, number][] = [];
+  // Its head (an index at a file's end says the file's start) left out: only the samples.
+  for (const [a, b] of mp4.rangesFor({ ...file.index, head: 0 }, Math.max(from - 1, 0), to + 1)) {
+    if (b <= a) continue;
+    const last = out.at(-1);
+    if (last !== undefined && a - last[1] < READER_GAP) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  file.windows.set(window, out);
+  return out;
+}
+
+/** Where an open-ended read from `from` is answered to (inclusive): the end of the index or the cut's stretch it's in, else a piece. */
+function reach(file: ReadFile, layout: Layout, from: number, window: [number, number][]): number {
+  const known: [number, number][] = layout.moov === null ? [...window] : [layout.moov, ...window];
+  for (const [a, b] of known) {
+    if (from >= a && from < b) {
+      file.next = b;
+      file.piece = READER_PIECE / 2;
+      return Math.min(b, layout.size) - 1;
+    }
+  }
+  // Read on from where the last piece ended: a bigger one; anywhere else, a small one. Never into what's known.
+  file.piece = from === file.next ? Math.min(file.piece * 2, READER_PIECE_MOST) : READER_PIECE;
+  let end = from + file.piece;
+  for (const [a] of known) if (a > from) end = Math.min(end, a);
+  end = Math.min(end, layout.size);
+  file.next = end;
+  return end - 1;
+}
+
+/** The kept piece holding byte `at`, and the start of the first one after it. */
+function keptAt(file: ReadFile, at: number): { piece: Kept | null; after: number } {
+  let after = Number.POSITIVE_INFINITY;
+  for (const piece of file.kept) {
+    if (at >= piece.at && at < piece.at + piece.bytes.length) return { piece, after };
+    if (piece.at > at) {
+      after = piece.at;
+      break;
+    }
+  }
+  return { piece: null, after };
+}
+
+/**
+ * Keeps `bytes` (read at `at`) in memory; the index parsed once it's all here. Two reads at once (a keyframe's and a
+ * cut's) may keep the same bytes twice: harmless, and let go with the file.
+ */
+function keepPiece(file: ReadFile, at: number, bytes: Uint8Array, moov: [number, number] | null): void {
+  if (bytes.length === 0) return;
+  const index = moov !== null && at >= moov[0] && at < moov[1];
+  const piece: Kept = { at, bytes, index, seq: ++file.seq };
+  file.kept.push(piece);
+  file.kept.sort((a, b) => a.at - b.at);
+  // The small pieces past their share: the least lately kept go first.
+  let small = file.kept.reduce((sum, one) => sum + (one.index ? 0 : one.bytes.length), 0);
+  while (small > READER_PIECES_KEPT) {
+    let oldest: Kept | null = null;
+    for (const one of file.kept) if (!one.index && one !== piece && (oldest === null || one.seq < oldest.seq)) oldest = one;
+    if (oldest === null) break;
+    small -= oldest.bytes.length;
+    file.kept.splice(file.kept.indexOf(oldest), 1);
+  }
+  if (moov === null || file.index !== null || !index) return;
+  // The index all here: read once, what the cuts' stretches come from.
+  const whole = new Uint8Array(moov[1] - moov[0]);
+  let filled = moov[0];
+  for (const one of file.kept) {
+    if (!one.index) continue;
+    const from = Math.max(one.at, moov[0]);
+    const to = Math.min(one.at + one.bytes.length, moov[1]);
+    if (to <= from) continue;
+    whole.set(one.bytes.subarray(from - one.at, to - one.at), from - moov[0]);
+    // Sorted by where they start: the index is whole once they leave no gap to its end.
+    if (from <= filled) filled = Math.max(filled, to);
+  }
+  if (filled < moov[1]) return;
+  const parsed = mp4.fromMoov(whole);
+  if (typeof parsed === "string") {
+    diag.info("cloud", `a cut's footage has no index to read (${parsed}): read in pieces`);
+    return;
+  }
+  file.index = parsed;
+  file.windows.clear();
+}
+
+/** Writes `bytes` to FFmpeg, waiting while its socket is full; false once FFmpeg has gone (it seeked elsewhere). */
+function sendPiece(response: http.ServerResponse, bytes: Uint8Array): Promise<boolean> {
+  if (response.destroyed) return Promise.resolve(false);
+  if (response.write(bytes)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = () => {
+      response.off("drain", done);
+      response.off("close", done);
+      resolve(!response.destroyed);
+    };
+    response.once("drain", done);
+    response.once("close", done);
+  });
+}
+
+/**
+ * One read FFmpeg asks of the reader: a bounded range as asked (the keyframe's reads of the index), an open-ended
+ * one to where `reach` says, from what's kept and the cloud's address. A read of the cloud that fails before the
+ * answer starts is passed on as it came (its status, or the connection dropped), and one that fails while it's sent
+ * drops the connection: FFmpeg sees what it saw from R2's own address and does what it did (tries again, or fails).
+ */
+async function answerRead(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+  const address = new URL(request.url ?? "/", "http://127.0.0.1");
+  const file = readFiles.get(address.pathname.split("/")[1] ?? "");
+  if (file === undefined) {
+    response.writeHead(404).end();
+    return;
+  }
+  const from0 = address.searchParams.get("from");
+  const to0 = address.searchParams.get("to");
+  const window = from0 !== null && to0 !== null && Number.isFinite(Number(from0)) && Number.isFinite(Number(to0)) ? `${Number(from0)}-${Number(to0)}` : null;
+  const asked = /^bytes=(\d+)-(\d*)$/u.exec(request.headers.range ?? "bytes=0-");
+  if (asked === null) {
+    response.writeHead(416).end();
+    return;
+  }
+  let layout: Layout;
+  try {
+    layout = await layoutOf(file);
+  } catch (error) {
+    if (error instanceof Upstream && error.status !== null) response.writeHead(error.status).end();
+    else response.destroy();
+    return;
+  }
+  const from = Number(asked[1]);
+  if (from >= layout.size) {
+    response.writeHead(416, { "content-range": `bytes */${layout.size}` }).end();
+    return;
+  }
+  const stretches = windowOf(file, window);
+  const end = asked[2] !== "" ? Math.min(Number(asked[2]), layout.size - 1) : reach(file, layout, from, stretches);
+  let started = false;
+  const start = () => {
+    if (started) return;
+    started = true;
+    response.writeHead(206, {
+      "content-type": layout.type,
+      "content-length": String(end - from + 1),
+      "content-range": `bytes ${from}-${end}/${layout.size}`,
+      "accept-ranges": "bytes",
+    });
+  };
+  // FFmpeg gone: what's being read for it stops.
+  const gone = new AbortController();
+  response.on("close", () => gone.abort());
+  let at = from;
+  while (at <= end) {
+    const { piece, after } = keptAt(file, at);
+    if (piece !== null) {
+      start();
+      const stop = Math.min(end + 1, piece.at + piece.bytes.length);
+      if (!(await sendPiece(response, piece.bytes.subarray(at - piece.at, stop - piece.at)))) return;
+      at = stop;
+      continue;
+    }
+    const upto = Math.min(end, after - 1);
+    let answer: Response;
+    try {
+      answer = await upstream(file.url, at, upto, gone.signal);
+    } catch (error) {
+      if (!started && error instanceof Upstream && error.status !== null) response.writeHead(error.status).end();
+      else response.destroy();
+      return;
+    }
+    start();
+    // Kept as it passes: the index, and a small piece (never a cut's own stretch, megabytes read once).
+    const keeping = (layout.moov !== null && at >= layout.moov[0] && at < layout.moov[1]) || (upto - at < READER_PIECES_KEPT && !stretches.some(([a, b]) => at >= a && at < b));
+    const chunks: Uint8Array[] = [];
+    const begun = at;
+    const body = answer.body?.getReader();
+    try {
+      for (;;) {
+        const read = await body?.read();
+        if (read === undefined || read.done) break;
+        // Never past what was asked (and FFmpeg told).
+        const bytes = read.value.subarray(0, Math.max(0, upto - at + 1));
+        if (bytes.length === 0) break;
+        if (keeping) chunks.push(bytes);
+        at += bytes.length;
+        if (!(await sendPiece(response, bytes))) break;
+      }
+    } catch {
+      // The cloud dropped it mid-answer, or FFmpeg went: what came is kept, FFmpeg asks again.
+    } finally {
+      void body?.cancel().catch(() => {});
+    }
+    if (keeping && chunks.length > 0) keepPiece(file, begun, joinBytes(chunks), layout.moov);
+    if (response.destroyed) return;
+    if (at <= upto) {
+      // Short: dropped as R2's own would have been.
+      response.destroy();
+      return;
+    }
+  }
+  start();
+  response.end();
+}
+
+function joinBytes(chunks: Uint8Array[]): Uint8Array {
+  if (chunks.length === 1) return chunks[0]!;
+  const out = new Uint8Array(chunks.reduce((sum, one) => sum + one.length, 0));
+  let at = 0;
+  for (const one of chunks) {
+    out.set(one, at);
+    at += one.length;
+  }
+  return out;
+}
+
+/** Excerpts of one file made at once from a file here (from the cloud's address, one at a time: `excerptsOf`). */
 const EXCERPTS_AT_ONCE = 3;
 /** Files at least this long (seconds) get a pieced proxy (a shorter one's whole proxy takes a minute or two). */
 const PIECED_FROM = 1200;
@@ -1831,6 +2276,8 @@ async function excerptMedia(
   end: number,
   stem: string,
   ext: string,
+  /** Runs the cut itself (one at a time over the line: `excerptsOf`). */
+  cutting: (cut: () => Promise<void>) => Promise<void> = (cut) => cut(),
 ): Promise<Made> {
   const source = excerptSource(original.file, start, end);
   const name = `${stem} ${scriptParts.clock(start)}-${scriptParts.clock(end)}.${ext}`;
@@ -1853,7 +2300,7 @@ async function excerptMedia(
   const local = localPath(cache, proxy);
   const scratch = scratchFile(scratchDir(cache), ext);
   try {
-    await diag.timeOnAsync("cloud", "cloud: cut excerpt", source, () => scriptParts.cut(url, start, end, scratch));
+    await cutting(() => diag.timeOnAsync("cloud", "cloud: cut excerpt", source, () => scriptParts.cut(url, start, end, scratch)));
     const probe = await native().probe(scratch);
     const size = sizeOf(scratch);
     await putRecord({ source, name, originalKey: key, size });
