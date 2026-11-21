@@ -32,6 +32,7 @@ import { importPaths } from "./import.ts";
 import { routes as mediaRoutes } from "./media_tools.ts";
 import { Semaphore } from "./media.ts";
 import type { ExportOptions, Project, Style } from "./model.ts";
+import type * as Model from "./model.ts";
 import { withProjectAsync } from "./native/index.ts";
 import * as patches from "./patch.ts";
 import { canonical, expandHome, extension, fileName, fileStem, isFile, join } from "./paths.ts";
@@ -47,6 +48,7 @@ import * as kinds from "./kinds.ts";
 import * as reset from "./reset.ts";
 import * as firstPrompt from "./first_prompt.ts";
 import * as uploads from "./uploads.ts";
+import * as timelineMedia from "./timeline_media.ts";
 import * as playbackRender from "./playback_render.ts";
 import * as playbackReady from "./playback_ready.ts";
 import * as footageReady from "./footage_ready.ts";
@@ -868,6 +870,8 @@ async function mediaFile(context: Context): Promise<Response> {
   const media = live.project.media.find((item) => item.id === params.media);
   if (media === undefined) throw notFound("no such media");
   const kind = params.kind!;
+  // The V2 timeline's pictures, by moment (timeline_media.ts).
+  if (kind === "frames") return timelineFrames(context, media);
   // Cloud playback always reads R2, even while an obsolete local preview exists.
   if (cloudMedia.streamKey(media.cloud, kind) !== null) {
     const streamed = await cloudMedia.streamFromCloud(context.request, media.cloud, kind);
@@ -938,7 +942,11 @@ async function mediaFile(context: Context): Promise<Response> {
       return null;
     });
     if (streamed !== null) return streamed;
-    throw notFound("not ready");
+    // A waveform this computer has none of (a sound played from the cloud's library never got one: Nov 21, 32 of a
+    // project's 181 sound clips), made now from wherever the sound is read (timeline_media.ts `peaksHere`).
+    const made = kind === "peaks" ? await timelineMedia.peaksHere(app, media) : null;
+    if (made === null) throw notFound("not ready");
+    file = made;
   }
   let response = serveFile(context.request, file);
   if (kind === "peaks") {
@@ -953,6 +961,23 @@ async function mediaFile(context: Context): Promise<Response> {
   const keep = lasting && file !== media.path && response.status >= 200 && response.status < 300;
   response.headers.set("cache-control", keep ? "private, max-age=31536000, immutable" : "no-cache");
   return response;
+}
+
+/**
+ * `GET …/media/{media}/frames?t=<seconds,…>&h=<px>`: the frames of a media at those seconds of it, packed as one body
+ * (timeline_media.ts `packFrames`); one that couldn't be made now is empty, for the page to ask again. A graphic not
+ * rendered yet has none (404). Kept a day by the browser once whole: the page's URL names the moments and the media's version.
+ */
+async function timelineFrames(context: Context, media: Model.Media): Promise<Response> {
+  const asked = timelineMedia.parseAsk(context.query);
+  if (asked === null) throw bad("t must be up to 32 seconds of the media, and h one of 36, 72, 108 or 144");
+  if (media.kind === "audio") throw notFound("a sound has no pictures");
+  if (timelineMedia.unrendered(media)) throw notFound("not rendered yet");
+  const frames = await timelineMedia.framesOf(context.app, media, asked.times, asked.h, context.request.signal);
+  const whole = frames.every((frame) => frame !== null);
+  return new Response(timelineMedia.packFrames(frames), {
+    headers: { "content-type": "application/octet-stream", "cache-control": whole ? "private, max-age=86400" : "no-store" },
+  });
 }
 
 // ---------------------------------------------------------------------------

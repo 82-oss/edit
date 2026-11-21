@@ -1,10 +1,9 @@
 import { Eye, EyeOff, Lock, LockOpen, Magnet, MousePointer2, Plus, Scissors, Spline, Volume2, VolumeX } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { mediaUrl } from "../lib/api";
-import { DecodedCache } from "../lib/decoded-cache";
 import { CLIP_HEX } from "../lib/colors";
-import { drawFilmstrip } from "../lib/filmstrip";
+import { drawMoments } from "../lib/filmstrip";
+import { frameHeight, snapTime, timelineMedia } from "../lib/timelineMedia";
 import {
   addTrack,
   clearRange,
@@ -64,68 +63,10 @@ function layoutRows(project: Project): { rows: Row[]; height: number } {
   return { rows, height: y + 8 };
 }
 
-// --- asset caches (sprites and waveforms), shared across renders -----------
-
-const sprites = new DecodedCache<HTMLImageElement | "missing">(64 * 1024 * 1024, (image) => {
-  if (image === "missing") return;
-  image.onload = null; image.onerror = null; image.src = "";
-});
-const peaks = new DecodedCache<Uint8Array | "missing">(8 * 1024 * 1024, () => {});
-const spriteLoads = new Map<string, HTMLImageElement>();
-const peakLoads = new Map<string, AbortController>();
-
-function clearAssets() {
-  for (const image of spriteLoads.values()) { image.onload = null; image.onerror = null; image.src = ""; }
-  spriteLoads.clear();
-  for (const loading of peakLoads.values()) loading.abort();
-  peakLoads.clear();
-  sprites.clear(); peaks.clear();
-}
-
-function sprite(project: Project, media: string, ready: boolean, onLoad: () => void) {
-  const key = `${project.id}/${media}`;
-  const cached = sprites.get(key);
-  if (cached instanceof HTMLImageElement) return cached;
-  if (cached === "missing" || spriteLoads.has(key) || !ready) return null;
-  const image = new Image();
-  spriteLoads.set(key, image);
-  image.onload = () => {
-    if (spriteLoads.get(key) !== image) return;
-    spriteLoads.delete(key);
-    sprites.set(key, image, image.naturalWidth * image.naturalHeight * 4);
-    onLoad();
-  };
-  image.onerror = () => {
-    if (spriteLoads.get(key) !== image) return;
-    spriteLoads.delete(key);
-    sprites.set(key, "missing", 1);
-  };
-  image.src = mediaUrl(project.id, media, "thumbs");
-  return null;
-}
-
-function waveform(project: Project, media: string, ready: boolean, onLoad: () => void) {
-  const key = `${project.id}/${media}`;
-  const cached = peaks.get(key);
-  if (cached instanceof Uint8Array) return cached;
-  if (cached === "missing" || peakLoads.has(key) || !ready) return null;
-  const loading = new AbortController();
-  peakLoads.set(key, loading);
-  fetch(mediaUrl(project.id, media, "peaks"), { signal: loading.signal })
-    .then((response) => (response.ok ? response.arrayBuffer() : Promise.reject()))
-    .then((buffer) => {
-      if (peakLoads.get(key) !== loading) return;
-      peakLoads.delete(key);
-      peaks.set(key, new Uint8Array(buffer), buffer.byteLength);
-      onLoad();
-    })
-    .catch(() => {
-      if (peakLoads.get(key) !== loading) return;
-      peakLoads.delete(key);
-      peaks.set(key, "missing", 1);
-    });
-  return null;
-}
+// Pictures and waveforms come from the timelines' one loader (lib/timelineMedia.ts, Nov 21): each cell's own moment,
+// asked for while it's in view, a miss asked again by itself. Until Nov 21 this page asked once per media for its
+// import's sheet (at most 120 keyframes over the whole source) and its waveform, and remembered a failed answer until a
+// reload; a sound played from the cloud's library never had one.
 
 // --- component -------------------------------------------------------------
 
@@ -178,8 +119,8 @@ export function Timeline() {
     requestDraw();
   };
 
-  // Do not keep decoded strips (or late fetch completions) from another project.
-  useLayoutEffect(() => () => clearAssets(), [project.id]);
+  // Do not keep decoded pictures (or late fetch completions) from another project.
+  useLayoutEffect(() => () => timelineMedia.clear(), [project.id]);
 
   // Size the canvas to its box.
   useEffect(() => {
@@ -246,6 +187,7 @@ export function Timeline() {
     });
     const offEditor = useEditor.subscribe(requestDraw);
     const offView = useView.subscribe(requestDraw);
+    const offMedia = timelineMedia.onChange(assetLoaded);
     // Clip labels are measured in Inter: fit and draw them again once it’s in.
     const onFonts = () => {
       fitted.clear();
@@ -256,6 +198,7 @@ export function Timeline() {
       offPlayhead();
       offEditor();
       offView();
+      offMedia();
       document.fonts?.removeEventListener("loadingdone", onFonts);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -761,7 +704,8 @@ export function Timeline() {
     const { rows } = layoutRows(project);
     const selected = new Set(state.selection);
     const fps = rate(project.settings);
-    const statuses = state.media;
+    // What this pass draws is what the loader fetches (and what scrolled away it stops fetching).
+    timelineMedia.begin();
 
     // Rows.
     ctx.save();
@@ -787,7 +731,7 @@ export function Timeline() {
       const y = row.y - scrollY + 1;
       const h = row.h - 2;
       if (y > height || y + h < RULER) continue;
-      drawClip(ctx, project, clip, x0, x1, y, h, selected.has(clip.id), row.track, statuses, width, assetLoaded);
+      drawClip(ctx, project, clip, x0, x1, y, h, selected.has(clip.id), row.track, width);
     }
 
     // Drop ghost: the picture where it will land and its sound below (most footage has sound).
@@ -814,6 +758,7 @@ export function Timeline() {
     ctx.restore();
 
     drawRuler(ctx, width, fps, ppf, useView.getState().scrollX, preview.sections, marks, project.markers);
+    timelineMedia.flush();
   }
 
   const videoTracks = project.tracks.filter((track) => track.kind === "video");
@@ -904,7 +849,7 @@ const THUMB_LEAST_SHARE = 0.06;
  * frame-level zoom. Drag it to move, drag an end to zoom, click beside it to
  * jump there, double-click to see it all.
  */
-function ZoomBar({ width, header, onFit, onManual }: { width: number; header: number; onFit: () => void; onManual: () => void }) {
+export function ZoomBar({ width, header, onFit, onManual }: { width: number; header: number; onFit: () => void; onManual: () => void }) {
   const { ppf, scrollX } = useView();
   const held = useRef<{ part: "thumb" | "in" | "out"; x: number; start: number; end: number; thumb: number } | null>(null);
   const start = scrollX / ppf;
@@ -1042,9 +987,7 @@ function drawClip(
   h: number,
   selected: boolean,
   track: Track,
-  statuses: Record<string, { thumbs: string; peaks: string; thumb_count: number }>,
   width: number,
-  onAsset: () => void,
 ) {
   const color = CLIP_HEX[clip.color];
   const w = Math.max(2, x1 - x0 - 1);
@@ -1069,23 +1012,16 @@ function drawClip(
 
   if (clip.type === "video") {
     const media = mediaOf(project, clip.media);
-    const status = statuses[clip.media];
-    const image = media && w >= 8 && sprite(project, clip.media, status?.thumbs === "ready", onAsset);
-    if (media && image) {
-      drawFilmstrip(
-        ctx,
-        { image, width: image.naturalWidth, height: image.naturalHeight, count: Math.max(1, status?.thumb_count || 1), duration: media.duration, rev: 0 },
-        { x: x0, y, w, h, header },
-        sourceAt,
-        visible0,
-        visible1,
-      );
+    if (media && w >= 8) {
+      const dpr = typeof window === "undefined" ? 1 : window.devicePixelRatio || 1;
+      const aspect = media.width > 0 && media.height > 0 ? media.width / media.height : 16 / 9;
+      drawMoments(ctx, { x: x0, y, w, h, header }, aspect, sourceAt, (seconds, spacing, height) => timelineMedia.frame(project.id, media, snapTime(seconds, spacing), frameHeight(height, dpr)), visible0, visible1);
     }
     ctx.fillStyle = shade(color, 0.92);
     ctx.fillRect(x0, y, w, header);
   } else if (clip.type === "audio") {
-    const status = statuses[clip.media];
-    const data = waveform(project, clip.media, status?.peaks === "ready", onAsset);
+    const media = mediaOf(project, clip.media);
+    const data = media ? timelineMedia.peaks(project.id, media) : null;
     if (data) {
       ctx.fillStyle = shade(color, 0.85);
       const mid = y + h / 2 + 5;

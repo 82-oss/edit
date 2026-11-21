@@ -1,4 +1,4 @@
-import { Maximize, MessageSquarePlus, Minimize, Pause, Play, SkipBack, SkipForward, StepBack, StepForward, Volume1, Volume2, VolumeX } from "lucide-react";
+import { ChartNoAxesGantt, Maximize, MessageSquarePlus, Minimize, Pause, Play, SkipBack, SkipForward, StepBack, StepForward, Volume1, Volume2, VolumeX } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { useAgent } from "../lib/agent";
@@ -24,6 +24,7 @@ import { agentSpot } from "../lib/agentTurns";
 import { useEffects } from "../lib/effects";
 import { useSeekFlash } from "../lib/seekFlash";
 import { cutsAfter, mapFrame, onViewed, pinFor, useWatching, type Pinned } from "../lib/watching";
+import { toggleTimeline, useTimelineShown } from "../lib/timelineShown";
 import { EffectLayer } from "./EffectLayer";
 import { NoteBoxLayer, NoteDraft } from "./NoteDraft";
 import { VideoComments } from "./VideoComments";
@@ -588,7 +589,7 @@ function clock(frame: number, fps: number): string {
  * on the right (commenting is in the top right: CommentButton), over a shade that fades up from the picture's foot.
  * Frame steps and the ends are the keys' (arrows, Home, End).
  */
-function VideoControls({ fullscreen }: { fullscreen: boolean }) {
+export function VideoControls({ fullscreen }: { fullscreen: boolean }) {
   const frame = useFrame();
   const playing = usePlaying();
   const viewed = useViewedProject();
@@ -615,6 +616,7 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
   // The part playing and the marked stretch it's in, named after the time, so the bar carries no words (Sphe, Nov 13).
   const part = useChapters(duration).findLast((chapter) => chapter.start <= frame) ?? null;
   const stretch = useMarked(viewed).find((one) => frame >= one.start && frame < one.end) ?? null;
+  const timelineOpen = useTimelineShown((state) => state.open);
   return (
     <div className="flex flex-col px-3 pb-1">
       <ScrubBar frame={frame} duration={duration} thin marks={fullscreen ? [] : marks} agent={agent} />
@@ -643,6 +645,12 @@ function VideoControls({ fullscreen }: { fullscreen: boolean }) {
           >
             {speed}×
           </IconButton>
+          {/* The edit's timeline under the player, read only (Sphe, Nov 21): off until it's pressed, then kept on. */}
+          {!fullscreen && (
+            <IconButton label="Timeline (T)" aria-pressed={timelineOpen} onClick={toggleTimeline} className={timelineOpen ? "bg-white/15 text-white hover:bg-white/20" : light}>
+              <ChartNoAxesGantt size={16} />
+            </IconButton>
+          )}
           <IconButton label={fullscreen ? "Exit full screen (F)" : "Full screen (F)"} onClick={toggleFullscreen} className={light}>
             {fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
           </IconButton>

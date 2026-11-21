@@ -14,7 +14,8 @@ vi.mock("../lib/playback", () => {
 });
 vi.mock("../lib/nativePreview", () => ({ nativePreview: {}, nativeAvailable: () => false }));
 
-import { ScrubBar } from "./Viewer";
+import { useTimelineShown } from "../lib/timelineShown";
+import { ScrubBar, VideoControls } from "./Viewer";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 delete (Element.prototype as { animate?: unknown }).animate;
@@ -64,5 +65,23 @@ describe("the V2 player's progress bar", () => {
       vi.useRealTimers();
       player.ready = [];
     }
+  });
+});
+
+describe("the V2 player's Timeline button", () => {
+  it("opens and closes the edit's timeline, shown pressed while it's open, and not offered full screen", () => {
+    localStorage.clear();
+    useTimelineShown.setState({ open: false });
+    show(<VideoControls fullscreen={false} />);
+    const button = () => document.querySelector<HTMLButtonElement>("button[aria-label='Timeline (T)']");
+    expect(button()!.getAttribute("aria-pressed")).toBe("false");
+    act(() => button()!.click());
+    expect(useTimelineShown.getState().open).toBe(true);
+    expect(button()!.getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem("edit.v2.timeline")).toBe("open");
+    act(() => button()!.click());
+    expect(useTimelineShown.getState().open).toBe(false);
+    act(() => root!.render(<VideoControls fullscreen />));
+    expect(button()).toBeNull();
   });
 });
