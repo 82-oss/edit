@@ -601,9 +601,11 @@ class Preview {
     this.warmFrom(from);
     recordTiming(stalled ? "preview: holding for footage (stalled)" : "preview: holding for footage", 0);
     if (this.native) {
-      // Behind the pause sent before it: the two cross on the way otherwise, and the pause let go of the hold.
+      // Behind the pause sent before it: the two cross on the way otherwise, and the pause let go of the hold. And only
+      // once the window has the edit: a hold asked before it holds nothing and reads nothing ahead (a cold open's,
+      // the Nov 21 audit, P11b), as a play asked before it was refused.
       const frame = Math.floor(from);
-      void this.nativeQuiet.then(() => (this.holding === hold ? nativePreview.hint(frame, true) : undefined))
+      void this.nativeQuiet.then(() => this.windowHasEdit()).then(() => (this.holding === hold ? nativePreview.hint(frame, true) : undefined))
         .then(() => { hold.hinted = true; }, () => { hold.hinted = true; });
     }
     // Whether it's done: played (enough here, or waited past the most), or let go (a pause, another play).
@@ -1493,6 +1495,9 @@ class Preview {
 
   /** The window's position: into the playhead and the diagnostics; its end pauses here. */
   private nativePosition(at: NativeWhere) {
+    // A good answer: what failed before it wasn't "five in a row" (the Nov 21 audit, P11a: five slow answers scattered
+    // across a long cold watch-through gave the window's player up mid-play).
+    this.nativeFailures = 0;
     const s = this.nativeStats;
     s.played += at.drawn;
     s.playedSkipped += at.skipped;

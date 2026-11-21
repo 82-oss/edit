@@ -1271,6 +1271,24 @@ describe("preview seeks and lifetime", () => {
     expect(decoding.requestVideo).toHaveBeenCalled();
   });
 
+  it("five slow answers from the window scattered through a long play, each followed by good ones, aren't five in a row: the play goes on in the window (the Nov 21 audit, P11a)", async () => {
+    let asks = 0;
+    const sent = await inWindow((command) => (command === "preview_position" && ++asks % 4 === 0 ? "hang" : null));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const tick = async (ms = 0) => { await vi.advanceTimersByTimeAsync(ms); draw(); await vi.advanceTimersByTimeAsync(0); };
+    try {
+      preview.setProject(fixture(), {}); await tick(); await tick();
+      preview.play(); await tick();
+      expect(sent("preview_play")).toHaveLength(1);
+      // Every fourth ask doesn't answer in time (3 s): seven of them over the play, good answers between.
+      for (let n = 0; n < 60 && asks < 28; n++) { windowClock.frame += 3; await tick(500); }
+      expect(asks).toBeGreaterThanOrEqual(28);
+      expect(preview.native).toBe(true);
+      expect(preview.stopped).toBeNull();
+      expect(sent("preview_close")).toHaveLength(0);
+    } finally { vi.useRealTimers(); }
+  });
+
   it("a play the window's player stops mid-way goes on there once it's opened again, with nothing else playing meanwhile", async () => {
     let failing = false;
     const sent = await inWindow((command) => (failing && command === "preview_position" ? "hang" : null));
@@ -1299,6 +1317,33 @@ describe("preview seeks and lifetime", () => {
       expect(playhead.playing).toBe(true);
       expect(decoding.requestVideo).not.toHaveBeenCalled();
     } finally { vi.useRealTimers(); }
+  });
+
+  it("a hold on a cold open asks the window to read ahead only once it has the edit: before it, the window held nothing and read nothing (the Nov 21 audit, P11b)", async () => {
+    let opened: (value: boolean) => void = () => {};
+    const calls: [string, Record<string, unknown>][] = [];
+    const invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+      calls.push([command, args]);
+      if (command === "preview_open") return new Promise<boolean>((resolve) => { opened = resolve; });
+      if (command === "preview_project" || command === "preview_patch") return args.revision;
+      if (command === "preview_frame") return { revision: 0, drawn: true, skipped: false, ms: 4, decode: 3, composite: 0.5, present: 0.3, opens: 0, seeks: 0, ffmpeg: 0 };
+      if (command === "preview_position") return { frame: 0, playing: false, ended: false, drawn: 0, skipped: 0, slow: 0, draws: [], starved: 0 };
+      return null;
+    });
+    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = { invoke };
+    vi.stubGlobal("navigator", { gpu: {}, platform: "MacIntel" });
+    preview.detach();
+    const attached = preview.attach({ width: 320, height: 180 } as HTMLCanvasElement);
+    preview.setProject(fixture(), {});
+    for (let i = 0; i < 20 && !calls.some(([name]) => name === "preview_open"); i++) await settle();
+    // Nothing here yet: the play holds for its footage.
+    hereNow([]);
+    preview.play();
+    opened(true); await attached;
+    for (let i = 0; i < 8; i++) { await settle(); draw(); }
+    const hint = calls.findIndex(([name, args]) => name === "preview_hint" && args.hold === true);
+    expect(hint).toBeGreaterThan(-1);
+    expect(hint).toBeGreaterThan(calls.findIndex(([name]) => name === "preview_project"));
   });
 
   it("in full screen while the window plays, the page plays on from where it was", async () => {
