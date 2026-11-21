@@ -112,6 +112,15 @@ The team wants it back. Looked into on Nov 21 against the code and three real ch
 
 **What the team wants it for** (Sphe, Nov 21): not mainly to edit by hand, but a quick look over the whole project at where the footage, graphics, sound effects and the rest are placed. So steps 1 to 3 are the ask, and they need none of the hard part. Drawn that way from a real project's data: one row per kind of thing (graphics, captions, cut-ins, footage, looks, subtitles, voice-over, music, sound effects) rather than V1's rows per track, the whole edit fitted to the width, with zoom. The model already says which is which: an effect is a media with `effect`, music and sound effects are `library: "music"` or `"sfx"`, subtitles are the text clips on the subtitles track.
 
+**Pictures and waveforms, asked for on Nov 21 ("like V1, but reliable this time").** Why V1's aren't reliable, from the code and one real project on one machine:
+
+- A picture strip is one sheet per source file, at most 120 pictures spread over its whole length, keyframes only (`apps/server/src/media.ts` `makeThumbs`): a long source gets one every half minute or more, so short clips show a neighbour's picture.
+- Sheets and waveforms are made once per file on each computer, as part of import. A sound played from the cloud's library never gets a waveform here: 32 of that project's 181 sound clips (all its music) had none. Two of its graphics had no sheet: 35 of 59 graphics clips.
+- The page asks once. A sheet or waveform that fails to load is marked missing until the page is reloaded (`apps/web/src/components/Timeline.tsx` `sprite`, `waveform`), so one slow answer blanks a clip for the session.
+- A see-through graphic's sheet shows its picture and its mask squashed together, and nothing remakes a sheet when a graphic is rendered again.
+
+What "reliable" needs: pictures asked for by clip and moment (the frame at that clip's own source time, from the preview already on the Mac or the cloud's), only for what is on screen at the current zoom, kept by the file's content and the moment so every computer and every reopening reuses them; a waveform for any sound wherever it is played from; a graphic's picture cut from the top half of its render and keyed by the render, so a new render brings new pictures; and a miss tried again by itself, never remembered as missing. A close-up drawn this way from the same project needed 397 pictures and 59 waveforms, fetched in 13 seconds.
+
 **Still to ask**: whether V2 keeps the video-player keys or takes V1's.
 
 ## The `agent/` folder
