@@ -33,7 +33,6 @@ node_modules/
 /app/rife/
 
 # Mood-board stills from other channels: kept locally, not published
-/docs/moodboard/shots/
 /.claude/worktrees/
 /app/apps/relay/node_modules/
 /app/packages/*/node_modules/

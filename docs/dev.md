@@ -1,6 +1,8 @@
 # Development & Releases
 
-Keep this file short. Put feature details in code comments or dedicated topic docs under `docs/`, not here.
+Keep this file short. Feature details go in a comment at the top of the code they describe, not in a doc. Work not yet done goes in `TODO.md`, and is deleted from it when done. A plan is deleted once it is built.
+
+Rust is for the engine, the player and the project's model; TypeScript is for the part that waits on networks, disks and people (decided Nov 19; not to be argued again without new evidence).
 
 ## Commands
 
@@ -42,7 +44,7 @@ Dev and prod stay separate so dev work never touches team installs:
 - **Nothing ships past a red Check, and at most one nightly a day** (`just nightly --force "<reason>"` only for urgent fixes).
 - Push to `main`, wait for CI (`check.yml`) to pass, then `just nightly`.
 - Linux builds/checks run on stable `v*` releases only; nightlies build Apple Silicon macOS (`aarch64-apple-darwin`).
-- The first clause of a commit message is what `scripts/nightly-notes.ts` surfaces in the team's nightly notes.
+- The first clause of a commit message is what `app/scripts/nightly-notes.ts` surfaces in the team's nightly notes.
 
 ## Rules that must hold on the team's Macs
 

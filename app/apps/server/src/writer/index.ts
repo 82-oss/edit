@@ -2,6 +2,17 @@
 // server. Every start carries on the imports and Claude's jobs that died with
 // the server (an update, a crash), and before Edit restarts itself the jobs
 // are stopped where they are, to carry on after it.
+//
+// Where Script mode lives: this folder is the server (routes.ts is its whole
+// HTTP API under /api/writer/, each route checked by can.ts; store.ts keeps
+// scripts at <home>/writer/scripts/<id>/script.json beside their files);
+// apps/web/src/writer/ is the page (script-mode.tsx); packages/edit-types/
+// src/writer.ts the shared types; agent/writer/ the script guides; test/
+// writer/ its tests. Its cloud is Edit's relay (/v1/cloud/writer/*,
+// apps/relay/src/writer_cloud.ts) over Convex `writer:*` and R2
+// `writer/scripts/<id>/`. The sign-in, Claude, hearing, YouTube, Drive, logs
+// and updates are Edit's own. An edit made from a script and the script
+// follow each other through ../script_sync.ts.
 
 
 import type { App } from "../app.ts";

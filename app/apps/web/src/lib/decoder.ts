@@ -3,6 +3,13 @@ import { DecodedCache } from "./decoded-cache";
 import { note } from "./diagnostics";
 import { AUDIO_CHUNK_SECONDS, type DecodeRequest, type DecodeResponse, type PcmChunk } from "./decoder.protocol";
 
+// Measuring this over a realistic line: run the editor through a bandwidth-
+// and latency-limited proxy (Chrome's --proxy-server). DevTools' throttling
+// does not reach the decoder workers. Compare shown scrub positions, settle
+// time, start time and videoMisses/audioUnderruns. The loading badge only
+// appears after 600 ms, so its absence doesn't prove there were no short
+// stalls; for sound, compare decoded PCM at chunk joins against one
+// continuous decode of the same file.
 const MiB = 1024 * 1024;
 const frameKey = (key: string, time: number) => `${key}|v${Math.round(time * 1e6)}`;
 const audioKey = (key: string, chunk: number, speed: number) => `${key}|a${chunk}@${speed}`;

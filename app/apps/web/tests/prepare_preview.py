@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
-"""Create a synthetic playback fixture in an isolated running Edit server."""
+"""Create a synthetic playback fixture in an isolated running Edit server.
+
+preview.html (beside this file) exercises the real browser decoder, the WASM
+compositor and the playback loop: cut colours, black flashes, seeking after
+playback ends, and rapid seeks that must finish on the latest frame asked.
+Unit tests can't tell whether a decoded picture matches currentTime.
+
+Run it, from app/, with FFmpeg installed and a data folder of its own:
+
+  just wasm native
+  bun apps/server/src/main.ts serve --host 127.0.0.1 --port 7711 --home /tmp/edit-preview-test/home
+  EDIT_HTTPS=0 EDIT_SERVER=http://127.0.0.1:7711 bun run --cwd apps/web dev --host 127.0.0.1 --port 5174
+  python3 apps/web/tests/prepare_preview.py
+
+Open the printed URL in a WebGPU browser, wait for the first picture, click
+"Run playback checks" and expect PASS. Reload after: restoredFrame should be
+5. The fixtures are synthetic 320x180, 30 fps all-intra video: a correctness
+check, not a benchmark. Delete the data folder after stopping both servers.
+"""
 import argparse
 import copy
 import json

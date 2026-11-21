@@ -4,6 +4,19 @@
 // generations.ts): the model list and forms, a picture made from a prompt
 // and the pictures it's given (uploaded to OpenArt first), waited on until
 // it's done, and its bytes.
+//
+// The sign-in: POST /v1/openart/mcp on the relay forwards OpenArt's MCP
+// server with the team's token (apps/relay/src/openart.ts). The sign-in is
+// OPENART_CLIENT_ID / OPENART_REFRESH_TOKEN / OPENART_ACCOUNT in Infisical
+// /edit-relay, put there by apps/relay/scripts/openart-connect.ts and then
+// push-secrets.ts --only …; the live token pair is kept in the BUDGET
+// Durable Object's `openart` instance, since OpenArt hands a new refresh
+// token with each renewal and revokes the old (a new sign-in in Infisical
+// starts it over). One sign-in for dev and prod (Sphe, Nov 2): only the live
+// relay holds it and the dev relay forwards to it (OPENART_UPSTREAM in
+// wrangler's [env.dev.vars]; OPENART_RELAY_TOKEN the same in both). A second
+// account is a line in ACCOUNTS plus its sign-in on the relay at its own
+// route; the one in use per Mac is in <home>/openart-account.json.
 
 import * as fs from "node:fs";
 

@@ -566,7 +566,7 @@ test("a file's picture and its own sound are one file read once: not counted twi
   }
 });
 
-test("a long video's pieces the disk has no room to keep (nothing will bring them before a play) aren't waited on: the dialog is ready on a slow line, not up for good (docs/fix-next.md, JJ's case)", async () => {
+test("a long video's pieces the disk has no room to keep (nothing will bring them before a play) aren't waited on: the dialog is ready on a slow line, not up for good (JJ's case, Nov 19)", async () => {
   const home = scratch("footage-ready-pieced");
   try {
     const cache = home.dir;

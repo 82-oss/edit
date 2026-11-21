@@ -12,13 +12,12 @@
 // import it and lay out its cuts, title and sound through the server's MCP
 // tools (as the agent does), then:
 //
-// - the page: headless Chrome opens the editor (window.__edit.preview, as
-//   docs/preview.md measures) and asserts the first frame within 3 s, no
+// - the page: headless Chrome opens the editor (window.__edit.preview) and asserts the first frame within 3 s, no
 //   decode error, a 3 s play with videoMisses at most 5 and no audio
 //   underrun, a scrub of 60 positions showing over half of them, full screen
 //   in and out with the picture still drawn after; then scripts/home-audit.ts
 //   at two widths against the same server. Between them it opens a script
-//   as well (Script mode plays on the editor's player, docs/preview.md):
+//   as well (Script mode plays on the editor's player):
 //   one written as an import leaves it, its preview made the same
 //   way, and through window.__editScript (writer/player.ts) asserts the
 //   monitor's first picture, a 3 s play across a cut, a drag that settles

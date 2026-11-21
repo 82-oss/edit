@@ -110,8 +110,8 @@ impl FontBook {
 /// lettering), Tinos (its serif place names) and Arimo (its dates and quotes,
 /// static weights cut from the variable font) and Gabarito (Bold cut from the
 /// variable font: the in-video subtitle look) are SIL OFL 1.1.
-/// Akwe Pro is the team's commentary reference face; see assets/commentary/README.md
-/// for the review-build source and its separate distribution licence requirement.
+/// Akwe Pro is the team's commentary reference face, from https://font.download/font/akwe-pro,
+/// whose page lists personal use: its licence for a public release is unverified (TODO.md).
 /// Drawn from where a text's own face has no glyph: Noto Sans JP (SIL OFL
 /// 1.1), Bold, kept to kana, full-width forms and the JIS X 0208 kanji.
 pub const FALLBACK_FAMILY: &str = "Noto Sans JP";

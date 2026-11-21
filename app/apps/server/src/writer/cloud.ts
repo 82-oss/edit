@@ -4,6 +4,11 @@
 // in Convex (Repack's deployment, the `writer` module) naming each script's
 // current rev and files, reached through Edit's relay.
 //
+// Two rules that must hold: the bodies stay on R2, never in Convex's file
+// storage (Edit's nightly sweep deletes Convex-stored JSON no Edit project
+// uses), and Script mode's keys stay under `writer/` (Repack's own cleanup
+// deletes unrecorded files under `repack/`).
+//
 // Saves land on disk as always. A loop pushes what changed a few seconds
 // later (the changed files, then a new body, then a commit naming the rev it
 // began from) and pulls what other Macs pushed. Footage goes up beside the

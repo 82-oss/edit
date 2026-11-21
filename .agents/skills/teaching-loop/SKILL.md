@@ -5,7 +5,7 @@ description: Teach Edit's in-app agent from the team's feedback by experiment, n
 
 # The teaching loop
 
-What it's for: the next edit shouldn't get the same notes. The agent never sees the team's comments; it learns from short skills, better tools and audits, and each round shows whether that worked. Loop 2 (Oct 21–22, `docs/feedback/2026-10-22-teaching-loop-2.md`) is the worked example: read it first, and its `~/edit-experiments/loop2/LOG.md`.
+What it's for: the next edit shouldn't get the same notes. The agent never sees the team's comments; it learns from short skills, better tools and audits, and each round shows whether that worked. Loop 2 (Oct 21–22, `loop-2.md` beside this file) is the worked example: read it first, and its `~/edit-experiments/loop2/LOG.md`.
 
 ## The user's rules
 - Never show the agent the feedback; teach through skills. Reword where most of it is already there; **smaller skills are better** (big, verbose skills contradict themselves and confuse it). A rule can always apply or apply by context; leave creative freedom where the feedback doesn't forbid it. Quote the team so the reason travels with the rule.

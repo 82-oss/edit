@@ -2,7 +2,7 @@
 // proxy, a 960×540 copy where every frame is a keyframe (all-intra H.264,
 // ~6 Mbit/s, VideoToolbox), so a drag shows the frame under the playhead
 // instead of the keyframe before it (a scrub showed about half the positions
-// asked: docs/preview.md). The viewer decodes it only while the playhead is
+// asked). The viewer decodes it only while the playhead is
 // dragged; resting or playing, the 1080p proxy, so what's judged is full size.
 //
 // Made only for the stretches the timeline uses, in pieces of `PIECE`

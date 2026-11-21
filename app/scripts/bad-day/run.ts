@@ -1,6 +1,8 @@
 // `just bad-day [--at <ref>] [case…]`: builds the sandbox and runs the
-// bad-day cases inside it (inside.ts). Section 3 of
-// docs/plans/2026-11-19-honest-council/final.md is the spec.
+// bad-day cases inside it (inside.ts). Its spec was section 3 of
+// docs/plans/2026-11-19-honest-council/final.md, with verify.md beside it (the "final.md change N" and
+// "verify.md finding N" in comments): removed Nov 21 once built, still in git (`git log --all -- <path>`).
+// What they left undone is in TODO.md.
 //
 // - One run at a time: the scope has one name (edit-bad-day), so a second is
 //   refused by systemd ("already loaded").

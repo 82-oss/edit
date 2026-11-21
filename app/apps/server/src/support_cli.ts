@@ -1,5 +1,7 @@
 // An operator's client for an Edit the owner already shared over Tailscale.
 // This creates no listener, pairing, login, shell access or background job.
+// The owner's side, with Edit open: `tailscale serve --bg http://127.0.0.1:7700`.
+// Never expose Edit on the public internet.
 import * as fs from "node:fs";
 import { scrub } from "./diag.ts";
 

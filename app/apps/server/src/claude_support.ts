@@ -1,5 +1,38 @@
 // Claude owns its installation and browser OAuth flow. Edit runs its CLI,
 // checks a real request, and retains only the diagnosis, never credentials.
+//
+// Maintenance: each installed nightly runs it once, on its first start. The
+// attempt is written to <home>/agent/claude-support.json before it starts, so
+// reopening Edit (even after an interrupted setup) never updates Claude or
+// opens a browser again. Dev builds and packaging smoke tests skip it
+// (EDIT_CLAUDE_MAINTENANCE=0). It uses the installed CLI's own updater,
+// Homebrew or npm as the CLI was installed, Anthropic's installer when there
+// is none; background updating is off for the CLIs Edit starts. A failed
+// update is recorded and the diagnosis still runs.
+//
+// Diagnosis: the executable and version, the config folder and the NAMES of
+// credential overrides (never values), the saved sign-in, `claude doctor`, a
+// small `claude -p` request with Edit's model and settings, and one through
+// the Agent SDK as Edit really connects. A saved login alone isn't enough.
+// These are real requests on the person's plan, so launches and status polls
+// never run them.
+//
+// Recovery: a rejected sign-in keeps the failed message in
+// agent/claude-pending.json and starts one shared flow on this Mac. If
+// dropping an inherited token makes a real request work, Edit uses the saved
+// login for its own children and leaves the person's shell alone. Otherwise
+// the person's own `claude auth login` opens Claude's site and owns the
+// callback; Edit shows the CLI's link as a fallback and checks both real
+// requests before going on. Passwords, tokens and callback codes are never
+// collected; authorization URLs are neither logged nor saved. The retry keeps
+// the conversation and one visible message; if tools already ran it asks the
+// agent to look at the project and continue, and it checks the cloud lock
+// again. Stop, New Chat, cancelling, switching provider or a newer message
+// drops it; a second rejection never opens another login by itself.
+//
+// GET /api/agent/claude only observes; POST takes diagnose, repair, login or
+// cancel. The page shows one line only when someone has to act
+// (ClaudeSetupCard.tsx).
 import * as fs from "node:fs";
 import { spawn } from "node:child_process";
 import * as claude from "./claude.ts";

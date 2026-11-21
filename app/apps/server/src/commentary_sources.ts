@@ -123,6 +123,9 @@ registerTool("search_broll", async ({ app, args, projectId }) => {
   if (args.queries.length === 0) {
     let inventory: unknown = {};
     try { inventory = JSON.parse(fs.readFileSync(join(app.store.home, "research", projectId, "broll.json"), "utf8")); } catch { /* no sources yet */ }
+    // assets/commentary/background.png is decorative artwork, never evidence: the Internet Janitor wallpaper from
+    // the team's Oct 19 research, with every case title, number, portrait and document marking removed by image
+    // generation (the table, folders, floor and palette kept; every folder and paper left blank).
     // Bun's embedded file is virtual; native ImageIO and realpath need a
     // real file, as bundled sound effects do. Never pass /$bunfs to native I/O.
     const brand = await Promise.all(([["background", wallpaper, "png"], ["avatar", avatarFile, "png"], ["subscribe", subscribeFile, "png"], ["light-leak", leakFile, "mp4"], ["background-motion", motionFile, "mp4"]] as const).map(async ([name, file, ext]) => {
