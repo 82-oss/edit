@@ -108,6 +108,7 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 
 ## For Sphe to decide
 
+- **Where `tailscale serve` is on, any device on the tailnet can drive Edit** (`/mcp`, `/api/ws` and the changing routes; `apps/server/src/http/host.ts` `checkHost` checks Host and Origin only). Today that's one machine and every device on the tailnet is Sphe's. A per-install bearer would close it if that changes.
 - **The bake-off**: Edit against Claude Desktop plus Premiere on the same cases, judged blind. Never run.
 - **One record for a script** instead of Writer's script and the project's `script.blocks` (about a week).
 - **V2**: a Git mirror of the effects library; a sandboxed shell for the agent against one tool per job; a stage view while the agent makes a graphic; a graphics craft skill.
@@ -123,28 +124,3 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 - **Speaking to the agents**: a mic button in the chat boxes, transcribed on the machine. Researched Nov 7: try Moonshine (MIT, small, runs on any CPU, words as you speak) against NVIDIA Parakeet TDT 0.6B v3 (Apache 2.0, the accurate one: FluidAudio or parakeet-mlx on a Mac, ONNX on an NVIDIA card; about 1.2 GB, downloaded on first use) with the team's own prompts; names need the project's cast (`people.ts`).
 - **A feedback link for ideas and thumbnails**, as an edit has its review link.
 - **Thumbnails: frames from YouTube**: give Claude Ideas' `scan_video` and `grab_frames` (`ideas/frames.ts`) on a thumbnail.
-
-## Probably not worth doing
-
-The same reader would drop these. Delete this section once Sphe agrees.
-
-- **Two fixed clocks remain on network work**: the Mac takes over when the relay's copy trips, and 15 minutes is a generous bound for a probe.
-- **Every wake retries all missing recordings, not only those due**: one refused request a wake costs nothing.
-- **Footage gone without is retried for good**: one cheap try every 30 minutes, and finding the file later is a win.
-- **After an update every failed export and share is retried**: low impact: chunks are kept.
-- **"Skip all" is looser than skipping by name**: the person pressed Skip all on purpose.
-- **A deleted script's original may keep uploading**: never seen; R2's orphan sweep covers it.
-- **Disk claims are one total for the whole process, and an unreadable disk counts as endless**: Macs have one disk, and an unreadable disk hasn't been seen.
-- **Saved files are trusted as read**: not true as written: `jobs.ts` already drops malformed rows and fills in what's missing; only a job's `args` go unchecked.
-- **The server aborted once as it stopped mid-export**: symbols are kept and it hasn't happened since.
-- **No check that a failure path never deletes someone's work**: no known case, and a grep can't tell an explicit delete from a failure path.
-- **No lint against the `!` shortcut in new code**: style only.
-- **A rejected edit plan says only "revision conflict"**: rare, and the agent refreshes by itself.
-- **Tools don't forgive near-misses**: the agent recovers from a plain error.
-- **The `countdown` op ends at the frame it counts to**: nobody has asked for it.
-- **`broll_recut` and "hold the shot" have never run in a real courtroom edit**: a test note; no courtroom channel exists.
-- **Lists aren't served from this Mac**: one relay call on the ideas page, not felt.
-- **No dev review site**: dev already warns.
-- **No auth beyond loopback**: Edit listens on 127.0.0.1 only; other devices reach it only where `tailscale serve` is on, which is Sphe's own machine.
-- **Linux: the thumbnail subject cut-out**: the team is on Macs.
-- **Parked**: already parked (SAM 2.1 mask tracking).
