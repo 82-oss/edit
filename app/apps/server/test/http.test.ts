@@ -5,7 +5,7 @@ import type { App } from "../src/app.ts";
 import { timings } from "../src/diag.ts";
 import { mapAssets, staticAsset, useAssets } from "../src/http/assets.ts";
 import { ApiError, bad, json } from "../src/http/errors.ts";
-import { checkHost, mapSibling, mediaPath, sameOrigin } from "../src/http/host.ts";
+import { checkHost, mapSibling, mediaPath, readTailscaleWith, sameOrigin } from "../src/http/host.ts";
 import { badShape, readJson, Router, valueEnd } from "../src/http/router.ts";
 import { baseRouter, listen, respond } from "../src/http/server.ts";
 import { fixtureHome } from "./helpers/home.ts";
@@ -190,6 +190,33 @@ test("a body of the wrong shape says where, as serde does (line and column just 
     ]);
     expect(valueEnd('{"a":[1,{"b":"}"}]}', ["a", 1])).toBe(17);
   } finally {
+    cleanup();
+  }
+});
+
+test("a Tailscale name that came up after Edit started is let in once it's read again", async () => {
+  const { app, cleanup } = fixtureHome("http-tailscale-late");
+  let reads = 0;
+  readTailscaleWith(async () => {
+    reads += 1;
+    return ["box.tail1234.ts.net", "100.101.102.103"];
+  });
+  try {
+    const routes = router();
+    const asked = async (host: string) => (await respond(app, routes, request("/api/projects/p1", { host }), null))!;
+    // Not Tailscale's: refused, nothing read.
+    expect((await asked("evil.example:7700")).status).toBe(403);
+    expect(reads).toBe(0);
+    expect((await asked("box.tail1234.ts.net")).status).toBe(200);
+    expect(reads).toBe(1);
+    // Known now: not read again.
+    expect((await asked("100.101.102.103:7700")).status).toBe(200);
+    // Another tailnet's name: refused, and refusals read again at most every few seconds.
+    expect((await asked("other.tail9999.ts.net")).status).toBe(403);
+    expect((await asked("other.tail9999.ts.net")).status).toBe(403);
+    expect(reads).toBe(1);
+  } finally {
+    readTailscaleWith(null);
     cleanup();
   }
 });

@@ -42,7 +42,7 @@ import * as busy from "./busy.ts";
 import * as effects from "./effects.ts";
 import { prepareShell } from "./chrome_devtools.ts";
 import { messageContext, registerMediaTools } from "./media_tools.ts";
-import { allowedHosts } from "./http/host.ts";
+import { allowedHosts, readTailscaleWith } from "./http/host.ts";
 import { encodersListed, initNative, native } from "./native/index.ts";
 import { join } from "./paths.ts";
 import * as archive from "./archive.ts";
@@ -133,6 +133,33 @@ function run(binary: string, args: string[]): string | null {
   } catch {
     return null;
   }
+}
+
+async function runLater(binary: string, args: string[]): Promise<string | null> {
+  try {
+    const child = Bun.spawn([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 5000 });
+    const out = await new Response(child.stdout).text();
+    return (await child.exited) === 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/** This machine's Tailscale address and name, read without holding the server (a request's host check, http/host.ts). */
+export async function tailscaleLater(): Promise<(string | null)[]> {
+  for (const binary of TAILSCALE) {
+    const out = await runLater(binary, ["status", "--json"]);
+    if (out === null) continue;
+    try {
+      const status = JSON.parse(out) as { Self?: { DNSName?: unknown; TailscaleIPs?: unknown } };
+      const name = typeof status.Self?.DNSName === "string" ? status.Self.DNSName.replace(/\.+$/, "").toLowerCase() : null;
+      const ips = Array.isArray(status.Self?.TailscaleIPs) ? status.Self.TailscaleIPs.filter((ip): ip is string => typeof ip === "string" && !ip.includes(":")) : [];
+      return [name === "" ? null : name, ...ips];
+    } catch {
+      continue;
+    }
+  }
+  return [];
 }
 
 /** This machine's Tailscale IPv4 address, if Tailscale runs. */
@@ -312,6 +339,8 @@ function startHere(home: string, host: string | null, port: number): { app: App;
   cloud.keepUploadJournalsIn(join(store.home, "uploads"));
   modelChoice.use(store.home);
   const ip = tailscaleIp();
+  // Read again when a request names it and it wasn't there at start (Tailscale not up yet at a boot).
+  readTailscaleWith(tailscaleLater);
   const app = createApp({
     store,
     port,

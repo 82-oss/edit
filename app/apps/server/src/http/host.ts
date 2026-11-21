@@ -145,6 +145,42 @@ export function sameOrigin(origin: string, host: string): boolean {
   );
 }
 
+/** Reads this machine's Tailscale address and name again (serve.ts sets it); null until it does. */
+let tailscaleNow: (() => Promise<(string | null)[]>) | null = null;
+/** When they were last read again, so a stream of refusals reads them once every few seconds at most. */
+let lookedAt = 0;
+const LOOK_EVERY_MS = 10_000;
+
+export function readTailscaleWith(read: (() => Promise<(string | null)[]>) | null): void {
+  tailscaleNow = read;
+  lookedAt = 0;
+}
+
+/**
+ * A refused host that may be this machine's Tailscale name or address (a
+ * `.ts.net` name, or 100.64.0.0/10), read again and added to `allowed` when it
+ * is. The names are read once at start, and Edit started at a boot comes up
+ * before Tailscale has its name (Nov 21: Sphe's prod Edit on mandalorian
+ * refused every request through `tailscale serve` for hours, "host
+ * mandalorian.tail863066.ts.net is not allowed", until a restart). True when
+ * it was added.
+ */
+export async function admitTailscale(request: Request, allowed: string[]): Promise<boolean> {
+  if (tailscaleNow === null) return false;
+  const parsed = authority(request.headers.get("host") ?? "");
+  if (parsed === null) return false;
+  const name = parsed.host.toLowerCase();
+  const octets = /^100\.(\d+)\.\d+\.\d+$/.exec(name);
+  if (!(name.endsWith(".ts.net") || (octets !== null && Number(octets[1]) >= 64 && Number(octets[1]) <= 127))) return false;
+  const now = Date.now();
+  if (now - lookedAt < LOOK_EVERY_MS) return false;
+  lookedAt = now;
+  const read: (string | null)[] = await tailscaleNow().catch(() => []);
+  const found = read.filter((entry): entry is string => entry !== null && entry !== "").map((entry) => entry.toLowerCase());
+  for (const entry of found) if (!allowed.includes(entry)) allowed.push(entry);
+  return allowed.includes(name);
+}
+
 /**
  * The host names this server answers to: localhost, this machine's name, its
  * Tailscale address and name when there is one (serve.ts gathers those), the
