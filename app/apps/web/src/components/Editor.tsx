@@ -7,7 +7,7 @@ import { playhead, preview } from "../lib/playback";
 import { api, ApiError } from "../lib/api";
 import { cloudApi } from "../lib/cloud";
 import { loadEffects } from "../lib/effects";
-import { clientId, connectEvents, leave, settled, syncScriptJob, useEditor } from "../lib/store";
+import { clientId, connectEvents, leave, settled, syncExport, syncScriptJob, useEditor } from "../lib/store";
 import { clearIn, clearInOut, clearOut, markIn, markOut } from "../lib/inOut";
 import { goToEnd, goToStart, useView } from "../lib/timelineView";
 import { followNotes, startNote } from "../lib/notes";
@@ -77,6 +77,10 @@ export function Editor({ id }: { id: string }) {
         // list they show as their stills, and the next change to one brings it.
         if (project.hq === true) void loadEffects(id).catch(() => {});
         void syncScriptJob(id);
+        // Its export as the server has it: `load` starts it at none, and only a reconnect asked again, so after a
+        // reload a queued, graphics-waiting or failed export vanished and Export was refused as "already has an
+        // export running" (audit E9, Nov 21).
+        void syncExport(id);
         // A reset the agent was already asking about when the page (re)loaded.
         void api
           .resetAsked(id)

@@ -8,7 +8,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import * as cloud from "../src/cloud.ts";
-import { fullBehind } from "../src/reviews.ts";
+import * as jobs from "../src/jobs.ts";
+import { fullBehind, fullUpload, resumeFull } from "../src/reviews.ts";
 
 const spies: { mockRestore(): void }[] = [];
 // Nothing up yet (fullBehind asks the cloud first).
@@ -117,5 +118,126 @@ test("an export gone from here is fetched back from its cloud copy and sent, onc
   expect(Date.now() - began).toBeLessThan(2_000);
   expect(sent.length).toBe(1);
   expect((told.at(-1)!.fullUpload as { failed?: string }).failed).toContain("Share again");
+  expect(listed(home)).toEqual([]);
+}, 20_000);
+
+// Audit E6 (Nov 21): serve.ts's `full` resumer crossed the row off when the export wasn't on this computer, before
+// fullBehind could fetch it back from its cloud copy; that resumer is also how a waiting row is woken, so a share's
+// full-quality upload put off by a dropped line, its export deleted meanwhile (archived, the disk short), never came:
+// no Download on the review and one line in the log. Out of tries with the file gone, it was ended, not put off.
+const RESUMED = { key: "edit/reviews/p4/t/full.mp4", name: "Bodycam 12" };
+function waitingFull(home: string, file: string, archived: boolean): string {
+  fs.writeFileSync(path.join(home, "exports.json"), JSON.stringify({ p4: [{ path: file, name: "Bodycam 12.mp4", frames: 1, whole: true, finished_ms: 1, bytes: 6, ...(archived ? { cloudKey: "edit/exports/p4/Bodycam 12.mp4" } : {}) }] }));
+  const key = jobs.keyOf("full", "p4", RESUMED.key);
+  fs.writeFileSync(path.join(home, "jobs.json"), JSON.stringify([{ key, kind: "full", project: "p4", args: { name: RESUMED.name, path: file, key: RESUMED.key, version: 2 }, part: RESUMED.key, state: "waiting", retry_at: 1, put_off: 1, attempts: 0, started_ms: 1, updated_ms: 1 }]));
+  return key;
+}
+const fullResumer = (home: string): jobs.Resumers => ({ full: (job) => void resumeFull(home, job).catch(() => {}) });
+
+async function until(what: string, ok: () => boolean, ms = 5_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!ok()) {
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await Bun.sleep(10);
+  }
+}
+
+test("a waiting full-quality upload whose export was deleted here is woken, fetched back from its cloud copy and sent", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "edit-full-wake-"));
+  const file = path.join(home, "Bodycam 12.mp4");
+  waitingFull(home, file, true);
+  const fetched: string[] = [];
+  const sent: string[] = [];
+  const told: Record<string, unknown>[] = [];
+  spies.push(
+    spyOn(cloud, "download").mockImplementation(async (key: string, dest: string) => {
+      fetched.push(key);
+      fs.writeFileSync(dest, "export");
+    }),
+    spyOn(cloud, "uploadFile").mockImplementation(async (from: string, key: string) => void sent.push(`${fs.readFileSync(from, "utf8")} -> ${key}`)),
+    spyOn(cloud, "remove").mockImplementation(async () => {}),
+    spyOn(cloud, "mutation").mockImplementation(async (_name: string, args: unknown) => {
+      told.push((args as { meta: Record<string, unknown> }).meta);
+      return null as never;
+    }),
+  );
+  jobs.useResumers(home, fullResumer(home));
+  await jobs.wake(home, ["full"]);
+  await until("the upload to end", () => listed(home).length === 0);
+  expect(fetched).toEqual(["edit/exports/p4/Bodycam 12.mp4"]);
+  expect(sent).toEqual([`export -> ${RESUMED.key}`]);
+  expect(told.at(-1)).toEqual({ fullKey: RESUMED.key, fullUpload: null });
+}, 20_000);
+
+test("a woken full-quality upload with its export nowhere, here or in the cloud, ends with its words to the review", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "edit-full-wake-"));
+  waitingFull(home, path.join(home, "Bodycam 12.mp4"), false);
+  const told: Record<string, unknown>[] = [];
+  spies.push(
+    spyOn(cloud, "uploadFile").mockImplementation(async () => {
+      throw new Error("nothing should go up");
+    }),
+    spyOn(cloud, "mutation").mockImplementation(async (_name: string, args: unknown) => {
+      told.push((args as { meta: Record<string, unknown> }).meta);
+      return null as never;
+    }),
+  );
+  jobs.useResumers(home, fullResumer(home));
+  await jobs.wake(home, ["full"]);
+  await until("the row to end", () => listed(home).length === 0);
+  await until("the review to be told", () => told.some((meta) => typeof (meta.fullUpload as { failed?: string } | null)?.failed === "string"));
+  expect((told.at(-1)!.fullUpload as { failed: string }).failed).toContain("Share again");
+}, 20_000);
+
+test("fetching the export back failing on a dropped line, out of tries: the row waits to be tried again, never ended", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "edit-full-wake-"));
+  const file = path.join(home, "Bodycam 12.mp4");
+  const key = waitingFull(home, file, true);
+  const { waitMs, tries } = fullUpload;
+  fullUpload.waitMs = () => 0;
+  fullUpload.tries = 2;
+  let asked = 0;
+  spies.push(
+    spyOn(cloud, "download").mockImplementation(async () => {
+      asked += 1;
+      throw new Error("fetch failed: ECONNRESET");
+    }),
+    spyOn(cloud, "uploadFile").mockImplementation(async () => {
+      throw new Error("nothing should go up");
+    }),
+    spyOn(cloud, "mutation").mockImplementation(async () => null as never),
+  );
+  try {
+    await fullBehind(home, "p4", RESUMED.name, file, RESUMED.key, 2);
+  } finally {
+    fullUpload.waitMs = waitMs;
+    fullUpload.tries = tries;
+  }
+  expect(asked).toBe(2);
+  expect(jobs.get(home, key)).toEqual(expect.objectContaining({ state: "waiting", retry_at: expect.any(Number) }));
+}, 20_000);
+
+test("its cloud copy on record but not there any more: said once on the review and ended, not waited on for good", async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "edit-full-wake-"));
+  const file = path.join(home, "Bodycam 12.mp4");
+  waitingFull(home, file, true);
+  const told: Record<string, unknown>[] = [];
+  let asked = 0;
+  spies.push(
+    spyOn(cloud, "download").mockImplementation(async (key: string) => {
+      asked += 1;
+      throw new Error(`${key} isn't in the cloud`);
+    }),
+    spyOn(cloud, "uploadFile").mockImplementation(async () => {
+      throw new Error("nothing should go up");
+    }),
+    spyOn(cloud, "mutation").mockImplementation(async (_name: string, args: unknown) => {
+      told.push((args as { meta: Record<string, unknown> }).meta);
+      return null as never;
+    }),
+  );
+  await fullBehind(home, "p4", RESUMED.name, file, RESUMED.key, 2);
+  expect(asked).toBe(1);
+  expect((told.at(-1)!.fullUpload as { failed: string }).failed).toContain("Share again");
   expect(listed(home)).toEqual([]);
 }, 20_000);

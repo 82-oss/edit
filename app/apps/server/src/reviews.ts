@@ -440,6 +440,27 @@ function shareSignal(projectId: string): AbortSignal {
   return stop.signal;
 }
 
+/**
+ * `wait`, or the share's Cancel, whichever comes first (undefined then; `haltShare` after it throws). What it waited on
+ * goes on by itself, as it would have (an effect's render, a map shot: the edit plays them). Nov 21, audit E7: the
+ * waits for a share's graphics took no Cancel, 20 minutes each and up to three times, the stop looked at only after,
+ * so "Stopping…" sat on the dialog and no new share could start; in V2 that's every share after an agent's turn.
+ */
+async function untilCancelled<T>(projectId: string, wait: Promise<T>): Promise<T | undefined> {
+  const signal = shareSignal(projectId);
+  if (signal.aborted) return undefined;
+  let onAbort = () => {};
+  const stopped = new Promise<undefined>((resolve) => {
+    onAbort = () => resolve(undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([wait, stopped]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 function dropShare(projectId: string): void {
   droppedShares.delete(projectId);
   shareAbort.delete(projectId);
@@ -485,10 +506,11 @@ export function shareable<T extends { path: string; whole: boolean; start?: numb
  */
 export async function restoreArchived(
   record: { path: string; bytes: number | null; cloudKey?: string },
-  fetch: (key: string, dest: string) => Promise<void> = cloud.download,
+  fetch: (key: string, dest: string, signal?: AbortSignal) => Promise<void> = (key, dest, signal) => cloud.download(key, dest, undefined, signal),
+  signal?: AbortSignal,
 ): Promise<void> {
   if (fs.existsSync(record.path) || record.cloudKey === undefined) return;
-  await fetch(record.cloudKey, record.path);
+  await fetch(record.cloudKey, record.path, signal);
   const size = fs.existsSync(record.path) ? fs.statSync(record.path).size : -1;
   if (record.bytes !== null && size !== record.bytes) {
     fs.rmSync(record.path, { force: true });
@@ -538,14 +560,21 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
         // fetched back from that copy, the same bytes, rather than tried twenty times as a file that isn't there
         // (Nov 21). With no copy in the cloud either there's nothing to send, and that's said once.
         if (!fs.existsSync(path)) {
-          const archived = cloudKeyFor(home, path);
-          if (archived === null) {
+          const nowhere = async () => {
             diag.warn("review", `${name}: the full-quality file isn't on this computer or in the cloud any more, so the review has no Download; export and share again for one`);
             await tell({ fullUpload: { ...last, at: Date.now(), failed: "The export isn't on this computer any more. Share again for a download." } }).catch(() => undefined);
-            return;
-          }
+          };
+          const archived = cloudKeyFor(home, path);
+          if (archived === null) return await nowhere();
           diag.info("review", `${name}: the export isn't here any more; fetching it back from its cloud copy to send the review's full-quality file`);
-          await restoreArchived({ path, bytes: null, cloudKey: archived });
+          try {
+            await restoreArchived({ path, bytes: null, cloudKey: archived });
+          } catch (error) {
+            // Its cloud copy is on record and not there (deleted with a review link, a cleanup): nowhere, said once.
+            // The same every try, it would otherwise be waited on every 30 minutes for good (Nov 21).
+            if (!cloud.notThere(error)) throw error;
+            return await nowhere();
+          }
           last = { sent: 0, total: fs.statSync(path).size };
         }
         // Up already (a restart came after its last part, before the cloud was told): straight to telling it, not sent
@@ -583,7 +612,9 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
         if (attempt >= fullUpload.tries) {
           diag.warn("review", `${name}: the full-quality file didn't go up after ${attempt} tries: ${diag.messageOf(error)}`);
           await tell({ fullUpload: { ...last, at: Date.now(), failed: diag.messageOf(error).slice(0, 300) } }).catch(() => undefined);
-          if (fs.existsSync(path)) putOff = `the full-quality file didn't go up after ${attempt} tries: ${diag.messageOf(error)}`;
+          // Put off while there's something to send from, here or its cloud copy to fetch back (Nov 21, audit E6: with
+          // the file gone, a fetch-back that failed offline for an hour or two ended the row, and the Download never came).
+          if (!fullGone(home, path)) putOff = `the full-quality file didn't go up after ${attempt} tries: ${diag.messageOf(error)}`;
           return;
         }
         diag.warn("review", `${name}: the full-quality file (try ${attempt}): ${diag.messageOf(error)}; trying again`);
@@ -598,6 +629,22 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
   });
 }
 
+
+/** Whether a review's full-quality file has nothing left to be sent from: not on this computer, and no cloud copy to fetch it back from. */
+export function fullGone(home: string, path: string): boolean {
+  return !fs.existsSync(path) && cloudKeyFor(home, path) === null;
+}
+
+/**
+ * A `full` row started again: after a restart, and each time the job table wakes it from a wait. Its export not on
+ * this computer is fullBehind's to fetch back from its cloud copy, or, with none, to say on the review (Nov 21, audit
+ * E6: serve.ts crossed the row off first, so a share's full-quality upload put off by a dropped line, its export
+ * deleted meanwhile because it was archived and the disk short, never came; no Download, one line in the log).
+ */
+export function resumeFull(home: string, job: jobs.Job): Promise<void> {
+  const { name, path, key, version } = job.args as { name: string; path: string; key: string; version?: number };
+  return fullBehind(home, job.project, name, path, key, version);
+}
 
 /** Refused before a share is listed: no cloud, one under way, its link being deleted. */
 function canShare(home: string, projectId: string): void {
@@ -872,16 +919,22 @@ async function exportStep(app: App, projectId: string, args: ShareArgs): Promise
         diag.warn("review", `${projectId}: what its share waits on: ${diag.messageOf(error)}`);
       }
       sharing.set(projectId, "waiting for map shots");
-      await seams.broll.waitForMaps(app, projectId, 20 * 60_000).catch((error: unknown) => {
-        if (!seams.isUnavailable(error)) throw error;
-      });
+      await untilCancelled(
+        projectId,
+        seams.broll.waitForMaps(app, projectId, 20 * 60_000).catch((error: unknown) => {
+          if (!seams.isUnavailable(error)) throw error;
+        }),
+      );
       haltShare(projectId);
       // Slowed shots still being smoothed would go out stuttering or half
       // swapped (N3on's fourth preview was shared with 16 still rendering).
       sharing.set(projectId, "waiting for slowed shots");
-      await seams.broll.waitForSmoothing(projectId, 20 * 60_000).catch((error: unknown) => {
-        if (!seams.isUnavailable(error)) throw error;
-      });
+      await untilCancelled(
+        projectId,
+        seams.broll.waitForSmoothing(projectId, 20 * 60_000).catch((error: unknown) => {
+          if (!seams.isUnavailable(error)) throw error;
+        }),
+      );
       haltShare(projectId);
       const live = app.store.get(projectId);
       if (live === null) throw new Error("no such project");
@@ -978,7 +1031,9 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       jobs.step(home, key, "review copy", { checked: false, uploaded: false });
       if (!fs.existsSync(chosen.path)) {
         sharing.set(projectId, "fetching the export back from the cloud");
-        await restoreArchived(chosen);
+        // Stopped by the share's Cancel (Nov 21, audit E7: a multi-GB fetch ran to its end first); what came stays as
+        // its `.partial`, so the next share carries the download on.
+        await restoreArchived(chosen, undefined, signal);
         sharing.set(projectId, "making the review copy");
       }
       if (!fs.existsSync(copy)) {

@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as cloud from "../src/cloud.ts";
 import { archiveJob, behindShare, beingRead, exportCloud, ExportRegistry, listExports, resetBehindShare, wakeBehindShare, type ExportRecord } from "../src/exports.ts";
 import * as jobs from "../src/jobs.ts";
-import { fullBehind } from "../src/reviews.ts";
+import { fullBehind, resumeFull } from "../src/reviews.ts";
 import { fixtureHome, type Fixture } from "./helpers/home.ts";
 import { clip } from "./helpers/model.ts";
 
@@ -94,18 +94,15 @@ function setUp(): { t: Fixture; registry: ExportRegistry } {
   return { t, registry };
 }
 
-/** serve.ts's resumers for `archive` and `full`, read-only copies of them. */
+/** serve.ts's resumers for `archive` (a read-only copy of it) and `full`. */
 function useServeResumers(home: string, registry: ExportRegistry): jobs.Resumers {
   const resumers: jobs.Resumers = {
     archive: async (job) => {
       const { output, key, record } = job.args as { output: string; key: string; record: ExportRecord };
       await archiveJob(home, job.key, () => registry.sendUp(home, job.project, output, key, record));
     },
-    full: (job) => {
-      const { name, path, key, version } = job.args as { name: string; path: string; key: string; version?: number };
-      if (!fs.existsSync(path)) throw new jobs.Gone(`${path} is gone`);
-      void fullBehind(home, job.project, name, path, key, version).catch(() => {});
-    },
+    // serve.ts's own (it settles a failure as well).
+    full: (job) => void resumeFull(home, job).catch(() => {}),
   };
   jobs.useResumers(home, resumers);
   return resumers;

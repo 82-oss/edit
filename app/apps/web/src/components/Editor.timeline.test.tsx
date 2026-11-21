@@ -7,6 +7,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const opened = vi.hoisted(() => ({ project: null as unknown }));
+// GET /api/projects/{id}/export (store.ts `syncExport`): the project's export as the server has it.
+const exportNow = vi.hoisted(() => ({ state: null as unknown, asked: [] as string[] }));
 vi.mock("../lib/playback", () => {
   const preview = { onStatus: () => () => {}, sections: null, speed: 1, seek: () => {}, hint: () => {}, toggle: () => {}, pause: () => {}, play: () => {}, setSpeed: () => {} };
   const playhead = { frame: 0, playing: false, subscribe: () => () => {} };
@@ -16,6 +18,10 @@ vi.mock("../lib/api", async (original) => {
   const real = await original<typeof import("../lib/api")>();
   return {
     ...real,
+    request: async (method: string, path: string) => {
+      exportNow.asked.push(`${method} ${path}`);
+      return { export: exportNow.state };
+    },
     api: {
       ...real.api,
       project: async () => ({ rev: 1, project: opened.project }),
@@ -165,5 +171,23 @@ describe("the V2 timeline in the editor", () => {
     container = await reopen(edit(false));
     expect(container.querySelector("[data-v1-timeline]")).not.toBeNull();
     expect(container.querySelector("[data-v2-timeline]")).toBeNull();
+  });
+});
+
+// Audit E9 (Nov 21): opening the editor (a reload, or back from another project) reset the export to nothing and only
+// a reconnect asked for it again, so a queued, graphics-waiting or failed export vanished, Export was offered, and
+// pressing it was refused with "this project already has an export running".
+describe("the export's state when the editor opens", () => {
+  afterEach(() => {
+    exportNow.state = null;
+    exportNow.asked.length = 0;
+  });
+
+  it("is asked of the server on load and shown", async () => {
+    exportNow.state = { state: "queued", progress: 0, path: "/x.mp4", waiting: "rendering the cutfx-21 effect" };
+    const project = edit(false);
+    await open(project);
+    expect(exportNow.asked).toContain(`GET /api/projects/${project.id}/export`);
+    expect(useEditor.getState().exportState).toMatchObject({ state: "queued", waiting: "rendering the cutfx-21 effect" });
   });
 });

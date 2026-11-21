@@ -684,10 +684,10 @@ async function resumeJobs(app: App): Promise<void> {
       seams.cloudMedia.resumeUpload(app.store.home, job.args);
     },
     full: (job) => {
-      // A review version's full-quality file for its Download button: the rest of its parts.
-      const { name, path, key, version } = job.args as { name: string; path: string; key: string; version?: number };
-      if (!fs.existsSync(path)) throw new jobs.Gone(`${path} is gone`);
-      void reviews.fullBehind(app.store.home, job.project, name, path, key, version).catch(settleBehind(app.store.home, job.key, "review", `${job.project}: its full-quality file`, () => !fs.existsSync(path)));
+      // A review version's full-quality file for its Download button: the rest of its parts, from its export here or
+      // fetched back from its cloud copy (gone only when it's neither: reviews.resumeFull).
+      const { path } = job.args as { path: string };
+      void reviews.resumeFull(app.store.home, job).catch(settleBehind(app.store.home, job.key, "review", `${job.project}: its full-quality file`, () => reviews.fullGone(app.store.home, path)));
     },
     share: (job) => reviews.resumeShareJob(app, job),
     fix: (job) => reviews.resumeFix(app, job),

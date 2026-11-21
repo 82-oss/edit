@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 
 import { dispatch } from "../src/mcp/index.ts";
@@ -10,6 +10,7 @@ import type { Project, Range } from "../src/model.ts";
 import { fileName, join } from "../src/paths.ts";
 import { batchOf, cancel, carryOn, exportRanges, forgetBatches, isBatch, latestBatch, tidy, timing, type Batch } from "../src/ranges.ts";
 import * as jobs from "../src/jobs.ts";
+import * as seams from "../src/seams.ts";
 import * as tools from "../src/tools.ts";
 import { fixtureHome, write, type Fixture } from "./helpers/home.ts";
 
@@ -248,3 +249,36 @@ test("a batch written down before a restart and not carried on yet is cancelled 
   expect(jobs.get(home, key)).toBeUndefined();
   expect(batchOf(app, project.id)).toBeNull();
 });
+
+// Audit E8a (Nov 21): a batch's wait for its graphics took no Cancel (up to 20 minutes, `cancelled` looked at only after).
+test("a batch cancelled while it waits for its graphics stops at once, exports nothing, and a new one can start", async () => {
+  const { app, home, project } = exportsHome("ranges-cancel-wait", [{ start: 0, end: 30, name: "One" }, { start: 60, end: 90, name: "Two" }]);
+  const asked = fakeExports(app, home, project);
+  let entered = 0;
+  const waiting: (() => void)[] = [];
+  const spy = spyOn(seams.broll, "waitForMaps").mockImplementation(async () => {
+    entered += 1;
+    // A render that takes its 20 minutes: let go at the end.
+    await new Promise<void>((resolve) => waiting.push(resolve));
+  });
+  try {
+    const batch = exportRanges(app, project, { range: null, format: "h264" } as never, "each", null);
+    for (let tries = 0; entered === 0 && tries < 300; tries++) await Bun.sleep(10);
+    expect(cancel(app, project.id)).toBe(true);
+    const asked_at = Date.now();
+    for (let tries = 0; !batch.finished && Date.now() - asked_at < 3_000; tries++) await Bun.sleep(10);
+    // Generous for CI's slow Mac: at once here.
+    expect(batch.finished).toBe(true);
+    expect(asked).toEqual([]);
+    expect(jobs.get(home, jobs.keyOf("export", project.id, "ranges"))).toBeUndefined();
+    const again = exportRanges(app, project, { range: null, format: "h264" } as never, "each", null);
+    for (let tries = 0; entered < 2 && tries < 300; tries++) await Bun.sleep(10);
+    expect(entered).toBe(2);
+    cancel(app, project.id);
+    for (let tries = 0; !again.finished && tries < 300; tries++) await Bun.sleep(10);
+    expect(again.finished).toBe(true);
+  } finally {
+    waiting.splice(0).forEach((resolve) => resolve());
+    spy.mockRestore();
+  }
+}, 30_000);

@@ -13,6 +13,7 @@ import * as cloud from "../src/cloud.ts";
 import * as jobs from "../src/jobs.ts";
 import * as remote from "../src/remote_actions.ts";
 import * as reviews from "../src/reviews.ts";
+import * as seams from "../src/seams.ts";
 import * as tools from "../src/tools.ts";
 import { fixtureHome } from "./helpers/home.ts";
 
@@ -361,6 +362,90 @@ test("a share's review copy says how far it is, from FFmpeg's own report, and ne
     await expect(shared).rejects.toThrow("the share was cancelled");
   } finally {
     reviews.copyLooks.everyMs = looks;
+    cleanup();
+  }
+}, 30_000);
+
+// Audit E7 (Nov 21): a share's waits for its graphics (effect renders, map shots, then slowed shots) took no Cancel:
+// 20 minutes each, up to three times, the share's stop looked at only after; and an export fetched back from the cloud
+// ran its whole download. "Stopping…" sat on the dialog all that time, and no new share could start.
+/** `wait` as one that never ends by itself (a render that takes its 20 minutes): the test lets it go at the end. */
+function hangingWait(name: "waitForMaps" | "waitForSmoothing"): { entered: () => number; release: () => void } {
+  let entered = 0;
+  const waiting: (() => void)[] = [];
+  spies.push(spyOn(seams.broll, name).mockImplementation((async () => {
+    entered += 1;
+    await new Promise<void>((resolve) => waiting.push(resolve));
+    return true;
+  }) as never));
+  return { entered: () => entered, release: () => waiting.splice(0).forEach((resolve) => resolve()) };
+}
+
+/** Settled within `ms`, or "still going". */
+const within = <T>(work: Promise<T>, ms: number) => Promise.race([work.then(() => "ended", (error: unknown) => (error as Error).message), Bun.sleep(ms).then(() => "still going")]);
+
+for (const [name, line] of [["waitForMaps", "waiting for map shots"], ["waitForSmoothing", "waiting for slowed shots"]] as const) {
+  test(`Cancel while a share's export ${line}: it stops at once, and a new share can start`, async () => {
+    const { app, home, id, cleanup } = await exported(`share-cancel-${name}`);
+    fakeCloud();
+    if (name === "waitForSmoothing") spies.push(spyOn(seams.broll, "waitForMaps").mockImplementation(async () => {}));
+    const wait = hangingWait(name);
+    try {
+      const shared = reviews.exportAndShare(app, id, {});
+      shared.catch(() => {});
+      for (let tries = 0; wait.entered() === 0 && tries < 500; tries++) await Bun.sleep(10);
+      expect(reviews.shareNow(home, id).line).toBe(line);
+      expect(reviews.cancelShare(app, id)).toBe(true);
+      // Generous for CI's slow Mac: at once here.
+      expect(await within(shared, 3_000)).toBe("the share was cancelled");
+      expect(jobs.get(home, jobs.keyOf("share", id))).toBeUndefined();
+      // The next share isn't refused as one under way.
+      const again = reviews.exportAndShare(app, id, {});
+      again.catch(() => {});
+      for (let tries = 0; wait.entered() < 2 && tries < 500; tries++) await Bun.sleep(10);
+      expect(wait.entered()).toBe(2);
+      reviews.cancelShare(app, id);
+      expect(await within(again, 3_000)).toBe("the share was cancelled");
+    } finally {
+      wait.release();
+      cleanup();
+    }
+  }, 30_000);
+}
+
+test("Cancel while a share fetches its export back from the cloud: the download is stopped, and the share with it", async () => {
+  const { app, home, id, path, cleanup } = await exported("share-cancel-fetch");
+  fakeCloud();
+  // Archived and gone from here (the disk short).
+  const records = JSON.parse(fs.readFileSync(nodePath.join(home, "exports.json"), "utf8")) as Record<string, Record<string, unknown>[]>;
+  records[id]![0]!.cloudKey = `edit/exports/${id}/Cops Realize.mp4`;
+  fs.writeFileSync(nodePath.join(home, "exports.json"), JSON.stringify(records));
+  fs.rmSync(path);
+  let fetching = 0;
+  let stopped = false;
+  const ends: (() => void)[] = [];
+  spies.push(spyOn(cloud, "download").mockImplementation((_key: string, _dest: string, _progress?: unknown, signal?: AbortSignal) => {
+    fetching += 1;
+    // A multi-GB fetch: ends only when it's stopped (or the test lets it go).
+    return new Promise<void>((resolve, reject) => {
+      ends.push(resolve);
+      signal?.addEventListener("abort", () => {
+        stopped = true;
+        reject(new Error("download was cancelled"));
+      }, { once: true });
+    });
+  }));
+  try {
+    const shared = reviews.share(app, id, null);
+    shared.catch(() => {});
+    for (let tries = 0; fetching === 0 && tries < 500; tries++) await Bun.sleep(10);
+    expect(reviews.shareNow(home, id).line).toBe("fetching the export back from the cloud");
+    expect(reviews.cancelShare(app, id)).toBe(true);
+    expect(await within(shared, 3_000)).toBe("the share was cancelled");
+    expect(stopped).toBe(true);
+    expect(jobs.get(home, jobs.keyOf("share", id))).toBeUndefined();
+  } finally {
+    ends.splice(0).forEach((end) => end());
     cleanup();
   }
 }, 30_000);

@@ -299,12 +299,14 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
       setBatch(await api.exportRanges(project.id, mode, options, watermark));
       setBatchShown(true);
     });
-  const go = () => {
+  // What's picked in the dialog, done: Export's click, and Retry when the server has nothing of it to retry.
+  const asPicked = () => {
     writeSetting(WHERE, where);
     if (choosing) writeSetting(WHAT, what);
-    if (where === "feedback") return void share();
-    return void (chosen === "whole" ? exportHere() : exportStretches(chosen));
+    if (where === "feedback") return share();
+    return chosen === "whole" ? exportHere() : exportStretches(chosen);
   };
+  const go = () => void asPicked();
 
   // Approving deletes the other versions' files: two clicks.
   const approve = async () => {
@@ -362,10 +364,13 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
       setStopped(false);
       setReview(await api.review(project.id));
     } catch (error) {
-      // Cancelled before an export existed: share with the dialog's settings.
+      // Nothing of it on the server (cancelled before an export existed, or failed while it waited on its graphics):
+      // what failed is done again, a share as a share (Ready for changes starts them too), anything else as picked here.
+      // It was a share whatever had failed, and a failed Save to Mac went up to the review link as a new version, on a
+      // link a client may have (audit E10c, Nov 21).
       if ((error as Error).message === "nothing to retry") {
         setRetrying(false);
-        await share();
+        await (status.kind === "share-failed" ? share() : asPicked());
         return;
       }
       setProblem((error as Error).message);

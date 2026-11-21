@@ -1275,13 +1275,17 @@ export async function has(key: string): Promise<boolean> {
   return (await head(key)) !== null;
 }
 
+const NOT_THERE = " isn't in the cloud";
+/** Whether `error` is `download` saying the object was looked for and isn't there: the same on every try, never a failure that passes. */
+export const notThere = (error: unknown): boolean => error instanceof Error && error.message.endsWith(NOT_THERE);
+
 export function download(key: string, dest: string, progress: Report = () => {}, signal?: AbortSignal): Promise<void> {
   checkKey(key);
   if (signal?.aborted) return Promise.reject(new Error("download was cancelled"));
   return diag.timeOnAsync("cloud", "cloud: download", key, async () => {
     const object = await head(key, signal);
     if (signal?.aborted) throw new Error("download was cancelled");
-    if (object === null) throw new Error(`${key} isn't in the cloud`);
+    if (object === null) throw new Error(`${key}${NOT_THERE}`);
     const dir = parent(dest);
     try {
       if (dir !== null && dir !== "") fs.mkdirSync(dir, { recursive: true });
