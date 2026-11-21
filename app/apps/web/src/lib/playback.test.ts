@@ -15,10 +15,13 @@ vi.mock("./api", () => ({ api: nativeApi, fetchRetrying: vi.fn(async () => new R
 const decoding = vi.hoisted(() => ({
   frames: new Map<string, object>(), sound: new Map<number, object>(), near: undefined as object | undefined,
   requestVideo: vi.fn(), requestRough: vi.fn(), requestAudio: vi.fn(), requestImage: vi.fn(), forget: vi.fn(), dispose: vi.fn(),
+  /** The page's decoder failing on a file (its second argument, the file's key), as the real one tells the player. */
+  fail: (_error: unknown, _key?: string) => {},
 }));
 vi.mock("./decoder", async (original) => {
   const actual = await original<typeof import("./decoder")>();
   return { ...actual, Decoder: class {
+    constructor(_changed: () => void, failed: (error: unknown, key?: string) => void) { decoding.fail = failed; }
     stats = {}; pictures = { bytes: 0, size: 0 }; sound = { bytes: 0 };
     picture(key: string, time: number) { return decoding.frames.get(`${key}:${time.toFixed(6)}`); }
     pcm(_key: string, chunk: number) { return decoding.sound.get(chunk); }
@@ -1100,6 +1103,36 @@ describe("preview seeks and lifetime", () => {
     } finally {
       at.mockRestore();
     }
+  });
+
+  it("plays in the window when the page's own decoder has just failed on a file (the MacBook Air, Nov 21: Play pressed a second after a cold open did nothing for 4 s, the page's decoder having failed on a proxy still coming down)", async () => {
+    const sent = await inWindow();
+    preview.setProject(fixture(), {}); await settle(); draw(); await settle();
+    decoding.fail(new Error("No video frame at the requested source time (video at 134.68 s)"), "/p1/m1");
+    preview.play(); await settle();
+    expect(sent("preview_play")).toEqual([{ frame: 0 }]);
+    expect(playhead.playing).toBe(true);
+  });
+
+  it("a Play pressed while the page's own player tries a frame again plays once it's back, never nothing", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      preview.setProject(fixture(), {}); draw();
+      decoding.fail(new Error("the network dropped"), "/p1/m1");
+      preview.play();
+      // Not played yet (the frame's being tried again), but the press is kept: a spinner, not silence.
+      expect(playhead.playing).toBe(false);
+      expect(preview.buffering).toBe(true);
+      vi.advanceTimersByTime(4_000);
+      expect(playhead.playing).toBe(true);
+      // A pause lets a kept press go, its spinner with it.
+      preview.pause();
+      decoding.fail(new Error("the network dropped"), "/p1/m1");
+      preview.play(); preview.pause();
+      expect(preview.buffering).toBe(false);
+      vi.advanceTimersByTime(4_000);
+      expect(playhead.playing).toBe(false);
+    } finally { vi.useRealTimers(); }
   });
 
   it("in full screen while the window plays, the page plays on from where it was", async () => {

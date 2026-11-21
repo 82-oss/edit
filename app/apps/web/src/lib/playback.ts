@@ -429,6 +429,13 @@ class Preview {
       note("warn", "preview", `${message} (behind the smooth render, which plays on)`);
       return;
     }
+    // Edit.app's window draws and plays: the page's decoder behind it (a frame asked for as the window opened, a proxy
+    // still coming down) neither covers it nor stops a Play (the MacBook Air, Nov 21: Play a second after a cold open
+    // did nothing for the 4 s of the page's retry).
+    if (this.native) {
+      note("warn", "preview", `${message} (the window's player draws, not this one)`);
+      return;
+    }
     // At rest, drawn live: the render's picture there is shown instead.
     if (this.smooth !== null && !playhead.playing && this.smoothAt(playhead.frame)) {
       note("warn", "preview", `${message} (the smooth render shown instead)`);
@@ -450,7 +457,7 @@ class Preview {
       this.error = null;
       this.notify();
       this.invalidate();
-      if (this.resumeAfterRetry) { this.resumeAfterRetry = false; this.play(); }
+      if (this.resumeAfterRetry) { this.resumeAfterRetry = false; this.setBuffering(false); this.play(); }
     }, DECODE_RETRY_MS);
   });
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1893,6 +1900,15 @@ class Preview {
     // A stream just opened hasn't heard what's made yet (a version moved to at a cut, mid-play): worth the wait too.
     const coming = this.stream !== null && (!this.stream.described || this.stream.made(playhead.frame, second));
     const rendered = this.smooth !== null && this.video !== null && (this.smoothAt(playhead.frame, second) || coming);
+    // The page's decoder trying a frame again (`DECODE_RETRY_MS`): the window plays anyway, and the page's own player
+    // keeps the press, on a spinner, and plays once it's back (a pause lets it go). It did nothing, without a word
+    // (the MacBook Air, Nov 21: Play pressed a second after a cold open).
+    if (this.error !== null && this.decodingError() && this.native) { this.error = null; this.notify(); }
+    if (this.error !== null && this.decodingError() && !rendered) {
+      this.resumeAfterRetry = true;
+      this.setBuffering(true, true);
+      return;
+    }
     if (this.error !== null && !(rendered && this.decodingError())) return;
     if (this.smooth && this.video && this.smoothAt(playhead.frame, second)) {
       // The picture's in, its sound not yet at this place (a jump): both start together once it is.
@@ -2066,6 +2082,8 @@ class Preview {
     this.remember();
     this.endHold();
     this.shortSince = undefined;
+    // A Play kept while a frame was tried again, let go: its spinner with it.
+    if (this.resumeAfterRetry && !playhead.playing) this.setBuffering(false);
     this.resumeAfterRetry = false;
     const playing = playhead.playing;
     playhead.playing = false;
