@@ -14,7 +14,7 @@ If something breaks, stop there:
 3. Verify it with a test and by running the failed step again.
 4. Commit, then carry on from that step on the fixed build.
 
-When only Sphe can unblock a fix, stop and ask. Log each fix in `docs/feedback/<date>-<project>.md`, and also in the teaching loop's `LOG.md` when the run is a trial.
+When only Sphe can unblock a fix, stop and ask. Each fix is its own commit, whose message says what the team's note was and what changed. What's still open goes into `TODO.md` under "The in-app agent", and is deleted from there when done. Write no log file into the repo; when the run is a trial, the teaching loop's `LOG.md` is the log.
 
 ## A round of feedback
 A round of feedback is a chance to make the next edit better, not just this one. For each pattern in the notes, decide:

@@ -43,5 +43,5 @@ The agent's turn ends with flags it hasn't fixed → Edit already follows up by 
 ## The holdout and the write-up
 - When the loop stops: one from-scratch edit of the holdout, judged against the same key. One clean shot; no teaching from it.
 - Close every inbox lesson the loop took: `edit lessons taught <id> <the skill, audit or code and its commit>`, or `edit lessons drop <id> <why>` (a one-off, or against what the team wants elsewhere). Never close one the loop didn't measure.
-- Write it up in `docs/feedback/<date>-<name>.md` (rounds, the table, what changed by kind with commits, what's open for the user) and update the agent memory. Everything else stays under `$LOOP`.
+- Write it up in `$LOOP/LOG.md` (rounds, the table, what changed by kind with commits), tell the user what's open and add those items to `TODO.md` under "The in-app agent", and update the agent memory. Nothing of the loop goes into the repo but the changes themselves.
 - Say plainly what the measures can't: nothing was heard or judged for taste; the team's review of a fresh edit is the real test.

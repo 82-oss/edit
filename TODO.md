@@ -91,15 +91,13 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 
 ## The in-app agent
 
-- **Most of `agent/` is not in any channel.** Checked Nov 21 against prod's channels. Moved, word for word, and no longer read from the repo by channel projects: the writer guides `cut-in`, `judgment`, `house`, `foia`, `compilation`, and both ideas guides. Moved only as a short rewrite: the ten house edit skills. Not moved at all: `writer/courtroom.md`, `writer/commentary.md`, `thumbnails/guide.md` (every Thumbnails lane is empty), `skills/subtitle-video.md`, most of `skills/resume-edit.md`, `shared/names-first.md`, and all 45 files of `styles/` (no courtroom, horror, shorts or commentary channel exists). None of it can be deleted while V1 is in use: 105 of 116 edit projects, 113 of 126 scripts and all 42 ideas have no channel, and JJ and Marc made V1 work on Nov 18 to 20. Deleting `agent/writer` today stops Edit from starting.
-- **Channel projects still read three repo files**: `instructions.md` (sent whole to every session, with a list of skills for a tool channel projects don't have, `mcp/index.ts`), `writer/commentary.md` (`writer/commentary.ts`, even when the script has a channel) and `thumbnails/guide.md` (`thumbnails/run.ts`).
+- **Making V2 the only mode** has its own file, `docs/v1-to-v2.md`: what of `agent/` is in the channels, what V2 can't do yet, and the order of steps.
 - **A channel project's voice-over may take its voice from the project's style, not the channel's narration voice** (`styles.ts` → `voiceover.ts`; projects default to `bodycam`). Not traced.
 - **V1 still compacts its conversation at 180k** (`claude.ts`; V2 uses 1M). Measure first.
 - **`repack_subtitles` loses hand fixes on a re-run**: lines deleted and holds lengthened by hand come back (`subtitles.ts`, `captions.ts` `adjusted`).
 - **The server says "choose Check Claude"**, a button the page no longer has (`agent.ts` `waitForClaudeLogin`).
 - **Text removal, from the Boyfriends edit**: the bottom ARRESTFLIX mark is never found; a short "No" in the 0.80× copy reads as no words; a subtitle under the glitch transition isn't planned. All wait on the bake-off of mark finders.
 - **Cuffed & Caught's cleanup**: a new render after the strip-stacking fix was never checked on prod.
-- **The two skills that run the agent tell coding agents to write a file per project in `docs/feedback/`** (`.agents/skills/in-app-agent`, `teaching-loop`). If this list is to stay the only one, they should add open items here instead.
 
 ## The cloud and storage
 
@@ -107,14 +105,13 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 - **The footage sweep is off** (accounts repo, `convex/footage.ts` `SWEEP = { clear: false }`); to turn on about Dec 15, once every Mac can bring footage back.
 - **Deleting a review link leaves each version's `fullKey`, `preview.key` and `wordsKey` on R2** (accounts repo, `convex/reviewPage.ts` `remove`).
 - **The live relay still diarizes with pyannote** (`apps/relay/wrangler.toml` `DIARIZE`); every Mac is past the builds that needed it.
-- **V1's watermark dropdown** (`channel_marks.ts` `offerFor`) goes once every channel has its watermark on its page.
 
 ## For Sphe to decide
 
 - **The bake-off**: Edit against Claude Desktop plus Premiere on the same cases, judged blind. Never run.
 - **One record for a script** instead of Writer's script and the project's `script.blocks` (about a week).
 - **V2**: a Git mirror of the effects library; a sandboxed shell for the agent against one tool per job; a stage view while the agent makes a graphic; a graphics craft skill.
-- **Settings**: Updates › Channel shows a disabled "Stable · Soon" (`AppMenu.tsx`), and Beta › Edit V2 is still a switch (`lib/beta.ts`). Hide them? Update by itself when idle?
+- **Settings**: Updates › Channel shows a disabled "Stable · Soon" (`AppMenu.tsx`). Hide it? Update by itself when idle? (The Beta › Edit V2 switch is in `docs/v1-to-v2.md`.)
 - **Akwe Pro Bold's licence** was never verified; its download page said personal use (`crates/edit-render/fonts/AkwePro-Bold.otf`).
 - **"COURTROOM WATCH"**: blurring the logo leaves a soft blue patch; a solid patch or a crop (`mark_blurs.ts`).
 - **Apple's on-device sound classifier** behind `listen`, to name music, sirens or shouting (about a day). And Apple's first-pass words have no pauses: Scribe in pieces for what Apple hears worst, or a wider `PAD_MS` (`kept_hearing.ts`).
