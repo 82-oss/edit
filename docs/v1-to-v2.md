@@ -78,12 +78,39 @@ No channel has a Trello board, so channel ideas fall back to the V1 boards (`app
 | Ideas | No channel has its own Trello board | Missing content |
 | Watermarks | Five channels have none. V1's Drive dropdown and per-style default still serve no-channel projects (`channel_marks.ts` `offerFor`, `reviews.ts` `styleWatermark`) | Missing content |
 | The lessons inbox | 103 open V1 lessons (bodycam 49, interrogation 23, courtroom 14, FOIA 10, shorts 4, commentary 3) with nowhere to go in V2 | Missing content |
-| Timeline, note boxes, changing a project's category | Not in V2 | Deliberate |
+| Timeline | Not in V2; the team wants it (see "The timeline in V2") | By design, never decided |
+| Note boxes, changing a project's category | Not in V2 | Deliberate |
 | The house's graphics tools (`add_text`, `map_view`, `highlight_evidence`, `reframe`, the commentary tools…) | Removed from the channel tool list (`mcp/registry.ts` `NOT_IN_HQ`); replaced by `v1-<name>` effects in the library. GTA 6 and InternetJanitor have none | Deliberate |
 
 ## What the team gains
 
 Graphics written as code with version history, a library the whole team shares, teaching per channel and per group with exceptions, an untaught channel that won't edit until it's taught, text and watermark removal by the channel's own lesson, the passes after each turn (both ears, house words), undo of any change by anyone, a message queue with steer and cancel, and the viewer pinned to the last render while the agent works.
+
+## The timeline in V2
+
+The team wants it back. Looked into on Nov 21 against the code and three real channel projects (one of 3,173 clips on 28 tracks, 2 h 6 min).
+
+**Why there is none.** It was part of V2's first design (Nov 10, "an HQ editor is the viewer and the chat"), with the reasons in the code: "its timeline is the agent's to work" and "a stray S would split a clip nobody can see" (`apps/web/src/components/Editor.tsx`). Nobody decided the team shouldn't see their edit.
+
+**What the V1 timeline would do with a channel project today.** It is one canvas that draws the project's tracks and clips, and almost all of it is generic (`components/Timeline.tsx`, `lib/edit.ts`, `lib/timelineView.ts`). Footage, sound, voice-over, music and made sounds would draw correctly. Four things would draw wrongly:
+
+- An effect is an ordinary video clip that is a window into one render, so it draws as footage, with nothing saying it's an effect or whether its render is current.
+- A see-through effect's render holds the picture above its mask at twice the height, and thumbnails are made from the whole frame (`media.ts`), so its strip shows both squashed together.
+- Subtitles drawn by effects leave their text clips at opacity 0 (2,028 in one project), and the timeline draws those like visible ones.
+- Removal strips and blurs are separate clips on separate tracks, with nothing showing which footage they belong to.
+
+**Why hand edits aren't safe yet.** The agent's effect code stores positions on the timeline inside itself (one project's cut-in graphic holds a list of timeline frames; its subtitles hold "timeline second, words"). The model stays valid when a clip is moved by hand, but nothing knows the graphic is now timed to the wrong moment, and nothing re-renders it. Also: what's beneath an effect is remade only for that effect's first clip (`effect_inputs.ts`); a single-track move, trim or ripple delete leaves effects, subtitles and voice-over behind; the passes after a turn (both ears, house words) don't run after a hand edit; during a turn the viewer plays a pinned version while the timeline would draw the live one; and V1's menus and the T key add the house's text, which V2 forbids.
+
+**The order.**
+
+1. **The timeline shown, read only** (2 to 3 days): see every track and clip, scrub, zoom; nothing can be changed. During a turn it draws the version on screen.
+2. **Made exact**: effect clips marked with their render's state, the see-through thumbnails fixed, hidden subtitles dimmed, removal and blurs drawn with their footage.
+3. **Select a clip to point the agent at it**: a chip in the chat naming the clip, its time and its effect.
+4. **Hand edits on footage and sound** (about a week more): outside a turn only, effect clips locked, the agent told with the next message what the person changed and which effects it touches, the passes run after a hand edit, and the server refusing a save that changes an effect clip.
+5. **What's beneath an effect remade for every clip of it**, not only the first.
+6. **Only if the team needs it, hand edits on effects** (2 to 4 weeks): effects are handed their place on the timeline instead of storing it, which means the agent's notes and every existing effect taught again.
+
+**To ask the team first**: what they want to do on it (see and scrub, find a graphic, fix a subtitle's timing, trim or reorder footage, move a graphic), and whether V2 keeps the video-player keys or takes V1's.
 
 ## The `agent/` folder
 
@@ -137,7 +164,7 @@ A proposal, each step small enough for one nightly, each with what proves it.
 
 - What happens to the 105 V1 edits (18 touched this week) and 113 V1 scripts: finish as V1, convert, or archive.
 - Whether a style becomes a channel or something a channel has, and which channel courtroom (16 edits, 22 scripts), commentary (5 edits, 3 scripts: InternetJanitor?), horror, shorts and the 13 subtitled videos belong to.
-- Whether V2 stays without a timeline once it's everyone's editor.
+- The timeline: which of the steps under "The timeline in V2" to build, and how far.
 - Whether the house's graphics stay code-only `v1-` effects, and whether GTA 6 and InternetJanitor get them.
 - Whether access stays by style or moves to channels alone.
 - What becomes of the 103 inbox lessons, and of `instructions.md`.
