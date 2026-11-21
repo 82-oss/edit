@@ -239,3 +239,47 @@ test("an effect's render that takes too long to make again ends the export as a 
     t.cleanup();
   }
 });
+
+// Nov 21, bad-day's cold-export-drop on the final code: the line dropped two minutes while an export read its footage
+// from the cloud. It tried three ways in 25 seconds ("could not decode <url> failed to fill whole buffer" each time),
+// then was "failed" with a Retry to press. The same words ended exports 26 times in two days in Sphe's log.
+test("an export the connection dropped under waits and goes again by itself; one that fails for a reason of its own still fails", async () => {
+  const t = fixtureHome("export-line-dropped");
+  const registry = new ExportRegistry(t.home);
+  t.app.exports = registry;
+  const plan = spyOn(t.native, "exportPlan").mockReturnValue({ plan: { start: 0, end: 30, width: 64, height: 36, audio: false }, fps: 30 });
+  const archive = spyOn(exportCloud, "enabled").mockReturnValue(false);
+  const render = spyOn(t.native.ExportJob, "start").mockImplementation((job) => {
+    const named = JSON.parse(job.project.json).name as string;
+    const why = named === "Dropped" ? "could not decode <url> failed to fill whole buffer" : "the encoder stopped early";
+    return { cancel: () => {}, wait: () => Promise.reject(new Error(`${named}: ${why}`)) };
+  });
+  const make = async (named: string): Promise<Project> => {
+    const id = t.store.create(named, { width: 64, height: 36, fps: 30 }).project.id;
+    await t.store.update(id, "test", (p) => p.clips.push(clip({ id: "solid", track: p.tracks[0]!.id, start: 0, duration: 30, type: "solid" })));
+    return structuredClone(t.store.get(id)!.project);
+  };
+  const rowOf = (id: string) => jobs.list(t.home, "export").find((one) => one.project === id);
+  const settled = async (id: string) => {
+    for (let waited = 0; waited < 5000 && (rowOf(id)?.state ?? "running") === "running"; waited += 10) await Bun.sleep(10);
+    return rowOf(id);
+  };
+  try {
+    const options = t.native.exportDefaults();
+    const dropped = await make("Dropped");
+    await registry.start(t.store, t.app.library, dropped, options, `${t.dir}/dropped.mp4`, { drive: false, keepLocal: true });
+    const waiting = await settled(dropped.id);
+    expect(waiting).toMatchObject({ state: "waiting" });
+    expect(waiting?.retry_at).toBeGreaterThan(Date.now());
+    expect(String(waiting?.why)).toContain("the connection dropped");
+    // Its own failure (nothing failure.ts knows as trouble that passes): failed, as before, for a person or the next build.
+    const broken = await make("Broken");
+    await registry.start(t.store, t.app.library, broken, options, `${t.dir}/broken.mp4`, { drive: false, keepLocal: true });
+    expect(await settled(broken.id)).toMatchObject({ state: "failed" });
+  } finally {
+    render.mockRestore();
+    archive.mockRestore();
+    plan.mockRestore();
+    t.cleanup();
+  }
+});

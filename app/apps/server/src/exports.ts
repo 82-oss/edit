@@ -1850,12 +1850,24 @@ export class ExportRegistry implements seams.Exports {
       // The engine never ended a job it was told to stop, or an effect's render took too long to make again: it waits
       // and goes again by itself, a fresh job (jobs.ts `wait`, the export resumer), as trouble that passes.
       if (failedWith instanceof EngineAbandoned || failedWith instanceof RemakeTimedOut) jobs.wait(this.home, running.key, failedWith);
+      // The line dropped while it read its footage from the cloud (failure.ts knows the words: nothing it doesn't
+      // recognise waits here, an export's own refusals are plain errors): it waits and goes again by itself, at once
+      // when the cloud answers again, with the chunks it made (Nov 21, bad-day cold-export-drop: three tries in 25
+      // seconds of a two-minute drop, then "failed" and a Retry to press; in Sphe's log on mandalorian the same
+      // "could not decode <url> failed to fill whole buffer" ended exports 26 times in two days).
+      else if (failure.surely(failedWith ?? result.error) === "passing") {
+        diag.warn("export", `${project.name}: the connection dropped under the export (${result.error.slice(0, 160)}); it waits and goes again by itself`);
+        jobs.wait(this.home, running.key, new Error(`could not reach the footage in the cloud: the connection dropped while ${project.name} was exporting`));
+      }
       // Kept, failed, for the next build to try again (retry_after_update.ts).
       else jobs.settle(this.home, running.key, "failed", { error: result.error, build: BUILD, args: { name: project.name, ...(upload ? { drive: true } : {}) } });
     }
     this.jobs.delete(id);
     if (!(result.ok === false && !running.cancelled)) jobs.end(this.home, running.key);
-    if (running.snapshot !== null) fs.rmSync(running.snapshot, { force: true });
+    // The timeline it was started with stays for an export that waits to go again (it's made from that, not from
+    // edits made meanwhile, and never "as the edit is now" for want of it).
+    const waits = result.ok === false && !running.cancelled && jobs.get(this.home, running.key)?.state === "waiting";
+    if (running.snapshot !== null && !waits) fs.rmSync(running.snapshot, { force: true });
     if (upload && result.ok) {
       try {
         seams.drive.start(store, library, project, output);

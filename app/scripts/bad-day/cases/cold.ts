@@ -163,8 +163,10 @@ function coldExport(name: string, trouble: Trouble, spec: string): Case {
         context.check("it finished within five minutes of the trouble ending", took <= 300, `${took} s`);
         sameVideo(context, "the cold export", kept, fileOf(context, cold_));
       }
-      const failed = edit.log().split("\n").filter((one) => /\[export\].*(export failed|stopped moving|Sharing stopped)/.test(one));
-      context.check("no export failed on the way", failed.length === 0, failed.length === 0 ? "no failed export in Edit's log" : failed.slice(0, 3).map((one) => one.slice(0, 220)).join(" | "));
+      // Whether it had to wait and go again (the line gone under its reads), and how often: said, not judged. What's
+      // judged is the end: done by itself, the same video, no row failed (the common checks).
+      const waited = edit.log().split("\n").filter((one) => /\[export\].*it waits and goes again by itself/.test(one));
+      context.log(`the export waited and went again ${waited.length} time(s)${waited.length > 0 ? `: ${waited[0]!.slice(24, 220)}` : ""}`);
     },
   };
 }
