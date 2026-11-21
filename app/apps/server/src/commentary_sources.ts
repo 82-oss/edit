@@ -2,6 +2,7 @@
 // video downloads, bounded excerpts through the shared cloud media registry.
 // Keep the beat and source clock together so subsequent edits can reuse them.
 import { mapAllowed } from "./hq_reference.ts";
+import * as addons from "./addons.ts";
 import * as fs from "node:fs";
 import type { App } from "./app.ts";
 import { writeAtomic } from "./files.ts";
@@ -32,8 +33,9 @@ registerTool("capture_evidence", async ({ app, args, projectId }) => {
   const dir = join(app.store.home, "research", projectId, "captures"); fs.mkdirSync(dir, { recursive: true });
   const path = join(dir, `source-${Date.now()}.png`);
   const page = typeof args.page === "number" && Number.isInteger(args.page) ? args.page : null;
-  // Horror shows a page whole and close, never a line of it: a phrase comes with the page round it.
-  const around = app.store.get(projectId)?.project.style === "horror";
+  // Horror shows a page whole and close, never a line of it: a phrase comes with the page round it (`horror-look`).
+  const project = app.store.get(projectId)?.project;
+  const around = project !== undefined && addons.has(project, "horror-look");
   const result = await capture(args.url, path, typeof args.phrase === "string" ? args.phrase : "", typeof args.selector === "string" ? args.selector : "", args.full_page === true, page, around);
   const [, ids, errors] = await importPaths(app, projectId, [path], false, "agent");
   const media = ids[0]; if (media === undefined) throw new Error(errors.join("; "));
@@ -148,8 +150,9 @@ registerTool("search_broll", async ({ app, args, projectId }) => {
       try {
         const videos = await searchYoutube(app.store.home, String(query), limit);
         keep(app, projectId, `query:${String(query)}`, { at: Date.now(), videos });
-        // Horror: another channel's upload about the story is never footage (its guide).
-        if (app.store.get(projectId)?.project.style === "horror") {
+        // Horror: another channel's upload about the story is never footage (its guide; `no-competitor-footage`).
+        const project = app.store.get(projectId)?.project;
+        if (project !== undefined && addons.has(project, "no-competitor-footage")) {
           const theirs = videos.filter((v) => competitor(v.channel, v.title));
           if (theirs.length > 0) return { query, videos: videos.filter((v) => !theirs.includes(v)), left_out: theirs.map((v) => `${String(v.channel)}: ${String(v.title)} (a channel covering such stories; find the original upload, the person, the news or an archive)`) };
         }
@@ -222,7 +225,8 @@ registerTool("import_broll", async ({ app, args, projectId }) => {
   ranges.splice(0, ranges.length, ...ranges.filter((r) => !isPost(r.url)));
   // Reuse one original for all ranges from that video; no persistent preview download.
   const sources = [...new Set(ranges.map((r) => youtube.videoId(r.url)!))];
-  if (app.store.get(projectId)?.project.style === "horror") {
+  const project = app.store.get(projectId)?.project;
+  if (project !== undefined && addons.has(project, "no-competitor-footage")) {
     for (const id of sources) {
       const seen = knownChannel(app, projectId, id);
       if (seen !== null && competitor(seen.channel, seen.title)) throw new Error(`${String(seen.channel)} makes videos about such stories: never their footage (the guide). Find the original upload, the person involved, the news station or an archive; nothing imported`);

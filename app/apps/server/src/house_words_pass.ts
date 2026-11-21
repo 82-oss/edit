@@ -10,6 +10,7 @@
 // The person hears of it in one line only when it did something.
 
 import * as fs from "node:fs";
+import * as addons from "./addons.ts";
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
 import * as effects from "./effects.ts";
@@ -21,7 +22,7 @@ import { splitWhitespace } from "./rust.ts";
 import { agentPanel, type Kept } from "./seams.ts";
 import * as seams from "./seams.ts";
 import type { Store } from "./store.ts";
-import { houseWords, starOnScreen, styleTerms, suggestions } from "./subtitles.ts";
+import { houseWords, mutedWords, starOnScreen, suggestions } from "./subtitles.ts";
 
 /** Who the pass's saves are from: Edit's own work, never the agent's or a person's. */
 export const ORIGIN = "house-words";
@@ -133,6 +134,11 @@ export function start(app: App): void {
         began.delete(root);
         const now = app.store.get(root);
         if (now === null || (from !== undefined && now.rev === from)) return;
+        // The channel's add-ons (its extra muted words) read fresh first, bounded; one that fails answers with the
+        // edit's style's, as before, and the pass runs either way.
+        if (typeof now.project.channel === "string" && now.project.channel !== "") {
+          await addons.ready().catch((error: unknown) => diag.warn("house words", `${root}: the channel's add-ons weren't read, so its style's are used: ${diag.messageOf(error)}`));
+        }
         const passed = await pass(app, root);
         if (passed === null) return;
         const said = line(passed);
@@ -175,7 +181,8 @@ export function unstarredIn(code: string, extra: readonly string[] = []): string
 export function effectLine(store: Store, projectId: string, name: string): string | null {
   const live = store.get(projectId);
   if (live === null) return null;
-  const extra = styleTerms(live.project.style);
+  // The channel's extra muted words (its `muted-words` add-on), on top of the house list `suggestions` always has.
+  const extra = addons.has(live.project, "muted-words") ? mutedWords(live.project) : [];
   const dir = effects.folder(store, projectId, name);
   const terms = new Set<string>();
   const files: string[] = [];

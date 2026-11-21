@@ -9,6 +9,7 @@
 // short shots (`broll_recut`). Files not read yet start reading and are listed as
 // pending, as the censor check's are.
 
+import * as addons from "./addons.ts";
 import * as diag from "./diag.ts";
 import { Semaphore } from "./media.ts";
 import type { Clip, Media, Project } from "./model.ts";
@@ -273,7 +274,7 @@ export function issues(project: Project): { issues: unknown[]; pending: string[]
   }
   out.push(...subtitled.values());
   // A fixed camera held, not cut up: a courtroom's hearing, an interrogation's room (Nov 8).
-  if (project.style === "courtroom" || project.style === "interrogation") out.push(...recuts(project, clips));
+  if (addons.has(project, "held-broll")) out.push(...recuts(project, clips));
   return { issues: out, pending: [...pending].sort() };
 }
 

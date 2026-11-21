@@ -13,6 +13,7 @@
 
 import * as fs from "node:fs";
 
+import * as addons from "./addons.ts";
 import * as diag from "./diag.ts";
 import { clipFrom } from "./clips.ts";
 import type { Clip, Media, Project } from "./model.ts";
@@ -447,7 +448,7 @@ const BRIDGE_PICTURES = 0.4;
  * right here in the voiceover that we could literally show").
  */
 export function interrogationIssues(project: Project, parts: { start: number; end: number; kind: string }[], unmarked: (at: number) => string[]): Record<string, unknown>[] {
-  if (project.style !== "interrogation") return [];
+  if (!addons.has(project, "interrogation-structure")) return [];
   const out: Record<string, unknown>[] = [];
   const fps = project.settings.fps;
   const base = project.tracks.find((track) => track.kind === "video")?.id;

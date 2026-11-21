@@ -48,7 +48,7 @@ import * as markers from "./markers.ts";
 import { call, ORIGIN } from "./mcp/index.ts";
 import { handlerFor, image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
 import type { Clip, ExportOptions, Marker, Media, Project } from "./model.ts";
-import { isEssay } from "./model.ts";
+import * as addons from "./addons.ts";
 import { closeMarks } from "@edit/types/marks";
 import * as localPreviews from "./local_previews.ts";
 import { native, withProject, withProjectAsync, type EncodedImage, type ProjectInput, type SheetSpec } from "./native/index.ts";
@@ -966,7 +966,7 @@ const BIG_CUT_ASK_MS = 60 * 60_000;
  */
 function bigCut(app: ToolCall["app"], projectId: string, project: Project, frames: number, asked: unknown): void {
   // A Short starts as its whole source and is cut down to a minute: its workflow takes out most of it at once.
-  if (project.style === "shorts") return;
+  if (addons.has(project, "short-form")) return;
   const length = durationOf(project);
   if (length <= 0 || frames * 2 <= length) return;
   const fps = fpsOf(project);
@@ -1538,7 +1538,7 @@ const LONGEST_INTRO = 40;
 const scripted = (project: Project): boolean => project.script?.blocks.some((block) => block.kind === "footage") ?? false;
 
 export function introLong(project: Project, teasers: [number, number][]): Json[] {
-  if (project.style !== "bodycam" || teasers.length === 0 || scripted(project)) return [];
+  if (!addons.has(project, "bodycam-intro") || teasers.length === 0 || scripted(project)) return [];
   const fps = project.settings.fps;
   const [start, end] = [Math.min(...teasers.map(([from]) => from)), Math.max(...teasers.map(([, to]) => to))];
   // The teasers' footage, not the narration of a cut-in between them.
@@ -1556,7 +1556,7 @@ const CUT_INS_PER_SCREEN = 6;
  * images pop up"); windows_overused is the other side.
  */
 export function windowsUnderused(project: Project): Json[] {
-  if (project.style !== "bodycam") return [];
+  if (!addons.has(project, "windows-screens")) return [];
   const cutIns = (project.script?.blocks ?? []).filter((block) => block.kind === "narration").length;
   const wanted = Math.floor(cutIns / CUT_INS_PER_SCREEN);
   const screens = new Set(project.clips.map((clip) => /^(.*?)Desktop · /u.exec(clip.name ?? "")?.[1]).filter((prefix): prefix is string => prefix !== undefined)).size;
@@ -1574,7 +1574,7 @@ const FEWEST_WINDOWS = 3;
  * on this window screen").
  */
 export function desktopsSparse(project: Project): Json[] {
-  if (project.style !== "bodycam") return [];
+  if (!addons.has(project, "windows-screens")) return [];
   const screens = new Map<string, { start: number; windows: number }>();
   for (const clip of project.clips) {
     const found = /^(.*?Desktop) · (Photo Viewer|Video Player|Notepad)( · |$)/u.exec(clip.name ?? "");
@@ -1833,7 +1833,7 @@ const ARREST = /\b(you'?re|you are) (now )?under arrest\b|\bunder arrest\b|\bcuf
  */
 export function introWithoutArrest(project: Project, heard: Map<string, Transcript>, teasers: [number, number][]): Json[] {
   // A script decides where its intro ends ("according to the script, the intro stops after this"): only an edit without one is told to end on the arrest.
-  if (project.style !== "bodycam" || teasers.length === 0 || scripted(project)) return [];
+  if (!addons.has(project, "bodycam-intro") || teasers.length === 0 || scripted(project)) return [];
   const fps = project.settings.fps;
   const end = Math.max(...teasers.map(([, to]) => to));
   // What the intro's last 10 s say.
@@ -1868,7 +1868,7 @@ export function introWithoutArrest(project: Project, heard: Map<string, Transcri
  * card it does not").
  */
 function introUncaptioned(project: Project, teasers: [number, number][]): Json[] {
-  if (project.style !== "interrogation" && project.style !== "bodycam") return [];
+  if (!addons.has(project, "intro-captions")) return [];
   return teasers.flatMap(([start, end]) => {
     const inside = project.clips.filter((clip) => clip.type === "text" && clip.start >= start && clip.start < end);
     const plain = inside.filter((clip) => (clip.name ?? "").startsWith("Subtitle ·"));
@@ -1893,7 +1893,8 @@ export function audited(app: App, project: Project, rev: number | null): Args {
   const sections = onProject((input) => native().sections(input));
   const parts = sections.parts;
   const teasers = parts.filter((part) => part.kind === "intro").map((part): [number, number] => [part.start, part.end]);
-  const extra = isEssay(project.style) ? [
+  // The essay's checks instead of the police edit's (the add-on essay-checks).
+  const extra = addons.has(project, "essay-checks") ? [
     ...(unusedNoteLinks(app, project) as Json[]),
     ...hooks.offScript(project, heard),
     ...hooks.cutMidWord(project, heard),
@@ -2115,7 +2116,7 @@ export function editContext(app: App, found: Live, args: Args): Args {
   const endGiven = num(args.end);
   const from = startGiven !== null ? asInt(round(startGiven * fps)) : (span?.[0] ?? null);
   const to = endGiven !== null ? asInt(round(endGiven * fps)) : (span?.[1] ?? null);
-  const overview = isEssay(p.style) && from === null && to === null && ids === null;
+  const overview = addons.has(p, "essay-checks") && from === null && to === null && ids === null;
   const narrationIds = new Set((p.script?.blocks ?? []).flatMap((b) => b.kind === "narration" ? [b.clip, b.voiceover].filter((id): id is string => typeof id === "string") : []));
   const narrationLinks = new Set(p.clips.filter((c) => narrationIds.has(c.id)).flatMap((c) => c.link ? [c.link] : []));
   const inside = (start: number, end: number) => !(from !== null && end <= from) && !(to !== null && start >= to);
@@ -2246,7 +2247,7 @@ export function editContext(app: App, found: Live, args: Args): Args {
       const added = uploads.forContext(app, p);
       return added.length === 0 ? {} : { uploads: added };
     })(),
-    ...(isEssay(p.style) ? { chapters: commentaryAudit.outline(p) } : {}),
+    ...(addons.has(p, "essay-checks") ? { chapters: commentaryAudit.outline(p) } : {}),
     ...burnedContext(p, from ?? 0, to ?? Number.MAX_SAFE_INTEGER),
     ...removalContext(app, p),
     speaker_line_counts: speakers,
@@ -2384,7 +2385,7 @@ function removalContext(app: App, p: Project): Args {
       // How their text comes out (a tight tracked blur, every section), the edit's sections, and what detection proposes for the agent to mark.
       ...(removalLesson.kinds(lesson).blur.length > 0 ? removalSections.outline(p, textRemoval.proposed(app, p)) : {}),
       pieces: `${done} done, ${out} still being done${failed > 0 ? `, ${failed} not clean` : ""}`,
-      ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "The person stopped it (the chat's Stop): what ran by itself doesn't now; only what's asked or marked since with start_removal (marks, from/to, media, or whole) is taken out." } : {}),
+      ...(removalAsks.isStopped(app.store.home, p.id) ? { stopped: "It doesn't run by itself here: the person stopped it (the chat's Stop), or moved this edit onto its channel from today's kind of edit (its picture stays as it was until they ask). Only what's asked or marked since with start_removal (marks, from/to, media, or whole) is taken out." } : {}),
       note:
         (textRemoval.marksOnly(p)
           ? "Their subtitles and text get a tight tracked blur only where you mark them (marks above), in the background; their watermarks come out by themselves as footage is cut. A mark covers the shot it's in. Their watermark still there (a logo or name laid over the footage, never the camera's stamp or labels): mark its stretch with its box (marks: [{from, to, box}]), and it goes with their words. "

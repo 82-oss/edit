@@ -10,6 +10,7 @@
 
 import * as fs from "node:fs";
 
+import * as addons from "./addons.ts";
 import type { App } from "./app.ts";
 import { parseTranscript } from "./captions_core.ts";
 import { clipFrom, textStyleFrom } from "./clips.ts";
@@ -22,7 +23,7 @@ import { importMade, importPaths } from "./import.ts";
 import * as mediaModule from "./media.ts";
 import { cloudEnabled } from "./relay.ts";
 import type { ClipColor, Media, Project, Script, ScriptBlock, ScriptJob, Style, TextStyle, TrackKind } from "./model.ts";
-import { isEssay, NARRATION } from "./model.ts";
+import { NARRATION } from "./model.ts";
 import { addTrack, clipOf, duration as projectDuration, fps as fpsOf, freeTrack, freshId, GONE_WITHOUT_NOTE, goneWithout, goneWithoutName, insertTime, marksCut, mediaOf, REUSE_LABEL, reuseCaseLabel, reuseCaseOf, reusedLabel, WHOLE_SOURCE_LABEL, REUSED_SCRIPT_NOTE, reusedScriptBlock } from "./project.ts";
 import { fileName, fileStem, extension as pathExtension, join, parent } from "./paths.ts";
 import { byteLength, charCount, display, f32, isAlphanumeric, isWhitespace, parseHex, round, splitWhitespace, takeChars, trim } from "./rust.ts";
@@ -2993,13 +2994,19 @@ async function followOn(app: App, id: string, inserting: string | null, recut: b
   });
   if (credit === null) diag.info("script", `${title}: import done in ${diag.human(timing.now() - began)}`);
   // A new edit starts with the case's research, so the articles and images
-  // are waiting by the time the editing gets to them. Not a Short: it shows
-  // only its own footage (no maps, photos or articles to wait for). Once: a
-  // voice-over carried on after its wait doesn't ask again.
+  // are waiting by the time the editing gets to them, when it has the add-on
+  // (`case-research`: a case's kinds of video, never an essay or a Short, which
+  // shows only its own footage). Once: a voice-over carried on after its wait
+  // doesn't ask again. An edit gone since is still asked, as it always was.
   const home = app.store.home;
   const now = app.store.get(id);
   const researched = seams.research.articles(home, id).length > 0 || seams.research.items(home, id).length > 0 || app.scripts.get(id)?.after?.some((line) => line.step === "research" && line.state === "done") === true;
-  if (!recut && inserting === null && !researched && !(now !== null && now !== undefined && isEssay(now.project.style)) && now?.project.style !== "shorts") {
+  // A channel's add-ons read fresh first, bounded, the read the research turn's own start waits on anyway (agent.ts);
+  // one that fails answers with the edit's style's, as before.
+  if (!recut && inserting === null && !researched && typeof now?.project.channel === "string" && now.project.channel !== "") {
+    await addons.ready().catch((error: unknown) => diag.warn("script", `${title}: the channel's add-ons weren't read, so its style's are used: ${diag.messageOf(error)}`));
+  }
+  if (!recut && inserting === null && !researched && (now === null || now === undefined || addons.has(now.project, "case-research"))) {
     try {
       await seams.agentPanel(app).send(id, RESEARCH, null, null);
       say("research", "done", "The agent is researching the case.");
@@ -3131,7 +3138,8 @@ async function footageToDisk(app: App, id: string, index: number, file: string):
 async function footageToCloud(app: App, id: string, index: number, file: string, letGo: () => void = () => {}): Promise<Fetched> {
   const progress = fileProgress(app, id, index);
   const live = app.store.get(id);
-  if (live !== null && live !== undefined && isEssay(live.project.style) && youtube.idOf(file) !== null) {
+  // YouTube footage comes in as the stretches the edit uses, never whole, when it has the add-on (an essay's).
+  if (live !== null && live !== undefined && addons.has(live.project, "youtube-excerpts") && youtube.idOf(file) !== null) {
     const cut = await seams.cloudMedia.youtubeExcerpts(app.store.home, app.store.cacheDir(), file, fileRanges(live.project, file), progress);
     return [cut.reduce((n, one) => n + (one.cloud?.cloud?.size ?? 0), 0), cut[0]?.cloud?.name ?? file, cut];
   }

@@ -12,9 +12,16 @@
 // here before the plan applies. The copy keeps the screenshot's exact size,
 // so highlight_evidence's rectangles (original image pixels) still land on
 // its words.
+//
+// The passes after every plan (fillReels, mosaicCensors, textOnTop, soundEdges,
+// groundsWithCards) are the `horror-look` add-on's (addons.ts): a V1 horror
+// project's, or a channel's that has it. The plan assets for horror cards
+// (retroScreenshots, the drawn icons) are the house's graphics and stay on
+// the style.
 
 import * as fs from "node:fs";
 
+import * as addons from "./addons.ts";
 import type { App } from "./app.ts";
 import { clipFrom } from "./clips.ts";
 import { iconFile } from "./horror_graphics.ts";
@@ -212,7 +219,7 @@ const REEL_BLUR = "Horror · reel blur";
  */
 export function fillReels(project: Project): void {
   const fresh = (prefix: string) => freshId(project, prefix);
-  if (project.style !== "horror") return;
+  if (!addons.has(project, "horror-look")) return;
   const { width: w, height: h } = project.settings;
   const old = new Set(project.clips.filter((c) => c.name === REEL_BACKDROP || c.name === REEL_BLUR).map((c) => c.track));
   project.clips = project.clips.filter((c) => c.name !== REEL_BACKDROP && c.name !== REEL_BLUR);
@@ -268,7 +275,7 @@ export function fillReels(project: Project): void {
  * blurs (backdrops, motion, another channel's marks) stay smooth.
  */
 export function mosaicCensors(project: Project): void {
-  if (project.style !== "horror") return;
+  if (!addons.has(project, "horror-look")) return;
   const k = project.settings.height / 1080;
   for (const clip of project.clips) {
     if (clip.type !== "adjustment" || /^(Horror|Janitor|Desktop) · |^Mark blur/u.test(clip.name ?? "")) continue;
@@ -328,7 +335,7 @@ export function desktopLines(project: Project, start: number, end: number): void
  * overlaps (v2, Nov 6: two quotes sat behind the photos placed after them).
  */
 export function textOnTop(project: Project): void {
-  if (project.style !== "horror") return;
+  if (!addons.has(project, "horror-look")) return;
   const order = () => new Map(project.tracks.map((t, i) => [t.id, i]));
   const words = project.clips.filter((c) => c.type === "text" && /^(Cut-in \d+ · )?Horror · /u.test(c.name ?? ""));
   for (const text of words) {
@@ -353,7 +360,7 @@ export function textOnTop(project: Project): void {
  * tail still at -23 dB, and the reel's sound came in on it at full level. Only edges left at no fade.
  */
 export function soundEdges(project: Project): void {
-  if (project.style !== "horror") return;
+  if (!addons.has(project, "horror-look")) return;
   const fps = project.settings.fps;
   const voiced = new Set((project.script?.blocks ?? []).flatMap((b) => {
     const ids = b as { clip?: string; voiceover?: string };
@@ -378,7 +385,7 @@ export function soundEdges(project: Project): void {
  * under, or goes when there's none.
  */
 export function groundsWithCards(project: Project): void {
-  if (project.style !== "horror") return;
+  if (!addons.has(project, "horror-look")) return;
   const card = /^(Cut-in \d+ · )?Horror · (picture|screenshot)$/u;
   const ground = /^(Cut-in \d+ · )?Horror · (card ground|card ground blur|card backdrop)$/u;
   const cards = project.clips.filter((c) => c.type === "video" && card.test(c.name ?? ""));

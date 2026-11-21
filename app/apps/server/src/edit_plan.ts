@@ -21,7 +21,6 @@ import * as markBlurs from "./mark_blurs.ts";
 import * as typing from "./typing_sounds.ts";
 import * as markers from "./markers.ts";
 import type { Clip, Keyframe, Media, Project, SoundChannel } from "./model.ts";
-import { isEssay } from "./model.ts";
 import { native } from "./native/index.ts";
 import {
   addTrack,
@@ -46,6 +45,7 @@ import {
 import { isBug } from "./guard.ts";
 import { asInt, compareStrings, f32Saved as f32, idiv, jsonForSerde, round, trim } from "./rust.ts";
 import * as seams from "./seams.ts";
+import * as addons from "./addons.ts";
 import { framingAt } from "./frames_fill.ts";
 import { HIT } from "./sfx.ts";
 import { readStruct, SerdeError, type Struct } from "./serde.ts";
@@ -1418,11 +1418,13 @@ export function audit(project: Project): { issues: Json[]; frames: number; clips
       issues.push({ kind: "source_exhausted", clip: clip.id });
     }
   }
-  if (isEssay(project.style)) {
+  // Which of these checks a project gets is its add-ons' (addons.ts, Nov 21): a V1
+  // project's are its style's, as these asked before; a channel's, its channel's.
+  if (addons.has(project, "essay-checks")) {
     return { issues: sortIssues([...issues, ...commentaryAudit.issues(project)]), frames: total, clips: project.clips.length };
   }
   // A Short has its own checks: no teaser, map, intro or outro to flag.
-  if (project.style === "shorts") {
+  if (addons.has(project, "short-form")) {
     return { issues: sortIssues([...issues, ...shortsAudit.issues(project)]), frames: total, clips: project.clips.length };
   }
   // The same picture shown in more than one place in the video (the team:
@@ -1710,7 +1712,7 @@ export function audit(project: Project): { issues: Json[]; frames: number; clips
   // the B-roll footage almost every second"; Nov 8, Killer Pastor's room: "It
   // seems like our rule of changing the B-roll footage or changing the clips
   // completely removes attention from what actually matters").
-  for (const clip of project.style === "courtroom" || project.style === "interrogation" ? [] : project.clips) {
+  for (const clip of addons.has(project, "held-broll") ? [] : project.clips) {
     if (clip.type !== "video" || clip.track === base || !(clip.name ?? "").includes("B-roll:")) continue;
     if (clip.duration <= longest) continue;
     const own = level(clip.track);
@@ -1743,7 +1745,7 @@ export function audit(project: Project): { issues: Json[]; frames: number; clips
     (clip): clip is Extract<Clip, { type: "audio" }> =>
       visible(clip.track) && isMusic(clip, clip.type === "audio" ? mediaOf(project, clip.media) : undefined),
   );
-  const longestBed = project.style === "interrogation" ? LONGEST_SECTION_BED : LONGEST_BED;
+  const longestBed = addons.has(project, "interrogation-music") ? LONGEST_SECTION_BED : LONGEST_BED;
   // A bed that covers one narration longer than that and no more can't be
   // shorter without stopping under it (music_stops_mid_narration) or changing
   // in it (music_change_mid_narration): Mom & Teen's 26–31 s cut-ins.
@@ -1763,7 +1765,7 @@ export function audit(project: Project): { issues: Json[]; frames: number; clips
   }
   // An interrogation keeps a bed's family across its bridges (the references
   // do); the same song again and again is a bodycam habit to break.
-  const often = project.style === "interrogation" ? 6 : 3;
+  const often = addons.has(project, "interrogation-music") ? 6 : 3;
   for (const [media, clips] of songs) {
     if (clips.length < often) continue;
     issues.push({
@@ -1803,7 +1805,7 @@ export function audit(project: Project): { issues: Json[]; frames: number; clips
   // last seconds, a hit on the first frame of the tape, the prologue's music
   // cut there, not faded on under the room ("we need to be able, as viewers,
   // to know and feel that, 'Okay, now the video starts.'").
-  if (project.style === "interrogation") {
+  if (addons.has(project, "interrogation-structure")) {
     const counts = project.clips.filter((clip) => clip.type === "text" && clip.name === "Countdown" && visible(clip.track));
     if (counts.length > 0) {
       const tape = Math.max(...counts.map(clipEnd));
@@ -1834,7 +1836,7 @@ export function audit(project: Project): { issues: Json[]; frames: number; clips
   // after the last page (Jones JJ, OnlyFans, Oct 31: "We don't want to have
   // this image right here in the end. We'd rather just stay on the previous
   // screen and have that written out as well").
-  if (project.style === "interrogation") {
+  if (addons.has(project, "interrogation-structure")) {
     const shown = project.clips.filter((clip) => visible(clip.track) && clip.type !== "audio" && clip.type !== "adjustment");
     const last = shown.reduce((most, clip) => Math.max(most, clipEnd(clip)), 0);
     const pages = shown.filter((clip) => clip.type === "text" && !/^(Subtitle|Caption|Countdown)/u.test(clip.name ?? ""));
@@ -1946,18 +1948,20 @@ export function audit(project: Project): { issues: Json[]; frames: number; clips
     }
   }
   // A courtroom video's words on screen are read on a phone over a busy
-  // hearing: callouts, tags and labels at least SMALLEST_TEXT at 1080p
+  // hearing: callouts, tags and labels at least SMALLEST_TEXT at 1080p, or the
+  // add-on's own `smallest` where a channel sets one (Nov 21)
   // (Corrupt Cop's 44 px name callout and "*UNDER OATH*" tag: "text is
   // really small here, it should be bigger"). Subtitles and the desktop
   // profile's own window text keep their sizes.
-  if (project.style === "courtroom") {
+  if (addons.has(project, "courtroom-text")) {
+    const smallest = addons.setting(project, "courtroom-text", "smallest") ?? SMALLEST_TEXT;
     const scale = project.settings.height / 1080;
     for (const text of project.clips) {
       if (text.type !== "text" || !visible(text.track)) continue;
       const name = text.name ?? "";
       if (trackOf(project, text.track)?.subtitles === true || /^(Subtitle|Caption|Desktop profile)/u.test(name)) continue;
       const size = text.style.size / scale;
-      if (size < SMALLEST_TEXT) issues.push({ kind: "small_text", clip: text.id, start: text.start, size: round(size), at_least: SMALLEST_TEXT, text: text.text.slice(0, 40) });
+      if (size < smallest) issues.push({ kind: "small_text", clip: text.id, start: text.start, size: round(size), at_least: smallest, text: text.text.slice(0, 40) });
     }
   }
   // "actual image" / "actual footage" only on a picture filling the screen,
@@ -1974,9 +1978,10 @@ export function audit(project: Project): { issues: Json[]; frames: number; clips
   // colour), and a courtroom video's, with no label, never change by speaker
   // (the team: "for courtroom videos we have the text for subtitles be white
   // and not change by subject"). A Repack-style line's words carry its colour.
+  const white = addons.has(project, "courtroom-text");
   for (const text of project.clips) {
     if (text.type !== "text" || !visible(text.track) || !/^Subtitle/u.test(text.name ?? "")) continue;
-    if (text.style.label == null && project.style !== "courtroom") continue;
+    if (text.style.label == null && !white) continue;
     const [r, g, b] = text.style.color;
     if (Math.min(r, g, b) < 0.95) issues.push({ kind: "subtitle_coloured", clip: text.id, start: text.start, text: text.text.slice(0, 40), fix: "update_clips on the subtitles track: style.color [1,1,1,1]" });
   }

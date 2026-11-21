@@ -1,3 +1,4 @@
+import * as addons from "./addons.ts";
 import type { Clip, Project } from "./model.ts";
 import { clipEnd, mediaOf, trackOf } from "./project.ts";
 import { captured } from "./watermarks.ts";
@@ -191,7 +192,8 @@ function pacing(p: Project, live: Clip[]): Record<string, unknown>[] {
   if (graphics.length >= 10 && plain / graphics.length >= 0.85) out.push({ kind: "commentary_graphics_monotony", start: graphics[0]!.start, cards_and_text: plain, graphics: graphics.length, punch_ins: punches.length,
     fix: "nearly every graphic is a card or centred text: use the reference's other moves where they fit (commentary_youtube for a video talked about, highlight_evidence on a real post, commentary_punch on the words that land, commentary_label for a comic beat, commentary_leak on a turn), and show people in footage rather than cards" });
   // Horror: "Always use grain and vignette on all footage" (its guide's first rule): every picture under the look.
-  if (p.style === "horror") {
+  // The `horror-look` add-on's; reached only inside the essay's audit, so on a channel it takes `essay-checks` too.
+  if (addons.has(p, "horror-look")) {
     // A picture is graded only where a look sits on a higher track than it.
     const level = new Map(p.tracks.map((t, i) => [t.id, i]));
     const looks = live.filter((c) => c.name === "Horror · analog look");

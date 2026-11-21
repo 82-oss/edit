@@ -12,6 +12,7 @@
 // Geometry that lands in the project (box sizes, places) is f32 as it was in
 // Rust (`f32` after every step), so the saved numbers come out the same.
 
+import * as addons from "./addons.ts";
 import type { App } from "./app.ts";
 import { cachedTranscript, hex, subtitleRow, transcriptOf } from "./captions_core.ts";
 import * as burned from "./burned_subtitles.ts";
@@ -121,8 +122,19 @@ const starredTerm = (entry: string) => {
 };
 const commentaryTerms = [...HOUSE_TERMS, ...COMMENTARY_TERMS].map(starredTerm);
 const horrorTerms = [...HOUSE_TERMS, ...HORROR_TERMS].map(starredTerm);
-/** The style's own words on top of the house list (commentary, horror). */
+/** The style's own words on top of the house list (commentary, horror): the V1 table's, as the add-on's `list` names them. */
 export const styleTerms = (style: string): string[] => style === "commentary" ? commentaryTerms : style === "horror" ? horrorTerms : [];
+/**
+ * The words muted and starred on top of the house's own, from the project's
+ * `muted-words` add-on: its `list`'s (and the house list) and its own `words`.
+ * None without it. A V1 project gets its style's, as `styleTerms` gives them.
+ */
+export function mutedWords(project: addons.Of): string[] {
+  if (!addons.has(project, "muted-words")) return [];
+  const listed = styleTerms(addons.setting(project, "muted-words", "list") ?? "");
+  const own = addons.setting(project, "muted-words", "words") ?? [];
+  return own.length === 0 ? listed : [...listed, ...own.map(starredTerm)];
+}
 /** Muted and starred out too, only in a heavy neglect case. */
 export const NEGLECT_TERMS = [
   "endangerment",
@@ -1470,7 +1482,7 @@ export async function houseWords(
   extra: readonly string[] = [],
   options: HouseOptions = {},
 ): Promise<HouseWords> {
-  extra = [...styleTerms(project.style), ...extra];
+  extra = [...mutedWords(project), ...extra];
   const fps = fpsOf(project);
   const sound: [Clip, boolean][] = [
     ...footageSound(project, from, to).map((clip) => [clip, false] as [Clip, boolean]),
@@ -1555,7 +1567,7 @@ export async function muteHouseWords(
   if (to <= from) throw new Error("the span is empty");
   const live = app.store.get(projectId);
   if (live === null) throw new Error("no such project");
-  extra = [...styleTerms(live.project.style), ...extra];
+  extra = [...mutedWords(live.project), ...extra];
   const fps = fpsOf(live.project);
   let house = await houseWords(app, live.project, from, to, neglect, extra);
   // Words to leave unmuted where they're said: a "not muted" marker on the
