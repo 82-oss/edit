@@ -285,6 +285,15 @@ describe("the catalogue", () => {
     });
   });
 
+  // end_check.ts (Nov 21): Edit's own check when a turn ends, which wakes the agent, is no kind's: a channel sets it.
+  test("end-check is off for every style, and on a channel with nothing set", () => {
+    for (const style of ALL) {
+      expect([style, addons.has(v1(style), "end-check"), addons.has(v1(style, TALL), "end-check")]).toEqual([style, false, false]);
+      expect([style, addons.has(onChannel("unset-channel", WIDE, style), "end-check")]).toEqual([style, false]);
+    }
+    expect(addons.CATALOGUE["end-check"]).toMatchObject({ lane: "edit", trigger: "turn-end", v1: [], form: "any", settings: {} });
+  });
+
   test("every default passes its own check, and every V1 setting too", () => {
     for (const name of addons.NAMES) {
       const own = addons.CATALOGUE[name];
@@ -380,7 +389,7 @@ describe("form filtering", () => {
     const by = (form: addons.Form) => addons.NAMES.filter((name) => addons.CATALOGUE[name].form === form);
     expect(by("short")).toEqual(["short-form"]);
     expect(by("long")).toEqual(["bodycam-intro", "windows-screens", "intro-captions", "held-broll", "interrogation-music", "interrogation-structure", "courtroom-text", "essay-checks", "case-research"]);
-    expect(by("any")).toEqual(["horror-look", "no-competitor-footage", "post-details", "reverb-out", "youtube-excerpts", "muted-words", "court-script", "essay-script"]);
+    expect(by("any")).toEqual(["horror-look", "no-competitor-footage", "post-details", "reverb-out", "youtube-excerpts", "muted-words", "end-check", "court-script", "essay-script"]);
     for (const name of addons.NAMES) {
       const form = addons.CATALOGUE[name].form;
       expect([name, addons.fits(form, v1("bodycam", WIDE)), addons.fits(form, v1("bodycam", TALL))]).toEqual([name, form !== "short", form !== "long"]);

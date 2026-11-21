@@ -4,7 +4,7 @@
 // cut with its sound, a cut-in card and its voice-over, an evidence board's
 // framed photo moving in, a title, subtitles, a look over a stretch, music
 // and a sound effect, a script link) is moved through the route; the saved
-// project is equal to the one before in every field but `hq` and `channel`,
+// project is equal to the one before in every field but `hq`, `channel` and `removal_held`,
 // its export plans are the same, and with the real engine built its frames
 // are the same bytes. Then what's refused, and what must be right after: a
 // new conversation, removal not started by itself, the move never undone.
@@ -146,7 +146,7 @@ async function v1Edit(made: ReturnType<typeof home>): Promise<string> {
   return id;
 }
 
-const ALL_BUT_KIND = (project: Project) => stableStringify({ ...project, hq: undefined, channel: undefined });
+const ALL_BUT_KIND = (project: Project) => stableStringify({ ...project, hq: undefined, channel: undefined, removal_held: undefined });
 
 /** The export plans the share and the dialog ask for: the whole edit, a stretch, a 9:16 cut, sound alone. */
 function plans(project: Project): unknown[] {
@@ -194,7 +194,7 @@ test("a V1 edit moved onto a channel is that channel's Edit V2 project, the same
     // As saved on disk too: a fresh read of the file is the same.
     const reread = Store.open(made.home).get(id)!.project;
     expect(ALL_BUT_KIND(reread)).toBe(ALL_BUT_KIND(before.project));
-    expect([reread.hq, reread.channel]).toEqual([true, "ch-cuffed"]);
+    expect([reread.hq, reread.channel, reread.removal_held]).toEqual([true, "ch-cuffed", true]);
     // One save, the person's (nothing of Edit's after it: no pass ran, nothing laid).
     expect(seen.filter((event) => event.type === "project").map((event) => [event.origin, event.rev])).toEqual([["ui-home", before.rev + 1]]);
     expect(seen.some((event) => event.type === "agent")).toBe(false);
@@ -323,6 +323,9 @@ test("a channel taught to take another channel's text out doesn't start on a mov
     expect((await made.ask("POST", `/api/channels/ch-cuffed/projects/${id}`)).status).toBe(200);
     // What resume, an edit's rest and an export's wait each ask first: nothing runs by itself here.
     expect(removalAsks.inForce(removal.lessonOf(made.store.get(id)!.project), made.home, id)).toBeNull();
+    // Held in the project, not in a file on the computer that moved it: another computer opening it reads the same.
+    expect(made.store.get(id)!.project.removal_held).toBe(true);
+    expect(fs.existsSync(join(made.home, "removal-stopped.json"))).toBe(false);
     // A project made on the channel the usual way: in force.
     const fresh = made.store.createAs("V2", "bodycam", { width: 640, height: 360, fps: 30 }, true).project.id;
     expect(removal.takesOut(removalAsks.inForce(lesson, made.home, fresh))).toBe(true);

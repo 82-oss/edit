@@ -3,7 +3,7 @@
 // still want to keep it under a beta toggle"). The two are the same kind of
 // file, played and exported by the same engine, which never reads `hq` or
 // `channel`; what makes a project V2 is those two fields. So the move sets
-// them in one revision and touches nothing else (Store.relabel: not a clip,
+// them (and `removal_held`, below) in one revision and touches nothing else (Store.relabel: not a clip,
 // track, medium, setting, script link, person, nor its style, so code that
 // runs for its kind still runs for it), and its video stays the same frame for
 // frame. Asked from Home's ⋯ with Edit V2 on here, through the route that
@@ -19,9 +19,11 @@
 //     `newConversation`): the one it had names tools V2 hasn't and was given
 //     V1's instructions; the chat stays readable;
 //   - the channel's removal of another channel's text and watermarks doesn't
-//     start by itself on it (removal_asks.ts, as the chat's Stop leaves it):
-//     it would change the picture before anyone asked; the agent's
-//     start_removal still runs what the person asks for;
+//     start by itself on it (`Project.removal_held`, read by removal_asks.ts
+//     as the chat's Stop is): it would change the picture before anyone
+//     asked; the agent's start_removal still runs what the person asks for.
+//     Kept in the project, so it holds on every computer that opens it (until
+//     Nov 21 evening it was a file on the computer that made the move);
 //   - recorded as the person's change (changes.ts), which undo_changes never
 //     takes back (it isn't an edit: Home moves a project).
 // The passes after a V2 turn (both ears, house words) run only once a turn
@@ -31,7 +33,6 @@ import type { App } from "./app.ts";
 import * as busy from "./busy.ts";
 import * as diag from "./diag.ts";
 import { ApiError } from "./http/errors.ts";
-import * as removalAsks from "./removal_asks.ts";
 import { agentPanel } from "./seams.ts";
 import { refusalOf } from "./store.ts";
 
@@ -54,14 +55,12 @@ export async function convert(app: App, id: string, channel: { key: string; titl
   }
   const running = busy.workFor(app, id);
   if (running.length > 0) throw new ApiError(409, `${capital(listed(running))} ${running.length === 1 ? "is" : "are"} under way on this edit: move it once ${running.length === 1 ? "it's" : "they're"} done.`);
-  // Held before the save: its event starts the removal's look 2 s later (removal_schedule.ts `start`).
-  const stopped = removalAsks.isStopped(app.store.home, id);
-  if (!stopped) removalAsks.setStopped(app.store.home, id, true);
+  // Its removal is held in the same save that makes it the channel's: that save's event starts the removal's look
+  // 2 s later (removal_schedule.ts `start`), which reads the project.
   let live;
   try {
-    live = await app.store.relabel(id, ORIGIN, { hq: true, channel: channel.key });
+    live = await app.store.relabel(id, ORIGIN, { hq: true, channel: channel.key, removal_held: true });
   } catch (error) {
-    if (!stopped) removalAsks.setStopped(app.store.home, id, false);
     throw new ApiError(409, diag.messageOf(error));
   }
   try {
