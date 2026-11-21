@@ -330,8 +330,6 @@ export class ConvexMock {
   groups: Record<string, unknown>[] = [];
   readonly library = new Map<string, { key: string; kind: string; projectId?: string; name: string; current: number; latest: number; note?: string; brief?: string; category?: string; archived?: boolean; niches?: string[]; at: number; by: { name: string } }>();
   readonly libraryVersions = new Map<string, { key: string; n: number; files?: unknown[]; text?: string; reason?: string; from?: unknown; source?: string; at: number; by: { name: string } }[]>();
-  /** The lessons inbox (mamagi's editLessons), by id, in the order noted. */
-  readonly lessons = new Map<string, Record<string, unknown>>();
   /** Convex's clock (leases), changeable by tests. */
   now: () => number = () => Date.now();
   private nextFile = 1;
@@ -531,23 +529,6 @@ export class ConvexMock {
         const at = Math.min(typeof args.at === "number" ? args.at : this.now(), this.now());
         mine.set(key, Math.max(at, mine.get(key) ?? 0));
         return { key, at: mine.get(key) };
-      }
-      case "listLessons": {
-        const rows = [...this.lessons.values()];
-        return args.all === true ? rows.reverse() : rows.filter((row) => row.status === "open");
-      }
-      case "noteLesson": {
-        const id = `lesson${this.lessons.size + 1}`;
-        const { token: _token, actor, ...fields } = args;
-        this.lessons.set(id, { id, ...fields, from: fields.from ?? null, style: fields.style ?? null, source: fields.source ?? null, status: "open", outcome: null, at: this.now(), by: actor ?? null, closedAt: null, closedBy: null });
-        return { id };
-      }
-      case "closeLesson": {
-        const row = this.lessons.get(String(args.id ?? ""));
-        if (row === undefined) throw new Fail("invalid", `No lesson ${String(args.id)}.`);
-        const open = args.status === "open";
-        Object.assign(row, { status: args.status, outcome: open ? null : args.outcome, closedAt: open ? null : this.now(), closedBy: open ? null : (args.actor ?? null) });
-        return { id: row.id, status: args.status };
       }
       case "getProject": {
         const row = this.projects.get(projectId);

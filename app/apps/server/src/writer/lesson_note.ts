@@ -1,8 +1,10 @@
-// Script mode's part of the lessons inbox (../lesson_inbox.ts, Nov 1 2026):
-// a revision answers once with no tools, so its structured answer carries an
-// optional `lesson`, a lasting preference or correction the producer or a
-// reviewer gave, and the server notes it with the script it was said on. The
-// edit agent does the same with its note_lesson tool.
+// Script mode's lessons: a revision answers once with no tools, so its
+// structured answer carries an optional `lesson`, a lasting preference or
+// correction the producer or a reviewer gave, and the server keeps it in the
+// script's channel's Script lane (lanes.ts). Nothing else keeps one: the
+// team's lessons inbox it once went to is gone (Sphe, Nov 21: "completely
+// remove the lessons inbox system… we'll be using v2's cloud for lessons and
+// v1 will soon be deprecated").
 
 import type { Script } from "@edit/types/writer";
 
@@ -12,8 +14,6 @@ import { parent } from "../paths.ts";
 import * as teachingConflicts from "../teaching_conflicts.ts";
 import * as lanes from "../lanes.ts";
 import * as v2cloud from "../v2_cloud.ts";
-import * as cloud from "../cloud.ts";
-import { note, noteFrom } from "../lesson_inbox.ts";
 
 /** The answer's optional `lesson` property (left out: nothing that should outlast this script). */
 export const LESSON_SCHEMA = {
@@ -33,7 +33,7 @@ export const LESSON_SCHEMA = {
 
 /** What the model is told about it. */
 export const LESSON_RULE =
-  "LESSONS: when the producer or a reviewer says a preference or correction holds for every later script, not just this one (\"we never…\", \"always…\", \"from now on\", a rule of the guide it shows wrong), or says yes when you asked whether it should, also send lesson {lesson: the rule in general terms for any script, never naming this one's clips or times; quote: their words verbatim; from: who said it when it's a review note's author; scope: house (every script), style (this kind of script) or person (one person's or channel's taste)}, once, beside the edits that fix this script. It goes to the team's lessons inbox for the next teaching round. Otherwise leave lesson out. Never mention a lesson you send in the reply: the app adds a line. One that could hold for every script but doesn't say so (\"throughout the script\" means this one): send no lesson; end the reply with one short question, naming it, whether to do it on every script from now on (several: one question for all). Send it only when their next message says yes; left unanswered, it stays this script's and you don't ask again.";
+  "LESSONS: when the producer or a reviewer says a preference or correction holds for every later script, not just this one (\"we never…\", \"always…\", \"from now on\", a rule of the guide it shows wrong), or says yes when you asked whether it should, also send lesson {lesson: the rule in general terms for any script, never naming this one's clips or times; quote: their words verbatim; from: who said it when it's a review note's author; scope: house (every script), style (this kind of script) or person (one person's or channel's taste)}, once, beside the edits that fix this script. Otherwise leave lesson out. Never mention a lesson you send in the reply: the app adds a line. One that could hold for every script but doesn't say so (\"throughout the script\" means this one): send no lesson; end the reply with one short question, naming it, whether to do it on every script from now on (several: one question for all). Send it only when their next message says yes; left unanswered, it stays this script's and you don't ask again.";
 
 /** The answer's lesson, if it carries one. */
 export function lessonOf(plan: Record<string, unknown> | null): Record<string, unknown> | null {
@@ -45,20 +45,15 @@ export function lessonOf(plan: Record<string, unknown> | null): Record<string, u
 const slug = (text: string): string => text.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/g, "");
 
 /**
- * Notes `lesson` with the script it was said on; the line to add to the reply, or "" when there was none or it
- * couldn't be noted (logged). `data` is Writer's data folder, in Edit's home: with Edit V2 on there (Sphe, Nov 16:
- * "once you've enabled Edit V2, things don't go into a Teams lessons inbox"), every lesson of a channel's script is
- * kept in that channel's Script lane, whatever its scope, and a script without a channel keeps none, as a V2 edit
- * without one doesn't; the inbox is V1's.
+ * Keeps `lesson` with the script it was said on; the line to add to the reply, or "" when there was none. `data` is
+ * Writer's data folder, in Edit's home: with Edit V2 on there (Sphe, Nov 16: "once you've enabled Edit V2, things don't
+ * go into a Teams lessons inbox"), every lesson of a channel's script is kept in that channel's Script lane, whatever its
+ * scope; without it, only one of how that channel does its scripts (scope "channel"). Anything else is kept nowhere.
  */
 export async function keep(script: Script, lesson: Record<string, unknown> | null, data?: string): Promise<string> {
   if (lesson === null) return "";
   const v2 = data !== undefined && beta.read(parent(data) ?? data).v2;
-  if (v2 && !script.channel) {
-    diag.info("lessons", `${script.title}: a lesson not kept: Edit V2 keeps a channel's lessons, and this script isn't a channel's`);
-    return "\n\nThis script isn't a channel's, so nothing is kept from it for later scripts.";
-  }
-  // A channel's script: a lesson of how that channel does its scripts is kept in its Script lane at once (lanes.ts), not sent to the inbox.
+  // A channel's script: a lesson of how that channel does its scripts is kept in its Script lane at once (lanes.ts).
   if ((lesson.scope === "channel" || v2) && script.channel) {
     const named = typeof lesson.name === "string" && lesson.name.trim() !== "" ? lesson.name : typeof lesson.lesson === "string" ? lesson.lesson.split(/\s+/u).slice(0, 5).join(" ") : "";
     const name = slug(named);
@@ -78,19 +73,8 @@ export async function keep(script: Script, lesson: Record<string, unknown> | nul
       return v2cloud.teacher() ? "\n\nThat sounds like a lesson for this channel's scripts, but it couldn't be kept just now: say it again in a moment." : "";
     }
   }
-  // Scope "channel" on a script that has none: one person's or channel's taste, as the inbox has it.
-  const given = noteFrom({ ...lesson, ...(lesson.scope === "channel" ? { scope: "person" } : {}), part: "script" });
-  if (typeof given === "string") {
-    diag.warn("lessons", `${script.title}: a lesson came back unusable (${given})`);
-    return "";
-  }
-  if (!cloud.enabled()) return "\n\nThis sounds like a lesson for every script, but Edit isn't signed in, so it couldn't reach the team's lessons inbox: pass it on.";
-  try {
-    const id = await note({ ...given, style: script.commentary ? "commentary" : (script.kind ?? "interrogation"), source: { kind: "script", id: script.id, name: script.title } });
-    diag.info("lessons", `${script.title}: noted ${id} (script, ${given.scope})`);
-    return "\n\nNoted for the next teaching round, so later scripts get it too.";
-  } catch (error) {
-    diag.warn("lessons", `${script.title}: the lesson wasn't noted: ${diag.messageOf(error)}`);
-    return "";
-  }
+  // A script without a channel, or a V1 lesson for every script: nowhere keeps it since the inbox went (Nov 21), and the
+  // reply says so, as the model is told the app adds the line.
+  diag.info("lessons", `${script.title}: a lesson not kept: ${script.channel ? "it isn't one of how this channel does its scripts" : "this script isn't a channel's"}`);
+  return script.channel ? "\n\nOnly a lesson of how this channel does its scripts is kept for later ones, so that stays this script's." : "\n\nThis script isn't a channel's, so nothing is kept from it for later scripts.";
 }

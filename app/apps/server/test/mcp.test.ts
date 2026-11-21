@@ -33,11 +33,12 @@ test("tool_reference_is_one_short_line_per_tool", () => {
   expect(toolReference(toolsFor(true)).trimEnd().split("\n").length).toBe(TOOLS.length - NOT_IN_HQ.length);
   // Edit V2's own twelve (effects, sounds, V2's cloud), in its chat alone, whose prompt has none of the house's instructions;
   // start_removal's marks, unmark and blur mode (Nov 18: the agent's in and out points, the tracked blur) a few words more;
-  // addons and set_addon (Nov 21: a channel's add-ons, set through the agent) a line each.
-  expect(toolReference(toolsFor(true)).length).toBeLessThan(reference.length + 2_500);
+  // addons and set_addon (Nov 21: a channel's add-ons, set through the agent) a line each; note_lesson's line gone from
+  // the house's list alone (Nov 21: the lessons inbox removed; V2's never had it), so the gap is that line wider.
+  expect(toolReference(toolsFor(true)).length).toBeLessThan(reference.length + 2_700);
   expect(reference).toContain("- apply_edit_plan(base_rev: integer, operations: array, ");
   // Commentary's posts, video references and shot checks, Edit Script and the team's effects, came in Oct 26;
-  // read_upload (any file dropped in, Oct 31) one short line more, note_lesson (the lessons inbox, Nov 1) another,
+  // read_upload (any file dropped in, Oct 31) one short line more (note_lesson, the lessons inbox of Nov 1, came and went: Nov 21),
   // use_found's not_a_person flag (Nov 2: found pictures must name the case) a few words, pull_feedback
   // (Nov 2: "implement the new feedback" from the review) one short line, the sheets' detail (Nov 2: sheets sized
   // for the model's eyes) a few words on three tools, wait (Nov 2: background work waited for once) one line,
@@ -52,8 +53,8 @@ test("tool_reference_is_one_short_line_per_tool", () => {
 
 test("every tool takes project_id; the instructions list the skills", () => {
   // other_channels (Nov 14): a channel's agent reaching into another channel; find_camera_time (Nov 17); teach_removal and check_removal (Nov 17); start_removal (Nov 17);
-  // addons and set_addon (Nov 21).
-  expect(TOOLS.length).toBe(129);
+  // addons and set_addon (Nov 21); note_lesson gone (Nov 21: Sphe, "completely remove the lessons inbox system").
+  expect(TOOLS.length).toBe(128);
   for (const tool of TOOLS) {
     expect(tool.inputSchema.type).toBe("object");
     expect(tool.inputSchema.properties.project_id).toEqual({

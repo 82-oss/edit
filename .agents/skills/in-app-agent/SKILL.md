@@ -24,7 +24,7 @@ A round of feedback is a chance to make the next edit better, not just this one.
 
 Quote the team's words in the rule when they carry the reason. Then apply it through the in-app agent on the new build.
 
-Lessons noted between rounds are an inbox, not memory the agent reads back. The skills, the code, and the audits are what teach it.
+Lasting feedback is taught into the channel's lanes in V2's cloud: what a teacher's agent keeps with `remember`, and what that channel's agents read back. The skills, the code, and the audits teach the rest.
 
 ## Teaching loops and trials
 We run teaching loops and trial experiments now and then, not all the time: when enough feedback has built up to make it worth training the agent. To make a lesson stick across videos, use the `teaching-loop` skill.

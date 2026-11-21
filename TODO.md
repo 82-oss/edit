@@ -117,6 +117,7 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 - **The footage sweep is off** (accounts repo, `convex/footage.ts` `SWEEP = { clear: false }`); to turn on about Dec 15, once every Mac can bring footage back.
 - **Deleting a review link leaves each version's `fullKey`, `preview.key` and `wordsKey` on R2** (accounts repo, `convex/reviewPage.ts` `remove`).
 - **The live relay still diarizes with pyannote** (`apps/relay/wrangler.toml` `DIARIZE`); every Mac is past the builds that needed it.
+- **The lessons inbox's cloud half stays until every Mac is past the build that took it out of the app** (Nov 21): the accounts cloud's `edit:listLessons`, `edit:noteLesson` and `edit:closeLesson`, their entries in the relay's allow-list (`apps/relay/src/authz.ts` `EDIT_CALLS`, and `cloud.ts`'s list of calls that name who made them), and the `editLessons` table can go then; older builds still call them.
 
 ## For Sphe to decide
 

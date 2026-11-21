@@ -767,7 +767,7 @@ export interface Revised {
   costUsd: number;
   /** The producer asked to start over: nothing changes until they confirm it (chat.ts). */
   startOver: boolean;
-  /** A lasting lesson the request carried, for the team's inbox (lesson_note.ts), or null. */
+  /** A lasting lesson the request carried, for its channel's Script lane (lesson_note.ts), or null. */
   lesson: Record<string, unknown> | null;
   /** What it did for each review note it pulled (turn_tools.ts), by id. */
   feedback: Feedback[];

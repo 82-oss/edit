@@ -134,7 +134,6 @@
     "test/writer_handoff.test.ts": 9,
     "test/archive.test.ts": 8,
     "test/edit_review.test.ts": 8,
-    "test/lesson_inbox.test.ts": 8,
     "test/frame_picks.test.ts": 7,
     "test/helpful_wife.test.ts": 7,
     "test/listen.test.ts": 7,
