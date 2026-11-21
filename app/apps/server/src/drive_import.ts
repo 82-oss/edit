@@ -100,7 +100,7 @@ export function importDrive(app: App, id: string, url: string, place: boolean, o
  * isn't put there again.
  */
 export function resumeImport(app: App, job: jobs.Job): void {
-  const { url, place, origin, media, paths, whole } = job.args as { url?: unknown; place?: unknown; origin?: unknown; media?: unknown; paths?: unknown; whole?: unknown };
+  const { url, place, origin, media, paths, whole, retry, imported, lost } = job.args as { url?: unknown; place?: unknown; origin?: unknown; media?: unknown; paths?: unknown; whole?: unknown; retry?: unknown; imported?: unknown; lost?: unknown };
   if (typeof url !== "string") throw new jobs.Gone("no link kept");
   if (going.has(job.key)) return;
   const from = typeof origin === "string" ? origin : "";
@@ -108,20 +108,36 @@ export function resumeImport(app: App, job: jobs.Job): void {
     finish(app, job.key, job.project, media as string[], paths as string[], whole === true, true);
     return;
   }
-  void run(app, job.key, job.project, url, place !== false, from, true).catch((error: unknown) => {
+  const strings = (value: unknown): string[] => (Array.isArray(value) ? value.filter((one): one is string => typeof one === "string") : []);
+  // Files that came down and didn't come in for something that passes: only they are imported again, from their downloads.
+  const again = strings(retry);
+  const left: Retry | null = job.step === "importing" && again.length > 0 ? { paths: again, media: strings(media), imported: strings(imported), lost: lost === true } : null;
+  void run(app, job.key, job.project, url, place !== false, from, true, left).catch((error: unknown) => {
     const waiting = jobs.get(app.store.home, job.key)?.state === "waiting";
     diag.warn("drive", `${job.project}: the Drive footage a restart cut off didn't come in${waiting ? " yet (tried again by itself)" : ""}: ${diag.messageOf(error)}`);
   });
 }
 
-function run(app: App, key: string, id: string, url: string, place: boolean, origin: string, resumed: boolean): Promise<Imported> {
+/** What earlier tries of a Drive import brought in: the media added and the downloads they came from, and whether a file failed for good. */
+interface Before {
+  media: string[];
+  imported: string[];
+  lost: boolean;
+}
+/** A Drive import that waits for some of its files: those files' downloads, to import again, and what already came in. */
+interface Retry extends Before {
+  paths: string[];
+}
+
+function run(app: App, key: string, id: string, url: string, place: boolean, origin: string, resumed: boolean, retry: Retry | null = null): Promise<Imported> {
   // Failed, it ends (the person is told); cut by Edit restarting itself, the table is frozen and it stays for the next run.
   // At Google Drive's download limit for the day, it waits in the table instead and the table wakes it once Google
   // allows it (import_steps.ts `retryAt`): "try later" was said, and Edit never did (Nov 16 audit).
   // Anything else that passes (a dropped line, "Download stopped", a full disk) waits in the table too and is tried again
   // by itself on failure.ts's schedule, its downloads resuming (Nov 20: it ended the row, so after a restart the
   // footage never came and nothing said so). Only the person's (not shared, deleted) or Edit's own bug ends it.
-  const work = importDriveNow(app, key, id, url, place, origin, resumed).catch((error: unknown) => {
+  const now = retry === null ? importDriveNow(app, key, id, url, place, origin, resumed) : importDownloaded(app, key, id, retry.paths, place, origin, true, retry);
+  const work = now.catch((error: unknown) => {
     if (steps.whyOf(error) === "limit") {
       const at = steps.retryAt("limit", Date.now(), error)!;
       diag.warn("drive", `${id}: Google Drive's download limit is used up for ${url}; tried again by itself at ${new Date(at).toLocaleString()}`);
@@ -158,22 +174,54 @@ async function importDriveNow(app: App, key: string, id: string, url: string, pl
     paths.push(path);
   }
   jobs.step(home, key, "importing", { paths });
+  return importDownloaded(app, key, id, paths, place, origin, resumed, { media: [], imported: [], lost: false });
+}
+
+/**
+ * The downloads `paths` imported into project `id`. A file that didn't come in for something that passes (a dropped
+ * line, the relay busy, a full disk, a sign-in: failure.ts `waitsByItself`) keeps the job waiting, holding only those
+ * files, tried again by itself from their downloads (Nov 21, audit I4: every file's failure was words, and the job
+ * ended whatever they were; after a restart nothing was shown at all, and the downloads of the files that failed
+ * stayed on the disk until the project was deleted). A file only the person can change is said, as before, and its
+ * download goes. `before`: what earlier tries of this import already brought in.
+ */
+async function importDownloaded(app: App, key: string, id: string, paths: string[], place: boolean, origin: string, resumed: boolean, before: Before): Promise<Imported> {
+  const home = app.store.home;
   // Carried on after a restart: what the cut import put on the timeline stays where it is, and only the rest is
   // placed (a media item is added once per file either way: import.ts addMedia). Into a timeline still empty, all of it as at first.
-  const before = app.store.get(id)?.project ?? null;
-  const placeAll = place && (!resumed || before === null || before.clips.length === 0);
+  const live = app.store.get(id)?.project ?? null;
+  const placeAll = place && (!resumed || live === null || live.clips.length === 0);
   let imported = await importPaths(app, id, paths, placeAll, origin);
   if (place && !placeAll) {
-    const [live] = await app.store.update(id, origin, (project) => {
+    const [now] = await app.store.update(id, origin, (project) => {
       for (const media of imported[1]) {
         if (!project.clips.some((clip) => "media" in clip && clip.media === media)) placeAtEnd(project, media);
       }
     });
-    imported = [live.rev, imported[1], imported[2]];
+    imported = [now.rev, imported[1], imported[2], imported[3]];
   }
-  const whole = imported[2].length === 0;
-  jobs.step(home, key, "added", { media: imported[1], paths, whole });
-  finish(app, key, id, imported[1], paths, whole, resumed);
+  const failed = imported[3] ?? [];
+  const media = [...new Set([...before.media, ...imported[1]])];
+  const came = [...new Set([...before.imported, ...paths.filter((path) => !failed.some((one) => one.path === path))])];
+  const again = failed.filter((one) => failure.waitsByItself(failure.kindOf(one.error)));
+  // The downloads of files that won't be tried again go now: nothing else would ever sweep them (cache_cleanup.ts
+  // sweeps only the copies of footage that came in).
+  const root = app.store.uploadsDir(id);
+  const lost = before.lost || failed.length > again.length;
+  for (const one of failed) if (!again.includes(one)) removeStagedCopy(one.path, root);
+  if (again.length > 0) {
+    noteAdded(app, id, media, true);
+    jobs.patch(home, key, { retry: again.map((one) => one.path), media, imported: came, lost });
+    const at = jobs.wait(home, key, again[0]!.error);
+    diag.warn("drive", `${id}: ${again.length} of the Drive link's files didn't come in yet (${again.map((one) => one.said).join("; ")}); tried again by itself${at === null ? "" : ` at ${new Date(at).toLocaleString()}`}, from their downloads`);
+    const waiting = new Set(again.map((one) => one.said));
+    return [imported[0], imported[1], imported[2].map((said) => (waiting.has(said) ? `${said} (tried again by itself)` : said)), failed];
+  }
+  // Every file in: their copies go once up (`finish`). A file that failed for good leaves the others' copies as it
+  // always did (cache_cleanup.ts sweeps them a few days after they were last used).
+  const whole = !lost;
+  jobs.step(home, key, "added", { media, paths: came, whole, retry: [] });
+  finish(app, key, id, media, came, whole, resumed);
   return imported;
 }
 
@@ -183,6 +231,21 @@ async function importDriveNow(app: App, key: string, id: string, url: string, pl
  * Carried on (`again`), what was already noted isn't noted twice.
  */
 function finish(app: App, key: string, id: string, added: string[], paths: string[], whole: boolean, again: boolean): void {
+  noteAdded(app, id, added, again);
+  // Upload-once: Edit's downloaded staging copies go once their uploads are
+  // verified in the cloud (the import's background upload). A failed or
+  // pending upload keeps its copy — it may be the only one.
+  if (whole) {
+    const root = app.store.uploadsDir(id);
+    for (const path of paths) {
+      void seams.cloudMedia.uploaded(path).then((ok) => { if (ok) removeStagedCopy(path, root); });
+    }
+  }
+  jobs.end(app.store.home, key);
+}
+
+/** What was added, noted for the agent's context (uploads.ts); `again`: what's noted already isn't noted twice. */
+function noteAdded(app: App, id: string, added: string[], again: boolean): void {
   const project = app.store.get(id)?.project ?? null;
   try {
     const dir = app.store.uploadsDir(id);
@@ -194,16 +257,6 @@ function finish(app: App, key: string, id: string, added: string[], paths: strin
   } catch (error) {
     diag.warn("upload", `noting what was added: ${diag.messageOf(error)}`);
   }
-  // Upload-once: Edit's downloaded staging copies go once their uploads are
-  // verified in the cloud (the import's background upload). A failed or
-  // pending upload keeps its copy — it may be the only one.
-  if (whole) {
-    const root = app.store.uploadsDir(id);
-    for (const path of paths) {
-      void seams.cloudMedia.uploaded(path).then((ok) => { if (ok) removeStagedCopy(path, root); });
-    }
-  }
-  jobs.end(app.store.home, key);
 }
 
 /** Bytes a download kept in `dir` already (a resumed import's). */

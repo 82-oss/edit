@@ -8,7 +8,7 @@ import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
-import { NoRoom } from "./failure.ts";
+import { NeedsPerson, NoRoom, surely } from "./failure.ts";
 import * as folderAccess from "./folder_access.ts";
 import * as media from "./media.ts";
 import type { Clip, ClipColor, Media, Project } from "./model.ts";
@@ -29,8 +29,22 @@ export const hooks = {
     seams.cloudMedia.importLocal(cache, path, probe, name),
 };
 
-/** What an import did: the project's rev after it, the media ids added (or found), and what couldn't come in. */
-export type Imported = [rev: number, added: string[], errors: string[]];
+/**
+ * A file that couldn't come in: the path it was given as, what stopped it (the error itself, so its kind is known:
+ * failure.ts), and its words as they are in `errors`.
+ */
+export interface Failed {
+  path: string;
+  error: unknown;
+  said: string;
+}
+
+/**
+ * What an import did: the project's rev after it, the media ids added (or found), what couldn't come in, and the same
+ * file by file with its error (Nov 21, audit I4: only the words were kept, so a Drive import couldn't tell a dropped
+ * line, to try again, from a file only the person can change).
+ */
+export type Imported = [rev: number, added: string[], errors: string[], failed?: Failed[]];
 
 /**
  * Footage imports going now (New project, the chat, the file browser): no row of their own, so counted here for as
@@ -59,6 +73,13 @@ export async function importPaths(
 async function importNow(app: App, id: string, paths: string[], place: boolean, origin: string): Promise<Imported> {
   const probed: [string, media.Probe][] = [];
   const errors: string[] = [];
+  const failed: Failed[] = [];
+  const fail = (path: string, error: unknown, said: string) => {
+    errors.push(said);
+    failed.push({ path, error, said });
+  };
+  // The path each probed file was given as (a converted one is probed at its conversion).
+  const givenAs = new Map<string, string>();
   const names = new Map<string, string>();
   // Footage on a drive, or in Downloads or Desktop: macOS may ask the person first, and a sync look at it below
   // would hold the whole server while it asks. Asked off the event loop; the import waits for the answer.
@@ -68,7 +89,8 @@ async function importNow(app: App, id: string, paths: string[], place: boolean, 
     try {
       path = fs.realpathSync(given);
     } catch {
-      errors.push(`${given} is not a supported local media file`);
+      const said = `${given} is not a supported local media file`;
+      fail(given, new NeedsPerson(said), said);
       continue;
     }
     const file = isFile(path);
@@ -83,7 +105,7 @@ async function importNow(app: App, id: string, paths: string[], place: boolean, 
       try {
         dir = app.store.uploadsDir(id);
       } catch (error) {
-        errors.push(diag.messageOf(error));
+        fail(given, error, diag.messageOf(error));
         continue;
       }
       const how = await uploads.plan(path, join(dir, "converted"));
@@ -111,13 +133,19 @@ async function importNow(app: App, id: string, paths: string[], place: boolean, 
       if (how.from !== undefined) names.set(how.media, fileName(path) ?? fileName(how.media) ?? "media");
       path = how.media;
     } else {
-      errors.push(`${path} is not a supported local media file`);
+      const said = `${path} is not a supported local media file`;
+      fail(given, new NeedsPerson(said), said);
       continue;
     }
     try {
       probed.push([path, await media.probe(path)]);
+      givenAs.set(path, given);
     } catch (error) {
-      errors.push(diag.messageOf(error));
+      // A file that can't be read as media is the person's (another file), unless what stopped the look is known to
+      // pass (the disk, a sign-in): unrecognised words count as passing elsewhere, and a damaged file would be
+      // tried again four times over twenty minutes before anyone was told.
+      const said = diag.messageOf(error);
+      fail(given, surely(error) === null ? new NeedsPerson(said) : error, said);
     }
   }
   const nameOf = (path: string) => names.get(path) ?? fileName(path) ?? path;
@@ -143,10 +171,11 @@ async function importNow(app: App, id: string, paths: string[], place: boolean, 
         ),
       );
     } catch (error) {
-      errors.push(`${name} couldn't go to the cloud: ${diag.messageOf(error)}`);
+      fail(givenAs.get(path) ?? path, error, `${name} couldn't go to the cloud: ${diag.messageOf(error)}`);
     }
   }
-  return addMedia(app, id, items, errors, place, origin);
+  const [rev, added] = await addMedia(app, id, items, errors, place, origin);
+  return [rev, added, errors, failed];
 }
 
 /** A video's whole proxy is made here only under 20 minutes (cloud_media.ts `PIECED_FROM`); a longer one's pieces come as they're read: its first 20 minutes are counted. */

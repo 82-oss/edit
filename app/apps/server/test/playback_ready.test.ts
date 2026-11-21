@@ -5,6 +5,7 @@ import * as path from "node:path";
 
 import { BLOCK } from "../src/cloud_blocks.ts";
 import { localPath } from "../src/cloud_media.ts";
+import * as pieces from "../src/proxy_pieces.ts";
 import { keeping, readyStretches } from "../src/playback_ready.ts";
 import * as storage from "../src/storage.ts";
 import { scratch } from "./helpers/home.ts";
@@ -102,6 +103,92 @@ test.skipIf(vbr.ffmpeg === null || vbr.ffprobe === null)("a streamed proxy is re
     expect(await readyStretches(cache, project, root)).toEqual([[0, 180]]);
   } finally {
     file.cleanup();
+    home.cleanup();
+  }
+});
+
+// Nov 21 (audit P9): a clip's end in its file was worked out unclamped, and what's here was held to the file's length
+// (an index's last span to the media's duration, a pieced proxy's pieces to its picture's frames). A clip at the file's
+// end overshot it by a sliver of float (3.3e-7 s on a 29.97 fps file), rounded out to a whole frame not "ready": a play
+// near that cut held on its spinner up to 30 s with every byte on the disk.
+
+test("a clip to its file's very end is ready when the whole file is here, its last frame too, whatever the float says", async () => {
+  const home = scratch("playback-ready-end");
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    const key = "edit/proxies/drive/ntsc-end.mp4";
+    const project = newProject();
+    project.settings.fps = 30;
+    project.settings.ntsc = true;
+    // The probe's file: 29.97 fps, 9.976633 s; 299 frames of it end 3.3e-7 s past that.
+    project.media.push(media({ id: "n", name: "n", path: stream(key), kind: "video", duration: 9.976633, cloud: { proxy: key } } as never));
+    expect((299 * 1001) / 30000 - 9.976633).toBeGreaterThan(0);
+    keep(root, key, 10, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    project.clips.push(clip("c1", "n", 0, 299), clip("c2", "n", 0, 299, 0, "audio"));
+    expect(await readyStretches(cache, project, root)).toEqual([[0, 299]]);
+    // Its last block not here: its end truly isn't, and is said so (the run's end pulled in half a block's worth).
+    fs.rmSync(path.join(root, createHash("sha1").update(key).digest("hex"), "9"));
+    const ready = await readyStretches(cache, project, root);
+    expect(ready.length).toBe(1);
+    expect(ready[0]![0]).toBe(0);
+    expect(ready[0]![1]).toBeLessThan(299 - 20);
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("a clip running a tenth of a second past its file's length (edit_plan allows it) is ready when the file is here", async () => {
+  const home = scratch("playback-ready-past");
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    const key = "edit/proxies/drive/past-end.mp4";
+    const project = newProject();
+    project.settings.fps = 30;
+    project.media.push(media({ id: "p", name: "p", path: stream(key), kind: "video", duration: 10, cloud: { proxy: key } } as never));
+    keep(root, key, 10, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    // 303 frames from its start: 10.1 s of a 10 s file, then a clip after it.
+    project.clips.push(clip("c1", "p", 0, 303), clip("c2", "p", 303, 150, 2));
+    expect(await readyStretches(cache, project, root)).toEqual([[0, 453]]);
+    // The first half of the file not here: what the clips need of it is still missing.
+    const folder = path.join(root, createHash("sha1").update(key).digest("hex"));
+    for (const n of [1, 2, 3, 4]) fs.rmSync(path.join(folder, `${n}`));
+    expect(await readyStretches(cache, project, root)).toEqual([[0, 15], [165, 303], [408, 453]]);
+  } finally {
+    home.cleanup();
+  }
+});
+
+test("a pieced proxy whose sound outlasts its picture is ready to its sound's end once its last piece is here; a piece not here is still missing", async () => {
+  const home = scratch("playback-ready-pieced");
+  try {
+    const cache = home.dir;
+    const source = "hash:sound-outlasts-picture";
+    const base = pieces.baseKey(source);
+    const key = pieces.proxyKeyOf(source);
+    // Two one-minute pieces of picture (3,600 frames at 30 fps, 120 s); its sound runs to 120.4 s.
+    const layout: pieces.Layout = {
+      v: 1, source, original: "edit/originals/x", duration: 120.4, fps: 30, frames: 3600, perPiece: 1800, pieces: 2,
+      width: 320, height: 180, bitrate: 1_000_000, slot: 1 << 20, audio: { frames: 5644, slot: 1 << 16 }, head: 4096, total: 4096 + 2 * ((1 << 20) + (1 << 16)),
+    };
+    const at = (k: string) => {
+      const file = localPath(cache, k);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      return file;
+    };
+    fs.writeFileSync(at(`${base}/layout.json`), JSON.stringify(layout));
+    fs.writeFileSync(at(`${base}/video/0.m4s`), "piece");
+    const project = newProject();
+    project.settings.fps = 30;
+    project.media.push(media({ id: "s", name: "s", path: stream(key), kind: "video", duration: 120.4, cloud: { proxy: key } } as never));
+    // Its picture to 120 s, its sound to 120.4 s.
+    project.clips.push(clip("c1", "s", 0, 3600), clip("c2", "s", 0, 3612, 0, "audio"));
+    // The second piece not here: its minute is missing, picture and sound.
+    expect(await readyStretches(cache, project, path.join(cache, "cloud", "blocks"))).toEqual([[0, 1800]]);
+    fs.writeFileSync(at(`${base}/video/1.m4s`), "piece");
+    expect(await readyStretches(cache, project, path.join(cache, "cloud", "blocks"))).toEqual([[0, 3612]]);
+  } finally {
     home.cleanup();
   }
 });

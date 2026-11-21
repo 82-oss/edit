@@ -703,6 +703,8 @@ export function dueNow(home: string, kinds?: readonly Kind[]): Job[] {
 export function wakePassing(home: string, why: string): string[] {
   const now = nowMs();
   const keys: string[] = [];
+  // The times of those after the first, a few seconds apart (the first goes now).
+  const later: number[] = [];
   // The same kind of signal again within seconds wakes nothing it just woke (Nov 20: twelve sign-ins in six seconds
   // tried a refused recording 80 ms apart and spent its schedule). Another kind of signal still wakes it at once.
   const signal = signalOf(why);
@@ -720,12 +722,25 @@ export function wakePassing(home: string, why: string): string[] {
       const kind = job.why === undefined ? (on === "passing" ? "passing" : "other") : failure.kindOf(said);
       if (kind !== "passing" && kind !== "signin") continue;
       job.retry_at = now + keys.length * failure.scaled(3_000);
+      if (keys.length > 0) later.push(job.retry_at);
       keys.push(job.key);
     }
     return keys.length > 0;
   });
   for (const key of keys) woken.set(key, { signal, at: now });
   if (keys.length > 0) diag.info("jobs", `${why}: ${keys.length} waiting job${keys.length === 1 ? "" : "s"} woken (${keys.join(", ")})`);
+  // Each one after the first gets its timer as its time comes (Nov 21, audit I15.a: they had a time and no timer, so
+  // went up to 30 s late at the table's next look). `wakeAt` keeps one timer a data folder, the soonest, so the next
+  // is asked for once the one before it has gone.
+  const arm = (left: number[]): void => {
+    const at = left[0];
+    if (at === undefined) return;
+    wakeAt(home, at);
+    if (left.length === 1) return;
+    const next = setTimeout(() => arm(left.slice(1)), Math.max(at - nowMs(), 0) + 100);
+    next.unref?.();
+  };
+  arm(later);
   // Also what fell due since the table's last look (a try due a few seconds ago waited for the next 30-second tick:
   // the bad-day wifi-drop-editor-import case, done 29 s after the line came back).
   void wake(home).catch((error: unknown) => diag.warn("jobs", `waking waiting jobs: ${diag.messageOf(error)}`));

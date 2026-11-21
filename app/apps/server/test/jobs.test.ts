@@ -567,6 +567,31 @@ test("a wait already there as a run starts, due before the table's next look, go
   }
 });
 
+// Nov 21 (audit I15.a): the trouble over, the second and later rows woken a few seconds apart had their time set but
+// no timer, so they went only at the table's next look, up to 30 s on.
+test("rows woken a few seconds apart as the trouble ends each go when their time comes, not at the table's next look", async () => {
+  const dir = home();
+  // Sixty times faster (failure.ts `speed`): 3 s apart becomes 50 ms apart.
+  process.env.EDIT_BAD_DAY_SPEED = "60";
+  try {
+    const keys = ["p1", "p2", "p3", "p4"].map((project) => {
+      jobs.begin(dir, "archive", project, {});
+      jobs.wait(dir, `archive:${project}`, "could not reach Edit's relay: The socket connection was closed unexpectedly");
+      return `archive:${project}`;
+    });
+    const started: string[] = [];
+    // No table timer of its own (`useResumers`, not `resume`): only what waking sets can start them.
+    jobs.useResumers(dir, { archive: (job) => void started.push(job.key) });
+    expect(jobs.wakePassing(dir, "Edit's relay answers again").sort()).toEqual(keys);
+    // The last is due 150 ms on; a second and a half is ten times that.
+    await Bun.sleep(1500);
+    expect(started.sort()).toEqual(keys);
+  } finally {
+    delete process.env.EDIT_BAD_DAY_SPEED;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // Nov 20: the fault-injection run's storm and the rows left "running" with nothing running.
 test("the same kind of signal again within seconds wakes nothing it just woke; another kind still wakes it at once", () => {
   const dir = home();

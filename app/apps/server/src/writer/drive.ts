@@ -34,11 +34,21 @@ const unsigned = hooks.accessToken;
  */
 export type Token = string | (() => Promise<string>);
 
-/** How one download signs its tries: `next` asks for a token (once a try); `renew` says whether a 401 may be tried once more with a fresh one. */
+/**
+ * How one download signs its tries: `next` asks for a token (once a try); `saw` hears the bytes down so far; `renew`
+ * says whether a 401 is the token's running out, to be tried again at once with a fresh one, or Drive's refusal.
+ * A 401 is the token's the first time, and again each time the renewed token had brought bytes before it (Nov 21,
+ * audit I3.b: renewed once a download, the second token to run out in a recording that takes an hour or two to come
+ * down, or in one with two lid closes, was called "Drive won't let … download" with 120 of its 200 kB down). Two 401s
+ * with nothing between them is the file's, not the token's: a refusal.
+ */
 function signer(token: Token) {
   let first: string | null = typeof token === "string" ? token : null;
   const ask = (): Promise<string> => (typeof token === "function" ? token() : hooks.accessToken === unsigned ? Promise.resolve(token) : hooks.accessToken());
-  let renewed = false;
+  // The most bytes heard down, and that at the last renewal (-1: none yet). A most, not a count of reports: a download
+  // in parts says the parts it already has as it starts, which isn't anything the token brought.
+  let most = 0;
+  let atRenewal = -1;
   return {
     // A sign-in that can't be had fails the download as the caller's own ask would have (a wait for the sign-in, the relay out of reach), not as Drive's refusal.
     next: Effect.tryPromise({
@@ -49,13 +59,25 @@ function signer(token: Token) {
       },
       catch: (error) => (error instanceof Error ? error : new Error(String(error))),
     }),
-    renew: (): boolean => (renewed ? false : (renewed = true)),
+    saw: (bytes: number): void => {
+      if (bytes > most) most = bytes;
+    },
+    renew: (): boolean => {
+      if (atRenewal >= 0 && most <= atRenewal) return false;
+      atRenewal = most;
+      return true;
+    },
   };
 }
 type Signer = ReturnType<typeof signer>;
 
-/** A 401 the first time in a download: the token, not the file, so asked again with a fresh one (a temporary failure, tried again by itself). */
-const staleToken = () => new service.ServiceUnreachable({ service: SERVICE, message: "Google Drive refused the sign-in (401: a token over an hour old, or from before a sleep): asking again with a fresh one" });
+/**
+ * A 401 the sign-in answers: the token ran out (over an hour old, or from before a sleep), not the file's sharing.
+ * Tried again at once with a fresh one, and not counted as one of the line's tries: a long download needs as many as
+ * its hours, and `renew` already holds them to ones that brought bytes. Never leaves `downloading`.
+ */
+class TokenRanOut extends Schema.TaggedError<TokenRanOut>()("TokenRanOut", { message: Schema.String }) {}
+const staleToken = () => new TokenRanOut({ message: "Google Drive refused the sign-in (401: a token over an hour old, or from before a sleep): asking again with a fresh one" });
 
 export type Link = { kind: "file"; id: string } | { kind: "folder"; id: string };
 
@@ -278,9 +300,13 @@ const sizeOf = (path: string) => (fs.existsSync(path) ? fs.statSync(path).size :
  * its end. Fails when the connection drops, Drive refuses, or nothing comes
  * for `STALL_MS`; whatever came down stays, for the next try.
  */
-const downloadTry = (sign: Signer, recording: Recording, dest: string, onBytes: (bytes: number) => void) =>
+const downloadTry = (sign: Signer, recording: Recording, dest: string, report: (bytes: number) => void) =>
   Effect.gen(function* () {
     const token = yield* sign.next;
+    const onBytes = (bytes: number) => {
+      sign.saw(bytes);
+      report(bytes);
+    };
     const have = sizeOf(dest);
     // A big one in parts at once (ranged_download.ts: 70 MB/s from Drive, one connection 12-16): begun so, or begun now.
     if (recording.size >= ranged.ranged.from && (ranged.partlyDone(dest) || have === 0)) {
@@ -390,8 +416,22 @@ const downloadTry = (sign: Signer, recording: Recording, dest: string, onBytes: 
  */
 export const downloading = Effect.fn("drive.download")(function* (token: Token, recording: Recording, dest: string, onBytes: (bytes: number) => void = () => {}) {
   const sign = signer(token);
+  // A try whose token ran out goes again at once with a fresh one, as many times as `renew` allows.
+  const signedTry = Effect.gen(function* () {
+    for (;;) {
+      const ranOut = yield* downloadTry(sign, recording, dest, onBytes).pipe(
+        Effect.as(false),
+        // An instance check, not a tag: the try's failures are typed as Error (the sign-in's own failure is a plain one).
+        Effect.catchIf(
+          (error): error is TokenRanOut => error instanceof TokenRanOut,
+          (error) => Effect.sync(() => (diag.warn("writer", `${recording.name}: ${error.message}`), true)),
+        ),
+      );
+      if (!ranOut) return;
+    }
+  });
   let problem = "";
-  yield* downloadTry(sign, recording, dest, onBytes).pipe(
+  yield* signedTry.pipe(
     Effect.tapError((error) => Effect.sync(() => (problem = error.message))),
     Effect.retry(service.temporaryRetries(`downloading ${recording.name} from Google Drive`, timing.instant ? { base: 1, times: 4 } : { base: "2 seconds", times: 4 })),
     // Out of tries on a temporary failure: what came down is said below, and kept for Try again.
@@ -413,7 +453,7 @@ export const downloading = Effect.fn("drive.download")(function* (token: Token, 
   if (yield* intactNow(sign.next, recording, dest)) return;
   diag.warn("writer", `${recording.name} came down damaged (its MD5 isn't Drive's): fetching it again from the start`);
   fs.rmSync(dest, { force: true });
-  yield* downloadTry(sign, recording, dest, onBytes).pipe(Effect.retry(service.temporaryRetries(`downloading ${recording.name} again from Google Drive`, timing.instant ? { base: 1, times: 4 } : { base: "2 seconds", times: 4 })));
+  yield* signedTry.pipe(Effect.retry(service.temporaryRetries(`downloading ${recording.name} again from Google Drive`, timing.instant ? { base: 1, times: 4 } : { base: "2 seconds", times: 4 })));
   if (!(yield* intactNow(sign.next, recording, dest))) {
     fs.rmSync(dest, { force: true });
     return yield* new DownloadCorrupt({ message: `${recording.name} came down damaged twice (it isn't the file Drive holds). Try again later.` });

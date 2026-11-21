@@ -922,7 +922,7 @@ export function uploadLater(home: string, upload: Upload): void {
   const key = jobs.begin(home, "upload", "-", { ...upload }, upload.source);
   const entry = { key, home, upload, done: Promise.resolve(true) };
   entry.done = uploadSlot
-    .with(() => diag.timeOnAsync("cloud", "cloud: upload import", upload.file, () => runUpload(upload, () => jobs.progressed(home, key))))
+    .with(() => diag.timeOnAsync("cloud", "cloud: upload import", upload.file, () => runUpload(upload, () => jobs.progressed(home, key), () => jobs.beat(home, key))))
     .then(
       () => {
         jobs.end(home, key);
@@ -949,8 +949,13 @@ export function uploadLater(home: string, upload: Upload): void {
   uploading.set(upload.file, entry);
 }
 
-/** `progressed`: said once a big original's upload sends a part past those already up (it resumes; cloud.ts). */
-async function runUpload(upload: Upload, progressed: () => void): Promise<void> {
+/**
+ * `progressed`: said once a big original's upload sends a part past those already up (it resumes; cloud.ts). `moving`:
+ * at every report (jobs.ts `beat`, at most every 30 s a row), so an hour's upload is never listed as still (Nov 21,
+ * audit I14.e: beaten only at its first reports, a long upload read "running, nothing noted for N min" in the log and in
+ * each Mac's report).
+ */
+async function runUpload(upload: Upload, progressed: () => void, moving: () => void = () => {}): Promise<void> {
   if (upload.uploadOriginal) {
     // Up already, whole (the same footage imported again while its first upload went on: the 10-hour trial,
     // Nov 4, sent 58 GB twice): the key is its content's, so it isn't sent again.
@@ -966,6 +971,7 @@ async function runUpload(upload: Upload, progressed: () => void): Promise<void> 
       let before = 0;
       await cloud.uploadFile(upload.file, upload.originalKey, (sent) => {
         if (++reports === 2) progressed();
+        else moving();
         upSent.set(upload.file, sent);
         if (reports > 1) slotSent += Math.max(sent - before, 0);
         before = sent;
@@ -974,7 +980,7 @@ async function runUpload(upload: Upload, progressed: () => void): Promise<void> 
     await putRecord({ source: upload.source, originalReady: true, size: upload.size, duration: upload.duration });
   }
   if (upload.proxy !== null && upload.local !== null) {
-    await cloud.uploadFile(upload.local, upload.proxy);
+    await cloud.uploadFile(upload.local, upload.proxy, moving);
     await putRecord({ source: upload.source, proxyKey: upload.proxy, proxyReady: true });
     // The proxy stays here once it's up: it's this Mac's whole copy, what the
     // native player and the agent's renders read (local_previews.ts), and the
@@ -1057,8 +1063,10 @@ async function makeEveryPiece(home: string, key: string, cache: string, source: 
       exportSaid = !exportSaid;
       jobs.step(home, key, exportSaid ? "waiting for the export to end" : "making its pieces");
     }
-    await fillHooks.fill(context, [{ base, seconds: (n * layout.perPiece) / layout.fps }], () => false);
-    jobs.progressed(home, key);
+    // Getting further only when a piece was really made (Nov 21, audit I8.a: said after every fill, which forgave the
+    // row's waits, so a piece that failed each time waited a minute every time, an encode a minute for good). The fill
+    // logs a piece's failure and goes on, as playback's own filling needs; nothing made, the throw below waits longer each time.
+    if ((await fillHooks.fill(context, [{ base, seconds: (n * layout.perPiece) / layout.fps }], () => false)) > 0) jobs.progressed(home, key);
   }
   if (exportSaid) jobs.step(home, key, "making its pieces");
   const left = pieces.missingHere(context, base, layout);

@@ -78,7 +78,9 @@ export async function hereOf(cache: string, root: string | null, media: Media): 
       for (let n = 0; n < layout.pieces; n++) {
         if (!pieces.pictureHere(context, base, n)) continue;
         const [first, end] = pieces.framesOf(layout, n);
-        const span: [number, number] = [first / layout.fps, end / layout.fps];
+        // The last piece holds the file to its end, sound that outlasts the picture too (Nov 21, audit P9: held to the
+        // picture's frames, a sound clip to the file's end was never ready).
+        const span: [number, number] = [first / layout.fps, n === layout.pieces - 1 ? Math.max(end / layout.fps, layout.duration, media.duration) : end / layout.fps];
         const last = out.at(-1);
         if (last !== undefined && Math.abs(last[1] - span[0]) < 1e-6) last[1] = span[1];
         else out.push(span);
@@ -187,7 +189,12 @@ export async function missingOf(cache: string, project: Project, root = cloudMed
     if (has === "all") continue;
     const speed = clip.speed ?? 1;
     const from = clip.source_in ?? 0;
-    const to = from + (clip.duration / fps) * speed;
+    // Never more than the file holds (Nov 21, audit P9): a clip at its file's end overshot it by a float's sliver
+    // (3.3e-7 s of a 29.97 fps file), and one may run a tenth of a second past it (edit_plan.ts `runsOut`); what's here
+    // ends at the file's end, so that sliver was "missing", a whole frame once rounded, and a play near the cut held
+    // on its spinner up to 30 s with every byte here.
+    const to = Math.min(from + (clip.duration / fps) * speed, one.duration > 0 ? one.duration : Number.POSITIVE_INFINITY);
+    if (!(to > from)) continue;
     // What of the clip's stretch of its file isn't here, onto the timeline.
     for (const [a, b] of without([[from, to]], has)) {
       missing.push({ media: one, frames: [clip.start + ((a - from) / speed) * fps, clip.start + ((b - from) / speed) * fps], seconds: [a, b] });
