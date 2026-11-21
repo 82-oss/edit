@@ -134,12 +134,12 @@ The same reader would drop these. Delete this section once Sphe agrees.
 - **After an update every failed export and share is retried**: low impact: chunks are kept.
 - **"Skip all" is looser than skipping by name**: the person pressed Skip all on purpose.
 - **A deleted script's original may keep uploading**: never seen; R2's orphan sweep covers it.
-- **Disk claims are one total for the whole process: Macs have one disk, and an unreadable disk hasn't been seen.
+- **Disk claims are one total for the whole process, and an unreadable disk counts as endless**: Macs have one disk, and an unreadable disk hasn't been seen.
 - **Saved files are trusted as read**: not true as written: `jobs.ts` already drops malformed rows and fills in what's missing; only a job's `args` go unchecked.
 - **The server aborted once as it stopped mid-export**: symbols are kept and it hasn't happened since.
 - **No check that a failure path never deletes someone's work**: no known case, and a grep can't tell an explicit delete from a failure path.
 - **No lint against the `!` shortcut in new code**: style only.
-- **A rejected edit plan says only: rare, and the agent refreshes by itself.
+- **A rejected edit plan says only "revision conflict"**: rare, and the agent refreshes by itself.
 - **Tools don't forgive near-misses**: the agent recovers from a plain error.
 - **The `countdown` op ends at the frame it counts to**: nobody has asked for it.
 - **`broll_recut` and "hold the shot" have never run in a real courtroom edit**: a test note; no courtroom channel exists.
