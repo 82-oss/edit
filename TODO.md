@@ -2,11 +2,24 @@
 
 The one list of work that isn't done. On Nov 21 every plan, review, council, feedback log and topic doc in the repo was checked against the code; what was built was deleted, and what wasn't is here. An item is deleted from this file when it's done. The files it came from are in git history (`git log --all -- docs/plans docs/feedback docs/fix-next.md`).
 
-Paths are relative to `app/`. Items are grouped by area, not ordered inside a group; "Do first" is the order.
+Paths are relative to `app/`. Items are grouped by area, not ordered inside a group; "Do first" is the order, and its items appear again in their groups with the detail.
 
 ## Do first
 
-Filled in by the Nov 21 review of this list (below).
+The order a second reader gave this list on Nov 21, checking each item against the code: what can still make an import or an export look frozen, or playback slow to start, on JJ's 8 Mbit/s line and on Macs short of disk.
+
+1. **Prove the nightly on the team's Macs** (hours, no code). Once JJ is on it: read his report and its `[thread]` lines, time a cold open and Play on one of his projects in Edit.app, count wake lines against `pmset -g log` after a real lid close, and write down what failed and why. Nothing else shows the playback complaint is gone.
+2. **A share's export goes up once, not twice** (a day). On JJ's line a 5 GB export is about 85 minutes a copy. Where a finished export is handed to an `archive` job (`exports.ts`), skip it for a share: `reviews.ts` `fullBehind` and `heldByReview` already point the export's record at the review's `full.mp4`. Archive only if the share ends without `full.mp4` up.
+3. **Uploads leave room on the line** (a day). `cloud.ts` sends 8 parts at once (`FILE_PARALLEL`), which floods an 8 Mbit/s uplink and slows every download behind it. One or two parts at a time for uploads that run behind, about four for one a person waits on, and `lineFree` also waits while an import is fetching footage.
+4. **Cuts over the network fetch only what they need, one at a time** (a day). In `cloud_media.ts` `driveExcerpts`, one worker when the source is a URL, and bounded reads: cut through the block cache so the keyframe probe and the cut share bytes, or give FFmpeg an end offset a cut.
+5. **Script mode keeps its local copy** (1 to 2 days). In `writer/streamed.ts` `settle`, stop calling `drop` once the copy is up and its piece made; add the copies folder to `ledger.ts` `rootsOf` as evictable so room is made only under pressure. Then write the `handoff-no-refetch` and `upload-behind` bad-day cases, which must fail on today's code.
+6. **Four things off the server's thread** (a day): `motion_review.ts` (the cached `planExport`, FFmpeg through an asynchronous spawn); `export_ahead.ts`'s `pmset`; `exportPlan` as an asynchronous task in Rust; `cleanCache` and `cleanExports` giving the thread back every few hundred files. With them: `ai_claude.ts` makes contact sheets with a synchronous FFmpeg for every few minutes of footage during an import (`watch.ts` writes its request synchronously too), and `chrome_devtools.ts` and `thumbnails/render.ts` run `ps` synchronously.
+7. **An export made ahead stops when someone presses Play** (2 to 3 hours). `export_ahead.ts` listens to `playing` and stops what it's making, as `giveWay` does.
+8. **A file waiting on the person is looked at again every 30 minutes** (2 to 3 hours). In `script.ts`, give such files a `retry_at` from `failure.nextTry("person", …)`, which already answers 30 minutes and is never called for them.
+9. **A Drive upload that meets passing trouble waits** (2 hours). In `drive.ts`, `jobs.wait` when `failure.surely` says passing, instead of "failed" and `jobs.end`; the resumer in `serve.ts` carries it on.
+10. **A channel project's voice-over uses the channel's voice** (1 to 2 hours). Confirmed: all four calls in `voiceover.ts` pass the project's style's voice, and the channel's narration voice is only told to the agent in words. One `voiceOf(project)` that answers the channel's voice when it has one.
+
+Also found while checking, not from the old files: every call to the cloud's records waits up to 120 s and is tried three times (`cloud.ts`), so when the relay hangs instead of refusing, work behind `getRecord` holds for up to six minutes. And before a deleted review link clears its `full.mp4` from R2, it must skip one an export's record points at (`exports.ts` `heldByReview`), or that export loses its only cloud copy.
 
 ## Imports and Script mode
 
@@ -15,24 +28,16 @@ Filled in by the Nov 21 review of this list (below).
 - **Three bad-day cases are stubs**: `handoff-no-refetch`, `resume-download`, `upload-behind` throw "isn't written yet" (`scripts/bad-day/cases/stubs.ts`). They wait on the two items above.
 - **Cloud cuts run three at once whatever the source** (`cloud_media.ts` `EXCERPTS_AT_ONCE`); over the network they were meant to go one at a time.
 - **An excerpt cut over the network fetches two to five times what it needs** (bad-day `no-room` fails its bytes bound on both machines: about 100 MB fetched for 20 MB of excerpts). FFmpeg's reads are open-ended ranges: each cut opens the file twice, drops each read after 2 to 3 MB and reads about 4 MB past the excerpt's end. Bounded ranges would stop it.
-- **Two fixed clocks remain on network work**: `LIMITS.relayCopy` is a total deadline beside its stall rule (`cloud_media.ts`; the Mac takes over when it trips, so nothing fails), and the remote probe is a fixed 15 minutes (`import_steps.ts`).
 - **"Go on without" lives in a file on one Mac** (`missing_media.ts`, `footage-gone-without.json`); it was meant to move into the project, which needs a field on edit-core's Media.
 - **A failed Drive upload ends its job** with no wait (`drive.ts`, emits "failed" then `jobs.end`). A footage import from a Drive link already waits.
 - **An unknown failure stops Script mode's import as if it were the person's to fix** (`writer/imports.ts` `known ?? "person"`); shares read only `failure.surely` too (`reviews.ts`).
 - **An export waits only on errors known to pass**; room, quota and unrecognised failures still end failed with Retry (`exports.ts`, `failure.surely(...) === "passing"`).
 - **A file that's the person's to fix is never looked at again in the editor's import** (`script.ts` deletes its `retry_at`): if JJ shares the file in Drive, nothing happens until he presses Try again. A cheap "is it shared now?" check every 30 minutes was planned.
-- **Every wake retries all missing recordings, not only those due** (`serve.ts` calls `writerMissing.tryAgain(project, true)`; `writer/missing.ts` skips `nextAt` when `all`). A recording at Drive's daily limit is asked for whenever a neighbour's minute is up.
-- **Footage gone without is retried for good**, whatever the project's state or the failure's kind (`missing_media.ts`).
-- **After an update every failed export and share is retried**, not only the broken ones (`retry_after_update.ts`). Low impact: chunks are kept.
 - **A share carried on from an older build loses "Exported as the edit is now"** (`serve.ts`: the share gets `note`, not `said`); no test reads that note.
 - **The editor's import stops for a file that's really gone** (Script mode goes on without it). Needs "Use another link" to work on an edit already laid out.
-- **"Skip all" is looser than skipping by name**: it also skips files waiting on room, credit or a sign-in (`script.ts`, the `*` path).
 - **Left from the AVI fix**: a big upload doesn't give way to an import's downloads, and an import that keeps failing the same files doesn't lay out the rest.
 - **A local-file import with the relay down**: `putHashed` waits for the registry before anything else (`cloud_media.ts` `getRecord`); no bad-day case covers it.
-- **A deleted script's original may keep uploading**: an upload already under way, or the relay's own Drive-to-R2 copy, was never tested.
-- **Disk claims are one total for the whole process with no disk attached, and a disk whose free space can't be read counts as endless** (`storage.ts` claims, `admit`).
 - **Uploads aren't paced to leave room on the line** (nothing in `cloud.ts`, `uploads.ts`, `cloud_media.ts`, `writer/cloud.ts`). On JJ's 8 Mbit/s uplink a share's upload starves everything else.
-- **Saved files are trusted as read**: `jobs.json`'s shape isn't checked, which matters for rows written by nightly-84.
 - **The footage dialog can still say "Only 2.0 of the 2.0 GB fits"** when the bytes are down but files aren't all here (`footage_ready.ts`).
 - **The relay answers 401 to a token whose `kid` is missing when its re-read of the keys fails** (`apps/relay/src/auth.ts`).
 - **Once every Mac has the build with the job table**: delete `wakeWhatPasses` and `carryOnOlder` (`serve.ts`, `script.ts`, `seams.ts`, `writer/missing.ts`), `ChooseRecordings.tsx`, the old going-on-without file's reader and `jobs.ts`'s pre-Nov-8 rows.
@@ -47,7 +52,6 @@ Filled in by the Nov 21 review of this list (below).
 - **Planning a long edit is a synchronous native call** (`exportPlan`: 716 ms on the server's thread for a 2-hour edit; callers in `effect_inputs.ts`, `playback_render.ts`, `motion_review.ts`). Planned once a revision now; the call itself should be asynchronous in Rust.
 - **The engine's own waits have no deadlines**: a dead VideoToolbox session or a lost GPU after a lid close can leave a render thread waiting for good. Edit drops such a job after a minute and starts a fresh one; the Rust side should end it itself (`wait()` settling within seconds of `cancel()`, `recv_timeout` in the stage loops, deadlines on AVAssetWriter's finish and cancel).
 - **"What's beneath title-card" never renders on Linux** ("When Cops Rescue Boyfriends…", 17 times, once at every start). An 8-frame export fails four ways in two seconds, no frame reaching the encoder; a size the encoders refuse (odd, or under NVENC's smallest) is the first thing to look at, and the engine keeps only FFmpeg's last line, which hides the reason. Not seen on a Mac.
-- **The server aborted once as it stopped mid-export**; release symbols are kept to place the next one (`Cargo.toml`), nothing since.
 - **`review_motion` works on the server's thread**: FFmpeg through `Bun.spawnSync` and `exportPlan`, and its saved-answer check runs only after it has taken the one slot (`motion_review.ts`).
 - **`pmset` is a `spawnSync` on the server's thread once a minute** (`export_ahead.ts`, 2 s timeout): against "no synchronous program" in `docs/dev.md`.
 - **Idea, needs a trial on JJ's Mac**: hardware and x264 encoding together for exports (about 1.5 to 1.8 times on the video stage when idle), HEVC speed-over-quality for previews and proxies.
@@ -82,8 +86,6 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 
 - **Two tests fail every Linux build**, so a stable release can't pass its Linux check: `apps/server/test/export_ahead.test.ts` (no "chunks … already made" line in the last 400 log lines) and `proxy_pieces.test.ts` (the PSNR compare of piece 1 reports 31 frames, not 30).
 - **No release check runs an old client against the new relay.**
-- **No check that a failure path never deletes someone's work** (a test or grep flagging removal of blocks, clips or media outside an explicit delete).
-- **No lint against the `!` shortcut in new code** (`.oxlintrc.json`).
 - **Errors seen in the team's logs, never diagnosed** (check the R2 logs first; drop any that no longer occur): `censor: analyse … Input/output error`, `media: preview copy … Invalid argument`, YouTube "ffmpeg exited with code 251", VideoToolbox "A pixel buffer cannot be appended".
 - **Plans refused for media that "runs out at"** (19 on nightly-58): check whether the agent still hits it (`edit_plan.ts` `runsOut`).
 
@@ -92,12 +94,8 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 - **Most of `agent/` is not in any channel.** Checked Nov 21 against prod's channels. Moved, word for word, and no longer read from the repo by channel projects: the writer guides `cut-in`, `judgment`, `house`, `foia`, `compilation`, and both ideas guides. Moved only as a short rewrite: the ten house edit skills. Not moved at all: `writer/courtroom.md`, `writer/commentary.md`, `thumbnails/guide.md` (every Thumbnails lane is empty), `skills/subtitle-video.md`, most of `skills/resume-edit.md`, `shared/names-first.md`, and all 45 files of `styles/` (no courtroom, horror, shorts or commentary channel exists). None of it can be deleted while V1 is in use: 105 of 116 edit projects, 113 of 126 scripts and all 42 ideas have no channel, and JJ and Marc made V1 work on Nov 18 to 20. Deleting `agent/writer` today stops Edit from starting.
 - **Channel projects still read three repo files**: `instructions.md` (sent whole to every session, with a list of skills for a tool channel projects don't have, `mcp/index.ts`), `writer/commentary.md` (`writer/commentary.ts`, even when the script has a channel) and `thumbnails/guide.md` (`thumbnails/run.ts`).
 - **A channel project's voice-over may take its voice from the project's style, not the channel's narration voice** (`styles.ts` → `voiceover.ts`; projects default to `bodycam`). Not traced.
-- **A rejected edit plan says only "revision conflict … refresh get_edit_context"** (`edit_tools.ts`), with no span of what changed.
 - **V1 still compacts its conversation at 180k** (`claude.ts`; V2 uses 1M). Measure first.
-- **Tools don't forgive near-misses**: an unknown tool gets no suggestion (`mcp/index.ts`), `report_problem` requires `tool` (`agent_reports.ts`), rectangles aren't clamped.
 - **`repack_subtitles` loses hand fixes on a re-run**: lines deleted and holds lengthened by hand come back (`subtitles.ts`, `captions.ts` `adjusted`).
-- **The `countdown` op ends at the frame it counts to**; it can't stay up while counting to a later return (`intro_graphics.ts`).
-- **`broll_recut` and "hold the shot" have never run in a real courtroom edit** (`onscreen.ts`).
 - **The server says "choose Check Claude"**, a button the page no longer has (`agent.ts` `waitForClaudeLogin`).
 - **Text removal, from the Boyfriends edit**: the bottom ARRESTFLIX mark is never found; a short "No" in the 0.80× copy reads as no words; a subtitle under the glitch transition isn't planned. All wait on the bake-off of mark finders.
 - **Cuffed & Caught's cleanup**: a new render after the strip-stacking fix was never checked on prod.
@@ -110,9 +108,6 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 - **Deleting a review link leaves each version's `fullKey`, `preview.key` and `wordsKey` on R2** (accounts repo, `convex/reviewPage.ts` `remove`).
 - **The live relay still diarizes with pyannote** (`apps/relay/wrangler.toml` `DIARIZE`); every Mac is past the builds that needed it.
 - **V1's watermark dropdown** (`channel_marks.ts` `offerFor`) goes once every channel has its watermark on its page.
-- **Lists aren't served from this Mac**: `/api/ideas` asks the relay on every call (`ideas/routes.ts`).
-- **No dev review site**: links shared from dev open nothing; Edit only warns (`reviews.ts`).
-- **No auth beyond loopback**: any device on the tailnet can drive `/mcp`, `/api/ws` and the changing routes (`http/host.ts` `checkHost` checks Host and Origin only). A per-install bearer would close it.
 
 ## For Sphe to decide
 
@@ -129,7 +124,30 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 
 - **Finds in each channel's ideas lane**: watched channels checked daily, a speed score for a video rising fast, Make it or Skip, similar finds grouped, skips teaching the scout. Only the competitor list per channel exists. With it: push an idea to the board at a set time.
 - **Speaking to the agents**: a mic button in the chat boxes, transcribed on the machine. Researched Nov 7: try Moonshine (MIT, small, runs on any CPU, words as you speak) against NVIDIA Parakeet TDT 0.6B v3 (Apache 2.0, the accurate one: FluidAudio or parakeet-mlx on a Mac, ONNX on an NVIDIA card; about 1.2 GB, downloaded on first use) with the team's own prompts; names need the project's cast (`people.ts`).
-- **Linux: the thumbnail subject cut-out** with BiRefNet (MIT, about 200 MB, downloaded on first use); today it says "Lifting a subject out needs a Mac" (`crates/edit-native/src/media.rs`).
 - **A feedback link for ideas and thumbnails**, as an edit has its review link.
 - **Thumbnails: frames from YouTube**: give Claude Ideas' `scan_video` and `grab_frames` (`ideas/frames.ts`) on a thumbnail.
-- **Parked**: SAM 2.1 mask tracking where the template tracker loses a face (`crates/edit-engine/src/track.rs`).
+
+## Probably not worth doing
+
+The same reader would drop these. Delete this section once Sphe agrees.
+
+- **Two fixed clocks remain on network work**: the Mac takes over when the relay's copy trips, and 15 minutes is a generous bound for a probe.
+- **Every wake retries all missing recordings, not only those due**: one refused request a wake costs nothing.
+- **Footage gone without is retried for good**: one cheap try every 30 minutes, and finding the file later is a win.
+- **After an update every failed export and share is retried**: low impact: chunks are kept.
+- **"Skip all" is looser than skipping by name**: the person pressed Skip all on purpose.
+- **A deleted script's original may keep uploading**: never seen; R2's orphan sweep covers it.
+- **Disk claims are one total for the whole process: Macs have one disk, and an unreadable disk hasn't been seen.
+- **Saved files are trusted as read**: not true as written: `jobs.ts` already drops malformed rows and fills in what's missing; only a job's `args` go unchecked.
+- **The server aborted once as it stopped mid-export**: symbols are kept and it hasn't happened since.
+- **No check that a failure path never deletes someone's work**: no known case, and a grep can't tell an explicit delete from a failure path.
+- **No lint against the `!` shortcut in new code**: style only.
+- **A rejected edit plan says only: rare, and the agent refreshes by itself.
+- **Tools don't forgive near-misses**: the agent recovers from a plain error.
+- **The `countdown` op ends at the frame it counts to**: nobody has asked for it.
+- **`broll_recut` and "hold the shot" have never run in a real courtroom edit**: a test note; no courtroom channel exists.
+- **Lists aren't served from this Mac**: one relay call on the ideas page, not felt.
+- **No dev review site**: dev already warns.
+- **No auth beyond loopback**: Edit listens on 127.0.0.1 only; other devices reach it only where `tailscale serve` is on, which is Sphe's own machine.
+- **Linux: the thumbnail subject cut-out**: the team is on Macs.
+- **Parked**: already parked (SAM 2.1 mask tracking).
