@@ -93,7 +93,9 @@ test("a render whose engine reports progress for longer than the still time is n
     for (let tries = 0; t.registry.running() && tries < 1200; tries++) await Bun.sleep(10);
     t.cleanup();
   }
-});
+  // Its clocks (four still times, then one more) take about five seconds since they were made four times longer:
+  // past bun's own limit on a slow machine (Nov 21, this test alone timed out at 5.0 s on Linux).
+}, 30_000);
 
 test("an export's cloud copy going up for longer than the still time is never listed as still while its bytes move", async () => {
   const t = fixtureHome("archive-beats");
