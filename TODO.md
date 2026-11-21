@@ -6,65 +6,48 @@ Paths are relative to `app/`. Items are grouped by area, not ordered inside a gr
 
 ## Do first
 
-The order a second reader gave this list on Nov 21, checking each item against the code: what can still make an import or an export look frozen, or playback slow to start, on JJ's 8 Mbit/s line and on Macs short of disk.
+What can still make an import or an export look frozen, or playback slow to start, on JJ's 8 Mbit/s line and on Macs short of disk.
 
 1. **Prove the nightly on the team's Macs** (hours, no code). Once JJ is on it: read his report and its `[thread]` lines, time a cold open and Play on one of his projects in Edit.app, count wake lines against `pmset -g log` after a real lid close, and write down what failed and why. Nothing else shows the playback complaint is gone.
-2. **A share's export goes up once, not twice** (a day). On JJ's line a 5 GB export is about 85 minutes a copy. Where a finished export is handed to an `archive` job (`exports.ts`), skip it for a share: `reviews.ts` `fullBehind` and `heldByReview` already point the export's record at the review's `full.mp4`. Archive only if the share ends without `full.mp4` up.
-3. **Uploads leave room on the line** (a day). `cloud.ts` sends 8 parts at once (`FILE_PARALLEL`), which floods an 8 Mbit/s uplink and slows every download behind it. One or two parts at a time for uploads that run behind, about four for one a person waits on, and `lineFree` also waits while an import is fetching footage.
-4. **Cuts over the network fetch only what they need, one at a time** (a day). In `cloud_media.ts` `driveExcerpts`, one worker when the source is a URL, and bounded reads: cut through the block cache so the keyframe probe and the cut share bytes, or give FFmpeg an end offset a cut.
-5. **Script mode keeps its local copy** (1 to 2 days). In `writer/streamed.ts` `settle`, stop calling `drop` once the copy is up and its piece made; add the copies folder to `ledger.ts` `rootsOf` as evictable so room is made only under pressure. Then write the `handoff-no-refetch` and `upload-behind` bad-day cases, which must fail on today's code.
-6. **Four things off the server's thread** (a day): `motion_review.ts` (the cached `planExport`, FFmpeg through an asynchronous spawn); `export_ahead.ts`'s `pmset`; `exportPlan` as an asynchronous task in Rust; `cleanCache` and `cleanExports` giving the thread back every few hundred files. With them: `ai_claude.ts` makes contact sheets with a synchronous FFmpeg for every few minutes of footage during an import (`watch.ts` writes its request synchronously too), and `chrome_devtools.ts` and `thumbnails/render.ts` run `ps` synchronously.
-7. **An export made ahead stops when someone presses Play** (2 to 3 hours). `export_ahead.ts` listens to `playing` and stops what it's making, as `giveWay` does.
-8. **A file waiting on the person is looked at again every 30 minutes** (2 to 3 hours). In `script.ts`, give such files a `retry_at` from `failure.nextTry("person", …)`, which already answers 30 minutes and is never called for them.
-9. **A Drive upload that meets passing trouble waits** (2 hours). In `drive.ts`, `jobs.wait` when `failure.surely` says passing, instead of "failed" and `jobs.end`; the resumer in `serve.ts` carries it on.
-10. **A channel project's voice-over uses the channel's voice** (1 to 2 hours). Confirmed: all four calls in `voiceover.ts` pass the project's style's voice, and the channel's narration voice is only told to the agent in words. One `voiceOf(project)` that answers the channel's voice when it has one.
 
 Also found while checking, not from the old files: every call to the cloud's records waits up to 120 s and is tried three times (`cloud.ts`), so when the relay hangs instead of refusing, work behind `getRecord` holds for up to six minutes. And before a deleted review link clears its `full.mp4` from R2, it must skip one an export's record points at (`exports.ts` `heldByReview`), or that export loses its only cloud copy.
 
 ## Imports and Script mode
 
-- **Importing a file under 20 minutes blocks the file browser for over two minutes**: a whole proxy is made before the import answers (the 1200 s cutoff in `cloud_media.ts`). On the MacBook Air, Nov 21, three files of about 14.6 minutes took 2 min 14 s to 2 min 23 s each, the browser on its busy button throughout; a 20.75-minute file answered in 13.6 s.
 - **A YouTube import through Script mode says "5% Starting." for the whole download**, about a minute, and an 18-second clip took 49 s, 35 of them fetching captions through the proxy.
 - **Originals going up aren't uploads "behind"** (`cloud_media.ts` `runUpload`), so they never give way to a play or an import's downloads, and a Script import has no running row for the upload pacing to see (`cloud.ts` `forPerson`).
 - **Room is asked for before the work is known to fit** (`storage.ts` `admit`): an import too big for the disk gives up kept copies and is still refused.
 - **Restoring an archived project's excerpts still cuts straight from R2** (`cloud_media.ts` `restoreHere`, `remake`), with the waste the import's cuts no longer have.
-- **Script mode deletes its local copy once it's uploaded**, so Start the edit reads every recording back over the network (`apps/server/src/writer/streamed.ts` `settle`, then `drop`). The copy should be kept as the local original while there's room.
-- **Two fetch paths where one was planned**: fetch to disk first when there's room, one function with a "room here?" branch. `footageToDisk` and `footageToCloud` are still two (`script.ts`), `cutsBetterHere` / `wholeHere` and the fallback in `driveExcerpts` remain (`cloud_media.ts`), and the ledger doesn't cover Script mode's footage (`ledger.ts` `rootsOf`).
-- **Three bad-day cases are stubs**: `handoff-no-refetch`, `resume-download`, `upload-behind` throw "isn't written yet" (`scripts/bad-day/cases/stubs.ts`). They wait on the two items above.
-- **Cloud cuts run three at once whatever the source** (`cloud_media.ts` `EXCERPTS_AT_ONCE`); over the network they were meant to go one at a time.
-- **An excerpt cut over the network fetches two to five times what it needs** (bad-day `no-room` fails its bytes bound on both machines: about 100 MB fetched for 20 MB of excerpts). FFmpeg's reads are open-ended ranges: each cut opens the file twice, drops each read after 2 to 3 MB and reads about 4 MB past the excerpt's end. Bounded ranges would stop it.
+- **Two fetch paths where one was planned**: fetch to disk first when there's room, one function with a "room here?" branch. `footageToDisk` and `footageToCloud` are still two (`script.ts`), and `cutsBetterHere` / `wholeHere` and the fallback in `driveExcerpts` remain (`cloud_media.ts`).
+- **One bad-day case is a stub**: `resume-download` throws "isn't written yet" (`scripts/bad-day/cases/stubs.ts`).
 - **"Go on without" lives in a file on one Mac** (`missing_media.ts`, `footage-gone-without.json`); it was meant to move into the project, which needs a field on edit-core's Media.
-- **A failed Drive upload ends its job** with no wait (`drive.ts`, emits "failed" then `jobs.end`). A footage import from a Drive link already waits.
 - **An unknown failure stops Script mode's import as if it were the person's to fix** (`writer/imports.ts` `known ?? "person"`); shares read only `failure.surely` too (`reviews.ts`).
 - **An export waits only on errors known to pass**; room, quota and unrecognised failures still end failed with Retry (`exports.ts`, `failure.surely(...) === "passing"`).
-- **A file that's the person's to fix is never looked at again in the editor's import** (`script.ts` deletes its `retry_at`): if JJ shares the file in Drive, nothing happens until he presses Try again. A cheap "is it shared now?" check every 30 minutes was planned.
 - **A share carried on from an older build loses "Exported as the edit is now"** (`serve.ts`: the share gets `note`, not `said`); no test reads that note.
 - **The editor's import stops for a file that's really gone** (Script mode goes on without it). Needs "Use another link" to work on an edit already laid out.
 - **Left from the AVI fix**: a big upload doesn't give way to an import's downloads, and an import that keeps failing the same files doesn't lay out the rest.
 - **A local-file import with the relay down**: `putHashed` waits for the registry before anything else (`cloud_media.ts` `getRecord`); no bad-day case covers it.
-- **Uploads aren't paced to leave room on the line** (nothing in `cloud.ts`, `uploads.ts`, `cloud_media.ts`, `writer/cloud.ts`). On JJ's 8 Mbit/s uplink a share's upload starves everything else.
 - **The footage dialog can still say "Only 2.0 of the 2.0 GB fits"** when the bytes are down but files aren't all here (`footage_ready.ts`).
 - **The relay answers 401 to a token whose `kid` is missing when its re-read of the keys fails** (`apps/relay/src/auth.ts`).
+- **Checked true in the Nov 21 code audit, not yet fixed** (each was read against the code by a second reviewer): "Make the edit with their parts black" also blacks files that are only waiting (`script.ts` `askable`); deleting a script doesn't stop its downloads (`writer/imports.ts`); a folder case's master is never stamped after one failed upload or a restart mid-upload (`writer/handoff.ts`); the loopback reader's layout fetch has no time limit (`cloud_media.ts`, add `AbortSignal.timeout(30_000)`); a blocks file says no room after room has come back (`cloud_blocks.ts`); two waiters on one proxy encode, and the loser deletes the winner's proxy (`makeProxy`); a frame rate with no bound (1000/90000) is not refused at import. Not true, so not to be "fixed": the claims of a fetch waiting for good (Bun gives up on a silent connection at 300 s, timed).
 - **Once every Mac has the build with the job table**: delete `wakeWhatPasses` and `carryOnOlder` (`serve.ts`, `script.ts`, `seams.ts`, `writer/missing.ts`), `ChooseRecordings.tsx`, the old going-on-without file's reader and `jobs.ts`'s pre-Nov-8 rows.
 - **Stale comments and names**: `import_steps.ts`'s header still describes `RETRY_WAITS` and "every step is bounded", and keeps `whyOf`, `passing`, `QUOTA_RETRY_MS`, `LIMIT_RETRY_MS` as aliases; `cloud_media.ts` "an hour and then a day later"; `remote_control.ts` names `busy.wouldLose`; `cache_cleanup.ts` and `writer/storage.ts` still say "15 GB or a tenth of the disk" (it's a flat 15 GB, `storage.ts`).
 
 ## Exports and shares
 
-- **An export restarted after a kill shows its progress from 1%**, then jumps from 77% to 100% at the end (the MacBook Air, Nov 21; the file is right and 6 of 26 chunks were reused).
-- **Three export lines say too little**: the log never names the encoder ("native video"), a share's review copy has no percentage (2 min 14 s of nothing), and the join shows "100%" for its 22 s.
+- **The export's log never names the encoder** ("native video").
 - **Two shares still upload twice**: one that follows a plain export already running, and one of an export archived earlier (the cloud has no copy-in-place).
 - **After a restart a share's full-quality file gone from the Mac isn't fetched back**: `serve.ts`'s `full` resumer ends it as gone before `fullBehind`'s fetch-back runs.
 - **A plain export whose cloud copy is put off isn't protected from the cleaner** (only a share's is, `exports.ts` `beingRead`).
 - **Voice-overs made before Nov 21 on a channel project keep the style's voice** until their words change (`voice.ts` `forProject` reuses one made from the same words).
-- **A share's export goes up twice in full**: the archive (`edit/exports/…`), then the review's `full.mp4` (`exports.ts` `heldByReview`, `reviews.ts` `fullBehind`). The relay has no server-side copy. With it: the review copy isn't uploaded ahead of the share, and it's still 3 Mbit/s (`reviews.ts`).
+- **A share's review copy isn't uploaded ahead of the share**, and it's still 3 Mbit/s (`reviews.ts`).
 - **One encoder lease with priorities** (export > share copy > playback > made ahead > proxies): `encoder.ts` only counts users. Done so far: a person's Export takes the encoder from smooth playback's render.
-- **An export made ahead doesn't step aside for a live play** (it checks only before it starts, `export_ahead.ts`), a real export doesn't use fewer encoders while something plays, and exports made ahead have no byte quota. Whether to keep exports made ahead at all waits on a week's count of how often one is used.
+- **A real export doesn't use fewer encoders while something plays**, and exports made ahead have no byte quota. Whether to keep exports made ahead at all waits on a week's count of how often one is used.
 - **A joined export is checked by frame count only** (`crates/edit-engine/src/render.rs` `export_chunked`); its fallback chain (chunked, again, whole native, whole FFmpeg) hides the first cause, and Marc's "joined 33826 frames, not 33786" was never explained.
-- **Planning a long edit is a synchronous native call** (`exportPlan`: 716 ms on the server's thread for a 2-hour edit; callers in `effect_inputs.ts`, `playback_render.ts`, `motion_review.ts`). Planned once a revision now; the call itself should be asynchronous in Rust.
+- **Planning a long edit off the thread needs the addon rebuilt**: `export_plan_async` is written in Rust (`crates/edit-native/src/export.rs`) and `native/index.ts` uses it when the addon has it; until a build carries it the plan is the synchronous call (716 ms for a 2-hour edit), made once a revision.
 - **The engine's own waits have no deadlines**: a dead VideoToolbox session or a lost GPU after a lid close can leave a render thread waiting for good. Edit drops such a job after a minute and starts a fresh one; the Rust side should end it itself (`wait()` settling within seconds of `cancel()`, `recv_timeout` in the stage loops, deadlines on AVAssetWriter's finish and cancel).
 - **"What's beneath title-card" never renders on Linux** ("When Cops Rescue Boyfriends…", 17 times, once at every start). An 8-frame export fails four ways in two seconds, no frame reaching the encoder; a size the encoders refuse (odd, or under NVENC's smallest) is the first thing to look at, and the engine keeps only FFmpeg's last line, which hides the reason. Not seen on a Mac.
-- **`review_motion` works on the server's thread**: FFmpeg through `Bun.spawnSync` and `exportPlan`, and its saved-answer check runs only after it has taken the one slot (`motion_review.ts`).
-- **`pmset` is a `spawnSync` on the server's thread once a minute** (`export_ahead.ts`, 2 s timeout): against "no synchronous program" in `docs/dev.md`.
+- **Checked true in the Nov 21 code audit, not yet fixed**: a bad cached chunk is reused for three days (`render.rs`: check reused chunks on the second try, put the encoder in the key; half a day); Drive's `curl` has no stall limit (`drive.ts`: `--speed-limit`, and "too slow" among `failure.ts`'s passing errors); the page is told "failed" while the export waits to go again by itself (`exports.ts`); `dropKept` can take an export another is copying chunks from (`filePins`); old progress is carried into an export started within 15 s of a cancel (`export_steps.ts`); four small guards in the Rust mix (a worker's panic spins `render_kept_in`, identical minutes share a `.partial`, workers lack `with_decoders`, a panic in `export_chunked` stops Cancel reaching the mix).
 - **Idea, needs a trial on JJ's Mac**: hardware and x264 encoding together for exports (about 1.5 to 1.8 times on the video stage when idle), HEVC speed-over-quality for previews and proxies.
 
 ## Playback
@@ -81,18 +64,17 @@ Also found while checking, not from the old files: every call to the cloud's rec
 - **A cold open on a slow line was never measured in Edit.app or the page** (JJ's took 6 s to 4 min a file); bad-day's `cold-open-play` covers the server's side only.
 - **V2: the viewer doesn't measure what it draws.** The Mac viewer should time its own drawing of an effect and play the render where the web view can't keep up; the only cost check is measured in Chrome (`effect_tools.ts`). Also never checked on a Mac: a stacked-alpha render in the native player, and an effect with moving footage.
 - **A strip the native reader refuses isn't remembered** ("No native video track"), so it falls back to FFmpeg on every read. Unconfirmed whether it still happens.
+- **Checked true in the Nov 21 code audit, not yet fixed** (the page's player; none matter in Edit.app once one player lands): sound ending before its picture gives an error every 4 s for good (`decodeAudio`; first to fix, 30 min); a failed or short smooth chunk is answered 200 and cached for good; the 10 s watchdog ends a worker that is only waiting on a slow read; readiness polling stops on a project switch until the next play; a `<video>` error leaves "playing" frozen until Play is pressed again. In the window: a player thread's panic skips the view's teardown; stale read-ahead opens can evict the reader that's playing; `mix_live`'s FFmpegs aren't ended on cancel.
 - **Nobody has listened to 2× speed's sound.**
 
 ## The server's thread, start and crashes
 
-- **`GET …/playback/ready` kept the thread 3.7 s** with a 50-minute project open in the window (the MacBook Air, Nov 21).
-- **The cache clean calls the native `mediaKey` once a file without a breath** (`cache_cleanup.ts`): two holds of 2.0 s on the MacBook Air, Nov 21. The same pass as the hourly clean below.
 - **Still synchronous on the thread**: a file under 32 MiB is read with `fs.readSync` as it uploads (`cloud.ts` `fileSource`); a media's whole transcript is read and parsed at `watch.ts` (megabytes for hours of footage); every render serialises the whole edit to start (`native/index.ts` `ExportStart.project` takes only JSON).
 - **A tool call can't be cancelled**: `mcp/registry.ts` `ToolCall` carries no signal, so `review_motion` can't stop its sample when the request goes.
 - **As Edit starts it answers nothing for 3 to 8 s** on a home with long edits ("last started: GET /api/projects/{id}/text-removal"). Read the `[thread]` lines of a start.
-- **The hourly cache clean keeps the thread about 3 s** on a home of 14,000 cached files (`cache_cleanup.ts` `cleanCache` or `cleanExports`; each names itself in the `[thread]` line).
 - **A Nov 4 `.partial` file in `cloud/sound` is never swept**: eviction skips partial files and the other sweep doesn't match that path (`cache_cleanup.ts`).
 - **Prod Linux Edit holds about 9.5 GB while blurring two projects**, and the blur's Rust threads take the whole CPU quota; it should cap its own threads.
+- **78 of the server's 358 modules can't be the first one imported** (import rings, older than Nov 21: the server's own start order is safe, a test or script that starts elsewhere meets "Cannot access … before initialization"). Two edges were cut on Nov 21 (`semaphore.ts`, `addons.ts`'s `from` hooks); `routes.ts` still takes `Semaphore` through `media.ts`.
 - **A crash in the Rust addon takes the whole server down**: it runs inside the server's process.
 - **After a hard crash the old `claude` process isn't ended** (`serve.ts` `endLeftovers` ends only children of the same pid), so an orphan can keep calling the new server's `/mcp`.
 
@@ -110,7 +92,6 @@ From the Nov 19 council's list; none can be shown in a harness. A real lid close
 ## The in-app agent
 
 - **Making V2 the only mode** has its own file, `docs/v1-to-v2.md`: what of `agent/` is in the channels, what V2 can't do yet, and the order of steps.
-- **A channel project's voice-over may take its voice from the project's style, not the channel's narration voice** (`styles.ts` → `voiceover.ts`; projects default to `bodycam`). Not traced.
 - **V1 still compacts its conversation at 180k** (`claude.ts`; V2 uses 1M). Measure first.
 - **`repack_subtitles` loses hand fixes on a re-run**: lines deleted and holds lengthened by hand come back (`subtitles.ts`, `captions.ts` `adjusted`).
 - **The server says "choose Check Claude"**, a button the page no longer has (`agent.ts` `waitForClaudeLogin`).
