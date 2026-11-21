@@ -80,6 +80,7 @@ import * as effects from "./effects.ts";
 import * as exportSteps from "./export_steps.ts";
 import * as jobs from "./jobs.ts";
 import * as removalSchedule from "./removal_schedule.ts";
+import * as background from "./background.ts";
 import * as watermarkRemoval from "./watermark_removal.ts";
 import * as effectCloud from "./effect_cloud.ts";
 import { BUILD, VERSION } from "./version.ts";
@@ -141,6 +142,7 @@ export function buildRouter(): Router<App> {
   beta.routes(router);
   effects.routes(router);
   removalSchedule.routes(router);
+  background.routes(router);
   watermarkRemoval.routes(router);
   archive.routes(router);
   avatars.routes(router);

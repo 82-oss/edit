@@ -510,7 +510,7 @@ async function applyEditPlan({ app, args, projectId }: ToolCall): Promise<Conten
 }
 
 /** Each clip's place and contents, to see what a plan changed. */
-function clipSpans(project: Project): Map<string, [number, number, string]> {
+export function clipSpans(project: Project): Map<string, [number, number, string]> {
   return new Map(project.clips.map((clip) => [clip.id, [clip.start, clip.start + clip.duration, JSON.stringify(clip)]]));
 }
 
@@ -1961,7 +1961,7 @@ export function audited(app: App, project: Project, rev: number | null): Args {
  * repeated_broll, which a fixed camera often forces; not marks across the
  * people, which need a clean copy). cut_mid_word is one extend_clip.
  */
-const FIXABLE = [
+export const FIXABLE = [
   "commentary_uncovered_narration", "commentary_placeholder", "commentary_music_over_source", "commentary_static_source", "commentary_repeated_range", "commentary_text_heavy",
   "commentary_flash", "commentary_short_card", "commentary_source_overuse", "commentary_graphics_monotony",
   "commentary_punch_overuse", "commentary_label_overuse", "commentary_sound_without_picture", "commentary_leak_overuse", "note_link_unused",

@@ -23,6 +23,7 @@
 //     never goes out uncleaned while a piece is coming.
 
 import type { App } from "./app.ts";
+import * as background from "./background.ts";
 import { readyWaits } from "./broll.ts";
 import { ApiError, json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
@@ -446,6 +447,10 @@ export function routes(router: Router<App>): void {
     return json(statusOf(app, id));
   });
 }
+
+// The chat's waiting row reads every line under way from one place (background.ts, Nov 21): removal's is this one,
+// the same numbers and the same Stop as its own routes above.
+background.provide("removal", { line: (_app, id) => backgroundOf(id), stop });
 
 // ---------------------------------------------------------------------------
 // A project's run in the background: the chat's waiting row, and the agent told when it's done

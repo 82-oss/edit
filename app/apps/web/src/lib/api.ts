@@ -220,17 +220,22 @@ export interface ExportActivity {
  */
 export const byPerson = (): { person?: true } => (navigator.webdriver ? {} : { person: true });
 
-/** Removal of their text and watermarks under way, for the chat's waiting row (the server's removal_schedule.ts `statusOf`). */
-export interface TextRemoval {
-  /** Under way in the background: the chat's waiting row (RemovalRow.tsx) says it. */
-  background: RemovalRun | null;
+/** Work under way in the background (removal, a channel's end-of-turn check), for the chat's waiting row (the server's background.ts). */
+export interface Background {
+  /** Each under way, the older first: the chat's waiting row (RemovalRow.tsx) says each. */
+  lines: BackgroundLine[];
 }
 
-export interface RemovalRun {
+export interface BackgroundLine {
+  /** Its kind ("removal", "end-check"): its Stop's address. */
+  key: string;
   label: string;
   done: number;
+  /** 0: nothing to count, so no count and no bar. */
   total: number;
   started_at: number;
+  /** What's counted ("pieces" when not said). */
+  unit?: string;
 }
 
 
@@ -261,10 +266,10 @@ export const api = {
   scriptChanges: (id: string) => request<ScriptChanges>("GET", `/api/projects/${id}/script/pull`),
   /** Takes the Doc's changed ranges and cuts their clips again; the rest is left for the agent. */
   pullScript: (id: string) => request<ScriptChanges>("POST", `/api/projects/${id}/script/pull`, { apply: true }),
-  /** Taking what re-uploaders burned into the footage out of its picture (text_removal.ts): the chat's waiting row. */
-  textRemoval: (id: string) => request<TextRemoval>("GET", `/api/projects/${id}/text-removal`),
-  /** The chat's waiting row's Stop: nothing more is done (what's done stays). */
-  stopRemoval: (id: string) => request<TextRemoval>("POST", `/api/projects/${id}/removal/stop`),
+  /** What runs on in the background (removal of their text, a channel's end-of-turn check): the chat's waiting row. */
+  background: (id: string) => request<Background>("GET", `/api/projects/${id}/background`),
+  /** A waiting row's Stop: nothing more is done (what's done stays), and nobody is woken for it. */
+  stopBackground: (id: string, key: string) => request<Background>("POST", `/api/projects/${id}/background/${key}/stop`),
   /** The footage the timeline plays that isn't on this machine and can't be fetched. */
   /** Footage the timeline uses that isn't here (missing_media.ts): Edit tries it again by itself meanwhile. */
   missingFootage: (id: string) => request<EditMissing>("GET", `/api/projects/${id}/missing`),

@@ -80,6 +80,7 @@ export type Name =
   | "case-research"
   | "youtube-excerpts"
   | "muted-words"
+  | "end-check"
   | "short-form"
   | "court-script"
   | "essay-script";
@@ -257,6 +258,15 @@ export const CATALOGUE: Record<Name, BuiltIn> = {
     },
     v1: ["commentary", "horror"],
     v1Settings: { commentary: { list: "commentary" }, horror: { list: "horror" } },
+  },
+  // end_check.ts: the audit (edit_tools.ts `audited`) where the turn changed the edit, its line in background.ts, the
+  // agent woken without a word in the chat. Off everywhere until a channel sets it (Sphe, Nov 21: "the agent selecting
+  // a trigger e.g at the end of its turn the add-on runs in the background").
+  "end-check": {
+    title: "Check when a turn ends",
+    description: "When a turn that changed the edit ends, Edit runs the edit's checks again where it changed, in the background; if something there is still wrong, the agent is started again with what was found, to fix it and say what it changed. Nothing shows when nothing is.",
+    lane: "edit", trigger: "turn-end", does: { reports: true, background: true, asks: true }, form: "any", settings: {},
+    v1: [],
   },
   // edit_tools.ts bigCut, edit_plan.ts audit (shortsAudit), edit_review.ts narrationInFootage, script.ts followOn; the frame at New project.
   "short-form": {
