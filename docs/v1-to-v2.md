@@ -121,7 +121,7 @@ The team wants it back. Looked into on Nov 21 against the code and three real ch
 
 What "reliable" needs: pictures asked for by clip and moment (the frame at that clip's own source time, from the preview already on the Mac or the cloud's), only for what is on screen at the current zoom, kept by the file's content and the moment so every computer and every reopening reuses them; a waveform for any sound wherever it is played from; a graphic's picture cut from the top half of its render and keyed by the render, so a new render brings new pictures; and a miss tried again by itself, never remembered as missing. A close-up drawn this way from the same project needed 397 pictures and 59 waveforms, fetched in 13 seconds.
 
-**Still to ask**: whether V2 keeps the video-player keys or takes V1's.
+**Being built** (Sphe's go, Nov 21): the read-only timeline under the viewer of every channel project, a row per kind of thing, pictures and waveforms as above, and the Subtitles row first and locked in place under the ruler so the words are always in view. V2 keeps its video-player keys.
 
 ## The `agent/` folder
 
