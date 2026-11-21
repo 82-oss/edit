@@ -4,6 +4,18 @@ The one list of work that isn't done. On Nov 21 every plan, review, council, fee
 
 Paths are relative to `app/`. Items are grouped by area, not ordered inside a group; "Do first" is the order, and its items appear again in their groups with the detail.
 
+## Pick up here (left Nov 21, 16:00, when the Linux machine was needed)
+
+Sphe's plan for the nightly: cut it once the V1 kinds are on channels, courtroom and Shorts first (their graphics recreated), commentary's and horror's graphics in the nightly after. Nothing below is a release until he says go. Delete this section as each line is done.
+
+1. **The Mac's pass on main.** Queued on the MacBook Air's thread ("Mac: a day on main in the real Edit window"), after its one-player report and the playback fixes on `one-player-mac` (audit P11a, P11b, P11c, P2, P1). Read its last line first: "main is fit for a nightly" or why not.
+2. **The removal hold kept in the project** (`Project.removal_held`: an edit moved onto a channel never starts its removal by itself, on any computer). Written, not built: on the branch `wip-nov-21` (`crates/edit-core/src/model.rs`, `store.ts` `relabel`, `removal_held.ts`, `removal_asks.ts`, `channel_move.ts` and its test). To finish: `just native`, `just wasm`, `just types`, then `bun test test/channel_move.test.ts`; the test fails with "Moving it would have changed more than its channel" until the addon is rebuilt.
+3. **The end-of-turn check** (the `end-check` add-on, off until a channel switches it on: when a turn that changed the edit ends, the edit's checks run again where it changed, on removal's waiting line, and what's found wakes the agent with no message in the chat; Sphe approved that look and only that). Built by its agent with its tests passing, not yet read by a second pair of eyes, so on `wip-nov-21`, not main (`end_check.ts`, `background.ts`, `addons.ts`, `edit_tools.ts`, `removal_schedule.ts`, `routes.ts`, `serve.ts`, `RemovalRow.tsx`, `lib/removal.ts`, `lib/api.ts`). Before it lands: each audit is synchronous on the server's thread, up to 12 a check (give it breaths, `docs/dev.md`); a file that can never be read keeps the line up 60 s; the person gets a second "Changes are done" notice after the fix turn; whole-edit findings with no position are never reported; run the server's shards and the web's tests; try it once in dev on a channel with it set.
+4. **A channel's script add-ons set from the app** (see The in-app agent, below).
+5. **The four kinds on channels.** Make the placeholder channels Courtroom, Shorts and Horror (names agreed; they're in the one channel list dev and prod share) and use InternetJanitor for commentary; set each one's add-ons (the lists are in `docs/v1-to-v2.md`); move each kind's teaching from `agent/` into its lanes; recreate V1's graphics frame by frame as V2 effects, courtroom's six and Shorts' one or two before the nightly, commentary's 21 and horror's 13 after; carry it to prod.
+6. **The lessons inbox**: save the agreed lessons to their lanes (courtroom's and Shorts' once those channels exist), close the 67 already covered, then take the inbox out of the code.
+7. **Before tagging**: `bun run mamagi:deploy` in the accounts repo (its `c63c14f`, a channel given is all a person needs; on dev already, the relay's half ships with the tag), a green Check, and the screenshot of player, chat and timeline on a real project Sphe asked for.
+
 ## Do first
 
 What can still make an import or an export look frozen, or playback slow to start, on JJ's 8 Mbit/s line and on Macs short of disk.
