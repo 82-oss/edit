@@ -77,6 +77,41 @@ export function failed(destination: Destination, said: string): void {
   const now = timing.now();
   Object.assign(health, { since: now, wait: timing.firstMs, probeAt: now + jittered(timing.firstMs), probing: false, skipped: 0 });
   diag.warn("cloud", `${NAMES[destination]} unreachable: background checks paused (${diag.scrub(said).slice(0, 300)})`);
+  lookUntilBack(destination);
+}
+
+/**
+ * While a destination is down it's asked every few seconds whether it answers yet (`lookers`: relay.ts gives the
+ * relay's: one small request, any answer counts), so the outage ends within seconds of the line coming back and the
+ * work waiting on it goes then. Until Nov 21 an outage ended only when some request of Edit's own happened to get
+ * through: a background round (probing every 15 s, doubling to 5 minutes) or the waiting work's own next try, up to
+ * half an hour on. On Sphe's MacBook Air an import waiting on a dropped line went 28 s after the line was back, at
+ * its own next try, where it should have gone at once; with its wait at 30 minutes that's 30 minutes. A Mac that is
+ * simply offline makes one request every few seconds that fails at once: nothing else, and nothing said.
+ */
+export const lookers: Partial<Record<Destination, () => Promise<unknown>>> = {};
+export const look = { everyMs: 3_000 };
+const looking = new Map<Destination, ReturnType<typeof setInterval>>();
+
+function lookUntilBack(destination: Destination): void {
+  if (looking.has(destination) || lookers[destination] === undefined) return;
+  let asking = false;
+  const timer = setInterval(() => {
+    if (of(destination).since === null) {
+      clearInterval(timer);
+      looking.delete(destination);
+      return;
+    }
+    if (asking) return;
+    asking = true;
+    // Its outcome is told by the request itself (`answered`, `failed`), as every request's is.
+    void Promise.resolve()
+      .then(() => lookers[destination]?.())
+      .catch(() => undefined)
+      .finally(() => (asking = false));
+  }, look.everyMs);
+  timer.unref?.();
+  looking.set(destination, timer);
 }
 
 /** Told as an outage ends (`answered`): the work waiting on it is woken at once (serve.ts), not at its next try. */
@@ -159,5 +194,7 @@ export async function background<T>(to: Destination | readonly Destination[], ru
 
 /** Tests: every destination answering, nothing counted. */
 export function forgetForTests(): void {
+  for (const timer of looking.values()) clearInterval(timer);
+  looking.clear();
   healths.clear();
 }

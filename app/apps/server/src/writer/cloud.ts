@@ -643,7 +643,12 @@ const syncing = (data: string) =>
       const pull = pullNow || Date.now() - lastPull >= PULL_EVERY_MS;
       const was = status.state;
       const ran = yield* Effect.tryPromise(() => tick(data, pull)).pipe(Effect.result);
-      if (ran._tag === "Success") {
+      // A round that asked the cloud nothing (no pull, nothing to send) can't say the cloud is back: offline stays
+      // offline until a round that asked gets through (the Mac's bad-day run, Nov 21: "offline", then "back in sync"
+      // three seconds later, every 30 s of a two-minute drop).
+      if (ran._tag === "Success" && was === "offline" && !pull) {
+        // Still offline, as far as anything here knows.
+      } else if (ran._tag === "Success") {
         if (was === "offline" || was === "error") yield* Effect.logInfo("the cloud: back in sync");
         Object.assign(status, { pending: ran.success, state: ran.success > 0 ? "syncing" : "synced", error: null, transfer: null, lastSync: Date.now() });
       } else {

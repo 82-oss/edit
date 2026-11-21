@@ -30,6 +30,7 @@ import * as encoder from "./encoder.ts";
 import * as jobs from "./jobs.ts";
 import * as missingMediaTries from "./missing_media.ts";
 import * as outages from "./outages.ts";
+import * as relay from "./relay.ts";
 import * as storage from "./storage.ts";
 import * as wake from "./wake.ts";
 import type { ExportOptions } from "./model.ts";
@@ -571,6 +572,9 @@ function wakeAfterTrouble(app: App): void {
     void renewed.then(() => jobs.wakePassing(app.store.home, `the machine woke after ${diag.human(sleptMs)}`));
   });
   outages.onBack((destination) => void jobs.wakePassing(app.store.home, `${destination === "relay" ? "Edit's relay" : "R2"} answers again`));
+  // And while the relay is down it's asked every few seconds whether it answers yet (its /health, 2.5 s at most), so
+  // that wake comes within seconds of the line coming back, not at some request's next try (outages.ts `lookers`).
+  outages.lookers.relay = () => relay.answers(2_500);
   // Someone signed in (or back in): work waiting on a sign-in goes now, not at its next look (verify.md finding 4).
   // Only when there was no good token before: a routine renewal ends no wait (Nov 20: each one woke every waiting
   // job and spent the passing schedule's tries, three in six seconds on the fault-injection run).

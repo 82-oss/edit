@@ -193,3 +193,40 @@ test("relay calls that can't connect make the outage, and a lock renewal during 
     process.env.EDIT_RELAY_URL = real;
   }
 });
+
+// Nov 21, bad-day's wifi-drop-editor-import on Sphe's MacBook Air: the line came back and the import waiting on it
+// went 28 s later, at its own next try, because an outage ended only when some request of Edit's own got through.
+test("while a destination is down it's asked every few seconds whether it answers yet, and the outage ends when it does", async () => {
+  const was = { every: outages.look.everyMs, relay: outages.lookers.relay };
+  outages.look.everyMs = 20;
+  let up = false;
+  let asked = 0;
+  outages.lookers.relay = async () => {
+    asked++;
+    if (up) outages.answered("relay");
+    else outages.failed("relay", "could not reach Edit's relay");
+  };
+  const back: string[] = [];
+  const stop = outages.onBack((destination) => back.push(destination));
+  try {
+    for (let n = 0; n < outages.timing.failures; n++) outages.failed("relay", "could not reach Edit's relay");
+    expect(outages.down("relay")).toBe(true);
+    await Bun.sleep(120);
+    // Asked while it's down, and still down.
+    expect(asked).toBeGreaterThan(2);
+    expect(back).toEqual([]);
+    up = true;
+    await Bun.sleep(80);
+    expect(outages.down("relay")).toBe(false);
+    expect(back).toEqual(["relay"]);
+    // And not asked again once it answers.
+    const then = asked;
+    await Bun.sleep(100);
+    expect(asked).toBe(then);
+  } finally {
+    stop();
+    outages.look.everyMs = was.every;
+    if (was.relay === undefined) delete outages.lookers.relay;
+    else outages.lookers.relay = was.relay;
+  }
+});
