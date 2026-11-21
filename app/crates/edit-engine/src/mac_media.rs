@@ -142,6 +142,7 @@ unsafe extern "C" {
         starved: *mut u64,
     );
     fn edit_speaker_latency(handle: *mut c_void) -> f64;
+    fn edit_speaker_running(handle: *mut c_void) -> i32;
     fn edit_speaker_close(handle: *mut c_void);
     fn edit_sound_writer_open(
         path: *const c_char,
@@ -748,6 +749,13 @@ impl Speaker {
             );
         }
         state
+    }
+
+    /// Whether its engine runs: an output device change or a wake stops it, and it's started again
+    /// (tried for a few seconds); one left stopped never plays a frame more.
+    pub fn running(&self) -> bool {
+        // Reads the engine of the handle this speaker owns.
+        unsafe { edit_speaker_running(self.handle.as_ptr()) != 0 }
     }
 
     /// Seconds between a frame leaving the ring and the speaker: read from
