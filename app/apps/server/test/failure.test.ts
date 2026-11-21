@@ -97,6 +97,8 @@ test("surely: what's known to pass, or null for Edit's own plain refusals (a sha
 test("real network errors are passing by their code and by FFmpeg's, curl's and Bun's words; Edit's own room lines are room (verify.md findings 4 and 5)", () => {
   for (const words of [
     "Server returned 5XX Server Error reply",
+    // curl's word for a connection dropped before any answer (Nov 21: a Drive upload cut mid-PUT).
+    "curl: (52) Empty reply from server",
     "Input/output error",
     "No route to host",
     "Failed to resolve hostname r2.example",
