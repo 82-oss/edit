@@ -585,9 +585,11 @@ export function unfence(given: string): string {
  * Never Edit's own path since Oct 30.
  */
 async function askStandIn(clip: string, text: string, lines: number, scratch: string, effort: string | null = "low"): Promise<[Answer, number]> {
+  // The clip and the request holding it read and written off the server's thread (Nov 21: a few minutes of footage
+  // each, for every window of an import, written synchronously).
   let data: string;
   try {
-    data = fs.readFileSync(clip).toString("base64");
+    data = (await fs.promises.readFile(clip)).toString("base64");
   } catch (error) {
     throw new Error(ioMessage(error));
   }
@@ -610,7 +612,7 @@ async function askStandIn(clip: string, text: string, lines: number, scratch: st
   if (effort !== null) request.reasoning = { effort };
   try {
     // Keys sorted, as serde_json writes a `json!` value.
-    fs.writeFileSync(scratch, stableStringify(request));
+    await fs.promises.writeFile(scratch, stableStringify(request));
   } catch (error) {
     throw new Error(ioMessage(error));
   }

@@ -12,7 +12,7 @@ import { rendererSource } from "./renderer_source.ts" with { type: "macro" };
 
 import * as diag from "../diag.ts";
 import { join } from "../paths.ts";
-import { chromeFonts, devToolsPort, headlessCommand } from "../chrome_devtools.ts";
+import { chromeFonts, devToolsPort, headlessCommand, processList } from "../chrome_devtools.ts";
 
 let transpiled: string | null = null;
 
@@ -154,11 +154,12 @@ let swept = false;
  * goodbye: a crash, `bun --watch`, an update's exec): whatever runs on a
  * thumbnail profile with nobody left to answer to is closed, its profile gone.
  */
-function sweepOrphans(): void {
+async function sweepOrphans(): Promise<void> {
   if (swept) return;
   swept = true;
   try {
-    const listed = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,command="]).stdout.toString();
+    // Off the server's thread (Nov 21: a synchronous `ps` here held every page while it listed).
+    const listed = await processList("pid=,ppid=,command=");
     for (const line of listed.split("\n")) {
       const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
       if (match === null || match[2] !== "1" || !match[3]!.includes(`--user-data-dir=${join(os.tmpdir(), PROFILE)}`)) continue;
@@ -179,7 +180,7 @@ process.on("exit", () => {
 });
 
 async function launch(origin: string): Promise<Browser> {
-  sweepOrphans();
+  await sweepOrphans();
   const profile = fs.mkdtempSync(join(os.tmpdir(), PROFILE));
   const command = headlessCommand(["--no-first-run", "--no-default-browser-check", "--disable-extensions", "--mute-audio", "--hide-scrollbars", "--window-size=1400,900", "--remote-debugging-port=0", `--user-data-dir=${profile}`, "about:blank"]);
   if (command === null) {
@@ -376,10 +377,14 @@ function onPage<T>(origin: string, use: (open: Browser) => Promise<T>): Promise<
   });
   // The line only orders the drawings: each one's error goes to its own caller.
   queue = work.catch(() => {});
-  void work.finally(() => {
-    if (idle !== null) clearTimeout(idle);
-    idle = setTimeout(close, 5 * 60_000);
-    idle.unref?.();
-  });
+  // Its error is its caller's alone: `finally` hands it on, and unheld it was an "unhandled failure" in the log for
+  // every drawing whose Chrome didn't start (Nov 21).
+  void work
+    .finally(() => {
+      if (idle !== null) clearTimeout(idle);
+      idle = setTimeout(close, 5 * 60_000);
+      idle.unref?.();
+    })
+    .catch(() => {});
   return work;
 }
