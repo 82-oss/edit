@@ -152,6 +152,15 @@ export interface ExportPlan {
   chunks?: string
 }
 
+/**
+ * `export_plan` on the runtime's blocking pool, off the server's one thread
+ * (Nov 21: a MacBook Air's server was held 3.7 s with a long edit open; a
+ * plan sent as JSON reads the whole project again, and a process's first
+ * plan runs FFmpeg to list its encoders, 0.7 s on mandalorian, on whatever
+ * thread asks).
+ */
+export declare function exportPlanAsync(project: ProjectInput, options: ExportOptions): Promise<ExportPlan>
+
 export interface ExportProject {
   /** The project as it's exported (cloud media pointing at originals). */
   json: string
