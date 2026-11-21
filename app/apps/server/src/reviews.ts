@@ -953,6 +953,16 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
     haltShare(projectId);
     sharing.set(projectId, total ? `${label} ${Math.round((done / total) * 100)}%` : label);
   };
+  // The review copy's own percent (Nov 21: a share's copy took 2 min 14 s on a MacBook Air with none said). Never
+  // back (libx264 after the hardware starts again), never 100% before it's whole, and only while the copy is what the
+  // share is on (not over its Cancel).
+  let copied = -1;
+  const copyTell = (share: number) => {
+    const percent = Math.min(99, Math.max(0, Math.floor(share * 100)));
+    if (percent <= copied || droppedShares.has(projectId) || !(sharing.get(projectId) ?? "").startsWith("making the review copy")) return;
+    copied = percent;
+    sharing.set(projectId, `making the review copy ${percent}%`);
+  };
   // The export held while it's read (an archive waits for it), let go however this ends.
   return await withExport(chosen.path, async () => {
     haltShare(projectId);
@@ -974,12 +984,12 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       if (!fs.existsSync(copy)) {
         let pieced = false;
         try {
-          pieced = await reviewCopyFromChunks(app.store.cacheDir(), projectId, chosen.path, copy, run, signal);
+          pieced = await reviewCopyFromChunks(app.store.cacheDir(), projectId, chosen.path, copy, run, signal, copyTell);
         } catch (error) {
           haltShare(projectId);
           diag.warn("review", `${projectId}: the review copy from the export's chunks: ${diag.messageOf(error)}; making it whole`);
         }
-        if (!pieced) await reviewCopy(chosen.path, copy, run);
+        if (!pieced) await reviewCopy(chosen.path, copy, run, copyTell);
       }
       // Never shared unless it plays as the export and decodes (review_check.ts): one
       // that doesn't (from pieces, or kept from before) is made whole again,
@@ -1316,13 +1326,18 @@ const PIECES_AT_ONCE = new Semaphore(2);
  * intro (card 1, Oct 29). False when the export wasn't made of chunks (or
  * isn't the file they were joined into): then it's made whole.
  */
-async function reviewCopyFromChunks(cache: string, project: string, source: string, dest: string, run: ShareRun = plainRun, signal?: AbortSignal): Promise<boolean> {
+async function reviewCopyFromChunks(cache: string, project: string, source: string, dest: string, run: ShareRun = plainRun, signal?: AbortSignal, tell?: (share: number) => void): Promise<boolean> {
   const last = lastChunks(cache, project);
   if (last === null || last.output !== source || !fs.existsSync(source) || fs.statSync(source).size !== last.size) return false;
   const dir = join(chunkFolder(cache, project), "review");
   fs.mkdirSync(dir, { recursive: true });
   const pieceOf = (key: string) => join(dir, `${key}.mp4`);
   let made = 0;
+  const encoders = new Set<string>();
+  // Its percent by the frames of the pieces there (those kept from before count from the start); the join is the last 5%.
+  const frames = Math.max(1, last.chunks.reduce((sum, chunk) => sum + chunk.frames, 0));
+  let there = last.chunks.filter((chunk) => fs.existsSync(pieceOf(chunk.key))).reduce((sum, chunk) => sum + chunk.frames, 0);
+  tell?.((there / frames) * 0.95);
   await Promise.all(
     last.chunks.map((chunk) =>
       PIECES_AT_ONCE.with(async () => {
@@ -1331,9 +1346,11 @@ async function reviewCopyFromChunks(cache: string, project: string, source: stri
         const partial = `${piece}.partial.mp4`;
         // No chapters: the export's run to its end and would count in the piece's length (review_runtime.py).
         const common = ["-v", "error", "-nostdin", "-y", "-ss", (chunk.at / last.fps).toFixed(6), "-i", source, "-frames:v", String(chunk.frames), "-an", "-map_chapters", "-1", "-vf", "scale=-2:720"];
-        await encodeReview(common, partial, run);
+        encoders.add(await encodeReview(common, partial, run));
         fs.renameSync(partial, piece);
         made += 1;
+        there += chunk.frames;
+        tell?.((there / frames) * 0.95);
       }),
     ),
   );
@@ -1353,35 +1370,72 @@ async function reviewCopyFromChunks(cache: string, project: string, source: stri
   // Pieces of chunks the edit no longer has go.
   const kept = new Set(last.chunks.map((chunk) => `${chunk.key}.mp4`));
   for (const name of fs.readdirSync(dir)) if (name.endsWith(".mp4") && !kept.has(name)) fs.rmSync(join(dir, name), { force: true });
-  diag.info("review", `${project}: review copy from ${last.chunks.length} pieces, ${made} made now`);
+  diag.info("review", `${project}: review copy from ${last.chunks.length} pieces, ${made} made now${encoders.size > 0 ? ` with ${[...encoders].join(" and ")}` : ""}`);
   return true;
 }
 
 /** The review copy made whole from `source` (720p, its sound): picture and sound only. */
-export async function reviewCopy(source: string, dest: string, run: ShareRun = plainRun): Promise<void> {
+export async function reviewCopy(source: string, dest: string, run: ShareRun = plainRun, tell?: (share: number) => void): Promise<void> {
   const partial = `${dest}.partial.mp4`;
   const common = ["-v", "error", "-nostdin", "-y", "-i", source, "-map_chapters", "-1", "-vf", "scale=-2:720", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"];
-  await encodeReview(common, partial, run);
+  const began = Date.now();
+  const encoder = await encodeReview(common, partial, run, tell);
   fs.renameSync(partial, dest);
+  // Which encoder made it, and how long it took (Nov 21: a share's copy took 2 min 14 s on a MacBook Air and the log
+  // couldn't say whether it was on the hardware or libx264 after it).
+  diag.info("review", `review copy made whole with ${encoder} in ${diag.human(Date.now() - began)}`);
 }
 
-/** A review copy's picture at 3 Mbit/s on the video hardware, else libx264 at CRF 26. */
-async function encodeReview(common: string[], partial: string, run: ShareRun = plainRun): Promise<void> {
+/** A review copy's picture at 3 Mbit/s on the video hardware, else libx264 at CRF 26; the encoder that made it. */
+async function encodeReview(common: string[], partial: string, run: ShareRun = plainRun, tell?: (share: number) => void): Promise<string> {
   const hardware = tools.hardwareH264();
   if (hardware !== null) {
     try {
-      await run([tools.ffmpeg(), ...common, ...hardware, "-b:v", "3M", partial], partial);
-      return;
+      await run([tools.ffmpeg(), ...common, ...hardware, "-b:v", "3M", partial], partial, tell);
+      return hardware[1]!;
     } catch (error) {
       // Cancelled: nothing more. Else libx264 below (a hardware session that stood still too).
       if (diag.messageOf(error) === "the share was cancelled") throw error;
+      diag.warn("review", `the review copy on ${hardware[1]} failed (${diag.messageOf(error).slice(0, 160)}); making it with libx264`);
     }
   }
-  await run([tools.ffmpeg(), ...common, "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", partial], partial);
+  await run([tools.ffmpeg(), ...common, "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", partial], partial, tell);
+  return "libx264";
 }
 
-/** Runs a share's FFmpeg (`output`: the file it writes, watched for progress). */
-type ShareRun = (command: string[], output?: string) => Promise<Uint8Array>;
+/**
+ * Runs a share's FFmpeg (`output`: the file it writes, watched for progress). With `tell`, FFmpeg's own report of how
+ * far it is (`-progress`, the time of the video it has made) is given to it as a share of the video, as it goes.
+ */
+type ShareRun = (command: string[], output?: string, tell?: (share: number) => void) => Promise<Uint8Array>;
+
+/** How often a share's FFmpeg report (`-progress`) is read. */
+export const copyLooks = { everyMs: 1000 };
+
+/**
+ * The share of `seconds` FFmpeg says it has made, from the end of its `-progress` file (`out_time_us`, the same
+ * report writer/media.ts reads from a pipe): read as it's written, a few KB at its end, off the server's thread.
+ */
+export async function reportedShare(file: string, seconds: number): Promise<number | null> {
+  let handle: fs.promises.FileHandle | null = null;
+  try {
+    handle = await fs.promises.open(file, "r");
+    const size = (await handle.stat()).size;
+    const length = Math.min(size, 4096);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, size - length);
+    const text = buffer.toString("utf8");
+    if (/progress=end\s*$/.test(text)) return 1;
+    const times = [...text.matchAll(/out_time_(?:us|ms)=(\d+)/g)];
+    const micros = times.at(-1)?.[1];
+    if (micros === undefined || seconds <= 0) return null;
+    return Math.min(1, Number(micros) / 1e6 / seconds);
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
 const plainRun: ShareRun = (command) => tools.run(command);
 
 /**
@@ -1400,9 +1454,27 @@ export const shareTools = {
 
 /** The share's runner for `projectId`, a video of `seconds`: ended by its Cancel, `shareTools.ms`, and its file standing still. */
 function shareRun(projectId: string, seconds: number): ShareRun {
-  return async (command, output) => {
+  return async (given, output, tell) => {
     const signal = shareSignal(projectId);
-    const what = command[0] === tools.ffprobe() ? "reading the export" : "making the review copy";
+    const what = given[0] === tools.ffprobe() ? "reading the export" : "making the review copy";
+    // Its report beside its file, read as it goes (`reportedShare`); a global option, so it goes first.
+    const report = tell !== undefined && output !== undefined ? `${output}.progress` : null;
+    const command = report === null ? given : [given[0]!, "-progress", report, ...given.slice(1)];
+    let reading = false;
+    const looks =
+      report === null
+        ? null
+        : setInterval(() => {
+            if (reading) return;
+            reading = true;
+            void reportedShare(report, seconds)
+              .then((share) => {
+                if (share !== null) tell?.(share);
+              })
+              .finally(() => {
+                reading = false;
+              });
+          }, copyLooks.everyMs);
     try {
       return await bounded(what, shareTools.ms(seconds), (limit) => {
         if (output === undefined) return tools.run(command, { signal: AbortSignal.any([limit, signal]) });
@@ -1420,6 +1492,9 @@ function shareRun(projectId: string, seconds: number): ShareRun {
       haltShare(projectId);
       if (signal.aborted) throw new Error("the share was cancelled");
       throw error;
+    } finally {
+      if (looks !== null) clearInterval(looks);
+      if (report !== null) await fs.promises.rm(report, { force: true }).catch(() => {});
     }
   };
 }

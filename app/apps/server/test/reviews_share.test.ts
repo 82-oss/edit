@@ -314,3 +314,53 @@ test("a review copy that stands still is stopped, and the share waits and goes o
     cleanup();
   }
 });
+
+test("a share's review copy says how far it is, from FFmpeg's own report, and never 100% before it's whole", async () => {
+  // Nov 21: a share's review copy took 2 min 14 s on a MacBook Air with no percent at all ("making the review copy").
+  const { app, home, id, cleanup } = await exported("share-copy-percent");
+  fakeCloud();
+  const looks = reviews.copyLooks.everyMs;
+  reviews.copyLooks.everyMs = 20;
+  const real = tools.run;
+  let entered = 0;
+  // The copy's FFmpeg reports a second of the 6 s video every 60 ms into its `-progress` file, then stands until stopped.
+  spies.push(spyOn(tools, "run").mockImplementation((command: string[], options?: { signal?: AbortSignal }) => {
+    if (!command.some((arg) => arg.endsWith(".partial.mp4"))) return real(command, options);
+    entered += 1;
+    const at = command.indexOf("-progress");
+    const report = at < 0 ? null : command[at + 1]!;
+    let second = 0;
+    const timer = setInterval(() => {
+      if (report === null || second >= 5) return;
+      second += 1;
+      fs.appendFileSync(report, `frame=${second * 30}\nout_time_us=${second * 1_000_000}\nout_time_ms=${second * 1_000_000}\nprogress=continue\n`);
+    }, 60);
+    return new Promise<Uint8Array>((_, reject) =>
+      options?.signal?.addEventListener("abort", () => {
+        clearInterval(timer);
+        reject(new Error("killed"));
+      }, { once: true }),
+    );
+  }));
+  try {
+    const shared = reviews.share(app, id, null);
+    shared.catch(() => {});
+    const lines: string[] = [];
+    const end = Date.now() + 8_000;
+    while (Date.now() < end && !lines.includes("making the review copy 83%")) {
+      const line = reviews.shareNow(home, id).line;
+      if (line !== null && line !== lines.at(-1)) lines.push(line);
+      await Bun.sleep(5);
+    }
+    expect(entered).toBe(1);
+    const percents = lines.map((line) => /^making the review copy (\d+)%$/.exec(line)?.[1]).filter((one) => one !== undefined).map(Number);
+    expect(percents.length).toBeGreaterThanOrEqual(2);
+    expect(percents.at(-1)).toBe(83);
+    for (let at = 1; at < percents.length; at++) expect(percents[at]!).toBeGreaterThan(percents[at - 1]!);
+    reviews.cancelShare(app, id);
+    await expect(shared).rejects.toThrow("the share was cancelled");
+  } finally {
+    reviews.copyLooks.everyMs = looks;
+    cleanup();
+  }
+}, 30_000);
