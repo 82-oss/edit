@@ -6,9 +6,10 @@
 // channel's alone when asked) and by whoever may teach the channel. `addons`
 // reads what this channel could have and what it has, for anyone.
 //
-// The edit lane's alone: a script's add-on (`court-script`) is the channel's
-// Script lane's, never set from an edit's chat ("you're never given ... this
-// channel's other lanes", lanes.ts).
+// A channel's script add-ons too (`court-script`, `essay-script`: what a New
+// script there is): they're how the channel is set up, not what its Script
+// lane was taught, so the edit's chat sets them like the rest (until Nov 21
+// evening they were refused here and nothing in the app could set one).
 //
 // Settings merge (Nov 21): each one given is set, the others stay as they
 // were (as teach_removal's parts do), and one given as null goes back to its
@@ -29,8 +30,8 @@ import * as channels from "./channels.ts";
 import { handlerFor, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
-/** The edit lane's add-ons, in the catalogue's order. */
-const EDIT = addons.NAMES.filter((name) => addons.CATALOGUE[name].lane === "edit");
+/** Whether an add-on is for the channel's scripts, not its edits. */
+const forScripts = (name: addons.Name): boolean => addons.CATALOGUE[name].lane === "script";
 
 /** When each one runs, as the agent reads it. */
 const WHEN: Record<addons.Trigger, string> = {
@@ -44,7 +45,8 @@ const WHEN: Record<addons.Trigger, string> = {
 /** When one runs, and the tools it gives. */
 export function whenOf(name: addons.Name): string {
   const own = addons.CATALOGUE[name];
-  return `${WHEN[own.trigger]}${own.tools === undefined ? "" : `; gives you ${own.tools.join(", ")}`}`;
+  const when = own.lane === "script" && own.trigger === "made" ? "when a script is made in this channel" : WHEN[own.trigger];
+  return `${when}${own.tools === undefined ? "" : `; gives you ${own.tools.join(", ")}`}`;
 }
 
 /** Its settings as said: "list horror; words gizmo, widget". */
@@ -69,11 +71,10 @@ function channelHere(app: App, projectId: string): { channel: string; project: a
 
 /** A name the agent gave, or the refusal naming the ones there are. */
 function nameOf(given: unknown): addons.Name {
-  const names = EDIT.join(", ");
+  const names = addons.NAMES.join(", ");
   if (typeof given !== "string" || given.trim() === "") throw new Error(`name is required: one of ${names}`);
   const name = given.trim() as addons.Name;
   if (!(name in addons.CATALOGUE)) throw new Error(`Edit has no add-on called ${given}. The ones there are: ${names}.`);
-  if (addons.CATALOGUE[name].lane !== "edit") throw new Error(`${name} is for the channel's scripts, not its edits, so it isn't set from an edit's chat. The edit's add-ons are: ${names}.`);
   return name;
 }
 
@@ -89,19 +90,20 @@ async function fresh(): Promise<void> {
   await Promise.all([v2cloud.refreshSkills(), channels.refresh()]);
 }
 
-/** `addons`: every add-on of the edit's this channel could have, on or off, where that comes from, and its settings. */
+/** `addons`: every add-on this channel could have (its edits' first, then its scripts'), on or off, where that comes from, and its settings. */
 async function list({ app, args, projectId }: ToolCall): Promise<Content[]> {
   const { channel, project } = channelHere(app, projectId);
   await fresh();
   const grouped = channels.groupOf(channel) !== null;
   const only = args.name === undefined || args.name === null || args.name === "" ? null : nameOf(args.name);
-  const all = addons.ofChannel(channel, "edit").filter((one) => only === null || one.name === only);
+  const all = [...addons.ofChannel(channel, "edit"), ...addons.ofChannel(channel, "script")].filter((one) => only === null || one.name === only);
   const lines = all.map((one) => {
     const own = addons.CATALOGUE[one.name];
     const takes = Object.entries(own.settings).map(([key, setting]) => `${key}: ${setting.words}`);
-    const differs = addons.has(project, one.name) !== one.on;
+    // A script's add-on says nothing of this edit: only an edit's can differ on it (its frame, the kind it was made as).
+    const differs = !forScripts(one.name) && addons.has(project, one.name) !== one.on;
     return (
-      `- ${one.name} (${own.title}): ${own.description} Runs ${whenOf(one.name)}. ` +
+      `- ${one.name} (${own.title}${forScripts(one.name) ? ", for this channel's scripts" : ""}): ${own.description} Runs ${whenOf(one.name)}. ` +
       `${one.on ? "On" : "Off"} here (${whereFrom(one, grouped)})` +
       (Object.keys(one.settings).length > 0 ? `, with ${settingsText(one.settings)}` : "") +
       "." +
@@ -128,7 +130,9 @@ function startsLine(name: addons.Name, on: boolean): string {
   const tools = own.tools === undefined ? "" : ` ${own.tools.join(" and ")} ${own.tools.length > 1 ? "are" : "is"} in your tools from your next turn (each turn lists them again), not this one.`;
   switch (own.trigger) {
     case "made":
-      return `It shapes every project made in this channel from now on; projects already made keep their frame.${tools}`;
+      return own.lane === "script"
+        ? "It shapes every script made in this channel from now on; scripts already made stay what they are."
+        : `It shapes every project made in this channel from now on; projects already made keep their frame.${tools}`;
     case "import":
       return `It runs from the next import of footage here.${tools}`;
     case "change":
@@ -207,7 +211,7 @@ async function setAddon({ app, args, projectId }: ToolCall): Promise<Content[]> 
   const now = addons.itemOf(channel, name);
   // Kept for the group while this channel has its own: the channel's still wins here.
   const shadowed = now !== null && now.key !== key && now.from === "channel";
-  const holdsHere = addons.has(project, name);
+  const holdsHere = forScripts(name) || addons.has(project, name);
   return text(
     `${addons.summary(name, on, ok.settings)} Kept as ${skill} (version ${saved.n})${where}. ${startsLine(name, on)}` +
       (on && !holdsHere && !shadowed && now?.on === true ? ` It doesn't run on this project, though: it's for ${frameWords(name)}, and this one is ${addons.formOf(project) === "long" ? "a long one" : "a Short"}.` : "") +

@@ -4427,7 +4427,7 @@
     "name": "teach_removal"
   },
   {
-    "description": "This channel's add-ons, on and off: Edit's own code a channel switches on. Each with what it does (checks after each change, fixes, research after an import, more muted words, the shape of new projects), when it runs, whether it's on here and where that comes from (Edit's default, the group, this channel), and the settings it takes. Read it before set_addon, and when the person asks what runs on this channel.",
+    "description": "This channel's add-ons, on and off: Edit's own code a channel switches on. Each with what it does (checks after each change, fixes, research after an import, more muted words, the shape of new projects and of new scripts), when it runs, whether it's on here and where that comes from (Edit's default, the group, this channel), and the settings it takes. Read it before set_addon, and when the person asks what runs on this channel.",
     "inputSchema": {
       "properties": {
         "name": {
@@ -4445,7 +4445,7 @@
     "name": "addons"
   },
   {
-    "description": "Switch one of this channel's add-ons on or off, with its settings, when the person asks for something that should hold for every video here. Such as \"every video here is a Short\", or \"mute these words too\". Kept like a lesson: for the group (every channel in it) by default, for this channel alone when for says so. Settings merge: each one given is set, the others stay as they were, and one given as null goes back to its default. The answer says from when it holds (your next change, the next import, the end of this turn, the next project made); a tool it gives is yours from your next turn. Switched off with on: false, never put away with archive_in_library. A teacher's to do.",
+    "description": "Switch one of this channel's add-ons on or off, with its settings, when the person asks for something that should hold for every video here. Such as \"every video here is a Short\", \"mute these words too\", or \"this channel's scripts are commentaries\". Kept like a lesson: for the group (every channel in it) by default, for this channel alone when for says so. Settings merge: each one given is set, the others stay as they were, and one given as null goes back to its default. The answer says from when it holds (your next change, the next import, the end of this turn, the next project made); a tool it gives is yours from your next turn. Switched off with on: false, never put away with archive_in_library. A teacher's to do.",
     "inputSchema": {
       "properties": {
         "name": {

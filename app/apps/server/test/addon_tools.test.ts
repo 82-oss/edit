@@ -192,13 +192,18 @@ describe("set_addon", () => {
     }
   });
 
-  test("an unknown name is answered with the names there are; the script's add-on, a project with no channel and a V1 one are refused in words", async () => {
+  test("an unknown name is answered with the names there are; a script's add-on is set like the rest; a project with no channel and a V1 one are refused in words", async () => {
     const { app, cleanup } = fixtureHome("addon-tools-names");
     try {
       const id = await made(app, "solo");
       const unknown = await call(app, id, "set_addon", { name: "laser-show", on: true, reason: "Sphe" });
-      expect(unknown.text).toBe(`Edit has no add-on called laser-show. The ones there are: ${addons.NAMES.filter((one) => addons.CATALOGUE[one].lane === "edit").join(", ")}.`);
-      expect((await call(app, id, "set_addon", { name: "court-script", on: true, reason: "Sphe" })).text).toContain("court-script is for the channel's scripts, not its edits");
+      expect(unknown.text).toBe(`Edit has no add-on called laser-show. The ones there are: ${addons.NAMES.join(", ")}.`);
+      // A channel's script add-on is set here too (Nov 21 evening: refused, nothing in the app could set one): kept in its Script lane's place.
+      const court = await call(app, id, "set_addon", { name: "court-script", on: true, reason: "Sphe: its scripts are court cases" });
+      expect(court.text).toContain("It shapes every script made in this channel from now on");
+      expect(addons.courtScripts("solo")).toBe(true);
+      expect((await call(app, id, "addons", { name: "court-script" })).text).toContain("for this channel's scripts");
+      expect((await call(app, id, "addons", { name: "court-script" })).text).toContain("Runs when a script is made in this channel. On here");
       expect((await call(app, id, "set_addon", { name: "short-form", reason: "Sphe" })).text).toContain("on is true");
       expect((await call(app, id, "set_addon", { name: "short-form", on: true })).text).toContain("reason is required");
       const loose = await made(app, null);
@@ -206,7 +211,8 @@ describe("set_addon", () => {
       expect((await call(app, loose, "addons", {})).text).toContain("This project isn't a channel's");
       const v1 = await made(app, null, { hq: false });
       expect((await call(app, v1, "addons", {})).text).toContain("this project isn't an Edit V2 one");
-      expect(mock.cloud.convex.library.size).toBe(0);
+      // Only the script's add-on above was kept.
+      expect(mock.cloud.convex.library.size).toBe(1);
     } finally {
       cleanup();
     }
@@ -250,14 +256,14 @@ describe("set_addon", () => {
 });
 
 describe("addons", () => {
-  test("lists every add-on of the edit, on or off, where each comes from, and its settings", async () => {
+  test("lists every add-on, the edit's then the scripts', on or off, where each comes from, and its settings", async () => {
     v2cloud.useSkillsForTests([...LESSONS, item(edit("grp"), "muted-words", true, { list: "horror" }), item(edit("alpha"), "bodycam-intro", false)]);
     const { app, cleanup } = fixtureHome("addon-tools-list");
     try {
       const id = await made(app, "alpha");
       const said = (await call(app, id, "addons", {})).text;
       const lines = said.split("\n").filter((line) => line.startsWith("- "));
-      expect(lines.map((line) => line.slice(2, line.indexOf(" (")))).toEqual(addons.NAMES.filter((one) => addons.CATALOGUE[one].lane === "edit"));
+      expect(lines.map((line) => line.slice(2, line.indexOf(" (")))).toEqual([...addons.NAMES.filter((one) => addons.CATALOGUE[one].lane === "edit"), ...addons.NAMES.filter((one) => addons.CATALOGUE[one].lane === "script")]);
       const line = (name: string) => lines.find((one) => one.startsWith(`- ${name} `))!;
       expect(line("muted-words")).toContain("On here (set for the group), with list horror; words none.");
       expect(line("muted-words")).toContain("Runs when your turn ends.");
