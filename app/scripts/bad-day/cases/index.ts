@@ -93,6 +93,15 @@ function answering(one: Case): Case {
       const slow: { at: number; ms: number }[] = [];
       let asked = 0;
       let going = true;
+      // And when the harness itself had no turn (it compares two videos with FFmpeg run synchronously, seconds at a
+      // time): an ask outstanding then is answered late on this side of the wire, not Edit's (Nov 21: 4.8 s at the end
+      // of cold-export-drop, check 7's own time, with no hold in Edit's log).
+      let beatAt = Date.now();
+      const beat = setInterval(() => {
+        const now = Date.now();
+        if (now - beatAt > 600) ours.push([beatAt, now + 250]);
+        beatAt = now;
+      }, 100);
       const pulse = (async () => {
         while (going) {
           const at = Date.now();
@@ -113,6 +122,8 @@ function answering(one: Case): Case {
       } finally {
         going = false;
         await pulse;
+        clearInterval(beat);
+        if (Date.now() - beatAt > 600) ours.push([beatAt, Date.now() + 250]);
         edit.kill = kill;
         edit.start = start;
         edit.stop = stop;
