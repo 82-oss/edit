@@ -110,7 +110,9 @@ The team wants it back. Looked into on Nov 21 against the code and three real ch
 5. **What's beneath an effect remade for every clip of it**, not only the first.
 6. **Only if the team needs it, hand edits on effects** (2 to 4 weeks): effects are handed their place on the timeline instead of storing it, which means the agent's notes and every existing effect taught again.
 
-**To ask the team first**: what they want to do on it (see and scrub, find a graphic, fix a subtitle's timing, trim or reorder footage, move a graphic), and whether V2 keeps the video-player keys or takes V1's.
+**What the team wants it for** (Sphe, Nov 21): not mainly to edit by hand, but a quick look over the whole project at where the footage, graphics, sound effects and the rest are placed. So steps 1 to 3 are the ask, and they need none of the hard part. Drawn that way from a real project's data: one row per kind of thing (graphics, captions, cut-ins, footage, looks, subtitles, voice-over, music, sound effects) rather than V1's rows per track, the whole edit fitted to the width, with zoom. The model already says which is which: an effect is a media with `effect`, music and sound effects are `library: "music"` or `"sfx"`, subtitles are the text clips on the subtitles track.
+
+**Still to ask**: whether V2 keeps the video-player keys or takes V1's.
 
 ## The `agent/` folder
 
