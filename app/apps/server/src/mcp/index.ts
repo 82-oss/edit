@@ -18,11 +18,11 @@ import { stableStringify } from "../stable.ts";
 import * as teachingGate from "../teaching_gate.ts";
 import { VERSION } from "../version.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
-import { handlerFor, registerTool, text, TOOLS, toolsFor, type Content } from "./registry.ts";
+import { handlerFor, registerTool, text, TOOLS, toolsFor, withheld, type Content } from "./registry.ts";
 
 export { INSTRUCTIONS } from "./instructions.ts";
 export { toolReference } from "./reference.ts";
-export { HQ_TOOLS, image, NOT_IN_HQ, registerTool, text, TOOLS, toolsFor, type Content, type ToolCall, type ToolHandler } from "./registry.ts";
+export { HQ_TOOLS, image, NOT_IN_HQ, registerTool, text, TOOLS, toolsFor, withheld, type Content, type ToolCall, type ToolHandler } from "./registry.ts";
 export { stableStringify } from "../stable.ts";
 
 /** Who agent edits come from (clients skip their own echo by it). */
@@ -72,9 +72,12 @@ export async function dispatch(app: App, message: unknown, scope: string | null)
     case "ping":
       result = {};
       break;
-    case "tools/list":
-      result = { tools: toolsFor(scope !== null && app.store.get(scope)?.project.hq === true) };
+    case "tools/list": {
+      // A channel's V2 project: V2's list and its add-ons' tools, as cached now (registry.ts toolsFor).
+      const project = scope === null ? null : (app.store.get(scope)?.project ?? null);
+      result = { tools: toolsFor(project?.hq === true, project) };
       break;
+    }
     case "tools/call": {
       const tool = typeof given.name === "string" ? given.name : "";
       const args =
@@ -141,6 +144,9 @@ export async function call(
   const live = app.store.get(projectId);
   const untaught = live === null ? null : await teachingGate.refusal(live.project, name);
   if (untaught !== null) throw new Error(untaught);
+  // A tool only an add-on gives, on a channel's project without it (registry.ts withheld; Nov 21).
+  const notGiven = live === null ? null : withheld(live.project, name);
+  if (notGiven !== null) throw new Error(notGiven);
   // The agent's own edits, checked against what it read (store.ts agentCalls); not what it leaves running after.
   const asAgent = async (): Promise<Content[]> => {
     const state = { active: true, tool: name };

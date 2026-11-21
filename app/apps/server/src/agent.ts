@@ -29,6 +29,8 @@ import { crashed, isBug } from "./guard.ts";
 import { HQ_NOTES } from "./agent_text.ts";
 import * as v2cloud from "./v2_cloud.ts";
 import * as channels from "./channels.ts";
+import * as addons from "./addons.ts";
+import * as addonTools from "./addon_tools.ts";
 import * as effects from "./effects.ts";
 import { INSTRUCTIONS, toolReference, toolsFor } from "./mcp/index.ts";
 import { join, withExtension } from "./paths.ts";
@@ -2133,7 +2135,7 @@ export function agentInstructions(project: Pick<Project, "name" | "style" | "set
  * project is taught its channel's edit style; one made without a channel,
  * the global skill alone, and nothing is kept from it.
  */
-function hqInstructions(project: Pick<Project, "name" | "settings" | "channel" | "compilation">): string {
+function hqInstructions(project: Pick<Project, "name" | "style" | "settings" | "channel" | "compilation">): string {
   const { settings } = project;
   const channel = typeof project.channel === "string" && project.channel !== "" ? channelText(project) : null;
   // When it keeps what it's taught (teaching.ts): said outright, at once; maybe, asked at the end; a teacher's alone, and a channel's.
@@ -2155,7 +2157,7 @@ function hqInstructions(project: Pick<Project, "name" | "settings" | "channel" |
     `You are the agent built into Edit, a video editor, making "${project.name}" (${settings.width}x${settings.height} at ${rateText(settings)} fps) with the person watching: what you change appears in their viewer at once. ` +
     "You work through the `edit` tools and write code with your file tools (Read, Write, Edit, Glob, Grep), which work only in your working directory, the project's effects folder; you have no shell. " +
     `Each tool call is a wait for them: do independent calls side by side. Reply in a line or two: what you made or changed, and where. ${PICTURES}\n\n` +
-    `${channel ?? ""}${keeping}\n\n${HQ_NOTES}${memory}${skills}${channel === null ? "" : !v2cloud.teachingKnown() ? `\n\n${UNREAD}` : !v2cloud.taughtAnything(places) ? `\n\n${UNTAUGHT}` : ""}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true))}`
+    `${channel ?? ""}${channel === null ? "" : addonsText(project)}${keeping}\n\n${HQ_NOTES}${memory}${skills}${channel === null ? "" : !v2cloud.teachingKnown() ? `\n\n${UNREAD}` : !v2cloud.taughtAnything(places) ? `\n\n${UNTAUGHT}` : ""}\n\nThe edit tools (call them directly; every one is listed here):\n${toolReference(toolsFor(true, { ...project, hq: true }))}`
   );
 }
 
@@ -2190,6 +2192,34 @@ function channelText(project: Pick<Project, "channel" | "compilation">): string 
       : "What you remember and save is this channel's edit style: its group's, or its own exceptions; you're never given another channel's outside the group, nor the ideas, thumbnails or script styles. ") +
     "The house's music and sound effects (list_library, add_sound_effect) are there when this channel's style or the person asks for them, never by default. " +
     "When the person points you at something another channel has (a graphic, how it cuts), or asks you to start from another channel's style, find it with other_channels and bring it in as this channel's own copy, to change and rebrand here.\n\n"
+  );
+}
+
+/**
+ * A channel's add-ons as its agent is told them (addons.ts; Nov 21): those
+ * the channel or its group set that run on this project, each in a line and
+ * when it runs, and that set_addon sets more. Only once the channel has an
+ * item: with none, not a byte of its instructions changes (its style's
+ * defaults run as they always did, unsaid).
+ */
+function addonsText(project: Pick<Project, "style" | "settings" | "channel">): string {
+  const items = addons.itemsAt(project.channel!, "edit");
+  if (items.size === 0) return "";
+  const grouped = channels.groupOf(project.channel!) !== null;
+  // In the catalogue's order, whichever place each is set at.
+  const set = addons.NAMES.flatMap((name) => (items.has(name) ? [[name, items.get(name)!] as const] : []));
+  const on = set.filter(([name, item]) => item.on && addons.has(project, name));
+  const off = set.filter(([, item]) => !item.on).map(([name]) => addons.CATALOGUE[name].title);
+  const lines = on.map(([name, item]) => {
+    const own = addons.CATALOGUE[name];
+    const where = item.from === "group" ? "the group's" : grouped ? "this channel only" : "";
+    const said = [where, addonTools.settingsText(item.settings)].filter((one) => one !== "").join("; ");
+    return `- ${own.title}${said === "" ? "" : ` (${said})`}: ${own.description} Runs ${addonTools.whenOf(name)}.`;
+  });
+  return (
+    `THIS CHANNEL'S ADD-ONS (Edit's own code, set for this channel; each runs by itself):${lines.length === 0 ? " none on for this project." : `\n${lines.join("\n")}`}` +
+    `${off.length === 0 ? "" : `\nSwitched off here: ${off.join(", ")}.`}` +
+    "\nThere are more (addons lists them): when the team asks for something that should hold for every video here, see whether one does it and set it with set_addon.\n\n"
   );
 }
 

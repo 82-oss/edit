@@ -4427,6 +4427,66 @@
     "name": "teach_removal"
   },
   {
+    "description": "This channel's add-ons, on and off: Edit's own code a channel switches on. Each with what it does (checks after each change, fixes, research after an import, more muted words, the shape of new projects), when it runs, whether it's on here and where that comes from (Edit's default, the group, this channel), and the settings it takes. Read it before set_addon, and when the person asks what runs on this channel.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "description": "One add-on alone (all of them when left out)",
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "addons"
+  },
+  {
+    "description": "Switch one of this channel's add-ons on or off, with its settings, when the person asks for something that should hold for every video here. Such as \"every video here is a Short\", or \"mute these words too\". Kept like a lesson: for the group (every channel in it) by default, for this channel alone when for says so. Settings merge: each one given is set, the others stay as they were, and one given as null goes back to its default. The answer says from when it holds (your next change, the next import, the end of this turn, the next project made); a tool it gives is yours from your next turn. Switched off with on: false, never put away with archive_in_library. A teacher's to do.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "description": "The add-on, as addons names it",
+          "type": "string"
+        },
+        "on": {
+          "description": "true switches it on here, false off (Edit's default for this channel included)",
+          "type": "boolean"
+        },
+        "settings": {
+          "description": "Only those to change, each as addons says it takes; null puts one back to its default",
+          "type": "object"
+        },
+        "reason": {
+          "description": "What the person said",
+          "type": "string"
+        },
+        "for": {
+          "description": "In a grouped channel: \"group\" (the default) sets it for every channel in the group; \"channel\" for this channel alone, when the person says it's for this one.",
+          "enum": [
+            "group",
+            "channel"
+          ],
+          "type": "string"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "on",
+        "reason"
+      ],
+      "type": "object"
+    },
+    "name": "set_addon"
+  },
+  {
     "description": "The pieces done taking a channel's taught overlays out of its footage (their watermark's, the blur's over their text: see get_edit_context's removal), each listed, and the newest watermark pieces you haven't seen shown before (left) and after (right). Look at each: their mark gone, the camera's stamp the same, no ghost or smear. Reject a watermark piece that isn't clean (reject: [{piece, why}]): it's done once more, then left as it was and said to the person; look at a blur's stretch with render_frame, and mark it again tighter where it misses their words. Nothing to do for clean ones.",
     "inputSchema": {
       "properties": {
