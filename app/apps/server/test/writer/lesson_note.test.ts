@@ -1,40 +1,24 @@
 // Script mode's lessons (writer/lesson_note.ts): a revision's answer carries
-// an optional lesson, noted in the team's inbox with the script it was said
-// on (the cloud mock's editLessons); none, or an unusable one, adds nothing.
+// an optional lesson; a script without a channel, or a V1 lesson for every
+// script, is kept nowhere since the team's lessons inbox went (Sphe, Nov 21),
+// and the reply says so; none adds nothing. A channel's lesson going to its
+// Script lane is v2_cloud.test.ts's.
 
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 
 import type { Script } from "@edit/types/writer";
 
-import * as cloud from "../../src/cloud.ts";
-import { list } from "../../src/lesson_inbox.ts";
 import { keep, LESSON_RULE, LESSON_SCHEMA, lessonOf } from "../../src/writer/lesson_note.ts";
-import { MockServer } from "../mocks/server.ts";
 
-let mock: MockServer;
-let restore: () => void;
-
-beforeAll(() => {
-  mock = MockServer.start();
-  restore = mock.useEnv({ EDIT_RELAY_TOKEN: "cloud-token" });
-  cloud.timing.sleep = async () => {};
-});
-
-afterAll(() => {
-  restore();
-  mock.stop();
-});
-
-test("a revision's lesson is noted with its script; none or an unusable one adds nothing", async () => {
+test("a revision's lesson with nowhere to go is said not kept; none adds nothing", async () => {
   const script = { id: "s1793450000000", title: "Predator Tutor", kind: "interrogation" } as Script;
   const plan = { edits: [], answer: "Done.", lesson: { lesson: "Openings start on the confession, not the arrest.", quote: "we always open on the confession", from: "JJ", scope: "style" } };
-  expect(await keep(script, lessonOf(plan))).toContain("Noted for the next teaching round");
+  expect(await keep(script, lessonOf(plan))).toContain("isn't a channel's, so nothing is kept");
   expect(await keep(script, lessonOf({ edits: [], answer: "Done." }))).toBe("");
-  expect(await keep(script, { lesson: "no quote", scope: "house" })).toBe("");
-  const [noted] = await list();
-  expect(noted).toMatchObject({ part: "script", style: "interrogation", scope: "style", from: "JJ", quote: "we always open on the confession", source: { kind: "script", id: script.id, name: "Predator Tutor" } });
-  expect((await list()).length).toBe(1);
-  // The schema the model answers to has it optional, and the rule names it.
+  // A V1 channel's script: only a lesson of how that channel does its scripts has a place (its lane).
+  expect(await keep({ ...script, channel: "some-ch" }, { lesson: "Every script opens cold.", quote: "always open cold", scope: "house" })).toContain("stays this script's");
+  // The schema the model answers to has it optional, and the rule names it, with no inbox.
   expect(LESSON_SCHEMA.required).toEqual(["lesson", "quote", "scope"]);
   expect(LESSON_RULE).toContain("leave lesson out");
+  expect(LESSON_RULE).not.toContain("inbox");
 });

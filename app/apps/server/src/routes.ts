@@ -67,7 +67,6 @@ import * as seen from "./seen.ts";
 import * as exportsView from "./exports_view.ts";
 import * as editNotes from "./edit_notes.ts";
 import * as localFiles from "./local_files.ts";
-import * as lessonInbox from "./lesson_inbox.ts";
 import * as memory from "./memory.ts";
 // The agent's report_problem tool (registered as it loads).
 import "./agent_reports.ts";
@@ -133,7 +132,6 @@ export function buildRouter(): Router<App> {
   later.routes(router);
   seen.routes(router);
   exportsView.routes(router);
-  lessonInbox.routes(router);
   presence.routes(router);
   memory.routes(router);
   devProjects.routes(router);

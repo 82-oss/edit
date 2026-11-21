@@ -558,20 +558,18 @@ test("a channel that's put away or not given is said in words, never by its key,
   }
 });
 
-test("with Edit V2 on, a script revision's lesson goes to its channel's Script lane whatever its scope, never the team's inbox; a script without a channel keeps none", async () => {
+test("with Edit V2 on, a script revision's lesson goes to its channel's Script lane whatever its scope; a script without a channel keeps none", async () => {
   // Sphe, Nov 16: "once you've enabled Edit V2, things don't go into a Teams lessons inbox".
   const { app, cleanup } = fixtureHome("v2-script-lessons");
   try {
     fs.writeFileSync(join(app.store.home, "beta.json"), JSON.stringify({ v2: true }));
     accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.lessons-ch"]);
     const data = writerStore.dataDir(app.store.home);
-    const inbox = mock.cloud.convex.lessons.size;
     const said = await lessonNote.keep({ id: "s1", title: "A case", kind: "interrogation", channel: "lessons-ch" } as Script, { lesson: "Cut-ins are short and blunt, no rhetorical questions.", quote: "remember this for the future", scope: "house" }, data);
     expect(said).toContain("This channel's next scripts have it");
     expect([...mock.cloud.convex.library.keys()].some((key) => key.startsWith("skill:@lessons-ch--script/"))).toBe(true);
     const none = await lessonNote.keep({ id: "s2", title: "No channel", kind: "interrogation" } as Script, { lesson: "Always open cold.", quote: "always", scope: "house" }, data);
     expect(none).toContain("isn't a channel's");
-    expect(mock.cloud.convex.lessons.size).toBe(inbox);
   } finally {
     cleanup();
   }
