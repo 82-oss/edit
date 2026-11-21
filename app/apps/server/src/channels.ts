@@ -33,7 +33,7 @@
 //   POST   /api/channels/{key}/restore  brought back (an admin, or who sees it in full)
 //   GET    /api/channels/voices         {voices, used}: who could narrate, and who narrates for whom already
 //   GET    /api/channels/{key}/videos?order=top|recent   {channel, videos}: its most viewed or newest, with their numbers
-//   POST   /api/channels/{key}/projects/{id}   an edit project moved onto the channel (its Edit lane from its next turn)
+//   POST   /api/channels/{key}/projects/{id}   an edit project moved onto the channel (its Edit lane from its next turn); today's kind of edit made its Edit V2 project (channel_move.ts)
 //   GET    /api/groups/{key}            {group, taught, teacher}
 //   POST   /api/groups                  {channels, from} → {group}: made, `from`'s teaching moved into it
 //   PUT    /api/groups/{key}            {lanes} → {group}
@@ -598,15 +598,25 @@ export function routes(router: Router<App>): void {
       return json(await asked(() => videosOf(channel.youtubeId!, url.searchParams.get("order") === "recent" ? "recent" : "top")));
     })
     .post("/api/channels/{key}/projects/{id}", async ({ app, params }: RouteContext<App>) => {
+      // Today's kind of edit made the channel's Edit V2 project (channel_move.ts, Nov 21), with Edit V2 on here only. By
+      // whoever may work on it and has been given the channel, as New edit lets them make a project on it: unlike
+      // moving a V2 project between channels (a teacher's, below), it changes nothing of what any channel is taught.
+      const found = app.store.get(params.id!);
+      if (found === undefined || found === null) throw new ApiError(404, "This edit isn't on this computer: open it here once, then move it.");
+      if (!found.project.hq) {
+        const channel = await channelFor(params.key!, app.store.home);
+        if (channel === null) throw bad("channel is a channel's key");
+        if (!(await tokenCarries([channel.key], app.store.home))) throw new ApiError(403, `${channel.title} isn't given to your account yet: ask an admin to give it to you on accounts.spheceo.com.`);
+        // Read when asked: it reaches the job table and the agents, which reach the channels again as they load.
+        const moved = await (await import("./channel_move.ts")).convert(app, found.project.id, channel);
+        return json({ project: moved });
+      }
       needTeacher();
       const channel = await asked(() => get(params.key!));
       if (channel === null || channel.archived) throw new ApiError(404, `no channel ${params.key}`);
-      const live = app.store.get(params.id!);
-      if (live === undefined || live === null) throw new ApiError(404, `no project ${params.id} on this computer`);
-      if (!live.project.hq) throw bad("Only an Edit V2 project can be a channel's: this one is today's kind of edit.");
       // Not under a turn: what its agent is taught changes with the channel.
-      if (agentPanel(app).turn?.(live.project.id).running) throw new ApiError(409, "Its agent is working: move it once the turn is done.");
-      const [moved] = await app.store.update(live.project.id, "channel", (project) => {
+      if (agentPanel(app).turn?.(found.project.id).running) throw new ApiError(409, "Its agent is working: move it once the turn is done.");
+      const [moved] = await app.store.update(found.project.id, "channel", (project) => {
         project.channel = channel.key;
       });
       forget();

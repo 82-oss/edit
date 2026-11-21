@@ -46,6 +46,7 @@ import { UpdateButton } from "./UpdateButton";
 import { Button, ConfirmDialog, cx, Modal, ProgressRing, Pulse, spring, Switch } from "./ui";
 import { aboutWords, sizeWords } from "./FootageReady";
 import { isListed, promoteItem, TestBadge } from "./TestProjects";
+import { MoveToChannel, moveItem } from "./MoveToChannel";
 import { THIS_MACHINE } from "../lib/platform";
 
 // Every project is 1080p at 30 fps.
@@ -974,6 +975,8 @@ export function Notice({ tone, text, title }: NoticeProps) {
 function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boolean, status?: CloudStatus, remote?: CloudProject, script: string | null = null) {
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const v2 = useBeta((beta) => beta.v2);
   const toast = useEditor((state) => state.toast);
   const drive = useDriveLink(project.id, project.drive);
   const inCloud = cloudOn && Boolean(status?.cloud);
@@ -1050,6 +1053,8 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
     ...(project.style !== "shorts" && project.hq !== true && !project.problem && styles.length > 1
       ? [{ label: "Category", icon: <Tag size={14} />, submenu: styles.map((one) => ({ label: one.label, checked: one.value === project.style, onSelect: () => void recategorize(one.value) })) }]
       : []),
+    // Today's kind of edit made a channel's Edit V2 project, with Edit V2 on here (MoveToChannel.tsx).
+    ...moveItem(project, v2, () => setMoving(true)),
     // Shared from here, many projects at once (an export that would wait here goes to the cloud).
     ...(project.problem ? [] : [{ label: "Share for review", icon: <Share2 size={14} />, onSelect: () => void share() }]),
     ...(drive
@@ -1103,6 +1108,7 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
         confirm={inCloud ? "Delete everywhere" : "Delete project"}
         onConfirm={() => void remove()}
       />
+      {moving && <MoveToChannel project={project} open={moving} onClose={() => setMoving(false)} onMoved={onChanged} />}
     </>
   );
   // What’s worth a word on the card, as a chip beside "On Drive".

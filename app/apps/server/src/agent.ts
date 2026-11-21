@@ -795,6 +795,27 @@ export class Agents implements seams.AgentPanel {
     this.resetAfter.add(project);
   }
 
+  /**
+   * The project became its channel's Edit V2 project (channel_move.ts, Nov 21): its next turn is a new conversation,
+   * since the one it had names tools V2 hasn't and was given V1's instructions (resumed, the model would go on with
+   * both). The chat's entries stay, readable as before; only the session goes, with the model and thinking level
+   * picked for V1 (V2's menu and level are its own), and the fresh-eyes pass's own conversation with it.
+   */
+  newConversation(project: string): void {
+    for (const key of [project, subKey(project, "review")]) {
+      // A chat never had (none here, none kept): nothing to start again, and no empty one written.
+      if (!this.chats.has(key) && !fs.existsSync(this.store.chatPath(key))) continue;
+      const chat = this.withChat(key);
+      if (chat.running) throw new Error("Its agent is working: move it once the turn is done.");
+      chat.provider = null;
+      chat.thread = null;
+      chat.tools = null;
+      chat.model = null;
+      chat.effort = null;
+      this.save(key);
+    }
+  }
+
   reset(project: string): void {
     this.resetAfter.delete(project);
     this.authPending.delete(project);

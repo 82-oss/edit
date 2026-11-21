@@ -20,6 +20,9 @@ import { agentCalls } from "./store.ts";
 /** Changes kept a project. */
 const MOST = 300;
 
+/** What says which kind of project it is and whose channel: never changed by undo_changes. */
+const IDENTITY = ["hq", "channel"] as const;
+
 export interface Change {
   rev: number;
   at: number;
@@ -231,10 +234,21 @@ export async function undo(app: App, id: string, given: { revs?: number[]; backT
       }
     }
   }
+  // Which kind of project it is and whose channel isn't an edit (Nov 21, channel_move.ts: an edit moved onto a channel
+  // from Home): undone, the project would go back to today's kind under the very turn undoing it, with V2's tools and
+  // conversation. Never undone here, as a kept version brought back keeps them (`bringBack`).
+  const moves = chosen.filter((one) => one.touched.length > 0 && one.touched.every((name) => (IDENTITY as readonly string[]).includes(name)));
+  if (moves.length === chosen.length) {
+    throw new Error(`rev ${moves.map((one) => one.rev).join(", ")} moved this project onto its channel, which isn't an edit and isn't undone: the person moves a project from Home. Undo the edits around it instead.`);
+  }
   const newestFirst = [...chosen].sort((a, b) => b.rev - a.rev);
   await app.store.update(id, "agent", (project) => {
     let restored: Project = project;
     for (const one of newestFirst) restored = patches.apply(restored, one.undo);
+    for (const key of IDENTITY) {
+      if (key in project) (restored as unknown as Record<string, unknown>)[key] = project[key];
+      else delete (restored as unknown as Record<string, unknown>)[key];
+    }
     for (const key of Object.keys(project) as (keyof Project)[]) if (!(key in restored)) delete project[key];
     Object.assign(project, restored);
   }, app.store.get(id) ?? undefined);
