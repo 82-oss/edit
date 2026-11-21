@@ -8,6 +8,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
 
+import { makeRoom } from "../../src/cache_cleanup.ts";
 import * as editCloud from "../../src/cloud.ts";
 import * as cloudMedia from "../../src/cloud_media.ts";
 import * as jobs from "../../src/jobs.ts";
@@ -125,12 +126,31 @@ afterAll(() => {
   mock.stop();
 });
 
+/**
+ * The disk short of what Edit keeps free for a moment, the cleaner asked for room (Nov 21: a copy that's up and has its
+ * piece stays as the local original until the disk needs the room; `dir`'s import is over by then).
+ */
+async function shortOfRoom(app: ReturnType<typeof fixtureHome>["app"], dir: string): Promise<void> {
+  await streamed.settled();
+  fs.writeFileSync(join(dir, "script.json"), JSON.stringify({ ...JSON.parse(fs.readFileSync(join(dir, "script.json"), "utf8")), status: "ready" }));
+  room.diskHooks.free = () => 14e9;
+  // Past the lease the import's join took on each copy it read (streamed.ts `localOf`).
+  const clock = streamed.hooks.now;
+  streamed.hooks.now = () => Date.now() + 2 * 3600_000;
+  try {
+    makeRoom(app, room.keepFreeBytes(dir));
+  } finally {
+    room.diskHooks.free = () => 1e12;
+    streamed.hooks.now = clock;
+  }
+}
+
 /** Resolves `promise`'s outcome, or "pending" if it hasn't settled within `ms`. */
 async function within<T>(promise: Promise<T>, ms: number): Promise<T | "pending"> {
   return Promise.race([promise, Bun.sleep(ms).then(() => "pending" as const)]);
 }
 
-test.skipIf(ffmpeg === null)("each piece is made from the copy here while the slow upload goes on; the script is ready, the edit here waits, and each copy goes once it's up", async () => {
+test.skipIf(ffmpeg === null)("each piece is made from the copy here while the slow upload goes on; the script is ready, the edit here waits, and each copy stays once it's up until the disk needs the room", async () => {
   const { app, cleanup } = fixtureHome("local-first-slow-up");
   let release: () => void = () => {};
   try {
@@ -169,7 +189,10 @@ test.skipIf(ffmpeg === null)("each piece is made from the copy here while the sl
       expect(record(n)?.originalReady).toBe(true);
       expect(mock.cloud.objects.get(keyOf(n))).toEqual(bytes[n]!);
     }
-    // Up and its piece made: each copy is gone.
+    // Up and its piece made: each copy stays here as the local original, for Start the edit to cut from (Nov 21).
+    for (const n of [0, 1, 2]) expect(fs.existsSync(join(dir, ".originals", ids[n]!, names[n]!))).toBe(true);
+    // The disk short of what Edit keeps free: the cleaner gives them up, and their record with them.
+    await shortOfRoom(app, dir);
     expect(fs.existsSync(join(dir, ".originals", "held.json"))).toBe(false);
     for (const n of [0, 1, 2]) expect(fs.existsSync(join(dir, ".originals", ids[n]!))).toBe(false);
 
@@ -188,7 +211,7 @@ test.skipIf(ffmpeg === null)("each piece is made from the copy here while the sl
   }
 }, 180_000);
 
-test.skipIf(ffmpeg === null)("with the relay copying it, nothing is sent from this Mac, and a copy that's up before its piece stays until the piece is made", async () => {
+test.skipIf(ffmpeg === null)("with the relay copying it, nothing is sent from this Mac, and a copy that's up before its piece stays, until the disk needs the room", async () => {
   const { app, cleanup } = fixtureHome("local-first-relay");
   try {
     streamed.start(app);
@@ -206,15 +229,18 @@ test.skipIf(ffmpeg === null)("with the relay copying it, nothing is sent from th
     expect(originalPuts()).toEqual([]);
     // Its piece isn't made yet: the copy stays.
     expect(fs.existsSync(put.here!)).toBe(true);
-    // Made: it goes.
+    // Made: it stays while there's room (Nov 21), and goes when the disk needs it.
     streamed.done(dir, put);
+    await streamed.settled();
+    expect(fs.existsSync(put.here!)).toBe(true);
+    await shortOfRoom(app, dir);
     expect(fs.existsSync(put.here!)).toBe(false);
   } finally {
     cleanup();
   }
 }, 60_000);
 
-test("an upload a restart cut off carries on from the parts already up, the import's next call reads the copy without downloading it again, and the copy goes once it's up", async () => {
+test("an upload a restart cut off carries on from the parts already up, the import's next call reads the copy without downloading it again, and the copy stays once it's up until the disk needs the room", async () => {
   const { app, cleanup } = fixtureHome("local-first-restart");
   const PART = 1024 * 1024;
   Object.assign(editCloud.timing, { filePart: PART, resumableFrom: 2 * PART });
@@ -256,9 +282,12 @@ test("an upload a restart cut off carries on from the parts already up, the impo
     expect(after.filter((call) => call.method === "PUT" && call.path.startsWith("/r2/edit/originals/")).map((call) => call.query.get("partNumber")).sort()).toEqual(["3", "4", "5"]);
     expect(mock.cloud.objects.get(key)).toEqual(data5);
     expect(mock.cloud.convex.media.get(`drive:${id}`)?.originalReady).toBe(true);
-    // Up, but the import isn't done with it: kept; done, removed.
+    // Up, but the import isn't done with it: kept; done, still kept while there's room (Nov 21); short of it, given up.
     expect(fs.existsSync(path)).toBe(true);
     streamed.done(dir, put);
+    await streamed.settled();
+    expect(fs.existsSync(path)).toBe(true);
+    await shortOfRoom(app, dir);
     expect(fs.existsSync(path)).toBe(false);
   } finally {
     Object.assign(editCloud.timing, { filePart: cloudTiming.filePart, resumableFrom: cloudTiming.resumableFrom });
@@ -368,9 +397,12 @@ test.skipIf(ffmpeg === null)("a YouTube video is read from its download here whi
     await streamed.settled();
     expect(mock.cloud.convex.media.get(`youtube:${id}`)?.originalReady).toBe(true);
     expect(mock.cloud.objects.get(put.key)).toEqual(bytes[0]!);
-    // Kept until its piece is made.
+    // Kept until its piece is made, and then while there's room (Nov 21); short of it, given up.
     expect(fs.existsSync(put.here!)).toBe(true);
     streamed.done(dir, put);
+    await streamed.settled();
+    expect(fs.existsSync(put.here!)).toBe(true);
+    await shortOfRoom(app, dir);
     expect(fs.existsSync(into)).toBe(false);
   } finally {
     release();

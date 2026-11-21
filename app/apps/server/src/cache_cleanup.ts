@@ -35,6 +35,11 @@
 //   own copies are ever taken: ledger.ts `evictable`). Opened again, it comes
 //   back as any cloud footage does (footage_ready.ts: "Getting the footage
 //   ready", with its progress).
+// - Script mode's copies of its recordings (writer/streamed.ts, Nov 21): kept
+//   so Start the edit cuts from them; for room only, after nobody's copies and
+//   before any project's (first of all when work asks for room and they alone
+//   make it: `makeRoom`), oldest-unused first, each once R2 has said it holds
+//   it and never while it's cut from (`ledger.scriptCopies`).
 //
 // The disk is kept with what Edit keeps free on it (storage.ts
 // `keepFreeBytes`: 15 GB or a tenth of the disk); only with it under the
@@ -536,9 +541,11 @@ function survey(app: App, entries: Entry[], now: number, done: Set<string>, know
   const making = makingAhead(app);
   const ahead = making === null ? null : aheadFile(cache, making);
   const scripts = writerStore.originals(writerStore.dataDir(home));
+  // Script mode's copies go by its own word alone (`cleanCache`'s step for them), never with a project's.
+  const scriptCopies = `${ledgerOf.scriptsOf(home)}/`;
   const groups = new Map<string, Group>();
   for (const entry of entries) {
-    if (!entry.evictable || ledgerOf.tierOf(entry.kind) === null) continue;
+    if (!entry.evictable || ledgerOf.tierOf(entry.kind) === null || entry.path.startsWith(scriptCopies)) continue;
     const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
     if (PARTIAL.test(name) || (name === "meta.json" && entry.path.includes("/cloud/blocks/"))) continue;
     if (now - entry.at < fresh || pinned(entry.path) || scripts.has(entry.path)) continue;
@@ -779,8 +786,34 @@ export function cleanCache(
     report.files += 1;
     if (report.removed.length < 50) report.removed.push(research.poolDir(app.store.home));
   }
+  const free = () => (limits.free !== undefined ? limits.free + report.bytes : diskHooks.free(cache) + (dryRun ? report.bytes : 0));
+  const short = () => limits.freeBytes - free();
+  // The recordings Script mode keeps here so Start the edit cuts from them (writer/streamed.ts, Nov 21): each is a
+  // whole original the cloud holds (R2 said so at its size), so they go for room before any project's copies, oldest
+  // unused first, never one cut from now nor one an import is reading again. Only for room: with the disk over what's
+  // to be kept free they all stay.
+  const scriptCopies = () => {
+    if (short() <= 0) return;
+    // Counted as they go, too: a Mac's free space can lag a delete (APFS's local snapshots), and the disk's word alone
+    // would give up every copy for room one of them made.
+    const before = free();
+    let given = 0;
+    ledgerOf.scriptCopies.letGo(
+      () => limits.freeBytes - Math.max(free(), before + given),
+      (path, bytes) => {
+        given += bytes;
+        gone.add(path);
+        if (!dryRun) ledger.forget(path);
+        report.files += 1;
+        report.bytes += bytes;
+        if (report.removed.length < 50) report.removed.push(path);
+      },
+      dryRun,
+    );
+  };
   // By project state (see the top).
-  if (inUse !== null) {
+  if (inUse === null) scriptCopies();
+  else {
     const { groups } = survey(app, entries, now, done, inUse);
     const take = (entry: Entry) => {
       const before = report.files;
@@ -794,10 +827,8 @@ export function cleanCache(
     for (const group of groups.filter((one) => one.state === "done")) {
       for (const entry of group.files) if (tierOf(entry) !== 2 || confirmed.has(entry.path)) take(entry);
     }
-    const free = () => (limits.free !== undefined ? limits.free + report.bytes : diskHooks.free(cache) + (dryRun ? report.bytes : 0));
-    const short = () => limits.freeBytes - free();
-    // Short of what's to be kept free: nobody's copies, the oldest first; then the projects not in work, whole, the
-    // one worked on longest ago first, each its derived copies and then its proxies.
+    // Short of what's to be kept free: nobody's copies, the oldest first; then Script mode's copies; then the projects
+    // not in work, whole, the one worked on longest ago first, each its derived copies and then its proxies.
     if (short() > 0) {
       const nobody = groups.find((one) => one.state === "nobody's");
       for (const entry of [...(nobody?.files ?? [])].sort((a, b) => a.at - b.at)) {
@@ -805,6 +836,7 @@ export function cleanCache(
         if (tierOf(entry) !== 2 || confirmed.has(entry.path)) take(entry);
       }
     }
+    scriptCopies();
     const wholeTier = (group: Group, tier: 0 | 1) => {
       for (const entry of group.files) if (tierOf(entry) === tier) take(entry);
     };
@@ -940,10 +972,28 @@ let doneLately = new Set<string>();
  */
 export function makeRoom(app: App, wanted: number): number {
   const cache = app.store.cacheDir();
+  // Script mode's copies first when they alone make the room (Nov 21): found from their own records, with no walk.
+  // With them kept down to what Edit keeps free, each recording an import brings down asks for room, and a whole pass
+  // holds the server's thread for seconds on a big home (thread.ts); the hourly pass takes nobody's copies first.
+  const before = diskHooks.free(cache);
+  let quick = 0;
+  ledgerOf.scriptCopies.letGo(
+    () => wanted - Math.max(diskHooks.free(cache), before + quick),
+    (path, bytes) => {
+      quick += bytes;
+      ledger.forget(path);
+    },
+    false,
+  );
+  if (wanted - Math.max(diskHooks.free(cache), before + quick) <= 0) {
+    if (quick > 0) diag.info("cache", `freed ${(quick / 1e9).toFixed(2)} GB of Script mode's copies for work that needs ${(wanted / 1e9).toFixed(1)} GB free`);
+    return quick;
+  }
   const entries = ledger.covers(cache) ? ledger.all() : undefined;
   const report = cleanCache(app, false, Date.now(), { freeBytes: wanted, ...(entries === undefined ? {} : { entries }) }, doneLately);
-  if (report.bytes > 0) diag.info("cache", `freed ${(report.bytes / 1e9).toFixed(2)} GB for work that needs ${(wanted / 1e9).toFixed(1)} GB free`);
-  return report.bytes;
+  const freed = report.bytes + quick;
+  if (freed > 0) diag.info("cache", `freed ${(freed / 1e9).toFixed(2)} GB for work that needs ${(wanted / 1e9).toFixed(1)} GB free`);
+  return freed;
 }
 
 /** The edits marked done on Home (none when Later can't be reached: ordered by when they were worked on alone). */

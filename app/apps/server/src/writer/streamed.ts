@@ -22,11 +22,22 @@
 // time, resumable, noted in jobs.json). Neither holds the import, its words,
 // its speakers or its build. The copy is kept in the script's `.originals/`
 // (a dot folder: the script's sync, its recordings and the room rounds leave
-// it alone) until its piece is made and the cloud has it, then removed; a
-// restart carries both on from `.originals/held.json`. Short of room, a
-// recording goes to the cloud first and is read back from there, as before.
-// Edit mode on this Mac waits for an original still on its way
+// it alone); a restart carries it on from `.originals/held.json`. Short of
+// room, a recording goes to the cloud first and is read back from there, as
+// before. Edit mode on this Mac waits for an original still on its way
 // (cloud_media `goingUpBehind`) instead of copying it again.
+//
+// Kept as the local original (Nov 21, the Nov 19 change 8b's plan): the copy
+// was removed the moment it was up and its piece made, so 113 of the team's
+// 126 scripts had none left by Start the edit, which read every recording back
+// over the line (JJ's 8 Mbit/s: hours). Now it stays while the disk has what
+// Edit keeps free (storage.ts `keepFreeBytes`), and Start the edit cuts from it
+// (`copyHere`). It's room Edit takes back: the cleaner (cache_cleanup.ts, with
+// the ledger's count of it) gives copies up for room, oldest-unused first,
+// only once R2 has said it holds each at its size (`checked`), never one cut
+// from now (`inUse`) nor one an import is reading again (`piece` false, or
+// `localOf`'s lease). A Mac under what Edit keeps free asks the cleaner as
+// soon as a copy may go.
 
 import * as fs from "node:fs";
 
@@ -35,6 +46,7 @@ import * as cloud from "../cloud.ts";
 import * as cloudMedia from "../cloud_media.ts";
 import * as diag from "../diag.ts";
 import { writeAtomic } from "../files.ts";
+import { scriptCopies } from "../ledger.ts";
 import { isFile, join } from "../paths.ts";
 import * as room from "../storage.ts";
 import * as youtube from "../youtube.ts";
@@ -95,7 +107,7 @@ async function driveHere(dir: string, recording: Recording, onBytes: (bytes: num
     const landed = known !== undefined && known.landed && isFile(join(dir, known.path)) ? join(dir, known.path) : null;
     if (known !== undefined) {
       if (landed === null) drop(dir, known);
-      else settle(dir, source, (one) => Object.assign(one, { piece: false, up: true }));
+      else settle(dir, source, (one) => Object.assign(one, { piece: false, up: true, usedAt: Date.now() }));
     }
     return { source, key: ready, name: record.name, size: Math.max(Math.trunc(record.size), 0), url: await cloud.presign(ready, "GET", READ_SECONDS), here: landed };
   }
@@ -135,7 +147,8 @@ async function driveHere(dir: string, recording: Recording, onBytes: (bytes: num
     failed(error);
     throw error;
   }
-  settle(dir, source, (kept) => void (kept.landed = true));
+  settle(dir, source, (kept) => Object.assign(kept, { landed: true, usedAt: Date.now() }));
+  room.ledger.note(path);
   landed(path);
   onBytes(recording.size);
   keepShared(dir, null, source, key);
@@ -152,7 +165,7 @@ async function whole(path: string, recording: Recording): Promise<boolean> {
   }
 }
 
-/** The import is done with a copy here (its piece made, or it didn't read): it goes once the cloud has the original. */
+/** The import is done with a copy here (its piece made, or it didn't read): it may go for room once the cloud has the original. */
 export function done(dir: string, put: InCloud): void {
   if (put.here === null) return;
   settle(dir, put.source, (one) => void (one.piece = true));
@@ -167,11 +180,23 @@ export function localOf(dir: string, url: string): string | null {
     return null;
   }
   const one = readHeld(dir).find((kept) => kept.landed && kept.key.split("/").slice(-2).join("/") === named);
-  return one !== undefined && isFile(join(dir, one.path)) ? join(dir, one.path) : null;
+  if (one === undefined || !isFile(join(dir, one.path))) return null;
+  // Read by the import's join (imports.ts `joinPreview`), after its piece is made: not given up under it for a while.
+  readLately.set(one.source, hooks.now());
+  return join(dir, one.path);
 }
 
+/**
+ * How long a copy `localOf` handed out is kept from the cleaner (Nov 21): past the join's reads of it, which open it
+ * again to encode a piece that's missing (an encode already going keeps reading a copy deleted under it; a new open
+ * wouldn't). A recording's piece encodes here at 11–17× real time, so an hour covers a long case's.
+ */
+const READ_LEASE_MS = 3600_000;
+/** When `localOf` last handed each source's copy out. */
+const readLately = new Map<string, number>();
+
 // ---------------------------------------------------------------------------
-// The copies kept here until their originals are up.
+// The copies kept here: until their originals are up, then for as long as the disk has room for them.
 
 /** The script's folder for them: a dot folder, which the script's sync, its recordings and the room rounds leave alone. */
 const HERE = ".originals";
@@ -191,6 +216,10 @@ interface Held {
   up: boolean;
   /** The import is done with the copy. */
   piece: boolean;
+  /** R2 said it holds the original at this copy's very size (`confirm`): only then may the copy go for room. */
+  checked?: boolean;
+  /** When it last landed or was cut from (ms): the cleaner gives up the oldest first (the file's time when unset). */
+  usedAt?: number;
 }
 
 const heldPath = (dir: string) => join(dir, HERE, "held.json");
@@ -210,34 +239,122 @@ function writeHeld(dir: string, list: Held[]): void {
   if (!fs.existsSync(join(dir, "script.json"))) return;
   fs.mkdirSync(join(dir, HERE), { recursive: true });
   writeAtomic(heldPath(dir), JSON.stringify(list, null, 2));
+  holding.add(dir);
 }
 
 function keep(dir: string, one: Held): void {
   writeHeld(dir, [...readHeld(dir).filter((kept) => kept.source !== one.source), one]);
 }
 
+/** Its copy's folder in the script's (`.originals/<folder>`), which `drop` removes whole. */
+const folderOf = (dir: string, one: Held): string => join(dir, one.path.split("/").slice(0, 2).join("/"));
+
 /** Its copy and its line gone. */
 function drop(dir: string, one: Held): void {
-  fs.rmSync(join(dir, one.path.split("/").slice(0, 2).join("/")), { recursive: true, force: true });
+  const folder = folderOf(dir, one);
+  fs.rmSync(folder, { recursive: true, force: true });
+  room.ledger.forget(folder);
   const rest = readHeld(dir).filter((kept) => kept.source !== one.source);
   if (rest.length > 0) writeHeld(dir, rest);
-  else fs.rmSync(heldPath(dir), { force: true });
+  else {
+    fs.rmSync(heldPath(dir), { force: true });
+    holding.delete(dir);
+  }
 }
 
-/** `change` applied to `source`'s line; the copy goes once the cloud has it and the import is done with it. */
+/** The script folders with a `held.json` (`start` finds them; each write adds its own): the cleaner looks at these alone. */
+const holding = new Set<string>();
+
+/** May the copy go for room: in the cloud at its size, the import done with it, nothing cutting from it, reading it or bringing it down. */
+const mayGo = (one: Held): boolean =>
+  one.landed && one.up && one.piece && one.checked === true && !(inUse.get(one.source) ?? 0) && !landing.has(one.source) && hooks.now() - (readLately.get(one.source) ?? Number.NEGATIVE_INFINITY) > READ_LEASE_MS;
+
+/** Whether the disk holding `dir` has less free than Edit keeps (writes under way counted). */
+const short = (dir: string): boolean => room.freeBytes(dir) - room.claimedBytes() < room.keepFreeBytes(dir);
+
+/**
+ * `change` applied to `source`'s line. The copy stays as the local original (see the top); with the disk under what
+ * Edit keeps free, a copy that may go asks the cleaner for the room at once (it gives up the oldest-unused, this one
+ * or another), rather than waiting for its next pass. One the cloud has, not yet looked at in R2, is (`confirm`).
+ */
 function settle(dir: string, source: string, change: (one: Held) => void): void {
   const list = readHeld(dir);
   const one = list.find((kept) => kept.source === source);
   if (one === undefined) return;
   change(one);
-  // Edit mode cutting from it (`copyHere`): kept until it lets go, then looked at again.
-  if (one.up && one.piece && !(inUse.get(source) ?? 0)) {
-    drop(dir, one);
-    diag.info("writer", `${source}: in the cloud and its piece made, so its copy here (${Math.round(one.size / 1e6)} MB) is removed`);
-    return;
-  }
   writeHeld(dir, list);
+  if (one.landed && one.up && one.checked !== true) confirm(dir, one);
+  else if (mayGo(one) && short(dir)) {
+    try {
+      room.diskHooks.makeRoom(room.keepFreeBytes(dir));
+    } catch (error) {
+      diag.warn("writer", `${source}: room for what Edit keeps free wasn't made: ${diag.messageOf(error)}`);
+    }
+  }
 }
+
+/** Seams for tests: R2's word on an original (cloud.head), and the clock `localOf`'s lease runs on. */
+export const hooks = {
+  head: (key: string): Promise<{ size: number } | null> => (cloud.enabled() ? cloud.head(key) : Promise.resolve(null)),
+  now: (): number => Date.now(),
+};
+
+/** The looks at R2 under way, by script folder and source. */
+const confirming = new Map<string, Promise<void>>();
+
+/**
+ * R2 asked whether it holds `one`'s original at the very size of the copy here: then (`checked`) the copy may go for
+ * room. The registry's word alone isn't enough to delete what may be the only whole copy (a relay copy cut short, an
+ * upload noted ready before its last part). Not known (offline, not there yet): asked again at the cleaner's next look.
+ */
+function confirm(dir: string, one: Held): void {
+  const id = `${dir}\n${one.source}`;
+  if (confirming.has(id)) return;
+  const run = (async () => {
+    const [there, here] = await Promise.all([hooks.head(one.key), fs.promises.stat(join(dir, one.path))]);
+    if (there === null || !(here.size > 0) || there.size !== here.size) return;
+    settle(dir, one.source, (kept) => {
+      if (kept.key === one.key) kept.checked = true;
+    });
+  })()
+    .catch(() => {})
+    .finally(() => confirming.delete(id));
+  confirming.set(id, run);
+}
+
+/**
+ * The cleaner's ask (ledger.ts `scriptCopies`): with the disk `short()`, the copies that may go given up, the one cut
+ * from longest ago first (its landing, else its file's time), until it isn't; each told to `took`. An import reading a
+ * copy again holds it (`piece` false until it's done with it, `localOf`'s lease for its join). Only the scripts with a
+ * `held.json` are looked at, each a small read: never a script's own script.json (2 MB at the median here, 13 at most).
+ */
+function letGoForRoom(enough: () => number, took: (path: string, bytes: number) => void, dryRun: boolean): void {
+  const ready: { dir: string; one: Held; at: number; bytes: number }[] = [];
+  for (const dir of [...holding]) {
+    for (const one of readHeld(dir)) {
+      if (one.landed && one.up && one.checked !== true) confirm(dir, one);
+      if (!mayGo(one)) continue;
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(join(dir, one.path));
+      } catch {
+        continue;
+      }
+      ready.push({ dir, one, at: one.usedAt ?? stat.mtimeMs, bytes: stat.size });
+    }
+  }
+  ready.sort((a, b) => a.at - b.at);
+  for (const { dir, one, bytes } of ready) {
+    if (enough() <= 0) break;
+    const folder = folderOf(dir, one);
+    if (!dryRun) {
+      drop(dir, one);
+      diag.info("writer", `${one.source}: its copy here (${Math.round(bytes / 1e6)} MB) given up for room; the cloud has it, and Start the edit reads it from there`);
+    }
+    took(folder, bytes);
+  }
+}
+scriptCopies.letGo = letGoForRoom;
 
 // ---------------------------------------------------------------------------
 // Edit mode's import cutting from a copy here (Nov 20).
@@ -270,8 +387,8 @@ export function copyHere(source: string): CopyHere | null {
       const left = (inUse.get(source) ?? 1) - 1;
       if (left > 0) inUse.set(source, left);
       else inUse.delete(source);
-      // Its upload may have finished meanwhile: it goes now if the import is done with it too.
-      settle(dir, source, () => {});
+      // Just cut from: the last the cleaner gives up (and, the disk short, it may ask for room now).
+      settle(dir, source, (kept) => void (kept.usedAt = Date.now()));
     };
     return { copy: { path: join(dir, one.path), key: one.key, name: one.name, size: one.size, release } };
   }
@@ -310,8 +427,8 @@ const going = new Map<string, Promise<void>>();
  * `one`'s original to the cloud behind the import: the relay's copy for a
  * Drive file (nothing sent from here), else this Mac's upload of `local`
  * once it's whole. Edit mode here waits for it (`goingUpBehind`). Done, the
- * copy goes if the import is done with it; failed, it stays for the next
- * start to try again.
+ * copy may go for room once the import is done with it and R2 says it holds it
+ * (`confirm`); failed, it stays for the next start to try again.
  */
 function goUp(dir: string, one: Held, local: Promise<string>): void {
   const id = `${dir}\n${one.source}`;
@@ -397,6 +514,7 @@ export function start(app: App): void {
     const dir = store.scriptDir(data, id);
     const list = readHeld(dir);
     if (list.length === 0) continue;
+    holding.add(dir);
     let importing = false;
     try {
       importing = store.read(dir).status === "processing";
@@ -416,15 +534,18 @@ export function start(app: App): void {
   }
 }
 
-/** For tests: the uploads going on now, done. */
+/** For tests: the uploads going on now, and the looks at R2, done. */
 export async function settled(): Promise<void> {
-  while (going.size > 0) await Promise.all([...going.values()]);
+  while (going.size > 0 || confirming.size > 0) await Promise.all([...going.values(), ...confirming.values()]);
 }
 
 /** For tests. */
 export function reset(): void {
   home = null;
   going.clear();
+  holding.clear();
+  confirming.clear();
+  readLately.clear();
   for (const stop of stops) stop(new Error("stopped"));
   stops.clear();
 }
@@ -455,8 +576,8 @@ export async function readHere(dir: string, put: InCloud, onBytes: (bytes: numbe
  * Oct 30): one connection read at about the video's own speed, which nothing
  * could resume, so a single drop anywhere in a 25-minute video stopped the
  * whole import from the start (Oct 31, Kroger: "yt-dlp stopped part-way
- * (exit 1)" at 5%, on three Macs). The file is kept in `.originals/`
- * until its piece is made and it's up: behind the import when there's room
+ * (exit 1)" at 5%, on three Macs). The file is kept in `.originals/` as
+ * Drive's are (see the top): it goes up behind the import when there's room
  * to keep it (`room.roomFor`), else before the import goes on, as it was.
  */
 export async function fromYoutube(app: App, dir: string, url: string, onBytes: (bytes: number) => void): Promise<InCloud> {
@@ -468,7 +589,7 @@ export async function fromYoutube(app: App, dir: string, url: string, onBytes: (
   const known = readHeld(dir).find((one) => one.source === source && one.landed && isFile(join(dir, one.path)));
   if (known !== undefined && (record?.originalKey === undefined || record.originalKey === known.key)) {
     // Read again now: kept until this run is done with it too.
-    settle(dir, source, (one) => Object.assign(one, { piece: false, up: one.up || record?.originalReady === true }));
+    settle(dir, source, (one) => Object.assign(one, { piece: false, up: one.up || record?.originalReady === true, usedAt: Date.now() }));
     if (record?.originalReady !== true) goUp(dir, known, Promise.resolve(join(dir, known.path)));
     keepShared(dir, null, source, known.key);
     onBytes(known.size);
@@ -506,8 +627,9 @@ export async function fromYoutube(app: App, dir: string, url: string, onBytes: (
     throw error;
   }
   const size = got.size;
-  const one: Held = { source, key, name, size, path: got.path.slice(dir.length + 1), landed: true, up: false, piece: false };
+  const one: Held = { source, key, name, size, path: got.path.slice(dir.length + 1), landed: true, up: false, piece: false, usedAt: Date.now() };
   keep(dir, one);
+  room.ledger.note(got.path);
   const address = await cloud.presign(key, "GET", READ_SECONDS);
   // Room to keep it until it's up: its piece is made from it now, and it goes up behind the import.
   if (got.path.startsWith(`${dir}/`) && room.roomFor(dir, 0)) {
@@ -516,7 +638,7 @@ export async function fromYoutube(app: App, dir: string, url: string, onBytes: (
     diag.info("writer", `YouTube ${id} downloaded (${Math.round(size / 1e6)} MB): its piece is made from the copy on ${THIS_MACHINE} while it goes up behind the import`);
     return { source, key, name, size, url: address, here: got.path };
   }
-  // Short of room: up first, as before (its piece still made from the copy here, removed once it is).
+  // Short of room: up first, as before (its piece still made from the copy here, which the cleaner then takes back).
   try {
     await cloud.uploadFile(got.path, key, (sent) => onBytes(sent));
   } catch (error) {
@@ -528,6 +650,6 @@ export async function fromYoutube(app: App, dir: string, url: string, onBytes: (
   await cloud.mutation("edit:putMedia", { source, originalReady: true, size });
   settle(dir, source, (kept) => void (kept.up = true));
   keepShared(dir, null, source, key);
-  diag.info("writer", `YouTube ${id} downloaded and put in Edit's originals (${Math.round(size / 1e6)} MB); its copy on ${THIS_MACHINE} goes once its piece is made`);
+  diag.info("writer", `YouTube ${id} downloaded and put in Edit's originals (${Math.round(size / 1e6)} MB); its copy on ${THIS_MACHINE} stays while there's room, for Start the edit to cut from`);
   return { source, key, name, size, url: address, here: got.path };
 }
