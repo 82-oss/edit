@@ -28,6 +28,8 @@
 // Nothing here happens signed out (no cloud): an effect then has only its
 // folder, and the agent the release's text.
 
+import * as addons from "./addons.ts";
+import { ADDON_PREFIX } from "./addons.ts";
 import fs from "node:fs";
 import { dirname, join, sep } from "node:path";
 import type { App } from "./app.ts";
@@ -358,14 +360,43 @@ export interface Skill {
   latest?: number;
 }
 
-/** The skills in V2's cloud (the global one first), as last read. */
+/** The skills in V2's cloud (the global one first), as last read: the lessons alone, the add-ons apart. */
 let skills: Skill[] = [];
+/** Of those, the channels' add-ons (`addon-<name>`), apart: as last read, a new array at each read. */
+let addonSkills: Skill[] = [];
+
+/**
+ * A channel's add-on is kept as a skill named `addon-<name>` (addons.ts):
+ * Edit's own code switched on for the channel, not something the agent was
+ * told. It's never one of the agent's lessons, never read with read_skill,
+ * and never makes a place taught; addons.ts reads them (`addonItems`).
+ */
+export { ADDON_PREFIX };
+export const isAddon = (name: string) => name.startsWith(ADDON_PREFIX);
+
+/** The skills as read: the lessons, and the add-ons apart. */
+function asRead(given: Skill[]): void {
+  skills = given.filter((one) => !isAddon(one.name));
+  addonSkills = given.filter((one) => isAddon(one.name));
+}
+
+/**
+ * Why a lesson can't be kept under `name`, or null when it can: an add-on's
+ * name (set only by its own tool), and in the edit lane `removal`
+ * (removal_lesson.ts SKILL: what a channel takes out of its footage, kept only
+ * by teach_removal, which a lesson by hand would replace with nothing read).
+ */
+export function reservedName(name: string, lane: Lane): string | null {
+  if (isAddon(name)) return `${name}: names starting ${ADDON_PREFIX} are the channel's add-ons (Edit's own code it switches on), set only by their own tool, never kept as a lesson. Give the lesson another name.`;
+  if (name === "removal" && lane === "edit") return "removal is what this channel takes out of its footage's picture, kept only with teach_removal, never as a lesson: use teach_removal, or give the lesson another name.";
+  return null;
+}
 /** The effects and sounds in V2's cloud, by key and name alone, as last read with the skills. */
 let pieces: { key: string; name: string }[] = [];
 let readAt = 0;
 const SKILLS_FRESH_MS = 30_000;
 
-/** What a place's agent knows (null: a V2 project without a channel): the global skill, then the place's own by name. */
+/** What a place's agent knows (null: a V2 project without a channel): the global skill, then the place's own by name; never an add-on. */
 export function memories(place: Places): Skill[] {
   return forPlace(skills.map((one) => ({ ...one, key: one.key ?? skillKey(one.name) })), place);
 }
@@ -382,6 +413,11 @@ export function taughtAnything(place: Places): boolean {
 /** One skill a place knows, as last read. */
 export function skill(name: string, place: Places): Skill | undefined {
   return memories(place).find((one) => one.name === name);
+}
+
+/** Every add-on item as last read, whatever its place: the same array until the next read (addons.ts indexes it once per read). */
+export function addonItems(): readonly Skill[] {
+  return addonSkills;
 }
 
 /** Whether the skills have been read from the cloud since Edit started: until then "nothing taught" means "not known". */
@@ -412,7 +448,7 @@ export async function refreshSkills(): Promise<void> {
         if (typeof text === "string" && text.trim() !== "") next.push({ name: item.name, text: text.trim(), ...(item.note ? { note: item.note } : {}), key: item.key, latest: item.latest });
       }
       pieces = [...templates, ...sounds].map(({ key, name }) => ({ key, name }));
-      skills = next.sort((a, b) => Number(b.name === GLOBAL) - Number(a.name === GLOBAL) || a.name.localeCompare(b.name));
+      asRead(next.sort((a, b) => Number(b.name === GLOBAL) - Number(a.name === GLOBAL) || a.name.localeCompare(b.name)));
       skillsRead = true;
       readAt = Date.now();
     } catch (error) {
@@ -435,7 +471,7 @@ export function forgetSkills(): void {
 
 /** Tests: the skills as given, read now. */
 export function useSkillsForTests(given: Skill[], effectsAndSounds: { key: string; name: string }[] = [], known = true): void {
-  skills = given;
+  asRead(given);
   pieces = effectsAndSounds;
   readAt = Date.now();
   skillsRead = known;
@@ -449,3 +485,6 @@ export function whoIs(by: { name: string } | null): string {
 }
 
 export type { App };
+
+// addons.ts reads the library through these, handed over here instead of imported there (its `from`: a ring of imports otherwise).
+Object.assign(addons.from, { addonItems, skillKey, ownPlaceOf, laneOf, enabled, refreshSkills });

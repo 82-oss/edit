@@ -187,3 +187,33 @@ test("an export the job table holds waiting to start again (an update's, that co
     cleanup();
   }
 });
+
+test("an export carried on with part of its video made counts that part in the queue's percent, never goes back, and says its join", async () => {
+  // Nov 21, a MacBook Air: carried on after a restart with 6 of 26 chunks made, the bar read 1% (its time counted from
+  // the restart alone) and the join said nothing.
+  const { JOINING } = await import("../src/exports.ts");
+  const { app, home, store, cleanup } = fixtureHome("export-steps-carried");
+  try {
+    const id = store.create("Welfare check", { width: 1920, height: 1080, fps: 30 }).project.id;
+    // This Mac exports a minute's video in three minutes.
+    speeds.noteExport(home, 1800, 180);
+    const t0 = 5_000_000;
+    steps.clock.now = () => t0;
+    const job = { id, name: "Welfare check", path: "/x/out.mp4", state: "running" as const, progress: 0.3, updated_ms: t0, started_ms: t0, seconds: 60, made: 0.3 };
+    const seen: number[] = [];
+    for (let s = 0; s <= 60; s += 5) {
+      const given = steps.stepsOf(app, id, { ...job, progress: 0.3 + s * 0.004 }, t0 + s * 1000)!;
+      seen.push(given.progress);
+    }
+    // From its first look: about the share made, not the time since the restart (which reads 0).
+    expect(seen[0]!).toBeGreaterThanOrEqual(0.25);
+    for (let at = 1; at < seen.length; at++) expect(seen[at]!).toBeGreaterThanOrEqual(seen[at - 1]!);
+    expect(seen.at(-1)!).toBeGreaterThanOrEqual(0.5);
+    // Its join: the video's line says so.
+    const joining = steps.stepsOf(app, id, { ...job, progress: 0.96, phase: JOINING }, t0 + 70_000)!;
+    expect(joining.steps.find((one) => one.kind === "video")!.note).toBe(JOINING);
+    expect(joining.progress).toBeLessThan(1);
+  } finally {
+    cleanup();
+  }
+});

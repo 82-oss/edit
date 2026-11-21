@@ -29,7 +29,9 @@ import type { Clip, DriveFile, Media, Project, ProjectSummary, Settings, Style }
 import { native, type Prepared } from "./native/index.ts";
 import { canonical, extension, fileStem, join } from "./paths.ts";
 import { duration, mediaOf, newProject } from "./project.ts";
+import * as removalHeld from "./removal_held.ts";
 import { asSerdeRead, jsonForSerde } from "./rust.ts";
+import { stableStringify } from "./stable.ts";
 import * as patches from "./patch.ts";
 
 export { nextFileId, nowMs, writeAtomic } from "./files.ts";
@@ -195,6 +197,8 @@ export class Store {
 
   private constructor(home: string) {
     this.home = home;
+    // An edit moved onto a channel holds its removal in the project itself (removal_held.ts).
+    removalHeld.tell(home, (id) => this.get(id)?.project.removal_held === true);
   }
 
   static open(home: string): Store {
@@ -730,6 +734,57 @@ export class Store {
         default:
           throw new Error(error.message);
       }
+    }
+  }
+
+  /**
+   * Today's kind of edit made its channel's Edit V2 project (channel_move.ts,
+   * Sphe, Nov 21: "have v1 projects convert to v2 cleanly and be identical"):
+   * `hq`, `channel` and `removal_held` (its channel's removal doesn't start by
+ * itself on it) set in one revision and nothing else. None of the house
+   * rules `update` and `commit` lay on every save run here (a project last
+   * saved before a rule landed would have its clips changed by the move
+   * itself), and a save the model would write out different anywhere else
+   * (the media resolver, its own serialization) is refused, never made.
+   * Throws an Error with the reason.
+   */
+  async relabel(id: string, origin: string, fields: { hq: true; channel: string; removal_held: true }): Promise<Live> {
+    if (this.get(id) === null) throw new Error(`no project ${id}`);
+    const cloud = this.cloudHook;
+    if (cloud !== null) {
+      try {
+        await cloud.mayWrite(id);
+      } catch (error) {
+        throw new Error(diag.messageOf(error));
+      }
+    }
+    // Nothing awaited from here to the swap: what's read is what's saved, with those fields alone on top.
+    const current = this.get(id);
+    if (current === null) throw new Error("project was deleted while moving it");
+    const project = structuredClone(current.project) as Project;
+    project.hq = fields.hq;
+    project.channel = fields.channel;
+    project.removal_held = fields.removal_held;
+    const refused = refusalOf(current.project, project);
+    if (refused !== null) throw new Error(refused);
+    let prepared: Prepared;
+    let wanted: string;
+    try {
+      // Where its files are on this computer, as every read and save has them (a path, never what's in the file).
+      this.resolveMedia?.(project);
+      wanted = stableStringify(project);
+      prepared = this.prepare(id, project);
+    } catch (error) {
+      throw new Error(diag.messageOf(error));
+    }
+    if (stableStringify(JSON.parse(prepared.json)) !== wanted) throw new Error("Moving it would have changed more than its channel, so nothing was changed: tell Sphe which edit it was.");
+    try {
+      const live = this.commitUnguarded(id, current.rev, prepared, origin);
+      cloud?.wrote(id);
+      agentView.background(id, current.project, live.project);
+      return live;
+    } catch (error) {
+      throw new Error(diag.messageOf(error));
     }
   }
 

@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 
 /**
- * The picture strip both timelines draw under a clip's name.
- * The edit page gets it from a media item's thumbnail sheet. A script has no
- * sheet, so it samples the preview into one of the same shape. No strip, no
- * frames: the clip stays its flat colour.
+ * A picture strip drawn from one sheet of frames: a script's clips sample
+ * their preview into one (no sheet is made for a script), and a clip's preview
+ * card draws from it. No strip, no frames: the clip stays its flat colour.
+ * The edit timelines draw each cell's own moment instead (`drawMoments`).
  */
 export type Strip = {
   image: CanvasImageSource;
@@ -38,6 +38,37 @@ export function drawFilmstrip(
   }
   ctx.fillStyle = "rgba(0,0,0,0.18)";
   ctx.fillRect(box.x, box.y + box.header, box.w, th);
+}
+
+/**
+ * Tiles a clip with its own moments' frames (Nov 21: "like on v1 but have them work reliably this time"): one cell per
+ * frame's width across the part in view, each the frame at that cell's source time (`sourceAt` of its middle) as
+ * `frameAt` has it (lib/timelineMedia.ts asks for it when it hasn't), then dimmed so the colour and the name still read.
+ * A cell whose frame isn't in yet is the clip's flat colour. Both timelines draw their picture clips with it.
+ */
+export function drawMoments(
+  ctx: CanvasRenderingContext2D,
+  box: { x: number; y: number; w: number; h: number; header: number },
+  aspect: number,
+  sourceAt: (x: number) => number,
+  /** A cell's frame: its source second, how many seconds a cell spans (for the grid it's asked on), and the cells' height. */
+  frameAt: (seconds: number, spacing: number, height: number) => CanvasImageSource | null,
+  visible0: number,
+  visible1: number,
+  dim = 0.18,
+) {
+  const th = box.h - box.header;
+  if (th < 4 || box.w < 8) return;
+  const tw = Math.max(8, th * (aspect > 0 ? aspect : 16 / 9));
+  const top = box.y + box.header;
+  const spacing = Math.abs(sourceAt(box.x + tw) - sourceAt(box.x));
+  const start = box.x + Math.max(0, Math.floor((visible0 - box.x) / tw)) * tw;
+  for (let x = start; x < visible1; x += tw) {
+    const picture = frameAt(sourceAt(Math.min(x + tw / 2, box.x + box.w)), spacing, th);
+    if (picture !== null) ctx.drawImage(picture, x, top, tw, th);
+  }
+  ctx.fillStyle = `rgba(0,0,0,${dim})`;
+  ctx.fillRect(box.x, top, box.w, th);
 }
 
 const HEIGHT = 72;

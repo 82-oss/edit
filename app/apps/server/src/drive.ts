@@ -14,6 +14,7 @@
 import * as fs from "node:fs";
 
 import * as diag from "./diag.ts";
+import * as failure from "./failure.ts";
 import * as jobs from "./jobs.ts";
 import { googleProto, google } from "./endpoints.ts";
 import { ioMessage, nowMs } from "./files.ts";
@@ -149,12 +150,13 @@ export function start(store: Store, library: Library, project: Project, path: st
     emit("uploading", { progress: 0.0 });
     const subject = `${path} (${id})`;
     let file: DriveFile | null = null;
-    let failure: string | null = null;
+    let stopped: unknown = null;
+    let sent = 0.0;
     try {
       file = await diag.timeOnAsync("drive", "drive upload", subject, () =>
         catchBugsAsync("the Drive upload", () =>
           // Each percent notes the row as moving (Nov 21): `patch` doesn't, and a long upload on a slow line was reported still.
-          upload(library, path, name, into, replacing, (progress) => (jobs.beat(store.home, job), emit("uploading", { progress })), keep),
+          upload(library, path, name, into, replacing, (progress) => ((sent = progress), jobs.beat(store.home, job), emit("uploading", { progress })), keep),
         ),
       );
       if (uploads.get(id) === number) {
@@ -164,16 +166,29 @@ export function start(store: Store, library: Library, project: Project, path: st
         });
       }
     } catch (error) {
-      failure = diag.messageOf(error);
+      stopped = error;
     }
-    if (failure === null && file !== null) {
+    const newest = uploads.get(id) === number;
+    if (newest) uploads.delete(id);
+    if (stopped === null && file !== null) {
       diag.info("drive", `uploaded ${path} to Drive`);
       checkedAt.set(file.file_id, timing.now());
       emit("done", { progress: 1.0, url: file.url });
-    } else {
-      emit("failed", { error: failure });
+      jobs.end(store.home, job);
+      return;
     }
-    if (uploads.get(id) === number) uploads.delete(id);
+    // Trouble that passes (a dropped line, a busy Drive, a timeout), credit or a limit: the upload waits in the job
+    // table as failure.ts says for it, its session kept with its row, and serve.ts' resumer carries it on from what
+    // Drive has. Nov 21: it ended as failed after three quick tries, a minute's Wi-Fi drop losing the export's link.
+    // Only the person's (a 403) and what nothing recognises fail, as before: those never pass by waiting.
+    const kind = stopped === null ? null : failure.surely(stopped);
+    // An upload a newer one replaced shares its row: it never puts that one to wait.
+    const at = newest && kind !== null && failure.waitsByItself(kind) ? jobs.wait(store.home, job, stopped) : null;
+    if (newest && jobs.get(store.home, job)?.state === "waiting") {
+      emit("waiting", { progress: sent, ...(at === null ? {} : { retry_at: at }) });
+      return;
+    }
+    emit("failed", { error: stopped === null ? "Google Drive didn't say what the uploaded file is" : diag.messageOf(stopped) });
     jobs.end(store.home, job);
   })();
 }
@@ -495,6 +510,9 @@ function driveError(code: number, body: string): string {
     case 404:
       return "Google Drive can't find the Subtitles folder.";
     default:
+      // Said as passing (failure.ts reads "busy" and a 5xx in brackets): Drive busy or the line gone is waited out.
+      if (code === 0) return `Google Drive didn't answer: ${message}`;
+      if (code === 429 || code >= 500) return `Google Drive is busy (${code}): ${message}`;
       return `Google Drive answered ${code}: ${message}`;
   }
 }

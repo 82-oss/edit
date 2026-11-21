@@ -42,7 +42,7 @@ import { DEFAULT_RELAY, url as relayUrl } from "./relay.ts";
 import { ApiError } from "./http/errors.ts";
 import { readJson, type Router } from "./http/router.ts";
 import * as busy from "./busy.ts";
-import { chunkFolder, clipMap, cloudKeyFor, deleteExport, heldByReview, lastChunks, listExports, mapFile, optionsKey, timelineHash, withExport, withWatermarkKey } from "./exports.ts";
+import { chunkFolder, clipMap, cloudKeyFor, deleteExport, heldByReview, lastChunks, listExports, mapFile, optionsKey, timelineHash, wakeBehindShare, withExport, withWatermarkKey } from "./exports.ts";
 import { shareLine } from "./export_prep.ts";
 import * as speeds from "./export_speeds.ts";
 import * as effects from "./effects.ts";
@@ -54,7 +54,7 @@ import { defaultExportPath } from "./server_seam.ts";
 import { clipEnd, fps as fpsOf, trackOf } from "./project.ts";
 import { lengthsOf, oddPieces, reviewCopyProblem } from "./review_check.ts";
 import { cachedTranscripts } from "./edit_tools.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import { native } from "./native/index.ts";
 import { onScreen } from "./review.ts";
 import { fixed, jsonForSerde } from "./rust.ts";
@@ -440,6 +440,27 @@ function shareSignal(projectId: string): AbortSignal {
   return stop.signal;
 }
 
+/**
+ * `wait`, or the share's Cancel, whichever comes first (undefined then; `haltShare` after it throws). What it waited on
+ * goes on by itself, as it would have (an effect's render, a map shot: the edit plays them). Nov 21, audit E7: the
+ * waits for a share's graphics took no Cancel, 20 minutes each and up to three times, the stop looked at only after,
+ * so "Stopping…" sat on the dialog and no new share could start; in V2 that's every share after an agent's turn.
+ */
+async function untilCancelled<T>(projectId: string, wait: Promise<T>): Promise<T | undefined> {
+  const signal = shareSignal(projectId);
+  if (signal.aborted) return undefined;
+  let onAbort = () => {};
+  const stopped = new Promise<undefined>((resolve) => {
+    onAbort = () => resolve(undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([wait, stopped]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 function dropShare(projectId: string): void {
   droppedShares.delete(projectId);
   shareAbort.delete(projectId);
@@ -459,8 +480,9 @@ export function cancelShare(app: App, projectId: string): boolean {
     stop.abort();
     sharing.set(projectId, "cancelling");
   } else if (listed) {
-    // Cut short by a restart and not carried on yet: nothing runs to stop, so its listing goes.
+    // Cut short by a restart and not carried on yet: nothing runs to stop, so its listing goes (and its export's archive with it, if it waited).
     jobs.end(home, shareKey(projectId));
+    wakeBehindShare(home, projectId);
   }
   if (exporting) app.exports.cancel(projectId);
   return true;
@@ -484,10 +506,11 @@ export function shareable<T extends { path: string; whole: boolean; start?: numb
  */
 export async function restoreArchived(
   record: { path: string; bytes: number | null; cloudKey?: string },
-  fetch: (key: string, dest: string) => Promise<void> = cloud.download,
+  fetch: (key: string, dest: string, signal?: AbortSignal) => Promise<void> = (key, dest, signal) => cloud.download(key, dest, undefined, signal),
+  signal?: AbortSignal,
 ): Promise<void> {
   if (fs.existsSync(record.path) || record.cloudKey === undefined) return;
-  await fetch(record.cloudKey, record.path);
+  await fetch(record.cloudKey, record.path, signal);
   const size = fs.existsSync(record.path) ? fs.statSync(record.path).size : -1;
   if (record.bytes !== null && size !== record.bytes) {
     fs.rmSync(record.path, { force: true });
@@ -537,14 +560,21 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
         // fetched back from that copy, the same bytes, rather than tried twenty times as a file that isn't there
         // (Nov 21). With no copy in the cloud either there's nothing to send, and that's said once.
         if (!fs.existsSync(path)) {
-          const archived = cloudKeyFor(home, path);
-          if (archived === null) {
+          const nowhere = async () => {
             diag.warn("review", `${name}: the full-quality file isn't on this computer or in the cloud any more, so the review has no Download; export and share again for one`);
             await tell({ fullUpload: { ...last, at: Date.now(), failed: "The export isn't on this computer any more. Share again for a download." } }).catch(() => undefined);
-            return;
-          }
+          };
+          const archived = cloudKeyFor(home, path);
+          if (archived === null) return await nowhere();
           diag.info("review", `${name}: the export isn't here any more; fetching it back from its cloud copy to send the review's full-quality file`);
-          await restoreArchived({ path, bytes: null, cloudKey: archived });
+          try {
+            await restoreArchived({ path, bytes: null, cloudKey: archived });
+          } catch (error) {
+            // Its cloud copy is on record and not there (deleted with a review link, a cleanup): nowhere, said once.
+            // The same every try, it would otherwise be waited on every 30 minutes for good (Nov 21).
+            if (!cloud.notThere(error)) throw error;
+            return await nowhere();
+          }
           last = { sent: 0, total: fs.statSync(path).size };
         }
         // Up already (a restart came after its last part, before the cloud was told): straight to telling it, not sent
@@ -562,6 +592,10 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
             else last = { sent, total };
           }, undefined, true);
         }
+        // The export's own archive is the same bytes: it's kept once, as this. Named before the version is told (Nov 21):
+        // a share's export has no archive of its own any more (exports.ts `BEHIND_SHARE`), and this is its one cloud
+        // copy whether or not the review page hears of it.
+        await heldByReview(home, projectId, path, key, last.total).catch((error: unknown) => diag.warn("review", `${name}: keeping the export once: ${diag.messageOf(error)}`));
         // Named in its version only now: named at the publish, the page's Download button was there hours before the
         // file (Nov 8, Killer Pastor's v3: its 4.6 GB export still going up, and Download saved "media.json", the 404).
         if (version !== undefined) {
@@ -573,14 +607,14 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
           }
         }
         diag.info("review", `${name}: the full-quality file is up for the review's Download button`);
-        // The export's own archive is the same bytes: it's kept once, as this.
-        await heldByReview(home, projectId, path, key, last.total).catch((error: unknown) => diag.warn("review", `${name}: keeping the export once: ${diag.messageOf(error)}`));
         return;
       } catch (error) {
         if (attempt >= fullUpload.tries) {
           diag.warn("review", `${name}: the full-quality file didn't go up after ${attempt} tries: ${diag.messageOf(error)}`);
           await tell({ fullUpload: { ...last, at: Date.now(), failed: diag.messageOf(error).slice(0, 300) } }).catch(() => undefined);
-          if (fs.existsSync(path)) putOff = `the full-quality file didn't go up after ${attempt} tries: ${diag.messageOf(error)}`;
+          // Put off while there's something to send from, here or its cloud copy to fetch back (Nov 21, audit E6: with
+          // the file gone, a fetch-back that failed offline for an hour or two ended the row, and the Download never came).
+          if (!fullGone(home, path)) putOff = `the full-quality file didn't go up after ${attempt} tries: ${diag.messageOf(error)}`;
           return;
         }
         diag.warn("review", `${name}: the full-quality file (try ${attempt}): ${diag.messageOf(error)}; trying again`);
@@ -590,9 +624,27 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
   }).finally(() => {
     if (putOff === null) jobs.end(home, job);
     else jobs.wait(home, job, putOff);
+    // Its export's archive, waiting behind it, is crossed off (up as this) or goes now (this ended without the file up).
+    if (putOff === null) wakeBehindShare(home, projectId);
   });
 }
 
+
+/** Whether a review's full-quality file has nothing left to be sent from: not on this computer, and no cloud copy to fetch it back from. */
+export function fullGone(home: string, path: string): boolean {
+  return !fs.existsSync(path) && cloudKeyFor(home, path) === null;
+}
+
+/**
+ * A `full` row started again: after a restart, and each time the job table wakes it from a wait. Its export not on
+ * this computer is fullBehind's to fetch back from its cloud copy, or, with none, to say on the review (Nov 21, audit
+ * E6: serve.ts crossed the row off first, so a share's full-quality upload put off by a dropped line, its export
+ * deleted meanwhile because it was archived and the disk short, never came; no Download, one line in the log).
+ */
+export function resumeFull(home: string, job: jobs.Job): Promise<void> {
+  const { name, path, key, version } = job.args as { name: string; path: string; key: string; version?: number };
+  return fullBehind(home, job.project, name, path, key, version);
+}
 
 /** Refused before a share is listed: no cloud, one under way, its link being deleted. */
 function canShare(home: string, projectId: string): void {
@@ -715,6 +767,7 @@ export function resumeShareJob(app: App, job: jobs.Job): void {
   if (sharing.has(job.project)) return;
   if (!cloud.enabled()) {
     jobs.settle(app.store.home, job.key, "failed", { error: "sharing needs Edit's cloud (sign in)", build: BUILD });
+    wakeBehindShare(app.store.home, job.project);
     return;
   }
   const run = runShare(app, job.project);
@@ -836,7 +889,12 @@ async function runShare(app: App, projectId: string): Promise<{ url: string; ver
     sharing.delete(projectId);
     speeds.uploadEnds(projectId);
     dropShare(projectId);
-    if (!shareGoing(home, projectId)) fs.rmSync(join(home, "jobs", `share-${projectId}.json`), { force: true });
+    if (!shareGoing(home, projectId)) {
+      fs.rmSync(join(home, "jobs", `share-${projectId}.json`), { force: true });
+      // Ended (failed, cancelled, or done with its full-quality file listed): its export's archive, waiting behind it,
+      // goes now if nothing sends that file (exports.ts `BEHIND_SHARE`). A share that only waits isn't ended.
+      wakeBehindShare(home, projectId);
+    }
   }
 }
 
@@ -861,16 +919,22 @@ async function exportStep(app: App, projectId: string, args: ShareArgs): Promise
         diag.warn("review", `${projectId}: what its share waits on: ${diag.messageOf(error)}`);
       }
       sharing.set(projectId, "waiting for map shots");
-      await seams.broll.waitForMaps(app, projectId, 20 * 60_000).catch((error: unknown) => {
-        if (!seams.isUnavailable(error)) throw error;
-      });
+      await untilCancelled(
+        projectId,
+        seams.broll.waitForMaps(app, projectId, 20 * 60_000).catch((error: unknown) => {
+          if (!seams.isUnavailable(error)) throw error;
+        }),
+      );
       haltShare(projectId);
       // Slowed shots still being smoothed would go out stuttering or half
       // swapped (N3on's fourth preview was shared with 16 still rendering).
       sharing.set(projectId, "waiting for slowed shots");
-      await seams.broll.waitForSmoothing(projectId, 20 * 60_000).catch((error: unknown) => {
-        if (!seams.isUnavailable(error)) throw error;
-      });
+      await untilCancelled(
+        projectId,
+        seams.broll.waitForSmoothing(projectId, 20 * 60_000).catch((error: unknown) => {
+          if (!seams.isUnavailable(error)) throw error;
+        }),
+      );
       haltShare(projectId);
       const live = app.store.get(projectId);
       if (live === null) throw new Error("no such project");
@@ -942,6 +1006,16 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
     haltShare(projectId);
     sharing.set(projectId, total ? `${label} ${Math.round((done / total) * 100)}%` : label);
   };
+  // The review copy's own percent (Nov 21: a share's copy took 2 min 14 s on a MacBook Air with none said). Never
+  // back (libx264 after the hardware starts again), never 100% before it's whole, and only while the copy is what the
+  // share is on (not over its Cancel).
+  let copied = -1;
+  const copyTell = (share: number) => {
+    const percent = Math.min(99, Math.max(0, Math.floor(share * 100)));
+    if (percent <= copied || droppedShares.has(projectId) || !(sharing.get(projectId) ?? "").startsWith("making the review copy")) return;
+    copied = percent;
+    sharing.set(projectId, `making the review copy ${percent}%`);
+  };
   // The export held while it's read (an archive waits for it), let go however this ends.
   return await withExport(chosen.path, async () => {
     haltShare(projectId);
@@ -957,18 +1031,20 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       jobs.step(home, key, "review copy", { checked: false, uploaded: false });
       if (!fs.existsSync(chosen.path)) {
         sharing.set(projectId, "fetching the export back from the cloud");
-        await restoreArchived(chosen);
+        // Stopped by the share's Cancel (Nov 21, audit E7: a multi-GB fetch ran to its end first); what came stays as
+        // its `.partial`, so the next share carries the download on.
+        await restoreArchived(chosen, undefined, signal);
         sharing.set(projectId, "making the review copy");
       }
       if (!fs.existsSync(copy)) {
         let pieced = false;
         try {
-          pieced = await reviewCopyFromChunks(app.store.cacheDir(), projectId, chosen.path, copy, run, signal);
+          pieced = await reviewCopyFromChunks(app.store.cacheDir(), projectId, chosen.path, copy, run, signal, copyTell);
         } catch (error) {
           haltShare(projectId);
           diag.warn("review", `${projectId}: the review copy from the export's chunks: ${diag.messageOf(error)}; making it whole`);
         }
-        if (!pieced) await reviewCopy(chosen.path, copy, run);
+        if (!pieced) await reviewCopy(chosen.path, copy, run, copyTell);
       }
       // Never shared unless it plays as the export and decodes (review_check.ts): one
       // that doesn't (from pieces, or kept from before) is made whole again,
@@ -1305,13 +1381,18 @@ const PIECES_AT_ONCE = new Semaphore(2);
  * intro (card 1, Oct 29). False when the export wasn't made of chunks (or
  * isn't the file they were joined into): then it's made whole.
  */
-async function reviewCopyFromChunks(cache: string, project: string, source: string, dest: string, run: ShareRun = plainRun, signal?: AbortSignal): Promise<boolean> {
+async function reviewCopyFromChunks(cache: string, project: string, source: string, dest: string, run: ShareRun = plainRun, signal?: AbortSignal, tell?: (share: number) => void): Promise<boolean> {
   const last = lastChunks(cache, project);
   if (last === null || last.output !== source || !fs.existsSync(source) || fs.statSync(source).size !== last.size) return false;
   const dir = join(chunkFolder(cache, project), "review");
   fs.mkdirSync(dir, { recursive: true });
   const pieceOf = (key: string) => join(dir, `${key}.mp4`);
   let made = 0;
+  const encoders = new Set<string>();
+  // Its percent by the frames of the pieces there (those kept from before count from the start); the join is the last 5%.
+  const frames = Math.max(1, last.chunks.reduce((sum, chunk) => sum + chunk.frames, 0));
+  let there = last.chunks.filter((chunk) => fs.existsSync(pieceOf(chunk.key))).reduce((sum, chunk) => sum + chunk.frames, 0);
+  tell?.((there / frames) * 0.95);
   await Promise.all(
     last.chunks.map((chunk) =>
       PIECES_AT_ONCE.with(async () => {
@@ -1320,9 +1401,11 @@ async function reviewCopyFromChunks(cache: string, project: string, source: stri
         const partial = `${piece}.partial.mp4`;
         // No chapters: the export's run to its end and would count in the piece's length (review_runtime.py).
         const common = ["-v", "error", "-nostdin", "-y", "-ss", (chunk.at / last.fps).toFixed(6), "-i", source, "-frames:v", String(chunk.frames), "-an", "-map_chapters", "-1", "-vf", "scale=-2:720"];
-        await encodeReview(common, partial, run);
+        encoders.add(await encodeReview(common, partial, run));
         fs.renameSync(partial, piece);
         made += 1;
+        there += chunk.frames;
+        tell?.((there / frames) * 0.95);
       }),
     ),
   );
@@ -1342,35 +1425,72 @@ async function reviewCopyFromChunks(cache: string, project: string, source: stri
   // Pieces of chunks the edit no longer has go.
   const kept = new Set(last.chunks.map((chunk) => `${chunk.key}.mp4`));
   for (const name of fs.readdirSync(dir)) if (name.endsWith(".mp4") && !kept.has(name)) fs.rmSync(join(dir, name), { force: true });
-  diag.info("review", `${project}: review copy from ${last.chunks.length} pieces, ${made} made now`);
+  diag.info("review", `${project}: review copy from ${last.chunks.length} pieces, ${made} made now${encoders.size > 0 ? ` with ${[...encoders].join(" and ")}` : ""}`);
   return true;
 }
 
 /** The review copy made whole from `source` (720p, its sound): picture and sound only. */
-export async function reviewCopy(source: string, dest: string, run: ShareRun = plainRun): Promise<void> {
+export async function reviewCopy(source: string, dest: string, run: ShareRun = plainRun, tell?: (share: number) => void): Promise<void> {
   const partial = `${dest}.partial.mp4`;
   const common = ["-v", "error", "-nostdin", "-y", "-i", source, "-map_chapters", "-1", "-vf", "scale=-2:720", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart"];
-  await encodeReview(common, partial, run);
+  const began = Date.now();
+  const encoder = await encodeReview(common, partial, run, tell);
   fs.renameSync(partial, dest);
+  // Which encoder made it, and how long it took (Nov 21: a share's copy took 2 min 14 s on a MacBook Air and the log
+  // couldn't say whether it was on the hardware or libx264 after it).
+  diag.info("review", `review copy made whole with ${encoder} in ${diag.human(Date.now() - began)}`);
 }
 
-/** A review copy's picture at 3 Mbit/s on the video hardware, else libx264 at CRF 26. */
-async function encodeReview(common: string[], partial: string, run: ShareRun = plainRun): Promise<void> {
+/** A review copy's picture at 3 Mbit/s on the video hardware, else libx264 at CRF 26; the encoder that made it. */
+async function encodeReview(common: string[], partial: string, run: ShareRun = plainRun, tell?: (share: number) => void): Promise<string> {
   const hardware = tools.hardwareH264();
   if (hardware !== null) {
     try {
-      await run([tools.ffmpeg(), ...common, ...hardware, "-b:v", "3M", partial], partial);
-      return;
+      await run([tools.ffmpeg(), ...common, ...hardware, "-b:v", "3M", partial], partial, tell);
+      return hardware[1]!;
     } catch (error) {
       // Cancelled: nothing more. Else libx264 below (a hardware session that stood still too).
       if (diag.messageOf(error) === "the share was cancelled") throw error;
+      diag.warn("review", `the review copy on ${hardware[1]} failed (${diag.messageOf(error).slice(0, 160)}); making it with libx264`);
     }
   }
-  await run([tools.ffmpeg(), ...common, "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", partial], partial);
+  await run([tools.ffmpeg(), ...common, "-c:v", "libx264", "-preset", "veryfast", "-crf", "26", partial], partial, tell);
+  return "libx264";
 }
 
-/** Runs a share's FFmpeg (`output`: the file it writes, watched for progress). */
-type ShareRun = (command: string[], output?: string) => Promise<Uint8Array>;
+/**
+ * Runs a share's FFmpeg (`output`: the file it writes, watched for progress). With `tell`, FFmpeg's own report of how
+ * far it is (`-progress`, the time of the video it has made) is given to it as a share of the video, as it goes.
+ */
+type ShareRun = (command: string[], output?: string, tell?: (share: number) => void) => Promise<Uint8Array>;
+
+/** How often a share's FFmpeg report (`-progress`) is read. */
+export const copyLooks = { everyMs: 1000 };
+
+/**
+ * The share of `seconds` FFmpeg says it has made, from the end of its `-progress` file (`out_time_us`, the same
+ * report writer/media.ts reads from a pipe): read as it's written, a few KB at its end, off the server's thread.
+ */
+export async function reportedShare(file: string, seconds: number): Promise<number | null> {
+  let handle: fs.promises.FileHandle | null = null;
+  try {
+    handle = await fs.promises.open(file, "r");
+    const size = (await handle.stat()).size;
+    const length = Math.min(size, 4096);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, size - length);
+    const text = buffer.toString("utf8");
+    if (/progress=end\s*$/.test(text)) return 1;
+    const times = [...text.matchAll(/out_time_(?:us|ms)=(\d+)/g)];
+    const micros = times.at(-1)?.[1];
+    if (micros === undefined || seconds <= 0) return null;
+    return Math.min(1, Number(micros) / 1e6 / seconds);
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
 const plainRun: ShareRun = (command) => tools.run(command);
 
 /**
@@ -1389,9 +1509,27 @@ export const shareTools = {
 
 /** The share's runner for `projectId`, a video of `seconds`: ended by its Cancel, `shareTools.ms`, and its file standing still. */
 function shareRun(projectId: string, seconds: number): ShareRun {
-  return async (command, output) => {
+  return async (given, output, tell) => {
     const signal = shareSignal(projectId);
-    const what = command[0] === tools.ffprobe() ? "reading the export" : "making the review copy";
+    const what = given[0] === tools.ffprobe() ? "reading the export" : "making the review copy";
+    // Its report beside its file, read as it goes (`reportedShare`); a global option, so it goes first.
+    const report = tell !== undefined && output !== undefined ? `${output}.progress` : null;
+    const command = report === null ? given : [given[0]!, "-progress", report, ...given.slice(1)];
+    let reading = false;
+    const looks =
+      report === null
+        ? null
+        : setInterval(() => {
+            if (reading) return;
+            reading = true;
+            void reportedShare(report, seconds)
+              .then((share) => {
+                if (share !== null) tell?.(share);
+              })
+              .finally(() => {
+                reading = false;
+              });
+          }, copyLooks.everyMs);
     try {
       return await bounded(what, shareTools.ms(seconds), (limit) => {
         if (output === undefined) return tools.run(command, { signal: AbortSignal.any([limit, signal]) });
@@ -1409,6 +1547,9 @@ function shareRun(projectId: string, seconds: number): ShareRun {
       haltShare(projectId);
       if (signal.aborted) throw new Error("the share was cancelled");
       throw error;
+    } finally {
+      if (looks !== null) clearInterval(looks);
+      if (report !== null) await fs.promises.rm(report, { force: true }).catch(() => {});
     }
   };
 }

@@ -115,6 +115,9 @@ export function classifyCache(relative: string): Class {
     if (parts.length === 3 && /^(manifest|plan)-v\d+\.json$/.test(third ?? "")) return keep("other");
     return own("chunks", id);
   }
+  // The timeline's pictures (timeline_media.ts, `timeline/<key>/<height>/<ms>.jpg`): a few kB each, made again in a moment, so
+  // the cleaner may take them like any other derived file (Nov 21; uncounted, they would only ever pile up).
+  if (top === "timeline") return own("derived");
   if (top === "ahead" && second !== undefined) return own("ahead", second.replace(/\.mp4(\.json)?$/, ""));
   if (top === "playback" && second !== undefined) return own("derived", second.replace(/\.mp4$/, ""));
   if ((top === "reviews" || top === "range-exports") && second !== undefined && parts.length >= 3) return own("derived", second);
@@ -134,19 +137,56 @@ export function classifyMedia(relative: string): Class {
   return { kind: "other", project: id, evictable: false };
 }
 
+/**
+ * What a file at `relative` under Script mode's scripts (`<home>/writer/scripts`, writer/store.ts) is: a recording's
+ * whole copy kept in a script's `.originals/<folder>/` (writer/streamed.ts) is an original Edit may give up for room,
+ * by Script mode's own word only (`scriptCopies`: once the cloud has it, never while it's cut from); a copy read for one
+ * piece (`.originals/read-here/`) is the import's, and anything else there (`held.json`) Edit's own state.
+ */
+export function classifyScripts(relative: string): Class {
+  const parts = relative.split("/");
+  if (parts.length === 4 && parts[1] === ".originals" && parts[2] !== "read-here") return { kind: "original", project: null, evictable: true };
+  return { kind: parts[1] === ".originals" && parts[2] === "read-here" ? "original" : "other", project: null, evictable: false };
+}
+
+/** Only a script's `.originals/` is walked: its own footage, preview and words are Script mode's (writer/storage.ts). */
+function inScriptsOriginals(relative: string, folder: boolean): boolean {
+  const parts = relative.split("/");
+  return folder ? parts.length === 1 || parts[1] === ".originals" : parts.length >= 3 && parts[1] === ".originals";
+}
+
 /** A root the ledger keeps, and how its files are told apart. */
 export interface Root {
   dir: string;
   classify: (relative: string) => Class;
+  /** Which folders are walked and which files kept (by their path under `dir`); all when unset. */
+  enter?: (relative: string, folder: boolean) => boolean;
 }
 
-/** The roots of a data folder: its cache and its media. */
+/** Script mode's scripts in a data folder (writer/store.ts `scriptsRoot`, named here so the ledger imports nothing of Script mode's). */
+export const scriptsOf = (home: string): string => join(home, "writer", "scripts");
+
+/**
+ * The roots of a data folder: its cache, its media, and the recordings Script mode keeps here (Nov 21: they were
+ * removed the moment they were up, and Start the edit read each back over the line; now they stay until the disk
+ * needs the room, so they're counted, and given up, with the rest).
+ */
 export function rootsOf(home: string, cache: string): Root[] {
   return [
     { dir: cache, classify: classifyCache },
     { dir: join(home, "media"), classify: classifyMedia },
+    { dir: scriptsOf(home), classify: classifyScripts, enter: inScriptsOriginals },
   ];
 }
+
+/**
+ * Script mode's word on its copies (writer/streamed.ts sets it): with the disk `short()` of what's wanted, the copies
+ * the cloud holds and nothing cuts from, given up oldest-unused first until it isn't, each told to `took` (its folder
+ * and bytes); with `dryRun`, only told. The cleaner asks (cache_cleanup.ts); nothing is given up while unset.
+ */
+export const scriptCopies = {
+  letGo: (_short: () => number, _took: (path: string, bytes: number) => void, _dryRun: boolean): void => {},
+};
 
 function entryOf(root: Root, path: string, stat: fs.Stats): Entry {
   const sort = root.classify(path.slice(root.dir.length + 1));
@@ -169,6 +209,39 @@ export function walkSync(roots: Root[]): Entry[] {
         const path = join(at, name);
         try {
           const stat = fs.lstatSync(path);
+          if (root.enter !== undefined && !root.enter(path.slice(root.dir.length + 1), stat.isDirectory())) continue;
+          if (stat.isDirectory()) stack.push(path);
+          else if (stat.isFile()) out.push(entryOf(root, path, stat));
+        } catch {
+          // Gone meanwhile.
+        }
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * `walkSync` off the server's thread: the same files in the same order (the cleaner takes files of equal age in the
+ * order it was given them, so a pass that walks for itself takes the same ones either way), each folder and file read
+ * with fs.promises, one at a time.
+ */
+export async function walkInOrder(roots: Root[]): Promise<Entry[]> {
+  const out: Entry[] = [];
+  for (const root of roots) {
+    const stack = [root.dir];
+    for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
+      let names: string[];
+      try {
+        names = await fs.promises.readdir(at);
+      } catch {
+        continue;
+      }
+      for (const name of names) {
+        const path = join(at, name);
+        try {
+          const stat = await fs.promises.lstat(path);
+          if (root.enter !== undefined && !root.enter(path.slice(root.dir.length + 1), stat.isDirectory())) continue;
           if (stat.isDirectory()) stack.push(path);
           else if (stat.isFile()) out.push(entryOf(root, path, stat));
         } catch {
@@ -203,6 +276,7 @@ export async function walk(roots: Root[]): Promise<Entry[]> {
         const path = join(dir, name);
         try {
           const stat = await fs.promises.lstat(path);
+          if (root.enter !== undefined && !root.enter(path.slice(root.dir.length + 1), stat.isDirectory())) continue;
           if (stat.isDirectory()) queue.push(path);
           else if (stat.isFile()) out.push(entryOf(root, path, stat));
         } catch {
@@ -294,6 +368,9 @@ export class Ledger {
   /** A file or a folder removed: it and everything under it. */
   forget(path: string): void {
     if (this.entries.delete(path)) return;
+    // Outside every root nothing of it is kept: no look through every entry (Nov 21: the cleaner forgets each history
+    // save it takes, and each looked through all 14,000 of a big home's).
+    if (this.roots.length > 0 && !this.roots.some((root) => path === root.dir || path.startsWith(`${root.dir}/`) || root.dir.startsWith(`${path}/`))) return;
     const under = `${path}/`;
     for (const key of this.entries.keys()) if (key.startsWith(under)) this.entries.delete(key);
   }

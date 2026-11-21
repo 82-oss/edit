@@ -27,9 +27,19 @@ import * as sources from "./sources.ts";
 
 type Context = RouteContext<App>;
 
-/** Whether the signed-in person works on ideas (kinds.ts's rule: an admin, or nobody signed in, has everything). */
+/**
+ * Whether the signed-in person works on ideas (kinds.ts's rule: an admin, or
+ * nobody signed in, has everything): an `ideas.*` capability, or a channel
+ * given to them, whose ideas (and thumbnails) are theirs with it (Sphe, Nov 21:
+ * "a channel I've given a person access to should be all they need").
+ */
 export function mayIdeas(given: Set<string> | null = kinds.granted()): boolean {
-  return given === null || [...given].some((perm) => perm.startsWith("ideas."));
+  return given === null || [...given].some((perm) => perm.startsWith("ideas.")) || kinds.anyChannel(given);
+}
+
+/** Whether they may work on this idea (or thumbnail): a channel's by the channel alone (Nov 21), any other by its workspace. */
+export function mayIdea(idea: { workspace?: Workspace; channel?: string | null }, given: Set<string> | null = kinds.granted()): boolean {
+  return kinds.onChannel(idea.channel) ? kinds.mayChannel(idea.channel, given) : mayWorkspace(idea.workspace ?? "interrogation", given);
 }
 
 /** Whether they work on one workspace's ideas (`ideas.<workspace>`). */
@@ -52,10 +62,17 @@ function guardWorkspace(workspace: Workspace): void {
   if (!mayWorkspace(workspace)) throw new ApiError(403, `Your account can't work on ${WORKSPACE_NAMES[workspace]} ideas: an admin can give you them at accounts.spheceo.com.`);
 }
 
-/** Refuses an idea of a workspace they don't work on (an idea that's gone is the route's to say). */
+/** Refuses an idea that isn't theirs: of a channel not given to them, or of a workspace they don't work on. */
+function guardIdea(idea: Pick<Idea, "workspace" | "channel">): void {
+  if (kinds.onChannel(idea.channel)) {
+    if (!kinds.mayChannel(idea.channel)) throw new ApiError(403, "This idea is for a channel you haven't been given: an admin can give you it at accounts.spheceo.com.");
+  } else guardWorkspace(idea.workspace);
+}
+
+/** Refuses an idea that isn't theirs (an idea that's gone is the route's to say). */
 async function guardId(id: string): Promise<void> {
   const found = await cloud.get(id).catch(() => null);
-  if (found !== null) guardWorkspace(found.idea.workspace);
+  if (found !== null) guardIdea(found.idea);
 }
 
 /** The workspace a request names: interrogation when it names none. */
@@ -118,13 +135,14 @@ async function places(rows: Omit<IdeaRow, "place">[], at: board.Where): Promise<
 
 async function home(): Promise<IdeasHome> {
   const mine = workspacesOf();
-  const rows = (await cloud.list()).filter((row) => mine.includes(row.workspace));
+  // A channel's ideas to who was given the channel, whatever workspaces they hold (Nov 21); the rest by workspace.
+  const rows = (await cloud.list()).filter((row) => (kinds.onChannel(row.summary.channel) ? kinds.mayChannel(row.summary.channel) : mine.includes(row.workspace)));
   const linked = new Set(rows.flatMap((row) => (row.summary.card !== null ? [row.summary.card.cardId] : [])));
   // Each workspace's board, and each channel's own one its ideas use (pasted on its page) or went to.
   await channels.refresh().catch(() => {});
   const own = new Set(channels.knownChannels().flatMap((one) => (one.trello ? [one.key] : [])));
   const channelBoards = [...new Set(rows.flatMap((row) => [row.summary.card?.channel, row.summary.channel].filter((key): key is string => typeof key === "string" && (own.has(key) || row.summary.card?.channel === key))))];
-  const where: board.Where[] = [...mine.map(board.inWorkspace), ...channelBoards.map((channel) => ({ workspace: mine[0]!, channel }))];
+  const where: board.Where[] = [...mine.map(board.inWorkspace), ...channelBoards.map((channel) => ({ workspace: mine[0] ?? "interrogation", channel }))];
   const boards = await Promise.all(
     where.map(async (at) => {
       const [found, boardError] = await places(rows, at);
@@ -154,7 +172,7 @@ async function page(id: string) {
   const found = await cloud.get(id);
   if (found === null) throw notFound("This idea was deleted.");
   const { idea, rev } = found;
-  guardWorkspace(idea.workspace);
+  guardIdea(idea);
   const live = run.liveOf(id);
   // Live here: its turn as it goes. Going on a Mac that stopped renewing its lease: stopped, not "running" for good.
   const shown: Idea = idea.run === null ? idea : live !== null ? { ...idea, run: { ...idea.run, ...live } } : { ...idea, run: stale(idea.run) };
@@ -418,9 +436,12 @@ export function routes(router: Router<App>): void {
     .post("/api/ideas", async (context: Context) => {
       guard();
       const body = await readJson<{ links?: unknown; steer?: unknown; summary?: unknown; footage?: unknown; workspace?: unknown; channel?: unknown }>(context);
-      const workspace = workspaceIn(body.workspace);
       const channel = await channels.channelFor(body.channel, context.app.store.home);
-      guardWorkspace(workspace);
+      // A channel's idea: the channel given is all it takes (Nov 21; one given since this token was issued, a fresh
+      // token first), kept in a workspace of theirs when they have one. Any other: a workspace they work on.
+      const workspace = channel !== null && (body.workspace === undefined || body.workspace === null || body.workspace === "") ? (workspacesOf()[0] ?? "interrogation") : workspaceIn(body.workspace);
+      if (channel === null) guardWorkspace(workspace);
+      else if (!(await channels.tokenCarries([channel.key], context.app.store.home))) throw new ApiError(403, `${channel.title} isn't given to your account yet: ask an admin to give it to you on accounts.spheceo.com.`);
       const links = linksIn(typeof body.links === "string" ? body.links : "");
       if (links.length === 0) throw bad("Paste a YouTube video or an article's link.");
       if (links.length > 20) throw bad("Twenty links at most at once.");

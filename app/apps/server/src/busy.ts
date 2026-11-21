@@ -66,6 +66,29 @@ export function workingNow(app: App): (id: string) => boolean {
   };
 }
 
+/** What shows on an edit's page as running (progress.ts), in a word each. */
+const PROGRESS_WORDS: Record<progress.Work, string> = { smooth: "smoothing", map: "a map shot", watch: "a watch", export: "an export", import: "a footage import", link: "footage coming in" };
+
+/**
+ * `workingFor` in words: each thing running for edit `id` now, or waiting in the job table for its next try, so a
+ * refusal can say what to wait for (channel_move.ts, Nov 21: an edit isn't moved onto a channel under any of them).
+ */
+export function workFor(app: App, id: string): string[] {
+  const said: string[] = [];
+  const agents = app.agents as { runningProjects?: () => string[] } | undefined;
+  if (agents?.runningProjects?.().includes(id) === true) said.push("an agent turn");
+  for (const job of jobs.list(app.store.home ?? null)) if (job.project === id && jobs.live(job)) said.push(WORDS[job.kind]);
+  for (const entry of progress.pending(id)) said.push(PROGRESS_WORDS[entry.kind]);
+  try {
+    if (app.exports.runningFor?.(id) != null) said.push("an export");
+  } catch {
+    // No exports here (tests).
+  }
+  if ((app.scripts as ScriptJobs | undefined)?.working?.(id) === true) said.push("a script's import");
+  if ([...projectWork].some((runs) => safely(() => runs(id)))) said.push("an effect's render or footage being cleaned");
+  return [...new Set(said)];
+}
+
 interface ScriptJobs {
   get?(project: string): { state: string } | null;
   running?(): boolean;

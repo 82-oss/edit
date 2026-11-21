@@ -511,7 +511,22 @@ const WRITER_HEAD = "You are the script writer for a commentary channel, the Int
 
 const WRITER_PLAN = "The answer:\n- open: the montage of short clips before the first word, as many as it needs (none if the video opens another way).\n- sections: in order. The first is headed \"Intro\" (its last paragraph ends on the channel line, unless the pacing says otherwise), then the numbered chapters (\"1. MrBeast's Evil Formula\"), then \"Ending\".\n- Each section's paragraphs are pieces in reading order: {\"kind\":\"say\",\"text\":\"…\"} is narration; {\"kind\":\"clip\",…} plays a clip at that point. A clip usually follows narration ending in \"…\", inside the same paragraph.\n- A clip: source is the ID of the source whose text holds the quote. video names the recording as the editor will find it, including which version when there are several (\"Exams Be Like (uncut, archive.org)\", \"Exams Be Like (current YouTube upload)\"). link is that recording's URL exactly as a source writes it, or leave it out. start and end are times in that recording, as the source gives them, written m:ss or h:mm:ss (round to the second; end after start). quote is the exact words spoken in the clip, copied from the source text: leave words out with \"…\" but never change, add or reorder one; empty only for a clip without speech. verify says what someone must confirm by ear or eye before the clip is used (the speaker, a misheard word), when the source gives reason to doubt it.\n- notes (optional, per paragraph): notes for the editor, each one or two sentences (what to show on screen, what to find, blur or bleep, the mood from here), each \"on\" the words of the paragraph's narration it goes under, copied exactly: the phrase or sentence it's about, never the whole paragraph.\n- quotes (optional, per paragraph): quote pop-ups, a few in the whole video (about one every two or three minutes of narration), each a whole line of someone's own words. Where someone's words carry the point but playing the clip isn't needed, the narration quotes them (\"He said it himself: \\\"I'm the most hated streamer alive.\\\"\") and the card types them out on screen. on is those words as the narration says them; who is who said them; source, video, link, start, end and quote are where they said it, checked against the source as a clip is.\n- checks: everything to confirm before recording, one line each, naming the clip or claim.\n- report: for the producer, two to four short sentences, under 100 words: where the evidence didn't support the brief, what you left out and why, anything you needed and couldn't find.\nNarration never uses an em dash. The app checks every quote against its source and every link against the sources; a plan that fails comes back to you to correct.";
 
-const systemPrompt = (title: string, pacing: Pacing): string => `${WRITER_HEAD}\n${WRITER_PLAN}\nWorking title: ${title}\n\nCOMMENTARY GUIDE\n${GUIDE}\n\n${instructions(pacing)}`;
+/**
+ * A channel's commentary (Nov 21: commentary's home is the InternetJanitor
+ * channel) is written as the channel's other scripts are, from its Script lane
+ * alone (formats.ts `taught`, Sphe, Nov 18): not the house's guide
+ * (agent/writer/commentary.md) nor the lessons its reviews kept (lessons.ts),
+ * which a teacher brings into the lane; its lane is added in their place
+ * (`writerSystem`, `reviseSystem`). How a commentary is written stays the
+ * writer's for every script: the plan's shape, sources and quotes checked,
+ * pacing, the story editor, the repair turns.
+ */
+const taught = (script: Pick<Script, "channel">): boolean => typeof script.channel === "string" && script.channel !== "";
+
+const systemPrompt = (title: string, pacing: Pacing, fromLane = false): string => `${WRITER_HEAD}\n${WRITER_PLAN}\nWorking title: ${title}${fromLane ? "" : `\n\nCOMMENTARY GUIDE\n${GUIDE}`}\n\n${instructions(pacing)}`;
+
+/** What past reviews taught, for a script of no channel (a channel's are in its lane). */
+const pastLessons = (script: Pick<Script, "channel">, lessons: string): string => (taught(script) || lessons.trim() === "" ? "" : `\n\nLESSONS FROM PAST REVIEWS (follow them as you follow the guide)\n${lessons.trim()}`);
 
 const citeSchema = () => ({
   type: "object",
@@ -653,20 +668,26 @@ const tooLong = (error: unknown): Error => {
   return new Error(message.includes("too long for one build") ? "These sources are too long for Opus to read at once. Remove one, or trim the longest." : message);
 };
 
+/** The system prompt a writing turn (a build, or feedback applied) is given. */
+export async function writerSystem(script: Script, writing: Pick<Writing, "lessons" | "extra">): Promise<string> {
+  let system = systemPrompt(script.title, commentaryOf(script).pacing ?? "channel", taught(script));
+  system += pastLessons(script, writing.lessons);
+  if (writing.extra.trim() !== "") system += `\n\n${writing.extra.trim()}`;
+  if (taught(script)) {
+    await lanes.refresh();
+    system += lanes.section(script.channel, "script", "none", false);
+  }
+  return system;
+}
+
 /** One script from Opus, checked and repaired as a build is. */
 export async function write(dir: string, script: Script, writing: Writing, signal?: AbortSignal): Promise<Built> {
   const commentary = commentaryOf(script);
   const sources = sourcesOf(dir, script);
   if (!sources.some(([source]) => source.role !== "style")) throw new Error("Add the brief or some evidence first.");
-  let system = systemPrompt(script.title, commentary.pacing ?? "channel");
   const reviewers = commentary.sources.flatMap((source) => reviewerSource(source) ?? []);
   if (reviewers.length > 0) diag.info("writer", `${script.title}: writing with reviewer-supplied choices from ${reviewers.join(", ")} (production inputs, not lessons)`);
-  if (writing.lessons.trim() !== "") system += `\n\nLESSONS FROM PAST REVIEWS (follow them as you follow the guide)\n${writing.lessons.trim()}`;
-  if (writing.extra.trim() !== "") system += `\n\n${writing.extra.trim()}`;
-  if (script.channel) {
-    await lanes.refresh();
-    system += lanes.section(script.channel, "script", "none");
-  }
+  const system = await writerSystem(script, writing);
   const scriptPart = writing.base === null ? "" : `\n\nTHE SCRIPT, as a plan in the answer's shape\n${JSON.stringify(planOf(writing.base), null, 2)}`;
   const prompt = `SOURCES\n\n${evidence(sources)}${scriptPart}\n\n${writing.request}`;
   const corpus = new Corpus(sources);
@@ -784,24 +805,29 @@ const REVISE_SCHEMA = {
   required: ["edits", "answer"],
 };
 
+/** The system prompt a revision is given, before its sources; `tools`: the turn has the script's tools (turn_tools.ts). */
+export async function reviseSystem(script: Script, lessons: string, tools: boolean): Promise<string> {
+  let system = systemPrompt(script.title, commentaryOf(script).pacing ?? "channel", taught(script));
+  system += pastLessons(script, lessons);
+  // A channel's script with the turn's tools keeps lessons with remember, as every other agent does (revise.ts systemPrompt).
+  const teach = tools && script.channel ? "tools" : "lesson";
+  system += `\n\n${REVISE_NOTE}${tools ? `\n${TOOLS_NOTE}` : ""}${teach === "lesson" ? `\n${LESSON_RULE}` : ""}`;
+  if (taught(script)) {
+    await lanes.refresh();
+    system += lanes.section(script.channel, "script", teach, false);
+  }
+  return system;
+}
+
 /** Opus carries out one request on a written script with edits to named paragraphs, so nothing it doesn't name can change; up to two repair turns. */
 export async function revise(dir: string, script: Script, request: string, lessons: string, signal?: AbortSignal, tools?: Tools): Promise<Revised> {
   const commentary = commentaryOf(script);
   const draft = commentary.draft;
   if (!draft) throw new Error("There's no script to change yet. Write it first.");
   const sources = sourcesOf(dir, script);
-  let system = systemPrompt(script.title, commentary.pacing ?? "channel");
-  if (lessons.trim() !== "") system += `\n\nLESSONS FROM PAST REVIEWS (follow them as you follow the guide)\n${lessons.trim()}`;
-  // A channel's script with the turn's tools keeps lessons with remember, as every other agent does (revise.ts systemPrompt).
-  const teach = tools && script.channel ? "tools" : "lesson";
-  system += `\n\n${REVISE_NOTE}${tools ? `\n${TOOLS_NOTE}` : ""}${teach === "lesson" ? `\n${LESSON_RULE}` : ""}`;
-  if (script.channel) {
-    await lanes.refresh();
-    system += lanes.section(script.channel, "script", teach);
-  }
   // The sources close the system prompt, which Claude caches, so one revision after another reads them at a
   // tenth of the price; the script, which changes, stays in the message (as revise.ts, Nov 5).
-  system += `\n\nSOURCES\n\n${evidence(sources)}`;
+  const system = `${await reviseSystem(script, lessons, tools !== undefined)}\n\nSOURCES\n\n${evidence(sources)}`;
   const prompt = `THE SCRIPT, as a plan with each paragraph's ID\n${JSON.stringify(planWithIds(draft), null, 2)}\n\n${request.trim()}`;
   const corpus = new Corpus(sources);
   const pick = claude.revision();

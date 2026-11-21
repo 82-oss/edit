@@ -3,8 +3,8 @@
 // callouts away from the words that point to them. No transcription or paid
 // calls: the transcripts given are the ones already made.
 
+import * as addons from "./addons.ts";
 import type { Clip, Project } from "./model.ts";
-import { isEssay } from "./model.ts";
 import { clipEnd, duration as durationOf, fps as fpsOf, reusedSpans, trackOf } from "./project.ts";
 import { byteLength, charCount, chars, isAlphanumeric, round, splitWhitespace, toI64, trim } from "./rust.ts";
 import * as seams from "./seams.ts";
@@ -727,7 +727,7 @@ const ROOM_SECONDS = 0.25;
  * few frames either side are fine.
  */
 export function narrationInFootage(project: Project, transcripts: Map<string, Transcript> = new Map()): unknown[] {
-  if (isEssay(project.style) || project.style === "shorts") return [];
+  if (addons.has(project, "essay-checks") || addons.has(project, "short-form")) return [];
   const fps = fpsOf(project);
   const near = Math.round(fps / 5);
   const audible = (clip: Clip): boolean => clip.type === "audio" && clip.volume_db > -30 && trackOf(project, clip.track)?.muted !== true;

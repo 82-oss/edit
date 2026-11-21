@@ -132,9 +132,10 @@ function DriveButton() {
   const drive = useDriveLink(projectId, useEditor((state) => state.project?.drive));
   const driveState = useEditor((state) => state.driveState);
   const toast = useEditor((state) => state.toast);
-  if (driveState?.state === "uploading") {
+  // Waiting out a dropped line keeps its percent (Nov 21: the server no longer ends such an upload as failed).
+  if (driveState?.state === "uploading" || driveState?.state === "waiting") {
     return (
-      <span className="flex h-8 items-center gap-1.5 px-2 text-[12px] text-muted tabular" title="Uploading the export to Drive">
+      <span className="flex h-8 items-center gap-1.5 px-2 text-[12px] text-muted tabular" title={driveState.state === "waiting" ? "The upload to Drive goes on by itself when the connection is back" : "Uploading the export to Drive"}>
         <CloudUpload size={15} />
         {Math.round((driveState.progress ?? 0) * 100)}%
       </span>

@@ -210,6 +210,39 @@ describe("ShareDialog once an export has ended (Astra, Nov 18: one obvious next 
     expect(primary()).toEqual(["Retry"]);
   });
 
+  // A Save-to-computer export that failed while it waited on its graphics has nothing on the server to retry (the
+  // wait's failure is only said), and Retry fell back to sharing: the cut went up as a new version on the review link,
+  // one a client may have, when only a file was asked for (audit E10c, Nov 21). Retry does what the dialog says.
+  it("Retry with nothing to retry does what was picked: a Save-to-computer export saves, it never shares", async () => {
+    await open(project(), { channel: null, channels: [] });
+    act(() => useEditor.setState({ exportState: { state: "failed", progress: 0, path: "/x.mp4", error: "not enough room" } as never }));
+    await settle();
+    expect(primary()).toEqual(["Retry"]);
+    vi.spyOn(api, "exportFolder").mockResolvedValue({ shown: "~/Movies/Edit", home: "/home/me", chosen: true } as never);
+    vi.spyOn(api, "retryExport").mockRejectedValue(new Error("nothing to retry"));
+    const shared = vi.spyOn(api, "shareProject").mockResolvedValue({} as never);
+    const saved = vi.spyOn(api, "exportHere").mockResolvedValue({} as never);
+    act(() => [...document.querySelectorAll("button")].find((one) => one.textContent?.trim() === "Retry")!.click());
+    await settle();
+    expect(shared).not.toHaveBeenCalled();
+    expect(saved).toHaveBeenCalledWith("p1", expect.anything(), null);
+  });
+
+  it("Retry with nothing to retry, sending for feedback: it shares, as picked", async () => {
+    localStorage.setItem("edit.export.where", "feedback");
+    await open(project(), { channel: null, channels: [] });
+    act(() => useEditor.setState({ exportState: { state: "failed", progress: 0, path: "/x.mp4", error: "not enough room" } as never }));
+    await settle();
+    vi.spyOn(api, "exportFolder").mockResolvedValue({ shown: "~/Movies/Edit", home: "/home/me", chosen: true } as never);
+    vi.spyOn(api, "retryExport").mockRejectedValue(new Error("nothing to retry"));
+    const shared = vi.spyOn(api, "shareProject").mockResolvedValue({} as never);
+    const saved = vi.spyOn(api, "exportHere").mockResolvedValue({} as never);
+    act(() => [...document.querySelectorAll("button")].find((one) => one.textContent?.trim() === "Retry")!.click());
+    await settle();
+    expect(saved).not.toHaveBeenCalled();
+    expect(shared).toHaveBeenCalledWith("p1", expect.anything(), false, true, null);
+  });
+
   it("a cancelled export: Export again, no Retry", async () => {
     await open(project(), { channel: null, channels: [] });
     act(() => useEditor.setState({ exportState: { state: "cancelled", progress: 0, path: "/x.mp4" } as never }));

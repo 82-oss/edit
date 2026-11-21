@@ -12,6 +12,7 @@ import { diarizeJobs, diarizeOn, voicesOf, type DiarizeEnv } from "./diarize_job
 import { removerJobs, removerOn, type RemoverEnv } from "./remover";
 export { RemoverPods } from "./remover";
 import { google, mayUseDrive } from "./google";
+import { holdsAnyChannel } from "./authz";
 
 export { DriveToR2 } from "./jobs";
 
@@ -151,21 +152,22 @@ export default {
       if (!(await env.DOCS_BURST.limit({ key: found.kind === "person" ? found.sub : "unknown" })).success) return json(429, { error: "Too many Docs requests at once; try again in a minute." });
       return url.pathname === "/v1/docs/export" ? exportDoc(request, env) : listDocs(url.searchParams.get("script") ?? "", env);
     }
-    // Trello, read only, for Script mode's imports (moved from Writer's relay): people who edit or write scripts.
+    // Trello, read only, for Script mode's imports (moved from Writer's relay): people who edit or write scripts, a
+    // channel's included (Sphe, Nov 21: "a channel I've given a person access to should be all they need").
     if ((url.pathname === "/v1/trello/card" || url.pathname === "/v1/trello/cards") && request.method === "GET") {
       const found = await allow(request, env, "use", "trello");
       if (found instanceof Response) return found;
-      if (found.kind === "person" && !found.admin && !found.perms.some((perm) => perm.startsWith("edit.") || perm.startsWith("scripts."))) {
+      if (!importsWork(found)) {
         return json(403, { error: "Your account can't import from Trello: an admin can give you an editing or scripts permission at accounts.spheceo.com." });
       }
       return url.pathname === "/v1/trello/card" ? trelloCard(url.searchParams.get("card") ?? "", env) : trelloCards(url.searchParams.get("list") ?? "", env);
     }
     // YouTube links checked before Script mode imports them (ideas.ts youtubeCheck), and its search for more of a case's
-    // footage (youtubeSearch): people who edit or write scripts.
+    // footage (youtubeSearch): people who edit or write scripts, a channel's included (Nov 21).
     if ((url.pathname === "/v1/youtube/check" || url.pathname === "/v1/youtube/search") && request.method === "GET") {
       const found = await allow(request, env, "use", "youtube");
       if (found instanceof Response) return found;
-      if (found.kind === "person" && !found.admin && !found.perms.some((perm) => perm.startsWith("edit.") || perm.startsWith("scripts."))) {
+      if (!importsWork(found)) {
         return json(403, { error: "Your account can't import from YouTube: an admin can give you an editing or scripts permission at accounts.spheceo.com." });
       }
       try {
@@ -524,6 +526,15 @@ function multipart(audio: ReadableStream<Uint8Array>, audioSize: number, audioTy
     await writer.close();
   })().catch((error) => writer.abort(error));
   return { body: readable, contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
+/**
+ * Whether someone imports from Trello and YouTube for their work: who edits or
+ * writes scripts, or was given a channel (in full or by its label), whose
+ * edits and scripts are theirs with it (Sphe, Nov 21).
+ */
+export function importsWork(found: Caller): boolean {
+  return found.kind !== "person" || found.admin || found.perms.some((perm) => perm.startsWith("edit.") || perm.startsWith("scripts.")) || holdsAnyChannel(found.perms);
 }
 
 function json(status: number, body: unknown) {

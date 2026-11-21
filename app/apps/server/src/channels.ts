@@ -33,7 +33,7 @@
 //   POST   /api/channels/{key}/restore  brought back (an admin, or who sees it in full)
 //   GET    /api/channels/voices         {voices, used}: who could narrate, and who narrates for whom already
 //   GET    /api/channels/{key}/videos?order=top|recent   {channel, videos}: its most viewed or newest, with their numbers
-//   POST   /api/channels/{key}/projects/{id}   an edit project moved onto the channel (its Edit lane from its next turn)
+//   POST   /api/channels/{key}/projects/{id}   an edit project moved onto the channel (its Edit lane from its next turn); today's kind of edit made its Edit V2 project (channel_move.ts)
 //   GET    /api/groups/{key}            {group, taught, teacher}
 //   POST   /api/groups                  {channels, from} → {group}: made, `from`'s teaching moved into it
 //   PUT    /api/groups/{key}            {lanes} → {group}
@@ -42,6 +42,7 @@
 //   DELETE /api/groups/{key}/channels/{channel}   taken out, with a copy of the group's teaching
 //   POST   /api/groups/{key}/move       {item}: a channel's own item moved into the group
 
+import * as addons from "./addons.ts";
 import { HOUSE_LOOK, LOOK_RANGE, markOf, type WatermarkLook } from "@edit/types/watermark";
 
 import type { App } from "./app.ts";
@@ -50,7 +51,8 @@ import * as accounts from "./accounts.ts";
 import * as cloud from "./cloud.ts";
 import * as kinds from "./kinds.ts";
 import * as diag from "./diag.ts";
-import { STYLES } from "./model.ts";
+import { STYLES, type Style } from "./model.ts";
+import { DEFAULT_SETTINGS, SHORTS_SETTINGS } from "./project.ts";
 import { voiceFor } from "./styles.ts";
 import { HOUSE_VOICE } from "./voice.ts";
 import { ApiError, bad, json } from "./http/errors.ts";
@@ -274,6 +276,23 @@ export function channelOf(project: { channel?: string | null }): Channel | null 
   return typeof project.channel === "string" && project.channel !== "" ? (known.find((one) => one.key === project.channel) ?? null) : null;
 }
 
+/**
+ * The voice a project's voice-overs are made in: its channel's narrator when the channel narrates with a voice, else
+ * its style's (styles.ts `voiceFor`, null for the house voice). Nov 21: every voice-over took its style's voice, so a
+ * channel set up with its own narrator was voiced by the courtroom's or the house's. Only the voice's id: the channel
+ * keeps no settings of its own (model, speed), so they're the house's, as a style's voice has them. A channel's
+ * project whose channel isn't read yet is read first (bounded, `refresh`); one still not found keeps its style's.
+ */
+export async function voiceOf(project: { style: Style; channel?: string | null }): Promise<string | null> {
+  if (typeof project.channel === "string" && project.channel !== "") {
+    await refresh();
+    const channel = channelOf(project);
+    if (channel?.narration?.kind === "voice") return channel.narration.id;
+    if (channel === null) diag.warn("channels", `channel ${project.channel} isn't known here: its voice-over is made in its style's voice`);
+  }
+  return voiceFor(project.style);
+}
+
 /** A channel's watermark as its exports carry it (channel_marks.ts' mark: its picture, uploaded or Drive's, and its look); undefined: it has none. */
 export function markFor(channel: Channel): string | undefined {
   const upload = channel.watermarkUpload;
@@ -353,8 +372,47 @@ export async function channelFor(given: unknown, home: string): Promise<Channel 
   return channel;
 }
 
+/**
+ * What New project offers on a channel, from its add-ons (Sphe, Nov 21: "because of the add-on it literally changes
+ * the ui"): `forms`, the forms its edits take (`short-form`), and `scripts`, what its scripts are (`essay-script`),
+ * each only where it isn't today's one choice (long form; a script from a case's footage), so a channel with nothing
+ * set is served exactly as before.
+ */
+export interface Made {
+  forms?: ("long" | "short")[];
+  scripts?: ("footage" | "commentary")[];
+}
+
+/** A channel as the page reads it: with what New project offers on it, when that isn't the usual (`Made`). */
+export function withMade(channel: Channel): Channel & Made {
+  const forms = addons.formsOf(channel.key);
+  const scripts = addons.scriptsOf(channel.key);
+  return {
+    ...channel,
+    ...(forms.length === 1 && forms[0] === "long" ? {} : { forms }),
+    ...(scripts.length === 1 && scripts[0] === "footage" ? {} : { scripts }),
+  };
+}
+
 /** Who reads a channel's scripts, as Edit's tools take it: a voice (the house's voice-over pipeline, bodycam's) or the editor's recording (interrogation's). */
 export const styleOf = (channel: Channel): "bodycam" | "interrogation" => (channel.narration?.kind === "recorded" ? "interrogation" : "bodycam");
+
+/**
+ * The frame of a new edit on `channel` (Sphe, Nov 21: "for this channel we want 9:16 (for shorts for example) or, we
+ * want long form and short form"): its `short-form` add-on decides (addons.ts `formMade`), a Short 9:16 and the
+ * rest 16:9, `asked` the person's pick where it offers both; the page sends the pick, never a frame. A channel without
+ * it makes what it always made, the frame given (16:9 unless asked otherwise). Refused in words when the form asked is
+ * one the channel doesn't make (a page read before its add-on changed).
+ */
+export async function frameOf(channel: Channel, asked: string | null, given: { width: number; height: number; fps: number }): Promise<{ width: number; height: number; fps: number }> {
+  if (asked !== null && asked !== "long" && asked !== "short") throw bad('form is "long" or "short"');
+  await addons.ready(undefined, `a new edit on ${channel.title}`);
+  const forms = addons.formsOf(channel.key);
+  if (asked !== null && !forms.includes(asked)) throw bad(asked === "short" ? `${channel.title} doesn't make Shorts: its edits are long form.` : `${channel.title} makes Shorts only.`);
+  if (!forms.includes("short")) return given;
+  const shape = addons.formMade(channel.key, asked ?? undefined) === "short" ? SHORTS_SETTINGS : DEFAULT_SETTINGS;
+  return { width: shape.width, height: shape.height, fps: given.fps };
+}
 
 export async function get(key: string): Promise<Channel | null> {
   return (await cloud.query("channels:getChannel", { key })) as Channel | null;
@@ -443,12 +501,17 @@ export interface Taught {
   category: string | null;
 }
 
-/** What each of a channel's (or a group's) lanes has been taught: its own lessons, effects and sounds, each kind read once. */
+/**
+ * What each of a channel's (or a group's) lanes has been taught: its own lessons, effects and sounds, each kind read
+ * once. Never its add-ons (`addon-<name>` skills, addons.ts): they're Edit's code switched on, not teaching, so the
+ * page neither lists nor counts them as lessons.
+ */
 export async function taughtOf(channel: string): Promise<Record<Lane, Taught[]>> {
   const kinds = ["skill", "template", "sound"] as const;
   const all = (await Promise.all(kinds.map((kind) => v2cloud.list(kind)))).flat();
   const out = Object.fromEntries(LANES.map((lane) => [lane, [] as Taught[]])) as Record<Lane, Taught[]>;
   for (const item of all) {
+    if (item.kind === "skill" && v2cloud.isAddon(item.name)) continue;
     const place = v2cloud.laneOf(v2cloud.ownPlaceOf(item.key) ?? "");
     if (place === null || place.channel !== channel) continue;
     out[place.lane].push({ kind: item.kind as Taught["kind"], key: item.key, name: item.name, note: item.note, category: item.category });
@@ -530,7 +593,8 @@ export function routes(router: Router<App>): void {
       const listed = await asked(() => list());
       // One given since this token was issued: a fresh token, so its work isn't refused meanwhile.
       void tokenCarries(listed.map((one) => one.key), app.store.home);
-      return json({ channels: listed, groups: knownGroups(), teacher: v2cloud.teacher() });
+      await addons.ready(undefined, "the channels for New project");
+      return json({ channels: listed.map(withMade), groups: knownGroups(), teacher: v2cloud.teacher() });
     })
     // A Trello board from a link pasted on a channel's page: its name, and the lists its ideas would be sent to.
     .get("/api/channels/board", async ({ url }: RouteContext<App>) => {
@@ -581,15 +645,25 @@ export function routes(router: Router<App>): void {
       return json(await asked(() => videosOf(channel.youtubeId!, url.searchParams.get("order") === "recent" ? "recent" : "top")));
     })
     .post("/api/channels/{key}/projects/{id}", async ({ app, params }: RouteContext<App>) => {
+      // Today's kind of edit made the channel's Edit V2 project (channel_move.ts, Nov 21), with Edit V2 on here only. By
+      // whoever may work on it and has been given the channel, as New edit lets them make a project on it: unlike
+      // moving a V2 project between channels (a teacher's, below), it changes nothing of what any channel is taught.
+      const found = app.store.get(params.id!);
+      if (found === undefined || found === null) throw new ApiError(404, "This edit isn't on this computer: open it here once, then move it.");
+      if (!found.project.hq) {
+        const channel = await channelFor(params.key!, app.store.home);
+        if (channel === null) throw bad("channel is a channel's key");
+        if (!(await tokenCarries([channel.key], app.store.home))) throw new ApiError(403, `${channel.title} isn't given to your account yet: ask an admin to give it to you on accounts.spheceo.com.`);
+        // Read when asked: it reaches the job table and the agents, which reach the channels again as they load.
+        const moved = await (await import("./channel_move.ts")).convert(app, found.project.id, channel);
+        return json({ project: moved });
+      }
       needTeacher();
       const channel = await asked(() => get(params.key!));
       if (channel === null || channel.archived) throw new ApiError(404, `no channel ${params.key}`);
-      const live = app.store.get(params.id!);
-      if (live === undefined || live === null) throw new ApiError(404, `no project ${params.id} on this computer`);
-      if (!live.project.hq) throw bad("Only an Edit V2 project can be a channel's: this one is today's kind of edit.");
       // Not under a turn: what its agent is taught changes with the channel.
-      if (agentPanel(app).turn?.(live.project.id).running) throw new ApiError(409, "Its agent is working: move it once the turn is done.");
-      const [moved] = await app.store.update(live.project.id, "channel", (project) => {
+      if (agentPanel(app).turn?.(found.project.id).running) throw new ApiError(409, "Its agent is working: move it once the turn is done.");
+      const [moved] = await app.store.update(found.project.id, "channel", (project) => {
         project.channel = channel.key;
       });
       forget();
@@ -604,8 +678,9 @@ export function routes(router: Router<App>): void {
       // Found with its put-away channels (this one may be), shown without them.
       const found = typeof channel.group === "string" ? ((await listGroups(true)).find((one) => one.key === channel.group) ?? null) : null;
       const group = found === null ? null : { ...found, channels: found.channels.filter((key) => key === channel.key || !putAway(key)) };
-      const [taught, shared] = await asked(() => Promise.all([taughtOf(channel.key), group === null ? null : taughtOf(group.key)]));
-      return json({ channel, taught, group: group === null ? null : { ...group, taught: shared }, teacher: v2cloud.teacher() });
+      const [taught, shared] = await asked(() => Promise.all([taughtOf(channel.key), group === null ? null : taughtOf(group.key), addons.ready(undefined, `${channel.title}'s page`)]));
+      // The add-ons set for it, by name (addons.ts `namesOn`): the page's one line, nothing to click, none on a channel with nothing set.
+      return json({ channel: withMade(channel), taught, group: group === null ? null : { ...group, taught: shared }, addons: addons.namesOn(channel.key), teacher: v2cloud.teacher() });
     })
     .put("/api/channels/{key}", async (context: RouteContext<App>) => {
       needTeacher();
@@ -707,3 +782,13 @@ function changed<T>(given?: T): T | undefined {
   v2cloud.forgetSkills();
   return given;
 }
+
+// addons.ts reads the channels through these, handed over here instead of imported there (its `from`: a ring of imports otherwise).
+Object.assign(addons.from, {
+  placesOf,
+  narrationStyle: (channel: string) => {
+    const found = channelOf({ channel });
+    return found === null ? "bodycam" : styleOf(found);
+  },
+  refreshChannels: refresh,
+});

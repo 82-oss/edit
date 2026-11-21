@@ -195,13 +195,16 @@ export async function caller(request: Request, env: AuthEnv, audience = "edit"):
 
 /**
  * Whether a person may make voice-overs (paid): they come with editing, so an
- * admin or anyone with an `edit.*` capability (manifest.ts); subtitles alone
- * don't. Nov 5: a token with no capability ids passed too, kept for tokens from
- * before accounts' contract v2; Edit has been v2 since (accounts' APP_MANIFESTS),
- * so that only let someone given Edit with nothing ticked spend on voices.
+ * admin or anyone with an `edit.*` capability (manifest.ts), or a channel given
+ * to them, whose edits are theirs to make with it (Sphe, Nov 21: "a channel
+ * I've given a person access to should be all they need"; a bodycam channel's
+ * edit is narrated); subtitles alone don't. Nov 5: a token with no capability
+ * ids passed too, kept for tokens from before accounts' contract v2; Edit has
+ * been v2 since (accounts' APP_MANIFESTS), so that only let someone given Edit
+ * with nothing ticked spend on voices.
  */
 export function mayVoice(found: Caller): boolean {
-  return found.kind === "person" && (found.admin || found.perms.some(isEditing));
+  return found.kind === "person" && (found.admin || found.perms.some((perm) => isEditing(perm) || perm.startsWith("channel.")));
 }
 
 /** Who to put in the log line: a person's id, never their token or more than that. */

@@ -19,7 +19,7 @@ import type { App } from "./app.ts";
 import * as effects from "./effects.ts";
 import * as removalSchedule from "./removal_schedule.ts";
 import * as speeds from "./export_speeds.ts";
-import { reviewBytes, stall as exportsStall, type ExportActivity } from "./exports.ts";
+import { JOINING, MIXING, reviewBytes, stall as exportsStall, type ExportActivity } from "./exports.ts";
 import * as jobs from "./jobs.ts";
 import { homePath, parent } from "./paths.ts";
 import { duration, fps as rateOf } from "./project.ts";
@@ -127,6 +127,10 @@ interface Run {
   /** The bar as last shown, and where it's held while the real progress stands still (`STILL_MS`). */
   last?: number;
   held?: number | null;
+  /** The highest it has shown: it never goes back within a run (Nov 21). */
+  top?: number;
+  /** The time the video made before this run would have taken at this run's pace (`ExportActivity.made`). */
+  credit?: number;
 }
 
 /**
@@ -195,6 +199,12 @@ function shareStage(line: string, step: string | null): number {
     if (step === "uploading" || step === "publishing") return 4;
   }
   return 2;
+}
+
+/** The review copy's share made, from the share's line ("making the review copy 40%"), or null when it says none. */
+function copyShare(line: string | null): number | null {
+  const percent = line === null ? undefined : /^making the review copy (\d+)%$/.exec(line)?.[1];
+  return percent === undefined ? null : Math.min(1, Number(percent) / 100);
 }
 
 /**
@@ -280,7 +290,10 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
   };
   // What it waits on before its first frame: the encoder, another export, slowed shots, map shots that aren't graphics.
   const before = job?.state === "queued" ? job.waiting : stage === 1 && graphics.length === 0 ? "waiting for the map shots" : line === "waiting for slowed shots" ? "waiting for the slowed shots" : line === "waiting for this project's other export" ? "waiting for its other export" : undefined;
+  // Past its frames: the sound's mix after the picture, or the join into one file (exports.ts `ExportBar`), said.
+  const after = stage === 2 && (job?.phase === JOINING || job?.phase === MIXING) ? job.phase : undefined;
   if (before !== undefined && (video.state === "current" || queued)) video.note = before;
+  else if (after !== undefined && video.state === "current") video.note = after;
   else if (stage === 1 && graphics.length === 0 && removing.out === 0) {
     // Nothing to render but map shots: the video is what it's on.
     video.state = "current";
@@ -291,8 +304,12 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
 
   if (feedback) {
     const copyGuess = measured.copy_spv === undefined ? null : seconds * measured.copy_spv;
-    const copyLeft = stage > 3 ? 0 : copyGuess === null ? null : stage === 3 ? Math.max(1, copyGuess - (now - run.stageAt) / 1000) : copyGuess;
-    steps.push({ kind: "copy", state: stage > 3 ? "done" : stage === 3 ? "current" : "waiting", label: "", progress: null, left_s: smooth(run, "copy", copyLeft, now) });
+    // Its own percent, as FFmpeg reports it (reviews.ts `copyLine`): its pace once it has one.
+    const copied = stage === 3 ? copyShare(line) : null;
+    const inCopy = (now - run.stageAt) / 1000;
+    const copyOwn = copied !== null && copied >= 0.02 && inCopy >= 3 ? (inCopy * (1 - copied)) / copied : null;
+    const copyLeft = stage > 3 ? 0 : copyOwn !== null ? copyOwn : copyGuess === null ? null : stage === 3 ? Math.max(1, copyGuess - inCopy) : copyGuess;
+    steps.push({ kind: "copy", state: stage > 3 ? "done" : stage === 3 ? "current" : "waiting", label: "", progress: copied, left_s: smooth(run, "copy", copyLeft, now) });
     const upload = speeds.uploadOf(id);
     const bytes = upload?.total ?? reviewBytes(seconds);
     const sent = stage === 4 ? (upload?.done ?? 0) : 0;
@@ -309,9 +326,14 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
   const ahead = steps.filter((step) => step.state !== "done");
   let left = ahead.every((step) => step.left_s !== null) ? ahead.reduce((sum, step) => sum + step.left_s!, 0) : null;
   const elapsed = queued ? 0 : Math.max(0, (now - run.since) / 1000);
+  // Carried on (a restart, a stall): the video made before is time already spent, at this run's pace (Nov 21: an
+  // export carried on with 6 of 26 chunks made read 1% here, its time counted from the restart alone).
+  const made = exporting ? Math.min(1, Math.max(0, job.made ?? 0)) : 0;
+  if (stage === 2 && made > 0 && video.left_s !== null && p < 0.999) run.credit = made * (video.left_s / (1 - p));
+  const credit = stage >= 2 ? (run.credit ?? 0) : 0;
   let progress: number;
   if (queued) progress = 0;
-  else if (left !== null && elapsed + left > 0) progress = elapsed / (elapsed + left);
+  else if (left !== null && elapsed + credit + left > 0) progress = (elapsed + credit) / (elapsed + credit + left);
   else {
     // Untimed: by its steps, the current one's share counted.
     const counted = steps.reduce((sum, step) => sum + (step.state === "done" ? 1 : step.state === "current" ? (step.progress ?? 0) : 0), 0);
@@ -320,7 +342,7 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
   // Standing still (`STILL_MS`): held where it is, no time said, and its step says for how long and what ends it. Only
   // where Edit hears real progress: the graphics' frames, the video (the engine, or its prep's line), the upload's bytes.
   const current = steps.find((step) => step.state === "current");
-  const heard = !queued && current !== undefined && (current.kind === "graphic" || current.kind === "video" || (current.kind === "upload" && line !== null && line.startsWith("uploading")));
+  const heard = !queued && current !== undefined && (current.kind === "graphic" || current.kind === "video" || (current.kind === "upload" && line !== null && line.startsWith("uploading")) || (current.kind === "copy" && current.progress !== null));
   const real = JSON.stringify([stage, job?.progress ?? 0, job?.phase ?? "", graphics.map((one) => one.drawn), removing.done, speeds.uploadOf(id)?.done ?? 0, line]);
   if (run.real !== real) {
     run.real = real;
@@ -340,6 +362,9 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
       current.note = restarts && minutes < by ? `nothing new for ${minutes} min: Edit starts it again by itself at ${by} min` : `nothing new for ${minutes} min`;
     }
   }
+  // Never back within a run: an estimate that rose (a slower pace heard), a stall's restart, the engine trying again.
+  if (!queued) progress = Math.max(progress, run.top ?? 0);
+  run.top = progress;
   run.last = progress;
   return { where: feedback ? "feedback" : "here", steps, queued, elapsed_s: Math.round(elapsed), left_s: left === null ? null : Math.round(left), progress: Math.min(0.99, Math.max(0, progress)) };
 }

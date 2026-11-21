@@ -110,7 +110,18 @@ The team wants it back. Looked into on Nov 21 against the code and three real ch
 5. **What's beneath an effect remade for every clip of it**, not only the first.
 6. **Only if the team needs it, hand edits on effects** (2 to 4 weeks): effects are handed their place on the timeline instead of storing it, which means the agent's notes and every existing effect taught again.
 
-**To ask the team first**: what they want to do on it (see and scrub, find a graphic, fix a subtitle's timing, trim or reorder footage, move a graphic), and whether V2 keeps the video-player keys or takes V1's.
+**What the team wants it for** (Sphe, Nov 21): not mainly to edit by hand, but a quick look over the whole project at where the footage, graphics, sound effects and the rest are placed. So steps 1 to 3 are the ask, and they need none of the hard part. Drawn that way from a real project's data: one row per kind of thing (graphics, captions, cut-ins, footage, looks, subtitles, voice-over, music, sound effects) rather than V1's rows per track, the whole edit fitted to the width, with zoom. The model already says which is which: an effect is a media with `effect`, music and sound effects are `library: "music"` or `"sfx"`, subtitles are the text clips on the subtitles track.
+
+**Pictures and waveforms, asked for on Nov 21 ("like V1, but reliable this time").** Why V1's aren't reliable, from the code and one real project on one machine:
+
+- A picture strip is one sheet per source file, at most 120 pictures spread over its whole length, keyframes only (`apps/server/src/media.ts` `makeThumbs`): a long source gets one every half minute or more, so short clips show a neighbour's picture.
+- Sheets and waveforms are made once per file on each computer, as part of import. A sound played from the cloud's library never gets a waveform here: 32 of that project's 181 sound clips (all its music) had none. Two of its graphics had no sheet: 35 of 59 graphics clips.
+- The page asks once. A sheet or waveform that fails to load is marked missing until the page is reloaded (`apps/web/src/components/Timeline.tsx` `sprite`, `waveform`), so one slow answer blanks a clip for the session.
+- A see-through graphic's sheet shows its picture and its mask squashed together, and nothing remakes a sheet when a graphic is rendered again.
+
+What "reliable" needs: pictures asked for by clip and moment (the frame at that clip's own source time, from the preview already on the Mac or the cloud's), only for what is on screen at the current zoom, kept by the file's content and the moment so every computer and every reopening reuses them; a waveform for any sound wherever it is played from; a graphic's picture cut from the top half of its render and keyed by the render, so a new render brings new pictures; and a miss tried again by itself, never remembered as missing. A close-up drawn this way from the same project needed 397 pictures and 59 waveforms, fetched in 13 seconds.
+
+**Being built** (Sphe's go, Nov 21): the read-only timeline under the viewer of a channel project, off until someone turns it on with a button among the player's controls and remembered from then on ("if you never toggle it, you never see it"), a row per kind of thing, pictures and waveforms as above, and the Subtitles row first and locked in place under the ruler so the words are always in view. V2 keeps its video-player keys.
 
 ## The `agent/` folder
 
@@ -159,6 +170,47 @@ A proposal, each step small enough for one nightly, each with what proves it.
 8. **Beta on for everyone**, the switch kept for one nightly. First: everyone on the team has a channel given to them. Proof: JJ's Mac after the nightly.
 9. **Remove the switch and the ways to make V1 work.** V1 projects still open until none has been touched for some weeks.
 10. **Remove V1's agent text, tools and tests last.** Proof: a green Check with `agent/` trimmed, and the release build starts.
+
+## Decided (Sphe, Nov 21)
+
+- **Courtroom, commentary, shorts and horror each get a placeholder channel** ("Courtroom Placeholder" and so on). Their teachings for scripts, edits and the rest move there, and their V1 graphics are recreated by V2's agent frame by frame and kept on those channels, as was done for bodycam and interrogation on Nov 18 to 20 (the tools: `~/.cache/v1fx` on mandalorian). Subtitled videos are left out: "we barely do those anymore".
+- **No narration voice on Female Felons and InternetJanitor, and no house graphics on GTA 6 and InternetJanitor, are fine as they are.**
+- **The inbox's lessons are sorted by channel and drafted as lessons for his approval.**
+- **The timeline** is built for V2, read only, turned on from the player (`T`), off until then.
+- **Who has the switch on** (asked Nov 21): Sphe's Linux Edit, yes; JJ's Mac, no (nightly-96); Marc's Mac and the M4 weren't open to ask.
+
+- **A converter is built**: with Edit V2 turned on, a V1 project is clicked, a channel picked, and it becomes that channel's V2 project, its clips untouched so its video is the same frame for frame. It stays behind the Beta switch.
+- **Commentary goes on InternetJanitor**, not on a placeholder: its lessons and its graphics recreated frame by frame.
+- **The lessons inbox is removed** once its lessons are in the lanes: V2's cloud holds the lessons, and V1 is on its way out.
+- **Not now**: Trello boards and watermarks per channel are left as they are, and nobody's switch is turned on for them.
+
+What the four kinds need beyond teaching and graphics (investigated Nov 21): a channel's projects only ever get the style bodycam or interrogation (`apps/server/src/channels.ts` `styleOf`), so the code that runs only for a kind never runs for a channel: courtroom's audits, relaxed pacing and Doc layout; commentary's essay import, research and extra house words; horror's passes after every plan and its list of words to mute; shorts' tall shape, `reframe` and its allowance to cut most of the source. The smallest change that brings all of it back is a channel that carries its kind (a field in the accounts cloud, read by `styleOf`), with four tools given back to V2 that aren't graphics (`reframe`, `youtube_reference`, `tweet_reference`, `commentary_reverb_out`) and Akwe Pro added to the effects' fonts. Graphics still to recreate: courtroom 6, shorts 1 or 2, commentary about 21, horror about 13. Only courtroom is in real use (16 edits and 22 scripts, nearly all Marc's).
+
+Still open: whether a channel carries a kind; when the switch goes on for everyone.
+
+## Add-ons (Sphe's idea, Nov 21; not built)
+
+V2 has skills and lessons, which are words, and effects, which are code that draws. V1 has a third thing with no home in V2: code that checks and fixes the edit, and code that shapes what a project is. About 16,000 lines sit in files tied to a kind of video (about 4,500 of them graphics builders that effects replace), with over 60 named checks and about 65 places that ask what kind a project is. An add-on is that third thing, kept on a channel beside its lessons and effects.
+
+Sphe's shape for it: the agent sets an add-on up, and picks **when it runs**:
+
+- **when a project is made in the channel**: it can change what New project offers ("short form or long form", an aspect ratio such as 9:16);
+- **after an import is done**;
+- **after every change the agent makes to the project**: it sees the change, checks it, and tells the agent before the turn ends, or makes the change itself;
+- **at the end of the agent's turn**, in the background, with the waiting line the subtitle removal has.
+
+"Edit V2 is meant to give the agent as much control, and the user using it even more control through the agent."
+
+Every one of those moments already exists in the code as a fixed hook for one kind: the checks and automatic passes after each plan (`edit_plan.ts`, `edit_tools.ts`), the passes after a turn (`hq_ears.ts`, `house_words_pass.ts`), the research turn after an import (`script.ts`), the removal's background line, and the shape forced at New project (`apps/web/src/components/Home.tsx`). The work is to make them things a channel holds, by name, with a trigger, instead of branches on a style.
+
+Two rules he set the same day:
+
+- **An add-on at the end of a turn wakes the agent by itself, and no prompt is ever shown.** It runs in the background with the waiting line subtitle removal has (`apps/web/src/components/RemovalRow.tsx`); when it is done the line goes, the agent works, and its answer is all the chat shows. That waiting line is the only add-on UI there is (Sphe: "I like this UI and only this UI"): what was found and fixed is said by the agent in its own answer, never by a panel of its own, and an add-on that finds nothing wakes nobody. This is how removal already wakes the agent. It is the one exception to "only the team prompts a V2 agent" (Nov 13).
+- **A channel a person has been given is all they need** to work on it: no bodycam or interrogation permission beside it (`apps/server/src/kinds.ts`, `routes.ts` and `writer_handoff.ts` ask for one today).
+
+The design, from the code: `~/.cache/edit-addons/design.md` on mandalorian (17 built-in add-ons, kept in V2's library beside lessons and effects, twelve slices).
+
+Order proposed: first the built-in ones, switched on per channel (what a courtroom, shorts, commentary or horror channel needs is then a list of add-ons, not a kind welded into Edit); then add-ons the agent writes that only report (checks); last, add-ons the agent writes that change the edit, which need a sandbox and an undo first.
 
 ## For Sphe to decide
 

@@ -18,12 +18,11 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
-import * as beta from "./beta.ts";
 import * as channels from "./channels.ts";
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
 import { THIS_MACHINE } from "./machine.ts";
-import { ApiError } from "./http/errors.ts";
+import { ApiError, bad } from "./http/errors.ts";
 import * as kinds from "./kinds.ts";
 import * as caseNames from "./names.ts";
 import { withDocuments } from "./writer/casefiles.ts";
@@ -41,8 +40,10 @@ import { markReusedScript, parseScriptText } from "./compilation_input.ts";
 import type { Parsed } from "./seams.ts";
 import { writeAtomic } from "./files.ts";
 import { join } from "./paths.ts";
+import { DEFAULT_SETTINGS } from "./project.ts";
 import { stableStringify } from "./stable.ts";
 import { THE_MACHINE } from "./machine.ts";
+import * as v2cloud from "./v2_cloud.ts";
 
 /** A producer's comment on a Writer clip: on a cut-in's narration words, or a footage clip's timestamp (or its spoken words). */
 type WriterNote = { id?: string; text: string; anchor?: { quote: string } };
@@ -98,7 +99,27 @@ export function styleOf(kind: string | undefined): Style {
 }
 
 export function scriptStyle(given: WriterScript): Style {
-  return given.sourceKind === "commentary" || given.commentary != null ? "commentary" : styleOf(given.kind);
+  return isCommentary(given) ? "commentary" : styleOf(given.kind);
+}
+
+/** A narrated essay written from sources (writer/commentary.ts), not a case's footage. */
+export const isCommentary = (given: Pick<WriterScript, "sourceKind" | "commentary">): boolean => given.sourceKind === "commentary" || given.commentary != null;
+
+/**
+ * The style of the edit made from `given` for `channel` (null: none, V1's
+ * `scriptStyle`). A channel's edit runs the way its videos are narrated
+ * (channels.styleOf), as New edit's channel projects do; but one made from a
+ * commentary keeps commentary's (Nov 21: commentary's home is the
+ * InternetJanitor channel), since what an essay's edit needs that isn't a
+ * graphic answers by it until a channel holds its add-ons: its YouTube footage
+ * in excerpts and its essay checks (addons.ts `has`, from the project's style
+ * meanwhile), the team's recording fetched and placed (script.ts, by
+ * model.ts `NARRATION`). As a bodycam edit it would download whole videos,
+ * research the case and voice the narration.
+ */
+export function editStyleOf(given: WriterScript, channel: channels.Channel | null): Style {
+  if (channel === null || isCommentary(given)) return scriptStyle(given);
+  return channels.styleOf(channel);
 }
 
 /** Preserve the writer's order, citations, verification requests and anchored
@@ -337,8 +358,9 @@ export async function list(
       })(),
     }))
     .filter((row) => row.id !== "")
-    // Only scripts of styles the signed-in person may edit (kinds.ts); one Writer hasn't given a style yet, to anyone who edits.
-    .filter((row) => (row.style === null ? kinds.editsAny() : kinds.mayEdit(row.style)))
+    // Only scripts the signed-in person may make an edit of: a channel's to who was given the channel (kinds.ts, Nov 21),
+    // else of styles they may edit; one Writer hasn't given a style yet, to anyone who edits.
+    .filter((row) => (row.channel !== undefined ? kinds.mayChannel(row.channel) : row.style === null ? kinds.editsAny() : kinds.mayEdit(row.style)))
     // Those sent to Edit first, newest first.
     .sort((a, b) => Number(b.handoff !== null) - Number(a.handoff !== null) || (b.handoff?.at ?? b.updatedAt) - (a.handoff?.at ?? a.updatedAt));
 }
@@ -391,24 +413,46 @@ export function carryResearch(app: App, scriptId: string, projectId: string): vo
   if (reports.length > 0 || names.length > 0) diag.info("script", `${projectId}: the script's research came along (${reports.length} reports, ${names.length} case names)`);
 }
 
-/** Makes an Edit project from a Writer script and starts its import (footage, transcripts, voice-over, layout). */
 /**
  * What an edit made from a script is for: `channel`, the channel picked in New
  * edit (its project is that channel's, V2's: channels.channelFor); none
- * picked, the script's own channel when it has one and V2 is on here, else
- * today's kind of edit. `compilation`: the channel's unless this one differs.
+ * picked, the script's own channel when it has one, else today's kind of edit.
+ * `compilation`: the channel's unless this one differs. `form`: long or short,
+ * on a channel whose `short-form` offers both (channels.frameOf).
  */
-export type ImportFor = { channel?: unknown; compilation?: unknown };
+export type ImportFor = { channel?: unknown; compilation?: unknown; form?: unknown };
 
-/** The channel an edit of `given` is made for: the one asked for, else the script's own while V2 is on and it's still there. */
+/** The channel an edit of `given` is made for: the one asked for, else the script's own, whatever Edit V2's switch says here. */
 async function channelOfImport(app: App, given: { channel?: string }, asked: ImportFor): Promise<channels.Channel | null> {
   if (asked.channel !== undefined && asked.channel !== null && asked.channel !== "") return channels.channelFor(asked.channel, app.store.home);
-  if (!given.channel || !beta.read(app.store.home).v2) return null;
-  // Never quietly today's kind of edit instead (Nov 16 audit): a V2 edit can't be made from one afterwards, so a blip,
-  // a channel put away or one not given to this person is said, and nothing is made.
-  return channels.channelFor(given.channel, app.store.home);
+  if (!given.channel) return null;
+  return scriptsChannel(given.channel);
 }
 
+/**
+ * A channel's script's own channel, read without Edit V2's switch (Nov 21, docs/v1-to-v2.md step 1: with the switch
+ * off on a Mac, Start edit on a channel's script quietly made a V1 edit, out of its channel, its teaching and its
+ * tools). The switch decides what a person may start fresh on this computer (channels.channelFor), not what a
+ * channel's own script turns into; opening a V2 project never looks at it. Never quietly today's kind of edit
+ * instead (Nov 16 audit): a V2 edit can't be made from one afterwards, so signed out, a blip, a channel put away or
+ * one not given to this person is said, and nothing is made.
+ */
+async function scriptsChannel(key: string): Promise<channels.Channel> {
+  if (!v2cloud.enabled()) throw bad("This script is a channel's: sign in to Edit on this computer, then start its edit again.");
+  let channel: channels.Channel;
+  try {
+    // Signed in: a connection that fails is said by channels.read in its own words, with what to do.
+    channel = await channels.read(key);
+  } catch (error) {
+    // Its 404 names the channel by its key, which means nothing to the person.
+    if (error instanceof ApiError && error.status === 404) throw bad("This script's channel isn't in Edit, or isn't shown to your account: ask an admin to give it to you, then start its edit again.");
+    throw error;
+  }
+  if (channel.archived) throw bad(`${channel.title} was put away: an admin can bring it back (add it again), then start its edit again.`);
+  return channel;
+}
+
+/** Makes an Edit project from a Writer script and starts its import (footage, transcripts, voice-over, layout). */
 export async function importScript(app: App, id: string, asked: ImportFor = {}): Promise<{ project: string }> {
   const data = writerStore.dataDir(app.store.home);
   // Footage a revision brought in and still being heard exactly (writer/exact_after.ts): the edit is made from its exact times, not the captions'.
@@ -433,19 +477,30 @@ export async function importScript(app: App, id: string, asked: ImportFor = {}):
     given = writerShare.withSharedKeys(writerStore.scriptDir(data, id), (await fetchScript(id, app.store.home)) as never, true) as unknown as typeof given;
   }
   const channel = await channelOfImport(app, given, asked);
-  // A channel's edit runs the way its videos are narrated (channels.styleOf), as New edit's channel projects do.
-  const style = channel !== null ? channels.styleOf(channel) : scriptStyle(given);
-  if (channel !== null ? !kinds.mayStart(style) : !kinds.mayEdit(style)) throw new Error(kinds.cantMake(`edit.${style}`));
+  const style = editStyleOf(given, channel);
+  // A channel's edit: the channel given is all it takes, whatever its style (kinds.ts, Sphe, Nov 21: it had asked for
+  // `edit.<style>` too); one given since this token was issued, a fresh token first. No channel: the kinds rule.
+  if (channel !== null ? !(await channels.tokenCarries([channel.key], app.store.home)) : !kinds.mayEdit(style)) {
+    throw new Error(channel !== null ? `${channel.title} isn't given to your account yet: ask an admin to give it to you on accounts.spheceo.com.` : kinds.cantMake(`edit.${style}`));
+  }
+  // Its frame as New edit's on the channel (Nov 21: the channel's `short-form` decides, the person's pick where it
+  // offers both); 16:9 with no channel, or on a channel without it, as always.
+  const frame = channel === null ? DEFAULT_SETTINGS : await channels.frameOf(channel, asked.form === undefined || asked.form === null ? null : String(asked.form), DEFAULT_SETTINGS);
   const parsed = toParsed(await resolveWriterCases(given));
-  const live = app.store.createAs(given.title, style, { width: 1920, height: 1080, fps: 30 }, channel !== null);
+  const live = app.store.createAs(given.title, style, frame, channel !== null);
   if (channel !== null) {
-    await app.store.update(live.project.id, "channel", (project) => {
-      project.channel = channel.key;
-      if (typeof asked.compilation === "boolean" && asked.compilation !== channel.compilation) project.compilation = asked.compilation;
-    });
+    // Made with no channel, then given it: the moment between is the channel's (kinds.ts `startingOn`).
+    await kinds.startingOn(channel.key, () =>
+      app.store.update(live.project.id, "channel", (project) => {
+        project.channel = channel.key;
+        if (typeof asked.compilation === "boolean" && asked.compilation !== channel.compilation) project.compilation = asked.compilation;
+      }),
+    );
   }
   await app.store.update(live.project.id, "script", (project) => script.attach(project, `writer:${id}`, parsed));
-  if (style === "commentary") {
+  // A commentary's evidence for the edit's research (commentary_sources.ts search_broll lists it): the script's own,
+  // so an edit made from it on a channel has it too (Nov 21). No add-on answers for it: it's what the script is.
+  if (isCommentary(given)) {
     const dir = join(app.store.home, "research", live.project.id);
     fs.mkdirSync(dir, { recursive: true });
     writeAtomic(join(dir, "broll.json"), JSON.stringify({ writer: { id: given.id, title: given.title, sources: (given.commentary?.sources ?? []).filter((source) => source.role === "evidence") } }, null, 2));

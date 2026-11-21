@@ -129,9 +129,9 @@ function installedShell(root: string): string | null {
 
 /** The shell's own signature checked (every file it seals as it was built) and the shell run once, for its version. */
 async function verifyShell(binary: string): Promise<string | null> {
-  const checked = Bun.spawnSync(["/usr/bin/codesign", "--verify", "--strict", binary], { stdout: "ignore", stderr: "pipe" });
-  if (checked.exitCode !== 0) return `its signature didn't verify (${checked.stderr.toString().trim()})`;
-  const said = Bun.spawnSync(["/usr/bin/codesign", "-dv", binary], { stdout: "ignore", stderr: "pipe" }).stderr.toString();
+  const checked = await runOff(["/usr/bin/codesign", "--verify", "--strict", binary], "stderr");
+  if (checked.code !== 0) return `its signature didn't verify (${checked.text.trim()})`;
+  const said = (await runOff(["/usr/bin/codesign", "-dv", binary], "stderr")).text;
   if (!said.includes("Identifier=headless_shell")) return "it isn't Chrome's headless shell";
   // The Mac's first look at a program new to it: done here, not in a look's start.
   const child = Bun.spawn([binary, "--version"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
@@ -192,7 +192,7 @@ async function fetchNewestShell(root: string): Promise<string> {
   const now = new Date();
   fs.writeFileSync(join(root, "checked"), version);
   fs.utimesSync(join(root, "checked"), now, now);
-  removeOldShells(root, version);
+  await removeOldShells(root, version);
   return shell;
 }
 
@@ -221,8 +221,8 @@ async function unpackShell(url: string, root: string, dir: string): Promise<void
     if (hasher.digest("base64") !== md5) throw new Error("the download didn't match its checksum");
     const out = join(part, "unpacked");
     // ditto, as Finder unpacks: the signature's extended attributes kept (unzip where there's none: the tests on Linux).
-    const unzipped = Bun.spawnSync(fs.existsSync("/usr/bin/ditto") ? ["/usr/bin/ditto", "-x", "-k", zip, out] : ["unzip", "-q", zip, "-d", out], { stdout: "ignore", stderr: "pipe" });
-    if (unzipped.exitCode !== 0) throw new Error(`unpacking it: ${unzipped.stderr.toString().trim()}`);
+    const unzipped = await runOff(fs.existsSync("/usr/bin/ditto") ? ["/usr/bin/ditto", "-x", "-k", zip, out] : ["unzip", "-q", zip, "-d", out], "stderr", 10 * 60_000);
+    if (unzipped.code !== 0) throw new Error(`unpacking it: ${unzipped.text.trim()}`);
     const binary = shellBinary(out);
     if (!fs.existsSync(binary)) throw new Error("the download has no chrome-headless-shell in it");
     const refused = await shellHooks.verify(binary);
@@ -236,10 +236,10 @@ async function unpackShell(url: string, root: string, dir: string): Promise<void
 }
 
 /** Versions older than `kept` no Chrome runs from any more (one still running keeps its own until it's gone). */
-function removeOldShells(root: string, kept: string): void {
+async function removeOldShells(root: string, kept: string): Promise<void> {
   let running = "";
   try {
-    running = Bun.spawnSync(["ps", "-axo", "command="]).stdout.toString();
+    running = await processList("command=");
   } catch {
     return;
   }
@@ -290,17 +290,41 @@ export async function chromeFonts(binary: string, call: (method: string, params:
 
 const swept = new Set<string>();
 
+/** The program that lists processes (tests: a stand-in). */
+export const psHooks = { program: "ps" };
+
+/**
+ * A program's exit code and what it wrote (`stdout` or `stderr`), run off the server's thread and ended after `ms`
+ * (Nov 21: `ps`, `codesign` and the shell's unzip ran as synchronous programs, every page and play waiting on them;
+ * `ps -axo` on a Mac with a few hundred processes takes 50-300 ms, and longer under load).
+ */
+async function runOff(command: string[], what: "stdout" | "stderr", ms = 30_000): Promise<{ code: number; text: string }> {
+  const child = Bun.spawn(command, { stdin: "ignore", stdout: what === "stdout" ? "pipe" : "ignore", stderr: what === "stderr" ? "pipe" : "ignore" });
+  const timer = setTimeout(() => child.kill("SIGKILL"), ms);
+  try {
+    const text = await new Response(what === "stdout" ? (child.stdout as ReadableStream) : (child.stderr as ReadableStream)).text();
+    return { code: await child.exited, text };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Every process as `ps -axo <format>` lists it (thumbnails/render.ts' sweep too), off the server's thread. */
+export async function processList(format: string): Promise<string> {
+  return (await runOff([psHooks.program, "-axo", format], "stdout", 10_000)).text;
+}
+
 /**
  * Chromes an Edit before this one left running on `profile` (a restart that
  * couldn't say goodbye: a crash, `bun --watch`, an update's exec): whatever
  * has nobody left to answer to is closed, its profile gone, and so is every
  * profile of the prefix no Chrome uses. Once a prefix.
  */
-function sweepOrphans(profile: string): void {
+async function sweepOrphans(profile: string): Promise<void> {
   if (swept.has(profile)) return;
   swept.add(profile);
   try {
-    const listed = Bun.spawnSync(["ps", "-axo", "pid=,ppid=,command="]).stdout.toString();
+    const listed = await processList("pid=,ppid=,command=");
     for (const line of listed.split("\n")) {
       const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
       if (match === null || match[2] !== "1" || !match[3]!.includes(`--user-data-dir=${join(os.tmpdir(), profile)}`)) continue;
@@ -311,7 +335,7 @@ function sweepOrphans(profile: string): void {
     }
     // And the profiles no Chrome uses any more, ten minutes old or more (another Edit on this computer may have just
     // made one): one for every Chrome started (Nov 11: 225 left here by a day's looks and renders).
-    const now = Bun.spawnSync(["ps", "-axo", "command="]).stdout.toString();
+    const now = await processList("command=");
     for (const entry of fs.readdirSync(os.tmpdir())) {
       if (!entry.startsWith(profile)) continue;
       const dir = join(os.tmpdir(), entry);
@@ -330,7 +354,7 @@ function sweepOrphans(profile: string): void {
 
 /** A Chrome with one blank page, ready for commands. */
 export async function open(opening: Opening): Promise<Page> {
-  sweepOrphans(opening.profile);
+  await sweepOrphans(opening.profile);
   const profile = fs.mkdtempSync(join(os.tmpdir(), opening.profile));
   const command = headlessCommand(
     [

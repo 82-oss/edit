@@ -32,8 +32,9 @@ test("tool_reference_is_one_short_line_per_tool", () => {
   expect(reference.trimEnd().split("\n").length).toBe(TOOLS.length - HQ_TOOLS.length);
   expect(toolReference(toolsFor(true)).trimEnd().split("\n").length).toBe(TOOLS.length - NOT_IN_HQ.length);
   // Edit V2's own twelve (effects, sounds, V2's cloud), in its chat alone, whose prompt has none of the house's instructions;
-  // start_removal's marks, unmark and blur mode (Nov 18: the agent's in and out points, the tracked blur) a few words more.
-  expect(toolReference(toolsFor(true)).length).toBeLessThan(reference.length + 2_150);
+  // start_removal's marks, unmark and blur mode (Nov 18: the agent's in and out points, the tracked blur) a few words more;
+  // addons and set_addon (Nov 21: a channel's add-ons, set through the agent) a line each.
+  expect(toolReference(toolsFor(true)).length).toBeLessThan(reference.length + 2_500);
   expect(reference).toContain("- apply_edit_plan(base_rev: integer, operations: array, ");
   // Commentary's posts, video references and shot checks, Edit Script and the team's effects, came in Oct 26;
   // read_upload (any file dropped in, Oct 31) one short line more, note_lesson (the lessons inbox, Nov 1) another,
@@ -50,8 +51,9 @@ test("tool_reference_is_one_short_line_per_tool", () => {
 });
 
 test("every tool takes project_id; the instructions list the skills", () => {
-  // other_channels (Nov 14): a channel's agent reaching into another channel; find_camera_time (Nov 17); teach_removal and check_removal (Nov 17); start_removal (Nov 17).
-  expect(TOOLS.length).toBe(127);
+  // other_channels (Nov 14): a channel's agent reaching into another channel; find_camera_time (Nov 17); teach_removal and check_removal (Nov 17); start_removal (Nov 17);
+  // addons and set_addon (Nov 21).
+  expect(TOOLS.length).toBe(129);
   for (const tool of TOOLS) {
     expect(tool.inputSchema.type).toBe("object");
     expect(tool.inputSchema.properties.project_id).toEqual({

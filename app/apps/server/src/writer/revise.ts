@@ -53,7 +53,7 @@ const TAUGHT_HEAD = `${REVISE_HEAD.slice(0, REVISE_HEAD.indexOf("\nEditorial pri
 const TAUGHT_EDGES = "Anchor clip edges to exact words; the app adds breathing room. An edge the producer puts on something seen (a walk-up, a door), or at a time they give, goes at that time, words or not. CURRENT SCRIPT lists what the edge review flags on each clip.";
 
 /** A channel's script with the turn's tools keeps lessons with remember (lanes.ts, teaching.ts keepRule), as every other agent does; otherwise its one answer carries one (lesson_note.ts). */
-function systemPrompt(script: Script, format: Format, tools: boolean): string {
+export function systemPrompt(script: Script, format: Format, tools: boolean): string {
   const teach = tools && script.channel ? "tools" : "lesson";
   const rule = teach === "lesson" ? `\n${LESSON_RULE}` : "";
   if (format.taught) return `${TAUGHT_HEAD}\n${TAUGHT_EDGES}\n${REVISE_EDITS}${tools ? `\n${TOOLS_NOTE}` : ""}${rule}\nProject title: ${script.title}${lanes.section(script.channel, "script", teach, false)}`;

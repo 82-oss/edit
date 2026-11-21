@@ -4,6 +4,7 @@
 // do from there: see the page drawn, bring one of the project's pictures into
 // its folder, and put it among the project's media.
 
+import { registerAddonTools } from "./addon_tools.ts";
 import type { App } from "./app.ts";
 import fs from "node:fs";
 import { join } from "node:path";
@@ -456,6 +457,8 @@ async function archiveInLibrary({ app, args, projectId }: ToolCall): Promise<Con
   teacherOnly("Putting it away");
   const name = libraryName(args.name, "name");
   if (args.kind === "skill" && name === v2cloud.GLOBAL) throw new Error("the global skill stays: it's Edit's own");
+  // A channel's add-on is switched off by its own tool, whose item says so (put away, the group's would win again unseen; Nov 21).
+  if (args.kind === "skill" && v2cloud.isAddon(name)) throw new Error(`${name} is one of this channel's add-ons, not a lesson: switch it off with set_addon (on: false), never put it away.`);
   // This channel's own (a font is every project's).
   const kind = args.kind === "skill" ? "skill" : kindArg(args.kind);
   let key = keyOf("font", name);
@@ -484,6 +487,9 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
   teacherOnly("Remembering it for this channel's agents");
   const skill = libraryName(args.skill, "skill");
   if (skill === v2cloud.GLOBAL) throw new Error("the global skill is Edit's own: give your own a name");
+  // A channel's add-ons and its removal are kept by their own tools, never written over by hand.
+  const reserved = v2cloud.reservedName(skill, "edit");
+  if (reserved !== null) throw new Error(reserved);
   if (args.change === undefined && (typeof args.text !== "string" || args.text.trim() === "")) throw new Error("text is required (or change, for part of a skill that's there)");
   if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");
   const note = typeof args.note === "string" && args.note.trim() !== "" ? args.note.trim() : undefined;
@@ -660,9 +666,10 @@ const TOOLS: [string, (call: ToolCall) => Promise<Content[]>][] = [
   ["effect_picture", effectPicture],
 ];
 
-/** Registers the effects' tools with the MCP server (once; later calls do nothing). */
+/** Registers the effects' tools with the MCP server, and the add-ons' beside them (once; later calls do nothing). */
 export function registerEffectTools(): void {
   effectInputs.start();
+  registerAddonTools();
   for (const [name, handler] of TOOLS) {
     if (handlerFor(name)?.handler === handler) continue;
     registerTool(name, handler);

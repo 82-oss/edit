@@ -2,7 +2,7 @@
 // (Sphe, Nov 10: an update goes through at any time): Drive is asked where the
 // session is, and the file is never sent again whole, nor made twice.
 
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, setSystemTime, test } from "bun:test";
 import * as fs from "node:fs";
 
 import * as drive from "../src/drive.ts";
@@ -190,6 +190,133 @@ test("an upload's progress notes its row as moving", async () => {
     expect(noted.at(-1)!).toBeGreaterThan(Date.now() - 60_000);
   } finally {
     jobs.BEAT_MS.value = was;
+    fx.cleanup();
+  }
+});
+
+/**
+ * A Drive upload session on a line that drops (Nov 21): a raw socket, so a drop is a connection cut mid-send, as a
+ * Wi-Fi drop is, never a tidy answer. While `down`, a PUT is cut once Drive has kept `keepAt` bytes of it, and every
+ * status ask after that cut is cut too; up, it answers as Drive does. What it kept, from where each PUT began, is recorded.
+ */
+function droppingSession(size: number, keepAt: number) {
+  const kept: { from: number; bytes: Uint8Array }[] = [];
+  let have = 0;
+  const line = { down: false, drops: 0, asks: 0 };
+  const answer = (socket: { write(text: string): unknown; end(): unknown }, status: string, headers: Record<string, string>, body = "") => {
+    const head = Object.entries({ ...headers, "content-length": String(Buffer.byteLength(body)), connection: "close" }).map(([key, value]) => `${key}: ${value}\r\n`).join("");
+    socket.write(`HTTP/1.1 ${status}\r\n${head}\r\n${body}`);
+    socket.end();
+  };
+  const server = Bun.listen<{ buffer: Buffer; done: boolean }>({
+    hostname: "127.0.0.1",
+    port: 0,
+    socket: {
+      open(socket) {
+        socket.data = { buffer: Buffer.alloc(0), done: false };
+      },
+      data(socket, chunk) {
+        if (socket.data.done) return;
+        socket.data.buffer = Buffer.concat([socket.data.buffer, chunk]);
+        const split = socket.data.buffer.indexOf("\r\n\r\n");
+        if (split < 0) return;
+        const lines = socket.data.buffer.subarray(0, split).toString("latin1").split("\r\n");
+        const header = (name: string) => lines.find((one) => one.toLowerCase().startsWith(`${name}:`))?.slice(name.length + 1).trim() ?? "";
+        const range = header("content-range");
+        const body = socket.data.buffer.subarray(split + 4);
+        if (/^bytes \*\/\d+$/.test(range)) {
+          line.asks += 1;
+          socket.data.done = true;
+          // Cut once the line has gone under a PUT: the ask before it reaches Drive.
+          if (line.down && line.drops > 0) return (line.drops++, void socket.terminate());
+          if (have >= size) return answer(socket, "200 OK", { "content-type": "application/json" }, JSON.stringify({ id: "file-dropped" }));
+          return answer(socket, "308 Resume Incomplete", have === 0 ? {} : { range: `bytes=0-${have - 1}` });
+        }
+        const from = /^bytes (\d+)-/.exec(range)?.[1] === undefined ? 0 : Number(/^bytes (\d+)-/.exec(range)![1]);
+        if (line.down && body.length >= keepAt - from) {
+          // Drive kept up to `keepAt`, then the line went: cut while curl is still sending.
+          kept.push({ from, bytes: new Uint8Array(body.subarray(0, keepAt - from)) });
+          have = keepAt;
+          socket.data.done = true;
+          line.drops += 1;
+          socket.terminate();
+          return;
+        }
+        if (body.length < Number(header("content-length"))) return;
+        socket.data.done = true;
+        kept.push({ from, bytes: new Uint8Array(body) });
+        have = from + body.length;
+        answer(socket, "200 OK", { "content-type": "application/json" }, JSON.stringify({ id: "file-dropped" }));
+      },
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}/upload?upload_id=dropped`, kept, line, stop: () => server.stop(true) };
+}
+
+// Nov 21: an upload that met a dropped line ended as failed (after three quick tries inside), its kept session never
+// carried on, and the export's link never came. It waits in the job table now and its resumer carries it on.
+test("an upload on a line that drops mid-send waits by itself and is carried on from what Drive has: no byte sent twice", async () => {
+  const fx = fixtureHome("drive-dropped");
+  const size = 4 * 1024 * 1024;
+  const keepAt = 1024 * 1024;
+  const session = droppingSession(size, keepAt);
+  try {
+    const project = fx.app.store.create("Case (subtitles)", { width: 1920, height: 1080, fps: 30 }).project;
+    const path = `${fx.dir}/case.mp4`;
+    const bytes = new Uint8Array(size).map((_, i) => (i * 7) % 251);
+    write(path, bytes);
+    mock.on("POST", /^\/www\.googleapis\.com\/drive\/v3\/files\/[^/]+\/permissions$/, () => Response.json({ id: "anyone" }));
+    const events: Record<string, unknown>[] = [];
+    fx.app.store.subscribe((event) => {
+      if (event.type === "drive") events.push(event);
+    });
+    // Its session kept with its job (as one begun before the line went), then the line goes under its bytes.
+    jobs.begin(fx.app.store.home, "drive", project.id, { path, session: { uri: session.url, size, mtime_ms: fs.statSync(path).mtimeMs, replacing: null } });
+    session.line.down = true;
+    const library = new Library();
+    drive.start(fx.app.store, library, project, path);
+    const waited = await settled(events);
+    // Waiting, never failed: the page hears it as such, and its row waits in the table with its session.
+    expect(waited.state).toBe("waiting");
+    expect(events.some((event) => event.state === "failed")).toBe(false);
+    const row = jobs.get(fx.app.store.home, jobs.keyOf("drive", project.id))!;
+    expect(row).toMatchObject({ state: "waiting", args: { path, session: { uri: session.url } } });
+    expect(row.retry_at! - Date.now()).toBeGreaterThan(50_000);
+    expect(session.line.drops).toBeGreaterThan(0);
+    expect(drive.uploading(project.id)).toBe(false);
+
+    // The line back; the table wakes it at its time (a minute on), and serve.ts' resumer carries it on.
+    session.line.down = false;
+    events.length = 0;
+    jobs.useResumers(fx.app.store.home, { drive: (job) => drive.start(fx.app.store, library, fx.app.store.get(job.project)!.project, (job.args as { path: string }).path) });
+    setSystemTime(new Date(row.retry_at! + 1_000));
+    await jobs.wake(fx.app.store.home, ["drive"]);
+    const done = await settled(events);
+    expect(done.state).toBe("done");
+    expect(fx.app.store.get(project.id)!.project.drive?.file_id).toBe("file-dropped");
+    expect(jobs.list(fx.app.store.home, "drive")).toEqual([]);
+    // What Drive kept: the first megabyte before the drop, then the rest from there. Nothing twice, nothing missed.
+    expect(session.kept.map((one) => [one.from, one.bytes.length])).toEqual([[0, keepAt], [keepAt, size - keepAt]]);
+    const whole = new Uint8Array(size);
+    for (const one of session.kept) whole.set(one.bytes, one.from);
+    expect(Buffer.from(whole).equals(Buffer.from(bytes))).toBe(true);
+  } finally {
+    setSystemTime();
+    session.stop();
+    fx.cleanup();
+  }
+}, 60_000);
+
+test("a refusal that is Drive's word (403, not allowed) still fails at once, its row crossed off", async () => {
+  const fx = setUp("drive-refused");
+  try {
+    mock.on("POST", SESSIONS, () => Response.json({ error: { message: "The user does not have sufficient permissions for this file." } }, { status: 403 }));
+    drive.start(fx.app.store, new Library(), fx.project, fx.path);
+    const ended = await settled(fx.events);
+    expect(ended.state).toBe("failed");
+    expect(String(ended.error)).toContain("Google Drive refused the upload (403)");
+    expect(jobs.list(fx.app.store.home, "drive")).toEqual([]);
+  } finally {
     fx.cleanup();
   }
 });

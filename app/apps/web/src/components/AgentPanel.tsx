@@ -462,7 +462,7 @@ function MainAgentPanel() {
           ),
       }}
     >
-      {/* Removal under way in the background: pinned at the end, between turns. */}
+      {/* What runs on in the background (removal, the channel's end-of-turn check): pinned at the end, between turns. */}
       {entries.length > 0 && projectId !== undefined && <RemovalRow projectId={projectId} marked={channel} running={running} />}
     </AgentChat>
   );

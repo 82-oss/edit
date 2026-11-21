@@ -25,6 +25,9 @@ export const WHILE_UNTAUGHT: ReadonlySet<string> = new Set([
   // Teaching.
   "remember",
   "teach_removal",
+  // A channel's add-ons (addon_tools.ts): setting a channel up comes before teaching it, and one alone never makes it taught.
+  "addons",
+  "set_addon",
   "save_to_library",
   "archive_in_library",
   "other_channels",

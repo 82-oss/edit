@@ -13,7 +13,7 @@ import { keepAwakeWhile } from "./awake.ts";
 import { resumeImport } from "./drive_import.ts";
 import { createApp, hostname, type App } from "./app.ts";
 import { pauseForExports, setListening, smoothsFast } from "./broll.ts";
-import { makeRoom, startCleaning } from "./cache_cleanup.ts";
+import { makeRoomAsync, startCleaning } from "./cache_cleanup.ts";
 import * as cloud from "./cloud.ts";
 import { setSmoothByDefault } from "./cutin.ts";
 import * as diag from "./diag.ts";
@@ -42,13 +42,14 @@ import * as busy from "./busy.ts";
 import * as effects from "./effects.ts";
 import { prepareShell } from "./chrome_devtools.ts";
 import { messageContext, registerMediaTools } from "./media_tools.ts";
-import { allowedHosts } from "./http/host.ts";
-import { initNative, native } from "./native/index.ts";
+import { allowedHosts, readTailscaleWith } from "./http/host.ts";
+import { encodersListed, initNative, native } from "./native/index.ts";
 import { join } from "./paths.ts";
 import * as archive from "./archive.ts";
 import * as firstPrompt from "./first_prompt.ts";
 import * as researchCloud from "./research_cloud.ts";
 import * as playbackRender from "./playback_render.ts";
+import * as endCheck from "./end_check.ts";
 import * as hqEars from "./hq_ears.ts";
 import * as houseWordsPass from "./house_words_pass.ts";
 import * as agentSessions from "./agent_sessions.ts";
@@ -132,6 +133,33 @@ function run(binary: string, args: string[]): string | null {
   } catch {
     return null;
   }
+}
+
+async function runLater(binary: string, args: string[]): Promise<string | null> {
+  try {
+    const child = Bun.spawn([binary, ...args], { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 5000 });
+    const out = await new Response(child.stdout).text();
+    return (await child.exited) === 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/** This machine's Tailscale address and name, read without holding the server (a request's host check, http/host.ts). */
+export async function tailscaleLater(): Promise<(string | null)[]> {
+  for (const binary of TAILSCALE) {
+    const out = await runLater(binary, ["status", "--json"]);
+    if (out === null) continue;
+    try {
+      const status = JSON.parse(out) as { Self?: { DNSName?: unknown; TailscaleIPs?: unknown } };
+      const name = typeof status.Self?.DNSName === "string" ? status.Self.DNSName.replace(/\.+$/, "").toLowerCase() : null;
+      const ips = Array.isArray(status.Self?.TailscaleIPs) ? status.Self.TailscaleIPs.filter((ip): ip is string => typeof ip === "string" && !ip.includes(":")) : [];
+      return [name === "" ? null : name, ...ips];
+    } catch {
+      continue;
+    }
+  }
+  return [];
 }
 
 /** This machine's Tailscale IPv4 address, if Tailscale runs. */
@@ -311,6 +339,8 @@ function startHere(home: string, host: string | null, port: number): { app: App;
   cloud.keepUploadJournalsIn(join(store.home, "uploads"));
   modelChoice.use(store.home);
   const ip = tailscaleIp();
+  // Read again when a request names it and it wasn't there at start (Tailscale not up yet at a boot).
+  readTailscaleWith(tailscaleLater);
   const app = createApp({
     store,
     port,
@@ -340,6 +370,9 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     pauseForExports(() => app.exports.localRunning?.() ?? app.exports.running());
     // Slowed cut-in shots are smoothed unless asked not to, where it takes seconds.
     setSmoothByDefault(app.native.smoothSupported());
+    // The encoders are listed once now, off the thread (Nov 21): the first export plan of a process listed them by
+    // running FFmpeg synchronously, 0.7 s of nothing else answered, whoever asked first.
+    void encodersListed();
     // On Linux, RIFE on the GPU (rife.ts), looked for at start (a two-frame check, its programs awaited: Nov 21, run
     // synchronously two seconds in it kept the server's thread for as long as RIFE took to answer, 14 s seen).
     if (process.platform === "linux") {
@@ -351,7 +384,7 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     // The cache kept by each project's state; a project with an effect rendering or removal pieces out is in work.
     busy.registerProjectWork((id) => effects.renderingLine(id) !== null || removalSchedule.progressOf(id).out > 0);
     startCleaning(app);
-    exportRoom.make = (wanted) => void makeRoom(app, wanted);
+    exportRoom.make = (wanted) => makeRoomAsync(app, wanted).then(() => {});
     seams.broll.stopLeftoverMaps?.();
     // Tools register here; the subtitles' and captions' register as their modules load (through seams).
     registerEditingTools();
@@ -394,6 +427,8 @@ function startHere(home: string, host: string | null, port: number): { app: App;
     optional("playback", () => playbackRender.start(app));
     optional("hq ears", () => hqEars.start(app));
     optional("house words", () => houseWordsPass.start(app));
+    // A channel's end-of-turn check (its add-on end-check): the edit's checks where a turn changed it, in the background.
+    optional("end check", () => endCheck.start(app));
     // The agent's old Claude Code sessions (a chat's left ones, one-off questions) removed from this computer.
     if (!trials) optional("agent sessions", () => void agentSessions.start(app));
     // Effect render files nothing plays from any more (replaced by one in the cloud, or of an effect gone).
@@ -681,10 +716,10 @@ async function resumeJobs(app: App): Promise<void> {
       seams.cloudMedia.resumeUpload(app.store.home, job.args);
     },
     full: (job) => {
-      // A review version's full-quality file for its Download button: the rest of its parts.
-      const { name, path, key, version } = job.args as { name: string; path: string; key: string; version?: number };
-      if (!fs.existsSync(path)) throw new jobs.Gone(`${path} is gone`);
-      void reviews.fullBehind(app.store.home, job.project, name, path, key, version).catch(settleBehind(app.store.home, job.key, "review", `${job.project}: its full-quality file`, () => !fs.existsSync(path)));
+      // A review version's full-quality file for its Download button: the rest of its parts, from its export here or
+      // fetched back from its cloud copy (gone only when it's neither: reviews.resumeFull).
+      const { path } = job.args as { path: string };
+      void reviews.resumeFull(app.store.home, job).catch(settleBehind(app.store.home, job.key, "review", `${job.project}: its full-quality file`, () => reviews.fullGone(app.store.home, path)));
     },
     share: (job) => reviews.resumeShareJob(app, job),
     fix: (job) => reviews.resumeFix(app, job),

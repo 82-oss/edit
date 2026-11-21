@@ -22,7 +22,7 @@ import * as diag from "./diag.ts";
 import { ApiError, json, notFound } from "./http/errors.ts";
 import { serveFile } from "./http/files.ts";
 import { readJson, type Router } from "./http/router.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import type { Media, Project } from "./model.ts";
 import { isFile, join } from "./paths.ts";
 import * as tools from "./tools.ts";

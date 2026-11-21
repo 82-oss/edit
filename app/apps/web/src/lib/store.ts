@@ -44,7 +44,8 @@ export interface ExportState {
 
 /** The upload of an export to Drive (`drive` events from apps/server/src/drive.ts). */
 export interface DriveState {
-  state: "uploading" | "done" | "failed";
+  /** `waiting`: the upload met trouble that passes (a dropped line, a busy Drive) and goes on by itself from where it was. */
+  state: "uploading" | "waiting" | "done" | "failed";
   progress?: number;
   name?: string;
   url?: string;

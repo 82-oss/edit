@@ -55,6 +55,8 @@
 // `shareAnalysis` puts them in the cloud.
 
 import * as fs from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import * as http from "node:http";
 
 import type { App } from "./app.ts";
 import * as cloudBlocks from "./cloud_blocks.ts";
@@ -66,6 +68,7 @@ import * as filePins from "./file_pins.ts";
 import { prepLine } from "./export_prep.ts";
 import * as speeds from "./export_speeds.ts";
 import { openedTimes } from "./opened.ts";
+import * as mp4 from "./mp4_index.ts";
 import * as pieces from "./proxy_pieces.ts";
 import * as cloud from "./cloud.ts";
 import * as effectCloud from "./effect_cloud.ts";
@@ -77,10 +80,12 @@ import * as sharedWords from "./shared_words.ts";
 import { serveFile } from "./http/files.ts";
 import * as endpoints from "./endpoints.ts";
 import { copyFile, ioMessage, nextFileId, nowMs, writeAtomic } from "./files.ts";
+import { NoRoom } from "./failure.ts";
 import { isBug } from "./guard.ts";
 import * as jobs from "./jobs.ts";
 import * as steps from "./import_steps.ts";
-import { forgetKeyVerdict, mediaHooks, mediaKey, Semaphore } from "./media.ts";
+import { forgetKeyVerdict, keyIsThere, mediaHooks, mediaKey } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import * as finished from "./finished.ts";
 import * as wake from "./wake.ts";
 import * as youtube from "./youtube.ts";
@@ -917,7 +922,7 @@ export function uploadLater(home: string, upload: Upload): void {
   const key = jobs.begin(home, "upload", "-", { ...upload }, upload.source);
   const entry = { key, home, upload, done: Promise.resolve(true) };
   entry.done = uploadSlot
-    .with(() => diag.timeOnAsync("cloud", "cloud: upload import", upload.file, () => runUpload(upload, () => jobs.progressed(home, key))))
+    .with(() => diag.timeOnAsync("cloud", "cloud: upload import", upload.file, () => runUpload(upload, () => jobs.progressed(home, key), () => jobs.beat(home, key))))
     .then(
       () => {
         jobs.end(home, key);
@@ -944,8 +949,13 @@ export function uploadLater(home: string, upload: Upload): void {
   uploading.set(upload.file, entry);
 }
 
-/** `progressed`: said once a big original's upload sends a part past those already up (it resumes; cloud.ts). */
-async function runUpload(upload: Upload, progressed: () => void): Promise<void> {
+/**
+ * `progressed`: said once a big original's upload sends a part past those already up (it resumes; cloud.ts). `moving`:
+ * at every report (jobs.ts `beat`, at most every 30 s a row), so an hour's upload is never listed as still (Nov 21,
+ * audit I14.e: beaten only at its first reports, a long upload read "running, nothing noted for N min" in the log and in
+ * each Mac's report).
+ */
+async function runUpload(upload: Upload, progressed: () => void, moving: () => void = () => {}): Promise<void> {
   if (upload.uploadOriginal) {
     // Up already, whole (the same footage imported again while its first upload went on: the 10-hour trial,
     // Nov 4, sent 58 GB twice): the key is its content's, so it isn't sent again.
@@ -961,6 +971,7 @@ async function runUpload(upload: Upload, progressed: () => void): Promise<void> 
       let before = 0;
       await cloud.uploadFile(upload.file, upload.originalKey, (sent) => {
         if (++reports === 2) progressed();
+        else moving();
         upSent.set(upload.file, sent);
         if (reports > 1) slotSent += Math.max(sent - before, 0);
         before = sent;
@@ -969,7 +980,9 @@ async function runUpload(upload: Upload, progressed: () => void): Promise<void> 
     await putRecord({ source: upload.source, originalReady: true, size: upload.size, duration: upload.duration });
   }
   if (upload.proxy !== null && upload.local !== null) {
-    await cloud.uploadFile(upload.local, upload.proxy);
+    await cloud.uploadFile(upload.local, upload.proxy, moving);
+    // There now, said without asking: a look at its status mid-upload isn't answered "not in the cloud" (media.ts).
+    keyIsThere(upload.proxy);
     await putRecord({ source: upload.source, proxyKey: upload.proxy, proxyReady: true });
     // The proxy stays here once it's up: it's this Mac's whole copy, what the
     // native player and the agent's renders read (local_previews.ts), and the
@@ -980,6 +993,11 @@ async function runUpload(upload: Upload, progressed: () => void): Promise<void> 
 
 /** A noted upload a restart cut short (jobs.ts), started again while its files are still here. */
 export function resumeUpload(home: string, args: Record<string, unknown>): void {
+  // A short import's pieces behind it (`piecesBehind`): the ones not made or not up yet.
+  if (typeof args.pieces === "string" && typeof args.cache === "string") {
+    void piecesBehind(home, args.cache, args.pieces);
+    return;
+  }
   const upload = args as unknown as Upload;
   if (typeof upload.file !== "string" || typeof upload.source !== "string" || typeof upload.originalKey !== "string") {
     throw new jobs.Gone("not an upload");
@@ -990,6 +1008,76 @@ export function resumeUpload(home: string, args: Record<string, unknown>): void 
     throw new jobs.Gone(`${gone} is gone`);
   }
   uploadLater(home, upload);
+}
+
+/** Each short import's pieces being made behind it now (`piecesBehind`), by source. */
+const piecesGoing = new Map<string, Promise<void>>();
+
+/**
+ * Every piece of `source`'s pieced proxy made here (or brought from R2 where another Mac made it) and put in the
+ * cloud, behind the import of a short file that answered with its first piece (`putHashed`; Nov 21: its whole proxy
+ * was made before the answer, over two minutes for 14.6 minutes of footage on a MacBook Air). One piece at a time,
+ * giving way to any piece someone waits on, and waiting while a local export holds the encoder (proxy_pieces.ts
+ * `fill`). Its own `upload` row in the job table says what it's on and notes each piece, so a restart carries on with
+ * what isn't made or up yet (`resumeUpload`); a failure, or a disk too full for the next piece, waits and is tried
+ * again by itself (jobs.ts `wait`), and a pieced proxy gone from here and the cloud crosses it off.
+ */
+export function piecesBehind(home: string, cache: string, source: string): Promise<void> {
+  const running = piecesGoing.get(source);
+  if (running !== undefined) return running;
+  const key = jobs.begin(home, "upload", "-", { pieces: source, cache }, `${source}#pieces`, "making its pieces");
+  const done: Promise<void> = makeEveryPiece(home, key, cache, source)
+    .then(
+      () => jobs.end(home, key),
+      (error: unknown) => {
+        if (error instanceof jobs.Gone) {
+          diag.warn("pieces", `${source}: ${diag.messageOf(error)}; its pieces aren't made behind the import`);
+          jobs.end(home, key);
+          return;
+        }
+        diag.warn("pieces", `${source}: its pieces behind the import: ${scrub(failure(error))}; tried again by itself`);
+        jobs.wait(home, key, error);
+      },
+    )
+    .finally(() => {
+      if (piecesGoing.get(source) === done) piecesGoing.delete(source);
+    });
+  piecesGoing.set(source, done);
+  return done;
+}
+
+async function makeEveryPiece(home: string, key: string, cache: string, source: string): Promise<void> {
+  const context = piecesContext(cache);
+  const base = pieces.baseKey(source);
+  let layout: pieces.Layout;
+  try {
+    layout = await pieces.layoutOf(context, base);
+  } catch (error) {
+    // Neither here nor in the cloud (its cache cleared before it was ever put up): nothing to make pieces of.
+    if ((await context.head(pieces.layoutKeyOf(base)).catch(() => undefined)) === null) throw new jobs.Gone(`${base} has no layout here or in the cloud`);
+    throw error;
+  }
+  let exportSaid = false;
+  for (const n of pieces.missingHere(context, base, layout)) {
+    if (storage.spare(cache, PIECE_ROOM, storage.footageFloor(cache, base)) < 0) throw new NoRoom(PIECE_ROOM, "The disk is too full for the footage's next piece");
+    // The fill waits while an export holds the encoder: the row says so, then says it's making pieces again.
+    if (context.exporting() !== exportSaid) {
+      exportSaid = !exportSaid;
+      jobs.step(home, key, exportSaid ? "waiting for the export to end" : "making its pieces");
+    }
+    // Getting further only when a piece was really made (Nov 21, audit I8.a: said after every fill, which forgave the
+    // row's waits, so a piece that failed each time waited a minute every time, an encode a minute for good). The fill
+    // logs a piece's failure and goes on, as playback's own filling needs; nothing made, the throw below waits longer each time.
+    if ((await fillHooks.fill(context, [{ base, seconds: (n * layout.perPiece) / layout.fps }], () => false)) > 0) jobs.progressed(home, key);
+  }
+  if (exportSaid) jobs.step(home, key, "making its pieces");
+  const left = pieces.missingHere(context, base, layout);
+  if (left.length > 0) throw new Error(`piece${left.length === 1 ? "" : "s"} ${left.join(", ")} of ${layout.pieces} weren't made (the log says why)`);
+  // Up as its whole proxy went up, one file at a time; each one's share under way is waited on, never sent twice.
+  for (let n = 0; n < layout.pieces; n++) {
+    for (const one of pieces.pieceKeys(base, layout, n)) await pieces.upNow(context, one);
+    jobs.progressed(home, key);
+  }
 }
 
 async function publish(
@@ -1056,10 +1144,30 @@ async function publish(
  * is never changed or removed.
  */
 export function importLocal(cache: string, path: string, probe: Probe, name: string): Promise<Made> {
-  // Footage answers once its proxy is made here; the uploads carry on behind
-  // (`uploadLater`), so an import never waits for gigabytes to go up.
+  // Footage answers once its pieced proxy is playable (its first piece, made beside the hash); the rest of its
+  // proxy and the uploads carry on behind (`piecesBehind`, `uploadLater`), so an import never waits for minutes of
+  // encoding or gigabytes to go up.
   return putLocal(cache, path, probe, name, probe.kind !== "video", parent(cache));
 }
+
+/**
+ * Whether a file from a disk gets a pieced proxy (proxy_pieces.ts): every video an import answers before its uploads
+ * (`later`) from two minutes long (`PIECED_BEHIND_FROM`), and otherwise one of `PIECED_FROM` or more. Until Nov 21 a disk's file under 20
+ * minutes had its whole proxy made before the import answered: on a MacBook Air three files of about 14.6 minutes
+ * kept the file browser busy 2 min 14 s, 2 min 17 s and 2 min 23 s, while a 20.75-minute one answered in 13.6 s.
+ */
+function piecedFromDisk(probe: Probe, later: string | null): boolean {
+  return probe.kind === "video" && ((later !== null && probe.duration >= PIECED_BEHIND_FROM) || probe.duration >= PIECED_FROM);
+}
+
+/**
+ * Under two minutes a file's whole proxy is still made before the import answers, as it always was: that is at most
+ * about 20 s on the slowest Mac the team has (the MacBook Air made 14.6 minutes in 2 min 14 s to 2 min 23 s, about
+ * 9.5 s a minute of footage), and it keeps every short clip (a script's excerpts, the agent's cut-ins, Edit's own
+ * renders) on the one whole-file path the player, the thumbnails and other Macs already read. From two minutes the
+ * wait is what someone feels, and the file is pieced.
+ */
+const PIECED_BEHIND_FROM = 120;
 
 /**
  * `importLocal`; `own`: the file goes up as it is and is its own proxy
@@ -1067,8 +1175,8 @@ export function importLocal(cache: string, path: string, probe: Probe, name: str
  * `later` (the data folder), footage's uploads finish in the background.
  */
 async function putLocal(cache: string, path: string, probe: Probe, name: string, own: boolean, later: string | null = null): Promise<Made> {
-  // A long video's first piece made while the file is read for its hash (proxy_pieces.ts): playable once it's known.
-  const first = !own && probe.kind === "video" && probe.duration >= PIECED_FROM ? pieces.startFirst(piecesContext(cache), path, probe) : null;
+  // A pieced proxy's first piece made while the file is read for its hash (proxy_pieces.ts): playable once it's known.
+  const first = !own && piecedFromDisk(probe, later) ? pieces.startFirst(piecesContext(cache), path, probe) : null;
   try {
     return await putHashed(cache, path, probe, name, own, later, first);
   } finally {
@@ -1100,10 +1208,13 @@ async function putHashed(cache: string, path: string, probe: Probe, name: string
   rememberLocalOriginal(cache, originalKey, path);
   if (probe.has_audio) shareSound(cache, path, originalKey);
   const ready = readyProxy(record);
-  // A long file's proxy made a piece at a time (proxy_pieces.ts), read from this file while it's here; its upload goes on behind.
-  if (ready === null && probe.kind === "video" && probe.duration >= PIECED_FROM) {
+  // A pieced proxy made a piece at a time (proxy_pieces.ts), read from this file while it's here; its upload goes on
+  // behind. A short file's other pieces are all made behind the answer too (`piecesBehind`), the work its whole proxy
+  // was before the answer: a long one's are made as they're read (`fillPieces`), as before.
+  if (ready === null && piecedFromDisk(probe, later)) {
     const layout = await pieces.tryCreate(piecesContext(cache), source, originalKey, probe, first);
     if (layout !== null) {
+      if (later !== null && probe.duration < PIECED_FROM) void piecesBehind(later, cache, source);
       if (needOriginal && later !== null) {
         uploadLater(later, { file: path, source, size, duration: probe.duration, originalKey, uploadOriginal: true, proxy: null, local: null });
       } else if (needOriginal) {
@@ -1622,6 +1733,8 @@ export async function driveExcerpts(
   // A copy still on this disk (a YouTube download on its way up) is cut from here; one this call brought down whole
   // (`copied`) goes once its excerpts are cut.
   let copied: string | null = null;
+  // The cloud's address as FFmpeg reads it: through this Mac's reader (`readerFor`), so it fetches only what it needs.
+  let reader: Reader | null = null;
   try {
     let url = input;
     if (url === null && !readsInPlace(original.name)) {
@@ -1634,21 +1747,27 @@ export async function driveExcerpts(
         },
       );
     }
-    url ??= await getUrl(original.key, 6 * HOUR);
+    if (url === null) {
+      url = await getUrl(original.key, 6 * HOUR);
+      reader = await readerFor(original, url);
+    }
     // Read here even when the registry knows it: a URL FFmpeg can't read would
     // otherwise only show as keyframes not found (excerpts from the start).
     let duration: number;
     try {
-      duration = await scriptParts.durationOf(url);
+      duration = await scriptParts.durationOf(reader?.url ?? url);
     } catch (error) {
       // Too slow to read in place (a slow line): the rest is read from the whole file brought here.
       if (isBug(error) || input !== null || copied !== null || !cutsBetterHere(error)) throw error;
       diag.warn("cloud", `${original.name}: ${scrub(diag.messageOf(error)).replace(/\.$/u, "")}; it's read from a copy downloaded here`);
       url = copied = await wholeHere(cache, original);
+      reader?.release();
+      reader = null;
       duration = await scriptParts.durationOf(url);
     }
-    return await excerptsOf(cache, original, ranges, url, input !== null || copied !== null, duration, onCut);
+    return await excerptsOf(cache, original, ranges, url, input !== null || copied !== null, duration, onCut, reader);
   } finally {
+    reader?.release();
     if (copied !== null) fs.rmSync(copied, { force: true });
   }
 }
@@ -1663,7 +1782,10 @@ export function readsInPlace(name: string): boolean {
   return ["mp4", "m4v", "mov", "m4a", "mp3", "wav", "aac"].includes(extensionOf(name));
 }
 
-/** `original`'s excerpts (or itself whole), read from `url`: the cloud's address, or a copy on this disk (`onDisk`). */
+/**
+ * `original`'s excerpts (or itself whole), read from `url`: the cloud's address (FFmpeg given `reader`'s for it), or a
+ * copy on this disk (`onDisk`).
+ */
 async function excerptsOf(
   cache: string,
   original: Original,
@@ -1672,6 +1794,7 @@ async function excerptsOf(
   onDisk: boolean,
   duration: number,
   onCut: (done: number, total: number) => void,
+  reader: Reader | null = null,
 ): Promise<Excerpt[]> {
   const spans = scriptParts.spans(ranges, duration);
   const used = spans.reduce((sum, [from, to]) => sum + (to - from), 0);
@@ -1690,11 +1813,16 @@ async function excerptsOf(
   // handed to the person for how the cloud serves it.
   let source = url;
   let here: Promise<string> | null = null;
+  // Cut from the cloud's address one at a time (their uploads and proxies still go on beside the next cut): three at
+  // once shared the line three ways, so each took three times as long to finish and every one a stop threw away was
+  // three times the bytes (Nov 21, the bad-day run's no-room case; JJ's 8 Mbit/s line). From a file here, three.
+  const overTheLine = new Semaphore(1);
   const one = async (index: number, from: string) => {
     const [at, to] = spans[index]!;
-    const start = await scriptParts.keyframeBefore(from, at);
+    const through = from === url && reader !== null ? reader : null;
+    const start = await scriptParts.keyframeBefore(through?.url ?? from, at);
     const made = await diag.timeOnAsync("cloud", "cloud: excerpt", `${original.name} ${scriptParts.clock(start)}–${scriptParts.clock(to)}`, () =>
-      excerptMedia(cache, original, from, start, to, stem, ext),
+      excerptMedia(cache, original, through?.at(start, to) ?? from, start, to, stem, ext, through === null ? undefined : (cut) => overTheLine.with(cut), through === null ? undefined : () => through.bytes(start, to)),
     );
     out[index] = { path: made.path, from: start, to, cloud: made };
   };
@@ -1769,9 +1897,441 @@ async function wholeHere(cache: string, original: Original): Promise<string> {
   return dest;
 }
 
-/** Excerpts of one file made at once. */
+// ---------------------------------------------------------------------------
+// The cloud's address as FFmpeg reads it for excerpts: through a reader on this Mac.
+//
+// Nov 21, the bad-day run's no-room case, on Linux and on a Mac: 98 to 109 MB fetched for 20 MB of excerpts. FFmpeg
+// reads an address in open-ended ranges (`bytes=N-`) and drops each one when it seeks, and every byte the line had
+// handed over by then was paid for and thrown away. For an Axon-shaped file (its index at its end) the length probe
+// and each cut read its start (0.3 to 0.5 MB thrown away), its index (0.6 MB, again for every cut), its first pictures
+// (2.8 MB thrown away), then the excerpt and about 4 MB past its end: 18 MB fetched for a 10 MB excerpt, 3.8 more for
+// the probe. FFmpeg is given this reader's address instead, which answers an open-ended read with only what's known
+// to be needed: the index whole (fetched once a file and kept in memory: the probe's, the keyframe's and every cut's
+// reads of it come from here), the stretch of samples the cut reads (from that index), and anything else in small
+// pieces that grow while the reads run on. Where an answer ends FFmpeg asks again from there (its `-reconnect`, as
+// after a dropped line, at once), FFmpeg 8 and 9 both. Past the excerpt only a piece is read, and the index only once.
+// Measured on the bad-day run's Axon file (two excerpts, unthrottled loopback): 42.0 MB fetched before, 23.1 after,
+// for 22.3 MB of excerpts and index.
+
+/** An open-ended read outside what's known to be needed is answered this much at a time: the most one drop throws away. */
+const READER_PIECE = 256 * 1024;
+/** Pieces read one after another grow to this (a file with no index to say what's needed: a sound file). */
+const READER_PIECE_MOST = 8 * 1024 * 1024;
+/** Stretches a cut needs this close together are read as one. */
+const READER_GAP = 64 * 1024;
+/** An index this big or bigger isn't kept (it's read through as asked; a 52-minute Axon file's is 5 MB). */
+const READER_INDEX_MOST = 64 * 1024 * 1024;
+/** The small pieces kept a file (its start, its first pictures: every open reads them), the least lately used let go first. */
+const READER_PIECES_KEPT = 4 * 1024 * 1024;
+/**
+ * Files whose index is kept after their excerpts are cut (a retry reads it from here), and the most their indexes take
+ * in all: past either, the least lately used no cut is reading let go first.
+ */
+const READER_FILES = 8;
+const READER_KEPT_MOST = 64 * 1024 * 1024;
+
+interface Kept {
+  at: number;
+  bytes: Uint8Array;
+  /** Part of the index: kept while the file is. */
+  index: boolean;
+  /** When it was kept, against the file's other pieces. */
+  seq: number;
+}
+
+interface Layout {
+  size: number;
+  type: string;
+  moov: [number, number] | null;
+}
+
+interface ReadFile {
+  /** The cloud's address, signed again at each `readerFor`. */
+  url: string;
+  users: number;
+  /** The object's size, its type as the cloud says it, and where its index box lies ([start, end)), from its boxes' headers (`layoutOf`). */
+  layout: Promise<Layout> | null;
+  index: mp4.Mp4Index | null;
+  /** In memory, sorted by where they start. */
+  kept: Kept[];
+  seq: number;
+  /** Where the last open-ended answer outside the known ended, and how big it was (`reach`). */
+  next: number;
+  piece: number;
+  /** The stretches each cut reads, by its window. */
+  windows: Map<string, [number, number][]>;
+}
+
+/** What `readerFor` gives: the address to read the file at, one for a cut of `from..to` seconds, and its letting go. */
+interface Reader {
+  url: string;
+  at(from: number, to: number): string;
+  /** The bytes a cut of `from..to` seconds reads from the cloud, from the file's index; null while it hasn't been read (or there is none). */
+  bytes(from: number, to: number): number | null;
+  release(): void;
+}
+
+/** Files by id: a hash of the key with this process's own secret, so the reader answers only addresses it gave. */
+const readFiles = new Map<string, ReadFile>();
+const readerSecret = randomUUID();
+let readerPort: Promise<number> | null = null;
+
+/** The reader's address for `original` (read from `url`, R2's signed address), held until `release`. */
+async function readerFor(original: Original, url: string): Promise<Reader> {
+  const id = createHash("sha256").update(`${readerSecret}\u0000${original.key}`).digest("hex").slice(0, 32);
+  let file = readFiles.get(id);
+  if (file === undefined) {
+    file = { url, users: 0, layout: null, index: null, kept: [], seq: 0, next: -1, piece: READER_PIECE / 2, windows: new Map() };
+  } else {
+    readFiles.delete(id);
+  }
+  // The most lately used last; files no cut is reading let go past the few kept.
+  readFiles.set(id, file);
+  file.url = url;
+  file.users++;
+  let kept = 0;
+  for (const one of readFiles.values()) for (const piece of one.kept) kept += piece.bytes.length;
+  for (const [other, one] of readFiles) {
+    if (readFiles.size <= READER_FILES && kept <= READER_KEPT_MOST) break;
+    if (one.users > 0) continue;
+    for (const piece of one.kept) kept -= piece.bytes.length;
+    readFiles.delete(other);
+  }
+  const port = await (readerPort ??= startReader());
+  // The name kept, so what FFmpeg says (and a test) still names the file.
+  const base = `http://127.0.0.1:${port}/${id}/${encodeURIComponent(original.name.split(/[\\/]/u).pop() || "footage")}`;
+  let released = false;
+  const held = file;
+  return {
+    url: base,
+    at: (from, to) => `${base}?from=${from}&to=${to}`,
+    bytes: (from, to) => (held.index === null ? null : windowOf(held, `${Number(from)}-${Number(to)}`).reduce((sum, [a, b]) => sum + (b - a), 0)),
+    release() {
+      if (released) return;
+      released = true;
+      // Its index stays for a retry; the small pieces go (a few hundred kB, read again if it's cut again).
+      if (--held.users === 0) held.kept = held.kept.filter((piece) => piece.index);
+    },
+  };
+}
+
+function startReader(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((request, response) => {
+      void answerRead(request, response).catch((error: unknown) => {
+        diag.warn("cloud", `reading footage for a cut: ${scrub(diag.messageOf(error))}`);
+        response.destroy();
+      });
+    });
+    server.on("error", (error) => {
+      readerPort = null;
+      reject(error);
+    });
+    server.listen(0, "127.0.0.1", () => {
+      // Never what keeps the process alive.
+      server.unref();
+      resolve((server.address() as { port: number }).port);
+    });
+  });
+}
+
+/** A read of the cloud's address failed before or while it answered: what FFmpeg would have seen from R2's. */
+class Upstream extends Error {
+  constructor(
+    message: string,
+    readonly status: number | null,
+  ) {
+    super(message);
+  }
+}
+
+/** A bounded read of the cloud's address, `from..to` (inclusive): its answer, 206 or thrown. */
+async function upstream(url: string, from: number, to: number, signal?: AbortSignal): Promise<Response> {
+  let answer: Response;
+  try {
+    answer = await fetch(url, { headers: { range: `bytes=${from}-${to}` }, signal });
+  } catch (error) {
+    throw new Upstream(`couldn't read the footage in the cloud: ${diag.messageOf(error)}`, null);
+  }
+  if (answer.status !== 206) {
+    await answer.body?.cancel().catch(() => {});
+    throw new Upstream(`the cloud answered ${answer.status}`, answer.status);
+  }
+  return answer;
+}
+
+/**
+ * The object's size and where its index lies, from the headers of its top-level boxes (16 bytes each, as
+ * keyframe_index.ts walks them): one round trip a box, a few a file, and once a file. A file that isn't an MP4 or
+ * MOV (a sound file) has no index to say: its size only.
+ */
+function layoutOf(file: ReadFile): Promise<Layout> {
+  file.layout ??= (async () => {
+    let size: number | null = null;
+    let type = "application/octet-stream";
+    let moov: [number, number] | null = null;
+    let at = 0;
+    for (let boxes = 0; boxes < 64; boxes++) {
+      const answer = await upstream(file.url, at, at + 15);
+      const head = new Uint8Array(await answer.arrayBuffer());
+      if (size === null) {
+        size = Number(/\/(\d+)$/u.exec(answer.headers.get("content-range") ?? "")?.[1] ?? NaN);
+        // What FFmpeg was told by the cloud's own address (a hint to what the file is).
+        type = answer.headers.get("content-type") ?? type;
+      }
+      if (!Number.isFinite(size)) throw new Upstream("the cloud didn't say the footage's size", null);
+      if (head.length < 8) break;
+      const view = new DataView(head.buffer, head.byteOffset, head.byteLength);
+      let length = view.getUint32(0);
+      const box = String.fromCharCode(...head.subarray(4, 8));
+      if (length === 1 && head.length >= 16) length = Number(view.getBigUint64(8));
+      else if (length === 0) length = size - at;
+      if (length < 8 || box === "moof" || (boxes === 0 && !["ftyp", "moov", "mdat", "wide", "free", "skip", "pnot"].includes(box))) break;
+      if (box === "moov") {
+        if (length < READER_INDEX_MOST) moov = [at, at + length];
+        break;
+      }
+      at += length;
+      if (at + 8 > size) break;
+    }
+    if (size === null) throw new Upstream("the cloud didn't say the footage's size", null);
+    return { size, type, moov };
+  })().catch((error: unknown) => {
+    // Asked again by the next read (a dropped line comes back).
+    file.layout = null;
+    throw error;
+  });
+  return file.layout;
+}
+
+/** The stretches (sorted, apart) a cut of `from..to` seconds reads: its samples' bytes, a second either side, from the index. */
+function windowOf(file: ReadFile, window: string | null): [number, number][] {
+  if (file.index === null || window === null) return [];
+  const known = file.windows.get(window);
+  if (known !== undefined) return known;
+  const [from, to] = window.split("-").map(Number) as [number, number];
+  const out: [number, number][] = [];
+  // Its head (an index at a file's end says the file's start) left out: only the samples.
+  for (const [a, b] of mp4.rangesFor({ ...file.index, head: 0 }, Math.max(from - 1, 0), to + 1)) {
+    if (b <= a) continue;
+    const last = out.at(-1);
+    if (last !== undefined && a - last[1] < READER_GAP) last[1] = Math.max(last[1], b);
+    else out.push([a, b]);
+  }
+  file.windows.set(window, out);
+  return out;
+}
+
+/** Where an open-ended read from `from` is answered to (inclusive): the end of the index or the cut's stretch it's in, else a piece. */
+function reach(file: ReadFile, layout: Layout, from: number, window: [number, number][]): number {
+  const known: [number, number][] = layout.moov === null ? [...window] : [layout.moov, ...window];
+  for (const [a, b] of known) {
+    if (from >= a && from < b) {
+      file.next = b;
+      file.piece = READER_PIECE / 2;
+      return Math.min(b, layout.size) - 1;
+    }
+  }
+  // Read on from where the last piece ended: a bigger one; anywhere else, a small one. Never into what's known.
+  file.piece = from === file.next ? Math.min(file.piece * 2, READER_PIECE_MOST) : READER_PIECE;
+  let end = from + file.piece;
+  for (const [a] of known) if (a > from) end = Math.min(end, a);
+  end = Math.min(end, layout.size);
+  file.next = end;
+  return end - 1;
+}
+
+/** The kept piece holding byte `at`, and the start of the first one after it. */
+function keptAt(file: ReadFile, at: number): { piece: Kept | null; after: number } {
+  let after = Number.POSITIVE_INFINITY;
+  for (const piece of file.kept) {
+    if (at >= piece.at && at < piece.at + piece.bytes.length) return { piece, after };
+    if (piece.at > at) {
+      after = piece.at;
+      break;
+    }
+  }
+  return { piece: null, after };
+}
+
+/**
+ * Keeps `bytes` (read at `at`) in memory; the index parsed once it's all here. Two reads at once (a keyframe's and a
+ * cut's) may keep the same bytes twice: harmless, and let go with the file.
+ */
+function keepPiece(file: ReadFile, at: number, bytes: Uint8Array, moov: [number, number] | null): void {
+  if (bytes.length === 0) return;
+  const index = moov !== null && at >= moov[0] && at < moov[1];
+  const piece: Kept = { at, bytes, index, seq: ++file.seq };
+  file.kept.push(piece);
+  file.kept.sort((a, b) => a.at - b.at);
+  // The small pieces past their share: the least lately kept go first.
+  let small = file.kept.reduce((sum, one) => sum + (one.index ? 0 : one.bytes.length), 0);
+  while (small > READER_PIECES_KEPT) {
+    let oldest: Kept | null = null;
+    for (const one of file.kept) if (!one.index && one !== piece && (oldest === null || one.seq < oldest.seq)) oldest = one;
+    if (oldest === null) break;
+    small -= oldest.bytes.length;
+    file.kept.splice(file.kept.indexOf(oldest), 1);
+  }
+  if (moov === null || file.index !== null || !index) return;
+  // The index all here: read once, what the cuts' stretches come from.
+  const whole = new Uint8Array(moov[1] - moov[0]);
+  let filled = moov[0];
+  for (const one of file.kept) {
+    if (!one.index) continue;
+    const from = Math.max(one.at, moov[0]);
+    const to = Math.min(one.at + one.bytes.length, moov[1]);
+    if (to <= from) continue;
+    whole.set(one.bytes.subarray(from - one.at, to - one.at), from - moov[0]);
+    // Sorted by where they start: the index is whole once they leave no gap to its end.
+    if (from <= filled) filled = Math.max(filled, to);
+  }
+  if (filled < moov[1]) return;
+  const parsed = mp4.fromMoov(whole);
+  if (typeof parsed === "string") {
+    diag.info("cloud", `a cut's footage has no index to read (${parsed}): read in pieces`);
+    return;
+  }
+  file.index = parsed;
+  file.windows.clear();
+}
+
+/** Writes `bytes` to FFmpeg, waiting while its socket is full; false once FFmpeg has gone (it seeked elsewhere). */
+function sendPiece(response: http.ServerResponse, bytes: Uint8Array): Promise<boolean> {
+  if (response.destroyed) return Promise.resolve(false);
+  if (response.write(bytes)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const done = () => {
+      response.off("drain", done);
+      response.off("close", done);
+      resolve(!response.destroyed);
+    };
+    response.once("drain", done);
+    response.once("close", done);
+  });
+}
+
+/**
+ * One read FFmpeg asks of the reader: a bounded range as asked (the keyframe's reads of the index), an open-ended
+ * one to where `reach` says, from what's kept and the cloud's address. A read of the cloud that fails before the
+ * answer starts is passed on as it came (its status, or the connection dropped), and one that fails while it's sent
+ * drops the connection: FFmpeg sees what it saw from R2's own address and does what it did (tries again, or fails).
+ */
+async function answerRead(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+  const address = new URL(request.url ?? "/", "http://127.0.0.1");
+  const file = readFiles.get(address.pathname.split("/")[1] ?? "");
+  if (file === undefined) {
+    response.writeHead(404).end();
+    return;
+  }
+  const from0 = address.searchParams.get("from");
+  const to0 = address.searchParams.get("to");
+  const window = from0 !== null && to0 !== null && Number.isFinite(Number(from0)) && Number.isFinite(Number(to0)) ? `${Number(from0)}-${Number(to0)}` : null;
+  const asked = /^bytes=(\d+)-(\d*)$/u.exec(request.headers.range ?? "bytes=0-");
+  if (asked === null) {
+    response.writeHead(416).end();
+    return;
+  }
+  let layout: Layout;
+  try {
+    layout = await layoutOf(file);
+  } catch (error) {
+    if (error instanceof Upstream && error.status !== null) response.writeHead(error.status).end();
+    else response.destroy();
+    return;
+  }
+  const from = Number(asked[1]);
+  if (from >= layout.size) {
+    response.writeHead(416, { "content-range": `bytes */${layout.size}` }).end();
+    return;
+  }
+  const stretches = windowOf(file, window);
+  const end = asked[2] !== "" ? Math.min(Number(asked[2]), layout.size - 1) : reach(file, layout, from, stretches);
+  let started = false;
+  const start = () => {
+    if (started) return;
+    started = true;
+    response.writeHead(206, {
+      "content-type": layout.type,
+      "content-length": String(end - from + 1),
+      "content-range": `bytes ${from}-${end}/${layout.size}`,
+      "accept-ranges": "bytes",
+    });
+  };
+  // FFmpeg gone: what's being read for it stops.
+  const gone = new AbortController();
+  response.on("close", () => gone.abort());
+  let at = from;
+  while (at <= end) {
+    const { piece, after } = keptAt(file, at);
+    if (piece !== null) {
+      start();
+      const stop = Math.min(end + 1, piece.at + piece.bytes.length);
+      if (!(await sendPiece(response, piece.bytes.subarray(at - piece.at, stop - piece.at)))) return;
+      at = stop;
+      continue;
+    }
+    const upto = Math.min(end, after - 1);
+    let answer: Response;
+    try {
+      answer = await upstream(file.url, at, upto, gone.signal);
+    } catch (error) {
+      if (!started && error instanceof Upstream && error.status !== null) response.writeHead(error.status).end();
+      else response.destroy();
+      return;
+    }
+    start();
+    // Kept as it passes: the index, and a small piece (never a cut's own stretch, megabytes read once).
+    const keeping = (layout.moov !== null && at >= layout.moov[0] && at < layout.moov[1]) || (upto - at < READER_PIECES_KEPT && !stretches.some(([a, b]) => at >= a && at < b));
+    const chunks: Uint8Array[] = [];
+    const begun = at;
+    const body = answer.body?.getReader();
+    try {
+      for (;;) {
+        const read = await body?.read();
+        if (read === undefined || read.done) break;
+        // Never past what was asked (and FFmpeg told).
+        const bytes = read.value.subarray(0, Math.max(0, upto - at + 1));
+        if (bytes.length === 0) break;
+        if (keeping) chunks.push(bytes);
+        at += bytes.length;
+        if (!(await sendPiece(response, bytes))) break;
+      }
+    } catch {
+      // The cloud dropped it mid-answer, or FFmpeg went: what came is kept, FFmpeg asks again.
+    } finally {
+      void body?.cancel().catch(() => {});
+    }
+    if (keeping && chunks.length > 0) keepPiece(file, begun, joinBytes(chunks), layout.moov);
+    if (response.destroyed) return;
+    if (at <= upto) {
+      // Short: dropped as R2's own would have been.
+      response.destroy();
+      return;
+    }
+  }
+  start();
+  response.end();
+}
+
+function joinBytes(chunks: Uint8Array[]): Uint8Array {
+  if (chunks.length === 1) return chunks[0]!;
+  const out = new Uint8Array(chunks.reduce((sum, one) => sum + one.length, 0));
+  let at = 0;
+  for (const one of chunks) {
+    out.set(one, at);
+    at += one.length;
+  }
+  return out;
+}
+
+/** Excerpts of one file made at once from a file here (from the cloud's address, one at a time: `excerptsOf`). */
 const EXCERPTS_AT_ONCE = 3;
-/** Files at least this long (seconds) get a pieced proxy (a shorter one's whole proxy takes a minute or two). */
+/**
+ * Files at least this long (seconds) get a pieced proxy when read from R2 (a Drive file's) or put up by the backfill;
+ * a shorter one's whole proxy is made instead. A disk's file an import answers is pieced whatever its length
+ * (`piecedFromDisk`), and under this its pieces are all made behind the answer (`piecesBehind`).
+ */
 const PIECED_FROM = 1200;
 
 /** The whole Drive file as one media: its proxy made straight from R2. */
@@ -1831,6 +2391,10 @@ async function excerptMedia(
   end: number,
   stem: string,
   ext: string,
+  /** Runs the cut itself (one at a time over the line: `excerptsOf`). */
+  cutting: (cut: () => Promise<void>) => Promise<void> = (cut) => cut(),
+  /** The bytes the cut reads from the cloud, when the reader's index says (`Reader.bytes`). */
+  fromCloud: () => number | null = () => null,
 ): Promise<Made> {
   const source = excerptSource(original.file, start, end);
   const name = `${stem} ${scriptParts.clock(start)}-${scriptParts.clock(end)}.${ext}`;
@@ -1852,8 +2416,22 @@ async function excerptMedia(
   if (proxy === null) throw new Error("no proxy key");
   const local = localPath(cache, proxy);
   const scratch = scratchFile(scratchDir(cache), ext);
+  // The room is looked at before a byte is fetched (Nov 21): the file's index already says how big this excerpt is, so a
+  // full disk no longer costs a whole fetch of it to find out (the bad-day run's no-room case: 30 MB fetched into a
+  // disk with 12 MB free, then all of it again once there was room). What it needs here: the excerpt itself and its
+  // proxy, at the proxy's most (4 Mbit/s). Where the index can't say, the cut finds out as before.
+  const reads = fromCloud();
+  if (reads !== null && reads > 0) {
+    const need = reads + Math.ceil(((end - start) * 4_000_000) / 8);
+    // By the rule work is admitted by (storage.ts `admit`): what's free, less what's promised, must stay above the
+    // floor writes keep once this is written. The wait for room is ended by that same rule (`jobs.roomCheck`).
+    if (Number.isFinite(storage.freeBytes(scratchDir(cache))) && storage.spare(scratchDir(cache), need, storage.WORK_FLOOR_BYTES) < 0) {
+      const mb = Math.ceil(need / 1e6);
+      throw new NoRoom(mb * 1e6, `Needs ${mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`} free on this computer to cut the footage's excerpts: make room, and Edit goes on by itself.`);
+    }
+  }
   try {
-    await diag.timeOnAsync("cloud", "cloud: cut excerpt", source, () => scriptParts.cut(url, start, end, scratch));
+    await cutting(() => diag.timeOnAsync("cloud", "cloud: cut excerpt", source, () => scriptParts.cut(url, start, end, scratch)));
     const probe = await native().probe(scratch);
     const size = sizeOf(scratch);
     await putRecord({ source, name, originalKey: key, size });
@@ -3609,6 +4187,10 @@ export async function wholeTranscript(source: string, target: string, scratch: s
 
 mediaHooks.wholeTranscript = (source, target) => wholeTranscript(source, target, parent(target) ?? ".");
 // A streamed proxy is ready only while its key is there (media.ts `keyVerdict`): a cloud without it (offline, signed out) can't say.
+mediaHooks.goingUp = (key) => {
+  for (const { upload } of uploading.values()) if (upload.proxy === key) return true;
+  return false;
+};
 mediaHooks.keyAnswers = async (key) => {
   if (!cloud.enabled()) throw new Error("the cloud is off");
   return (await cloud.head(key)) !== null;

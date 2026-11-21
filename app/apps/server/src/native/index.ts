@@ -274,6 +274,8 @@ export interface Native {
   // Export
   exportDefaults(): ExportOptions; // S
   exportPlan(project: ProjectInput, options: ExportOptions): { plan: Plan; fps: number; chunks?: string | null }; // S
+  /** `exportPlan` on the addon's worker pool (`planOffThread` below). Missing from an addon built before Nov 21. */
+  exportPlanAsync?(project: ProjectInput, options: ExportOptions): Promise<{ plan: Plan; fps: number; chunks?: string | null }>; // A
   withExtension(path: string, format: Format): string; // S
   encoders(): Promise<Encoders>; // A
   readonly ExportJob: ExportJobClass; // T
@@ -461,6 +463,29 @@ export function withProject<T>(
     if (error instanceof Error && error.message === STALE) return work({ json: json() });
     throw error;
   }
+}
+
+/**
+ * `exportPlan` off the server's one thread: a plan sent as JSON reads the whole project again, and a process's first
+ * plan runs FFmpeg to list its encoders (0.7 s on mandalorian, Nov 21), all on the thread that asks; a long edit's
+ * render or beneath held it for that. With an addon built before `exportPlanAsync` (Nov 21; delete this fallback once
+ * every build has it): the encoders are listed off the thread first (`encoders`, kept for the process), then the
+ * plan is made here as before.
+ */
+export async function planOffThread(project: ProjectInput, options: ExportOptions): Promise<{ plan: Plan; fps: number; chunks?: string | null }> {
+  const addon = native();
+  if (typeof addon.exportPlanAsync === "function") return addon.exportPlanAsync(project, options);
+  await encodersListed();
+  return addon.exportPlan(project, options);
+}
+
+/**
+ * The encoders listed off the server's thread (`encoders`: FFmpeg run on the addon's pool, kept for the process), so a
+ * synchronous `exportPlan` after it never runs FFmpeg on the thread (Nov 21: the first plan of a process did, 0.7 s on
+ * mandalorian). Its listing failing is the plan's to say: it lists them itself.
+ */
+export async function encodersListed(): Promise<void> {
+  await Promise.resolve(native().encoders?.()).catch(() => {});
 }
 
 /** `withProject` for async work. */

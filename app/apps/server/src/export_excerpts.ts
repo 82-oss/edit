@@ -32,7 +32,7 @@ import * as cloudBlocks from "./cloud_blocks.ts";
 import { localPath, scratchDir } from "./cloud_media.ts";
 import * as diag from "./diag.ts";
 import * as steps from "./import_steps.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import type { Media, Project } from "./model.ts";
 import { PLAYBACK_ROUTE } from "./cloud_playback.ts";
 import type { ExportExcerpt } from "./native/index.ts";

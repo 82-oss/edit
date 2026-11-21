@@ -611,8 +611,11 @@ export function bytesHere(root: string, key: string): number {
 /**
  * Indexes (mp4_index.ts) read lately, by key, the least lately used let go first past `INDEX_BYTES` (a 9-minute
  * proxy's is about 1.1 MB): null for an object with none to read (not a faststart MP4), which is laid out evenly.
+ * 96 MB since Nov 21: the team's largest edit (389 media, 4.8 hours of footage) has about 35 MB of indexes, past the
+ * 32 MB this was, so every ask of whether it's ready to play read and parsed every file's index again (341 of them,
+ * 0.35 s each ask, asked every 0.7 s while playing). 96 MB holds about 13 hours of footage's indexes.
  */
-const INDEX_BYTES = 32 * 1024 * 1024;
+const INDEX_BYTES = 96 * 1024 * 1024;
 const INDEX_COUNT = 1024;
 const indexes = new Map<string, { size: number; index: mp4.Mp4Index | null }>();
 let indexBytes = 0;

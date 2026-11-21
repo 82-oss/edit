@@ -25,6 +25,7 @@ import { navigate } from "../lib/route";
 import { useEditor } from "../lib/store";
 import { Loader as EditLoader } from "../components/Logo";
 import { ProblemView } from "../components/ProblemView";
+import type { NewProjectStart } from "../components/Home";
 import { explain } from "@edit/types/problems";
 
 /** Home, on its Ideas section. */
@@ -606,12 +607,21 @@ function CaseForm({ page, onChange, busy, onRegenerate, onUploaded }: { page: Pa
 /** Whether a script can start from the idea: its footage, or the case's own video. */
 const canStartScript = (idea: Idea) => idea.footage.length > 0 || idea.sources.some((one) => one.kind === "youtube");
 
-/** New project on Home, opened with the idea's main title, its kind and its footage (the case's own video when none of it is listed). */
-function startScript(idea: Idea): void {
+/**
+ * What New project opens with for the idea: its main title, its kind, its footage (the case's own video when none of
+ * it is listed), and its channel. Nov 21: the channel was left out, and an idea made for a channel became a script
+ * with none (V1's) unless the person picked it again.
+ */
+export function scriptStart(idea: Idea): NewProjectStart {
   // A bodycam repost is its own footage: the case's video goes in when no footage of the case is listed.
   const own = idea.footage.some((one) => !one.reuse) ? [] : idea.sources.flatMap((one) => (one.kind === "youtube" ? [one.url] : []));
   const text = [...own, ...idea.footage.map(footageLine)].join("\n");
-  sessionStorage.setItem("edit.newProject", JSON.stringify({ title: idea.main ?? idea.titles[0]?.text ?? "", text, style: idea.workspace === "bodycam" ? "bodycam" : "interrogation" }));
+  return { title: idea.main ?? idea.titles[0]?.text ?? "", text, style: idea.workspace === "bodycam" ? "bodycam" : "interrogation", ...(idea.channel ? { channel: idea.channel } : {}) };
+}
+
+/** New project on Home, opened as `scriptStart` says. */
+function startScript(idea: Idea): void {
+  sessionStorage.setItem("edit.newProject", JSON.stringify(scriptStart(idea)));
   navigate("/");
 }
 

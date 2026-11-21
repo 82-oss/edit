@@ -137,6 +137,8 @@ interface Running {
   /** How long the video is, and when it was asked for: its steps (export_steps.ts). */
   seconds?: number;
   started_ms?: number;
+  /** The share of its video made before this run, once known (`ExportBar`). */
+  made?: number;
   /** Lets go of the files it holds (`holdFiles`), once its render has ended or it never starts. */
   unpin?: () => void;
   /** Lets go of only the export it copies unchanged chunks from: the room it needs comes first. */
@@ -157,7 +159,7 @@ export interface ExportActivity {
   note?: string;
   /** Queued: what it waits for ("waiting for the encoder (this Mac has one)", export_capacity.ts). */
   waiting?: string;
-  /** Running, before frames are encoding: "cutting the footage, 12 of 225". Absent once the encoder reports, so the line goes back to the percent. */
+  /** Running, before frames are encoding: "cutting the footage, 12 of 225". Absent once the encoder reports, so the line goes back to the percent, until it's past its frames (`MIXING`, `JOINING`). */
   phase?: string;
   /** The file is still on this Mac. Set only once the export is done, and checked again each time the queue is read: the archive deletes it after upload. */
   onDisk?: boolean;
@@ -167,6 +169,8 @@ export interface ExportActivity {
   seconds?: number;
   started_ms?: number;
   share?: boolean;
+  /** Running: the share of its video made before this run (chunks kept from one cut short), counted as done (`ExportBar`). */
+  made?: number;
 }
 
 /**
@@ -252,9 +256,121 @@ export function holdExport(path: string): () => void {
 /** Finished exports going up to the cloud now, by their file: how each is stopped, and when it has. */
 const archiving = new Map<string, { stop: AbortController; done: Promise<void> }>();
 
-/** Whether something is reading the export at `path` now (a share making its copies, its own upload to the cloud). */
+/** Whether something is reading the export at `path` now (a share making its copies, its own upload to the cloud), or its one cloud copy is still to go up (`owedNow`). */
 export function beingRead(path: string): boolean {
-  return reading.has(path) || archiving.has(path);
+  return reading.has(path) || archiving.has(path) || owedNow(path);
+}
+
+/**
+ * A share's export goes to the cloud once, as its review's full-quality file (Nov 21: it went up twice in full, as
+ * its archive and as `full.mp4`, and one was deleted only after; on JJ's 8 Mbit/s line a 5 GB export is about 85
+ * minutes a copy). Its `archive` row is listed as the export ends, as any export's, so a restart at any point leaves
+ * a row that sees it into the cloud; but while its share (`share:<project>`, until its export is named) or the
+ * share's `full` upload of the file is still to do, even waiting on a dropped line, the row waits behind it with
+ * this step. It's crossed off once the export's record names the review's copy (`heldByReview`), and goes up as an
+ * archive only once the share ended with no full-quality file on its way (failed, cancelled, given up).
+ */
+const BEHIND_SHARE = "waiting for its share's full-quality file";
+
+/** How often a row waiting behind its share looks that the share still carries it (`watchBehind`), and its last-resort wake in the job table. */
+export const behindShare = { everyMs: 30_000, backstopMs: 60 * 60_000 };
+
+/** Data folders whose share-made exports are watched (an ExportRegistry's, and any that archived here). */
+const homes = new Set<string>();
+
+/** The archive row of the export at `output`, by its file: a share's is keyed by it, a plain one's by its project. */
+function archiveRow(home: string, id: string, output: string): jobs.Job | undefined {
+  return jobs.list(home, "archive").find((job) => job.project === id && job.args.output === output);
+}
+
+/**
+ * What still sends a share's export up as `full.mp4`, so its own archive waits: the share's `full` job for this file
+ * (live: going, or waiting for the line), or the share itself while it hasn't ended (its export not named yet, or
+ * named as this file). Null once neither is there.
+ */
+function carriedBy(home: string, id: string, output: string): "full" | "share" | null {
+  if (jobs.list(home, "full").some((job) => jobs.live(job) && job.args.path === output)) return "full";
+  const share = jobs.get(home, jobs.keyOf("share", id));
+  if (share === undefined || !jobs.live(share) || share.args.export === undefined) return null;
+  const named = share.args.path;
+  return named === undefined || named === output ? "share" : null;
+}
+
+/** The files whose one cloud copy is still owed (a share's archive row, live), read at most once a second. */
+let owed = { at: 0, paths: new Set<string>() };
+
+/**
+ * Whether the export at `path` is a share's whose one cloud copy isn't up yet: the cleaners leave it (cache_cleanup's
+ * retention and the Storage page ask `beingRead`), as it's the only copy there is until `full.mp4` or its archive is up.
+ */
+function owedNow(path: string): boolean {
+  if (homes.size === 0) return false;
+  const now = Date.now();
+  if (now - owed.at > 1000) {
+    const paths = new Set<string>();
+    for (const home of homes) {
+      for (const job of jobs.list(home, "archive")) if (jobs.live(job) && job.args.share === true && typeof job.args.output === "string") paths.add(job.args.output);
+    }
+    owed = { at: now, paths };
+  }
+  return owed.paths.has(path);
+}
+
+let watching: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Looks, every `behindShare.everyMs`, at the rows waiting behind their share in `home` (from now until Edit quits):
+ * one whose share no longer carries it is woken (`wakeBehindShare`). Only the job table is read meanwhile; nothing is
+ * written, and no row says running, until one has something to do.
+ */
+function watchBehind(home: string): void {
+  homes.add(home);
+  if (watching !== null) return;
+  const look = () => {
+    for (const one of homes) {
+      if (!fs.existsSync(one)) {
+        homes.delete(one);
+        continue;
+      }
+      try {
+        for (const project of new Set(jobs.list(one, "archive").filter(waitsBehind).map((job) => job.project))) wakeBehindShare(one, project);
+      } catch (error) {
+        diag.warn("export", `looking at exports waiting behind their share: ${diag.messageOf(error)}`);
+      }
+    }
+  };
+  const tick = () => {
+    look();
+    watching = setTimeout(tick, failure.scaled(behindShare.everyMs));
+    watching.unref?.();
+  };
+  watching = setTimeout(tick, failure.scaled(behindShare.everyMs));
+  watching.unref?.();
+}
+
+function waitsBehind(job: jobs.Job): boolean {
+  return job.state === "waiting" && job.args.share === true && job.step === BEHIND_SHARE;
+}
+
+/**
+ * The share of project `id` ended, or its full-quality file did (reviews.ts says so; the watch looks too): each of
+ * its exports waiting behind it that nothing carries any more goes now, to be crossed off (its record names the
+ * review's copy) or sent up as its archive. One still carried is left as it is.
+ */
+export function wakeBehindShare(home: string, id: string): void {
+  for (const job of jobs.list(home, "archive")) {
+    if (job.project !== id || !waitsBehind(job) || typeof job.args.output !== "string") continue;
+    if (carriedBy(home, id, job.args.output) !== null) continue;
+    jobs.settle(home, job.key, "waiting", { retry_at: nowMs(), step: "uploading" });
+  }
+}
+
+/** For tests: the watch stopped and its folders forgotten. */
+export function resetBehindShare(): void {
+  if (watching !== null) clearTimeout(watching);
+  watching = null;
+  homes.clear();
+  owed = { at: 0, paths: new Set() };
 }
 
 /**
@@ -441,6 +557,11 @@ export async function archiveExportFile(
   } catch { return false; }
   // Stopped for a newer export of this file: that one is written here now, and goes up itself.
   if (signal?.aborted) return false;
+  return letGoHere(output, room, wanted);
+}
+
+/** An export now in the cloud: kept here while the disk has room or something still reads it, else deleted. Whether that went as it should. */
+function letGoHere(output: string, room: (path: string) => number, wanted?: () => boolean): boolean {
   // Archived; while the disk keeps its room it stays here too: it's the project's newest.
   if (room(output) > KEEP_NEWEST_FREE) return true;
   // A copy being read stays until the reading's done; so does one a share's full-quality upload still has to send
@@ -460,14 +581,27 @@ export async function archiveExportFile(
  * export of the file, or not up (offline, signed out, the relay down): that
  * one's job waits and is tried again by itself (jobs.ts `wait`, failure.ts's schedule).
  */
-export type Archived = "up" | "stopped" | "not up";
+export type Archived = "up" | "stopped" | "not up" | "behind";
 
 /**
  * Puts a finished export in the cloud (`archiveExportFile`) and lists it
  * there: after the export, or after a restart cut the upload short (the
  * `archive` job). A file gone meanwhile is said, never exported again here.
+ * A share's export waits behind its share instead ("behind", `BEHIND_SHARE`).
  */
 export async function archiveFinished(home: string, id: string, output: string, key: string, record: ExportRecord, signal?: AbortSignal): Promise<Archived> {
+  watchBehind(home);
+  // Its row, found by its file (a share's export has its own: `ExportRegistry.run`); none in some tests.
+  const row = archiveRow(home, id, output);
+  const rowKey = row?.key ?? jobs.keyOf("archive", id);
+  const forShare = row?.args.share === true;
+  if (forShare && fs.existsSync(output)) {
+    const by = carriedBy(home, id, output);
+    if (by !== null) {
+      diag.info("export", `${id}: ${output} goes to the cloud once, as its review's full-quality file: its archive waits for ${by === "full" ? "that upload" : "its share"}`);
+      return "behind";
+    }
+  }
   if (!fs.existsSync(output)) {
     // Its review's copy stands in for it (`heldByReview`): listed as that.
     const kept = record.bytes === null ? null : reviewCopyOf(home, id, output, record.bytes);
@@ -485,20 +619,28 @@ export async function archiveFinished(home: string, id: string, output: string, 
     throw new jobs.Gone(`${output} is gone`);
   }
   // Its review's full-quality download is this very file already: not sent a second time.
-  const held = reviewCopyOf(home, id, output, fs.statSync(output).size);
+  const size = fs.statSync(output).size;
+  const wanted = () => jobs.list(home, "full").some((job) => jobs.live(job) && job.args.path === output);
+  const held = reviewCopyOf(home, id, output, size);
   if (held !== null) {
     remember(home, id, { ...record, cloudKey: held });
     diag.info("export", `${id}: ${output} is in the cloud already as ${held}: not archived again`);
+    // A share's export, its one copy up as `full.mp4`: kept here or not by the archive's own rule (the disk's room),
+    // as it would have been had the archive sent it; only once the cloud holds that copy whole.
+    if (forShare) {
+      dropKept(home, output);
+      const there = await exportCloud.head(held).catch(() => null);
+      if (there !== null && there.size === size) letGoHere(output, freeBytes, wanted);
+    }
     return "up";
   }
   // Short of room: the older copies kept while there was some go first, so this one may stay.
   dropKept(home, output);
   // Its job begun by an earlier run, or tried before and put off: carried on (what's up already isn't sent again).
-  const listed = jobs.get(home, jobs.keyOf("archive", id));
+  const listed = row ?? jobs.get(home, rowKey);
   const carriedOn = (listed?.started_ms ?? Infinity) < performance.timeOrigin || listed?.put_off !== undefined;
   // Its bytes going up are its row's beat (Nov 21): noted only as it began, an upload of hours read as still.
-  const moving = () => jobs.beat(home, jobs.keyOf("archive", id));
-  const wanted = () => jobs.list(home, "full").some((job) => jobs.live(job) && job.args.path === output);
+  const moving = () => jobs.beat(home, rowKey);
   if (await archiveExportFile(output, key, exportCloud, freeBytes, signal, carriedOn, moving, wanted)) {
     try {
       remember(home, id, record);
@@ -535,7 +677,11 @@ export async function archiveJob(home: string | null, job: string, send: () => P
     went = "not up";
     diag.warn("export", `${job}: archiving: ${diag.messageOf(error)}`);
   }
-  if (went === "not up") jobs.wait(home, job, "its export's cloud copy didn't go up");
+  // Behind its share: waiting, so nothing counts it as running (the Mac may sleep, an update isn't held), until the
+  // share or its full-quality file ends (`wakeBehindShare`, from reviews.ts and the watch); the table's own wake is
+  // only the last resort, an hour on. A restart meanwhile leaves it waiting, and the watch of the next run looks again.
+  if (went === "behind") jobs.settle(home, job, "waiting", { step: BEHIND_SHARE, retry_at: nowMs() + failure.scaled(behindShare.backstopMs) });
+  else if (went === "not up") jobs.wait(home, job, "its export's cloud copy didn't go up");
   else jobs.end(home, job);
 }
 
@@ -640,6 +786,234 @@ export function lastChunks(cache: string, project: string): { output: string; si
     return chunks.length === value.chunks.length && chunks.length > 0 ? { output: value.output, size: value.size, fps: value.fps, chunks } : null;
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------- the bar
+//
+// What the bar says while the engine renders (Nov 21, a MacBook Air): an export killed at 29.9% was carried on by
+// itself a second later, reused 6 of its 26 chunks and came out right, but its bar went back to 1%, crawled, and went
+// from 77% to 100% at the end; a fresh export's join (22 s there) said 100% all the while. The engine's fraction
+// counts only the chunks it has left to make (render.rs `export_chunked`: their share of the frames, and 5% for the
+// sound when it's mixed again) and says nothing while it joins. What it writes says the rest, read here without the
+// engine knowing: its plan and the chunks already there (`plan-v1.json`, a file per chunk made, the last export's
+// manifest), the list it joins from, and its file growing as it's joined. So the chunks made before count as done
+// from the start, the join and the sound's mix are said and the join has the end of the bar to itself, and the bar
+// never goes back within an export.
+
+/** The end of the bar a chunked export's join fills: its chunks copied into one file, the file's index moved to its front, its frames counted. */
+export const JOIN_SHARE = 0.06;
+/** The sound mix's share of the engine's fraction when it's mixed again (render.rs `sound_share`). */
+const SOUND_SHARE = 0.05;
+/** Of the join's end of the bar, what its copy fills (by the bytes written); its +faststart pass and frame count the rest, by the clock. */
+const JOIN_COPY = 0.45;
+/** A plan written this long before the engine job started is still its own (a disk that keeps times to the second). */
+const PLAN_SLACK_MS = 2_000;
+/** How often the bar looks at what the engine has written (tests look more often). */
+export const barLooks = { everyMs: 500 };
+/** Said while the engine joins its chunks into the file, and while the sound's mix goes on after the picture is done. */
+export const JOINING = "joining the pieces into one file";
+export const MIXING = "mixing the sound";
+
+/** An engine job's chunks as it planned them (`plan-v1.json`, chunks.rs `write_plan`). */
+interface ChunkPlan {
+  extension: string;
+  chunks: { key: string; frames: number }[];
+  frames: number;
+}
+
+async function statOf(path: string): Promise<fs.Stats | null> {
+  try {
+    return await fs.promises.stat(path);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The plan in chunk folder `dir` and the share of its frames already made: chunk files there from before `since` (any,
+ * with `since` null), and the chunks the engine copies out of the last export (`last`, while its file is the one its
+ * manifest names). Null with no plan, or one older than `since` (another run's, not this engine job's).
+ */
+export async function madeShare(dir: string, since: number | null, last: ReturnType<typeof lastChunks>): Promise<{ plan: ChunkPlan; made: number } | null> {
+  const file = join(dir, "plan-v1.json");
+  const stat = await statOf(file);
+  if (stat === null || (since !== null && stat.mtimeMs < since - PLAN_SLACK_MS)) return null;
+  let plan: ChunkPlan;
+  try {
+    const value = JSON.parse(await fs.promises.readFile(file, "utf8")) as { extension?: unknown; chunks?: unknown };
+    if (typeof value.extension !== "string" || !Array.isArray(value.chunks)) return null;
+    const chunks = (value.chunks as Record<string, unknown>[])
+      .filter((one) => typeof one.key === "string" && typeof one.start === "number" && typeof one.end === "number")
+      .map((one) => ({ key: one.key as string, frames: Math.max(0, (one.end as number) - (one.start as number)) }));
+    plan = { extension: value.extension, chunks, frames: chunks.reduce((sum, one) => sum + one.frames, 0) };
+  } catch {
+    return null;
+  }
+  if (plan.frames <= 0) return null;
+  const old = last !== null && (await statOf(last.output))?.size === last.size ? new Map(last.chunks.map((one) => [one.key, one.frames])) : new Map<string, number>();
+  const files = await Promise.all(plan.chunks.map((chunk) => statOf(join(dir, `${chunk.key}.${plan.extension}`))));
+  let made = 0;
+  plan.chunks.forEach((chunk, at) => {
+    const own = files[at];
+    if (own !== null && own !== undefined) {
+      if (since === null || own.mtimeMs < since) made += chunk.frames;
+    } else if (since !== null && old.get(chunk.key) === chunk.frames) made += chunk.frames;
+  });
+  return { plan, made: made / plan.frames };
+}
+
+/** The engine's file for `output` while it's made (render.rs `partial_path`: this server's pid, as the engine runs in it). */
+export function partialOf(output: string, project: string, format: ExportOptions["format"]): string {
+  const extension = { h264: "mp4", hevc: "mp4", prores: "mov", gif: "gif", wav: "wav", mp3: "mp3", png: "png" }[format] ?? "mp4";
+  return `${output}.${process.pid}-${project}.partial.${extension}`;
+}
+
+/**
+ * One export's bar (0–1 of its encode, `shownProgress` adds its prep): the engine's fraction with the chunks made
+ * before counted as done, the join's end of the bar, and what it's on. Looked at as the engine reports and every
+ * `barLooks.everyMs`; `engineBegins` for each engine job of the export (a stall's restart is another).
+ */
+export class ExportBar {
+  /** The share of the video made before this engine job; null until its plan is read. */
+  made: number | null = null;
+  /** Its plan is read: the chunks and the join are known (else the engine's fraction is the whole bar, as before). */
+  private plan: ChunkPlan | null = null;
+  /** Looked for its plan once the engine had reported: a whole export (not in chunks) writes none. */
+  private settled = false;
+  private since = 0;
+  /** The engine's fraction last heard. */
+  private engine = 0;
+  private heard = false;
+  /** Its sound is mixed again: assumed when the edit has sound, seen as the mix's files appear. */
+  private mixing: boolean;
+  private picture = false;
+  private mixDone = false;
+  /** The join: when it began, the bytes it copies, those written and when they last grew, and when its copy was done. */
+  private join: { at: number; expected: number; written: number; grew: number; copied: number | null } | null = null;
+  private looking = false;
+  /** The last export's manifest, read once an engine job's plan is (`madeShare`). */
+  private lastRead: ReturnType<typeof lastChunks> = null;
+
+  /** The engine's file while it's made (`partialOf`), set as each engine job begins. */
+  private partial = "";
+
+  constructor(
+    private readonly folder: string,
+    audio: boolean,
+    private readonly last: () => ReturnType<typeof lastChunks>,
+    private readonly now: () => number = Date.now,
+  ) {
+    this.mixing = audio;
+  }
+
+  /** A new engine job starts (`since`: the time just before it did), making `partial`. */
+  engineBegins(since: number, partial: string): void {
+    this.partial = partial;
+    this.made = null;
+    this.plan = null;
+    this.settled = false;
+    this.since = since;
+    this.engine = 0;
+    this.heard = false;
+    this.picture = false;
+    this.mixDone = false;
+    this.join = null;
+  }
+
+  /** The engine's fraction (render.rs `export_chunked`'s, 0–1). */
+  hear(fraction: number): void {
+    this.engine = Math.min(1, Math.max(0, fraction));
+    this.heard = true;
+  }
+
+  /** Whether the bar can be said: its plan read, or none to read. */
+  get ready(): boolean {
+    return this.plan !== null || this.settled;
+  }
+
+  /** The encode's share of the bar now, 0–1. */
+  get encode(): number {
+    if (this.plan === null) return this.engine;
+    const made = this.made ?? 0;
+    const sound = this.mixing ? SOUND_SHARE : 0;
+    // The engine's fraction leaves out the picture made before: (1 − the sound's share) of its frames (render.rs `picture_share`).
+    const render = this.join !== null ? 1 : Math.min(1, this.engine + (1 - sound) * made);
+    return (1 - JOIN_SHARE) * render + JOIN_SHARE * this.joined();
+  }
+
+  /** What it's on, when it's past its frames: the sound's mix after the picture, or the join. */
+  get phase(): string | undefined {
+    if (this.join !== null) return JOINING;
+    if (this.picture && this.mixing && !this.mixDone) return MIXING;
+    return undefined;
+  }
+
+  /** The join's own part done, 0–1: its copy by the bytes written, then by the clock (never 1 until the engine ends). */
+  private joined(): number {
+    const join = this.join;
+    if (join === null) return 0;
+    const copy = join.expected > 0 ? Math.min(1, join.written / join.expected) : 0;
+    if (join.copied === null) return JOIN_COPY * copy;
+    // The +faststart pass rewrites the file and the frame count reads it: about as long again as the copy took.
+    const took = Math.max(1_000, join.copied - join.at);
+    const rest = 1 - Math.exp(-(this.now() - join.copied) / took);
+    return Math.min(0.99, JOIN_COPY + (1 - JOIN_COPY) * rest);
+  }
+
+  /** Looks at what the engine has written: its plan, the sound's mix, the join. Never two looks at once. */
+  async look(): Promise<void> {
+    if (this.looking) return;
+    this.looking = true;
+    try {
+      if (this.plan === null && !this.settled) {
+        const heardBefore = this.heard;
+        this.lastRead = this.last();
+        const read = await madeShare(this.folder, this.since, this.lastRead);
+        if (read !== null) {
+          this.plan = read.plan;
+          this.made = read.made;
+        } else if (heardBefore) this.settled = true;
+      }
+      const plan = this.plan;
+      if (plan === null) return;
+      const sound = `${this.partial}.sound.m4a`;
+      if (!this.mixDone) {
+        const [mixed, mixing, scratch] = await Promise.all([statOf(sound), statOf(`${sound}.mixing.m4a`), statOf(`${sound}.mix.f32`)]);
+        if (mixed !== null) this.mixDone = true;
+        if (mixed !== null || mixing !== null || scratch !== null) this.mixing = true;
+      }
+      if (this.join === null) {
+        if ((await statOf(`${this.partial}.chunks.txt`)) !== null) {
+          // Its chunks are all made: what it copies is about their bytes, those copied from the last export, and the sound.
+          const last = this.lastRead;
+          const files = await Promise.all(plan.chunks.map((chunk) => statOf(join(this.folder, `${chunk.key}.${plan.extension}`))));
+          const own = new Set(plan.chunks.filter((_, at) => files[at] !== null).map((chunk) => chunk.key));
+          const lastFrames = last?.chunks.reduce((sum, one) => sum + one.frames, 0) ?? 0;
+          const old = last === null || lastFrames <= 0 ? 0 : plan.chunks.filter((chunk) => !own.has(chunk.key)).reduce((sum, chunk) => sum + chunk.frames, 0) * (last.size / lastFrames);
+          const bytes = files.reduce((sum, one) => sum + (one?.size ?? 0), 0) + old + ((await statOf(sound))?.size ?? 0);
+          this.join = { at: this.now(), expected: bytes, written: 0, grew: this.now(), copied: null };
+        } else if (this.mixing && !this.mixDone && !this.picture && this.engine >= (1 - SOUND_SHARE) * (1 - (this.made ?? 0)) - 0.005) {
+          // Its frames may all be there: the picture is done when every chunk's file is (each renamed into place whole).
+          const files = await Promise.all(plan.chunks.map((chunk) => statOf(join(this.folder, `${chunk.key}.${plan.extension}`))));
+          const copied = new Set(this.lastRead?.chunks.map((one) => one.key) ?? []);
+          this.picture = plan.chunks.every((chunk, at) => files[at] !== null || copied.has(chunk.key));
+        }
+      }
+      const join_ = this.join;
+      if (join_ !== null && join_.copied === null) {
+        const written = (await statOf(this.partial))?.size ?? 0;
+        if (written > join_.written) {
+          join_.written = written;
+          join_.grew = this.now();
+        }
+        // Copied: about all its bytes there, or the file standing still once it has some (the guess was over).
+        const still = join_.written > 0 && this.now() - join_.grew >= 3 * barLooks.everyMs;
+        if (join_.expected <= 0 || join_.written >= join_.expected * 0.98 || still) join_.copied = this.now();
+      }
+    } finally {
+      this.looking = false;
+    }
   }
 }
 
@@ -1017,7 +1391,10 @@ export class ExportRegistry implements seams.Exports {
   private sending = 0;
 
   /** The data folder whose exports list this keeps (`<home>/exports.json`); none in some tests. */
-  constructor(private readonly home: string | null = null) {}
+  constructor(private readonly home: string | null = null) {
+    // Its share-made exports waiting behind their share, from before a restart too, are looked at from the start.
+    if (home !== null) watchBehind(home);
+  }
 
   /** Whether `path` is a file this server exported, now or before a restart (and so may be downloaded or revealed). */
   exported(path: string): boolean {
@@ -1218,7 +1595,7 @@ export class ExportRegistry implements seams.Exports {
     const waiting = state === "queued" && typeof running.waiting === "string" && running.waiting !== "" ? running.waiting : undefined;
     const rest = { ...extra };
     delete rest.phase;
-    this.recent.set(project.id, { id: project.id, name: project.name, path: running.output, state, progress, updated_ms: nowMs(), ...(typeof extra.error === "string" ? { error: extra.error } : {}), ...(running.note === undefined ? {} : { note: running.note }), ...(waiting !== undefined ? { waiting } : {}), ...(phase !== undefined ? { phase } : {}), ...(running.seconds === undefined ? {} : { seconds: running.seconds }), ...(running.started_ms === undefined ? {} : { started_ms: running.started_ms }), ...(running.share === true ? { share: true } : {}) });
+    this.recent.set(project.id, { id: project.id, name: project.name, path: running.output, state, progress, updated_ms: nowMs(), ...(typeof extra.error === "string" ? { error: extra.error } : {}), ...(running.note === undefined ? {} : { note: running.note }), ...(waiting !== undefined ? { waiting } : {}), ...(phase !== undefined ? { phase } : {}), ...(running.seconds === undefined ? {} : { seconds: running.seconds }), ...(running.started_ms === undefined ? {} : { started_ms: running.started_ms }), ...(running.share === true ? { share: true } : {}), ...(state === "running" && running.made !== undefined ? { made: running.made } : {}) });
     // Keep every active job and only the latest completed outcomes.
     const ended = [...this.recent.values()].filter(one => one.state !== "queued" && one.state !== "running").sort((a, b) => b.updated_ms - a.updated_ms);
     for (const old of ended.slice(20)) {
@@ -1420,20 +1797,20 @@ export class ExportRegistry implements seams.Exports {
     // until he cleared the disk by hand).
     // The export made ahead it copies its chunks from is kept while anything else can go; taken last, when it's that or
     // no export (Sphe's M4, Nov 17: Retry's room took it, 7.3 GB, and all 88 chunks were rendered again).
-    const make = () => {
+    const make = async () => {
       if (room.make === null) return;
       try {
-        // As far as what Edit keeps free on the disk, from projects not in work (cache_cleanup.ts `makeRoom`).
-        room.make(roomWanted(size, store.cacheDir(), folder) + storage.keepFreeBytes(store.cacheDir()));
+        // As far as what Edit keeps free on the disk, from projects not in work (cache_cleanup.ts `makeRoomAsync`).
+        await room.make(roomWanted(size, store.cacheDir(), folder) + storage.keepFreeBytes(store.cacheDir()));
       } catch (error) {
         diag.warn("export", `making room for ${project.name}'s export: ${diag.messageOf(error)}`);
       }
       short = roomFor(size, store.cacheDir(), folder);
     };
-    if (short !== null) make();
+    if (short !== null) await make();
     if (short !== null && room.make !== null && letReuseGo !== null) {
       letReuseGo();
-      make();
+      await make();
     }
     if (short !== null) throw new Error(short);
     const whole = ["h264", "hevc", "prores"].includes(options.format) && plan.start === 0 && plan.end >= duration(project) && plan.end > 0;
@@ -1547,7 +1924,11 @@ export class ExportRegistry implements seams.Exports {
     const id = project.id;
     const quiet = running.ahead === true;
     // One made ahead says nothing to the page: nobody asked for it.
+    // The bar never goes back within an export (`ExportBar`): its prep said again on a stall's restart, the engine's
+    // second try at its chunks, a fresh engine job carrying on.
+    let best = 0;
     const emit = (state: ExportActivity["state"], progress: number, extra: Record<string, unknown> = {}) => {
+      if (state === "running") progress = best = Math.max(best, progress);
       if (!quiet) this.publish(store, project, running, state, progress, extra);
     };
     // Real progress heard (the prep's line, the last export's bytes, the engine's frames) is its row's beat (`beatRows`).
@@ -1571,28 +1952,40 @@ export class ExportRegistry implements seams.Exports {
       // The last export's download, when there is one, takes the rest of the prep slice.
       tell(phase, ratio * 0.85);
     };
+    const chunkDir = chunkFolder(store.cacheDir(), running.chunks ?? id);
+    const bar = new ExportBar(chunkDir, plan.audio === true, () => lastChunks(store.cacheDir(), running.chunks ?? id));
+    // Chunks left by a run cut short (a restart, a stall) are done from its first line, prep and all: the bar never
+    // reads as started over while the footage is prepared again. Looked at only where an engine has planned (a few
+    // stats, off the thread); the engine's own plan says it exactly as it starts.
+    if (!quiet && isFile(join(chunkDir, "plan-v1.json"))) {
+      const read = await madeShare(chunkDir, null, null).catch(() => null);
+      if (read !== null && read.made > 0) {
+        running.made = read.made;
+        best = shownProgress(null, (1 - JOIN_SHARE) * (plan.audio === true ? 1 - SOUND_SHARE : 1) * read.made);
+      }
+    }
     emit("running", 0, { phase: "preparing the footage" });
     const started = performance.now();
     const folder = parent(output) ?? ".";
     /** Room for it now, as it starts (it may have waited in line a long while since it was asked for), and once the excerpts it reads are cut. */
-    const roomNow = () => {
+    const roomNow = async () => {
       if (quiet || running.bytes === undefined) return;
       const bytes = running.bytes;
       let short = roomShort(bytes, running.review ?? 0, store.cacheDir(), folder);
-      const make = () => {
+      const make = async () => {
         if (room.make === null) return;
         try {
-          room.make(roomWanted(bytes, store.cacheDir(), folder) + (running.review ?? 0) + storage.keepFreeBytes(store.cacheDir()));
+          await room.make(roomWanted(bytes, store.cacheDir(), folder) + (running.review ?? 0) + storage.keepFreeBytes(store.cacheDir()));
         } catch (error) {
           diag.warn("export", `making room for ${project.name}'s export: ${diag.messageOf(error)}`);
         }
         short = roomShort(bytes, running.review ?? 0, store.cacheDir(), folder);
       };
-      if (short > 0) make();
+      if (short > 0) await make();
       // The export it copies from goes last, as at its start.
       if (short > 0 && room.make !== null && running.letReuseGo !== undefined) {
         running.letReuseGo();
-        make();
+        await make();
       }
       if (short > 0) throw new Error(diskFull(short));
     };
@@ -1605,7 +1998,7 @@ export class ExportRegistry implements seams.Exports {
       await catchBugsAsync("the export", async () => {
         // Fetched back to reuse its chunks; gone again after if this export writes elsewhere.
         let restored: string | null = null;
-        roomNow();
+        await roomNow();
         try {
           // Effects' renders made again (or fetched again) for this export: Edit's own files, never the person's to fix.
           const remade = new Set<string>();
@@ -1669,7 +2062,7 @@ export class ExportRegistry implements seams.Exports {
                 );
               }
               if (running.cancelled) throw new Error("cancelled");
-              if (!begun) roomNow();
+              if (!begun) await roomNow();
               if (!begun) {
                 begun = true;
                 let fetched = -1;
@@ -1689,6 +2082,27 @@ export class ExportRegistry implements seams.Exports {
               } else emit("running", 0, { phase: "starting the export" });
               const watch = new EngineWatch(project.name, () => running.cancelled);
               let last = -1;
+              // The bar from the engine's fraction and what it writes (`ExportBar`), said as it reports and as it's looked at.
+              let engineOn = true;
+              const say = () => {
+                if (!engineOn || quiet || !bar.ready) return;
+                if (bar.made !== null) {
+                  if (bar.made > 0) running.made = bar.made;
+                  else delete running.made;
+                }
+                const phase = bar.phase;
+                try {
+                  // No phase while it renders: the line goes back to the percent, and a stale "cutting the footage" doesn't stick.
+                  emit("running", shownProgress(prepared ? 1 : null, bar.encode), phase === undefined ? {} : { phase });
+                } catch (error) {
+                  diag.warn("export", `progress: ${diag.messageOf(error)}`);
+                }
+              };
+              const looked = () => {
+                if (quiet || !engineOn) return;
+                void bar.look().then(say, (error: unknown) => diag.warn("export", `looking at the export's progress: ${diag.messageOf(error)}`));
+              };
+              bar.engineBegins(Date.now(), partialOf(output, exported.id, options.format));
               const job = native().ExportJob.start(
                 { project: { json: jsonForSerde(exported) }, options, plan, output, cacheDir: store.cacheDir(), sounds: originals?.sounds ?? {}, excerpts: originals?.excerpts ?? [], ...(quiet ? { background: true } : {}) },
                 (progress) => {
@@ -1702,16 +2116,15 @@ export class ExportRegistry implements seams.Exports {
                     // 30-minute render was noted only as it began, and read as still for most of it.
                     moving();
                   }
-                  try {
-                    // No phase: the line goes back to the percent, and a stale "cutting the footage" doesn't stick.
-                    emit("running", shownProgress(prepared ? 1 : null, progress));
-                  } catch (error) {
-                    diag.warn("export", `progress: ${diag.messageOf(error)}`);
-                  }
+                  bar.hear(progress);
+                  // Its plan is looked at once it has reported (it's written before the first frame), and said from then on.
+                  if (!bar.ready) looked();
+                  else say();
                 },
               );
               running.job = job;
               if (running.cancelled) job.cancel();
+              const looks = quiet ? null : setInterval(looked, barLooks.everyMs);
               let how: "ended" | "abandoned" = "ended";
               try {
                 how = await watch.wait(job);
@@ -1724,6 +2137,8 @@ export class ExportRegistry implements seams.Exports {
                 }
               } finally {
                 stalled = watch.stalled;
+                engineOn = false;
+                if (looks !== null) clearInterval(looks);
               }
               if (running.cancelled) throw new Error("cancelled");
               // Stopped and never ended (Nov 20): the export ends here, from the server's side, its place given back and
@@ -1834,7 +2249,10 @@ export class ExportRegistry implements seams.Exports {
         // The export is done: its file is whole and listed. The archive is a job of its own, so a restart
         // meanwhile sends the file again instead of exporting it again (Nov 3: Kroger, 77 minutes, started
         // over from nothing by a restart during its upload); handed over in one write, so no crash falls between.
-        const archive = jobs.handOff(this.home, running.key, { kind: "archive", project: id, args: { output, key, record }, step: "uploading" });
+        // A share's export goes up once, as its review's `full.mp4` (`BEHIND_SHARE`): its row waits behind the share,
+        // and is its own (keyed by its file), so a plain export of the project ending meanwhile never crosses it off.
+        const share = running.share === true;
+        const archive = jobs.handOff(this.home, running.key, { kind: "archive", project: id, args: { output, key, record, ...(share ? { share: true } : {}) }, ...(share ? { part: output } : {}), step: "uploading" });
         // It goes up once the project is free again (below): while it was awaited here the project stayed
         // "exporting" for the whole upload, so a share of it waited (or, before nightly-69, was refused: JJ's Mac,
         // Nov 9, "this project already has an export running" 15 times in the 17 minutes one took), other work
@@ -1906,7 +2324,8 @@ const GB = 1e9;
 
 /** Frees room on the cache's disk until `wanted` bytes are free, as far as the cache can give (cache_cleanup.ts `makeRoom`, set by serve.ts; none in tests). */
 export const room = {
-  make: null as ((wanted: number) => void) | null,
+  /** Awaited (Nov 21): the cleaner's pass gives the server's thread back as it goes (cache_cleanup.ts `makeRoomAsync`); it held it for seconds. */
+  make: null as ((wanted: number) => void | Promise<void>) | null,
   /** The bytes free on the disk holding a path (statfs; tests stand in for it). */
   free: (path: string): number => freeAt(path),
 };

@@ -58,6 +58,29 @@ pub fn export_plan(
     })
 }
 
+/// `export_plan` on the runtime's blocking pool, off the server's one thread
+/// (Nov 21: a MacBook Air's server was held 3.7 s with a long edit open; a
+/// plan sent as JSON reads the whole project again, and a process's first
+/// plan runs FFmpeg to list its encoders, 0.7 s on mandalorian, on whatever
+/// thread asks).
+#[napi(ts_return_type = "Promise<ExportPlan>")]
+pub async fn export_plan_async(
+    #[napi(ts_arg_type = "ProjectInput")] project: crate::project::ProjectInput,
+    #[napi(ts_arg_type = "ExportOptions")] options: serde_json::Value,
+) -> napi::Result<ExportPlan> {
+    crate::blocking("planning an export", move || {
+        let project = crate::project::project_of(&project)?;
+        let options = options_of(options)?;
+        let plan = edit_engine::render::export_plan(&project, &options)?;
+        Ok(ExportPlan {
+            plan: json(&plan)?,
+            fps: project.fps(),
+            chunks: edit_engine::render::chunk_name(&project, &options, &plan),
+        })
+    })
+    .await
+}
+
 /// `path` ending in the format's extension.
 #[napi]
 pub fn with_extension(

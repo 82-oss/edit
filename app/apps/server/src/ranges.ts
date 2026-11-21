@@ -136,6 +136,8 @@ export interface Batch {
 }
 
 const batches = new Map<string, Batch>();
+/** How a running batch's waits are stopped by its Cancel (kept beside it: a batch is said as JSON). */
+const stops = new WeakMap<Batch, AbortController>();
 
 /** Where a project's last batch is kept, so a restart doesn't take its Download away (Sphe, Nov 12: on another computer, the file can't be fetched any other way). */
 const keptAt = (app: App, id: string) => join(app.store.cacheDir(), "range-exports", `${safe(id)}.json`);
@@ -320,9 +322,25 @@ async function runBatch(app: App, id: string, batch: Batch, kept: Kept, given?: 
   try {
     // Its effects' renders and map shots first, as a share waits for them (each stretch would go out with their
     // stand-ins), then the edit as it is once they're in (after a restart too: they may be rendering again).
-    await seams.broll.waitForMaps(app, id, 20 * 60_000).catch((error: unknown) => {
-      if (!seams.isUnavailable(error)) throw error;
+    // Ended at once by its Cancel (Nov 21, audit E8a: up to 20 minutes, `cancelled` looked at only after); the renders go on.
+    const stop = new AbortController();
+    stops.set(batch, stop);
+    if (batch.cancelled) return;
+    let onAbort = () => {};
+    const cancelled = new Promise<void>((resolve) => {
+      onAbort = resolve;
+      stop.signal.addEventListener("abort", onAbort, { once: true });
     });
+    try {
+      await Promise.race([
+        seams.broll.waitForMaps(app, id, 20 * 60_000).catch((error: unknown) => {
+          if (!seams.isUnavailable(error)) throw error;
+        }),
+        cancelled,
+      ]);
+    } finally {
+      stop.signal.removeEventListener("abort", onAbort);
+    }
     if (batch.cancelled) return;
     const now = app.store.get(id)?.project;
     let project = given ?? now;
@@ -452,6 +470,7 @@ export function cancel(app: App, id: string): boolean {
     return true;
   }
   batch.cancelled = true;
+  stops.get(batch)?.abort();
   app.exports.cancel(id);
   return true;
 }

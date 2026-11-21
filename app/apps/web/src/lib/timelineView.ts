@@ -12,8 +12,12 @@ import { rate } from "./types";
 
 /** Height of the band of sections (intro, B-roll, story, outro) atop the ruler, in px. */
 const BAND = 18;
+/** Height of the time scale under the band, in px. */
+const SCALE = 28;
 /** Height of the time ruler (the sections band and the time scale), in px. */
-export const RULER = BAND + 28;
+export const RULER = BAND + SCALE;
+/** The V2 timeline's ruler: the time scale alone (its sections are the player's chapters), in px. */
+export const SCALE_ONLY = SCALE;
 
 /** Each kind of section's colour. */
 export const SECTION_COLORS: Record<Section["kind"], string> = {
@@ -130,14 +134,17 @@ export function drawRuler(
   sections?: Sections | null,
   marks?: Marks,
   markers?: TimelineMarker[],
+  /** The sections band's height: none for the V2 timeline (`SCALE_ONLY`). */
+  band = BAND,
 ) {
+  const ruler = band + SCALE;
   ctx.fillStyle = "#0a0a0a";
-  ctx.fillRect(0, 0, width, RULER);
+  ctx.fillRect(0, 0, width, ruler);
   ctx.fillStyle = "rgba(255,255,255,0.07)";
-  ctx.fillRect(0, RULER - 1, width, 1);
-  drawSections(ctx, width, ppf, scrollX, sections?.parts ?? []);
-  if (marks?.span) drawSpan(ctx, ppf, scrollX, marks);
-  drawTimelineMarkers(ctx, width, ppf, scrollX, markers ?? []);
+  ctx.fillRect(0, ruler - 1, width, 1);
+  if (band > 0) drawSections(ctx, width, ppf, scrollX, sections?.parts ?? []);
+  if (marks?.span) drawSpan(ctx, ppf, scrollX, marks, band);
+  drawTimelineMarkers(ctx, width, ppf, scrollX, markers ?? [], band);
   const pxPerSecond = ppf * fps;
   const steps = [1 / fps, 2 / fps, 5 / fps, 10 / fps, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200, 1800, 3600];
   const major = steps.find((step) => step * pxPerSecond >= 90) ?? 3600;
@@ -150,24 +157,25 @@ export function drawRuler(
     if (x < -1) continue;
     const isMajor = Math.abs(t / major - Math.round(t / major)) < 1e-6;
     ctx.fillStyle = isMajor ? "rgba(255,255,255,0.28)" : "rgba(255,255,255,0.1)";
-    ctx.fillRect(x, isMajor ? RULER - 12 : RULER - 6, 1, isMajor ? 11 : 5);
+    ctx.fillRect(x, isMajor ? ruler - 12 : ruler - 6, 1, isMajor ? 11 : 5);
     if (isMajor) {
       ctx.fillStyle = "#8f8f8f";
-      ctx.fillText(rulerLabel(t, fps, major), x + 4, BAND + 5);
+      ctx.fillText(rulerLabel(t, fps, major), x + 4, band + 5);
     }
   }
 }
 
 /** Moments marked on the timeline (an agent planning its sounds): a small amber flag at the ruler's foot. */
-function drawTimelineMarkers(ctx: CanvasRenderingContext2D, width: number, ppf: number, scrollX: number, markers: TimelineMarker[]) {
+function drawTimelineMarkers(ctx: CanvasRenderingContext2D, width: number, ppf: number, scrollX: number, markers: TimelineMarker[], band: number) {
+  const ruler = band + SCALE;
   ctx.fillStyle = "#fbbf24";
   for (const marker of markers) {
     const x = Math.round(marker.frame * ppf - scrollX) + 0.5;
     if (x < -6 || x > width + 6) continue;
     ctx.beginPath();
-    ctx.moveTo(x - 4, RULER - 9);
-    ctx.lineTo(x + 4, RULER - 9);
-    ctx.lineTo(x, RULER - 3);
+    ctx.moveTo(x - 4, ruler - 9);
+    ctx.lineTo(x + 4, ruler - 9);
+    ctx.lineTo(x, ruler - 3);
     ctx.closePath();
     ctx.fill();
   }
@@ -206,12 +214,13 @@ function drawSections(ctx: CanvasRenderingContext2D, width: number, ppf: number,
 }
 
 /** The in-to-out span in the time scale, with a bracket at each marked point. */
-function drawSpan(ctx: CanvasRenderingContext2D, ppf: number, scrollX: number, marks: Marks) {
+function drawSpan(ctx: CanvasRenderingContext2D, ppf: number, scrollX: number, marks: Marks, band: number) {
+  const ruler = band + SCALE;
   const [start, end] = marks.span!;
   const x0 = Math.round(start * ppf - scrollX);
   const x1 = Math.round(end * ppf - scrollX);
-  const top = BAND + 1;
-  const bottom = RULER - 1;
+  const top = band + 1;
+  const bottom = ruler - 1;
   ctx.fillStyle = "rgba(255,255,255,0.1)";
   ctx.fillRect(x0, top, x1 - x0, bottom - top);
   ctx.fillStyle = "#f5f5f5";
@@ -239,12 +248,13 @@ export function dimOutsideSpan(ctx: CanvasRenderingContext2D, width: number, hei
 }
 
 /** The playhead: its line down the lanes and its head in the time scale (below the sections band). */
-export function drawPlayhead(ctx: CanvasRenderingContext2D, px: number, height: number) {
-  const top = BAND + 6;
+export function drawPlayhead(ctx: CanvasRenderingContext2D, px: number, height: number, band = BAND) {
+  const ruler = band + SCALE;
+  const top = band + 6;
   ctx.strokeStyle = "#ff3d6e";
   ctx.lineWidth = 1.5;
   ctx.beginPath();
-  ctx.moveTo(px, RULER - 4);
+  ctx.moveTo(px, ruler - 4);
   ctx.lineTo(px, height);
   ctx.stroke();
   ctx.fillStyle = "#ff3d6e";
@@ -253,7 +263,7 @@ export function drawPlayhead(ctx: CanvasRenderingContext2D, px: number, height: 
   ctx.lineTo(px + 6, top);
   ctx.quadraticCurveTo(px + 7, top, px + 7, top + 2);
   ctx.lineTo(px + 7, top + 9);
-  ctx.lineTo(px, RULER - 4);
+  ctx.lineTo(px, ruler - 4);
   ctx.lineTo(px - 7, top + 9);
   ctx.lineTo(px - 7, top + 2);
   ctx.quadraticCurveTo(px - 7, top, px - 6, top);
@@ -262,9 +272,11 @@ export function drawPlayhead(ctx: CanvasRenderingContext2D, px: number, height: 
 
 function rulerLabel(seconds: number, fps: number, step: number) {
   const whole = Math.floor(seconds + 1e-6);
-  const m = Math.floor(whole / 60);
+  const h = Math.floor(whole / 3600);
+  const m = h > 0 ? Math.floor(whole / 60) % 60 : Math.floor(whole / 60);
   const s = whole % 60;
-  const base = `${m}:${String(s).padStart(2, "0")}`;
+  // Past an hour, hours too ("1:05:00", not "65:00": a 2-hour channel edit's ruler, Nov 21).
+  const base = h > 0 ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
   if (step >= 1) return base;
   const frames = Math.round((seconds - whole) * fps);
   return `${base}:${String(frames).padStart(2, "0")}`;

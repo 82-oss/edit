@@ -52,6 +52,7 @@ import * as playing from "./playing.ts";
 import { duration as projectDuration, fps as projectFps } from "./project.ts";
 import * as pieces from "./proxy_pieces.ts";
 import * as storage from "./storage.ts";
+import * as thread from "./thread.ts";
 import { THIS_MACHINE } from "./machine.ts";
 import * as fs from "node:fs";
 
@@ -138,7 +139,11 @@ async function filesOf(cache: string, project: Project, root: string | null): Pr
   const used = new Set(playbackReady.played(project).map((clip) => clip.media));
   const out: FileState[] = [];
   const seen = new Set<string>();
+  // Two or three stats and a folder read a file, hundreds of files an ask (every second while the dialog is up): a
+  // turn for the rest of Edit every few ms (thread.ts).
+  const breathe = thread.breather();
   for (const media of project.media) {
+    await breathe();
     if (!used.has(media.id) || (media.kind !== "video" && media.kind !== "audio")) continue;
     const key = cloudMedia.streamKey(media.cloud, "proxy");
     if (key === null || isFile(media.path) || seen.has(key)) continue;
@@ -190,7 +195,9 @@ async function needsOf(cache: string, project: Project, root: string | null, fil
   const started = new Set<string>();
   const counted = new Map<string, [number, number][]>();
   const needs: Need[] = [];
+  const breathe = thread.breather();
   for (const one of [...missing].sort((a, b) => a.frames[0] - b.frames[0])) {
+    await breathe();
     const file = byKey.get(one.media.id);
     if (file?.never === true) continue;
     const size = file?.size ?? guessBytes(one.media, cloudMedia.streamKey(one.media.cloud, "proxy") ?? "");
@@ -330,7 +337,13 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
   let spare = storage.spare(cache, 0, floor) + storage.claimedBytes();
   // Short of room for it: projects not in work make room first (oldest first, whole: cache_cleanup.ts `makeRoom`), at
   // most every few minutes however often this is asked; what still doesn't fit plays from the cloud, said below.
-  if (keeping && left > spare && storage.askForRoom(storage.freeBytes(cache) + left - spare) > 0) spare = storage.spare(cache, 0, floor) + storage.claimedBytes();
+  if (keeping && left > spare) {
+    // The cleaner's pass runs here, on the thread, when it's asked (cache_cleanup.ts `makeRoom`): said, so a hold names it.
+    // Only while it's asked: it's asked at most every few minutes, however often this is (storage.ts `askForRoom`).
+    thread.note(`GET /api/projects/{id}/footage/ready: asking the cache cleaner for room (cache_cleanup.ts makeRoom)`);
+    if (storage.askForRoom(storage.freeBytes(cache) + left - spare) > 0) spare = storage.spare(cache, 0, floor) + storage.claimedBytes();
+    thread.note("GET /api/projects/{id}/footage/ready");
+  }
   if (!keeping) room = "This Mac's disk is too full to keep the footage, so it plays from the cloud.";
   else if (left > spare) room = `Only ${GB(Math.max(0, spare) + bytes_done)} of the ${GB(bytes_total)} GB fits on this Mac. The start of the edit comes first; the rest plays from the cloud.`;
 

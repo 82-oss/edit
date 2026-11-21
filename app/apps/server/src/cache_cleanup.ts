@@ -35,6 +35,11 @@
 //   own copies are ever taken: ledger.ts `evictable`). Opened again, it comes
 //   back as any cloud footage does (footage_ready.ts: "Getting the footage
 //   ready", with its progress).
+// - Script mode's copies of its recordings (writer/streamed.ts, Nov 21): kept
+//   so Start the edit cuts from them; for room only, after nobody's copies and
+//   before any project's (first of all when work asks for room and they alone
+//   make it: `makeRoom`), oldest-unused first, each once R2 has said it holds
+//   it and never while it's cut from (`ledger.scriptCopies`).
 //
 // The disk is kept with what Edit keeps free on it (storage.ts
 // `keepFreeBytes`: 15 GB or a tenth of the disk); only with it under the
@@ -43,13 +48,24 @@
 // footage this Mac plays and renders from: they go only this way, never
 // because R2 has them too. Pinned files (file_pins.ts), uploads not landed
 // and anything written in the last hours always stay.
+//
+// The server's own passes (the hourly one, and room asked for with
+// `makeRoomAsync`) run gently (Nov 21): each kept the server's one thread for
+// 3 to 4.4 s every hour on Sphe's Linux Edit (14,000 cached files; mostly
+// every script.json read and parsed twice a pass, 381 MB of JSON), and a
+// MacBook Air's for 2 s in one native `mediaKey`. A pass is written once, as
+// steps that touch the disk (`Steps`): `run` does them at once on the thread
+// (`cleanCache`, `makeRoom`: callers that need the answer before they go on),
+// `gently` off it, with a breath every few milliseconds (thread.ts). What a pass
+// reads again each hour (scripts' originals, projects' media, media keys) is
+// kept by each file's stamp and read again only once the file has changed.
 
 import * as fs from "node:fs";
 
 import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
-import { playbackPath } from "./cloud_playback.ts";
-import { Semaphore } from "./media.ts";
+import { playbackKey, playbackPath } from "./cloud_playback.ts";
+import { Semaphore } from "./semaphore.ts";
 import * as diag from "./diag.ts";
 import * as thread from "./thread.ts";
 import * as drive from "./drive.ts";
@@ -72,6 +88,237 @@ import * as folderAccess from "./folder_access.ts";
 import * as research from "./research.ts";
 import * as writerStore from "./writer/store.ts";
 import { CACHE_FLOOR_BYTES, FREE_FLOOR_BYTES, diskHooks, keepFreeBytes, ledger } from "./storage.ts";
+
+/** A step of a pass that touches the disk, or gives the thread back (`breath`); what each answers is in `answerNow`. */
+type Op =
+  | { op: "breath" }
+  | { op: "stat" | "lstat" | "list" | "read"; path: string }
+  | { op: "rm"; path: string; recursive: boolean }
+  | { op: "walk"; roots: ledgerOf.Root[] };
+
+/** A pass, or a part of one: yields its steps, is answered each, returns `T`. */
+type Steps<T> = Generator<Op, T, unknown>;
+
+const BREATH: Op = { op: "breath" };
+
+/** The step answered at once, on the thread (as the cleaner always did). */
+function answerNow(op: Op): unknown {
+  try {
+    switch (op.op) {
+      case "breath":
+        return undefined;
+      case "stat":
+        return fs.statSync(op.path);
+      case "lstat":
+        return fs.lstatSync(op.path);
+      case "list":
+        return fs.readdirSync(op.path);
+      case "read":
+        return fs.readFileSync(op.path, "utf8");
+      case "rm":
+        fs.rmSync(op.path, op.recursive ? { recursive: true, force: true } : {});
+        return null;
+      case "walk":
+        return ledgerOf.walkSync(op.roots);
+    }
+  } catch (error) {
+    // A stat, list or read that fails answers null; a removal that fails answers its error.
+    return op.op === "rm" ? (error instanceof Error ? error : new Error(String(error))) : null;
+  }
+}
+
+/** The step answered off the thread (fs.promises: the disk's wait is libuv's, never the server's). */
+async function answerLater(op: Op): Promise<unknown> {
+  try {
+    switch (op.op) {
+      case "breath":
+        return undefined;
+      case "stat":
+        return await fs.promises.stat(op.path);
+      case "lstat":
+        return await fs.promises.lstat(op.path);
+      case "list":
+        return await fs.promises.readdir(op.path);
+      case "read":
+        return await fs.promises.readFile(op.path, "utf8");
+      case "rm":
+        await fs.promises.rm(op.path, op.recursive ? { recursive: true, force: true } : {});
+        return null;
+      case "walk":
+        return await ledgerOf.walkInOrder(op.roots);
+    }
+  } catch (error) {
+    return op.op === "rm" ? (error instanceof Error ? error : new Error(String(error))) : null;
+  }
+}
+
+/** A pass run at once: every step on the thread, start to end (the answer is wanted before the caller goes on). */
+function atOnce<T>(steps: Steps<T>): T {
+  let next = steps.next();
+  while (next.done !== true) next = steps.next(answerNow(next.value));
+  return next.value;
+}
+
+/** A pass run gently: each step off the thread, and the rest of Edit given its turn every few milliseconds. */
+async function gently<T>(steps: Steps<T>): Promise<T> {
+  const breathe = thread.breather();
+  let next = steps.next();
+  while (next.done !== true) {
+    const op = next.value;
+    if (op.op === "breath") {
+      await breathe();
+      next = steps.next(undefined);
+    } else next = steps.next(await answerLater(op));
+  }
+  return next.value;
+}
+
+function* statOf(path: string): Steps<fs.Stats | null> {
+  return (yield { op: "stat", path }) as fs.Stats | null;
+}
+
+function* lstatOf(path: string): Steps<fs.Stats | null> {
+  return (yield { op: "lstat", path }) as fs.Stats | null;
+}
+
+/** A folder's names; null when it won't list. */
+function* listOf(path: string): Steps<string[] | null> {
+  return (yield { op: "list", path }) as string[] | null;
+}
+
+/** A folder's names; none when it won't list. */
+function* namesIn(path: string): Steps<string[]> {
+  return (yield* listOf(path)) ?? [];
+}
+
+function* textOf(path: string): Steps<string | null> {
+  return (yield { op: "read", path }) as string | null;
+}
+
+/** Removes `path` (a folder whole with `recursive`, gone already is no fault then); its error, or null. */
+function* rmOf(path: string, recursive: boolean): Steps<Error | null> {
+  return (yield { op: "rm", path, recursive }) as Error | null;
+}
+
+/** A file as it is now: one with the same stamp is the same file, unchanged (an atomic write is a new inode). */
+const stampOf = (stat: fs.Stats): string => `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+
+/**
+ * What a file says, kept by its stamp: read and worked out again only once the file has changed (`fresh`), and only
+ * kept when it didn't change while it was read. Each pass keeps only the files it looked at (`prune`).
+ */
+class ByStamp<T> {
+  private known = new Map<string, { stamp: string; value: T }>();
+  private looked = new Set<string>();
+
+  /** `fresh(text)` of the file at `path`, or what it was last time it had this stamp; null when it won't read. */
+  *of(path: string, fresh: (text: string) => T): Steps<{ value: T; stat: fs.Stats } | null> {
+    this.looked.add(path);
+    const stat = yield* statOf(path);
+    if (stat === null) {
+      this.known.delete(path);
+      return null;
+    }
+    const stamp = stampOf(stat);
+    const known = this.known.get(path);
+    if (known !== undefined && known.stamp === stamp) return { value: known.value, stat };
+    const text = yield* textOf(path);
+    if (text === null) return null;
+    const value = fresh(text);
+    const after = yield* statOf(path);
+    if (after !== null && stampOf(after) === stamp) this.known.set(path, { stamp, value });
+    return { value, stat };
+  }
+
+  /** What a pass that looked at every file kept: the rest forgotten (files gone, projects deleted). */
+  prune(): void {
+    for (const path of this.known.keys()) if (!this.looked.has(path)) this.known.delete(path);
+    this.looked.clear();
+  }
+}
+
+/**
+ * A project file's media list (whatever it holds: each reader checks it) and when it went to Drive, or `bad` when it
+ * isn't JSON.
+ */
+const projectMedia = new ByStamp<{ media: unknown; driveAt: number | null } | "bad">();
+const mediaOfText = (text: string): { media: unknown; driveAt: number | null } | "bad" => {
+  try {
+    const value = JSON.parse(text) as { media?: unknown; drive?: { uploaded_ms?: unknown } | null } | null;
+    // A file of `null` stops a pass as one that won't parse does (reading `.media` of it threw).
+    if (value === null) return "bad";
+    const at = typeof value.drive === "object" && value.drive !== null ? value.drive.uploaded_ms : undefined;
+    return { media: value.media, driveAt: typeof at === "number" ? at : null };
+  } catch {
+    return "bad";
+  }
+};
+
+/** A script's original (`originalPath`), or null when it has none or won't read (writer/store.ts `originals`). */
+const scriptOriginal = new ByStamp<unknown>();
+const originalOfText = (text: string): unknown => {
+  try {
+    const value = JSON.parse(text) as { originalPath?: unknown } | null;
+    return value === null || typeof value !== "object" ? null : value.originalPath;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The files scripts here play from, as writer/store.ts `originals` reads them, each script.json read again only once
+ * it's been saved since (Nov 21: all 126 of Sphe's, 381 MB, the largest 12.9 MB, were read and parsed twice a pass).
+ */
+function* scriptOriginals(home: string): Steps<Set<string>> {
+  const data = writerStore.dataDir(home);
+  const out = new Set<string>();
+  for (const id of writerStore.ids(data)) {
+    yield BREATH;
+    const found = yield* scriptOriginal.of(join(writerStore.scriptDir(data, id), "script.json"), originalOfText);
+    const original = found?.value;
+    if (original) out.add(original as string);
+  }
+  scriptOriginal.prune();
+  return out;
+}
+
+/**
+ * Media keys (the native `mediaKey`: a hash of the path, the file's size and time) kept by the file's stamp: the
+ * addon is asked only for a file not keyed since it last changed, and only once a stat off the thread has found it
+ * (Nov 21, a MacBook Air: one `mediaKey` kept the server's thread 2 s, the file's disk waking). A path the addon keys
+ * without its file (a playback address) is kept by the path alone.
+ */
+const keys = new Map<string, { stamp: string; key: string }>();
+const keysLooked = new Set<string>();
+
+/**
+ * Whether `path` is a file here, and its media key (null when the addon can't key it, or, unless `always`, when
+ * there's no file to key).
+ */
+function* keyOf(app: App, path: string, always: boolean): Steps<{ exists: boolean; key: string | null }> {
+  keysLooked.add(path);
+  const address = playbackKey(path) !== null;
+  const stat = address ? null : yield* statOf(path);
+  if (!address && stat === null && !always) return { exists: false, key: null };
+  const stamp = address ? "address" : stat === null ? "none" : stampOf(stat);
+  const known = keys.get(path);
+  if (known !== undefined && known.stamp === stamp) return { exists: stat !== null, key: known.key };
+  let key: string;
+  try {
+    key = app.native.mediaKey(path);
+  } catch {
+    keys.delete(path);
+    return { exists: stat !== null, key: null };
+  }
+  const after = address ? null : yield* statOf(path);
+  if ((address ? "address" : after === null ? "none" : stampOf(after)) === stamp) keys.set(path, { stamp, key });
+  return { exists: stat !== null, key };
+}
+
+function pruneKeys(): void {
+  for (const path of keys.keys()) if (!keysLooked.has(path)) keys.delete(path);
+  keysLooked.clear();
+}
 
 /** Made again cheaply from the source. */
 const REBUILT = /^(preview|thumbs|peaks|loudness|censor|light)/;
@@ -128,6 +375,51 @@ export async function cleanCloudPreviews(
 ): Promise<CleanReport> {
   const report: CleanReport = { folders: 0, files: 0, bytes: 0, removed: [] };
   const cache = app.store.cacheDir();
+  const found = await gently(previewSources(app, dryRun));
+  if (found === null) return report;
+  const { paths, sources } = found;
+  const pending = pendingUploads(app.store.home);
+  if (pending === null) return report;
+  const removed = new Set<string>();
+  const slots = new Semaphore(3);
+  const candidatesWithFiles = await gently(withPreviews(cache, sources));
+  const confirmedKeys = new Map(await Promise.all(candidatesWithFiles.map(([key]) => slots.with(async () => {
+    try { return [key, await head(key)] as const; } catch { return [key, null] as const; }
+  }))));
+  await gently((function* (): Steps<void> {
+    for (const [key, aliases] of sources) {
+      yield BREATH;
+      const confirmed = confirmedKeys.get(key) ?? null;
+      if (confirmed === null || confirmed.size <= 0) continue;
+      const candidates = new Set<string>();
+      for (const alias of aliases) {
+        const dir = join(cache, alias);
+        for (const name of yield* namesIn(dir)) if (/^preview(?:-light)?\.(?:mp4|m4a|done)$/.test(name)) candidates.add(join(dir, name));
+      }
+      for (const path of candidates) {
+        yield BREATH;
+        if (removed.has(path) || paths.has(path) || pending.has(path) || uploadingNow(path)) continue;
+        const stat = yield* lstatOf(path);
+        if (stat === null || !stat.isFile()) continue;
+        // A concurrent job finished or removed it: not counted.
+        if (!dryRun && (yield* rmOf(path, false)) !== null) continue;
+        removed.add(path);
+        report.files += 1;
+        report.bytes += stat.size;
+        if (report.removed.length < 50) report.removed.push(path);
+      }
+    }
+  })());
+  report.folders = new Set([...removed].map((path) => path.slice(0, path.lastIndexOf("/")))).size;
+  return report;
+}
+
+/**
+ * `cleanCloudPreviews`' reading of the projects: the paths they use directly, and each cloud proxy's media keys (its
+ * aliases), older keys carried with analysis followed; null when a project won't read (then nothing is known unused).
+ */
+function* previewSources(app: App, dryRun: boolean): Steps<{ paths: Set<string>; sources: Map<string, Set<string>> } | null> {
+  const cache = app.store.cacheDir();
   const paths = new Set<string>();
   const sources = new Map<string, Set<string>>();
   const add = (key: string, alias: string) => {
@@ -137,70 +429,62 @@ export async function cleanCloudPreviews(
   };
   // Read the saved locations before store.get normalises them for playback.
   // An unreadable project makes the reference set incomplete: keep everything.
-  for (const name of safeList(join(app.store.home, "projects")).filter((name) => name.endsWith(".json"))) {
+  const dir = join(app.store.home, "projects");
+  for (const name of (yield* namesIn(dir)).filter((name) => name.endsWith(".json"))) {
+    yield BREATH;
+    const read = yield* projectMedia.of(join(dir, name), mediaOfText);
+    if (read === null || read.value === "bad") return null;
     try {
-      const project = JSON.parse(fs.readFileSync(join(app.store.home, "projects", name), "utf8")) as {
-        media?: { path: string; kind: string; cloud?: { proxy?: string } | null }[];
-      };
-      for (const media of project.media ?? []) {
-        if (typeof media.path !== "string") return report;
+      for (const media of (read.value.media ?? []) as { path: string; kind: string; cloud?: { proxy?: string } | null }[]) {
+        yield BREATH;
+        if (typeof media.path !== "string") return null;
         if (media.cloud?.proxy === undefined || !cloud.validKey(media.cloud.proxy)) {
           paths.add(media.path);
           continue;
         }
         if (media.kind === "image") continue;
         const key = media.cloud.proxy;
-        add(key, app.native.mediaKey(media.path));
-        add(key, app.native.mediaKey(localPath(cache, key)));
-        add(key, app.native.mediaKey(playbackPath(key, app.port)));
-        // Carry paid analysis before the old proxy's metadata (and key) goes.
-        if (!dryRun) carryAnalysis(cache, media.path, playbackPath(key, app.port));
+        const keyed = [yield* keyOf(app, media.path, true), yield* keyOf(app, localPath(cache, key), true), yield* keyOf(app, playbackPath(key, app.port), true)];
+        // The addon couldn't key one: as when it threw, nothing is known unused.
+        if (keyed.some((one) => one.key === null)) return null;
+        for (const one of keyed) add(key, one.key as string);
+        // Carry paid analysis before the old proxy's metadata (and key) goes; with no folder of the original's key
+        // there's nothing to carry (cloud_media.ts `carryAnalysis` finds no analysis files and does nothing).
+        if (!dryRun && (yield* statOf(join(cache, keyed[0]!.key as string))) !== null) carryAnalysis(cache, media.path, playbackPath(key, app.port));
       }
-    } catch { return report; }
+    } catch {
+      return null;
+    }
   }
   // Analysis carried from an original records its older media keys. Follow
   // those aliases so migrating a project doesn't strand its old previews.
   for (const aliases of sources.values()) {
     for (const alias of aliases) {
+      yield BREATH;
+      const text = yield* textOf(join(cache, alias, "watch", "keys.json"));
+      if (text === null) continue;
       try {
-        const value = JSON.parse(fs.readFileSync(join(cache, alias, "watch", "keys.json"), "utf8")) as { keys?: unknown };
+        const value = JSON.parse(text) as { keys?: unknown };
         if (Array.isArray(value.keys)) for (const key of value.keys) if (typeof key === "string" && /^[0-9a-f]{16}$/.test(key)) aliases.add(key);
       } catch { /* no older analysis */ }
     }
   }
-  const pending = pendingUploads(app.store.home);
-  if (pending === null) return report;
-  const removed = new Set<string>();
-  const slots = new Semaphore(3);
-  const candidatesWithFiles = [...sources].filter(([, aliases]) =>
-    [...aliases].some((alias) => safeList(join(cache, alias)).some((name) => /^preview(?:-light)?\.(?:mp4|m4a)$/.test(name))),
-  );
-  const confirmedKeys = new Map(await Promise.all(candidatesWithFiles.map(([key]) => slots.with(async () => {
-    try { return [key, await head(key)] as const; } catch { return [key, null] as const; }
-  }))));
+  return { paths, sources };
+}
+
+/** The proxies with a legacy preview in one of their aliases' folders. */
+function* withPreviews(cache: string, sources: Map<string, Set<string>>): Steps<[string, Set<string>][]> {
+  const out: [string, Set<string>][] = [];
   for (const [key, aliases] of sources) {
-    const confirmed = confirmedKeys.get(key) ?? null;
-    if (confirmed === null || confirmed.size <= 0) continue;
-    const candidates = new Set<string>();
     for (const alias of aliases) {
-      const dir = join(cache, alias);
-      for (const name of safeList(dir)) if (/^preview(?:-light)?\.(?:mp4|m4a|done)$/.test(name)) candidates.add(join(dir, name));
-    }
-    for (const path of candidates) {
-      if (removed.has(path) || paths.has(path) || pending.has(path) || uploadingNow(path)) continue;
-      try {
-        const stat = fs.lstatSync(path);
-        if (!stat.isFile()) continue;
-        if (!dryRun) fs.rmSync(path);
-        removed.add(path);
-        report.files += 1;
-        report.bytes += stat.size;
-        if (report.removed.length < 50) report.removed.push(path);
-      } catch { /* a concurrent job finished or removed it */ }
+      yield BREATH;
+      if ((yield* namesIn(join(cache, alias))).some((name) => /^preview(?:-light)?\.(?:mp4|m4a)$/.test(name))) {
+        out.push([key, aliases]);
+        break;
+      }
     }
   }
-  report.folders = new Set([...removed].map((path) => path.slice(0, path.lastIndexOf("/")))).size;
-  return report;
+  return out;
 }
 
 /**
@@ -223,35 +507,24 @@ function pendingUploads(home: string): Set<string> | null {
 }
 
 /** Bytes under `path`, each file once however many hard links it has (a proxy and its preview are one file). */
-function size(path: string, seen = new Set<string>()): number {
-  try {
-    const stat = fs.statSync(path);
-    if (!stat.isDirectory()) {
-      const inode = `${stat.dev}:${stat.ino}`;
-      if (seen.has(inode)) return 0;
-      seen.add(inode);
-      return stat.size;
-    }
-    return fs.readdirSync(path).reduce((total, name) => total + size(join(path, name), seen), 0);
-  } catch {
-    return 0;
+function* sizeOf(path: string, seen = new Set<string>(), known?: fs.Stats): Steps<number> {
+  yield BREATH;
+  const stat = known ?? (yield* statOf(path));
+  if (stat === null) return 0;
+  if (!stat.isDirectory()) {
+    const inode = `${stat.dev}:${stat.ino}`;
+    if (seen.has(inode)) return 0;
+    seen.add(inode);
+    return stat.size;
   }
+  let total = 0;
+  for (const name of yield* namesIn(path)) total += yield* sizeOf(join(path, name), seen);
+  return total;
 }
 
-function safeList(dir: string): string[] {
-  try {
-    return fs.readdirSync(dir);
-  } catch {
-    return [];
-  }
-}
-
-function age(path: string, now: number): number {
-  try {
-    return now - fs.statSync(path).mtimeMs;
-  } catch {
-    return 0;
-  }
+function* ageOf(path: string, now: number): Steps<number> {
+  const stat = yield* statOf(path);
+  return stat === null ? 0 : now - stat.mtimeMs;
 }
 
 /**
@@ -260,7 +533,7 @@ function age(path: string, now: number): number {
  * media work started). Null when a project file won't read: then nothing it
  * might use is known, so everything counts as used.
  */
-function used(app: App, pending: Set<string> | null): Used | null {
+function* used(app: App, pending: Set<string> | null): Steps<Used | null> {
   const paths = new Set<string>();
   // Files a project uses that aren't here: their key can't be known.
   let missing = 0;
@@ -274,22 +547,23 @@ function used(app: App, pending: Set<string> | null): Used | null {
   const goingUp = new Set(uploadsNow().flatMap((one) => [one.file, one.originalKey, ...(one.proxy === null ? [] : [one.proxy])]));
   const notUp = (one: unknown) => typeof one === "string" && (pending === null || pending.has(one) || goingUp.has(one) || uploadingNow(one));
   const dir = join(home, "projects");
-  for (const name of safeList(dir).filter((name) => name.endsWith(".json"))) {
-    let media: { path?: unknown; kind?: unknown; cloud?: { source?: unknown; original?: unknown; proxy?: unknown } | null }[] = [];
-    let at = 0;
-    try {
-      at = fs.statSync(join(dir, name)).mtimeMs;
-      const value = JSON.parse(fs.readFileSync(join(dir, name), "utf8")) as { media?: typeof media };
-      media = Array.isArray(value.media) ? value.media : [];
-    } catch (error) {
-      diag.warn("cache", `${name} won't read, so nothing it might use is cleaned (${diag.messageOf(error)})`);
+  for (const name of (yield* namesIn(dir)).filter((name) => name.endsWith(".json"))) {
+    yield BREATH;
+    const read = yield* projectMedia.of(join(dir, name), mediaOfText);
+    if (read === null || read.value === "bad") {
+      diag.warn("cache", `${name} won't read, so nothing it might use is cleaned`);
       return null;
     }
+    const at = read.stat.mtimeMs;
+    const media = (Array.isArray(read.value.media) ? read.value.media : []) as { path?: unknown; kind?: unknown; cloud?: { source?: unknown; original?: unknown; proxy?: unknown } | null }[];
     const id = name.slice(0, -".json".length);
     const project: UsedProject = { saved: at, tokens: new Set(), blocks: new Set(), unconfirmed: false };
     projects.set(id, project);
     for (const item of media) {
+      yield BREATH;
       const cloudMedia = item.cloud;
+      // Whether its file is here, and its key: looked at once for both questions below.
+      const here = typeof item.path === "string" ? yield* keyOf(app, item.path, false) : null;
       if (cloudMedia !== null && typeof cloudMedia === "object") {
         for (const key of [cloudMedia.original, cloudMedia.proxy]) {
           if (typeof key !== "string") continue;
@@ -303,32 +577,31 @@ function used(app: App, pending: Set<string> | null): Used | null {
         }
         // Not in R2 yet: its upload pending or under way (the only copy may be here).
         if (typeof cloudMedia.original !== "string" || notUp(cloudMedia.original) || notUp(cloudMedia.proxy) || notUp(item.path)) project.unconfirmed = true;
-      } else if (typeof item.path === "string" && item.path.startsWith(`${home}/`) && fs.existsSync(item.path)) {
+      } else if (typeof item.path === "string" && item.path.startsWith(`${home}/`) && here?.exists === true) {
         // A file Edit made or keeps for it (a smoothed shot, a map, an upload) that hasn't gone up.
         project.unconfirmed = true;
       }
-      if (typeof item.path !== "string") continue;
+      if (typeof item.path !== "string" || here === null) continue;
       paths.add(item.path);
       let users = pathProjects.get(item.path);
       if (users === undefined) pathProjects.set(item.path, users = new Set());
       users.add(id);
       // A missing file keys differently (no size or time): its folder would look unused.
-      if (!fs.existsSync(item.path)) {
+      if (!here.exists) {
         if (typeof item.cloud?.proxy !== "string" || !cloud.validKey(item.cloud.proxy)) missing += 1;
         continue;
       }
-      try {
-        const key = app.native.mediaKey(item.path);
-        keys.add(key);
-        saved.set(key, Math.max(saved.get(key) ?? 0, at));
-        let users = keyProjects.get(key);
-        if (users === undefined) keyProjects.set(key, users = new Set());
-        users.add(id);
-      } catch {
-        // A path the addon can't key: nothing of it is touched either way.
-      }
+      // A path the addon can't key: nothing of it is touched either way.
+      if (here.key === null) continue;
+      const key = here.key;
+      keys.add(key);
+      saved.set(key, Math.max(saved.get(key) ?? 0, at));
+      let keyUsers = keyProjects.get(key);
+      if (keyUsers === undefined) keyProjects.set(key, keyUsers = new Set());
+      keyUsers.add(id);
     }
   }
+  projectMedia.prune();
   return { paths, keys, saved, missing, projects, keyProjects, pathProjects };
 }
 
@@ -434,7 +707,7 @@ function standings(app: App, inUse: Used, done: Set<string>, now: number): Map<s
 }
 
 /** Whose each file is (`Entry.owners`), from the projects' media: its folder's project, its footage's place in keys, its block folder, its media key. */
-function attribute(entries: Entry[], cache: string, home: string, inUse: Used): void {
+function* attribute(entries: Entry[], cache: string, home: string, inUse: Used): Steps<void> {
   const cloudDir = `${join(cache, "cloud")}/`;
   const mediaDir = `${join(home, "media")}/`;
   const byToken = new Map<string, Set<string>>();
@@ -453,11 +726,12 @@ function attribute(entries: Entry[], cache: string, home: string, inUse: Used): 
   const downloads = new Map<string, string>();
   for (const [key, entry] of Object.entries(readLocalOriginals(cache))) if (typeof entry.path === "string") downloads.set(entry.path, key);
   const blockTokens = new Map<string, string | null>();
-  const blockToken = (folder: string): string | null => {
+  const blockToken = function* (folder: string): Steps<string | null> {
     if (!blockTokens.has(folder)) {
       let token: string | null = null;
+      const text = yield* textOf(join(cloudDir, "blocks", folder, "meta.json"));
       try {
-        const meta = JSON.parse(fs.readFileSync(join(cloudDir, "blocks", folder, "meta.json"), "utf8")) as { key?: unknown };
+        const meta = JSON.parse(text ?? "") as { key?: unknown };
         if (typeof meta.key === "string") token = ownerToken(meta.key);
       } catch {
         // A folder from before keys were kept: known by its name alone.
@@ -467,6 +741,7 @@ function attribute(entries: Entry[], cache: string, home: string, inUse: Used): 
     return blockTokens.get(folder) ?? null;
   };
   for (const entry of entries) {
+    yield BREATH;
     const owners = new Set<string>(entry.project === null ? [] : [entry.project]);
     const add = (ids: Set<string> | undefined) => {
       for (const id of ids ?? []) owners.add(id);
@@ -476,7 +751,7 @@ function attribute(entries: Entry[], cache: string, home: string, inUse: Used): 
       if (relative.startsWith("blocks/")) {
         const folder = relative.slice("blocks/".length).split("/")[0] ?? "";
         add(byBlock.get(folder));
-        const token = blockToken(folder);
+        const token = yield* blockToken(folder);
         if (token !== null) add(byToken.get(token));
       } else {
         const token = ownerToken(`edit/${relative}`);
@@ -516,13 +791,13 @@ interface Survey {
  * never one that's pinned, on its way up, written lately, half-written, a block folder's note, the export being made
  * ahead, a script's original, or not Edit's own copy.
  */
-function survey(app: App, entries: Entry[], now: number, done: Set<string>, known?: Used | null): Survey {
+function* survey(app: App, entries: Entry[], now: number, done: Set<string>, known?: Used | null): Steps<Survey> {
   const cache = app.store.cacheDir();
   const home = app.store.home;
   const pending = pendingUploads(home);
-  const inUse = known === undefined ? used(app, pending) : known;
+  const inUse = known === undefined ? yield* used(app, pending) : known;
   if (inUse === null) return { inUse, groups: [] };
-  attribute(entries, cache, home, inUse);
+  yield* attribute(entries, cache, home, inUse);
   const standing = standings(app, inUse, done, now);
   let exporting = true;
   try {
@@ -535,10 +810,13 @@ function survey(app: App, entries: Entry[], now: number, done: Set<string>, know
   const fresh = exporting ? RECENT : COPY_RECENT;
   const making = makingAhead(app);
   const ahead = making === null ? null : aheadFile(cache, making);
-  const scripts = writerStore.originals(writerStore.dataDir(home));
+  const scripts = yield* scriptOriginals(home);
+  // Script mode's copies go by its own word alone (`cleanCache`'s step for them), never with a project's.
+  const scriptCopies = `${ledgerOf.scriptsOf(home)}/`;
   const groups = new Map<string, Group>();
   for (const entry of entries) {
-    if (!entry.evictable || ledgerOf.tierOf(entry.kind) === null) continue;
+    yield BREATH;
+    if (!entry.evictable || ledgerOf.tierOf(entry.kind) === null || entry.path.startsWith(scriptCopies)) continue;
     const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
     if (PARTIAL.test(name) || (name === "meta.json" && entry.path.includes("/cloud/blocks/"))) continue;
     if (now - entry.at < fresh || pinned(entry.path) || scripts.has(entry.path)) continue;
@@ -591,7 +869,7 @@ export async function confirmOriginals(
   const asks: [Entry, string][] = [];
   // Nobody's originals go only for room: asked about only while the disk is short of what Edit keeps free.
   const short = diskHooks.free(cache) < keepFreeBytes(cache);
-  for (const group of survey(app, entries, now, done).groups) {
+  for (const group of (await gently(survey(app, entries, now, done))).groups) {
     if (group.state !== "done" && !(group.state === "nobody's" && short)) continue;
     for (const entry of group.files) {
       if (ledgerOf.tierOf(entry.kind) !== 2) continue;
@@ -611,7 +889,10 @@ export async function confirmOriginals(
   return confirmed;
 }
 
-/** Cleans the cache as the module notes say; with `dryRun`, only says what would go. */
+/**
+ * Cleans the cache as the module notes say; with `dryRun`, only says what would go. All of it on the thread, at once:
+ * for callers that need the answer before they go on (tests, `makeRoom`); the server's own passes use `cleanCacheGently`.
+ */
 export function cleanCache(
   app: App,
   dryRun: boolean,
@@ -619,31 +900,51 @@ export function cleanCache(
   given?: Limits,
   done: Set<string> = new Set(),
 ): CleanReport {
+  return atOnce(cleanSteps(app, dryRun, now, given, done, false));
+}
+
+/** `cleanCache`, the same files taken in the same order, off the server's thread with a breath every few milliseconds. */
+export function cleanCacheGently(
+  app: App,
+  dryRun: boolean,
+  now = Date.now(),
+  given?: Limits,
+  done: Set<string> = new Set(),
+): Promise<CleanReport> {
+  return gently(cleanSteps(app, dryRun, now, given, done, true));
+}
+
+function* cleanSteps(app: App, dryRun: boolean, now: number, given: Limits | undefined, done: Set<string>, gentle: boolean): Steps<CleanReport> {
   // A home that isn't one (EDIT_HOME="") cleans nothing: its cache would be "/cache".
   if (app.store.home.trim() === "" || app.store.home === "/") return { folders: 0, files: 0, bytes: 0, removed: [] };
   const cache = app.store.cacheDir();
   // The cache and the media are walked once a pass (the ledger's, off the thread, when the server's pass asks), and
   // what's taken off is counted from it (Astra's audit, Nov 18: four walks a pass on the server's thread).
-  const entries = given?.entries ?? ledgerOf.walkSync(ledgerOf.rootsOf(app.store.home, cache));
+  const walked = given?.entries === undefined;
+  const entries = given?.entries ?? ((yield { op: "walk", roots: ledgerOf.rootsOf(app.store.home, cache) }) as Entry[]);
   const limits: Limits = given ?? { freeBytes: keepFreeBytes(cache) };
   const confirmed = limits.confirmed ?? new Set<string>();
   const report: CleanReport = { folders: 0, files: 0, bytes: 0, removed: [] };
   const gone = new Set<string>();
   const seen = new Set<string>();
-  const remove = (path: string) => {
+  const remove = function* (path: string): Steps<void> {
+    yield BREATH;
     // An export reading it, or about to (its footage, an effect's render, the export made ahead it copies its chunks
-    // from: file_pins.ts): left for the next pass.
-    if (pinned(path) || gone.has(path)) return;
+    // from: file_pins.ts): left for the next pass. A gentle pass takes a file seconds after it chose it, so an upload
+    // started on it meanwhile keeps it too.
+    if (pinned(path) || gone.has(path) || (gentle && uploadingNow(path))) return;
     // Gone since the ledger counted it (another pass, the export that made it): nothing to take.
-    if (!fs.existsSync(path)) {
+    const stat = yield* statOf(path);
+    if (stat === null) {
       if (!dryRun) ledger.forget(path);
       return;
     }
-    const bytes = size(path, seen);
+    const bytes = yield* sizeOf(path, seen, stat);
     if (!dryRun) {
-      try {
-        fs.rmSync(path, { recursive: true, force: true });
-      } catch (error) {
+      // Asked once more right before it goes (the size of a big folder is a walk of it, breaths and all).
+      if (pinned(path)) return;
+      const error = yield* rmOf(path, true);
+      if (error !== null) {
         diag.warn("cache", `couldn't remove ${path}: ${diag.messageOf(error)}`);
         return;
       }
@@ -656,19 +957,15 @@ export function cleanCache(
     report.bytes += bytes;
     if (report.removed.length < 50) report.removed.push(path);
   };
-  let names: string[];
-  try {
-    names = fs.readdirSync(cache);
-  } catch {
-    return report;
-  }
-  const inUse = used(app, pendingUploads(app.store.home));
+  const names = yield* listOf(cache);
+  if (names === null) return report;
+  const inUse = yield* used(app, pendingUploads(app.store.home));
   // The window's copies of a long video's pieces cut the old way (native_preview.ts `oldCuts`: every frame from the
   // video's start, up to 955 MB a minute, never read since Nov 18), whatever their age: cut again small if wanted.
   for (const path of oldCuts(cache)) {
     // A folder goes once its files have (one pinned stays, and so does its folder).
-    if (safeList(path).length > 0) continue;
-    remove(path);
+    if ((yield* namesIn(path)).length > 0) continue;
+    yield* remove(path);
   }
   // Footage Edit downloaded from Drive (drive_import.ts) whose original is in
   // the cloud: the copy only speeds exports up, so it goes once unused a while.
@@ -683,7 +980,7 @@ export function cleanCache(
     // Not while its upload to the cloud is still going.
     if (uploadingNow(entry.path)) continue;
     if (inUse === null || inUse.paths.has(entry.path) || now - (entry.used_ms ?? entry.mtime_ms) < DOWNLOADED) continue;
-    remove(entry.path);
+    yield* remove(entry.path);
     if (!dryRun) {
       delete known[key];
       dropped = true;
@@ -699,22 +996,19 @@ export function cleanCache(
   // it's asked for again.
   if (inUse !== null) {
     // A script's original can be one of these when it couldn't be hard-linked (another disk).
-    const scripts = writerStore.originals(writerStore.dataDir(app.store.home));
+    const scripts = yield* scriptOriginals(app.store.home);
     const generated = (relative: string) => /(?:^|\/)smooth\/[^/]+$/.test(relative) || /^(?:[A-Za-z0-9_-]+\/)?drive\/youtube\/[A-Za-z0-9_-]{6,}\/[^/]+$/.test(relative);
     const places: [string, (relative: string) => boolean][] = [...[...roots].map((root): [string, (relative: string) => boolean] => [root, generated]), [join(app.store.home, "library"), () => true]];
     for (const [root, wanted] of places) {
       const stack = [root];
       for (let at = stack.pop(); at !== undefined; at = stack.pop()) {
-        for (const name of safeList(at)) {
+        for (const name of yield* namesIn(at)) {
+          yield BREATH;
           const path = join(at, name);
-          let stat: fs.Stats;
-          try {
-            stat = fs.statSync(path);
-          } catch {
-            continue;
-          }
+          const stat = yield* statOf(path);
+          if (stat === null) continue;
           if (stat.isDirectory()) stack.push(path);
-          else if (wanted(path.slice(root.length + 1)) && !inUse.paths.has(path) && !scripts.has(path) && !uploadingNow(path) && now - stat.mtimeMs >= (PARTIAL.test(name) ? DAY : RECENT)) remove(path);
+          else if (wanted(path.slice(root.length + 1)) && !inUse.paths.has(path) && !scripts.has(path) && !uploadingNow(path) && now - stat.mtimeMs >= (PARTIAL.test(name) ? DAY : RECENT)) yield* remove(path);
         }
       }
     }
@@ -722,41 +1016,39 @@ export function cleanCache(
   // Chunks an export left when it stopped part-way (the engine's chunks.rs):
   // a run again soon carries on from them; after a few days they go.
   const chunksDir = join(cache, "export-chunks");
-  for (const project of safeList(chunksDir)) {
-    for (const entry of safeList(join(chunksDir, project))) {
+  for (const project of yield* namesIn(chunksDir)) {
+    for (const entry of yield* namesIn(join(chunksDir, project))) {
+      yield BREATH;
       if (!entry.endsWith(".mp4")) continue;
       const path = join(chunksDir, project, entry);
-      if (age(path, now) >= DOWNLOADED) remove(path);
+      if ((yield* ageOf(path, now)) >= DOWNLOADED) yield* remove(path);
     }
     // Its sound kept a minute at a time (smooth playback's, the engine's mix.rs render_kept), the same way.
-    for (const entry of safeList(join(chunksDir, project, "sound"))) {
+    for (const entry of yield* namesIn(join(chunksDir, project, "sound"))) {
       const path = join(chunksDir, project, "sound", entry);
-      if (age(path, now) >= DOWNLOADED) remove(path);
+      if ((yield* ageOf(path, now)) >= DOWNLOADED) yield* remove(path);
     }
     // A share's review pieces of its chunks (reviews.ts `reviewCopyFromChunks`, 1.1-1.5 GB a project on mandalorian,
     // never taken before Nov 18): the next share's copy is made from them, so they go a few days after.
-    for (const entry of safeList(join(chunksDir, project, "review"))) {
+    for (const entry of yield* namesIn(join(chunksDir, project, "review"))) {
       const path = join(chunksDir, project, "review", entry);
-      if (age(path, now) >= DOWNLOADED) remove(path);
+      if ((yield* ageOf(path, now)) >= DOWNLOADED) yield* remove(path);
     }
   }
   for (const name of names) {
     if (!/^[0-9a-f]{16}$/.test(name)) continue;
+    yield BREATH;
     const dir = join(cache, name);
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(dir);
-    } catch {
-      continue;
-    }
+    const entries = yield* listOf(dir);
+    if (entries === null) continue;
     // With a used file missing, no folder can be known unused (its key is unknown).
     const unused = inUse !== null && inUse.missing === 0 && !inUse.keys.has(name);
     let touched = false;
     for (const entry of entries) {
       const path = join(dir, entry);
-      if (age(path, now) < (PARTIAL.test(entry) ? DAY : RECENT)) continue;
+      if ((yield* ageOf(path, now)) < (PARTIAL.test(entry) ? DAY : RECENT)) continue;
       if (PARTIAL.test(entry) || (unused && REBUILT.test(entry))) {
-        remove(path);
+        yield* remove(path);
         touched = true;
       }
     }
@@ -765,11 +1057,12 @@ export function cleanCache(
   // A review copy is removed once its share is published; one a share that
   // failed left (Oct 29: a 669 MB one, two days old) goes after a few days.
   const reviewsDir = join(cache, "reviews");
-  for (const project of safeList(reviewsDir)) {
-    for (const entry of safeList(join(reviewsDir, project))) {
+  for (const project of yield* namesIn(reviewsDir)) {
+    for (const entry of yield* namesIn(join(reviewsDir, project))) {
+      yield BREATH;
       if (!entry.endsWith(".mp4")) continue;
       const path = join(reviewsDir, project, entry);
-      if (age(path, now) >= DOWNLOADED) remove(path);
+      if ((yield* ageOf(path, now)) >= DOWNLOADED) yield* remove(path);
     }
   }
   // Research images no project links any more (research.ts's pool).
@@ -779,12 +1072,38 @@ export function cleanCache(
     report.files += 1;
     if (report.removed.length < 50) report.removed.push(research.poolDir(app.store.home));
   }
+  const free = () => (limits.free !== undefined ? limits.free + report.bytes : diskHooks.free(cache) + (dryRun ? report.bytes : 0));
+  const short = () => limits.freeBytes - free();
+  // The recordings Script mode keeps here so Start the edit cuts from them (writer/streamed.ts, Nov 21): each is a
+  // whole original the cloud holds (R2 said so at its size), so they go for room before any project's copies, oldest
+  // unused first, never one cut from now nor one an import is reading again. Only for room: with the disk over what's
+  // to be kept free they all stay.
+  const scriptCopies = () => {
+    if (short() <= 0) return;
+    // Counted as they go, too: a Mac's free space can lag a delete (APFS's local snapshots), and the disk's word alone
+    // would give up every copy for room one of them made.
+    const before = free();
+    let given = 0;
+    ledgerOf.scriptCopies.letGo(
+      () => limits.freeBytes - Math.max(free(), before + given),
+      (path, bytes) => {
+        given += bytes;
+        gone.add(path);
+        if (!dryRun) ledger.forget(path);
+        report.files += 1;
+        report.bytes += bytes;
+        if (report.removed.length < 50) report.removed.push(path);
+      },
+      dryRun,
+    );
+  };
   // By project state (see the top).
-  if (inUse !== null) {
-    const { groups } = survey(app, entries, now, done, inUse);
-    const take = (entry: Entry) => {
+  if (inUse === null) scriptCopies();
+  else {
+    const { groups } = yield* survey(app, entries, now, done, inUse);
+    const take = function* (entry: Entry): Steps<void> {
       const before = report.files;
-      remove(entry.path);
+      yield* remove(entry.path);
       // A legacy preview of local footage: the media's own note of it goes too (made again when it's opened).
       const folder = /^([0-9a-f]{16})\/preview/.exec(entry.path.slice(cache.length + 1))?.[1];
       if (folder !== undefined && report.files > before && !dryRun) app.media.forgetKey(folder);
@@ -792,36 +1111,35 @@ export function cleanCache(
     const tierOf = (entry: Entry) => ledgerOf.tierOf(entry.kind);
     // Let go (done on Home, or idle a week, or deleted): all of its copies at each pass, its originals once R2 has them.
     for (const group of groups.filter((one) => one.state === "done")) {
-      for (const entry of group.files) if (tierOf(entry) !== 2 || confirmed.has(entry.path)) take(entry);
+      for (const entry of group.files) if (tierOf(entry) !== 2 || confirmed.has(entry.path)) yield* take(entry);
     }
-    const free = () => (limits.free !== undefined ? limits.free + report.bytes : diskHooks.free(cache) + (dryRun ? report.bytes : 0));
-    const short = () => limits.freeBytes - free();
-    // Short of what's to be kept free: nobody's copies, the oldest first; then the projects not in work, whole, the
-    // one worked on longest ago first, each its derived copies and then its proxies.
+    // Short of what's to be kept free: nobody's copies, the oldest first; then Script mode's copies; then the projects
+    // not in work, whole, the one worked on longest ago first, each its derived copies and then its proxies.
     if (short() > 0) {
       const nobody = groups.find((one) => one.state === "nobody's");
       for (const entry of [...(nobody?.files ?? [])].sort((a, b) => a.at - b.at)) {
         if (short() <= 0) break;
-        if (tierOf(entry) !== 2 || confirmed.has(entry.path)) take(entry);
+        if (tierOf(entry) !== 2 || confirmed.has(entry.path)) yield* take(entry);
       }
     }
-    const wholeTier = (group: Group, tier: 0 | 1) => {
-      for (const entry of group.files) if (tierOf(entry) === tier) take(entry);
+    scriptCopies();
+    const wholeTier = function* (group: Group, tier: 0 | 1): Steps<void> {
+      for (const entry of group.files) if (tierOf(entry) === tier) yield* take(entry);
     };
     for (const group of groups.filter((one) => one.state === "idle").sort((a, b) => a.last - b.last)) {
       if (short() <= 0) break;
-      wholeTier(group, 0);
+      yield* wholeTier(group, 0);
       if (short() <= 0) break;
-      wholeTier(group, 1);
+      yield* wholeTier(group, 1);
     }
     // Under the cache's hard floor with nothing else left: projects in work give their copies up too, the oldest
     // first, but never one open in the last minutes or with work running.
     if (short() > 0 && free() < CACHE_FLOOR_BYTES) {
       for (const group of groups.filter((one) => one.state === "work" && !one.active).sort((a, b) => a.last - b.last)) {
         if (short() <= 0 || free() >= CACHE_FLOOR_BYTES) break;
-        wholeTier(group, 0);
+        yield* wholeTier(group, 0);
         if (short() <= 0 || free() >= CACHE_FLOOR_BYTES) break;
-        wholeTier(group, 1);
+        yield* wholeTier(group, 1);
       }
     }
   }
@@ -831,13 +1149,20 @@ export function cleanCache(
     const left = Object.fromEntries(Object.entries(known).filter(([, entry]) => !gone.has(entry.path)));
     if (Object.keys(left).length < Object.keys(known).length) writeLocalOriginals(cache, left);
   }
-  if (!dryRun) {
-    // What's left, for the ledger: neither a file taken nor one in a folder taken.
+  // What's left, for the ledger: neither a file taken nor one in a folder taken. A gentle pass given the ledger's own
+  // entries leaves it as each removal kept it (`forget`): written over with the list it started from, it would lose
+  // what was noted, and keep what was forgotten, in the seconds it ran.
+  if (!dryRun && (walked || !gentle)) {
     const taken = (path: string) => {
       for (let at = path; at.length > cache.length; at = at.slice(0, at.lastIndexOf("/"))) if (gone.has(at)) return true;
       return gone.has(path);
     };
-    ledger.replace(entries.filter((entry) => !taken(entry.path)), now);
+    const kept: Entry[] = [];
+    for (const entry of entries) {
+      yield BREATH;
+      if (!taken(entry.path)) kept.push(entry);
+    }
+    ledger.replace(kept, now);
   }
   // Project history is metadata, but unbounded it fills a disk alone: past
   // HISTORY_BYTES, the oldest saves go, across every project's
@@ -846,30 +1171,26 @@ export function cleanCache(
   // until Nov 16, all 30 saves of one at a time, past a fixed 100 MB.
   {
     const history = join(app.store.home, "projects", "history");
-    let over = size(history) - HISTORY_BYTES;
+    let over = (yield* sizeOf(history)) - HISTORY_BYTES;
     if (over > 0) {
       const saves: { path: string; at: number }[] = [];
-      for (const id of safeList(history)) {
+      for (const id of yield* namesIn(history)) {
         const dir = join(history, id);
-        const own = safeList(dir)
-          .filter((name) => /^\d+\.json$/.test(name))
-          .map((name) => {
-            const path = join(dir, name);
-            try {
-              return { path, at: fs.statSync(path).mtimeMs };
-            } catch {
-              return null;
-            }
-          })
-          .filter((one): one is { path: string; at: number } => one !== null)
-          .sort((a, b) => b.at - a.at);
+        const own: { path: string; at: number }[] = [];
+        for (const name of (yield* namesIn(dir)).filter((name) => /^\d+\.json$/.test(name))) {
+          yield BREATH;
+          const path = join(dir, name);
+          const stat = yield* statOf(path);
+          if (stat !== null) own.push({ path, at: stat.mtimeMs });
+        }
+        own.sort((a, b) => b.at - a.at);
         saves.push(...own.slice(HISTORY_KEPT_EACH));
       }
       saves.sort((a, b) => a.at - b.at);
       for (const save of saves) {
         if (over <= 0) break;
         const before = report.bytes;
-        remove(save.path);
+        yield* remove(save.path);
         over -= report.bytes - before;
       }
     }
@@ -894,40 +1215,97 @@ function makingAhead(app: App): string | null {
 
 /**
  * Older exports of each project that are no longer wanted (export_retention.ts):
- * with `dryRun` only logged ("would delete …").
+ * with `dryRun` only logged ("would delete …"). Each file goes off the thread
+ * first (an export is gigabytes; its unlink is the disk's wait), then the list
+ * marks it removed (`apply` finds it gone, and only marks and says it).
  */
-export function cleanExports(app: App, dryRun: boolean, now = Date.now()): { files: number; bytes: number; decisions: retention.Decision[] } {
+export async function cleanExports(app: App, dryRun: boolean, now = Date.now()): Promise<{ files: number; bytes: number; decisions: retention.Decision[] }> {
   const home = app.store.home;
   let records: Record<string, retention.Kept[]> = {};
   try {
-    records = JSON.parse(fs.readFileSync(join(home, "exports.json"), "utf8")) as Record<string, retention.Kept[]>;
+    records = JSON.parse(await fs.promises.readFile(join(home, "exports.json"), "utf8")) as Record<string, retention.Kept[]>;
   } catch {
     return { files: 0, bytes: 0, decisions: [] };
   }
   const roots = new Set(exportRoots(home));
   const shared = reviews.read(home).shared;
   const free = diskHooks.free(app.store.cacheDir());
+  // When each project went to Drive, from its file (only the reason a removal gives): until Nov 21 the store loaded
+  // each project for it, a long edit's whole file parsed and kept in memory, 0.6 s of the thread for a 10 MB one.
+  const driveAt = await gently((function* (): Steps<Map<string, number | null>> {
+    const out = new Map<string, number | null>();
+    for (const id of Object.keys(records)) {
+      yield BREATH;
+      const read = id.length <= 64 && /^[A-Za-z0-9_-]+$/.test(id) ? yield* projectMedia.of(join(home, "projects", `${id}.json`), mediaOfText) : null;
+      out.set(id, read === null || read.value === "bad" ? null : read.value.driveAt);
+    }
+    return out;
+  })());
   const decisions = retention.decide(records, {
     now,
     roots: [...roots],
     reviewed: (id, path) => shared[id]?.versions.find((version) => version.path === path)?.n ?? null,
-    onDrive: (id) => app.store.get(id)?.project.drive?.uploaded_ms ?? null,
-    busy: (id, path) => {
-      let exporting = false;
-      try {
-        exporting = app.exports.runningFor?.(id)?.output === path;
-      } catch {
-        // No exports here (tests).
-      }
-      return exporting || beingRead(path) || reviews.sharingNow(id) || drive.uploading(id);
-    },
+    onDrive: (id) => driveAt.get(id) ?? null,
+    busy: (id, path) => busyExport(app, id, path),
     short: Number.isFinite(free) ? FREE_FLOOR_BYTES - free : 0,
   });
-  return { ...retention.apply(home, decisions, dryRun), decisions };
+  if (dryRun) return { ...retention.apply(home, decisions, true), decisions };
+  const removed: retention.Decision[] = [];
+  for (const decision of decisions) {
+    if (!decision.remove || decision.removed === undefined) continue;
+    // Asked again as it goes: an export, a share or an upload may have started on it since it was decided.
+    if (busyExport(app, decision.project, decision.path)) continue;
+    try {
+      await fs.promises.rm(decision.path, { force: true });
+    } catch (error) {
+      diag.warn("export", `couldn't delete ${decision.project}: v${decision.version} (${decision.name}, ${(decision.bytes / 1e9).toFixed(2)} GB): ${decision.why}: ${diag.messageOf(error)}`);
+      continue;
+    }
+    removed.push(decision);
+  }
+  return { ...retention.apply(home, removed, false), decisions };
+}
+
+/** Whether an export's file is in use: being exported, read, shared or uploaded to Drive. */
+function busyExport(app: App, id: string, path: string): boolean {
+  let exporting = false;
+  try {
+    exporting = app.exports.runningFor?.(id)?.output === path;
+  } catch {
+    // No exports here (tests).
+  }
+  return exporting || beingRead(path) || reviews.sharingNow(id) || drive.uploading(id);
 }
 
 /** The edits marked done on Home at the last pass (later.ts): room-making between passes knows them too. */
 let doneLately = new Set<string>();
+
+/**
+ * Script mode's copies given up for `wanted` bytes free, when they alone make the room (Nov 21): found from their own
+ * records, with no walk. With them kept down to what Edit keeps free, each recording an import brings down asks for
+ * room, and a whole pass is a pass of the whole cache; the hourly pass takes nobody's copies first. What they freed,
+ * and whether that was enough.
+ */
+function scriptCopiesFirst(app: App, wanted: number): { bytes: number; enough: boolean } {
+  const cache = app.store.cacheDir();
+  const before = diskHooks.free(cache);
+  let quick = 0;
+  ledgerOf.scriptCopies.letGo(
+    () => wanted - Math.max(diskHooks.free(cache), before + quick),
+    (path, bytes) => {
+      quick += bytes;
+      ledger.forget(path);
+    },
+    false,
+  );
+  const enough = wanted - Math.max(diskHooks.free(cache), before + quick) <= 0;
+  if (enough && quick > 0) diag.info("cache", `freed ${(quick / 1e9).toFixed(2)} GB of Script mode's copies for work that needs ${(wanted / 1e9).toFixed(1)} GB free`);
+  return { bytes: quick, enough };
+}
+
+function saidFreed(freed: number, wanted: number): void {
+  if (freed > 0) diag.info("cache", `freed ${(freed / 1e9).toFixed(2)} GB for work that needs ${(wanted / 1e9).toFixed(1)} GB free`);
+}
 
 /**
  * Room for work that needs `wanted` bytes free on the cache's disk and hasn't
@@ -937,13 +1315,57 @@ let doneLately = new Set<string>();
  * disk: nobody's copies, then projects not in work, whole and oldest first,
  * and only with the disk under its hard floor a project in work that isn't
  * open now. What was freed (bytes).
+ *
+ * All of it on the thread, for a caller that reads the disk's free space as
+ * soon as this returns; `makeRoomAsync` makes the same room gently.
  */
 export function makeRoom(app: App, wanted: number): number {
   const cache = app.store.cacheDir();
+  const quick = scriptCopiesFirst(app, wanted);
+  if (quick.enough) return quick.bytes;
   const entries = ledger.covers(cache) ? ledger.all() : undefined;
   const report = cleanCache(app, false, Date.now(), { freeBytes: wanted, ...(entries === undefined ? {} : { entries }) }, doneLately);
-  if (report.bytes > 0) diag.info("cache", `freed ${(report.bytes / 1e9).toFixed(2)} GB for work that needs ${(wanted / 1e9).toFixed(1)} GB free`);
-  return report.bytes;
+  const freed = report.bytes + quick.bytes;
+  saidFreed(freed, wanted);
+  return freed;
+}
+
+/**
+ * One pass at a time (Nov 21): the hourly one and room asked for take turns, so two never take from the same ledger
+ * at once; asks that come while one waits its turn join it, for the most room any of them wants.
+ */
+let lane: Promise<unknown> = Promise.resolve();
+let waiting: { wanted: number; freed: Promise<number> } | null = null;
+
+function inLane<T>(job: () => Promise<T>): Promise<T> {
+  const next = lane.then(job, job);
+  lane = next.catch(() => {});
+  return next;
+}
+
+/**
+ * `makeRoom` off the server's thread: Script mode's copies first, at once, as `makeRoom` gives them; then, still
+ * short, a gentle pass for the room, after the one running now (if any). What was freed (bytes).
+ */
+export async function makeRoomAsync(app: App, wanted: number): Promise<number> {
+  const quick = scriptCopiesFirst(app, wanted);
+  if (quick.enough) return quick.bytes;
+  if (waiting !== null) {
+    waiting.wanted = Math.max(waiting.wanted, wanted);
+    return quick.bytes + (await waiting.freed);
+  }
+  const ask = { wanted, freed: Promise.resolve(0) };
+  ask.freed = inLane(async () => {
+    if (waiting === ask) waiting = null;
+    thread.note("room asked of the cache for work");
+    const cache = app.store.cacheDir();
+    const entries = ledger.covers(cache) ? ledger.all() : undefined;
+    const report = await cleanCacheGently(app, false, Date.now(), { freeBytes: ask.wanted, ...(entries === undefined ? {} : { entries }) }, doneLately);
+    saidFreed(report.bytes, ask.wanted);
+    return report.bytes;
+  });
+  waiting = ask;
+  return quick.bytes + (await ask.freed);
 }
 
 /** The edits marked done on Home (none when Later can't be reached: ordered by when they were worked on alone). */
@@ -959,31 +1381,38 @@ async function doneOnHome(): Promise<Set<string>> {
 
 /**
  * One pass, as the server runs it: the ledger built again off the thread, the originals of projects let go asked of
- * R2, then the cache cleaned to keep what Edit keeps free (`head`: tests stand in for R2).
+ * R2, then the cache cleaned to keep what Edit keeps free (`head`: tests stand in for R2). All of it gently (see the
+ * top), after any pass for room already running.
  */
-export async function cleanPass(app: App, now = Date.now(), head?: (key: string) => Promise<{ size: number } | null>): Promise<CleanReport> {
-  const cache = app.store.cacheDir();
-  const previews = await cleanCloudPreviews(app, false, head);
-  const done = await doneOnHome();
-  doneLately = done;
-  ledger.useRoots(ledgerOf.rootsOf(app.store.home, cache));
-  const entries = await ledger.rebuild();
-  const confirmed = await confirmOriginals(app, entries, done, now, head);
-  // Each said as it starts: on a home of 14,000 cached files a pass keeps the server's thread about three seconds
-  // (mandalorian, Nov 21, each hour), and the hold's line should name which part (thread.ts).
-  thread.note("the hourly cache clean (the cache)");
-  const report = cleanCache(app, false, now, { freeBytes: keepFreeBytes(cache), entries, confirmed }, done);
-  thread.note("the hourly cache clean (old exports)");
-  const old = cleanExports(app, false, now);
-  report.bytes += old.bytes + previews.bytes;
-  report.files += old.files + previews.files;
-  return report;
+export function cleanPass(app: App, now = Date.now(), head?: (key: string) => Promise<{ size: number } | null>): Promise<CleanReport> {
+  return inLane(async () => {
+    const cache = app.store.cacheDir();
+    thread.note("the hourly cache clean (cloud previews)");
+    const previews = await cleanCloudPreviews(app, false, head);
+    const done = await doneOnHome();
+    doneLately = done;
+    ledger.useRoots(ledgerOf.rootsOf(app.store.home, cache));
+    const entries = await ledger.rebuild();
+    thread.note("the hourly cache clean (originals asked of R2)");
+    const confirmed = await confirmOriginals(app, entries, done, now, head);
+    // Each said as it starts (thread.ts): until Nov 21 the next two kept the server's thread 3 to 4.4 s each hour on a
+    // home of 14,000 cached files; now each gives it back every few milliseconds.
+    thread.note("the hourly cache clean (the cache)");
+    const report = await cleanCacheGently(app, false, now, { freeBytes: keepFreeBytes(cache), entries, confirmed }, done);
+    thread.note("the hourly cache clean (old exports)");
+    const old = await cleanExports(app, false, now);
+    pruneKeys();
+    report.bytes += old.bytes + previews.bytes;
+    report.files += old.files + previews.files;
+    return report;
+  });
 }
 
 /** Cleans now and then: a few minutes after the start, then hourly (a day of imports and exports filled the disk). */
 export function startCleaning(app: App): () => void {
   // Work with no room asks the cleaner for it (storage.ts `askForRoom`, `admit`).
   diskHooks.makeRoom = (wanted) => makeRoom(app, wanted);
+  diskHooks.makeRoomAsync = (wanted) => makeRoomAsync(app, wanted);
   ledger.useRoots(ledgerOf.rootsOf(app.store.home, app.store.cacheDir()));
   let running = false;
   const run = async (clean: boolean) => {
@@ -997,8 +1426,15 @@ export function startCleaning(app: App): () => void {
     running = true;
     try {
       if (!clean) {
-        // The first count, soon after the start: room-making has it before the first pass.
-        await ledger.rebuild();
+        // The first count, soon after the start: room-making has it before the first pass, and what it reads of the
+        // projects and scripts (`makeRoom` reads only what has changed since).
+        await inLane(async () => {
+          await ledger.rebuild();
+          await gently((function* (): Steps<void> {
+            yield* used(app, pendingUploads(app.store.home));
+            yield* scriptOriginals(app.store.home);
+          })());
+        });
         diag.info("cache", `this computer holds ${ledger.summary()} of Edit's`);
         return;
       }

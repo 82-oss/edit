@@ -7,7 +7,7 @@ import { playhead, preview } from "../lib/playback";
 import { api, ApiError } from "../lib/api";
 import { cloudApi } from "../lib/cloud";
 import { loadEffects } from "../lib/effects";
-import { clientId, connectEvents, leave, settled, syncScriptJob, useEditor } from "../lib/store";
+import { clientId, connectEvents, leave, settled, syncExport, syncScriptJob, useEditor } from "../lib/store";
 import { clearIn, clearInOut, clearOut, markIn, markOut } from "../lib/inOut";
 import { goToEnd, goToStart, useView } from "../lib/timelineView";
 import { followNotes, startNote } from "../lib/notes";
@@ -22,6 +22,8 @@ import { ImportProblems } from "./MissingBanner";
 import { FootageBack } from "./FootageBack";
 import { FootageDialog, useFootage } from "./FootageReady";
 import { Timeline } from "./Timeline";
+import { V2Timeline } from "./V2Timeline";
+import { resetTimelineHeight as resetV2Height, setTimelineHeight as setV2Height, toggleTimeline, useTimelineShown } from "../lib/timelineShown";
 import { TopBar } from "./TopBar";
 import { PROBLEM_BUTTON, ProblemView } from "./ProblemView";
 import { navigate } from "../lib/route";
@@ -37,6 +39,8 @@ const HEARTBEAT_MS = 30_000;
 export function Editor({ id }: { id: string }) {
   const project = useEditor((state) => state.project);
   const timelineHeight = useEditor((state) => state.timelineHeight);
+  const v2Open = useTimelineShown((state) => state.open);
+  const v2Height = useTimelineShown((state) => state.height);
   const [resizing, setResizing] = useState(false);
   const agentWorking = useAgent((state) => state.running);
   const [importing, setImporting] = useState(false);
@@ -73,6 +77,10 @@ export function Editor({ id }: { id: string }) {
         // list they show as their stills, and the next change to one brings it.
         if (project.hq === true) void loadEffects(id).catch(() => {});
         void syncScriptJob(id);
+        // Its export as the server has it: `load` starts it at none, and only a reconnect asked again, so after a
+        // reload a queued, graphics-waiting or failed export vanished and Export was refused as "already has an
+        // export running" (audit E9, Nov 21).
+        void syncExport(id);
         // A reset the agent was already asking about when the page (re)loaded.
         void api
           .resetAsked(id)
@@ -159,10 +167,9 @@ export function Editor({ id }: { id: string }) {
           <div className="flex min-h-0 flex-1">
             <Viewer />
           </div>
-          {/* A video made the new way (Edit V2) is the viewer and the chat: its timeline is the agent's to work, and the viewer's own bar moves through it. */}
-          {project.hq !== true && (
+          {project.hq !== true ? (
             <>
-              <ResizeBar resizing={resizing} setResizing={setResizing} />
+              <ResizeBar resizing={resizing} setResizing={setResizing} height={timelineHeight} onHeight={(height) => useEditor.getState().setTimelineHeight(height)} onReset={() => useEditor.getState().resetTimelineHeight()} />
               <div
                 className="shrink-0"
                 // A reset glides to the default; while dragged it follows the pointer at once.
@@ -171,6 +178,17 @@ export function Editor({ id }: { id: string }) {
                 <Timeline />
               </div>
             </>
+          ) : (
+            // A video made the new way (Edit V2) is the viewer and the chat; its timeline, read only, is there for whoever
+            // turned it on with the player's Timeline button (Sphe, Nov 21), and nothing of it loads for anyone else.
+            v2Open && (
+              <>
+                <ResizeBar resizing={resizing} setResizing={setResizing} height={v2Height} onHeight={setV2Height} onReset={resetV2Height} />
+                <div className="shrink-0" style={{ height: v2Height, transition: resizing ? "none" : "height 0.32s cubic-bezier(0.2, 0.7, 0.2, 1)" }}>
+                  <V2Timeline />
+                </div>
+              </>
+            )
           )}
         </div>
         {/* Edit V2's chat is wider until it's dragged (Sphe, Nov 12): its graphics talk takes room. */}
@@ -218,7 +236,7 @@ function useDropToChat() {
 
 /** The divider above the timeline (as Repack’s panel gutters): a pill that grows when
  * you’re on it and turns playhead red while dragged; double-click resets the height. */
-function ResizeBar({ resizing, setResizing }: { resizing: boolean; setResizing: (resizing: boolean) => void }) {
+function ResizeBar({ resizing, setResizing, height, onHeight, onReset }: { resizing: boolean; setResizing: (resizing: boolean) => void; height: number; onHeight: (height: number) => void; onReset: () => void }) {
   const drag = useRef<{ y: number; height: number } | null>(null);
   const end = () => {
     drag.current = null;
@@ -234,20 +252,17 @@ function ResizeBar({ resizing, setResizing }: { resizing: boolean; setResizing: 
       )}
       onPointerDown={(event) => {
         (event.target as HTMLElement).setPointerCapture(event.pointerId);
-        drag.current = {
-          y: event.clientY,
-          height: useEditor.getState().timelineHeight,
-        };
+        drag.current = { y: event.clientY, height };
         setResizing(true);
       }}
       onPointerMove={(event) => {
         if (!drag.current) return;
-        const height = drag.current.height - (event.clientY - drag.current.y);
-        useEditor.getState().setTimelineHeight(Math.min(window.innerHeight - 260, Math.max(160, height)));
+        const next = drag.current.height - (event.clientY - drag.current.y);
+        onHeight(Math.min(window.innerHeight - 260, Math.max(160, next)));
       }}
       onPointerUp={end}
       onPointerCancel={end}
-      onDoubleClick={() => useEditor.getState().resetTimelineHeight()}
+      onDoubleClick={onReset}
     >
       <div
         className={cx(
@@ -337,8 +352,14 @@ function useShortcuts({ onImport, onExport }: { onImport: () => void; onExport: 
       const key = event.key.toLowerCase();
       const fps = rate(project.settings);
       const handled = () => event.preventDefault();
-      // A video made the new way shows no timeline: the keys that select, cut and place on one do nothing there (a stray S would split a clip nobody can see).
-      if (project.hq === true && (mod ? ["a", "d", "k"].includes(key) : ["s", "backspace", "delete", "v", "c", "m", "n", "g", "t"].includes(key))) return;
+      // A video made the new way: T opens and closes its timeline, as the player's Timeline button does (Sphe, Nov 21).
+      if (project.hq === true && !mod && !event.altKey && key === "t") {
+        handled();
+        if (!event.repeat) toggleTimeline();
+        return;
+      }
+      // Its timeline is read only: the keys that select, cut and place on one do nothing there (a stray S would split a clip by hand).
+      if (project.hq === true && (mod ? ["a", "d", "k"].includes(key) : ["s", "backspace", "delete", "v", "c", "m", "n", "g"].includes(key))) return;
       // And it watches like a video: a video player's keys.
       if (project.hq === true && !mod && !event.altKey && videoKey(event, fps)) return;
 

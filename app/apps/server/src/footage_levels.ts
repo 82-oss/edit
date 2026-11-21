@@ -11,6 +11,7 @@
 
 import * as fs from "node:fs";
 
+import * as addons from "./addons.ts";
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
 import { isBug } from "./guard.ts";
@@ -287,7 +288,7 @@ export function issues(app: App, project: Project): { issues: Record<string, unk
   // An interrogation's bridges: the library's drones are for bodycam at a
   // scene ("this sounds like funeral music… right here, I don't feel it fits
   // in"), its pulsing and high-pace beds for intros.
-  if (project.style === "interrogation") {
+  if (addons.has(project, "interrogation-music")) {
     // Categories come from the library's listing (read once, then cached).
     const lister = app.library as { list?: (refresh: boolean) => Promise<unknown> };
     void lister.list?.(false).catch(() => {});

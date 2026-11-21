@@ -12,7 +12,7 @@ import type { App } from "../app.ts";
 import * as diag from "../diag.ts";
 import { ApiError, bad, empty, json, notFound } from "../http/errors.ts";
 import { readBytes, readJson, type RouteContext, type Router } from "../http/router.ts";
-import { mayIdeas, mayWorkspace, workspacesOf } from "../ideas/routes.ts";
+import { mayIdea, mayIdeas, workspacesOf } from "../ideas/routes.ts";
 import * as assets from "./assets.ts";
 import * as cloud from "./cloud.ts";
 import { addComment, canonical, editComment, switchVersion, takeFinal } from "./design.ts";
@@ -78,7 +78,8 @@ export function routes(router: Router<App>): void {
       guard();
       try {
         // Only the workspaces this person works on (the cloud refuses the rest too).
-        return json({ thumbnails: (await cloud.list()).filter((row) => mayWorkspace(row.workspace ?? "interrogation")) });
+        // A channel's by the channel alone (ideas/routes.ts `mayIdea`, Nov 21).
+        return json({ thumbnails: (await cloud.list()).filter((row) => mayIdea({ channel: row.summary.channel ?? null, workspace: row.workspace ?? "interrogation" })) });
       } catch (error) {
         failed(error);
       }
@@ -87,6 +88,8 @@ export function routes(router: Router<App>): void {
       guard();
       const body = await readJson<{ title?: unknown; brief?: unknown; channel?: unknown }>(context).catch(() => ({}) as Record<string, unknown>);
       const channel = await channels.channelFor(body.channel, context.app.store.home);
+      // The channel given is all a channel's thumbnail takes (Nov 21); one given since this token was issued, a fresh one first.
+      if (channel !== null && !(await channels.tokenCarries([channel.key], context.app.store.home))) throw new ApiError(403, `${channel.title} isn't given to your account yet: ask an admin to give it to you on accounts.spheceo.com.`);
       const who = by();
       // A new one starts under a placeholder title ("Thumbnail 1", the next free number) until the person names it.
       let title = typeof body.title === "string" ? body.title.trim().slice(0, 120) : "";

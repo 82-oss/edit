@@ -2,6 +2,7 @@
 // tools.json, and each package registers the handlers for its tools here. A
 // declared tool nobody has registered answers that it isn't registered.
 
+import * as addons from "../addons.ts";
 import type { App } from "../app.ts";
 import { allSkillNames } from "../styles.ts";
 import declared from "./tools.json" with { type: "json" };
@@ -50,6 +51,8 @@ export const HQ_TOOLS: readonly string[] = [
   "archive_in_library",
   "remember",
   "teach_removal",
+  "addons",
+  "set_addon",
   "check_removal",
   "start_removal",
   "read_skill",
@@ -86,9 +89,45 @@ export const NOT_IN_HQ: readonly string[] = [
   "reframe",
 ];
 
-/** The tools a chat in a project is offered. */
-export function toolsFor(hq: boolean): Tool[] {
-  return hq ? TOOLS.filter((tool) => !NOT_IN_HQ.includes(tool.name)) : TOOLS.filter((tool) => !HQ_TOOLS.includes(tool.name));
+/** A project as the tool list reads it: Edit V2's or not, its channel, and what its add-ons are asked of. */
+export type ToolsOf = addons.Of & { hq?: boolean | null };
+
+/** A channel's V2 project: the one whose tools its add-ons decide (a V1 project has every tool, a V2 one without a channel V2's own). */
+const addonsDecide = (project: ToolsOf | null | undefined): project is ToolsOf & { channel: string } =>
+  project !== null && project !== undefined && project.hq === true && typeof project.channel === "string" && project.channel !== "";
+
+/** The add-ons that give each tool off NOT_IN_HQ back (addons.ts `tools`), by tool. */
+const GIVEN_BY = new Map<string, addons.Name[]>();
+for (const name of addons.NAMES) for (const tool of addons.CATALOGUE[name].tools ?? []) GIVEN_BY.set(tool, [...(GIVEN_BY.get(tool) ?? []), name]);
+
+/**
+ * The tools a chat in a project is offered. A channel's V2 project gets V2's
+ * list and the tools of the add-ons it has (`short-form` gives back
+ * `reframe`; Nov 21), read from what's cached each time the list is asked:
+ * Claude Code asks once a turn, as each turn connects again (agent.ts), so a
+ * tool an add-on just gave is listed from the agent's next turn. Left out,
+ * `project` is V2's own list.
+ */
+export function toolsFor(hq: boolean, project?: ToolsOf | null): Tool[] {
+  if (!hq) return TOOLS.filter((tool) => !HQ_TOOLS.includes(tool.name));
+  const given = addonsDecide(project) ? new Set([...GIVEN_BY].filter(([, by]) => by.some((name) => addons.has(project, name))).map(([tool]) => tool)) : new Set<string>();
+  return TOOLS.filter((tool) => !NOT_IN_HQ.includes(tool.name) || given.has(tool.name));
+}
+
+/**
+ * Why a channel's V2 project can't call `name`, a tool only an add-on gives
+ * (one it doesn't have), or null. Said so the agent can tell the person what
+ * to ask for; every other project and tool answers as before (Nov 21).
+ */
+export function withheld(project: ToolsOf | null | undefined, name: string): string | null {
+  const by = GIVEN_BY.get(name);
+  if (by === undefined || !addonsDecide(project) || by.some((one) => addons.has(project, one))) return null;
+  const said = by.map((one) => addons.CATALOGUE[one].title).join(" or ");
+  const setHere = by.some((one) => addons.itemOf(project.channel, one)?.on === true);
+  return (
+    `${name} comes with this channel's ${said} add-on, ` +
+    (setHere ? `which is on here for its ${addons.formOf(project) === "long" ? "Shorts" : "long videos"} only: this project is ${addons.formOf(project) === "long" ? "a long one" : "a Short"}.` : `which isn't on here. If the person wants it for every video here, set_addon switches it on (a teacher's to do), and ${name} is yours from your next turn.`)
+  );
 }
 
 // The skill tool's choices are the skills in agent/ (agent_text.ts), so a new

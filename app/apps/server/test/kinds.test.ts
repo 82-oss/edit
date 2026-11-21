@@ -29,8 +29,9 @@ test("a channel's work is only for who's been given that channel, in full or by 
   expect(kinds.mayWork(onChannel, new Set(["use", "edit.bodycam"]))).toBe(false);
   expect(kinds.mayWork(onChannel, new Set(["use", "edit.bodycam", "channel.inspectorted1"]))).toBe(true);
   expect(kinds.mayWork(onChannel, new Set(["use", "edit.bodycam", "channel.inspectorted1.label"]))).toBe(true);
-  // The channel alone isn't the kind of video.
-  expect(kinds.mayWork(onChannel, new Set(["use", "edit.courtroom", "channel.inspectorted1"]))).toBe(false);
+  // The channel given is all it takes, whatever kinds of video they hold (Sphe, Nov 21: it had needed the style too).
+  expect(kinds.mayWork(onChannel, new Set(["use", "edit.courtroom", "channel.inspectorted1"]))).toBe(true);
+  expect(kinds.mayWork(onChannel, new Set(["use", "channel.inspectorted1"]))).toBe(true);
   expect(kinds.mayWork({ ...onChannel, channel: null }, new Set(["use", "edit.bodycam"]))).toBe(true);
   expect(kinds.mayWork(onChannel, null)).toBe(true);
   accounts.signedInForTests(["use", "edit.bodycam"]);

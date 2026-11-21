@@ -22,6 +22,7 @@
  * under `writer/reports/` are put by anyone, read only by an admin.
  */
 import { forbiddenOf, withCaller, type Caller } from "./auth";
+import { holdsAnyChannel, holdsChannel, onChannel } from "./authz";
 import { BadRequest, convexPaused, escapeXml, isObject, objectUrl, r2Config, r2Fetch, Upstream, unescapeXml, xmlValue, type CloudEnv, type R2 } from "./cloud";
 
 const HOUR = 3600;
@@ -82,6 +83,35 @@ export function grantsOf(found: Caller): Grants {
 
 const has = (grants: Grants, id: string) => grants.admin || grants.perms.has(id);
 const anyWork = (grants: Grants) => grants.admin || [...grants.perms].some((perm) => perm.startsWith("scripts."));
+/** Writes scripts at all: a `scripts.*` capability, or a channel given to them, whose scripts are theirs with it (Sphe, Nov 21). */
+const writesAtAll = (grants: Grants) => anyWork(grants) || holdsAnyChannel(grants.perms);
+
+/**
+ * The channel a script's summary names, when it's a channel's (Edit V2's):
+ * footage or commentary, it is the channel's alone (Sphe, Nov 21: "a channel
+ * I've given a person access to should be all they need"; Edit's writer/can.ts
+ * `isChannelScript`, `sees`). Who was given the channel, in full or by its
+ * label, sees and writes it, whatever kinds of script they write; nobody else
+ * does, whatever kinds they write (it had been judged by its kind alone here,
+ * with the channel left to mamagi). Null: no channel's, the kinds rule.
+ */
+export function channelOfScript(summary: unknown): string | null {
+  return isObject(summary) && onChannel(summary.channel) ? summary.channel : null;
+}
+
+/**
+ * Whether the caller may commit or delete a script that says it is `summary`.
+ * `undefined` (a commit that says nothing of what it is) needs a kind of
+ * script, as before: a channel given never makes a script of no channel.
+ */
+export function mayDoScriptWork(summary: unknown, grants: Grants): boolean {
+  if (grants.admin) return true;
+  if (summary === undefined) return anyWork(grants);
+  const channel = channelOfScript(summary);
+  if (channel !== null) return holdsChannel(grants.perms, channel);
+  const work = workOf(summary);
+  return work ? has(grants, work) : anyWork(grants);
+}
 
 /** The work a script is, from its summary, as Script mode's can.ts reads it. */
 export function workOf(summary: unknown): string | null {
@@ -125,16 +155,20 @@ export function mayReadScript(summary: unknown, found: Caller): boolean {
   const grants = grantsOf(found);
   if (found.kind !== "person") return false;
   if (grants.admin) return true;
-  if (summary === undefined) return anyWork(grants) || editsAny(grants);
+  if (summary === undefined) return writesAtAll(grants) || editsAny(grants);
+  const channel = channelOfScript(summary);
+  if (channel !== null) return holdsChannel(grants.perms, channel);
   if (grants.perms.has(scriptWork(summary))) return true;
   const style = scriptEditStyle(summary);
   return style === null ? editsAny(grants) : grants.perms.has(`edit.${style}`);
 }
 
-/** Whether the caller may change a script with this summary (`undefined`: not in the cloud yet, anyone who writes scripts). */
+/** Whether the caller may change a script with this summary (`undefined`: not in the cloud yet, anyone who writes scripts, a channel's included). */
 export function mayWriteScript(summary: unknown, grants: Grants): boolean {
   if (grants.admin) return true;
-  return summary === undefined ? anyWork(grants) : grants.perms.has(scriptWork(summary));
+  if (summary === undefined) return writesAtAll(grants);
+  const channel = channelOfScript(summary);
+  return channel !== null ? holdsChannel(grants.perms, channel) : grants.perms.has(scriptWork(summary));
 }
 
 /** The script a key belongs to: its body and files, or its review's. Null for Script mode's shared keys (the lessons, reports). */
@@ -237,7 +271,8 @@ export async function writerCloud(request: Request, url: URL, env: CloudEnv, fou
     if (!(route === "r2/url" && body.method === "PUT" && touched.length === 1)) return refuse("read the team's problem reports");
   } else if (writes) {
     if (touched.includes(LESSONS_KEY) && !has(grants, "review.lessons")) return refuse("change the shared lessons");
-    if (!anyWork(grants)) return refuse("write scripts");
+    // A channel given is script work too (Nov 21): which script's files is each key's own check below.
+    if (!writesAtAll(grants)) return refuse("write scripts");
   }
   // A script's own files (its body, its review's): only for who may see it, and written only by who writes its kind.
   if (route === "r2/list" && !grants.admin) {
@@ -366,7 +401,15 @@ async function convex(body: Record<string, unknown>, env: CloudEnv, found: Calle
   if (paused !== null) return paused;
   const needs = WRITER_FUNCTIONS[body.path]!;
   const args = { ...((body.args as Record<string, unknown> | undefined) ?? {}) };
-  if (needs === "any" && !anyWork(grants)) return refuse("write scripts");
+  // Footage (putMedia) is for who writes scripts at all, a channel's included (Nov 21); clearing a script's restore is
+  // for who writes scripts of any kind, or that script's channel.
+  if (needs === "any" && !grants.admin && body.path === "writer:clearRestore" && !anyWork(grants)) {
+    if (typeof args.scriptId !== "string") return json(400, { error: "args.scriptId must be a string." });
+    const known = await scriptSummary(env, args.scriptId);
+    if (known === null) return json(502, { error: "Convex: couldn't look the script up." });
+    const channel = channelOfScript(known.summary);
+    if (channel === null || !holdsChannel(grants.perms, channel)) return refuse("write scripts");
+  } else if (needs === "any" && !writesAtAll(grants)) return refuse("write scripts");
   if (needs === "admin" && !grants.admin) return refuse("do that: it's for admins");
   if (needs.includes(".") && !has(grants, needs)) return refuse("do that");
   if (needs === "script" && !grants.admin) {
@@ -377,9 +420,9 @@ async function convex(body: Record<string, unknown>, env: CloudEnv, found: Calle
       if (row === undefined) return json(502, { error: "Convex: couldn't look the script up." });
       summary = row === null ? undefined : isObject(row) ? row.summary : null;
     }
-    const work = summary === undefined ? null : workOf(summary);
-    if (summary !== undefined && !(work ? has(grants, work) : anyWork(grants))) return refuse("change scripts of that kind");
-    if (summary === undefined && !anyWork(grants)) return refuse("write scripts");
+    // A delete of a script the cloud doesn't have has nothing to judge, and deletes nothing: anyone who writes scripts at all.
+    const allowed = summary === undefined && body.path === "writer:deleteScript" ? writesAtAll(grants) : mayDoScriptWork(summary, grants);
+    if (!allowed) return refuse(summary === undefined ? "write scripts" : "change scripts of that kind");
     // A commit over a script already in the cloud: only one of the writer's own kind (never another kind's, retitled as theirs).
     if (body.path === "writer:commitScript") {
       if (typeof args.scriptId !== "string") return json(400, { error: "args.scriptId must be a string." });

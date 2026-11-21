@@ -243,6 +243,63 @@ test("a 401 is asked again once with a fresh token before Drive is said to refus
   expect(seen.length).toBe(2);
 });
 
+// Nov 21 (audit I3.b): the token was renewed once a download, so the second time one ran out (a recording that takes
+// an hour or two to come down, or two lid closes in one) was read as Drive's refusal: "Drive won't let Repack's
+// account download Interview.mp4" with 120,000 of its 200,000 bytes down, and the import stopped for the person.
+
+/** A sign-in whose token Drive takes for `uses` requests, then answers 401; the sign-in hands out a fresh one only after that 401. */
+function shortTokens(uses: number) {
+  const state = { n: 1, used: 0 };
+  return {
+    token: async () => `t${state.n}`,
+    signed: (request: Request) => {
+      if (request.headers.get("authorization") !== `Bearer t${state.n}` || state.used >= uses) {
+        if (request.headers.get("authorization") === `Bearer t${state.n}`) Object.assign(state, { n: state.n + 1, used: 0 });
+        return false;
+      }
+      state.used += 1;
+      return true;
+    },
+  };
+}
+const unsigned = () => new Response("Request had invalid authentication credentials.", { status: 401 });
+
+test("a token that runs out again and again in one long download is renewed each time it had brought bytes", async () => {
+  // Each token good for one request, each request 60 kB of the 200 kB: three tokens run out before it's down.
+  const sign = shortTokens(1);
+  handler = (request) => (sign.signed(request) ? media(request, VIDEO.subarray(from(request), from(request) + 60_000)) : unsigned());
+  const dest = join(dir, "long.mp4");
+  await drive.download(sign.token, recording, dest);
+  expect(Buffer.compare(fs.readFileSync(dest), VIDEO)).toBe(0);
+  expect(seen.map((request) => request.headers.get("authorization")?.slice(7))).toEqual(["t1", "t1", "t2", "t2", "t3", "t3", "t4"]);
+});
+
+test("a big recording in parts whose token runs out again and again is renewed each time; nothing is fetched twice", async () => {
+  const was = { ...ranged };
+  // Seven parts of 30 kB one at a time, each token good for two of them.
+  Object.assign(ranged, { from: 100_000, part: 30_000, parallel: 1, sleep: async () => {} });
+  try {
+    const sign = shortTokens(2);
+    const parts: string[] = [];
+    handler = (request) => {
+      // Drive's MD5, asked beside the parts: none here (not checked).
+      if (!new URL(request.url).searchParams.has("alt")) return Response.json({});
+      if (!sign.signed(request)) return unsigned();
+      const [, a, b] = /bytes=(\d+)-(\d+)/.exec(request.headers.get("range") ?? "")!;
+      parts.push(a!);
+      const end = Math.min(Number(b), VIDEO.length - 1);
+      return new Response(VIDEO.subarray(Number(a), end + 1), { status: 206, headers: { "content-range": `bytes ${a}-${end}/${VIDEO.length}` } });
+    };
+    const dest = join(dir, "long-parted.mp4");
+    await drive.download(sign.token, recording, dest);
+    expect(Buffer.compare(fs.readFileSync(dest), VIDEO)).toBe(0);
+    expect(parts).toEqual(["0", "30000", "60000", "90000", "120000", "150000", "180000"]);
+    expect(fs.existsSync(`${dest}.parts`)).toBe(false);
+  } finally {
+    Object.assign(ranged, was);
+  }
+});
+
 test("a wake mid-download starts the stall clock again: the download isn't called stalled", async () => {
   drive.STALL_MS.value = 1_000;
   let sendRest: () => void = () => {};

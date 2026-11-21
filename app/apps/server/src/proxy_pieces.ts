@@ -31,7 +31,7 @@ import * as fs from "node:fs";
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
 import * as fmp4 from "./fmp4.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import { isFile, join, parent } from "./paths.ts";
 import * as storage from "./storage.ts";
 import * as tools from "./tools.ts";
@@ -298,11 +298,50 @@ function scratch(context: Context, ext: string): string {
 
 /** Puts a made file in R2 behind the reader, unless another Mac's is there (theirs stays: a reader may hold its bytes). */
 function share(context: Context, local: string, key: string): void {
-  void (async () => {
-    if ((await context.head(key).catch(() => null)) !== null) return;
+  const going: Promise<boolean> = (async () => {
+    if ((await context.head(key).catch(() => null)) !== null) return true;
     await context.upload(local, key);
-  })().catch((error: unknown) => diag.warn("pieces", `sharing ${key}: ${diag.messageOf(error)}`));
+    return true;
+  })()
+    .catch((error: unknown) => {
+      diag.warn("pieces", `sharing ${key}: ${diag.messageOf(error)}`);
+      return false;
+    })
+    .finally(() => {
+      if (sharing.get(key) === going) sharing.delete(key);
+    });
+  sharing.set(key, going);
 }
+
+/** Shares under way (`share`), by key, and whether each went up: what `upNow` waits on rather than sending one twice. */
+const sharing = new Map<string, Promise<boolean>>();
+
+/** The keys of piece `n`'s files: its picture, and its sound when it has one. */
+export function pieceKeys(base: string, layout: Layout, n: number): string[] {
+  return layout.audio === null ? [videoKey(base, n)] : [videoKey(base, n), audioKey(base, n)];
+}
+
+/** The pieces of `base` not all on this Mac yet (picture or sound missing). */
+export function missingHere(context: Context, base: string, layout: Layout): number[] {
+  const out: number[] = [];
+  for (let n = 0; n < layout.pieces; n++) if (!made(context, base, layout, n)) out.push(n);
+  return out;
+}
+
+/**
+ * Piece file `key` (on this Mac) in R2 by the time this answers: its share under way waited on, else put up unless
+ * R2 has it (another Mac's stays). A short import's pieces behind it (cloud_media `piecesBehind`, Nov 21) end only once
+ * they're up, as its whole proxy's upload did, so a restart in between sends what didn't go.
+ */
+export async function upNow(context: Context, key: string): Promise<void> {
+  const going = sharing.get(key);
+  if (going !== undefined && (await going)) return;
+  if ((await context.head(key).catch(() => null)) !== null) return;
+  await context.upload(context.local(key), key);
+}
+
+/** A layout's key in R2 (`layoutOf` reads it): whether a pieced proxy is there at all. */
+export const layoutKeyOf = (base: string): string => layoutKey(base);
 
 /**
  * FFmpeg's command for piece `n`'s picture from `url` into `out` (an

@@ -30,7 +30,7 @@ import { explain } from "@edit/types/problems";
 import { ChannelAvatar } from "./Channels";
 import { ChannelsActions, ChannelsTitle, ChannelsView, useChannelsNav, type ChannelWork } from "./ChannelsHome";
 import { AREA, Aside, ChannelField, FIELD, Field, More, NewShell, useChannelNeeded } from "./NewWork";
-import { loadChannels, useChannels } from "../lib/channels";
+import { loadChannels, useChannels, type Channel, type Form, type ScriptKind } from "../lib/channels";
 import { toggleMenu, type MenuItem } from "./ContextMenu";
 import { BY, Category, CATEGORY, CHIP, COLUMNS, contextMenu, CreatorCell, DoneContext, DoneStatus, FreshMark, KindMark, LENGTH, LengthCell, layoutFor, NAME, NoteMark, PILL, ROW, RowButtons, StatusCell, TableShape, Updated, useDoneRow, useNote, withDone } from "./HomeTable";
 import { ExportsActions, ExportsView, useWatchExports } from "./ExportsView";
@@ -46,6 +46,7 @@ import { UpdateButton } from "./UpdateButton";
 import { Button, ConfirmDialog, cx, Modal, ProgressRing, Pulse, spring, Switch } from "./ui";
 import { aboutWords, sizeWords } from "./FootageReady";
 import { isListed, promoteItem, TestBadge } from "./TestProjects";
+import { MoveToChannel, moveItem } from "./MoveToChannel";
 import { THIS_MACHINE } from "../lib/platform";
 
 // Every project is 1080p at 30 fps.
@@ -153,15 +154,17 @@ export function Home() {
   const issues = localScripts.filter((row) => (row.status === "needs_choice" || row.status === "error") && !row.dismissedAt);
   const [query, setQuery] = useState("");
   // Ideas (Oct 31): the team's repackaging, a section of Home's for those who work on them.
-  const ideasAllowed = makesIdeas(account);
+  // A channel given counts for each, with Edit V2 on (Sphe, Nov 21: "a channel I've given a person access to should be all they need").
+  const ideasAllowed = makesIdeas(account, v2);
   const [ideasHome, refreshIdeas, ideasError] = useIdeasHome(ideasAllowed);
   const [ideaOpen, setIdeaOpen] = useState(false);
   // The places this person works in, and only those (Sphe, Nov 6: "almost a tunnel vision"): Ideas (and Thumbnails)
   // with the permission, Scripts when they write them, Edits when they make videos (or have edits they may open).
-  const makes = makesVideos(account);
+  const makes = makesVideos(account, v2);
+  const writes = writesScripts(account, v2);
   const hasEdits = (projects?.length ?? 0) > 0 || (cloud?.projects?.length ?? 0) > 0;
-  const edits = makes || hasEdits || (!ideasAllowed && !writesScripts(account) && scripts.length === 0);
-  const places: Spot[] = [...(ideasAllowed ? (["ideas"] as const) : []), ...(writesScripts(account) || scripts.length > 0 ? (["scripts"] as const) : []), ...(edits ? (["edits"] as const) : [])];
+  const edits = makes || hasEdits || (!ideasAllowed && !writes && scripts.length === 0);
+  const places: Spot[] = [...(ideasAllowed ? (["ideas"] as const) : []), ...(writes || scripts.length > 0 ? (["scripts"] as const) : []), ...(edits ? (["edits"] as const) : [])];
   // One place at a time, remembered on this browser; /ideas is Home on its Ideas (the idea page's way back).
   // /thumbnails is Home on its Thumbnails (a thumbnail's way back), as /ideas is on its Ideas.
   const [where, setWhere] = useState<Where>(() => (window.location.pathname === "/ideas" ? "ideas" : window.location.pathname === "/thumbnails" ? "thumbnails" : window.location.pathname === "/channels" ? "channels" : savedWhere()));
@@ -169,7 +172,7 @@ export function Home() {
   useWatchExports();
   const shownWhere: Where = (placeOf(where).place !== null && !places.includes(placeOf(where).place!)) || (where === "thumbnails" && !ideasAllowed) || (where === "channels" && !v2) ? (places[0] ?? "edits") : where;
   // Each section's New is its own kind (Sphe, Nov 14: no switching between them); elsewhere, an edit for someone who makes them.
-  const newWork: "edit" | "script" | null = placeOf(shownWhere).place === "scripts" ? (writesScripts(account) ? "script" : null) : makes ? "edit" : writesScripts(account) ? "script" : null;
+  const newWork: "edit" | "script" | null = placeOf(shownWhere).place === "scripts" ? (writes ? "script" : null) : makes ? "edit" : writes ? "script" : null;
   const [thumbOpen, setThumbOpen] = useState(false);
   // Yours, or everyone's (remembered on this browser); nobody signed in has nothing of their own.
   const [mineOnly, setMineOnly] = useState(() => localStorage.getItem(MINE) !== "0");
@@ -219,7 +222,7 @@ export function Home() {
       .projects()
       .then(setCloud)
       .catch((error: unknown) => setCloud((last) => (last === null ? null : { ...last, error: (error as Error).message, offline: true })));
-    if (writesScripts(useAccount.getState().account)) {
+    if (writesScripts(useAccount.getState().account, useBeta.getState().v2)) {
       void api
         .writerScripts()
         .then(({ scripts }) => setScripts(scripts.filter(isListed)))
@@ -876,8 +879,8 @@ function HomeList({ groups, solo, cross, lengthLabel }: { groups: { key: string;
   );
 }
 
-/** New project opened with a title, its links and a kind (an approved idea's Write the script). */
-export type NewProjectStart = { title: string; text: string; style: Style };
+/** New project opened with a title, its links, a kind and the idea's channel (an approved idea's Write the script). */
+export type NewProjectStart = { title: string; text: string; style: Style; channel?: string };
 
 /** A row of Home's table: a project on this Mac, one only in the cloud, or a script with no edit yet; `script`: the script it's made from. */
 export type Listed =
@@ -974,6 +977,8 @@ export function Notice({ tone, text, title }: NoticeProps) {
 function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boolean, status?: CloudStatus, remote?: CloudProject, script: string | null = null) {
   const [renaming, setRenaming] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [moving, setMoving] = useState(false);
+  const v2 = useBeta((beta) => beta.v2);
   const toast = useEditor((state) => state.toast);
   const drive = useDriveLink(project.id, project.drive);
   const inCloud = cloudOn && Boolean(status?.cloud);
@@ -1050,6 +1055,8 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
     ...(project.style !== "shorts" && project.hq !== true && !project.problem && styles.length > 1
       ? [{ label: "Category", icon: <Tag size={14} />, submenu: styles.map((one) => ({ label: one.label, checked: one.value === project.style, onSelect: () => void recategorize(one.value) })) }]
       : []),
+    // Today's kind of edit made a channel's Edit V2 project, with Edit V2 on here (MoveToChannel.tsx).
+    ...moveItem(project, v2, () => setMoving(true)),
     // Shared from here, many projects at once (an export that would wait here goes to the cloud).
     ...(project.problem ? [] : [{ label: "Share for review", icon: <Share2 size={14} />, onSelect: () => void share() }]),
     ...(drive
@@ -1103,6 +1110,7 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
         confirm={inCloud ? "Delete everywhere" : "Delete project"}
         onConfirm={() => void remove()}
       />
+      {moving && <MoveToChannel project={project} open={moving} onClose={() => setMoving(false)} onMoved={onChanged} />}
     </>
   );
   // What’s worth a word on the card, as a chip beside "On Drive".
@@ -2017,6 +2025,11 @@ const LINK = /https?:\/\/\S+/gi;
 const WRITER_KIND: Partial<Record<Style, "foia" | "interrogation" | "courtroom">> = { bodycam: "foia", interrogation: "interrogation", courtroom: "courtroom" };
 
 /** One source of a script to write, as Script mode checked it: a video or a reused case. */
+/** The forms a channel's new edits take: long form alone unless its add-on says (its row's `forms`). */
+const formsOf = (channel: Channel | null): Form[] => channel?.forms ?? ["long"];
+/** What a channel's new scripts are: from a case's footage alone unless its add-on says (its row's `scripts`). */
+const scriptsOf = (channel: Channel | null): ScriptKind[] => channel?.scripts ?? ["footage"];
+
 type Source = { url: string; title: string; durationMs: number | null; reuse: boolean; earlier?: string; problem: string | null; warning?: string | null; again?: boolean };
 
 /**
@@ -2046,6 +2059,10 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   const channels = useChannels((state) => state.channels);
   const [channelKey, setChannelKey] = useState<string | null>(null);
   const [compilation, setCompilation] = useState<boolean | null>(null);
+  /** A channel's script written as a commentary (an essay from sources) rather than from a case's footage, where its add-on offers both. */
+  const [essay, setEssay] = useState(false);
+  /** A channel's new edit as a Short rather than long form, where its add-on offers both. */
+  const [form, setForm] = useState<Form>("long");
   const [sources, setSources] = useState<Source[] | null>(null);
   /** Several videos: one case or a compilation, as the person said (null: not yet). */
   const [shape, setShape] = useState<Shape | null>(null);
@@ -2089,8 +2106,15 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
   // Scripts too (Sphe, Nov 14): an edit's, a script's, an idea's and a thumbnail's agent is taught its channel's lane.
   const channel = v2 ? (channels?.find((one) => one.key === channelKey) ?? null) : null;
   const unpicked = useChannelNeeded(channel?.key ?? null);
-  // A channel's script is its footage's (its kind from the channel); a commentary is V1's alone (no channel makes them yet).
-  const commentary = writing && channel === null && kind === "commentary";
+  // What a channel's work can be is its channel's, from its add-ons (Sphe, Nov 21: "because of the add-on it literally
+  // changes the ui and allows you two paths"): a choice shows only where the channel offers two, and the one thing it
+  // makes is made without asking. Its scripts: from a case's footage, or commentaries (`essay-script`); with no
+  // channel, the Kind says. Its edits: long form, Shorts (`short-form`), or either; the server sets the frame.
+  const scriptKinds = scriptsOf(channel);
+  const forms = formsOf(channel);
+  const commentary = writing && (channel === null ? kind === "commentary" : scriptKinds.length > 1 ? essay : scriptKinds[0] === "commentary");
+  /** The form asked for, sent only where the channel offers both. */
+  const asked = !writing && channel !== null && forms.length > 1 ? { form } : {};
 
   // A fresh dialog each time.
   useEffect(() => {
@@ -2107,8 +2131,12 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
     setError(null);
     setMade(null);
     setPicked(start !== null);
-    setChannelKey(null);
+    // An idea's channel is its script's (Nov 21: the dialog started on none, and an idea made for a channel became a
+    // V1 script unless the person picked it again); still theirs to change.
+    setChannelKey(start?.channel ?? null);
     setCompilation(null);
+    setEssay(start?.style === "commentary");
+    setForm("long");
     setFrom("list");
     setQuery("");
     setScriptId(null);
@@ -2300,7 +2328,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
           navigate(`/p/${pickedScript.project}`);
           return;
         }
-        const { project } = await api.importWriter(pickedScript.id, channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}) } : {});
+        const { project } = await api.importWriter(pickedScript.id, channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}), ...asked } : {});
         if (autoStart) {
           // The edit workflow starts once its footage is in, as a pasted Doc's does.
           await begin(project, `Start the editing workflow.${extra ? `\n\n${extra}` : ""}`, "open");
@@ -2315,7 +2343,9 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         // The script workflow starts once the footage is in when `build` is given; omitted, the import stops ready to script.
         const buildNote = autoStart ? extra : undefined;
         const work = commentary
-          ? writer.createCommentary(title.trim(), links)
+          ? channel !== null
+            ? writer.createCommentary(title.trim(), links, channel.key)
+            : writer.createCommentary(title.trim(), links)
           : footage.length === 1 && footage.length === sources!.length
             ? DRIVE.test(footage[0]!.url)
               ? writer.importDrive(footage[0]!.url, undefined, title.trim(), writerKind, buildNote, channel?.key)
@@ -2342,8 +2372,8 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
       const { project } = await api.createProject({
         name: title.trim(),
         style: kind,
-        ...(channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}) } : {}),
-        ...(kind === "shorts" && channel === null ? SHORTS_FORMAT : FORMAT),
+        // A channel's frame is the server's, from its add-ons: only the form picked goes.
+        ...(channel !== null ? { channel: channel.key, ...(compilation !== null && compilation !== channel.compilation ? { compilation } : {}), ...asked } : kind === "shorts" ? SHORTS_FORMAT : FORMAT),
       });
       if (input === "") {
         // A blank project: the first message, if there is one, goes to its agent at once (a V2 edit's footage comes in the chat).
@@ -2402,9 +2432,40 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         </div>
   );
 
+  /** Two ways the channel's work can go, as today's Kind pills look: shown only on a channel that offers both. */
+  const pills = <T,>(options: readonly (readonly [T, string, string])[], value: T, set: (value: T) => void) => (
+    <div className="flex flex-wrap gap-1.5">
+      {options.map(([one, name, note]) => (
+        <button
+          type="button"
+          key={name}
+          title={note}
+          onClick={() => set(one)}
+          className={cx(
+            "flex h-7 items-center gap-1.5 rounded-full border px-3 text-[12px] font-medium transition-colors",
+            value === one ? "border-line-strong bg-raised text-fg" : "border-line text-muted hover:text-fg",
+          )}
+        >
+          {name}
+        </button>
+      ))}
+    </div>
+  );
+  const choice =
+    channel === null
+      ? undefined
+      : writing
+        ? scriptKinds.length > 1
+          ? pills([[false, "Footage", "A case's footage, written as the channel was taught"], [true, "Commentary", "A narrated essay written from sources: videos, articles, posts"]] as const, essay, setEssay)
+          : undefined
+        : forms.length > 1 && !existingEdit
+          ? pills([["long", "Long form", "16:9"], ["short", "Short form", "A 9:16 Short"]] as const, form, setForm)
+          : undefined;
+
   const pickChannel = (key: string | null) => {
     setChannelKey(key);
     setCompilation(null);
+    setForm("long");
     // A script of another channel is no longer one of the list's.
     const chosenNow = (channels ?? []).find((one) => one.key === key) ?? null;
     if (chosenNow !== null && pickedScript?.channel && pickedScript.channel !== chosenNow.key) setScriptId(null);
@@ -2554,6 +2615,7 @@ export function NewProject({ work, open, onClose, start = null }: { work: "edit"
         onChange={pickChannel}
         // An edit from a script is the script's kind: today's kinds are a pasted Doc's or a script's to write.
         other={listed ? undefined : kindBlock(false)}
+        also={choice}
       />
 
       {listed ? (

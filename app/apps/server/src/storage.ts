@@ -99,6 +99,8 @@ export const diskHooks = {
     return stat === null ? Number.NaN : stat.blocks * stat.bsize;
   },
   makeRoom: (_wanted: number): number => 0,
+  /** The same, giving the server's thread back as it goes: for callers that don't need the room this instant (cache_cleanup.ts `makeRoomAsync`). */
+  makeRoomAsync: (_wanted: number): Promise<number> => Promise.resolve(0),
 };
 
 /**

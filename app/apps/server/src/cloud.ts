@@ -25,13 +25,16 @@ import * as fs from "node:fs";
 
 import { Effect, Option, Predicate, Schedule, Schema } from "effect";
 
+import * as cloudBlocks from "./cloud_blocks.ts";
 import * as diag from "./diag.ts";
 import { inArea, runPromise } from "./effect/runtime.ts";
 import * as service from "./effect/service.ts";
 import { ioMessage, writeAtomic } from "./files.ts";
 import { isBug } from "./guard.ts";
+import * as jobs from "./jobs.ts";
 import * as outages from "./outages.ts";
 import { extension, join, parent } from "./paths.ts";
+import * as playing from "./playing.ts";
 import * as relay from "./relay.ts";
 import { byteLength, debugStr, takeChars } from "./rust.ts";
 import { stableStringify } from "./stable.ts";
@@ -39,13 +42,14 @@ import { validId } from "./store.ts";
 
 const MIB = 1024 * 1024;
 /**
- * A file's parts: 16 MiB, eight in flight (≤ 144 MiB in memory). A part has to
- * finish well inside a minute: from Sphe's Mac each connection to R2 carried
- * ~0.5 MB/s on Nov 7, and every 64 MiB part was cut at ~60 s ("The socket
- * connection was closed unexpectedly"), so a 0.7 GB review copy never got up.
+ * A file's parts: 16 MiB, at most eight in flight (≤ 144 MiB in memory); how
+ * many of the eight go follows the line (`partsFor`). A part has to finish well
+ * inside a minute: from Sphe's Mac each connection to R2 carried ~0.5 MB/s on
+ * Nov 7, and every 64 MiB part was cut at ~60 s ("The socket connection was
+ * closed unexpectedly"), so a 0.7 GB review copy never got up.
  */
 export const FILE_PART = 16 * MIB;
-const FILE_PARALLEL = 8;
+export const FILE_PARALLEL = 8;
 /** A stream's parts: 32 MiB, two in flight plus the one being read (≤ 96 MiB). */
 export const STREAM_PART = 32 * MIB;
 const STREAM_PARALLEL = 2;
@@ -81,6 +85,8 @@ export const timing = {
   resumableFrom: RESUMABLE_FROM,
   /** How long an upload that must get there (a share's) keeps at a network that comes and goes, its waits in all. */
   keptAtMs: 10 * 60_000,
+  /** How much of a request's body is handed over at a time (its progress, and the line's meter: `pulled`). */
+  putChunk: MIB,
 };
 
 /** Whether cloud calls can work: someone is signed in (or `EDIT_RELAY_TOKEN` is set). Cloud is always on then. */
@@ -294,24 +300,293 @@ export function lineTaken(): boolean {
   return waitedOn > 0;
 }
 
-/** Waits until nothing a person waits on has the line (at once when nothing has), or `signal` stops the wait. */
-async function lineFree(signal?: AbortSignal): Promise<void> {
+/**
+ * Waits until nothing a person waits on has the line (at once when nothing has), or `signal` stops the wait. What
+ * ends it: the `first` work ending (a share's link out). `beat` is called every `pace.beatMs` while it waits: a share
+ * on JJ's line takes 20 minutes, and an archive held behind it said nothing for all of them, which read as still
+ * (jobs.ts `still`, 15 min) though it was only waiting its turn (Nov 21).
+ */
+async function lineFree(signal?: AbortSignal, beat: () => void = () => {}): Promise<void> {
   while (waitedOn > 0 && signal?.aborted !== true) {
-    await new Promise<void>((resolve) => {
-      const wake = () => {
+    const woken = await new Promise<boolean>((resolve) => {
+      const done = (woke: boolean) => {
         lineWaiters.delete(wake);
         signal?.removeEventListener("abort", wake);
-        resolve();
+        clearTimeout(timer);
+        resolve(woke);
       };
+      const wake = () => done(true);
+      const timer = setTimeout(() => done(false), pace.beatMs);
+      unref(timer);
       lineWaiters.add(wake);
       signal?.addEventListener("abort", wake, { once: true });
     });
+    if (!woken) beat();
   }
 }
 
+// ---------------------------------------------------------------------------
+// The line's pace (Nov 21, JJ: an 8 Mbit/s uplink). Eight parts went at once
+// whatever the line; on his they filled it, and a full line out chokes every
+// download on the same line too (their acknowledgements queue behind the
+// upload), so an import's footage and a cold play's reads crawled while a share
+// or an export's cloud copy went up, and he saw imports and playback freeze.
+// Now how many parts go follows the line out's own measured speed, by a rule of
+// scale (a faster line is never worse off, only a slower one gentler):
+// - `partsFor`: one part for each 4 Mbit/s of the line, one at the least and
+//   eight at the most, as today;
+// - an upload nobody waits on (`behind`) goes with half as many, one at the least;
+// - while something on this Mac downloads for a person (a play, footage someone
+//   waits on, a page's read from the cloud, an import bringing footage in:
+//   `forPerson`), a `behind` upload sends one part at a time at half the line's
+//   speed, which leaves the other half to the download; it carries on at its
+//   own count by itself once that ends (looked at again each part and each
+//   `pollMs`). It never waits for it: it only goes slower.
+
 /**
- * Uploads the file at `path` to `key`: one PUT under 64 MiB, else multipart. `signal` stops it (a share the person
- * cancelled). `behind`: nobody waits for it, so it gives the line to what someone does (`first`), a part at a time.
+ * A part's share of the line. At 4 Mbit/s a 16 MiB part is up in ~34 s, well inside the minute a part was cut at
+ * (Nov 7); a line that gives every part at least that is one more parts can't fill, so it keeps all eight. Parts
+ * beyond what fills the line add no speed: they only make each part slower and the line's queue longer, which is
+ * what every download on it waits in. What it means on a line:
+ * - JJ's 8 Mbit/s: 2 parts (a part ~34 s), 1 for an upload nobody waits on;
+ * - a 40 Mbit/s line: 8 (a part ~27 s), 4 behind;
+ * - a 300 Mbit/s line: 8 (a part ~4 s), 4 behind;
+ * - not measured yet (the first ~13 s of the first upload since Edit started): 8, 4 behind, as before.
+ */
+export const PART_SHARE_BPS = 4_000_000;
+
+/** How many parts go at once on a line out of `bps` bits a second (null: not measured), for an upload someone waits on or (`behind`) nobody does. */
+export function partsFor(bps: number | null, behind = false): number {
+  const waited = bps === null || !(bps > 0) ? FILE_PARALLEL : Math.min(FILE_PARALLEL, Math.max(1, Math.floor(bps / PART_SHARE_BPS)));
+  return behind ? halved(waited) : waited;
+}
+
+const halved = (parts: number): number => Math.max(1, Math.floor(parts / 2));
+
+/** How fast a `behind` upload goes while a person's download runs (bits a second): half the line, or half JJ's when it isn't measured yet. */
+export function givenWayBps(bps: number | null): number {
+  return Math.max(256_000, (bps === null || !(bps > 0) ? 8_000_000 : bps) / 2);
+}
+
+/** What tests change: the meter's windows, how often a held part looks again, and what downloads for a person. */
+export const pace = {
+  /** A window's first stretch isn't counted: each connection's buffer fills at memory speed, not the line's. */
+  warmMs: 3_000,
+  /** A window counts at least this long and this many bytes, parts in flight all through it. */
+  spanMs: 10_000,
+  spanBytes: 4 * MIB,
+  /** A count measured this long ago is forgotten (a line shown not to be full at more parts is believed this long). */
+  forgetMs: 30 * 60_000,
+  /** How often an upload waiting for a slot looks again at its count (a play stopped: it carries on within this). */
+  pollMs: 1_000,
+  /** How often an upload waiting its turn says it's still there (its progress again: its job row's beat). */
+  beatMs: 20_000,
+  /** A real wait (tests make `timing.sleep` instant; a pace can't be). */
+  sleep: (ms: number): Promise<void> => Bun.sleep(ms),
+  /** What downloads for a person on this Mac now, in words, or null (`forPerson`). */
+  forPerson: (): string | null => forPerson(),
+};
+
+/** Import rows that bring footage down while they run (jobs.ts): a Drive link, a Writer case, an edit's missing footage. */
+const IMPORTS: readonly jobs.Kind[] = ["footage", "case", "media"];
+let personSeen: { at: number; what: string | null } | null = null;
+
+/**
+ * What downloads for a person on this Mac now, or null: a play (shown, or held on its spinner for its footage), footage
+ * someone waits on to open (footage_ready.ts), a page's read that had to go to the cloud in the last 5 s
+ * (cloud_blocks.ts `viewerBusy`), or an import bringing footage in (its row running in jobs.json). Looked at at most
+ * once a second: the job table is a file.
+ */
+function forPerson(): string | null {
+  const now = performance.now();
+  if (personSeen !== null && now - personSeen.at < 1_000) return personSeen.what;
+  let what: string | null = null;
+  if (playing.isPlaying()) what = "a play";
+  else if (playing.linkHeld()) what = "footage someone waits on";
+  else if (cloudBlocks.viewerBusy()) what = "a read the page waits on";
+  else {
+    // The journals are kept in `<home>/uploads` (serve.ts), so their parent is the home whose job table this is.
+    const home = journals === null ? null : parent(journals);
+    if (home !== null && home !== "") {
+      try {
+        const row = jobs.list(home).find((job) => job.state === "running" && IMPORTS.includes(job.kind));
+        if (row !== undefined) what = `an import (${row.key})`;
+      } catch (error) {
+        if (isBug(error)) throw error;
+      }
+    }
+  }
+  personSeen = { at: now, what };
+  return what;
+}
+
+/** The line out as measured: its speed (bits a second, null until measured), its recent windows, and a count shown not to fill it. */
+const line = {
+  bps: null as number | null,
+  windows: [] as { parts: number; bps: number; at: number }[],
+  floor: { parts: 1, until: 0 },
+  /** What the log last said, so it says only changes. */
+  said: "",
+  gaveWay: null as string | null,
+};
+
+/** The line out's speed as measured here (bits a second), or null before any upload measured it. */
+export function lineBps(): number | null {
+  return line.bps;
+}
+
+/** How many parts an upload sends at once now (`behind`: one nobody waits on), for the log and the tests. */
+export function partsAtOnce(behind = false): number {
+  return partsNow(behind);
+}
+
+/** Forgets what was measured (tests), or sets the line's speed as if measured (`bps`). */
+export function resetPace(bps: number | null = null): void {
+  line.bps = bps;
+  line.windows = [];
+  line.floor = { parts: 1, until: 0 };
+  line.said = "";
+  line.gaveWay = null;
+  meter = null;
+  requestsOut = 0;
+  emptyAt = 0;
+  pacedNext = 0;
+  personSeen = null;
+}
+
+/** What a person's download asks of a `behind` upload now: the words for it, or null; said in the log as it begins and ends. */
+function givingWay(): string | null {
+  const what = pace.forPerson();
+  if (what !== line.gaveWay) {
+    line.gaveWay = what;
+    if (what !== null) diag.info("cloud", `uploads nobody waits for give way to ${what}: one part at a time, at ${(givenWayBps(line.bps) / 1e6).toFixed(1)} Mbit/s`);
+    else diag.info("cloud", `nothing downloads for a person now: uploads nobody waits for carry on at ${partsNow(true)} part${partsNow(true) === 1 ? "" : "s"} at once`);
+  }
+  return what;
+}
+
+/** `partsNow`, looked at again (a person's download begun or ended), within `most`. */
+function partsAllowed(behind: boolean, most: number): number {
+  if (behind) givingWay();
+  return Math.min(most, partsNow(behind));
+}
+
+/** How many parts an upload sends at once now: `partsFor` the measured line (never fewer than a count shown not to fill it), one for `behind` while a person's download runs. */
+function partsNow(behind: boolean): number {
+  const floor = line.floor.until > performance.now() ? line.floor.parts : 1;
+  const waited = Math.max(floor, partsFor(line.bps));
+  if (!behind) return waited;
+  return line.gaveWay !== null ? 1 : halved(waited);
+}
+
+/** Waits until fewer than `most()` of `inFlight` go: one finishing, or the count looked at again every `pace.pollMs` (a play stopped). */
+async function slot(inFlight: Set<Promise<void>>, most: () => number): Promise<void> {
+  while (inFlight.size >= Math.max(1, most())) await Promise.race([...inFlight, pace.sleep(pace.pollMs)]);
+}
+
+// The meter: the bytes every upload's requests take, over windows of `spanMs` with requests in flight. A request's
+// body is pulled as its connection sends it (put: a MiB at a time; Bun's fetch takes the next only as the socket
+// drains, measured here Nov 21), so once the connections' buffers have filled (`warmMs`), what is pulled is what the
+// line carries. How many parts went is the window's average in flight, by time (a part ending and the next one
+// asking the relay for its URL dips it for a moment). The clock starts again after a second with nothing in flight
+// (the time between uploads isn't a slow line), and a paced request's bytes are never counted (`givingWay`: their
+// speed is ours, not the line's).
+let requestsOut = 0;
+/** When the last request in flight ended (0: one is in flight, or none yet). */
+let emptyAt = 0;
+let meter: { opened: number; from: number | null; bytes: number; partMs: number; at: number } | null = null;
+
+/** Counts the time since the meter last moved at the requests in flight through it. */
+function advance(now: number): void {
+  if (meter === null) return;
+  if (meter.from !== null) meter.partMs += requestsOut * (now - meter.at);
+  meter.at = now;
+}
+
+function sendStarted(): void {
+  const now = performance.now();
+  if (meter !== null && emptyAt > 0 && now - emptyAt > 1_000) meter = null;
+  advance(now);
+  requestsOut += 1;
+  emptyAt = 0;
+  meter ??= { opened: now, from: null, bytes: 0, partMs: 0, at: now };
+}
+
+function sendEnded(): void {
+  advance(performance.now());
+  requestsOut = Math.max(0, requestsOut - 1);
+  if (requestsOut === 0) emptyAt = performance.now();
+}
+
+function pulled(bytes: number, paced: boolean): void {
+  if (paced) {
+    meter = null;
+    return;
+  }
+  const now = performance.now();
+  if (meter === null) {
+    meter = { opened: now, from: null, bytes: 0, partMs: 0, at: now };
+    return;
+  }
+  advance(now);
+  if (meter.from === null) {
+    if (now - meter.opened < pace.warmMs) return;
+    meter.from = now;
+    return;
+  }
+  meter.bytes += bytes;
+  const ms = now - meter.from;
+  if (ms < pace.spanMs || meter.bytes < pace.spanBytes) return;
+  measured(meter.partMs / ms, (meter.bytes * 8 * 1000) / ms);
+  meter = { opened: meter.opened, from: now, bytes: 0, partMs: 0, at: now };
+}
+
+/**
+ * A window's speed (`bps`) with `parts` in flight on average. Clearly fewer parts (under 70% as many) going clearly
+ * slower (under 70%) than a window before means the line wasn't full at the more: each connection was what held it,
+ * not the line (R2's pace per connection, as on Sphe's Mac on Nov 7). That count is then kept for `forgetMs`, the
+ * line's speed staying as the more measured it, so a line like that is never stepped down below today's eight and
+ * made slower. A full line goes about as fast with fewer, and is stepped down.
+ */
+function measured(parts: number, bps: number): void {
+  const now = performance.now();
+  line.windows = line.windows.filter((seen) => now - seen.at < pace.forgetMs);
+  let fuller: { parts: number; bps: number } | null = null;
+  for (const seen of line.windows) {
+    if (parts < 0.7 * seen.parts && bps < 0.7 * seen.bps && (fuller === null || seen.parts > fuller.parts)) fuller = seen;
+  }
+  line.windows = [...line.windows.slice(-31), { parts, bps, at: now }];
+  if (fuller !== null) {
+    const kept = Math.min(FILE_PARALLEL, Math.max(1, Math.round(fuller.parts)));
+    line.floor = { parts: Math.max(kept, line.floor.until > now ? line.floor.parts : 1), until: now + pace.forgetMs };
+    line.bps = Math.max(line.bps ?? 0, fuller.bps);
+  } else {
+    line.bps = bps;
+  }
+  const said = `${partsNow(false)}/${partsNow(true)}`;
+  if (said !== line.said) {
+    line.said = said;
+    const going = parts.toFixed(1);
+    diag.info("cloud", `the line out measures ${(bps / 1e6).toFixed(1)} Mbit/s with ${going} parts going: uploads send ${partsNow(false)} at once, ${partsNow(true)} for one nobody waits for${fuller === null ? "" : ` (fewer went slower: the line isn't full at ${Math.round(fuller.parts)})`}`);
+  }
+}
+
+/** A paced request's turn: every paced byte is spaced out at `bitsPerSecond`, all paced requests together. */
+let pacedNext = 0;
+async function pacedTurn(bytes: number, bitsPerSecond: number): Promise<void> {
+  const now = performance.now();
+  const at = Math.max(now, pacedNext);
+  pacedNext = at + ((bytes * 8) / bitsPerSecond) * 1000;
+  if (at > now) await pace.sleep(at - now);
+}
+
+/** A paced request's step: small, so each burst into the line is short (64 KiB is ~65 ms of JJ's line). */
+const PACED_CHUNK = 64 * 1024;
+
+/**
+ * Uploads the file at `path` to `key`: one PUT under a part, else multipart, as many parts at once as the line takes
+ * (`partsFor`). `signal` stops it (a share the person cancelled). `behind`: nobody waits for it, so it gives the line
+ * to what someone does (`first`), goes with half the parts, and gives way to a person's download (`givingWay`).
  */
 export async function uploadFile(path: string, key: string, progress: Report = () => {}, signal?: AbortSignal, behind = false): Promise<void> {
   checkUploadKey(key);
@@ -496,7 +771,10 @@ async function resumable(fd: number, journal: string, file: Omit<Journal, "uploa
   }
 }
 
-/** Sends the parts R2 doesn't hold yet, `FILE_PARALLEL` at once, each noted in the journal as it's up; then completes the upload. */
+/**
+ * Sends the parts R2 doesn't hold yet, as many at once as the line takes now (`partsAllowed`, looked at again before
+ * each part), each noted in the journal as it's up; then completes the upload.
+ */
 async function sendParts(fd: number, journal: string, state: Journal, report: Report, signal?: AbortSignal, behind = false): Promise<void> {
   const count = Math.max(1, Math.ceil(state.size / state.part));
   if (count > MAX_PARTS) throw new Error(`${state.key} needs more than ${MAX_PARTS} parts`);
@@ -509,31 +787,39 @@ async function sendParts(fd: number, journal: string, state: Journal, report: Re
     else missing.push(n);
   }
   if (up > 0) progress.add(up);
-  let next = 0;
   let failure: unknown = null;
-  const worker = async () => {
-    while (failure === null && next < missing.length) {
-      if (behind) await lineFree(signal);
-      if (signal?.aborted) throw new Error("the share was cancelled");
-      if (failure !== null || next >= missing.length) break;
-      const n = missing[next++]!;
-      const data = Buffer.allocUnsafe(lengthOf(n));
+  const inFlight = new Set<Promise<void>>();
+  for (const n of missing) {
+    if (behind) await lineFree(signal, () => progress.again());
+    if (signal?.aborted) {
+      failure ??= new Error("the share was cancelled");
+      break;
+    }
+    await slot(inFlight, () => partsAllowed(behind, FILE_PARALLEL));
+    if (failure !== null) break;
+    const data = Buffer.allocUnsafe(lengthOf(n));
+    try {
       for (let got = 0; got < data.length; ) {
         const read = await new Promise<number>((resolve, reject) => fs.read(fd, data, got, data.length - got, (n - 1) * state.part + got, (error, bytes) => (error ? reject(error) : resolve(bytes))));
         if (read === 0) throw new TransferMismatch({ message: `${state.key}'s file ended before ${state.size} bytes` });
         got += read;
       }
-      state.parts[n] = await putPart(state.key, state.uploadId, n, data, progress, signal);
-      writeAtomic(journal, JSON.stringify(state));
+    } catch (error) {
+      failure ??= error;
+      break;
     }
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(FILE_PARALLEL, Math.max(missing.length, 1)) }, () =>
-      worker().catch((error: unknown) => {
+    const job: Promise<void> = putPart(state.key, state.uploadId, n, data, progress, signal, behind)
+      .then((etag) => {
+        state.parts[n] = etag;
+        writeAtomic(journal, JSON.stringify(state));
+      })
+      .catch((error: unknown) => {
         failure ??= error;
-      }),
-    ),
-  );
+      })
+      .finally(() => inFlight.delete(job));
+    inFlight.add(job);
+  }
+  await Promise.all(inFlight);
   if (failure !== null) throw failure;
   const parts = Object.entries(state.parts)
     .map(([n, etag]) => ({ partNumber: Number(n), etag }))
@@ -585,6 +871,11 @@ export class Progress {
 
   takeBack(bytes: number): void {
     this.sent -= bytes;
+  }
+
+  /** What was last said, said again: an upload waiting its turn is still there (its job row beats by its progress). */
+  again(): void {
+    this.report(this.reported, this.total);
   }
 }
 
@@ -674,13 +965,13 @@ async function upload(
   const progress = new Progress(total ?? 0, report);
   const kind = contentType(key);
   const first = await readPart(source, part);
-  if (behind) await lineFree(signal);
+  if (behind) await lineFree(signal, () => progress.again());
   if (first.length < part) {
     // It all fits in one request.
     await retry(`upload of ${key}`, async () => {
       const answer = key.startsWith("writer/") ? await relayJson(r2(key, "url"), { key, method: "PUT" }) : { url: await presign(key, "PUT") };
       if (typeof answer.url !== "string") throw lacking("the relay gave no URL");
-      await put(answer.url, first, kind, progress, signal);
+      await put(answer.url, first, kind, progress, signal, behind);
     });
     const size = first.length;
     report(size, total ?? size);
@@ -705,9 +996,10 @@ async function upload(
 }
 
 /**
- * Sends the parts (the first already read) through `parallel` workers and
- * completes the upload; the total size. A part is read only once a worker is
- * free for it, so at most `parallel` parts are in flight plus the one read.
+ * Sends the parts (the first already read), at most `parallel` at once and no
+ * more than the line takes now (`partsAllowed`), and completes the upload; the
+ * total size. A part is read only once a slot is free for it, so at most
+ * `parallel` parts are in flight plus the one read.
  */
 async function multipart(
   source: Source,
@@ -732,18 +1024,18 @@ async function multipart(
   let number = 1;
   let data = first;
   for (;;) {
-    if (behind) await lineFree(signal);
+    if (behind) await lineFree(signal, () => progress.again());
     if (signal?.aborted) {
       fail(new Error("the share was cancelled"));
       break;
     }
     const length = data.length;
     size += length;
-    while (inFlight.size >= Math.max(parallel, 1)) await Promise.race(inFlight);
+    await slot(inFlight, () => partsAllowed(behind, Math.max(parallel, 1)));
     if (!failed) {
       const sending = number;
       const bytes = data;
-      const job: Promise<void> = putPart(key, uploadId, sending, bytes, progress, signal)
+      const job: Promise<void> = putPart(key, uploadId, sending, bytes, progress, signal, behind)
         .then((etag) => {
           etags.push([sending, etag]);
         }, fail)
@@ -776,14 +1068,14 @@ async function multipart(
   return size;
 }
 
-/** One part, retried with a fresh URL; its ETag. */
-function putPart(key: string, uploadId: string, number: number, data: Uint8Array, progress: Progress, signal?: AbortSignal): Promise<string> {
+/** One part, retried with a fresh URL; its ETag. `behind`: paced while a person's download runs (`put`). */
+function putPart(key: string, uploadId: string, number: number, data: Uint8Array, progress: Progress, signal?: AbortSignal, behind = false): Promise<string> {
   return retry(`part ${number} of ${key}`, async () => {
     const answer = await relayJson(r2(key, "multipart/urls"), { key, uploadId, parts: [number] });
     const urls = answer.urls as Record<string, unknown> | undefined;
     const url = urls !== undefined && urls !== null && typeof urls === "object" ? urls[String(number)] : undefined;
     if (typeof url !== "string") throw lacking("the relay gave no part URL");
-    const etag = await put(url, data, null, progress, signal);
+    const etag = await put(url, data, null, progress, signal, behind);
     if (etag === null) throw new service.AnswerInvalid({ service: "R2", message: "R2 gave no ETag for the part" });
     return etag;
   });
@@ -893,26 +1185,31 @@ function unref(timer: unknown): void {
 /**
  * PUTs `data` to a presigned URL with an exact Content-Length (S3 wants it,
  * never chunked), a MiB at a time as the request takes it (that's the
- * progress); the ETag R2 answered with.
+ * progress, and the line's meter); the ETag R2 answered with. `behind`: while a
+ * person's download runs, its bytes go at `givenWayBps`, in small steps.
  */
-async function put(url: string, data: Uint8Array, kind: string | null, progress: Progress, signal?: AbortSignal): Promise<string | null> {
+async function put(url: string, data: Uint8Array, kind: string | null, progress: Progress, signal?: AbortSignal, behind = false): Promise<string | null> {
   if (signal?.aborted) throw new Error("the share was cancelled");
   let written = 0;
   const stall = new Stall();
   const body = new ReadableStream<Uint8Array>(
     {
-      pull(controller) {
+      async pull(controller) {
         if (signal?.aborted) throw new Error("the share was cancelled");
         if (written >= data.length) {
           controller.close();
           return;
         }
-        const end = Math.min(written + MIB, data.length);
+        const paced = behind && givingWay() !== null;
+        const end = Math.min(written + (paced ? Math.min(PACED_CHUNK, timing.putChunk) : timing.putChunk), data.length);
+        if (paced) await pacedTurn(end - written, givenWayBps(line.bps));
+        if (signal?.aborted) throw new Error("the share was cancelled");
         const chunk = data.subarray(written, end);
         controller.enqueue(chunk);
         written = end;
         stall.moved(chunk.length);
         progress.add(chunk.length);
+        pulled(chunk.length, paced);
       },
     },
     { highWaterMark: 0 },
@@ -920,6 +1217,7 @@ async function put(url: string, data: Uint8Array, kind: string | null, progress:
   const headers: Record<string, string> = { "content-length": String(data.length) };
   if (kind !== null) headers["content-type"] = kind;
   const stop = signal === undefined ? stall.signal : AbortSignal.any([stall.signal, signal]);
+  sendStarted();
   try {
     let response: Response;
     try {
@@ -942,6 +1240,7 @@ async function put(url: string, data: Uint8Array, kind: string | null, progress:
     progress.takeBack(written);
     throw error;
   } finally {
+    sendEnded();
     stall.stop();
   }
 }
@@ -976,13 +1275,17 @@ export async function has(key: string): Promise<boolean> {
   return (await head(key)) !== null;
 }
 
+const NOT_THERE = " isn't in the cloud";
+/** Whether `error` is `download` saying the object was looked for and isn't there: the same on every try, never a failure that passes. */
+export const notThere = (error: unknown): boolean => error instanceof Error && error.message.endsWith(NOT_THERE);
+
 export function download(key: string, dest: string, progress: Report = () => {}, signal?: AbortSignal): Promise<void> {
   checkKey(key);
   if (signal?.aborted) return Promise.reject(new Error("download was cancelled"));
   return diag.timeOnAsync("cloud", "cloud: download", key, async () => {
     const object = await head(key, signal);
     if (signal?.aborted) throw new Error("download was cancelled");
-    if (object === null) throw new Error(`${key} isn't in the cloud`);
+    if (object === null) throw new Error(`${key}${NOT_THERE}`);
     const dir = parent(dest);
     try {
       if (dir !== null && dir !== "") fs.mkdirSync(dir, { recursive: true });

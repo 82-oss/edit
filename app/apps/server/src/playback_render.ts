@@ -44,7 +44,7 @@ import { ApiError, json, notFound } from "./http/errors.ts";
 import { serveFile } from "./http/files.ts";
 import type { Router } from "./http/router.ts";
 import type { ExportOptions, Project } from "./model.ts";
-import { native, type ExportExcerpt, type ExportJob } from "./native/index.ts";
+import { encodersListed, native, planOffThread, type ExportExcerpt, type ExportJob } from "./native/index.ts";
 import { isFile, join } from "./paths.ts";
 import { duration, fps } from "./project.ts";
 import { readState, writeAtomic } from "./files.ts";
@@ -56,6 +56,7 @@ import { playbackKey } from "./cloud_playback.ts";
 import * as player from "./player.ts";
 import * as playing from "./playing.ts";
 import * as seams from "./seams.ts";
+import * as thread from "./thread.ts";
 import { createHash } from "node:crypto";
 
 /** Renders kept on disk: the projects rendered last (each about 900 MB for a 40-minute edit). */
@@ -471,13 +472,21 @@ async function render(app: App, project: Project, current: Running): Promise<voi
   await seams.cloudMedia.restoreStills(app, project);
   if (current.cancelled) return;
   const options = playbackOptions();
-  // Its own chunk folder and file, so the real export's are never touched.
+  // Its own chunk folder and file, so the real export's are never touched. The project as JSON for the engine, here
+  // (37 ms for the longest real edit on mandalorian, Nov 21): said, so a hold of the thread here names itself.
+  thread.note(`smooth playback: ${project.name} as JSON for its render`);
   const playable = missingMedia.playable(app.store.home, project);
   const own = { ...playable, id: `${project.id}.playback` };
   const input = { json: jsonForSerde(own) };
   // Planned by reference to the revision it renders, and kept (exports.ts `planExport`, Nov 21): sent as JSON, the
   // plan alone kept the server's thread for a fifth of a second on a long edit. Its own id names only its chunks.
-  const { plan } = playable === project ? planExport(project, options, current.rev) : native().exportPlan(input, options);
+  // Either way off the thread where it can be: the encoders listed first (a process's first plan ran FFmpeg on the
+  // thread for them, 0.7 s on mandalorian), and one sent as JSON planned on the addon's pool (`planOffThread`).
+  await encodersListed();
+  if (current.cancelled) return;
+  thread.note(`smooth playback: planning ${project.name}'s render`);
+  const { plan } = playable === project ? planExport(project, options, current.rev) : await planOffThread(input, options);
+  if (current.cancelled) return;
   if (plan.end <= plan.start) throw new ApiError(400, "nothing on the timeline to play");
   current.heard = plan.audio;
   // The proxies it reads, cut to this Mac first as an export's originals are

@@ -56,7 +56,18 @@ export interface Channel {
   /** Its group's key, or null. */
   group?: string | null;
   at: number;
+  /**
+   * What New project offers on it, from its add-ons (Nov 21; the server's channels.ts `withMade`): the forms its new
+   * edits take, and what its new scripts are. Missing: long form alone, and a script from a case's footage alone.
+   */
+  forms?: Form[];
+  scripts?: ScriptKind[];
 }
+
+/** A new edit's form on a channel: 16:9 long form, or a 9:16 Short. */
+export type Form = "long" | "short";
+/** A new script on a channel: from a case's footage, or a commentary (an essay from sources). */
+export type ScriptKind = "footage" | "commentary";
 
 /** A Trello board as Edit read it from a pasted link: `lanes` are the lists its ideas are sent to. */
 export interface Trello {
@@ -139,7 +150,10 @@ export function groupTitle(group: Group, channels: Channel[]): string {
 }
 
 /** One channel changed: in the list at once. */
-function keep(channel: Channel): Channel {
+function keep(given: Channel): Channel {
+  // What New project offers on it comes with the list (`forms`, `scripts`), not with a change to it: kept from there.
+  const was = useChannels.getState().channels?.find((one) => one.key === given.key);
+  const channel: Channel = { ...given, ...(was?.forms !== undefined && given.forms === undefined ? { forms: was.forms } : {}), ...(was?.scripts !== undefined && given.scripts === undefined ? { scripts: was.scripts } : {}) };
   useChannels.setState((now) => ({ channels: [channel, ...(now.channels ?? []).filter((one) => one.key !== channel.key)] }));
   return channel;
 }
@@ -173,7 +187,7 @@ export const channelApi = {
     return answer.videos.find((one) => one.thumbnail)?.thumbnail ?? null;
   },
   /** A channel with what each lane has been taught, and its group's. */
-  page: (key: string) => request<{ channel: Channel; taught: Record<Lane, Taught[]>; group: (Group & { taught: Record<Lane, Taught[]> }) | null; teacher: boolean }>("GET", `/api/channels/${key}`),
+  page: (key: string) => request<{ channel: Channel; taught: Record<Lane, Taught[]>; group: (Group & { taught: Record<Lane, Taught[]> }) | null; addons?: Addons; teacher: boolean }>("GET", `/api/channels/${key}`),
   remove: async (key: string) => {
     await request("DELETE", `/api/channels/${key}`);
     useChannels.setState((now) => ({ channels: (now.channels ?? []).filter((one) => one.key !== key) }));
@@ -226,7 +240,10 @@ export const narrationLabel = (narration: Narration | null) => (narration === nu
  * minute at most (Channels' table asks for every row), again at once on a
  * page and after teaching moves.
  */
-export const useTaught = create<{ places: Record<string, Record<Lane, Taught[]>>; round: number }>(() => ({ places: {}, round: 0 }));
+export const useTaught = create<{ places: Record<string, Record<Lane, Taught[]>>; addons: Record<string, Addons>; round: number }>(() => ({ places: {}, addons: {}, round: 0 }));
+
+/** The add-ons that run on what a channel makes now, by lane, by their plain names (the server's addons.ts `namesOn`). */
+export type Addons = { edit: string[]; script: string[] };
 const readAt = new Map<string, number>();
 const asking = new Map<string, Promise<void>>();
 
@@ -242,7 +259,10 @@ export function loadTaught(place: string, fresh = false): Promise<void> {
   const work = (
     kind === "group"
       ? groupApi.page(key).then((page) => keepAll({ [place]: page.taught }))
-      : channelApi.page(key).then((page) => keepAll({ [place]: page.taught, ...(page.group ? { [`group:${page.group.key}`]: page.group.taught } : {}) }))
+      : channelApi.page(key).then((page) => {
+          keepAll({ [place]: page.taught, ...(page.group ? { [`group:${page.group.key}`]: page.group.taught } : {}) });
+          if (page.addons !== undefined) useTaught.setState((now) => ({ addons: { ...now.addons, [key]: page.addons! } }));
+        })
   )
     .catch(() => undefined)
     .finally(() => asking.delete(place));
@@ -265,6 +285,9 @@ export function useTaughtOf(place: string | null, fresh = false): Record<Lane, T
   }, [place, round, fresh]);
   return taught;
 }
+
+/** A channel's add-ons by lane, read with its page (null until read). */
+export const useAddonsOf = (channel: string): Addons | null => useTaught((state) => state.addons[channel] ?? null);
 
 /** How many things a lane's agent was taught, per lane. */
 export const countsOf = (taught: Record<Lane, Taught[]> | null): Record<Lane, number> | null =>

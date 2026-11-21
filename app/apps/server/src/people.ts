@@ -22,6 +22,7 @@
 // `Project::validate` refuses any save where one of a person's clips isn't
 // in their colour, so no writer (UI, MCP, plan) can split a person again.
 
+import * as addons from "./addons.ts";
 import { hex, subtitleName } from "./captions_core.ts";
 import type { Clip, Person as CastPerson, Project, Rgba } from "./model.ts";
 import { CAPTION_PREFIX, clipEnd, fps as fpsOf } from "./project.ts";
@@ -229,6 +230,7 @@ export function oneColourPerPerson(project: Project): unknown {
   const colours = assign(people, fpsOf(project));
   // Every line of theirs in it.
   const changed = new Map<string, number>();
+  const white = addons.has(project, "courtroom-text");
   for (const clip of project.clips) {
     const words = wordsOf(clip);
     if (clip.type !== "text" || words === null) continue;
@@ -241,7 +243,7 @@ export function oneColourPerPerson(project: Project): unknown {
         // words carry it, but a courtroom video's stay white ("for courtroom
         // videos we have the text for subtitles be white and not change by subject").
         // The in-video look's subtitles stay white too (Sphe, Nov 18: all white after the intro; its captions take the colour).
-        if (style.label == null && (project.style === "courtroom" || project.subtitle_look === "in_video")) continue;
+        if (style.label == null && (white || project.subtitle_look === "in_video")) continue;
         [key, onLabel] = [words.key, style.label != null];
         break;
       case "caption":

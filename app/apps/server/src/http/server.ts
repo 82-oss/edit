@@ -21,7 +21,7 @@ import * as relay from "../relay.ts";
 import { staticAsset } from "./assets.ts";
 import { compressed } from "./compress.ts";
 import { ApiError, notFound, text } from "./errors.ts";
-import { checkHost, loopbackSibling, mediaPath, secure } from "./host.ts";
+import { admitTailscale, checkHost, loopbackSibling, mediaPath, secure } from "./host.ts";
 import { Router, withPosition, type RouteContext } from "./router.ts";
 
 interface Socket {
@@ -135,7 +135,8 @@ export async function respond(
   const route = match.kind === "route" ? match.route.pattern : match.kind === "method" ? match.pattern : "(static)";
   let response: Response | undefined;
   try {
-    const refused = checkHost(request, app.allowedHosts);
+    let refused = checkHost(request, app.allowedHosts);
+    if (refused !== null && (await admitTailscale(request, app.allowedHosts))) refused = checkHost(request, app.allowedHosts);
     const preflight = refused === null ? siblingPreflight(request) : null;
     if (refused !== null) {
       response = refused;

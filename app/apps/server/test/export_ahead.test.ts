@@ -155,29 +155,29 @@ test("an edit's export is made ahead with its next share's settings, unless it's
     fs.writeFileSync(`${t.home}/reviews.json`, JSON.stringify({ shareOptions: { [project.id]: { quality: "small" } } }));
     expect(ahead.nextShare(t.home, project).options).toMatchObject({ quality: "small", preset: "youtube", range: null, chapters: [] });
     ahead.hooks.onBattery = () => true;
-    expect(ahead.tryNow(t.app, project.id)).toBe("on battery");
+    expect(await ahead.tryNow(t.app, project.id)).toBe("on battery");
     ahead.hooks.onBattery = () => false;
     smoothing.mockReturnValue(["c1"]);
-    expect(ahead.tryNow(t.app, project.id)).toBe("slowed shots still smoothing");
+    expect(await ahead.tryNow(t.app, project.id)).toBe("slowed shots still smoothing");
     smoothing.mockReturnValue([]);
     // Its picture still changing: footage being cleaned, or an effect not rendered yet (Nov 18).
     const cleaning = spyOn(removalSchedule, "progressOf").mockReturnValue({ done: 2, out: 3 });
-    expect(ahead.tryNow(t.app, project.id)).toBe("its footage still being cleaned");
+    expect(await ahead.tryNow(t.app, project.id)).toBe("its footage still being cleaned");
     cleaning.mockRestore();
     const rendering = spyOn(effects, "notReady").mockReturnValue("The title effect is still rendering: export again in a minute or two.");
-    expect(ahead.tryNow(t.app, project.id)).toBe("its effects still rendering");
+    expect(await ahead.tryNow(t.app, project.id)).toBe("its effects still rendering");
     rendering.mockRestore();
-    expect(ahead.tryNow(t.app, project.id)).toBeNull();
+    expect(await ahead.tryNow(t.app, project.id)).toBeNull();
     await t.settle(() => t.started.length === 1);
     expect(t.started[0]).toMatchObject({ name: "Shared", background: true });
-    expect(ahead.tryNow(t.app, project.id)).toBe("already making it");
+    expect(await ahead.tryNow(t.app, project.id)).toBe("already making it");
     t.started[0]!.release();
     await t.settle(() => fs.existsSync(`${aheadFile(t.store.cacheDir(), project.id)}.json`));
     await t.settle(() => t.registry.aheadFor() === null);
     // Made of this very edit with these settings: nothing to do until it changes.
-    expect(ahead.tryNow(t.app, project.id)).toBe("up to date");
+    expect(await ahead.tryNow(t.app, project.id)).toBe("up to date");
     await t.store.update(project.id, "test", (p) => { p.clips[0]!.duration = 20; });
-    expect(ahead.tryNow(t.app, project.id)).toBeNull();
+    expect(await ahead.tryNow(t.app, project.id)).toBeNull();
     await t.settle(() => t.started.length === 2);
     await t.registry.stopAhead();
   } finally {
@@ -297,7 +297,7 @@ test.skipIf(ffmpeg === null || ffprobe === null || addon === null)("a Share righ
       }
     });
     // Its first share is still to come: made ahead with its channel's logo, as the dialog will send it.
-    expect(ahead.tryNow(app, id)).toBeNull();
+    expect(await ahead.tryNow(app, id)).toBeNull();
     const file = aheadFile(store.cacheDir(), id);
     await settle(() => fs.existsSync(`${file}.json`) && registry.aheadFor() === null, 120_000);
     const madeAhead = diag.lines(400).map((line) => line.message).filter((message) => /chunks \(.*\) already made/.test(message));
