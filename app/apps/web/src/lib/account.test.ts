@@ -18,3 +18,17 @@ describe("what the signed-in person may do", () => {
     expect([makesVideos(signedIn(["use", "video.subtitles"])), editStyles(signedIn(["use", "edit.bodycam"]))]).toEqual([true, new Set(["bodycam"])]);
   });
 });
+
+// Sphe, Nov 21: "a channel I've given a person access to should be all they need".
+describe("a channel given", () => {
+  it("is all it takes for Home's edits, scripts and ideas with Edit V2 on; with it off, only today's kinds count", async () => {
+    const { makesIdeas } = await import("./ideas");
+    const channelOnly = signedIn(["use", "cloud", "channel.ch-ted"]);
+    expect([makesVideos(channelOnly), writesScripts(channelOnly), makesIdeas(channelOnly)]).toEqual([true, true, true]);
+    expect([makesVideos(signedIn(["use", "channel.ch-ted.label"])), writesScripts(signedIn(["use", "channel.ch-ted.label"]))]).toEqual([true, true]);
+    expect([makesVideos(channelOnly, false), writesScripts(channelOnly, false), makesIdeas(channelOnly, false)]).toEqual([false, false, false]);
+    // No full edits of any style beside it: the kinds of V1 stay theirs to be given.
+    expect(editStyles(channelOnly)).toEqual(new Set());
+    expect([makesVideos(signedIn(["use", "edit.bodycam"]), false), writesScripts(signedIn(["use", "scripts.interrogation"]), false)]).toEqual([true, true]);
+  });
+});

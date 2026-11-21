@@ -157,3 +157,33 @@ describe("New script from an idea", () => {
     expect(chosen()).toEqual([]);
   });
 });
+
+// Nov 21: commentary's home is the InternetJanitor channel. With Edit V2 on, a channel's script had to be its
+// footage's ("a commentary is V1's alone"); now the channel picked offers Footage or Commentary.
+describe("New script on a channel: a commentary", () => {
+  it("is offered only once a channel is picked, and footage is what it starts as", async () => {
+    await fromIdea({ title: "Why He's Hated", text: "", style: "bodycam" });
+    expect(() => findButton("Commentary")).toThrow("Button not found");
+    await act(async () => {
+      findButton(/Inspector Ted/).click();
+    });
+    expect(findButton("Commentary")).toBeDefined();
+    expect(document.querySelector("textarea")?.placeholder).toContain("Paste the footage");
+  });
+
+  it("is made on the channel picked, from its sources", async () => {
+    mocks.createCommentary.mockResolvedValue({ id: "c-1" });
+    await fromIdea({ title: "Why He's Hated", text: "https://example.com/the-brief", style: "bodycam", channel: "ch-ted" });
+    await act(async () => {
+      findButton("Commentary").click();
+    });
+    await flush();
+    expect(document.querySelector("textarea")?.placeholder).toContain("The first is the brief");
+    await act(async () => {
+      findButton("Create").click();
+    });
+    await flush();
+    expect(mocks.createCommentary).toHaveBeenCalledWith("Why He's Hated", ["https://example.com/the-brief"], "ch-ted");
+    expect(mocks.importYoutube).not.toHaveBeenCalled();
+  });
+});
