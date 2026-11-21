@@ -1,4 +1,4 @@
-import { Check, Copy, Download, ExternalLink, FolderSearch, HardDriveDownload, Link2, MessageSquareText, Trash2 } from "lucide-react";
+import { Copy, Download, Ellipsis, ExternalLink, FolderSearch, HardDriveDownload, Link2, MessageSquareText, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { ExportSteps as Steps } from "@edit/types/export_steps";
@@ -29,7 +29,8 @@ import { Button, cx, Modal, Select } from "./ui";
  * project's review link, where anyone with it watches and leaves notes at a
  * moment, and the notes come back to the agent. The first share makes the
  * link. A later share replaces the latest version when it has no comments,
- * and adds the next version when it has any.
+ * and adds the next version when it has any, and its button says which
+ * ("Replace v2", "Share as v3"), as the server answers.
  *
  * Export is back beside it (JJ, Nov 10: "an export option that is only to
  * export on your pc … not to the feedback link where it takes a year"): the
@@ -48,6 +49,15 @@ import { Button, cx, Modal, Select } from "./ui";
  * three cards, each with a picture of what comes out (Sphe, Nov 17: "7 videos,
  * one a stret…" didn't say whether it was seven files or one): the person
  * sees "parts", never "stretches".
+ *
+ * Three states (Sphe, Nov 21: "things are way too clumsy here… I have no idea
+ * of progress other than the 'about 9 minutes left'"): before, the two ways
+ * and one action that says what it will do ("Replace v2", "Share as v3",
+ * the server's answer); while it runs, no choices, what's happening, one
+ * number and bar, and each step with its own state and times, as the server
+ * measured them (export_steps.ts); done, what happened, the steps' times, and
+ * the one thing to do next (Copy link, Show in Finder). The link's Approve
+ * and Delete are behind its ⋯, never in front of an export.
  */
 type Where = "here" | "feedback";
 type What = "whole" | RangesMode;
@@ -170,11 +180,37 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   // While it runs, its steps: the same row of the Exports queue the sidebar's card reads (the server's export_steps.ts).
   const [steps, setSteps] = useState<Steps | null>(null);
   const going = starting || sharing !== null || exportState?.state === "queued" || exportState?.state === "running";
+  // Something ran while the dialog was open (begun here, by the agent, from Home): its end is the dialog's Done, with
+  // its steps done and their times (the server keeps them a while; else the steps as last seen), and whether it was a share.
+  const [ran, setRan] = useState<{ share: boolean } | null>(null);
+  const [doneSteps, setDoneSteps] = useState<Steps | null>(null);
+  const lastSteps = useRef<Steps | null>(null);
   useEffect(() => {
-    if (!open || !id || !going) {
+    if (open) return;
+    setRan(null);
+    setDoneSteps(null);
+    lastSteps.current = null;
+  }, [open]);
+  useEffect(() => {
+    if (!open || !id) return;
+    if (!going) {
       setSteps(null);
-      return;
+      if (lastSteps.current === null) return;
+      const seen = lastSteps.current;
+      lastSteps.current = null;
+      let live = true;
+      void api.exportActivity().then(
+        (rows) => {
+          const row = rows.find((one) => one.id === id && (one.kind ?? "edit") === "edit" && one.state === "done" && one.steps !== undefined);
+          if (live) setDoneSteps(row?.steps ?? { ...seen, steps: seen.steps.map((one) => ({ ...one, state: "done" as const, progress: null, left_s: 0, elapsed_s: undefined, note: undefined })) });
+        },
+        () => {},
+      );
+      return () => {
+        live = false;
+      };
     }
+    setDoneSteps(null);
     let live = true;
     const look = () =>
       void api.exportActivity().then(
@@ -182,6 +218,7 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
           if (!live) return;
           const row = rows.find((one) => one.id === id && (one.kind ?? "edit") === "edit" && (one.state === "queued" || one.state === "running"));
           setSteps(row?.steps ?? null);
+          if (row?.steps) lastSteps.current = row.steps;
         },
         // The next look asks again.
         () => {},
@@ -194,10 +231,15 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
     };
   }, [open, id, going]);
 
-  // A share under way (begun here, or by Ready for changes) is what the dialog says, not an Export before it.
+  // A share under way (begun here, from Home, or by the agent) is what the dialog says, not an Export before it.
   useEffect(() => {
     if (sharing !== null) setOnly(false);
   }, [sharing]);
+  // What's running is a share or a save: the share's line, or the steps' own word (an export started elsewhere).
+  const runningShare = sharing !== null || steps?.where === "feedback" || (starting && where === "feedback");
+  useEffect(() => {
+    if (going || batch?.finished === false) setRan((was) => ({ share: (was?.share ?? false) || runningShare }));
+  }, [going, runningShare, batch?.finished]);
 
   // The watermark its next share carries, until it's changed here: the server's (reviews.nextWatermark: as last shared;
   // never shared, its channel's own or its kind's last), the one its export made ahead has, so Export copies every chunk.
@@ -342,19 +384,31 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
 
   // The server's answer: a reviewer's comment on the latest version makes the next share a new version, else it replaces it.
   const next = review?.next ?? null;
+  // The one action says what it will do (Sphe, Nov 21: "we then are given the option to replace V2 and not the option
+  // to share as V3"): sending for feedback to a link with versions, the server's answer; the first share; a save.
+  const action = where === "feedback" ? (link !== null && next !== null ? (next.replace ? `Replace v${next.version}` : `Share as v${next.version}`) : "Share for feedback") : `Save to ${THIS_MACHINE}`;
   const status = shareStatus({ exportState, sharing, share: lastShare, linked: link !== null, stopped, only });
   // The stretches' export says how it went in place of its parts' exports; finished, only while it's the last thing that
   // happened (the server leaves out one an export came after; a share's is said here): yesterday's stood in for today's share.
   const batchLast = batch !== null && (!batch.finished || (sharing === null && review !== null && (lastShare === null || lastShare.at <= (batch.finished_ms ?? 0))));
   const showBatch = batchShown && batch !== null && batchLast;
-  // The steps in place of the progress line, while this edit's export or share runs (not the marked stretches').
   const running = busy || exporting || batchRunning;
-  const stepsShown = steps !== null && !showBatch && (exporting || sharing !== null) && !problem;
   const ended = !showBatch && !busy && !exporting && (status.kind === "share-failed" || status.kind === "export-failed" || status.kind === "cancelled");
   // One next action once it's over (Astra, Nov 18: Retry and Export side by side): a failure, its choices as they were,
   // is tried again the way it was asked; a cancel, or anything changed since, is a new export with what's picked now.
   const asked = `${where}|${what}|${marked ? channel : ""}`;
   const retryable = ended && status.kind !== "cancelled" && (endedWith === null || endedWith === asked);
+  // Done (Sphe, Nov 21: "way too clumsy… I have no idea of progress"): only for what ran while the dialog was open, and
+  // only as it really ended: a share once its version is published, a save once its file is there.
+  const doneBatch = showBatch && batch.finished && !batch.error && !batch.cancelled && batch.outputs.length > 0;
+  const doneShare = ran?.share === true && !doneBatch && lastShare?.state === "done" && link !== null;
+  const doneSave = ran !== null && !ran.share && !doneBatch && exportState?.state === "done" && typeof exportState.path === "string";
+  const done = !running && !problem && (doneShare || doneSave || doneBatch);
+  // What it puts up, from the share's own job while it runs (a note heard before it goes over a version makes it the
+  // next one), else the server's answer for the share about to start.
+  const target = lastShare?.state === "running" || lastShare?.state === "done" ? (lastShare.target ?? null) : next;
+  const sharingWords = target === null || link === null ? "Sharing for feedback" : target.replace ? `Replacing v${target.version} on the review link` : `Sharing v${target.version} for feedback`;
+  const folderOf = (path: string) => shownPath(path.slice(0, Math.max(path.lastIndexOf("/"), 0)) || path, folder?.home ?? null);
   const retry = async () => {
     if (busy || retrying) return;
     setRetrying(true);
@@ -365,7 +419,7 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
       setReview(await api.review(project.id));
     } catch (error) {
       // Nothing of it on the server (cancelled before an export existed, or failed while it waited on its graphics):
-      // what failed is done again, a share as a share (Ready for changes starts them too), anything else as picked here.
+      // what failed is done again, a share as a share (Home and the agent start them too), anything else as picked here.
       // It was a share whatever had failed, and a failed Save to Mac went up to the review link as a new version, on a
       // link a client may have (audit E10c, Nov 21).
       if ((error as Error).message === "nothing to retry") {
@@ -396,213 +450,291 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
     }
   };
 
+  const failure = !problem && (status.kind === "share-failed" || status.kind === "export-failed" || status.kind === "cancelled");
+  const reason = where === "feedback" && link !== null && next?.replace === true ? `No one has commented on v${next.version}, so this takes its place.` : null;
+
   return (
     <Modal open={open} onClose={onClose} width={500}>
       <div className="p-6">
-        <h2 className="text-[18px] font-semibold tracking-[-0.3px]">Export</h2>
-
-        <div className="mt-4 grid grid-cols-2 gap-3" role="radiogroup" aria-label="Where it goes">
-          <Choice
-            icon={<HardDriveDownload size={16} />}
-            title={`Save to ${THIS_MACHINE}`}
-            detail={`The video file, in ${folder?.shown ?? "your exports folder"}. Nothing is uploaded.`}
-            selected={where === "here"}
-            onClick={() => setWhere("here")}
-          />
-          <Choice
-            icon={<MessageSquareText size={16} />}
-            title="Send for feedback"
-            detail="Uploads it to the review link, where the team watches it and leaves notes for the agent."
-            note={link && next !== null ? (next.replace ? `Replaces v${next.version}: no one has commented on it` : `Adds v${next.version} to the link`) : link ? null : "Makes the link"}
-            selected={where === "feedback"}
-            onClick={() => setWhere("feedback")}
-          />
-        </div>
-
-        {choosing && <Scope ranges={ranges} edit={projectDuration(project) / rate(project.settings)} fps={rate(project.settings)} picked={picked} onPick={setWhat} />}
-
-        {stepsShown && <ExportSteps steps={steps.steps} className="mt-4" />}
-
-        {link && (
-          <div className="mt-4 flex flex-col rounded-[10px] border border-line bg-panel">
-            <div className="flex items-center gap-2.5 px-3 py-2.5">
-              <Link2 size={14} className="shrink-0 text-muted" />
-              <a href={link.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-[13px] text-fg hover:underline" title={link.url}>
-                {link.url.replace(/^https?:\/\//, "")}
-              </a>
-              <Button size="sm" variant="ghost" title="Copy the link" onClick={() => void navigator.clipboard?.writeText(link.url).then(() => toast("Link copied", "info"))}>
-                <Copy size={13} />
+        {running ? (
+          // While it runs: nothing to choose; what's happening, one number and one bar, each step where it is.
+          <>
+            <h2 className="text-[18px] font-semibold tracking-[-0.3px]">{showBatch || !runningShare ? `Saving to ${THIS_MACHINE}` : sharingWords}</h2>
+            {showBatch ? (
+              <Overall percent={batch.total > 0 ? batch.done / batch.total : 0} words={batch.current === "joining them" ? "joining them" : `${batch.current ?? "starting"} · ${Math.min(batch.done + 1, batch.total)} of ${batch.total}`} />
+            ) : steps !== null ? (
+              <>
+                <Overall percent={steps.queued ? null : steps.progress} words={steps.queued ? (exportState?.waiting ?? "in line behind another export") : (aboutLeft(steps.left_s)?.toLowerCase() ?? null)} />
+                <ExportSteps steps={steps.steps} className="mt-4" />
+              </>
+            ) : (
+              <p className="mt-3 text-[13px] text-muted tabular">{status.kind === "progress" ? status.text : "Starting…"}</p>
+            )}
+            {problem && <ProblemView error={problem} doing="stop it" className="mt-3" />}
+            <div className="mt-5 flex min-h-[34px] items-center gap-3">
+              <span className="min-w-0 flex-1 text-[12px] text-muted">It carries on if you close this.</span>
+              {(exporting || sharing !== null || batchRunning) && (
+                <Button variant="ghost" disabled={stopping || sharing === "cancelling"} onClick={() => void stop()}>
+                  {stopping || sharing === "cancelling" ? "Stopping…" : "Cancel export"}
+                </Button>
+              )}
+              <Button variant="subtle" onClick={onClose}>
+                Close
               </Button>
-              <a href={link.url} target="_blank" rel="noreferrer">
-                <Button size="sm" variant="subtle">
-                  <ExternalLink size={13} /> Open
-                </Button>
-              </a>
             </div>
-            <div className="flex items-center gap-2 border-t border-line px-3 py-2 text-[12px] text-muted">
-              <span className="flex-1">
-                {latest !== null ? `${link.versions.length} ${link.versions.length === 1 ? "version" : "versions"}, latest v${latest}` : "No versions yet"}
-                {link.approved && <span className="text-success"> · v{link.approved.version} approved by {link.approved.by}</span>}
-              </span>
-              {mayDelete && deleting === null && (
-                <Button size="sm" variant="ghost" disabled={busy} title={busy ? "It's being shared: delete the link once that's done" : "Delete this review link for good"} onClick={() => setDeleting("ask")}>
-                  <Trash2 size={13} /> Delete link
-                </Button>
-              )}
-              {!link.approved && latest !== null && deleting === null && (
-                <Button
-                  size="sm"
-                  variant={approving ? "danger" : "ghost"}
-                  onClick={() => void approve()}
-                  title="The team signed it off: the review closes, and the other versions' files and their exports here are deleted (their notes stay)"
-                >
-                  {approving ? `Approve v${latest} and delete the others` : `Approve v${latest}`}
-                </Button>
-              )}
-            </div>
-            {deleting !== null && (
-              <div className="flex items-center gap-2 border-t border-line px-3 py-2.5 text-[12px]">
-                <span className="min-w-0 flex-1 text-fg">Delete this link? It can't be undone: reviewers lose the page and every note on it. The exports here stay.</span>
-                <Button size="sm" variant="ghost" disabled={deleting === "running"} onClick={() => setDeleting(null)}>
-                  Cancel
-                </Button>
-                <Button size="sm" variant="danger" disabled={deleting === "running" || busy} onClick={() => void removeLink()}>
-                  {deleting === "running" ? "Deleting…" : "Delete link"}
-                </Button>
+          </>
+        ) : done ? (
+          // Done: what happened, its steps with their times, and the one thing to do next.
+          <>
+            <h2 className="text-[18px] font-semibold tracking-[-0.3px]">
+              {doneShare
+                ? lastShare?.target?.replace === true
+                  ? `v${lastShare.target.version} replaced`
+                  : `v${lastShare?.target?.version ?? latest ?? 1} is up`
+                : doneBatch
+                  ? batch.outputs.length === 1
+                    ? `Saved to ${folderOf(batch.outputs[0]!)}`
+                    : `${batch.outputs.length} videos saved to ${folder?.shown ?? "your exports folder"}`
+                  : `Saved to ${folderOf(exportState!.path!)}`}
+            </h2>
+            {doneSteps !== null && !doneBatch && <ExportSteps steps={doneSteps.steps} className="mt-4" />}
+            {doneShare && link && (
+              <div className="mt-4 flex items-center gap-2.5 rounded-[10px] border border-line bg-panel px-3 py-2.5">
+                <Link2 size={14} className="shrink-0 text-muted" />
+                <a href={link.url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-[13px] text-fg hover:underline" title={link.url}>
+                  {link.url.replace(/^https?:\/\//, "")}
+                </a>
+                <a href={link.url} target="_blank" rel="noreferrer">
+                  <Button size="sm" variant="subtle">
+                    <ExternalLink size={13} /> Open
+                  </Button>
+                </a>
               </div>
             )}
-          </div>
-        )}
-
-        {/* A channel's project whose channel has no watermark: no watermark at all (shown while it's read only if reading it failed). */}
-        {(!own || channelsFailed !== null || (channels !== null && channels.length > 0)) && (
-          <div className="mt-4 flex items-center gap-3 rounded-[10px] border border-line bg-panel px-3 py-2.5">
-            <label className="flex min-w-0 flex-1 items-center gap-2.5 text-[13px]" title="The channel's logo at 10%, moving around the frame like a DVD player's, over everything">
-              <input
-                type="checkbox"
-                checked={marked}
-                disabled={busy || channels === null || channels.length === 0}
-                onChange={(event) => {
-                  setMarkTouched(true);
-                  setMarked(event.target.checked);
-                }}
-              />
-              <span className="min-w-0">
-                <span className="block text-fg">Watermark</span>
-                <span className="block text-[12px] leading-snug text-muted">
-                  {channelsFailed ? `The channels didn’t load: ${channelsFailed}` : channels === null ? "Loading the channels…" : channels.length === 0 ? "No channels in the Watermarks folder" : own ? `${possessive(channels[0]!.name)} logo at 10%, moving around the frame` : "The channel’s logo at 10%, moving around the frame"}
-                </span>
-              </span>
-            </label>
-            {!own && channels && channels.length > 0 && channel !== null && (
-              <Select
-                value={channel}
-                options={channels.map((one) => ({ value: one.id, label: one.name }))}
-                onChange={(value) => {
-                  setMarkTouched(true);
-                  setChannel(value);
-                  setMarked(true);
-                }}
-                className={cx("h-[30px] min-w-[150px] shrink-0 justify-between rounded-lg border border-line-strong bg-bg pr-2.5 pl-3 text-[13px] hover:border-muted", !marked && "opacity-50")}
-              />
-            )}
-          </div>
-        )}
-
-        {/* An Export's file, where it is (JJ, Nov 10: "save it locally and display where it is saved"). */}
-        {showBatch && batch.finished && !batch.error && !batch.cancelled && batch.outputs.length > 0 && (
-          <div className="mt-4 flex items-center gap-2.5 rounded-[10px] border border-line bg-panel px-3 py-2.5 text-[13px]">
-            <Check size={14} className="shrink-0 text-success" />
-            <span className="min-w-0 flex-1 truncate text-fg" title={batch.outputs.join("\n")}>
-              {batch.outputs.length === 1 ? `Saved to ${shownPath(batch.outputs[0]!, folder?.home ?? null)}` : `${batch.outputs.length} videos saved to ${folder?.shown ?? "your exports folder"}`}
-            </span>
-            {onThisMac() ? (
-              <Button size="sm" variant="subtle" className="shrink-0" onClick={() => showInFinder(batch.outputs[0]!)}>
-                <FolderSearch size={13} /> Show in {FILE_MANAGER}
+            <div className="mt-5 flex min-h-[34px] items-center justify-end gap-3">
+              <Button variant="ghost" onClick={onClose}>
+                Close
               </Button>
-            ) : (
-              batch.outputs.length === 1 && (
-                <a className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-line-strong px-2.5 text-[12px] font-medium text-fg transition-colors hover:bg-hover" href={`/api/exports/file?path=${encodeURIComponent(batch.outputs[0]!)}`} download>
-                  <Download size={13} /> Download
-                </a>
-              )
-            )}
-          </div>
-        )}
+              {doneShare && link ? (
+                <Button variant="primary" onClick={() => void navigator.clipboard?.writeText(link.url).then(() => toast("Link copied", "info"))}>
+                  <Copy size={13} /> Copy link
+                </Button>
+              ) : (
+                <ShowFile path={doneBatch ? batch.outputs[0]! : exportState!.path!} />
+              )}
+            </div>
+          </>
+        ) : (
+          // Before it runs (and after a failure or a cancel): where it goes, and one action that says what it will do.
+          <>
+            <h2 className="text-[18px] font-semibold tracking-[-0.3px]">Export</h2>
 
-        {!showBatch && !problem && status.kind === "saved" && (
-          <div className="mt-4 flex items-center gap-2.5 rounded-[10px] border border-line bg-panel px-3 py-2.5 text-[13px]">
-            <Check size={14} className="shrink-0 text-success" />
-            <span className="min-w-0 flex-1 truncate text-fg" title={status.path}>
-              Saved to {shownPath(status.path, folder?.home ?? null)}
-            </span>
-            {onThisMac() ? (
-              <Button size="sm" variant="subtle" className="shrink-0" onClick={() => showInFinder(status.path)}>
-                <FolderSearch size={13} /> Show in {FILE_MANAGER}
-              </Button>
-            ) : (
-              <a className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-line-strong px-2.5 text-[12px] font-medium text-fg transition-colors hover:bg-hover" href={`/api/exports/file?path=${encodeURIComponent(status.path)}`} download>
-                <Download size={13} /> Download
-              </a>
-            )}
-          </div>
-        )}
+            <div className="mt-4 grid grid-cols-2 gap-3" role="radiogroup" aria-label="Where it goes">
+              <Choice
+                icon={<HardDriveDownload size={16} />}
+                title={`Save to ${THIS_MACHINE}`}
+                detail={`The video file, in ${folder?.shown ?? "your exports folder"}. Nothing is uploaded.`}
+                selected={where === "here"}
+                onClick={() => setWhere("here")}
+              />
+              <Choice
+                icon={<MessageSquareText size={16} />}
+                title="Send for feedback"
+                detail="Goes to the review link, where the team watches it and leaves notes."
+                selected={where === "feedback"}
+                onClick={() => setWhere("feedback")}
+              />
+            </div>
 
-        <div className="mt-5 flex min-h-[34px] items-center gap-3">
-          <div className="min-w-0 flex-1 text-[12px]">
-            {showBatch && !problem && (
-              <>
-                {!batch.finished && (
-                  <span className="text-muted tabular">
-                    {batch.current === "joining them" ? "Joining them…" : `Exporting ${batch.current ?? "…"} · ${Math.min(batch.done + 1, batch.total)} of ${batch.total}`}
+            {choosing && <Scope ranges={ranges} edit={projectDuration(project) / rate(project.settings)} fps={rate(project.settings)} picked={picked} onPick={setWhat} />}
+
+            {link && where === "feedback" && (
+              <LinkRow
+                url={link.url}
+                latest={latest}
+                approved={link.approved}
+                mayDelete={mayDelete}
+                approving={approving}
+                deleting={deleting}
+                onApprove={() => void approve()}
+                onAskDelete={() => setDeleting("ask")}
+                onCancelDelete={() => setDeleting(null)}
+                onDelete={() => void removeLink()}
+                onCopy={() => void navigator.clipboard?.writeText(link.url).then(() => toast("Link copied", "info"))}
+              />
+            )}
+
+            {/* A channel's project whose channel has no watermark: no watermark at all (shown while it's read only if reading it failed). */}
+            {(!own || channelsFailed !== null || (channels !== null && channels.length > 0)) && (
+              <div className="mt-4 flex items-center gap-3 rounded-[10px] border border-line bg-panel px-3 py-2.5">
+                <label className="flex min-w-0 flex-1 items-center gap-2.5 text-[13px]" title="The channel's logo at 10%, moving around the frame like a DVD player's, over everything">
+                  <input
+                    type="checkbox"
+                    checked={marked}
+                    disabled={busy || channels === null || channels.length === 0}
+                    onChange={(event) => {
+                      setMarkTouched(true);
+                      setMarked(event.target.checked);
+                    }}
+                  />
+                  <span className="min-w-0">
+                    <span className="block text-fg">Watermark</span>
+                    <span className="block text-[12px] leading-snug text-muted">
+                      {channelsFailed ? `The channels didn’t load: ${channelsFailed}` : channels === null ? "Loading the channels…" : channels.length === 0 ? "No channels in the Watermarks folder" : own ? `${possessive(channels[0]!.name)} logo at 10%, moving around the frame` : "The channel’s logo at 10%, moving around the frame"}
+                    </span>
                   </span>
+                </label>
+                {!own && channels && channels.length > 0 && channel !== null && (
+                  <Select
+                    value={channel}
+                    options={channels.map((one) => ({ value: one.id, label: one.name }))}
+                    onChange={(value) => {
+                      setMarkTouched(true);
+                      setChannel(value);
+                      setMarked(true);
+                    }}
+                    className={cx("h-[30px] min-w-[150px] shrink-0 justify-between rounded-lg border border-line-strong bg-bg pr-2.5 pl-3 text-[13px] hover:border-muted", !marked && "opacity-50")}
+                  />
                 )}
-                {batch.finished && batch.cancelled && <span className="text-muted">Cancelled</span>}
-                {batch.finished && !batch.cancelled && batch.error && <ProblemView error={batch.error} doing="export the marked parts" />}
-              </>
+              </div>
             )}
-            {showBatch ? null : <>
-            {status.kind === "progress" && (stepsShown ? <span className="text-muted tabular">{aboutLeft(steps.left_s)}</span> : <span className="text-muted tabular">{status.text}</span>)}
-            {status.kind !== "progress" && problem && <ProblemView error={problem} doing="share it" />}
-            {!problem && status.kind === "share-failed" && <ProblemView error={status.error} doing="share it" />}
-            {!problem && status.kind === "export-failed" && (status.error ? <ProblemView error={status.error} doing="export it" /> : <span className="text-muted">Export failed</span>)}
-            {!problem && status.kind === "cancelled" && <span className="text-muted">Cancelled</span>}
-            {/* Only once the server says the version is published: the export finishing is not the share. */}
-            {!problem && status.kind === "up" && (
-              <span className="flex items-center gap-1.5 text-success">
-                <Check size={13} /> Up on the link
-              </span>
-            )}
-            </>}
-            {showBatch && problem && <ProblemView error={problem} doing="export it" />}
-          </div>
-          {(exporting || sharing !== null || batchRunning) && (
-            <Button variant="ghost" disabled={stopping || sharing === "cancelling"} onClick={() => void stop()}>
-              {stopping || sharing === "cancelling" ? "Stopping…" : "Cancel export"}
-            </Button>
-          )}
-          <Button variant="ghost" onClick={onClose}>
-            Close
-          </Button>
-          {/* While one runs, Cancel export and Close; once it's over, one action: Retry a failure, Export again after a cancel. */}
-          {!running &&
-            (retryable ? (
-              <Button variant="primary" disabled={retrying} onClick={() => void retry()}>
-                {retrying ? "Retrying…" : "Retry"}
+
+            <div className="mt-5 flex min-h-[34px] items-center gap-3">
+              <div className="min-w-0 flex-1 text-[12px]">
+                {problem && <ProblemView error={problem} doing={where === "feedback" ? "share it" : "export it"} />}
+                {failure && status.kind === "share-failed" && <ProblemView error={status.error} doing="share it" />}
+                {failure && status.kind === "export-failed" && (status.error ? <ProblemView error={status.error} doing="export it" /> : <span className="text-muted">Export failed</span>)}
+                {failure && status.kind === "cancelled" && <span className="text-muted">Cancelled</span>}
+                {!problem && showBatch && batch.finished && batch.cancelled && <span className="text-muted">Cancelled</span>}
+                {!problem && showBatch && batch.finished && !batch.cancelled && batch.error && <ProblemView error={batch.error} doing="export the marked parts" />}
+                {!problem && !failure && !(showBatch && batch.finished) && reason && <span className="text-muted">{reason}</span>}
+              </div>
+              <Button variant="ghost" onClick={onClose}>
+                Close
               </Button>
-            ) : (
-              <Button variant="primary" disabled={unable} onClick={go}>
-                {ended && status.kind === "cancelled" ? "Export again" : "Export"}
-              </Button>
-            ))}
-        </div>
+              {/* Once one is over, one action: Retry a failure, Export again after a cancel, else what's picked, said. */}
+              {retryable ? (
+                <Button variant="primary" disabled={retrying} onClick={() => void retry()}>
+                  {retrying ? "Retrying…" : "Retry"}
+                </Button>
+              ) : (
+                <Button variant="primary" disabled={unable} onClick={go}>
+                  {ended && status.kind === "cancelled" ? "Export again" : action}
+                </Button>
+              )}
+            </div>
+          </>
+        )}
       </div>
     </Modal>
   );
 }
 
+/** The whole run's one number and time left, and one bar (it eases as it moves). A queued run has no number. */
+function Overall({ percent, words }: { percent: number | null; words: string | null }) {
+  return (
+    <>
+      <div className="mt-4 flex items-baseline gap-2.5">
+        {percent !== null && <span className="text-[28px] leading-none font-semibold tabular">{Math.round(percent * 100)}%</span>}
+        {words && <span className="text-[12.5px] text-muted tabular">{words}</span>}
+      </div>
+      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-active" aria-hidden>
+        <div className="h-full rounded-full bg-primary transition-[width] duration-500 ease-out" style={{ width: `${Math.round((percent ?? 0) * 100)}%` }} />
+      </div>
+    </>
+  );
+}
+
+/** A saved file's place: Show in the file manager on the computer running Edit, else its download. */
+function ShowFile({ path }: { path: string }) {
+  if (onThisMac())
+    return (
+      <Button variant="primary" onClick={() => showInFinder(path)}>
+        <FolderSearch size={13} /> Show in {FILE_MANAGER}
+      </Button>
+    );
+  return (
+    <a className="inline-flex h-[34px] items-center gap-1.5 rounded-lg border border-primary bg-primary px-3.5 text-[13px] font-medium text-white transition-colors hover:border-primary-hover hover:bg-primary-hover" href={`/api/exports/file?path=${encodeURIComponent(path)}`} download>
+      <Download size={13} /> Download
+    </a>
+  );
+}
+
+/**
+ * The review link, before a share: copy and open it, and behind its ⋯ the link's own two actions, out of the way
+ * (Sphe, Nov 21: "I don't know what 'Approve V2' is for or 'Delete link'… unnecessary decisions that are right in
+ * front of your face"). Approving keeps its two clicks; deleting its question.
+ */
+function LinkRow(props: {
+  url: string;
+  latest: number | null;
+  approved: { version: number; by: string } | null;
+  mayDelete: boolean;
+  approving: boolean;
+  deleting: "ask" | "running" | null;
+  onApprove: () => void;
+  onAskDelete: () => void;
+  onCancelDelete: () => void;
+  onDelete: () => void;
+  onCopy: () => void;
+}) {
+  const [more, setMore] = useState(false);
+  const { url, latest, approved, mayDelete, approving, deleting } = props;
+  const canApprove = approved === null && latest !== null;
+  const hasMore = canApprove || mayDelete;
+  return (
+    <div className="mt-4 flex flex-col rounded-[10px] border border-line bg-panel">
+      <div className="flex items-center gap-2.5 px-3 py-2.5">
+        <Link2 size={14} className="shrink-0 text-muted" />
+        <a href={url} target="_blank" rel="noreferrer" className="min-w-0 flex-1 truncate text-[13px] text-fg hover:underline" title={url}>
+          {url.replace(/^https?:\/\//, "")}
+        </a>
+        <Button size="sm" variant="ghost" title="Copy the link" onClick={props.onCopy}>
+          <Copy size={13} />
+        </Button>
+        <a href={url} target="_blank" rel="noreferrer">
+          <Button size="sm" variant="subtle">
+            <ExternalLink size={13} /> Open
+          </Button>
+        </a>
+        {hasMore && (
+          <Button size="sm" variant="ghost" title="More for this link" aria-label="More for this link" aria-expanded={more} onClick={() => setMore((was) => !was)}>
+            <Ellipsis size={14} />
+          </Button>
+        )}
+      </div>
+      {approved && <div className="border-t border-line px-3 py-2 text-[12px] text-success">v{approved.version} approved by {approved.by}</div>}
+      {more && deleting === null && (
+        <div className="flex items-center justify-end gap-2 border-t border-line px-3 py-2 text-[12px]">
+          {mayDelete && (
+            <Button size="sm" variant="ghost" title="Delete this review link for good" onClick={props.onAskDelete}>
+              <Trash2 size={13} /> Delete link
+            </Button>
+          )}
+          {canApprove && (
+            <Button size="sm" variant={approving ? "danger" : "ghost"} onClick={props.onApprove} title="The team signed it off: the review closes, and the other versions' files and their exports here are deleted (their notes stay)">
+              {approving ? `Approve v${latest} and delete the others` : `Approve v${latest}`}
+            </Button>
+          )}
+        </div>
+      )}
+      {deleting !== null && (
+        <div className="flex items-center gap-2 border-t border-line px-3 py-2.5 text-[12px]">
+          <span className="min-w-0 flex-1 text-fg">Delete this link? It can't be undone: reviewers lose the page and every note on it. The exports here stay.</span>
+          <Button size="sm" variant="ghost" disabled={deleting === "running"} onClick={props.onCancelDelete}>
+            Cancel
+          </Button>
+          <Button size="sm" variant="danger" disabled={deleting === "running"} onClick={props.onDelete}>
+            {deleting === "running" ? "Deleting…" : "Delete link"}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Where the video goes: one of two options, said on the option itself. */
-function Choice({ icon, title, detail, note, selected, onClick }: { icon: React.ReactNode; title: string; detail: string; note?: string | null; selected: boolean; onClick: () => void }) {
+function Choice({ icon, title, detail, selected, onClick }: { icon: React.ReactNode; title: string; detail: string; selected: boolean; onClick: () => void }) {
   return (
     <button
       type="button"
@@ -619,7 +751,6 @@ function Choice({ icon, title, detail, note, selected, onClick }: { icon: React.
         {title}
       </span>
       <span className="text-[12px] leading-snug text-muted">{detail}</span>
-      {note && <span className="text-[12px] leading-snug text-secondary">{note}</span>}
     </button>
   );
 }

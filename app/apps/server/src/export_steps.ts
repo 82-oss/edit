@@ -131,7 +131,27 @@ interface Run {
   top?: number;
   /** The time the video made before this run would have taken at this run's pace (`ExportActivity.made`). */
   credit?: number;
+  /** Its last look before this one: a stage's change is known to within the time between. */
+  prev?: number;
+  /** Each stage's start, when it was seen within `LOOK_MS` of happening ("1" graphics, "2" video, "3" copy, "4" upload). */
+  starts?: Map<string, number>;
+  /** Each stage's length (seconds) once it's over, when its start and end were both seen so. */
+  took?: Map<string, number>;
+  /** The steps as last said, for its end (`doneSteps`). */
+  said?: ExportSteps;
 }
+
+/**
+ * A stage's start or end is taken as seen when the look before was this recent: the dialog looks every second and Home
+ * every two, so it's right to a few seconds. Looked at less often (nothing open), its times aren't said: never a guess.
+ */
+const LOOK_MS = 5_000;
+/** How long a run's steps are kept once it's over, for the Export dialog's Done. */
+const FINISHED_MS = 10 * 60_000;
+/** Runs that ended, their steps all done and each one's time where it was seen. */
+const finished = new Map<string, { steps: ExportSteps; at: number }>();
+/** The stage each step is part of (graphics and removal are the run's first, taken together: no one graphic's time). */
+const STAGE_OF: Partial<Record<ExportStep["kind"], string>> = { video: "2", copy: "3", upload: "4" };
 
 /**
  * Nothing real (frames, bytes, the prep's line) new for this long: the bar stops where it is and its step says so (Nov
@@ -232,7 +252,16 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
   // 1 graphics, 2 the video, 3 the review copy, 4 the upload; 3 for a save is its end.
   const stage = line !== null ? shareStage(line, share?.step ?? null) : wait !== undefined ? 1 : 2;
   const stageKey = `${stage}`;
+  // When each stage began and how long it took, where that was seen within a few seconds (`LOOK_MS`): the first look
+  // of a run soon after it began has its first stage's start too.
+  const gap = now - (run.prev ?? run.since);
+  run.prev = now;
+  run.starts ??= new Map();
+  run.took ??= new Map();
   if (run.stage !== stageKey) {
+    const start = run.starts.get(run.stage);
+    if (run.stage !== "" && start !== undefined && gap <= LOOK_MS) run.took.set(run.stage, (now - start) / 1000);
+    if (gap <= LOOK_MS) run.starts.set(stageKey, run.stage === "" ? run.since : now);
     run.stage = stageKey;
     run.stageAt = now;
   }
@@ -366,7 +395,46 @@ export function stepsOf(app: App, id: string, job: ExportActivity | undefined, n
   if (!queued) progress = Math.max(progress, run.top ?? 0);
   run.top = progress;
   run.last = progress;
-  return { where: feedback ? "feedback" : "here", steps, queued, elapsed_s: Math.round(elapsed), left_s: left === null ? null : Math.round(left), progress: Math.min(0.99, Math.max(0, progress)) };
+  // Each step's own time where it was seen: a done one's length, the current one's so far.
+  for (const step of steps) {
+    const key = STAGE_OF[step.kind];
+    if (key === undefined) continue;
+    const took = run.took.get(key);
+    const start = run.starts.get(key);
+    if (step.state === "done" && took !== undefined) step.took_s = Math.round(took);
+    else if (step.state === "current" && !queued && start !== undefined && key === stageKey) step.elapsed_s = Math.round((now - start) / 1000);
+  }
+  const said: ExportSteps = { where: feedback ? "feedback" : "here", steps, queued, elapsed_s: Math.round(elapsed), left_s: left === null ? null : Math.round(left), progress: Math.min(0.99, Math.max(0, progress)) };
+  run.said = said;
+  return said;
+}
+
+/**
+ * Project `id`'s run that just ended at `end`: its steps as last said, each done, with how long each took where its
+ * start and end were seen (the last one's end is `end`: its publish, or its export's end), kept `FINISHED_MS` for the
+ * Export dialog's Done. Null when none was followed here, or it's long over.
+ */
+function doneSteps(id: string, end: number, now: number): ExportSteps | null {
+  const run = runs.get(id);
+  if (run?.said !== undefined) {
+    const start = run.starts?.get(run.stage);
+    // Its end seen soon after it came (the last look was recent): the last stage's time is known.
+    if (start !== undefined && end >= start && end - (run.prev ?? 0) <= LOOK_MS) run.took?.set(run.stage, (end - start) / 1000);
+    const steps = run.said.steps.map((step): ExportStep => {
+      const took = STAGE_OF[step.kind] === undefined ? undefined : run.took?.get(STAGE_OF[step.kind]!);
+      const { note: _note, elapsed_s: _elapsed, took_s: _took, ...rest } = step;
+      return { ...rest, state: "done", progress: null, left_s: 0, ...(took === undefined ? {} : { took_s: Math.round(took) }) };
+    });
+    finished.set(id, { steps: { where: run.said.where, steps, queued: false, elapsed_s: Math.round(Math.max(0, end - run.since) / 1000), left_s: 0, progress: 1 }, at: end });
+    runs.delete(id);
+  }
+  const kept = finished.get(id);
+  if (kept === undefined) return null;
+  if (now - kept.at > FINISHED_MS) {
+    finished.delete(id);
+    return null;
+  }
+  return kept.steps;
 }
 
 /**
@@ -426,6 +494,13 @@ export function activity(app: App, visible: Set<string>, now = clock.now()): (Ex
     });
   }
   return [...rows.values()].map((row) => {
+    if (row.state === "done") {
+      // Ended: its steps done, with their times, for a while (the dialog's Done); a share's end is its publish.
+      const share = reviews.shareNow(home, row.id).share;
+      const end = row.share === true && share?.state === "done" ? share.at : row.updated_ms;
+      const steps = doneSteps(row.id, end, now);
+      return steps === null ? row : { ...row, steps };
+    }
     if (row.state !== "queued" && row.state !== "running") return row;
     const steps = stepsOf(app, row.id, row, now);
     return steps === null ? row : { ...row, steps };
@@ -512,4 +587,5 @@ export function exportNow(app: App, id: string): { state: ExportActivity["state"
 export function reset(): void {
   waits.clear();
   runs.clear();
+  finished.clear();
 }

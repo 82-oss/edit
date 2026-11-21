@@ -1,10 +1,12 @@
 // Repack reviews of an edit:
 // an export shared to a Repack link, where anyone with it comments at a
 // moment of the video (as on Frame.io, which it replaces); the notes followed
-// here while Edit runs; the agent set on them when a reviewer clicks "Ready
-// for changes" and picks this computer on the review page (their own, where
-// they're signed in to Edit, or another that's on and not busy), and the next
-// cut exported and shared after;
+// here while Edit runs; the agent set on them when someone in Edit asks it to
+// pull the feedback, and the next cut shared only when someone asks for that
+// too (Sphe, Nov 21: "When feedback comes in, it shouldn't automatically get
+// queued up to get fixed… Once the agent fixes things, it shouldn't just
+// automatically publish as V2"; "Ready for changes" on the review page is
+// answered with what to do in Edit, `checkIn`);
 // and each fix's changed stretch of the timeline kept
 // with its note, so the timeline shows what the agent changed for whom and
 // why ("did the agent actually do what we said we wanted it to do?").
@@ -26,7 +28,6 @@ import * as exportsView from "./exports_view.ts";
 import * as archive from "./archive.ts";
 import * as channels from "./channels.ts";
 import * as cloud from "./cloud.ts";
-import * as cloudProjects from "./cloud_projects.ts";
 import * as accounts from "./accounts.ts";
 import * as diag from "./diag.ts";
 import * as failure from "./failure.ts";
@@ -72,13 +73,13 @@ const FILE = "reviews.json";
 export const POLL_MS = 45_000;
 /** How often a computer that has Ready for changes asked of it checks in; others check in at POLL_MS. */
 export const CHECK_IN_CHOSEN_MS = 15_000;
-/** The longest a Ready for changes turn is waited for before it's given up on. */
+/** The longest a feedback fix's turn is waited for before it's given up on. */
 const FIX_TURN_MS = 3 * 60 * 60_000;
 /** A note claimed this long ago and never resolved may be tried again… */
 const RETRY_MS = 30 * 60_000;
 /** …this many times in all; then it's left for the team (the audit, Oct 23: a new Opus turn every 30 minutes, forever). */
 export const MAX_ATTEMPTS = 2;
-/** Times one Ready for changes sends a note to the agent while its turns end without answering it. */
+/** Times one feedback fix sends a note to the agent while its turns end without answering it. */
 const FIX_TRIES = 4;
 /** Changed stretches closer than this (frames: a second) are one band. */
 const JOIN_SECONDS = 1;
@@ -109,6 +110,13 @@ export interface Note {
   attempts?: number;
   /** The agent's fix: what it changed (clip ids, and their stretch then) and its words. */
   fix?: { clips: string[]; ranges: [number, number][]; summary: string; at: number };
+  /**
+   * Fixed here and not yet marked so on the review: a reviewer reads a note as
+   * fixed only once a version carrying the fix is up (Sphe, Nov 21: a fix no
+   * longer goes up by itself). `version` is null until a share carries it, then
+   * the version it's in, until the review has it (`markCarried`).
+   */
+  pending?: { version: number | null };
   /** Why the agent left it. */
   unfixed?: string;
 }
@@ -137,7 +145,7 @@ interface State {
   cursor: number;
   shared: Record<string, Shared>;
   notes: Record<string, Note>;
-  /** Each project's last Share settings (not its range or chapters), for the share after a Ready for changes. */
+  /** Each project's last Share settings (not its range or chapters), for the shares after it that give none (Home's, the agent's). */
   shareOptions?: Record<string, Partial<ExportOptions>>;
   /** Each project's watermark from its last Share (a channel's picture id, channel_marks.ts), kept for the shares after it; "" none; absent, never shared (`nextWatermark`). */
   shareWatermark?: Record<string, string>;
@@ -243,9 +251,8 @@ function update<T>(home: string, change: (state: State) => T): T {
  * carries the share on from its last finished step, and checks first that a
  * step's output isn't there already (the export listed, the R2 object there
  * by HEAD, the version published under this share's id). A share that fails
- * is kept, failed, with why: the fixes of a Ready for changes that failed
- * that way are what the next one shares, changed or not (`unshared`), and a
- * new build tries them again (retry_after_update.ts). Its job is where the
+ * is kept, failed, with why, and a new build carries on one whose export was
+ * made (retry_after_update.ts `carriedOn`). Its job is where the
  * Share dialog, the Exports panel and Home all read how it's going
  * (`shareNow`); "Up on the link" is said only once it's published.
  */
@@ -256,8 +263,13 @@ interface ShareArgs {
   replace?: boolean;
   /** Said beside its export in the Exports panel ("Trying again after the update"). */
   note?: string;
-  /** Ready for changes: the request it ends and the version it shares, said on the review page if it fails. */
+  /**
+   * A share an older build started by itself after a fix (Ready for changes): the request and the version. None is
+   * made now (Sphe, Nov 21), and one carried over from before isn't run (`resumeShareJob`).
+   */
   fixes?: { reviewId: string | null; next: number };
+  /** When the edit it shares was taken: the notes fixed before it are in the video, marked so when it's up (`markCarried`). */
+  takenAt?: number;
   /** Exported first, with these settings and watermark; absent, an export already made is shared. */
   export?: { options: Partial<ExportOptions>; watermark?: string };
   /** The edit as it was when its export was asked for (a file under `<home>/jobs`), so a restart exports the same. */
@@ -282,6 +294,8 @@ export interface ShareView {
   version?: number;
   url?: string;
   error?: string;
+  /** The version it puts up and whether over the one there (as it goes, its own: a note heard before it goes over one makes it the next), for the dialog's words. */
+  target?: { version: number; replace: boolean };
 }
 
 /**
@@ -328,6 +342,9 @@ export function shareNow(home: string, projectId: string): { line: string | null
   if (job === undefined) return { line, share: null };
   const published = (job.args as Partial<ShareArgs>).published;
   const error = job.error ?? job.given_up;
+  const replace = (job.args as Partial<ShareArgs>).replace === true;
+  const newest = newestVersion(home, projectId)?.n ?? 0;
+  const target = published !== undefined ? { version: published.version, replace } : replace && newest > 0 ? { version: newest, replace: true } : { version: newest + 1, replace: false };
   return {
     line,
     share: {
@@ -337,18 +354,13 @@ export function shareNow(home: string, projectId: string): { line: string | null
       started: job.started_ms,
       ...(published === undefined ? {} : { version: published.version, url: published.url }),
       ...(!going && job.state !== "done" && error !== undefined ? { error } : {}),
+      target,
     },
   };
 }
 
-/** Ready for changes made fixes here that the share after them couldn't put up: the next one shares them, changed or not. */
-export function unshared(home: string, projectId: string): boolean {
-  const job = shareJob(home, projectId);
-  return job !== undefined && (job.state === "failed" || job.state === "given_up") && (job.args as Partial<ShareArgs>).fixes !== undefined;
-}
-
 /**
- * A share that failed after its export was made (or with nothing to export), not one from Ready for changes: it can
+ * A share that failed after its export was made (or with nothing to export), not an older build's of its fixes: it can
  * be carried on from its step with the export it has (retryShare), as a new build does once (retry_after_update;
  * honest council change 7h: a plain share that failed at its upload was never tried again).
  */
@@ -388,11 +400,6 @@ export function carryOnStale(app: App, projectId: string): string | null {
 /** Every plain share that failed and can be carried on (`carriedOn`). */
 export function carriedOnProjects(home: string): string[] {
   return jobs.list(home, "share").flatMap((job) => (carriedOn(home, job.project) ? [job.project] : []));
-}
-
-/** Every project with fixes `unshared`. */
-export function unsharedProjects(home: string): string[] {
-  return jobs.list(home, "share").flatMap((job) => (unshared(home, job.project) ? [job.project] : []));
 }
 
 /**
@@ -653,13 +660,12 @@ function canShare(home: string, projectId: string): void {
   if (removing.has(projectId)) throw new Error("this project's review link is being deleted: share it again once that's done");
 }
 
-/** Lists a share (taking over from a fix under way, `from`, in the same write) and runs it. */
-function startShare(app: App, projectId: string, given: Omit<ShareArgs, "id">, from?: string): Promise<{ url: string; version: number }> {
+/** Lists a share and runs it. */
+function startShare(app: App, projectId: string, given: Omit<ShareArgs, "id">): Promise<{ url: string; version: number }> {
   const home = app.store.home;
   const args: ShareArgs = { id: crypto.randomUUID(), ...given };
   const step = args.export === undefined ? "review copy" : "waiting";
-  if (from !== undefined) jobs.handOff(home, from, { kind: "share", project: projectId, args: args as unknown as Record<string, unknown>, step });
-  else jobs.begin(home, "share", projectId, args as unknown as Record<string, unknown>, "", step);
+  jobs.begin(home, "share", projectId, args as unknown as Record<string, unknown>, "", step);
   const run = runShare(app, projectId);
   return args.export === undefined ? run : toldOf(app, projectId, run);
 }
@@ -679,7 +685,10 @@ export async function share(app: App, projectId: string, path: string | null, re
   if (shareable(listExports(home, projectId), path) === undefined) throw new Error(path === null ? "export the whole edit first: a review shares an export" : "that isn't one of this project's whole exports or an export of its opening");
   canShare(home, projectId);
   if (replace && newestVersion(home, projectId) === null) throw new Error("nothing shared yet to replace");
-  return startShare(app, projectId, { path, ...(replace ? { replace } : {}) });
+  // The export is the edit as it is now: every fix made so far is in it.
+  const chosen = shareable(listExports(home, projectId), path);
+  const now = chosen?.timeline !== undefined && chosen.timeline === timelineHash(app.store.get(projectId)!.project);
+  return startShare(app, projectId, { path, ...(replace ? { replace } : {}), ...(now ? { takenAt: Date.now() } : {}) });
 }
 
 function newestVersion(home: string, projectId: string): Version | null {
@@ -693,17 +702,16 @@ function newestVersion(home: string, projectId: string): Version | null {
  * and a new version under it after. It runs on with nobody watching; its
  * job says how it's going (`shareNow`).
  *
- * `replace` (the person sharing asks for it, or a fix by the user's rule:
- * never the agent, as a revision put over a version by mistake loses what
- * the team saw) puts the export over the latest version instead of adding
- * one: "new revisions replace the one version they are on… everything up till
- * now on v1". `fixes`: Ready for changes' share of its fixes, taking over from
- * its fix job.
+ * `replace` puts the export over the latest version instead of adding one:
+ * "new revisions replace the one version they are on… everything up till now
+ * on v1". Every caller gives `nextShare`'s answer (the dialog, Home, the
+ * agent's share_for_review: Sphe, Nov 21), and the share looks again before
+ * it goes over a version (`publishSteps`).
  */
-export async function exportAndShare(app: App, projectId: string, options: Partial<ExportOptions>, replace = false, note?: string, watermark?: string | null, fixes?: ShareArgs["fixes"]): Promise<{ url: string; version: number }> {
+export async function exportAndShare(app: App, projectId: string, options: Partial<ExportOptions>, replace = false, note?: string, watermark?: string | null): Promise<{ url: string; version: number }> {
   const home = app.store.home;
   canShare(home, projectId);
-  // Remembered for the share after a Ready for changes: these settings, not this span or its chapters.
+  // Remembered for the shares after it (Home's Share, the agent's): these settings, not this span or its chapters.
   // Every share is for YouTube, including one from Home that sends no options (Sphe, Nov 3).
   const { range: _range, chapters: _chapters, ...settings } = { ...options, preset: "youtube" as const };
   // The watermark too (Sphe, Nov 2: a channel's logo on the final export): `null` takes it off, absent keeps the last
@@ -719,8 +727,7 @@ export async function exportAndShare(app: App, projectId: string, options: Parti
   });
   const kept = read(home).shareWatermark?.[projectId];
   const mark = live === null ? (kept === "" ? undefined : kept) : await nextWatermarkOf(home, live.project);
-  const from = fixes === undefined ? undefined : jobs.keyOf("fix", projectId);
-  return startShare(app, projectId, { export: { options, ...(mark === undefined ? {} : { watermark: mark }) }, ...(replace ? { replace } : {}), ...(note === undefined ? {} : { note }), ...(fixes === undefined ? {} : { fixes }) }, from);
+  return startShare(app, projectId, { export: { options, ...(mark === undefined ? {} : { watermark: mark }) }, ...(replace ? { replace } : {}), ...(note === undefined ? {} : { note }) });
 }
 
 /** Whether a share waits out `error` by itself: only what's surely passing, never one of its own refusals. */
@@ -765,6 +772,18 @@ async function toldOf<T extends { version: number } | void>(app: App, projectId:
 export function resumeShareJob(app: App, job: jobs.Job): void {
   if (app.store.get(job.project) === null) throw new jobs.Gone("the project is gone");
   if (sharing.has(job.project)) return;
+  // An older build's share of its fixes, started by itself after a Ready for changes: not put up now that nothing is
+  // (Sphe, Nov 21: "it shouldn't just automatically publish as V2"). Its fixes are in the edit; the request on the
+  // page ends saying how they go up. Published already, it's done and carried on as one.
+  const fixes = (job.args as Partial<ShareArgs>).fixes;
+  if (fixes !== undefined && (job.args as Partial<ShareArgs>).published === undefined) {
+    jobs.end(app.store.home, job.key);
+    fs.rmSync(join(app.store.home, "jobs", `share-${job.project}.json`), { force: true });
+    wakeBehindShare(app.store.home, job.project);
+    diag.info("review", `${app.store.get(job.project)?.project.name ?? job.project}: an older build's share of its fixes (v${fixes.next}) isn't put up by itself; it goes up when someone shares it`);
+    void progress(fixes.reviewId, { state: "done", stage: FIXED_NOT_UP });
+    return;
+  }
   if (!cloud.enabled()) {
     jobs.settle(app.store.home, job.key, "failed", { error: "sharing needs Edit's cloud (sign in)", build: BUILD });
     wakeBehindShare(app.store.home, job.project);
@@ -839,18 +858,6 @@ async function runShare(app: App, projectId: string): Promise<{ url: string; ver
   const key = shareKey(projectId);
   const first = argsOf(home, projectId);
   sharing.set(projectId, shareJob(home, projectId)?.step ?? "sharing");
-  // A Ready for changes' share says how it's going on the review page too.
-  let last = "";
-  const ticker =
-    first.fixes === undefined
-      ? null
-      : setInterval(() => {
-          const now = sharing.get(projectId);
-          if (now === undefined || now === last) return;
-          last = now;
-          void progress(first.fixes!.reviewId, { stage: `v${first.fixes!.next}: ${now}`.slice(0, 120) });
-        }, 10_000);
-  ticker?.unref?.();
   try {
     if (first.export !== undefined && first.path === undefined) {
       const path = await exportStep(app, projectId, first);
@@ -874,18 +881,10 @@ async function runShare(app: App, projectId: string): Promise<{ url: string; ver
       const at = jobs.wait(home, key, error, stillRendering(error) ? "Waiting for its graphics to render. The link comes by itself." : own ?? (kind === "passing" ? "Waiting for the connection. The link comes by itself." : `${failure.waitLine(kind, error, null)} The link comes by itself.`));
       diag.warn("review", `${app.store.get(projectId)?.project.name ?? projectId}: sharing waits (${failure.surely(error)}): ${message}; it goes on by itself${at === null ? "" : ` at ${new Date(at).toISOString()}`}`);
       throw new ShareWaits(message);
-    } else {
-      jobs.settle(home, key, "failed", { error: message, build: BUILD });
-      if (first.fixes !== undefined) {
-        // Said here too: the page's message alone left the log silent (Nov 6, four shares failed with nothing logged).
-        diag.warn("review", `${app.store.get(projectId)?.project.name ?? projectId}: Ready for changes: sharing v${first.fixes.next} failed: ${message}`);
-        await progress(first.fixes.reviewId, { state: "failed", error: `The fixes are in, but sharing v${first.fixes.next} failed: ${message}` });
-      }
-    }
+    } else jobs.settle(home, key, "failed", { error: message, build: BUILD });
     if (cancelled) throw new Error(message === "the export was cancelled" ? message : "the share was cancelled");
     throw error;
   } finally {
-    if (ticker !== null) clearInterval(ticker);
     sharing.delete(projectId);
     speeds.uploadEnds(projectId);
     dropShare(projectId);
@@ -941,7 +940,7 @@ async function exportStep(app: App, projectId: string, args: ShareArgs): Promise
       if (tries >= 2 || (seams.broll.exportReady?.(app.store, live.project, 0, Number.POSITIVE_INFINITY) ?? null) === null) taken = live.project;
     }
     project = taken;
-    jobs.step(home, key, "exporting", { snapshot: shareSnapshot(home, projectId, project) });
+    jobs.step(home, key, "exporting", { snapshot: shareSnapshot(home, projectId, project), takenAt: Date.now() });
   } else {
     // Carried on: an export of this edit that finished after the share began (its end came just before the restart) is it.
     const began = shareJob(home, projectId)?.started_ms ?? Date.now();
@@ -983,10 +982,24 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
   const path = args.path ?? null;
   const chosen = shareable(listExports(home, projectId), path);
   if (chosen === undefined) throw new Error(path === null ? "export the whole edit first: a review shares an export" : "that isn't one of this project's whole exports or an export of its opening");
-  const replace = args.replace === true;
+  let replace = args.replace === true;
+  // A version is gone over only while no one has a note on it: the rule is asked again here, with the notes heard
+  // now, before anything goes up over it (the share may have been asked for an hour ago, its label read from what Edit
+  // had heard then). A note on it since: this goes up as the next version instead (Sphe, Nov 21).
+  if (replace && args.uploaded !== true) {
+    await poll(app).catch((error: unknown) => diag.warn("review", `${live.project.name}: hearing the notes before replacing a version: ${diag.messageOf(error)}`));
+    if (!nextShare(home, projectId).replace) {
+      replace = false;
+      jobs.step(home, key, shareJob(home, projectId)?.step ?? "review copy", { replace: false });
+      diag.info("review", `${live.project.name}: a note came in on the latest version, so this goes up as the next one instead of replacing it`);
+    }
+  }
   const latest = replace ? newestVersion(home, projectId) : null;
   if (replace && latest === null) throw new Error("nothing shared yet to replace");
   const exportedTimeline = chosen.timeline ?? timelineHash(live.project);
+  // When the video's edit was taken (its fixes are those made before): as the share noted it, else now when the export
+  // is the edit as it is now, else unknown, and no note is marked by it.
+  const carries = args.takenAt ?? (chosen.timeline !== undefined && chosen.timeline === timelineHash(live.project) ? Date.now() : 0);
   // An opening's files are its own: the whole edit of the same timeline shared later is another version.
   const timeline = latest?.timeline ?? (chosen.whole ? exportedTimeline : `${exportedTimeline}-opening-${chosen.frames}`);
   let clips: [string, number, number][];
@@ -1095,7 +1108,7 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
     const durationMs = Math.round((chosen.frames / fps) * 1000);
     // Published: noted done in the same write that lists its full-quality upload (the export itself, for the page's
     // Download button, which goes up after the version and is named in it once it's up: fullBehind).
-    const published = (version: number, url: string): { url: string; version: number } => {
+    const published = (version: number, url: string, taken: number): { url: string; version: number } => {
       fs.rmSync(copy, { force: true });
       jobs.handOff(
         home,
@@ -1104,6 +1117,8 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
         { state: "done", step: "published", args: { published: { version, url } } },
       );
       void fullBehind(home, projectId, live.project.name, chosen.path, fullKey, version);
+      // The notes whose fixes this version carries read as fixed on the review now, whoever asked for the share.
+      markCarried(app, projectId, version, taken);
       return { url, version };
     };
     if (latest !== null) {
@@ -1113,7 +1128,7 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
         if (one !== undefined) Object.assign(one, { path: chosen.path, clips, fps, durationMs });
       });
       diag.info("review", `${live.project.name}: v${latest.n} replaced with ${chosen.name} at ${shared.url}`);
-      return published(latest.n, shared.url);
+      return published(latest.n, shared.url, carries);
     }
     const before = resumed ? await publishedBefore(projectId, args.id) : null;
     sharing.set(projectId, "publishing");
@@ -1137,7 +1152,7 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       state.shared[projectId] = { reviewId: answer.reviewId, url: answer.url, versions };
     });
     diag.info("review", `${live.project.name}: shared v${answer.version} at ${answer.url}`);
-    return published(answer.version, answer.url);
+    return published(answer.version, answer.url, carries);
   });
 }
 
@@ -1596,7 +1611,7 @@ export function heard(state: State, given: unknown[], projects: Set<string>): st
     const status = one.status === "done" ? "done" : "open";
     const reopened = was !== undefined && was.status === "done" && status === "open";
     const note: Note = {
-      ...(reopened ? { ...was, fix: undefined, unfixed: undefined, claimed: undefined, attempts: undefined } : was),
+      ...(reopened ? { ...was, fix: undefined, unfixed: undefined, claimed: undefined, attempts: undefined, pending: undefined } : was),
       id,
       reviewId: String(one.reviewId ?? was?.reviewId ?? ""),
       project,
@@ -1622,6 +1637,7 @@ export function heard(state: State, given: unknown[], projects: Set<string>): st
     if (note.unfixed === undefined) delete note.unfixed;
     if (note.claimed === undefined) delete note.claimed;
     if (note.attempts === undefined) delete note.attempts;
+    if (note.pending === undefined) delete note.pending;
     state.notes[id] = note;
     if (note.parentId === null && note.status === "open" && (was === undefined || reopened) && projects.has(project)) fresh.add(project);
   }
@@ -1692,8 +1708,10 @@ export function fixMessage(project: Project, shared: Shared | undefined, notes: 
     // Edit V2 has no house skills (its own are in its instructions), and keeps lessons only as its instructions say.
     `${project.hq ? "Fix them" : "Load the feedback skill and fix them"} across the video, the team's words being what they want. ` +
     'After each note, call feedback_done {note: "<its id>", summary: "<one line: what you changed>"}; for one you can\'t or shouldn\'t do, feedback_unfixed {note, reason}; a question (kind: question) gets feedback_answer {note, answer} and no change. A kind names the change wanted (a blur, a mute, music…): keep to it; "everywhere" means across the whole video. ' +
-    "Answer every note in this turn, however many there are: work through them all, one after another, and end the turn only when each has its feedback_done, feedback_unfixed or feedback_answer (Edit sends back any you leave and shares nothing until they're answered). " +
-    `Then mute_house_words once if subtitles changed, and finish with a line per note${project.hq ? "" : " (and, as your instructions say, a line on what you'll remember, or one question about the notes that might hold for every video)"}${asked ? "; when this turn ends Edit exports the edit and shares it on the review as the next version, so don't export or share it yourself" : ""}.\n` +
+    "Answer every note in this turn, however many there are: work through them all, one after another, and end the turn only when each has its feedback_done, feedback_unfixed or feedback_answer (Edit sends back any you leave). " +
+    `Then mute_house_words once if subtitles changed, and finish with a line per note${project.hq ? "" : " (and, as your instructions say, a line on what you'll remember, or one question about the notes that might hold for every video)"}. ` +
+    // Sphe, Nov 21: the fix isn't published by itself; the person puts it up, or asks the agent to.
+    "Nothing goes up on the review by itself: end by telling the user it's fixed in the edit, and that it goes up on the review link when they ask you to put it up, or from Export → Send for feedback; don't export or share it yourself in this turn.\n" +
     `${UNTRUSTED_OPEN}\n` +
     lines.join("\n") +
     `\n${UNTRUSTED_CLOSE}`
@@ -1750,7 +1768,6 @@ export function changes(before: Project, after: Project): { clips: string[]; ran
 /** The project as it was when the agent began each project's current note (its fix is the difference). */
 const checkpoints = new Map<string, Project>();
 
-/** Records the agent's fix of a note: what changed since the last one, kept here and sent to Repack. */
 /**
  * The note an agent means: its id, or a start of it only one of the
  * project's notes has (Oct 30: a turn resumed after a restart had only the
@@ -1769,38 +1786,75 @@ export function noteIdOf(home: string, projectId: string, given: string): string
   return parent && notes[parent]?.project === projectId ? parent : id;
 }
 
+/**
+ * Records the agent's fix of a note: what changed since the last one, kept
+ * here with the note (the timeline shows it). Nothing is said on the review
+ * yet: the note reads as fixed there once a version carrying the fix is up
+ * (`markCarried`), as a fix is no longer shared by itself (Sphe, Nov 21). It
+ * stays open here too, as the review has it (a look at the review must not
+ * take it for reopened), and leaves Home's count (`openCounts`).
+ */
 export async function done(app: App, projectId: string, given: string, summary: string): Promise<Note["fix"]> {
   const live = app.store.get(projectId);
   if (live === null) throw new Error("no such project");
   const home = app.store.home;
   const noteId = noteIdOf(home, projectId, given);
-  const state = read(home);
-  const note = state.notes[noteId];
+  const note = read(home).notes[noteId];
   if (note === undefined || note.project !== projectId) throw new Error(`no note ${noteId} on this project's review`);
   const before = checkpoints.get(projectId) ?? live.project;
   const changed = changes(before, live.project);
   // Repack's limit is 2000 characters: what's written there is short anyway.
   const said = summary.length > 1900 ? `${summary.slice(0, 1899)}…` : summary;
   const fix = { ...changed, summary: said, at: Date.now() };
-  const fps = fpsOf(live.project);
-  const latest = state.shared[projectId]?.versions.reduce((most, one) => Math.max(most, one.n), 0) ?? note.version;
-  // On the review first (as feedback_answer does): kept here as done only once Repack has it,
-  // so a failed resolve leaves the note open to try again, never done here and open there.
-  await cloud.mutation("reviews:resolve", {
-    noteId,
-    version: latest + 1,
-    changedRanges: changed.ranges.map(([start, end]) => ({ startMs: Math.round((start / fps) * 1000), endMs: Math.round((end / fps) * 1000) })),
-    fixSummary: said,
-  });
   checkpoints.set(projectId, structuredClone(live.project));
   update(home, (saved) => {
     const own = saved.notes[noteId];
-    if (own !== undefined) {
-      own.fix = fix;
-      own.status = "done";
-    }
+    if (own === undefined) return;
+    own.fix = fix;
+    // Done on the review already (fixed and shared before, then fixed again): it stays done; the next share's
+    // version carries the new fix all the same.
+    own.pending = { version: null };
   });
   return fix;
+}
+
+/**
+ * A version went up as `version`, its edit taken at `taken`: each note fixed
+ * here before then is in it, and is marked fixed in that version on the
+ * review (`reviews:resolve`, the fix's summary and stretches). Noted first, so
+ * one the review didn't take now is tried again at the next look (`poll`).
+ * Whoever started the share (the dialog, Home, the agent) it's the same.
+ */
+function markCarried(app: App, projectId: string, version: number, taken: number): void {
+  update(app.store.home, (state) => {
+    for (const note of Object.values(state.notes)) {
+      if (note.project === projectId && note.pending?.version === null && note.fix !== undefined && note.fix.at <= taken) note.pending = { version };
+    }
+  });
+  void resolveCarried(app, projectId).catch((error: unknown) => diag.warn("review", `${projectId}: marking the notes fixed in v${version}: ${diag.messageOf(error)}`));
+}
+
+/** The notes a version carries that the review doesn't have as fixed yet: marked now; one refused stays to try again. */
+async function resolveCarried(app: App, projectId?: string): Promise<void> {
+  const home = app.store.home;
+  const due = Object.values(read(home).notes).filter((note) => (projectId === undefined || note.project === projectId) && typeof note.pending?.version === "number" && note.fix !== undefined);
+  for (const note of due) {
+    const live = app.store.get(note.project);
+    const fps = live === null ? 30 : fpsOf(live.project);
+    const fix = note.fix!;
+    await cloud.mutation("reviews:resolve", {
+      noteId: note.id,
+      version: note.pending!.version!,
+      changedRanges: fix.ranges.map(([start, end]) => ({ startMs: Math.round((start / fps) * 1000), endMs: Math.round((end / fps) * 1000) })),
+      fixSummary: fix.summary,
+    });
+    update(home, (saved) => {
+      const own = saved.notes[note.id];
+      if (own === undefined || own.pending?.version !== note.pending!.version) return;
+      own.status = "done";
+      delete own.pending;
+    });
+  }
 }
 
 /** A short reviewer-facing line. The full reason stays in the status details. */
@@ -1877,14 +1931,14 @@ const removing = new Set<string>();
  * reviews delete a gone review's files; Repack's cleanup, which the delete
  * queued, catches any a failure left), and
  * what this Mac kept of it. The exports here stay; sharing again makes a new
- * link, v1. Refused while it's being shared or a Ready for changes is being
- * fixed here.
+ * link, v1. Refused while it's being shared or its notes are being fixed
+ * here.
  */
 export async function removeLink(app: App, projectId: string): Promise<{ removed: boolean; versions: number; notes: number; files: number }> {
   const home = app.store.home;
   if (shareGoing(home, projectId)) throw new Error("this project is being shared now: delete the link once that's done");
   if (removing.has(projectId)) throw new Error("this project's review link is already being deleted");
-  if (readying.has(projectId)) throw new Error("its notes are being fixed for a Ready for changes: delete the link once that's done");
+  if (readying.has(projectId)) throw new Error("its notes are being fixed: delete the link once that's done");
   const shared = read(home).shared[projectId];
   if (shared === undefined) throw new Error("this project has no review link to delete");
   removing.add(projectId);
@@ -2054,7 +2108,7 @@ export async function reconcile(app: App): Promise<string[]> {
   return found;
 }
 
-/** One look at Repack: new notes kept; projects whose notes have settled get the agent. */
+/** One look at Repack: new notes kept (the agent is set on them only when someone asks: `pullFeedback`), approvals and deleted links taken in. */
 export async function poll(app: App): Promise<void> {
   const home = app.store.home;
   // Only those the signed-in person may work on (kinds.ts): the agent follows up on no other.
@@ -2094,6 +2148,8 @@ export async function poll(app: App): Promise<void> {
     });
     if (approved !== null) clearOthers(app, row.sourceId, approved.version);
   }
+  // Fixes a version carries that the review didn't take when it went up: tried again.
+  await resolveCarried(app).catch((error: unknown) => diag.warn("review", `marking the notes a shared version carries as fixed: ${diag.messageOf(error)}`));
 }
 
 /**
@@ -2130,28 +2186,33 @@ export async function boxStills(home: string, projectId: string, shared: Shared 
 // (Nov 2: JJ's Ready for changes sat on "No computer is on" because the one
 // fixing computer chosen for everyone was Sphe's MacBook Air, off, while JJ's
 // own Mac had Edit open and idle). Each check-in says whether this computer
-// is busy, so the page greys it out, and hands back the requests asked of it;
-// one it can't do here (another computer holds the project, the project isn't
-// here and can't come down) is declined with why, so the page says so and
-// the reviewer picks again. A merely busy project waits.
+// is busy, so the page greys it out, and hands back the requests asked of it.
+//
+// None starts anything here now (Sphe, Nov 21: "When feedback comes in, it
+// shouldn't automatically get queued up to get fixed. We must go into the
+// edits app and ask the agents to pull the feedback"). Each request is taken
+// and ended at once with what to do (`ASK_IN_EDIT`), so the reviewer isn't
+// left waiting on a computer that will never start: declined, the page adds
+// "Pick another computer", and every Edit on this build says the same, while
+// one on an older build would fix and publish by itself; left untaken, it
+// waits three minutes and then reads "<computer> didn't start these changes".
+// The notes it came with are heard as any are (`poll`): Home's count has them.
+
+/** What the review page shows a reviewer who pressed Ready for changes (its error line, up to 500 characters). */
+export const ASK_IN_EDIT = "Changes are made in Edit now, not from this page: open the project in Edit and ask its agent to pull the feedback. The new version comes here once someone shares it from Edit.";
+
+/** What a request an older build was fixing says on the page once its fix is done here (a stage: 120 characters at most). */
+export const FIXED_NOT_UP = "Fixed in Edit. The new version comes here once someone shares it from Edit.";
 
 /** Ready for changes is asked of this computer, as its last check-in said. */
 let asked = false;
-/** Projects whose Ready for changes is being worked here. */
+/** Projects whose notes the agent is fixing here (pulled in the chat, or a fix carried over a restart). */
 const readying = new Set<string>();
-busy.register(() => (readying.size > 0 ? "a Ready for changes fix" : sharing.size > 0 ? "a share" : null));
+busy.register(() => (readying.size > 0 ? "a feedback fix" : sharing.size > 0 ? "a share" : null));
 
 /** Ready for changes is asked of this computer, as of its last check-in. */
 export function askedHere(): boolean {
   return asked;
-}
-
-/** The projects whose Ready for changes is asked of this computer, as of its last check-in. */
-let askedProjects = new Set<string>();
-
-/** Whether a Ready for changes on `project` is asked of this computer (waiting at the last check-in) or being worked here now. */
-export function askedFor(project: string): boolean {
-  return askedProjects.has(project) || readying.has(project) || sharing.has(project);
 }
 
 /** A review waiting on this computer, as `reviews:checkIn` lists it. */
@@ -2162,38 +2223,11 @@ interface Request {
   requestedAt?: number;
 }
 
-/** Why each request waits, as last said: said again only when it changes (the check-in runs every few seconds). */
-const waitingFix = new Map<string, string>();
-function waits(review: string, why: string): void {
-  if (waitingFix.get(review) === why) return;
-  waitingFix.set(review, why);
-  diag.info("review", why);
-}
-
-/** Requests declined here (review and when it was asked), so one is never declined twice; asked again later, it's a new one. */
-const declined = new Set<string>();
+/** Requests answered here (review and when it was asked), so one is never answered twice; asked again later, it's a new one. */
+const answered = new Set<string>();
+/** Requests taken here whose answer the page didn't get yet: said again at the next check-in (the page no longer lists a taken one). */
+const owed = new Map<string, Request>();
 const requestKey = (request: Request) => `${request.reviewId}:${request.requestedAt ?? ""}`;
-
-/**
- * Hands a request back (`reviews:declineFix`): it can't be done on this
- * computer, and `reason` (short, for the reviewer: "the project is open on
- * Sphe's MacBook Air") says why. Not marked declined when the call fails, so
- * the next check-in tries again.
- */
-async function decline(request: Request, reason: string): Promise<void> {
-  const key = requestKey(request);
-  if (declined.has(key)) return;
-  const name = request.title || request.sourceId;
-  try {
-    await cloud.mutation("reviews:declineFix", { machine: machine.id(), reviewId: request.reviewId, reason });
-  } catch (error) {
-    waits(request.reviewId, `${name}: Ready for changes can't be done here (${reason}), and handing it back failed: ${diag.messageOf(error)}`);
-    return;
-  }
-  declined.add(key);
-  waitingFix.delete(request.reviewId);
-  diag.info("review", `${name}: Ready for changes handed back: ${reason}`);
-}
 
 /** Something runs in Edit on this computer: a fix, a share, an export, an import, an agent turn, Claude on a script (busy.ts, the one answer; the fixes and shares here are in it). */
 export function busyHere(app: App): boolean {
@@ -2215,96 +2249,70 @@ export async function settledForTests(most = 10_000): Promise<void> {
 /** Tests: forget what earlier check-ins learnt. */
 export function resetCheckInForTests(): void {
   asked = false;
-  askedProjects = new Set();
-  declined.clear();
-  waitingFix.clear();
+  answered.clear();
+  owed.clear();
 }
 
 /**
  * Says this computer is open and whether it's busy (for the review page's
- * choice of computer), and takes each "Ready for changes" asked of it whose
- * project can be done here: `reviews:takeFix`, then `fixReady` runs on by
- * itself. One that can't be done here is declined; a busy one waits. The
- * requests it took.
+ * choice of computer), and answers each "Ready for changes" asked of it with
+ * `ASK_IN_EDIT` (`reviews:takeFix`, then `reviews:fixProgress` failed with
+ * those words), starting nothing. The projects whose requests it answered.
  */
 export async function checkIn(app: App): Promise<string[]> {
   const email = accounts.status().person as { email?: string } | null;
   // Busy is the whole Mac's: Script mode's work (Claude on a script, its imports) counts too.
   const answer = (await cloud.mutation("reviews:checkIn", { machine: machine.id(), name: machine.name(), email: email?.email ?? null, busy: busyHere(app) })) as { chosen?: boolean; requests?: Request[] };
   const requests = (answer.requests ?? []).filter((one) => typeof one.reviewId === "string" && typeof one.sourceId === "string");
-  askedProjects = new Set(requests.map((one) => one.sourceId));
   const now = requests.length > 0;
   if (now !== asked) diag.info("review", now ? "Ready for changes is asked of this computer" : "no Ready for changes is asked of this computer now");
   asked = now;
-  const took: string[] = [];
-  if (requests.length === 0) return took;
-  // The notes it fixes are read from what Edit has heard: hear them first.
-  await poll(app).catch((error: unknown) => diag.warn("review", `hearing the notes before a fix: ${diag.messageOf(error)}`));
+  const done: string[] = [];
+  for (const request of owed.values()) if (await tell(request)) done.push(request.sourceId);
+  if (requests.length === 0) return done;
+  // The notes that came with it, heard now: Home's count is up to date for whoever opens Edit next.
+  await poll(app).catch((error: unknown) => diag.warn("review", `hearing the notes of a Ready for changes: ${diag.messageOf(error)}`));
   for (const request of requests) {
-    if (declined.has(requestKey(request))) continue;
-    const project = request.sourceId;
-    const name = request.title || project;
-    const live = app.store.get(project);
-    const busy = readying.has(project) || shareGoing(app.store.home, project) || (live !== null && turnOf(app, project).running === true);
-    // A busy project waits for a later check-in: not a reason to hand it back.
-    if (busy) {
-      waits(request.reviewId, `${live?.project.name ?? name}: Ready for changes waits: the project is busy`);
-      continue;
-    }
-    if (live === null) {
-      // A project only in the cloud comes down, and the next check-in takes it
-      // (Oct 29: two Ready for changes waited all evening because their
-      // projects weren't on the computer).
-      if (cloudProjects.cloudOf(app)?.on() !== true) {
-        await decline(request, "the project isn't on this computer, and Edit's cloud projects are off here");
-        continue;
-      }
-      try {
-        await cloudProjects.open(app, project, "fixing");
-        waits(request.reviewId, `${name}: Ready for changes: the project came down from the cloud; its fix starts at the next check-in`);
-      } catch (error) {
-        // Not in the cloud, or not a kind of video this person works on: handed back. A network failure waits.
-        const message = diag.messageOf(error);
-        if (error instanceof ApiError || message === "no such project") await decline(request, error instanceof ApiError ? `the project can't be opened here: ${message}` : "the project isn't on this computer or in the cloud");
-        else waits(request.reviewId, `${name}: Ready for changes waits: the project didn't come down from the cloud (${message})`);
-      }
-      continue;
-    }
-    try {
-      await app.store.mayWrite(project);
-    } catch (error) {
-      const holder = cloudProjects.heldBy(diag.messageOf(error));
-      if (holder !== null) await decline(request, `the project is open on ${holder}`);
-      else waits(request.reviewId, `${live.project.name}: Ready for changes waits: ${diag.messageOf(error)}`);
-      continue;
-    }
-    waitingFix.delete(request.reviewId);
-    const taken = (await cloud.mutation("reviews:takeFix", { machine: machine.id(), reviewId: request.reviewId })) as { ok?: boolean; reason?: string; noteIds?: string[]; reshare?: boolean };
+    const key = requestKey(request);
+    if (answered.has(key) || owed.has(key)) continue;
+    const name = app.store.get(request.sourceId)?.project.name ?? (request.title || request.sourceId);
+    const taken = (await cloud.mutation("reviews:takeFix", { machine: machine.id(), reviewId: request.reviewId })) as { ok?: boolean; reason?: string };
     if (taken.ok !== true) {
-      diag.info("review", `${live.project.name}: Ready for changes not taken (${taken.reason ?? "?"})`);
+      // Asked of another, cancelled meanwhile, or nothing to fix (the page ended that one itself).
+      answered.add(key);
+      diag.info("review", `${name}: Ready for changes not taken (${taken.reason ?? "?"})`);
       continue;
     }
-    took.push(project);
-    readying.add(project);
-    void fixReady(app, project, request.reviewId, taken.noteIds ?? [], followMs, taken.reshare === true)
-      .catch(async (error: unknown) => {
-        diag.warn("review", `${live.project.name}: Ready for changes: ${diag.messageOf(error)}`);
-        await progress(request.reviewId, { state: "failed", error: diag.messageOf(error) });
-      })
-      .finally(() => readying.delete(project));
+    owed.set(key, request);
+    diag.info("review", `${name}: Ready for changes asked here: nothing starts by itself; the review page says to ask Edit's agent`);
+    if (await tell(request)) done.push(request.sourceId);
   }
-  return took;
+  return done;
 }
 
-/** How a Ready for changes is going, for its review page (`reviews:fixProgress`). Best effort. */
+/** Ends a taken request on its page with `ASK_IN_EDIT`; false when the page didn't hear it (tried again at the next check-in). */
+async function tell(request: Request): Promise<boolean> {
+  const key = requestKey(request);
+  try {
+    await cloud.mutation("reviews:fixProgress", { machine: machine.id(), reviewId: request.reviewId, state: "failed", error: ASK_IN_EDIT });
+  } catch (error) {
+    diag.warn("review", `${request.title || request.sourceId}: telling the review page what to do instead: ${diag.messageOf(error)}`);
+    return false;
+  }
+  owed.delete(key);
+  answered.add(key);
+  return true;
+}
+
+/** How a Ready for changes an older build took is going, for its review page (`reviews:fixProgress`). Best effort. */
 async function progress(reviewId: string | null, given: { state?: "fixing" | "sharing" | "done" | "failed"; stage?: string; done?: number; total?: number; error?: string }): Promise<void> {
-  // A fix asked for in the chat (pull_feedback) has no request on the page to report to.
+  // A fix asked for in the chat (pull_feedback), the only kind this build starts, has no request on the page to report to.
   if (reviewId === null) return;
   await cloud.mutation("reviews:fixProgress", { machine: machine.id(), reviewId, ...given }).catch((error: unknown) => diag.warn("review", `saying how the fix is going: ${diag.messageOf(error)}`));
 }
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-/** How often a Ready for changes turn is looked at. */
+/** How often a fix's turn is looked at. */
 let followMs = 5_000;
 /** Tests: look at the turn this often. */
 export function followEveryForTests(ms: number): void {
@@ -2312,76 +2320,10 @@ export function followEveryForTests(ms: number): void {
 }
 
 /**
- * A Ready for changes on `project`: its notes claimed, the agent set on them
- * (as a review turn: this video only), its turn followed note by note, then,
- * when the edit changed, the whole edit exported with the last Share's
- * settings and shared as the next version, which ends the request on the
- * page. Nothing changed (questions answered): done, nothing shared.
- */
-export async function fixReady(app: App, project: string, reviewId: string, noteIds: string[], every = followMs, reshare = false): Promise<void> {
-  const home = app.store.home;
-  const live = app.store.get(project);
-  if (live === null) throw new Error("the project isn't on this computer any more");
-  // Shared from another Mac: its versions taken in, so the fix replaces or follows the latest by the rule.
-  await adopt(app, project).catch((error: unknown) => diag.warn("review", `${live.project.name}: taking in its review from the cloud: ${diag.messageOf(error)}`));
-  // Asked again after a share failed, with nothing new to fix ("Share v2 again"): straight to the share.
-  if (noteIds.length === 0) {
-    if (!reshare) throw new Error("there were no notes to fix");
-    await shareAgain(app, project, reviewId);
-    return;
-  }
-  const answer = (await cloud.mutation("reviews:claim", { noteIds, by: app.machine, machine: machine.id() })) as { claimed?: string[]; reason?: string };
-  const claimed = answer.claimed ?? [];
-  const state = read(home);
-  const mine = claimed.map((id) => state.notes[id]).filter((note): note is Note => note !== undefined);
-  if (mine.length === 0) {
-    // Claimed but not heard here: handed straight back, so the notes aren't held
-    // for half an hour with no one on them (Nov 7, Cops Realize: JJ's Mac took
-    // Ready for changes on 9 new notes, stopped with this, and no run could take
-    // them until the claim ran out).
-    if (claimed.length > 0) await cloud.mutation("reviews:release", { noteIds: claimed, by: app.machine }).catch(() => {});
-    throw new Error(
-      claimed.length > 0
-        ? `${claimed.length} note(s) were claimed but aren't heard on this computer yet; handed back`
-        : `the notes were already taken by another run${answer.reason === undefined ? "" : ` (${answer.reason})`}`,
-    );
-  }
-  update(home, (saved) => {
-    for (const note of mine) {
-      const own = saved.notes[note.id];
-      if (own === undefined) continue;
-      own.claimed = Date.now();
-      own.attempts = (own.attempts ?? 0) + 1;
-    }
-  });
-  const before = timelineHash(live.project);
-  checkpoints.set(project, structuredClone(live.project));
-  await progress(reviewId, { stage: "Fixing the notes", done: 0, total: mine.length });
-  const replies = Object.values(state.notes).filter((note) => note.project === project && note.parentId !== null);
-  const stills = await boxStills(home, project, state.shared[project], mine);
-  const panel = seams.agentPanel(app);
-  reviewGuard.reviewTurnNext(project);
-  try {
-    await panel.send(project, fixMessage(live.project, state.shared[project], mine, replies, stills), null, null);
-  } catch (error) {
-    reviewGuard.forgetNext(project);
-    await cloud.mutation("reviews:release", { noteIds: mine.map((note) => note.id), by: app.machine }).catch(() => {});
-    throw error;
-  }
-  diag.info("review", `${live.project.name}: Ready for changes: the agent is fixing ${mine.length} note(s)`);
-  noteFix(home, project, { reviewId, noteIds: mine.map((note) => note.id), before, at: Date.now(), ...(reshare ? { reshare } : {}) });
-  try {
-    await followFix(app, project, reviewId, mine.map((note) => note.id), before, every, 0, reshare);
-  } finally {
-    noteFix(home, project, null);
-  }
-}
-
-/**
  * A review shared from another Mac, taken in here from the cloud (its link and
  * versions, each version's clip map from its meta; its export isn't here, so
  * its path is ""), so this Mac fixes and shares it as the one that shared it
- * does: pull_feedback works, and the fix replaces the latest version or comes
+ * does: pull_feedback works, and a share replaces the latest version or comes
  * as the next by the same rule. Sphe, Nov 6: four of JJ's reviews, shared from
  * Mathias's Mac, couldn't be pulled on this one ("This project hasn't been
  * shared for review"). Undefined when the project has no review.
@@ -2422,14 +2364,16 @@ export async function adopt(app: App, projectId: string): Promise<Shared | undef
  * new feedback"; Sphe, Nov 2: feedback sat on feedback.spheceo.com and there
  * was no way to just tell the agent to pull it): the team's own notes left in
  * Edit (edit_notes.ts), and the review's open notes, Repack asked for its
- * latest and those claimed by hand (any computer may). Both handed back as
- * Ready for changes hands them, so the agent fixes them in this turn. With the
- * review's notes the turn is a review turn from here (they're guests' words),
- * and when it ends the edit is exported and shared as the next version, as
- * after Ready for changes; the team's own notes alone share nothing (they're
- * in the app: "in app feedback and feedback-feedback are different"), and any
- * the turn didn't answer go back in their queue. `again`: notes the agent left
- * before are taken too.
+ * latest and those claimed by hand (any computer may). Both handed back so
+ * the agent fixes them in this turn. With the review's notes the turn is a
+ * review turn from here (they're guests' words), followed to its end; nothing
+ * is shared when it ends, by either kind (Sphe, Nov 21: "it shouldn't just
+ * automatically publish as V2"): the person puts it up from the Export dialog
+ * or asks the agent to (share_for_review), and the notes it fixed read as
+ * fixed on the review once that version is up (`markCarried`). Any of the
+ * team's own notes the turn didn't answer go back in their queue. The only way
+ * the agent is set on the notes now: Ready for changes starts nothing
+ * (`checkIn`). `again`: notes the agent left before are taken too.
  */
 export async function pullFeedback(app: App, projectId: string, again = false): Promise<string> {
   const live = app.store.get(projectId);
@@ -2446,7 +2390,7 @@ export async function pullFeedback(app: App, projectId: string, again = false): 
   if (shared === undefined) {
     if (own.length === 0) said.push("This project hasn't been shared for review, and the team left no notes in Edit to fix.");
   } else if (readying.has(projectId)) {
-    said.push("The review's notes are being fixed already (a Ready for changes or an earlier pull): leave them to that run.");
+    said.push("The review's notes are being fixed already (an earlier pull): leave them to that run.");
   } else {
     await poll(app);
     const state = read(home);
@@ -2498,7 +2442,7 @@ export async function pullFeedback(app: App, projectId: string, again = false): 
     readying.add(projectId);
     noteFix(home, projectId, { reviewId: null, noteIds: ids, before, at: Date.now() });
     diag.info("review", `${live.project.name}: asked in the chat: the agent is fixing ${mine.length} review note(s)`);
-    void followFix(app, projectId, null, ids, before)
+    void followFix(app, projectId, null, ids)
       .catch((error: unknown) => diag.warn("review", `${live.project.name}: the pulled feedback: ${diag.messageOf(error)}`))
       .finally(() => {
         noteFix(home, projectId, null);
@@ -2510,7 +2454,7 @@ export async function pullFeedback(app: App, projectId: string, again = false): 
   return parts.join("\n\n");
 }
 
-/** A fix under way (jobs.json kind `fix`), kept for a restart; `reshare`: an earlier share of its fixes failed, so it's shared even if this round changes nothing. */
+/** A fix under way (jobs.json kind `fix`), kept for a restart; `reviewId`: an older build's Ready for changes (one pulled in the chat: null). `before` (the edit as it began) and `reshare` aren't read any more. */
 type Taken = { reviewId: string | null; noteIds: string[]; before: string; at: number; reshare?: boolean };
 
 function noteFix(home: string, project: string, taken: Taken | null): void {
@@ -2526,10 +2470,12 @@ function noteFix(home: string, project: string, taken: Taken | null): void {
 
 /**
  * A fix a restart cut short, followed again (serve.ts's resumer for `fix`):
- * the agent's turn carries on by itself (its own `turn` job), and this exports
- * and shares when it ends, as the run before would have (Oct 30: one stayed at
- * "starting…" on the page and was never shared after a restart). It first
- * gives the turn a moment to carry on, so it's never taken for ended.
+ * the agent's turn carries on by itself (its own `turn` job), and this follows
+ * it to its end as the run before would have (Oct 30: one stayed at
+ * "starting…" on the page after a restart), sending back the notes it leaves
+ * unanswered, and shares nothing (Sphe, Nov 21), even for an older build's
+ * Ready for changes, whose page then says how it goes up (`FIXED_NOT_UP`). It
+ * first gives the turn a moment to carry on, so it's never taken for ended.
  */
 export function resumeFix(app: App, job: jobs.Job): void {
   const home = app.store.home;
@@ -2539,11 +2485,11 @@ export function resumeFix(app: App, job: jobs.Job): void {
   if (app.store.get(project) === null) throw new jobs.Gone("the project is gone");
   if (Date.now() - (typeof taken.at === "number" ? taken.at : job.started_ms) > FIX_TURN_MS) throw new jobs.Gone("its fix began more than three hours ago");
   readying.add(project);
-  diag.info("review", `${project}: Ready for changes: following the fix a restart cut short`);
+  diag.info("review", `${project}: following the feedback fix a restart cut short`);
   void pause(Math.min(30_000, followMs * 6))
-    .then(() => followFix(app, project, taken.reviewId, taken.noteIds, taken.before, followMs, 0, taken.reshare === true))
+    .then(() => followFix(app, project, taken.reviewId, taken.noteIds, followMs))
     .catch(async (error: unknown) => {
-      diag.warn("review", `${project}: Ready for changes: ${diag.messageOf(error)}`);
+      diag.warn("review", `${project}: the feedback fix: ${diag.messageOf(error)}`);
       await progress(taken.reviewId, { state: "failed", error: diag.messageOf(error) });
     })
     .finally(() => {
@@ -2554,8 +2500,11 @@ export function resumeFix(app: App, job: jobs.Job): void {
 
 /**
  * A new share replaces the latest version when that version has no reviewer
- * comments, and is the next version when it has any (Sphe, Nov 3). Replies
- * and the app's own notes are not comments. A commented version is never
+ * comments, and is the next version when it has any (Sphe, Nov 3; again Nov
+ * 21: "If we've already shared as V2 and now we want to share again, but there
+ * are no comments made, we then are given the option to replace V2 and not
+ * the option to share as V3"). Replies and the app's own notes are not
+ * comments; a comment fixed since still is one. A commented version is never
  * replaced, whatever the caller asked.
  */
 export function shareReplacesLatest(versionCount: number, commentsOnLatest: number): boolean {
@@ -2564,8 +2513,9 @@ export function shareReplacesLatest(versionCount: number, commentsOnLatest: numb
 
 /**
  * What `project`'s next share makes: the version, and whether it replaces the
- * latest (`shareReplacesLatest`). The one answer the Share routes, a fix's
- * share and the Share dialog's button (the review's `next`) read.
+ * latest (`shareReplacesLatest`). The one answer the Share routes, the
+ * agent's share_for_review and the Export dialog's button (the review's
+ * `next`) read; a share asks it again before it goes over a version.
  */
 export function nextShare(home: string, project: string): { version: number; replace: boolean } {
   const versions = read(home).shared[project]?.versions ?? [];
@@ -2582,25 +2532,16 @@ export function onLatest(home: string, project: string): Note[] {
 }
 
 /**
- * Follows the agent's fix to its end, then exports and shares it (the share
- * ends the request on the page): in place of the latest version unless it has
- * comments, else as the next one, with those comments fixed too (the user,
- * Oct 30: "unless there is a comment on v2 as soon as there is a comment it
- * goes as v3 and fixes those comments as well"). `round`: comments that came
- * in during the fix, sent to the agent after it (twice at most).
+ * Follows the agent's fix to its end, and shares nothing (Sphe, Nov 21: "Once
+ * the agent fixes things, it shouldn't just automatically publish as V2"): the
+ * person puts it up from the Export dialog or asks the agent to, and the notes
+ * it fixed read as fixed on the review once that version is up
+ * (`markCarried`). Notes the turn left unanswered are sent back to it first.
+ * Notes that came in while it worked wait for the next pull, as any do.
+ * `reviewId`: an older build's Ready for changes, carried over a restart: its
+ * page is told how the fixes go up.
  */
-async function followFix(
-  app: App,
-  project: string,
-  reviewId: string | null,
-  noteIds: string[],
-  before: string,
-  every = followMs,
-  round = 0,
-  reshare = false,
-  sent: Record<string, number> = {},
-  last: string[] | null = null,
-): Promise<void> {
+async function followFix(app: App, project: string, reviewId: string | null, noteIds: string[], every = followMs, sent: Record<string, number> = {}, last: string[] | null = null): Promise<void> {
   const home = app.store.home;
   const panel = seams.agentPanel(app);
   const mine = noteIds.flatMap((id) => (read(home).notes[id] ? [read(home).notes[id]!] : []));
@@ -2623,18 +2564,13 @@ async function followFix(
   if (Date.now() - began >= FIX_TURN_MS) throw new Error("the agent's turn ran for three hours without ending");
   const after = app.store.get(project);
   if (after === null) throw new Error("the project went while it was being fixed");
-  const approved = read(home).shared[project]?.approved;
-  if (approved) {
-    await progress(reviewId, { state: "failed", error: `v${approved.version} was approved meanwhile, so nothing was shared.` });
-    return;
-  }
   // Notes the turn ended without answering (no feedback_done, feedback_unfixed
-  // or feedback_answer) go back to the agent before anything's shared (Nov 6,
-  // JJ's Cops Realize: the turn compacted 2 minutes in, fixed 7 of 31 notes,
-  // said "this round is not finished", and v2 went up with the other 22
-  // untouched). Each is sent FIX_TRIES times at most, and only while the last
-  // send got some answered; what's still unanswered then is left on the page,
-  // saying so, never shown as queued.
+  // or feedback_answer) go back to the agent (Nov 6, JJ's Cops Realize: the
+  // turn compacted 2 minutes in, fixed 7 of 31 notes, said "this round is not
+  // finished", and v2 went up with the other 22 untouched). Each is sent
+  // FIX_TRIES times at most, and only while the last send got some answered;
+  // what's still unanswered then is left on the page, saying so, never shown
+  // as queued.
   const notesNow = read(home).notes;
   const unanswered = noteIds.filter((id) => {
     const note = notesNow[id];
@@ -2658,99 +2594,31 @@ async function followFix(
       reviewGuard.reviewTurnNext(project);
       await panel.send(
         project,
-        `(Edit, automatically) Your turn ended with ${again.length} of the ${noteIds.length} notes unanswered: no feedback_done, feedback_unfixed or feedback_answer for them, so nothing is shared yet. ` +
+        `(Edit, automatically) Your turn ended with ${again.length} of the ${noteIds.length} notes unanswered: no feedback_done, feedback_unfixed or feedback_answer for them. ` +
           "Fix every one of them now, in this turn, and answer each; don't end the turn with a list of what's left.\n" +
           fixMessage(after.project, state.shared[project], left, replies, await boxStills(home, project, state.shared[project], left)),
         null,
         null,
       );
-      diag.info("review", `${after.project.name}: Ready for changes: the turn left ${unanswered.length} of ${noteIds.length} note(s) unanswered; sent ${again.length} back to the agent`);
+      diag.info("review", `${after.project.name}: the feedback fix's turn left ${unanswered.length} of ${noteIds.length} note(s) unanswered; sent ${again.length} back to the agent`);
       const tried = { ...sent };
       for (const id of again) tried[id] = (tried[id] ?? 1) + 1;
       await progress(reviewId, { stage: `Fixing the ${again.length} note${again.length === 1 ? "" : "s"} still open`, done: noteIds.length - unanswered.length });
-      await followFix(app, project, reviewId, noteIds, before, every, round, reshare, tried, again);
+      await followFix(app, project, reviewId, noteIds, every, tried, again);
       return;
     }
     const tries = Math.max(...unanswered.map((id) => sent[id] ?? 1));
-    diag.warn("review", `${after.project.name}: Ready for changes: ${unanswered.length} note(s) still unanswered after ${tries} tr${tries === 1 ? "y" : "ies"}; left open on the review`);
+    diag.warn("review", `${after.project.name}: ${unanswered.length} note(s) still unanswered after ${tries} tr${tries === 1 ? "y" : "ies"}; left open on the review`);
     for (const id of unanswered) {
-      await unfixed(app, project, id, `Edit's agent didn't get to this note (asked ${tries} time${tries === 1 ? "" : "s"}): ask again with Ready for changes.`).catch((error: unknown) =>
+      await unfixed(app, project, id, `Edit's agent didn't get to this note (asked ${tries} time${tries === 1 ? "" : "s"}): it's tried again when the team pulls the feedback in Edit.`).catch((error: unknown) =>
         diag.warn("review", `${after.project.name}: leaving ${id} open: ${diag.messageOf(error)}`),
       );
     }
   }
-  // Comments on the latest version that came in during the fix: fixed before it's shared.
-  const unseen = onLatest(home, project).filter((note) => note.status === "open" && !noteIds.includes(note.id) && note.fix === undefined && note.unfixed === undefined);
-  if (unseen.length > 0 && round < 2) {
-    // Asked in the chat (no request taken here): by hand, as pull_feedback claimed the first; the database gives a request's notes only to the computer working on it.
-    const claimed = ((await cloud.mutation("reviews:claim", { noteIds: unseen.map((note) => note.id), by: app.machine, machine: machine.id(), ...(reviewId === null ? { manual: true } : {}) })) as { claimed?: string[] }).claimed ?? [];
-    const more = unseen.filter((note) => claimed.includes(note.id));
-    if (more.length > 0) {
-      const state = read(home);
-      const replies = Object.values(state.notes).filter((note) => note.project === project && note.parentId !== null);
-      reviewGuard.reviewTurnNext(project);
-      await panel.send(project, fixMessage(after.project, state.shared[project], more, replies, await boxStills(home, project, state.shared[project], more)), null, null);
-      diag.info("review", `${after.project.name}: Ready for changes: ${more.length} comment(s) came in meanwhile, sent to the agent too`);
-      const all = [...noteIds, ...more.map((note) => note.id)];
-      noteFix(home, project, { reviewId, noteIds: all, before, at: Date.now(), ...(reshare ? { reshare } : {}) });
-      await followFix(app, project, reviewId, all, before, every, round + 1, reshare, sent);
-      return;
-    }
-  }
-  // Fixes an earlier share failed on go out now, even when this round changed nothing:
-  // failed here (`unshared`), or anywhere, as the page says (`reshare`).
-  if (timelineHash(after.project) === before && !unshared(home, project) && !reshare) {
-    await progress(reviewId, { state: "done", stage: "Answered: nothing in the edit changed" });
-    return;
-  }
-  await shareFixes(app, project, reviewId, after.project.name);
-}
-
-/**
- * "Share v<n> again" on the review page: the fixes are in but sharing them
- * failed (Nov 2, JJ's Mom Secretly: every note done in v2, then the export
- * stalled, and nothing on the page could try again). The edit is exported and
- * shared as it is now, unless what it is now is already the latest version
- * shared (shared by hand meanwhile): then that's said, and nothing's shared twice.
- */
-async function shareAgain(app: App, project: string, reviewId: string): Promise<void> {
-  const home = app.store.home;
-  const live = app.store.get(project);
-  if (live === null) throw new Error("the project isn't on this computer any more");
-  const approved = read(home).shared[project]?.approved;
-  if (approved) {
-    await progress(reviewId, { state: "failed", error: `v${approved.version} was approved meanwhile, so nothing was shared.` });
-    return;
-  }
-  const versions = read(home).shared[project]?.versions ?? [];
-  const newest = versions.reduce<(typeof versions)[number] | null>((most, one) => (most === null || one.n > most.n ? one : most), null);
-  if (!unshared(home, project) && newest !== null && newest.timeline === timelineHash(live.project)) {
-    await progress(reviewId, { state: "done", stage: `v${newest.n} is already shared as the edit is now` });
-    return;
-  }
-  diag.info("review", `${live.project.name}: Ready for changes: sharing again (the fixes are in; the last share failed)`);
-  await shareFixes(app, project, reviewId, live.project.name);
-}
-
-/** Exports and shares the fixes: in place of the latest version unless it has comments, else as the next one; the share ends the request on the page. `note`: what the Exports panel says beside its export ("Trying again after the update"). */
-export async function shareFixes(app: App, project: string, reviewId: string | null, name: string, note?: string): Promise<void> {
-  const home = app.store.home;
-  const { version: next, replace } = nextShare(home, project);
-  await progress(reviewId, { state: "sharing", stage: replace ? `Exporting v${next} again (no comments on it)` : `Exporting v${next}` });
-  let listed = false;
-  try {
-    canShare(home, project);
-    listed = true;
-    // The share takes over from the fix (its job) and ends the request on the page, as done with this version; failing,
-    // it says so there and is kept failed, so the next Ready for changes shares these fixes (`unshared`).
-    const shared = await exportAndShare(app, project, read(home).shareOptions?.[project] ?? {}, replace, note, undefined, { reviewId, next });
-    diag.info("review", `${name}: Ready for changes: shared v${shared.version}${replace ? " in its place" : ""}`);
-  } catch (error) {
-    if (listed) return;
-    // Refused before it could start (no cloud, a share already going, its link being deleted).
-    diag.warn("review", `${name}: Ready for changes: sharing v${next} failed: ${diag.messageOf(error)}`);
-    await progress(reviewId, { state: "failed", error: `The fixes are in, but sharing v${next} failed: ${diag.messageOf(error)}` });
-  }
+  const fixed = read(home).notes;
+  const count = noteIds.filter((id) => fixed[id]?.fix !== undefined).length;
+  diag.info("review", `${after.project.name}: the feedback fix ended (${count} of ${noteIds.length} note(s) fixed); nothing is shared until someone shares it`);
+  await progress(reviewId, { state: "done", stage: FIXED_NOT_UP });
 }
 
 // ---------------------------------------------------------------------------
@@ -2812,11 +2680,12 @@ function bandsNow(project: Project, fix: NonNullable<Note["fix"]>): [number, num
   return out;
 }
 
-/** Per project: its open notes (for the home screen's badge). */
+/** Per project: its open notes not yet fixed (for the home screen's badge). */
 export function openCounts(home: string): Record<string, number> {
   const out: Record<string, number> = {};
   for (const note of Object.values(read(home).notes)) {
-    if (note.status === "open" && note.parentId === null) out[note.project] = (out[note.project] ?? 0) + 1;
+    // Fixed here and waiting for a share to go up (`pending`): not still to fix, as it read when a fix went up by itself.
+    if (note.status === "open" && note.parentId === null && note.fix === undefined) out[note.project] = (out[note.project] ?? 0) + 1;
   }
   return out;
 }
@@ -2959,9 +2828,26 @@ export async function doneFeedback(app: App, projectId: string): Promise<string>
   return `${roots.length} ${roots.length === 1 ? "note" : "notes"} fixed on the review, oldest first (read only: nothing was taken):\n\n${roots.map(one).join("\n\n")}`;
 }
 
+/**
+ * The agent puts the edit up on its review link when asked ("put this up on
+ * the review site"), as the Export dialog's Send for feedback does (Sphe, Nov
+ * 21): the edit as it is now exported with the last share's settings and
+ * watermark, and by the same rule (`nextShare`), in place of the latest
+ * version when no one has a note on it, else as the next one, said back as
+ * which it did. It's on the Exports page and in the dialog while it runs, as
+ * any share. `path`: an export already made instead (an opening's preview).
+ */
 registerTool("share_for_review", async ({ app, args, projectId }: ToolCall) => {
-  const shared = await share(app, projectId, str(args.path));
-  return text(`shared v${shared.version}: ${shared.url}${devShareNote()}`);
+  const home = app.store.home;
+  if (app.store.get(projectId) === null) throw new Error("no such project");
+  await adopt(app, projectId).catch((error: unknown) => diag.warn("review", `${projectId}: taking in its review from the cloud: ${diag.messageOf(error)}`));
+  const path = str(args.path);
+  const latest = newestVersion(home, projectId)?.n ?? 0;
+  const { replace } = nextShare(home, projectId);
+  const shared = path === null ? await exportAndShare(app, projectId, read(home).shareOptions?.[projectId] ?? {}, replace) : await share(app, projectId, path, replace);
+  // What it did, as it went: a note heard just before it would have gone over the latest makes it the next one.
+  const replaced = latest > 0 && shared.version === latest;
+  return text(`${replaced ? `Replaced v${shared.version}` : `Shared as v${shared.version}`} on the review link: ${shared.url}${devShareNote()}`);
 });
 
 /**
@@ -3083,7 +2969,7 @@ export function routes(router: Router<App>): void {
     const given = (await readJson<unknown>(context).catch(() => ({}))) as Record<string, unknown>;
     const id = context.params.id ?? "";
     if (context.app.store.get(id) === null) throw new ApiError(404, "no such project");
-    // From Home (no options): the last Share's settings, and in place of the latest version unless it has comments, as a fix goes up.
+    // From Home (no options): the last Share's settings, and in place of the latest version unless it has comments, as every share goes.
     const home = context.app.store.home;
     const options = typeof given?.options === "object" && given.options !== null && !Array.isArray(given.options) ? (given.options as Partial<ExportOptions>) : (read(home).shareOptions?.[id] ?? {});
     // Comments decide. No comments on the latest version: this replaces it. Any comment: the next version. The dialog's flags do not override that.

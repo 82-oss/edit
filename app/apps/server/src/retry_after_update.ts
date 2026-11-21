@@ -6,12 +6,10 @@
 // The first time a build runs on this Mac (its tag differs from the one kept
 // in `<home>/last-build.json`, or none was kept), it queues, in jobs.json
 // (each failed job's `retry`, set to this build):
-//   - each share that failed after its fixes went in (a failed `share` job
-//     from Ready for changes, reviews.ts `unshared`): exported and shared as the
-//     next version, as Share again does, which ends the failed request on the
-//     review page;
-//   - each plain share that failed after its export was made (reviews.ts
-//     `carriedOn`): carried on from its step with that export;
+//   - each share someone asked for that failed after its export was made
+//     (reviews.ts `carriedOn`): carried on from its step with that export.
+//     A share an older build started by itself after a fix isn't: nothing
+//     goes up on a review link unless someone asks (Sphe, Nov 21);
 //   - each export that failed and hasn't been exported since (a failed
 //     `export` job), but a share's: exported again with the same settings,
 //     through the normal queue.
@@ -19,8 +17,7 @@
 // time: each is taken off the queue before it starts, so it's tried once on
 // this build; failing again, it's a normal failure that waits for the next
 // build. Never on a project another computer holds, a share never on an
-// approved review, nor one a reviewer has asked of this Mac again (that
-// request does it). The project's chunk cache goes first, so it renders fresh
+// approved review. The project's chunk cache goes first, so it renders fresh
 // (a copy out of the last export that came out wrong fails the same way every
 // time: JJ's, Nov 2). Each says "Trying again after the update" in the log and
 // in the Exports panel.
@@ -94,8 +91,8 @@ export function noteBuild(app: App, build = BUILD): Item[] {
   if (last === build) return [];
   const from = typeof last === "string" ? last : null;
   const nameOf = (project: string, given?: string) => app.store.get(project)?.project.name ?? given ?? project;
-  // The fixes a share couldn't put up (failed `share` jobs), then the exports.
-  const shares = [...reviews.unsharedProjects(home), ...reviews.carriedOnProjects(home)];
+  // The shares asked for that failed after their export (failed `share` jobs), then the exports.
+  const shares = reviews.carriedOnProjects(home);
   const failures = failedExports(home);
   const exports = Object.values(failures)
     .filter((failure) => failure.share !== true && !shares.includes(failure.project))
@@ -116,15 +113,12 @@ export function noteBuild(app: App, build = BUILD): Item[] {
 
 /** What a retry does: tests stand in for them. */
 export interface Actions {
-  share(app: App, item: Item): Promise<void>;
   export(app: App, failure: ExportFailure): Promise<void>;
   /** A share whose export is made, carried on from its failed step (reviews.retryShare). */
-  carryOnShare?(app: App, item: Item): Promise<void>;
+  carryOnShare(app: App, item: Item): Promise<void>;
 }
 
 const real: Actions = {
-  // Ends in a failure said on the page and `unshared` set again, never thrown (reviews.shareFixes).
-  share: (app, item) => reviews.shareFixes(app, item.project, null, item.name, NOTE),
   carryOnShare: async (app, item) => {
     const run = reviews.retryShare(app, item.project);
     if (run === null) throw new Error("its share can't be carried on from its step");
@@ -152,18 +146,11 @@ async function skipped(app: App, item: Item): Promise<string | null> {
   const home = app.store.home;
   if (app.store.get(item.project) === null) return `the project isn't on ${THIS_MACHINE}`;
   if (item.kind === "share") {
-    const state = reviews.read(home);
-    const plain = reviews.carriedOn(home, item.project);
-    if (!reviews.unshared(home, item.project) && !plain) return "it has been shared since";
-    const shared = state.shared[item.project];
-    // A first share has no review yet; fixes always have one.
-    if (shared === undefined && !plain) return "it has no review";
+    if (!reviews.carriedOn(home, item.project)) return "it has been shared since";
+    const shared = reviews.read(home).shared[item.project];
     if (shared?.approved) return `v${shared.approved.version} of its review was approved`;
-    if (plain) {
-      const stale = reviews.carryOnStale(app, item.project);
-      if (stale !== null) return stale;
-    }
-    if (reviews.askedFor(item.project)) return `a reviewer asked again on ${THIS_MACHINE}, and that request does it`;
+    const stale = reviews.carryOnStale(app, item.project);
+    if (stale !== null) return stale;
   } else {
     if (failedExports(home)[item.project] === undefined) return "it has exported since";
     if (app.exports.runningFor?.(item.project) != null) return "an export of it is running";
@@ -211,16 +198,9 @@ export async function step(app: App, actions: Actions = real): Promise<string | 
       // Its export made and only what came after failed (the review copy, the upload, the publish): it goes on from
       // that step with the export it has, nothing rendered again (honest council change 7h, Nov 19: the chunks were
       // deleted before every retry, so a share that failed at its upload rendered all of it again).
-      const job = jobs.get(home, key);
-      if (job !== undefined && ((job.args as { path?: unknown }).path !== undefined || reviews.carriedOn(home, item.project)) && actions.carryOnShare !== undefined) {
-        diag.info("update", `${item.name}: ${NOTE}: sharing from its ${job.step ?? "last"} step, with the export it has`);
-        await actions.carryOnShare(app, item);
-        return "shared from its step";
-      }
-      freshChunks(app, item.project);
-      diag.info("update", `${item.name}: ${NOTE}: sharing the fixes an earlier share failed on`);
-      await actions.share(app, item);
-      return "shared";
+      diag.info("update", `${item.name}: ${NOTE}: sharing from its ${jobs.get(home, key)?.step ?? "last"} step, with the export it has`);
+      await actions.carryOnShare(app, item);
+      return "shared from its step";
     }
     const failure = failedExports(home)[item.project]!;
     // Rendered fresh only when the render itself failed (a copy out of an export that came out wrong fails the same way

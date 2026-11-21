@@ -14,10 +14,11 @@ const FIVE: ExportStep[] = [graphic("done", "0:12", 0), graphic("done", "5:40", 
 const steps = (list: ExportStep[], left: number | null, over: Partial<ExportSteps> = {}): ExportSteps => ({ where: "here", steps: list, queued: false, elapsed_s: 60, left_s: left, progress: 0.2, ...over });
 
 describe("an export's steps as rows", () => {
-  it("folds the done graphics and those to come, names the one under way by its place, and times the rest", () => {
+  // The one under way says its time left beside its percent (Sphe, Nov 21: "I have no idea of progress").
+  it("folds the done graphics and those to come, names the one under way by its place with its percent and time left, and times the rest", () => {
     expect(rowsOf(FIVE).map((row) => [row.state, row.text, row.right])).toEqual([
       ["done", "Graphics 1–2", "done"],
-      ["current", "Graphic 3 of 5 · the map at 41:12", "92%"],
+      ["current", "Graphic 3 of 5 · the map at 41:12", "92% · a moment"],
       ["waiting", "Graphics 4–5", "~40 s"],
       ["waiting", "Video · 1:48:29", "~3 min"],
       ["waiting", "Save to ~/Downloads/Edit", "a moment"],
@@ -32,6 +33,20 @@ describe("an export's steps as rows", () => {
       ["Save to ~/Downloads/Edit", "a moment"],
     ]);
     expect(rowsOf([graphic("current", "0:10", 3), graphic("waiting", "0:20", 10), graphic("waiting", "0:30", null)])[1]!.right).toBeNull();
+  });
+
+  // Only what was measured (Nov 21): a done step's time where its start and end were seen, else "done"; one under way
+  // with no percent its time so far; never a number made up.
+  it("says a done step's time and a running step's time so far when the server measured them, and nothing it didn't", async () => {
+    const { tookWords } = await import("./export-steps");
+    const share: ExportStep[] = [
+      { kind: "video", state: "done", label: "37:32", progress: null, left_s: 0, took_s: 408 },
+      { kind: "copy", state: "current", label: "", progress: null, left_s: 50, elapsed_s: 65 },
+      { kind: "upload", state: "waiting", label: "", progress: null, left_s: 30 },
+    ];
+    expect(rowsOf(share).map((row) => row.right)).toEqual(["6 min 48 s", "1 min 5 s so far", "~30 s"]);
+    expect(rowsOf([{ ...share[0]!, took_s: undefined }, { ...share[1]!, elapsed_s: undefined }, share[2]!]).map((row) => row.right)).toEqual(["done", "~50 s", "~30 s"]);
+    expect([52, 60, 408, 3725].map(tookWords)).toEqual(["52 s", "1 min", "6 min 48 s", "1 h 2 min"]);
   });
 
   it("lays out a share's steps: the review copy and the upload in place of the save", () => {

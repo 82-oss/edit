@@ -1513,7 +1513,7 @@
     }
   },
   {
-    "description": "The feedback to fix, called first whenever the user mentions it (\"do you see feedback?\"). Two kinds: the team's own notes left in Edit at the playhead ([app:id]: their moment now, the clip there, a box drawn on the picture), and the review's open notes from Repack (feedback.spheceo.com), when Edit hasn't handed them to you ([id], as Ready for changes gives them). Load the feedback skill, fix them, and call feedback_done / feedback_unfixed / feedback_answer after each, with the id as given. When your turn ends, a review's fixes are exported and shared on it as the next version; the team's own notes share nothing, and any you didn't answer go back in their queue.",
+    "description": "The feedback to fix, called first whenever the user mentions it (\"do you see feedback?\"). Two kinds: the team's own notes left in Edit at the playhead ([app:id]: their moment now, the clip there, a box drawn on the picture), and the review's open notes from Repack (feedback.spheceo.com), when Edit hasn't handed them to you ([id], as Ready for changes gives them). Load the feedback skill, fix them, and call feedback_done / feedback_unfixed / feedback_answer after each, with the id as given. Only when asked: nothing is pulled by itself (a reviewer's Ready for changes on the review page starts nothing). Nothing is shared when your turn ends: say it's fixed in the edit and goes up on the review link when they ask you to put it up (share_for_review) or from Export → Send for feedback. Any of the team's own notes you didn't answer go back in their queue.",
     "inputSchema": {
       "properties": {
         "again": {
@@ -1534,7 +1534,7 @@
     "name": "pull_feedback"
   },
   {
-    "description": "Marks a Repack review note fixed. Call it after each note Edit set you on, before the next: Edit works out what you changed since the note before (the clips and their stretch of the timeline), keeps it with the note so the timeline shows the change and the reviewer's words over it, and marks the note done on the review with your summary.",
+    "description": "Marks a Repack review note fixed. Call it after each note Edit set you on, before the next: Edit works out what you changed since the note before (the clips and their stretch of the timeline), keeps it with the note so the timeline shows the change and the reviewer's words over it, and marks the note done on the review with your summary once a version carrying the fix is shared.",
     "inputSchema": {
       "properties": {
         "note": {
@@ -1629,11 +1629,11 @@
     }
   },
   {
-    "description": "Shares a whole export for review on Repack. A 720p copy where anyone with the link comments at a moment of the video, as on Frame.io; the first share makes the review, later ones a new version under the same link. Their notes come back to Edit, which sets you on them. Returns the link.",
+    "description": "Puts the edit up on its review link, when asked. Only when the user asks (\"put this up on the review site\"): it exports the whole edit as it is now with the last share's settings and watermark, then a 720p copy goes up on feedback.spheceo.com, where anyone with the link comments at a moment of the video. The first share makes the link; after that it replaces the latest version when no one has commented on it, or adds the next version when someone has (Edit decides, as the Export dialog does). It shows on the Exports page while it runs. Says which it did, with the link: give the user that line. Their notes wait for the user to ask you to pull them (pull_feedback).",
     "inputSchema": {
       "properties": {
         "path": {
-          "description": "The export (as the exports list has it). Default: the newest whole export.",
+          "description": "An export already made to share instead (as the exports list has it), such as an opening's preview. Default: the whole edit as it is now, exported first.",
           "type": "string"
         },
         "project_id": {

@@ -17,8 +17,16 @@ export interface StepRow {
   note?: string;
   /** The current step's bar (0–1), when it's measured. */
   progress: number | null;
-  /** At the right: "done", the current step's percent, a time still to come. */
+  /** At the right: a done step's time ("52 s", else "done"), the current one's percent and time left (or its time so far), a time still to come. */
   right: string | null;
+}
+
+/** A time that was measured, said whole: "52 s", "6 min 48 s", "1 h 2 min". */
+export function tookWords(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds));
+  if (whole < 60) return `${whole} s`;
+  if (whole < 3600) return whole % 60 === 0 ? `${whole / 60} min` : `${Math.floor(whole / 60)} min ${whole % 60} s`;
+  return `${Math.floor(whole / 3600)} h ${Math.round((whole % 3600) / 60)} min`;
 }
 
 /** "a moment", "~40 s", "~3 min", "~1 h 20 min"; null with no basis. */
@@ -50,11 +58,18 @@ function sum(steps: ExportStep[]): number | null {
   return steps.every((step) => step.left_s !== null) ? steps.reduce((total, step) => total + step.left_s!, 0) : null;
 }
 
+/**
+ * What a row says at its right, only what the server measured (Sphe, Nov 21: "improve the ability to see progress"):
+ * done, how long it took when that was seen (else "done"); under way, its percent and time left, or with no percent
+ * its time so far; to come, its estimate.
+ */
 function rightOf(state: StepState, steps: ExportStep[]): string | null {
-  if (state === "done") return "done";
   const step = steps[0]!;
-  if (state === "current" && step.progress !== null) return `${Math.round(step.progress * 100)}%`;
-  return leftWords(sum(steps));
+  if (state === "done") return steps.length === 1 && step.took_s !== undefined ? tookWords(step.took_s) : "done";
+  const left = leftWords(sum(steps));
+  if (state === "current" && step.progress !== null) return [`${Math.round(step.progress * 100)}%`, left].filter(Boolean).join(" · ");
+  if (state === "current" && step.elapsed_s !== undefined) return `${tookWords(step.elapsed_s)} so far`;
+  return left;
 }
 
 function otherText(step: ExportStep): string {

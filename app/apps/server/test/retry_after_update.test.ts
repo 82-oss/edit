@@ -44,7 +44,7 @@ function recorder(): { done: string[]; actions: retry.Actions } {
   return {
     done,
     actions: {
-      share: async (_app, item) => void done.push(`share ${item.project}`),
+      carryOnShare: async (_app, item) => void done.push(`carry on ${item.project}`),
       export: async (_app, failure) => void done.push(`export ${failure.project} ${failure.output}`),
     },
   };
@@ -54,28 +54,38 @@ const failure = (project: string, extra: Partial<ExportFailure> = {}): ExportFai
   project, name: project, options: { format: "h264" } as ExportFailure["options"], output: `/out/${project}.mp4`, error: "Native encoder stalled", at: 1, build: "nightly-47", ...extra,
 });
 
-/** A home where `mom`'s share failed after its fixes and `cops`'s export failed; `old` the build that ran last. */
+/**
+ * A home where `mom`'s share, asked for by someone, failed at its upload after its export was made (its export of
+ * the edit as it is now on record), `cops`'s export failed, and `fixes`'s share, one an older build started by itself
+ * after a Ready for changes, failed (never tried again: Sphe, Nov 21, nothing goes up unless someone asks); `old`
+ * the build that ran last.
+ */
 function setUp(name: string, old: string | null) {
   const fixture = fixtureHome(name);
   const { app, home } = fixture;
   const mom = app.store.createAs("Mom Secretly", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
   const cops = app.store.createAs("Cops Surprise", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
+  const fixes = app.store.createAs("Fixed By Itself", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
   const version = { n: 1, timeline: "t", path: "/nowhere.mp4", fps: 30, durationMs: 10_000, clips: [] };
-  fs.writeFileSync(`${home}/reviews.json`, JSON.stringify({ cursor: 0, notes: {}, shared: { [mom]: { reviewId: "r1", url: "u", versions: [version] } } }));
-  const share = jobs.begin(home, "share", mom, { id: "unshared", fixes: { reviewId: null, next: 2 } }, "", "exporting");
-  jobs.settle(home, share, "failed", { error: "sharing the fixes failed on an earlier build" });
+  fs.writeFileSync(`${home}/reviews.json`, JSON.stringify({ cursor: 0, notes: {}, shared: { [mom]: { reviewId: "r1", url: "u", versions: [version] }, [fixes]: { reviewId: "r2", url: "u2", versions: [version] } } }));
+  const path = `${home}/mom.mp4`;
+  fs.writeFileSync(path, "video");
+  fs.writeFileSync(`${home}/exports.json`, JSON.stringify({ [mom]: [{ path, whole: true, timeline: timelineHash(app.store.get(mom)!.project), bytes: 5, frames: 300 }] }));
+  jobs.settle(home, jobs.begin(home, "share", mom, { id: "asked", export: { options: {} }, path }, "", "uploading"), "failed", { error: "R2 part 813 failed" });
+  jobs.settle(home, jobs.begin(home, "share", fixes, { id: "by-itself", fixes: { reviewId: null, next: 2 } }, "", "exporting"), "failed", { error: "sharing the fixes failed on an earlier build" });
   // A share's own export failing too: that's the share's to try again, not the export's.
   for (const { project, error, at: _at, build, ...args } of [failure(cops), failure(mom, { share: true })]) {
     jobs.settle(home, jobs.begin(home, "export", project, args), "failed", { error, build });
   }
   if (old !== null) fs.writeFileSync(`${home}/last-build.json`, JSON.stringify({ build: old }));
   idle(app);
-  return { ...fixture, mom, cops };
+  return { ...fixture, mom, cops, fixes };
 }
 
-test("a new build tries again, once and one at a time, the share that failed after its fixes and the export that failed", async () => {
+test("a new build tries again, once and one at a time, the share someone asked for that failed after its export and the export that failed; never an older build's share of its fixes", async () => {
   const { app, home, mom, cops, cleanup } = setUp("retry-new-build", "nightly-47");
   try {
+    // `fixes`'s share isn't queued: an older build started it by itself, and nothing goes up unless someone asks.
     expect(retry.noteBuild(app, "nightly-48").map((one) => `${one.kind} ${one.project}`)).toEqual([`share ${mom}`, `export ${cops}`]);
     // A stale chunk cache goes before it's tried, so it renders fresh.
     // A Vertical export's (its own folder, render.rs chunk_name) goes too; smooth playback's stays.
@@ -86,12 +96,12 @@ test("a new build tries again, once and one at a time, the share that failed aft
       fs.writeFileSync(`${folder}/manifest-v1.json`, "{}");
     }
     const { done, actions } = recorder();
-    expect(await retry.step(app, actions)).toBe("shared");
+    expect(await retry.step(app, actions)).toBe("shared from its step");
     expect(await retry.step(app, actions)).toBe("exported");
     expect(fs.existsSync(chunkFolder(app.store.cacheDir(), cops))).toBe(false);
     expect(fs.existsSync(vertical)).toBe(false);
     expect(fs.existsSync(playback)).toBe(true);
-    expect(done).toEqual([`share ${mom}`, `export ${cops} /out/${cops}.mp4`]);
+    expect(done).toEqual([`carry on ${mom}`, `export ${cops} /out/${cops}.mp4`]);
     // Each was taken once: nothing's left, and starting again on the same build queues nothing.
     expect(await retry.step(app, actions)).toBeNull();
     expect(retry.noteBuild(app, "nightly-48")).toEqual([]);
@@ -104,8 +114,7 @@ test("a new build tries again, once and one at a time, the share that failed aft
 test("what failed only after its render keeps what it rendered: a share whose export was made goes on from its step, an export stopped by the line exports again from its chunks", async () => {
   const { app, home, mom, cops, cleanup } = setUp("retry-keeps-chunks", "nightly-47");
   try {
-    // Mom's share failed at its upload, its export made; Cops' export failed on the relay, not on its picture.
-    jobs.settle(home, jobs.begin(home, "share", mom, { id: "unshared", fixes: { reviewId: null, next: 2 }, path: "/out/mom.mp4" }, "", "uploading"), "failed", { error: "R2 part 813 failed" });
+    // Mom's share failed at its upload, its export made (setUp); Cops' export failed on the relay, not on its picture.
     jobs.settle(home, jobs.begin(home, "export", cops, failure(cops) as unknown as Record<string, unknown>), "failed", { error: "could not reach Edit's relay: The socket connection was closed unexpectedly", build: "nightly-47" });
     retry.noteBuild(app, "nightly-48");
     for (const project of [mom, cops]) {
@@ -113,7 +122,6 @@ test("what failed only after its render keeps what it rendered: a share whose ex
       fs.writeFileSync(`${chunkFolder(app.store.cacheDir(), project)}/manifest-v1.json`, "{}");
     }
     const { done, actions } = recorder();
-    actions.carryOnShare = async (_app, item) => void done.push(`carry on ${item.project}`);
     expect(await retry.step(app, actions)).toBe("shared from its step");
     expect(done).toEqual([`carry on ${mom}`]);
     expect(fs.existsSync(chunkFolder(app.store.cacheDir(), mom))).toBe(true);
@@ -125,15 +133,15 @@ test("what failed only after its render keeps what it rendered: a share whose ex
   }
 });
 
-test("a plain share (not Ready for changes) that failed after its export was made is carried on by a new build, once; one still to export, one whose edit changed since and one weeks old aren't", async () => {
-  const { app, home, cops, cleanup } = setUp("retry-plain-share", "nightly-47");
+test("a plain share (not an older build's of its fixes) that failed after its export was made is carried on by a new build, once; one still to export, one whose edit changed since and one weeks old aren't", async () => {
+  const { app, home, mom, cops, cleanup } = setUp("retry-plain-share", "nightly-47");
   try {
     const exported = app.store.createAs("First Share", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
     const unexported = app.store.createAs("Never Exported", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
     const changed = app.store.createAs("Changed Since", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
     const old = app.store.createAs("Weeks Old", "bodycam", { width: 1920, height: 1080, fps: 30 }).project.id;
     // Each export's file and record; Changed Since's was made from another edit.
-    const records: Record<string, unknown[]> = {};
+    const records = JSON.parse(fs.readFileSync(`${home}/exports.json`, "utf8")) as Record<string, unknown[]>;
     for (const [project, timeline] of [[exported, timelineHash(app.store.get(exported)!.project)], [changed, "an-older-edit"], [old, timelineHash(app.store.get(old)!.project)]] as const) {
       const path = `${home}/${project}.mp4`;
       fs.writeFileSync(path, "video");
@@ -150,12 +158,12 @@ test("a plain share (not Ready for changes) that failed after its export was mad
     expect(queued).not.toContain(`share ${unexported}`);
     expect(queued).not.toContain(`share ${old}`);
     const { done, actions } = recorder();
-    actions.carryOnShare = async (_app, item) => void done.push(`carry on ${item.project}`);
     while ((await retry.step(app, actions)) !== null);
     expect(done).toContain(`carry on ${exported}`);
     expect(done).not.toContain(`carry on ${changed}`);
     expect(done).toContain(`export ${cops} /out/${cops}.mp4`);
-    expect(done.filter((one) => one.startsWith("share "))).toHaveLength(1);
+    // Mom's (setUp's) and First Share's, each once.
+    expect(done.filter((one) => one.startsWith("carry on ")).sort()).toEqual([`carry on ${exported}`, `carry on ${mom}`].sort());
     expect(retry.noteBuild(app, "nightly-48")).toEqual([]);
   } finally {
     cleanup();
@@ -194,13 +202,15 @@ test("a busy Mac (an export, an agent turn) waits, and the queue is kept for whe
     expect(done).toEqual([]);
     expect(retry.pending(home)).toHaveLength(2);
     idle(app);
-    expect(await retry.step(app, actions)).toBe("shared");
+    expect(await retry.step(app, actions)).toBe("shared from its step");
   } finally {
     cleanup();
   }
 });
 
-test(`never on a project another computer holds, nor a share on an approved review, nor one a reviewer asked of ${THIS_MACHINE} again`, async () => {
+// A reviewer's Ready for changes asked of this Mac used to stand in for the retry ("that request does it"); a request
+// starts nothing now (Sphe, Nov 21), so it no longer keeps the share someone asked for from being carried on.
+test(`never on a project another computer holds, nor a share on an approved review; a Ready for changes asked of ${THIS_MACHINE} doesn't stop it`, async () => {
   const { app, home, mom, cops, cleanup } = setUp("retry-skipped", "nightly-47");
   try {
     retry.noteBuild(app, "nightly-48");
@@ -216,7 +226,7 @@ test(`never on a project another computer holds, nor a share on an approved revi
     expect(await retry.step(app, actions)).toBe("skipped: the project is open on Sphe's MacBook Air");
     expect(done).toEqual([]);
     expect(retry.pending(home)).toEqual([]);
-    // Asked again of this Mac: the request does it, not the retry.
+    // Asked again of this Mac: the request is answered and starts nothing, and the retry goes on.
     delete state.shared[mom]!.approved;
     fs.writeFileSync(`${home}/reviews.json`, JSON.stringify(state));
     retry.noteBuild(app, "nightly-49");
@@ -225,7 +235,8 @@ test(`never on a project another computer holds, nor a share on an approved revi
       return Response.json({ status: "success", value: path === "reviews:checkIn" ? { chosen: true, requests: [{ reviewId: "r1", sourceId: mom, title: "Mom Secretly", requestedAt: 3 }] } : path === "reviews:changes" ? { notes: [], cursor: 0, more: false } : path === "reviews:open" ? [{ sourceId: mom, reviewId: "r1", approved: null }] : { ok: false, reason: "gone" } });
     });
     await reviews.checkIn(app);
-    expect(await retry.step(app, actions)).toBe(`skipped: a reviewer asked again on ${THIS_MACHINE}, and that request does it`);
+    expect(await retry.step(app, actions)).toBe("shared from its step");
+    expect(done).toEqual([`carry on ${mom}`]);
   } finally {
     mock.on("POST", "/v1/cloud/convex", () => Response.json({ status: "success", value: { chosen: false, requests: [] } }));
     cleanup();
@@ -238,7 +249,7 @@ test("a retry that fails again is a normal failure, not tried again until the ne
     retry.noteBuild(app, "nightly-48");
     let tries = 0;
     const actions: retry.Actions = {
-      share: async () => {
+      carryOnShare: async () => {
         tries++;
         throw new Error("sharing v2 failed");
       },
@@ -297,8 +308,8 @@ test("an export that fails is noted with its settings and build, a share's as a 
   }
 });
 
-test("the real retry of a share exports through the share, its export saying it's a retry, and a failure leaves it for the next build", async () => {
-  const { app, home, mom, cleanup } = setUp("retry-real-share", "nightly-47");
+test("the real retry of a share carries it on from its step with the export it has, and a failure leaves it for the next build", async () => {
+  const { app, home, mom, fixes, cleanup } = setUp("retry-real-share", "nightly-47");
   const started: Record<string, unknown>[] = [];
   (app as unknown as { exports: unknown }).exports = {
     running: () => false,
@@ -307,18 +318,22 @@ test("the real retry of a share exports through the share, its export saying it'
     exported: () => false,
     start: async (_store: unknown, _library: unknown, _project: unknown, _options: unknown, path: string, extra: Record<string, unknown>) => {
       started.push(extra);
-      setTimeout(() => app.store.emit({ type: "export", id: mom, state: "done", progress: 1, path }), 10);
       return path;
     },
   };
   try {
     retry.noteBuild(app, "nightly-48");
-    expect(await retry.step(app)).toBe("shared");
-    // It says too whether it goes over the latest version, so a restart shares it the same way.
-    expect(started).toEqual([{ share: true, replace: true, note: retry.NOTE }]);
-    // The fixture has no export on record, so the share stops after the export: still unshared (its share job failed), for the next build.
-    expect(reviews.unshared(home, mom)).toBe(true);
-    expect(retry.noteBuild(app, "nightly-49").some((one) => one.kind === "share" && one.project === mom)).toBe(true);
+    // Carried on from its upload's step (the review copy is made again first: it isn't here)…
+    expect(await retry.step(app)).toStartWith("failed: ");
+    // …nothing exported again: its export is made. The fixture's export isn't a video, so the share stops at its
+    // review copy: failed again, it's still one to carry on, for the next build.
+    expect(started).toEqual([]);
+    expect(jobs.get(home, reviews.shareKey(mom))?.state).toBe("failed");
+    expect(reviews.carriedOn(home, mom)).toBe(true);
+    const next = retry.noteBuild(app, "nightly-49");
+    expect(next.some((one) => one.kind === "share" && one.project === mom)).toBe(true);
+    // The older build's share of its fixes is never queued, on this build or the next.
+    expect(next.some((one) => one.project === fixes)).toBe(false);
   } finally {
     cleanup();
   }

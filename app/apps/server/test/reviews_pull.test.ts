@@ -70,6 +70,11 @@ test("pulls the open notes, claims them by hand, hands them over as a review tur
     // A second pull while this one runs is refused.
     expect(await reviews.pullFeedback(app, id).catch((error: Error) => error.message)).toContain("being fixed already");
     await reviews.unfixed(app, id, "n1", "a question: answered in the chat");
+    // Left with why on the review: one status, its short reason and the details, never a reply as well.
+    expect(calls.filter((call) => call.path === "reviews:status").map((call) => call.args)).toEqual([
+      { noteId: "n1", state: "left", reason: "a question: answered in the chat", details: "a question: answered in the chat", attemptAt: expect.any(Number) },
+    ]);
+    expect(calls.some((call) => call.path === "reviews:reply")).toBe(false);
     running = false;
     // The follow ends (nothing changed): the next pull may go, and finds nothing new.
     const end = Date.now() + 5_000;
@@ -87,22 +92,17 @@ test("pulls the open notes, claims them by hand, hands them over as a review tur
   }
 });
 
-// The database gives a request's notes, claimed without "by hand", only to the
-// computer working on that request (Nov 2): asked in the chat there's none,
-// so a note that came in during the fix is claimed by hand too.
-test("a note that came in during a pulled fix is claimed by hand, as the first were", async () => {
+// A note that came in during a pulled fix was claimed by hand and sent to the
+// agent when the turn ended (Nov 2). Nothing is queued up to be fixed by itself
+// now (Sphe, Nov 21: "We must go into the edits app and ask the agents to pull
+// the feedback"): it waits, in Home's count, for the next pull, which takes it.
+test("a note that came in during a pulled fix isn't sent to the agent by itself: the next pull takes it", async () => {
   const { app, home, cleanup } = fixtureHome("pull-late-note");
   const live = app.store.createAs("Judge", "courtroom", { width: 1920, height: 1080, fps: 30 });
   const id = live.project.id;
   let running = true;
   let sends = 0;
-  (app as unknown as { agents: unknown }).agents = {
-    chat: () => ({ running }),
-    send: async () => {
-      sends++;
-      setTimeout(() => void reviews.unfixed(app, id, "n4", "answered").catch(() => {}), 30);
-    },
-  };
+  (app as unknown as { agents: unknown }).agents = { chat: () => ({ running }), send: async () => void sends++ };
   try {
     fs.writeFileSync(`${home}/reviews.json`, JSON.stringify({ cursor: 0, notes: {}, shared: { [id]: { reviewId: "r1", url: "https://feedback.test/r/x", versions: [{ n: 1, timeline: "t", path: "/nowhere.mp4", fps: 30, durationMs: 10_000, clips: [] }] } } }));
     const note = (noteId: string) => ({ noteId, reviewId: "r1", sourceId: id, parentId: null, anchor: { kind: "time", ms: 1000 }, status: "open", fromApp: false, version: 1, author: "Marc", text: `note ${noteId}`, createdAt: 1, updatedAt: 1 });
@@ -118,19 +118,21 @@ test("a note that came in during a pulled fix is claimed by hand, as the first w
     await reviews.poll(app);
     await reviews.unfixed(app, id, "n1", "answered");
     running = false;
-    // Each wait has its own deadline: on GitHub's Macs the claim took most of a shared 5 s, the follow was still
-    // going when the fixture went, and its last write failed into the next tests (Nov 8).
-    const until = (ms: number) => Date.now() + ms;
-    let end = until(15_000);
-    while (!calls.some((call) => call.path === "reviews:claim" && (call.args.noteIds as string[]).includes("n4")) && Date.now() < end) await Bun.sleep(20);
-    const late = calls.find((call) => call.path === "reviews:claim" && (call.args.noteIds as string[]).includes("n4"));
-    expect(late?.args).toMatchObject({ noteIds: ["n4"], manual: true, machine: machine.id() });
-    end = until(15_000);
-    while (sends < 1 && Date.now() < end) await Bun.sleep(20);
-    expect(sends).toBe(1);
-    // The follow ends before the fixture goes.
-    end = until(15_000);
-    while (Date.now() < end && (await reviews.pullFeedback(app, id).catch((error: Error) => error.message)).includes("being fixed already")) await Bun.sleep(20);
+    // The follow ends before the fixture goes: the next pull may go.
+    const end = Date.now() + 15_000;
+    let again = "";
+    while (Date.now() < end) {
+      again = await reviews.pullFeedback(app, id).catch((error: Error) => error.message);
+      if (!again.includes("being fixed already")) break;
+      await Bun.sleep(20);
+    }
+    // Nothing was sent after the turn; n4 was claimed only by the next pull, by hand, and handed over in its answer.
+    expect(sends).toBe(0);
+    const claims = calls.filter((call) => call.path === "reviews:claim").map((call) => call.args.noteIds);
+    expect(claims).toEqual([["n1"], ["n4"]]);
+    expect(again).toContain("[n4]");
+    await reviews.unfixed(app, id, "n4", "answered");
+    await reviews.settledForTests();
   } finally {
     cleanup();
   }

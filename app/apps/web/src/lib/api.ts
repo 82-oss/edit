@@ -209,7 +209,7 @@ export interface ExportActivity {
   saved?: string;
   /** When it was asked for. */
   started_ms?: number;
-  /** Queued or running: its steps and their times (the server's export_steps.ts), what the Export dialog and the queue show. */
+  /** Queued or running: its steps and their times (the server's export_steps.ts), what the Export dialog and the queue show; just done, its steps done with their times, for the dialog's Done. */
   steps?: ExportSteps;
 }
 
@@ -543,6 +543,8 @@ export interface ShareState {
   version?: number;
   url?: string;
   error?: string;
+  /** The version it puts up and whether over the one there (the server's, as it goes). */
+  target?: { version: number; replace: boolean };
 }
 
 export interface Review {

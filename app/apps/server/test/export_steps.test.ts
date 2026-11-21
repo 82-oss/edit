@@ -217,3 +217,54 @@ test("an export carried on with part of its video made counts that part in the q
     cleanup();
   }
 });
+
+// Sphe, Nov 21: "I have no idea of progress other than the 'about 9 minutes left'". A step's own time is said only
+// where Edit saw it start and end (looked at every few seconds): the video's time so far while it runs, its length once
+// it's done, and the run's steps kept, done with their times, for the dialog's Done. Never a guess.
+test("a step's time so far and its length are said where they were seen, and the steps are kept done with their times once it ends", async () => {
+  const { app, store, cleanup } = fixtureHome("export-steps-times");
+  try {
+    const id = store.create("Welfare check", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const t0 = 7_000_000;
+    let row: Record<string, unknown> = { id, name: "Welfare check", path: "/x/out.mp4", state: "running", progress: 0.1, updated_ms: t0, started_ms: t0, seconds: 60 };
+    (app as unknown as { exports: unknown }).exports = { activity: () => [row] };
+    const look = (s: number) => steps.activity(app, new Set([id]), t0 + s * 1000)[0]!;
+    // Looked at from its start, every two seconds, as Home does.
+    for (let s = 1; s <= 59; s += 2) {
+      row = { ...row, progress: 0.1 + s * 0.015 };
+      const video = look(s).steps!.steps.find((one) => one.kind === "video")!;
+      if (s !== 41) continue;
+      expect(video).toMatchObject({ state: "current", elapsed_s: 41 });
+      expect(video.took_s).toBeUndefined();
+    }
+    // Done 60 s in: its steps, each done, the video's length as seen; the save has none of its own.
+    row = { ...row, state: "done", progress: 1, updated_ms: t0 + 60_000 };
+    const done = look(61);
+    expect(done.state).toBe("done");
+    expect(done.steps!.steps.map((one) => [one.kind, one.state, one.took_s ?? null])).toEqual([["video", "done", 60], ["save", "done", null]]);
+    // Kept a while for the dialog, then gone.
+    expect(look(120).steps?.steps).toHaveLength(2);
+    expect(look(61 + 11 * 60).steps).toBeUndefined();
+  } finally {
+    cleanup();
+  }
+});
+
+test("a run first looked at long after it began says no time for the step it was on: its start wasn't seen", async () => {
+  const { app, store, cleanup } = fixtureHome("export-steps-unseen");
+  try {
+    const id = store.create("Welfare check", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const t0 = 9_000_000;
+    let row: Record<string, unknown> = { id, name: "Welfare check", path: "/x/out.mp4", state: "running", progress: 0.5, updated_ms: t0, started_ms: t0, seconds: 60 };
+    (app as unknown as { exports: unknown }).exports = { activity: () => [row] };
+    // Nobody looked for five minutes (the dialog closed, Home not open).
+    const first = steps.activity(app, new Set([id]), t0 + 300_000)[0]!;
+    expect(first.steps!.steps.find((one) => one.kind === "video")!.elapsed_s).toBeUndefined();
+    row = { ...row, state: "done", progress: 1, updated_ms: t0 + 302_000 };
+    const done = steps.activity(app, new Set([id]), t0 + 302_000)[0]!;
+    expect(done.steps!.steps.find((one) => one.kind === "video")).toMatchObject({ state: "done" });
+    expect(done.steps!.steps.find((one) => one.kind === "video")!.took_s).toBeUndefined();
+  } finally {
+    cleanup();
+  }
+});

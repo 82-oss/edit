@@ -18,7 +18,7 @@ import * as writerJobs from "./writer/jobs.ts";
 /** Others' work this computer is doing (reviews' fixes): each says what runs, or nothing. */
 const others = new Set<() => string | null>();
 
-/** Adds work only its own module knows about (Ready for changes' fixes); undone by the function returned. */
+/** Adds work only its own module knows about (the review's feedback fixes); undone by the function returned. */
 export function register(what: () => string | null): () => void {
   others.add(what);
   return () => others.delete(what);
@@ -127,7 +127,7 @@ const WORDS: Record<jobs.Kind, string> = {
   case: "a footage import",
   full: "a share's full-quality file",
   share: "a share",
-  fix: "a Ready for changes fix",
+  fix: "a feedback fix",
   turn: "an agent turn",
   idea: "Claude on an idea",
   thumbnail: "Claude on a thumbnail",

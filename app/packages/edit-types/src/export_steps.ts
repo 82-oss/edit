@@ -20,6 +20,10 @@ export interface ExportStep {
   left_s: number | null;
   /** The current step's wait, in a few words ("waiting for the encoder"). */
   note?: string;
+  /** A done step's length (seconds), when its start and end were both seen here; absent otherwise (never guessed). */
+  took_s?: number;
+  /** The current step's time so far (seconds), when its start was seen here: what's said for a step with no percent. */
+  elapsed_s?: number;
 }
 
 export interface ExportSteps {
