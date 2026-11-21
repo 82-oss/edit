@@ -203,6 +203,13 @@ Sphe's shape for it: the agent sets an add-on up, and picks **when it runs**:
 
 Every one of those moments already exists in the code as a fixed hook for one kind: the checks and automatic passes after each plan (`edit_plan.ts`, `edit_tools.ts`), the passes after a turn (`hq_ears.ts`, `house_words_pass.ts`), the research turn after an import (`script.ts`), the removal's background line, and the shape forced at New project (`apps/web/src/components/Home.tsx`). The work is to make them things a channel holds, by name, with a trigger, instead of branches on a style.
 
+Two rules he set the same day:
+
+- **An add-on at the end of a turn wakes the agent by itself, and no prompt is ever shown.** It runs in the background with the waiting line subtitle removal has (`apps/web/src/components/RemovalRow.tsx`); when it is done the line goes, the agent works, and its answer is all the chat shows. This is how removal already wakes the agent. It is the one exception to "only the team prompts a V2 agent" (Nov 13).
+- **A channel a person has been given is all they need** to work on it: no bodycam or interrogation permission beside it (`apps/server/src/kinds.ts`, `routes.ts` and `writer_handoff.ts` ask for one today).
+
+The design, from the code: `~/.cache/edit-addons/design.md` on mandalorian (17 built-in add-ons, kept in V2's library beside lessons and effects, twelve slices).
+
 Order proposed: first the built-in ones, switched on per channel (what a courtroom, shorts, commentary or horror channel needs is then a list of add-ons, not a kind welded into Edit); then add-ons the agent writes that only report (checks); last, add-ons the agent writes that change the edit, which need a sandbox and an undo first.
 
 ## For Sphe to decide
