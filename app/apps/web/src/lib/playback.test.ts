@@ -6,7 +6,19 @@ const engine = vi.hoisted(() => ({
   resize: vi.fn(), render: vi.fn(), uploadFrame: vi.fn(), isLost: vi.fn(() => false), sections: vi.fn(() => "null"), setPeaks: vi.fn(), clearPeaks: vi.fn(),
   sources: vi.fn((_frame: number) => "[]"),
 }));
-vi.mock("../engine/pkg/edit_wasm", () => ({ default: vi.fn(), createEngine: vi.fn(async () => engine) }));
+// The GPU-free rules the page reads in Edit.app's window: the engine's own calls, so a test sees what either took.
+const rules = vi.hoisted(() => ({ made: 0 }));
+vi.mock("../engine/pkg/edit_wasm", () => ({
+  default: vi.fn(),
+  createEngine: vi.fn(async () => engine),
+  Rules: class {
+    constructor() { rules.made++; }
+    setProject(json: string) { return engine.setProject(json); }
+    applyPatch(json: string) { return engine.applyPatch(json); }
+    sections() { return engine.sections(); }
+    free() {}
+  },
+}));
 const nativeApi = vi.hoisted(() => ({ nativeSources: vi.fn(async () => ({ cache: "/cache", sources: { m1: "/video.mp4" } })),
   // What's here (playback_ready.ts): nothing said unless a test says (a play never waits on it).
   playbackReady: vi.fn(async () => ({ ready: null as [number, number][] | null })), warmPlayback: vi.fn(async () => ({ ok: true })) }));
@@ -613,6 +625,8 @@ describe("preview seeks and lifetime", () => {
     const invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
       calls.push([command, args]);
       const refused = refuse(command);
+      // A window that doesn't answer at all (a read stuck in it).
+      if (refused === "hang") return new Promise(() => {});
       if (refused !== null) throw refused;
       if (command === "preview_open") return true;
       if (command === "preview_project" || command === "preview_patch") return args.revision;
@@ -1154,13 +1168,83 @@ describe("preview seeks and lifetime", () => {
     for (let i = 0; i < 20 && !calls.some(([name]) => name === "preview_open"); i++) await settle();
     preview.seek(10); preview.play();
     expect(preview.native).toBe(false);
-    expect(playhead.playing).toBe(true);
+    // Kept, on a spinner, for the window's player: the page's own never starts in the window (the owner, Nov 21).
+    expect(playhead.playing).toBe(false);
+    expect(preview.buffering).toBe(true);
     opened(true); await attached; await settle(); draw(); await settle(); await settle();
     expect(preview.native).toBe(true);
     expect(calls.filter(([name]) => name === "preview_play")).toHaveLength(1);
     // Only once the window has the edit: before it, the window refuses the play ("no edit to play yet").
     expect(calls.findIndex(([name]) => name === "preview_play")).toBeGreaterThan(calls.findIndex(([name]) => name === "preview_project"));
     expect(playhead.playing).toBe(true);
+  });
+
+  it("in Edit.app's window the page builds no compositor and decodes nothing: the window's player draws the first frame, stills, scrubs and plays (the owner, Nov 21)", async () => {
+    const { createEngine } = await import("../engine/pkg/edit_wasm");
+    const made = vi.mocked(createEngine).mock.calls.length;
+    decoding.requestVideo.mockClear(); decoding.requestAudio.mockClear(); decoding.requestRough.mockClear();
+    const sent = await inWindow();
+    expect(vi.mocked(createEngine).mock.calls.length).toBe(made);
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    // The edit's rules and sections still read, from the GPU-free part of the engine.
+    expect(engine.setProject).toHaveBeenCalled();
+    expect(engine.sections).toHaveBeenCalled();
+    preview.seek(10); draw(); await settle();
+    preview.seek(20); preview.seek(28); draw(); await settle();
+    preview.play(); await settle();
+    windowClock.frame = 40; draw(); await settle();
+    preview.pause(); await settle(); draw(); await settle();
+    expect(sent("preview_frame").length).toBeGreaterThan(0);
+    expect(sent("preview_play")).toHaveLength(1);
+    expect(decoding.requestVideo).not.toHaveBeenCalled();
+    expect(decoding.requestAudio).not.toHaveBeenCalled();
+    expect(decoding.requestRough).not.toHaveBeenCalled();
+  });
+
+  it("a Mac whose window can't open its player at all plays on the page's own player, the last resort, and says why", async () => {
+    const { createEngine } = await import("../engine/pkg/edit_wasm");
+    const made = vi.mocked(createEngine).mock.calls.length;
+    const invoke = vi.fn(async (command: string) => (command === "preview_open" ? false : null));
+    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = { invoke };
+    vi.stubGlobal("navigator", { gpu: {}, platform: "MacIntel" });
+    preview.detach();
+    await preview.attach({ width: 320, height: 180 } as HTMLCanvasElement);
+    expect(preview.native).toBe(false);
+    expect(preview.nativeHere).toBe(false);
+    expect(vi.mocked(createEngine).mock.calls.length).toBe(made + 1);
+    expect(preview.diagnostics.nativeFrames.off).toContain("refused open");
+    preview.setProject(fixture(), {}); draw();
+    expect(decoding.requestVideo).toHaveBeenCalled();
+  });
+
+  it("a play the window's player stops mid-way goes on there once it's opened again, with nothing else playing meanwhile", async () => {
+    let failing = false;
+    const sent = await inWindow((command) => (failing && command === "preview_position" ? "hang" : null));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const tick = async (ms = 0) => { await vi.advanceTimersByTimeAsync(ms); draw(); await vi.advanceTimersByTimeAsync(0); };
+    try {
+      preview.setProject(fixture(), {}); await tick(); await tick();
+      decoding.requestVideo.mockClear();
+      preview.seek(10); await tick();
+      preview.play(); await tick();
+      expect(sent("preview_play")).toHaveLength(1);
+      failing = true;
+      for (let n = 0; n < 40 && preview.native; n++) await tick(1000);
+      expect(preview.native).toBe(false);
+      expect(playhead.playing).toBe(false);
+      expect(preview.stopped).toBe("The player stopped. Edit is opening it again.");
+      // Space meanwhile is kept for the window, nothing plays here.
+      preview.play(); await tick();
+      expect(playhead.playing).toBe(false);
+      failing = false;
+      await tick(2000); await tick(); await tick();
+      expect(preview.native).toBe(true);
+      expect(preview.stopped).toBeNull();
+      await tick(); await tick();
+      expect(sent("preview_play")).toHaveLength(2);
+      expect(playhead.playing).toBe(true);
+      expect(decoding.requestVideo).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
   });
 
   it("in full screen while the window plays, the page plays on from where it was", async () => {
@@ -1242,7 +1326,7 @@ describe("preview seeks and lifetime", () => {
     nativeApi.nativeSources.mockResolvedValue({ cache: "/cache", sources: { m1: "/video.mp4" } } as never);
   });
 
-  it("a window that failed for a while is opened again after a short while, not left off until a reload; one that keeps failing is left off for the session", async () => {
+  it("a window that failed for a while is opened again after a short while, not left off until a reload; one that keeps failing is opened again for as long as it takes, the page never taking over", async () => {
     let failing = true;
     const sent = await inWindow((command) => (failing && command === "preview_frame" ? "ImageIO couldn't decode the image" : null));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -1264,17 +1348,20 @@ describe("preview seeks and lifetime", () => {
       expect(preview.diagnostics.nativeFrames.off).toBeNull();
       preview.seek(20); await tick();
       expect(sent("preview_frame").at(-1)!.frame).toBe(20);
-      // Failing each time it comes back (after 4, 8, 16 and 32 s now): left off for good once five comebacks failed.
+      // Failing each time it comes back (after 4, 8, 16, then every 30 s): opened again for as long as it takes, saying
+      // so meanwhile, and the page's own player never takes over in the window (the owner, Nov 21).
       failing = true;
-      for (let back = 1; back <= 4; back++) {
+      const before = vi.mocked((await import("../engine/pkg/edit_wasm")).createEngine).mock.calls.length;
+      for (let back = 1; back <= 6; back++) {
         preview.seek(30 + back); await failOut();
         expect(preview.native).toBe(false);
-        await tick(2000 * 2 ** back); await tick(); await tick();
+        expect(preview.stopped).toBe("The player stopped. Edit is opening it again.");
+        await tick(Math.min(30_000, 2000 * 2 ** back)); await tick(); await tick();
         expect(preview.native).toBe(true);
       }
-      preview.seek(50); await failOut();
-      expect(preview.native).toBe(false);
-      expect(preview.nativeHere).toBe(false);
+      expect(preview.nativeHere).toBe(true);
+      expect(vi.mocked((await import("../engine/pkg/edit_wasm")).createEngine).mock.calls.length).toBe(before);
+      expect(decoding.requestVideo).not.toHaveBeenCalled();
       const last = sent("preview_open").length;
       await tick(120_000);
       expect(sent("preview_open").length).toBe(last);
@@ -1343,7 +1430,7 @@ describe("preview seeks and lifetime", () => {
   it("in full screen the page draws, still as Edit.app's window's picture (no smooth-playback render asked for), and says why", async () => {
     await inWindow();
     preview.setProject(fixture(), {}); await settle(); draw(); await settle();
-    preview.setNativeAllowed(false);
+    preview.setNativeAllowed(false); await settle(); await settle();
     expect(preview.native).toBe(false);
     // Viewer asks for a render only when neither holds (it took a place in the export line and the encoder).
     expect(preview.nativeHere).toBe(true);

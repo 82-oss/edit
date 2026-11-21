@@ -1,6 +1,6 @@
 // Workers decode source frames and PCM. Web Audio owns the timeline clock;
 // the shared WASM compositor still evaluates and renders each complete scene.
-import init, { createEngine, type Engine } from "../engine/pkg/edit_wasm";
+import init, { createEngine, Rules, type Engine } from "../engine/pkg/edit_wasm";
 import { api, fetchRetrying, mediaHost, mediaUrl } from "./api";
 import { Decoder, videoTime } from "./decoder";
 import { note, recordTiming, tell } from "./diagnostics";
@@ -143,6 +143,10 @@ const NATIVE_HINT_GAP_MS = 100;
  */
 const NATIVE_BACK_MS = 2000;
 const NATIVE_COMEBACKS = 5;
+/** In the window, where nothing else takes over, the window's player is opened again at most this long apart, for as long as it takes. */
+const NATIVE_BACK_MOST_MS = 30_000;
+/** Over the picture while the window's player is being opened again (`leaveNative`). */
+const WINDOW_DOWN = "The player stopped. Edit is opening it again.";
 const NATIVE_STEADY_MS = 60_000;
 
 /**
@@ -207,6 +211,14 @@ function clipsOnly(patch: patches.Patch): boolean {
 
 class Preview {
   engine: Engine | null = null;
+  /**
+   * In Edit.app's window only the window's player draws and plays (the owner, Nov 21): the page builds no compositor
+   * and decodes nothing, and reads the edit's rules and sections from this GPU-free part of the engine. The page's
+   * own player is a last resort there, for a Mac whose window can't open its player at all (`nativeRefused`).
+   */
+  private rules: Rules | null = null;
+  /** A play asked for while the window's player was opening or opening again: it plays there once it's open. */
+  private playWhenOpen = false;
   /**
    * Edit.app's window draws the picture (lib/nativePreview.ts): the page's
    * engine still reads the edit (its sections) but draws nothing, and nothing
@@ -753,7 +765,7 @@ class Preview {
    */
   setSmooth(url: string | null) {
     // The window draws the edit live, at the screen's rate: no render to play.
-    if (this.native) url = null;
+    if (this.native || this.rules !== null) url = null;
     if (url === this.smooth) return;
     this.smooth = url;
     this.stream?.close();
@@ -918,6 +930,14 @@ class Preview {
     this.canvas = canvas;
     this.error = null;
     const generation = ++this.generation;
+    if (this.windowDraws()) {
+      await this.attachWindow(generation);
+      if (generation !== this.generation || this.native || !this.nativeRefused) return;
+      // The window can't open its player on this Mac at all: the page's own player is the last resort (said in the log
+      // and the report's `native off`), never the way after a passing failure (`leaveNative`).
+    }
+    this.rules?.free();
+    this.rules = null;
     if (!("gpu" in navigator)) {
       this.error =
         location.hostname === "localhost" || location.protocol === "https:"
@@ -967,6 +987,44 @@ class Preview {
     }
   }
 
+  /** In Edit.app's window, where only the window's player draws (`rules`), unless it can't open one here at all or full screen is the page's. */
+  private windowDraws(): boolean {
+    return nativeAvailable() && this.nativeAllowed && !this.nativeRefused;
+  }
+
+  /** The page's side in the window: the edit's rules (no GPU, no decoder), then the window's player opened. */
+  private async attachWindow(generation: number) {
+    this.attaching = true;
+    this.setBuffering(true);
+    try {
+      wasmReady ??= init();
+      await wasmReady;
+      if (generation !== this.generation) return;
+      this.retire();
+      this.rules?.free();
+      this.rules = new Rules();
+      this.engineStale = true;
+      this.syncEngine();
+      await this.openNative(generation);
+      if (generation !== this.generation) return;
+      this.setBuffering(false);
+      this.notify();
+      this.invalidate();
+    } catch (error) {
+      if (generation !== this.generation) return;
+      this.error = `Preview failed to start: ${error}`; note("error", "preview", this.error);
+      this.setBuffering(false);
+      this.notify();
+    } finally {
+      if (generation === this.generation) this.attaching = false;
+    }
+  }
+
+  /** The window's player is down in the window (failed, being opened again): nothing else draws or plays meanwhile. */
+  private windowDown(): boolean {
+    return this.rules !== null && !this.native;
+  }
+
   /**
    * The page is visible again. The browser may have dropped the GPU device
    * (or the canvas contents) while it was hidden, so redraw, which rebuilds
@@ -974,7 +1032,7 @@ class Preview {
    */
   wake() {
     this.renderedFrame = null;
-    if (this.canvas && !this.engine && !this.attaching) void this.attach(this.canvas);
+    if (this.canvas && !this.engine && !this.rules && !this.attaching) void this.attach(this.canvas);
     else this.invalidate();
   }
 
@@ -1009,7 +1067,10 @@ class Preview {
       recordTiming("preview: native", 0);
       // A new window plays at 1×: told the speed now, the sound it makes ready at rest is at that speed, so the first play starts at once.
       if (this.speed !== 1) void this.sendSpeed();
-      if (playing) this.play();
+      if (this.stopped === WINDOW_DOWN) this.clearStopped();
+      const waiting = this.playWhenOpen;
+      this.playWhenOpen = false;
+      if (playing || waiting) this.play();
     } catch (error) {
       this.nativeRefused = true;
       // Where the page was and what it was, for a refusal by the window's permissions (Nov 16: one on the M4 that a
@@ -1052,7 +1113,17 @@ class Preview {
     const playing = playhead.playing;
     if (playing) this.pause();
     this.native = false;
-    if (refuse !== null) {
+    if (refuse !== null && this.rules !== null) {
+      // In the window nothing takes over: it says so over the picture and the window's player is opened again by
+      // itself, a play under way going on there once it's back (the owner, Nov 21: no quiet switch to the page's player).
+      this.nativeOff(refuse.startsWith("the window refused the edit") ? "refused edit" : "failed", `the window's own preview stopped (${refuse}): opening it again`);
+      if (performance.now() - this.nativeOpenedAt >= NATIVE_STEADY_MS) this.nativeLeft = 0;
+      this.nativeLeft++;
+      this.nativeAgainIn(Math.min(NATIVE_BACK_MOST_MS, NATIVE_BACK_MS * 2 ** (this.nativeLeft - 1)));
+      this.stopped = WINDOW_DOWN;
+      this.playWhenOpen ||= playing && resume;
+      resume = false;
+    } else if (refuse !== null) {
       this.nativeOff(refuse.startsWith("the window refused the edit") ? "refused edit" : "failed", `the window's own preview stopped (${refuse}): the page draws it`);
       // A passing failure (a file read as the wrong kind while an effect's render landed): the window is
       // opened again in a while, and only one that keeps failing is left off for the session.
@@ -1078,7 +1149,7 @@ class Preview {
     const generation = this.generation;
     this.nativeBack = setTimeout(() => {
       this.nativeBack = null;
-      if (generation !== this.generation || this.native || this.nativeRefused || !this.engine) return;
+      if (generation !== this.generation || this.native || this.nativeRefused || (!this.engine && !this.rules)) return;
       if (playhead.playing) { this.nativeAgainIn(1000); return; }
       recordTiming("preview: native again", 0);
       void this.openNative(generation).then(() => { this.notify(); this.invalidate(); });
@@ -1091,8 +1162,13 @@ class Preview {
     this.nativeAllowed = allowed;
     if (!allowed) {
       if (this.native) this.nativeOff("full screen", null);
+      // The page draws while it's full screen: its player, started for it where the window had been the only one.
+      if (this.rules !== null && this.engine === null && this.canvas !== null) {
+        void this.attach(this.canvas).then(() => this.leaveNative(null));
+        return;
+      }
       this.leaveNative(null);
-    } else if (this.engine) void this.openNative(this.generation).then(() => { this.notify(); this.invalidate(); });
+    } else if (this.engine || this.rules) void this.openNative(this.generation).then(() => { this.notify(); this.invalidate(); });
   }
 
   /** The window's sources for this project, asked again when its media or their versions change. */
@@ -1508,7 +1584,7 @@ class Preview {
    * never a black frame: a preview built before people's white bystanders
    * were allowed showed Mom Leaves 5 Kids as black from start to end.
    */
-  private sendProject(engine: Engine, project: Project) {
+  private sendProject(engine: Pick<Engine, "setProject" | "applyPatch">, project: Project) {
     const has = this.engineHas;
     if (has !== null && has.id === project.id && has !== project) {
       // Only what changed, when it's clips: the whole edit parsed again took 63 ms a move in Chrome (Nov 8).
@@ -1601,6 +1677,7 @@ class Preview {
 
   detach() {
     clearTimeout(this.readyTimer);
+    this.playWhenOpen = false;
     this.endHold();
     this.leaveNative(null, false);
     this.nativeKey = "";
@@ -1617,6 +1694,8 @@ class Preview {
     this.queued = 0;
     clearTimeout(this.settleTimer);
     this.retire();
+    this.rules?.free();
+    this.rules = null;
     this.decoder.dispose();
     this.pendingScenes.clear();
   }
@@ -1789,10 +1868,11 @@ class Preview {
    * it stale; this runs at most once per frame, before anything reads the engine.
    */
   private syncEngine() {
-    if (!this.engineStale || !this.engine || !this.project) return;
+    if (!this.engineStale || (!this.engine && !this.rules) || !this.project) return;
     this.engineStale = false;
     const project = this.project;
-    this.use((engine) => this.sendProject(engine, project));
+    if (this.engine) this.use((engine) => this.sendProject(engine, project));
+    else if (this.rules) this.sendProject(this.rules, project);
     this.readSections();
     this.notify();
   }
@@ -1817,7 +1897,7 @@ class Preview {
 
   private readSections() {
     const before = JSON.stringify(this.sections);
-    try { this.sections = JSON.parse(this.use((engine) => engine.sections()) ?? "null"); }
+    try { this.sections = JSON.parse((this.engine ? this.use((engine) => engine.sections()) : this.rules?.sections()) ?? "null"); }
     catch { this.sections = null; }
     // Told when they change: the progress bar splits at them.
     if (JSON.stringify(this.sections) !== before) this.notify();
@@ -1912,6 +1992,12 @@ class Preview {
 
   play() {
     if (!this.project || playhead.playing || this.duration <= 0) return;
+    // The window's player opening (a cold open) or opening again: the press plays there once it's open.
+    if (this.windowDown()) {
+      this.playWhenOpen = true;
+      this.setBuffering(true, true);
+      return;
+    }
     this.clearStopped();
     // Stopped at a range's end: Space carries on with the rest, the range gone.
     if (this.range !== null && playhead.frame >= this.range.end) this.clearRange();
@@ -2102,6 +2188,7 @@ class Preview {
 
   pause() {
     this.remember();
+    if (this.playWhenOpen) { this.playWhenOpen = false; if (!playhead.playing) this.setBuffering(false); }
     this.endHold();
     this.shortSince = undefined;
     // A Play kept while a frame was tried again, let go: its spinner with it.
