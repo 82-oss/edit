@@ -258,6 +258,9 @@ async function remember(args: Record<string, unknown>, place: Place): Promise<st
   // Its group as it is now, not as it was when the turn began (a group made since: kept for it).
   await channels.refresh();
   const skill = nameArg(args.skill, "skill");
+  // A channel's add-ons are kept by their own tool, never written over by hand.
+  const reserved = v2cloud.reservedName(skill, place.lane);
+  if (reserved !== null) throw new Error(reserved);
   if (args.change === undefined && (typeof args.text !== "string" || args.text.trim() === "")) throw new Error("text is required (or change, for part of a lesson that's there)");
   if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");
   const note = typeof args.note === "string" && args.note.trim() !== "" ? args.note.trim() : undefined;
@@ -315,17 +318,21 @@ function named(all: channels.Channel[], given: string): channels.Channel {
 export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Record<string, unknown>): Promise<string> {
   const word = WORD[lane];
   const kindWord = (kind: string) => (lane === "edit" && kind === "template" ? "effect" : (KIND_WORD[kind as (typeof STYLE_KINDS)[number]] ?? kind));
+  // A channel's add-ons (addons.ts) are no lesson: never listed or counted as one, and brought with the whole style
+  // (a channel started from another runs what it ran), said as what they are.
+  const shown = (style: v2cloud.Item[]) => style.filter((one) => !(one.kind === "skill" && v2cloud.isAddon(one.name)));
+  const itemWords = (item: v2cloud.Item) => (item.kind === "skill" && v2cloud.isAddon(item.name) ? `add-on ${item.name.slice(v2cloud.ADDON_PREFIX.length)}` : `${kindWord(item.kind)} ${item.name}`);
   const others = (await channels.list()).filter((one) => one.key !== mine);
   if (typeof args.channel !== "string" || args.channel.trim() === "") {
     if (others.length === 0) return "There are no other channels.";
-    const counts = await Promise.all(others.map(async (one) => (await styleOf(one.key, lane)).length));
+    const counts = await Promise.all(others.map(async (one) => shown(await styleOf(one.key, lane)).length));
     return others.map((one, at) => `- ${one.title}${one.handle ? ` (@${one.handle})` : ""}: ${counts[at] === 0 ? "nothing taught yet" : `${counts[at]} ${lane === "edit" ? "lessons, effects and sounds" : lane === "thumbnails" ? "lessons and graphics" : "lessons"}`}${one.lanes[lane] ? `. Its ${word} style: ${one.lanes[lane]}` : ""}`).join("\n") + "\nother_channels with channel shows one's; bring copies a piece of it here.";
   }
   const from = named(others, args.channel);
   const style = await styleOf(from.key, lane);
   if (args.bring === undefined) {
-    if (style.length === 0) return `${from.title}'s ${word} style has nothing taught yet.`;
-    return `${from.title}'s ${word} style${from.lanes[lane] ? ` ("${from.lanes[lane]}")` : ""}:\n${style.map((one) => `- ${kindWord(one.kind)} ${one.name}${one.category ? ` [${one.category}]` : ""}: ${one.note ?? ""}`).join("\n")}\nbring: a name, or "all" for the whole style as this channel's base.`;
+    if (shown(style).length === 0) return `${from.title}'s ${word} style has nothing taught yet.`;
+    return `${from.title}'s ${word} style${from.lanes[lane] ? ` ("${from.lanes[lane]}")` : ""}:\n${shown(style).map((one) => `- ${kindWord(one.kind)} ${one.name}${one.category ? ` [${one.category}]` : ""}: ${one.note ?? ""}`).join("\n")}\nbring: a name, or "all" for the whole style as this channel's base.`;
   }
   if (typeof args.bring !== "string" || args.bring.trim() === "") throw new Error(`bring is a name from that channel's style, or "all"`);
   const wanted = args.bring.trim() === "all" ? style : style.filter((one) => one.name === args.bring);
@@ -349,7 +356,8 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
       kept.push(item.name);
       continue;
     }
-    const text = item.kind === "skill" ? (await v2cloud.version(item.key))?.version.text : undefined;
+    // An add-on is never checked against the lessons: it's no lesson.
+    const text = item.kind === "skill" && !v2cloud.isAddon(item.name) ? (await v2cloud.version(item.key))?.version.text : undefined;
     if (typeof text === "string" && !settled) {
       const found = await teachingConflicts.conflicts(item.name, text, here);
       if (found === null) unchecked.push(item.name);
@@ -359,7 +367,7 @@ export async function otherChannels(mine: string, lane: v2cloud.Lane, args: Reco
       }
     }
     if (await v2cloud.copyItem(item, v2cloud.ownKey(item.kind as (typeof STYLE_KINDS)[number], place, item.name), `brought from ${from.title}'s ${word} style`)) {
-      brought.push(`${kindWord(item.kind)} ${item.name}`);
+      brought.push(itemWords(item));
       if (typeof text === "string") here.push({ name: item.name, text, ...(item.note ? { note: item.note } : {}) });
     }
   }

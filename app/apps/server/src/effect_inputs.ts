@@ -23,7 +23,7 @@ import { footageFraming, toProject, toSource } from "./captions.ts";
 import * as diag from "./diag.ts";
 import * as effects from "./effects.ts";
 import { writeAtomic } from "./files.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import * as missingMedia from "./missing_media.ts";
 import type { Media, Project } from "./model.ts";
 import { native, planOffThread } from "./native/index.ts";

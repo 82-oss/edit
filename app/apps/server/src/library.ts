@@ -29,7 +29,7 @@ import * as diag from "./diag.ts";
 import { google, googleProto, useGateway } from "./endpoints.ts";
 import { catchBugsAsync } from "./guard.ts";
 import { importPaths } from "./import.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import * as relay from "./relay.ts";
 import type { AudioClip, Clip, Project } from "./model.ts";
 import { native } from "./native/index.ts";

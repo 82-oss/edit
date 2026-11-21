@@ -65,7 +65,7 @@ import * as fs from "node:fs";
 import type { App } from "./app.ts";
 import * as cloud from "./cloud.ts";
 import { playbackKey, playbackPath } from "./cloud_playback.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import * as diag from "./diag.ts";
 import * as thread from "./thread.ts";
 import * as drive from "./drive.ts";

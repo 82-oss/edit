@@ -11,7 +11,7 @@
 
 import * as addons from "./addons.ts";
 import * as diag from "./diag.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import type { Clip, Media, Project } from "./model.ts";
 import { native, isReal } from "./native/index.ts";
 import { clipEnd, fps as fpsOf, mediaOf, reusedMedia, trackOf } from "./project.ts";

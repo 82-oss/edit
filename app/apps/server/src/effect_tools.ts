@@ -484,6 +484,9 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
   teacherOnly("Remembering it for this channel's agents");
   const skill = libraryName(args.skill, "skill");
   if (skill === v2cloud.GLOBAL) throw new Error("the global skill is Edit's own: give your own a name");
+  // A channel's add-ons and its removal are kept by their own tools, never written over by hand.
+  const reserved = v2cloud.reservedName(skill, "edit");
+  if (reserved !== null) throw new Error(reserved);
   if (args.change === undefined && (typeof args.text !== "string" || args.text.trim() === "")) throw new Error("text is required (or change, for part of a skill that's there)");
   if (typeof args.reason !== "string" || args.reason.trim() === "") throw new Error("reason is required: what the person said");
   const note = typeof args.note === "string" && args.note.trim() !== "" ? args.note.trim() : undefined;

@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import type { App } from "./app.ts";
 import * as diag from "./diag.ts";
 import { planExport, revOf } from "./exports.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import type { ExportOptions } from "./model.ts";
 import { native } from "./native/index.ts";
 import { registerTool, text } from "./mcp/registry.ts";

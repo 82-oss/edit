@@ -42,6 +42,7 @@
 //   DELETE /api/groups/{key}/channels/{channel}   taken out, with a copy of the group's teaching
 //   POST   /api/groups/{key}/move       {item}: a channel's own item moved into the group
 
+import * as addons from "./addons.ts";
 import { HOUSE_LOOK, LOOK_RANGE, markOf, type WatermarkLook } from "@edit/types/watermark";
 
 import type { App } from "./app.ts";
@@ -460,12 +461,17 @@ export interface Taught {
   category: string | null;
 }
 
-/** What each of a channel's (or a group's) lanes has been taught: its own lessons, effects and sounds, each kind read once. */
+/**
+ * What each of a channel's (or a group's) lanes has been taught: its own lessons, effects and sounds, each kind read
+ * once. Never its add-ons (`addon-<name>` skills, addons.ts): they're Edit's code switched on, not teaching, so the
+ * page neither lists nor counts them as lessons.
+ */
 export async function taughtOf(channel: string): Promise<Record<Lane, Taught[]>> {
   const kinds = ["skill", "template", "sound"] as const;
   const all = (await Promise.all(kinds.map((kind) => v2cloud.list(kind)))).flat();
   const out = Object.fromEntries(LANES.map((lane) => [lane, [] as Taught[]])) as Record<Lane, Taught[]>;
   for (const item of all) {
+    if (item.kind === "skill" && v2cloud.isAddon(item.name)) continue;
     const place = v2cloud.laneOf(v2cloud.ownPlaceOf(item.key) ?? "");
     if (place === null || place.channel !== channel) continue;
     out[place.lane].push({ kind: item.kind as Taught["kind"], key: item.key, name: item.name, note: item.note, category: item.category });
@@ -734,3 +740,13 @@ function changed<T>(given?: T): T | undefined {
   v2cloud.forgetSkills();
   return given;
 }
+
+// addons.ts reads the channels through these, handed over here instead of imported there (its `from`: a ring of imports otherwise).
+Object.assign(addons.from, {
+  placesOf,
+  narrationStyle: (channel: string) => {
+    const found = channelOf({ channel });
+    return found === null ? "bodycam" : styleOf(found);
+  },
+  refreshChannels: refresh,
+});

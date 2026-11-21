@@ -134,11 +134,10 @@ export function start(app: App): void {
         began.delete(root);
         const now = app.store.get(root);
         if (now === null || (from !== undefined && now.rev === from)) return;
-        // The channel's add-ons (its extra muted words) read fresh first, bounded; one that fails answers with the
-        // edit's style's, as before, and the pass runs either way.
-        if (typeof now.project.channel === "string" && now.project.channel !== "") {
-          await addons.ready().catch((error: unknown) => diag.warn("house words", `${root}: the channel's add-ons weren't read, so its style's are used: ${diag.messageOf(error)}`));
-        }
+        // The channel's add-ons (its extra muted words) read fresh first, a few seconds at most, so a hung cloud
+        // never holds the passes queued behind (`addons.ready`, a no-op without a channel; it never throws); one not
+        // read in time answers with what was read before, its style's own until something is, and the pass runs.
+        await addons.ready(now.project, root);
         const passed = await pass(app, root);
         if (passed === null) return;
         const said = line(passed);

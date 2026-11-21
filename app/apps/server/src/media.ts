@@ -10,6 +10,7 @@
 // separate AAC file, so decoding it never downloads the picture.
 
 import * as fs from "node:fs";
+import { Semaphore } from "./semaphore.ts";
 
 import * as diag from "./diag.ts";
 import { playbackKey } from "./cloud_playback.ts";
@@ -31,39 +32,7 @@ import * as voices from "./voices.ts";
 
 export type { Probe } from "./model.ts";
 
-/** A counting semaphore for async work . */
-export class Semaphore {
-  private waiting: (() => void)[] = [];
-
-  constructor(private permits: number) {}
-
-  /** `urgent`: someone is waiting on it now (a viewer's read), so it goes ahead of the background work in line. */
-  async acquire(urgent = false): Promise<() => void> {
-    if (this.permits > 0) {
-      this.permits -= 1;
-    } else {
-      await new Promise<void>((resolve) => (urgent ? this.waiting.unshift(resolve) : this.waiting.push(resolve)));
-    }
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      const next = this.waiting.shift();
-      if (next !== undefined) next();
-      else this.permits += 1;
-    };
-  }
-
-  /** Runs `work` holding a permit (`urgent`: ahead of the background work in line). */
-  async with<T>(work: () => Promise<T>, urgent = false): Promise<T> {
-    const release = await this.acquire(urgent);
-    try {
-      return await work();
-    } finally {
-      release();
-    }
-  }
-}
+export { Semaphore } from "./semaphore.ts";
 
 /**
  * Shared across proxies, thumbnails and optional optical flow. Independent

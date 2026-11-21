@@ -16,7 +16,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 
 import * as diag from "./diag.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import * as media from "./media.ts";
 import { native } from "./native/index.ts";
 import { join } from "./paths.ts";

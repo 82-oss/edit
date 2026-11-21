@@ -16,11 +16,53 @@
 // gave it when it was made (bodycam's, or interrogation's when the team
 // records it: `channels.ts` `styleOf`) or a moved V1 edit's own; then what's
 // set on the channel or its group; then only those that fit its frame
-// (`form`). Nothing is set anywhere yet: reading a channel's add-ons from its
-// library is `itemsAt`'s.
+// (`form`).
+//
+// What's set on a channel is kept in V2's library beside its lessons, as
+// removal is (removal_lesson.ts): a skill item named `addon-<name>` at the
+// channel's lane's place, or its group's (`<channel>--edit`, `<group>--edit`;
+// `--script` for the script lane's), its text a line the person can read and
+// then its data:
+//
+//     Analog horror is on here: Tall videos shown whole over a blurred copy …
+//     <addon>{"v":1,"on":true,"settings":{}}</addon>
+//
+// `on: false` switches off its style's default, or its group's for this
+// channel alone; `settings` are only those set, each over its default. One
+// item per add-on, so a channel's own wins over its group's by name and it can
+// differ from its group in one add-on alone. They're read with the lessons
+// (v2_cloud.ts `refreshSkills`) and never shown, kept or counted as lessons.
 
-import * as channels from "./channels.ts";
+import type * as channelsModule from "./channels.ts";
+import * as diag from "./diag.ts";
 import type { Project, Style } from "./model.ts";
+import type * as v2cloudModule from "./v2_cloud.ts";
+
+/** What an add-on's item in the library is named: `addon-<name>` (v2_cloud.ts keeps these apart from lessons). */
+export const ADDON_PREFIX = "addon-";
+
+/**
+ * What this module reads of the channels and of the library, handed to it by those modules as they load
+ * (channels.ts, v2_cloud.ts) instead of imported here. The places that ask `has` are small files the whole server
+ * leans on (framing.ts, onscreen.ts, people.ts, footage_levels.ts: media.ts imports the first), and importing
+ * channels.ts from here closed a ring of imports through them (media -> framing -> addons -> channels -> ... ->
+ * cloud_media -> media): a file in the ring that used another's export as it loaded met it before it existed
+ * whenever the ring was entered at the wrong file (Nov 21: "Cannot access 'mediaHooks' before initialization" on
+ * importing channels.ts first; the server's own start happened to enter at a safe one). Until they load, no channel
+ * is known and nothing is set, which is every project running its style's own list.
+ */
+export const from = {
+  placesOf: ((_channel, _lane) => []) as typeof channelsModule.placesOf,
+  /** A channel's narration's style, as a project made in it now gets it; bodycam until it's read. */
+  narrationStyle: (_channel: string): "bodycam" | "interrogation" => "bodycam",
+  refreshChannels: (): Promise<unknown> => Promise.resolve(),
+  addonItems: (() => []) as typeof v2cloudModule.addonItems,
+  skillKey: ((name) => name) as typeof v2cloudModule.skillKey,
+  ownPlaceOf: ((_key) => null) as typeof v2cloudModule.ownPlaceOf,
+  laneOf: ((_place) => null) as typeof v2cloudModule.laneOf,
+  enabled: (): boolean => false,
+  refreshSkills: (): Promise<unknown> => Promise.resolve(),
+};
 
 export type Name =
   | "bodycam-intro"
@@ -259,25 +301,133 @@ export interface Effective {
 }
 
 /** What's set on a channel's place for an add-on. */
-interface Item {
+export interface Item {
   on: boolean;
+  /** Only those set; each over its default. */
   settings: Record<string, unknown>;
   from: "group" | "channel";
+  /** Its item in the library, and its newest version when read (a save over a newer one is refused: `v2cloud.saveSkill`'s `latest`). */
+  key: string;
+  latest?: number;
+}
+
+/** An add-on's item's name in the library. */
+export const skillOf = (name: Name): string => `${ADDON_PREFIX}${name}`;
+
+/** Its note in the library: what anyone listing it reads. */
+export const noteOf = (name: Name): string => `Add-on (Edit's code): ${CATALOGUE[name].description}`;
+
+const OPEN = "<addon>";
+const CLOSE = "</addon>";
+
+/**
+ * `given` as an add-on's settings, or why not, in a line naming what it takes:
+ * each one it takes, of the kind it takes (`Setting.check`).
+ */
+export function checked(name: Name, given: unknown): { settings: Record<string, unknown> } | { error: string } {
+  const own = CATALOGUE[name].settings;
+  const takes = Object.keys(own);
+  const says = takes.length === 0 ? `${name} takes no settings` : `${name} takes ${takes.map((key) => `${key}: ${own[key]!.words}`).join("; ")}`;
+  if (given === undefined || given === null) return { settings: {} };
+  if (typeof given !== "object" || Array.isArray(given)) return { error: `settings is an object: ${says}` };
+  for (const [key, value] of Object.entries(given)) {
+    const one = own[key];
+    if (one === undefined) return { error: `${key} isn't one of its settings: ${says}` };
+    if (!one.check(value)) return { error: `${key} is ${one.words}, not ${JSON.stringify(value)}` };
+  }
+  return { settings: { ...(given as Record<string, unknown>) } };
+}
+
+/** The line the person reads: whether it's on here, what it does, and what's set. */
+export function summary(name: Name, on: boolean, settings: Record<string, unknown>): string {
+  const own = CATALOGUE[name];
+  const set = Object.entries(settings).map(([key, value]) => `${key} ${Array.isArray(value) ? value.join(", ") || "none" : String(value)}`);
+  return `${own.title} is ${on ? "on" : "off"} here${set.length > 0 ? ` (${set.join("; ")})` : ""}: ${own.description}`;
+}
+
+/** An add-on's item's text as kept: its line, then its data. `settings` as `checked` gave them. */
+export function write(name: Name, on: boolean, settings: Record<string, unknown>): string {
+  return `${summary(name, on, settings)}\n${OPEN}${JSON.stringify({ v: 1, on, settings })}${CLOSE}`;
+}
+
+/** An item's text read: what it sets, or why it's read as nothing. */
+export function parse(name: Name, text: string): { on: boolean; settings: Record<string, unknown> } | { error: string } {
+  const start = text.indexOf(OPEN);
+  const end = text.indexOf(CLOSE, start + OPEN.length);
+  if (start < 0 || end < 0) return { error: `no ${OPEN}…${CLOSE} in it` };
+  let given: unknown;
+  try {
+    given = JSON.parse(text.slice(start + OPEN.length, end));
+  } catch (error) {
+    return { error: `its data isn't JSON (${diag.messageOf(error)})` };
+  }
+  if (typeof given !== "object" || given === null || Array.isArray(given)) return { error: "its data isn't an object" };
+  const data = given as { v?: unknown; on?: unknown; settings?: unknown };
+  if (data.v !== 1) return { error: `it's version ${JSON.stringify(data.v)} of an add-on, and this Edit reads 1` };
+  if (typeof data.on !== "boolean") return { error: "on isn't true or false" };
+  const settings = checked(name, data.settings);
+  if ("error" in settings) return settings;
+  return { on: data.on, settings: settings.settings };
+}
+
+/** The items as last read, each parsed once: by place, then name. Rebuilt only when the library's read again (a new array). */
+let index: { from: readonly v2cloudModule.Skill[]; at: Map<string, Map<Name, Omit<Item, "from">>> } = { from: [], at: new Map() };
+/** The items already said to be unreadable (by key and text), so each is said once. */
+const warned = new Set<string>();
+
+function indexed(): Map<string, Map<Name, Omit<Item, "from">>> {
+  const read = from.addonItems();
+  if (index.from === read) return index.at;
+  const at = new Map<string, Map<Name, Omit<Item, "from">>>();
+  for (const one of read) {
+    const key = one.key ?? from.skillKey(one.name);
+    const place = from.ownPlaceOf(key);
+    const lane = place === null ? null : from.laneOf(place);
+    const name = one.name.slice(ADDON_PREFIX.length) as Name;
+    const parsed: { error: string } | { on: boolean; settings: Record<string, unknown> } =
+      !(name in CATALOGUE) ? { error: "Edit has no add-on of that name" }
+      : place === null || lane === null ? { error: "it isn't kept at a channel's or a group's lane" }
+      : lane.lane !== CATALOGUE[name].lane ? { error: `it's the ${CATALOGUE[name].lane} lane's, kept in the ${lane.lane} lane` }
+      : parse(name, one.text);
+    if ("error" in parsed) {
+      const said = `${key}\n${one.text}`;
+      if (!warned.has(said)) diag.warn("addons", `${key} is read as nothing, so what it would set doesn't hold: ${parsed.error}`);
+      warned.add(said);
+      continue;
+    }
+    if (!at.has(place!)) at.set(place!, new Map());
+    at.get(place!)!.set(name, { ...parsed, key, ...(one.latest !== undefined ? { latest: one.latest } : {}) });
+  }
+  index = { from: read, at };
+  return at;
 }
 
 /**
  * What's set for a channel's lane, by name, the channel's own over its
- * group's. None yet: they come from the channel's library (its places,
- * `channels.placesOf`), read from what's cached, never waited for here.
+ * group's (its places, `channels.placesOf`, nearest first). Sync, from what's
+ * cached: the library's last read and the channels' (for its group), never
+ * waited for here (`ready` is what waits, before a trigger outside a turn).
  */
-function itemsAt(_channel: string, _lane: BuiltIn["lane"]): Map<Name, Item> {
-  return new Map();
+export function itemsAt(channel: string, which: BuiltIn["lane"]): Map<Name, Item> {
+  const at = indexed();
+  const out = new Map<Name, Item>();
+  const places = from.placesOf(channel, which);
+  for (const [near, place] of places.entries()) {
+    for (const [name, item] of at.get(place) ?? []) {
+      if (!out.has(name)) out.set(name, { ...item, from: near === 0 ? "channel" : "group" });
+    }
+  }
+  return out;
+}
+
+/** What's set for one add-on of a channel (the channel's own, else its group's), or null: for the tool that sets them. */
+export function itemOf(channel: string, name: Name): Item | null {
+  return itemsAt(channel, CATALOGUE[name].lane).get(name) ?? null;
 }
 
 /** A channel's narration's style, as a project made in it now gets it (`channels.styleOf`); bodycam until it's read. */
 function narrationStyle(channel: string): "bodycam" | "interrogation" {
-  const found = channels.channelOf({ channel });
-  return found === null ? "bodycam" : channels.styleOf(found);
+  return from.narrationStyle(channel);
 }
 
 function defaults(name: Name, style: Style): Record<string, unknown> {
@@ -326,6 +476,19 @@ function holding(project: Of, name: Name): Effective | null {
 /** Whether a channel has set `short-form` itself: the one case where a project's frame says which add-ons are its. */
 const makesShorts = (channel: string): boolean => itemsAt(channel, "edit").get("short-form")?.on === true;
 
+/**
+ * The form a project made in a channel now takes, for New project: a Short on
+ * a channel whose `short-form` is "short", the form asked on one offering
+ * "both" (long unless a Short is asked), long anywhere else. Made once: a
+ * project already there keeps its frame.
+ */
+export function formMade(channel: string, asked?: "long" | "short"): "long" | "short" {
+  const set = itemsAt(channel, "edit").get("short-form");
+  if (set?.on !== true) return "long";
+  const forms = set.settings.forms ?? CATALOGUE["short-form"].settings.forms!.default;
+  return forms === "short" || asked === "short" ? "short" : "long";
+}
+
 /** Whether a project has an add-on: by its style without a channel, by its channel's with one. Sync, from what's cached. */
 export function has(project: Of, name: Name): boolean {
   return holding(project, name) !== null;
@@ -336,7 +499,39 @@ export function setting<N extends keyof Settings, K extends keyof Settings[N]>(p
   return holding(project, name)?.settings[key as string] as Settings[N][K] | undefined;
 }
 
-/** Before a trigger outside the agent's turn asks (a project made, an import, the turn's end): the channels read again when they're old, bounded. */
-export async function ready(): Promise<void> {
-  await channels.refresh();
+/**
+ * How long a trigger outside a turn waits for a channel's add-ons to be read
+ * (an import's research turn, the end-of-turn pass). What's cached is good
+ * enough: the read goes on behind and the next ask has it, and a turn's own
+ * start waits longer anyway (`v2cloud.SKILLS_WAIT_MS`). A healthy read of the
+ * channels and the library is well under a second; three seconds lets a slow
+ * line finish without letting a hung cloud hold the passes queued behind.
+ */
+export const READY_MS = 3_000;
+
+/**
+ * Before a trigger outside the agent's turn asks (a project made, an import,
+ * the turn's end): the channels and the library read again when they're old,
+ * waited on at most READY_MS, and only for a project with a channel (`project`
+ * left out: a channel's, as New project in one asks). Never throws: when the
+ * cloud can't be reached or doesn't answer in time, what was read before
+ * answers (its style's defaults when nothing was), with one line in the log.
+ */
+export async function ready(project?: Of | null, who = "a channel's project"): Promise<void> {
+  if (project !== undefined && (project === null || !hasChannel(project))) return;
+  if (!from.enabled()) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // Each read logs its own failure and keeps what it had (v2_cloud.ts, channels.ts).
+    const read = Promise.all([from.refreshSkills(), from.refreshChannels()]).then(
+      () => "read" as const,
+      () => "failed" as const,
+    );
+    const late = new Promise<"late">((resolve) => (timer = setTimeout(() => resolve("late"), READY_MS)));
+    if ((await Promise.race([read, late])) === "late") diag.warn("addons", `${who}: the channel's add-ons weren't read in ${READY_MS / 1000} s, so what was read before is used (its style's own until something is)`);
+  } catch (error) {
+    diag.warn("addons", `${who}: the channel's add-ons weren't read, so what was read before is used: ${diag.messageOf(error)}`);
+  } finally {
+    clearTimeout(timer);
+  }
 }

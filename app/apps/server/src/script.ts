@@ -3001,11 +3001,9 @@ async function followOn(app: App, id: string, inserting: string | null, recut: b
   const home = app.store.home;
   const now = app.store.get(id);
   const researched = seams.research.articles(home, id).length > 0 || seams.research.items(home, id).length > 0 || app.scripts.get(id)?.after?.some((line) => line.step === "research" && line.state === "done") === true;
-  // A channel's add-ons read fresh first, bounded, the read the research turn's own start waits on anyway (agent.ts);
-  // one that fails answers with the edit's style's, as before.
-  if (!recut && inserting === null && !researched && typeof now?.project.channel === "string" && now.project.channel !== "") {
-    await addons.ready().catch((error: unknown) => diag.warn("script", `${title}: the channel's add-ons weren't read, so its style's are used: ${diag.messageOf(error)}`));
-  }
+  // A channel's add-ons read fresh first, a few seconds at most (`addons.ready`, a no-op without a channel; it never
+  // throws); one not read in time answers with what was read before, its style's own until something is.
+  if (!recut && inserting === null && !researched && now !== null && now !== undefined) await addons.ready(now.project, title);
   if (!recut && inserting === null && !researched && (now === null || now === undefined || addons.has(now.project, "case-research"))) {
     try {
       await seams.agentPanel(app).send(id, RESEARCH, null, null);

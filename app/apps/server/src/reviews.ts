@@ -54,7 +54,7 @@ import { defaultExportPath } from "./server_seam.ts";
 import { clipEnd, fps as fpsOf, trackOf } from "./project.ts";
 import { lengthsOf, oddPieces, reviewCopyProblem } from "./review_check.ts";
 import { cachedTranscripts } from "./edit_tools.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import { native } from "./native/index.ts";
 import { onScreen } from "./review.ts";
 import { fixed, jsonForSerde } from "./rust.ts";

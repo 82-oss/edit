@@ -252,8 +252,11 @@ const wifiDropScript: Case = {
     }
     // What waits while the line is down (seen at any look), and when each goes again once it's back.
     const waited = new Set<string>();
+    // Not the share's export's archive: since Nov 21 it waits behind its share (exports.ts `BEHIND_SHARE`: the export
+    // goes up once, as the review's full-quality file), so it waits on the share, not on the line, and is crossed off
+    // when that file is up, however long the upload takes (the full run on 51bb82c5 counted it: 44 s, the share 25 s).
     const look = () => {
-      for (const row of rows(context)) if (row.state === "waiting") waited.add(row.key);
+      for (const row of rows(context)) if (row.state === "waiting" && row.step !== "waiting for its share's full-quality file") waited.add(row.key);
     };
     const looking = setInterval(look, 250);
     const uploadsBeside = rows(context).filter((row) => UPLOADS.has(row.kind) && live(row)).map((row) => row.key);

@@ -31,7 +31,7 @@ import * as fs from "node:fs";
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
 import * as fmp4 from "./fmp4.ts";
-import { Semaphore } from "./media.ts";
+import { Semaphore } from "./semaphore.ts";
 import { isFile, join, parent } from "./paths.ts";
 import * as storage from "./storage.ts";
 import * as tools from "./tools.ts";
