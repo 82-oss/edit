@@ -552,7 +552,15 @@ const uploadFailedThenUpdate: Case = {
     );
     const shared = cloud.published.at(-1);
     const objects = cloud.mock.cloud.objects as unknown as { pathOf(key: string): string; has(key: string): boolean };
-    const exportFile = exportsBefore.find((one) => one.whole);
+    // The export as it's listed now: its copy for the cloud may have gone up since the restart and, on a disk short of
+    // room, left this computer (the Mac's run, Nov 21: listed before the restart it had no cloud key yet, and check 7
+    // found no file to compare).
+    const exportFile = (await exportsOf(context, id)).find((one) => one.whole) ?? exportsBefore.find((one) => one.whole);
+    // And the review's full-quality file isn't tried on a file that's no longer here (the same run: twenty tries over
+    // an hour and a half on "No such file or directory", then given up with a line in the log).
+    await context.sleep(5000);
+    const lost = logSince(context, logAt, /full-quality file \(try \d+\).*(No such file|ENOENT)/);
+    context.check("the full-quality file isn't tried on a file that's gone", lost.length === 0, lost.length === 0 ? "no such try in Edit's log" : lost.slice(0, 2).map((one) => one.slice(0, 200)).join(" | "));
     if (shared !== undefined && exportFile !== undefined && objects.has(shared.key)) sameVideo(context, "the shared video and the export it had", fileOf(context, exportFile), objects.pathOf(shared.key));
   },
 };
