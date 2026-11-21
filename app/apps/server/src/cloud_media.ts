@@ -84,7 +84,7 @@ import { NoRoom } from "./failure.ts";
 import { isBug } from "./guard.ts";
 import * as jobs from "./jobs.ts";
 import * as steps from "./import_steps.ts";
-import { forgetKeyVerdict, mediaHooks, mediaKey } from "./media.ts";
+import { forgetKeyVerdict, keyIsThere, mediaHooks, mediaKey } from "./media.ts";
 import { Semaphore } from "./semaphore.ts";
 import * as finished from "./finished.ts";
 import * as wake from "./wake.ts";
@@ -981,6 +981,8 @@ async function runUpload(upload: Upload, progressed: () => void, moving: () => v
   }
   if (upload.proxy !== null && upload.local !== null) {
     await cloud.uploadFile(upload.local, upload.proxy, moving);
+    // There now, said without asking: a look at its status mid-upload isn't answered "not in the cloud" (media.ts).
+    keyIsThere(upload.proxy);
     await putRecord({ source: upload.source, proxyKey: upload.proxy, proxyReady: true });
     // The proxy stays here once it's up: it's this Mac's whole copy, what the
     // native player and the agent's renders read (local_previews.ts), and the
@@ -4185,6 +4187,10 @@ export async function wholeTranscript(source: string, target: string, scratch: s
 
 mediaHooks.wholeTranscript = (source, target) => wholeTranscript(source, target, parent(target) ?? ".");
 // A streamed proxy is ready only while its key is there (media.ts `keyVerdict`): a cloud without it (offline, signed out) can't say.
+mediaHooks.goingUp = (key) => {
+  for (const { upload } of uploading.values()) if (upload.proxy === key) return true;
+  return false;
+};
 mediaHooks.keyAnswers = async (key) => {
   if (!cloud.enabled()) throw new Error("the cloud is off");
   return (await cloud.head(key)) !== null;

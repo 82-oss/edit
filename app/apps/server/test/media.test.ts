@@ -375,3 +375,95 @@ test("a streamed proxy the cloud didn't have yet is playable once its upload lan
     cleanup();
   }
 });
+
+// Nov 21, a MacBook Air on main: a one-minute file just imported read "failed: Its proxy isn't in the cloud", with
+// Export offering its parts black, for a minute, and once for four (until a restart), its proxy up after 7 s. The
+// cloud was asked while the import's upload was still on its way, and an answer already at hand never took the
+// failure back.
+const streamed = (hex: string) => `http://127.0.0.1:7731/api/cloud/preview?key=${encodeURIComponent(`edit/proxies/sha256/${hex}.mp4`)}`;
+const VIDEO = { kind: "video", duration: 60, width: 1280, height: 720, fps: 30, has_audio: true } as never;
+
+test("a proxy on its way up from this computer is never called missing, and is there the moment its upload ends, unasked", async () => {
+  const { mediaHooks, keyIsThere } = await import("../src/media.ts");
+  const { store, cleanup } = fixtureHome("media-going-up");
+  const was = { answers: mediaHooks.keyAnswers, going: mediaHooks.goingUp };
+  const hex = "1b7767985de7eb1e5e4fcf0c202146b64ce305b0e1f6a970d93bdcb9bcc7a351";
+  const source = streamed(hex);
+  let going = true;
+  let asked = 0;
+  try {
+    mediaHooks.goingUp = () => going;
+    mediaHooks.keyAnswers = async () => {
+      asked += 1;
+      return false;
+    };
+    const media = new Processor(store);
+    media.ensure(source, VIDEO);
+    for (let n = 0; n < 3; n++) {
+      expect(media.status(source).error).toBeUndefined();
+      await Bun.sleep(10);
+    }
+    expect(media.status(source).proxy).not.toBe("failed");
+    expect(asked).toBe(0);
+    // Its upload ends (cloud_media.ts `runUpload`).
+    keyIsThere(`edit/proxies/sha256/${hex}.mp4`);
+    going = false;
+    expect(media.status(source)).toMatchObject({ proxy: "ready" });
+    expect(asked).toBe(0);
+  } finally {
+    mediaHooks.keyAnswers = was.answers;
+    mediaHooks.goingUp = was.going;
+    cleanup();
+  }
+});
+
+test("a file called missing is playable at the next look once its key is known to be there, without a new ask", async () => {
+  const { mediaHooks, keyIsThere, MISSING_IN_CLOUD } = await import("../src/media.ts");
+  const { store, cleanup } = fixtureHome("media-known-there");
+  const was = mediaHooks.keyAnswers;
+  const hex = "2b7767985de7eb1e5e4fcf0c202146b64ce305b0e1f6a970d93bdcb9bcc7a352";
+  const source = streamed(hex);
+  let asked = 0;
+  try {
+    mediaHooks.keyAnswers = async () => {
+      asked += 1;
+      return false;
+    };
+    const media = new Processor(store);
+    media.ensure(source, VIDEO);
+    media.status(source);
+    await Bun.sleep(20);
+    expect(media.status(source)).toMatchObject({ proxy: "failed", error: MISSING_IN_CLOUD });
+    keyIsThere(`edit/proxies/sha256/${hex}.mp4`);
+    expect(media.status(source)).toMatchObject({ proxy: "ready", proxy_progress: 1 });
+    expect(media.status(source).error).toBeUndefined();
+    expect(asked).toBe(1);
+  } finally {
+    mediaHooks.keyAnswers = was;
+    cleanup();
+  }
+});
+
+test("a \"not there\" asked before its upload ended and answered after doesn't fail a file that is there", async () => {
+  const { mediaHooks, keyIsThere } = await import("../src/media.ts");
+  const { store, cleanup } = fixtureHome("media-old-answer");
+  const was = mediaHooks.keyAnswers;
+  const hex = "3b7767985de7eb1e5e4fcf0c202146b64ce305b0e1f6a970d93bdcb9bcc7a353";
+  const source = streamed(hex);
+  let answer: (there: boolean) => void = () => {};
+  try {
+    mediaHooks.keyAnswers = () => new Promise<boolean>((resolve) => (answer = resolve));
+    const media = new Processor(store);
+    media.ensure(source, VIDEO);
+    media.status(source);
+    await Bun.sleep(5);
+    keyIsThere(`edit/proxies/sha256/${hex}.mp4`);
+    answer(false);
+    await Bun.sleep(20);
+    expect(media.status(source)).toMatchObject({ proxy: "ready" });
+    expect(media.status(source).error).toBeUndefined();
+  } finally {
+    mediaHooks.keyAnswers = was;
+    cleanup();
+  }
+});

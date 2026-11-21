@@ -171,7 +171,17 @@ export class Processor {
     // "Not in the cloud" is asked again once that answer is old: a dropped file's proxy is uploaded just after
     // the drop returns, so the first ask can find nothing (Nov 11: a fresh upload stayed "failed" for good).
     const key = known.error === MISSING_IN_CLOUD ? playbackKey(source) : null;
-    if (key !== null) this.askAbout(source, key);
+    if (key !== null && this.askAbout(source, key) === true) {
+      // Known to be there now, by its upload ending or another look (Nov 21, a MacBook Air: a one-minute file stayed
+      // "failed" for four minutes, until a restart, its proxy up after 7 s: an answer already at hand was returned
+      // here and never took the failure back, which only a new ask's answer did).
+      this.set(source, (status) => {
+        status.proxy = "ready";
+        status.proxy_progress = 1;
+        delete status.error;
+      });
+      return shown(this.statuses.get(mediaKey(source)) ?? known);
+    }
     return shown(known);
   }
 
@@ -205,8 +215,16 @@ export class Processor {
   private askAbout(source: string, key: string): boolean | null {
     const known = keyVerdict(key);
     if (known !== null) return known;
+    // On its way up from this computer (an import's upload, waiting its turn or going): not there yet is not
+    // missing. Asked just after a short file's import answered, the cloud said "not there", and the file read
+    // "failed: its proxy isn't in the cloud", with Export offering its parts black, for a minute or more (Nov 21).
+    if (mediaHooks.goingUp?.(key) === true) return null;
     void checkKey(key).then((there) => {
       const now = this.statuses.get(mediaKey(source));
+      if (there === false && mediaHooks.goingUp?.(key) === true) {
+        forgetKeyVerdict(key);
+        return;
+      }
       if (there === true) {
         // There after all (its upload finished): playable, as a streamed proxy is.
         if (now?.error !== MISSING_IN_CLOUD) return;
@@ -788,6 +806,11 @@ export function forgetKeyVerdict(key: string): void {
   verdicts.delete(key);
 }
 
+/** `key` was just put in the cloud from here (an import's upload ended): there, without asking. */
+export function keyIsThere(key: string): void {
+  verdicts.set(key, { there: true, at: Date.now() });
+}
+
 /** Asks the cloud whether it has `key` (HEAD through the relay, one ask at a time per key); null when it couldn't say. */
 export function checkKey(key: string): Promise<boolean | null> {
   const known = keyVerdict(key);
@@ -796,9 +819,13 @@ export function checkKey(key: string): Promise<boolean | null> {
   if (ask === null) return Promise.resolve(null);
   const flying = asking.get(key);
   if (flying !== undefined) return flying;
+  const askedAt = Date.now();
   const flight = ask(key)
     .then(
       (there) => {
+        // Put there while this was asked (its upload ended, `keyIsThere`): a "not there" from before that is old.
+        const since = verdicts.get(key);
+        if (!there && since?.there === true && since.at >= askedAt) return true as boolean | null;
         verdicts.set(key, { there, at: Date.now() });
         return there as boolean | null;
       },
@@ -826,7 +853,9 @@ export const mediaHooks: {
    * isn't here yet, resolved once it is), or null for any other source (read as it is).
    */
   censorInput: ((source: string) => Promise<string> | null) | null;
-} = { keyAnswers: null, wholeTranscript: null, analysisInput: null, censorInput: null };
+  /** Whether an upload from this computer that puts `key` in the cloud is waiting or going (cloud_media's imports). */
+  goingUp: ((key: string) => boolean) | null;
+} = { keyAnswers: null, wholeTranscript: null, analysisInput: null, censorInput: null, goingUp: null };
 
 /** `transcribe` was asked for free words only (an import) and there are none for this file. */
 class NothingFree extends Error {}
