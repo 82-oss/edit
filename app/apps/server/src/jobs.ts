@@ -1006,7 +1006,13 @@ export function resume(home: string, resumers: Resumers, kinds?: readonly Kind[]
     registered.set(home, resumers);
     keepWaking(home);
   }
-  return startAll(home, takeOver(home, kinds), resumers);
+  const taken = takeOver(home, kinds);
+  // A wait already there as this run starts (left by the last one, or set just now for work cut short by restarts in a
+  // row) gets its timer too when it's due before the table's next look (Nov 21: `wakeAt` was only asked as a wait was
+  // set with resumers in, so such a row went up to 30 s late).
+  const soon = read(home).reduce((least, job) => (asleep(job) && job.retry_at !== undefined && job.retry_at < least ? job.retry_at : least), Number.POSITIVE_INFINITY);
+  if (Number.isFinite(soon)) wakeAt(home, soon);
+  return startAll(home, taken, resumers);
 }
 
 /** The resumers registered for `home` (tests register theirs to wake waiting jobs). */

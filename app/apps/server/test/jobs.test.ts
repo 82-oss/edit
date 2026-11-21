@@ -549,6 +549,24 @@ test("a wait due sooner than the table's next look goes when it's due, not at th
   }
 });
 
+// Nov 21, the fault-injection run's kill-three-times: a row put to wait as a run starts (cut short by restarts in a row,
+// a minute; there a second) went only at the table's next look, up to 30 s on, since no timer was set for it.
+test("a wait already there as a run starts, due before the table's next look, goes when it's due", async () => {
+  const dir = home();
+  try {
+    const started: string[] = [];
+    const key = jobs.begin(dir, "case", "p-left", {}, "", "downloading");
+    // Set before any resumers are in, as the last run (or this one's taking over) leaves it.
+    jobs.settle(dir, key, "waiting", { retry_at: Date.now() + 200 });
+    await jobs.resume(dir, { case: (job) => void started.push(job.key) });
+    expect(started).toEqual([]);
+    await Bun.sleep(1200);
+    expect(started).toEqual([key]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // Nov 20: the fault-injection run's storm and the rows left "running" with nothing running.
 test("the same kind of signal again within seconds wakes nothing it just woke; another kind still wakes it at once", () => {
   const dir = home();
