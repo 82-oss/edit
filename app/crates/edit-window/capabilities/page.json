@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "page",
-  "description": "Edit's page (served by its own server on this Mac) may move the window from its top bars (data-tauri-drag-region) and draw its preview natively (src/preview.rs), and ask how its notifications stand, turn them on and send a test (src/notices.rs), nothing else.",
+  "description": "Edit's page (served by its own server on this Mac) may move the window from its top bars (data-tauri-drag-region), put it in and out of full screen with the viewer (lib/windowFullscreen.ts) and draw its preview natively (src/preview.rs), and ask how its notifications stand, turn them on and send a test (src/notices.rs), nothing else.",
   "windows": [
     "main"
   ],
@@ -13,6 +13,8 @@
   },
   "permissions": [
     "core:window:allow-start-dragging",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen",
     "allow-preview-open",
     "allow-preview-place",
     "allow-preview-project",

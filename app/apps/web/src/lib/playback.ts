@@ -2711,9 +2711,18 @@ export function projectJson(project: Project) {
 export const preview = new Preview();
 // The server's cleaner took a copy the window reads (lib/store.ts hears it): asked again before the next jump fails on it.
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") window.addEventListener("edit:native-sources", () => preview.refreshNativeSources());
+/**
+ * Hidden for this long before a play pauses: macOS hides the page for about half a second while a window goes in or
+ * out of full screen, and every play paused there (the MacBook Air, Nov 21: F in Edit.app, 3 runs out of 3; with
+ * the page's element full screen, now and then).
+ */
+export const HIDDEN_PAUSE_MS = 1000;
+let hiding: ReturnType<typeof setTimeout> | undefined;
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "visible") preview.wake();
-  else { preview.remember(); preview.pause(); }
+  clearTimeout(hiding);
+  if (document.visibilityState === "visible") { preview.wake(); return; }
+  preview.remember();
+  hiding = setTimeout(() => { if (document.visibilityState !== "visible") { preview.remember(); preview.pause(); } }, HIDDEN_PAUSE_MS);
 });
 window.addEventListener("pagehide", () => preview.remember());
 (window as unknown as { __edit?: unknown }).__edit = { preview, playhead };

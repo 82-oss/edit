@@ -1179,6 +1179,27 @@ describe("preview seeks and lifetime", () => {
     expect(playhead.playing).toBe(true);
   });
 
+  it("plays on through the half second macOS hides the page as a window goes full screen, and pauses when it stays hidden", async () => {
+    const sent = await inWindow();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      preview.setProject(fixture(), {}); await vi.advanceTimersByTimeAsync(0); draw(); await vi.advanceTimersByTimeAsync(0);
+      preview.play(); await vi.advanceTimersByTimeAsync(0);
+      expect(playhead.playing).toBe(true);
+      const doc = document as unknown as EventTarget & { visibilityState: string };
+      doc.visibilityState = "hidden"; doc.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(530);
+      doc.visibilityState = "visible"; doc.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(playhead.playing).toBe(true);
+      expect(sent("preview_pause")).toHaveLength(0);
+      doc.visibilityState = "hidden"; doc.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(playhead.playing).toBe(false);
+      doc.visibilityState = "visible";
+    } finally { vi.useRealTimers(); }
+  });
+
   it("in Edit.app's window the page builds no compositor and decodes nothing: the window's player draws the first frame, stills, scrubs and plays (the owner, Nov 21)", async () => {
     const { createEngine } = await import("../engine/pkg/edit_wasm");
     const made = vi.mocked(createEngine).mock.calls.length;

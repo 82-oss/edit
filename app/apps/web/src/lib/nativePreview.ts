@@ -153,6 +153,10 @@ export const nativePreview = {
     closing = closed.catch(() => {});
     return closed;
   },
+  /** The window itself in or out of full screen (lib/windowFullscreen.ts): the layer goes with it. */
+  fullscreen: (on: boolean): Promise<unknown> => call("plugin:window|set_fullscreen", { value: on }),
+  /** Whether the window is full screen now (it can leave by itself: its green button, ⌃⌘F). */
+  isFullscreen: async (): Promise<boolean> => (await call("plugin:window|is_fullscreen")) === true,
 };
 
 /** One play on the window's clock, as it went: what the line in the log says (`playLine`). */
