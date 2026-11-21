@@ -244,9 +244,9 @@ export const checkVideos = (lines: string[]) =>
 export const buildStatus = (id: string) =>
   http<BuildStatus | null>(`/api/writer/scripts/${id}/build`);
 
-/** A commentary project, its links read in as sources (the first is the brief). */
-export const createCommentary = (title: string, links: string[]) =>
-  http<Script>("/api/writer/scripts/commentary", json({ title, links, ...byPerson() }));
+/** A commentary project, its links read in as sources (the first is the brief); `channel`: a channel's (Edit V2, Nov 21). */
+export const createCommentary = (title: string, links: string[], channel?: string) =>
+  http<Script>("/api/writer/scripts/commentary", json({ title, links, ...byPerson(), ...(channel ? { channel } : {}) }));
 
 export const addSource = (id: string, adding: Adding, role: Role) =>
   http<Script>(`/api/writer/scripts/${id}/sources`, json({ adding, role }));

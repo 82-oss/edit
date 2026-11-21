@@ -10,6 +10,17 @@
 // is `video.subtitles`; anything else is `edit.<style>`. A project with only
 // footage (or nothing) yet is open to subtitlers too: that's how a subtitled
 // video starts.
+//
+// Work on a channel (Edit V2) is the channel's alone (Sphe, Nov 21: "a channel
+// I've given a person access to should be all they need"): an edit, a script,
+// an idea or a thumbnail of a channel given to them (in full or by its label)
+// is theirs to make, open and work on, whatever kinds of video they hold. A
+// channel's edit had needed `edit.<style>` beside the channel, its style being
+// only how the channel's videos are narrated (channels.ts `styleOf`), so
+// someone holding `edit.courtroom` and given Inspector Ted couldn't open its
+// edits. Work of no channel (V1) keeps the kinds rule exactly.
+
+import { AsyncLocalStorage } from "node:async_hooks";
 
 import { status as accountStatus } from "./accounts.ts";
 import type { Style } from "./model.ts";
@@ -51,6 +62,14 @@ export function kindOf(shape: Shape): string {
   return shape.subtitles ? "video.subtitles" : `edit.${shape.style}`;
 }
 
+/** Whether work names a channel (Edit V2's); null, undefined and "" are no channel's (V1). */
+export const onChannel = (channel: string | null | undefined): channel is string => typeof channel === "string" && channel !== "";
+
+/** Whether they've been given any channel (in full or by its label): each is work of its own, whatever kinds they hold. */
+export function anyChannel(given: Set<string> | null = granted()): boolean {
+  return given === null || [...given].some((perm) => perm.startsWith("channel."));
+}
+
 /**
  * Whether the signed-in person may see work of this channel (Sphe, Nov 15): a
  * project, a script, an idea or a thumbnail. In full or by its label
@@ -63,7 +82,11 @@ export function mayChannel(channel: string | null | undefined, given: Set<string
 /** Whether the signed-in person may see and change a project of this shape. */
 export function mayWork(shape: Shape, given: Set<string> | null = granted()): boolean {
   if (given === null) return true;
-  if (!mayChannel(shape.channel, given)) return false;
+  // A channel's: the channel given is all it takes (Nov 21), a subtitled one too.
+  if (onChannel(shape.channel)) return mayChannel(shape.channel, given);
+  // The project being made for a channel, in the moment before its channel is set (`startingOn`).
+  const starting = startingFor.getStore();
+  if (starting !== undefined && shape.footageOnly && mayChannel(starting, given)) return true;
   if (!shape.subtitles && given.has(`edit.${shape.style}`)) return true;
   return given.has("video.subtitles") && (shape.subtitles || shape.footageOnly);
 }
@@ -71,6 +94,23 @@ export function mayWork(shape: Shape, given: Set<string> | null = granted()): bo
 /** Whether they may start a project of `style` (a subtitled video starts as one too). */
 export function mayStart(style: Style, given: Set<string> | null = granted()): boolean {
   return given === null || given.has(`edit.${style}`) || given.has("video.subtitles");
+}
+
+const startingFor = new AsyncLocalStorage<string>();
+
+/**
+ * `work` sets `channel` on a project just made with none (routes.ts New edit
+ * on a channel, writer_handoff.ts an edit from a channel's script): the store
+ * makes a project with no channel, then sets it with a save that is held to
+ * the kinds rule on both sides (store.ts `refusalOf`), and the side before is
+ * a V1 project with nothing in it, which someone given only the channel may
+ * not work on. Inside `work` alone, and only for who holds `channel`, a
+ * project of nothing but footage (or nothing) with no channel counts as theirs.
+ * The real fix is the store making it with its channel (createAs), after which
+ * this goes (Nov 21).
+ */
+export function startingOn<T>(channel: string, work: () => Promise<T>): Promise<T> {
+  return startingFor.run(channel, work);
 }
 
 /** Whether they may make a full edit of `style` (a script import, a Writer script). */

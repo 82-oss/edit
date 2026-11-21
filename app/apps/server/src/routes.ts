@@ -513,8 +513,8 @@ async function createChannelProject(context: Context, given: Record<string, unkn
   const channel = await channels.channelFor(key, context.app.store.home);
   if (channel === null) throw bad("channel is a channel's key");
   const style = channels.styleOf(channel);
-  if (!kinds.mayStart(style)) throw new ApiError(403, kinds.cantMake(`edit.${style}`));
-  // A channel given (or added) since this token was issued: a fresh one first, and a plain refusal before anything is made.
+  // The channel given is all it takes, whatever its style (kinds.ts, Sphe, Nov 21: it had asked for `edit.<style>`
+  // too). One given (or added) since this token was issued: a fresh one first, and a plain refusal before anything is made.
   if (!(await channels.tokenCarries([channel.key], context.app.store.home))) throw new ApiError(403, `${channel.title} isn't given to your account yet: ask an admin to give it to you on accounts.spheceo.com.`);
   const compilation = field<boolean>(given, "compilation", "boolean");
   const person = devProjects.madeForPerson(context.request, field<boolean>(given, "person", "boolean"));
@@ -524,12 +524,16 @@ async function createChannelProject(context: Context, given: Record<string, unkn
   } catch (error) {
     throw bad(diag.messageOf(error));
   }
+  const made = live.project.id;
   try {
+    // Made with no channel, then given it: the moment between is the channel's (kinds.ts `startingOn`).
     live = (
-      await context.app.store.update(live.project.id, "channel", (project) => {
-        project.channel = channel.key;
-        if (compilation !== null && compilation !== channel.compilation) project.compilation = compilation;
-      })
+      await kinds.startingOn(channel.key, () =>
+        context.app.store.update(made, "channel", (project) => {
+          project.channel = channel.key;
+          if (compilation !== null && compilation !== channel.compilation) project.compilation = compilation;
+        }),
+      )
     )[0];
   } catch (error) {
     // Refused on its channel: no untitled project left behind with none.

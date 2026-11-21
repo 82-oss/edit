@@ -4,12 +4,12 @@
 
 import type { Idea, IdeaImage, IdeaPlace, IdeasHome, Niche, Workspace } from "@edit/types/ideas";
 
-import type { Account } from "./account";
+import { givenChannels, type Account } from "./account";
 
 export type * from "@edit/types/ideas";
 
-/** Whether the person works on ideas: an `ideas.*` capability (an admin, or nobody signed in, has everything). */
-export const makesIdeas = (account: Account | null): boolean => account === null || account.person === null || account.admin || account.perms.some((perm) => perm.startsWith("ideas."));
+/** Whether the person works on ideas and thumbnails: an `ideas.*` capability, or a channel given to them (lib/account.ts `givenChannels`, Nov 21); an admin, or nobody signed in, has everything. */
+export const makesIdeas = (account: Account | null, v2 = true): boolean => account === null || account.person === null || account.admin || givenChannels(account, v2) || account.perms.some((perm) => perm.startsWith("ideas."));
 
 /** Each niche's name and dot (Sphe Research's). */
 export const NICHE: Record<Niche, { label: string; dot: string }> = {

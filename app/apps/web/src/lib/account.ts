@@ -34,11 +34,20 @@ export function editStyles(account: Account | null): Set<string> | null {
 
 const everything = (account: Account | null) => account === null || account.person === null || account.admin;
 
-/** Whether the person makes videos at all: a style's edits or subtitled videos. */
-export const makesVideos = (account: Account | null): boolean => everything(account) || account!.perms.some((perm) => perm.startsWith("edit.") || perm === "video.subtitles");
+/**
+ * Whether a channel (Edit V2's) has been given to them, in full or by its
+ * label: each is all they need to make and work on its edits, scripts, ideas
+ * and thumbnails (Sphe, Nov 21; the server's kinds.ts and writer/can.ts).
+ * `v2`: Edit V2 is on on this computer; with it off, channels count for none
+ * of Home (no channels anywhere, beta.ts), and the person's own kinds decide.
+ */
+export const givenChannels = (account: Account | null, v2 = true): boolean => v2 && account !== null && account.person !== null && account.perms.some((perm) => perm.startsWith("channel."));
 
-/** Whether they write scripts (Script mode's `scripts.*`). */
-export const writesScripts = (account: Account | null): boolean => everything(account) || account!.perms.some((perm) => perm.startsWith("scripts."));
+/** Whether the person makes videos at all: a style's edits, subtitled videos, or a channel's edits (`givenChannels`). */
+export const makesVideos = (account: Account | null, v2 = true): boolean => everything(account) || givenChannels(account, v2) || account!.perms.some((perm) => perm.startsWith("edit.") || perm === "video.subtitles");
+
+/** Whether they write scripts: Script mode's `scripts.*`, or a channel's (`givenChannels`). */
+export const writesScripts = (account: Account | null, v2 = true): boolean => everything(account) || givenChannels(account, v2) || account!.perms.some((perm) => perm.startsWith("scripts."));
 
 export const useAccount = create<{ account: Account | null; waiting: boolean }>(() => ({ account: null, waiting: false }));
 

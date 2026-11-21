@@ -111,3 +111,47 @@ test("a channel's script whose channel can't be read is refused in words that sa
     cleanup();
   }
 });
+
+/** A finished commentary on this computer (a draft, its brief and one evidence source), a channel's when `channel` is given. */
+function essay(home: string, channel?: string): string {
+  next += 1;
+  const id = `6b1f0c2e-3a4d-4e5f-9a8b-7c6d5e4f3a${String(next).padStart(2, "0")}`;
+  const dir = writerStore.scriptDir(writerStore.dataDir(home), id);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(join(dir, "script.json"), JSON.stringify({
+    id, title: `Essay ${next}`, sourceKind: "commentary", kind: "interrogation", ...(channel !== undefined ? { channel } : {}), sourceUrl: "", originalPath: "",
+    status: "ready", stage: "", revision: 1, updatedAt: 1, durationMs: 0, words: [], clips: [],
+    commentary: {
+      pacing: "channel",
+      sources: [
+        { id: "S1", title: "The brief", role: "brief", origin: "pasted", chars: 9, timed: false, preview: "", addedAt: 0 },
+        { id: "S2", title: "The lawsuit", role: "evidence", origin: "https://example.com/lawsuit", chars: 9, timed: false, preview: "", addedAt: 0 },
+      ],
+      draft: { open: [], sections: [{ heading: "Intro", paragraphs: [{ id: "pa", pieces: [{ kind: "say", text: "He was the most hated man online." }] }] }], checks: [], report: "", writtenAt: 1 },
+    },
+  }));
+  return id;
+}
+
+test("an edit from a channel's commentary is that channel's V2 edit that keeps what an essay's edit needs: its style's add-ons and the evidence for its research", async () => {
+  const { app, cleanup } = fixtureHome("handoff-channel-essay");
+  try {
+    const addons = await import("../src/addons.ts");
+    mock.cloud.convex.channels = [CHANNEL];
+    v2(app.store.home, true);
+    const seeds: unknown[] = [];
+    for (const channel of [CHANNEL.key, undefined]) {
+      const made = await importScript(app, essay(app.store.home, channel));
+      const project = app.store.get(made.project)!.project;
+      expect({ hq: project.hq ?? false, channel: project.channel ?? null, style: project.style }).toEqual({ hq: channel !== undefined, channel: channel ?? null, style: "commentary" });
+      // Not a bodycam edit's: YouTube footage in excerpts, the essay's checks, no case research turn.
+      expect(["youtube-excerpts", "essay-checks", "post-details", "case-research"].map((name) => addons.has(project, name as never))).toEqual([true, true, true, false]);
+      const seed = JSON.parse(fs.readFileSync(join(app.store.home, "research", made.project, "broll.json"), "utf8")) as { writer: { sources: { id: string }[] } };
+      seeds.push(seed.writer.sources.map((one) => one.id));
+    }
+    // The research seed, channel or none: the evidence alone.
+    expect(seeds).toEqual([["S2"], ["S2"]]);
+  } finally {
+    cleanup();
+  }
+});

@@ -648,7 +648,7 @@ export function routes(router: Router<App>): void {
         const script = readFor(dataOf(context.app), id(context));
         if (given.kind !== undefined) can.requireKind(script, given.kind);
         const note = String(given.note ?? "");
-        const waits = await scripting.needsTeaching(script, note);
+        const waits = await waitsForTeaching(script, note);
         if (waits !== null) throw new Error(waits);
         const review = scripting.scriptFreshEyes(given.review);
         // Footage the note links or the message carries comes in first, and the first draft is written with it (links.ts).
@@ -719,9 +719,11 @@ export function routes(router: Router<App>): void {
     .post("/api/writer/scripts/commentary", async (context) => {
       const given = await body<{ title?: string; links?: string[]; person?: boolean; channel?: string }>(context);
       return answer(async () => {
-        can.require(can.COMMENTARY);
+        // On a channel (Nov 21: commentary's home is the InternetJanitor channel) the channel is all it takes.
+        const made = await madeOf(context.app, given);
+        can.requireCommentary(made.channel);
         const data = dataOf(context.app);
-        return detail(data, await commentary.create(data, String(given.title ?? ""), Array.isArray(given.links) ? given.links.map(String) : [], creator() ?? undefined, await madeOf(context.app, given)));
+        return detail(data, await commentary.create(data, String(given.title ?? ""), Array.isArray(given.links) ? given.links.map(String) : [], creator() ?? undefined, made));
       });
     })
     .post("/api/writer/scripts/{id}/sources", async (context) => {
@@ -828,8 +830,23 @@ const testOf = (given: { person?: unknown }): boolean => given.person !== true;
  */
 async function madeOf(app: App, given: { person?: unknown; channel?: unknown }): Promise<imports.Made & { kind: Kind | null }> {
   const channel = await channels.channelFor(given.channel, app.store.home);
+  // The channel given is all a channel's script takes (can.ts, Nov 21); one given since this token was issued, a fresh one first.
+  if (channel !== null && !(await channels.tokenCarries([channel.key], app.store.home))) throw new ApiError(403, `${channel.title} isn't given to your account yet: ask an admin to give it to you on accounts.spheceo.com.`);
   // A channel's script has no kind, whoever narrates it (formats.ts `taught`): its Script lane is all it's written from.
   return { test: testOf(given), ...(channel !== null ? { channel: channel.key } : {}), kind: null };
+}
+
+/**
+ * Why a script can't build now, or null (scripting.ts `needsTeaching`). A
+ * channel's commentary is written from its channel's Script lane alone since
+ * Nov 21 (commentary.ts `guideFor`), so it waits until taught as the channel's
+ * footage scripts do: `needsTeaching` leaves commentary out, from when every
+ * commentary was written from the house guide.
+ */
+export async function waitsForTeaching(script: Script, note: string): Promise<string | null> {
+  if (!script.commentary || !script.channel) return scripting.needsTeaching(script, note);
+  const { commentary: _, ...asFootage } = script;
+  return scripting.needsTeaching(asFootage as Script, note);
 }
 
 /** A script marked a test one, brought forth, hidden again, or promoted (store.ts TEST_FILE). */

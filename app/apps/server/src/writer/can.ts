@@ -6,10 +6,17 @@
 // Sharing for review (links, approving, fixing notes, Doc exports) is anyone's
 // who's signed in, on the scripts they may see (Sphe, Nov 6); teaching from
 // feedback needs `review.lessons`.
+//
+// A channel's script (Edit V2), a commentary included, is the channel's alone
+// (Sphe, Nov 21: "a channel I've given a person access to should be all they
+// need"): the channel given is all it takes to make, see and write it, whatever
+// kinds of script they write. It had needed some script kind of its shape
+// (`scripts.interrogation` for one case, a compilation kind for several) and a
+// commentary `scripts.commentary` beside the channel.
 
 import type { Kind, Script, Summary } from "@edit/types/writer";
 
-import { granted, mayChannel } from "../kinds.ts";
+import { granted, mayChannel, onChannel } from "../kinds.ts";
 
 export const INTERROGATION = "scripts.interrogation";
 export const INTERROGATION_COMPILATION = "scripts.interrogation-compilation";
@@ -34,18 +41,24 @@ export function workOf(script: Pick<Script | Summary, "sourceKind" | "compilatio
   return kind === "foia" ? FOIA : kind === "courtroom" ? COURTROOM : INTERROGATION;
 }
 
-/** A channel's footage script: it has no kind of its own (formats.ts `taught`), so whoever writes scripts of its shape and may use the channel may write it. */
-export const isChannelScript = (script: Pick<Script | Summary, "sourceKind" | "channel">): boolean => typeof script.channel === "string" && script.channel !== "" && script.sourceKind !== "commentary";
-
-const writesShape = (compilation: boolean | undefined, given: Set<string> | null): boolean => (compilation ? compilationKinds(given) : singleKinds(given)).length > 0;
+/** A channel's script, footage or commentary: who was given the channel may see and write it (Nov 21). */
+export const isChannelScript = (script: Pick<Script | Summary, "channel">): boolean => onChannel(script.channel);
 
 /** May see and write this script. */
 export const sees = (script: Pick<Script | Summary, "sourceKind" | "compilation" | "kind" | "channel">, given: Set<string> | null = granted()): boolean =>
-  mayChannel(script.channel, given) && (isChannelScript(script) ? writesShape(script.compilation, given) : has(workOf(script), given));
+  isChannelScript(script) ? mayChannel(script.channel, given) : has(workOf(script), given);
 
-/** Making a channel's script of this shape: refused when the person writes no scripts of it. */
-export function requireShape(compilation: boolean | undefined): void {
-  if (!writesShape(compilation, granted())) throw new Error(refusal(compilation ? INTERROGATION_COMPILATION : INTERROGATION));
+/**
+ * Making a channel's footage script: nothing more to ask (Nov 21). The channel
+ * is checked where the script is asked for (writer/routes.ts `madeOf`: the
+ * channel shown to them, carried by their token), and that is all it takes.
+ * Kept for writer/imports.ts `start`, which calls it.
+ */
+export function requireShape(_compilation: boolean | undefined): void {}
+
+/** Making a commentary: on a channel, the channel is all it takes (checked by `madeOf`, as above); with none, `scripts.commentary`. */
+export function requireCommentary(channel: string | undefined): void {
+  if (!onChannel(channel)) require(COMMENTARY);
 }
 
 /** The one-case formats this person may write, in the editor's order. */
@@ -83,8 +96,9 @@ export function requireScript(script: Pick<Script, "sourceKind" | "compilation" 
   if (!sees(script)) throw new Error(NOT_AVAILABLE);
 }
 
-/** Building as `kind`: refused when the person can't write that kind. */
-export function requireKind(script: Pick<Script, "sourceKind" | "compilation">, kind: Kind): void {
+/** Building as `kind`: refused when the person can't write that kind; a channel's script has no kind of theirs to ask for (Nov 21). */
+export function requireKind(script: Pick<Script, "sourceKind" | "compilation"> & Partial<Pick<Script, "channel">>, kind: Kind): void {
+  if (isChannelScript(script)) return requireScript({ ...script, kind, channel: script.channel });
   require(workOf({ ...script, kind }));
 }
 

@@ -102,7 +102,12 @@ export function Field({ label, hint, children, className }: { label: string; hin
  * channels"; a group opens to its channels, ChannelPicker), never a niche.
  * Edit V1: `other`, the niche (today's kinds), and never a channel.
  */
-export function ChannelField({ kind, channels, value, onChange, other }: { kind: WorkKind; channels: Channel[]; value: string | null; onChange: (key: string | null) => void; other?: ReactNode }) {
+/**
+ * The channel (Edit V2), or today's kinds (`other`) with it off. `also`: what
+ * the work on the channel picked may be, under its picker (New script's
+ * Footage or Commentary, Nov 21), with V2 on only.
+ */
+export function ChannelField({ kind, channels, value, onChange, other, also }: { kind: WorkKind; channels: Channel[]; value: string | null; onChange: (key: string | null) => void; other?: ReactNode; also?: ReactNode }) {
   const v2 = useBeta((beta) => beta.v2);
   const loaded = useChannels((state) => state.channels !== null);
   const failed = useChannels((state) => state.failed !== null);
@@ -111,7 +116,10 @@ export function ChannelField({ kind, channels, value, onChange, other }: { kind:
   return (
     <Field label="Channel">
       {channels.length > 0 ? (
-        <ChannelPicker channels={channels} value={value} lane={KINDS[kind].lane} onChange={onChange} />
+        <>
+          <ChannelPicker channels={channels} value={value} lane={KINDS[kind].lane} onChange={onChange} />
+          {also !== undefined && <div className="mt-2">{also}</div>}
+        </>
       ) : failed ? (
         <ChannelsFailed />
       ) : !loaded ? (
