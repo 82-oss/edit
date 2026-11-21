@@ -34,8 +34,9 @@ export type Imported = [rev: number, added: string[], errors: string[]];
 
 /**
  * Footage imports going now (New project, the chat, the file browser): no row of their own, so counted here for as
- * long as `importPaths` runs, hash, lookup and a proxy encode of up to 45 minutes. busy.ts reads it: the Mac is kept
- * awake for it and a restart from afar sees it (Nov 20: it could idle-sleep mid-encode).
+ * long as `importPaths` runs, hash, lookup and the proxy's first piece (the rest of it is made behind the answer in an
+ * `upload` row of its own: cloud_media.ts `piecesBehind`, Nov 21). busy.ts reads it: the Mac is kept awake for it and
+ * a restart from afar sees it (Nov 20: it could idle-sleep mid-encode).
  */
 let going = 0;
 export const importingNow = (): boolean => going > 0;
@@ -148,7 +149,7 @@ async function importNow(app: App, id: string, paths: string[], place: boolean, 
   return addMedia(app, id, items, errors, place, origin);
 }
 
-/** A long video's proxy is made a piece at a time as it's read (cloud_media.ts `PIECED_FROM`): its first 20 minutes are counted. */
+/** A video's whole proxy is made here only under 20 minutes (cloud_media.ts `PIECED_FROM`); a longer one's pieces come as they're read: its first 20 minutes are counted. */
 const PIECED_COUNTED_S = 1200;
 
 /** About how much the proxies of these files take (proxy_pieces.ts `bitrateFor`, the sound at 160 kbit/s). */

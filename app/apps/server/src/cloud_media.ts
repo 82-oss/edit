@@ -80,6 +80,7 @@ import * as sharedWords from "./shared_words.ts";
 import { serveFile } from "./http/files.ts";
 import * as endpoints from "./endpoints.ts";
 import { copyFile, ioMessage, nextFileId, nowMs, writeAtomic } from "./files.ts";
+import { NoRoom } from "./failure.ts";
 import { isBug } from "./guard.ts";
 import * as jobs from "./jobs.ts";
 import * as steps from "./import_steps.ts";
@@ -983,6 +984,11 @@ async function runUpload(upload: Upload, progressed: () => void): Promise<void> 
 
 /** A noted upload a restart cut short (jobs.ts), started again while its files are still here. */
 export function resumeUpload(home: string, args: Record<string, unknown>): void {
+  // A short import's pieces behind it (`piecesBehind`): the ones not made or not up yet.
+  if (typeof args.pieces === "string" && typeof args.cache === "string") {
+    void piecesBehind(home, args.cache, args.pieces);
+    return;
+  }
   const upload = args as unknown as Upload;
   if (typeof upload.file !== "string" || typeof upload.source !== "string" || typeof upload.originalKey !== "string") {
     throw new jobs.Gone("not an upload");
@@ -993,6 +999,74 @@ export function resumeUpload(home: string, args: Record<string, unknown>): void 
     throw new jobs.Gone(`${gone} is gone`);
   }
   uploadLater(home, upload);
+}
+
+/** Each short import's pieces being made behind it now (`piecesBehind`), by source. */
+const piecesGoing = new Map<string, Promise<void>>();
+
+/**
+ * Every piece of `source`'s pieced proxy made here (or brought from R2 where another Mac made it) and put in the
+ * cloud, behind the import of a short file that answered with its first piece (`putHashed`; Nov 21: its whole proxy
+ * was made before the answer, over two minutes for 14.6 minutes of footage on a MacBook Air). One piece at a time,
+ * giving way to any piece someone waits on, and waiting while a local export holds the encoder (proxy_pieces.ts
+ * `fill`). Its own `upload` row in the job table says what it's on and notes each piece, so a restart carries on with
+ * what isn't made or up yet (`resumeUpload`); a failure, or a disk too full for the next piece, waits and is tried
+ * again by itself (jobs.ts `wait`), and a pieced proxy gone from here and the cloud crosses it off.
+ */
+export function piecesBehind(home: string, cache: string, source: string): Promise<void> {
+  const running = piecesGoing.get(source);
+  if (running !== undefined) return running;
+  const key = jobs.begin(home, "upload", "-", { pieces: source, cache }, `${source}#pieces`, "making its pieces");
+  const done: Promise<void> = makeEveryPiece(home, key, cache, source)
+    .then(
+      () => jobs.end(home, key),
+      (error: unknown) => {
+        if (error instanceof jobs.Gone) {
+          diag.warn("pieces", `${source}: ${diag.messageOf(error)}; its pieces aren't made behind the import`);
+          jobs.end(home, key);
+          return;
+        }
+        diag.warn("pieces", `${source}: its pieces behind the import: ${scrub(failure(error))}; tried again by itself`);
+        jobs.wait(home, key, error);
+      },
+    )
+    .finally(() => {
+      if (piecesGoing.get(source) === done) piecesGoing.delete(source);
+    });
+  piecesGoing.set(source, done);
+  return done;
+}
+
+async function makeEveryPiece(home: string, key: string, cache: string, source: string): Promise<void> {
+  const context = piecesContext(cache);
+  const base = pieces.baseKey(source);
+  let layout: pieces.Layout;
+  try {
+    layout = await pieces.layoutOf(context, base);
+  } catch (error) {
+    // Neither here nor in the cloud (its cache cleared before it was ever put up): nothing to make pieces of.
+    if ((await context.head(pieces.layoutKeyOf(base)).catch(() => undefined)) === null) throw new jobs.Gone(`${base} has no layout here or in the cloud`);
+    throw error;
+  }
+  let exportSaid = false;
+  for (const n of pieces.missingHere(context, base, layout)) {
+    if (storage.spare(cache, PIECE_ROOM, storage.footageFloor(cache, base)) < 0) throw new NoRoom(PIECE_ROOM, "The disk is too full for the footage's next piece");
+    // The fill waits while an export holds the encoder: the row says so, then says it's making pieces again.
+    if (context.exporting() !== exportSaid) {
+      exportSaid = !exportSaid;
+      jobs.step(home, key, exportSaid ? "waiting for the export to end" : "making its pieces");
+    }
+    await fillHooks.fill(context, [{ base, seconds: (n * layout.perPiece) / layout.fps }], () => false);
+    jobs.progressed(home, key);
+  }
+  if (exportSaid) jobs.step(home, key, "making its pieces");
+  const left = pieces.missingHere(context, base, layout);
+  if (left.length > 0) throw new Error(`piece${left.length === 1 ? "" : "s"} ${left.join(", ")} of ${layout.pieces} weren't made (the log says why)`);
+  // Up as its whole proxy went up, one file at a time; each one's share under way is waited on, never sent twice.
+  for (let n = 0; n < layout.pieces; n++) {
+    for (const one of pieces.pieceKeys(base, layout, n)) await pieces.upNow(context, one);
+    jobs.progressed(home, key);
+  }
 }
 
 async function publish(
@@ -1059,10 +1133,30 @@ async function publish(
  * is never changed or removed.
  */
 export function importLocal(cache: string, path: string, probe: Probe, name: string): Promise<Made> {
-  // Footage answers once its proxy is made here; the uploads carry on behind
-  // (`uploadLater`), so an import never waits for gigabytes to go up.
+  // Footage answers once its pieced proxy is playable (its first piece, made beside the hash); the rest of its
+  // proxy and the uploads carry on behind (`piecesBehind`, `uploadLater`), so an import never waits for minutes of
+  // encoding or gigabytes to go up.
   return putLocal(cache, path, probe, name, probe.kind !== "video", parent(cache));
 }
+
+/**
+ * Whether a file from a disk gets a pieced proxy (proxy_pieces.ts): every video an import answers before its uploads
+ * (`later`) from two minutes long (`PIECED_BEHIND_FROM`), and otherwise one of `PIECED_FROM` or more. Until Nov 21 a disk's file under 20
+ * minutes had its whole proxy made before the import answered: on a MacBook Air three files of about 14.6 minutes
+ * kept the file browser busy 2 min 14 s, 2 min 17 s and 2 min 23 s, while a 20.75-minute one answered in 13.6 s.
+ */
+function piecedFromDisk(probe: Probe, later: string | null): boolean {
+  return probe.kind === "video" && ((later !== null && probe.duration >= PIECED_BEHIND_FROM) || probe.duration >= PIECED_FROM);
+}
+
+/**
+ * Under two minutes a file's whole proxy is still made before the import answers, as it always was: that is at most
+ * about 20 s on the slowest Mac the team has (the MacBook Air made 14.6 minutes in 2 min 14 s to 2 min 23 s, about
+ * 9.5 s a minute of footage), and it keeps every short clip (a script's excerpts, the agent's cut-ins, Edit's own
+ * renders) on the one whole-file path the player, the thumbnails and other Macs already read. From two minutes the
+ * wait is what someone feels, and the file is pieced.
+ */
+const PIECED_BEHIND_FROM = 120;
 
 /**
  * `importLocal`; `own`: the file goes up as it is and is its own proxy
@@ -1070,8 +1164,8 @@ export function importLocal(cache: string, path: string, probe: Probe, name: str
  * `later` (the data folder), footage's uploads finish in the background.
  */
 async function putLocal(cache: string, path: string, probe: Probe, name: string, own: boolean, later: string | null = null): Promise<Made> {
-  // A long video's first piece made while the file is read for its hash (proxy_pieces.ts): playable once it's known.
-  const first = !own && probe.kind === "video" && probe.duration >= PIECED_FROM ? pieces.startFirst(piecesContext(cache), path, probe) : null;
+  // A pieced proxy's first piece made while the file is read for its hash (proxy_pieces.ts): playable once it's known.
+  const first = !own && piecedFromDisk(probe, later) ? pieces.startFirst(piecesContext(cache), path, probe) : null;
   try {
     return await putHashed(cache, path, probe, name, own, later, first);
   } finally {
@@ -1103,10 +1197,13 @@ async function putHashed(cache: string, path: string, probe: Probe, name: string
   rememberLocalOriginal(cache, originalKey, path);
   if (probe.has_audio) shareSound(cache, path, originalKey);
   const ready = readyProxy(record);
-  // A long file's proxy made a piece at a time (proxy_pieces.ts), read from this file while it's here; its upload goes on behind.
-  if (ready === null && probe.kind === "video" && probe.duration >= PIECED_FROM) {
+  // A pieced proxy made a piece at a time (proxy_pieces.ts), read from this file while it's here; its upload goes on
+  // behind. A short file's other pieces are all made behind the answer too (`piecesBehind`), the work its whole proxy
+  // was before the answer: a long one's are made as they're read (`fillPieces`), as before.
+  if (ready === null && piecedFromDisk(probe, later)) {
     const layout = await pieces.tryCreate(piecesContext(cache), source, originalKey, probe, first);
     if (layout !== null) {
+      if (later !== null && probe.duration < PIECED_FROM) void piecesBehind(later, cache, source);
       if (needOriginal && later !== null) {
         uploadLater(later, { file: path, source, size, duration: probe.duration, originalKey, uploadOriginal: true, proxy: null, local: null });
       } else if (needOriginal) {
@@ -1714,7 +1811,7 @@ async function excerptsOf(
     const through = from === url && reader !== null ? reader : null;
     const start = await scriptParts.keyframeBefore(through?.url ?? from, at);
     const made = await diag.timeOnAsync("cloud", "cloud: excerpt", `${original.name} ${scriptParts.clock(start)}–${scriptParts.clock(to)}`, () =>
-      excerptMedia(cache, original, through?.at(start, to) ?? from, start, to, stem, ext, through === null ? undefined : (cut) => overTheLine.with(cut)),
+      excerptMedia(cache, original, through?.at(start, to) ?? from, start, to, stem, ext, through === null ? undefined : (cut) => overTheLine.with(cut), through === null ? undefined : () => through.bytes(start, to)),
     );
     out[index] = { path: made.path, from: start, to, cloud: made };
   };
@@ -1858,6 +1955,8 @@ interface ReadFile {
 interface Reader {
   url: string;
   at(from: number, to: number): string;
+  /** The bytes a cut of `from..to` seconds reads from the cloud, from the file's index; null while it hasn't been read (or there is none). */
+  bytes(from: number, to: number): number | null;
   release(): void;
 }
 
@@ -1895,6 +1994,7 @@ async function readerFor(original: Original, url: string): Promise<Reader> {
   return {
     url: base,
     at: (from, to) => `${base}?from=${from}&to=${to}`,
+    bytes: (from, to) => (held.index === null ? null : windowOf(held, `${Number(from)}-${Number(to)}`).reduce((sum, [a, b]) => sum + (b - a), 0)),
     release() {
       if (released) return;
       released = true;
@@ -2216,7 +2316,11 @@ function joinBytes(chunks: Uint8Array[]): Uint8Array {
 
 /** Excerpts of one file made at once from a file here (from the cloud's address, one at a time: `excerptsOf`). */
 const EXCERPTS_AT_ONCE = 3;
-/** Files at least this long (seconds) get a pieced proxy (a shorter one's whole proxy takes a minute or two). */
+/**
+ * Files at least this long (seconds) get a pieced proxy when read from R2 (a Drive file's) or put up by the backfill;
+ * a shorter one's whole proxy is made instead. A disk's file an import answers is pieced whatever its length
+ * (`piecedFromDisk`), and under this its pieces are all made behind the answer (`piecesBehind`).
+ */
 const PIECED_FROM = 1200;
 
 /** The whole Drive file as one media: its proxy made straight from R2. */
@@ -2278,6 +2382,8 @@ async function excerptMedia(
   ext: string,
   /** Runs the cut itself (one at a time over the line: `excerptsOf`). */
   cutting: (cut: () => Promise<void>) => Promise<void> = (cut) => cut(),
+  /** The bytes the cut reads from the cloud, when the reader's index says (`Reader.bytes`). */
+  fromCloud: () => number | null = () => null,
 ): Promise<Made> {
   const source = excerptSource(original.file, start, end);
   const name = `${stem} ${scriptParts.clock(start)}-${scriptParts.clock(end)}.${ext}`;
@@ -2299,6 +2405,20 @@ async function excerptMedia(
   if (proxy === null) throw new Error("no proxy key");
   const local = localPath(cache, proxy);
   const scratch = scratchFile(scratchDir(cache), ext);
+  // The room is looked at before a byte is fetched (Nov 21): the file's index already says how big this excerpt is, so a
+  // full disk no longer costs a whole fetch of it to find out (the bad-day run's no-room case: 30 MB fetched into a
+  // disk with 12 MB free, then all of it again once there was room). What it needs here: the excerpt itself and its
+  // proxy, at the proxy's most (4 Mbit/s). Where the index can't say, the cut finds out as before.
+  const reads = fromCloud();
+  if (reads !== null && reads > 0) {
+    const need = reads + Math.ceil(((end - start) * 4_000_000) / 8);
+    // By the rule work is admitted by (storage.ts `admit`): what's free, less what's promised, must stay above the
+    // floor writes keep once this is written. The wait for room is ended by that same rule (`jobs.roomCheck`).
+    if (Number.isFinite(storage.freeBytes(scratchDir(cache))) && storage.spare(scratchDir(cache), need, storage.WORK_FLOOR_BYTES) < 0) {
+      const mb = Math.ceil(need / 1e6);
+      throw new NoRoom(mb * 1e6, `Needs ${mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`} free on this computer to cut the footage's excerpts: make room, and Edit goes on by itself.`);
+    }
+  }
   try {
     await cutting(() => diag.timeOnAsync("cloud", "cloud: cut excerpt", source, () => scriptParts.cut(url, start, end, scratch)));
     const probe = await native().probe(scratch);
