@@ -35,7 +35,7 @@
 // GITHUB_STEP_SUMMARY when set. EDIT_BIN runs a built `edit` instead of this
 // checkout's server; OUT keeps the logs and screenshots (/tmp/edit-acceptance).
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, appendFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, appendFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -496,13 +496,75 @@ async function homeAudit(): Promise<void> {
 
 // ---- Edit.app's own player ----
 
+/**
+ * The server as the window sees it: everything passed through, but /api/account says sign-in isn't needed, as
+ * pageChecks tells Chrome. The window can't be told that itself, so since signing in became required it stopped at
+ * the sign-in screen and its player never opened (Nov 21: native=false, 0 draws).
+ */
+function signedInFront(): { port: number } {
+  type Pipe = { upstream: WebSocket; held: (string | ArrayBuffer | Uint8Array)[] };
+  const server = Bun.serve<Pipe, object>({
+    port: 0,
+    hostname: "127.0.0.1",
+    // The window's long polls (/api/window/next) wait longer than Bun's 10 s.
+    idleTimeout: 0,
+    async fetch(request, front) {
+      const url = new URL(request.url);
+      const to = `${API}${url.pathname}${url.search}`;
+      if (request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        const upstream = new WebSocket(to.replace(/^http/, "ws"));
+        upstream.binaryType = "arraybuffer";
+        return front.upgrade(request, { data: { upstream, held: [] } }) ? undefined : new Response("no upgrade", { status: 400 });
+      }
+      const headers = new Headers(request.headers);
+      headers.set("host", new URL(API).host);
+      // Bun's fetch unpacks a compressed answer but keeps its content-encoding, which the window would unpack again.
+      headers.set("accept-encoding", "identity");
+      if (headers.has("origin")) headers.set("origin", API);
+      const answer = await fetch(to, { method: request.method, headers, body: request.body, redirect: "manual" });
+      if (url.pathname !== "/api/account" || !answer.ok) return answer;
+      const account = await answer.json();
+      account.required = false;
+      return Response.json(account);
+    },
+    websocket: {
+      open(socket) {
+        const { upstream, held } = socket.data;
+        // The account comes this way too, whenever a sign-in starts or fails (store.ts's "account" event).
+        upstream.onmessage = (event) => {
+          if (typeof event.data === "string" && event.data.includes('"account"')) {
+            const said = JSON.parse(event.data);
+            if (said?.type === "account" && said.account) said.account.required = false;
+            socket.send(JSON.stringify(said));
+          } else socket.send(event.data);
+        };
+        upstream.onclose = () => socket.close();
+        upstream.onopen = () => held.splice(0).forEach((one) => upstream.send(one));
+      },
+      message(socket, message) {
+        const { upstream, held } = socket.data;
+        if (upstream.readyState === WebSocket.OPEN) upstream.send(message);
+        else held.push(message);
+      },
+      close(socket) {
+        socket.data.upstream.close();
+      },
+    },
+  });
+  return { port: server.port! };
+}
+
 async function nativeChecks(id: string, helper: string): Promise<void> {
   if (process.platform !== "darwin") {
     record("native player", "skip", "Edit.app's player is the Mac's");
     return;
   }
   const trace = join(OUT, "window.log");
-  const window = (running.window = Bun.spawn([helper, "--url", `${API}/p/${id}`], {
+  // The last run's log said "check: done" already, so the wait below ended at once and the window was closed unseen.
+  rmSync(trace, { force: true });
+  rmSync(join(OUT, "native.png"), { force: true });
+  const front = signedInFront();
+  const window = (running.window = Bun.spawn([helper, "--url", `http://127.0.0.1:${front.port}/p/${id}`], {
     env: { ...process.env, EDIT_PREVIEW_CHECK: "0", EDIT_PREVIEW_TRACE: "1", EDIT_PREVIEW_SHOT: join(OUT, "native.png") },
     stdin: "pipe",
     stdout: "ignore",
