@@ -11,10 +11,15 @@
 // cloud as before.
 //
 // A script's preview that's only in the cloud (made on another Mac, or left
-// to the cloud when room was short) comes down whole behind the ask when the
-// scripts' footage and Edit's cache have room for it (storage.overBudget, the
-// same rule that later decides what leaves: what Edit keeps free on the disk), and the page asks again until
-// it's here. With no room it stays in the cloud and plays as it did.
+// to the cloud when room was short) is answered at once with this server's
+// stream of it (the preview route, read from the shared block cache, as the
+// editor's cloud footage is), so the window plays it from the first picture;
+// in Edit.app only the window's player plays (the owner, Nov 21), where the
+// page's own drew first and the window took over 15 s later, when the whole
+// file was here (the MacBook Air, Nov 21: three runs out of three). It still
+// comes down whole behind the ask when the scripts' footage and Edit's cache
+// have room for it (storage.overBudget, the same rule that later decides what
+// leaves), and the page asks again until it's here, then reads the file.
 
 import type { CutSource } from "@edit/types/script_cut";
 
@@ -48,7 +53,34 @@ const probed = new Map<string, { stamp: string; source: CutSource }>();
 export const hooks = {
   fetchPreview: (data: string, id: string): Promise<string> => cloud.fetchPreview(data, id),
   overBudget: (data: string, cache: string): number => storage.overBudget(data, cache),
+  /** What's in a preview read through this server (its stream's address). */
+  probeStream: async (url: string): Promise<CutSource> => sourceOf(url, await native().probe(url)),
 };
+/** What's in each cloud preview's stream, by its cloud key. */
+const streamed = new Map<string, CutSource>();
+
+function sourceOf(path: string, found: Awaited<ReturnType<ReturnType<typeof native>["probe"]>>): CutSource {
+  return {
+    path,
+    width: found.kind === "audio" ? 0 : found.width,
+    height: found.kind === "audio" ? 0 : found.height,
+    durationMs: Math.round(found.duration * 1000),
+    fps: found.fps,
+    sound: found.has_audio || found.kind === "audio",
+  };
+}
+
+/** A script's preview in the cloud as this server's stream of it (the window reads it through the block cache); null when the cloud has none. */
+async function stream(app: App, data: string, id: string): Promise<CutSource | null> {
+  const kept = cloud.fileKey(data, id, "proxy.mp4");
+  if (kept === null || kept.key === "") return null;
+  const known = streamed.get(kept.key);
+  if (known !== undefined) return known;
+  const url = `http://127.0.0.1:${app.port}/api/writer/scripts/${id}/proxy`;
+  const source = await hooks.probeStream(url);
+  streamed.set(kept.key, source);
+  return source;
+}
 
 /** The script and the file an address of the script page's player stands for (the routes that serve them), or null for any other. */
 function fileOf(data: string, src: string): { id: string; path: string; preview: boolean } | null {
@@ -76,15 +108,7 @@ async function describe(path: string): Promise<CutSource> {
   const stamp = `${meta.size}-${meta.mtimeMs}`;
   const known = probed.get(path);
   if (known !== undefined && known.stamp === stamp) return known.source;
-  const found = await native().probe(path);
-  const source: CutSource = {
-    path,
-    width: found.kind === "audio" ? 0 : found.width,
-    height: found.kind === "audio" ? 0 : found.height,
-    durationMs: Math.round(found.duration * 1000),
-    fps: found.fps,
-    sound: found.has_audio || found.kind === "audio",
-  };
+  const source = sourceOf(path, await native().probe(path));
   probed.set(path, { stamp, source });
   return source;
 }
@@ -97,7 +121,7 @@ function bring(data: string, cache: string, id: string): boolean {
   if (kept === null || kept.key === "") return false;
   if (hooks.overBudget(data, cache) + kept.size > 0) {
     notNow.set(id, Date.now());
-    diag.info("writer", `${id.slice(0, 8)}: its preview (${(kept.size / 1e9).toFixed(1)} GB) stays in the cloud: no room for it here, so the page plays it`);
+    diag.info("writer", `${id.slice(0, 8)}: its preview (${(kept.size / 1e9).toFixed(1)} GB) stays in the cloud: no room for it here, so the window reads it through this server`);
     return false;
   }
   bringing.add(id);
@@ -132,13 +156,22 @@ export async function windowSources(app: App, srcs: string[], readable: (id: str
       } catch (error) {
         diag.warn("writer", `${file.id.slice(0, 8)}: ${file.path} can't be read for the window's player: ${diag.messageOf(error)}`);
       }
-    } else if (file.preview && bring(data, cache, file.id)) coming.push(src);
+    } else if (file.preview) {
+      try {
+        const source = await stream(app, data, file.id);
+        if (source !== null) sources[src] = source;
+      } catch (error) {
+        diag.warn("writer", `${file.id.slice(0, 8)}: its preview in the cloud can't be read through this server for the window's player: ${diag.messageOf(error)}`);
+      }
+      if (bring(data, cache, file.id)) coming.push(src);
+    }
   }
   return { cache, sources, coming };
 }
 
 /** For tests. */
 export function reset(): void {
+  streamed.clear();
   bringing.clear();
   notNow.clear();
   probed.clear();

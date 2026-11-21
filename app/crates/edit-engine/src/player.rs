@@ -1433,12 +1433,18 @@ impl Player {
     }
 }
 
-/// Whether `path` is this server's loopback stream of a cloud preview (`…/api/cloud/preview?key=`), whose bytes it
-/// keeps in blocks on disk as they're read: what's worth reading ahead.
+/// Whether `path` is this server's loopback stream of a cloud preview (`…/api/cloud/preview?key=`, or a script's
+/// preview in the cloud, `…/api/writer/scripts/<id>/proxy`), whose bytes it keeps in blocks on disk as they're read:
+/// what's worth reading ahead.
 fn through_server(path: &std::path::Path) -> bool {
     path.to_str().is_some_and(|text| {
         (text.starts_with("http://127.0.0.1:") || text.starts_with("http://localhost:"))
-            && text.contains("/api/cloud/preview?")
+            && (text.contains("/api/cloud/preview?")
+                || (text.contains("/api/writer/scripts/")
+                    && text
+                        .split('?')
+                        .next()
+                        .is_some_and(|path| path.ends_with("/proxy"))))
     })
 }
 
@@ -1605,5 +1611,30 @@ fn mix_into(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::through_server;
+    use std::path::Path;
+
+    #[test]
+    fn a_scripts_preview_in_the_cloud_is_read_ahead_as_the_editors_cloud_footage_is() {
+        assert!(through_server(Path::new(
+            "http://127.0.0.1:7700/api/cloud/preview?key=edit%2Fproxies%2Fa.mp4"
+        )));
+        assert!(through_server(Path::new(
+            "http://127.0.0.1:7700/api/writer/scripts/7d0e4c1a-2b3f-4a5e-8c9d-0f1e2d3c4b5a/proxy"
+        )));
+        assert!(!through_server(Path::new(
+            "http://127.0.0.1:7700/api/writer/scripts/7d0e4c1a/footage/yt-0.mp4"
+        )));
+        assert!(!through_server(Path::new(
+            "/Users/x/.edit/writer/scripts/a/proxy.mp4"
+        )));
+        assert!(!through_server(Path::new(
+            "https://example.com/api/cloud/preview?key=a"
+        )));
     }
 }

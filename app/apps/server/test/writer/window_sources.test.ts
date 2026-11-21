@@ -46,13 +46,18 @@ beforeAll(async () => {
   home = fs.mkdtempSync(join(os.tmpdir(), "edit-window-sources-"));
   clip = join(home, "clip.mp4");
   await tools.run([tools.ffmpeg(), "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "2", "-c:v", "libx264", "-c:a", "aac", "-shortest", clip]);
-  app = { store: { home, cacheDir: () => join(home, "cache") } } as unknown as App;
+  app = { port: 7700, store: { home, cacheDir: () => join(home, "cache") } } as unknown as App;
 });
 afterAll(() => fs.rmSync(home, { recursive: true, force: true }));
+/** The stream's probe, as the window's address of a preview in the cloud is read (no server here). */
+const STREAM = { width: 854, height: 480, durationMs: 1_000, fps: 30, sound: true };
+let probed: string[] = [];
 beforeEach(() => {
   reset();
   locks.resetForTests();
   Object.assign(hooks, kept);
+  probed = [];
+  hooks.probeStream = async (url) => { probed.push(url); return { path: url, ...STREAM }; };
   fs.rmSync(store.dataDir(home), { recursive: true, force: true });
 });
 
@@ -75,7 +80,7 @@ test("a preview on this Mac is answered with its file and what's in it, a commen
   expect(answer.sources[srcs[2]!]!.path).toBe(join(dir, "found (1).mp4"));
 });
 
-test("a preview only in the cloud comes down behind the ask when there's room, once, and is answered when it's here", async () => {
+test("a preview only in the cloud is answered at once with this server's stream of it, so the window plays it from the first picture; it comes down behind the ask when there's room, once, and its file is answered when it's here", async () => {
   const dir = script(ID);
   inCloud(ID, 5_000);
   let fetched = 0;
@@ -90,10 +95,12 @@ test("a preview only in the cloud comes down behind the ask when there's room, o
       };
     });
   };
-  expect(await windowSources(app, [proxyOf(ID)], () => true)).toMatchObject({ sources: {}, coming: [proxyOf(ID)] });
-  // Asked again while it's on its way: still coming, not fetched twice.
-  expect(await windowSources(app, [proxyOf(ID)], () => true)).toMatchObject({ sources: {}, coming: [proxyOf(ID)] });
+  const url = `http://127.0.0.1:7700/api/writer/scripts/${ID}/proxy`;
+  expect(await windowSources(app, [proxyOf(ID)], () => true)).toMatchObject({ sources: { [proxyOf(ID)]: { path: url, width: 854 } }, coming: [proxyOf(ID)] });
+  // Asked again while it's on its way: still coming, not fetched twice, its stream not probed again.
+  expect(await windowSources(app, [proxyOf(ID)], () => true)).toMatchObject({ sources: { [proxyOf(ID)]: { path: url } }, coming: [proxyOf(ID)] });
   expect(fetched).toBe(1);
+  expect(probed).toEqual([url]);
   land();
   await new Promise((resolve) => setTimeout(resolve, 0));
   const here = await windowSources(app, [proxyOf(ID)], () => true);
@@ -101,7 +108,7 @@ test("a preview only in the cloud comes down behind the ask when there's room, o
   expect(here.sources[proxyOf(ID)]!.path).toBe(store.proxyPath(dir));
 });
 
-test("with no room for it the preview stays in the cloud (the page plays it), and the disk isn't measured again at every ask", async () => {
+test("with no room for it the preview stays in the cloud (the window reads it through this server), and the disk isn't measured again at every ask", async () => {
   script(ID);
   inCloud(ID, 5_000);
   let measured = 0;
@@ -115,7 +122,7 @@ test("with no room for it the preview stays in the cloud (the page plays it), an
     fetched++;
     return Promise.resolve("");
   };
-  for (let ask = 0; ask < 3; ask++) expect(await windowSources(app, [proxyOf(ID)], () => true)).toMatchObject({ sources: {}, coming: [] });
+  for (let ask = 0; ask < 3; ask++) expect(await windowSources(app, [proxyOf(ID)], () => true)).toMatchObject({ sources: { [proxyOf(ID)]: { path: `http://127.0.0.1:7700/api/writer/scripts/${ID}/proxy` } }, coming: [] });
   expect([measured, fetched]).toEqual([1, 0]);
 });
 

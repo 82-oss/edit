@@ -145,7 +145,7 @@ describe("the script's player, chosen where it runs", () => {
     expect(page.fake.project!.media.map((media) => media.id).sort()).toEqual([SRC, other].sort());
   });
 
-  it("a window that can't go on hands the cut back to the page's player at the same moment, still playing, and isn't tried again", async () => {
+  it("a window that can't go on says so and is opened again by itself, the cut going on there where it was, still playing; the page's player never starts (the owner, Nov 21)", async () => {
     const { player, playhead, screen } = opened();
     await page.settle();
     player.play(0);
@@ -155,21 +155,25 @@ describe("the script's player, chosen where it runs", () => {
     expect(playhead.ms).toBe(5_000);
     // Its player thread is gone: every ask of it fails.
     page.fake.refuse = (command) => (command === "preview_close" || command === "preview_place" ? null : "the preview stopped");
-    for (let turn = 0; turn < 3; turn++) {
+    for (let turn = 0; turn < 3 && player.drawnBy === "window"; turn++) {
       await page.frames();
       await vi.advanceTimersByTimeAsync(300);
       await page.settle();
     }
-    expect(player.drawnBy).toBe("page");
+    expect(player.drawnBy).toBe("choosing");
+    expect(player.error).toBe("The player stopped. Edit is opening it again.");
     expect(page.fake.of("preview_close")).toHaveLength(1);
     expect(page.root.classes.has("native-preview")).toBe(false);
     expect(screen.panel.attributes.has("data-window")).toBe(false);
-    expect([playhead.ms, player.playing]).toEqual([5_000, true]);
-    // A changed cut doesn't bring the window back.
+    // Back: opened again, playing on from where it was.
     page.fake.refuse = () => null;
-    player.update([clips[0]!]);
+    const opens = page.fake.of("preview_open").length;
+    await vi.advanceTimersByTimeAsync(2_000);
     await page.settle();
-    expect(player.drawnBy).toBe("page");
+    expect(player.drawnBy).toBe("window");
+    expect(page.fake.of("preview_open")).toHaveLength(opens + 1);
+    expect(player.error).toBeNull();
+    expect(page.fake.last("preview_play")).toEqual({ frame: 150 });
   });
 
   it("a player nobody sees asks for nothing: no canvas, no question to the server, no window", async () => {
