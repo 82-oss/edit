@@ -944,8 +944,10 @@ describe("preview seeks and lifetime", () => {
       preview.play(); await settle();
       expect(sent("preview_play")).toEqual([{ frame: 0 }]);
       time.at.ms = 300; windowClock.frame = 20; draw(); await settle();
-      // The clock stops at 20 (its sound ran short): past the start's grace and the stall's 400 ms, held there.
+      // The clock stops at 20 (its sound ran short): past the start's grace and a start's stall (1.2 s), held there.
       time.at.ms = 1500; draw(); await settle(); await settle(); await settle();
+      expect(sent("preview_pause")).toHaveLength(0);
+      time.at.ms = 2000; draw(); await settle(); await settle(); await settle();
       expect(sent("preview_pause").length).toBeGreaterThanOrEqual(1);
       expect(sent("preview_hint").at(-1)).toEqual({ frame: 20, hold: true });
       expect(playhead.playing).toBe(true);
@@ -982,10 +984,13 @@ describe("preview seeks and lifetime", () => {
       windowClock.skipped = 0; windowClock.frame = 40; time.at.ms = 2600; draw(); await settle();
       expect(sent("preview_hint").filter((hint) => hint.hold === true)).toHaveLength(0);
       expect(playhead.frame).toBe(40);
-      windowClock.frame = 5; time.at.ms = 2700; draw(); await settle();
-      // A clock that stops once it has drawn is a stall, as before.
-      time.at.ms = 3800; draw(); await settle(); await settle(); await settle();
-      expect(sent("preview_hint").at(-1)).toEqual({ frame: 5, hold: true });
+      // A short pause as its reads fill, in its first seconds: it carries on by itself, not held.
+      time.at.ms = 3300; draw(); await settle(); await settle();
+      expect(sent("preview_hint").filter((hint) => hint.hold === true)).toHaveLength(0);
+      windowClock.frame = 50; time.at.ms = 4500; draw(); await settle();
+      // Past them, a clock that stops is a stall at 400 ms, as before.
+      time.at.ms = 5000; draw(); await settle(); await settle(); await settle();
+      expect(sent("preview_hint").at(-1)).toEqual({ frame: 50, hold: true });
     } finally {
       time.restore();
     }
@@ -1033,12 +1038,12 @@ describe("preview seeks and lifetime", () => {
     try {
       preview.play(); await settle();
       time.at.ms = 300; windowClock.frame = 20; draw(); await settle();
-      time.at.ms = 1500; draw(); await settle(); await settle(); await settle();
+      time.at.ms = 2000; draw(); await settle(); await settle(); await settle();
       expect(sent("preview_pause").length).toBeGreaterThanOrEqual(1);
       // Here by the server's word, but the hold's only just begun.
       await lookAgain();
       expect(sent("preview_play")).toHaveLength(1);
-      time.at.ms = 1500 + 1600; await lookAgain();
+      time.at.ms = 2000 + 1600; await lookAgain();
       expect(sent("preview_play").at(-1)).toEqual({ frame: 20 });
     } finally {
       time.restore();

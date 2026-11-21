@@ -185,6 +185,12 @@ const START_GRACE_MS = 600;
  * busy alongside it before, happened not to see it in time.
  */
 const FIRST_FRAME_MS = 4000;
+/**
+ * In those first seconds a still clock is a stall only past this long: the window's reads ahead still fill after a
+ * cold first frame, and it carries on by itself; held at 400 ms, the play then waited for 2 s to be read (the MacBook
+ * Air, Nov 21: a 0.4 s pause after a 0.58 s first frame cost 1.1 s more on a spinner).
+ */
+const START_STALL_MS = 1200;
 /** The page's own play, its picture or sound missing this long: the clock holds until they're in. */
 const LIVE_HOLD_MS = 300;
 /** What's here is asked this often while playing or holding, and at rest; a play asks for what's ahead this often. */
@@ -1525,7 +1531,7 @@ class Preview {
     if (at.frame !== this.windowMoved.frame) this.windowMoved = { frame: at.frame, at: Math.max(now, this.windowMoved.at) };
     // Its first frame still on the way (a cold read): waited for, not held as a stall, up to `FIRST_FRAME_MS`.
     const first = this.nativeRun !== null && this.nativeRun.shown === 0 && now - this.runStartedAt < FIRST_FRAME_MS;
-    const stalled = !first && now - this.windowMoved.at > STALL_MS;
+    const stalled = !first && now - this.windowMoved.at > (now - this.runStartedAt < FIRST_FRAME_MS ? START_STALL_MS : STALL_MS);
     if (at.skipped > 0 && !catchingUp) this.windowSkips.push([now, at.skipped]);
     while (this.windowSkips.length > 0 && now - this.windowSkips[0]![0] > 1000) this.windowSkips.shift();
     const skipped = this.windowSkips.reduce((sum, [, count]) => sum + count, 0);
