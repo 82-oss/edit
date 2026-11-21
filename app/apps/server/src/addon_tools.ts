@@ -97,18 +97,22 @@ async function list({ app, args, projectId }: ToolCall): Promise<Content[]> {
   const grouped = channels.groupOf(channel) !== null;
   const only = args.name === undefined || args.name === null || args.name === "" ? null : nameOf(args.name);
   const all = [...addons.ofChannel(channel, "edit"), ...addons.ofChannel(channel, "script")].filter((one) => only === null || one.name === only);
+  // The forms this channel's edits take: an add-on for the other one never runs here, whatever it's set to (Nov 21: a
+  // channel set to Shorts only read "On here" for five long-video checks, and its agent told the person they were on).
+  const forms = addons.formsOf(channel);
   const lines = all.map((one) => {
     const own = addons.CATALOGUE[one.name];
+    const never = !forScripts(one.name) && own.form !== "any" && !forms.includes(own.form);
     const takes = Object.entries(own.settings).map(([key, setting]) => `${key}: ${setting.words}`);
     // A script's add-on says nothing of this edit: only an edit's can differ on it (its frame, the kind it was made as).
     const differs = !forScripts(one.name) && addons.has(project, one.name) !== one.on;
     return (
       `- ${one.name} (${own.title}${forScripts(one.name) ? ", for this channel's scripts" : ""}): ${own.description} Runs ${whenOf(one.name)}. ` +
-      `${one.on ? "On" : "Off"} here (${whereFrom(one, grouped)})` +
+      (never && one.on ? `Never runs here: it's for ${frameWords(one.name)}, and this channel makes only ${forms[0] === "short" ? "Shorts" : "long videos"}` : `${one.on ? "On" : "Off"} here (${whereFrom(one, grouped)})`) +
       (Object.keys(one.settings).length > 0 ? `, with ${settingsText(one.settings)}` : "") +
       "." +
       (takes.length > 0 ? ` Takes ${takes.join("; ")}.` : "") +
-      (differs ? ` This project ${one.on ? `doesn't run it: it's for ${frameWords(one.name)}` : "runs it all the same: it was made with another kind of video's add-ons, and keeps them"}.` : "")
+      (differs && !never ? ` This project ${one.on ? `doesn't run it: it's for ${frameWords(one.name)}` : "runs it all the same: it was made with another kind of video's add-ons, and keeps them"}.` : "")
     );
   });
   const unread = !v2cloud.enabled() || !v2cloud.teachingKnown() ? "\nWhat's set on this channel couldn't be read yet, so this is Edit's defaults: ask again in a moment." : "";

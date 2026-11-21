@@ -272,6 +272,15 @@ describe("addons", () => {
       expect(line("horror-look")).toContain("Off here (Edit's default for this channel).");
       expect(line("short-form")).toContain("Runs when a project is made in this channel; gives you reframe.");
       expect(line("short-form")).toContain('Takes forms: "short" (every project is a Short) or "both"');
+      // On a channel set to Shorts only, a long video's check never runs, and isn't called on (Nov 21: the Shorts
+      // channel's agent told the person five long-video checks were on there).
+      v2cloud.useSkillsForTests([...LESSONS, item(edit("solo"), "short-form", true)]);
+      const shorts = (await call(app, await made(app, "solo"), "addons", {})).text.split("\n");
+      const short = (name: string) => shorts.find((row) => row.startsWith(`- ${name} `))!;
+      expect(short("windows-screens")).toContain("Never runs here: it's for long videos, and this channel makes only Shorts.");
+      expect(short("windows-screens")).not.toContain("On here");
+      expect(short("short-form")).toContain("On here (set for this channel)");
+      v2cloud.useSkillsForTests([...LESSONS, item(edit("grp"), "muted-words", true, { list: "horror" }), item(edit("alpha"), "bodycam-intro", false)]);
       // One alone.
       const one = (await call(app, id, "addons", { name: "reverb-out" })).text;
       expect(one.split("\n").filter((row) => row.startsWith("- "))).toHaveLength(1);
