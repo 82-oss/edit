@@ -23,6 +23,11 @@ Also found while checking, not from the old files: every call to the cloud's rec
 
 ## Imports and Script mode
 
+- **Importing a file under 20 minutes blocks the file browser for over two minutes**: a whole proxy is made before the import answers (the 1200 s cutoff in `cloud_media.ts`). On the MacBook Air, Nov 21, three files of about 14.6 minutes took 2 min 14 s to 2 min 23 s each, the browser on its busy button throughout; a 20.75-minute file answered in 13.6 s.
+- **A YouTube import through Script mode says "5% Starting." for the whole download**, about a minute, and an 18-second clip took 49 s, 35 of them fetching captions through the proxy.
+- **Originals going up aren't uploads "behind"** (`cloud_media.ts` `runUpload`), so they never give way to a play or an import's downloads, and a Script import has no running row for the upload pacing to see (`cloud.ts` `forPerson`).
+- **Room is asked for before the work is known to fit** (`storage.ts` `admit`): an import too big for the disk gives up kept copies and is still refused.
+- **Restoring an archived project's excerpts still cuts straight from R2** (`cloud_media.ts` `restoreHere`, `remake`), with the waste the import's cuts no longer have.
 - **Script mode deletes its local copy once it's uploaded**, so Start the edit reads every recording back over the network (`apps/server/src/writer/streamed.ts` `settle`, then `drop`). The copy should be kept as the local original while there's room.
 - **Two fetch paths where one was planned**: fetch to disk first when there's room, one function with a "room here?" branch. `footageToDisk` and `footageToCloud` are still two (`script.ts`), `cutsBetterHere` / `wholeHere` and the fallback in `driveExcerpts` remain (`cloud_media.ts`), and the ledger doesn't cover Script mode's footage (`ledger.ts` `rootsOf`).
 - **Three bad-day cases are stubs**: `handoff-no-refetch`, `resume-download`, `upload-behind` throw "isn't written yet" (`scripts/bad-day/cases/stubs.ts`). They wait on the two items above.
@@ -45,6 +50,12 @@ Also found while checking, not from the old files: every call to the cloud's rec
 
 ## Exports and shares
 
+- **An export restarted after a kill shows its progress from 1%**, then jumps from 77% to 100% at the end (the MacBook Air, Nov 21; the file is right and 6 of 26 chunks were reused).
+- **Three export lines say too little**: the log never names the encoder ("native video"), a share's review copy has no percentage (2 min 14 s of nothing), and the join shows "100%" for its 22 s.
+- **Two shares still upload twice**: one that follows a plain export already running, and one of an export archived earlier (the cloud has no copy-in-place).
+- **After a restart a share's full-quality file gone from the Mac isn't fetched back**: `serve.ts`'s `full` resumer ends it as gone before `fullBehind`'s fetch-back runs.
+- **A plain export whose cloud copy is put off isn't protected from the cleaner** (only a share's is, `exports.ts` `beingRead`).
+- **Voice-overs made before Nov 21 on a channel project keep the style's voice** until their words change (`voice.ts` `forProject` reuses one made from the same words).
 - **A share's export goes up twice in full**: the archive (`edit/exports/…`), then the review's `full.mp4` (`exports.ts` `heldByReview`, `reviews.ts` `fullBehind`). The relay has no server-side copy. With it: the review copy isn't uploaded ahead of the share, and it's still 3 Mbit/s (`reviews.ts`).
 - **One encoder lease with priorities** (export > share copy > playback > made ahead > proxies): `encoder.ts` only counts users. Done so far: a person's Export takes the encoder from smooth playback's render.
 - **An export made ahead doesn't step aside for a live play** (it checks only before it starts, `export_ahead.ts`), a real export doesn't use fewer encoders while something plays, and exports made ahead have no byte quota. Whether to keep exports made ahead at all waits on a week's count of how often one is used.
@@ -58,8 +69,10 @@ Also found while checking, not from the old files: every call to the cloud's rec
 
 ## Playback
 
-- **Edit.app's player, from the Nov 20 audit**: long videos' sound always streams (it could come from the piece here); the window's read-ahead is skipped for any file that has excerpts; the sound clock isn't restarted after an output device change or a wake; one failing sound part silences the rest of a play.
-- **The first picture from a fresh decoder takes 181 to 228 ms on the MacBook Air** (3 of 3 runs, Nov 21), against the 100 ms mark of `scripts/acceptance.ts --native`.
+- **Once, entering full screen paused the play** (the MacBook Air, Nov 21; not seen again in two more tries).
+- **A second scrub drew two positions late** (356 and 160 ms, both decoding forward across a cut; the rest about 16 ms).
+- **Edit.app's player, from the Nov 20 audit**: long videos' sound always streams (seen on the MacBook Air, Nov 21: 20 minutes of sound read over HTTP for four minutes with the file on the Mac); the window's read-ahead is skipped for any file that has excerpts; the sound clock isn't restarted after an output device change or a wake; one failing sound part silences the rest of a play.
+- **The first picture from a fresh decoder takes 181 to 378 ms on the MacBook Air** (4 of 5 runs, Nov 21), against the 100 ms mark of `scripts/acceptance.ts --native`.
 - **One local proxy by rule, never uploaded** (the local-first plan's step 3, never built). Measured Nov 18 on an M1: a file whose keyframes are at most about 2 s apart plays as the original (jumps 33 to 54 ms); everything else, which is every YouTube download (keyframes 4 to 7 s apart, up to 13.5 s) and long-GOP Drive exports, jumps at 140 to 600 ms under an agent's load. The rule: probe keyframe spacing at import (`ffprobe -skip_frame nokey`); files over 2 s get one proxy at 720p, a keyframe every second, no B-frames, about 1.8 Mbit/s, made at 5 to 17 times real time and kept on the Mac only. Today's proxy is up to 1080p at 4 Mbit/s, made in pieces and uploaded (`proxy_pieces.ts`, `crates/edit-native/src/media.rs`). A 113-minute source is 1.81 GB as the original against 6 to 9 GB of preview copies. Not yet measured: capping a 60 fps source's proxy at 30 fps, phone HEVC and 4K footage, the 2.1 to 2.4 s first seek.
 - **One player, and the old layers retired**: full screen still uses the page's player (`apps/web/src/components/Viewer.tsx`), and the page player's smooth render, scrub pieces, stitched stream, block cache and export excerpts are all still here (`playback_render.ts`, `playback_stream.ts`, `scrub.ts`, `cloud_blocks.ts`, `export_excerpts.ts`, `native_preview.ts` `joined/` and `native2/`). They go once playing from files on the Mac is proven on a real Mac.
 - **A drag forward in Edit.app is bound by its seek** (20 to 80 ms a position) past the 2 s a reader reads on; a reader kept ahead of a forward drag would hide it (`render.rs` `ReaderPool`, `player.rs` `hint`).
@@ -71,6 +84,10 @@ Also found while checking, not from the old files: every call to the cloud's rec
 
 ## The server's thread, start and crashes
 
+- **`GET …/playback/ready` kept the thread 3.7 s** with a 50-minute project open in the window (the MacBook Air, Nov 21).
+- **The cache clean calls the native `mediaKey` once a file without a breath** (`cache_cleanup.ts`): two holds of 2.0 s on the MacBook Air, Nov 21. The same pass as the hourly clean below.
+- **Still synchronous on the thread**: a file under 32 MiB is read with `fs.readSync` as it uploads (`cloud.ts` `fileSource`); a media's whole transcript is read and parsed at `watch.ts` (megabytes for hours of footage); every render serialises the whole edit to start (`native/index.ts` `ExportStart.project` takes only JSON).
+- **A tool call can't be cancelled**: `mcp/registry.ts` `ToolCall` carries no signal, so `review_motion` can't stop its sample when the request goes.
 - **As Edit starts it answers nothing for 3 to 8 s** on a home with long edits ("last started: GET /api/projects/{id}/text-removal"). Read the `[thread]` lines of a start.
 - **The hourly cache clean keeps the thread about 3 s** on a home of 14,000 cached files (`cache_cleanup.ts` `cleanCache` or `cleanExports`; each names itself in the `[thread]` line).
 - **A Nov 4 `.partial` file in `cloud/sound` is never swept**: eviction skips partial files and the other sweep doesn't match that path (`cache_cleanup.ts`).
