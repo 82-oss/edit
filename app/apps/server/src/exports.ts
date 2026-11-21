@@ -252,9 +252,121 @@ export function holdExport(path: string): () => void {
 /** Finished exports going up to the cloud now, by their file: how each is stopped, and when it has. */
 const archiving = new Map<string, { stop: AbortController; done: Promise<void> }>();
 
-/** Whether something is reading the export at `path` now (a share making its copies, its own upload to the cloud). */
+/** Whether something is reading the export at `path` now (a share making its copies, its own upload to the cloud), or its one cloud copy is still to go up (`owedNow`). */
 export function beingRead(path: string): boolean {
-  return reading.has(path) || archiving.has(path);
+  return reading.has(path) || archiving.has(path) || owedNow(path);
+}
+
+/**
+ * A share's export goes to the cloud once, as its review's full-quality file (Nov 21: it went up twice in full, as
+ * its archive and as `full.mp4`, and one was deleted only after; on JJ's 8 Mbit/s line a 5 GB export is about 85
+ * minutes a copy). Its `archive` row is listed as the export ends, as any export's, so a restart at any point leaves
+ * a row that sees it into the cloud; but while its share (`share:<project>`, until its export is named) or the
+ * share's `full` upload of the file is still to do, even waiting on a dropped line, the row waits behind it with
+ * this step. It's crossed off once the export's record names the review's copy (`heldByReview`), and goes up as an
+ * archive only once the share ended with no full-quality file on its way (failed, cancelled, given up).
+ */
+const BEHIND_SHARE = "waiting for its share's full-quality file";
+
+/** How often a row waiting behind its share looks that the share still carries it (`watchBehind`), and its last-resort wake in the job table. */
+export const behindShare = { everyMs: 30_000, backstopMs: 60 * 60_000 };
+
+/** Data folders whose share-made exports are watched (an ExportRegistry's, and any that archived here). */
+const homes = new Set<string>();
+
+/** The archive row of the export at `output`, by its file: a share's is keyed by it, a plain one's by its project. */
+function archiveRow(home: string, id: string, output: string): jobs.Job | undefined {
+  return jobs.list(home, "archive").find((job) => job.project === id && job.args.output === output);
+}
+
+/**
+ * What still sends a share's export up as `full.mp4`, so its own archive waits: the share's `full` job for this file
+ * (live: going, or waiting for the line), or the share itself while it hasn't ended (its export not named yet, or
+ * named as this file). Null once neither is there.
+ */
+function carriedBy(home: string, id: string, output: string): "full" | "share" | null {
+  if (jobs.list(home, "full").some((job) => jobs.live(job) && job.args.path === output)) return "full";
+  const share = jobs.get(home, jobs.keyOf("share", id));
+  if (share === undefined || !jobs.live(share) || share.args.export === undefined) return null;
+  const named = share.args.path;
+  return named === undefined || named === output ? "share" : null;
+}
+
+/** The files whose one cloud copy is still owed (a share's archive row, live), read at most once a second. */
+let owed = { at: 0, paths: new Set<string>() };
+
+/**
+ * Whether the export at `path` is a share's whose one cloud copy isn't up yet: the cleaners leave it (cache_cleanup's
+ * retention and the Storage page ask `beingRead`), as it's the only copy there is until `full.mp4` or its archive is up.
+ */
+function owedNow(path: string): boolean {
+  if (homes.size === 0) return false;
+  const now = Date.now();
+  if (now - owed.at > 1000) {
+    const paths = new Set<string>();
+    for (const home of homes) {
+      for (const job of jobs.list(home, "archive")) if (jobs.live(job) && job.args.share === true && typeof job.args.output === "string") paths.add(job.args.output);
+    }
+    owed = { at: now, paths };
+  }
+  return owed.paths.has(path);
+}
+
+let watching: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Looks, every `behindShare.everyMs`, at the rows waiting behind their share in `home` (from now until Edit quits):
+ * one whose share no longer carries it is woken (`wakeBehindShare`). Only the job table is read meanwhile; nothing is
+ * written, and no row says running, until one has something to do.
+ */
+function watchBehind(home: string): void {
+  homes.add(home);
+  if (watching !== null) return;
+  const look = () => {
+    for (const one of homes) {
+      if (!fs.existsSync(one)) {
+        homes.delete(one);
+        continue;
+      }
+      try {
+        for (const project of new Set(jobs.list(one, "archive").filter(waitsBehind).map((job) => job.project))) wakeBehindShare(one, project);
+      } catch (error) {
+        diag.warn("export", `looking at exports waiting behind their share: ${diag.messageOf(error)}`);
+      }
+    }
+  };
+  const tick = () => {
+    look();
+    watching = setTimeout(tick, failure.scaled(behindShare.everyMs));
+    watching.unref?.();
+  };
+  watching = setTimeout(tick, failure.scaled(behindShare.everyMs));
+  watching.unref?.();
+}
+
+function waitsBehind(job: jobs.Job): boolean {
+  return job.state === "waiting" && job.args.share === true && job.step === BEHIND_SHARE;
+}
+
+/**
+ * The share of project `id` ended, or its full-quality file did (reviews.ts says so; the watch looks too): each of
+ * its exports waiting behind it that nothing carries any more goes now, to be crossed off (its record names the
+ * review's copy) or sent up as its archive. One still carried is left as it is.
+ */
+export function wakeBehindShare(home: string, id: string): void {
+  for (const job of jobs.list(home, "archive")) {
+    if (job.project !== id || !waitsBehind(job) || typeof job.args.output !== "string") continue;
+    if (carriedBy(home, id, job.args.output) !== null) continue;
+    jobs.settle(home, job.key, "waiting", { retry_at: nowMs(), step: "uploading" });
+  }
+}
+
+/** For tests: the watch stopped and its folders forgotten. */
+export function resetBehindShare(): void {
+  if (watching !== null) clearTimeout(watching);
+  watching = null;
+  homes.clear();
+  owed = { at: 0, paths: new Set() };
 }
 
 /**
@@ -441,6 +553,11 @@ export async function archiveExportFile(
   } catch { return false; }
   // Stopped for a newer export of this file: that one is written here now, and goes up itself.
   if (signal?.aborted) return false;
+  return letGoHere(output, room, wanted);
+}
+
+/** An export now in the cloud: kept here while the disk has room or something still reads it, else deleted. Whether that went as it should. */
+function letGoHere(output: string, room: (path: string) => number, wanted?: () => boolean): boolean {
   // Archived; while the disk keeps its room it stays here too: it's the project's newest.
   if (room(output) > KEEP_NEWEST_FREE) return true;
   // A copy being read stays until the reading's done; so does one a share's full-quality upload still has to send
@@ -460,14 +577,27 @@ export async function archiveExportFile(
  * export of the file, or not up (offline, signed out, the relay down): that
  * one's job waits and is tried again by itself (jobs.ts `wait`, failure.ts's schedule).
  */
-export type Archived = "up" | "stopped" | "not up";
+export type Archived = "up" | "stopped" | "not up" | "behind";
 
 /**
  * Puts a finished export in the cloud (`archiveExportFile`) and lists it
  * there: after the export, or after a restart cut the upload short (the
  * `archive` job). A file gone meanwhile is said, never exported again here.
+ * A share's export waits behind its share instead ("behind", `BEHIND_SHARE`).
  */
 export async function archiveFinished(home: string, id: string, output: string, key: string, record: ExportRecord, signal?: AbortSignal): Promise<Archived> {
+  watchBehind(home);
+  // Its row, found by its file (a share's export has its own: `ExportRegistry.run`); none in some tests.
+  const row = archiveRow(home, id, output);
+  const rowKey = row?.key ?? jobs.keyOf("archive", id);
+  const forShare = row?.args.share === true;
+  if (forShare && fs.existsSync(output)) {
+    const by = carriedBy(home, id, output);
+    if (by !== null) {
+      diag.info("export", `${id}: ${output} goes to the cloud once, as its review's full-quality file: its archive waits for ${by === "full" ? "that upload" : "its share"}`);
+      return "behind";
+    }
+  }
   if (!fs.existsSync(output)) {
     // Its review's copy stands in for it (`heldByReview`): listed as that.
     const kept = record.bytes === null ? null : reviewCopyOf(home, id, output, record.bytes);
@@ -485,20 +615,28 @@ export async function archiveFinished(home: string, id: string, output: string, 
     throw new jobs.Gone(`${output} is gone`);
   }
   // Its review's full-quality download is this very file already: not sent a second time.
-  const held = reviewCopyOf(home, id, output, fs.statSync(output).size);
+  const size = fs.statSync(output).size;
+  const wanted = () => jobs.list(home, "full").some((job) => jobs.live(job) && job.args.path === output);
+  const held = reviewCopyOf(home, id, output, size);
   if (held !== null) {
     remember(home, id, { ...record, cloudKey: held });
     diag.info("export", `${id}: ${output} is in the cloud already as ${held}: not archived again`);
+    // A share's export, its one copy up as `full.mp4`: kept here or not by the archive's own rule (the disk's room),
+    // as it would have been had the archive sent it; only once the cloud holds that copy whole.
+    if (forShare) {
+      dropKept(home, output);
+      const there = await exportCloud.head(held).catch(() => null);
+      if (there !== null && there.size === size) letGoHere(output, freeBytes, wanted);
+    }
     return "up";
   }
   // Short of room: the older copies kept while there was some go first, so this one may stay.
   dropKept(home, output);
   // Its job begun by an earlier run, or tried before and put off: carried on (what's up already isn't sent again).
-  const listed = jobs.get(home, jobs.keyOf("archive", id));
+  const listed = row ?? jobs.get(home, rowKey);
   const carriedOn = (listed?.started_ms ?? Infinity) < performance.timeOrigin || listed?.put_off !== undefined;
   // Its bytes going up are its row's beat (Nov 21): noted only as it began, an upload of hours read as still.
-  const moving = () => jobs.beat(home, jobs.keyOf("archive", id));
-  const wanted = () => jobs.list(home, "full").some((job) => jobs.live(job) && job.args.path === output);
+  const moving = () => jobs.beat(home, rowKey);
   if (await archiveExportFile(output, key, exportCloud, freeBytes, signal, carriedOn, moving, wanted)) {
     try {
       remember(home, id, record);
@@ -535,7 +673,11 @@ export async function archiveJob(home: string | null, job: string, send: () => P
     went = "not up";
     diag.warn("export", `${job}: archiving: ${diag.messageOf(error)}`);
   }
-  if (went === "not up") jobs.wait(home, job, "its export's cloud copy didn't go up");
+  // Behind its share: waiting, so nothing counts it as running (the Mac may sleep, an update isn't held), until the
+  // share or its full-quality file ends (`wakeBehindShare`, from reviews.ts and the watch); the table's own wake is
+  // only the last resort, an hour on. A restart meanwhile leaves it waiting, and the watch of the next run looks again.
+  if (went === "behind") jobs.settle(home, job, "waiting", { step: BEHIND_SHARE, retry_at: nowMs() + failure.scaled(behindShare.backstopMs) });
+  else if (went === "not up") jobs.wait(home, job, "its export's cloud copy didn't go up");
   else jobs.end(home, job);
 }
 
@@ -1017,7 +1159,10 @@ export class ExportRegistry implements seams.Exports {
   private sending = 0;
 
   /** The data folder whose exports list this keeps (`<home>/exports.json`); none in some tests. */
-  constructor(private readonly home: string | null = null) {}
+  constructor(private readonly home: string | null = null) {
+    // Its share-made exports waiting behind their share, from before a restart too, are looked at from the start.
+    if (home !== null) watchBehind(home);
+  }
 
   /** Whether `path` is a file this server exported, now or before a restart (and so may be downloaded or revealed). */
   exported(path: string): boolean {
@@ -1834,7 +1979,10 @@ export class ExportRegistry implements seams.Exports {
         // The export is done: its file is whole and listed. The archive is a job of its own, so a restart
         // meanwhile sends the file again instead of exporting it again (Nov 3: Kroger, 77 minutes, started
         // over from nothing by a restart during its upload); handed over in one write, so no crash falls between.
-        const archive = jobs.handOff(this.home, running.key, { kind: "archive", project: id, args: { output, key, record }, step: "uploading" });
+        // A share's export goes up once, as its review's `full.mp4` (`BEHIND_SHARE`): its row waits behind the share,
+        // and is its own (keyed by its file), so a plain export of the project ending meanwhile never crosses it off.
+        const share = running.share === true;
+        const archive = jobs.handOff(this.home, running.key, { kind: "archive", project: id, args: { output, key, record, ...(share ? { share: true } : {}) }, ...(share ? { part: output } : {}), step: "uploading" });
         // It goes up once the project is free again (below): while it was awaited here the project stayed
         // "exporting" for the whole upload, so a share of it waited (or, before nightly-69, was refused: JJ's Mac,
         // Nov 9, "this project already has an export running" 15 times in the 17 minutes one took), other work

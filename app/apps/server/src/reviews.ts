@@ -42,7 +42,7 @@ import { DEFAULT_RELAY, url as relayUrl } from "./relay.ts";
 import { ApiError } from "./http/errors.ts";
 import { readJson, type Router } from "./http/router.ts";
 import * as busy from "./busy.ts";
-import { chunkFolder, clipMap, cloudKeyFor, deleteExport, heldByReview, lastChunks, listExports, mapFile, optionsKey, timelineHash, withExport, withWatermarkKey } from "./exports.ts";
+import { chunkFolder, clipMap, cloudKeyFor, deleteExport, heldByReview, lastChunks, listExports, mapFile, optionsKey, timelineHash, wakeBehindShare, withExport, withWatermarkKey } from "./exports.ts";
 import { shareLine } from "./export_prep.ts";
 import * as speeds from "./export_speeds.ts";
 import * as effects from "./effects.ts";
@@ -459,8 +459,9 @@ export function cancelShare(app: App, projectId: string): boolean {
     stop.abort();
     sharing.set(projectId, "cancelling");
   } else if (listed) {
-    // Cut short by a restart and not carried on yet: nothing runs to stop, so its listing goes.
+    // Cut short by a restart and not carried on yet: nothing runs to stop, so its listing goes (and its export's archive with it, if it waited).
     jobs.end(home, shareKey(projectId));
+    wakeBehindShare(home, projectId);
   }
   if (exporting) app.exports.cancel(projectId);
   return true;
@@ -562,6 +563,10 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
             else last = { sent, total };
           }, undefined, true);
         }
+        // The export's own archive is the same bytes: it's kept once, as this. Named before the version is told (Nov 21):
+        // a share's export has no archive of its own any more (exports.ts `BEHIND_SHARE`), and this is its one cloud
+        // copy whether or not the review page hears of it.
+        await heldByReview(home, projectId, path, key, last.total).catch((error: unknown) => diag.warn("review", `${name}: keeping the export once: ${diag.messageOf(error)}`));
         // Named in its version only now: named at the publish, the page's Download button was there hours before the
         // file (Nov 8, Killer Pastor's v3: its 4.6 GB export still going up, and Download saved "media.json", the 404).
         if (version !== undefined) {
@@ -573,8 +578,6 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
           }
         }
         diag.info("review", `${name}: the full-quality file is up for the review's Download button`);
-        // The export's own archive is the same bytes: it's kept once, as this.
-        await heldByReview(home, projectId, path, key, last.total).catch((error: unknown) => diag.warn("review", `${name}: keeping the export once: ${diag.messageOf(error)}`));
         return;
       } catch (error) {
         if (attempt >= fullUpload.tries) {
@@ -590,6 +593,8 @@ export function fullBehind(home: string, projectId: string, name: string, path: 
   }).finally(() => {
     if (putOff === null) jobs.end(home, job);
     else jobs.wait(home, job, putOff);
+    // Its export's archive, waiting behind it, is crossed off (up as this) or goes now (this ended without the file up).
+    if (putOff === null) wakeBehindShare(home, projectId);
   });
 }
 
@@ -715,6 +720,7 @@ export function resumeShareJob(app: App, job: jobs.Job): void {
   if (sharing.has(job.project)) return;
   if (!cloud.enabled()) {
     jobs.settle(app.store.home, job.key, "failed", { error: "sharing needs Edit's cloud (sign in)", build: BUILD });
+    wakeBehindShare(app.store.home, job.project);
     return;
   }
   const run = runShare(app, job.project);
@@ -836,7 +842,12 @@ async function runShare(app: App, projectId: string): Promise<{ url: string; ver
     sharing.delete(projectId);
     speeds.uploadEnds(projectId);
     dropShare(projectId);
-    if (!shareGoing(home, projectId)) fs.rmSync(join(home, "jobs", `share-${projectId}.json`), { force: true });
+    if (!shareGoing(home, projectId)) {
+      fs.rmSync(join(home, "jobs", `share-${projectId}.json`), { force: true });
+      // Ended (failed, cancelled, or done with its full-quality file listed): its export's archive, waiting behind it,
+      // goes now if nothing sends that file (exports.ts `BEHIND_SHARE`). A share that only waits isn't ended.
+      wakeBehindShare(home, projectId);
+    }
   }
 }
 
