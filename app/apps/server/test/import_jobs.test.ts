@@ -3,7 +3,7 @@
 // every step is bounded, the plan's credit and the shared encoder are waits
 // rather than errors, and what follows the layout never fails the import.
 
-import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, setSystemTime, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 
 import { createApp } from "../src/app.ts";
@@ -12,6 +12,7 @@ import * as failure from "../src/failure.ts";
 import * as steps from "../src/import_steps.ts";
 import * as jobs from "../src/jobs.ts";
 import * as missingMedia from "../src/missing_media.ts";
+import * as notices from "../src/notices.ts";
 import { Processor } from "../src/media.ts";
 import type { MediaStatus, Probe, ScriptJob } from "../src/model.ts";
 import * as relay from "../src/relay.ts";
@@ -112,10 +113,10 @@ test("an import waiting on the person survives a restart with its files' states,
     const before = await settled(scripts, id);
     expect(before.state).toBe("waiting");
     expect(before.files.map((file) => [file.state, file.why ?? null])).toEqual([["done", null], ["failed", "person"]]);
-    // Not tried again by itself: only the person can answer that one.
+    // Not tried again at once: only the person can answer that one (it's looked at again in half an hour, Nov 21).
     expect(fetched).toEqual(["FILEcase0001", "FILEcase0002"]);
-    // In the job table, waiting on the person: never cut short by a restart, never given up.
-    expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", until: "person" });
+    // In the job table, waiting on the person and its next look: never cut short by a restart, never given up.
+    expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", step: "waiting for the person", retry_at: before.files[1]!.retry_at });
     expect(jobs.takeOver(fixture.home, ["case"])).toEqual([]);
 
     // A restart: a new process reads the same Downloads panel back.
@@ -223,7 +224,7 @@ test("going on without a file that's really gone keeps its ranges in place as bl
     await start(fixture.app, id, false);
     const asked = await settled(scripts, id);
     expect(asked.files[1]).toMatchObject({ state: "failed", why: "person" });
-    expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", until: "person" });
+    expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", step: "waiting for the person", retry_at: asked.files[1]!.retry_at });
 
     await skipFootage(fixture.app, id, "FILEcase0002");
     const done = await settled(scripts, id);
@@ -750,6 +751,134 @@ test("a keyframe that can't be read is a failure tried again, never the file's s
     expect(failed?.message).toStartWith("Finding the excerpt's keyframe: the footage couldn't be read");
     expect(steps.whyOf(failed)).toBe("passing");
   } finally {
+    fixture.cleanup();
+  }
+});
+
+// Nov 21: a file the person was asked about (a Drive link never shared) was never looked at again, though the rule of
+// Nov 19 said every 30 minutes: shared in Drive since, the import still waited for Try again. Now it's looked at again
+// by itself, quietly: its question stays as it was while it's looked at, and goes only once the file comes in.
+test("a file not shared is looked at again by itself in 30 minutes: shared since, the import finishes with nothing pressed", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-person-looks", { services: { scripts } });
+  try {
+    const id = await twoFiles(fixture);
+    let shared = false;
+    const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" && !shared ? new steps.NeedsPerson("This Drive file isn't shared. Set it so anyone with the link can view.") : null));
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    await start(fixture.app, id, false);
+    const asked = await settled(scripts, id);
+    // Its question as before: the person's file failed, what the page asks about.
+    expect(asked.state).toBe("waiting");
+    expect(asked.files[1]).toMatchObject({ state: "failed", why: "person", tries: 1 });
+    // And its next look, half an hour on, the import's too: the job table wakes it.
+    const at = asked.files[1]!.retry_at!;
+    expect(at - Date.now()).toBeGreaterThan(29 * 60_000);
+    expect(at - Date.now()).toBeLessThanOrEqual(30 * 60_000);
+    expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", step: "waiting for the person", retry_at: at });
+    expect(caseJob(fixture.home, id)!.until).toBeUndefined();
+
+    // Shared in Drive meanwhile; nobody presses anything. At its time the table wakes it.
+    shared = true;
+    jobs.useResumers(fixture.home, { case: (one) => void carryOn(fixture.app, one.project) });
+    setSystemTime(new Date(at + 1_000));
+    await jobs.wake(fixture.home, ["case"]);
+    const done = await settled(scripts, id);
+    expect(done.state).toBe("done");
+    expect(done.files.every((file) => file.state === "done")).toBe(true);
+    expect(fetched.filter((file) => file === "FILEcase0002").length).toBe(2);
+    expect(fixture.store.get(id)!.project.script!.blocks.filter((block) => block.kind === "footage").every((block) => typeof block.media === "string")).toBe(true);
+  } finally {
+    setSystemTime();
+    fixture.cleanup();
+  }
+});
+
+test("a file still not shared keeps its question through each quiet look, looked at again every 30 minutes for good: no notice, no tries spent", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-person-still", { services: { scripts } });
+  const told = mocked(spyOn(notices, "notify"));
+  try {
+    const id = await twoFiles(fixture);
+    const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" ? new steps.NeedsPerson("This Drive file isn't shared. Set it so anyone with the link can view.") : null));
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    await start(fixture.app, id, false);
+    const first = await settled(scripts, id);
+    const row = () => caseJob(fixture.home, id)!;
+    const counts = () => [row().attempts, row().put_off ?? null, row().args.same_count ?? null];
+    const before = counts();
+    jobs.useResumers(fixture.home, { case: (one) => void carryOn(fixture.app, one.project) });
+    // What the page is told while each look runs: the import waiting, the file asked about, never "Downloading".
+    const heard: ScriptJob[] = [];
+    fixture.store.subscribe((event) => {
+      if (event.type === "script" && event.id === id) heard.push(event.job as ScriptJob);
+    });
+    let at = first.files[1]!.retry_at!;
+    for (let look = 1; look <= 3; look++) {
+      setSystemTime(new Date(at + 1_000));
+      await jobs.wake(fixture.home, ["case"]);
+      const after = await settled(scripts, id);
+      expect(after.state).toBe("waiting");
+      expect(after.files[1]).toMatchObject({ state: "failed", why: "person", tries: 1, error: first.files[1]!.error });
+      expect(after.error).toBe(first.error);
+      // Its next look half an hour after this one, for good.
+      expect(after.files[1]!.retry_at! - (at + 1_000)).toBeGreaterThan(29 * 60_000);
+      expect(row()).toMatchObject({ state: "waiting", step: "waiting for the person", retry_at: after.files[1]!.retry_at });
+      at = after.files[1]!.retry_at!;
+    }
+    expect(fetched.filter((file) => file === "FILEcase0002").length).toBe(4);
+    // The file kept in is never fetched again.
+    expect(fetched.filter((file) => file === "FILEcase0001").length).toBe(1);
+    expect(heard.length).toBeGreaterThan(0);
+    for (const job of heard) {
+      expect(job.state).toBe("waiting");
+      expect(job.files[1]).toMatchObject({ state: "failed", why: "person" });
+    }
+    // Nothing counted against it, and nobody told anything.
+    expect(counts()).toEqual(before);
+    expect(told).not.toHaveBeenCalled();
+    // The person can still answer between looks: going on without it lays the edit out.
+    await skipFootage(fixture.app, id, "FILEcase0002");
+    expect((await settled(scripts, id)).state).toBe("done");
+  } finally {
+    setSystemTime();
+    fixture.cleanup();
+  }
+});
+
+test("an answer given while a quiet look is under way waits for it, never refused as still working", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-person-answer", { services: { scripts } });
+  try {
+    const id = await twoFiles(fixture);
+    let gate: Promise<void> | null = null;
+    let open = () => {};
+    cloudFootage(SOUNDLESS, () => null);
+    mocked(
+      spyOn(seams.cloudMedia, "driveOriginal").mockImplementation(async (file: string) => {
+        if (file === "FILEcase0002") {
+          if (gate !== null) await gate;
+          throw new steps.NeedsPerson("This Drive file isn't shared. Set it so anyone with the link can view.");
+        }
+        return { file, source: `drive:${file}`, key: `edit/originals/drive/${file}/a.mp4`, name: `${file}.mp4`, size: 100 };
+      }),
+    );
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    await start(fixture.app, id, false);
+    const asked = await settled(scripts, id);
+    gate = new Promise<void>((resolve) => (open = resolve));
+    jobs.useResumers(fixture.home, { case: (one) => void carryOn(fixture.app, one.project) });
+    setSystemTime(new Date(asked.files[1]!.retry_at! + 1_000));
+    await jobs.wake(fixture.home, ["case"]);
+    // The look is under way: working, its question still on the page.
+    expect(scripts.working(id)).toBe(true);
+    expect(scripts.get(id)).toMatchObject({ state: "waiting", files: [{ state: "done" }, { state: "failed", why: "person" }] });
+    const answer = skipFootage(fixture.app, id, "FILEcase0002");
+    setTimeout(open, 300);
+    await answer;
+    expect((await settled(scripts, id)).state).toBe("done");
+  } finally {
+    setSystemTime();
     fixture.cleanup();
   }
 });

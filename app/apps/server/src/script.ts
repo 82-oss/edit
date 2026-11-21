@@ -73,6 +73,15 @@ export function footageLabel(project: Project, file: string): string {
   return label !== "" ? label : (blocks[0]?.url ?? file);
 }
 
+/**
+ * An answer given while the import looks quietly at the person's files (`looking`: a second or two, a Drive link
+ * asked again) waits for that look to end, at most a minute, instead of being refused as "still working" with the
+ * question on the page (Nov 21).
+ */
+async function afterLook(app: App, id: string): Promise<void> {
+  for (let tick = 0; tick < 600 && app.scripts.working(id) && app.scripts.get(id)?.state === "waiting"; tick++) await new Promise((done) => setTimeout(done, 100));
+}
+
 function waitingFor(app: App, id: string, file: string): Project {
   const live = app.store.get(id);
   if (live === null) throw new Error("no such project");
@@ -88,6 +97,7 @@ function waitingFor(app: App, id: string, file: string): Project {
  * the import. The person's "do you have a replacement?".
  */
 export async function replaceFootage(app: App, id: string, file: string, url: string): Promise<void> {
+  await afterLook(app, id);
   waitingFor(app, id, file);
   const replacement = footageFile(url.trim());
   if (replacement === null) throw new Error("Give a link to one video: a Google Drive file or a YouTube video (not a folder or a Doc).");
@@ -112,6 +122,7 @@ export async function replaceFootage(app: App, id: string, file: string, url: st
 export async function skipFootage(app: App, id: string, file: string): Promise<void> {
   // "*": every file it couldn't get, in one go (each skip starts the import again, so one at a time the second was refused).
   // Never one still being tried by itself (a dropped connection): that one comes in.
+  await afterLook(app, id);
   const job = app.scripts.get(id);
   const askable = (one: { state: string; why?: string }) => one.state === "failed" || (one.state === "waiting" && one.why !== "passing");
   const files = file === "*" ? (job?.files ?? []).filter(askable).map((one) => one.file) : [file];
@@ -1463,7 +1474,31 @@ export type WaitingOn = "quota" | "encoder" | "voice" | "drive" | "passing" | "r
  * while it moves, and says since when once it hasn't for five minutes (Nov 20: the owner's "imports just freeze out
  * of nowhere" was a bar that read the same moving or not).
  */
-type Moving = ScriptJob & { moved_ms?: number };
+type Moving = ScriptJob & { moved_ms?: number; looking?: true };
+
+/**
+ * A quiet look (Nov 21): the import woken by itself to look again at the files the person was asked about (failure.ts
+ * `person`, every 30 minutes), its question kept on the page as it was while it looks: the job stays `waiting` and
+ * those files `failed`, until one shows it's coming in (`heard`). Never on the page (`shownJob` leaves it out); the
+ * import is working all the same (`working`), so no second run starts beside it.
+ */
+function looking(job: ScriptJob): boolean {
+  return (job as Moving).looking === true;
+}
+
+/** A file looked at quietly shows it's coming in (its bytes, its cut, its excerpts in): it's said as being fetched from now. */
+function heard(job: ScriptJob, entry: FileJob): void {
+  if (!looking(job) || entry.state !== "failed") return;
+  entry.state = "downloading";
+  delete entry.error;
+  delete entry.why;
+  delete entry.retry_at;
+  if (job.state === "waiting") {
+    job.state = "downloading";
+    delete job.error;
+    delete job.retry_at;
+  }
+}
 
 /** A job as it's always been written: its fields in order, the unset ones left out. */
 function shownJob(job: Moving): Moving {
@@ -1596,12 +1631,18 @@ export class Jobs {
   /** Whether any project's import is still working in this process. */
   running(): boolean {
     this.restore();
-    return [...this.active].some((project) => RUNNING.includes(this.jobs.get(project)?.state ?? "done"));
+    return [...this.active].some((project) => this.going(project));
+  }
+
+  /** Active here and fetching, laying out or voicing, or looking quietly at the person's files (`looking`). */
+  private going(project: string): boolean {
+    const job = this.jobs.get(project);
+    return job !== undefined && (RUNNING.includes(job.state) || looking(job));
   }
 
   /** Whether `project`'s import is working in this process now. */
   working(project: string): boolean {
-    return this.active.has(project) && RUNNING.includes(this.jobs.get(project)?.state ?? "done");
+    return this.active.has(project) && this.going(project);
   }
 
   /** Starts a job for `project` unless one is working here; whether it did. */
@@ -1678,6 +1719,7 @@ export class Jobs {
     if (timer !== undefined) clearTimeout(timer);
     this.pending.delete(project);
     const job = this.jobs.get(project);
+    if (job !== undefined) delete job.looking;
     if (settled.state !== "waiting" && settled.state !== "failed") this.made.delete(project);
     const key = durableJobs.keyOf("case", project);
     if (settled.state === "end") return durableJobs.end(this.home, key);
@@ -2540,8 +2582,17 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
     const kept = app.scripts.keptMade(projectId, file, fileRanges(live.project, file));
     return kept === null || recut ? undefined : [file, kept];
   });
-  const job: ScriptJob = {
-    state: "downloading",
+  // The person's files whose look by itself has come (each `retry_at`, every 30 minutes: failure.ts `person`). When
+  // they're all that's left to fetch, the look is quiet (`looking`): the page keeps the question as it was, and
+  // nothing new is said unless one comes in. Pressed before its time (Try again), a look is said as it always was.
+  const lookedAt = nowMs();
+  const due = files.map((file, index) => {
+    const was = before.get(file);
+    return fetched[index] === undefined && was?.state === "failed" && was.why === "person" && was.retry_at !== undefined && was.retry_at <= lookedAt;
+  });
+  const quiet = !recut && prior?.state === "waiting" && due.some(Boolean) && files.every((_, index) => fetched[index] !== undefined || due[index]);
+  const job: Moving = {
+    state: quiet ? "waiting" : "downloading",
     files: files.map((file, index) => {
       const was = before.get(file);
       const row: FileJob = { file, bytes: was?.bytes ?? 0, state: fetched[index] !== undefined ? "done" : "queued" };
@@ -2549,9 +2600,20 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
       if (was?.total !== undefined) row.total = was.total;
       // A file not in yet keeps its tries, so its next wait grows (1, 5, 15, then every 30 minutes; verify.md finding 2).
       if (fetched[index] === undefined && was?.tries !== undefined) row.tries = was.tries;
+      if (quiet && due[index] && was !== undefined) {
+        // Still asked about while it's looked at: as it was.
+        row.state = "failed";
+        if (was.error !== undefined) row.error = was.error;
+        if (was.why !== undefined) row.why = was.why;
+        if (was.retry_at !== undefined) row.retry_at = was.retry_at;
+      }
       return row;
     }),
   };
+  if (quiet) {
+    job.looking = true;
+    if (prior?.error !== undefined) job.error = prior.error;
+  }
   if (!app.scripts.claim(app, projectId, job, inserting ? inserting.id : undefined)) return null;
   // Every import is kept until it ends, so one a restart cuts off (an update,
   // a crash) carries on by itself when Edit is back: the first horror import
@@ -2582,14 +2644,18 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
       }
     };
     const fetchHolding = async (index: number, file: string, letGo: () => void) => {
-      app.scripts.set(app, id, (job) => {
-        const entry = job.files[index];
-        if (entry === undefined) return;
-        entry.state = "downloading";
-        delete entry.error;
-        delete entry.why;
-        delete entry.retry_at;
-      });
+      // Looked at quietly: its row stays asked about until it shows it's coming in (`heard`).
+      const quietly = quiet && due[index] === true;
+      if (!quietly) {
+        app.scripts.set(app, id, (job) => {
+          const entry = job.files[index];
+          if (entry === undefined) return;
+          entry.state = "downloading";
+          delete entry.error;
+          delete entry.why;
+          delete entry.retry_at;
+        });
+      }
       errors[index] = undefined;
       const fileBegan = timing.now();
       // A YouTube file waiting a wave of refusals out says when it goes again (a downloading file with a `retry_at`): nothing for the person to do.
@@ -2615,6 +2681,7 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
         app.scripts.set(app, id, (job) => {
           const entry = job.files[index];
           if (entry === undefined) return;
+          heard(job, entry);
           entry.state = "done";
           entry.bytes = bytes;
           entry.total = bytes;
@@ -2632,11 +2699,14 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
         app.scripts.set(app, id, (job) => {
           const entry = job.files[index];
           if (entry === undefined) return;
+          // Looked at quietly and still the person's: not another try (its question was never off the page), so
+          // a later dropped line still waits a minute, not half an hour.
+          const again = quietly && entry.state === "failed" && why === "person";
           entry.state = "failed";
           entry.error = diag.messageOf(error);
           entry.why = why;
           // Its tries so far: the next one's wait grows with them (failure.ts `nextTry`).
-          entry.tries = (entry.tries ?? 0) + 1;
+          if (!again) entry.tries = (entry.tries ?? 0) + 1;
           delete entry.cut;
         });
       } finally {
@@ -2662,7 +2732,9 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
       const now = nowMs();
       // Each file's own time (credit's half hour, the day's reset, Google's, a passing one's next try); the import is woken at the soonest.
       const triesOf = (index: number) => Math.max((app.scripts.get(id)?.files[index]?.tries ?? 1) - 1, 0);
-      const fileAt = missing.map((index, n) => (steps.waitsByItself(whys[n]!) ? failure.nextTry(whys[n]!, triesOf(index), now, errors[index]) : null));
+      // The person's too: looked at again every 30 minutes in case it was put right (failure.ts `person`; Nov 21, never
+      // asked before, so a file shared in Drive since waited for Try again). Only Edit's own bug has no time.
+      const fileAt = missing.map((index, n) => failure.nextTry(whys[n]!, triesOf(index), now, errors[index]));
       const times = fileAt.filter((at): at is number => at !== null);
       const retryAt = times.length > 0 ? Math.min(...times) : null;
       const asked = whys.filter((why) => !steps.waitsByItself(why)).length;
@@ -2672,12 +2744,10 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
           const entry = job.files[index];
           if (entry === undefined) continue;
           const at = fileAt[n];
-          // The person's (and Edit's own bug) stays `failed` (what the page asks about); the rest wait by themselves.
-          if (steps.waitsByItself(whys[n]!)) {
-            entry.state = "waiting";
-            if (at !== null && at !== undefined) entry.retry_at = at;
-            else delete entry.retry_at;
-          } else delete entry.retry_at;
+          // The person's (and Edit's own bug) stays `failed` (what the page asks about), with its next look; the rest wait by themselves.
+          if (steps.waitsByItself(whys[n]!)) entry.state = "waiting";
+          if (at !== null && at !== undefined) entry.retry_at = at;
+          else delete entry.retry_at;
         }
         if (byItself) job.error = waitingLine(whys, missing.length, files.length, retryAt, missing.map((index) => errors[index]));
         else job.error = `${asked} of ${files.length} footage files couldn't be downloaded`;
@@ -2698,8 +2768,9 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
                     // it cut into a full disk every five minutes on JJ's Mac, verify.md finding 5's own case).
                     { state: "waiting", step: "waiting for room", retry_at: retryAt, on: "room", args: { room_bytes: roomNeeded(app, id, files, missing, errors) } }
                   : { state: "waiting", step: "trying again by itself", retry_at: retryAt, on: "passing", args: { room_bytes: 0 } }
-          : // The person's file waits for them; one passing beside it is still tried again by itself.
-            whys.includes("passing") && retryAt !== null
+          : // The person's file waits for them, its question on the page, and is looked at again by itself at its time
+            // (one passing beside it sooner). Only files failed on Edit's own bug have no time: they wait for the person alone.
+            retryAt !== null
             ? { state: "waiting", step: "waiting for the person", retry_at: retryAt }
             : { state: "waiting", step: "waiting for the person", until: "person" },
       );
@@ -2992,6 +3063,7 @@ function fileProgress(app: App, id: string, index: number): (bytes: number, tota
     app.scripts.set(app, id, (job) => {
       const entry = job.files[index];
       if (entry === undefined) return;
+      if (bytes > 0) heard(job, entry);
       entry.bytes = bytes;
       if (total === null) delete entry.total;
       else entry.total = total;
@@ -3012,7 +3084,9 @@ function cutProgress(app: App, id: string, index: number): (done: number, total:
 function setFileState(app: App, id: string, index: number, state: FileJob["state"]): void {
   app.scripts.set(app, id, (job) => {
     const entry = job.files[index];
-    if (entry !== undefined) entry.state = state;
+    if (entry === undefined) return;
+    heard(job, entry);
+    entry.state = state;
   });
 }
 
