@@ -188,6 +188,23 @@ What the four kinds need beyond teaching and graphics (investigated Nov 21): a c
 
 Still open: whether a channel carries a kind; when the switch goes on for everyone.
 
+## Add-ons (Sphe's idea, Nov 21; not built)
+
+V2 has skills and lessons, which are words, and effects, which are code that draws. V1 has a third thing with no home in V2: code that checks and fixes the edit, and code that shapes what a project is. About 16,000 lines sit in files tied to a kind of video (about 4,500 of them graphics builders that effects replace), with over 60 named checks and about 65 places that ask what kind a project is. An add-on is that third thing, kept on a channel beside its lessons and effects.
+
+Sphe's shape for it: the agent sets an add-on up, and picks **when it runs**:
+
+- **when a project is made in the channel**: it can change what New project offers ("short form or long form", an aspect ratio such as 9:16);
+- **after an import is done**;
+- **after every change the agent makes to the project**: it sees the change, checks it, and tells the agent before the turn ends, or makes the change itself;
+- **at the end of the agent's turn**, in the background, with the waiting line the subtitle removal has.
+
+"Edit V2 is meant to give the agent as much control, and the user using it even more control through the agent."
+
+Every one of those moments already exists in the code as a fixed hook for one kind: the checks and automatic passes after each plan (`edit_plan.ts`, `edit_tools.ts`), the passes after a turn (`hq_ears.ts`, `house_words_pass.ts`), the research turn after an import (`script.ts`), the removal's background line, and the shape forced at New project (`apps/web/src/components/Home.tsx`). The work is to make them things a channel holds, by name, with a trigger, instead of branches on a style.
+
+Order proposed: first the built-in ones, switched on per channel (what a courtroom, shorts, commentary or horror channel needs is then a list of add-ons, not a kind welded into Edit); then add-ons the agent writes that only report (checks); last, add-ons the agent writes that change the edit, which need a sandbox and an undo first.
+
 ## For Sphe to decide
 
 - What happens to the 105 V1 edits (18 touched this week) and 113 V1 scripts: finish as V1, convert, or archive.
