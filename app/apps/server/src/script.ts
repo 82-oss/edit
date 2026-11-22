@@ -37,6 +37,7 @@ import * as proc from "./effect/proc.ts";
 import { runPromise } from "./effect/runtime.ts";
 import { retryAfterOf } from "./effect/service.ts";
 import { hearsAll, type Transcript, type Word } from "./transcribe.ts";
+import { PAD_MS } from "./kept_hearing.ts";
 import * as youtube from "./youtube.ts";
 import * as posts from "./posts.ts";
 import { LINK_PREFIX as FINISHED_LINK, reviewCode, reviewOf } from "./finished.ts";
@@ -3894,8 +3895,13 @@ async function transcripts(app: App, project: Project, within: (block: ScriptBlo
     // Rough words (captions or Apple's, here or from Script mode) where a range is cut: Scribe hears the ranges
     // the script keeps, only those (media.ts `refine`), before they're cut on, else a range is cut at rough times
     // (card 1's teasers, Oct 29: captions had "pregnant" missing, "vitals" nine seconds late).
+    // A local-first project's source is one whole media (local_first.ts): each range is heard with the handles an
+    // excerpt had around it (`spans`; `refine` pads 3 s itself), so a cut nudged in or out has its words, and no more.
+    const handle = localFirst.chosen(project) ? Math.max(0, HANDLE_SECONDS - PAD_MS / 1000) : 0;
     const ranges = (project.script?.blocks ?? []).flatMap((block): [number, number][] =>
-      block.kind === "footage" && block.media === item.id && within(block) && cueOf(block) !== null ? [[block.start - (block.media_start ?? 0), block.end - (block.media_start ?? 0)]] : [],
+      block.kind === "footage" && block.media === item.id && within(block) && cueOf(block) !== null
+        ? [[Math.max(0, block.start - (block.media_start ?? 0) - handle), Math.min(item.duration > 0 ? item.duration : Number.MAX_SAFE_INTEGER, block.end - (block.media_start ?? 0) + handle)]]
+        : [],
     );
     if (found.heard !== undefined && !hearsAll(found, ranges)) {
       try {

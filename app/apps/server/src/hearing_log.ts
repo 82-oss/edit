@@ -10,12 +10,16 @@ import * as diag from "./diag.ts";
 /** The log's area for every hearing. */
 export const AREA = "hearing";
 
+/** A transcript's model where no words were free and none were paid for yet (a local-first source: media.ts `localWholeOf`). */
+export const NO_WORDS = "none";
+
 /** A model said plainly: "Scribe v3 (scribe_v3, paid)". */
 export function said(model: string | undefined | null): string {
   if (model === undefined || model === null || model === "") return "an unknown model";
   if (model.startsWith("scribe_")) return `Scribe ${model.slice("scribe_".length)} (${model}, paid)`;
   if (model === "apple-speech") return "Apple's on-device recogniser (apple-speech, free)";
   if (model === "youtube-captions") return "YouTube's captions (youtube-captions, free)";
+  if (model === NO_WORDS) return "no words yet (none free, nothing paid)";
   if (model.startsWith("pyannote")) return `pyannote (${model}, paid)`;
   return model;
 }

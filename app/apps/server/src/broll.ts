@@ -34,7 +34,8 @@ import type { Store } from "./store.ts";
 import { stableStringify } from "./stable.ts";
 import { type Rife, rife, smooth as smoothWithRife } from "./rife.ts";
 import * as tools from "./tools.ts";
-import type { Transcript } from "./transcribe.ts";
+import { NO_WORDS } from "./hearing_log.ts";
+import { hearsAll, type Transcript } from "./transcribe.ts";
 import mapPageText from "./map_page.html" with { type: "text" };
 
 /**
@@ -178,7 +179,11 @@ export async function transcript(app: App, media: Media): Promise<Transcript> {
  * timing something to an exact word.
  */
 export async function mediaTranscript(app: App, media: Media, from: number, to: number, words: boolean): Promise<string> {
-  const said = await transcript(app, media);
+  let said = await transcript(app, media);
+  // A local-first source without free words has words only where the edit keeps it (media.ts `localWholeOf`): the
+  // agent asking for another stretch of it is what has Scribe hear that stretch, that stretch only, once.
+  const asked: [number, number] = [Math.max(0, from), Math.min(to, media.duration > 0 ? media.duration : to)];
+  if (said.rough === NO_WORDS && asked[1] > asked[0] && !hearsAll(said, [asked]) && (await app.media.refine(media.path, [asked]))) said = await transcript(app, media);
   const inSpan = said.words.filter((word) => word.start >= from && word.start < to);
   const nothing = () => `nothing is said in ${media.name} between ${fixed(from, 1)}s and ${fixed(to, 1)}s`;
   if (words) {

@@ -542,8 +542,12 @@ export class Processor {
       delete status.transcript_retry_at;
     });
     const target = this.paths(source).transcript;
-    // A cloud excerpt whose whole recording was heard already (Writer shares its words) takes its words from there.
-    const shared = again ? null : sharedSourceOf(this.store.cacheDir(), source);
+    // A local-first project's whole source (local_first.ts): its words are what the timeline keeps, never all of it
+    // as a side effect of being imported whole (`localWholeOf`).
+    const localWhole = sharedSourceOf(this.store.cacheDir(), source) === null ? this.localWholeOf(source) : null;
+    // A cloud excerpt whose whole recording was heard already (Writer shares its words) takes its words from there,
+    // and so does a local-first source, by its registry source: Script mode's hearing, or another project's.
+    const shared = again ? null : (sharedSourceOf(this.store.cacheDir(), source) ?? localWhole);
     // Scribe's words and voices, never YouTube's captions: they have no voices (every line its own
     // `caption_turn_N`) and JJ's notes caught their words wrong ("bit*", "slept", a "you" missing).
     const words = async () => {
@@ -555,7 +559,7 @@ export class Processor {
       // A long file's first words are free (first_hearing.ts): the agent cuts on them, and Scribe hears only
       // what's kept (`refine`). Heard again on purpose (`again`): Scribe, whole.
       const seconds = again || whole ? 0 : await transcribe.seconds(input);
-      if (!again && !whole && seconds > FIRST_PASS_FROM_S) {
+      if (!again && !whole && (seconds > FIRST_PASS_FROM_S || localWhole !== null)) {
         const work = join(parent(target) ?? ".", "first");
         try {
           if (await firstWords(this.store.home, this.cloudSource(source), input, target, work, seconds)) return;
@@ -564,6 +568,14 @@ export class Processor {
         }
       }
       if (freeOnly) throw new NothingFree();
+      if (localWhole !== null && !again && !whole) {
+        // No free words for it (Linux, or a video without word-timed captions): none rather than all of it paid for.
+        // Scribe hears what the timeline keeps (`refine`: the import's ranges, a clip placed later) and any stretch
+        // the agent asks for (broll.ts `mediaTranscript`), the way a long excerpt's rough words were refined.
+        writeAtomic(target, transcribe.serialize({ model: log.NO_WORDS, language: null, words: [], heard: [], rough: log.NO_WORDS }));
+        log.line(`${log.nameOf(localWhole)}: no free first words; Scribe hears only what the edit keeps of its ${log.clock(seconds)}`);
+        return;
+      }
       await transcribe.run(input, target, keyterms, again);
     };
     // The words, then pyannote's voices while the relay's flag is on (voices.ts; off from Nov 10), before
@@ -617,6 +629,20 @@ export class Processor {
         },
       );
     return this.status(source);
+  }
+
+  /**
+   * The registry source (`youtube:<id>`, `drive:<id>`, `sha256:<hex>`) of a local-first project's whole source this
+   * file is (local_first.ts: one media a source, imported whole where today's path cut excerpts), else null.
+   */
+  localWholeOf(path: string): string | null {
+    for (const id of this.store.usingMedia(path)) {
+      const project = this.store.get(id)?.project;
+      if (project?.local_media !== true) continue;
+      const source = project.media.find((item) => item.path === path)?.cloud?.source;
+      if (typeof source === "string" && /^(?:youtube|drive):[A-Za-z0-9_-]+$|^sha256:[a-f0-9]{64}$/u.test(source)) return source;
+    }
+    return null;
   }
 
   /** A file without words, named for the agent with why when it waits (`unheardName`): edit_tools' "Not transcribed yet". */
