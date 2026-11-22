@@ -154,6 +154,8 @@ pub struct Player {
     playing: Option<Playing>,
     /// The frame the last decode-ahead pass ran from (None: run one).
     warmed_from: Option<i64>,
+    /// The layer's size its pictures are decoded for (`shown`): the layer's own at rest, held through a play.
+    decoded: (u32, u32),
     /// How playing went since the page last asked (`position`).
     report: Report,
     /// The speaker's starved count when the page last asked.
@@ -426,6 +428,7 @@ impl Player {
             sound: Sound::default(),
             playing: None,
             warmed_from: None,
+            decoded: (0, 0),
             report: Report::default(),
             starved_before: 0,
             speaker_still: None,
@@ -597,14 +600,16 @@ impl Player {
         if (width, height) != (self.config.width, self.config.height) {
             self.config.width = width;
             self.config.height = height;
-            self.warmed_from = None;
-            // Pictures are decoded at the size shown: those kept are another size's.
-            self.pictures.forget();
             if !self.out_of_sight() {
                 self.surface.configure(self.renderer.device(), &self.config);
                 self.drawn = None;
             }
         }
+        // Playing, the pictures stay decoded at the size they were (fitted into the new one as they're drawn): each
+        // layer's reader is kept by its size, so a new one opened and seeked every layer on the drawing path, and
+        // full screen froze the picture for 0.6 s at each enter and leave (18 frames passed over, the M1, Nov 22).
+        // The layer's own size is taken at the next frame at rest.
+        self.decode_at_layer_size();
         if !self.out_of_sight() && self.playing.is_none() && self.drawn.is_none() {
             if let Some(frame) = self.at {
                 let started = Instant::now();
@@ -613,6 +618,20 @@ impl Player {
                 trace(|| describe_draw(frame, ms, &drawn, self.last));
             }
         }
+    }
+
+    /// At rest, pictures are decoded for the layer's size from now (`decoded`): those kept, and what was read ahead,
+    /// were another size's. The frame on screen is drawn again at it.
+    fn decode_at_layer_size(&mut self) {
+        let layer = (self.config.width, self.config.height);
+        let (decoded, changed) = decoded_for(self.decoded, layer, self.playing.is_some());
+        if !changed {
+            return;
+        }
+        self.decoded = decoded;
+        self.warmed_from = None;
+        self.pictures.forget();
+        self.drawn = None;
     }
 
     /// The layer is a pixel or two: where the page puts it to keep a cut
@@ -632,8 +651,9 @@ impl Player {
             project.settings.width.max(1),
             project.settings.height.max(1),
         );
-        let fit = (self.config.width as f32 / width as f32)
-            .min(self.config.height as f32 / height as f32)
+        let (layer_width, layer_height) = self.decoded;
+        let fit = (layer_width.max(1) as f32 / width as f32)
+            .min(layer_height.max(1) as f32 / height as f32)
             .min(1.0);
         let fit = (fit * 8.0).ceil().max(1.0) / 8.0;
         (
@@ -645,6 +665,8 @@ impl Player {
     /// Draws `frame`, unless it's on screen already (nothing changed since). Mid-drag, a
     /// neighbour's picture may stand in for a layer's (`inexact`); asked again, it's drawn exactly.
     pub fn draw(&mut self, frame: i64) -> Result<(), String> {
+        // At rest: a size the layer took during a play is decoded for now.
+        self.decode_at_layer_size();
         // At rest, a frame other than the one held for: the page moved on from that play.
         if self.playing.is_none() && self.held.is_some_and(|held| held != frame) {
             self.let_go_of_reads();
@@ -674,6 +696,8 @@ impl Player {
     }
 
     fn draw_as(&mut self, frame: i64, exact: bool) -> Result<(), String> {
+        // A play's first frame with nothing decoded yet at any size takes the layer's (`decoded_for`).
+        self.decode_at_layer_size();
         self.last = None;
         self.at = Some(frame);
         self.inexact = false;
@@ -1704,9 +1728,21 @@ fn mix_into(
     }
 }
 
+/// The size pictures are decoded for, with the layer at `layer` (`decoded`: the size they're decoded for now), and
+/// whether that's a change: the layer's own at rest, the one held while playing (`Player::resize`), unless nothing
+/// was decoded at that (none yet, or a layer out of sight: a play kept going with its monitor away, back in sight).
+fn decoded_for(decoded: (u32, u32), layer: (u32, u32), playing: bool) -> ((u32, u32), bool) {
+    let none = decoded.0 <= 2 && decoded.1 <= 2;
+    if decoded == layer || (playing && !none) {
+        (decoded, false)
+    } else {
+        (layer, true)
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{speaker_dead, SPEAKER_DEAD};
+    use super::{decoded_for, speaker_dead, SPEAKER_DEAD};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -1723,5 +1759,33 @@ mod tests {
         assert!(speaker_dead(Some(still), 900, later(500) + SPEAKER_DEAD, || false).is_none());
         // Nothing played for long, but the engine runs (a play held, short of sound): never taken for dead.
         assert!(speaker_dead(Some(still), 900, later(9000), || true).is_some());
+    }
+
+    #[test]
+    fn a_play_keeps_decoding_at_the_size_it_had_when_the_layer_resizes_and_takes_the_new_one_at_rest(
+    ) {
+        // Full screen mid-play: the readers kept at their size, none opened again on the drawing path (the M1, Nov 22).
+        assert_eq!(
+            decoded_for((1800, 1012), (2880, 1800), true),
+            ((1800, 1012), false)
+        );
+        // At rest, the layer's own, once.
+        assert_eq!(
+            decoded_for((1800, 1012), (2880, 1800), false),
+            ((2880, 1800), true)
+        );
+        assert_eq!(
+            decoded_for((2880, 1800), (2880, 1800), false),
+            ((2880, 1800), false)
+        );
+        // Nothing decoded at the size held (a play pressed before a first frame, a layer back in sight): the layer's.
+        assert_eq!(
+            decoded_for((0, 0), (1800, 1012), true),
+            ((1800, 1012), true)
+        );
+        assert_eq!(
+            decoded_for((1, 1), (1800, 1012), true),
+            ((1800, 1012), true)
+        );
     }
 }
