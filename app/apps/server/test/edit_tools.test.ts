@@ -179,6 +179,19 @@ test("one call recolours every subtitle of one person", async () => {
   }
 });
 
+test("a clip of footage added without its duration runs to its media's end; anything else is told to give one", async () => {
+  const { app, id } = setUp("tools-clip-duration");
+  // duration left out (the M1 trial, Nov 22: "missing field `duration`"): footage runs to its media's end; a solid is told what to give.
+  await app.store.update(id, "test", (project) => {
+    project.media.push(media({ id: "m9", name: "tape", path: "/nowhere/tape.mp4", kind: "video", duration: 12, width: 1920, height: 1080, fps: 30 }));
+  });
+  const whole = (await said(app, "add_clip", { clip: { type: "video", media: "m9", start: 0, source_in: 2 } })).replace("added clip ", "");
+  expect(clipOf(projectOf(app, id), whole)!.duration).toBe(300);
+  expect(await refused(app, "add_clip", { clip: { type: "solid", start: 0, fill: [0, 0, 0, 1] } })).toBe(
+    "duration is required here: the clip's length in frames at the edit's fps (only a clip of footage or sound can leave it out, to run to its media's end)",
+  );
+});
+
 test("adding, changing and removing clips answer", async () => {
   const { app, id } = setUp("tools-clips");
   expect(await said(app, "add_text", { text: "Hello", start: 1, duration: 2 })).toMatch(/^added text clip c\d+$/);

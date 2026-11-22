@@ -398,7 +398,7 @@
     "name": "add_text"
   },
   {
-    "description": "Add any clip (video/audio/text/adjustment/solid/waveform) using the model in the server instructions. Omit id. If track is omitted a free track of the right kind is chosen (created if needed); track \"new\" puts it on a new track on top of the rest. A clip's parent (a clip id: footage, a card, a text) makes it move with that clip, as parenting in After Effects: place it as it sits over the parent at rest (the parent's own transform) and the parent's keyframes and shake carry it, its blur's box and leader too. A box blur over a picture that moves (a card sliding in, a push-in) gets that picture as its parent by itself and stops at its edges; a label or arrow riding a moving card takes parent.",
+    "description": "Add any clip (video/audio/text/adjustment/solid/waveform) using the model in the server instructions. Omit id. duration is its length in frames at the edit's fps: left out, a clip of footage or sound runs from source_in to its media's end; a text, solid, adjustment or waveform needs it. If track is omitted a free track of the right kind is chosen (created if needed); track \"new\" puts it on a new track on top of the rest. A clip's parent (a clip id: footage, a card, a text) makes it move with that clip, as parenting in After Effects: place it as it sits over the parent at rest (the parent's own transform) and the parent's keyframes and shake carry it, its blur's box and leader too. A box blur over a picture that moves (a card sliding in, a push-in) gets that picture as its parent by itself and stops at its edges; a label or arrow riding a moving card takes parent.",
     "inputSchema": {
       "properties": {
         "clip": {

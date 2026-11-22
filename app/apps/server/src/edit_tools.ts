@@ -666,6 +666,16 @@ async function addClip({ app, args, projectId }: ToolCall): Promise<Content[]> {
     fields.id = id;
     const kind = fields.type === "audio" ? "audio" : "video";
     const number = (key: string, fallback: number) => int(fields[key]) ?? fallback;
+    // Left out (the M1 trial, Nov 22: "missing field `duration`", right on the agent's retry): footage or sound runs
+    // to its media's end; anything else is told what to give.
+    if (fields.duration === undefined) {
+      const media = project.media.find((one) => one.id === fields.media);
+      const speed = typeof fields.speed === "number" && fields.speed > 0 ? fields.speed : 1;
+      const from = typeof fields.source_in === "number" ? fields.source_in : 0;
+      const frames = media !== undefined && media.kind !== "image" && media.duration > from ? Math.floor(((media.duration - from) / speed) * fpsOf(project)) : 0;
+      if (frames < 1) throw new Error("duration is required here: the clip's length in frames at the edit's fps (only a clip of footage or sound can leave it out, to run to its media's end)");
+      fields.duration = frames;
+    }
     const track = str(fields.track);
     if (track === "new") {
       fields.track = addTrack(project, kind);
