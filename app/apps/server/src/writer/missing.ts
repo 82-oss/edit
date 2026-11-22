@@ -9,9 +9,14 @@
 // the connection coming back; the table is this computer's own, so the row is
 // also what says this Mac ran the import (honest council change 7d, Nov 19:
 // the tries lived on a timer in memory, which a restart forgot).
-// Until it's here, or the producer goes on without it (remembered in the
-// case's list, never asked again), the script isn't written: a build waits
-// (`firstBuild`) and starts by itself, and the writer is told what's missing.
+// Writing waits only while a recording is still on its way (`holding`: a
+// passing failure in its quick tries, 1, 5 and 15 minutes); one that won't
+// come by itself (a file that isn't video, damaged at its source, Edit's own
+// refusal) or still not here after them holds nothing: the build starts, the
+// writer is told what's missing (`forWriter`), and once it's written what
+// comes later is left out with a note, to add from the footage list (JJ's two,
+// Nov 22: each waited days on one unreadable file, shown on Home as "Starting
+// the workflow" with no way to the note that would have let it go on).
 
 import * as fs from "node:fs";
 
@@ -170,11 +175,13 @@ export async function tryAgain(id: string, all = false): Promise<void> {
   } finally {
     trying.delete(id);
   }
-  // Only the tries are written here: the rest of the script is as it is now.
-  if (tried.size > 0) {
+  // Only the tries are written here (and a recording a case was joined without, `damagedNote`): the rest of the script is as it is now.
+  const noted = (script.notes ?? []).filter((note) => note.startsWith(DAMAGED));
+  if (tried.size > 0 || noted.length > 0) {
     try {
       script = store.update(dir, (fresh) => {
         if (fresh.missing) fresh.missing = fresh.missing.map((one) => tried.get(one.id) ?? one);
+        for (const note of noted) if (!(fresh.notes ??= []).includes(note)) fresh.notes.push(note);
       }, true);
     } catch (error) {
       diag.warn("writer", `${id}: its footage's tries weren't saved: ${diag.messageOf(error)}`);
@@ -197,6 +204,26 @@ export async function tryAgain(id: string, all = false): Promise<void> {
   const left = (script.missing ?? []).filter((one) => !arrived.includes(one.id));
   if (left.length > 0) schedule(id, Math.min(...left.map((one) => tried.get(one.id)?.nextAt ?? one.nextAt)));
   else durable.end(home, keyOf(id));
+  // A build that waited on it starts once nothing left is still on its way (what came is joined first: its run builds).
+  if (arrived.length === 0) imports.buildIfWaiting(app, data, script);
+}
+
+/** A passing failure's quick tries (failure.ts: 1, 5 and 15 minutes): writing waits through these, never longer. */
+const QUICK_TRIES = (): number => failure.PASSING_WAITS.value.length;
+
+/**
+ * The missing recordings writing still waits for: those on their way, a
+ * dropped line or a busy encoder or disk in its quick tries. Not one only a
+ * person can put right, a refusal the same every time (damaged at its source),
+ * or one a long wait away (Drive's day, credit, a sign-in): the writer is told
+ * of those and writes the rest.
+ */
+export function holding(script: Script): MissingRecording[] {
+  return (script.missing ?? []).filter((one) => {
+    if (one.asked) return false;
+    const kind = failure.kindOf(one.error);
+    return (kind === "passing" || kind === "encoder" || kind === "room") && one.tries < QUICK_TRIES();
+  });
 }
 
 /**
@@ -279,6 +306,10 @@ const tooLateNote = (title: string): string => `${title} didn't come in before t
 const LEFT_OUT = "Left out at the producer's word: ";
 const leftOutNote = (title: string): string => `${LEFT_OUT}${title} didn't come in.`;
 
+const DAMAGED = "Damaged at its source: ";
+/** A case joined without one of its recordings, which came down whole but can't be played (imports.ts `fetchVideo`). */
+export const damagedNote = (name: string, caseTitle: string): string => `${DAMAGED}${name} (in ${caseTitle}) can't be played, so the case was joined without it.`;
+
 /**
  * What the writer is told of footage not in the case: what's still missing,
  * and what the producer went on without, so it never writes around a gap
@@ -287,10 +318,12 @@ const leftOutNote = (title: string): string => `${LEFT_OUT}${title} didn't come 
 export function forWriter(script: Script): string {
   const missing = (script.missing ?? []).map((one) => one.title);
   const leftOut = (script.notes ?? []).filter((note) => note.startsWith(LEFT_OUT)).map((note) => note.slice(LEFT_OUT.length).replace(/ didn't come in\.$/u, ""));
-  if (missing.length === 0 && leftOut.length === 0) return "";
+  const damaged = (script.notes ?? []).filter((note) => note.startsWith(DAMAGED)).map((note) => note.slice(DAMAGED.length).replace(/ can't be played, so the case was joined without it\.$/u, ""));
+  if (missing.length === 0 && leftOut.length === 0 && damaged.length === 0) return "";
   const lines: string[] = [];
   if (missing.length > 0) lines.push(`Not in the footage yet: ${missing.join(", ")} didn't come in, and Edit is still trying to bring ${missing.length === 1 ? "it" : "them"} in.`);
   if (leftOut.length > 0) lines.push(`Not in the footage: the producer went on without ${leftOut.join(", ")}, which didn't come in.`);
+  if (damaged.length > 0) lines.push(`Not in the footage: ${damaged.join(", ")} came down damaged and can't be played.`);
   lines.push("Don't write around the gap as if the case were whole: where the story needs what's missing, say so in your answer.");
   return lines.join(" ");
 }

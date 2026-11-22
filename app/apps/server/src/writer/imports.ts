@@ -539,11 +539,13 @@ export const hooks = { build: (_app: App, _id: string, _note: string): void => {
  */
 function buildWhenReady(app: App, data: string, script: Script): void {
   if (script.status !== "ready" || script.firstBuild === undefined) return;
-  // Writing waits for footage that didn't come in: it starts by itself once that's here or gone without (missing.ts).
-  if ((script.missing ?? []).length > 0) {
-    diag.info("writer", `${jobs.named(script.id, script.title)}: its import is ready, but writing waits for ${script.missing!.map((one) => one.title).join(", ")}`);
+  // Writing waits for footage still on its way, never for one that won't come by itself (missing.ts `holding`).
+  const holding = missingFootage.holding(script);
+  if (holding.length > 0) {
+    diag.info("writer", `${jobs.named(script.id, script.title)}: its import is ready, but writing waits for ${holding.map((one) => one.title).join(", ")}`);
     return;
   }
+  if ((script.missing ?? []).length > 0) diag.info("writer", `${jobs.named(script.id, script.title)}: writing starts without ${script.missing!.map((one) => one.title).join(", ")}, told it's missing; each is still tried by itself`);
   void buildOnceReady(app, data, script, script.firstBuild.note);
 }
 
@@ -1159,7 +1161,7 @@ async function fetchYoutube(app: App, dir: string, script: Script): Promise<Fetc
 }
 
 /** One video, from YouTube or a Drive file or folder link, to `dest`: a compilation's, or a reused case's brought in later. One already downloaded is kept. */
-export async function fetchVideo(app: App, url: string, dest: string, onPercent: (percent: number, said: string | null) => void = () => {}, signal?: AbortSignal): Promise<void> {
+export async function fetchVideo(app: App, url: string, dest: string, onPercent: (percent: number, said: string | null) => void = () => {}, signal?: AbortSignal, onLeftOut: (names: string[]) => void = () => {}): Promise<void> {
   if (await media.readable(dest)) return;
   if (!url.includes("drive.google.com")) {
     // A compilation's videos are joined from the script's folder: linked there, or copied across disks.
@@ -1188,7 +1190,16 @@ export async function fetchVideo(app: App, url: string, dest: string, onPercent:
     }
     paths.push(path);
   }
-  const joinParts = await Promise.all(paths.map(async (path) => ({ path, streams: await media.streams(path) })));
+  // A recording that came down whole (`downloaded`: Drive's own size and MD5) but can't be read is damaged at its
+  // source, the same on every try: the case is joined without it, not lost whole for one file (JJ's "745) Killer Mom",
+  // Nov 22: its ninth recording "Invalid data", the whole case tried every 30 minutes for three days).
+  const read = await Promise.all(paths.map(async (path) => ({ path, streams: await media.streams(path).catch((error: unknown) => error as Error) })));
+  const joinParts = read.flatMap((one) => (one.streams instanceof Error || !(one.streams.video || one.streams.audio) ? [] : [{ path: one.path, streams: one.streams }]));
+  const unreadable = read.flatMap((one, index) => (joinParts.some((part) => part.path === one.path) ? [] : [{ name: recordings[index]!.name, error: one.streams instanceof Error ? one.streams : new Error("no picture or sound") }]));
+  // A read that ran out of time says nothing of the file: the case waits for its next try, whole.
+  const slow = unreadable.find((one) => one.error instanceof failure.StepTimedOut || /took too long|timed out|took more than/i.test(one.error.message));
+  if (slow !== undefined || joinParts.length === 0) throw (slow ?? unreadable[0]!).error;
+  if (unreadable.length > 0) onLeftOut(unreadable.map((one) => one.name));
   const partial = dest.replace(/\.[^./]+$/, ".joining.mp4");
   try {
     await media.joinOriginal(joinParts, partial, (percent) => onPercent(70 + Math.floor((percent * 3) / 10), "Joining the case's recordings."), signal);
@@ -1906,7 +1917,16 @@ export async function fetchCompilationVideo(app: App, dir: string, script: Scrip
     }
     return put.url;
   }
-  await fetchVideo(app, url, dest, onPercent, signal);
+  await fetchVideo(app, url, dest, onPercent, signal, (names) => {
+    const video = parts.readVideos(dir)?.videos[index];
+    const caseTitle = video?.title || `video ${index + 1}`;
+    script.notes ??= [];
+    for (const name of names) {
+      const said = missingFootage.damagedNote(name, caseTitle);
+      if (!script.notes.includes(said)) script.notes.push(said);
+    }
+    diag.warn("writer", `${jobs.named(script.id, script.title)} · ${caseTitle}: joined without ${names.join(", ")}, which came down whole but can't be played`);
+  });
   if (!(await media.readable(dest))) throw new Error("Couldn't be read as video, so it was dropped.");
   // Its piece of the preview, while the other videos still come down.
   await encodePiece(dir, dest, `${jobs.named(script.id, script.title)} · video ${index + 1}`);

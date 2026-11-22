@@ -341,3 +341,69 @@ test("a script written already isn't fetched again every minute for good: its ro
     cleanup();
   }
 });
+
+test("writing waits only for footage still on its way: a file that won't come by itself, or one past its quick tries, holds nothing (JJ's two, Nov 22: each waited days on one unreadable file as \"Starting the workflow\")", () => {
+  const now = Date.now();
+  const one = (error: string, tries: number, asked?: true) => ({ id: "r", title: "CH02.mp4", error, tries, nextAt: now, ...(asked ? { asked } : {}) });
+  const holding = (...missingOnes: ReturnType<typeof one>[]) => missing.holding({ missing: missingOnes } as unknown as Script).length;
+  // A dropped line in its quick tries (1, 5, 15 min) holds the build; after them it doesn't.
+  expect(holding(one("could not reach Edit's relay", 0))).toBe(1);
+  expect(holding(one("could not reach Edit's relay", 2))).toBe(1);
+  expect(holding(one("could not reach Edit's relay", 3))).toBe(0);
+  // One only a person can put right, or that isn't video at all, never holds it.
+  expect(holding(one("Couldn't be read as video or audio, so it was dropped.", 0))).toBe(0);
+  expect(holding(one("anything", 0, true))).toBe(0);
+  // Drive's day-long limit isn't waited out by the writing either.
+  expect(holding(one("Drive says the download limit for this file is used up for today", 0))).toBe(0);
+});
+
+test.skipIf(ffmpeg === null)("a build that waited starts by itself once its missing footage is past its quick tries, told what's missing, and what comes later is left out with a note", async () => {
+  const { app, cleanup } = fixtureHome("missing-quick-tries");
+  try {
+    const data = store.dataDir(app.store.home);
+    missing.start(app, data);
+    refused.add(1);
+    const done = await imports.fromDrive(app, data, URL_, null, null, null, { note: "Write it." });
+    expect(done.missing?.map((one) => one.id)).toEqual([ids[1]!]);
+    expect(built).toEqual([]);
+    // Its quick tries spent (two more fail here), the next failure lets the build go.
+    const dir = store.scriptDir(data, done.id);
+    store.update(dir, (fresh) => (fresh.missing = fresh.missing!.map((one) => ({ ...one, tries: 2 }))), true);
+    await missing.tryAgain(done.id, true);
+    await until(data, done.id, () => built.length > 0);
+    expect(built).toEqual([[done.id, "Write it."]]);
+    const after = store.read(dir);
+    expect(after.missing?.map((one) => one.tries)).toEqual([3]);
+    expect(scripting.withMissing("Write it.", after)).toContain("CH02.mp4 didn't come in");
+  } finally {
+    cleanup();
+  }
+}, 120_000);
+
+test.skipIf(ffmpeg === null)("a compilation's Drive folder case is joined without a recording that came down whole but can't be played, never lost whole for it (JJ's \"745) Killer Mom\", Nov 22)", async () => {
+  const { app, cleanup } = fixtureHome("missing-folder-damaged");
+  const good = bytes[1]!;
+  try {
+    // Drive's own copy is damaged: the same size every time, noise inside.
+    bytes[1] = new Uint8Array(good.length).map(() => Math.floor(Math.random() * 256));
+    const dir = fs.mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "missing-folder-damaged-"));
+    const dest = join(dir, "00.mp4");
+    const left: string[] = [];
+    await imports.fetchVideo(app, URL_, dest, () => {}, undefined, (names) => left.push(...names));
+    expect(left).toEqual(["CH02.mp4"]);
+    const streams = await (await import("../../src/writer/media.ts")).streams(dest);
+    // CH01 (2 s) and CH03 (4 s) joined.
+    expect(streams.durationMs).toBeGreaterThan(5_500);
+    expect(streams.durationMs).toBeLessThan(7_500);
+    expect(missing.forWriter({ notes: [missing.damagedNote("CH02.mp4", "745) Killer Mom")] } as unknown as Script)).toContain("CH02.mp4 (in 745) Killer Mom) came down damaged");
+    // None readable: it says why, as before.
+    const all = bytes.slice();
+    bytes.forEach((one, n) => (bytes[n] = new Uint8Array(one.length).map(() => Math.floor(Math.random() * 256))));
+    const dest2 = join(dir, "01.mp4");
+    await expect(imports.fetchVideo(app, URL_, dest2)).rejects.toThrow();
+    all.forEach((one, n) => (bytes[n] = one));
+  } finally {
+    bytes[1] = good;
+    cleanup();
+  }
+}, 120_000);

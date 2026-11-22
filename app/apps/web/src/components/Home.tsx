@@ -315,7 +315,8 @@ export function Home() {
     if (one.status === "processing") importingNow.set(one.id, { word: `Importing ${Math.floor(creeping(one.id, one.progress ?? 0))}%`, stopped: false, percent: creeping(one.id, one.progress ?? 0) });
     else if (one.status === "error" || one.status === "needs_choice") importingNow.set(one.id, { word: one.status === "needs_choice" ? "Waiting on a choice" : "Stopped", stopped: true });
     // In, but its first prompt not started yet: still importing until the workflow is under way.
-    else if (one.firstBuild) importingNow.set(one.id, { word: "Starting the workflow", stopped: false });
+    // Its footage is in: the row opens the script (its missing footage, its build), never the import's steps at 0%.
+    else if (one.firstBuild) importingNow.set(one.id, { word: "Starting the workflow", stopped: false, in: true });
   }
   // The server's own number, eased ahead only while it moves; still for five minutes, the line says since when (Nov 20).
   for (const one of writing) {
@@ -381,7 +382,7 @@ export function Home() {
         fresh: fresh(row),
         kind: script.style,
         channel: script.channel ?? null,
-        row: () => <ScriptTableRow script={script} importing={row.importing} writing={row.writing === true} sharing={row.sharing ?? null} shareFailed={row.shareFailed ?? null} here={row.here === true} fresh={status} onChanged={refresh} onImport={row.importing ? () => setWatching(script.id) : undefined} />,
+        row: () => <ScriptTableRow script={script} importing={row.importing} writing={row.writing === true} sharing={row.sharing ?? null} shareFailed={row.shareFailed ?? null} here={row.here === true} fresh={status} onChanged={refresh} onImport={row.importing && !row.importing.in ? () => setWatching(script.id) : undefined} />,
       });
       continue;
     }
@@ -889,7 +890,7 @@ export type Listed =
   | { at: number; local: null; cloud: null; script: WriterScriptRow; importing?: Importing; writing?: boolean; sharing?: Sharing | null; shareFailed?: ShareFailed | null; here?: boolean };
 
 /** A script's import while it isn't done: its word for it ("Importing 40%", "Stopped"). */
-export type Importing = { word: string; stopped: boolean; percent?: number; step?: string };
+export type Importing = { word: string; stopped: boolean; percent?: number; step?: string; in?: boolean };
 
 /**
  * Where a project is on its way, script to finished video: Home lists them by

@@ -883,10 +883,11 @@ imports.hooks.build = (app, id, note) => {
 export function startJob(app: App, scriptId: string, work: jobs.Work): BuildStatus {
   const script = readFor(dataOf(app), scriptId);
   idle(scriptId);
-  // Writing waits for footage that didn't come in: kept as the build to start by itself once it's here or gone without (missing.ts).
-  if (work.kind === "build" && (script.missing ?? []).length > 0) {
+  // Writing waits for footage still on its way: kept as the build to start by itself once it's here or its quick tries are over (missing.ts `holding`).
+  const holding = work.kind === "build" ? missing.holding(script) : [];
+  if (work.kind === "build" && holding.length > 0) {
     store.update(store.scriptDir(dataOf(app), scriptId), (fresh) => (fresh.firstBuild = { note: work.note }), true);
-    throw new Error(`Writing waits: ${missing.line(script)}. It starts by itself once it's here, or when you go on without it.`);
+    throw new Error(`Writing waits: ${missing.line({ ...script, missing: holding })}. It starts by itself in a few minutes, with or without it.`);
   }
   return beginJob(app, scriptId, script.title, work);
 }

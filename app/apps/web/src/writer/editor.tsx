@@ -670,7 +670,7 @@ export function Editor({ script, onChange, onBack }: { script: Script; onChange:
         <div className="top-actions">
           <StatusChips />
           <UpdateButton />
-          {/* Footage that didn't come in: writing waits for it (missing.ts), said at the cloud with its two answers. */}
+          {/* Footage that didn't come in: writing waits only while it is still on its way (missing.ts `holding`), said at the cloud with its two answers. */}
           {(script.missing ?? []).length > 0 && (
             <MissingCloud
               items={script.missing!.map((one) => ({ id: one.id, name: one.title, ...(one.asked === true ? { asked: true } : {}) }))}
