@@ -470,3 +470,19 @@ test("a local file's import with the relay down answers with footage that plays 
     fixture.cleanup();
   }
 }, 60_000);
+
+test("the stretches add up to the source's own frames, whatever its rate and length", () => {
+  for (const [duration, fps] of [[7200, 24000 / 1001], [3601.5, 30000 / 1001], [8, 30], [125.3, 60], [59.99, 25]] as const) {
+    const total = localFirst.stretchesOf(duration);
+    let frames = 0;
+    let last = 0;
+    for (let n = 0; n < total; n++) {
+      const [first, end] = localFirst.stretchFrames({ duration, fps }, n);
+      expect(first).toBe(last);
+      expect(end).toBeGreaterThan(first);
+      frames += end - first;
+      last = end;
+    }
+    expect(frames).toBe(Math.round(duration * localFirst.workingFps(fps)));
+  }
+});

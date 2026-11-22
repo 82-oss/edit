@@ -325,12 +325,25 @@ export function workingSize(width: number, height: number): [number, number] {
 /** Its frame rate: the source's, at most `WORKING.most_fps`. */
 export const workingFps = (fps: number): number => (fps > 0 ? Math.min(fps, WORKING.most_fps) : WORKING.most_fps);
 
-/** FFmpeg's command for stretch `n` (`WORKING.segment_s` of the source from `n * segment_s`) into `out`, picture only. */
+/**
+ * Stretch `n`'s frames of the working copy, [first, end): by the whole file's frame count, so stretches joined are the
+ * source's length to the frame (each rounded on its own, a 23.976 fps source drifted 0.44 of a frame a stretch, 2 s
+ * over two hours).
+ */
+export function stretchFrames(probe: Pick<Probe, "duration" | "fps">, n: number): [number, number] {
+  const fps = workingFps(probe.fps);
+  const all = Math.max(1, Math.round(probe.duration * fps));
+  const at = (k: number) => Math.min(all, Math.round(k * WORKING.segment_s * fps));
+  return [at(n), n === stretchesOf(probe.duration) - 1 ? all : at(n + 1)];
+}
+
+/** FFmpeg's command for stretch `n` (`stretchFrames`) into `out`, picture only. */
 export function stretchCommand(input: string, probe: Probe, n: number, out: string): string[] {
   const fps = workingFps(probe.fps);
   const [width, height] = workingSize(probe.width, probe.height);
-  const from = n * WORKING.segment_s;
-  const frames = Math.max(1, Math.round(Math.min(WORKING.segment_s, Math.max(probe.duration - from, 0)) * fps));
+  const [first, end] = stretchFrames(probe, n);
+  const from = first / fps;
+  const frames = Math.max(1, end - first);
   const gop = String(Math.max(1, Math.round(fps * WORKING.keyframe_s)));
   const kbps = Math.round(WORKING.bitrate / 1000);
   // On a Mac, VideoToolbox (its speed first, as the pieces' encode: proxy_pieces.ts); elsewhere NVENC, else libx264.
