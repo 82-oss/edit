@@ -358,6 +358,52 @@ pub mod decode_stats {
     }
 }
 
+/// Files the Mac's reader wouldn't open ("No native video track"), by path, as they were then (size and
+/// modification time): every reader of one tried it again, the open's seconds and a warning each time
+/// (46 for one watermark strip in a morning on the M4, Nov 18), before reading it with FFmpeg as the last
+/// one had. A file that changed since is tried again; a frame that fails once it's open isn't remembered.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod refused {
+    use std::collections::HashMap;
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+    use std::time::SystemTime;
+
+    use parking_lot::Mutex;
+
+    type Stamp = (u64, Option<SystemTime>);
+
+    fn known() -> &'static Mutex<HashMap<PathBuf, Stamp>> {
+        static KNOWN: OnceLock<Mutex<HashMap<PathBuf, Stamp>>> = OnceLock::new();
+        KNOWN.get_or_init(|| Mutex::new(HashMap::new()))
+    }
+
+    fn stamp(path: &Path) -> Option<Stamp> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some((meta.len(), meta.modified().ok()))
+    }
+
+    /// The Mac's reader refused `path` as it is now.
+    pub(super) fn remember(path: &Path) {
+        if let Some(stamp) = stamp(path) {
+            known().lock().insert(path.to_owned(), stamp);
+        }
+    }
+
+    /// Whether the Mac's reader refused `path` as it is now (one changed since, or gone, is forgotten).
+    pub(super) fn is(path: &Path) -> bool {
+        let mut known = known().lock();
+        let Some(was) = known.get(path).copied() else {
+            return false;
+        };
+        if stamp(path) == Some(was) {
+            return true;
+        }
+        known.remove(path);
+        false
+    }
+}
+
 /// Sequential reader for one source that restarts on jumps: AVFoundation on
 /// the Mac, FFmpeg for what it can't read (and elsewhere), ImageIO for stills.
 pub(crate) struct VideoReader {
@@ -432,7 +478,7 @@ impl VideoReader {
         tests::OPENED.with(|opened| opened.set(opened.get() + 1));
         let (width, height) = (source.key.width, source.key.height);
         #[cfg(target_os = "macos")]
-        let url = crate::util::is_url(&source.key.path);
+        let ffmpeg_only = crate::util::is_url(&source.key.path) || refused::is(&source.key.path);
         let excerpts_seen = crate::excerpts::changes();
         let excerpts = crate::excerpts::of(&source.key.path);
         Self {
@@ -443,8 +489,9 @@ impl VideoReader {
             #[cfg(target_os = "macos")]
             native: None,
             #[cfg(target_os = "macos")]
-            // AVAssetReader only reads local files: a cloud original's URL is FFmpeg's.
-            native_failed: std::env::var_os("EDIT_FFMPEG_VIDEO").is_some() || url,
+            // AVAssetReader only reads local files: a cloud original's URL is FFmpeg's, and so is a file
+            // it refused before, unchanged since (`refused`).
+            native_failed: std::env::var_os("EDIT_FFMPEG_VIDEO").is_some() || ffmpeg_only,
             start: 0.0,
             next_index: 0,
             frame: Vec::new(),
@@ -912,11 +959,12 @@ impl VideoReader {
             use decode_stats as stats;
             if self.native.is_none() {
                 let started = Instant::now();
-                self.native = Some(crate::mac_media::Reader::open(
-                    &self.source.key.path,
-                    self.width,
-                    self.height,
-                )?);
+                let opened =
+                    crate::mac_media::Reader::open(&self.source.key.path, self.width, self.height);
+                if opened.is_err() {
+                    refused::remember(&self.source.key.path);
+                }
+                self.native = Some(opened?);
                 stats::add(&stats::OPENS, &stats::OPEN_NS, started);
                 self.forward = false;
             }
@@ -6078,6 +6126,28 @@ mod tests {
             1,
             "kept from before"
         );
+    }
+
+    /// A file the Mac's reader refused is read with FFmpeg by every reader after, until it changes.
+    #[test]
+    fn a_file_the_native_reader_refused_is_remembered_until_it_changes() {
+        let dir = std::env::temp_dir().join(format!("edit-refused-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("strip.mp4");
+        std::fs::write(&path, b"not yet a video").unwrap();
+        assert!(!super::refused::is(&path));
+        super::refused::remember(&path);
+        assert!(super::refused::is(&path));
+        // Written again (made anew): tried again.
+        std::fs::write(&path, b"a video now, longer").unwrap();
+        assert!(!super::refused::is(&path));
+        // Gone: nothing to remember, nothing remembered.
+        super::refused::remember(&path);
+        std::fs::remove_file(&path).unwrap();
+        assert!(!super::refused::is(&path));
+        super::refused::remember(&path);
+        assert!(!super::refused::is(&path));
+        std::fs::remove_dir_all(dir).ok();
     }
 
     /// A reader whose read failed is let go, not pooled: the next ask for the file opens it again.
