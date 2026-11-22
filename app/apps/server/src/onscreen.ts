@@ -76,9 +76,24 @@ const reading = new Set<string>();
  */
 const READS_AT_ONCE = new Semaphore(2);
 
+/**
+ * Files whose read failed, and when: not read again (nor waited on as being
+ * read) for a while, as watermarks.ts's. Until Nov 22 one that could never be
+ * read was "still being read" for good, and the end-of-turn check
+ * (end_check.ts) waited its whole minute on it.
+ */
+const failed = new Map<string, number>();
+const RETRY_MS = 10 * 60_000;
+
+/** Whether reading a file's picture failed in the last ten minutes. */
+export function couldNotRead(media: Media): boolean {
+  const at = failed.get(media.path);
+  return at !== undefined && Date.now() - at < RETRY_MS;
+}
+
 /** Reads in the background what isn't cached yet: the seconds of each file the timeline plays, then its cuts. */
 function warm(media: Media, seconds: number[], cuts: boolean): void {
-  if (!isReal() || reading.has(media.path)) return;
+  if (!isReal() || reading.has(media.path) || couldNotRead(media)) return;
   reading.add(media.path);
   void (async () => {
     const release = await READS_AT_ONCE.acquire();
@@ -86,6 +101,7 @@ function warm(media: Media, seconds: number[], cuts: boolean): void {
       if (seconds.length > 0) await native().screenTextDetect(media.path, [media.width ?? 1920, media.height ?? 1080], seconds);
       if (cuts) await seats.cutsOf(media.path);
     } catch (error) {
+      failed.set(media.path, Date.now());
       diag.warn("audit", `reading ${media.name}'s picture: ${diag.messageOf(error)}`);
     } finally {
       release();
@@ -201,7 +217,7 @@ export function issues(project: Project): { issues: unknown[]; pending: string[]
     const text = native().screenTextCached(media.path) ?? {};
     const missing = [...seconds].filter((second) => !Object.hasOwn(text, second)).sort((a, b) => a - b);
     const cuts = broll ? seats.cachedCuts(media.path) : [];
-    if (missing.length > 0 || cuts === null) {
+    if ((missing.length > 0 || cuts === null) && !couldNotRead(media)) {
       pending.add(media.name);
       warm(media, missing, cuts === null);
     }
@@ -311,4 +327,9 @@ function recuts(project: Project, clips: [VideoClip, Media][]): unknown[] {
     });
   }
   return out;
+}
+
+/** For tests: every file readable again. */
+export function resetFailures(): void {
+  failed.clear();
 }

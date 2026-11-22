@@ -7,7 +7,7 @@ import * as os from "node:os";
 import type { Clip, Project } from "../src/model.ts";
 import { useNative, wrap, type Native, type ScreenText } from "../src/native/index.ts";
 import { createStub } from "../src/native/stub.ts";
-import { issues } from "../src/onscreen.ts";
+import { couldNotRead, issues, resetFailures } from "../src/onscreen.ts";
 import { join } from "../src/paths.ts";
 import { newProject, REUSE_LABEL } from "../src/project.ts";
 
@@ -148,4 +148,27 @@ test("another channel's subtitles burned into the footage, under ours, are flagg
 test("cuts every half second (a bodycam walking) aren't cuts; one standing alone is", async () => {
   const { lone } = await import("../src/seats.ts");
   expect(lone([0.5, 1.5, 2, 3, 3.5, 5.5, 6, 6.5, 30, 44.5, 45.5])).toEqual([30]);
+});
+
+test("a file whose picture can't be read isn't waited on as still being read (Nov 22: the end-of-turn check waited its whole minute on one)", async () => {
+  const cache = addon({}, null);
+  const raw = createStub() as unknown as Record<string, unknown>;
+  raw.stub = false;
+  raw.mediaCache = () => cache;
+  raw.screenTextCached = () => null;
+  raw.screenTextDetect = async () => {
+    throw new Error("Invalid data found when processing input");
+  };
+  useNative(wrap(raw as unknown as Native));
+  try {
+    const p = project([video("c1", 0, 300, 0)]);
+    expect(issues(p).pending).toEqual(["hearing.mp4"]);
+    for (let tries = 0; !couldNotRead(p.media[0]!) && tries < 100; tries++) await Bun.sleep(5);
+    expect(couldNotRead(p.media[0]!)).toBe(true);
+    // Not pending now, on every look while it's fresh.
+    expect(issues(p).pending).toEqual([]);
+    expect(issues(p).pending).toEqual([]);
+  } finally {
+    resetFailures();
+  }
 });
