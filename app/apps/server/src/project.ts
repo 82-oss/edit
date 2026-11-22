@@ -210,6 +210,24 @@ export function mediaOf(project: Project, id: string): Media | undefined {
   return project.media.find((media) => media.id === id);
 }
 
+/**
+ * The stretches of each video the timeline shows (seconds of it, by media id), in the timeline's order: what Edit.app's
+ * window plays of it (native_preview.ts) and what a local-first project keeps of it when room is short
+ * (local_first_room.ts).
+ */
+export function playedStretches(project: Pick<Project, "clips" | "settings">): Map<string, [number, number][]> {
+  const rate = project.settings.fps > 0 ? project.settings.fps : 30;
+  const played = new Map<string, [number, number][]>();
+  for (const clip of [...project.clips].sort((a, b) => a.start - b.start)) {
+    if (clip.type !== "video") continue;
+    const from = clip.source_in ?? 0;
+    const stretches = played.get(clip.media) ?? [];
+    stretches.push([from, from + (clip.duration / rate) * (clip.speed ?? 1)]);
+    played.set(clip.media, stretches);
+  }
+  return played;
+}
+
 export function clipOf(project: Project, id: string): Clip | undefined {
   return project.clips.find((clip) => clip.id === id);
 }

@@ -3427,12 +3427,20 @@ async function prepareForExport(
   // The picture is read from excerpts cut to this machine (export_excerpts.ts),
   // made while the sound copies come. Both report in, and the card names whichever has more left.
   const heard = needed.filter(([mediaId]) => mediaOf(project, mediaId)?.has_audio === true);
+  // A local-first project's footage is read from here (its originals, else their used stretches kept: local_first_room.ts):
+  // what neither holds comes from the cloud now, and the card says so in those words.
+  const fetches = localFirst.chosen(project) && exportExcerpts.cellsOf(project, start, end, new Set(urls.keys())).some((cell) => {
+    const item = mediaOf(project, cell.media);
+    const key = item === undefined ? null : exportExcerpts.cellKey(new Map(needed).get(cell.media) ?? "", item.fps, cell.index);
+    return key !== null && !isFile(localPath(cache, key));
+  });
+  if (fetches) diag.info("export", `${project.id}: some of its footage is neither here nor kept as used stretches: fetched from the cloud for this export`);
   let cut = { done: 0, total: 0 };
   let soundsDone = 0;
   let lastSaid = "";
   const say = (): void => {
     if (onPrep === undefined) return;
-    const line = prepLine(cut.total > 0 ? cut : null, heard.length > 0 ? { done: soundsDone, total: heard.length } : null);
+    const line = prepLine(cut.total > 0 ? cut : null, heard.length > 0 ? { done: soundsDone, total: heard.length } : null, fetches ? "fetching footage this computer no longer has from the cloud" : undefined);
     if (line === null) return;
     // The count is in the line. Emit when the percent or the named part changes, so a few hundred cells don't each push an event.
     const kind = line.phase.startsWith("copying the sound") ? "sound" : "footage";

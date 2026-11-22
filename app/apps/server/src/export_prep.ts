@@ -20,9 +20,9 @@ export const PREP = 0.2;
  * with the most left, so 222 excerpts still to cut read as the wait rather
  * than the sound copies that already finished. Null when nothing is prepared.
  */
-export function prepLine(excerpts: Count | null, sounds: Count | null): { phase: string; ratio: number } | null {
+export function prepLine(excerpts: Count | null, sounds: Count | null, cutting = "cutting the footage"): { phase: string; ratio: number } | null {
   const parts = [
-    excerpts !== null && excerpts.total > 0 ? { phase: "cutting the footage", ...excerpts } : null,
+    excerpts !== null && excerpts.total > 0 ? { phase: cutting, ...excerpts } : null,
     sounds !== null && sounds.total > 0 ? { phase: "copying the sound", ...sounds } : null,
   ].filter((part): part is { phase: string; done: number; total: number } => part !== null);
   if (parts.length === 0) return null;

@@ -50,6 +50,7 @@ import { fetchWhole, onLanded, previewBytes } from "./local_previews.ts";
 import type { Project } from "./model.ts";
 import { isFile } from "./paths.ts";
 import * as player from "./player.ts";
+import { playedStretches } from "./project.ts";
 import * as localFirst from "./local_first.ts";
 import * as pieces from "./proxy_pieces.ts";
 import * as storage from "./storage.ts";
@@ -418,18 +419,12 @@ export async function nativeSources(app: App, project: Project): Promise<Respons
   const streamed = new Set<string>();
   let piecesComing = false;
   const firstUse = new Map<string, number>();
-  // The stretches of each video the timeline shows (seconds of it), in the timeline's order.
-  const fps = project.settings.fps > 0 ? project.settings.fps : 30;
-  const played = new Map<string, [number, number][]>();
-  for (const clip of [...project.clips].sort((a, b) => a.start - b.start)) {
+  for (const clip of project.clips) {
     if (clip.type !== "video" && clip.type !== "audio") continue;
     firstUse.set(clip.media, Math.min(firstUse.get(clip.media) ?? Infinity, clip.start));
-    if (clip.type !== "video") continue;
-    const from = clip.source_in ?? 0;
-    const stretches = played.get(clip.media) ?? [];
-    stretches.push([from, from + (clip.duration / fps) * (clip.speed ?? 1)]);
-    played.set(clip.media, stretches);
   }
+  // The stretches of each video the timeline shows (seconds of it), in the timeline's order.
+  const played = playedStretches(project);
   const inPlayheadOrder = [...project.media].sort((a, b) => (firstUse.get(a.id) ?? Infinity) - (firstUse.get(b.id) ?? Infinity));
   for (const media of inPlayheadOrder) {
     const sound = media.kind === "audio" || (media.kind === "video" && media.has_audio);

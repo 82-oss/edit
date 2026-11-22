@@ -85,6 +85,8 @@ import { join } from "./paths.ts";
 import * as folderAccess from "./folder_access.ts";
 import * as research from "./research.ts";
 import * as writerStore from "./writer/store.ts";
+import * as localRoom from "./local_first_room.ts";
+import type { Project } from "./model.ts";
 import { CACHE_FLOOR_BYTES, FREE_FLOOR_BYTES, diskHooks, keepFreeBytes, ledger } from "./storage.ts";
 
 /** A step of a pass that touches the disk, or gives the thread back (`breath`); what each answers is in `answerNow`. */
@@ -239,14 +241,21 @@ class ByStamp<T> {
  * A project file's media list (whatever it holds: each reader checks it) and when it went to Drive, or `bad` when it
  * isn't JSON.
  */
-const projectMedia = new ByStamp<{ media: unknown; driveAt: number | null } | "bad">();
-const mediaOfText = (text: string): { media: unknown; driveAt: number | null } | "bad" => {
+const projectMedia = new ByStamp<{ media: unknown; driveAt: number | null; local: localRoom.Footage[] } | "bad">();
+const mediaOfText = (text: string): { media: unknown; driveAt: number | null; local: localRoom.Footage[] } | "bad" => {
   try {
     const value = JSON.parse(text) as { media?: unknown; drive?: { uploaded_ms?: unknown } | null } | null;
     // A file of `null` stops a pass as one that won't parse does (reading `.media` of it threw).
     if (value === null) return "bad";
     const at = typeof value.drive === "object" && value.drive !== null ? value.drive.uploaded_ms : undefined;
-    return { media: value.media, driveAt: typeof at === "number" ? at : null };
+    // A local-first project's sources and what its timeline uses of each (local_first_room.ts), worked out once a save.
+    let local: localRoom.Footage[] = [];
+    try {
+      local = localRoom.footageOf(value as Project);
+    } catch {
+      local = [];
+    }
+    return { media: value.media, driveAt: typeof at === "number" ? at : null, local };
   } catch {
     return "bad";
   }
@@ -555,7 +564,7 @@ function* used(app: App, pending: Set<string> | null): Steps<Used | null> {
     const at = read.stat.mtimeMs;
     const media = (Array.isArray(read.value.media) ? read.value.media : []) as { path?: unknown; kind?: unknown; cloud?: { source?: unknown; original?: unknown; proxy?: unknown } | null }[];
     const id = name.slice(0, -".json".length);
-    const project: UsedProject = { saved: at, tokens: new Set(), blocks: new Set(), unconfirmed: false };
+    const project: UsedProject = { saved: at, tokens: new Set(), blocks: new Set(), unconfirmed: false, local: read.value.local };
     projects.set(id, project);
     for (const item of media) {
       yield BREATH;
@@ -612,6 +621,8 @@ interface UsedProject {
   blocks: Set<string>;
   /** Something of it isn't in R2 yet (an upload pending or under way, a file Edit made that hasn't gone up): in work. */
   unconfirmed: boolean;
+  /** Its sources whose footage is local while it's in work (local_first_room.ts): none for any other project. */
+  local: localRoom.Footage[];
 }
 
 interface Used {
@@ -836,6 +847,56 @@ function* survey(app: App, entries: Entry[], now: number, done: Set<string>, kno
   return { inUse, groups: [...groups.values()] };
 }
 
+/** A local-first source's files here, every local-first project using it as one (local_first_room.ts). */
+interface LocalSource {
+  original: string;
+  /** Its working copy, or null when the original plays as it is. */
+  copy: string | null;
+  onTimeline: boolean;
+  /** Its used stretches: the export cells and the sound copy the timeline needs. */
+  stretches: string[];
+}
+
+/** What a file here is to a local-first source: its original, its working copy, or one of its used stretches. */
+interface LocalFile {
+  role: "original" | "copy" | "stretch";
+  source: LocalSource;
+}
+
+/** The local-first sources' files here, by path (none when no project took the local path). */
+function localFiles(cache: string, inUse: Used): Map<string, LocalFile> {
+  const sources = new Map<string, LocalSource>();
+  for (const project of inUse.projects.values()) {
+    for (const footage of project.local) {
+      const at = localRoom.paths(cache, footage);
+      const known = sources.get(at.original);
+      const stretches = [...at.cells, ...(at.sound === null ? [] : [at.sound])];
+      if (known === undefined) sources.set(at.original, { original: at.original, copy: at.copy, onTimeline: footage.onTimeline, stretches });
+      else {
+        known.onTimeline ||= footage.onTimeline;
+        known.stretches = [...new Set([...known.stretches, ...stretches])];
+        known.copy ??= at.copy;
+      }
+    }
+  }
+  const out = new Map<string, LocalFile>();
+  for (const source of sources.values()) {
+    out.set(source.original, { role: source.copy === null ? "copy" : "original", source });
+    if (source.copy !== null) out.set(source.copy, { role: "copy", source });
+    for (const stretch of source.stretches) out.set(stretch, { role: "stretch", source });
+  }
+  return out;
+}
+
+/**
+ * Local-first originals R2 has said it holds at their size (`confirmOriginals`, the hourly pass), by path, with that
+ * size: room asked for between passes (`makeRoom`) may take them as the pass would. A file of another size isn't one.
+ */
+const heldInR2 = new Map<string, number>();
+
+/** Free space under which the hourly pass asks R2 about local-first originals and keeps their used stretches ready to let them go. */
+export const LOCAL_SOON_BYTES = 10_000_000_000;
+
 /** R2's own key for an original here: a cache copy's (`<cache>/cloud/<key less edit/>`), or a Drive download's (cloud_media `localOriginal`). */
 function originalKeyOf(cache: string, path: string, downloads: Map<string, string>): string | null {
   const cloudDir = `${join(cache, "cloud")}/`;
@@ -864,19 +925,32 @@ export async function confirmOriginals(
   const asks: [Entry, string][] = [];
   // Nobody's originals go only for room: asked about only while the disk is short of what Edit keeps free.
   const short = diskHooks.free(cache) < keepFreeBytes(cache);
-  for (const group of (await gently(survey(app, entries, now, done))).groups) {
-    if (group.state !== "done" && !(group.state === "nobody's" && short)) continue;
+  // A local-first project's (idle or in work) only as room gets short, so their used stretches are ready by then.
+  const soon = diskHooks.free(cache) < keepFreeBytes(cache) + LOCAL_SOON_BYTES;
+  const surveyed = await gently(survey(app, entries, now, done));
+  const local = surveyed.inUse === null ? new Map<string, LocalFile>() : localFiles(cache, surveyed.inUse);
+  const asked = new Set<string>();
+  for (const group of surveyed.groups) {
+    const localToo = soon && (group.state === "idle" || group.state === "work");
+    if (group.state !== "done" && !(group.state === "nobody's" && short) && !localToo) continue;
     for (const entry of group.files) {
       if (ledgerOf.tierOf(entry.kind) !== 2) continue;
+      if (group.state !== "done" && group.state !== "nobody's" && local.get(entry.path)?.source.original !== entry.path) continue;
       const key = originalKeyOf(cache, entry.path, downloads);
-      if (key !== null && cloud.validKey(key)) asks.push([entry, key]);
+      if (key !== null && cloud.validKey(key)) {
+        asks.push([entry, key]);
+        if (local.has(entry.path)) asked.add(entry.path);
+      }
     }
   }
   const slots = new Semaphore(3);
   await Promise.all(asks.slice(0, CONFIRM_MOST).map(([entry, key]) => slots.with(async () => {
     try {
       const there = await head(key);
-      if (there !== null && there.size === entry.bytes && entry.bytes > 0) confirmed.add(entry.path);
+      if (there !== null && there.size === entry.bytes && entry.bytes > 0) {
+        confirmed.add(entry.path);
+        if (asked.has(entry.path)) heldInR2.set(entry.path, entry.bytes);
+      } else if (asked.has(entry.path)) heldInR2.delete(entry.path);
     } catch {
       // Not known: it stays.
     }
@@ -1122,6 +1196,82 @@ function* cleanSteps(app: App, dryRun: boolean, now: number, given: Limits | und
       if (folder !== undefined && report.files > before && !dryRun) app.media.forgetKey(folder);
     };
     const tierOf = (entry: Entry) => ledgerOf.tierOf(entry.kind);
+    /**
+     * A local-first source's files for room (local_first_room.ts), idle projects before projects in work, the one worked
+     * on longest ago first: (1) originals R2 holds at their size, their working copy made and their used stretches kept
+     * here; (2) working copies of sources off the timeline; (3) working copies of sources on it; (4) the used stretches.
+     * A project in work gives up (3) and (4) only with the disk truly out (`out`), and never one open now or with work
+     * running. A working copy is made again from its original (here or in R2) or fetched; an original goes only once R2
+     * has it. Each said in the log with why.
+     */
+    const localOrder = function* (local: Map<string, LocalFile>, groups: Group[], out: boolean): Steps<void> {
+      if (local.size === 0 || short() <= 0) return;
+      const fileOf = new Map(entries.map((entry) => [entry.path, entry.file]));
+      const order = (group: Group) => (group.state === "idle" ? 0 : 1);
+      const candidates = groups
+        .filter((group) => group.state === "idle" || group.state === "work")
+        .sort((a, b) => order(a) - order(b) || a.last - b.last)
+        .flatMap((group) => group.files.flatMap((entry) => {
+          const file = local.get(entry.path);
+          return file === undefined ? [] : [{ entry, group, ...file }];
+        }));
+      const here = function* (path: string): Steps<boolean> {
+        return (yield* statOf(path)) !== null;
+      };
+      // A file with another name too (a person's own file linked in at its key's place: local_first.ts `importFile`):
+      // removing this name frees nothing, and the file is theirs.
+      const linked = function* (path: string): Steps<boolean> {
+        return ((yield* statOf(path))?.nlink ?? 1) > 1;
+      };
+      // The working copy is its original under another name (not made yet): giving up either frees nothing.
+      const standIn = (source: LocalSource) => source.copy !== null && fileOf.get(source.copy) !== undefined && fileOf.get(source.copy) === fileOf.get(source.original);
+      const inR2 = (entry: Entry) => entry.bytes > 0 && (confirmed.has(entry.path) || heldInR2.get(entry.path) === entry.bytes);
+      const kept = function* (source: LocalSource): Steps<boolean> {
+        for (const stretch of source.stretches) if (!(yield* here(stretch))) return false;
+        return true;
+      };
+      const give = function* (entry: Entry, why: string): Steps<void> {
+        const before = report.bytes;
+        yield* take(entry);
+        if (report.bytes > before) diag.info("cache", `gave up ${entry.path} (${(entry.bytes / 1e9).toFixed(2)} GB) for room: ${why}`);
+      };
+      let said = false;
+      const truly = function* (one: { group: Group }): Steps<boolean> {
+        if (one.group.state === "idle") return true;
+        if (!out || one.group.active) return false;
+        if (!said) {
+          said = true;
+          diag.warn("cache", `The disk has ${(free() / 1e9).toFixed(1)} GB free, under the ${(CACHE_FLOOR_BYTES / 1e9).toFixed(1)} GB Edit needs to work: projects in work give up the footage on their timeline too; it comes back from the cloud as it's played`);
+        }
+        yield BREATH;
+        return true;
+      };
+      // 1. Whole originals R2 holds, their working copy made and what the timeline uses of them kept here.
+      for (const one of candidates) {
+        if (short() <= 0) return;
+        if (one.role !== "original" || standIn(one.source) || !inR2(one.entry) || (yield* linked(one.entry.path))) continue;
+        if (one.source.copy === null || !(yield* here(one.source.copy))) continue;
+        if (one.source.onTimeline && !(yield* kept(one.source))) continue;
+        yield* give(one.entry, `R2 holds this original at its size${one.source.onTimeline ? ", and what the timeline uses of it is kept here" : ""}`);
+      }
+      // 2 and 3. Working copies: off the timeline, then on it. One that's its own original goes only as an original may.
+      for (const onTimeline of [false, true]) {
+        for (const one of candidates) {
+          if (short() <= 0) return;
+          if (one.role !== "copy" || one.source.onTimeline !== onTimeline || standIn(one.source)) continue;
+          const own = one.source.copy === null;
+          if (own && (!inR2(one.entry) || (yield* linked(one.entry.path)) || (onTimeline && !(yield* kept(one.source))))) continue;
+          if (onTimeline && !(yield* truly(one))) continue;
+          yield* give(one.entry, `a working copy of footage ${onTimeline ? "on" : "off"} the timeline, fetched from the cloud when it's played${own ? " (it's its original, which R2 holds at its size)" : ""}`);
+        }
+      }
+      // 4. The used stretches, last.
+      for (const one of candidates) {
+        if (short() <= 0) return;
+        if (one.role !== "stretch" || !(yield* truly(one))) continue;
+        yield* give(one.entry, "a used stretch of footage whose original and working copy are gone here; an export fetches it again");
+      }
+    };
     // Let go (done on Home, or idle a week, or deleted): all of its copies at each pass, its originals once R2 has them.
     for (const group of groups.filter((one) => one.state === "done")) {
       for (const entry of group.files) if (tierOf(entry) !== 2 || confirmed.has(entry.path)) yield* take(entry);
@@ -1136,8 +1286,11 @@ function* cleanSteps(app: App, dryRun: boolean, now: number, given: Limits | und
       }
     }
     scriptCopies();
+    // A local-first source's original, working copy and used stretches go in their own order (`localOrder`), never
+    // by these tiers; every other file as it always has.
+    const local = localFiles(cache, inUse);
     const wholeTier = function* (group: Group, tier: 0 | 1): Steps<void> {
-      for (const entry of group.files) if (tierOf(entry) === tier) yield* take(entry);
+      for (const entry of group.files) if (tierOf(entry) === tier && !local.has(entry.path)) yield* take(entry);
     };
     for (const group of groups.filter((one) => one.state === "idle").sort((a, b) => a.last - b.last)) {
       if (short() <= 0) break;
@@ -1145,6 +1298,7 @@ function* cleanSteps(app: App, dryRun: boolean, now: number, given: Limits | und
       if (short() <= 0) break;
       yield* wholeTier(group, 1);
     }
+    yield* localOrder(local, groups, false);
     // Under the cache's hard floor with nothing else left: projects in work give their copies up too, the oldest
     // first, but never one open in the last minutes or with work running.
     if (short() > 0 && free() < CACHE_FLOOR_BYTES) {
@@ -1154,6 +1308,7 @@ function* cleanSteps(app: App, dryRun: boolean, now: number, given: Limits | und
         if (short() <= 0 || free() >= CACHE_FLOOR_BYTES) break;
         yield* wholeTier(group, 1);
       }
+      if (short() > 0 && free() < CACHE_FLOOR_BYTES) yield* localOrder(local, groups, true);
     }
   }
   // A Drive download taken: no longer noted as its original's copy here (cloud_media `localOriginal`).
@@ -1363,6 +1518,8 @@ export async function makeRoomAsync(app: App, wanted: number): Promise<number> {
     if (waiting === ask) waiting = null;
     thread.note("room asked of the cache for work");
     const cache = app.store.cacheDir();
+    // Local-first originals the last pass found in R2 have their used stretches cut first, so they can go (local_first_room.ts).
+    if (heldInR2.size > 0) await localRoom.keep(app, (path, bytes) => heldInR2.get(path) === bytes, doneLately);
     const entries = ledger.covers(cache) ? ledger.all() : undefined;
     const report = await cleanCacheGently(app, false, Date.now(), { freeBytes: ask.wanted, ...(entries === undefined ? {} : { entries }) }, doneLately);
     saidFreed(report.bytes, ask.wanted);
@@ -1399,6 +1556,11 @@ export function cleanPass(app: App, now = Date.now(), head?: (key: string) => Pr
     const entries = await ledger.rebuild();
     thread.note("the hourly cache clean (originals asked of R2)");
     const confirmed = await confirmOriginals(app, entries, done, now, head);
+    // Room getting short: local-first originals R2 holds have their used stretches cut here, so they can go (local_first_room.ts).
+    if (diskHooks.free(cache) < keepFreeBytes(cache) + LOCAL_SOON_BYTES) {
+      thread.note("the hourly cache clean (local-first stretches kept)");
+      await localRoom.keep(app, (path) => confirmed.has(path), done);
+    }
     // Each said as it starts (thread.ts): until Nov 21 the next two kept the server's thread 3 to 4.4 s each hour on a
     // home of 14,000 cached files; now each gives it back every few milliseconds.
     thread.note("the hourly cache clean (the cache)");
