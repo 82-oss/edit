@@ -1402,6 +1402,23 @@ impl Player {
         if self.sound.refused {
             return from;
         }
+        // Its engine stopped while at rest or held (an output device change, a wake, and the restarts in
+        // mac_media.m didn't take): sound mixed into it would never play, and the play after stalled a second
+        // before `watch_speaker` saw it, the spinner cycling meanwhile. A new speaker now, on the device there is.
+        if self
+            .sound
+            .feed
+            .as_ref()
+            .is_some_and(|feed| !feed.speaker.running())
+        {
+            crate::log::warn(
+                "preview",
+                "the player's speaker stopped while at rest (an output device change or a wake); a new one".to_string(),
+            );
+            trace(|| "speaker stopped at rest: a new one".to_owned());
+            self.sound.disarm();
+            self.sound.feed = None;
+        }
         let fps = project.fps();
         if let Some(armed) = self
             .sound
