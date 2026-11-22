@@ -65,7 +65,9 @@ describe("ShareDialog's watermark (Sphe, Nov 16: only when the channel has one)"
   it("a project of no channel (V1) keeps the checkbox and the folder's pictures to pick from, starting on the usual one", async () => {
     const { box, row } = await open(project(), { channel: null, channels: PICTURES, usual: "pic-si" });
     expect(box).not.toBeNull();
-    expect(row!.textContent).toContain("The channel’s logo at 10%");
+    // Nov 22: it has no channel, so the row never says "the channel's": a logo, and the picker says whose.
+    expect(row!.textContent).toContain("A logo at 10%");
+    expect(row!.textContent).not.toContain("channel");
     // The picker, on the one picked most here.
     expect(row!.querySelector("button")?.textContent).toContain("Sam's Interrogations");
   });
@@ -258,10 +260,23 @@ describe("ShareDialog once an export has ended (Astra, Nov 18: one obvious next 
 
   it("a cancelled export: Export again, no Retry", async () => {
     await open(project(), { channel: null, channels: [] });
+    vi.spyOn(api, "exportActivity").mockResolvedValue([]);
+    act(() => useEditor.setState({ exportState: { state: "running", progress: 0.2, path: "/x.mp4" } as never }));
+    await settle();
     act(() => useEditor.setState({ exportState: { state: "cancelled", progress: 0, path: "/x.mp4" } as never }));
     await settle();
     expect(primary()).toEqual(["Export again"]);
     expect(labels()).not.toContain("Retry");
+    expect(document.body.textContent).toContain("Cancelled");
+  });
+
+  // The MacBook Air, Nov 22: "Cancelled" was still there after closing the dialog and opening it again.
+  it("a cancel seen before the dialog opened: the dialog as before, no Cancelled", async () => {
+    await open(project(), { channel: null, channels: [] });
+    act(() => useEditor.setState({ exportState: { state: "cancelled", progress: 0, path: "/x.mp4" } as never }));
+    await settle();
+    expect(document.body.textContent).not.toContain("Cancelled");
+    expect(primary()).toEqual(["Save to this computer"]);
   });
 });
 
@@ -297,6 +312,26 @@ describe("ShareDialog's Send for feedback says what it will do, as the server an
   it("someone has commented on v2: Share as v3", async () => {
     await linked({ version: 3, replace: false });
     expect(primary()).toEqual(["Share as v3"]);
+  });
+
+  // The MacBook Air, Nov 22: "Share as v2" ended "v1 is up" (the edit as v1's, the cloud gave v1 back).
+  it("the edit unchanged since v2: never promised as v3, and it says why", async () => {
+    await linked({ version: 2, replace: false, unchanged: true } as never);
+    expect([...document.querySelectorAll("button")].map((one) => one.textContent?.trim())).toContain("Share v2 again");
+    expect(document.body.textContent).toContain("The edit hasn’t changed since v2.");
+    expect(document.body.textContent).not.toContain("v3");
+  });
+
+  // The MacBook Air, Nov 22: a first share stopped behind "Where should exports go?", which only a save needs.
+  it("a share never asks where exports go", async () => {
+    await linked({ version: 3, replace: false });
+    const asked = vi.spyOn(api, "exportFolder").mockResolvedValue({ shown: "~/Movies/Edit", home: "/home/me", chosen: false } as never);
+    const shared = vi.spyOn(api, "shareProject").mockResolvedValue({ started: true } as never);
+    asked.mockClear();
+    act(() => [...document.querySelectorAll("button")].find((one) => one.textContent?.trim() === "Share as v3")!.click());
+    await settle();
+    expect(shared).toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain("Where should exports go");
   });
 
   it("saving to this computer instead: Save to this computer", async () => {
@@ -373,6 +408,27 @@ describe("ShareDialog's three states: before, while it runs, done", () => {
     expect(texts()).toEqual(expect.arrayContaining(["Cancel export", "Close"]));
     expect(texts()).not.toContain("Replace v2");
     expect(document.body.textContent).toContain("It carries on if you close this.");
+  });
+
+  // The MacBook Air, Nov 22: the heading said the last share's words for a second as the next one started.
+  it("a share just pressed is headed by what it will do, never by the last share's words", async () => {
+    vi.spyOn(api, "exportActivity").mockResolvedValue([]);
+    await show({ review: LINK, next: { version: 3, replace: false }, share: { state: "done", step: "published", at: 1, version: 2, url: LINK.url, target: { version: 2, replace: true } } } as never);
+    vi.spyOn(api, "shareProject").mockReturnValue(new Promise(() => {}));
+    act(() => [...document.querySelectorAll("button")].find((one) => one.textContent?.trim() === "Share as v3")!.click());
+    await settle();
+    expect(document.querySelector("h2")?.textContent).toBe("Sharing v3 for feedback");
+  });
+
+  it("a share of an unchanged edit, done: it says nothing changed and that version is still the link", async () => {
+    vi.spyOn(api, "exportActivity").mockResolvedValue([]);
+    const asked = await show({ review: LINK, next: { version: 2, replace: false, unchanged: true }, sharing: "uploading 90%", share: { state: "running", step: "uploading", at: 1, target: { version: 2, replace: false, unchanged: true } } } as never);
+    await settle();
+    expect(document.querySelector("h2")?.textContent).toBe("Sharing v2 again");
+    asked.mockResolvedValue({ sharing: null, share: { state: "done", step: "published", at: 2, version: 2, url: LINK.url, target: { version: 2, replace: false, unchanged: true } }, watermark: null, review: LINK, next: { version: 2, replace: false, unchanged: true }, notes: [] } as unknown as Review);
+    await wait(1700);
+    await settle();
+    expect(document.querySelector("h2")?.textContent).toBe("Nothing changed, so v2 is still the link");
   });
 
   it("a step under way with a percent says it and its time left, with its own bar", async () => {

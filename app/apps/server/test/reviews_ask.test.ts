@@ -234,6 +234,27 @@ test("a share after the fix marks the notes it carries as fixed in that version:
   }
 }, 30_000);
 
+test("a share of an edit unchanged since the latest version, which has notes: promised as that version again, and said so once the cloud hands it back", async () => {
+  // Nov 22, the MacBook Air: "Share as v2" ended "v1 is up", the cloud giving v1 back for the same files.
+  const { app, home, id, cleanup } = await exported("ask-share-unchanged", [1], { n7: keptNote("", "n7", 1) });
+  const state = JSON.parse(fs.readFileSync(`${home}/reviews.json`, "utf8")) as { shared: Record<string, { versions: { timeline: string }[] }> };
+  state.shared[id]!.versions[0]!.timeline = timelineHash(app.store.get(id)!.project);
+  fs.writeFileSync(`${home}/reviews.json`, JSON.stringify(state));
+  const { named } = fakeCloud({ "reviews:publish": () => ({ reviewId: "r1", url: "https://review.test/r1", version: 1 }) });
+  try {
+    expect((reviews.view(app, id) as { next: unknown }).next).toEqual({ version: 1, replace: false, unchanged: true });
+    expect(await reviews.share(app, id, null, false)).toEqual({ url: "https://review.test/r1", version: 1 });
+    expect(named("reviews:publish")).toHaveLength(1);
+    expect(reviews.shareNow(home, id).share).toMatchObject({ state: "done", version: 1, target: { version: 1, replace: false, unchanged: true } });
+    // Changed since: the next share is a new version, promised as one.
+    const live = app.store.get(id)!.project;
+    await app.store.replace(id, null, { ...live, clips: [...live.clips, { id: "c-new", type: "solid", track: live.tracks[0]?.id ?? "v1", start: 0, duration: 30, color: "#000000" }] } as never, "test");
+    expect((reviews.view(app, id) as { next: unknown }).next).toEqual({ version: 2, replace: false });
+  } finally {
+    cleanup();
+  }
+}, 30_000);
+
 test("with no notes on the latest version, a share replaces it, and the fixes it carries are marked as in it", async () => {
   // Notes on v1, fixed; v2 went up after with no one's notes on it.
   const { app, home, id, cleanup } = await exported("ask-share-replace", [1, 2], { n1: fixedNotes(1).n1 });

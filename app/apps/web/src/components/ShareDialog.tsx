@@ -112,6 +112,7 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   useEffect(() => {
     if (!open) return;
     setMarkTouched(false);
+    setStopped(false);
     void api.exportFolder().then(
       (given) => setFolder({ shown: given.shown, home: given.home }),
       // Shown whole, then.
@@ -297,19 +298,22 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   const picked: What = what === "joined" && ranges.length === 1 ? "each" : what;
   const chosen: What = choosing ? picked : "whole";
 
-  // Share and Export make the same file: the edit as saved, whole, the house export.
-  const start = async (go: (options: ExportOptions, watermark: string | null) => Promise<void>) => {
+  // Share and Export make the same file: the edit as saved, whole, the house export. Only a save asks where exports go
+  // (a share's file is Edit's to keep, and a first share stopped behind the question: the MacBook Air, Nov 22).
+  const start = async (go: (options: ExportOptions, watermark: string | null) => Promise<void>, saving: boolean) => {
     if (busy || exporting || batchRunning) return;
     setStarting(true);
     setStopped(false);
     setProblem(null);
     try {
-      await askExportFolder();
-      // The folder just chosen is the one the card names (it said ~/Movies/Edit still: kenobi, Nov 16).
-      void api.exportFolder().then(
-        (given) => setFolder({ shown: given.shown, home: given.home }),
-        () => {},
-      );
+      if (saving) {
+        await askExportFolder();
+        // The folder just chosen is the one the card names (it said ~/Movies/Edit still: kenobi, Nov 16).
+        void api.exportFolder().then(
+          (given) => setFolder({ shown: given.shown, home: given.home }),
+          () => {},
+        );
+      }
       useEditor.getState().endGesture();
       await flushSave();
       if (useEditor.getState().dirty) throw new Error("The latest changes couldn’t be saved. Try again once the connection returns.");
@@ -329,18 +333,18 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
       setBatchShown(false);
       await api.shareProject(project.id, options, false, true, watermark);
       setReview(await api.review(project.id));
-    });
+    }, false);
   const exportHere = () =>
     start(async (options, watermark) => {
       await api.exportHere(project.id, options, watermark);
       setOnly(true);
       setBatchShown(false);
-    });
+    }, true);
   const exportStretches = (mode: RangesMode) =>
     start(async (options, watermark) => {
       setBatch(await api.exportRanges(project.id, mode, options, watermark));
       setBatchShown(true);
-    });
+    }, true);
   // What's picked in the dialog, done: Export's click, and Retry when the server has nothing of it to retry.
   const asPicked = () => {
     writeSetting(WHERE, where);
@@ -386,8 +390,13 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   const next = review?.next ?? null;
   // The one action says what it will do (Sphe, Nov 21: "we then are given the option to replace V2 and not the option
   // to share as V3"): sending for feedback to a link with versions, the server's answer; the first share; a save.
-  const action = where === "feedback" ? (link !== null && next !== null ? (next.replace ? `Replace v${next.version}` : `Share as v${next.version}`) : "Share for feedback") : `Save to ${THIS_MACHINE}`;
-  const status = shareStatus({ exportState, sharing, share: lastShare, linked: link !== null, stopped, only });
+  // The edit as the latest version's: the cloud hands that version back, so it's never promised as a new one (Nov 22).
+  const action =
+    where === "feedback" ? (link !== null && next !== null ? (next.unchanged === true ? `Share v${next.version} again` : next.replace ? `Replace v${next.version}` : `Share as v${next.version}`) : "Share for feedback") : `Save to ${THIS_MACHINE}`;
+  // A cancel is said while the dialog that saw it stays open; opened again, it's the dialog as before (the MacBook Air,
+  // Nov 22: "Cancelled" was still there after closing and reopening).
+  const asItStands = shareStatus({ exportState, sharing, share: lastShare, linked: link !== null, stopped, only });
+  const status = asItStands.kind === "cancelled" && !stopped && ran === null ? ({ kind: "none" } as const) : asItStands;
   // The stretches' export says how it went in place of its parts' exports; finished, only while it's the last thing that
   // happened (the server leaves out one an export came after; a share's is said here): yesterday's stood in for today's share.
   const batchLast = batch !== null && (!batch.finished || (sharing === null && review !== null && (lastShare === null || lastShare.at <= (batch.finished_ms ?? 0))));
@@ -406,8 +415,10 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   const done = !running && !problem && (doneShare || doneSave || doneBatch);
   // What it puts up, from the share's own job while it runs (a note heard before it goes over a version makes it the
   // next one), else the server's answer for the share about to start.
-  const target = lastShare?.state === "running" || lastShare?.state === "done" ? (lastShare.target ?? null) : next;
-  const sharingWords = target === null || link === null ? "Sharing for feedback" : target.replace ? `Replacing v${target.version} on the review link` : `Sharing v${target.version} for feedback`;
+  // A share just begun has no job yet: the last one's words stood in its heading for a second (the MacBook Air, Nov 22).
+  const target = lastShare?.state === "running" ? (lastShare.target ?? null) : next;
+  const sharingWords =
+    target === null || link === null ? "Sharing for feedback" : target.unchanged === true ? `Sharing v${target.version} again` : target.replace ? `Replacing v${target.version} on the review link` : `Sharing v${target.version} for feedback`;
   const folderOf = (path: string) => shownPath(path.slice(0, Math.max(path.lastIndexOf("/"), 0)) || path, folder?.home ?? null);
   const retry = async () => {
     if (busy || retrying) return;
@@ -451,7 +462,14 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
   };
 
   const failure = !problem && (status.kind === "share-failed" || status.kind === "export-failed" || status.kind === "cancelled");
-  const reason = where === "feedback" && link !== null && next?.replace === true ? `No one has commented on v${next.version}, so this takes its place.` : null;
+  const reason =
+    where === "feedback" && link !== null && next !== null
+      ? next.unchanged === true
+        ? `The edit hasn’t changed since v${next.version}.`
+        : next.replace
+          ? `No one has commented on v${next.version}, so this takes its place.`
+          : null
+      : null;
 
   return (
     <Modal open={open} onClose={onClose} width={500}>
@@ -488,9 +506,11 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
           <>
             <h2 className="text-[18px] font-semibold tracking-[-0.3px]">
               {doneShare
-                ? lastShare?.target?.replace === true
-                  ? `v${lastShare.target.version} replaced`
-                  : `v${lastShare?.target?.version ?? latest ?? 1} is up`
+                ? lastShare?.target?.unchanged === true
+                  ? `Nothing changed, so v${lastShare.target.version} is still the link`
+                  : lastShare?.target?.replace === true
+                    ? `v${lastShare.target.version} replaced`
+                    : `v${lastShare?.target?.version ?? latest ?? 1} is up`
                 : doneBatch
                   ? batch.outputs.length === 1
                     ? `Saved to ${folderOf(batch.outputs[0]!)}`
@@ -567,7 +587,7 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
             {/* A channel's project whose channel has no watermark: no watermark at all (shown while it's read only if reading it failed). */}
             {(!own || channelsFailed !== null || (channels !== null && channels.length > 0)) && (
               <div className="mt-4 flex items-center gap-3 rounded-[10px] border border-line bg-panel px-3 py-2.5">
-                <label className="flex min-w-0 flex-1 items-center gap-2.5 text-[13px]" title="The channel's logo at 10%, moving around the frame like a DVD player's, over everything">
+                <label className="flex min-w-0 flex-1 items-center gap-2.5 text-[13px]" title={own ? "The channel’s logo at 10%, moving around the frame like a DVD player’s, over everything" : "A logo from the Watermarks folder at 10%, moving around the frame like a DVD player’s, over everything"}>
                   <input
                     type="checkbox"
                     checked={marked}
@@ -580,7 +600,7 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
                   <span className="min-w-0">
                     <span className="block text-fg">Watermark</span>
                     <span className="block text-[12px] leading-snug text-muted">
-                      {channelsFailed ? `The channels didn’t load: ${channelsFailed}` : channels === null ? "Loading the channels…" : channels.length === 0 ? "No channels in the Watermarks folder" : own ? `${possessive(channels[0]!.name)} logo at 10%, moving around the frame` : "The channel’s logo at 10%, moving around the frame"}
+                      {channelsFailed ? "The logos didn’t load. Close this and open it again." : channels === null ? "Loading the logos…" : channels.length === 0 ? "No logos in the Watermarks folder" : own ? `${possessive(channels[0]!.name)} logo at 10%, moving around the frame` : "A logo at 10%, moving around the frame"}
                     </span>
                   </span>
                 </label>
@@ -605,7 +625,7 @@ export function ShareDialog({ open, onClose }: { open: boolean; onClose: () => v
                 {failure && status.kind === "share-failed" && <ProblemView error={status.error} doing="share it" />}
                 {failure && status.kind === "export-failed" && (status.error ? <ProblemView error={status.error} doing="export it" /> : <span className="text-muted">Export failed</span>)}
                 {failure && status.kind === "cancelled" && <span className="text-muted">Cancelled</span>}
-                {!problem && showBatch && batch.finished && batch.cancelled && <span className="text-muted">Cancelled</span>}
+                {!problem && showBatch && batch.finished && batch.cancelled && (stopped || ran !== null) && <span className="text-muted">Cancelled</span>}
                 {!problem && showBatch && batch.finished && !batch.cancelled && batch.error && <ProblemView error={batch.error} doing="export the marked parts" />}
                 {!problem && !failure && !(showBatch && batch.finished) && reason && <span className="text-muted">{reason}</span>}
               </div>

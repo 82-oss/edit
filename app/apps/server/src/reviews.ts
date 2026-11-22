@@ -124,7 +124,10 @@ export interface Note {
 /** One shared export. */
 export interface Version {
   n: number;
+  /** Its files' key in the cloud (a replace keeps the one it replaced). */
   timeline: string;
+  /** The edit its video is of (`timelineHash`, an opening's with `-opening-<frames>`); absent before Nov 22, then `timeline`. */
+  made?: string;
   path: string;
   fps: number;
   durationMs: number;
@@ -281,7 +284,8 @@ interface ShareArgs {
   /** They're up on R2. */
   uploaded?: boolean;
   /** Published as this version. */
-  published?: { version: number; url: string };
+  /** `unchanged`: the edit was as the latest version's, so the cloud handed that version back (its files are this video's now). */
+  published?: { version: number; url: string; unchanged?: true };
 }
 
 /** How a project's share stands, for the UI: running (its step), done (published), or failed (why). */
@@ -294,8 +298,8 @@ export interface ShareView {
   version?: number;
   url?: string;
   error?: string;
-  /** The version it puts up and whether over the one there (as it goes, its own: a note heard before it goes over one makes it the next), for the dialog's words. */
-  target?: { version: number; replace: boolean };
+  /** The version it puts up and whether over the one there (as it goes, its own: a note heard before it goes over one makes it the next), for the dialog's words; `unchanged`, it's the latest version again since the edit hasn't changed. */
+  target?: { version: number; replace: boolean; unchanged?: true };
 }
 
 /**
@@ -335,7 +339,7 @@ export function sharingNow(id: string): boolean {
  * panel and Home read: `line` while it runs (null otherwise), and `share`,
  * how the last one stands. It's `done` only once its version is published.
  */
-export function shareNow(home: string, projectId: string): { line: string | null; share: ShareView | null } {
+export function shareNow(home: string, projectId: string, editNow?: string): { line: string | null; share: ShareView | null } {
   const job = shareJob(home, projectId);
   const going = job !== undefined && jobs.live(job);
   const line = sharing.get(projectId) ?? (going ? (job.step ?? "sharing") : null);
@@ -343,8 +347,18 @@ export function shareNow(home: string, projectId: string): { line: string | null
   const published = (job.args as Partial<ShareArgs>).published;
   const error = job.error ?? job.given_up;
   const replace = (job.args as Partial<ShareArgs>).replace === true;
-  const newest = newestVersion(home, projectId)?.n ?? 0;
-  const target = published !== undefined ? { version: published.version, replace } : replace && newest > 0 ? { version: newest, replace: true } : { version: newest + 1, replace: false };
+  const newestOne = newestVersion(home, projectId);
+  const newest = newestOne?.n ?? 0;
+  // Under way while the edit is still the latest version's (`editNow`, the project's `timelineHash`): the cloud hands that version back.
+  const same = !replace && published === undefined && going && newestOne !== null && editNow !== undefined && editOf(newestOne) === editNow;
+  const target =
+    published !== undefined
+      ? { version: published.version, replace, ...(published.unchanged === true ? { unchanged: true as const } : {}) }
+      : same
+        ? { version: newest, replace: false, unchanged: true as const }
+        : replace && newest > 0
+          ? { version: newest, replace: true }
+          : { version: newest + 1, replace: false };
   return {
     line,
     share: {
@@ -691,6 +705,22 @@ export async function share(app: App, projectId: string, path: string | null, re
   return startShare(app, projectId, { path, ...(replace ? { replace } : {}), ...(now ? { takenAt: Date.now() } : {}) });
 }
 
+/** The edit a version's video is of. */
+function editOf(version: Version): string {
+  return version.made ?? version.timeline;
+}
+
+/**
+ * Whether the project's edit (`editNow`, its `timelineHash`) is the one its
+ * latest version's video is of: its next share goes up under that version's
+ * files, and the cloud hands that version back, not a new one (Nov 22, the
+ * MacBook Air: "Share as v2" ended "v1 is up").
+ */
+export function unchangedSince(home: string, projectId: string, editNow: string): number | null {
+  const newest = newestVersion(home, projectId);
+  return newest !== null && editOf(newest) === editNow ? newest.n : null;
+}
+
 function newestVersion(home: string, projectId: string): Version | null {
   return read(home).shared[projectId]?.versions.reduce<Version | null>((most, one) => (most === null || one.n > most.n ? one : most), null) ?? null;
 }
@@ -1001,7 +1031,8 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
   // is the edit as it is now, else unknown, and no note is marked by it.
   const carries = args.takenAt ?? (chosen.timeline !== undefined && chosen.timeline === timelineHash(live.project) ? Date.now() : 0);
   // An opening's files are its own: the whole edit of the same timeline shared later is another version.
-  const timeline = latest?.timeline ?? (chosen.whole ? exportedTimeline : `${exportedTimeline}-opening-${chosen.frames}`);
+  const madeOf = chosen.whole ? exportedTimeline : `${exportedTimeline}-opening-${chosen.frames}`;
+  const timeline = latest?.timeline ?? madeOf;
   let clips: [string, number, number][];
   try {
     clips = JSON.parse(fs.readFileSync(mapFile(home, exportedTimeline), "utf8")) as [string, number, number][];
@@ -1108,13 +1139,13 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
     const durationMs = Math.round((chosen.frames / fps) * 1000);
     // Published: noted done in the same write that lists its full-quality upload (the export itself, for the page's
     // Download button, which goes up after the version and is named in it once it's up: fullBehind).
-    const published = (version: number, url: string, taken: number): { url: string; version: number } => {
+    const published = (version: number, url: string, taken: number, unchanged = false): { url: string; version: number } => {
       fs.rmSync(copy, { force: true });
       jobs.handOff(
         home,
         key,
         { kind: "full", project: projectId, args: { name: live.project.name, path: chosen.path, key: fullKey, version }, part: fullKey, step: "uploading" },
-        { state: "done", step: "published", args: { published: { version, url } } },
+        { state: "done", step: "published", args: { published: { version, url, ...(unchanged ? { unchanged: true } : {}) } } },
       );
       void fullBehind(home, projectId, live.project.name, chosen.path, fullKey, version);
       // The notes whose fixes this version carries read as fixed on the review now, whoever asked for the share.
@@ -1125,7 +1156,7 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
       const shared = read(home).shared[projectId]!;
       update(home, (state) => {
         const one = state.shared[projectId]?.versions.find((version) => version.n === latest.n);
-        if (one !== undefined) Object.assign(one, { path: chosen.path, clips, fps, durationMs });
+        if (one !== undefined) Object.assign(one, { path: chosen.path, clips, fps, durationMs, made: madeOf });
       });
       // The page's details of the version are this video's now: its length, its clips under each moment, its words and
       // chapters (Nov 22, a MacBook Air: a replace sent the new video and left the old one's details, so the page showed
@@ -1152,14 +1183,16 @@ async function publishSteps(app: App, projectId: string): Promise<{ url: string;
             by: app.machine,
           })) as { reviewId: string; url: string; version: number });
     if (before !== null) diag.info("review", `${live.project.name}: v${answer.version} was published before the restart; not again`);
+    // The edit hadn't changed since that version: the cloud handed it back (its key is the edit's), and this video is its files now.
+    const unchanged = before === null && (read(home).shared[projectId]?.versions.some((one) => one.n === answer.version) ?? false);
     update(home, (state) => {
       const was = state.shared[projectId];
       const versions = (was?.reviewId === answer.reviewId ? was.versions : []).filter((one) => one.n !== answer.version);
-      versions.push({ n: answer.version, timeline, path: chosen.path, fps, durationMs, clips });
+      versions.push({ n: answer.version, timeline, made: madeOf, path: chosen.path, fps, durationMs, clips });
       state.shared[projectId] = { reviewId: answer.reviewId, url: answer.url, versions };
     });
-    diag.info("review", `${live.project.name}: shared v${answer.version} at ${answer.url}`);
-    return published(answer.version, answer.url, carries);
+    diag.info("review", `${live.project.name}: ${unchanged ? `the edit hasn't changed since v${answer.version}, so it's still v${answer.version}` : `shared v${answer.version}`} at ${answer.url}`);
+    return published(answer.version, answer.url, carries, unchanged);
   });
 }
 
@@ -2645,7 +2678,9 @@ export function view(app: App, projectId: string): unknown {
   const notes = Object.values(state.notes)
     .filter((note) => note.project === projectId)
     .sort((a, b) => (a.ms ?? 0) - (b.ms ?? 0));
-  const now = shareNow(app.store.home, projectId);
+  const editNow = live === null ? undefined : timelineHash(live.project);
+  const now = shareNow(app.store.home, projectId, editNow);
+  const same = shared === undefined || editNow === undefined ? null : unchangedSince(app.store.home, projectId, editNow);
   return {
     // Where its share is: the line while it runs, and how the last one stands (done only once published).
     sharing: now.line,
@@ -2654,7 +2689,8 @@ export function view(app: App, projectId: string): unknown {
     watermark: (live === null ? state.shareWatermark?.[projectId] || undefined : nextWatermark(app.store.home, live.project, state)) ?? null,
     review: shared === undefined ? null : { url: shared.url, versions: shared.versions.map((one) => ({ n: one.n, path: one.path })), approved: shared.approved ?? null },
     // What the next share makes (the dialog's button says it): the server's own rule, never worked out again on the page.
-    next: shared === undefined ? null : nextShare(app.store.home, projectId),
+    // `unchanged`: the edit is the latest version's still, so a share puts that version up again, never a new one.
+    next: shared === undefined ? null : { ...nextShare(app.store.home, projectId), ...(same === null ? {} : { unchanged: true, version: same }) },
     notes: notes.map((note) => {
       const version = shared?.versions.find((one) => one.n === note.version);
       const frame = live === null || note.ms === null ? null : frameNow(live.project, version, note.ms);

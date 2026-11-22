@@ -543,8 +543,8 @@ export interface ShareState {
   version?: number;
   url?: string;
   error?: string;
-  /** The version it puts up and whether over the one there (the server's, as it goes). */
-  target?: { version: number; replace: boolean };
+  /** The version it puts up and whether over the one there (the server's, as it goes); `unchanged`: the latest version again, the edit as it was. */
+  target?: { version: number; replace: boolean; unchanged?: true };
 }
 
 export interface Review {
@@ -556,7 +556,7 @@ export interface Review {
   watermark?: string | null;
   review: { url: string; versions: { n: number; path: string }[]; approved: { version: number; by: string; at: number } | null } | null;
   /** What the next share makes: its version, and whether it replaces the latest (no reviewer comments on it). Null before the first. */
-  next?: { version: number; replace: boolean } | null;
+  next?: { version: number; replace: boolean; unchanged?: true } | null;
   notes: ReviewNote[];
 }
 

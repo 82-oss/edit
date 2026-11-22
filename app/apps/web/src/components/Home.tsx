@@ -25,7 +25,6 @@ import { SHAPES, type Shape, shapeOf } from "../writer/several";
 import type { Choice, Decision, Kind, ShareFailed, Sharing } from "../writer/types";
 import { nowWords, stoppedWords } from "../writer/share-steps";
 import { useKept } from "../lib/kept";
-import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
 import { explain } from "@edit/types/problems";
 import { ChannelAvatar } from "./Channels";
@@ -1034,7 +1033,7 @@ function useProject(project: ProjectSummary, onChanged: () => void, cloudOn: boo
   };
   const share = async () => {
     try {
-      await askExportFolder();
+      // A share needs no exports folder (Nov 22: a first share stopped behind the question).
       await api.shareProject(project.id, null, false, true);
       toast(`Sharing “${project.name}”: exporting it now`, "info");
       onChanged();
