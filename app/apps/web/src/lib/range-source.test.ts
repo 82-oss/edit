@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { afterEach } from "vitest";
-import { BLOCK, forgetBlocks, network, rangeReader, setStreaming } from "./range-source";
+import { BLOCK, forgetBlocks, network, onRead, rangeReader, setStreaming } from "./range-source";
 
 const file = Uint8Array.from({ length: BLOCK * 3 + 100 }, (_, i) => i % 251);
 
@@ -30,6 +30,29 @@ describe("block range reads", () => {
     // three blocks after it came in one request (one round trip over a slow link).
     const ranges = fetcher.mock.calls.map(([, init]) => (init.headers as Record<string, string>).Range);
     expect(ranges).toEqual([`bytes=0-${BLOCK - 1}`, `bytes=${BLOCK}-${file.length - 1}`]);
+  });
+
+  it("says it's alive every 2 s while a read is on its way, and stops once it's in", async () => {
+    vi.useFakeTimers();
+    try {
+      let answer!: () => void;
+      const slow = vi.fn((url: string, init: RequestInit) => new Promise<Response>((resolve) => { answer = () => void server()(url, init).then(resolve); }));
+      const heard = vi.fn();
+      onRead(heard);
+      const reader = rangeReader("/file", slow);
+      const size = reader.getSize();
+      // 12 s waiting on a slow read (a pieced proxy's unmade stretch): heard all along, past the page's 10 s watchdog.
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(heard.mock.calls.length).toBeGreaterThanOrEqual(5);
+      answer();
+      expect(await size).toBe(file.length);
+      const after = heard.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(heard.mock.calls.length).toBe(after);
+    } finally {
+      onRead(null);
+      vi.useRealTimers();
+    }
   });
 
   it("serves nearby reads from blocks already fetched", async () => {

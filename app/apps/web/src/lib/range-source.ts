@@ -27,6 +27,8 @@ const RUN = 16;
 /** A read that hasn't finished by then is abandoned and tried again: a hung
  * connection must not leave the preview waiting on a frame for good. */
 const READ_TIMEOUT_MS = 20_000;
+/** How often a read on its way says the worker is alive (well inside decoder.ts's HUNG_MS). */
+const BEAT_MS = 2_000;
 
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -50,7 +52,11 @@ const sizes = new Map<string, number>();
 /** Recently used blocks of every file (`url#index`), oldest first. */
 const blocks = new Map<string, Promise<Uint8Array>>();
 
-/** Told after each read that arrives (the worker's sign of life while a slow file loads). */
+/**
+ * Told after each read that arrives, and every BEAT_MS while one is still on its way: the worker's sign of life while a
+ * slow file loads (decode.worker.ts). A read waits up to READ_TIMEOUT_MS a try, and a pieced proxy's unmade stretch holds
+ * a read 15 s: told only once it came, the page's 10 s watchdog ended a worker that was only waiting (Nov 21 audit, P4).
+ */
 let arrived: (() => void) | null = null;
 export function onRead(listener: (() => void) | null) { arrived = listener; }
 
@@ -76,6 +82,15 @@ export function rangeReader(url: string, fetcher: Fetch = (input, init) => fetch
   const size = () => sizes.get(url) ?? Infinity;
 
   async function fetchRange(start: number, end: number) {
+    const beat = setInterval(() => arrived?.(), BEAT_MS);
+    try {
+      return await fetchTries(start, end);
+    } finally {
+      clearInterval(beat);
+    }
+  }
+
+  async function fetchTries(start: number, end: number) {
     for (let attempt = 0; ; attempt++) {
       const started = performance.now();
       const abort = new AbortController();
