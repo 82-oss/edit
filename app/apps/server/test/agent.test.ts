@@ -4,7 +4,7 @@
 
 import { expect, test } from "bun:test";
 
-import { busyModel, READY_FOR_MS, stillReady, summarizeArgs } from "../src/agent.ts";
+import { busyModel, READY_FOR_MS, signInLine, stillReady, summarizeArgs } from "../src/agent.ts";
 
 test("a_ready_status_is_kept_for_a_while", () => {
   const found = 1000;
@@ -29,4 +29,12 @@ test("tool arguments read as one short line; a busy model is tried again", () =>
   expect(busyModel("Invalid request")).toBe(false);
   expect(busyModel("Claude Code stopped: it reached its limit of turns.")).toBe(false);
   expect(busyModel("prompt is too long: 1500000 tokens")).toBe(false);
+});
+
+// Nov 21: "choose Check Claude to continue", a button the page no longer has.
+test("a sign-in Claude rejects twice names what the page offers, and says the message goes on by itself", () => {
+  const said = signInLine(true);
+  expect(said).not.toContain("Check Claude");
+  expect(said).toContain("Sign in");
+  expect(said).toContain("goes on by itself");
 });

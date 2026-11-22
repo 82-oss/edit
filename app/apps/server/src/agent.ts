@@ -415,6 +415,17 @@ class Lock {
   }
 }
 
+/**
+ * What the chat says when Claude refused its sign-in: the first time Edit opens Claude's sign-in by itself; the second,
+ * it's the person's, with what the page offers for it (the "Sign in to Claude" line, ClaudeSetupCard). It said "choose
+ * Check Claude", a button the page no longer has. Either way the message goes on by itself once Claude is signed in.
+ */
+export function signInLine(retried: boolean): string {
+  return retried
+    ? "Claude still rejected its sign-in. Your message is saved: sign in to Claude again (Sign in, on the line about Claude) and it goes on by itself."
+    : "Claude needs to sign in again. Your message is saved and will continue after sign-in.";
+}
+
 export class Agents implements seams.AgentPanel {
   /**
    * Remote updates (and the dev server's restarts) wait for all agent turns to finish, a cut one still to carry on
@@ -571,7 +582,7 @@ export class Agents implements seams.AgentPanel {
     const retried = this.authRetried.has(project);
     this.authPending.set(project, { text, user: user.id, model: chat.model, effort: chat.effort, continued, retried });
     this.saveAuthPending();
-    this.finish(project, retried ? "Claude still rejected its sign-in. Your message is saved; choose Check Claude to continue." : "Claude needs to sign in again. Your message is saved and will continue after sign-in.");
+    this.finish(project, signInLine(retried));
     this.claudeSupport.authenticationFailed();
     // One automatic recovery per user request; a second failure is actionable,
     // never an endless series of browser windows and duplicate messages.
