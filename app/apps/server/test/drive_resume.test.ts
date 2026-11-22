@@ -320,3 +320,25 @@ test("a refusal that is Drive's word (403, not allowed) still fails at once, its
     fx.cleanup();
   }
 });
+
+// Nov 21 audit: curl's upload had no stall limit, so a Drive that never answered held the upload, and its export's
+// "Uploading to Drive", for good. Now nothing moving for `stallSeconds` is too slow, a passing failure that waits.
+test("an upload Drive never answers is stopped as too slow and waits by itself, rather than holding for good", async () => {
+  const fx = setUp("drive-stalled");
+  const stall = drive.timing.stallSeconds;
+  drive.timing.stallSeconds = 1;
+  try {
+    mock.on("POST", SESSIONS, (_request, server) => new Response(null, { status: 200, headers: { location: `${server.url}${SESSIONS}?uploadType=resumable&upload_id=silent` } }));
+    mock.on("PUT", SESSIONS, (request) => {
+      if (/^bytes \*\/\d+$/.test(request.headers.get("content-range") ?? "")) return new Response(null, { status: 308 });
+      return new Promise<Response>(() => {});
+    });
+    drive.start(fx.app.store, new Library(), fx.project, fx.path);
+    for (let i = 0; i < 1200 && !fx.events.some((event) => event.state !== "uploading"); i++) await Bun.sleep(25);
+    expect(fx.events.at(-1)!.state).toBe("waiting");
+    expect(jobs.get(fx.app.store.home, jobs.keyOf("drive", fx.project.id))).toMatchObject({ state: "waiting" });
+  } finally {
+    drive.timing.stallSeconds = stall;
+    fx.cleanup();
+  }
+}, 60_000);

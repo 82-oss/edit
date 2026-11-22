@@ -41,6 +41,8 @@ const CHECKED_FOR_MS = 5 * 60 * 1000;
 export const timing = {
   sleep: (ms: number) => Bun.sleep(ms),
   now: () => performance.now(),
+  /** An upload that moves nothing for this long is stopped as too slow and tried again (curl's `--speed-time`). */
+  stallSeconds: 300,
 };
 
 /**
@@ -403,7 +405,9 @@ async function put(session: string, path: string, type: string, progress: (share
   let child: Bun.Subprocess<"pipe", "pipe", "pipe">;
   try {
     child = Bun.spawn(
-      ["curl", "-#", "-S", "--proto", googleProto(), "--config", "-", "--connect-timeout", "30", "-w", "\n%{http_code}", ...(from > 0 ? ["-C", String(from)] : []), "--upload-file", path],
+      // Nothing moving for five minutes (a line gone silent, Drive never answering the last byte) is stopped as too
+      // slow, a passing failure carried on from what Drive has; with no limit it waited for good (Nov 21 audit).
+      ["curl", "-#", "-S", "--proto", googleProto(), "--config", "-", "--connect-timeout", "30", "--speed-limit", "1", "--speed-time", String(timing.stallSeconds), "-w", "\n%{http_code}", ...(from > 0 ? ["-C", String(from)] : []), "--upload-file", path],
       { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
     );
   } catch (error) {
