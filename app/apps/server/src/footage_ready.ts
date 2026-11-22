@@ -345,7 +345,9 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
     thread.note("GET /api/projects/{id}/footage/ready");
   }
   if (!keeping) room = "This Mac's disk is too full to keep the footage, so it plays from the cloud.";
-  else if (left > spare) room = `Only ${GB(Math.max(0, spare) + bytes_done)} of the ${GB(bytes_total)} GB fits on this Mac. The start of the edit comes first; the rest plays from the cloud.`;
+  // Only while bytes are still to come (every byte down, a file not yet whole here needs no more room: it said "Only
+  // 2.0 of the 2.0 GB fits"), what fits rounded down so it never reads as all of it.
+  else if (left > 0 && left > spare) room = `Only ${GB(Math.floor(Math.min(Math.max(0, spare) + bytes_done, bytes_total) / 1e8) * 1e8)} of the ${GB(bytes_total)} GB fits on this Mac. The start of the edit comes first; the rest plays from the cloud.`;
 
   const headNeeds = needs.filter((need) => need.at_s < head_s);
   const headBytes = headNeeds.reduce((sum, need) => sum + need.bytes, 0);

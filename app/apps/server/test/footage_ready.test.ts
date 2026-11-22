@@ -347,6 +347,30 @@ test("the disk's floors hold: footage that can't all fit is said so plainly, and
   }
 });
 
+// Nov 21: "Only 2.0 of the 2.0 GB fits" with every byte down and the file not yet whole here: nothing more needs room.
+test("footage whose bytes are all down is never said not to fit, however little the disk has spare", async () => {
+  const home = scratch("footage-ready-all-down");
+  try {
+    const cache = home.dir;
+    const root = path.join(cache, "cloud", "blocks");
+    footageReady.hooks.root = () => root;
+    const key = "edit/proxies/drive/down.mp4";
+    const project = newProject();
+    project.settings.fps = 30;
+    project.media.push(media({ id: "a", name: "a", path: stream(key), kind: "video", duration: 600, cloud: { proxy: key } } as never));
+    project.clips.push(clip("ca", "a", 0, 18000));
+    keep(root, key, 20, Array.from({ length: 20 }, (_, n) => n));
+    const app = appOf(cache, project);
+    // Blocks still kept (over the work's floor), but under the cache's: no spare room for whole copies.
+    storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES + 5e8;
+    const answer = await readiness(app, project.id, false);
+    expect(answer.bytes_done).toBe(answer.bytes_total);
+    expect(answer.room).toBeNull();
+  } finally {
+    home.cleanup();
+  }
+});
+
 test("a project with nothing in the cloud, or whose footage is all here, is ready at once: no dialog", async () => {
   const home = scratch("footage-ready-here");
   try {
