@@ -931,7 +931,7 @@ async function fiveFiles(fixture: Fixture): Promise<string> {
   const id = fixture.store.create("import", { width: 640, height: 360, fps: 30 }).project.id;
   await fixture.store.update(id, "test", (p) => {
     p.style = "courtroom";
-    const footage = (n: number) => ({ kind: "footage" as const, file: `FILEcase000${n}`, url: `https://drive.google.com/file/d/FILEcase000${n}/view`, start: 0, end: 4, label: "00:00–00:04", words: ["where", "you"], notes: [`Case ${n}: link`] });
+    const footage = (n: number) => ({ kind: "footage" as const, file: `FILEcase000${n}`, url: `https://drive.google.com/file/d/FILEcase000${n}/view`, start: 0, end: 4, label: "00:00–00:04", words: ["where", "you"] as [string, string], notes: [`Case ${n}: link`] });
     p.script = { blocks: [footage(1), { kind: "narration", text: "Then it happened." }, footage(2), footage(3), footage(4), footage(5)] };
   });
   return id;
