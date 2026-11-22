@@ -27,6 +27,7 @@ import { addTrack, clipEnd, duration as durationOf, fps as fpsOf, freshId, media
 import { f32 } from "./rust.ts";
 import * as seams from "./seams.ts";
 import * as faces from "./faces.ts";
+import { isEffect, onChannel, shows } from "./house_effects.ts";
 import * as tools from "./tools.ts";
 import * as youtube from "./youtube.ts";
 
@@ -105,6 +106,16 @@ function fillBehind(project: Project, clip: Clip): boolean {
   );
 }
 
+/**
+ * Whether a channel's v1-shorts-blur-bars (V1's blur_bars as an effect: the shot whole over its blurred copy, drawn
+ * from the shot itself) covers the clip's middle on a track above it: the clip shows filled.
+ */
+function barsOver(project: Project, clip: Clip): boolean {
+  const level = (id: string) => project.tracks.findIndex((track) => track.id === id);
+  const mid = clip.start + Math.floor(clip.duration / 2);
+  return project.clips.some((other) => level(other.track) > level(clip.track) && other.start <= mid && mid < clipEnd(other) && shows(project, other, ["shorts-blur-bars"]));
+}
+
 /** What the audit says about a Short (with its checks for every edit: gaps, footage run out). */
 export function issues(project: Project): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
@@ -118,13 +129,13 @@ export function issues(project: Project): Record<string, unknown>[] {
   const clips = visibleClips(project);
   const footage = clips.filter(
     (clip): clip is Extract<Clip, { type: "video" }> =>
-      clip.type === "video" && mediaOf(project, clip.media)?.kind === "video" && !(clip.name ?? "").startsWith(BLUR_PLATE),
+      clip.type === "video" && mediaOf(project, clip.media)?.kind === "video" && !(clip.name ?? "").startsWith(BLUR_PLATE) && !isEffect(project, clip),
   );
   for (const clip of footage) {
     // A whole picture over a blurred copy that fills the bars is filled (blur_bars). The plate is not a shot to reframe.
     if (!fillsFrame(project, clip)) {
-      if (fillBehind(project, clip)) continue;
-      out.push({ kind: "short_unfilled", clip: clip.id, start: clip.start, fix: "reframe it (fills the 9:16 frame and follows the subject)" });
+      if (fillBehind(project, clip) || barsOver(project, clip)) continue;
+      out.push({ kind: "short_unfilled", clip: clip.id, start: clip.start, fix: onChannel(project) ? "reframe it (fills the 9:16 frame and follows the subject), or v1-shorts-blur-bars over it to show it whole over its blurred copy" : "reframe it (fills the 9:16 frame and follows the subject)" });
       continue;
     }
     // The subject at the clip's middle, from the faces already found: off the frame's middle third and a half, the camera missed them.

@@ -30,6 +30,28 @@ export interface Footage {
 
 export type Given = Record<string, Footage>;
 
+/**
+ * What library item the folder was brought in as (`use_from_library`): `{ "name": "v1-analog-look" }`, read onto its
+ * media by add_effect (`effect_from`), so the add-ons' checks know V1's house graphics by it whatever the folder is
+ * called. This project's note, never kept in the library.
+ */
+export const FROM = ".from.json";
+
+/** Notes that the folder `dir` is library item `name`. */
+export function noteFrom(dir: string, name: string): void {
+  writeAtomic(join(dir, FROM), JSON.stringify({ name }));
+}
+
+/** The library item the folder `dir` was brought in as, or null. */
+export function fromOf(dir: string): string | null {
+  try {
+    const read = JSON.parse(fs.readFileSync(join(dir, FROM), "utf8")) as { name?: unknown };
+    return typeof read.name === "string" && read.name !== "" ? read.name : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The files a page reads as text, followed for the names in them. */
 const TEXT = /\.(html?|m?js|css|json|svg|txt)$/iu;
 
@@ -114,13 +136,13 @@ export function needed(dir: string, entry: string, also: readonly string[] = [])
       queue.push(path);
     }
   }
-  for (const path of all) if (basename(path).startsWith(".") && !path.includes("/")) keep.add(path);
+  for (const path of all) if (basename(path).startsWith(".") && !path.includes("/") && path !== FROM) keep.add(path);
   for (const one of also) {
     const path = posix.normalize(one.replace(/^\.\//u, ""));
     if (!all.includes(path)) throw new Error(`there's no ${one} in the effect's folder (also names its files as they are inside it, such as img/top.png)`);
     keep.add(path);
   }
-  const left = all.filter((path) => !keep.has(path)).map((path) => ({ path, size: fs.statSync(join(dir, path)).size }));
+  const left = all.filter((path) => !keep.has(path) && path !== FROM).map((path) => ({ path, size: fs.statSync(join(dir, path)).size }));
   return { keep: all.filter((path) => keep.has(path)), left };
 }
 

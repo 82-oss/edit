@@ -365,6 +365,7 @@ mod tests {
             library: None,
             effect: None,
             effect_key: None,
+            effect_from: None,
             stacked_alpha: false,
             cleans: None,
         });

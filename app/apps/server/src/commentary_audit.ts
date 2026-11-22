@@ -2,6 +2,7 @@ import * as addons from "./addons.ts";
 import type { Clip, Project } from "./model.ts";
 import { clipEnd, mediaOf, trackOf } from "./project.ts";
 import { captured } from "./watermarks.ts";
+import { COMMENTARY_CARDS, COMMENTARY_GRAPHICS, COMMENTARY_OVER, COMMENTARY_PLAIN, HORROR_CARDS, HORROR_LOOK, HORROR_OVER, HORROR_PICTURES, HORROR_TITLES, effectOf, isEffect, onChannel, shows, TRANSITIONS } from "./house_effects.ts";
 
 /** Most of the narration a blurred text backdrop may cover: emphasis is selective. */
 export const TEXT_BACKDROP_SHARE = 0.25;
@@ -75,7 +76,8 @@ export function issues(p: Project): Record<string, unknown>[] {
   if (total > 0 && under / total > TEXT_BACKDROP_SHARE) out.push({ kind: "commentary_text_heavy", start: dimmed[0]?.[0] ?? 0, share: Math.round((under / total) * 100) / 100, backdrops: live.filter((c) => c.name === "Janitor · text backdrop").length,
     fix: `blurred text backdrops cover ${Math.round((under / total) * 100)}% of the narration: keep only each chapter's key phrases (a quarter at most), delete the rest's backdrop and text so the B-roll is seen` });
   // Exact repeated portions of a moving source, not a person's recurring portrait.
-  const uses = live.filter((c): c is Extract<Clip, { type: "video" }> => c.type === "video" && mediaOf(p, c.media)?.kind === "video" && !/backdrop/u.test(c.name ?? ""));
+  // An effect's render is a graphic, not footage: one placed twice (a dip at two cuts) repeats nothing.
+  const uses = live.filter((c): c is Extract<Clip, { type: "video" }> => c.type === "video" && mediaOf(p, c.media)?.kind === "video" && !/backdrop/u.test(c.name ?? "") && !isEffect(p, c));
   const flagged = new Set<string>();
   for (let i = 0; i < uses.length; i++) for (let j = i + 1; j < uses.length; j++) {
     const a = uses[i]!; const b = uses[j]!;
@@ -107,7 +109,8 @@ function sourceOf(p: Project, media: string): string {
 export function shots(p: Project, live: Clip[] = p.clips.filter((c) => !trackOf(p, c.track)?.hidden)): { id: string; from: number; to: number }[] {
   const index = new Map(p.tracks.map((t, i) => [t.id, i]));
   // A composition is one shot: its backdrop stands for it while its layers arrive (a list's rows one after another).
-  const pictures = live.filter((c) => (c.type === "video" && !/light leak|evidence marker|post highlight|Mark blur|^Dissolve|^Janitor · (YouTube|post|bumper|profile|source card|channel|icon)|^(Cut-in \d+ · )?Horror · (screenshot|picture|marker|icon)/u.test(c.name ?? "")) || c.type === "solid");
+  // On a channel, an effect drawn over the picture beneath (a look, words, a label) is no shot of its own: what's under it is.
+  const pictures = live.filter((c) => (c.type === "video" && !/light leak|evidence marker|post highlight|Mark blur|^Dissolve|^Janitor · (YouTube|post|bumper|profile|source card|channel|icon)|^(Cut-in \d+ · )?Horror · (screenshot|picture|marker|icon)/u.test(c.name ?? "") && !shows(p, c, [...HORROR_OVER, ...COMMENTARY_OVER])) || c.type === "solid");
   const cuts = [...new Set(pictures.flatMap((c) => [c.start, clipEnd(c)]))].sort((a, b) => a - b);
   const runs: { id: string; from: number; to: number }[] = [];
   for (let i = 0; i + 1 < cuts.length; i++) {
@@ -136,14 +139,17 @@ function pacing(p: Project, live: Clip[]): Record<string, unknown>[] {
   const fps = p.settings.fps;
   // "a quick 1-second frame of neon, and then it goes over to Megan Fox… We cannot have mistakes like that."
   // A house flash or dip is a transition, not a picture flashing up.
-  const runs = shots(p, live).filter((run) => !/^(Flash|Dip|Drop|Bridge flash|Light leak|Red flash)/u.test(live.find((c) => c.id === run.id)?.name ?? ""));
+  const runs = shots(p, live).filter((run) => {
+    const top = live.find((c) => c.id === run.id);
+    return !/^(Flash|Dip|Drop|Bridge flash|Light leak|Red flash)/u.test(top?.name ?? "") && (top === undefined || !shows(p, top, TRANSITIONS));
+  });
   for (let i = 1; i + 1 < runs.length; i++) {
     const run = runs[i]!;
     if (run.to - run.from >= FLASH_FRAMES || runs[i - 1]!.id === run.id || runs[i + 1]!.id === run.id) continue;
     out.push({ kind: "commentary_flash", clip: run.id, start: run.from, frames: run.to - run.from, between: [runs[i - 1]!.id, runs[i + 1]!.id],
       fix: "butt the pictures either side together (or hold one of them over the gap): a picture flashing up for a few frames reads as a mistake" });
   }
-  const cards = live.filter((c) => (c.name === "Janitor · source card" || c.name === "Horror · screenshot" || c.name === "Horror · picture") && c.duration < CARD_MIN_SECONDS * fps);
+  const cards = live.filter((c) => (c.name === "Janitor · source card" || c.name === "Horror · screenshot" || c.name === "Horror · picture" || shows(p, c, [...COMMENTARY_CARDS, "picture-card", "retro-card", "retro-page"])) && c.duration < CARD_MIN_SECONDS * fps);
   for (const c of cards) out.push({ kind: "commentary_short_card", clip: c.id, start: c.start, seconds: Math.round((c.duration / fps) * 10) / 10,
     fix: `a card needs ${CARD_MIN_SECONDS}s or more to arrive and be read: hold it longer, or show the moment as footage instead` });
   // "We're using all of the same clips."
@@ -170,15 +176,17 @@ function pacing(p: Project, live: Clip[]): Record<string, unknown>[] {
     out.push({ kind: "commentary_punch_overuse", start: group[0]!.start, clips: group.map((c) => c.id),
       fix: `${group.length} punched-in B-roll shots inside ${PUNCH_WINDOW}s: keep punch-ins for source clips where someone is talking and the narration's sharpest lines, remove the rest (their scale keys)` });
   }
-  const labels = live.filter((c) => c.name === "Janitor · corner label").sort((a, b) => a.start - b.start);
+  const labels = live.filter((c) => c.name === "Janitor · corner label" || shows(p, c, ["label"])).sort((a, b) => a.start - b.start);
   for (let i = 1; i < labels.length; i++) if (labels[i]!.start - labels[i - 1]!.start < LABEL_GAP * fps) out.push({ kind: "commentary_label_overuse", clip: labels[i]!.id, start: labels[i]!.start,
-    fix: "a corner label is a rare comic beat stating the obvious; big emphasis is commentary_text in the middle (\"have the sort of drop-shadow big text be in the middle instead\")" });
+    fix: onChannel(p)
+      ? "a corner label is a rare comic beat stating the obvious; big emphasis is v1-text in the middle (\"have the sort of drop-shadow big text be in the middle instead\")"
+      : "a corner label is a rare comic beat stating the obvious; big emphasis is commentary_text in the middle (\"have the sort of drop-shadow big text be in the middle instead\")" });
   // "We are not going to have light leaks for most of the video": a few, on the biggest turns.
-  const leaks = live.filter((c) => c.name === "Janitor · light leak" || c.name === "Light leak").sort((a, b) => a.start - b.start);
+  const leaks = live.filter((c) => c.name === "Janitor · light leak" || c.name === "Light leak" || shows(p, c, ["commentary-leak", "light-leak"])).sort((a, b) => a.start - b.start);
   for (let i = 1; i < leaks.length; i++) if (leaks[i]!.start - leaks[i - 1]!.start < LEAK_GAP * fps) out.push({ kind: "commentary_leak_overuse", clip: leaks[i]!.id, start: leaks[i]!.start,
-    fix: "light leaks are rare, for a chapter's start or the story's biggest turn; cut here, or a clean dissolve (transition kind dissolve)" });
+    fix: `light leaks are rare, for a chapter's start or the story's biggest turn; cut here, or a clean dissolve (${onChannel(p) ? "the cut's transition" : "transition kind dissolve"})` });
   // "if we're having camera shutter effects without any sort of flash on screen, that is weird."
-  const flashes = live.filter((c) => c.type !== "audio" && /flash|leak|burn|card|photo|board|shutter|post|YouTube frame/iu.test(c.name ?? ""));
+  const flashes = live.filter((c) => c.type !== "audio" && (/flash|leak|burn|card|photo|board|shutter|post|YouTube frame/iu.test(c.name ?? "") || /^v1-.*(flash|leak|burn|card|photo|board|shutter|tweet|youtube)/u.test(effectOf(p, c) ?? "")));
   for (const c of live) {
     if (c.type !== "audio" || trackOf(p, c.track)?.muted) continue;
     const m = mediaOf(p, c.media); if (!/shutter|camera/iu.test(`${m?.name ?? ""} ${c.name ?? ""}`)) continue;
@@ -186,18 +194,22 @@ function pacing(p: Project, live: Clip[]): Record<string, unknown>[] {
     out.push({ kind: "commentary_sound_without_picture", clip: c.id, start: c.start, fix: "a shutter needs a flash or a photo arriving on that frame: add a flash transition at it, or remove the sound" });
   }
   // "we use background blur, a box in the middle… the second one is just text in the middle, and that's it."
-  const graphics = live.filter((c) => /^Janitor · (source card|emphasis|YouTube frame|corner label|bumper avatar|light leak|profile facts|post text|channel panel|icon|location)$/u.test(c.name ?? ""));
+  const graphics = live.filter((c) => /^Janitor · (source card|emphasis|YouTube frame|corner label|bumper avatar|light leak|profile facts|post text|channel panel|icon|location)$/u.test(c.name ?? "") || shows(p, c, COMMENTARY_GRAPHICS));
   const punches = live.filter((c) => c.type === "video" && (c.keyframes?.scale ?? []).some((k) => k.ease === "hold"));
-  const plain = graphics.filter((c) => c.name === "Janitor · source card" || c.name === "Janitor · emphasis").length;
+  const plain = graphics.filter((c) => c.name === "Janitor · source card" || c.name === "Janitor · emphasis" || shows(p, c, COMMENTARY_PLAIN)).length;
   if (graphics.length >= 10 && plain / graphics.length >= 0.85) out.push({ kind: "commentary_graphics_monotony", start: graphics[0]!.start, cards_and_text: plain, graphics: graphics.length, punch_ins: punches.length,
-    fix: "nearly every graphic is a card or centred text: use the reference's other moves where they fit (commentary_youtube for a video talked about, highlight_evidence on a real post, commentary_punch on the words that land, commentary_label for a comic beat, commentary_leak on a turn), and show people in footage rather than cards" });
+    fix: onChannel(p)
+      ? "nearly every graphic is a card or centred text: use the reference's other moves where they fit (v1-youtube for a video talked about, v1-tweet on a real post, a punch-in on the words that land, v1-label for a comic beat, v1-commentary-leak on a turn), and show people in footage rather than cards"
+      : "nearly every graphic is a card or centred text: use the reference's other moves where they fit (commentary_youtube for a video talked about, highlight_evidence on a real post, commentary_punch on the words that land, commentary_label for a comic beat, commentary_leak on a turn), and show people in footage rather than cards" });
   // Horror: "Always use grain and vignette on all footage" (its guide's first rule): every picture under the look.
   // The `horror-look` add-on's; reached only inside the essay's audit, so on a channel it takes `essay-checks` too.
   if (addons.has(p, "horror-look")) {
     // A picture is graded only where a look sits on a higher track than it.
     const level = new Map(p.tracks.map((t, i) => [t.id, i]));
-    const looks = live.filter((c) => c.name === "Horror · analog look");
-    const bareSpans = union(live.filter((c) => c.type === "video" || c.type === "solid").flatMap((c): Span[] => {
+    // On a channel the look is v1-analog-look's clip, and the pictures under it are the footage and horror's own
+    // picture effects (its cards, desktop, icons); its words and the look itself draw over what's beneath.
+    const looks = live.filter((c) => c.name === "Horror · analog look" || shows(p, c, HORROR_LOOK));
+    const bareSpans = union(live.filter((c) => c.type === "solid" || (c.type === "video" && (!isEffect(p, c) || shows(p, c, HORROR_PICTURES)))).flatMap((c): Span[] => {
       const over = union(looks.filter((l) => (level.get(l.track) ?? 0) > (level.get(c.track) ?? 0)).map((l): Span => [l.start, clipEnd(l)]));
       let spans: Span[] = [[c.start, clipEnd(c)]];
       for (const [s, e] of over) spans = spans.flatMap(([a, b]): Span[] => e <= a || s >= b ? [[a, b]] : [...(s > a ? [[a, s] as Span] : []), ...(e < b ? [[e, b] as Span] : [])]);
@@ -205,7 +217,7 @@ function pacing(p: Project, live: Clip[]): Record<string, unknown>[] {
     }));
     // "The same clip never repeats in a video": any stretch of footage shown twice, however far apart.
     const fps = p.settings.fps;
-    const footage = live.filter((c): c is Extract<Clip, { type: "video" }> => c.type === "video" && mediaOf(p, c.media)?.kind === "video" && !/backdrop|^Horror · |^Desktop · /u.test(c.name ?? ""));
+    const footage = live.filter((c): c is Extract<Clip, { type: "video" }> => c.type === "video" && mediaOf(p, c.media)?.kind === "video" && !/backdrop|^Horror · |^Desktop · /u.test(c.name ?? "") && !isEffect(p, c));
     const repeated = new Set<string>();
     for (let i = 0; i < footage.length; i++) for (let j = i + 1; j < footage.length; j++) {
       const [a, b] = [footage[i]!, footage[j]!].sort((x, y) => x.start - y.start) as [typeof footage[number], typeof footage[number]];
@@ -244,7 +256,7 @@ function pacing(p: Project, live: Clip[]): Record<string, unknown>[] {
     const speaking = (frame: number) => narr.some((c) => c.start <= frame && clipEnd(c) > frame);
     const sourceSound = (frame: number) => source.some((c) => c.start <= frame && clipEnd(c) > frame && (c as { volume_db?: number }).volume_db !== undefined && ((c as { volume_db: number }).volume_db > -30));
     const graphic = /^(Cut-in \d+ · )?Horror · (picture|screenshot|card backdrop|.* title|title line|profile lines|icon|icon word)$/u;
-    const arriving = live.filter((c) => graphic.test(c.name ?? "") && c.name !== "Horror · title backdrop");
+    const arriving = live.filter((c) => (graphic.test(c.name ?? "") && c.name !== "Horror · title backdrop") || shows(p, c, [...HORROR_CARDS, ...HORROR_TITLES, "horror-icon"]));
     // "Animation appears while b-roll is still playing, we haven't switched to our voice over yet."
     const early = new Set<number>();
     for (const c of arriving) {
@@ -256,18 +268,18 @@ function pacing(p: Project, live: Clip[]): Record<string, unknown>[] {
     }
     // "We switch the background while our text is still visible, makes it look unpolished."
     const stack = new Map(p.tracks.map((t, i) => [t.id, i]));
-    const shots = live.filter((c) => c.type === "video" && !/^(Cut-in \d+ · )?(Horror|Desktop|Janitor) · |backdrop/u.test(c.name ?? ""));
+    const shots = live.filter((c) => c.type === "video" && !/^(Cut-in \d+ · )?(Horror|Desktop|Janitor) · |backdrop/u.test(c.name ?? "") && !isEffect(p, c));
     const topAt = (frame: number) => shots.filter((c) => c.start <= frame && clipEnd(c) > frame).sort((x, y) => (stack.get(y.track) ?? 0) - (stack.get(x.track) ?? 0))[0]?.id ?? null;
     for (const c of live) {
-      if (c.type !== "text" || !/Horror · .* title$/u.test(c.name ?? "") || c.duration < 12) continue;
+      if (!((c.type === "text" && /Horror · .* title$/u.test(c.name ?? "")) || shows(p, c, HORROR_TITLES)) || c.duration < 12) continue;
       const first = topAt(c.start + 2);
       const cut = Array.from({ length: Math.floor((c.duration - 6) / 3) }, (_, i) => c.start + 4 + i * 3).find((f) => topAt(f) !== first);
-      if (cut !== undefined) out.push({ kind: "horror_text_across_cut", clip: c.id, start: c.start, cut_near: cut, text: (c as { text?: string }).text,
+      if (cut !== undefined) out.push({ kind: "horror_text_across_cut", clip: c.id, start: c.start, cut_near: cut, ...(c.type === "text" ? { text: c.text } : { effect: effectOf(p, c) }),
         fix: "the picture under the words changes while they're up: end the words before the cut, or start them on the new shot" });
     }
     // "8:07 + 9:10 - The text is behind the image": a profile laid over the card already there, both up at once (Nov 6,
     // the agent's fix added commentary_profile at 7:57 and 8:27 and left the old picture cards under them).
-    const cards = live.filter((c) => c.type === "video" && /^(Cut-in \d+ · )?Horror · (picture|screenshot)$/u.test(c.name ?? "")).sort((x, y) => x.start - y.start);
+    const cards = live.filter((c) => c.type === "video" && (/^(Cut-in \d+ · )?Horror · (picture|screenshot)$/u.test(c.name ?? "") || shows(p, c, HORROR_CARDS))).sort((x, y) => x.start - y.start);
     const stacked = new Set<string>();
     for (const [i, a] of cards.entries()) {
       for (const b of cards.slice(i + 1)) {
@@ -275,14 +287,18 @@ function pacing(p: Project, live: Clip[]): Record<string, unknown>[] {
         if (stacked.has(b.id) || Math.min(clipEnd(a), clipEnd(b)) - b.start < 12) continue;
         stacked.add(b.id);
         out.push({ kind: "horror_cards_stacked", clip: b.id, under: a.id, start: b.start, end: Math.min(clipEnd(a), clipEnd(b)),
-          fix: "two cards are up at once, one over the other: delete or trim the one this replaces (with its backdrop, ground and marker), so one picture, page or profile is on screen at a time" });
+          fix: onChannel(p)
+            ? "two cards are up at once, one over the other: delete or trim the one this replaces, so one picture, page or profile is on screen at a time"
+            : "two cards are up at once, one over the other: delete or trim the one this replaces (with its backdrop, ground and marker), so one picture, page or profile is on screen at a time" });
       }
     }
     // "It gets worse at around 6:00 where it mostly used b-roll… 6:45 - Here we shouldn't use b-roll but show his
     // profile instead on insta" (Nov 6): case 3 ran 75 s on a short film and case 2's race footage, nothing of its own.
     // The story's own: the script's posts (imported as "instagram <id>", "x <id>"…), captured pages, Edit's cards and desktops.
-    const own = (c: Clip) => c.type === "video" && (/^(Cut-in \d+ · )?(Horror|Desktop|Janitor) · /u.test(c.name ?? "") || /^(instagram|x|tiktok|reddit|facebook|threads) /u.test(mediaOf(p, c.media)?.name ?? "") || (mediaOf(p, c.media) !== undefined && captured(p, mediaOf(p, c.media)!)));
-    const pictures = live.filter((c) => c.type === "video" && !/backdrop|card ground|Mark blur/u.test(c.name ?? ""));
+    // On a channel, an effect is the story's own as Edit's cards were (a card, a page, a desktop, a post), unless it only
+    // draws over what's beneath it (the look, the lens, the words): then what's beneath is the picture.
+    const own = (c: Clip) => c.type === "video" && (/^(Cut-in \d+ · )?(Horror|Desktop|Janitor) · /u.test(c.name ?? "") || /^(instagram|x|tiktok|reddit|facebook|threads) /u.test(mediaOf(p, c.media)?.name ?? "") || (mediaOf(p, c.media) !== undefined && captured(p, mediaOf(p, c.media)!)) || isEffect(p, c));
+    const pictures = live.filter((c) => c.type === "video" && !/backdrop|card ground|Mark blur/u.test(c.name ?? "") && !shows(p, c, [...HORROR_OVER, ...COMMENTARY_OVER]));
     const topPicture = (frame: number) => pictures.filter((c) => c.start <= frame && clipEnd(c) > frame).sort((x, y) => (stack.get(y.track) ?? 0) - (stack.get(x.track) ?? 0))[0];
     const end = Math.max(0, ...live.map(clipEnd));
     let run: number | null = null;
@@ -295,16 +311,18 @@ function pacing(p: Project, live: Clip[]): Record<string, unknown>[] {
     }
     // "By now it's getting boring for viewers because they see the text for 20s+."
     for (const c of live) {
-      const desk = /Desktop · wallpaper$/u.test(c.name ?? "");
-      const words = c.type === "text" && /Horror · (.* title|profile lines)$/u.test(c.name ?? "");
+      const desk = /Desktop · wallpaper$/u.test(c.name ?? "") || shows(p, c, ["xp-desktop"]);
+      const words = (c.type === "text" && /Horror · (.* title|profile lines)$/u.test(c.name ?? "")) || shows(p, c, [...HORROR_TITLES, "horror-profile"]);
       if ((desk && c.duration > 12 * fps) || (words && c.duration > 8 * fps)) out.push({ kind: "horror_text_long", clip: c.id, start: c.start, seconds: Math.round(c.duration / fps),
-        fix: desk ? "a Notepad (or any window) held this long is just words: open a picture or a video beside it (the person's photo in a Paint window, the post itself), or end it sooner" : "words alone this long: give the line a picture (the post, the page, the person) and keep the words short" });
+        fix: desk ? "a Notepad (or any window) held this long is just words: open a picture or a video beside it (the person's photo in a Paint window, the post itself), or end it sooner" : "words alone this long: give the line a picture (the post, the page, the person) and keep the words short", ...(isEffect(p, c) ? { effect: effectOf(p, c) } : {}) });
     }
     const bare = bareSpans.reduce((n, [a, b]) => n + b - a, 0);
     if (bare > p.settings.fps) {
       const at = bareSpans[0]?.[0] ?? 0;
       out.push({ kind: "horror_look_missing", start: at, seconds: Math.round(bare / p.settings.fps * 10) / 10,
-        fix: "the analog look goes on all footage: apply_edit_plan with the operation commentary_look {start: 0, end: the last frame} once the pictures are placed, and again after adding more" });
+        fix: onChannel(p)
+          ? "the analog look goes on all footage: v1-analog-look on a track above every picture, from the first frame to the last (use_from_library it if it isn't here, add_effect, place its clip, then effect_beneath), once the pictures are placed, and over what's added after"
+          : "the analog look goes on all footage: apply_edit_plan with the operation commentary_look {start: 0, end: the last frame} once the pictures are placed, and again after adding more" });
     }
   }
   return out;

@@ -17,6 +17,7 @@ import * as commentaryAudit from "./commentary_audit.ts";
 import { unusedNoteLinks } from "./note_links.ts";
 import { FRAME_SCALE, frameKey as screenFrameKey } from "./desktop_screen.ts";
 import * as diag from "./diag.ts";
+import * as houseEffects from "./house_effects.ts";
 import * as uploads from "./uploads.ts";
 import { footageLabel, unansweredFiles } from "./script.ts";
 import * as editPlan from "./edit_plan.ts";
@@ -1571,9 +1572,15 @@ export function windowsUnderused(project: Project): Json[] {
   if (!addons.has(project, "windows-screens")) return [];
   const cutIns = (project.script?.blocks ?? []).filter((block) => block.kind === "narration").length;
   const wanted = Math.floor(cutIns / CUT_INS_PER_SCREEN);
-  const screens = new Set(project.clips.map((clip) => /^(.*?)Desktop · /u.exec(clip.name ?? "")?.[1]).filter((prefix): prefix is string => prefix !== undefined)).size;
+  // On a channel a screen is a clip of v1-windows-desktop (V1's desktop as an effect, its windows inside it).
+  const screens =
+    new Set(project.clips.map((clip) => /^(.*?)Desktop · /u.exec(clip.name ?? "")?.[1]).filter((prefix): prefix is string => prefix !== undefined)).size +
+    project.clips.filter((clip) => houseEffects.shows(project, clip, ["windows-desktop"])).length;
   if (wanted === 0 || screens >= wanted) return [];
-  return [{ kind: "windows_underused", screens, at_least: wanted, cut_ins: cutIns, fix: "make a cut-in whose narration lists findings or several people a Windows screen (a desktop shot in cover_cut_in): Photo Viewers of who and what's named, a Notepad of the facts" }];
+  const fix = houseEffects.onChannel(project)
+    ? "make a cut-in whose narration lists findings or several people a Windows screen (v1-windows-desktop over it): Photo Viewers of who and what's named, a Notepad of the facts"
+    : "make a cut-in whose narration lists findings or several people a Windows screen (a desktop shot in cover_cut_in): Photo Viewers of who and what's named, a Notepad of the facts";
+  return [{ kind: "windows_underused", screens, at_least: wanted, cut_ins: cutIns, fix }];
 }
 
 /** A bodycam Windows screen holds at least this many windows. */

@@ -493,6 +493,13 @@ pub struct Media {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts", ts(optional))]
     pub effect_key: Option<String>,
+    /// For a coded effect brought in from the library (`use_from_library`,
+    /// or another channel's): the library item it came from, whatever its
+    /// folder is called here. A channel's add-on checks know V1's house
+    /// graphics by it (`v1-analog-look`, horror's look on every picture).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts", ts(optional))]
+    pub effect_from: Option<String>,
     /// The file carries its transparency: an ordinary video twice `height`,
     /// the picture (its colour premultiplied by its alpha) on top and the
     /// alpha as grey below, so a coded effect with see-through parts plays

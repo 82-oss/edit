@@ -1089,6 +1089,9 @@ export async function add(app: App, projectId: string, name: string): Promise<{ 
     if (media === undefined) throw new Error(`media ${id} is gone`);
     media.effect = name;
     media.name = name;
+    // The library item it came from, whatever its folder is called (effect_kept.ts FROM): the add-ons' checks know it by that.
+    const from = effectKept.fromOf(folder(app.store, projectId, name));
+    if (from !== null) media.effect_from = from;
     media.duration = first.duration;
     if (media.effect_key === undefined || media.effect_key === null) {
       media.width = project.settings.width;

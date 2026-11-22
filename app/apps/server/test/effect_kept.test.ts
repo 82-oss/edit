@@ -13,6 +13,7 @@ import { registerEffectTools } from "../src/effect_tools.ts";
 import * as effectKept from "../src/effect_kept.ts";
 import * as effects from "../src/effects.ts";
 import { dispatch } from "../src/mcp/index.ts";
+import { Store } from "../src/store.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
 import { fixtureHome } from "./helpers/home.ts";
 import { MockServer } from "./mocks/server.ts";
@@ -123,6 +124,15 @@ test("an effect kept without its footage tells the project that brings it in to 
     expect(brought).not.toContain("m2");
     expect(used).toContain("(desk.mp4: 30");
     expect(used).toContain('give it this project\'s now with effect_footage, as: "desk", the footage on this timeline it\'s for; ask the person which only when that isn\'t plain, and never leave the tool to them.');
+    // What it was brought in as, whatever its folder's called here: its media says so once it's added (the add-ons'
+    // checks know V1's house graphics by it), kept through a save; and kept again, the note stays out of the library.
+    expect(effectKept.fromOf(effects.folder(app.store, id, "window-2"))).toBe("window");
+    await app.store.update(id, "test", (project) => {
+      project.media.push({ id: "fx", name: "window-2", path: "/w.png", kind: "image", duration: 5, width: 1080, height: 1920, fps: 0, has_audio: false, effect: "window-2", effect_from: "window" } as never);
+    });
+    expect(Store.open(app.store.home).get(id)!.project.media.find((one) => one.id === "fx")!.effect_from).toBe("window");
+    await call(app, id, "save_to_library", { kind: "effect", name: "window-2", category: "desktop", note: "A desktop window.", brief: "Its title at the top." });
+    expect(await kept("template:@use-ch--edit/window-2")).toEqual([".given.json", "scene.html"]);
   } finally {
     cleanup();
   }

@@ -231,7 +231,8 @@ export function fillReels(project: Project): void {
   for (const c of project.clips) {
     if (c.type !== "video" || (c.name ?? "").includes("Horror ·") || (c.name ?? "").includes("Desktop ·") || c.frame != null) continue;
     const m = project.media.find((x) => x.id === c.media);
-    if (m === undefined || m.kind !== "video" || m.height < m.width * 1.1) continue;
+    // An effect's render is drawn at the frame's size: a channel's Short's graphics are tall, and no reel.
+    if (m === undefined || m.kind !== "video" || m.height < m.width * 1.1 || typeof m.effect === "string") continue;
     const t = c.transform ?? {};
     const moved = ["scale", "x", "y"].some((key) => (c.keyframes?.[key as "scale"]?.length ?? 0) > 0);
     if (!moved && (t.scale ?? 1) > 1.6 && Math.abs(t.x ?? 0) < w * 0.25 && Math.abs(t.y ?? 0) < h * 0.5) c.transform = { ...t, scale: 1, x: 0, y: 0 };
@@ -239,7 +240,7 @@ export function fillReels(project: Project): void {
   const reels = project.clips.filter((c): c is VideoClip => {
     if (c.type !== "video" || (c.name ?? "").startsWith("Horror ·") || (c.name ?? "").startsWith("Janitor ·")) return false;
     const m = project.media.find((x) => x.id === c.media);
-    if (m === undefined || m.kind !== "video" || m.height < m.width * 1.1) return false;
+    if (m === undefined || m.kind !== "video" || m.height < m.width * 1.1 || typeof m.effect === "string") return false;
     const t = c.transform ?? {};
     // Full frame: as placed (fitted to the frame's height), not a small inset or a card.
     return (t.scale ?? 1) >= 0.95 && (t.scale ?? 1) <= 1.6 && Math.abs(t.x ?? 0) < w * 0.05 && Math.abs(t.y ?? 0) < h * 0.05 && c.frame == null;

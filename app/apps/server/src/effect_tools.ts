@@ -423,6 +423,7 @@ async function useFromLibrary({ app, args, projectId }: ToolCall): Promise<Conte
   if (found === undefined) throw new Error(`no ${kind === "template" ? "effect" : "sound"} ${name} in this channel's edit style (library lists them)`);
   const from = await v2cloud.fetchInto(found.key, n, into);
   if (from === null) throw new Error(`no ${kind === "template" ? "effect" : "sound"} ${name}${n === null ? "" : ` version ${n}`} in the library`);
+  effectKept.noteFrom(into, name);
   // Footage its own project handed it isn't kept (effect_kept.ts): this project gives its own, by the same name.
   const expected = effectKept.given(into);
   const footage = Object.keys(expected).filter((path) => path.endsWith(".mp4") && !fs.existsSync(join(into, path)));

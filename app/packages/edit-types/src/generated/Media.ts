@@ -40,6 +40,13 @@ effect?: string,
  */
 effect_key?: string, 
 /**
+ * For a coded effect brought in from the library (`use_from_library`,
+ * or another channel's): the library item it came from, whatever its
+ * folder is called here. A channel's add-on checks know V1's house
+ * graphics by it (`v1-analog-look`, horror's look on every picture).
+ */
+effect_from?: string, 
+/**
  * The file carries its transparency: an ordinary video twice `height`,
  * the picture (its colour premultiplied by its alpha) on top and the
  * alpha as grey below, so a coded effect with see-through parts plays

@@ -2,6 +2,7 @@ import { afterAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import { join } from "node:path";
 
+import * as effectKept from "../src/effect_kept.ts";
 import * as effects from "../src/effects.ts";
 import { registerEffectTools } from "../src/effect_tools.ts";
 import { registerEditingTools } from "../src/edit_tools.ts";
@@ -83,8 +84,10 @@ test.skipIf(chrome === null)("an effect reads the pixels of footage it's given: 
         near(colour(still), red);
       }
     }
-    // And rendered: every frame of it the footage's colour.
+    // And rendered: every frame of it the footage's colour. Brought in from the library as another name, its media says which.
+    effectKept.noteFrom(effects.folder(app.store, id, "read-webgl"), "v1-analog-look");
     const added = await effects.add(app, id, "read-webgl");
+    expect(app.store.get(id)!.project.media.find((one) => one.id === added.media)!.effect_from).toBe("v1-analog-look");
     await app.store.update(id, "test", (project) => {
       project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
       project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 30, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
