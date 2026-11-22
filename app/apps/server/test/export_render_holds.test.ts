@@ -1,17 +1,17 @@
 // An export never loses an effect's render it planned, never reports Edit's
-// own render as the person's damaged footage, and keeps the export made ahead
-// it copies its chunks from (Sphe's M4, Nov 17, nightly-78: "Officers
+// own render as the person's damaged footage, and keeps the last export it
+// copies its chunks from (Sphe's M4, Nov 17, nightly-78: "Officers
 // Traumatized…", 1:48:29, 37 effects: cutfx-10's render deleted 5 s into the
 // export by its swap into the cache, the export failing on it 9 minutes in
 // with "Edit can't read that video … download it again", and Retry rendering
-// all 88 chunks again after its room-making took the 7.3 GB export made ahead).
+// all 88 chunks again after its room-making took the 7.3 GB file it copied from).
 
 import { expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 
 import { explain } from "@edit/types/problems";
 
-import { aheadFile, effectIn, ExportRegistry, exportCloud, located, room } from "../src/exports.ts";
+import { chunkFolder, effectIn, ExportRegistry, exportCloud, located, room } from "../src/exports.ts";
 import { pinned } from "../src/file_pins.ts";
 import type { Media, Project } from "../src/model.ts";
 import * as seams from "../src/seams.ts";
@@ -132,27 +132,29 @@ test("a render the engine can't read is made again and the export carries on; on
   }
 });
 
-test("an export short of room keeps the export made ahead it copies from while anything else can go, and holds its renders until it ends", async () => {
+test("an export short of room keeps the last export it copies from while anything else can go, and holds its renders until it ends", async () => {
   const { dir, home, store, app, native, cleanup } = fixtureHome("export-keeps-ahead");
   const registry = new ExportRegistry(home);
   app.exports = registry;
   const plan = spyOn(native, "exportPlan").mockReturnValue({ plan: { start: 0, end: 30, width: 64, height: 36, audio: false }, fps: 30 });
   const archive = spyOn(exportCloud, "enabled").mockReturnValue(false);
   const before = room.make;
-  const heldAhead: boolean[] = [];
+  const heldLast: boolean[] = [];
   try {
     fs.mkdirSync(`${dir}/effect-renders`, { recursive: true });
     const file = `${dir}/effect-renders/board-a1caed560fbc.mp4`;
     fs.writeFileSync(file, "render");
     const id = await edit(store, file);
-    // Made ahead: what an export of this edit copies every unchanged chunk from.
-    const ahead = aheadFile(store.cacheDir(), id);
-    fs.mkdirSync(`${store.cacheDir()}/ahead`, { recursive: true });
-    fs.writeFileSync(ahead, "made ahead");
-    room.make = () => void heldAhead.push(pinned(ahead));
+    // The last export, its chunk folder's manifest naming it: what an export of this edit copies every unchanged chunk from.
+    const ahead = `${dir}/last.mp4`;
+    fs.writeFileSync(ahead, "last export");
+    const chunks = chunkFolder(store.cacheDir(), id);
+    fs.mkdirSync(chunks, { recursive: true });
+    fs.writeFileSync(`${chunks}/manifest-v1.json`, JSON.stringify({ output: ahead, size: 11, fps: 30, chunks: [{ key: "c0", at: 0, frames: 30 }] }));
+    room.make = () => void heldLast.push(pinned(ahead));
     // Ten terabytes: no room whatever goes, so it's let go for the second ask, then refused.
     await expect(registry.start(store, app.library, store.get(id)!.project, { ...native.exportDefaults(), target_mb: 10_000_000 }, `${dir}/big.mp4`, { drive: false })).rejects.toThrow("This export needs about");
-    expect(heldAhead).toEqual([true, false]);
+    expect(heldLast).toEqual([true, false]);
     expect(pinned(file)).toBe(false);
     // An export that starts holds its render while it renders, and lets go once it's done.
     room.make = before;

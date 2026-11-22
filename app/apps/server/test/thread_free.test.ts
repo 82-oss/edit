@@ -11,11 +11,9 @@ import { join } from "node:path";
 
 import * as aiClaude from "../src/ai_claude.ts";
 import * as devtools from "../src/chrome_devtools.ts";
-import * as ahead from "../src/export_ahead.ts";
 import { forgetPlans } from "../src/exports.ts";
 import { handlerFor } from "../src/mcp/registry.ts";
 import "../src/motion_review.ts";
-import * as playing from "../src/playing.ts";
 import * as thumbnails from "../src/thumbnails/render.ts";
 import * as tools from "../src/tools.ts";
 import * as claude from "../src/writer/claude.ts";
@@ -160,71 +158,6 @@ test("review_motion stops its sample's render when the call that asked for it go
     render.mockRestore();
     plan.mockRestore();
     forgetPlans();
-    fixture.cleanup();
-  }
-});
-
-test("export ahead: pmset is asked off the thread, and one that hangs is 'can't tell' after its 2 s", async () => {
-  const before = ahead.hooks.pmset;
-  try {
-    ahead.hooks.pmset = program("pmset", `sleep ${SLOW}\necho "Now drawing from 'Battery Power'"`);
-    const slow = await beating(() => ahead.pmsetSaysBattery());
-    expect(slow.value).toBe(true);
-    expect(slow.ms).toBeGreaterThan(SLOW * 1000 - 100);
-    expect(slow.gap).toBeLessThan(HELD_MS);
-    ahead.hooks.pmset = program("pmset-hung", "sleep 30");
-    const hung = await beating(() => ahead.pmsetSaysBattery());
-    expect(hung.value).toBe(false);
-    expect(hung.ms).toBeLessThan(10_000);
-    expect(hung.gap).toBeLessThan(HELD_MS);
-  } finally {
-    ahead.hooks.pmset = before;
-  }
-});
-
-test("export ahead: a play that goes on stops the export being made ahead; a press of Play and Pause doesn't", async () => {
-  const fixture = fixtureHome("ahead-play");
-  const before = { playMs: ahead.hooks.playMs, restMs: ahead.hooks.restMs };
-  const stopped: string[] = [];
-  let making: string | null = "p1";
-  (fixture.app as unknown as { exports: unknown }).exports = {
-    running: () => false,
-    aheadFor: () => making,
-    stopAhead: async (id?: string) => {
-      stopped.push(id ?? "all");
-      making = null;
-    },
-    startAhead: () => false,
-  };
-  ahead.hooks.playMs = 200;
-  ahead.hooks.restMs = 3_600_000;
-  playing.reset();
-  const off = ahead.watchPlays(fixture.app);
-  try {
-    // Played for a moment, then paused: left to finish.
-    playing.note("p1", true);
-    await Bun.sleep(50);
-    playing.note("p1", false);
-    await Bun.sleep(600);
-    expect(stopped).toEqual([]);
-    // A play that goes on past the grace: stopped (what it made is kept), and looked at again after a rest.
-    playing.note("p1", true);
-    await Bun.sleep(100);
-    expect(stopped).toEqual([]);
-    await Bun.sleep(700);
-    expect(stopped.length).toBeGreaterThanOrEqual(1);
-    expect(stopped[0]).toBe("p1");
-    // Nothing being made ahead: a play stops nothing.
-    playing.note("p1", false);
-    stopped.length = 0;
-    playing.note("p1", true);
-    await Bun.sleep(600);
-    expect(stopped).toEqual([]);
-  } finally {
-    off();
-    playing.reset();
-    ahead.hooks.playMs = before.playMs;
-    ahead.hooks.restMs = before.restMs;
     fixture.cleanup();
   }
 });

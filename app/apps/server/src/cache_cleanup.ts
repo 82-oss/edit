@@ -22,12 +22,10 @@
 //   files not yet in R2 (an upload pending or under way, media Edit made
 //   that hasn't gone up); else, unless it's done, opened here in the last 3
 //   days (or saved: an agent's turn with the editor closed). Everything of
-//   it stays, its export made ahead among it: until Nov 18 only the one made
-//   last on a Mac was kept, so a second project's took the first one's, and
-//   its share rendered all 117 chunks again (JJ's Mac, Nov 17).
-// - Idle: its derived copies go first when room is needed (exports made
-//   ahead, export chunks, pieces, excerpts, sound and scrub copies, smooth
-//   playback renders), then its proxies. Whole projects, the one worked on
+//   it stays.
+// - Idle: its derived copies go first when room is needed (export chunks,
+//   pieces, excerpts, sound and scrub copies, smooth playback renders), then
+//   its proxies. Whole projects, the one worked on
 //   longest ago first, before any project in work is touched.
 // - Done on Home, or idle 7 days: its local footage goes at each pass, room
 //   needed or not, its originals only once R2 has said it holds them at their
@@ -69,7 +67,7 @@ import { Semaphore } from "./semaphore.ts";
 import * as diag from "./diag.ts";
 import * as thread from "./thread.ts";
 import * as drive from "./drive.ts";
-import { aheadFile, beingRead } from "./exports.ts";
+import { beingRead } from "./exports.ts";
 import * as retention from "./export_retention.ts";
 import * as later from "./later.ts";
 import { exportRoots } from "./export_folder.ts";
@@ -788,8 +786,8 @@ interface Survey {
 /**
  * The files the cleaner may take by project state, grouped by project: each file with the project using it that
  * was worked on last (a file two projects use goes with the later one, and only once neither is in work), and
- * never one that's pinned, on its way up, written lately, half-written, a block folder's note, the export being made
- * ahead, a script's original, or not Edit's own copy.
+ * never one that's pinned, on its way up, written lately, half-written, a block folder's note, a script's original,
+ * or not Edit's own copy.
  */
 function* survey(app: App, entries: Entry[], now: number, done: Set<string>, known?: Used | null): Steps<Survey> {
   const cache = app.store.cacheDir();
@@ -808,8 +806,6 @@ function* survey(app: App, entries: Entry[], now: number, done: Set<string>, kno
   // Files from the last few hours stay (one may be uploading or playing), and while an export runs (it mixes from
   // the sound copies) the last two days'.
   const fresh = exporting ? RECENT : COPY_RECENT;
-  const making = makingAhead(app);
-  const ahead = making === null ? null : aheadFile(cache, making);
   const scripts = yield* scriptOriginals(home);
   // Script mode's copies go by its own word alone (`cleanCache`'s step for them), never with a project's.
   const scriptCopies = `${ledgerOf.scriptsOf(home)}/`;
@@ -820,7 +816,6 @@ function* survey(app: App, entries: Entry[], now: number, done: Set<string>, kno
     const name = entry.path.slice(entry.path.lastIndexOf("/") + 1);
     if (PARTIAL.test(name) || (name === "meta.json" && entry.path.includes("/cloud/blocks/"))) continue;
     if (now - entry.at < fresh || pinned(entry.path) || scripts.has(entry.path)) continue;
-    if (ahead !== null && (entry.path === ahead || entry.path === `${ahead}.json`)) continue;
     if (pending === null || pending.has(entry.path) || uploadingNow(entry.path)) continue;
     let group: Group;
     if (entry.owners.length === 0) {
@@ -929,8 +924,8 @@ function* cleanSteps(app: App, dryRun: boolean, now: number, given: Limits | und
   const seen = new Set<string>();
   const remove = function* (path: string): Steps<void> {
     yield BREATH;
-    // An export reading it, or about to (its footage, an effect's render, the export made ahead it copies its chunks
-    // from: file_pins.ts): left for the next pass. A gentle pass takes a file seconds after it chose it, so an upload
+    // An export reading it, or about to (its footage, an effect's render, the last export it copies its chunks from:
+    // file_pins.ts): left for the next pass. A gentle pass takes a file seconds after it chose it, so an upload
     // started on it meanwhile keeps it too.
     if (pinned(path) || gone.has(path) || (gentle && uploadingNow(path))) return;
     // Gone since the ledger counted it (another pass, the export that made it): nothing to take.
@@ -1221,15 +1216,6 @@ const HISTORY_KEPT_EACH = 3;
 
 /** How much project history may take before its oldest saves go (it was a quarter of the cache's budget until Nov 18). */
 export const HISTORY_BYTES = 1_000_000_000;
-
-/** The project whose export is being made ahead now (exports.ts `aheadFor`); none where there are no exports (tests). */
-function makingAhead(app: App): string | null {
-  try {
-    return (app.exports as { aheadFor?: () => string | null }).aheadFor?.() ?? null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Older exports of each project that are no longer wanted (export_retention.ts):

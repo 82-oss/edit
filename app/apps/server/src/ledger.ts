@@ -19,12 +19,12 @@ import { join } from "./paths.ts";
  * What a file is to a project: its `original` (a copy of the full-quality file), its `proxy` (what plays: a whole
  * proxy, its blocks, a legacy preview), its `pieces` (a long video's pieced proxy, the window's cuts and joins), its
  * `excerpts` (an export's stretches of originals), its cleaned `strips` (paid removal), its `effects` (renders), its
- * export `chunks` (and a share's review pieces), its `ahead` export, `derived` (sound copies, scrub copies, smooth
+ * export `chunks` (and a share's review pieces), `derived` (sound copies, scrub copies, smooth
  * playback renders, review copies), or `other` (Edit's own state, paid analysis, fonts, tiles).
  */
-export type Kind = "original" | "proxy" | "pieces" | "excerpts" | "strips" | "effects" | "chunks" | "ahead" | "derived" | "other";
+export type Kind = "original" | "proxy" | "pieces" | "excerpts" | "strips" | "effects" | "chunks" | "derived" | "other";
 
-export const KINDS: readonly Kind[] = ["original", "proxy", "pieces", "excerpts", "strips", "effects", "chunks", "ahead", "derived", "other"];
+export const KINDS: readonly Kind[] = ["original", "proxy", "pieces", "excerpts", "strips", "effects", "chunks", "derived", "other"];
 
 /**
  * How readily a kind leaves a project that isn't in work: 0 its derived copies (made again from what's here or in
@@ -33,7 +33,6 @@ export const KINDS: readonly Kind[] = ["original", "proxy", "pieces", "excerpts"
  */
 export function tierOf(kind: Kind): 0 | 1 | 2 | null {
   switch (kind) {
-    case "ahead":
     case "chunks":
     case "pieces":
     case "excerpts":
@@ -59,7 +58,7 @@ export interface Entry {
   kind: Kind;
   /** When it was last written (ms). */
   at: number;
-  /** The project its folder names (`export-chunks/<id>`, `ahead/<id>.mp4`…), else null: the cleaner works out whose it is. */
+  /** The project its folder names (`export-chunks/<id>`, `playback/<id>.mp4`…), else null: the cleaner works out whose it is. */
   project: string | null;
   /** Whether the cleaner may take it for a project's state: only Edit's own copies, never a project's own media or a file of the person's. */
   evictable: boolean;
@@ -118,7 +117,6 @@ export function classifyCache(relative: string): Class {
   // The timeline's pictures (timeline_media.ts, `timeline/<key>/<height>/<ms>.jpg`): a few kB each, made again in a moment, so
   // the cleaner may take them like any other derived file (Nov 21; uncounted, they would only ever pile up).
   if (top === "timeline") return own("derived");
-  if (top === "ahead" && second !== undefined) return own("ahead", second.replace(/\.mp4(\.json)?$/, ""));
   if (top === "playback" && second !== undefined) return own("derived", second.replace(/\.mp4$/, ""));
   if ((top === "reviews" || top === "range-exports") && second !== undefined && parts.length >= 3) return own("derived", second);
   if (top === "cleaned" || top === "watermarks") return keep("strips");

@@ -490,50 +490,14 @@ test("short of room, an excerpt an export is reading stays; it goes once let go"
   } finally { cleanup(); }
 });
 
-// JJ's Mac, Nov 17: "Cops Surprise Fellow Officer" was made ahead at 14:13, "Parents Had No Idea" at 14:59, and only the
-// one made last was kept: Cops' share at 15:24 found 0 of its 117 chunks and took 10 min 31 s.
-test("exports made ahead go by their project's state: every project in work keeps its own, an idle one's goes for room, a gone one's at once", async () => {
-  const { app, store, cleanup } = fixtureHome("cache-ahead");
-  try {
-    const cache = store.cacheDir();
-    const hour = 3600 * 1000;
-    const made = (id: string) => {
-      // Made days ago (anything from the last hours stays whatever its project).
-      const at = (Date.now() - 72 * hour) / 1000;
-      fs.mkdirSync(`${cache}/ahead`, { recursive: true });
-      for (const path of [`${cache}/ahead/${id}.mp4`, `${cache}/ahead/${id}.mp4.json`]) {
-        fs.writeFileSync(path, "x".repeat(1000));
-        fs.utimesSync(path, at, at);
-      }
-      return () => fs.existsSync(`${cache}/ahead/${id}.mp4`) && fs.existsSync(`${cache}/ahead/${id}.mp4.json`);
-    };
-    const cops = await cloudProject(store, "cops", Date.now() - 2 * hour);
-    const parents = await cloudProject(store, "parents", Date.now() - hour);
-    const idle = await cloudProject(store, "idle", Date.now() - 5 * 24 * hour);
-    const copsAhead = made(cops.id);
-    const parentsAhead = made(parents.id);
-    const idleAhead = made(idle.id);
-    const goneAhead = made("deleted-project");
-    // Room enough: both in work keep theirs (the older one too), the idle one keeps its own, a deleted project's goes.
-    cleanCache(app, false, Date.now(), { freeBytes: 0, free: 1e12 });
-    expect([copsAhead(), parentsAhead(), idleAhead(), goneAhead()]).toEqual([true, true, true, false]);
-    // Short of room (over the hard floor): the idle one's goes; those in work stay.
-    cleanCache(app, false, Date.now(), { freeBytes: 9e12, free: 1e12 });
-    expect([copsAhead(), parentsAhead(), idleAhead()]).toEqual([true, true, false]);
-  } finally {
-    forget(store.home);
-    cleanup();
-  }
-});
-
-// Sphe's M4, Nov 17: Retry's room-making ("freed 7.31 GB for work that needs 15.6 GB free") took the export made ahead
-// that it would have copied all 88 chunks from, and rendered every one again.
-test("the export made ahead an export is about to copy from stays through room-making, and goes once it's let go", () => {
+// Sphe's M4, Nov 17: Retry's room-making ("freed 7.31 GB for work that needs 15.6 GB free") took the file it would have
+// copied all 88 chunks from, and rendered every one again.
+test("a file an export is about to copy from stays through room-making, and goes once it's let go", () => {
   const { app, store, cleanup } = fixtureHome("cache-ahead-held");
   try {
     const cache = store.cacheDir();
-    fs.mkdirSync(`${cache}/ahead`, { recursive: true });
-    const file = `${cache}/ahead/p1.mp4`;
+    fs.mkdirSync(`${cache}/playback`, { recursive: true });
+    const file = `${cache}/playback/p1.mp4`;
     const old = (Date.now() - 3600_000 * 60) / 1000;
     for (const path of [file, `${file}.json`]) {
       fs.writeFileSync(path, "x".repeat(1000));

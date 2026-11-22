@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 
-import { abandon, aheadFile, exportCloud, ExportRegistry, REMAKE_MS, resetAbandoned, stall, STUCK_ENGINE } from "../src/exports.ts";
+import { abandon, exportCloud, ExportRegistry, REMAKE_MS, resetAbandoned, stall, STUCK_ENGINE } from "../src/exports.ts";
 import * as seams from "../src/seams.ts";
 import * as jobs from "../src/jobs.ts";
 import type { Project } from "../src/model.ts";
@@ -134,30 +134,6 @@ test("Cancel on a render the engine never ends: cancelled within the time it's g
     expect(await t.until(() => t.registry.activity().find((one) => one.id === stuck.id)?.state === "cancelled")).toBe(true);
     expect(await t.until(() => t.registry.activity().find((one) => one.id === next.id)?.state === "done")).toBe(true);
     expect(jobs.list(t.home, "export").some((one) => one.project === stuck.id)).toBe(false);
-  } finally {
-    t.cleanup();
-  }
-});
-
-test("an export someone asks for never waits for ever on one made ahead that's stuck in the engine", async () => {
-  Object.assign(stall, { ms: 60_000, everyMs: 10 });
-  const t = hanging("engine-hangs-ahead", new Set(["Ahead"]));
-  try {
-    const ahead = await t.project("Ahead");
-    const asked = await t.project("Asked");
-    const options = t.native.exportDefaults();
-    expect(t.registry.startAhead(t.store, t.app.library, ahead, options, aheadFile(t.store.cacheDir(), ahead.id))).toBe(true);
-    expect(await t.until(() => t.started.includes("Ahead"))).toBe(true);
-    // Its own project's Export stops it first (start → stopAhead): that returns.
-    const began = Date.now();
-    await t.registry.start(t.store, t.app.library, ahead, options, `${t.dir}/ahead.mp4`, { drive: false, keepLocal: true });
-    expect(Date.now() - began).toBeLessThan(2000);
-    expect(t.registry.aheadFor()).toBeNull();
-    expect(await t.until(() => t.started.filter((one) => one === "Ahead").length > 1)).toBe(true);
-    // That one is stuck too; cancelled, another project's export gets the place.
-    t.registry.cancel(ahead.id);
-    await t.registry.start(t.store, t.app.library, asked, options, `${t.dir}/asked.mp4`, { drive: false, keepLocal: true });
-    expect(await t.until(() => t.registry.activity().find((one) => one.id === asked.id)?.state === "done", 5000)).toBe(true);
   } finally {
     t.cleanup();
   }

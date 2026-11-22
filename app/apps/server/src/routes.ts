@@ -1140,7 +1140,7 @@ async function whenReady(app: App, id: string, expected: string, asked: exportSt
         return json({ path: expected, cancelled: true });
       }
       const path = await go();
-      // Cancelled while it was starting (an export made ahead stopping, the watermark going on): it was said
+      // Cancelled while it was starting (the watermark going on): it was said
       // cancelled then, so it's stopped now it's there (Nov 20: it started anyway).
       if (held.cancelled) {
         app.exports.cancel(id);

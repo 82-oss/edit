@@ -53,8 +53,7 @@ export interface StartExtra {
   replace?: boolean;
   /**
    * One of a batch of marked stretches (ranges.ts), which follows it: kept out of jobs.json (never resumed or tried
-   * again after an update as a lone export, never in place of the project's own failed export), and the export made
-   * ahead of the whole edit isn't spent by it.
+   * again after an update as a lone export, never in place of the project's own failed export).
    */
   stretch?: boolean;
   /** A stretch's batch's row in jobs.json (ranges.ts): noted as moving as the stretch's render moves, as an export's own row is. */
@@ -121,15 +120,9 @@ interface Running {
   /** What it waits for while queued (export_capacity.ts `noRoom`). */
   waiting?: string;
   cancelQueued?: () => void;
-  /** Made ahead, before anyone asked (export_ahead.ts): nobody waits on it, nothing lists it, and any export asked for stops it. */
-  ahead?: boolean;
-  /** Settled once it has ended, however it ended. */
-  ended?: Promise<void>;
-  /** Made ahead: gives its place back and drops it from the registry, when it won't end (`stopAhead`). */
-  letGo?: () => void;
   /** A batch's stretch (`StartExtra.stretch`). */
   stretch?: boolean;
-  /** The row in jobs.json its progress notes as moving (`beatRows`): its own, or a stretch's batch's; none made ahead. */
+  /** The row in jobs.json its progress notes as moving (`beatRows`): its own, or a stretch's batch's. */
   beats?: string;
   /** About how big its file is (`exportBytes`), and a share's review copy beside it: what the disks are asked for again as it starts. */
   bytes?: number;
@@ -714,19 +707,6 @@ export async function archiveGoing(home: string, id: string, output: string, key
   }
 }
 
-/** Where project `id`'s export made ahead goes (export_ahead.ts), with what it was made of beside it (`.json`). */
-export function aheadFile(cache: string, id: string): string {
-  return join(cache, "ahead", `${id.replace(/[^A-Za-z0-9_-]/g, "_")}.mp4`);
-}
-
-/** An export of `id` asked for and made into `output`: its export made ahead (copied from, or older) is spent, and goes. */
-export function aheadSpent(cache: string, id: string, output: string): void {
-  const file = aheadFile(cache, id);
-  if (file === output) return;
-  fs.rmSync(file, { force: true });
-  fs.rmSync(`${file}.json`, { force: true });
-}
-
 /** The chunk folder of a project's exports (the engine's chunks::folder), or of the ones named `project` (`exportPlan`'s `chunks`). */
 export function chunkFolder(cache: string, project: string): string {
   return join(cache, "export-chunks", project.replace(/[^A-Za-z0-9_-]/g, "_"));
@@ -1103,12 +1083,11 @@ const KEEP_PARTS = 200;
  * Edit's own files (file_pins.ts), from the moment it's asked for until its
  * render ends: its files here (an effect's render before it goes up, footage
  * added here), the cache's copies of its renders, and the file its unchanged
- * chunks are copied out of (the export made ahead, the last export; the
- * engine's manifest names it). Sphe's M4, Nov 17: the render the export had
- * planned was deleted 5 s in by the swap into the cache once it went up, and
- * Retry's room-making took the 7.3 GB export made ahead it would have copied
- * every chunk from. `reuse` lets go of only the latter (when there's no room
- * for both, the room comes first).
+ * chunks are copied out of (the last export; the engine's manifest names
+ * it). Sphe's M4, Nov 17: the render the export had planned was deleted 5 s
+ * in by the swap into the cache once it went up, and Retry's room-making took
+ * the 7.3 GB file it would have copied every chunk from. `reuse` lets go of
+ * only the latter (when there's no room for both, the room comes first).
  */
 export function holdFiles(cache: string, project: Project, chunks: string = project.id): { media: () => void; reuse: () => void; reusable: boolean } {
   const paths: string[] = [];
@@ -1117,10 +1096,9 @@ export function holdFiles(cache: string, project: Project, chunks: string = proj
     const cloud = media.cloud;
     if (cloud !== undefined && cloud !== null && cloud.proxy === cloud.original) paths.push(cachePath(cache, cloud.original));
   }
-  const ahead = aheadFile(cache, project.id);
   const last = lastChunks(cache, chunks)?.output;
-  const reused = [ahead, ...(last === undefined ? [] : [last])];
-  return { media: filePins.pin(paths), reuse: filePins.pin([...reused, `${ahead}.json`]), reusable: reused.some((path) => isFile(path)) };
+  const reused = last === undefined ? [] : [last];
+  return { media: filePins.pin(paths), reuse: filePins.pin(reused), reusable: reused.some((path) => isFile(path)) };
 }
 
 /**
@@ -1346,7 +1324,7 @@ const PLANS_KEPT = 32;
  * 2 ms is the plan). `rev` is the store's revision `project` is (`revOf`), or null when it isn't one (a clone, a kept
  * snapshot, an edit with its watermark over it): then it's sent as JSON as before. With one, it's planned by reference
  * to what native already holds of that revision, and kept by the options' text while that revision is the one
- * planned, so the same plan asked again (an export made ahead looked at after each rest, a stretch of a batch again)
+ * planned, so the same plan asked again (the same edit exported again, a stretch of a batch again)
  * costs nothing. A plan is of the project and the options alone (render.rs `export_plan`, `chunk_name`).
  */
 export function planExport(project: Project, options: ExportOptions, rev: number | null): Planned {
@@ -1387,8 +1365,6 @@ export class ExportRegistry implements seams.Exports {
   private localActive = 0;
   /** Of those, the places smooth playback's render holds (`takeTurn`): not exports, so nothing waits on them as on one. */
   private lent = 0;
-  /** Of those, the places exports made ahead hold (`startAhead`): not exports either, and they give theirs up to anything that wants it. */
-  private aheadActive = 0;
   /** Smooth playback's renders waiting for a place: served before the exports in line (Sphe, Nov 3: "cut the line"). */
   private ahead: (((release: () => void) => void) & { giveWay?: (() => void) | undefined })[] = [];
   private localQueue: { running: Running; start: () => void; notify: () => void }[] = [];
@@ -1414,9 +1390,9 @@ export class ExportRegistry implements seams.Exports {
     return this.finished.includes(path) || (this.home !== null && listed(this.home, path));
   }
 
-  /** Whether an export someone asked for is under way (one made ahead isn't). */
+  /** Whether an export is under way. */
   running(): boolean {
-    return [...this.jobs.values()].some((job) => job.ahead !== true);
+    return this.jobs.size > 0;
   }
 
   /** Whether a finished export is going up to the cloud (its project is free to export or share again meanwhile). */
@@ -1434,110 +1410,15 @@ export class ExportRegistry implements seams.Exports {
     }
   }
 
-  /** Project `id`'s export under way: what it writes, its timeline (`timelineHash`) and options (`optionsKey`). One made ahead isn't one to follow. */
+  /** Project `id`'s export under way: what it writes, its timeline (`timelineHash`) and options (`optionsKey`). */
   runningFor(id: string): { output: string; timeline: string; options: string } | null {
     const running = this.jobs.get(id);
-    return running === undefined || running.cancelled || running.ahead === true ? null : { output: running.output, timeline: running.timeline, options: running.options };
+    return running === undefined || running.cancelled ? null : { output: running.output, timeline: running.timeline, options: running.options };
   }
 
-  /** Whether an export is rendering here (smooth playback's render isn't one, nor one made ahead). */
+  /** Whether an export is rendering here (smooth playback's render isn't one). */
   localRunning(): boolean {
-    return this.localActive - this.lent - this.aheadActive > 0;
-  }
-
-  /** The project whose export is being made ahead, if one is. */
-  aheadFor(): string | null {
-    for (const [id, job] of this.jobs) if (job.ahead === true && !job.cancelled) return id;
-    return null;
-  }
-
-  /** Stops exports made ahead (all, or `project`'s), for something someone wants; resolves once they've let go. */
-  async stopAhead(project?: string): Promise<void> {
-    const ended: Promise<void>[] = [];
-    const stopped: [string, Running][] = [];
-    for (const [id, job] of this.jobs) {
-      if (job.ahead !== true || (project !== undefined && id !== project)) continue;
-      job.cancelled = true;
-      job.stop.abort();
-      job.job?.cancel();
-      stopped.push([id, job]);
-      if (job.ended !== undefined) ended.push(job.ended);
-    }
-    if (ended.length === 0) return;
-    // Never for ever (Nov 20): a person's Export waited here, its request unanswered, on one made ahead stuck in the
-    // engine. Its render is given up on after `abandon.ms` (EngineWatch); this bound is for the rest of it (a watermark
-    // being put on). Then it's dropped and its place given back, whatever it's still doing.
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const late = new Promise<"late">((resolve) => {
-      timer = setTimeout(() => resolve("late"), abandon.ms + stall.everyMs + 5_000);
-    });
-    const how = await Promise.race([Promise.all(ended).then(() => "ended" as const), late]);
-    clearTimeout(timer);
-    if (how === "ended") return;
-    for (const [id, job] of stopped) {
-      if (this.jobs.get(id) !== job) continue;
-      diag.warn("export", `${id}: its export made ahead didn't stop within ${Math.round((abandon.ms + stall.everyMs) / 1000)} s; left to itself`);
-      this.jobs.delete(id);
-      job.letGo?.();
-    }
-  }
-
-  /**
-   * Starts making `project`'s export ahead into `output` (export_ahead.ts), when
-   * nothing else wants this Mac's encoder: no export rendering or waiting, none
-   * for this project, and room for it now. False when it didn't start.
-   */
-  startAhead(store: Store, library: seams.Library, project: Project, options: ExportOptions, output: string, watermark?: string): boolean {
-    if (this.jobs.size > 0 || this.localQueue.length > 0 || this.ahead.length > 0) return false;
-    if (capacity.noRoom(this.localActive) !== null) return false;
-    const { plan, fps, chunks } = planExport(project, options, revOf(store, project));
-    if (plan.end <= plan.start) return false;
-    const folder = parent(output) ?? ".";
-    try {
-      fs.mkdirSync(folder, { recursive: true });
-    } catch {
-      return false;
-    }
-    if (roomFor(exportBytes(options, plan, options.fps ?? fps), store.cacheDir(), folder) !== null) return false;
-    const edit = structuredClone(project);
-    let finish!: () => void;
-    const reads = holdFiles(store.cacheDir(), edit, chunks ?? edit.id);
-    const unpin = () => {
-      reads.media();
-      reads.reuse();
-    };
-    const running: Running = {
-      output, ...(chunks ? { chunks } : {}), key: "", cancelled: false, stop: new AbortController(), job: null, snapshot: null, timeline: timelineHash(edit),
-      options: withWatermarkKey(optionsKey(options), watermark), keepLocal: true, queued: false, ahead: true,
-      ended: new Promise<void>((resolve) => { finish = resolve; }), unpin, ...(reads.reusable ? { letReuseGo: reads.reuse } : {}),
-    };
-    this.jobs.set(project.id, running);
-    this.localActive++;
-    this.aheadActive++;
-    let held = true;
-    const release = () => {
-      if (!held) return;
-      held = false;
-      this.aheadActive = Math.max(0, this.aheadActive - 1);
-      this.releaseOne();
-    };
-    running.letGo = release;
-    void (async () => {
-      let marked = edit;
-      if (watermark !== undefined) marked = await seams.channelMarks.addWatermark({ library }, store.cacheDir(), edit, plan, watermark);
-      if (running.cancelled) return;
-      await this.run(store, library, marked, structuredClone(options), plan, output, running, false, release);
-    })()
-      .catch((error: unknown) => {
-        diag.warn("export", `${project.name}: making its export ahead: ${diag.messageOf(error)}`);
-      })
-      .finally(() => {
-        if (this.jobs.get(project.id) === running) this.jobs.delete(project.id);
-        unpin();
-        release();
-        finish();
-      });
-    return true;
+    return this.localActive - this.lent > 0;
   }
 
   /**
@@ -1550,8 +1431,6 @@ export class ExportRegistry implements seams.Exports {
    */
   takeTurn(ready: (release: () => void) => void, giveWay?: () => void): { release: (() => void) | null; cancel: () => void } {
     if (this.ahead.length === 0 && this.localQueue.length === 0 && capacity.noRoom(this.localActive) === null) return { release: this.lend(giveWay), cancel: () => {} };
-    // Someone is watching: an export made ahead gives its place up (it carries on later from its chunks).
-    if (this.aheadActive > 0) void this.stopAhead();
     const turn = (release: () => void) => ready(release);
     this.ahead.push(Object.assign(turn, { giveWay }));
     this.drain();
@@ -1624,17 +1503,6 @@ export class ExportRegistry implements seams.Exports {
     this.localQueue = this.localQueue.filter((one) => !one.running.cancelled);
     while (this.ahead.length > 0 || this.localQueue.length > 0) {
       const room = capacity.noRoom(this.localActive);
-      if (room !== null && this.aheadActive > 0) {
-        // An export made ahead holds the place something asked for wants: it gives it up, and its release drains again.
-        const why = "waiting for a background export to stop";
-        for (const one of this.localQueue) {
-          if (one.running.waiting === why) continue;
-          one.running.waiting = why;
-          one.notify();
-        }
-        void this.stopAhead();
-        return;
-      }
       if (room !== null && this.localQueue.length > 0 && this.lentTo.size > 0) {
         // Smooth playback's render holds a place an export someone asked for wants: it gives way (Nov 20: Export sat at
         // 0% for minutes behind it on a one-encoder Mac, for ever when it hung), and carries on from its chunks after.
@@ -1676,7 +1544,7 @@ export class ExportRegistry implements seams.Exports {
         return;
       }
       // An export someone asked for goes before smooth playback's render: given the place first, the render would only
-      // be told to give way to it at once (Nov 20). With nothing in line, the render goes before anything made ahead.
+      // be told to give way to it at once (Nov 20). With nothing in line, the render goes.
       if (this.localQueue.length === 0) {
         const turn = this.ahead.shift()!;
         turn(this.lend(turn.giveWay));
@@ -1732,8 +1600,6 @@ export class ExportRegistry implements seams.Exports {
     // Nothing final while footage is missing (missing_media.ts): the button's, a share's, the agent's and a retry's export wait alike.
     const missing = await missingMedia.held(store.home, project);
     if (missing !== null) throw new Error(missing);
-    // This project's export made ahead stops first (it writes the same chunk folder); what it made is reused.
-    await this.stopAhead(project.id);
     const { plan, fps, chunks } = planExport(project, options, revOf(store, project));
     // The edit it's handed, whoever asked: a coded effect not rendered from its code, or a map shot still its first
     // frame, would go out as its stand-in (a Retry, a retry after an update and a stretch never waited for them).
@@ -1808,8 +1674,8 @@ export class ExportRegistry implements seams.Exports {
     // Short of room: what Edit's own cache holds can be fetched again, so its least recently used copies go
     // first, and it's refused only if that isn't enough (JJ's Mac, Nov 10: a share refused twice for 3 GB,
     // until he cleared the disk by hand).
-    // The export made ahead it copies its chunks from is kept while anything else can go; taken last, when it's that or
-    // no export (Sphe's M4, Nov 17: Retry's room took it, 7.3 GB, and all 88 chunks were rendered again).
+    // The last export it copies its chunks from is kept while anything else can go; taken last, when it's that or
+    // no export (Sphe's M4, Nov 17: Retry's room took the file it copied from, 7.3 GB, and all 88 chunks were rendered again).
     const make = async () => {
       if (room.make === null) return;
       try {
@@ -1935,14 +1801,12 @@ export class ExportRegistry implements seams.Exports {
     releaseLocal?: () => void,
   ): Promise<void> {
     const id = project.id;
-    const quiet = running.ahead === true;
-    // One made ahead says nothing to the page: nobody asked for it.
     // The bar never goes back within an export (`ExportBar`): its prep said again on a stall's restart, the engine's
     // second try at its chunks, a fresh engine job carrying on.
     let best = 0;
     const emit = (state: ExportActivity["state"], progress: number, extra: Record<string, unknown> = {}) => {
       if (state === "running") progress = best = Math.max(best, progress);
-      if (!quiet) this.publish(store, project, running, state, progress, extra);
+      this.publish(store, project, running, state, progress, extra);
     };
     // Real progress heard (the prep's line, the last export's bytes, the engine's frames) is its row's beat (`beatRows`).
     const moving = () => this.beatRows(running);
@@ -1970,7 +1834,7 @@ export class ExportRegistry implements seams.Exports {
     // Chunks left by a run cut short (a restart, a stall) are done from its first line, prep and all: the bar never
     // reads as started over while the footage is prepared again. Looked at only where an engine has planned (a few
     // stats, off the thread); the engine's own plan says it exactly as it starts.
-    if (!quiet && isFile(join(chunkDir, "plan-v1.json"))) {
+    if (isFile(join(chunkDir, "plan-v1.json"))) {
       const read = await madeShare(chunkDir, null, null).catch(() => null);
       if (read !== null && read.made > 0) {
         running.made = read.made;
@@ -1982,7 +1846,7 @@ export class ExportRegistry implements seams.Exports {
     const folder = parent(output) ?? ".";
     /** Room for it now, as it starts (it may have waited in line a long while since it was asked for), and once the excerpts it reads are cut. */
     const roomNow = async () => {
-      if (quiet || running.bytes === undefined) return;
+      if (running.bytes === undefined) return;
       const bytes = running.bytes;
       let short = roomShort(bytes, running.review ?? 0, store.cacheDir(), folder);
       const make = async () => {
@@ -2004,7 +1868,7 @@ export class ExportRegistry implements seams.Exports {
       if (short > 0) throw new failure.NoRoom(short, diskFull(short));
     };
     // A speed sample (`fresh_fps`): rendered here from the start, every frame new, never restarted.
-    let fresh = !quiet && options.format === "h264" && nothingToReuse(store.cacheDir(), running.chunks ?? id);
+    let fresh = options.format === "h264" && nothingToReuse(store.cacheDir(), running.chunks ?? id);
     let result: { ok: true } | { ok: false; error: string };
     /** What it failed on: an engine job given up on waits and is tried again by itself (`EngineAbandoned`). */
     let failedWith: unknown = null;
@@ -2099,7 +1963,7 @@ export class ExportRegistry implements seams.Exports {
               // The bar from the engine's fraction and what it writes (`ExportBar`), said as it reports and as it's looked at.
               let engineOn = true;
               const say = () => {
-                if (!engineOn || quiet || !bar.ready) return;
+                if (!engineOn || !bar.ready) return;
                 if (bar.made !== null) {
                   if (bar.made > 0) running.made = bar.made;
                   else delete running.made;
@@ -2113,12 +1977,12 @@ export class ExportRegistry implements seams.Exports {
                 }
               };
               const looked = () => {
-                if (quiet || !engineOn) return;
+                if (!engineOn) return;
                 void bar.look().then(say, (error: unknown) => diag.warn("export", `looking at the export's progress: ${diag.messageOf(error)}`));
               };
               bar.engineBegins(Date.now(), partialOf(output, exported.id, options.format));
               const job = native().ExportJob.start(
-                { project: { json: jsonForSerde(exported) }, options, plan, output, cacheDir: store.cacheDir(), sounds: originals?.sounds ?? {}, excerpts: originals?.excerpts ?? [], ...(quiet ? { background: true } : {}) },
+                { project: { json: jsonForSerde(exported) }, options, plan, output, cacheDir: store.cacheDir(), sounds: originals?.sounds ?? {}, excerpts: originals?.excerpts ?? [] },
                 (progress) => {
                   // Any change is movement: the engine trying its chunks again reports from lower down (Nov 2:
                   // Kroger's retry rendered 11 chunks yet "nothing new for 8 minutes", and was started over).
@@ -2138,7 +2002,7 @@ export class ExportRegistry implements seams.Exports {
               );
               running.job = job;
               if (running.cancelled) job.cancel();
-              const looks = quiet ? null : setInterval(looked, barLooks.everyMs);
+              const looks = setInterval(looked, barLooks.everyMs);
               let how: "ended" | "abandoned" = "ended";
               try {
                 how = await watch.wait(job);
@@ -2152,7 +2016,7 @@ export class ExportRegistry implements seams.Exports {
               } finally {
                 stalled = watch.stalled;
                 engineOn = false;
-                if (looks !== null) clearInterval(looks);
+                clearInterval(looks);
               }
               if (running.cancelled) throw new Error("cancelled");
               // Stopped and never ended (Nov 20): the export ends here, from the server's side, its place given back and
@@ -2178,11 +2042,9 @@ export class ExportRegistry implements seams.Exports {
           if (restored !== null && restored !== output) fs.rmSync(restored, { force: true });
         }
       });
-      if (!quiet) {
-        this.finished = this.finished.filter((done) => done !== output);
-        this.finished.push(output);
-        this.finished.splice(0, Math.max(this.finished.length - KEEP_FINISHED, 0));
-      }
+      this.finished = this.finished.filter((done) => done !== output);
+      this.finished.push(output);
+      this.finished.splice(0, Math.max(this.finished.length - KEEP_FINISHED, 0));
       result = { ok: true };
     } catch (error) {
       // The disk ran out under it: said as what to free (the room it needed less what's free now).
@@ -2198,23 +2060,6 @@ export class ExportRegistry implements seams.Exports {
     const took = performance.now() - started;
     /** The finished file's upload to the cloud, started once the project is free again. */
     let upFromHere: (() => Promise<void>) | null = null;
-    if (quiet) {
-      // Made ahead: its chunks wait in the project's chunk folder (its manifest names this file) for the export someone asks for.
-      if (result.ok) {
-        diag.info("export", `${project.name}: made its export ahead, ${frames} frames in ${diag.human(took)}, for the next export or share to reuse`);
-        try {
-          writeAtomic(`${output}.json`, JSON.stringify({ timeline: running.timeline, options: running.options, made_ms: nowMs() }));
-        } catch (error) {
-          diag.warn("export", `${project.name}: noting its export made ahead: ${diag.messageOf(error)}`);
-        }
-      } else if (!running.cancelled) {
-        diag.warn("export", `${project.name}: making its export ahead: ${result.error}`);
-      }
-      if (this.jobs.get(id) === running) this.jobs.delete(id);
-      return;
-    }
-    // Asked for and made: one made ahead of this project's is spent (this export's manifest is the one now).
-    if (result.ok && running.stretch !== true) aheadSpent(store.cacheDir(), id, output);
     if (result.ok) {
       diag.info(
         "export",

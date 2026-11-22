@@ -26,7 +26,7 @@ function client(app: App) {
   return { send, post: (path: string, value: unknown) => send(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(value) }) };
 }
 
-/** A registry whose start waits for `gate` first, as one does on an export made ahead stopping or a watermark going on. */
+/** A registry whose start waits for `gate` first, as one does on a watermark going on. */
 class Slow extends ExportRegistry {
   gate: Promise<void> = Promise.resolve();
   override async start(store: Store, library: seams.Library, project: Project, options: ExportOptions, output: string, extra = {}): Promise<string> {

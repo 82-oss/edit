@@ -40,7 +40,6 @@ import * as cloudBlocks from "./cloud_blocks.ts";
 import * as cloudMedia from "./cloud_media.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as diag from "./diag.ts";
-import * as exportAhead from "./export_ahead.ts";
 import * as speeds from "./export_speeds.ts";
 import { json } from "./http/errors.ts";
 import type { Router } from "./http/router.ts";
@@ -381,11 +380,9 @@ export async function readiness(app: App, id: string, waiting: boolean): Promise
 
   if (waiting && !ready) hooks.prepare(app, id, Math.round(head_s * fps), now);
   // The link is the person's while they wait on this footage (the dialog, then the top bar's cloud): background work gives way
-  // (playing.ts), an export being made ahead stops; Open now (asked without `waiting`), or all of it here, lets go.
-  if (waiting && !done) {
-    if (!playing.linkHeld()) exportAhead.giveWay(app);
-    playing.holdLink(id, HOLD_MS);
-  } else playing.releaseLink(id);
+  // (playing.ts); Open now (asked without `waiting`), or all of it here, lets go.
+  if (waiting && !done) playing.holdLink(id, HOLD_MS);
+  else playing.releaseLink(id);
   // What moves: bytes and files here, not the estimate (a jittering estimate hid bytes standing still).
   if (waiting) watchStill(id, ready, `${bytes_done} ${files.filter((file) => file.here).length}`, now, `${files.filter((file) => file.here).length} of ${files.length} files, ${GB(bytes_done)} of ${GB(bytes_total)} GB, ${room ?? cant ?? "no room line"}`);
   return {

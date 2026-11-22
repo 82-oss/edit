@@ -142,7 +142,7 @@ test("the ledger: each file once by disk and by project, kept up as files are wr
     put(`${cache}/export-chunks/p1-2/0123.mp4`, 300);
     put(`${cache}/export-chunks/p1-2/manifest-v1.json`, 10);
     put(`${cache}/export-chunks/p1-2_playback/0.mp4`, 30);
-    put(`${cache}/ahead/p1-2.mp4`, 700);
+    put(`${cache}/playback/p1-2.mp4`, 700);
     put(`${cache}/cloud/exports/p1-2/effect-board-0123456789ab.mp4`, 70);
     put(`${cache}/cloud/pieces/v3/drive/AbcFile0001/native2/1.mp4`, 40);
     put(`${cache}/cleaned/p1-2-m1-0-1000.strip.mp4`, 90);
@@ -161,7 +161,7 @@ test("the ledger: each file once by disk and by project, kept up as files are wr
     expect(disk!.kinds.proxy).toBe(1000);
     expect(disk!.kinds.original).toBe(10_000);
     expect(disk!.kinds.chunks).toBe(330);
-    expect(disk!.kinds.ahead).toBe(700);
+    expect(disk!.kinds.derived).toBe(700);
     expect(disk!.kinds.effects).toBe(150);
     expect(disk!.kinds.pieces).toBe(40);
     expect(disk!.kinds.strips).toBe(90);
@@ -174,8 +174,8 @@ test("the ledger: each file once by disk and by project, kept up as files are wr
     expect(ledger.projects().get("p1-2")!.bytes).toBe(300 + 30 + 700 + 70 + 80 + 1000);
     expect([...ledger.disks().values()][0]!.bytes).toBe(1000 + 10_000 + 1320);
     // Removed: a file, then a folder and all under it.
-    fs.rmSync(`${cache}/ahead/p1-2.mp4`);
-    ledger.forget(`${cache}/ahead/p1-2.mp4`);
+    fs.rmSync(`${cache}/playback/p1-2.mp4`);
+    ledger.forget(`${cache}/playback/p1-2.mp4`);
     ledger.forget(`${cache}/export-chunks`);
     expect([...ledger.disks().values()][0]!.bytes).toBe(1000 + 10_000 + 1320 - 700 - 340);
     expect(ledger.projects().get("p1-2")!.bytes).toBe(70 + 80 + 1000);
@@ -206,7 +206,6 @@ test("what each file is: originals, proxies and derived copies are Edit's to tak
   expect(classifyCache("export-chunks/p1-2/manifest-v1.json")).toMatchObject({ kind: "other", evictable: false });
   expect(classifyCache("export-chunks/p1-2/review/ab.mp4")).toEqual({ kind: "chunks", project: "p1-2", evictable: true });
   expect(classifyCache("export-chunks/p1-2_playback/0.mp4")).toEqual({ kind: "chunks", project: "p1-2", evictable: true });
-  expect(classifyCache("ahead/p1-2.mp4.json")).toEqual({ kind: "ahead", project: "p1-2", evictable: true });
   expect(classifyCache("playback/p1-2.mp4")).toEqual({ kind: "derived", project: "p1-2", evictable: true });
   expect(classifyCache("cleaned/x.strip.mp4")).toMatchObject({ kind: "strips", evictable: false });
   expect(classifyCache("0123456789abcdef/preview.mp4")).toMatchObject({ kind: "proxy", evictable: true });
