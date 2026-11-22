@@ -75,7 +75,7 @@ export function stop(_app: App, id: string): void {
   began.delete(id);
 }
 
-background.provide(NAME, { line: lineOf, stop });
+background.provide(NAME, { line: lineOf, stop, underWay: (id) => checks.has(id) });
 
 /**
  * What's wrong where the edit changed since `from`, as the audit gives it (fixable kinds only), and how many of the
@@ -192,8 +192,8 @@ async function run(app: App, id: string, from: Project): Promise<void> {
       if (!on()) return;
     }
     if (!on() || result === null) return;
-    checks.delete(id);
     if (result.issues.length === 0) {
+      checks.delete(id);
       began.delete(id);
       diag.info("end check", `${id}: nothing wrong where the turn changed the edit`);
       return;
@@ -201,9 +201,11 @@ async function run(app: App, id: string, from: Project): Promise<void> {
     const panel = seams.agentPanel(app);
     const running = () => panel.turn?.(id).running === true;
     // A turn started as it finished (a message of the person's): theirs goes first, and its end checks again.
-    if (running()) return;
+    if (running()) return void checks.delete(id);
     await app.store.mayWrite(id);
-    if (running()) return;
+    if (running()) return void checks.delete(id);
+    // Let go as the turn starts (it's running from the call), so nothing is told the person in between.
+    checks.delete(id);
     // Let go only now: the woken turn's start keeps the edit as it is then, and is never checked itself.
     began.delete(id);
     const kinds = [...new Set(result.issues.map((issue) => String(issue.kind)))].join(", ");

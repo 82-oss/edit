@@ -451,7 +451,7 @@ export function routes(router: Router<App>): void {
 
 // The chat's waiting row reads every line under way from one place (background.ts, Nov 21): removal's is this one,
 // the same numbers and the same Stop as its own routes above.
-background.provide("removal", { line: (_app, id) => backgroundOf(id), stop });
+background.provide("removal", { line: (_app, id) => backgroundOf(id), stop, underWay: (id) => progressOf(id).out > 0 || wakes.has(id) });
 
 // ---------------------------------------------------------------------------
 // A project's run in the background: the chat's waiting row, and the agent told when it's done

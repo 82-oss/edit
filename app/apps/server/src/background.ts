@@ -29,6 +29,8 @@ export interface Line {
 interface Kind {
   line: (app: App, id: string) => Line | null;
   stop: (app: App, id: string) => void;
+  /** Whether it's under way for the project or still to start the agent's turn on what it did (its line gone meanwhile). */
+  underWay: (id: string) => boolean;
 }
 
 const kinds = new Map<string, Kind>();
@@ -36,6 +38,15 @@ const kinds = new Map<string, Kind>();
 /** A kind of background work: its line for a project, and its Stop. Registered again under the same key, the newer wins. */
 export function provide(key: string, kind: Kind): void {
   kinds.set(key, kind);
+}
+
+/**
+ * Whether anything is under way for the project that may still start the agent again: the person is told their
+ * changes are done only after it (agent.ts `settled`; the M1 trial, Nov 22: told before the check had finished).
+ */
+export function underWay(id: string): boolean {
+  for (const kind of kinds.values()) if (kind.underWay(id)) return true;
+  return false;
 }
 
 /** The project's lines under way, the older first, each with its kind's key (its Stop's address). */

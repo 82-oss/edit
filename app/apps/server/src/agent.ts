@@ -18,6 +18,7 @@ import * as os from "node:os";
 
 import { attachedText, pictures as attachedPictures, savedAttached, type Attached, type Picture } from "./chat_attachments.ts";
 import { CHAT_PICTURES, chatPictureAddress, inlinePictures } from "./chat_pictures.ts";
+import * as background from "./background.ts";
 import * as claude from "./claude.ts";
 import { readExportFolder } from "./export_folder.ts";
 import { busyModel, ClaudeSupport, type SupportAction, type SupportStatus } from "./claude_support.ts";
@@ -1806,6 +1807,12 @@ export class Agents implements seams.AgentPanel {
    */
   private settled(root: string): void {
     if (this.quitting || this.busy(root)) return;
+    // Work that runs on after the turn (the end-of-turn check, removal) and may start the agent again: told once it's
+    // all over, the turn it starts included (the M1 trial, Nov 22: told before the check, and nothing after its fix).
+    if (background.underWay(root)) {
+      this.settleLater(root);
+      return;
+    }
     const chat = this.chats.get(root);
     const live = this.store.get(root);
     if (chat === undefined || live === null || chat.halted || reviewGuard.inReviewTurn(root)) return;

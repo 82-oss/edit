@@ -9,7 +9,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import * as fs from "node:fs";
 
 import * as addons from "../src/addons.ts";
-import type { Agents } from "../src/agent.ts";
+import { timing as agentTiming, type Agents } from "../src/agent.ts";
 import type { App } from "../src/app.ts";
 import { linesOf } from "../src/background.ts";
 import { useChannelsForTests, type Channel } from "../src/channels.ts";
@@ -17,6 +17,7 @@ import type * as claude from "../src/claude.ts";
 import { EDIT_EVENT } from "../src/edit_event.ts";
 import * as endCheck from "../src/end_check.ts";
 import { respond } from "../src/http/server.ts";
+import * as notices from "../src/notices.ts";
 import { buildRouter } from "../src/routes.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
 import { fixtureHome } from "./helpers/home.ts";
@@ -216,6 +217,69 @@ describe("on a channel that sets it", () => {
       expect(linesOf(app, id)).toEqual([]);
     } finally {
       cleanup();
+    }
+  });
+
+  // The M1 trial, Nov 22: "Changes are done" came before the check had finished, and nothing told the person when the
+  // fix turn it started ended.
+  const listen = () => {
+    const later = agentTiming.later;
+    agentTiming.later = (_ms, work) => void setTimeout(work, 20);
+    const heard: { notice: notices.Notice }[] = [];
+    const viewer = notices.connect((text) => heard.push(JSON.parse(text) as (typeof heard)[number]));
+    notices.heard(viewer, JSON.stringify({ type: "attention", focused: true, path: "/" }));
+    return { heard, done: () => { agentTiming.later = later; notices.resetForTests(); } };
+  };
+
+  test("the person is told their changes are done once, when the check and the fix turn it started have both ended", async () => {
+    const { app, asked, ends, turn, cleanup } = setUp("end-check-notice-fix");
+    const { heard, done } = listen();
+    try {
+      Object.assign(endCheck.timing, { readEveryMs: 20, readsWithinMs: 300 });
+      const id = await project(app);
+      await turn(id, "Add B-roll over the start", () => broll(app, id, "b", 10));
+      // Checking: nothing said yet.
+      expect(await until(() => linesOf(app, id).length > 0)).toBe(true);
+      await Bun.sleep(100);
+      expect(heard).toEqual([]);
+      expect(await until(() => asked.length === 2)).toBe(true);
+      await Bun.sleep(100);
+      expect(heard).toEqual([]);
+      ends.at(-1)!();
+      expect(await until(() => heard.length > 0)).toBe(true);
+      await Bun.sleep(100);
+      expect(heard.map((one) => one.notice.title)).toEqual(["Changes are done"]);
+    } finally {
+      done();
+      cleanup();
+    }
+  });
+
+  test("a check that finds nothing: the person is told once it has, and at once with the add-on off", async () => {
+    const on = setUp("end-check-notice-clean");
+    const { heard, done } = listen();
+    try {
+      Object.assign(endCheck.timing, { readEveryMs: 20, readsWithinMs: 400 });
+      const id = await project(on.app);
+      await on.turn(id, "Add a short B-roll shot", () => broll(on.app, id, "b", 3));
+      expect(await until(() => linesOf(on.app, id).length > 0)).toBe(true);
+      await Bun.sleep(100);
+      expect(heard).toEqual([]);
+      expect(await until(() => heard.length > 0)).toBe(true);
+      expect(linesOf(on.app, id)).toEqual([]);
+      expect(heard.map((one) => one.notice.title)).toEqual(["Changes are done"]);
+    } finally {
+      on.cleanup();
+    }
+    const off = setUp("end-check-notice-off", false);
+    heard.splice(0);
+    try {
+      const id = await project(off.app);
+      await off.turn(id, "Add a short B-roll shot", () => broll(off.app, id, "b", 3));
+      expect(await until(() => heard.length > 0, 500)).toBe(true);
+    } finally {
+      done();
+      off.cleanup();
     }
   });
 
