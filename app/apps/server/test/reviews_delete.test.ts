@@ -80,6 +80,56 @@ test("an edit's review link is deleted: Repack's review, its files on R2 and wha
   }
 });
 
+// Found Nov 22: a share's export is kept in the cloud once, as its review's full-quality download (exports.ts
+// `heldByReview`, its own archive removed as the same bytes), and deleting the link deleted every file under the
+// review's prefix (and Repack queued the version's keys for its cleanup): that export lost its only cloud copy.
+test("deleting a review link never takes an export's only cloud copy: one still here goes up again as its own first", async () => {
+  const { app, home, dir, cleanup } = fixtureHome("review-delete-held");
+  const id = app.store.createAs("Judge", "courtroom", { width: 1920, height: 1080, fps: 30 }).project.id;
+  try {
+    const full = `edit/reviews/${id}/t/full.mp4`;
+    const file = path.join(dir, "Judge.mp4");
+    fs.writeFileSync(file, "the export's bytes");
+    const record = { path: file, name: "Judge.mp4", finished_ms: 1, seconds: 1, bytes: fs.statSync(file).size, frames: 300, whole: true, start: 0, format: "h264", timeline: "t", cloudKey: full };
+    fs.writeFileSync(`${home}/exports.json`, JSON.stringify({ [id]: [record] }));
+    const version = { n: 1, timeline: "t", path: file, fps: 30, durationMs: 10_000, clips: [] };
+    fs.writeFileSync(`${home}/reviews.json`, JSON.stringify({ cursor: 0, notes: {}, shared: { [id]: { reviewId: "r1", url: "https://feedback.test/r/x", versions: [version] } } }));
+    const objects = new Set([`edit/reviews/${id}/t/video.mp4`, full]);
+    relay("/v1/cloud", { "reviews:remove": () => ({ removed: true, versions: 1, notes: 0, keys: [`edit/reviews/${id}/t/video.mp4`, full] }) }, objects);
+    await reviews.removeLink(app, id);
+    expect([...objects]).toEqual([]);
+    // The export no longer points at the deleted copy, and its own archive is listed to go up from the file here.
+    const records = JSON.parse(fs.readFileSync(`${home}/exports.json`, "utf8")) as Record<string, { path: string; cloudKey?: string }[]>;
+    expect(records[id]![0]!.cloudKey).toBeUndefined();
+    const jobs = await import("../src/jobs.ts");
+    const archive = jobs.list(home, "archive").find((job) => job.args.output === file);
+    expect(archive?.args.key).toBe(`edit/exports/${id}/Judge.mp4`);
+  } finally {
+    await Bun.sleep(50);
+    cleanup();
+  }
+});
+
+test("a review link that is an export's only copy anywhere (not on this computer) isn't deleted: it says so, nothing goes", async () => {
+  const { app, home, cleanup } = fixtureHome("review-delete-only-copy");
+  const id = app.store.createAs("Judge", "courtroom", { width: 1920, height: 1080, fps: 30 }).project.id;
+  try {
+    const full = `edit/reviews/${id}/t/full.mp4`;
+    const record = { path: "/gone/Judge.mp4", name: "Judge.mp4", finished_ms: 1, seconds: 1, bytes: 10, frames: 300, whole: true, start: 0, format: "h264", timeline: "t", cloudKey: full };
+    fs.writeFileSync(`${home}/exports.json`, JSON.stringify({ [id]: [record] }));
+    const version = { n: 1, timeline: "t", path: "/gone/Judge.mp4", fps: 30, durationMs: 10_000, clips: [] };
+    fs.writeFileSync(`${home}/reviews.json`, JSON.stringify({ cursor: 0, notes: {}, shared: { [id]: { reviewId: "r1", url: "https://feedback.test/r/x", versions: [version] } } }));
+    const objects = new Set([full]);
+    const calls = relay("/v1/cloud", { "reviews:remove": () => ({ removed: true, versions: 1, notes: 0, keys: [full] }) }, objects);
+    await expect(reviews.removeLink(app, id)).rejects.toThrow('This link is the only copy in the cloud of the export "Judge.mp4", which isn\'t on this computer any more. Delete that export first if it isn\'t needed, then delete the link.');
+    expect(calls).toEqual([]);
+    expect([...objects]).toEqual([full]);
+    expect((reviews.view(app, id) as { review: unknown }).review).not.toBeNull();
+  } finally {
+    cleanup();
+  }
+});
+
 test("an edit's link deleted on another Mac or Repack's page is forgotten at the next look; one still on Repack stays", async () => {
   const { app, home, cleanup } = fixtureHome("review-delete-elsewhere");
   const id = app.store.createAs("Judge", "courtroom", { width: 1920, height: 1080, fps: 30 }).project.id;

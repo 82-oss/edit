@@ -1258,6 +1258,29 @@ export async function heldByReview(home: string, id: string, path: string, key: 
   diag.info("export", `${id}: ${path} is kept in the cloud once, as the review's ${key}${archive !== undefined && archive !== key ? ` (${archive} removed)` : ""}`);
 }
 
+/** Project `id`'s exports whose one copy in the cloud is a file under `prefix` (a review link's download: `heldByReview`). */
+export function heldUnder(home: string, id: string, prefix: string): ExportRecord[] {
+  return (readRecords(home)[id] ?? []).filter((record) => record.cloudKey?.startsWith(prefix) === true);
+}
+
+/**
+ * An export kept in the cloud only as a review link's download, the link being deleted (reviews.ts `removeLink`):
+ * its record lets go of that copy, and its file, still here, goes up again as its own archive (`edit/exports/`, an
+ * `archive` row as after its export, so a restart carries it on). Its key, or null when it isn't listed or isn't here.
+ */
+export function archiveAgain(home: string, id: string, path: string, send: (output: string, key: string, record: ExportRecord) => Promise<Archived>): string | null {
+  const records = readRecords(home);
+  const record = (records[id] ?? []).find((one) => one.path === path);
+  if (record === undefined || !isFile(path)) return null;
+  delete record.cloudKey;
+  writeRecords(home, records);
+  const key = exportCloudKey(id, fileName(path) ?? "export.mp4");
+  const listedAs: ExportRecord = { ...record, cloudKey: key };
+  const job = jobs.begin(home, "archive", id, { output: path, key, record: listedAs }, path, "uploading");
+  void archiveJob(home, job, () => send(path, key, listedAs));
+  return key;
+}
+
 /** The review's copy an export's file already is in the cloud, when it is (`heldByReview`). */
 function reviewCopyOf(home: string, id: string, path: string, size: number): string | null {
   const record = (readRecords(home)[id] ?? []).find((one) => one.path === path);

@@ -43,7 +43,7 @@ import { DEFAULT_RELAY, url as relayUrl } from "./relay.ts";
 import { ApiError } from "./http/errors.ts";
 import { readJson, type Router } from "./http/router.ts";
 import * as busy from "./busy.ts";
-import { chunkFolder, clipMap, cloudKeyFor, deleteExport, heldByReview, lastChunks, listExports, mapFile, optionsKey, timelineHash, wakeBehindShare, withExport, withWatermarkKey } from "./exports.ts";
+import { archiveAgain, archiveGoing, chunkFolder, clipMap, cloudKeyFor, deleteExport, heldByReview, heldUnder, lastChunks, listExports, mapFile, optionsKey, timelineHash, wakeBehindShare, withExport, withWatermarkKey } from "./exports.ts";
 import { shareLine } from "./export_prep.ts";
 import * as speeds from "./export_speeds.ts";
 import * as effects from "./effects.ts";
@@ -2020,10 +2020,24 @@ export async function removeLink(app: App, projectId: string): Promise<{ removed
   if (readying.has(projectId)) throw new Error("its notes are being fixed: delete the link once that's done");
   const shared = read(home).shared[projectId];
   if (shared === undefined) throw new Error("this project has no review link to delete");
+  const prefix = `edit/reviews/${projectId}/`;
+  // An export kept in the cloud only as this link's download (exports.ts `heldByReview`: its own archive was removed
+  // as the same bytes) would lose its one copy with it, and every file the link names is deleted (here, and by the
+  // cleanup Repack queues). One still on this computer goes up again as its own first; one that isn't keeps the link
+  // until the person says it isn't needed.
+  const held = heldUnder(home, projectId, prefix);
+  const away = held.filter((record) => !fs.existsSync(record.path));
+  if (away.length > 0) {
+    const names = away.map((record) => `"${record.name}"`).join(", ");
+    throw new Error(`This link is the only copy in the cloud of the export ${names}, which isn't on this computer any more. Delete that export first if it isn't needed, then delete the link.`);
+  }
   removing.add(projectId);
   try {
     const answer = (await cloud.mutation("reviews:remove", { sourceId: projectId })) as { removed?: boolean; versions?: number; notes?: number; keys?: unknown[] };
-    const prefix = `edit/reviews/${projectId}/`;
+    for (const record of held) {
+      const key = archiveAgain(home, projectId, record.path, (output, archive, listed) => app.exports.sendUp?.(home, projectId, output, archive, listed) ?? archiveGoing(home, projectId, output, archive, listed));
+      diag.info("review", `${projectId}: ${record.path} was kept in the cloud only as the link's ${record.cloudKey}: it goes up again as ${key}`);
+    }
     const keys = new Set((Array.isArray(answer.keys) ? answer.keys : []).filter((key): key is string => typeof key === "string" && key.startsWith(prefix)));
     let files = 0;
     try {
