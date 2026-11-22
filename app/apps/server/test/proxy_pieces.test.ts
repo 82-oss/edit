@@ -565,8 +565,9 @@ test.skipIf(process.platform === "darwin")("a piece made here with another setup
     expect(read.length).toBe(there.length);
     expect(read.slice(-15)).toEqual(there.slice(-15));
     // Piece 1's own picture is the original's, encoded again.
+    // The psnr filter can compare a frame past the 30 the output stops at (CI's Linux, FFmpeg 9.0.2, Nov 19: 31 lines): the first 30.
     const psnr = await run(["-ss", "90", "-i", url, "-ss", "90", "-i", original, "-lavfi", "[0:v][1:v]psnr=stats_file=-", "-frames:v", "30", "-f", "null", "-"]);
-    const db = psnr.trim().split("\n").map((line) => Number(/psnr_avg:(\S+)/.exec(line)?.[1]));
+    const db = psnr.trim().split("\n").map((line) => Number(/psnr_avg:(\S+)/.exec(line)?.[1])).slice(0, 30);
     expect(db.length).toBe(30);
     expect(Math.min(...db)).toBeGreaterThan(30);
     expect(fs.existsSync(context.local(`${base}/video/1.m4s`))).toBe(true);
