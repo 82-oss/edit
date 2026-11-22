@@ -2705,13 +2705,14 @@ export function untoldFailures(app: App, project: string): string[] {
  * goes out with a still, or an older version, where an effect is. An error
  * says which effect and why.
  */
-export async function waitForRenders(app: App, project: string, limitMs: number): Promise<void> {
+export async function waitForRenders(app: App, project: string, limitMs: number, signal?: AbortSignal): Promise<void> {
   const until = Date.now() + limitMs;
   await readyToRender(app, project);
   // Every render it waits on is waited on from now (render_turns.ts: it goes ahead of renders nobody waits on, another
   // project's long one giving way at its next chunk), started now if it isn't under way.
   const waits: { effect: ReturnType<typeof needed>[number]; done: Promise<void> }[] = [];
   const held: (() => void)[] = [];
+  let abortWait = () => {};
   try {
     for (const effect of needed(app.store, project)) {
       if (effect.fresh) continue;
@@ -2722,9 +2723,16 @@ export async function waitForRenders(app: App, project: string, limitMs: number)
       done.catch(() => {});
       waits.push({ effect, done });
     }
+    // Its asker's Cancel (a share's) ends the wait, and lets go of the renders it put ahead of others (the Nov 21 audit).
+    const aborted = new Promise<"cancelled">((resolve) => {
+      abortWait = () => resolve("cancelled");
+      if (signal?.aborted === true) abortWait();
+      else signal?.addEventListener("abort", abortWait, { once: true });
+    });
     for (const { effect, done } of waits) {
       const left = until - Date.now();
-      const timedOut = await Promise.race([done.then(() => false), Bun.sleep(Math.max(0, left)).then(() => true)]);
+      const timedOut = await Promise.race([done.then(() => false), Bun.sleep(Math.max(0, left)).then(() => true), aborted]);
+      if (timedOut === "cancelled") throw new Error("cancelled while waiting for its graphics");
       if (timedOut) {
         const state = renderState(project, effect.name, effect.current!.key);
         if (state !== null && state.startsWith("waiting behind")) throw new Error(`The ${effect.name} effect is ${state}: export again once it's done.`);
@@ -2732,6 +2740,7 @@ export async function waitForRenders(app: App, project: string, limitMs: number)
       }
     }
   } finally {
+    signal?.removeEventListener("abort", abortWait);
     for (const done of held) done();
   }
 }

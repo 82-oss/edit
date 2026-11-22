@@ -950,7 +950,7 @@ async function exportStep(app: App, projectId: string, args: ShareArgs): Promise
       sharing.set(projectId, "waiting for map shots");
       await untilCancelled(
         projectId,
-        seams.broll.waitForMaps(app, projectId, 20 * 60_000).catch((error: unknown) => {
+        seams.broll.waitForMaps(app, projectId, 20 * 60_000, shareSignal(projectId)).catch((error: unknown) => {
           if (!seams.isUnavailable(error)) throw error;
         }),
       );
@@ -960,7 +960,7 @@ async function exportStep(app: App, projectId: string, args: ShareArgs): Promise
       sharing.set(projectId, "waiting for slowed shots");
       await untilCancelled(
         projectId,
-        seams.broll.waitForSmoothing(projectId, 20 * 60_000).catch((error: unknown) => {
+        seams.broll.waitForSmoothing(projectId, 20 * 60_000, shareSignal(projectId)).catch((error: unknown) => {
           if (!seams.isUnavailable(error)) throw error;
         }),
       );

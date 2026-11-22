@@ -601,3 +601,18 @@ test.skipIf(ffmpeg === null)("a slowed clip across a cut is refused once, said i
     cleanup();
   }
 }, 180_000);
+
+// The Nov 21 audit: a share's graphics waits polled on after its Cancel until their 20 minutes were up.
+test("an export's wait for its graphics ends at its asker's Cancel", async () => {
+  const { app, store, cleanup } = fixtureHome("broll-wait-cancel");
+  try {
+    const id = store.create("Waits", { width: 64, height: 36, fps: 30 }).project.id;
+    const stop = new AbortController();
+    stop.abort();
+    await expect(broll.waitForMaps(app, id, 60_000, stop.signal)).rejects.toThrow("cancelled");
+    // Unasked, nothing changes: no graphics to wait for, so it's through.
+    await broll.waitForMaps(app, id, 60_000);
+  } finally {
+    cleanup();
+  }
+});

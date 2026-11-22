@@ -974,11 +974,12 @@ export interface BrollSeam {
   /** Clips showing a render an older smoother made, smoothed again (broll.ts). */
   smoothStaleAgain(app: App, projectId: string): Promise<string[]>;
   /** A still as 30 s of steady footage (off macOS, where pictures don't stay images). */
-  waitForMaps(app: App, projectId: string, limitMs: number): Promise<void>;
+  /** `signal`: its asker's Cancel (a share's): the wait ends there, and lets go of the renders it put ahead. */
+  waitForMaps(app: App, projectId: string, limitMs: number, signal?: AbortSignal): Promise<void>;
   /** Starts again the moving map shot whose stand-in is `first`, from its frames; false when it can't. */
   resumeMap?(app: App, projectId: string, first: string): boolean;
   stopLeftoverMaps?(): number;
-  waitForSmoothing(projectId: string, limitMs: number): Promise<boolean>;
+  waitForSmoothing(projectId: string, limitMs: number, signal?: AbortSignal): Promise<boolean>;
 }
 
 export interface DriveSeam {

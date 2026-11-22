@@ -145,10 +145,11 @@ export function exportLine(id: string): string | null {
  * which every export goes through): caught up with the edit first, then
  * until none is out.
  */
-export async function waitForPieces(app: App, id: string, limitMs = timing.exportWaitMs): Promise<void> {
+export async function waitForPieces(app: App, id: string, limitMs = timing.exportWaitMs, signal?: AbortSignal): Promise<void> {
   await ensure(app, id).catch((error: unknown) => diag.warn("removal", `${id}: ${diag.messageOf(error)}`));
   const started = Date.now();
   while (progressOf(id).out > 0) {
+    if (signal?.aborted === true) throw new Error("cancelled while waiting for their text to be taken out");
     // The quick look an export takes in its request: said "still rendering", it waits on in the background (routes.ts `whenReady`).
     if (limitMs <= 10_000 && Date.now() - started > limitMs) throw new Error("still rendering: their text is being taken out of the footage");
     if (Date.now() - started > Math.max(limitMs, timing.exportWaitMs)) throw new Error("Their text is still being taken out of the footage; export again once the chat says it's done.");
@@ -633,7 +634,7 @@ let wakeGeneration = 0;
 
 /** Every project of a channel taught to take theirs out is brought up to date as soon as its edits rest, and again when the server starts (`resume`), here (not a save pulled from another Mac); every export waits for its pieces still out. */
 export function start(app: App): void {
-  readyWaits.push((ready, id, limitMs) => waitForPieces(ready, id, limitMs));
+  readyWaits.push((ready, id, limitMs, signal) => waitForPieces(ready, id, limitMs, signal));
   const later = setTimeout(() => void resume(app).catch((error: unknown) => diag.warn("removal", `resuming: ${diag.messageOf(error)}`)), timing.resumeMs);
   later.unref?.();
   app.store.subscribe((event) => {

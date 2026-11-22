@@ -699,10 +699,11 @@ export function smoothInBackground(app: App, projectId: string, clipIds: string[
  * Waits (up to `limit`) until a project's background smoothing is done, so
  * an export renders the smooth shots. Returns false if it timed out.
  */
-export async function waitForSmoothing(projectId: string, limitMs: number): Promise<boolean> {
+export async function waitForSmoothing(projectId: string, limitMs: number, signal?: AbortSignal): Promise<boolean> {
   const started = timing.now();
   const busy = () => (smoothing.get(projectId)?.size ?? 0) > 0 || mapsRendering(projectId);
   while (busy()) {
+    if (signal?.aborted === true) throw new Error("cancelled while waiting for the slowed shots");
     if (timing.now() - started > limitMs) return false;
     await timing.sleep(500);
   }
@@ -1210,15 +1211,23 @@ export function remakeEffect(projectId: string, name: string, key: string, unrea
  * still by mistake.
  */
 /** What else an export waits for before it starts, given the same limit (removal_schedule.ts: pieces of their text still being taken out). */
-export const readyWaits: ((app: App, projectId: string, limitMs: number) => Promise<void>)[] = [];
+export const readyWaits: ((app: App, projectId: string, limitMs: number, signal?: AbortSignal) => Promise<void>)[] = [];
 
-export async function waitForMaps(app: App, projectId: string, limitMs: number): Promise<void> {
+export async function waitForMaps(app: App, projectId: string, limitMs: number, signal?: AbortSignal): Promise<void> {
   // A coded effect (Edit V2) exports as its render, made from its code as it is: waited for here by every
   // export that can wait (the agent's, the button's, a share's, a retry's); exports.start refuses the edit it's
   // handed while one isn't (`exportReady`), so none goes out with a stand-in whichever way it came.
   const started = timing.now();
-  await waitForEffectRenders(app, projectId, limitMs);
-  for (const wait of readyWaits) await wait(app, projectId, limitMs);
+  // `signal`: a share's Cancel ends each wait (they polled on for their 20 minutes after it, the Nov 21 audit).
+  const cancelled = () => {
+    if (signal?.aborted === true) throw new Error("cancelled while waiting for its graphics");
+  };
+  await waitForEffectRenders(app, projectId, limitMs, signal);
+  cancelled();
+  for (const wait of readyWaits) {
+    await wait(app, projectId, limitMs, signal);
+    cancelled();
+  }
   // Each stand-in left without its footage is started again once, here,
   // rather than refused (Oct 21: three exports waited on agents to call
   // map_view again for maps that had stalled or run out of allowance).
@@ -1227,6 +1236,7 @@ export async function waitForMaps(app: App, projectId: string, limitMs: number):
   let standIns: Media[];
   for (;;) {
     while (mapsRendering(projectId)) {
+      cancelled();
       if (timing.now() - started > limitMs) {
         throw new Error(
           "a map view is still rendering; export again in a minute (get_project's smoothing lists it until it's done)",

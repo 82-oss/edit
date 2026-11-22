@@ -370,15 +370,17 @@ test("a share's review copy says how far it is, from FFmpeg's own report, and ne
 // 20 minutes each, up to three times, the share's stop looked at only after; and an export fetched back from the cloud
 // ran its whole download. "Stopping…" sat on the dialog all that time, and no new share could start.
 /** `wait` as one that never ends by itself (a render that takes its 20 minutes): the test lets it go at the end. */
-function hangingWait(name: "waitForMaps" | "waitForSmoothing"): { entered: () => number; release: () => void } {
+function hangingWait(name: "waitForMaps" | "waitForSmoothing"): { entered: () => number; release: () => void; signal: () => AbortSignal | undefined } {
   let entered = 0;
+  let given: AbortSignal | undefined;
   const waiting: (() => void)[] = [];
-  spies.push(spyOn(seams.broll, name).mockImplementation((async () => {
+  spies.push(spyOn(seams.broll, name).mockImplementation((async (...args: unknown[]) => {
     entered += 1;
+    given = args.find((one): one is AbortSignal => one instanceof AbortSignal);
     await new Promise<void>((resolve) => waiting.push(resolve));
     return true;
   }) as never));
-  return { entered: () => entered, release: () => waiting.splice(0).forEach((resolve) => resolve()) };
+  return { entered: () => entered, release: () => waiting.splice(0).forEach((resolve) => resolve()), signal: () => given };
 }
 
 /** Settled within `ms`, or "still going". */
@@ -395,9 +397,12 @@ for (const [name, line] of [["waitForMaps", "waiting for map shots"], ["waitForS
       shared.catch(() => {});
       for (let tries = 0; wait.entered() === 0 && tries < 500; tries++) await Bun.sleep(10);
       expect(reviews.shareNow(home, id).line).toBe(line);
+      expect(wait.signal()?.aborted).toBe(false);
       expect(reviews.cancelShare(app, id)).toBe(true);
       // Generous for CI's slow Mac: at once here.
       expect(await within(shared, 3_000)).toBe("the share was cancelled");
+      // The wait itself is told, so it stops polling and lets go of the renders it put ahead (the Nov 21 audit).
+      expect(wait.signal()?.aborted).toBe(true);
       expect(jobs.get(home, jobs.keyOf("share", id))).toBeUndefined();
       // The next share isn't refused as one under way.
       const again = reviews.exportAndShare(app, id, {});
