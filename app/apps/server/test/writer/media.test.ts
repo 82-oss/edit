@@ -179,6 +179,35 @@ test("an encode that makes no progress is stopped by its pace, not left to run o
   }
 }, 30_000);
 
+test("a script's preview piece takes its turn after a share's review copy, and a cancel ends its wait (Nov 22)", async () => {
+  const dir = fs.mkdtempSync(joinPath(os.tmpdir(), "edit-piece-turn-"));
+  const { never, server } = stalled();
+  const was = { ...PACE, poll: encoder.hooks.pollMs };
+  Object.assign(PACE, { afterMs: 400, everyMs: 100 });
+  encoder.hooks.pollMs = 20;
+  const copy = encoder.hold("a share's review copy", "share");
+  try {
+    const stop = new AbortController();
+    const cancelled = encodeProxy(never, joinPath(dir, "a.mp4"), 3_600_000, () => {}, stop.signal).then(() => null, (error: unknown) => error as Error);
+    const encode = encodeProxy(never, joinPath(dir, "out.mp4"), 3_600_000).then(() => null, (error: unknown) => error as Error);
+    await Bun.sleep(150);
+    // Waiting, not encoding beside the copy.
+    expect(encoder.holding("background")).toEqual([]);
+    stop.abort(new Error("cancelled"));
+    expect((await cancelled)?.message).toBe("cancelled");
+    copy.release();
+    for (let tries = 0; encoder.holding("background").length === 0 && tries < 100; tries++) await Bun.sleep(10);
+    expect(encoder.holding("background")).toEqual(["a script's preview piece"]);
+    expect((await encode)?.message).toMatch(/made no progress/);
+  } finally {
+    copy.release();
+    encoder.hooks.pollMs = was.poll;
+    Object.assign(PACE, { afterMs: was.afterMs, everyMs: was.everyMs });
+    server.stop(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}, 30_000);
+
 test("an encode sharing the hardware encoder with an export isn't judged by its pace until the export ends", async () => {
   const dir = fs.mkdtempSync(joinPath(os.tmpdir(), "edit-pace-shared-"));
   const { never, server } = stalled();

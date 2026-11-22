@@ -197,13 +197,14 @@ interface Paced {
 async function encode(args: string[], dest: string, totalMs: number, onPercent: (percent: number) => void, signal?: AbortSignal, paced?: Paced): Promise<void> {
   const judgedMs = paced?.totalMs ?? totalMs;
   const limitMs = toolTime(judgedMs);
+  // On the hardware encoder while it runs (encoder.ts), its turn taken first: a background encode, it waits at each
+  // piece while an export, a share's review copy or smooth playback holds it (Nov 22). Time it still shares the encoder
+  // isn't its pace: JJ's Mac, Nov 8, two imports stopped as "too slow" while a 51-minute export held it.
+  const hold = await encoder.turn("a script's preview piece", "background", signal);
   const began = Date.now();
   let doneMs = 0;
   const slow = new AbortController();
   let why = "";
-  // On the hardware encoder while it runs (encoder.ts). Time it shares the encoder with an export or another
-  // encode isn't its pace: JJ's Mac, Nov 8, two imports stopped as "too slow" while a 51-minute export held it.
-  const hold = encoder.hold("a script's preview piece");
   let sharedMs = 0;
   // Time the machine was away (asleep, frozen) isn't its pace either, nor its time: a gap between the judge's looks
   // over three of its periods, or a wake (wake.ts), counts as away. Nov 20: a lid closed for two hours at 40% was judged
