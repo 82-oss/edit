@@ -17,8 +17,8 @@ export type ThumbImage = {
   name: string;
   /** Under `edit/thumbnails/<id>/`. */
   key: string;
-  /** cutout: a picture's subject lifted out of another of its pictures (`cutFrom`), the rest transparent. graphic: drawn from code (`graphic`). */
-  from: "openart" | "upload" | "render" | "cutout" | "graphic";
+  /** cutout: a picture's subject lifted out of another of its pictures (`cutFrom`), the rest transparent. graphic: drawn from code (`graphic`). frame: a YouTube video's frame (grab_frames). */
+  from: "openart" | "upload" | "render" | "cutout" | "graphic" | "frame";
   /** A graphic's code (its key under the thumbnail's folder), and the taught graphic it came from (V2's library: its key and version). */
   graphic?: { code: string; library?: { key: string; n: number } };
   width: number;

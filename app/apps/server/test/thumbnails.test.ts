@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import * as fs from "node:fs";
 
 import { placesOf as graphicsPlaces, repoint } from "../src/thumbnails/graphics.ts";
 import { graphicPage } from "../src/thumbnails/render.ts";
@@ -15,6 +16,7 @@ import { MockServer } from "./mocks/server.ts";
 import { HOUSE_SHADOW, NO_ADJUST, type ImageLayer, type Thumbnail } from "@edit/types/thumbnails";
 import { adjustPixels, blurPixelsAlpha, captionShadow, shadowMetrics, shownText, type Context } from "@edit/types/thumbnail_render";
 import { sizeOf } from "../src/thumbnails/size.ts";
+import * as frames from "../src/ideas/frames.ts";
 
 const sources = new Set(["img1", "asset:bodycam-rec"]);
 
@@ -487,4 +489,86 @@ test("a graphic is code drawn on nothing: its page has the house's fonts and say
   // Kept with the channel's Thumbnails lane, or the house's for none.
   expect(graphicsPlaces({ channel: "drinsanity", lane: "thumbnails" })).toEqual(["drinsanity--thumbnails"]);
   expect(graphicsPlaces(null)).toEqual(["thumbnails"]);
+});
+
+// Nov 22 (TODO "Thumbnails: frames from YouTube"): Claude on a thumbnail pulls a frame from a YouTube video as the Ideas
+// agent can, the video asked of YouTube the way an idea asks it (the proxy first, frames.ts).
+test("Claude on a thumbnail scans a YouTube video and grabs frames from it into the thumbnail's images", async () => {
+  const rows = new Map<string, { body: Thumbnail; rev: number }>();
+  const mock = MockServer.start();
+  const restore = mock.useEnv({ EDIT_RELAY_TOKEN: "test-token" });
+  const { dir: home, cleanup } = scratch("thumbnail-frames");
+  mock.on("POST", "/v1/ideas/convex", (request) => {
+    const { path, args } = request.json<{ path: string; args: Record<string, unknown> }>();
+    const ok = (value: unknown) => Response.json({ status: "success", value });
+    const id = args.thumbId as string;
+    if (path === "thumbnails:get") return ok(rows.has(id) ? rows.get(id)! : null);
+    if (path === "thumbnails:listAssets") return ok([]);
+    const rev = rows.get(id)?.rev ?? 0;
+    if (args.baseRev !== rev) return Response.json({ status: "error", errorMessage: "conflict", errorData: { code: "conflict", message: "conflict" } });
+    rows.set(id, { body: args.body as Thumbnail, rev: rev + 1 });
+    return ok({ rev: rev + 1 });
+  });
+  // A 12-second test video standing in for YouTube's 1080p stream, served by range as googlevideo does.
+  const clip = `${home}/source.mp4`;
+  expect(Bun.spawnSync(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=24:duration=12", "-pix_fmt", "yuv420p", "-movflags", "+faststart", clip]).exitCode).toBe(0);
+  const bytes = fs.readFileSync(clip);
+  const looks = { ...frames.looks };
+  const asked: string[] = [];
+  frames.looks.info = async (_home, id) => {
+    asked.push(id);
+    return {
+      duration: 12,
+      formats: [
+        { format_id: "sb0", width: 320, height: 180, rows: 3, columns: 3, fragments: [{ url: "https://i.ytimg.com/sb/M0.jpg", duration: 12 }] },
+        { format_id: "137", vcodec: "avc1.640028", acodec: "none", protocol: "https", height: 1080, url: "https://rr.googlevideo.com/stream" },
+      ],
+      way: "proxy",
+    };
+  };
+  frames.looks.fetch = async (url, init) => {
+    if (url.includes("/sb/")) return new Response(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]));
+    const range = /bytes=(\d+)-(\d*)/.exec(init.range ?? "");
+    if (range === null) return new Response(bytes, { headers: { "content-type": "video/mp4", "accept-ranges": "bytes" } });
+    const start = Number(range[1]);
+    const end = range[2] ? Math.min(Number(range[2]), bytes.length - 1) : bytes.length - 1;
+    return new Response(bytes.subarray(start, end + 1), { status: 206, headers: { "content-type": "video/mp4", "content-range": `bytes ${start}-${end}/${bytes.length}`, "accept-ranges": "bytes" } });
+  };
+  const ask = run.hooks.ask;
+  try {
+    await cloud.commit(fresh("t-frames", "Sphe", "Mom Lies", ""), 0, "Sphe");
+    const context = { origin: "http://127.0.0.1:7700", port: 7700, cacheDir: `${home}/cache`, home, holder: "test-mac", by: "Sphe" };
+    const answers: [string, boolean][] = [];
+    let listed: string[] = [];
+    run.hooks.ask = async (question) => {
+      const token = question.tools!.split("/").pop()!;
+      listed = run.TOOLS.map((one) => one.name);
+      const link = "https://www.youtube.com/watch?v=J112wCvKWNY";
+      answers.push(await run.call(token, "scan_video", { video: link }));
+      answers.push(await run.call(token, "grab_frames", { video: link, times: ["0:02", "0:30"] }));
+      answers.push(await run.call(token, "grab_frames", { video: link, times: ["0:02", "0:08"] }));
+      answers.push(await run.call(token, "grab_frames", { video: "not a link", times: ["0:02"] }));
+      return { structured: null, text: "Two frames are in.", session: null, costUsd: 0, result: {}, replies: 1, biggestReply: 0 };
+    };
+    await run.chat(context, "t-frames", "take the house from the video", []);
+    for (let tries = 0; tries < 400 && run.isRunning("t-frames"); tries++) await Bun.sleep(10);
+    expect(listed).toEqual(expect.arrayContaining(["scan_video", "grab_frames"]));
+    expect(answers[0]).toEqual([expect.stringContaining("1 storyboard sheet"), false]);
+    expect(answers[1]).toEqual([expect.stringContaining("0:30 is past its end"), true]);
+    expect(answers[2]![1]).toBe(false);
+    expect(answers[2]![0]).toMatch(/the frame at 0:0[12].*\.jpg\n- \w+, the frame at 0:0[78]/);
+    expect(answers[3]).toEqual(["video is a YouTube video's link.", true]);
+    // Looked up once a turn, as an idea's video is.
+    expect(asked).toEqual(["J112wCvKWNY"]);
+    const images = rows.get("t-frames")!.body.images;
+    expect(images.map((one) => [one.from, one.name.replace(/\d:\d\d$/, "m:ss")])).toEqual([["frame", "frame at m:ss"], ["frame", "frame at m:ss"]]);
+    for (const one of images) expect(mock.objects.get(one.key)?.slice(0, 2)).toEqual(new Uint8Array([0xff, 0xd8]));
+    expect(images.every((one) => one.width === 640 || one.width > 0)).toBe(true);
+  } finally {
+    Object.assign(frames.looks, looks);
+    run.hooks.ask = ask;
+    restore();
+    mock.stop();
+    cleanup();
+  }
 });

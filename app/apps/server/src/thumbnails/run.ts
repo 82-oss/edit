@@ -15,6 +15,7 @@ import { assetRef, FONTS, HEIGHT, WIDTH, type Design, type Layer, type Thumbnail
 import { thumbnailsGuide } from "../agent_text.ts";
 import { inlinePictures, pictureFile } from "../chat_pictures.ts";
 import * as diag from "../diag.ts";
+import * as frames from "../ideas/frames.ts";
 import * as lanes from "../lanes.ts";
 import * as jobs from "../jobs.ts";
 import * as runLease from "../run_lease.ts";
@@ -31,6 +32,7 @@ import * as openart from "./openart.ts";
 import * as render from "./render.ts";
 import { sizeOf } from "./size.ts";
 import { THIS_MACHINE } from "../machine.ts";
+import * as youtube from "../youtube.ts";
 
 export const AT_ONCE = 2;
 const SENT_TURNS = 14;
@@ -135,6 +137,8 @@ type Session = {
   asked: string;
   /** Its channel's Thumbnails lane, when it's a channel's: its lessons and the lane tools. */
   place: lanes.Place | null;
+  /** YouTube videos looked up this turn (scan_video, grab_frames), by id: asked as Ideas asks, the proxy first. */
+  videos: Map<string, Promise<frames.Video>>;
 };
 const sessions = new Map<string, Session>();
 
@@ -310,6 +314,16 @@ export const TOOLS = [
       additionalProperties: false,
       properties: { layers: { type: "array", items: { type: "string" } }, include_all: { type: "boolean" }, name: { type: "string" } },
     },
+  },
+  {
+    name: "scan_video",
+    description: `Look through a YouTube video as its storyboard: sheets of small pictures, one every few seconds, nine to a sheet, to find the moment a frame for the thumbnail should come from (the house, the subject's face). video: its link. Without from and to, the whole video (spread over ${frames.MAX_SHEETS} sheets when it's longer than about thirteen minutes); with them ("m:ss"), that stretch. Read the sheets it names, then grab_frames at the moments you want.`,
+    inputSchema: { type: "object", additionalProperties: false, properties: { video: { type: "string" }, from: { type: "string" }, to: { type: "string" } }, required: ["video"] },
+  },
+  {
+    name: "grab_frames",
+    description: `Full-size frames of a YouTube video (up to 1080p) at these times ("m:ss", 1–${frames.MAX_FRAMES}), each the sharpest within a second of the time asked, added to the thumbnail's images (a base, a subject to cut out, a reference for make_picture). video: its link. Read the files it names.`,
+    inputSchema: { type: "object", additionalProperties: false, properties: { video: { type: "string" }, times: { type: "array", items: { type: "string" }, minItems: 1, maxItems: frames.MAX_FRAMES } }, required: ["video", "times"] },
   },
   {
     name: "rename",
@@ -656,6 +670,34 @@ async function runTool(session: Session, name: string, args: Args): Promise<stri
       });
       return name === "reply_to_comment" ? `Answered #${n}; it stays open.` : `Settled #${n}.`;
     }
+    case "scan_video": {
+      const found = await videoOf(session, args.video);
+      const from = args.from === undefined ? 0 : frames.secondsOf(args.from);
+      const to = args.to === undefined ? found.duration : frames.secondsOf(args.to);
+      if (from === null || to === null || to <= from) throw new Error('from and to are times in the video ("m:ss"), from before to.');
+      const sheets = await frames.scan(found, session.folder, from, Math.min(to, found.duration), session.signal);
+      if (sheets.length === 0) throw new Error(`The video is ${frames.clock(found.duration)} long: nothing there.`);
+      return [`The video (${frames.clock(found.duration)}) as ${sheets.length} storyboard ${sheets.length === 1 ? "sheet" : "sheets"}. Read each:`, ...sheets.map((one) => `- ${frames.sheetText(found, one)}`)].join("\n");
+    }
+    case "grab_frames": {
+      const asked = Array.isArray(args.times) ? args.times.map(frames.secondsOf) : [];
+      if (asked.length === 0 || asked.length > frames.MAX_FRAMES || asked.some((one) => one === null)) throw new Error(`times are 1–${frames.MAX_FRAMES} times in the video, as "m:ss".`);
+      const found = await videoOf(session, args.video);
+      const late = (asked as number[]).filter((one) => one > found.duration);
+      if (late.length > 0) throw new Error(`The video is ${frames.clock(found.duration)} long: ${late.map(frames.clock).join(", ")} is past its end.`);
+      const got = await frames.grab(found, asked as number[], session.folder, session.signal);
+      const added: { image: ThumbImage; path: string }[] = [];
+      for (const one of got) {
+        const bytes = new Uint8Array(fs.readFileSync(one.path));
+        const size = sizeOf(bytes) ?? { width: WIDTH, height: HEIGHT };
+        const key = await cloud.put(session.id, bytes, "image/jpeg", "jpg");
+        added.push({ image: { id: newId(), name: `frame at ${frames.clock(one.at)}`, key, from: "frame", width: size.width, height: size.height, at: Date.now(), by: session.by }, path: one.path });
+      }
+      await cloud.change(session.id, session.by, (thumb) => {
+        thumb.images = [...thumb.images, ...added.map((one) => one.image)].slice(-60);
+      });
+      return ["Added to the thumbnail's images. Read each frame:", ...added.map(({ image, path }, at) => `- ${image.id}, the frame at ${frames.clock(got[at]!.at)}${frames.clock(got[at]!.at) === frames.clock(got[at]!.asked) ? "" : ` (asked ${frames.clock(got[at]!.asked)})`} (${image.width}×${image.height}): ${path}`)].join("\n");
+    }
     case "cut_out": {
       const found = await cloud.get(session.id);
       if (found === null) throw new cloud.Missing("This thumbnail was deleted.");
@@ -864,6 +906,27 @@ async function placePicture(session: Session, source: string): Promise<string | 
   return `${base}/files/${key.split("/").pop()}`;
 }
 
+/**
+ * The YouTube video `given` (its link) names, looked up once a turn as Ideas looks up a case's video (frames.ts: the
+ * proxy first, never this Mac's own address first).
+ */
+function videoOf(session: Session, given: unknown): Promise<frames.Video> {
+  const id = typeof given === "string" ? (youtube.videoId(given.trim()) ?? (/^[A-Za-z0-9_-]{11}$/.test(given.trim()) ? given.trim() : null)) : null;
+  if (id === null) return Promise.reject(new Error("video is a YouTube video's link."));
+  const home = session.context.home;
+  if (home === undefined || home === null) return Promise.reject(new Error("YouTube can't be looked at from here."));
+  let looking = session.videos.get(id);
+  if (looking === undefined) {
+    looking = frames.video(home, id, session.signal);
+    session.videos.set(id, looking);
+    // A failed look is tried again on the next call.
+    looking.catch(() => {
+      if (session.videos.get(id) === looking) session.videos.delete(id);
+    });
+  }
+  return looking;
+}
+
 // ---------------------------------------------------------------- turns
 
 type Ending = { state: ThumbRun["state"]; error?: string; text: string; changed?: boolean };
@@ -1010,7 +1073,7 @@ async function work(context: Context, id: string, asked: string, given: string[]
         });
       const found = await step("Claude is working");
       fs.mkdirSync(folder, { recursive: true });
-      const session: Session = { id, by: context.by, context, folder, signal, looked: false, changed: false, made: 0, asked, place: lanes.placeOf(found.thumb.channel, "thumbnails") };
+      const session: Session = { id, by: context.by, context, folder, signal, looked: false, changed: false, made: 0, asked, place: lanes.placeOf(found.thumb.channel, "thumbnails"), videos: new Map() };
       if (session.place !== null) await lanes.refresh();
       const token = Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex");
       sessions.set(token, session);
