@@ -486,3 +486,39 @@ test("the stretches add up to the source's own frames, whatever its rate and len
     expect(frames).toBe(Math.round(duration * localFirst.workingFps(fps)));
   }
 });
+
+test("every reader reads a plain file here: the agent's looks, the page's player, removal and analysis, before the working copy is made and after", async () => {
+  const fixture = home("local-first-readers");
+  const run = localFirst.hooks.run;
+  let letMake!: () => void;
+  const makeGate = new Promise<void>((resolve) => (letMake = resolve));
+  localFirst.hooks.run = async (command, signal) => {
+    await makeGate;
+    return run(command, signal);
+  };
+  try {
+    const cache = fixture.store.cacheDir();
+    const { project, original, working } = await imported(fixture, "readersTst1", farApart, false);
+    const media = project.media[0]!;
+    const check = async (expected: string) => {
+      // The agent's looks.
+      expect(fs.readFileSync(localPreviews.pathOf(cache, media))).toEqual(fs.readFileSync(expected));
+      expect(fs.readFileSync(localPreviews.localized(cache, project)!.media[0]!.path)).toEqual(fs.readFileSync(expected));
+      // The page's player, through this server.
+      const served = await cloudMedia.streamFromCloud(new Request(media.path), media.cloud, "proxy");
+      expect(Buffer.from(await served!.arrayBuffer())).toEqual(fs.readFileSync(expected));
+      // Removal and analysis read the original itself.
+      expect(await cloudMedia.originalInput(cache, media)).toBe(original);
+    };
+    await check(original);
+    letMake();
+    await until(() => !localFirst.isStandIn(working, original));
+    await check(working);
+    expect(mock.calls("/v1/cloud/r2/url").filter((one) => JSON.stringify(one.json()).includes("readersTst1"))).toEqual([]);
+  } finally {
+    letMake();
+    localFirst.hooks.run = run;
+    localFirst.reset();
+    fixture.cleanup();
+  }
+}, 60_000);
