@@ -1077,6 +1077,22 @@ describe("preview seeks and lifetime", () => {
     expect(preview.buffering).toBe(false);
   });
 
+  it("asks what's here of the project opened while the last one's ask was still on its way (Nov 21 audit, P13)", async () => {
+    preview.setProject(fixture(), {}); await settle();
+    let answer!: (value: { ready: [number, number][] }) => void;
+    nativeApi.playbackReady.mockReset();
+    nativeApi.playbackReady.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve as never; }) as never);
+    nativeApi.playbackReady.mockResolvedValue({ ready: [[0, 30]] } as never);
+    (preview as unknown as { askReady: (now: boolean) => void }).askReady(true);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(nativeApi.playbackReady).toHaveBeenCalledWith("p1");
+    // Another project opens; its own ask comes due (400 ms on) while p1's is still out.
+    preview.setProject(fixture("p2"), {}); await settle();
+    await new Promise((resolve) => setTimeout(resolve, 450));
+    answer({ ready: [[0, 90]] });
+    await vi.waitFor(() => expect(nativeApi.playbackReady).toHaveBeenCalledWith("p2"), { timeout: 1000 });
+  });
+
   it("where nothing can be kept (this Mac's disk at Edit's floor), a play waits for nothing to be here: it plays from the stream", async () => {
     const sent = await inWindow();
     preview.setProject(withSound(), {}); await settle(); draw(); await settle();

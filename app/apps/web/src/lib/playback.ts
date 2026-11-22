@@ -537,7 +537,9 @@ class Preview {
           this.lookAgain();
         })
         .catch(() => {})
-        .finally(() => { this.readyAsking = false; if (this.project?.id === project.id) this.askReady(); });
+        // On for the project open now: one opened while this ask was out had its own ask turned away above, and
+        // asked nothing again until the next play (Nov 21 audit, P13).
+        .finally(() => { this.readyAsking = false; if (this.project !== null) this.askReady(this.project.id !== project.id); });
     }, wait);
   }
 
