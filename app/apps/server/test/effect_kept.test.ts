@@ -72,7 +72,7 @@ test("a kept effect carries what its page loads, not its references, tests or th
       "test.html": "<p>a test page</p>",
       "footage.mp4": "x".repeat(14_000),
     });
-    effectKept.noteGiven(dir, ["footage.mp4", null], { media: "m1", start: 2, end: 6 });
+    effectKept.noteGiven(dir, { video: "footage.mp4", levels: null, wave: null }, 4, { width: 1920, height: 1080 });
     const keep = { kind: "effect", name: "blur-bars", category: "blur", note: "Blurred bars above and below a Short.", brief: "Bar height and blur at the top." };
     const key = "template:@kept-ch--edit/blur-bars";
     const first = (await call(app, id, "save_to_library", keep)).content[0]!.text!;
@@ -112,11 +112,17 @@ test("an effect kept without its footage tells the project that brings it in to 
     v2cloud.useSkillsForTests([{ name: v2cloud.GLOBAL, text: "Edit's own workings.", key: v2cloud.skillKey(v2cloud.GLOBAL) }]);
     const dir = effects.folder(app.store, id, "window");
     write(dir, { "scene.html": '<video src="desk.mp4"></video>', "desk.mp4": "y".repeat(55_000) });
-    effectKept.noteGiven(dir, ["desk.mp4"], { media: "m2", start: 0, end: 30 });
+    // Noted as before Nov 22, naming this project's media (the M1 trial: a kept effect's named m8, nothing elsewhere).
+    fs.writeFileSync(join(dir, effectKept.GIVEN), JSON.stringify({ "desk.mp4": { media: "m2", start: 0, end: 30 } }));
     await call(app, id, "save_to_library", { kind: "effect", name: "window", category: "desktop", note: "A desktop window.", brief: "Its title at the top." });
     expect(await kept("template:@use-ch--edit/window")).toEqual([".given.json", "scene.html"]);
     const used = (await call(app, id, "use_from_library", { kind: "effect", name: "window", as: "window-2" })).content[0]!.text!;
-    expect(used).toContain('give it this project\'s with effect_footage, as: "desk"');
+    // What it expects, never where it came from; and the agent gives it this project's itself.
+    const brought = fs.readFileSync(join(effects.folder(app.store, id, "window-2"), effectKept.GIVEN), "utf8");
+    expect(JSON.parse(brought)).toEqual({ "desk.mp4": { kind: "picture", seconds: 30 } });
+    expect(brought).not.toContain("m2");
+    expect(used).toContain("(desk.mp4: 30");
+    expect(used).toContain('give it this project\'s now with effect_footage, as: "desk", the footage on this timeline it\'s for; ask the person which only when that isn\'t plain, and never leave the tool to them.');
   } finally {
     cleanup();
   }

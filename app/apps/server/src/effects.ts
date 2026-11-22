@@ -1296,7 +1296,7 @@ export async function giveFootage(app: App, projectId: string, name: string, med
     writeAtomic(join(dir, wave), waveScript(stem, new Float32Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 4)), 24000));
   }
   // That video's, not the effect's: left out of the library when it's kept (effect_kept.ts).
-  effectKept.noteGiven(dir, [video, levels, wave], { media: mediaId, start, end });
+  effectKept.noteGiven(dir, { video, levels, wave }, end - start, { width: media.width, height: media.height });
   return { video, levels, wave, key: stem, width: media.width, height: media.height, start, duration: end - start };
 }
 

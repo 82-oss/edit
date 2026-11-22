@@ -424,8 +424,14 @@ async function useFromLibrary({ app, args, projectId }: ToolCall): Promise<Conte
   const from = await v2cloud.fetchInto(found.key, n, into);
   if (from === null) throw new Error(`no ${kind === "template" ? "effect" : "sound"} ${name}${n === null ? "" : ` version ${n}`} in the library`);
   // Footage its own project handed it isn't kept (effect_kept.ts): this project gives its own, by the same name.
-  const footage = Object.keys(effectKept.given(into)).filter((path) => path.endsWith(".mp4") && !fs.existsSync(join(into, path)));
-  const give = footage.length === 0 ? "" : ` Its page plays footage it isn't kept with (${footage.join(", ")}): give it this project's with effect_footage, as: ${footage.map((path) => JSON.stringify(path.replace(/\.mp4$/u, ""))).join(", ")}.`;
+  const expected = effectKept.given(into);
+  const footage = Object.keys(expected).filter((path) => path.endsWith(".mp4") && !fs.existsSync(join(into, path)));
+  const shape = (path: string) => {
+    const one = expected[path]!;
+    return `${path}: ${one.seconds > 0 ? `${fixed(one.seconds, 1)} s of ` : ""}footage${one.width !== undefined && one.height !== undefined ? ` ${one.width}x${one.height}` : ""} where it was made`;
+  };
+  // Done here, not left to the person (the M1 trial, Nov 22: the agent told them of the tool instead).
+  const give = footage.length === 0 ? "" : ` Its page plays footage it isn't kept with (${footage.map(shape).join("; ")}): give it this project's now with effect_footage, as: ${footage.map((path) => JSON.stringify(path.replace(/\.mp4$/u, ""))).join(", ")}, the footage on this timeline it's for; ask the person which only when that isn't plain, and never leave the tool to them.`;
   return text(`effects/${as}/ is ${name} (version ${from.n}, ${from.files?.length ?? 0} files): yours to change.${give}${kind === "sound" ? " make_sound renders it." : " Look at it, then add_effect."}`);
 }
 
@@ -456,7 +462,9 @@ async function saveToLibrary({ app, args, projectId }: ToolCall): Promise<Conten
   // Optional in the schema only because a font has none.
   if (typeof args.brief !== "string" || args.brief.trim() === "") throw new Error(`brief is required for ${kind === "sound" ? "a sound" : "an effect"}: how to change it without making it again, in a line or two`);
   if (args.also !== undefined && (!Array.isArray(args.also) || args.also.some((one) => typeof one !== "string"))) throw new Error("also is a list of the folder's files to keep as well, by their paths inside it");
-  // Only what its page draws from (effect_kept.ts): never the references and tests beside it, nor this video's footage.
+  // Only what its page draws from (effect_kept.ts): never the references and tests beside it, nor this video's footage,
+  // whose note says only what another project gives it.
+  effectKept.forLibrary(dir);
   const files = effectKept.needed(dir, entry, (args.also as string[] | undefined) ?? []);
   await placeHere(app, projectId);
   const where = keptIn(app, projectId, args.for);

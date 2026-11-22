@@ -8,17 +8,27 @@
 // is kept too. Left out: whatever nothing names (the agent's references, its
 // tests), and footage handed to it from this project with effect_footage,
 // which is that video's and is given again wherever it's used (`.given.json`
-// says what it was). The agent can name more to keep (`also`).
+// says what's expected there: its kind, length and shape, never the media of
+// the project it came from, which means nothing in another; the M1 trial, Nov
+// 22: a kept effect's named `m8`). The agent can name more to keep (`also`).
 
 import * as fs from "node:fs";
 import { basename, dirname, join, posix } from "node:path";
 
 import { writeAtomic } from "./files.ts";
 
-/** What effect_footage handed an effect: each file by its path in the folder, and what it was cut from. */
+/** What effect_footage handed an effect: each file by its path in the folder, and what's expected there. */
 export const GIVEN = ".given.json";
 
-export type Given = Record<string, { media: string; start: number; end: number }>;
+/** Each file handed: its picture, its sound's levels or its wave; the seconds it holds; the picture's size. */
+export interface Footage {
+  kind: "picture" | "levels" | "wave";
+  seconds: number;
+  width?: number;
+  height?: number;
+}
+
+export type Given = Record<string, Footage>;
 
 /** The files a page reads as text, followed for the names in them. */
 const TEXT = /\.(html?|m?js|css|json|svg|txt)$/iu;
@@ -44,11 +54,29 @@ export function given(dir: string): Given {
   }
 }
 
-/** Notes footage handed to the effect in `dir` (its files, and what they were cut from). */
-export function noteGiven(dir: string, files: (string | null)[], from: { media: string; start: number; end: number }): void {
+/** What a file handed says to another project: only what's expected there (a note from before Nov 22 named its media). */
+function shareable(path: string, said: Partial<Footage> & { start?: number; end?: number }): Footage {
+  const kind = said.kind ?? (path.endsWith(".levels.js") ? "levels" : path.endsWith(".wave.js") ? "wave" : "picture");
+  const seconds = typeof said.seconds === "number" ? said.seconds : typeof said.start === "number" && typeof said.end === "number" ? said.end - said.start : 0;
+  const size = kind === "picture" && typeof said.width === "number" && typeof said.height === "number" ? { width: said.width, height: said.height } : {};
+  return { kind, seconds: Math.round(seconds * 100) / 100, ...size };
+}
+
+/** Notes footage handed to the effect in `dir`: its picture, its sound's levels and wave, the seconds they hold, the picture's size. */
+export function noteGiven(dir: string, files: { video: string | null; levels: string | null; wave: string | null }, seconds: number, size: { width: number; height: number }): void {
   const now = given(dir);
-  for (const file of files) if (file !== null) now[file] = from;
+  if (files.video !== null) now[files.video] = shareable(files.video, { kind: "picture", seconds, ...size });
+  if (files.levels !== null) now[files.levels] = shareable(files.levels, { kind: "levels", seconds });
+  if (files.wave !== null) now[files.wave] = shareable(files.wave, { kind: "wave", seconds });
   writeAtomic(join(dir, GIVEN), JSON.stringify(now, null, 1));
+}
+
+/** The note of what was handed, as it goes into the library: written again in what another project can use, a project's media named nowhere. */
+export function forLibrary(dir: string): void {
+  const now = given(dir);
+  if (Object.keys(now).length === 0) return;
+  const shared = Object.fromEntries(Object.entries(now).map(([path, said]) => [path, shareable(path, said as Partial<Footage>)]));
+  writeAtomic(join(dir, GIVEN), JSON.stringify(shared, null, 1));
 }
 
 /** Whether `text` names `path` (a file of the folder), as written or as a URL would. */
