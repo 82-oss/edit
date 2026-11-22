@@ -653,3 +653,22 @@ test("a read to the end reads ahead only the blocks not here: those on disk aren
   expect(fs.statSync(join(folder, "0")).mtimeMs).toBeGreaterThan(long.getTime() + 1000);
   for (let n = 2; n <= 4; n++) expect(fs.statSync(join(folder, `${n}`)).mtimeMs).toBe(long.getTime());
 });
+
+// Nov 21 audit: a block read at the floor is held in memory; once there's room, a whole copy read it from there and
+// looked for it on disk before its write (started, not awaited) had landed, and stopped as "no room" with room back.
+test("a whole copy made once room is back keeps the blocks read at the floor, rather than stopping as no room", async () => {
+  const realFree = storage.diskHooks.free;
+  try {
+    const root = fs.mkdtempSync(join(os.tmpdir(), "edit-blocks-room-back-"));
+    const key = "edit/proxies/room-back.mp4";
+    storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES + BLOCK / 2;
+    for (const at of [BLOCK + 5, 2 * BLOCK + 5]) expect(await bytes(await serve(root, key, `bytes=${at}-${at + 9}`, url))).toEqual(object.subarray(at, at + 10));
+    expect(fs.existsSync(join(folderFor(root, key), "1"))).toBe(false);
+    storage.diskHooks.free = () => Number.POSITIVE_INFINITY;
+    const local = join(root, "room-back.mp4");
+    await fetchWhole(root, key, local, url);
+    expect(new Uint8Array(fs.readFileSync(local))).toEqual(object);
+  } finally {
+    storage.diskHooks.free = realFree;
+  }
+});

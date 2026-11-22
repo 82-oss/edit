@@ -830,6 +830,21 @@ async function peekAt(direct: () => Promise<string>, from: number, to: number): 
 /** Whole copies' fills at once, each this many of its blocks in flight (the slots are shared: `slot`). */
 const FILL_EACH = 3;
 
+/**
+ * Whether block `index` (`bytes`, as `block` gave it) is on disk now, written there if it was held in memory and the
+ * disk has room again: `block` only starts that write, and a whole copy looking for the file before it landed stopped
+ * as "no room" with room back (Nov 21 audit).
+ */
+async function keptOnDisk(root: string, folder: string, key: string, index: number, bytes: Uint8Array): Promise<boolean> {
+  const path = join(folder, `${index}`);
+  if (fs.existsSync(path)) return true;
+  if (!keepable(root)) return false;
+  await fs.promises.mkdir(folder, { recursive: true });
+  if (!(await keep(path, bytes))) return false;
+  unhold(`${key}#${index}`);
+  return true;
+}
+
 /** A whole copy stopped for want of room: its blocks would take the disk under its floor (storage.ts). */
 export class NoRoom extends Error {
   constructor(message = "the disk too full to keep it whole") {
@@ -865,8 +880,7 @@ export async function fetchWhole(root: string, key: string, local: string, url: 
       const index = next++;
       if (!missing.has(index)) continue;
       if (!keepable(root)) throw new NoRoom();
-      await block(root, key, index, url, "fill");
-      if (!fs.existsSync(join(folder, `${index}`))) throw new NoRoom();
+      if (!(await keptOnDisk(root, folder, key, index, await block(root, key, index, url, "fill")))) throw new NoRoom();
       missing.delete(index);
       room(left(), meta.size);
     }
