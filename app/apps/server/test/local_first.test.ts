@@ -15,6 +15,7 @@ import * as jobs from "../src/jobs.ts";
 import * as keyframes from "../src/keyframe_index.ts";
 import * as localFirst from "../src/local_first.ts";
 import * as localPreviews from "../src/local_previews.ts";
+import * as outages from "../src/outages.ts";
 import type { Probe, Project } from "../src/model.ts";
 import { nativeSources } from "../src/native_preview.ts";
 import { useNative, wrap } from "../src/native/index.ts";
@@ -59,7 +60,7 @@ beforeAll(() => {
   makeClip(close, 30);
   // Several stretches for an 8 s clip.
   localFirst.WORKING.segment_s = 3;
-});
+}, 60_000);
 
 afterAll(() => {
   localFirst.WORKING.segment_s = segment;
@@ -461,10 +462,15 @@ test("a local file's import with the relay down answers with footage that plays 
     expect([original, cloudMedia.localPath(cache, media.cloud!.proxy!)]).toContain(sources.sources[media.id]!);
     const working = cloudMedia.localPath(cache, media.cloud!.proxy!);
     await until(() => fs.existsSync(working) && !localFirst.isStandIn(working, original));
-    // Its upload waits for the relay, tried again by itself.
-    await until(() => jobs.list(fixture.home, "upload").some((job) => job.args.originalKey === media.cloud!.original && job.state === "waiting"));
+    // Its uploads, the original's and the working copy's, wait for the relay, tried again by themselves.
+    await until(() => jobs.list(fixture.home, "upload").some((job) => job.args.uploadOriginal === true && job.state === "waiting"));
+    await until(() => jobs.list(fixture.home, "upload").some((job) => job.args.proxy === media.cloud!.proxy && job.args.working === undefined && job.state === "waiting"));
+    // Each on its own row, so a restart carries both on.
+    expect(jobs.list(fixture.home, "upload").filter((job) => job.state === "waiting").map((job) => job.args.uploadOriginal).sort()).toEqual([false, true]);
   } finally {
     process.env.EDIT_RELAY_URL = relayUrl;
+    // The relay back, as Edit hears it once it answers again.
+    outages.forgetForTests();
     localFirst.CLOUD_WAIT_MS.value = wait;
     localFirst.reset();
     fixture.cleanup();
@@ -514,10 +520,47 @@ test("every reader reads a plain file here: the agent's looks, the page's player
     letMake();
     await until(() => !localFirst.isStandIn(working, original));
     await check(working);
-    expect(mock.calls("/v1/cloud/r2/url").filter((one) => JSON.stringify(one.json()).includes("readersTst1"))).toEqual([]);
+    // Nothing was read from the cloud (the working copy then goes up behind, as any does).
+    expect(mock.calls("/v1/cloud/r2/url").filter((one) => JSON.stringify(one.json()).includes("readersTst1") && (one.json() as { method?: string }).method !== "PUT")).toEqual([]);
+    await until(() => footageUp().length === 1 && jobs.list(fixture.home, "upload").length === 0);
   } finally {
     letMake();
     localFirst.hooks.run = run;
+    localFirst.reset();
+    fixture.cleanup();
+  }
+}, 60_000);
+
+test("a Drive file on a new channel project comes to this computer whole, straight from Drive, and is its own working copy when its keyframes are close", async () => {
+  const scripts = new Jobs();
+  const fixture = home("local-first-drive", { services: { scripts } });
+  const enabled = spyOn(relay, "cloudEnabled").mockReturnValue(true);
+  const researched = spyOn(seams.research, "articles").mockReturnValue([]);
+  try {
+    mock.driveFile("1LocalDriveFile01", new Uint8Array(fs.readFileSync(close)), "Bodycam 1.mp4");
+    const id = channelProject(fixture);
+    await fixture.store.update(id, "test", (project) => {
+      project.script = { blocks: [{ kind: "footage", file: "1LocalDriveFile01", url: "https://drive.google.com/file/d/1LocalDriveFile01/view", start: 2, end: 4, label: "00:02–00:04" }] };
+    });
+    await start(fixture.app, id, false);
+    const project = fixture.store.get(id)!.project;
+    expect(scripts.get(id)!.state).toBe("done");
+    const media = project.media[0]!;
+    expect(media.cloud!.original).toBe("edit/originals/drive/1LocalDriveFile01/Bodycam 1.mp4");
+    // Its own working copy: what plays is the original, at its key's place.
+    expect(media.cloud!.proxy).toBe(media.cloud!.original);
+    const cache = fixture.store.cacheDir();
+    const original = cloudMedia.localPath(cache, media.cloud!.original);
+    expect(fs.readFileSync(original)).toEqual(fs.readFileSync(close));
+    const sources = (await (await nativeSources(fixture.app, project)).json()) as { sources: Record<string, string> };
+    expect(sources.sources[media.id]).toBe(original);
+    // Up behind, never copied inside the cloud first.
+    await until(() => footageUp().length === 1 && jobs.list(fixture.home, "upload").length === 0);
+    expect(footageUp()).toEqual([media.cloud!.original]);
+    expect(mock.calls(/\/v1\/cloud\/jobs\/drive/).length).toBe(0);
+  } finally {
+    enabled.mockRestore();
+    researched.mockRestore();
     localFirst.reset();
     fixture.cleanup();
   }

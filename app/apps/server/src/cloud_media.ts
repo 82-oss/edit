@@ -937,7 +937,9 @@ export function uploadLater(home: string, upload: Upload): void {
   // first to end crossed off the job both were noted under).
   const running = uploading.get(upload.file)?.upload;
   if (running !== undefined && running.originalKey === upload.originalKey && running.uploadOriginal === upload.uploadOriginal && (upload.proxy === null || running.proxy === upload.proxy)) return;
-  const key = jobs.begin(home, "upload", "-", { ...upload }, upload.source);
+  // A local-first working copy goes up on a row of its own, beside its original's (local_first.ts): under the source's
+  // row it took the original's place, so a restart carried on with one of them and either ending crossed off both.
+  const key = jobs.begin(home, "upload", "-", { ...upload }, localFirst.isWorkingKey(upload.proxy) ? `${upload.source}#working-up` : upload.source);
   const entry = { key, home, upload, done: Promise.resolve(true) };
   entry.done = uploadSlot
     .with(() => diag.timeOnAsync("cloud", "cloud: upload import", upload.file, () => runUpload(upload, () => jobs.progressed(home, key), () => jobs.beat(home, key))))
