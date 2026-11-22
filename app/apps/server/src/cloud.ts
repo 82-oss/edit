@@ -87,7 +87,41 @@ export const timing = {
   keptAtMs: 10 * 60_000,
   /** How much of a request's body is handed over at a time (its progress, and the line's meter: `pulled`). */
   putChunk: MIB,
+  /** Whether a request to `url` goes through a proxy (`throughProxy`), which takes its whole body at once. */
+  proxied: (url: string): boolean => throughProxy(url, process.env),
 };
+
+/**
+ * How far what a direct request has handed its connection can lead what the receiver has taken: the socket's send
+ * buffer (Bun's fetch takes the next piece of a body only as the socket drains; 1 to 2 MB on a Mac, at most 4 MiB on
+ * Linux, measured Nov 22). An upload's progress counts only what's this far behind.
+ */
+const HANDED_AHEAD = 4 * MIB;
+
+/**
+ * Whether Bun's fetch sends a request to `url` through a proxy, as it decides (read once at its start: `HTTPS_PROXY`
+ * or `https_proxy` for https, `HTTP_PROXY` or `http_proxy` for http, unless `NO_PROXY`/`no_proxy` names the host, a
+ * domain above it, or `*`). Through one (a line proxy on the MacBook Air, Nov 22, and some VPNs), Bun takes a part's
+ * whole body at once into the tunnel, so what it has taken says nothing of what has got there.
+ */
+export function throughProxy(url: string, env: Record<string, string | undefined>): boolean {
+  let host: string;
+  let https: boolean;
+  try {
+    const parsed = new URL(url);
+    host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    https = parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+  const proxy = https ? (env.HTTPS_PROXY ?? env.https_proxy) : (env.HTTP_PROXY ?? env.http_proxy);
+  if (proxy === undefined || proxy.trim() === "") return false;
+  const skip = (env.NO_PROXY ?? env.no_proxy ?? "")
+    .split(/[\s,]+/)
+    .map((entry) => entry.trim().toLowerCase().replace(/:\d+$/, "").replace(/^\*?\./, ""))
+    .filter((entry) => entry !== "");
+  return !skip.some((entry) => entry === "*" || host === entry || host.endsWith(`.${entry}`));
+}
 
 /** Whether cloud calls can work: someone is signed in (or `EDIT_RELAY_TOKEN` is set). Cloud is always on then. */
 export function enabled(): boolean {
@@ -1168,7 +1202,7 @@ service.kinds({ TransferMismatch: "temporary" });
 export class Stall {
   private readonly controller = new AbortController();
   private moved_ = 0;
-  private timer: ReturnType<typeof setInterval>;
+  private timer: ReturnType<typeof setInterval> | ReturnType<typeof setTimeout>;
   private connect: ReturnType<typeof setTimeout> | null = null;
   reason: string | null = null;
 
@@ -1201,6 +1235,21 @@ export class Stall {
     this.moved_ += bytes;
   }
 
+  /**
+   * Everything is handed over and `waiting` bytes of it may not have got there yet: nothing more moves that this
+   * side can see until the answer, so a minute of nothing isn't a stall. Given up on only once those bytes would
+   * have gone slower than STALL_BYTES_PER_SECOND all along (a minute more for the answer): through a proxy that
+   * took a whole part at once, a 2 Mbit/s line's 16 MiB part takes over a minute, and was ended as "too slow"
+   * (the MacBook Air, Nov 22: a 53 MB share failed after 8 minutes).
+   */
+  handedOver(waiting: number): void {
+    if (this.reason !== null) return;
+    clearInterval(this.timer);
+    const ms = timing.stallMs + (waiting / STALL_BYTES_PER_SECOND) * 1000;
+    this.timer = setTimeout(() => this.abort(`Operation too slow. Less than ${STALL_BYTES_PER_SECOND} bytes/sec transferred the last ${Math.round(ms / 1000)} seconds`), ms);
+    unref(this.timer);
+  }
+
   private abort(reason: string): void {
     this.reason ??= reason;
     this.controller.abort(new Error(reason));
@@ -1208,6 +1257,7 @@ export class Stall {
 
   stop(): void {
     clearInterval(this.timer);
+    clearTimeout(this.timer);
     if (this.connect !== null) clearTimeout(this.connect);
   }
 
@@ -1223,13 +1273,25 @@ function unref(timer: unknown): void {
 
 /**
  * PUTs `data` to a presigned URL with an exact Content-Length (S3 wants it,
- * never chunked), a MiB at a time as the request takes it (that's the
- * progress, and the line's meter); the ETag R2 answered with. `behind`: while a
- * person's download runs, its bytes go at `givenWayBps`, in small steps.
+ * never chunked), a MiB at a time as the request takes it (the line's meter);
+ * the ETag R2 answered with. Its progress is what has surely got there: what
+ * was handed over less what the connection may still hold (`HANDED_AHEAD`),
+ * the rest once R2 answers; through a proxy (`timing.proxied`), which takes
+ * the whole body at once, nothing until the answer. `behind`: while a person's
+ * download runs, its bytes go at `givenWayBps`, in small steps.
  */
 async function put(url: string, data: Uint8Array, kind: string | null, progress: Progress, signal?: AbortSignal, behind = false): Promise<string | null> {
   if (signal?.aborted) throw new Error("the share was cancelled");
   let written = 0;
+  const buffered = timing.proxied(url);
+  const ahead = buffered ? data.length : HANDED_AHEAD;
+  let counted = 0;
+  let pacedAny = false;
+  const count = (upTo: number) => {
+    const now = Math.min(data.length, Math.max(counted, upTo));
+    if (now > counted) progress.add(now - counted);
+    counted = now;
+  };
   const stall = new Stall();
   const body = new ReadableStream<Uint8Array>(
     {
@@ -1247,8 +1309,11 @@ async function put(url: string, data: Uint8Array, kind: string | null, progress:
         controller.enqueue(chunk);
         written = end;
         stall.moved(chunk.length);
-        progress.add(chunk.length);
-        pulled(chunk.length, paced);
+        count(written - ahead);
+        // Through a proxy the body goes at memory speed, not the line's: it's metered as it gets there (below).
+        pacedAny ||= paced;
+        if (!buffered) pulled(chunk.length, paced);
+        if (written >= data.length) stall.handedOver(Math.min(data.length, ahead));
       },
     },
     { highWaterMark: 0 },
@@ -1273,10 +1338,12 @@ async function put(url: string, data: Uint8Array, kind: string | null, progress:
     if (response.status !== 200) {
       throw new service.ServiceRefused({ service: "R2", status: response.status, retryAfterMs: service.retryAfterOf(response.headers), message: `R2 refused the upload (${response.status}): ${r2Message(text)}` });
     }
+    count(data.length);
+    if (buffered) pulled(data.length, pacedAny);
     const etag = (response.headers.get("etag") ?? "").trim();
     return etag === "" ? null : etag;
   } catch (error) {
-    progress.takeBack(written);
+    progress.takeBack(counted);
     throw error;
   } finally {
     sendEnded();

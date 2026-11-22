@@ -167,10 +167,15 @@ test("on a slow line (10 Mbit/s) an upload measures it and sends at most two par
       starts = [];
       let measuredAt = Infinity;
       const key = `edit/test/slow-${resumable}.mp4`;
-      const sent = cloud.uploadFile(file, key, () => {
+      // Looked at every few ms, not at each progress report: progress counts only what's surely there (cloud.ts `put`).
+      const watch = setInterval(() => {
         if (measuredAt === Infinity && cloud.lineBps() !== null) measuredAt = performance.now();
-      });
-      await sent;
+      }, 5);
+      try {
+        await cloud.uploadFile(file, key);
+      } finally {
+        clearInterval(watch);
+      }
       expect(Buffer.from(mock.cloud.objects.get(key)!).equals(Buffer.from(data))).toBe(true);
       // The parts after the first eight (all of the second file's) went at most two at once.
       expect(most(starts.slice(resumable ? 0 : 8))).toBeLessThanOrEqual(2);
