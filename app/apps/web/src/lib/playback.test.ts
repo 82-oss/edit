@@ -1363,6 +1363,66 @@ describe("preview seeks and lifetime", () => {
     } finally { vi.useRealTimers(); }
   });
 
+  // The window's player closed behind the page's back: every call answers as crates/edit-window's preview.rs does with
+  // no player ("the preview isn't open"), and its open opens a new one (the M1 trial, Nov 22: "Still waiting for frame
+  // 3581" for 30 s, then the player reopened paused, "The player stopped" never seen).
+  const closedWindow = () => {
+    const state = { gone: false };
+    const refuse = (command: string) => (state.gone && command !== "preview_open" && command !== "preview_close" ? "the preview isn't open" : null);
+    return { state, refuse };
+  };
+
+  it("a window whose player is gone mid-play is left at once, says so, and plays on from where it was once it's opened again (the M1 trial, Nov 22)", async () => {
+    const closed = closedWindow();
+    const sent = await inWindow(closed.refuse);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const tick = async (ms = 0) => { await vi.advanceTimersByTimeAsync(ms); draw(); await vi.advanceTimersByTimeAsync(0); };
+    try {
+      preview.setProject(fixture(), {}); await tick(); await tick();
+      preview.play(); await tick();
+      windowClock.frame = 40; await tick(100); await tick();
+      expect(Math.floor(playhead.frame)).toBe(40);
+      closed.state.gone = true;
+      for (let n = 0; n < 10 && preview.native; n++) await tick(100);
+      expect(preview.native).toBe(false);
+      expect(preview.stopped).toBe("The player stopped. Edit is opening it again.");
+      expect(playhead.playing).toBe(false);
+      closed.state.gone = false;
+      for (let n = 0; n < 30 && !preview.native; n++) await tick(100);
+      expect(preview.native).toBe(true);
+      await tick(); await tick();
+      expect(sent("preview_play").at(-1)).toEqual({ frame: 40 });
+      expect(playhead.playing).toBe(true);
+    } finally { preview.pause(); vi.useRealTimers(); }
+  });
+
+  it("a window whose player is gone while a play is held for its footage is left at once, and the held play goes on once it's opened again (the M1 trial, Nov 22)", async () => {
+    const closed = closedWindow();
+    const sent = await inWindow(closed.refuse);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const tick = async (ms = 0) => { await vi.advanceTimersByTimeAsync(ms); draw(); await vi.advanceTimersByTimeAsync(0); };
+    try {
+      preview.setProject(withSound(), {}); await tick(); await tick();
+      hereNow([[0, 30]]);
+      preview.seek(40); await tick();
+      preview.play(); await tick(300);
+      expect(playhead.playing).toBe(true);
+      expect(sent("preview_play")).toEqual([]);
+      closed.state.gone = true;
+      for (let n = 0; n < 10 && preview.native; n++) await tick(250);
+      expect(preview.native).toBe(false);
+      expect(preview.stopped).toBe("The player stopped. Edit is opening it again.");
+      closed.state.gone = false;
+      for (let n = 0; n < 30 && !preview.native; n++) await tick(100);
+      expect(preview.native).toBe(true);
+      expect(preview.stopped).toBeNull();
+      // Still held (the footage isn't here), then played from where it was asked.
+      expect(playhead.playing).toBe(true);
+      hereNow([[0, 90]]); await tick(300); await tick();
+      expect(sent("preview_play").at(-1)).toEqual({ frame: 40 });
+    } finally { preview.pause(); vi.useRealTimers(); }
+  });
+
   it("a window that refuses to open its player again is asked again, and the play goes on there once it does: it had left the picture down for good (the pull request's review, Nov 21)", async () => {
     let failing = false;
     let refusing = false;

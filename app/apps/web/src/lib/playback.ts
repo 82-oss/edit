@@ -148,6 +148,12 @@ const NATIVE_BACK_MOST_MS = 30_000;
 /** Over the picture while the window's player is being opened again (`leaveNative`). */
 const WINDOW_DOWN = "The player stopped. Edit is opening it again.";
 const NATIVE_STEADY_MS = 60_000;
+/**
+ * The window's answer when its player is gone (crates/edit-window/src/preview.rs: no player open, or its thread ended):
+ * left at once, not counted towards five failures. The M1 trial, Nov 22: a player closed mid-play held the play on
+ * "Still waiting for frame 3581" for 30 s, its answers taken as a hold's passing misses, and reopened paused.
+ */
+const windowGone = (error: unknown): boolean => /the preview isn't open|the preview stopped/.test(String(error));
 
 /**
  * Holding a play for footage that isn't here yet (a cloud project opened for the first time on this Mac): a play
@@ -611,7 +617,7 @@ class Preview {
       // the Nov 21 audit, P11b), as a play asked before it was refused.
       const frame = Math.floor(from);
       void this.nativeQuiet.then(() => this.windowHasEdit()).then(() => (this.holding === hold ? nativePreview.hint(frame, true) : undefined))
-        .then(() => { hold.hinted = true; }, () => { hold.hinted = true; });
+        .then(() => { hold.hinted = true; }, (error: unknown) => { hold.hinted = true; if (this.holding === hold && windowGone(error)) this.nativeFailed(error); });
     }
     // Whether it's done: played (enough here, or waited past the most), or let go (a pause, another play).
     const over = (): boolean => {
@@ -638,7 +644,11 @@ class Preview {
           hold.asking = false;
           hold.window = at;
           over();
-        }, () => { hold.asking = false; });
+        }, (error: unknown) => {
+          hold.asking = false;
+          // The window's player gone: left now, the held play kept for it once it's opened again (`leaveNative`).
+          if (this.holding === hold && windowGone(error)) this.nativeFailed(error);
+        });
       }
       hold.timer = setTimeout(look, HOLD_LOOK_MS);
     };
@@ -1504,6 +1514,7 @@ class Preview {
     }, (error: unknown) => {
       if (generation !== this.nativePlay || !playhead.playing) return;
       if (String(error).includes("at the end")) { this.pause(); return; }
+      if (windowGone(error)) { this.nativeFailed(error); return; }
       this.pause();
       this.stoppedBecause(`the window's player didn't start: ${error}`);
     });
@@ -1529,7 +1540,7 @@ class Preview {
           if (!playhead.playing || generation !== this.nativePlay) return;
           // Not answering in time (a read stuck in it): a failure counted, the spinner up, asked again; five in a row and
           // the page draws instead (`nativeFailed`). A refusal stops the play.
-          if (error instanceof NativeTimeout) { this.nativeFailed(error); return; }
+          if (error instanceof NativeTimeout || windowGone(error)) { this.nativeFailed(error); return; }
           this.nativeFailed(error);
           this.pause();
           this.stoppedBecause(`the window's player didn't say where it was: ${error}`);
@@ -1640,7 +1651,7 @@ class Preview {
     this.nativeFailures++;
     this.nativeStats.failed++;
     if (this.nativeFailures === 1) note("warn", "preview", `the window's preview: ${error}`);
-    if (this.nativeFailures >= 5) { this.leaveNative(String(error)); return; }
+    if (this.nativeFailures >= 5 || windowGone(error)) { this.leaveNative(String(error)); return; }
     // A file gone from under it (the cleaner took a copy) fails a frame: what it reads is asked for again.
     this.refreshNativeSources();
     this.nativeStale = true;
