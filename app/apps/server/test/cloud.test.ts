@@ -260,6 +260,53 @@ test("a big upload that stops picks up where it was: only the parts R2 doesn't h
   }
 });
 
+// Nov 22: a share's Cancel let go of the parts of its upload already up, so the next share sent it all again.
+test("a big upload stopped by its Cancel keeps the parts already up: the next one sends only the rest", async () => {
+  const { dir, cleanup } = scratch("cloud-cancel-keeps");
+  try {
+    cloud.timing.filePart = MIB;
+    cloud.timing.resumableFrom = MIB;
+    cloud.keepUploadJournalsIn(`${dir}/uploads`);
+    const key = "edit/test/cancel-keeps.mp4";
+    const data = pattern(4 * MIB + 777);
+    const file = `${dir}/copy.mp4`;
+    fs.writeFileSync(file, data);
+    const stop = new AbortController();
+    let holding = true;
+    mock.on("PUT", `/r2/${key}`, async (request) => {
+      const n = Number(request.query.get("partNumber"));
+      // Parts 4 and 5 hang as a slow line's do, until the Cancel.
+      if (holding && n >= 4) {
+        await new Promise<void>((resolve) => stop.signal.addEventListener("abort", () => resolve(), { once: true }));
+        return new Response("<Error><Code>RequestTimeout</Code><Message>cut off</Message></Error>", { status: 400 });
+      }
+      const upload = mock.cloud.uploads.get(request.query.get("uploadId")!);
+      if (upload === undefined) return new Response("<Error><Code>NoSuchUpload</Code><Message>gone</Message></Error>", { status: 404 });
+      upload.parts.set(n, request.body);
+      return new Response(null, { status: 200, headers: { etag: etagOf(request.body) } });
+    });
+    const sent = cloud.uploadFile(file, key, undefined, stop.signal);
+    sent.catch(() => {});
+    const journal = () => (fs.existsSync(`${dir}/uploads`) ? fs.readdirSync(`${dir}/uploads`) : []);
+    const noted = () => journal().reduce((most, name) => Math.max(most, Object.keys((JSON.parse(fs.readFileSync(`${dir}/uploads/${name}`, "utf8")) as { parts: object }).parts).length), 0);
+    for (let tries = 0; noted() < 3 && tries < 300; tries++) await Bun.sleep(10);
+    expect(noted()).toBe(3);
+    const aborts = mock.calls("/v1/cloud/r2/multipart/abort").length;
+    stop.abort();
+    await expect(sent).rejects.toThrow();
+    expect(mock.calls("/v1/cloud/r2/multipart/abort").length).toBe(aborts);
+    expect(journal().length).toBe(1);
+    holding = false;
+    const before = mock.calls(`/r2/${key}`, "PUT").length;
+    await cloud.uploadFile(file, key);
+    expect(mock.calls(`/r2/${key}`, "PUT").length - before).toBe(2);
+    expect(Buffer.from(mock.cloud.objects.get(key)!).equals(Buffer.from(data))).toBe(true);
+  } finally {
+    cloud.keepUploadJournalsIn(null);
+    cleanup();
+  }
+});
+
 /**
  * R2 behind a connection that hangs up (Nov 8 audit, item I: "a relay that
  * drops the socket mid-upload"): a raw socket, so the drop is the network's,

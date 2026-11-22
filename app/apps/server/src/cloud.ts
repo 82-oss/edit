@@ -754,11 +754,15 @@ async function resumable(fd: number, journal: string, file: Omit<Journal, "uploa
       fs.rmSync(journal, { force: true });
       return;
     } catch (error) {
-      if (signal?.aborted || error instanceof TransferMismatch) {
+      if (error instanceof TransferMismatch) {
         abortUpload(state.key, state.uploadId);
         fs.rmSync(journal, { force: true });
         throw error;
       }
+      // A Cancel keeps the parts already up and their journal: the next share of the same file carries on from them
+      // (Nov 22: a cancelled share's next one sent it all again). One of another file, or none within R2's 7 days, lets
+      // them go (`keepUploadJournalsIn`, and the mismatch above).
+      if (signal?.aborted) throw error;
       // A refusal of one picked up (R2 let it go): begun again; anything temporary stays kept for the next try.
       if (resumed && !service.isTemporary(error)) {
         diag.warn("cloud", `the upload of ${file.key} couldn't be picked up (${diag.messageOf(error)}); beginning it again`);
