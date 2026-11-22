@@ -133,8 +133,11 @@ export async function makeProxy(source: string, probe: Probe, out: string): Prom
       await mine.made;
       // Stopped meanwhile: what it wrote goes (`leftBehind`), never taken as made.
       if (signal.aborted) return;
+      // Another step waiting on the same encode moved it into place first: made (failing here, its caller removed it, Nov 21 audit).
+      if (mine.moved && isFile(out)) return;
       if (!isFile(mine.temp)) throw new Error(probe.kind === "audio" ? "the sound's proxy wasn't made" : "the proxy wasn't made");
       fs.renameSync(mine.temp, out);
+      mine.moved = true;
     } finally {
       mine.waiting -= 1;
       leftBehind(mine);
@@ -158,6 +161,8 @@ interface Making {
   made: Promise<void>;
   waiting: number;
   settled: boolean;
+  /** Moved to its output by a step that waited on it. */
+  moved: boolean;
 }
 
 /**
@@ -184,7 +189,7 @@ function startProxy(source: string, probe: Probe, out: string, signal: AbortSign
               throw new Error(`the sound's proxy: ${diag.scrub(diag.messageOf(error))}`);
             },
           );
-  const one: Making = { temp, made, waiting: 0, settled: false };
+  const one: Making = { temp, made, waiting: 0, settled: false, moved: false };
   const settle = () => {
     one.settled = true;
     if (proxiesMaking.get(out) === one) proxiesMaking.delete(out);

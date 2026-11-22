@@ -1250,6 +1250,31 @@ test("a whole-file proxy read over the network runs for as long as it moves, and
   }
 });
 
+// Nov 21 audit: two steps waiting on one encode, the first to see it end moved it into place and the second, finding
+// its file gone, failed as "the proxy wasn't made", and its caller removed the proxy the first had just put there.
+test("two steps waiting on one proxy encode both take it as made, and the proxy stays", async () => {
+  const fixture = home("cloud-proxy-two-waiters");
+  try {
+    const encodes = slowProxies(fixture);
+    const dir = `${fixture.store.cacheDir()}/cloud/proxies/drive`;
+    fs.mkdirSync(dir, { recursive: true });
+    const url = "https://r2.example/edit/originals/drive/Twice01/Bodycam.mp4?X-Amz-Signature=abc";
+    const out = `${dir}/Twice01.mp4`;
+    const first = cloudMedia.makeProxy(url, VIDEO, out).then(() => null, (error: unknown) => error);
+    await Bun.sleep(20);
+    const second = cloudMedia.makeProxy(url, VIDEO, out).then(() => null, (error: unknown) => error);
+    await Bun.sleep(20);
+    expect(encodes).toHaveLength(1);
+    encodes[0]!.step();
+    encodes[0]!.finish();
+    expect(await first).toBeNull();
+    expect(await second).toBeNull();
+    expect(fs.readdirSync(dir)).toEqual(["Twice01.mp4"]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("a proxy made here and not uploaded yet is read from here: the import's analysis never waits on R2's 404", async () => {
   // Nov 3: the import answered once the proxy was made, the upload behind it,
   // and thumbnails, waveform and censor read it through R2 at once: 404 each.
