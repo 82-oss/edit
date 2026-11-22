@@ -203,6 +203,8 @@ export interface ExportActivity {
   kind?: "edit" | "script";
   /** A script share's stage ("uploading the footage 42%"). */
   stage?: string;
+  /** A script share with no bytes counted yet: its step in words, no number (its row on Home says it so). */
+  uncounted?: true;
   /** The file is still on this Mac. Set once the export is done. */
   onDisk?: boolean;
   /** Where that file is, with home as `~` (`~/Movies/Edit/Name.mp4`). Set only while `onDisk`. */

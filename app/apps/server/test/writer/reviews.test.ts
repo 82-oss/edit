@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import type { App } from "../../src/app.ts";
-import { approvalOf, cancelShare, isOpen, noteOf, shareProgress, shareQueue, shareState, shareWork, sharedAnchor, startShare, untaken } from "../../src/writer/reviews.ts";
+import { approvalOf, cancelShare, isOpen, noteOf, shareQueue, shareState, shareWork, sharedAnchor, startShare, untaken } from "../../src/writer/reviews.ts";
 import type { Script } from "@edit/types/writer";
 
 test("reads notes and approvals as Repack sends them", () => {
@@ -42,15 +42,6 @@ test("names a comment's words in the shared text", () => {
   fs.rmSync(dir, { recursive: true });
 });
 
-test("a script share's place in the export queue follows its stage", () => {
-  expect(shareProgress("checking the preview")).toBeCloseTo(0.05);
-  expect(shareProgress("uploading the script")).toBeCloseTo(0.15);
-  expect(shareProgress("uploading the footage")).toBeCloseTo(0.2);
-  expect(shareProgress("uploading the footage 50%")).toBeCloseTo(0.5);
-  expect(shareProgress("uploading the footage 100%")).toBeCloseTo(1);
-  expect(shareProgress("publishing")).toBeCloseTo(0.95);
-});
-
 test("cancelling a script share takes it off the queue and is not a failure", async () => {
   const before = shareWork.run;
   let finish: (script: Script) => void = () => {};
@@ -83,7 +74,8 @@ test("scripts share on their own, several at once, and one share of a script at 
     expect(shareState("share-b").sharing).toBeDefined();
     // Both are on the shared export queue, at the first stage, until each share settles.
     expect(shareQueue().map((one) => one.id).sort()).toEqual(["share-a", "share-b"]);
-    expect(shareQueue().every((one) => one.name === "Script" && one.stage === "checking the preview" && one.progress === 0.05)).toBe(true);
+    // No bytes counted yet: no number, never one guessed from the stage's name (Nov 22: 47% in the queue, 0% on the row).
+    expect(shareQueue().every((one) => one.name === "Script" && one.stage === "checking the preview" && !one.counted && one.progress === 0)).toBe(true);
     await expect(startShare(app, "/nowhere", "share-a")).rejects.toThrow("already being shared");
     waiting.get("share-a")!.resolve({ id: "share-a" } as Script);
     await a;

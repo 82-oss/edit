@@ -238,6 +238,7 @@ export function buildRouter(): Router<App> {
         updated_ms: share.startedAt,
         kind: "script" as const,
         stage: share.stage,
+        ...(share.counted ? {} : { uncounted: true as const }),
       }));
       const rank = (state: string) => (state === "running" || state === "queued" ? 0 : 1);
       return json([...edits, ...shares].sort((a, b) => rank(a.state) - rank(b.state) || b.updated_ms - a.updated_ms));

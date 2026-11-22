@@ -55,9 +55,14 @@ export function cardWords(jobs: Activity[], files: Exported[] | null, viewed: nu
     const lead = going.find((job) => job.state === "running" && job.steps?.queued !== true) ?? going[0]!;
     const progress = lead.steps?.progress ?? lead.progress;
     const left = aboutLeft(lead.steps?.left_s);
-    const more = going.length - 1;
-    const detail = [left === null ? null : left.replace(/ left$/u, "").toLowerCase(), more > 0 ? `${more} more waiting` : null].filter(Boolean).join(" · ");
-    return { live: true, count: `${Math.round(progress * 100)}%`, name: lead.name, detail: detail || null, progress };
+    // Shares run side by side (a share's upload beside another's export): only those in line are waiting (Nov 22: a
+    // share that was going was called "waiting").
+    const others = going.filter((job) => job !== lead);
+    const waiting = others.filter((job) => job.state === "queued" || job.steps?.queued === true).length;
+    const beside = others.length - waiting;
+    const detail = [left === null ? null : left.replace(/ left$/u, "").toLowerCase(), beside > 0 ? `${beside} more going` : null, waiting > 0 ? `${waiting} more waiting` : null].filter(Boolean).join(" · ");
+    // A script share with no bytes counted yet has no number, as its row on Home says none.
+    return { live: true, count: lead.uncounted === true ? null : `${Math.round(progress * 100)}%`, name: lead.name, detail: detail || null, progress: lead.uncounted === true ? null : progress };
   }
   const fresh = exportedSince(files ?? [], viewed).length;
   const last = files?.[0];
@@ -188,6 +193,8 @@ function JobRow({ job, lead, first, channel }: { job: Activity; lead: boolean; f
   const script = job.kind === "script";
   const steps = job.steps;
   const inLine = job.state === "queued" || steps?.queued === true;
+  // A script share's step with no bytes to count: said in words, no number (its row on Home says the same).
+  const counted = job.uncounted !== true;
   const failed = job.state === "failed";
   const progress = steps?.progress ?? job.progress;
   const current = steps === undefined ? undefined : rowsOf(steps.steps).find((row) => row.state === "current");
@@ -216,13 +223,13 @@ function JobRow({ job, lead, first, channel }: { job: Activity; lead: boolean; f
         <div className="truncate text-[14px] text-fg">{job.name}</div>
         {line !== null && (
           <div className="mt-[3px] truncate text-[12px] text-muted">
-            {!inLine && <span className="font-medium text-fg tabular">{Math.round(progress * 100)}%</span>}
-            {!inLine && line !== "" ? " · " : ""}
+            {!inLine && counted && <span className="font-medium text-fg tabular">{Math.round(progress * 100)}%</span>}
+            {!inLine && counted && line !== "" ? " · " : ""}
             {line}
           </div>
         )}
         {failed && job.error && <ProblemView error={job.error} doing="export it" className="mt-1" />}
-        {!inLine && !failed && (
+        {!inLine && !failed && counted && (
           <div className="mt-[7px] h-1 overflow-hidden rounded-full bg-active" aria-hidden>
             <div className="h-full rounded-full bg-fg transition-[width] duration-300 ease-out" style={{ width: `${Math.round(progress * 100)}%` }} />
           </div>

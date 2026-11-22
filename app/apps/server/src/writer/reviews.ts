@@ -537,30 +537,18 @@ function titleShare(id: string, title: string) {
   if (running !== undefined && running.name !== name) running.name = name;
 }
 
-/**
- * Where a script share sits in the shared export queue, from 0 to 1. A stage
- * that names a percent uses it, so the queue shows the same number as the share.
- */
-export function shareProgress(stage: string): number {
-  const percent = /(\d+)%/.exec(stage);
-  if (percent) return Math.min(100, Number(percent[1])) / 100;
-  if (stage === "cancelling") return 0;
-  if (stage === "publishing") return 0.95;
-  if (stage === "uploading the script") return 0.15;
-  if (stage === "uploading the footage") return 0.2;
-  if (stage === "checking the preview") return 0.05;
-  return 0.05;
-}
+const counted = (progress: number | null): { progress: number; counted: boolean } => ({ progress: progress ?? 0, counted: progress !== null });
 
 /** Script shares running now, for the export queue beside the edit exports. Finished shares leave; a script has no file to keep. */
-export function shareQueue(): { id: string; name: string; stage: string; progress: number; startedAt: number }[] {
+export function shareQueue(): { id: string; name: string; stage: string; progress: number; counted: boolean; startedAt: number }[] {
   const now = Date.now();
   return [...sharing.entries()].map(([id, one]) => ({
     id,
     name: one.name?.trim() || "Script",
     stage: one.stage,
-    // The bytes' share when it moves footage, so the queue and the script's row say the same number.
-    progress: one.stage === "cancelling" ? 0 : (overall(one.steps.map((step) => shown(step, now))).progress ?? shareProgress(one.stage)),
+    // The bytes' share when it moves footage, the script's row's own number; none before bytes are counted, as the row
+    // says its step in words (Nov 22: the queue guessed 47% from the stage's name while the row said 0%).
+    ...counted(one.stage === "cancelling" ? null : overall(one.steps.map((step) => shown(step, now))).progress),
     startedAt: one.startedAt,
   }));
 }

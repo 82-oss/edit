@@ -23,6 +23,17 @@ describe("the card and the lists", () => {
     expect(cardWords([next, running], null, null)).toEqual({ live: true, count: "62%", name: running.name, detail: "about 4 min · 1 more waiting", progress: 0.62 });
   });
 
+  it("a share going beside the one under way is going, not waiting (Nov 22)", () => {
+    const share: Activity = { id: "p3", name: "Cops Find", path: "", state: "running", progress: 0.4, updated_ms: 30, started_ms: 30, steps: { ...steps(0.4, 100), where: "feedback" as const } };
+    expect(cardWords([running, share, next], null, null).detail).toBe("about 4 min · 1 more going · 1 more waiting");
+    expect(cardWords([running, share], null, null).detail).toBe("about 4 min · 1 more going");
+  });
+
+  it("a script share with no bytes counted yet has no number, never one guessed from its stage (Nov 22)", () => {
+    const script: Activity = { id: "s1", name: "Drake", path: "", state: "running", progress: 0, updated_ms: 5, kind: "script", stage: "checking the preview", uncounted: true };
+    expect(cardWords([script], null, null)).toMatchObject({ count: null, name: "Drake", progress: null });
+  });
+
   it("idle: how many finished since the view was opened, and the last one's name", () => {
     const files = [file("Cops Found 3 Bodies", 300), file("Real Crimes", 200), file("Killer Pastor", 100)];
     expect(cardWords([], files, 150)).toEqual({ live: false, count: "2", name: "Last: Cops Found 3 Bodies", detail: null, progress: null });
