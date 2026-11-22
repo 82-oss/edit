@@ -184,7 +184,7 @@ test("an effect's key is its code's content: the same files with other times (fe
   const { app, cleanup, id } = hq("effects-key");
   try {
     const dir = write(app, id, "bar", { "scene.html": GOOD, ".beneath.json": "{\"key\":\"k\"}" });
-    const faces = effects.FONTS.map((font) => `@font-face { font-family: "${font.family}"; font-weight: ${font.weight}; src: url(edit-fonts/${font.file}); }`).join("\n");
+    const faces = effects.FONTS.filter((font) => font.later !== true).map((font) => `@font-face { font-family: "${font.family}"; font-weight: ${font.weight}; src: url(edit-fonts/${font.file}); }`).join("\n");
     const sha = (text: string) => new Bun.CryptoHasher("sha256").update(text).digest("hex");
     const key = effects.list(app.store, id)[0]!.key;
     expect(key).toBe(fingerprint([runtimeText as unknown as string, faces, "content", "1920x1080@30", `.beneath.json ${sha("{\"key\":\"k\"}")}`, `scene.html ${sha(GOOD)}`]));
@@ -208,7 +208,7 @@ test("a render saved under the key from before Nov 16 (the files' times) is take
   try {
     const dir = write(app, id, "bar", { "scene.html": GOOD });
     const stat = fs.statSync(join(dir, "scene.html"));
-    const faces = effects.FONTS.map((font) => `@font-face { font-family: "${font.family}"; font-weight: ${font.weight}; src: url(edit-fonts/${font.file}); }`).join("\n");
+    const faces = effects.FONTS.filter((font) => font.later !== true).map((font) => `@font-face { font-family: "${font.family}"; font-weight: ${font.weight}; src: url(edit-fonts/${font.file}); }`).join("\n");
     const before = fingerprint([runtimeText as unknown as string, faces, "1920x1080@30", `scene.html ${stat.size} ${Math.floor(stat.mtimeMs)}`]);
     expect(effects.list(app.store, id)[0]!.old).toBe(before);
     fs.writeFileSync(join(app.store.uploadsDir(id), "bar-render.mp4"), "the render");
