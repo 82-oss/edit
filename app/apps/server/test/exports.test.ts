@@ -835,6 +835,26 @@ test("short of room, kept copies go older first: each project's newest stays whi
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+test("short of room, a kept copy another export is copying its chunks out of stays (the Nov 21 audit)", async () => {
+  const filePins = await import("../src/file_pins.ts");
+  const home = fs.mkdtempSync(`${os.tmpdir()}/edit-kept-pinned-`);
+  try {
+    const record = (name: string, at: number) => {
+      const path = `${home}/${name}.mp4`;
+      fs.writeFileSync(path, Buffer.alloc(10));
+      return { path, name: `${name}.mp4`, finished_ms: at, seconds: 1, bytes: 10, frames: 30, whole: true, format: "h264", cloudKey: `edit/exports/${name}.mp4` };
+    };
+    fs.writeFileSync(`${home}/exports.json`, JSON.stringify({ a: [record("a1", 1), record("a2", 5)], d: [record("d1", 6)] }));
+    // An export of a reads its unchanged chunks out of a1 (its manifest names it): held.
+    const release = filePins.pin([`${home}/a1.mp4`]);
+    expect(dropKept(home, `${home}/d1.mp4`, () => 26e9)).toBe(0);
+    expect(fs.existsSync(`${home}/a1.mp4`)).toBe(true);
+    // Let go: it goes as before.
+    release();
+    expect(dropKept(home, `${home}/d1.mp4`, () => 26e9)).toBe(10);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test("a report's memory is the share macOS calls available, not the free pages", () => {
   const given = { chip: "Apple M4 Pro", totalBytes: 25.8e9, cores: 12, availablePercent: () => 46, load: () => 1 };
   expect(capacity.memorySummary(given)).toBe("46% available of 25.8 GB");

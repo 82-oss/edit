@@ -1030,7 +1030,8 @@ export function dropKept(home: string, except: string, free: (path: string) => n
   const records = Object.values(readRecords(home));
   const newest = new Set(records.map((own) => own.reduce<ExportRecord | null>((best, one) => (best === null || one.finished_ms >= best.finished_ms ? one : best), null)?.path).filter((path) => path !== undefined));
   const droppable = (record: ExportRecord): number | null => {
-    if (record.cloudKey === undefined || record.path === except || reading.has(record.path) || !fs.existsSync(record.path)) return null;
+    // Nor one another export copies its unchanged chunks out of (`holdFiles`: the last export, held as its render goes).
+    if (record.cloudKey === undefined || record.path === except || reading.has(record.path) || filePins.pinned(record.path) || !fs.existsSync(record.path)) return null;
     const size = fs.statSync(record.path).size;
     return record.bytes !== null && size !== record.bytes ? null : size;
   };
