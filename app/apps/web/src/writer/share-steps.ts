@@ -1,3 +1,4 @@
+import { explain } from "@edit/types/problems";
 import type { ShareFailed, ShareStep, Sharing } from "@edit/types/writer";
 
 import { THIS_MACHINE } from "../lib/platform";
@@ -106,4 +107,37 @@ export function failedLine(failed: ShareFailed): string {
     publish: "while publishing",
   };
   return failed.step ? `Sharing stopped ${where[failed.step]}.` : "";
+}
+
+/** Ends a sentence, when it doesn't end already. */
+const stop = (text: string) => (/[.!?…)"”]$/.test(text) ? text : `${text}.`);
+
+/** Edit's own file names and the network library's tail out of a stop's words: they mean nothing to a person. */
+function cleaned(error: string): string {
+  const said = error
+    .replace(/\s*For more information, pass `verbose: true` in the second argument to fetch\(\)\.?/gi, "")
+    .replace(/\b(?:proxy|preview)\.mp4\b/g, "its preview")
+    .replace(/\bwords\.json\b/g, "the script's words")
+    .replace(/\bscript\.json\b/g, "the script")
+    .trim();
+  return said === "" ? said : said[0]!.toUpperCase() + said.slice(1);
+}
+
+/**
+ * A stopped share in a person's words, as its dialog and its row say it
+ * (Nov 22, a MacBook Air in the real window: the row read "proxy.mp4 didn't
+ * get through (could not reach Edit's relay: The socket connection was closed
+ * unexpectedly. For more information, pass `verbose: true`…)"). `where` is
+ * the step it stopped in ("" when there is none to say); `why` is what
+ * happened and what to do: a dropped line, a sign-in, a full disk read as
+ * they do everywhere in Edit (`explain`), and only what nothing recognises
+ * keeps its own words, cleaned. Cancelled says so; a refusal says only its own
+ * words, never that sharing "stopped while" something.
+ */
+export function stoppedWords(failed: ShareFailed): { where: string; why: string } {
+  if (failed.why === "cancelled") return { where: "", why: "Cancelled." };
+  const own = cleaned(failed.error);
+  if (failed.why === "refused") return { where: "", why: own };
+  const problem = explain(own, "share the script");
+  return { where: failedLine(failed), why: problem.known ? [stop(problem.title), problem.fix].filter(Boolean).join(" ") : stop(own) };
 }

@@ -8,7 +8,7 @@ import { Dialog, Icon } from "./ui";
 import { formatBytes } from "../lib/time";
 import { THIS_MACHINE } from "../lib/platform";
 import { ShareRunning, ShareSteps } from "./share-progress";
-import { failedLine, runningTitle } from "./share-steps";
+import { runningTitle, stoppedWords } from "./share-steps";
 
 /**
  * Review on a Repack link (reviews.rs): Share, and what Claude changed for
@@ -348,8 +348,8 @@ export function ReviewDialog({
       }
       change.current(fresh);
     } catch (cause) {
-      // Refused before it began (Claude is on it, it's still importing): said as a stopped share is.
-      setFailed({ error: message(cause), at: Date.now() });
+      // Refused before it began (Claude is on it, it's still importing): in its own words alone (Nov 22).
+      setFailed({ error: message(cause), at: Date.now(), why: "refused" });
       setLive(null);
     } finally {
       setSharing(false);
@@ -437,6 +437,9 @@ export function ReviewDialog({
     }
   };
   const busyHere = running !== null || making;
+  // Cancelled here or, opened again, as the server kept it: "Cancelled" and Share again, as the edit's Export says its own (Nov 22).
+  const cancelled = stopped || failed?.why === "cancelled";
+  const stopWords = failed !== null && failed.why !== "cancelled" ? stoppedWords(failed) : null;
 
   return (
     <Dialog
@@ -458,13 +461,13 @@ export function ReviewDialog({
             {running && <span className="faint">It carries on if you close this.</span>}
             {!running && making && <span className="faint">Making this v1…</span>}
             {!running && !making && problem && <span className="bad">{problem}</span>}
-            {!busyHere && !problem && stopped && <span className="faint">Cancelled</span>}
-            {!busyHere && !problem && !stopped && landed && link && (
+            {!busyHere && !problem && cancelled && <span className="faint">Cancelled</span>}
+            {!busyHere && !problem && !cancelled && landed && link && (
               <span className="up">
                 <Icon name="check" size={13} /> Up on the link
               </span>
             )}
-            {!busyHere && !problem && !stopped && !(landed && link) && !mayShare && <span className="faint">Sign in to share.</span>}
+            {!busyHere && !problem && !cancelled && !(landed && link) && !mayShare && <span className="faint">Sign in to share.</span>}
           </span>
           {running && (
             <button type="button" className="ghost" disabled={cancelling} onClick={() => void stopShare()}>
@@ -477,7 +480,7 @@ export function ReviewDialog({
           {/* While it runs there is nothing to press but Cancel and Close; after a stop, this is the try again. */}
           {mayShare && !running && (
             <button type="button" className="primary share-go" disabled={making || busy} onClick={() => void share()}>
-              {failed ? "Share again" : link ? `Share v${link.version + 1}` : "Share"}
+              {failed || cancelled ? "Share again" : link ? `Share v${link.version + 1}` : "Share"}
             </button>
           )}
         </>
@@ -487,10 +490,16 @@ export function ReviewDialog({
         <ShareRunning sharing={running} durationMs={script.durationMs} />
       ) : (
       <div className="share-stack">
-        {failed && (
+        {stopWords && failed?.why === "refused" && (
+          // Refused before it began: its own words alone, not a share that stopped partway.
           <p className="share-failed" role="status">
-            <b>{failedLine(failed) || "Not shared."}</b>
-            <span>{failed.error}</span>
+            <b>{stopWords.why}</b>
+          </p>
+        )}
+        {stopWords && failed?.why !== "refused" && (
+          <p className="share-failed" role="status">
+            <b>{stopWords.where || "Not shared."}</b>
+            <span>{stopWords.why}</span>
           </p>
         )}
         {landed && link && landedSteps && landedSteps.steps.length > 0 && <ShareSteps steps={landedSteps.steps} version={landedSteps.version} durationMs={script.durationMs} />}

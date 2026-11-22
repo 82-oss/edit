@@ -210,8 +210,12 @@ export type ShareStep = {
 /** A share under way: its stage word, its steps, and the whole of it 0–1 by the bytes it moves (null when it moves none worth counting, a commentary's). */
 export type Sharing = { startedAt: number; stage?: string; version?: number; steps?: ShareStep[]; progress?: number | null; leftS?: number | null };
 
-/** A share that stopped: why (its own words say what to do), and the step it was in. */
-export type ShareFailed = { error: string; at: number; step?: ShareStep["kind"] };
+/**
+ * A share that stopped: why (its own words say what to do), and the step it was in. `why`: the person cancelled it
+ * (said "Cancelled", as an edit's Export says its own), or it was refused before it began (not ready, its preview
+ * still going up: said in the refusal's own words, never as stopped partway). Neither is a failure (Nov 22).
+ */
+export type ShareFailed = { error: string; at: number; step?: ShareStep["kind"]; why?: "cancelled" | "refused" };
 
 /** A script archived from Repack's page to free space: footage deleted, the script and its words kept. */
 export type Archive = { at: number; by: string; freedBytes: number; restoring: boolean; missing: string[] };

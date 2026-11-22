@@ -62,7 +62,8 @@ test("cancelling a script share takes it off the queue and is not a failure", as
     expect(cancelShare("missing")).toBe(false);
     finish({ id: "share-cancel" } as Script);
     await expect(pending).rejects.toThrow("cancelled");
-    expect(shareState("share-cancel")).toEqual({});
+    // Said as cancelled (Nov 22: the dialog and Home's row say "Cancelled" with Share again), never as a failure with a step it stopped in.
+    expect(shareState("share-cancel")).toEqual({ shareFailed: { error: "Cancelled.", at: expect.any(Number), why: "cancelled" } });
     expect(shareQueue()).toEqual([]);
   } finally {
     shareWork.run = before;

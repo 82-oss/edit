@@ -83,14 +83,38 @@ describe("Home's script rows and sharing", () => {
     expect(status("b")).toBe("Publishing");
   });
 
-  it("a share that stopped is said on its row in words, with what to do, and the row shares it again", async () => {
-    show([{ script: row("a", "One"), shareFailed: { error: "Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.", at: 1, step: "check" } }]);
-    expect(status("a")).toBe("Share againSharing stopped while checking its preview in the cloud. Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.");
+  it("a share that stopped is said on its row in plain words, with what to do, and the row shares it again", async () => {
+    // Nov 22, a MacBook Air in the real window: the row read a file name and the network library's own message.
+    show([{ script: row("a", "One"), shareFailed: { error: "proxy.mp4 didn't get through (could not reach Edit's relay: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()).", at: 1, step: "footage" } }]);
+    expect(status("a")).toBe("Share againSharing stopped while sending the footage. Edit couldn't reach the internet. Check your Wi-Fi or connection.");
     shareScript.mockResolvedValue({ id: "a", sharing: SENDING } as unknown as Script);
     act(() => container.querySelector<HTMLButtonElement>('[data-row="a"] button[title="Share it again"]')!.click());
     await settle();
     expect(shareScript).toHaveBeenCalledWith("a");
     expect(status("a")).toBe("46%");
+  });
+
+  it("a stop nothing recognises keeps its own words, without file names or the library's tail; a full disk says to make room", () => {
+    show([
+      { script: row("a", "One"), shareFailed: { error: "proxy.mp4 changed while uploading. For more information, pass `verbose: true` in the second argument to fetch().", at: 1, step: "footage" } },
+      { script: row("b", "Two"), shareFailed: { error: "ENOSPC: no space left on device, write", at: 1, step: "fetch" } },
+    ]);
+    expect(status("a")).toBe("Share againSharing stopped while sending the footage. Its preview changed while uploading.");
+    expect(status("b")).toMatch(/^Share againSharing stopped while bringing its preview to .+\. Your Mac's disk is full\. Free some space/);
+  });
+
+  it("a cancelled share says Cancelled on its row, with Share again, until the next share", () => {
+    show([{ script: row("a", "One"), shareFailed: { error: "Cancelled.", at: 1, why: "cancelled" } }]);
+    expect(status("a")).toBe("Share againCancelled.");
+  });
+
+  it("a share refused before it began says only the refusal, and Share again only on a row that can share", () => {
+    const waiting = { error: "Its preview is still going up to the cloud. Share it again once it's there.", at: 1, why: "refused" as const };
+    show([{ script: row("a", "One"), shareFailed: waiting }, { script: row("d", "Four", { built: false, clips: 1 }), shareFailed: { ...waiting, error: "Write the script before sharing it." } }]);
+    expect(status("a")).toBe("Share againIts preview is still going up to the cloud. Share it again once it's there.");
+    expect(status("d")).not.toContain("Share again");
+    expect(status("d")).toContain("Write script");
+    expect(status("d")).toContain("Write the script before sharing it.");
   });
 
   it("three scripts shared from their menus start three shares, each row its own; one that can't start says why on its row, the others go", async () => {

@@ -15,21 +15,27 @@ import * as realCloud from "../../src/writer/cloud.ts";
 
 const PREVIEW = 1_000;
 /** The review copy's upload, held until the test lets it go, hearing bytes as the test says them. */
-let upload: { report: (done: number, total: number) => void; finish: () => void; fail: (error: Error) => void } | null = null;
-const standIn = { on: false };
+let upload: { report: (done: number, total: number) => void; finish: () => void; fail: (error: Error) => void; aborted: boolean } | null = null;
+const standIn = { on: false, previewUp: true };
 const real = { ...realCloud };
 // The real one whenever this test isn't running: the mock is the whole run's.
 void mock.module("../../src/writer/cloud.ts", () => ({
   ...realCloud,
   fileKey: (data: string, id: string, name: string) => (standIn.on ? { key: `writer/${id}/proxy.mp4`, size: PREVIEW, mtime: 0 } : real.fileKey(data, id, name)),
-  sameAsHere: (data: string, id: string, name: string) => (standIn.on ? true : real.sameAsHere(data, id, name)),
+  sameAsHere: (data: string, id: string, name: string) => (standIn.on ? standIn.previewUp : real.sameAsHere(data, id, name)),
   // The kept preview is there; the review link has none yet.
   head: async (key: string) => (standIn.on ? (key.endsWith("/proxy.mp4") ? PREVIEW : null) : real.head(key)),
   putBytes: async (key: string, bytes: Uint8Array | string, type?: string) => (standIn.on ? undefined : real.putBytes(key, bytes, type)),
-  putFile: (script: string, key: string, path: string, onProgress?: (done: number, total: number) => void) => {
-    if (!standIn.on) return real.putFile(script, key, path, onProgress);
+  // Held as a slow line holds it: it ends only when the test lets it, or when its signal aborts it.
+  putFile: (script: string, key: string, path: string, onProgress?: (done: number, total: number) => void, signal?: AbortSignal) => {
+    if (!standIn.on) return real.putFile(script, key, path, onProgress, signal);
     return new Promise<number>((resolve, reject) => {
-      upload = { report: (done, total) => onProgress?.(done, total), finish: () => resolve(PREVIEW), fail: reject };
+      const held = { report: (done: number, total: number) => onProgress?.(done, total), finish: () => resolve(PREVIEW), fail: reject, aborted: false };
+      signal?.addEventListener("abort", () => {
+        held.aborted = true;
+        reject(new Error("the share was cancelled"));
+      });
+      upload = held;
     });
   },
   convex: async (kind: string, path: string, args: Record<string, unknown>) => {
@@ -163,5 +169,77 @@ test("a share that stops says why and the step it stopped in, and a commentary's
   } finally {
     standIn.on = false;
     upload = null;
+  }
+});
+
+// Nov 22, a MacBook Air in the real window: Cancel said "Stopping…" for 26 s while the footage kept going at full line rate.
+test("Cancel stops the footage's upload at once", async () => {
+  const id = "7a001eed-86e7-471f-b0c0-3fcc4009a004";
+  script(id);
+  standIn.on = true;
+  try {
+    const going = reviews.startShare({} as App, data, id);
+    await settle();
+    upload!.report(300, PREVIEW);
+    const held = upload!;
+    const began = Date.now();
+    expect(reviews.cancelShare(id)).toBe(true);
+    const settled = await Promise.race([going.then(() => "landed", (error: unknown) => (error instanceof reviews.ShareCancelled ? "cancelled" : `failed: ${String(error)}`)), new Promise<string>((resolve) => setTimeout(() => resolve("still going"), 2_000))]);
+    expect(settled).toBe("cancelled");
+    expect(Date.now() - began).toBeLessThan(2_000);
+    expect(held.aborted).toBe(true);
+    if (!held.aborted) held.finish();
+  } finally {
+    standIn.on = false;
+    upload = null;
+  }
+});
+
+// Nov 22, the same MacBook Air: after a Cancel the row went back to "Start edit" and the dialog to a plain "Share".
+test("a cancelled share says it was cancelled, not that it failed or where it stopped, until the next share", async () => {
+  const id = "7a001eed-86e7-471f-b0c0-3fcc4009a006";
+  script(id);
+  standIn.on = true;
+  try {
+    const going = reviews.startShare({} as App, data, id).catch((error: unknown) => error);
+    await settle();
+    upload!.report(300, PREVIEW);
+    reviews.cancelShare(id);
+    // Let go as the step it was in lets go, whether or not its signal stopped it.
+    upload!.finish();
+    expect(await going).toBeInstanceOf(reviews.ShareCancelled);
+    const said = reviews.shareState(id).shareFailed;
+    expect(said?.why).toBe("cancelled");
+    expect(said?.step).toBeUndefined();
+    const again = reviews.startShare({} as App, data, id);
+    await settle();
+    expect(reviews.shareState(id).shareFailed).toBeUndefined();
+    upload!.finish();
+    await again;
+  } finally {
+    standIn.on = false;
+    upload = null;
+  }
+});
+
+// Nov 22, the same MacBook Air: a share asked for while the preview still went up read "Sharing stopped while checking its preview",
+// as if it broke partway, and still said to wait after the preview was up.
+test("a share refused before it starts says only why, as a refusal, and the line goes once the preview is up", async () => {
+  const id = "7a001eed-86e7-471f-b0c0-3fcc4009a005";
+  script(id);
+  standIn.on = true;
+  standIn.previewUp = false;
+  try {
+    await expect(reviews.startShare({} as App, data, id)).rejects.toThrow("still going up to the cloud");
+    const said = reviews.shareState(id).shareFailed;
+    expect(said?.why).toBe("refused");
+    expect(said?.step).toBeUndefined();
+    expect(said?.error).toBe("Its preview is still going up to the cloud. Share it again once it's there.");
+    // The sync puts it up: nothing says to wait any more.
+    standIn.previewUp = true;
+    expect(reviews.shareState(id).shareFailed).toBeUndefined();
+  } finally {
+    standIn.on = false;
+    standIn.previewUp = true;
   }
 });

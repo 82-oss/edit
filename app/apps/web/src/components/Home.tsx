@@ -23,7 +23,7 @@ import { prefetchScript } from "../writer/opened";
 import { CAN, useGrants } from "../writer/can";
 import { SHAPES, type Shape, shapeOf } from "../writer/several";
 import type { Choice, Decision, Kind, ShareFailed, Sharing } from "../writer/types";
-import { failedLine, nowWords } from "../writer/share-steps";
+import { nowWords, stoppedWords } from "../writer/share-steps";
 import { useKept } from "../lib/kept";
 import { askExportFolder } from "./ExportFolder";
 import { ProblemView } from "./ProblemView";
@@ -1735,8 +1735,15 @@ export function ScriptTableRow({ script, importing, writing, sharing: given, sha
     const timer = window.setTimeout(() => setStarted(null), 5_000);
     return () => window.clearTimeout(timer);
   }, [started]);
+  // A refusal said here goes when the server's own word changes, or after a few minutes: it isn't true for ever (Nov 22).
+  useEffect(() => setRefused(null), [shareFailed?.at]);
+  useEffect(() => {
+    if (refused === null) return;
+    const timer = window.setTimeout(() => setRefused(null), 5 * 60_000);
+    return () => window.clearTimeout(timer);
+  }, [refused]);
   const sharing = given ?? started;
-  const stopped: ShareFailed | null = refused !== null ? { error: refused, at: Date.now() } : sharing === null ? shareFailed : null;
+  const stopped: ShareFailed | null = refused !== null ? { error: refused, at: Date.now(), why: "refused" } : sharing === null ? shareFailed : null;
   const shareNow = async (event?: React.MouseEvent) => {
     event?.stopPropagation();
     setRefused(null);
@@ -1916,17 +1923,12 @@ export function ScriptTableRow({ script, importing, writing, sharing: given, sha
             <Pulse size={12} />
             <span className="truncate">{nowWords(sharing)}</span>
           </span>
-        ) : stopped !== null ? (
-          // Its share stopped: said on the row in words, what happened and what to do; the chip shares it again.
-          <>
-            <button title="Share it again" onClick={(event) => void shareNow(event)} className={cx(CHIP, "cursor-pointer text-warning transition-colors hover:bg-hover")}>
-              <RotateCw size={12} />
-              Share again
-            </button>
-            <span className="basis-full text-[12px] leading-snug text-muted">
-              {[failedLine(stopped), stopped.error].filter(Boolean).join(" ")}
-            </span>
-          </>
+        ) : stopped !== null && mayShare ? (
+          // Its share stopped: the chip shares it again, only where sharing is something this script can do (its ⋯'s rule).
+          <button title="Share it again" onClick={(event) => void shareNow(event)} className={cx(CHIP, "cursor-pointer text-warning transition-colors hover:bg-hover")}>
+            <RotateCw size={12} />
+            Share again
+          </button>
         ) : failed !== null ? (
           // Its last run failed: said in orange, and a click runs it again (why, plainly, in its tooltip).
           <button disabled={starting} title={`${explain(failed.error, "finish the script").title}. Click to run it again.`} onClick={(event) => void write(event)} className={cx(CHIP, "cursor-pointer text-warning transition-colors hover:bg-hover disabled:opacity-60")}>
@@ -1939,6 +1941,12 @@ export function ScriptTableRow({ script, importing, writing, sharing: given, sha
             {script.built ? <Film size={12} /> : <PenLine size={12} />}
             {starting ? "Starting…" : script.built ? "Start edit" : "Write script"}
           </button>
+        )}
+        {!marked.entry && !importing && !writing && stopped !== null && (
+          // Its share stopped, was cancelled or refused: said beneath in plain words, what happened and what to do (Nov 22).
+          <span className="basis-full text-[12px] leading-snug text-muted">
+            {(({ where, why }) => [where, why].filter(Boolean).join(" "))(stoppedWords(stopped))}
+          </span>
         )}
       </StatusCell>
       <Category style={script.style} compilation={script.compilation} channel={script.channel} />

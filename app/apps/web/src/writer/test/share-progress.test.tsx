@@ -113,15 +113,37 @@ describe("a script's share dialog", () => {
     expect(steps()).toEqual(["done The script | 1 s", "current Publish v3 | 12 s"]);
   });
 
-  it("a share that stops says where and why in words, no red, and Share again is the one way on", async () => {
-    getScript.mockResolvedValue(script({ shareFailed: { error: "preview.mp4 didn't get through (the line dropped). Check the connection, then share again.", at: 5, step: "footage" } }));
+  it("a share that stops says where and why in plain words, no red, and Share again is the one way on", async () => {
+    // Nov 22, a MacBook Air in the real window: the dialog read a file name and the network library's own message.
+    getScript.mockResolvedValue(script({ shareFailed: { error: "proxy.mp4 didn't get through (could not reach Edit's relay: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()).", at: 5, step: "footage" } }));
     show(script({ sharing: RUNNING }));
     await settle();
-    expect(document.querySelector(".share-failed")?.textContent).toBe("Sharing stopped while sending the footage.preview.mp4 didn't get through (the line dropped). Check the connection, then share again.");
+    expect(document.querySelector(".share-failed")?.textContent).toBe("Sharing stopped while sending the footage.Edit couldn't reach the internet. Check your Wi-Fi or connection.");
     expect(document.querySelector(".bad")).toBeNull();
     expect(buttons()).toContain("Share again");
     expect(buttons()).not.toContain("Retry");
     expect(heading()).toBe("Share");
+  });
+
+  it("a cancelled share, opened again, says Cancelled with Share again, plain", async () => {
+    show(script({ shareFailed: { error: "Cancelled.", at: 5, why: "cancelled" } }));
+    await settle();
+    expect(document.querySelector(".share-progress")?.textContent).toBe("Cancelled");
+    expect(document.querySelector(".share-failed")).toBeNull();
+    expect(buttons()).toContain("Share again");
+  });
+
+  it("a share refused before it began says only the refusal, not that sharing stopped", async () => {
+    shareScript.mockRejectedValue(new Error("Its preview is still going up to the cloud. Share it again once it's there."));
+    show(script({}));
+    await settle();
+    act(() => [...document.querySelectorAll<HTMLButtonElement>("button")].find((one) => one.textContent?.trim() === "Share v2")!.click());
+    await settle();
+    expect(document.querySelector(".share-failed")?.textContent).toBe("Its preview is still going up to the cloud. Share it again once it's there.");
+    // The server's own word for it, a moment later: the same.
+    show(script({ shareFailed: { error: "Its preview is still going up to the cloud. Share it again once it's there.", at: 6, why: "refused" } }));
+    await settle();
+    expect(document.querySelector(".share-failed")?.textContent).toBe("Its preview is still going up to the cloud. Share it again once it's there.");
   });
 
   it("one that lands lists what each step took, the link beneath", async () => {

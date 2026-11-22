@@ -340,6 +340,18 @@ export async function deleteNote(data: string, noteId: string): Promise<void> {
 
 // ---- Sharing ----
 
+/**
+ * A share refused before it began: not ready, its preview still going up.
+ * Said in its own words alone, never as a share that "stopped while"
+ * something (Nov 22, a MacBook Air in the real window: "Sharing stopped
+ * while checking its preview in the cloud" read as if it broke partway).
+ */
+export class ShareRefused extends Error {
+  override readonly name = "ShareRefused";
+}
+
+const PREVIEW_GOING_UP = "Its preview is still going up to the cloud. Share it again once it's there.";
+
 /** The review page plays the preview from the cloud, so sharing waits until that preview is verified there. */
 async function previewInCloud(data: string, id: string, dir: string, script: Script): Promise<void> {
   if (script.commentary) return;
@@ -352,19 +364,19 @@ async function previewInCloud(data: string, id: string, dir: string, script: Scr
       throw new Error(`Couldn't verify its preview in the cloud (${diag.messageOf(error)}). Check the connection, then share again.`);
     }
     // The cloud's can be an earlier preview while this Mac's new one goes up beside the words (writer/cloud.ts footageFirst).
-    if (found !== kept.size || !cloud.sameAsHere(data, id, "proxy.mp4")) throw new Error("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.");
-  } else if (isFile(store.proxyPath(dir))) throw new Error("Its preview hasn't reached the cloud yet. Wait for the sync to finish, then share again.");
+    if (found !== kept.size || !cloud.sameAsHere(data, id, "proxy.mp4")) throw new ShareRefused(PREVIEW_GOING_UP);
+  } else if (isFile(store.proxyPath(dir))) throw new ShareRefused(PREVIEW_GOING_UP);
 }
 
 /** A commentary's paragraphs get the ids notes anchor to; refused when there's nothing to share. */
 function shareable(dir: string, script: Script): Block[] {
-  if (script.status !== "ready") throw new Error("Share a script once its import has finished.");
+  if (script.status !== "ready") throw new ShareRefused("Share a script once its import has finished.");
   if (script.commentary) {
-    if (!script.commentary.draft) throw new Error("Write the script before sharing it.");
+    if (!script.commentary.draft) throw new ShareRefused("Write the script before sharing it.");
     if (ensureIds(script.commentary.draft)) store.write(dir, script);
   }
   const found = blocksOf(script);
-  if (found.length === 0) throw new Error("There's nothing in the script to share yet.");
+  if (found.length === 0) throw new ShareRefused("There's nothing in the script to share yet.");
   return found;
 }
 
@@ -389,6 +401,12 @@ const shareFailed = new Map<string, ShareFailed>();
 const landed = new Map<string, { at: number; version: number; steps: ShareStep[] }>();
 /** A share the person stopped. The step it's in lets go, and nothing is published. */
 const dropped = new Set<string>();
+/** Each running share's Cancel, which aborts its transfers at once (`cancelShare`). */
+const shareAbort = new Map<string, AbortController>();
+/** Refusals that last only while the preview goes up: the data folder to look in, so the line goes once the sync has it up. */
+const waitingPreview = new Map<string, string>();
+/** A refusal's line goes by itself after this, whatever it said: true or not by then, it isn't said for ever. */
+const REFUSAL_FOR_MS = 5 * 60_000;
 
 /**
  * A share's steps as they go (Sphe, Nov 22: a script's share should show its
@@ -431,6 +449,7 @@ export function cancelShare(id: string): boolean {
   if (running === undefined) return false;
   dropped.add(id);
   sharing.set(id, { ...running, stage: "cancelling" });
+  shareAbort.get(id)?.abort(new ShareCancelled());
   return true;
 }
 
@@ -555,6 +574,17 @@ export function shareState(id: string, now = Date.now()): { sharing?: Sharing; s
     return { sharing: { startedAt: running.startedAt, stage: running.stage, ...(running.version === undefined ? {} : { version: running.version }), steps, progress: whole.progress, leftS: whole.leftS } };
   }
   const failed = shareFailed.get(id);
+  // A refusal goes once it's no longer true: the preview the sync was putting up is up (the ledger says the cloud has
+  // this Mac's), or a few minutes have passed for the others.
+  if (failed?.why === "refused") {
+    const data = waitingPreview.get(id);
+    const up = data !== undefined && (cloud.fileKey(data, id, "proxy.mp4")?.key ?? "") !== "" && cloud.sameAsHere(data, id, "proxy.mp4");
+    if (up || now - failed.at > REFUSAL_FOR_MS) {
+      shareFailed.delete(id);
+      waitingPreview.delete(id);
+      return landed.has(id) ? { shared: landed.get(id)! } : {};
+    }
+  }
   if (failed !== undefined) return { shareFailed: failed };
   const done = landed.get(id);
   return done === undefined ? {} : { shared: done };
@@ -569,7 +599,9 @@ export function startShare(app: App, data: string, id: string): Promise<Script> 
   if (removing.has(id)) return Promise.reject(new Error("This script's review link is being deleted: share it again once that's done."));
   if (jobs.running(id)) return Promise.reject(new Error("Claude is still working on this script. Share it when that's done."));
   sharing.set(id, { startedAt: Date.now(), stage: STAGE.check, steps: [] });
+  shareAbort.set(id, new AbortController());
   shareFailed.delete(id);
+  waitingPreview.delete(id);
   landed.delete(id);
   // The lists hear it at once: Home's row says it's sharing without waiting for its next look.
   store.libraryChanged();
@@ -586,7 +618,17 @@ export function startShare(app: App, data: string, id: string): Promise<Script> 
       return script;
     })
     .catch((error: unknown) => {
-      if (dropped.has(id) || error instanceof ShareCancelled) throw new ShareCancelled();
+      // Cancelled: said as the edit's Export says its own ("Cancelled", Share again), until the next share; not a failure,
+      // so nothing logs or counts it (Nov 22, a MacBook Air in the real window: the row went back to "Start edit").
+      if (dropped.has(id) || error instanceof ShareCancelled) {
+        shareFailed.set(id, { error: "Cancelled.", at: Date.now(), why: "cancelled" });
+        throw new ShareCancelled();
+      }
+      if (error instanceof ShareRefused) {
+        shareFailed.set(id, { error: error.message, at: Date.now(), why: "refused" });
+        if (error.message === PREVIEW_GOING_UP) waitingPreview.set(id, data);
+        throw error;
+      }
       const step = sharing.get(id)?.steps.find((one) => one.state === "current")?.kind;
       shareFailed.set(id, { error: diag.messageOf(error), at: Date.now(), ...(step === undefined ? {} : { step }) });
       throw error;
@@ -594,6 +636,7 @@ export function startShare(app: App, data: string, id: string): Promise<Script> 
     .finally(() => {
       sharing.delete(id);
       dropped.delete(id);
+      shareAbort.delete(id);
       // The lists hear it: Home's row and the open script stop saying "Sharing".
       store.libraryChanged();
     });
@@ -619,9 +662,11 @@ export async function shareNext(app: App, data: string, id: string): Promise<Scr
   halt(id);
   // The review's id is Repack's to give, on the first publish: snapshots are kept by the script's id instead.
   const key = `writer/reviews/${id}/v${next}/script.json`;
+  // The share's Cancel stops its transfers at once (none from a fix's own share, which has no Cancel).
+  const signal = shareAbort.get(id)?.signal;
   begin(id, "script");
   halt(id);
-  await cloud.putBytes(key, snapshot);
+  await cloud.putBytes(key, snapshot, undefined, signal);
   halt(id);
   const meta = await metaOf(data, id, script, found, {
     begin: (kind) => begin(id, kind),
@@ -630,6 +675,7 @@ export async function shareNext(app: App, data: string, id: string): Promise<Scr
       halt(id);
       moved(id, kind, done, total);
     },
+    signal,
   });
   halt(id);
   begin(id, "publish");
@@ -752,7 +798,7 @@ function forget(data: string, scriptId: string, reviewId: string): void {
 }
 
 /** A share's steps as metaOf goes through them (shareNext's; compress follows none). */
-type Track = { begin: (kind: ShareStep["kind"]) => void; skip: (kind: ShareStep["kind"]) => void; moved: (kind: ShareStep["kind"], done: number, total: number) => void };
+type Track = { begin: (kind: ShareStep["kind"]) => void; skip: (kind: ShareStep["kind"]) => void; moved: (kind: ShareStep["kind"], done: number, total: number) => void; signal?: AbortSignal | undefined };
 
 /**
  * What the review page shows and plays: the blocks, the outline rail with
@@ -771,13 +817,13 @@ async function metaOf(data: string, id: string, script: Script, found: Block[], 
   if (isFootage) {
     // The preview the clips play from, put under the review (the review page serves only writer/reviews/ keys); sent again only when it changed.
     if (!isFile(store.proxyPath(store.scriptDir(data, id)))) track?.begin("fetch");
-    const proxy = await cloud.fetchPreview(data, id, (done, total) => track?.moved("fetch", done, total));
+    const proxy = await cloud.fetchPreview(data, id, (done, total) => track?.moved("fetch", done, total), track?.signal);
     const size = fs.statSync(proxy).size;
     const key = `writer/reviews/${id}/preview.mp4`;
     // Its step from the look at what the link has: that look is part of sending it (or finding it there already).
     track?.begin("footage");
     if ((await cloud.head(key)) !== size) {
-      await cloud.putFile(id, key, proxy, (done, total) => track?.moved("footage", done, total));
+      await cloud.putFile(id, key, proxy, (done, total) => track?.moved("footage", done, total), track?.signal);
     } else track?.skip("footage");
     meta.preview = { key, durationMs: script.durationMs, sizeBytes: size };
   }
@@ -785,7 +831,7 @@ async function metaOf(data: string, id: string, script: Script, found: Block[], 
   if (JSON.stringify(meta).length > META_BYTES) {
     const words = Object.fromEntries(found.flatMap((block) => (block.words && block.words.length > 0 ? [[block.id, block.words]] : [])));
     const key = `writer/reviews/${id}/${crypto.randomUUID()}/words.json`;
-    await cloud.putBytes(key, JSON.stringify(words));
+    await cloud.putBytes(key, JSON.stringify(words), undefined, track?.signal);
     meta.blocks = found.map(({ words: _words, ...rest }) => rest);
     meta.wordsKey = key;
     if (JSON.stringify(meta).length > META_BYTES) throw new Error("This script is too long to share in one review page.");

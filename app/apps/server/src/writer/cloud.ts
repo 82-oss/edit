@@ -411,6 +411,9 @@ function fileBody(path: string, size: number, onProgress: (done: number) => void
   );
 }
 
+/** A request's deadline, and a share's Cancel when there is one. */
+const stopped = (deadline: AbortSignal, signal?: AbortSignal): AbortSignal => (signal === undefined ? deadline : AbortSignal.any([deadline, signal]));
+
 /**
  * Uploads a file, its progress shown as it goes. One past cloud.ts's
  * resumable size goes up as Edit's own footage does (`editCloud.uploadFile`):
@@ -420,8 +423,11 @@ function fileBody(path: string, size: number, onProgress: (done: number) => void
  * preview at 0.47 GB when his line dropped began again from nothing, 44
  * minutes on his 8 Mbit/s line). `onProgress` is told bytes as they go.
  * `behind`: nobody waits on it, so a share's upload has the line first.
+ * `signal`: a share's Cancel, which stops it at once, parts in flight too
+ * (Nov 22, a MacBook Air in the real window: without it the footage went on
+ * at full line rate for 26 s after Cancel, up to three 16 MB parts at once).
  */
-async function upload(script: string, name: string, path: string, key: string, onProgress?: (done: number, total: number) => void, behind = false): Promise<number> {
+async function upload(script: string, name: string, path: string, key: string, onProgress?: (done: number, total: number) => void, behind = false, signal?: AbortSignal): Promise<number> {
   const size = fs.statSync(path).size;
   const shown = (done: number) => {
     sending = { script, name, up: true, done: Math.min(done, size), total: size };
@@ -429,12 +435,12 @@ async function upload(script: string, name: string, path: string, key: string, o
   };
   try {
     if (size < editCloud.timing.resumableFrom) {
-      const answer = await fetch(await presign(key, "PUT"), { method: "PUT", body: onProgress ? fileBody(path, size, shown) : Bun.file(path), headers: { "content-length": String(size) }, signal: AbortSignal.timeout(600_000), ...(onProgress ? { duplex: "half" } : {}) } as RequestInit).catch((error: unknown) => {
+      const answer = await fetch(await presign(key, "PUT"), { method: "PUT", body: onProgress ? fileBody(path, size, shown) : Bun.file(path), headers: { "content-length": String(size) }, signal: stopped(AbortSignal.timeout(600_000), signal), ...(onProgress ? { duplex: "half" } : {}) } as RequestInit).catch((error: unknown) => {
         throw transferProblem(error, name);
       });
       if (!answer.ok) throw new Problem(`The cloud refused ${name} (${answer.status}).`);
     } else {
-      await editCloud.uploadFile(path, key, (done) => shown(done), undefined, behind).catch((error: unknown) => {
+      await editCloud.uploadFile(path, key, (done) => shown(done), signal, behind).catch((error: unknown) => {
         const temporary = service.isTemporary(error);
         throw new Problem(`${name} didn't get through (${diag.messageOf(error)}).`, temporary, temporary);
       });
@@ -487,8 +493,8 @@ async function fetchBytes(key: string): Promise<Uint8Array | null> {
   }
 }
 
-/** Downloads a file beside its place, then moves it in whole. */
-async function download(script: string, name: string, key: string, size: number, path: string, onProgress?: (done: number, total: number) => void): Promise<void> {
+/** Downloads a file beside its place, then moves it in whole. `signal`: a share's Cancel. */
+async function download(script: string, name: string, key: string, size: number, path: string, onProgress?: (done: number, total: number) => void, signal?: AbortSignal): Promise<void> {
   // A body that stops arriving must not wedge the sync forever: 60 s
   // without a chunk aborts it (a total deadline would kill slow big files).
   const stall = new AbortController();
@@ -499,7 +505,7 @@ async function download(script: string, name: string, key: string, size: number,
     timer.unref?.();
   };
   arm();
-  const answer = await fetch(await presign(key, "GET"), { signal: stall.signal }).catch((error: unknown) => {
+  const answer = await fetch(await presign(key, "GET"), { signal: stopped(stall.signal, signal) }).catch((error: unknown) => {
     clearTimeout(timer);
     throw transferProblem(error, name);
   });
@@ -533,18 +539,18 @@ async function download(script: string, name: string, key: string, size: number,
 }
 
 /** Puts bytes at a key Script mode may write (its own, or Edit's shared prefixes). */
-export async function putBytes(key: string, bytes: Uint8Array | string, contentType = "application/json"): Promise<void> {
+export async function putBytes(key: string, bytes: Uint8Array | string, contentType = "application/json", signal?: AbortSignal): Promise<void> {
   // A minute, or what a slow line takes for its size, as uploadBytes: a share's snapshot of a 26-hour case is ~22 MB, which a
   // flat minute cut off on a line under 3 Mbit/s and the share failed (Nov 22).
   const size = typeof bytes === "string" ? Buffer.byteLength(bytes) : bytes.length;
-  const answer = await fetch(await presign(key, "PUT"), { method: "PUT", body: bytes, headers: { "content-type": contentType }, signal: AbortSignal.timeout(Math.max(60_000, size / SLOW_BYTES_PER_MS)) }).catch((error: unknown) => {
+  const answer = await fetch(await presign(key, "PUT"), { method: "PUT", body: bytes, headers: { "content-type": contentType }, signal: stopped(AbortSignal.timeout(Math.max(60_000, size / SLOW_BYTES_PER_MS)), signal) }).catch((error: unknown) => {
     throw transferProblem(error, key.split("/").pop() ?? "file");
   });
   if (!answer.ok) throw new Problem(`The cloud refused ${key.split("/").pop()} (${answer.status}).`);
 }
 
-/** Uploads a file to a key, its progress shown under `script` as the sync's is. `onProgress` hears bytes as they go. */
-export const putFile = (script: string, key: string, path: string, onProgress?: (done: number, total: number) => void): Promise<number> => upload(script, path.split("/").pop() ?? "file", path, key, onProgress);
+/** Uploads a file to a key, its progress shown under `script` as the sync's is. `onProgress` hears bytes as they go; `signal` (a share's Cancel) stops it. */
+export const putFile = (script: string, key: string, path: string, onProgress?: (done: number, total: number) => void, signal?: AbortSignal): Promise<number> => upload(script, path.split("/").pop() ?? "file", path, key, onProgress, false, signal);
 
 /** The size of what's at a key, or null when nothing is there. */
 export async function head(key: string): Promise<number | null> {
@@ -559,13 +565,13 @@ export const getBytes = (key: string): Promise<Uint8Array | null> => fetchBytes(
  * A script's file (by its path in the folder) on this Mac, brought down from
  * the cloud first when it was cleared from here or made on another Mac.
  */
-export async function fetchFile(data: string, id: string, name: string, onProgress?: (done: number, total: number) => void): Promise<string> {
+export async function fetchFile(data: string, id: string, name: string, onProgress?: (done: number, total: number) => void, signal?: AbortSignal): Promise<string> {
   const path = inside(store.scriptDir(data, id), name);
   if (path === null) throw new Error(`${name} isn't a script's file.`);
   if (isFile(path)) return path;
   const kept = fileKey(data, id, name);
   if (kept === null || kept.key === "") throw new Error(`This script's ${name} isn't on ${THIS_MACHINE} or in the cloud.`);
-  await download(id, name, kept.key, kept.size, path, onProgress);
+  await download(id, name, kept.key, kept.size, path, onProgress, signal);
   // Its time as kept here now, so the next push sees it unchanged.
   const ledger = ledgerNow(data);
   const known = ledger.scripts[id]?.files[name];
@@ -577,8 +583,8 @@ export async function fetchFile(data: string, id: string, name: string, onProgre
   return path;
 }
 
-/** The script's preview on this Mac, brought down from the cloud first when it was cleared from here or made on another Mac; `onProgress` hears the bytes coming down. */
-export const fetchPreview = (data: string, id: string, onProgress?: (done: number, total: number) => void): Promise<string> => fetchFile(data, id, "proxy.mp4", onProgress);
+/** The script's preview on this Mac, brought down from the cloud first when it was cleared from here or made on another Mac; `onProgress` hears the bytes coming down, `signal` (a share's Cancel) stops it. */
+export const fetchPreview = (data: string, id: string, onProgress?: (done: number, total: number) => void, signal?: AbortSignal): Promise<string> => fetchFile(data, id, "proxy.mp4", onProgress, signal);
 
 /** Presigned read addresses, kept until they near their hour: a block read costs R2's round trip, not the relay's too. */
 const signedReads = new Map<string, { url: string; until: number }>();
