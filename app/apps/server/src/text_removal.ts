@@ -615,9 +615,35 @@ export async function ensure(app: App, id: string): Promise<void> {
   // The files not read by the finder yet are read in the background (`whenFound` plans again as each is done).
   if (taken && found.available()) found.ensure(app, id, await findWants(live.project));
   const plans = taken ? await blurPlan(app, live.project) : [];
-  await blur.ensure(app, id, plans);
   const cleaned = inpaintPlan(live.project, plans);
+  if (taken && found.available()) await dropStale(app, id, plans, cleaned);
+  await blur.ensure(app, id, plans);
   await inpaint.ensure(app, id, cleaned, masksOf(app, cleaned), rangeOf(app, cleaned));
+}
+
+/**
+ * The strips of a file the finder has read that aren't a stretch the model cleans now are taken off: made before, from
+ * marks and tracks (another method's, another version's, other seconds), each still counted as their words gone
+ * (`stripCovers`), so the blur stood down over whatever it had left (Nov 22, the Boyfriends edit: a Vmake strip of Nov
+ * 19 over 347–527 s with a blue subtitle still in it, shown sharp). The blur takes those seconds, and the model the
+ * ones it cleans. Only while the model can be reached (its strips are what take their place).
+ */
+async function dropStale(app: App, id: string, plans: blur.BlurPlan[], cleaned: inpaint.InpaintPlan[]): Promise<void> {
+  if (!inpaint.available()) return;
+  const live = app.store.get(id);
+  if (live === null) return;
+  // The files whose stretches come from the finder's boxes.
+  const read = new Set<string>();
+  for (const plan of plans) if (found.foundOf(app, plan.source) !== null) read.add(plan.media.id);
+  const wanted = (media: Media): boolean =>
+    cleaned.some((plan) => plan.media.id === media.cleans!.media && plan.spans.some(([from, to]) => Math.abs(from - media.cleans!.from) <= 0.05 && Math.abs(to - media.cleans!.to) <= 0.05));
+  const stale = (media: Media): boolean => media.cleans != null && (media.cleans.what ?? "text") === "text" && read.has(media.cleans.media) && !wanted(media);
+  const count = live.project.media.filter(stale).length;
+  if (count === 0) return;
+  await app.store.update(id, "text removal", (project) => {
+    project.media = project.media.filter((media) => !stale(media));
+  });
+  diag.info("removal", `${id}: ${count} strips made before the finder read their files taken off (the blur and the model's new strips take those seconds)`);
 }
 
 // A file read by the finder: the project's plan again, with its boxes (one look at a time a project).
