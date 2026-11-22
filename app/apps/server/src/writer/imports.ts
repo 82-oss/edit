@@ -1132,7 +1132,15 @@ async function fetchYoutube(app: App, dir: string, script: Script): Promise<Fetc
     }
     const began = Date.now();
     const stop = sayWhileParked(script, script.sourceUrl);
-    const inCloud = await streamed.fromYoutube(app, dir, script.sourceUrl, (bytes) => say(script, `Downloading from YouTube: ${Math.round(bytes / 1e6)} MB.`, "downloading", 10)).finally(stop);
+    // What it's doing from the first moment, and the download's share as it comes (Nov 22: "5% Starting." for the whole
+    // of it, then a count of MB at a fixed 10%).
+    say(script, "Downloading from YouTube.", "downloading", 5);
+    const inCloud = await streamed
+      .fromYoutube(app, dir, script.sourceUrl, (bytes, total) => {
+        const share = total !== null && total !== undefined && total > 0 ? Math.min(bytes / total, 1) : null;
+        say(script, share === null ? `Downloading from YouTube: ${Math.round(bytes / 1e6)} MB.` : `Downloading from YouTube: ${Math.floor(share * 100)}%.`, "downloading", share === null ? 10 : 5 + Math.floor(share * 10));
+      })
+      .finally(stop);
     diag.info("writer", `${jobs.named(script.id, script.title)}: YouTube video downloaded in ${Math.round((Date.now() - began) / 1000)} s`);
     say(script, "Making the preview.", "downloading", 15);
     try {

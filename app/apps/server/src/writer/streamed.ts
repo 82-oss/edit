@@ -581,7 +581,7 @@ export async function readHere(dir: string, put: InCloud, onBytes: (bytes: numbe
  * Drive's are (see the top): it goes up behind the import when there's room
  * to keep it (`room.roomFor`), else before the import goes on, as it was.
  */
-export async function fromYoutube(app: App, dir: string, url: string, onBytes: (bytes: number) => void): Promise<InCloud> {
+export async function fromYoutube(app: App, dir: string, url: string, onBytes: (bytes: number, total?: number | null) => void): Promise<InCloud> {
   const id = youtube.videoId(url);
   if (id === null) throw new Error(`${url} isn't a YouTube video link.`);
   const source = `${youtube.PREFIX}${id}`;
@@ -619,7 +619,7 @@ export async function fromYoutube(app: App, dir: string, url: string, onBytes: (
   fs.rmSync(join(dir, "scratch", "youtube", id), { recursive: true, force: true });
   let got: { path: string; size: number };
   try {
-    got = await youtube.download(app.store.home, id, into, (bytes) => onBytes(bytes));
+    got = await youtube.download(app.store.home, id, into, (bytes, total) => onBytes(bytes, total));
   } catch (error) {
     // Half a video is never left as the original: none is ready until this one is.
     await cloud.mutation("edit:putMedia", { source, originalReady: false }).catch(() => {});

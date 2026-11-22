@@ -64,10 +64,18 @@ async function ytdlp(app: App, url: string, args: string[], timeoutMs: number, s
 export async function title(app: App, url: string): Promise<string> {
   const known = checked.get(url);
   if (known !== undefined && Date.now() - known[1] < 3_600_000) return known[0];
+  // The Data API through the relay first (a second), as `probe` asks it; yt-dlp through the proxy (17 s to a minute)
+  // only for what it can't answer. Kept, so the import's second ask (the file's name) is free (Nov 22: asked of
+  // yt-dlp twice before every YouTube download, the bar saying "Starting." meanwhile).
+  const quick = await fromApi(url).catch(() => null);
+  if (quick !== null) return quick.title;
   try {
     const text = await ytdlp(app, url, ["--no-playlist", "--skip-download", "--print", "%(title)s"], 60_000);
     const line = text.split("\n").find((one) => one.trim() !== "")?.trim().replace(/[\r\n]/g, " ");
-    return line ? [...line].slice(0, 180).join("") : "YouTube video";
+    if (!line) return "YouTube video";
+    const name = [...line].slice(0, 180).join("");
+    checked.set(url, [name, Date.now()]);
+    return name;
   } catch {
     return "YouTube video";
   }
