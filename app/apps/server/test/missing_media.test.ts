@@ -6,6 +6,7 @@ import { afterAll, afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { join } from "node:path";
 
+import * as cloudMedia from "../src/cloud_media.ts";
 import * as diag from "../src/diag.ts";
 import { exportCloud, ExportRegistry, listExports } from "../src/exports.ts";
 import { respond } from "../src/http/server.ts";
@@ -113,6 +114,25 @@ test("only footage that truly didn't come in holds an export: never cloud footag
     });
     const { missing } = await missingMedia.missingOf(app.store.home, store.get(id)!.project);
     expect(missing.map((one) => one.id).sort()).toEqual(["lost", "m2"]);
+    // Going up from here: the cloud lacks its proxy as yet, its original or its proxy is on this Mac (a desktop
+    // plan's scrolling page, Nov 22): an export reads it here, so nothing holds it.
+    const scroll = join(app.store.home, "graphics", "horror", "p-Scroll · m16.mp4");
+    fs.mkdirSync(join(scroll, ".."), { recursive: true });
+    fs.writeFileSync(scroll, "scrolling page");
+    cloudMedia.rememberLocalOriginal(app.store.cacheDir(), "edit/originals/up-original.mp4", scroll);
+    const proxied = cloudMedia.localPath(app.store.cacheDir(), "edit/proxies/up-proxy.mp4");
+    fs.mkdirSync(join(proxied, ".."), { recursive: true });
+    fs.writeFileSync(proxied, "its proxy");
+    mediaHooks.keyAnswers = async (key) => key === "edit/proxies/here.mp4";
+    const going = [
+      { ...media("going", streamed("edit/proxies/up-original.mp4")), cloud: { ...cloudOf("edit/proxies/up-original.mp4"), original: "edit/originals/up-original.mp4" } },
+      { ...media("proxied", streamed("edit/proxies/up-proxy.mp4")), cloud: cloudOf("edit/proxies/up-proxy.mp4") },
+    ] as Media[];
+    await store.update(id, "test", (p) => {
+      p.media.push(...going);
+      for (const [at, one] of going.entries()) p.clips.push({ type: "video", id: `g${at}`, track: "v1", media: one.id, start: 200 + at * 5, duration: 5, source_in: 0, speed: 1 } as never);
+    });
+    expect((await missingMedia.missingOf(app.store.home, store.get(id)!.project)).missing.map((one) => one.id).sort()).toEqual(["lost", "m2"]);
   } finally {
     mediaHooks.keyAnswers = asked;
     cleanup();

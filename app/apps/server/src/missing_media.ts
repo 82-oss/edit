@@ -77,7 +77,7 @@ function madeHere(home: string, media: Media): boolean {
  */
 export async function missingOf(home: string, project: Project, all = false): Promise<{ used: number; missing: Media[] }> {
   const used = usedIds(project);
-  const streamed = project.media.filter((media) => used.has(media.id) && proxyKeyOf(media) !== null && !madeHere(home, media));
+  const streamed = project.media.filter((media) => used.has(media.id) && proxyKeyOf(media) !== null && !madeHere(home, media) && !hereStill(home, media));
   const gone = new Set<string>();
   for (let at = 0; at < streamed.length; at += 8) {
     await Promise.all(
@@ -89,6 +89,24 @@ export async function missingOf(home: string, project: Project, all = false): Pr
   const left = new Set(all ? [] : waived(home, project.id));
   const missing = [...missingMedia(project).filter((media) => !madeHere(home, media)), ...streamed.filter((media) => gone.has(media.id))].filter((media) => !left.has(media.id));
   return { used: project.media.filter((media) => used.has(media.id)).length, missing };
+}
+
+/**
+ * Whether a streamed medium's footage is on this machine all the same, as an
+ * export reads it (cloud_media.ts `located`): its proxy whole in the cache, or
+ * its original here (a file just imported, Edit's own picture of a page
+ * scrolling, while its upload goes on behind). Its key not in the cloud yet is
+ * then its upload under way, never a file that didn't come in (Nov 22: an
+ * export right after a desktop plan was refused "1 file didn't come in:
+ * Scroll · m16-1280x1160-30.mp4", the scroll the plan had just made going up;
+ * the same export went through a minute later).
+ */
+function hereStill(home: string, media: Media): boolean {
+  const cache = join(home, "cache");
+  const proxy = proxyKeyOf(media);
+  if (proxy !== null && isFile(cloudMedia.localPath(cache, proxy))) return true;
+  const original = media.cloud?.original;
+  return typeof original === "string" && cloudMedia.localOriginal(cache, original) !== null;
 }
 
 /** "1 file didn't come in: CH03.avi", "3 files didn't come in: a.mp4, b.mp4 and c.mp4". */
