@@ -144,6 +144,24 @@ function bare(style: Style, frame: typeof WIDE, onChannel: string | null): Proje
   return p;
 }
 
+/**
+ * `value` without its issues' `fix` words. What a check finds is the same on a channel as in V1; what it says to do
+ * is the channel's own since Nov 22, because a channel's agent has the `v1-` effects, not V1's tools (88c497f7:
+ * `horror_look_missing` named `commentary_look`, which draws another channel's look).
+ */
+function found(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(found);
+  if (value === null || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).flatMap(([key, inner]) => (key === "fix" ? [] : [[key, found(inner)]])));
+}
+
+/** Every `fix` in `value`, as one text. */
+function fixes(value: unknown): string {
+  if (Array.isArray(value)) return value.map(fixes).join("\n");
+  if (value === null || typeof value !== "object") return "";
+  return Object.entries(value).map(([key, inner]) => (key === "fix" && typeof inner === "string" ? inner : fixes(inner))).join("\n");
+}
+
 describe("a channel's project answers as a V1 project of its style (the project alone)", () => {
   for (const one of PURE) {
     test(one.site, () => {
@@ -151,7 +169,10 @@ describe("a channel's project answers as a V1 project of its style (the project 
       for (const pair of PAIRS) {
         const theirs = one.run(bare(pair.style, pair.frame, null));
         const ours = one.run(bare(pair.style, pair.frame, pair.channel));
-        expect([pair.label, ours]).toEqual([pair.label, theirs]);
+        expect([pair.label, found(ours)]).toEqual([pair.label, found(theirs)]);
+        // What to do about it never names another channel's look on a channel (`desktop_sparse`, which only V1's own
+        // desktop clips trip, still names V1's cover_cut_in there).
+        expect([pair.label, fixes(ours)]).not.toEqual([pair.label, expect.stringMatching(/commentary_look/)]);
         if ((theirs as unknown[]).length > 0) tripped.push(pair.style);
       }
       // A fixture that trips nowhere (or everywhere) proves nothing.
@@ -213,7 +234,8 @@ describe("a channel's project answers as a V1 project of its style (in Edit)", (
     for (const pair of PAIRS) {
       const { v1, ours } = await twins(pair, edit);
       const issues = (id: string) => audited(fixture!.app, fixture!.store.get(id)!.project, null).issues as unknown[];
-      expect([pair.label, issues(ours)]).toEqual([pair.label, issues(v1)]);
+      expect([pair.label, found(issues(ours))]).toEqual([pair.label, found(issues(v1))]);
+      expect([pair.label, fixes(issues(ours))]).not.toEqual([pair.label, expect.stringMatching(/commentary_look/)]);
       kinds[pair.style] = (issues(v1) as { kind: string }[]).map((issue) => issue.kind);
     }
     // The fixture trips both sides of each site somewhere.
@@ -239,7 +261,7 @@ describe("a channel's project answers as a V1 project of its style (in Edit)", (
         return { keys: Object.keys(read).sort(), chapters: read.chapters ?? null, cut_ins: read.cut_ins ?? null, clips: read.clips ?? null, audit: read.audit ?? null };
       };
       const theirs = await context(v1);
-      expect([pair.label, await context(ours)]).toEqual([pair.label, theirs]);
+      expect([pair.label, found(await context(ours))]).toEqual([pair.label, found(theirs)]);
       chapters[pair.style] = theirs.chapters !== null;
     }
     expect(chapters).toEqual({ bodycam: false, interrogation: false, courtroom: false, commentary: true, horror: true, shorts: false });
