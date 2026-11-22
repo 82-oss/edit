@@ -1559,8 +1559,15 @@ export function onTimeline(project: Project): string[] {
 
 /** How long an effect's code has to stay unchanged before it's rendered: the agent saves a page several times a minute while it works. */
 const SETTLE_MS = 6_000;
-/** Chromes drawing one render side by side: as the map shots, by the computer's memory. */
-const CHROMES = os.totalmem() >= 16 * 2 ** 30 ? 4 : 2;
+/**
+ * Chromes drawing one render side by side: as the map shots, by the computer's memory. Two at most on Linux, where
+ * each draws through Vulkan on the one graphics card everything else there shares: four (some 56 Chrome processes
+ * with a render under way) beside the encoder, the desktop and a frame asked for filled an 8 GB card's address space,
+ * and NVIDIA's driver answers that by hanging every program that touches the card until the machine is restarted
+ * (Nov 22, mandalorian, twice in an evening: "can't alloc VA space for mapping" by the thousand, Chrome, FFmpeg and
+ * the desktop's shell stuck in the driver).
+ */
+const CHROMES = process.platform === "linux" ? 2 : os.totalmem() >= 16 * 2 ** 30 ? 4 : 2;
 /** Chromes drawing a map's render (one that loads edit-map): each holds a 3D city on the graphics card. */
 const MAP_CHROMES = Math.min(2, CHROMES);
 const RENDER_PROFILE = "edit-effect-render-";
