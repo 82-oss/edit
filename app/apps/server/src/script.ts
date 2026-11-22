@@ -122,11 +122,11 @@ export async function replaceFootage(app: App, id: string, file: string, url: st
  */
 export async function skipFootage(app: App, id: string, file: string): Promise<void> {
   // "*": every file it couldn't get, in one go (each skip starts the import again, so one at a time the second was refused).
-  // Never one still being tried by itself (a dropped connection): that one comes in.
+  // Only the person's (failed, what the page lists): one waiting by itself (a dropped connection, room, credit, Drive's
+  // limit) comes in, and blacking it too lost footage that was only waiting (Nov 21 audit).
   await afterLook(app, id);
   const job = app.scripts.get(id);
-  const askable = (one: { state: string; why?: string }) => one.state === "failed" || (one.state === "waiting" && one.why !== "passing");
-  const files = file === "*" ? (job?.files ?? []).filter(askable).map((one) => one.file) : [file];
+  const files = file === "*" ? (job?.files ?? []).filter((one) => one.state === "failed").map((one) => one.file) : [file];
   if (files.length === 0) throw new Error("Nothing is waiting to be skipped.");
   // One given by name (the agent's tool, an older page) the same: only a file that's the person's to answer, never one
   // still being brought in by itself (Astra's council, Nov 19: the named path never asked).

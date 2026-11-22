@@ -882,3 +882,25 @@ test("an answer given while a quiet look is under way waits for it, never refuse
     fixture.cleanup();
   }
 });
+
+// Nov 21 audit: "Make the edit with their parts black" ("*") blacked a file waiting for room as well as the one that
+// was the person's; a file waiting for room, credit or Drive's limit comes in by itself.
+test("going on without them all blacks only the person's files, never one waiting for room", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-skip-all-waiting", { services: { scripts } });
+  try {
+    const id = await twoFiles(fixture);
+    cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" ? new steps.NeedsPerson("Google Drive can't find this file: it was deleted, or in the trash.") : new failure.NoRoom(1e9)));
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    await start(fixture.app, id, false);
+    const asked = await settled(scripts, id);
+    expect(asked.files.map((file) => [file.state, file.why ?? null])).toEqual([["waiting", "room"], ["failed", "person"]]);
+    await skipFootage(fixture.app, id, "*");
+    await settled(scripts, id);
+    const notes = (file: string) => fixture.store.get(id)!.project.script!.blocks.flatMap((block) => (block.kind === "footage" && block.file === file ? (block.notes ?? []) : []));
+    expect(notes("FILEcase0002").some((note) => note.startsWith("Gone without"))).toBe(true);
+    expect(notes("FILEcase0001").some((note) => note.startsWith("Gone without"))).toBe(false);
+  } finally {
+    fixture.cleanup();
+  }
+});
