@@ -1,17 +1,19 @@
-// A channel's agents don't edit until the channel is taught (teaching_gate.ts;
-// Sphe, Nov 16): the tools that change the edit refuse in a line, teaching,
-// reading and research work, and an unread or failed read never refuses.
+// A channel taught nothing yet (teaching_gate.ts): its import's first message
+// waits (first_prompt.test.ts), and its agent's tools all work, so a person can
+// build effects and cut there before teaching it (Sphe, Nov 22).
 
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
+import { join } from "node:path";
 
 import * as accounts from "../src/accounts.ts";
 import { registerChannelTools } from "../src/channel_tools.ts";
 import * as cloud from "../src/cloud.ts";
 import { registerEffectTools } from "../src/effect_tools.ts";
 import { registerEditingTools } from "../src/edit_tools.ts";
+import { registerMediaTools } from "../src/media_tools.ts";
 import { dispatch } from "../src/mcp/index.ts";
-import { TOOLS } from "../src/mcp/registry.ts";
-import { REFUSAL, WHILE_UNTAUGHT } from "../src/teaching_gate.ts";
+import { agentInstructions } from "../src/agent.ts";
+import { waiting } from "../src/teaching_gate.ts";
 import * as v2cloud from "../src/v2_cloud.ts";
 import { fixtureHome } from "./helpers/home.ts";
 import { MockServer } from "./mocks/server.ts";
@@ -26,6 +28,7 @@ beforeAll(() => {
   registerEffectTools();
   registerChannelTools();
   registerEditingTools();
+  registerMediaTools();
 });
 
 afterAll(() => {
@@ -38,16 +41,11 @@ afterEach(() => {
   v2cloud.useSkillsForTests([]);
 });
 
-async function call(app: ReturnType<typeof fixtureHome>["app"], project: string, name: string, args: Record<string, unknown>) {
-  const answer = (await dispatch(app, { id: 1, method: "tools/call", params: { name, arguments: args } }, project)) as { result: { content: { text?: string }[]; isError: boolean } };
-  return answer.result.content[0]?.text ?? "";
+async function result(app: ReturnType<typeof fixtureHome>["app"], project: string, name: string, args: Record<string, unknown>) {
+  return ((await dispatch(app, { id: 1, method: "tools/call", params: { name, arguments: args } }, project)) as { result: { content: { text?: string }[]; isError: boolean } }).result;
 }
 
-test("every tool allowed while a channel is untaught is one of Edit's", () => {
-  for (const name of WHILE_UNTAUGHT) expect(TOOLS.some((tool) => tool.name === name)).toBe(true);
-});
-
-test("a channel not taught yet: the edit's tools refuse in a line, reading and teaching work, and once it's taught they work", async () => {
+test("a channel not taught yet: the agent's tools all work there (Sphe, Nov 22), and its instructions say nothing is taught", async () => {
   const { app, cleanup } = fixtureHome("gate-untaught");
   try {
     const id = app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project.id;
@@ -57,43 +55,31 @@ test("a channel not taught yet: the edit's tools refuse in a line, reading and t
     });
     accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.gate-ch"]);
     v2cloud.useSkillsForTests([{ name: v2cloud.GLOBAL, text: "Edit's own workings.", key: v2cloud.skillKey(v2cloud.GLOBAL) }]);
-    const clip = { track: 0, start: 0, duration: 30, kind: "solid", color: "#ff0000" };
-    expect(await call(app, id, "add_clip", clip)).toBe(REFUSAL);
-    expect(await call(app, id, "delete_clips", { ids: ["c1"] })).toBe(REFUSAL);
-    expect(await call(app, id, "batch", { calls: [{ tool: "add_clip", args: clip }] })).toContain("isn't taught yet");
-    // Reading works.
-    expect(await call(app, id, "get_edit_context", {})).not.toBe(REFUSAL);
-    // Teaching works, and the edit's tools work from the next call.
-    expect(await call(app, id, "remember", { skill: "pins", text: "Pins are red.", reason: "Sphe said so" })).toContain("Remembered as pins");
-    expect(await call(app, id, "add_clip", clip)).not.toBe(REFUSAL);
-  } finally {
-    cleanup();
-  }
-});
-
-test("never refused when what's taught isn't known, nor for a V1 project or a V2 one without a channel", async () => {
-  const { app, cleanup } = fixtureHome("gate-unknown");
-  try {
-    const channel = app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project.id;
-    await app.store.update(channel, "test", (project) => {
-      project.hq = true;
-      project.channel = "gate-ch";
-    });
-    const none = app.store.create("No channel", { width: 1920, height: 1080, fps: 30 }).project.id;
-    await app.store.update(none, "test", (project) => {
-      project.hq = true;
-    });
-    const v1 = app.store.create("V1", { width: 1920, height: 1080, fps: 30 }).project.id;
-    accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.gate-ch"]);
-    const clip = { track: 0, start: 0, duration: 30, kind: "solid", color: "#ff0000" };
-    // Read and empty: only the channel's project waits.
-    v2cloud.useSkillsForTests([]);
-    expect(await call(app, none, "add_clip", clip)).not.toBe(REFUSAL);
-    expect(await call(app, v1, "add_clip", clip)).not.toBe(REFUSAL);
-    expect(await call(app, channel, "add_clip", clip)).toBe(REFUSAL);
-    // Not read (Edit just started, or the read failed): it isn't taken for untaught.
-    v2cloud.useSkillsForTests([], [], false);
-    expect(await call(app, channel, "add_clip", clip)).not.toBe(REFUSAL);
+    expect(waiting(app.store.get(id)!.project)).toBe(true);
+    const clip = { type: "solid", start: 0, duration: 30, fill: [0, 0, 0, 1] };
+    const added = await result(app, id, "add_clip", { clip });
+    expect(added.isError).toBe(false);
+    expect(app.store.get(id)!.project.clips).toHaveLength(1);
+    const batch = await result(app, id, "batch", { calls: [{ tool: "add_clip", args: { clip: { ...clip, start: 30 } } }] });
+    expect(batch.content[0]!.text).not.toContain("taught");
+    expect(app.store.get(id)!.project.clips).toHaveLength(2);
+    const ids = app.store.get(id)!.project.clips.map((one) => one.id);
+    expect((await result(app, id, "delete_clips", { clip_ids: ids })).isError).toBe(false);
+    expect(app.store.get(id)!.project.clips).toHaveLength(0);
+    // Footage brought in by the agent, and a picture of it handed to an effect it's building (both refused before).
+    const png = join(app.store.home, "still.png");
+    await Bun.write(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGP8z8DAwMDAxMDAwMDAAAANHQEDK+mmyAAAAABJRU5ErkJggg==", "base64"));
+    const imported = await result(app, id, "import_media", { paths: [png] });
+    expect(imported.isError).toBe(false);
+    const media = app.store.get(id)!.project.media[0]!;
+    const picture = await result(app, id, "effect_picture", { name: "lower-third", media_id: media.id });
+    expect(picture.isError).toBe(false);
+    expect(picture.content[0]!.text).toContain("effects/lower-third/");
+    // The agent is told plainly: nothing taught, no style to follow, nothing kept just to start.
+    const told = agentInstructions(app.store.get(id)!.project);
+    expect(told).toContain("THIS CHANNEL ISN'T TAUGHT YET");
+    expect(told).toContain("Never keep a lesson or an effect only to get started");
+    expect(told).not.toContain("change the edit refuse");
   } finally {
     cleanup();
   }

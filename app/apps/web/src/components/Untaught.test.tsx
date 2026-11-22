@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { useAgent } from "../lib/agent";
 import { useEditor } from "../lib/store";
 import { UntaughtLine, useUntaughtChannel } from "./Untaught";
 
@@ -41,6 +42,11 @@ describe("Waiting for this channel to be taught", () => {
     useEditor.setState({ project: { id: "p1", channel: "cuffed", media: [{ id: "m1" }] } as never });
     expect(await shown()).toBe("Waiting for this channel to be taught");
     act(() => root!.unmount());
+    // Once the person is working with the agent there, it's gone (its tools all work untaught; Sphe, Nov 22).
+    useAgent.setState({ entries: [{ id: "u1", kind: "user", text: "make a lower third" }] as never });
+    expect(await shown()).toBe("");
+    act(() => root!.unmount());
+    useAgent.setState({ entries: [] });
     taught = { edit: [{ kind: "skill", key: "skill:@cuffed--edit/pins", name: "pins" }] };
     expect(await shown()).toBe("");
     act(() => root!.unmount());

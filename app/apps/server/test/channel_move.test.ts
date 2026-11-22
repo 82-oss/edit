@@ -339,7 +339,6 @@ test("a channel taught to take another channel's text out doesn't start on a mov
 
 test("the move is the person's change in the history; undo_changes never takes it back, and an undo across it keeps it a V2 project", async () => {
   const made = home("move-undo");
-  // Taught something, so its agent's tools change the edit (teaching_gate.ts): an untaught channel's refuse first.
   v2cloud.useSkillsForTests([{ name: "pacing", key: v2cloud.ownKey("skill", "ch-cuffed--edit", "pacing"), text: "Hold on faces." }]);
   try {
     const id = made.store.createAs("V1", "courtroom", { width: 640, height: 360, fps: 30 }).project.id;

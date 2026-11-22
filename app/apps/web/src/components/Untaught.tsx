@@ -1,7 +1,8 @@
 // A channel's project whose channel isn't taught yet (Sphe, Nov 16: "It only
-// starts working on stuff once we have taught it things"): its agent doesn't
-// edit and its first message waits (the server's teaching_gate.ts), so the
-// chat says so in one quiet line on the composer's top edge.
+// starts working on stuff once we have taught it things"): its import's first
+// message waits (the server's teaching_gate.ts), so an empty chat says so in
+// one quiet line on the composer's top edge. Its agent works when asked (Sphe,
+// Nov 22), so once the chat has begun the line goes.
 
 import { useEffect, useState } from "react";
 
@@ -11,16 +12,18 @@ import { useEditor } from "../lib/store";
 
 /**
  * The channel's title while its edit style (and its group's) is still empty,
- * once its footage is in (Sphe, Nov 14); null otherwise, and when the channel
- * couldn't be read (never taken for untaught). Asked again after each turn,
- * and gone once something is taught.
+ * once its footage is in (Sphe, Nov 14) and before anything is said in the
+ * chat; null otherwise, and when the channel couldn't be read (never taken
+ * for untaught). Asked again after each turn, and gone once something is
+ * taught.
  */
 export function useUntaughtChannel(): string | null {
   const channel = useEditor((state) => state.project?.channel ?? null);
   const footage = useEditor((state) => (state.project?.media.length ?? 0) > 0);
   const running = useAgent((state) => state.running);
+  const begun = useAgent((state) => state.entries.length > 0);
   const empty = useUntaughtLane(channel, "edit", running);
-  return channel !== null && footage ? empty : null;
+  return channel !== null && footage && !begun ? empty : null;
 }
 
 /**

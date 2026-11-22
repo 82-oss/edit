@@ -15,7 +15,6 @@ import { isBug, crashed } from "../guard.ts";
 import { empty, json, text as plain } from "../http/errors.ts";
 import { readJson, type RouteContext } from "../http/router.ts";
 import { stableStringify } from "../stable.ts";
-import * as teachingGate from "../teaching_gate.ts";
 import { VERSION } from "../version.ts";
 import { INSTRUCTIONS } from "./instructions.ts";
 import { handlerFor, registerTool, text, TOOLS, toolsFor, withheld, type Content } from "./registry.ts";
@@ -140,10 +139,7 @@ export async function call(
     if (TOOLS.some((tool) => tool.name === name)) throw new Error(`${name} is not available`);
     throw new Error(`unknown tool ${name}`);
   }
-  // A channel not taught yet: nothing in the edit changes (teaching_gate.ts; Sphe, Nov 16).
   const live = app.store.get(projectId);
-  const untaught = live === null ? null : await teachingGate.refusal(live.project, name);
-  if (untaught !== null) throw new Error(untaught);
   // A tool only an add-on gives, on a channel's project without it (registry.ts withheld; Nov 21).
   const notGiven = live === null ? null : withheld(live.project, name);
   if (notGiven !== null) throw new Error(notGiven);

@@ -2227,9 +2227,9 @@ function addonsText(project: Pick<Project, "style" | "settings" | "channel">): s
 const UNREAD =
   "THIS CHANNEL'S TEACHING COULDN'T BE READ from Edit's cloud just now (it's slow or out of reach), so its lessons, effects and sounds aren't here this turn. Do what's asked plainly, in the house's way, and tell the person once, in a line, that the channel's style didn't load and to ask again in a moment for it; keep nothing to the library this turn.";
 
-/** Said to a channel's agent while its edit style is still empty. */
+/** Said to a channel's agent while its edit style is still empty (Sphe, Nov 22: its tools all work; it never pretends there's a style). */
 const UNTAUGHT =
-  "THIS CHANNEL ISN'T TAUGHT YET: no lessons, effects or sounds of its own, so you don't edit until it is (Edit's tools that change the edit refuse; reading, research and teaching work). Ask the person how this channel's videos should look and keep what they say (remember; an effect or a sound with save_to_library) as KEEPING WHAT YOU'RE TAUGHT says, or bring another channel's style in with other_channels when they point you at one. Once something is kept, the editing tools work and you can start.";
+  "THIS CHANNEL ISN'T TAUGHT YET: no lessons, effects or sounds of its own, so there's no house style here to follow and you don't start on the edit by yourself. Do what the person asks (build, look at and place effects, bring footage in, cut), and say plainly, once, that nothing is taught yet and what you chose on your own. Never keep a lesson or an effect only to get started: keep what they say to keep, as KEEPING WHAT YOU'RE TAUGHT says, or bring another channel's style in with other_channels when they point you at one.";
 
 /** A saved chat, read as serde reads `Chat` (every field defaults; a wrong type refuses the whole file). */
 export function readChat(text: string): Chat {

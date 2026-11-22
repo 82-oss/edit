@@ -436,11 +436,11 @@ function MainAgentPanel() {
         tray: [
           // Edit V2's are pinned on the picture and the progress bar instead.
           notes > 0 && !hq && <NoteQueue key="notes" />,
-          // Its agent doesn't edit, and its first message waits, until the channel is taught (Sphe, Nov 16).
+          // Its import's first message waits until the channel is taught (Sphe, Nov 16): said while the chat is empty.
           untaught !== null && <UntaughtLine key="untaught" />,
         ],
         disabled: !status?.ready,
-        // A channel with no edit style yet says so here, not in a notice of its own (Sphe, Nov 15: "this is horrible"); it isn't edited until it has one.
+        // A channel with no edit style yet says so here, not in a notice of its own (Sphe, Nov 15: "this is horrible").
         placeholder: untaught !== null ? `Tell the agent how ${untaught}’s videos should look…` : "Start the editing workflow, or ask for a change…",
         composerHidden: entries.length === 0 && blocked,
         notice: (
