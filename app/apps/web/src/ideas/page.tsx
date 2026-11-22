@@ -326,7 +326,7 @@ function Notices({ page, busy, onRepackage }: { page: Page; busy: string | null;
   const off = busy !== null || working(idea);
   const run = idea.run;
   // Why Claude stopped short, said plainly (problems.ts): the original words are the log's, never the band's.
-  const short = run !== null && run.state === "failed" ? explain(run.error ?? "", run.what === "chat" ? "finish that change" : "finish repackaging") : null;
+  const short = run !== null && run.state === "failed" ? explain(run.error ?? "", "finish repackaging") : null;
   const band = "shrink-0 border-b border-amber-400/20 bg-amber-400/[0.05] px-5 py-2.5";
   const link = "underline decoration-amber-100/20 underline-offset-2 transition-colors hover:text-amber-100/90 disabled:opacity-40";
   return (
@@ -368,7 +368,8 @@ function Notices({ page, busy, onRepackage }: { page: Page; busy: string | null;
           </p>
         </div>
       )}
-      {run !== null && (run.state === "failed" || run.state === "stopped") && (
+      {/* A chat's failure is said in the chat, under the message it answers; a channel not taught yet can't repackage (run.ts needsTeaching). */}
+      {run !== null && run.what === "repackage" && (run.state === "failed" || run.state === "stopped") && page.untaught !== true && (
         <p className="shrink-0 border-b border-red-500/15 bg-red-500/[0.04] px-5 py-2 text-[12.5px] leading-relaxed text-red-200/75">
           {short === null ? (
             "Stopped."
@@ -377,7 +378,7 @@ function Notices({ page, busy, onRepackage }: { page: Page; busy: string | null;
               <span className="font-medium">{short.title}.</span> {short.fix}
             </>
           )}{" "}
-          <button type="button" disabled={off} onClick={() => onRepackage({ changes: run.what === "repackage" && idea.changes !== null && idea.card !== null })} className="underline underline-offset-2 disabled:opacity-40">
+          <button type="button" disabled={off} onClick={() => onRepackage({ changes: idea.changes !== null && idea.card !== null })} className="underline underline-offset-2 disabled:opacity-40">
             Repackage again
           </button>
         </p>
