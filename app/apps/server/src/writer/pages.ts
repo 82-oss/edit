@@ -8,7 +8,7 @@ import type { Clip, Script } from "@edit/types/writer";
 
 import ARIAL from "./arial.json" with { type: "json" };
 import { isCutIn, stamp } from "./blocks.ts";
-import { style } from "./formats.ts";
+import { courtroomNow, style } from "./formats.ts";
 import { partAt } from "./tidy.ts";
 
 /** The page's geometry in CSS px. */
@@ -125,7 +125,7 @@ export function pageCount(script: Script, clips: Clip[]): number {
   // Where a compilation's cases start: its transitions, and a hidden one's first block.
   const hidden = style(script.title) === "hidden";
   const starts = script.compilation ? blocks.flatMap(([own], index) => (own.length === 0 || (index === 0 && hidden) ? [index] : [])) : [];
-  const running = script.kind === "courtroom" && !script.compilation;
+  const running = courtroomNow(script) && !script.compilation;
   const narrationLines = (cue: Clip) => lineCount(cue.narration ?? "", TEXT, false);
   for (const [index, [own, cue]] of blocks.entries()) {
     const divider = starts.indexOf(index) > 0;
@@ -159,6 +159,6 @@ export function pageCount(script: Script, clips: Clip[]): number {
       gap = running ? 0 : 32;
     }
   }
-  if (script.kind === "courtroom") place(32, LINE, 0);
+  if (courtroomNow(script)) place(32, LINE, 0);
   return page + 1;
 }

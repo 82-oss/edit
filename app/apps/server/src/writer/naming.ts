@@ -8,6 +8,7 @@ import type { Script, Word } from "@edit/types/writer";
 
 import { splitWhitespace } from "../rust.ts";
 import * as claude from "./claude.ts";
+import { courtroomNow } from "./formats.ts";
 import { partAt } from "./tidy.ts";
 
 const POLICE_ROLES = "You label the speakers in footage of a police interview or interrogation. For every speaker ID give role: one or two plain words for who they are in this footage, such as Suspect, Detective, Sheriff, Officer, Victim, Witness, Attorney or Interpreter.";
@@ -106,10 +107,11 @@ async function name(title: string, words: Word[], courtroom: boolean, narrated: 
 
 /**
  * How a script's voices are named: a hearing's roles (judge, defendant…) for a courtroom case, a channel's made one
- * by its `court-script` add-on included (Nov 21), and a narrator looked for over a courtroom case or a compilation.
+ * by its `court-script` add-on included (Nov 21) while the channel has it, and a narrator looked for over a courtroom case or a compilation.
  */
-export function rolesOf(script: Pick<Script, "kind" | "compilation">): { courtroom: boolean; narrated: boolean; system: string } {
-  const courtroom = script.kind === "courtroom";
+export function rolesOf(script: Pick<Script, "kind" | "compilation" | "channel">): { courtroom: boolean; narrated: boolean; system: string } {
+  // A channel's that has since turned `court-script` off is named as its builds now are: plain (formats.ts courtroomNow).
+  const courtroom = courtroomNow(script);
   const narrated = courtroom || (script.compilation ?? false);
   return { courtroom, narrated, system: system(courtroom, narrated) };
 }

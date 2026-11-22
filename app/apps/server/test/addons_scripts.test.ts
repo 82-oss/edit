@@ -236,6 +236,26 @@ describe("court-script", () => {
     expect(rolesOf(court).system).toContain("court hearing");
     expect(rolesOf(plain)).toMatchObject({ courtroom: false, narrated: false });
   });
+
+  test("a channel that turns it off has its courtroom scripts paged and named as their builds now go: plain", () => {
+    const court = script(COURT.key, "courtroom");
+    const plain = script(COURT.key);
+    const clips: Clip[] = Array.from({ length: 40 }, (_, index) => [
+      { id: `f${index}`, startMs: index * 1_000, endMs: index * 1_000 + 600 } as Clip,
+      { id: `c${index}`, kind: "cut-in", startMs: 0, endMs: 3_000, narration: "A short line." } as Clip,
+    ]).flat();
+    // Its add-on gone from the channel: the stored kind stays, the build, the pages and the voices go plain together.
+    v2cloud.useSkillsForTests([lesson(COURT.key), lesson(PLAIN.key)]);
+    try {
+      expect(formatOfScript(court).kind).toBe("interrogation");
+      expect(pageCount(court, clips)).toBe(pageCount(plain, clips));
+      expect(rolesOf(court)).toMatchObject({ courtroom: false, narrated: false });
+      // A courtroom script of no channel stays a courtroom case.
+      expect(rolesOf({ ...court, channel: undefined })).toMatchObject({ courtroom: true, narrated: true });
+    } finally {
+      setItems();
+    }
+  });
 });
 
 describe("essay-script", () => {

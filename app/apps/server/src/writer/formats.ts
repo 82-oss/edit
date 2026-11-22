@@ -4,8 +4,9 @@
 // plan, so those names are put plainly (see `plain`). The guides themselves
 // are agent/writer/*.md.
 
+import * as addons from "../addons.ts";
 import { writerGuide } from "../agent_text.ts";
-import type { Kind } from "@edit/types/writer";
+import type { Kind, Script } from "@edit/types/writer";
 
 export type { Kind };
 
@@ -39,6 +40,18 @@ export interface Format {
 
 export function formatOf(kind: Kind, compilation: boolean, title: string, taught = false, court = false): Format {
   return { kind: taught && !(court && kind === "courtroom") ? "interrogation" : kind, compilation, style: style(title), taught };
+}
+
+/**
+ * Whether a script is a courtroom case now: stored as one, and, for a
+ * channel's, on a channel that still has `court-script` (as `formatOf`'s
+ * `court`). A channel that turns it off has its courtroom scripts built
+ * plain; their pages and voices read the same (Nov 22: they kept a
+ * courtroom's page layout and a hearing's roles while their builds went plain).
+ */
+export function courtroomNow(script: Pick<Script, "kind" | "channel">): boolean {
+  if (script.kind !== "courtroom") return false;
+  return typeof script.channel !== "string" || script.channel === "" || addons.courtScripts(script.channel);
 }
 
 export const isFoia = (format: Format): boolean => format.kind === "foia" && !format.compilation;
