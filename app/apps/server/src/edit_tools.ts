@@ -18,7 +18,7 @@ import { unusedNoteLinks } from "./note_links.ts";
 import { FRAME_SCALE, frameKey as screenFrameKey } from "./desktop_screen.ts";
 import * as diag from "./diag.ts";
 import * as uploads from "./uploads.ts";
-import { footageLabel } from "./script.ts";
+import { footageLabel, unansweredFiles } from "./script.ts";
 import * as editPlan from "./edit_plan.ts";
 import * as footageLevels from "./footage_levels.ts";
 import * as framing from "./framing.ts";
@@ -2081,6 +2081,15 @@ export function importStatus(app: App, p: Project): Args | null {
   const job = app.scripts.get(p.id);
   // Waiting by itself (the transcription plan's credit, the encoder, a dropped connection tried again): nothing to ask the person.
   const byItself = job?.state === "waiting" && !job.files.some((file) => file.state === "failed");
+  // Laid out without footage that couldn't come (the import's own call), the person not answered yet.
+  const gone = job === null || job.state === "done" ? unansweredFiles(p) : [];
+  if (gone.length > 0) {
+    return {
+      state: "done",
+      missing: gone.map((one) => ({ file: one.file, label: one.name, why: one.why })),
+      note: "Laid out without this footage: its ranges are black cards. Edit as usual; if the user gives another link for one, replace_footage fills its cards in place.",
+    };
+  }
   return job === null || job.state === "done"
     ? null
     : byItself

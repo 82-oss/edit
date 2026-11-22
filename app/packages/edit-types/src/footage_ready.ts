@@ -66,6 +66,10 @@ export interface FootageComing {
 export interface EditMissing {
   /** Files the timeline uses. */
   used: number;
-  /** Those not here, less the ones the person went on without; `asked` when only the person can put it right (a file gone from this machine with no cloud copy), so Retry is worth pressing. */
-  missing: { id: string; name: string; path: string; asked?: boolean }[];
+  /**
+   * Those not here, less the ones the person went on without; `asked` when only the person can put it right (a file gone
+   * from this machine with no cloud copy), so Retry is worth pressing. `link`: a script's file the import laid out
+   * without by itself (its id `file:<file>`, `why` it didn't come), its parts black: another link fills them.
+   */
+  missing: { id: string; name: string; path: string; asked?: boolean; link?: true; why?: string }[];
 }

@@ -56,6 +56,27 @@ describe("MissingCloud", () => {
     expect([...note.querySelectorAll("button")].map((button) => button.textContent?.trim())).toEqual(["Write without it", "Retry now"]);
   });
 
+  it("a script's file laid out without: why in plain words, and another link given there fills it", async () => {
+    const onLink = vi.fn(async () => {});
+    const item = { id: "file:FILE3", name: "Case 3", path: "FILE3", asked: true as const, link: true as const, why: "Google Drive can't find this file: it was deleted, or in the trash." };
+    mount(<MissingCloud items={[item]} noun="file" onRetry={async () => {}} onWithout={async () => {}} without={(it) => `Keep ${it === "it" ? "its" : "their"} parts black`} outcome={writeOutcome} onLink={onLink} />);
+    const note = document.querySelector("[role=status]")!;
+    expect(note.textContent).toContain("1 file didn't come in: Case 3");
+    expect(note.textContent).toContain("use another link");
+    expect(note.textContent).not.toContain("Edit keeps trying");
+    act(() => buttonNamed("Use another link")!.click());
+    const input = document.querySelector("input")!;
+    act(() => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      set.call(input, "https://drive.google.com/file/d/COPY/view");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => buttonNamed("Use it")!.click());
+    await settle();
+    expect(onLink).toHaveBeenCalledWith(item, "https://drive.google.com/file/d/COPY/view");
+    expect(document.querySelector("input")).toBeNull();
+  });
+
   it("Retry now asks again; a click away hides the note and the cloud brings it back", async () => {
     const onRetry = vi.fn(async () => {});
     mount(<MissingCloud items={[{ id: "r2", name: "CH03.avi", asked: true }]} onRetry={onRetry} onWithout={async () => {}} without={writeWithout} outcome={writeOutcome} />);

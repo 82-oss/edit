@@ -1,4 +1,5 @@
 import type { EditMissing } from "@edit/types/footage_ready";
+import { explain } from "@edit/types/problems";
 import { Cloud } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
@@ -19,8 +20,11 @@ import { Button, ConfirmDialog, escapeCloses, IconButton } from "./ui";
  * the editor's show the same one; Edit tries again by itself meanwhile.
  */
 
-/** `asked`: only the person can put it right, so Retry now is worth pressing. */
-export type MissingItem = { id: string; name: string; asked?: boolean };
+/**
+ * `asked`: only the person can put it right, so Retry now is worth pressing. `link`: a script's file the import laid
+ * out without (its parts black), which another link fills; `path` is its file, `why` what stopped it.
+ */
+export type MissingItem = { id: string; name: string; asked?: boolean; link?: true; path?: string; why?: string };
 
 /** "1 recording didn't come in: CH03.avi", "2 files didn't come in: a.mp4 and b.mp4". */
 export function missingWords(items: MissingItem[], one = "recording", many = `${one}s`): string {
@@ -36,6 +40,7 @@ export function MissingCloud({
   onWithout,
   without,
   outcome,
+  onLink,
 }: {
   items: MissingItem[];
   /** What each is ("recording", "video", "file"). */
@@ -47,6 +52,8 @@ export function MissingCloud({
   without: (it: "it" | "them") => string;
   /** What the answer does, said before it's confirmed. */
   outcome: (it: "it" | "them") => string;
+  /** Another link for a `link` item: it fills that file's black parts. */
+  onLink?: (item: MissingItem, url: string) => Promise<unknown>;
 }) {
   const [open, setOpen] = useState(true);
   const [asking, setAsking] = useState(false);
@@ -97,6 +104,7 @@ export function MissingCloud({
           >
             <p className="leading-snug text-fg break-words">{line}</p>
             {!items.some((item) => item.asked === true) && <p className="mt-1 leading-snug text-muted">Edit keeps trying to bring {it} in.</p>}
+            {onLink !== undefined && items.filter((item) => item.link === true).map((item) => <OtherLink key={item.id} item={item} named={items.length > 1} onLink={onLink} />)}
             <div className="mt-3 flex justify-end gap-1.5">
               <Button size="sm" variant="ghost" disabled={busy !== null} onClick={() => setAsking(true)}>
                 {without(it)}
@@ -124,6 +132,56 @@ export function MissingCloud({
           })
         }
       />
+    </div>
+  );
+}
+
+/** A file laid out without: what stopped it, in plain words, and another link for it, which fills its black parts. */
+function OtherLink({ item, named, onLink }: { item: MissingItem; named: boolean; onLink: (item: MissingItem, url: string) => Promise<unknown> }) {
+  const [open, setOpen] = useState(false);
+  const [url, setUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  const fix = explain(item.why ?? "", "download this file").fix;
+  const use = () => {
+    setBusy(true);
+    setFailed(null);
+    void onLink(item, url.trim())
+      .then(() => setOpen(false))
+      .catch((error: unknown) => setFailed(explain(error, "use that link").title))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div className="mt-2">
+      <p className="leading-snug text-muted break-words">
+        {named && <span className="text-fg">{item.name}: </span>}
+        {fix || "Its parts are black in the edit."}
+      </p>
+      {open ? (
+        <form
+          className="mt-1.5 flex gap-1.5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (url.trim()) use();
+          }}
+        >
+          <input
+            autoFocus
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+            placeholder="A Drive or YouTube link to the same video"
+            className="h-7 min-w-0 flex-1 rounded-md border border-line bg-black px-2 text-[12px] outline-none placeholder:text-faint focus:border-muted"
+          />
+          <Button size="sm" variant="primary" type="submit" busy={busy} disabled={busy || !url.trim()}>
+            Use it
+          </Button>
+        </form>
+      ) : (
+        <Button size="sm" variant="subtle" className="mt-1.5" onClick={() => setOpen(true)}>
+          Use another link
+        </Button>
+      )}
+      {failed !== null && <p className="mt-1 leading-snug text-danger">{failed}</p>}
     </div>
   );
 }
@@ -157,6 +215,11 @@ export function useEditMissing(id: string, mediaCount: number, back: unknown) {
   return {
     items: found?.missing ?? [],
     retry: async () => setFound(await api.retryMissingFootage(id)),
+    // Another link for a file laid out without: brought in behind, and asked again once it's had a moment.
+    link: async (item: MissingItem, url: string) => {
+      await api.answerFootage(id, item.path ?? "", { url });
+      setFound(await api.missingFootage(id));
+    },
     without: async (ids: string[]) => {
       let last: EditMissing | null = null;
       for (const media of ids) last = await api.goWithoutFootage(id, media);

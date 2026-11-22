@@ -185,7 +185,7 @@ test("footage gone without plays nothing in what's rendered, its time kept: its 
     const before = store.get(id)!.project;
     // Nothing gone without: the same project.
     expect(missingMedia.playable(app.store.home, before)).toBe(before);
-    missingMedia.goWithout(app, id, "m2");
+    await missingMedia.goWithout(app, id, "m2");
     const project = store.get(id)!.project;
     const shown = missingMedia.playable(app.store.home, project);
     expect(shown.clips.map((clip) => [clip.id, clip.type, clip.start, clip.duration])).toEqual([["c1", "video", 0, 30], ["c2", "solid", 30, 30]]);
@@ -232,7 +232,7 @@ test.skipIf(ffmpeg === null || ffprobe === null || addon === null)("an edit gone
     });
     // Asked about, then gone without: the export goes.
     expect((await missingMedia.missingOf(home, store.get(id)!.project)).missing.map((one) => one.id)).toEqual(["m2"]);
-    missingMedia.goWithout(app, id, "m2");
+    await missingMedia.goWithout(app, id, "m2");
     const out = join(dir, "gone.mp4");
     await registry.start(store, app.library, store.get(id)!.project, native().exportDefaults(), out, { drive: false, keepLocal: true });
     for (let tries = 0; registry.running() && tries < 1200; tries++) await Bun.sleep(50);

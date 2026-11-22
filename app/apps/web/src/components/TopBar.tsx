@@ -105,6 +105,10 @@ export function ExportWords() {
 const editWithout = (it: "it" | "them") => `Export with ${it === "it" ? "its" : "their"} parts black`;
 const editOutcome = (it: "it" | "them") => `${it === "it" ? "its" : "their"} clips stay black and silent in what's exported, the rest plays and exports, and Edit keeps trying to bring ${it} in: ${it === "it" ? "it plays" : "they play"} again once ${it === "it" ? "it's" : "they're"} here.`;
 
+/** What keeping a laid-out edit's missing file black does: nothing moves, and the note goes. */
+const keepBlack = (it: "it" | "them") => `Keep ${it === "it" ? "its" : "their"} parts black`;
+const keptBlack = (it: "it" | "them") => `${it === "it" ? "its" : "their"} parts stay black in the edit and in what's exported, and this note goes.`;
+
 /**
  * A cloud project’s sync as an icon only (its words are its tooltip): saved, syncing, offline, read-only, a problem;
  * while its footage is still coming here, how far that has got instead (`FootageCloud`), back to the sync once it's here;
@@ -119,7 +123,9 @@ function SyncState({ footage }: { footage: Ready | null }) {
   const back = useEditor((state) => (state.scriptJob?.back === true ? state.scriptJob.state : null));
   const missing = useEditMissing(id, mediaCount, back);
   // Footage that didn't come in comes first: export and share wait on it (missing_media.ts).
-  if (missing.items.length > 0) return <MissingCloud items={missing.items} noun="file" onRetry={missing.retry} onWithout={missing.without} without={editWithout} outcome={editOutcome} />;
+  // Only a script's files laid out without (their parts black already): keeping them black is the answer.
+  const black = missing.items.every((item) => item.link === true);
+  if (missing.items.length > 0) return <MissingCloud items={missing.items} noun="file" onRetry={missing.retry} onWithout={missing.without} without={black ? keepBlack : editWithout} outcome={black ? keptBlack : editOutcome} onLink={missing.link} />;
   if (footageShowing(footage)) return <FootageCloud answer={footage} />;
   if (!label) return null;
   const Icon = { ok: CloudCheck, busy: CloudSync, warn: label.text === "Read-only" ? Lock : CloudOff, bad: CloudAlert }[label.tone];

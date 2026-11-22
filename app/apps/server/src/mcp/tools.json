@@ -3305,7 +3305,7 @@
   },
   {
     "name": "replace_footage",
-    "description": "Give footage the import couldn't fetch another link: a Drive file or YouTube video of the same recording (the script's times stay). Use when get_edit_context's import is waiting and the user gives a replacement; the import carries on by itself. file is from import.missing.",
+    "description": "Give footage the import couldn't fetch another link: a Drive file or YouTube video of the same recording (the script's times stay). Use when get_edit_context's import is waiting, or laid out without it (its black cards), and the user gives a replacement; the import carries on by itself, or the cards fill in place. file is from import.missing.",
     "inputSchema": {
       "type": "object",
       "properties": {

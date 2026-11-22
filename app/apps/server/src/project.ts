@@ -314,6 +314,18 @@ export const GONE_WITHOUT_NOTE = "Gone without (it couldn't be downloaded): ";
 export function goneWithout(block: ScriptBlock): boolean {
   return block.kind === "footage" && (block.notes ?? []).some((note) => note.startsWith(GONE_WITHOUT_NOTE));
 }
+/**
+ * Beside `GONE_WITHOUT_NOTE` on a range the import laid out without by itself (its file surely gone, or failing try
+ * after try), the person not answered yet: why it didn't come, in plain words. The top bar's cloud says it with
+ * Retry now, another link, or keeping its parts black, which takes this note off.
+ */
+export const UNANSWERED_NOTE = "Laid out without it, the person not answered yet: ";
+/** Why a range's file didn't come in, when the import went on without it by itself and the person hasn't answered; else null. */
+export function unanswered(block: ScriptBlock): string | null {
+  if (!goneWithout(block)) return null;
+  const note = (block.notes ?? []).find((one) => one.startsWith(UNANSWERED_NOTE));
+  return note === undefined ? null : note.slice(UNANSWERED_NOTE.length);
+}
 /** The name of the file a range gone without is from (as its note keeps it). */
 export function goneWithoutName(block: ScriptBlock): string | null {
   const note = (block.notes ?? []).find((one) => one.startsWith(GONE_WITHOUT_NOTE));

@@ -27,7 +27,7 @@ import type { Router } from "./http/router.ts";
 import { checkKey } from "./media.ts";
 import type { Media, Project } from "./model.ts";
 import { join } from "./paths.ts";
-import { goneWithout, goneWithoutName } from "./project.ts";
+import { goneWithout, goneWithoutName, unanswered } from "./project.ts";
 import { stableStringify } from "./stable.ts";
 import { missingMedia } from "./store.ts";
 
@@ -150,7 +150,9 @@ export async function forAgent(home: string, project: Project): Promise<string> 
   const ranges = (project.script?.blocks ?? []).filter((block) => goneWithout(block) && typeof block.clip === "string" && project.clips.some((clip) => clip.id === block.clip));
   if (ranges.length > 0) {
     const names = [...new Set(ranges.map((block) => goneWithoutName(block) ?? "a file"))];
-    lines.push(`The person went on without ${names.join(", ")}, which couldn't be downloaded: ${ranges.length === 1 ? "its range holds its place" : `its ${ranges.length} ranges hold their place`} as black cards named "… · didn't come in", with no picture or sound. Leave them where they are unless the person asks, and say so wherever that leaves a gap.`);
+    const asked = ranges.some((block) => unanswered(block) !== null);
+    const who = asked ? `${names.join(", ")} couldn't be downloaded, so the import went on without ${names.length === 1 ? "it" : "them"}` : `The person went on without ${names.join(", ")}, which couldn't be downloaded`;
+    lines.push(`${who}: ${ranges.length === 1 ? "its range holds its place" : `its ${ranges.length} ranges hold their place`} as black cards named "… · didn't come in", with no picture or sound. Leave them where they are unless the person asks, and say so wherever that leaves a gap.${asked ? " The person can give another link at the cloud in the top bar (or with replace_footage), which fills them." : ""}`);
   }
   return lines.join(" ");
 }
@@ -175,7 +177,7 @@ function waitToTry(app: App, id: string, tries: number): number | null {
 }
 
 /** Project `id` has footage missing: tried again later by itself (once it waits, its next try follows the last). */
-function keepTrying(app: App, id: string): void {
+export function keepTrying(app: App, id: string): void {
   const listed = jobs.get(app.store.home, keyOf(id));
   if (listed !== undefined && jobs.live(listed)) return;
   waitToTry(app, id, 0);
@@ -190,6 +192,11 @@ function keepTrying(app: App, id: string): void {
 export async function tryAgain(app: App, id: string): Promise<EditMissing> {
   const live = app.store.get(id);
   if (live === null) throw new ApiError(404, "no such project");
+  // A script's files laid out without, each from its own link again (shared since, put back), in the background.
+  const script = await import("./script.ts");
+  for (const one of script.unansweredFiles(live.project)) {
+    await script.refill(app, id, one.file, null, true).catch((error: unknown) => diag.warn("cloud", `${id}: ${one.name} wasn't tried again: ${diag.messageOf(error)}`));
+  }
   const listed = jobs.get(app.store.home, keyOf(id));
   const before = typeof listed?.args.tries === "number" ? listed.args.tries : -1;
   if (!trying.has(id)) {
@@ -218,9 +225,12 @@ export async function tryAgain(app: App, id: string): Promise<EditMissing> {
   }
   let now: EditMissing;
   let still: Awaited<ReturnType<typeof missingOf>>["missing"];
+  let gone: ReturnType<typeof script.unansweredFiles>;
   try {
     now = await state(app, id, false);
-    still = (await missingOf(app.store.home, (app.store.get(id) ?? live).project, true)).missing;
+    const project = (app.store.get(id) ?? live).project;
+    still = (await missingOf(app.store.home, project, true)).missing;
+    gone = script.unansweredFiles(project);
   } catch (error) {
     // Its row never stays "running" with nothing running (Nov 20): the project deleted meanwhile ends it, anything
     // else waits its next try.
@@ -228,12 +238,12 @@ export async function tryAgain(app: App, id: string): Promise<EditMissing> {
     else waitToTry(app, id, before + 1);
     throw error;
   }
-  if (still.length === 0) {
+  if (still.length === 0 && gone.length === 0) {
     jobs.end(app.store.home, keyOf(id));
     return now;
   }
   const at = waitToTry(app, id, before + 1);
-  diag.info("cloud", `${id}: ${line(still)}; tried again${at === null ? " later" : ` at ${new Date(at).toISOString()}`}`);
+  diag.info("cloud", `${id}: ${line([...still, ...gone])}; tried again${at === null ? " later" : ` at ${new Date(at).toISOString()}`}`);
   return now;
 }
 
@@ -242,20 +252,35 @@ export async function state(app: App, id: string, follow = true): Promise<EditMi
   const live = app.store.get(id);
   if (live === null) throw new ApiError(404, "no such project");
   const { used, missing } = await missingOf(app.store.home, live.project);
-  // Tried by itself while anything is missing, the ones gone on without too: they play again once they're back.
-  if (follow && (missing.length > 0 || (await missingOf(app.store.home, live.project, true)).missing.length > 0)) keepTrying(app, id);
+  const { unansweredFiles } = await import("./script.ts");
+  const gone = unansweredFiles(live.project);
+  // Tried by itself while anything is missing, the ones gone on without too: they play again once they're back. A
+  // script's file laid out without the same: its black parts fill once it comes.
+  if (follow && (missing.length > 0 || gone.length > 0 || (await missingOf(app.store.home, live.project, true)).missing.length > 0)) keepTrying(app, id);
   // A file gone from this machine with no cloud copy is the person's to put back; a cloud proxy Edit fetches again itself.
   const local = new Set(missingMedia(live.project).map((media) => media.id));
-  return { used, missing: missing.map((media) => ({ id: media.id, name: media.name, path: media.path, ...(local.has(media.id) ? { asked: true } : {}) })) };
+  // A script's file the import laid out without by itself: the person's to answer, with another link or Retry now.
+  const files = gone.map((one) => ({ id: `${FILE}${one.file}`, name: one.name, path: one.file, asked: true as const, link: true as const, why: one.why }));
+  return { used, missing: [...missing.map((media) => ({ id: media.id, name: media.name, path: media.path, ...(local.has(media.id) ? { asked: true } : {}) })), ...files] };
 }
+
+/** The id of a script's file in the missing list (`state`), beside the media's own. */
+const FILE = "file:";
 
 /**
  * Exports `id` with medium `media`'s parts black (the person's answer): the export stops waiting for it, its clips
  * play black and silent, and Edit keeps trying to bring it in; once it's here it plays and exports again.
  */
-export function goWithout(app: App, id: string, media: string): void {
+export async function goWithout(app: App, id: string, media: string): Promise<void> {
   const live = app.store.get(id);
   if (live === null) throw new ApiError(404, "no such project");
+  // A script's file laid out without: its parts are black already, and stay so; its question goes.
+  if (media.startsWith(FILE)) {
+    const { keepBlack } = await import("./script.ts");
+    await keepBlack(app, id, media.slice(FILE.length));
+    diag.info("cloud", `${id}: keeping ${media.slice(FILE.length)}'s parts black, as asked`);
+    return;
+  }
   if (!live.project.media.some((one) => one.id === media)) throw new ApiError(404, "That file isn't in this project.");
   const all = readWaived(app.store.home);
   all[id] = [...new Set([...(all[id] ?? []), media])];
@@ -271,7 +296,7 @@ export function routes(router: Router<App>): void {
     .get("/api/projects/{id}/missing", async ({ app, params }) => reply(await state(app, params.id ?? "")))
     .post("/api/projects/{id}/missing/retry", async ({ app, params }) => reply(await tryAgain(app, params.id ?? "")))
     .post("/api/projects/{id}/missing/{media}/without", async ({ app, params }) => {
-      goWithout(app, params.id ?? "", params.media ?? "");
+      await goWithout(app, params.id ?? "", params.media ?? "");
       return reply(await state(app, params.id ?? "", false));
     });
 }

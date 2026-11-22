@@ -17,7 +17,7 @@ import { Processor } from "../src/media.ts";
 import type { MediaStatus, Probe, ScriptJob } from "../src/model.ts";
 import * as relay from "../src/relay.ts";
 import { waitingByItself } from "../src/remote_actions.ts";
-import { carryOn, copiesHere, Jobs, keyframeBefore, skipFootage, start, timing, wakeWhatPasses } from "../src/script.ts";
+import { carryOn, copiesHere, Jobs, keyframeBefore, replaceFootage, skipFootage, start, timing, wakeWhatPasses } from "../src/script.ts";
 import * as seams from "../src/seams.ts";
 import type { Excerpt } from "../src/seams.ts";
 import { fixtureHome, type Fixture } from "./helpers/home.ts";
@@ -102,18 +102,20 @@ function caseJob(home: string, id: string): jobs.Job | undefined {
   return jobs.get(home, jobs.keyOf("case", id));
 }
 
-test("an import waiting on the person survives a restart with its files' states, and carries on without fetching what it had", async () => {
+// Only when no footage at all came is there nothing to lay out: the import waits on the person.
+test("an import waiting on the person survives a restart with its files' states, and carries on when one comes", async () => {
   const scripts = new Jobs();
   const fixture = fixtureHome("import-waits", { services: { scripts } });
   try {
     const id = await twoFiles(fixture);
-    const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" ? new steps.NeedsPerson("This Drive file isn't shared. Set it so anyone with the link can view.") : null));
+    let shared = false;
+    const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" || !shared ? new steps.NeedsPerson("This Drive file isn't shared. Set it so anyone with the link can view.") : null));
     mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
     await start(fixture.app, id, false);
     const before = await settled(scripts, id);
     expect(before.state).toBe("waiting");
-    expect(before.files.map((file) => [file.state, file.why ?? null])).toEqual([["done", null], ["failed", "person"]]);
-    // Not tried again at once: only the person can answer that one (it's looked at again in half an hour, Nov 21).
+    expect(before.files.map((file) => [file.state, file.why ?? null])).toEqual([["failed", "person"], ["failed", "person"]]);
+    // Not tried again at once: only the person can answer these (they're looked at again in half an hour, Nov 21).
     expect(fetched).toEqual(["FILEcase0001", "FILEcase0002"]);
     // In the job table, waiting on the person and its next look: never cut short by a restart, never given up.
     expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", step: "waiting for the person", retry_at: before.files[1]!.retry_at });
@@ -124,11 +126,12 @@ test("an import waiting on the person survives a restart with its files' states,
     expect(after.get(id)).toEqual(before);
     expect(after.working(id)).toBe(false);
     const restarted = createApp({ store: fixture.store, services: { scripts: after } });
-    // Going on without the file nobody shared: the one fetched before is laid out from what the job kept.
-    await skipFootage(restarted, id, "FILEcase0002");
+    // The first file shared since: tried again, it comes, and the edit is laid out without the one still not shared.
+    shared = true;
+    expect(carryOn(restarted, id)).toBe("started");
     const done = await settled(after, id);
     expect(done.state).toBe("done");
-    expect(fetched).toEqual(["FILEcase0001", "FILEcase0002"]);
+    expect(fetched).toEqual(["FILEcase0001", "FILEcase0002", "FILEcase0001", "FILEcase0002"]);
     expect(fixture.store.get(id)!.project.clips.length).toBeGreaterThan(0);
     // Done: kept to show, its excerpts let go.
     expect(caseJob(fixture.home, id)).toMatchObject({ state: "done" });
@@ -213,8 +216,9 @@ test("JJ's dropped connection: the file waits and is tried again by itself until
 });
 
 // The rest of JJ's path: "Go on without it" on a file that's really gone took its 19 ranges out of the script and left a
-// 2:44 edit of a 25-minute one. Now its ranges hold their place as black cards and the rest is laid out as written.
-test("going on without a file that's really gone keeps its ranges in place as black cards: the edit is whole, and the agent is told", async () => {
+// 2:44 edit of a 25-minute one. Now its ranges hold their place as black cards and the rest is laid out as written; and
+// (Nov 22) the import does it by itself, never stopped on the file with the rest of the footage unused.
+test("a file that's really gone never stops the import: the rest is laid out, its ranges black cards in place, said once at the cloud, and the agent is told", async () => {
   const scripts = new Jobs();
   const fixture = fixtureHome("import-gone-without", { services: { scripts } });
   try {
@@ -222,11 +226,6 @@ test("going on without a file that's really gone keeps its ranges in place as bl
     const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" ? new steps.NeedsPerson("Google Drive can't find this file: it was deleted, or in the trash.") : null));
     mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
     await start(fixture.app, id, false);
-    const asked = await settled(scripts, id);
-    expect(asked.files[1]).toMatchObject({ state: "failed", why: "person" });
-    expect(caseJob(fixture.home, id)).toMatchObject({ state: "waiting", step: "waiting for the person", retry_at: asked.files[1]!.retry_at });
-
-    await skipFootage(fixture.app, id, "FILEcase0002");
     const done = await settled(scripts, id);
     expect(done.state).toBe("done");
     // Not fetched again: it's gone without.
@@ -247,9 +246,16 @@ test("going on without a file that's really gone keeps its ranges in place as bl
     const cutIn = project.clips.find((clip) => clip.id === blocks[1]!.clip)!;
     expect(cutIn.start).toBe(first.start + first.duration);
     expect(card.start).toBe(cutIn.start + cutIn.duration);
-    // A file nothing in the edit lacks: nothing for the editor's cloud to ask, nothing for the export to wait on.
+    // Nothing for the export to wait on; the editor's cloud says it, with why, for another link or Retry now.
     expect(await missingMedia.held(fixture.home, project)).toBeNull();
-    expect(await missingMedia.forAgent(fixture.home, project)).toContain("went on without Case 2, which couldn't be downloaded: its range holds its place as black cards");
+    expect((await missingMedia.state(fixture.app, id, false)).missing).toEqual([{ id: "file:FILEcase0002", name: "Case 2", path: "FILEcase0002", asked: true, link: true, why: "Google Drive can't find this file: it was deleted, or in the trash." }]);
+    expect(await missingMedia.forAgent(fixture.home, project)).toContain("Case 2 couldn't be downloaded, so the import went on without it: its range holds its place as black cards");
+    // Kept trying by itself from the job table, page open or not.
+    expect(jobs.get(fixture.home, jobs.keyOf("media", id))).toMatchObject({ state: "waiting" });
+    // "Keep its parts black": the question goes, the cards stay.
+    await missingMedia.goWithout(fixture.app, id, "file:FILEcase0002");
+    expect((await missingMedia.state(fixture.app, id, false)).missing).toEqual([]);
+    expect(fixture.store.get(id)!.project.clips.find((clip) => clip.id === gone.clip)).toMatchObject({ type: "solid" });
     // A Re-cut lays it out again the same way.
     await start(fixture.app, id, true);
     const recut = fixture.store.get(id)!.project;
@@ -561,24 +567,40 @@ test("a footage file whose original is on this Mac is cut from that copy, never 
 });
 
 // Fable's check of the work (verify.md finding 2): each wake started the job afresh and the file's tries went with it.
-test("a file on a dropped line is tried again after 1 minute, then 5, then 15, then 30", async () => {
+test("a file on a dropped line is tried again after 1 minute, then 5; failing a third time, the rest is laid out without it and it's tried on from there", async () => {
   const scripts = new Jobs();
   const fixture = fixtureHome("import-tries", { services: { scripts } });
   try {
     const id = await twoFiles(fixture);
     const dropped = "could not reach Edit's relay: The socket connection was closed unexpectedly";
-    cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" ? new Error(dropped) : null));
+    let down = true;
+    cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" && down ? new Error(dropped) : null));
     mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
     const seen: [number, number][] = [];
     const note = (job: ScriptJob) => seen.push([job.files[1]!.tries ?? 0, Math.round((job.files[1]!.retry_at! - Date.now()) / 60_000)]);
     await start(fixture.app, id, false);
     note(await settled(scripts, id));
-    for (let wake = 0; wake < 3; wake++) {
-      // What serve.ts' case resumer does when the table wakes it.
-      expect(carryOn(fixture.app, id)).toBe("started");
-      note(await settled(scripts, id));
-    }
-    expect(seen).toEqual([[1, 1], [2, 5], [3, 15], [4, 30]]);
+    // What serve.ts' case resumer does when the table wakes it.
+    expect(carryOn(fixture.app, id)).toBe("started");
+    note(await settled(scripts, id));
+    expect(seen).toEqual([[1, 1], [2, 5]]);
+    // The third failure in a row: it no longer holds the edit.
+    expect(carryOn(fixture.app, id)).toBe("started");
+    expect((await settled(scripts, id)).state).toBe("done");
+    const project = fixture.store.get(id)!.project;
+    const blocks = project.script!.blocks.filter((block) => block.kind === "footage");
+    expect(blocks.map((block) => typeof block.media === "string")).toEqual([true, false]);
+    expect(project.clips.find((clip) => clip.id === blocks[1]!.clip)).toMatchObject({ type: "solid", name: "Case 2 · didn't come in" });
+    expect((await missingMedia.state(fixture.app, id, false)).missing).toMatchObject([{ id: "file:FILEcase0002", link: true, why: dropped }]);
+    // Tried on by itself from the editor's row: the line back, its cards fill where they are.
+    expect(jobs.get(fixture.home, jobs.keyOf("media", id))).toMatchObject({ state: "waiting" });
+    down = false;
+    const card = project.clips.find((clip) => clip.id === blocks[1]!.clip)!;
+    await missingMedia.tryAgain(fixture.app, id);
+    const filled = fixture.store.get(id)!.project;
+    expect(filled.clips.find((clip) => clip.id === card.id)).toMatchObject({ type: "video", start: card.start, duration: card.duration });
+    expect((await missingMedia.state(fixture.app, id, false)).missing).toEqual([]);
+    expect(jobs.get(fixture.home, jobs.keyOf("media", id))).toBeUndefined();
   } finally {
     fixture.cleanup();
   }
@@ -764,7 +786,8 @@ test("a file not shared is looked at again by itself in 30 minutes: shared since
   try {
     const id = await twoFiles(fixture);
     let shared = false;
-    const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" && !shared ? new steps.NeedsPerson("This Drive file isn't shared. Set it so anyone with the link can view.") : null));
+    // Neither shared: nothing to lay out, so the import waits on the person.
+    const { fetched } = cloudFootage(SOUNDLESS, () => (!shared ? new steps.NeedsPerson("This Drive file isn't shared. Set it so anyone with the link can view.") : null));
     mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
     await start(fixture.app, id, false);
     const asked = await settled(scripts, id);
@@ -800,7 +823,7 @@ test("a file still not shared keeps its question through each quiet look, looked
   const told = mocked(spyOn(notices, "notify"));
   try {
     const id = await twoFiles(fixture);
-    const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" ? new steps.NeedsPerson("This Drive file isn't shared. Set it so anyone with the link can view.") : null));
+    const { fetched } = cloudFootage(SOUNDLESS, () => new steps.NeedsPerson("This Drive file isn't shared. Set it so anyone with the link can view."));
     mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
     await start(fixture.app, id, false);
     const first = await settled(scripts, id);
@@ -827,8 +850,6 @@ test("a file still not shared keeps its question through each quiet look, looked
       at = after.files[1]!.retry_at!;
     }
     expect(fetched.filter((file) => file === "FILEcase0002").length).toBe(4);
-    // The file kept in is never fetched again.
-    expect(fetched.filter((file) => file === "FILEcase0001").length).toBe(1);
     expect(heard.length).toBeGreaterThan(0);
     for (const job of heard) {
       expect(job.state).toBe("waiting");
@@ -837,9 +858,6 @@ test("a file still not shared keeps its question through each quiet look, looked
     // Nothing counted against it, and nobody told anything.
     expect(counts()).toEqual(before);
     expect(told).not.toHaveBeenCalled();
-    // The person can still answer between looks: going on without it lays the edit out.
-    await skipFootage(fixture.app, id, "FILEcase0002");
-    expect((await settled(scripts, id)).state).toBe("done");
   } finally {
     setSystemTime();
     fixture.cleanup();
@@ -860,7 +878,8 @@ test("an answer given while a quiet look is under way waits for it, never refuse
           if (gate !== null) await gate;
           throw new steps.NeedsPerson("This Drive file isn't shared. Set it so anyone with the link can view.");
         }
-        return { file, source: `drive:${file}`, key: `edit/originals/drive/${file}/a.mp4`, name: `${file}.mp4`, size: 100 };
+        // Neither shared (nothing to lay out: the import waits on the person, and its looks are quiet).
+        throw new steps.NeedsPerson("This Drive file isn't shared. Set it so anyone with the link can view.");
       }),
     );
     mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
@@ -872,11 +891,13 @@ test("an answer given while a quiet look is under way waits for it, never refuse
     await jobs.wake(fixture.home, ["case"]);
     // The look is under way: working, its question still on the page.
     expect(scripts.working(id)).toBe(true);
-    expect(scripts.get(id)).toMatchObject({ state: "waiting", files: [{ state: "done" }, { state: "failed", why: "person" }] });
+    expect(scripts.get(id)).toMatchObject({ state: "waiting", files: [{ state: "failed", why: "person" }, { state: "failed", why: "person" }] });
     const answer = skipFootage(fixture.app, id, "FILEcase0002");
     setTimeout(open, 300);
     await answer;
-    expect((await settled(scripts, id)).state).toBe("done");
+    await settled(scripts, id);
+    const notes = fixture.store.get(id)!.project.script!.blocks.flatMap((block) => (block.kind === "footage" && block.file === "FILEcase0002" ? (block.notes ?? []) : []));
+    expect(notes.some((note) => note.startsWith("Gone without"))).toBe(true);
   } finally {
     setSystemTime();
     fixture.cleanup();
@@ -900,6 +921,86 @@ test("going on without them all blacks only the person's files, never one waitin
     const notes = (file: string) => fixture.store.get(id)!.project.script!.blocks.flatMap((block) => (block.kind === "footage" && block.file === file ? (block.notes ?? []) : []));
     expect(notes("FILEcase0002").some((note) => note.startsWith("Gone without"))).toBe(true);
     expect(notes("FILEcase0001").some((note) => note.startsWith("Gone without"))).toBe(false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+/** A project with a script of five footage files, one range each, a cut-in after the first. */
+async function fiveFiles(fixture: Fixture): Promise<string> {
+  const id = fixture.store.create("import", { width: 640, height: 360, fps: 30 }).project.id;
+  await fixture.store.update(id, "test", (p) => {
+    p.style = "courtroom";
+    const footage = (n: number) => ({ kind: "footage" as const, file: `FILEcase000${n}`, url: `https://drive.google.com/file/d/FILEcase000${n}/view`, start: 0, end: 4, label: "00:00–00:04", words: ["where", "you"], notes: [`Case ${n}: link`] });
+    p.script = { blocks: [footage(1), { kind: "narration", text: "Then it happened." }, footage(2), footage(3), footage(4), footage(5)] };
+  });
+  return id;
+}
+
+// Nov 22 (TODO: the editor's import stopped for a file that's really gone, the rest of the footage unused).
+test("one of five files gone: the other four are laid out at once, the gone one's range a black card in its place", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-one-of-five", { services: { scripts } });
+  try {
+    const id = await fiveFiles(fixture);
+    const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0003" ? new steps.NeedsPerson("Video unavailable: this video has been removed by the uploader.") : null));
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    await start(fixture.app, id, false);
+    const job = await settled(scripts, id);
+    expect(job.state).toBe("done");
+    // Each fetched once: the gone one isn't asked again and again.
+    expect(fetched.sort()).toEqual(["FILEcase0001", "FILEcase0002", "FILEcase0003", "FILEcase0004", "FILEcase0005"]);
+    const project = fixture.store.get(id)!.project;
+    const footage = project.script!.blocks.filter((block) => block.kind === "footage");
+    expect(footage.map((block) => typeof block.media === "string")).toEqual([true, true, false, true, true]);
+    // In script order, butted: the black card holds the gone range's 4 s between its neighbours.
+    const clips = project.script!.blocks.map((block) => project.clips.find((clip) => clip.id === block.clip)!);
+    for (let n = 1; n < clips.length; n++) expect(clips[n]!.start).toBe(clips[n - 1]!.start + clips[n - 1]!.duration);
+    expect(clips[3]).toMatchObject({ type: "solid", duration: 120, name: "Case 3 · didn't come in" });
+    // Said once, plainly, with what to do: the cloud's line (another link or keep it black).
+    const said = (await missingMedia.state(fixture.app, id, false)).missing;
+    expect(said).toEqual([{ id: "file:FILEcase0003", name: "Case 3", path: "FILEcase0003", asked: true, link: true, why: "Video unavailable: this video has been removed by the uploader." }]);
+    expect(await missingMedia.held(fixture.home, project)).toBeNull();
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("another link given after the layout fills the black card where it is, sound and all, and nothing else moves", async () => {
+  const scripts = new Jobs();
+  const fixture = fixtureHome("import-link-after", { services: { scripts } });
+  try {
+    const id = await twoFiles(fixture);
+    const { fetched } = cloudFootage(SOUNDLESS, (file) => (file === "FILEcase0002" ? new steps.NeedsPerson("Google Drive can't find this file: it was deleted, or in the trash.") : null));
+    mocked(spyOn(seams.voiceover, "generate").mockResolvedValue({}));
+    await start(fixture.app, id, false);
+    expect((await settled(scripts, id)).state).toBe("done");
+    const before = fixture.store.get(id)!.project;
+    const gone = before.script!.blocks[2]!;
+    const card = before.clips.find((clip) => clip.id === gone.clip)!;
+    const others = before.clips.filter((clip) => clip.id !== card.id);
+
+    // The copy has sound.
+    const copy = cloudFootage(HEARD);
+    await replaceFootage(fixture.app, id, "FILEcase0002", "https://drive.google.com/file/d/FILEcopy00002/view");
+    const done = await settled(scripts, id);
+    expect(done.state).toBe("done");
+    expect(copy.fetched).toEqual(["FILEcopy00002"]);
+    expect(fetched).not.toContain("FILEcopy00002");
+    const after = fixture.store.get(id)!.project;
+    const block = after.script!.blocks[2]!;
+    expect(block).toMatchObject({ kind: "footage", file: "FILEcopy00002", url: "https://drive.google.com/file/d/FILEcopy00002/view" });
+    expect(typeof (block.kind === "footage" && block.media)).toBe("string");
+    expect((block.notes ?? []).some((note) => note.startsWith("Gone without") || note.startsWith("Laid out without"))).toBe(false);
+    // The same clip id, place and length, now the footage; its sound linked beneath it.
+    const picture = after.clips.find((clip) => clip.id === card.id)!;
+    expect(picture).toMatchObject({ type: "video", start: card.start, duration: card.duration, source_in: 0 });
+    const sound = after.clips.find((clip) => clip.type === "audio" && clip.link === picture.link && clip.link !== undefined);
+    expect(sound).toMatchObject({ start: card.start, duration: card.duration });
+    for (const clip of others) expect(after.clips.find((one) => one.id === clip.id)).toEqual(clip);
+    expect((await missingMedia.state(fixture.app, id, false)).missing).toEqual([]);
+    // A bad link is refused in plain words, and nothing changes.
+    await expect(replaceFootage(fixture.app, id, "FILEcopy00002", "https://docs.google.com/document/d/x")).rejects.toThrow("isn't missing from this edit");
   } finally {
     fixture.cleanup();
   }

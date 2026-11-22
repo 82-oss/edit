@@ -25,7 +25,7 @@ import * as mediaModule from "./media.ts";
 import { cloudEnabled } from "./relay.ts";
 import type { ClipColor, Media, Project, Script, ScriptBlock, ScriptJob, Style, TextStyle, TrackKind } from "./model.ts";
 import { NARRATION } from "./model.ts";
-import { addTrack, clipOf, duration as projectDuration, fps as fpsOf, freeTrack, freshId, GONE_WITHOUT_NOTE, goneWithout, goneWithoutName, insertTime, marksCut, mediaOf, REUSE_LABEL, reuseCaseLabel, reuseCaseOf, reusedLabel, WHOLE_SOURCE_LABEL, REUSED_SCRIPT_NOTE, reusedScriptBlock } from "./project.ts";
+import { addTrack, clipOf, duration as projectDuration, fps as fpsOf, freeTrack, freshId, GONE_WITHOUT_NOTE, goneWithout, goneWithoutName, insertTime, UNANSWERED_NOTE, unanswered, marksCut, mediaOf, REUSE_LABEL, reuseCaseLabel, reuseCaseOf, reusedLabel, WHOLE_SOURCE_LABEL, REUSED_SCRIPT_NOTE, reusedScriptBlock } from "./project.ts";
 import { fileName, fileStem, extension as pathExtension, join, parent } from "./paths.ts";
 import { byteLength, charCount, display, f32, isAlphanumeric, isWhitespace, parseHex, round, splitWhitespace, takeChars, trim } from "./rust.ts";
 import * as ranged from "./ranged_download.ts";
@@ -100,6 +100,9 @@ function waitingFor(app: App, id: string, file: string): Project {
  */
 export async function replaceFootage(app: App, id: string, file: string, url: string): Promise<void> {
   await afterLook(app, id);
+  // Laid out already, the file's parts black: the new link fills them in the edit as it is.
+  const live = app.store.get(id);
+  if (live !== null && laidOut(live.project) && pendingCase(live.project) === null) return refill(app, id, file, url);
   waitingFor(app, id, file);
   const replacement = footageFile(url.trim());
   if (replacement === null) throw new Error("Give a link to one video: a Google Drive file or a YouTube video (not a folder or a Doc).");
@@ -126,6 +129,15 @@ export async function skipFootage(app: App, id: string, file: string): Promise<v
   // Only the person's (failed, what the page lists): one waiting by itself (a dropped connection, room, credit, Drive's
   // limit) comes in, and blacking it too lost footage that was only waiting (Nov 21 audit).
   await afterLook(app, id);
+  // Laid out already without it (the import's own call): its parts are black, and the answer keeps them so.
+  const laid = app.store.get(id)?.project;
+  if (laid !== undefined && laidOut(laid) && pendingCase(laid) === null) {
+    const asked = unansweredFiles(laid).map((one) => one.file);
+    const which = file === "*" ? asked : asked.filter((one) => one === file);
+    if (which.length === 0) throw new Error("This edit is already laid out: add footage to it with insert_compilation_case, or import it as media.");
+    for (const one of which) await keepBlack(app, id, one);
+    return;
+  }
   const job = app.scripts.get(id);
   const files = file === "*" ? (job?.files ?? []).filter((one) => one.state === "failed").map((one) => one.file) : [file];
   if (files.length === 0) throw new Error("Nothing is waiting to be skipped.");
@@ -147,6 +159,153 @@ export async function skipFootage(app: App, id: string, file: string): Promise<v
   });
   diag.info("script", `${project.name}: going on without ${files.map(nameOf).join(", ")}, as asked: ${files.length === 1 ? "its" : "their"} ranges hold their place as black cards`);
   void start(app, id, false);
+}
+
+/** A file the import went on without by itself and the person hasn't answered: its file, its name, why it didn't come. */
+export interface Unanswered {
+  file: string;
+  name: string;
+  why: string;
+}
+
+/** The files of `project`'s script laid out without by the import itself, the person not answered yet (`UNANSWERED_NOTE`). */
+export function unansweredFiles(project: Project): Unanswered[] {
+  const out = new Map<string, Unanswered>();
+  for (const block of project.script?.blocks ?? []) {
+    if (block.kind !== "footage" || out.has(block.file)) continue;
+    const why = unanswered(block);
+    if (why !== null) out.set(block.file, { file: block.file, name: goneWithoutName(block) ?? footageLabel(project, block.file), why });
+  }
+  return [...out.values()];
+}
+
+/** The person keeps file `file`'s parts black: its question goes (its note off), the cards stay as they are. */
+export async function keepBlack(app: App, id: string, file: string): Promise<void> {
+  await app.store.update(id, "script", (project) => {
+    for (const block of project.script?.blocks ?? []) {
+      if (block.kind !== "footage" || block.file !== file) continue;
+      block.notes = (block.notes ?? []).filter((note) => !note.startsWith(UNANSWERED_NOTE));
+    }
+  });
+}
+
+/**
+ * Brings in footage file `file` of an edit already laid out without it (its ranges black cards), from `url` when the
+ * person gave another link, else from its own link again (Retry now: shared since, put back): each card still on the
+ * timeline becomes its range's footage, at the same place and length, so nothing around it moves. In the background;
+ * failing, its cards stay black and its question says why.
+ */
+export async function refill(app: App, id: string, file: string, url: string | null, wait = false): Promise<void> {
+  await afterLook(app, id);
+  const live = app.store.get(id);
+  if (live === null) throw new Error("no such project");
+  if (app.scripts.working(id)) throw new Error("The import is still working: wait for it to finish first.");
+  if (!(live.project.script?.blocks ?? []).some((block) => block.kind === "footage" && block.file === file && goneWithout(block))) throw new Error("That file isn't missing from this edit.");
+  let target = file;
+  if (url !== null) {
+    const replacement = footageFile(url.trim());
+    if (replacement === null) throw new Error("Give a link to one video: a Google Drive file or a YouTube video (not a folder or a Doc).");
+    target = replacement;
+    await app.store.update(id, "script", (project) => {
+      for (const block of project.script?.blocks ?? []) {
+        if (block.kind !== "footage" || block.file !== file || !goneWithout(block)) continue;
+        block.file = replacement;
+        block.url = url.trim();
+        if (replacement !== file) block.notes = [...(block.notes ?? []), `Replaced: ${file}`];
+      }
+    });
+  }
+  const prior = app.scripts.get(id);
+  const job: ScriptJob = { state: "downloading", files: [{ file: target, bytes: 0, state: "downloading" }] };
+  if (prior?.after !== undefined) job.after = prior.after;
+  if (!app.scripts.claim(app, id, job)) throw new Error("The import is still working: wait for it to finish first.");
+  const title = live.project.name;
+  const work = (async () => {
+    try {
+      const [bytes, name, cut] = cloudEnabled() ? await footageToCloud(app, id, 0, target) : await footageToDisk(app, id, 0, target);
+      await importExcerpts(app, id, cut);
+      await app.store.update(id, "script", (project) => fillCards(project, target, cut));
+      app.scripts.set(app, id, (one) => {
+        one.state = "done";
+        const entry = one.files[0];
+        if (entry !== undefined) {
+          entry.state = "done";
+          entry.bytes = bytes;
+          entry.total = bytes;
+          if (name !== null) entry.name = name;
+        }
+      });
+      app.scripts.finish(id, { state: "done" });
+      diag.info("script", `${title}: ${name ?? target} came in after the layout: its parts play in the edit now`);
+    } catch (error) {
+      const said = diag.messageOf(error);
+      diag.warn("script", `${title}: ${target} still didn't come in after the layout (${failure.kindOf(error)}): ${said}`);
+      await app.store
+        .update(id, "script", (project) => {
+          for (const block of project.script?.blocks ?? []) {
+            if (block.kind !== "footage" || block.file !== target || !goneWithout(block)) continue;
+            block.notes = [...(block.notes ?? []).filter((note) => !note.startsWith(UNANSWERED_NOTE)), `${UNANSWERED_NOTE}${diag.scrub(said)}`];
+          }
+        })
+        .catch(() => {});
+      app.scripts.set(app, id, (one) => {
+        one.state = "done";
+        const entry = one.files[0];
+        if (entry !== undefined) {
+          entry.state = "failed";
+          entry.error = said;
+          entry.why = failure.kindOf(error);
+        }
+      });
+      app.scripts.finish(id, { state: "done" });
+    }
+  })();
+  if (wait) await work;
+}
+
+/** A fetched file's excerpts into the project as media: those cut on this disk imported as files, cloud ones as made. */
+async function importExcerpts(app: App, id: string, cut: Excerpt[]): Promise<void> {
+  const paths = cut.filter((excerpt) => excerpt.cloud === null);
+  const made = cut.filter((excerpt) => excerpt.cloud !== null);
+  if (paths.length > 0) {
+    const [, , errors] = await importPaths(app, id, paths.map((excerpt) => excerpt.path), false, "script");
+    if (errors[0] !== undefined) throw new Error(errors[0]);
+  }
+  if (made.length > 0) await importMade(app, id, made.map((excerpt) => excerpt.cloud!), false, "script");
+}
+
+/**
+ * File `file`'s black cards in a laid-out edit become its footage: each range gone without gets its media, and its
+ * card, where it still is, a clip of the range at the card's place and length (its sound linked under it). A card the
+ * person took off stays off. The range no longer gone without, its notes go.
+ */
+export function fillCards(project: Project, file: string, cut: Excerpt[]): void {
+  const byPath = new Map(project.media.map((media) => [media.path, media.id]));
+  const audio = tracksOf(project, "audio")[0];
+  for (const block of project.script?.blocks ?? []) {
+    if (block.kind !== "footage" || block.file !== file || !goneWithout(block)) continue;
+    const found = cut.find((excerpt) => excerpt.from <= block.start + 1e-6 && block.end <= excerpt.to + 1e-6);
+    const mediaId = found === undefined ? undefined : byPath.get(found.path);
+    const media = mediaId === undefined ? undefined : mediaOf(project, mediaId);
+    if (found === undefined || media === undefined) continue;
+    block.media = media.id;
+    if (found.from > 0) block.media_start = found.from;
+    else delete block.media_start;
+    block.notes = (block.notes ?? []).filter((note) => !note.startsWith(GONE_WITHOUT_NOTE) && !note.startsWith(UNANSWERED_NOTE));
+    const at = isSome(block.clip) ? project.clips.findIndex((clip) => clip.id === block.clip) : -1;
+    const card = project.clips[at];
+    if (card === undefined || card.type !== "solid") continue;
+    const from = Math.min(Math.max(block.start - found.from, 0), media.duration);
+    const link = media.has_audio && audio !== undefined ? freshId(project, "l") : null;
+    const picture =
+      media.kind === "audio"
+        ? clipFrom({ id: card.id, track: card.track, start: card.start, duration: card.duration, color: card.color, ...(link !== null ? { link } : {}), name: `${media.name} · sound only`, type: "solid", fill: [0, 0, 0, 1], opacity: 1 })
+        : clipFrom({ id: card.id, track: card.track, start: card.start, duration: card.duration, color: card.color, ...(link !== null ? { link } : {}), type: "video", media: media.id, source_in: from, speed: 1, transform: { ...framing.fill(project, media), rotation: 0 } });
+    project.clips[at] = picture;
+    if (link !== null && audio !== undefined) {
+      project.clips.push(clipFrom({ id: freshId(project, "c"), track: audio, start: card.start, duration: card.duration, color: card.color, link, type: "audio", media: media.id, source_in: from, speed: 1 }));
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2743,7 +2902,33 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
     // and then five, while the import counted as working and every answer was refused): each file is settled at
     // once by failure.ts and the import waits in the job table, woken at its soonest try, at once when the
     // connection is back (jobs.wakePassing), or by the person's answer.
-    const missing = files.flatMap((_, index) => (toFetch(index) ? [index] : []));
+    let missing = files.flatMap((_, index) => (toFetch(index) ? [index] : []));
+    // Files surely gone (the person's: deleted, taken down, never shared; Edit's own bug) or failing try after try
+    // never hold the rest: once nothing else is still coming by itself, the edit is laid out without them, their
+    // ranges black cards, and the top bar's cloud says once which and what the person can do (Retry now, another
+    // link, or keep them black). Never when they're all the footage there is: then there's nothing to lay out.
+    if (missing.length > 0 && !inserting) {
+      const project = app.store.get(id)?.project ?? live.project;
+      const gone = (index: number) => {
+        const why = failure.kindOf(errors[index] ?? "");
+        return !steps.waitsByItself(why) || (why === "passing" && (app.scripts.get(id)?.files[index]?.tries ?? 0) >= GIVE_UP_AFTER);
+      };
+      const lost = missing.filter(gone).map((index) => files[index]!);
+      const rest = (project.script?.blocks ?? []).some((block) => block.kind === "footage" && !lost.includes(block.file) && !goneWithout(block));
+      if (lost.length === missing.length && rest) {
+        const job = app.scripts.get(id);
+        const nameOf = (one: string): string => job?.files.find((entry) => entry.file === one)?.name ?? footageLabel(project, one);
+        const whyOf = (one: string): string => diag.scrub(diag.messageOf(errors[files.indexOf(one)] ?? "It couldn't be downloaded."));
+        await app.store.update(id, "script", (edited) => {
+          for (const block of edited.script?.blocks ?? []) {
+            if (block.kind !== "footage" || !lost.includes(block.file) || goneWithout(block)) continue;
+            block.notes = [...(block.notes ?? []), `${GONE_WITHOUT_NOTE}${nameOf(block.file)}`, `${UNANSWERED_NOTE}${whyOf(block.file)}`];
+          }
+        });
+        diag.warn("script", `${title}: laying out without ${lost.map(nameOf).join(", ")}: ${lost.length === 1 ? "its" : "their"} ranges hold their place as black cards, and the top bar asks the person`);
+        missing = [];
+      }
+    }
     if (missing.length > 0 && !inserting) {
       const whys = missing.map((index) => failure.kindOf(errors[index] ?? ""));
       // Only the person's (a file deleted, never shared, a private video) is asked about: another link, or go on
@@ -2836,6 +3021,10 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
       finish({ state: "failed", error: result });
       return;
     }
+    // Laid out without a file that didn't come: it's tried again by itself from now (missing_media.ts's row), its cards
+    // filled once it's here, page open or not.
+    const after = app.store.get(id)?.project;
+    if (after !== undefined && unansweredFiles(after).length > 0) (await import("./missing_media.ts")).keepTrying(app, id);
     // Laid out: the import's part is done. What follows has its own lines, never failing it.
     if (late.length > 0) {
       app.scripts.set(app, id, (job) => {
@@ -2856,6 +3045,12 @@ export function start(app: App, projectId: string, recut: boolean): Promise<void
     if (!settled) finish({ state: "failed", error: message });
   });
 }
+
+/**
+ * A file failing on what passes this many times in a row (its first try, then a minute on, then five) no longer holds
+ * the rest of the edit: it's laid out without it, its parts black, and Retry now or another link fills them.
+ */
+export const GIVE_UP_AFTER = 3;
 
 /** Thrown by `place` when footage waits for its words on the transcription plan's credit. */
 class CreditWait extends Error {}
@@ -3075,7 +3270,9 @@ export function carryOn(app: App, id: string): "started" | "working" | "finished
   if (live === null) return "nothing";
   if (!unfinished(live.project) && app.scripts.get(id)?.state !== "voicing") {
     // Waited on the voice-over's credit, and its cut-ins were voiced or changed meanwhile: nothing waits any more.
-    if (app.scripts.get(id)?.state === "waiting" && laidOut(live.project)) {
+    // A laid-out edit's file brought in again (`refill`) and cut short by a restart: nothing runs, its cards stay black.
+    const was = app.scripts.get(id)?.state;
+    if ((was === "waiting" || was === "downloading") && laidOut(live.project)) {
       app.scripts.set(app, id, (job) => {
         job.state = "done";
         delete job.error;
