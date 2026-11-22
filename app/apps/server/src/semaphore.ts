@@ -8,7 +8,17 @@
 export class Semaphore {
   private waiting: (() => void)[] = [];
 
-  constructor(private permits: number) {}
+  private readonly all: number;
+
+  constructor(private permits: number) {
+    this.all = permits;
+  }
+
+  /** Tests: every permit back and nobody waiting (work another test file left running in it is no longer waited for). */
+  forgetForTests(): void {
+    this.permits = this.all;
+    this.waiting = [];
+  }
 
   /** `urgent`: someone is waiting on it now (a viewer's read), so it goes ahead of the background work in line. */
   async acquire(urgent = false): Promise<() => void> {

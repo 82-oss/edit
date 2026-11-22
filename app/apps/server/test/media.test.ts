@@ -3,7 +3,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import * as fs from "node:fs";
 
 import * as encoder from "../src/encoder.ts";
-import { isImagePath, isLocalCopy, isMediaPath, makeThumbs, Processor, Semaphore } from "../src/media.ts";
+import { backgroundSlots, isImagePath, isLocalCopy, isMediaPath, makeThumbs, Processor, Semaphore } from "../src/media.ts";
 import type { MediaStatus } from "../src/media.ts";
 import type { CachePaths } from "../src/native/index.ts";
 import * as failure from "../src/failure.ts";
@@ -73,6 +73,8 @@ test("a file opened with only its thumbnails and waveform to make waits for a pl
   // One for the whole run, like the slot below: nothing another file's test left on the encoder is waited for here.
   const left = encoder.others();
   encoder.reset();
+  // The background slot too: on the Check's Mac another file's work sat in it for good (45 s wasn't enough, nightly-98's commit).
+  backgroundSlots.forgetForTests();
   const poll = playing.hooks.pollMs;
   playing.hooks.pollMs = 5;
   try {
