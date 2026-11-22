@@ -2,6 +2,16 @@
 
 A handover for carrying on in another session. Delete this file once the work below is done.
 
+## Continuing from Windows: read this first
+
+Sphe means to carry on from Windows on the same PC. That changes what can be done:
+
+- **Edit doesn't run on Windows.** From Windows you can read and change the code (it's all pushed to `origin/main`) and talk to RunPod and the relay, but you can't render, export or share a video.
+- **The video's last steps need mandalorian booted into Linux**, where the finished removal, the finder's boxes and prod Edit live. Nothing below can be finished from Windows.
+- **Don't open the Boyfriends project in Edit on a Mac to finish it there.** A Mac has no finder, so it would plan removal the old way from the agent's marks and could take tonight's blurs off. The project doesn't hold its removal on other machines (`removal_held` is unset).
+- **What only exists on the Linux disk:** `~/.edit-prod` (prod Edit's data, including the finder's boxes under `cache/cleaned/found`), the lab at `~/.cache/removal-lab`, the finder's Python, and the rebuilt prod binary. The project itself and its cleaned strips are in the cloud.
+- **Useful from Windows:** the code work under "Still open after this video" (cleaning up the finder, the label box that clips the camera stamp, the relay's card estimate), and the WSL2 trial.
+
 ## What Sphe asked for
 
 1. Rethink subtitle and watermark removal (Vmake API, Vmake through Browser Use, and MiniMax on RunPod had all been unreliable).
@@ -82,7 +92,7 @@ Mandalorian's NVIDIA driver locked up twice on Nov 22 (about 20:45 and 21:34). T
 - MiniMax-Remover's licence is non-commercial (CC BY-NC). Sphe has been told three times and has not ruled on it.
 
 **Housekeeping**
-- Push the six commits; CI has not run on any of them.
+- Pushed to `origin/main` at 21:55 on Nov 22 (ten commits, some from other sessions); check that CI passed.
 - Re-enable nothing: no services were disabled. `gpu-guard.service` is new and enabled.
 - The 10-minute scheduled check in the T3 thread ("Boyfriends removal run: 10-minute check") should be deleted once the link is sent.
 - Sphe asked about moving to Windows. Advice given: no port; try WSL2 first (Windows as the desktop, Edit's Linux build and the agents inside it), about half a day to test.
