@@ -250,3 +250,60 @@ test.skipIf(ffmpeg === null)("a live Drive import whose file fails for a dropped
     mock.stop();
   }
 }, 60_000);
+
+// Nov 21 audit: a waiting import carried on from its downloads, one of them deleted meanwhile, failed that file as the
+// person's and ended; it comes down again instead.
+test.skipIf(ffmpeg === null)("a waiting Drive import whose download was deleted meanwhile downloads it again and comes in", async () => {
+  const mock = MockServer.start();
+  const restore = mock.useEnv({ EDIT_RELAY_TOKEN: "cloud-token" });
+  const fx = fixtureHome("drive-import-gone-download");
+  const importLocal = importing.hooks.importLocal;
+  const waits = failure.PASSING_WAITS.value;
+  failure.PASSING_WAITS.value = [0, 0, 0];
+  try {
+    mock.driveFile("1GoneGoneGoneGoneGone", video(fx.dir), "Bodycam 3.mp4");
+    const url = "https://drive.google.com/file/d/1GoneGoneGoneGoneGone/view";
+    const id = fx.app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const home = fx.app.store.home;
+    const key = importKey(id, url);
+    const asked = cloudThat(fx.dir, [new Error("could not reach Edit's relay: The socket connection was closed unexpectedly")]);
+    jobs.begin(home, "footage", id, { url, place: true, origin: "" }, key.split(":").at(-1)!, "downloading");
+    resumeImport(fx.app, jobs.get(home, key)!);
+    for (let i = 0; i < 400 && jobs.get(home, key)?.state === "running"; i++) await Bun.sleep(25);
+    expect(jobs.get(home, key)).toMatchObject({ state: "waiting" });
+    fs.rmSync(asked[0]!);
+    jobs.useResumers(home, { footage: (job) => resumeImport(fx.app, job) });
+    await jobs.wake(home, ["footage"]);
+    for (let i = 0; i < 400 && jobs.get(home, key) !== undefined; i++) await Bun.sleep(25);
+    expect(fx.app.store.get(id)!.project.media.length).toBe(1);
+    expect(asked).toHaveLength(2);
+  } finally {
+    importing.hooks.importLocal = importLocal;
+    failure.PASSING_WAITS.value = waits;
+    fx.cleanup();
+    restore();
+    mock.stop();
+  }
+}, 60_000);
+
+// Nov 21 audit: with no cloud there's no upload, and "nothing uploading it" was read as up: a Drive import removed the
+// footage it had just added (its media's file is the download itself).
+test.skipIf(ffmpeg === null)("with no cloud a Drive import keeps its footage", async () => {
+  const mock = MockServer.start();
+  const restore = mock.useEnv({ EDIT_RELAY_TOKEN: undefined });
+  const fx = fixtureHome("drive-import-no-cloud");
+  try {
+    mock.driveFile("1NoCloudNoCloudNoClou", video(fx.dir), "Bodycam 4.mp4");
+    const id = fx.app.store.create("Case", { width: 1920, height: 1080, fps: 30 }).project.id;
+    const [, added, errors] = await importDrive(fx.app, id, "https://drive.google.com/file/d/1NoCloudNoCloudNoClou/view", true, "");
+    expect(errors).toEqual([]);
+    expect(added).toHaveLength(1);
+    await Bun.sleep(200);
+    const media = fx.app.store.get(id)!.project.media[0]!;
+    expect(fs.existsSync(media.path)).toBe(true);
+  } finally {
+    fx.cleanup();
+    restore();
+    mock.stop();
+  }
+}, 60_000);

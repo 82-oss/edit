@@ -22,6 +22,7 @@ import * as seams from "./seams.ts";
 import * as storage from "./storage.ts";
 import { curl, driveError, encode, quote } from "./library.ts";
 import { join } from "./paths.ts";
+import { cloudEnabled } from "./relay.ts";
 import { serdeParse } from "./rust.ts";
 import * as script from "./script.ts";
 import * as uploads from "./uploads.ts";
@@ -136,7 +137,10 @@ function run(app: App, key: string, id: string, url: string, place: boolean, ori
   // Anything else that passes (a dropped line, "Download stopped", a full disk) waits in the table too and is tried again
   // by itself on failure.ts's schedule, its downloads resuming (Nov 20: it ended the row, so after a restart the
   // footage never came and nothing said so). Only the person's (not shared, deleted) or Edit's own bug ends it.
-  const now = retry === null ? importDriveNow(app, key, id, url, place, origin, resumed) : importDownloaded(app, key, id, retry.paths, place, origin, true, retry);
+  const now =
+    retry === null
+      ? importDriveNow(app, key, id, url, place, origin, resumed)
+      : downloadedAgain(app, key, id, retry.paths).then((paths) => importDownloaded(app, key, id, paths, place, origin, true, retry));
   const work = now.catch((error: unknown) => {
     if (steps.whyOf(error) === "limit") {
       const at = steps.retryAt("limit", Date.now(), error)!;
@@ -152,6 +156,26 @@ function run(app: App, key: string, id: string, url: string, place: boolean, ori
   };
   work.then(done, done);
   return work;
+}
+
+/**
+ * The downloads a waiting import tries again, each brought down again if it was deleted meanwhile (the cleaner, the
+ * person): imported from a download that was gone, the file failed as the person's and the import ended (Nov 21 audit).
+ */
+async function downloadedAgain(app: App, key: string, id: string, paths: string[]): Promise<string[]> {
+  const root = join(app.store.uploadsDir(id), "drive");
+  const out: string[] = [];
+  for (const path of paths) {
+    const dir = path.slice(0, path.lastIndexOf("/"));
+    const file = dir.slice(dir.lastIndexOf("/") + 1);
+    if (fs.existsSync(path) || dir !== join(root, file)) {
+      out.push(path);
+      continue;
+    }
+    diag.info("drive", `${id}: ${path.slice(dir.length + 1)}'s download was gone, so it comes down again`);
+    out.push(await script.download(dir, file, () => jobs.beat(app.store.home, key)));
+  }
+  return out;
 }
 
 async function importDriveNow(app: App, key: string, id: string, url: string, place: boolean, origin: string, resumed: boolean): Promise<Imported> {
@@ -234,8 +258,9 @@ function finish(app: App, key: string, id: string, added: string[], paths: strin
   noteAdded(app, id, added, again);
   // Upload-once: Edit's downloaded staging copies go once their uploads are
   // verified in the cloud (the import's background upload). A failed or
-  // pending upload keeps its copy — it may be the only one.
-  if (whole) {
+  // pending upload keeps its copy — it may be the only one. With no cloud there's no upload: the copy is the footage
+  // itself (its media's file), and `uploaded` answering "nothing going" removed it.
+  if (whole && cloudEnabled()) {
     const root = app.store.uploadsDir(id);
     for (const path of paths) {
       void seams.cloudMedia.uploaded(path).then((ok) => { if (ok) removeStagedCopy(path, root); });
