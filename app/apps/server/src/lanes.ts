@@ -12,7 +12,7 @@
 // share other_channels' reach into another channel from here.
 
 import * as channels from "./channels.ts";
-import { CHANGE_ARG, changeLesson, changedMost, groupRule, keepRule } from "./teaching.ts";
+import { CHANGE_ARG, changeLesson, changedMost, GUIDE_FROM, groupRule, keepRule, lessonRefusal, MEMORY_MOST, PART_MOST } from "./teaching.ts";
 import * as teachingConflicts from "./teaching_conflicts.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
@@ -173,7 +173,7 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
   const tools: { name: string; description: string; inputSchema: Record<string, unknown> }[] = [
     {
       name: "remember",
-      description: `Keep a lesson for this channel's ${MANY[lane]}: what the person said holds beyond this one, or said yes to keeping when you asked (never what they let pass unanswered), in their words. A lesson is a line or two, always in your instructions from the next turn; a longer part (at most 2,400 characters) with a note (when to read it) is read with read_skill when it fits. The same name changes the lesson: with change, just the lines that change (any lesson, however long). A teacher's to do.`,
+      description: `Keep a lesson for this channel's ${MANY[lane]}: what the person said holds beyond this one, or said yes to keeping when you asked (never what they let pass unanswered), in their words. A lesson is a line or two, always in your instructions from the next turn; a longer part with a note (when to read it), up to a whole guide (at most ${PART_MOST[lane].toLocaleString("en-US")} characters), is read with read_skill when it fits. The same name changes the lesson: with change, just the lines that change (any lesson, however long). A teacher's to do.`,
       inputSchema: {
         type: "object",
         properties: {
@@ -217,10 +217,6 @@ export function toolsFor(lane: WorkLane): { name: string; description: string; i
 }
 
 export const TOOL_NAMES = ["remember", "read_skill", "other_channels", "channel_videos"] as const;
-
-/** A lesson is a line or two; a part (with a note) is longer, and still short. */
-const MEMORY_MOST = 400;
-const PART_MOST = 2_400;
 
 function needCloud(): void {
   if (!v2cloud.enabled()) throw new Error("A channel's lessons need this computer signed in to Edit.");
@@ -272,11 +268,13 @@ async function remember(args: Record<string, unknown>, place: Place): Promise<st
   const changing = args.change !== undefined;
   if (changing && before === undefined) throw new Error(`there's no ${skill} to change: give its text to keep it as a new lesson`);
   const changed = changing ? changeLesson(skill, before!.text, args.change) : { text: String(args.text).trim(), added: String(args.text).trim() };
-  // A guide brought over whole (longer than a part can be) is never written over by a short lesson: its lines are changed with change, or what's new is a lesson of its own, which wins where they differ.
-  if (!changing && before !== undefined && before.text.length > PART_MOST) throw new Error(`${skill} is a guide brought over whole (${before.text.length} characters): change its lines with change, or keep this as a lesson of its own`);
+  // A guide is never written over by a short lesson: its lines are changed with change, or what's new is a lesson of its own, which wins where they differ. Kept whole again (its next version, as long), it's the guide.
+  if (!changing && before !== undefined && before.text.length > GUIDE_FROM && changed.text.length < before.text.length / 2) throw new Error(`${skill} is a guide (${before.text.length} characters): change its lines with change, or keep this as a lesson of its own`);
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
-  const most = changing ? changedMost(part ? PART_MOST : MEMORY_MOST, before!.text.length) : part ? PART_MOST : MEMORY_MOST;
-  if (changed.text.length > most) throw new Error(`at most ${most} characters (this is ${changed.text.length}): ${part ? "keep the part short: its rules, not their history" : "a line or two, in the person's words"}`);
+  const lane = PART_MOST[place.lane];
+  const most = changing ? changedMost(part ? lane : MEMORY_MOST, before!.text.length) : part ? lane : MEMORY_MOST;
+  const refused = lessonRefusal(changed.text, place.lane, part, most);
+  if (refused !== null) throw new Error(refused);
   // What it contradicts is said first, and kept only once the person says which holds (teaching_conflicts.ts): for a change, the words it puts in.
   const settled = typeof args.settled === "string" && args.settled.trim() !== "";
   const clashes = settled || changed.added === "" ? [] : await teachingConflicts.conflicts(skill, changed.added, lessonsOf(place));

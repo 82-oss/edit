@@ -56,6 +56,40 @@ export function changeLesson(name: string, text: string, given: unknown): { text
 /** How long a changed lesson may be: its kind's most, or for one already past it (a guide brought over whole), a little more than it was. */
 export const changedMost = (most: number, before: number): number => (before > most ? before + 400 : most);
 
+/** A memory, always in mind: a line or two. */
+export const MEMORY_MOST = 400;
+
+/**
+ * A part read when needed (it has a note), by lane: up to a whole guide of
+ * that lane, so one can be kept through the app (Nov 21: the courtroom script
+ * guides had to be saved from a script, past 2,400). The house's longest of
+ * each, with room: the cut-in script guide 35.6k, the thumbnail guide 20.6k,
+ * the bodycam ideas guide 14.7k, the edit's cut-ins skill 10.7k.
+ */
+export const PART_MOST: Record<"ideas" | "script" | "thumbnails" | "edit", number> = { script: 40_000, thumbnails: 24_000, ideas: 16_000, edit: 12_000 };
+
+/** Past this a part is a guide: refused when it reads as a transcript, and never written over by a short lesson. */
+export const GUIDE_FROM = 2_400;
+
+const STAMP = /^\s*[[(]?\d{1,2}:\d{2}(:\d{2})?([.,]\d+)?[\])]?(\s|-->|$)/u;
+const SPEAKER = /^\s*[A-Z][A-Za-z .'-]{0,30}:\s+\S/u;
+
+/**
+ * Why `text` can't be kept as a lesson of `lane` (null when it can): too long
+ * for its kind, or a guide-length text that reads as a transcript or a
+ * subtitle file (most of its lines times, or a speaker and their words) rather
+ * than rules. The house's guides have at most 2% of such lines.
+ */
+export function lessonRefusal(text: string, lane: keyof typeof PART_MOST, part: boolean, most: number): string | null {
+  if (text.length > most) return `at most ${most.toLocaleString("en-US")} characters (this is ${text.length.toLocaleString("en-US")}): ${part ? "keep the part to its rules, not their history" : "a line or two, in the person's words (a longer part, read when needed, takes a note)"}`;
+  if (!part || text.length <= GUIDE_FROM) return null;
+  const lines = text.split("\n").filter((line) => line.trim() !== "");
+  const stamped = lines.filter((line) => STAMP.test(line)).length;
+  const spoken = lines.filter((line) => SPEAKER.test(line)).length;
+  if (lines.length >= 20 && (stamped >= lines.length / 4 || spoken >= (lines.length * 2) / 5)) return `that reads as a transcript, not a ${lane === "edit" ? "part of the edit" : "guide"}: keep the rules it teaches, in a few lines each, never the words said in a video`;
+  return null;
+}
+
 /** The `change` argument every remember takes, as its schema says it. */
 export const CHANGE_ARG = {
   type: "array",

@@ -23,7 +23,7 @@ import * as tools from "./tools.ts";
 import * as removal from "./removal_lesson.ts";
 import * as removalSchedule from "./removal_schedule.ts";
 import * as textRemoval from "./text_removal.ts";
-import { changeLesson, changedMost } from "./teaching.ts";
+import { changeLesson, changedMost, lessonRefusal, MEMORY_MOST, PART_MOST } from "./teaching.ts";
 import * as teachingConflicts from "./teaching_conflicts.ts";
 import * as v2cloud from "./v2_cloud.ts";
 
@@ -503,10 +503,6 @@ async function archiveInLibrary({ app, args, projectId }: ToolCall): Promise<Con
   return text(archived ? `${name} is put away: out of every list, its versions kept (archived: false brings it back).` : `${name} is back.`);
 }
 
-/** A memory is a line or two; a part of the edit (a skill with a note, read when needed) is longer, and still short. */
-const MEMORY_MOST = 400;
-const SKILL_MOST = 2_400;
-
 async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> {
   named(app, projectId, { name: "-" });
   cloudOn();
@@ -529,8 +525,9 @@ async function remember({ app, args, projectId }: ToolCall): Promise<Content[]> 
   if (changing && before === undefined) throw new Error(`there's no ${skill} to change: give its text to keep it as a new skill`);
   const changed = changing ? changeLesson(skill, before!.text, args.change) : { text: String(args.text).trim(), added: String(args.text).trim() };
   const part = note !== undefined || before?.note !== undefined || (before?.text.length ?? 0) > MEMORY_MOST;
-  const most = changing ? changedMost(part ? SKILL_MOST : MEMORY_MOST, before!.text.length) : part ? SKILL_MOST : MEMORY_MOST;
-  if (changed.text.length > most) throw new Error(`at most ${most} characters (this is ${changed.text.length}): ${part ? "keep the part's skill short: its rules, not their history" : "a line or two, in the person's words"}`);
+  const most = changing ? changedMost(part ? PART_MOST.edit : MEMORY_MOST, before!.text.length) : part ? PART_MOST.edit : MEMORY_MOST;
+  const refused = lessonRefusal(changed.text, "edit", part, most);
+  if (refused !== null) throw new Error(refused);
   // What it contradicts is said first, and kept only once the person says which holds (teaching_conflicts.ts): for a change, the words it puts in.
   const settled = typeof args.settled === "string" && args.settled.trim() !== "";
   const clashes = settled || changed.added === "" ? [] : await teachingConflicts.conflicts(skill, changed.added, v2cloud.memories(places));

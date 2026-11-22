@@ -308,7 +308,7 @@ test("what the agent remembers: a line or two each, the global skill first and n
     expect(v2cloud.memories(place).map((one) => one.name)).toEqual(["global"]);
     // A part of the edit's skill: named with when it fits, read when needed, longer than a memory and still short.
     expect((await call(app, id, "remember", { skill: "subtitles", text: "y".repeat(500), reason: "the house's, cut down", note: "Subtitles after the intro." })).content[0]!.text).toContain("version 1");
-    expect((await call(app, id, "remember", { skill: "subtitles", text: "y".repeat(2_401), reason: "too long" })).content[0]!.text).toContain("at most 2400 characters");
+    expect((await call(app, id, "remember", { skill: "subtitles", text: "y".repeat(12_001), reason: "too long" })).content[0]!.text).toContain("at most 12,000 characters");
     await call(app, id, "remember", { skill: "subtitles", text: "- Locked bottom middle.\n- One line each.", reason: "JJ" });
     await v2cloud.refreshSkills();
     // One line changed in place, as a diff (Sphe, Nov 20): the rest stays word for word; words not there change nothing.
@@ -766,6 +766,36 @@ test("in a grouped channel a lesson goes to the group by default and to the chan
     expect(await lanes.call("remember", { skill: "slow", text: "Slow titles.", reason: "Sphe" }, { channel: "jcs", lane: "ideas" })).toBe("Kept as slow (version 1) in JCS (@jcs)'s ideas style: its agents have it from their next turn.");
   } finally {
     channels.useChannelsForTests([]);
+    cleanup();
+  }
+});
+
+test("a whole guide is kept through the app, as long as its lane's longest (Nov 21: the courtroom script guides were saved from a script), never a transcript, and a guide isn't written over by a short lesson", async () => {
+  const { cleanup } = hq("v2-guide-length");
+  const ask = teachingConflicts.hooks.ask;
+  teachingConflicts.hooks.ask = async () => ({ conflicts: [] });
+  try {
+    accounts.signedInForTests(["edit.bodycam", "agent.teach", "channel.court-ch"]);
+    v2cloud.useSkillsForTests([{ name: v2cloud.GLOBAL, text: "Edit's own workings.", key: v2cloud.skillKey(v2cloud.GLOBAL) }]);
+    const place = { channel: "court-ch", lane: "script" as const };
+    const guide = fs.readFileSync(join(import.meta.dir, "../../../../agent/writer/courtroom.md"), "utf8");
+    expect(guide.length).toBeGreaterThan(30_000);
+    expect(await lanes.call("remember", { skill: "courtroom-guide", text: guide, note: "How a courtroom script is written.", reason: "Sphe: keep the courtroom guide" }, place)).toContain("Kept as courtroom-guide (version 1)");
+    expect(mock.cloud.convex.libraryVersions.get("skill:@court-ch--script/courtroom-guide")?.[0]).toMatchObject({ text: guide.trim() });
+    await v2cloud.refreshSkills();
+    // Not written over by a line of its own name; kept whole again, it is.
+    await expect(lanes.call("remember", { skill: "courtroom-guide", text: "Short.", reason: "Sphe" }, place)).rejects.toThrow("is a guide");
+    expect(await lanes.call("remember", { skill: "courtroom-guide", text: `${guide}\n- One more rule.`, reason: "Sphe" }, place)).toContain("version 2");
+    // Past the lane's longest; a memory with no note stays a line or two.
+    await expect(lanes.call("remember", { skill: "too-long", text: "x".repeat(40_001), note: "n", reason: "Sphe" }, place)).rejects.toThrow("at most 40,000 characters");
+    await expect(lanes.call("remember", { skill: "no-note", text: "x".repeat(401), reason: "Sphe" }, place)).rejects.toThrow("at most 400 characters");
+    // A transcript dumped as a lesson: refused, whatever its length.
+    const transcript = Array.from({ length: 80 }, (_, at) => `${String(Math.floor(at / 6)).padStart(2, "0")}:${String((at * 10) % 60).padStart(2, "0")} OFFICER: Step out of the car, sir, and keep your hands where I can see them.`).join("\n");
+    await expect(lanes.call("remember", { skill: "case-transcript", text: transcript, note: "The case.", reason: "Sphe" }, place)).rejects.toThrow("reads as a transcript");
+    const spoken = Array.from({ length: 60 }, (_, at) => `${at % 2 === 0 ? "JUDGE" : "DEFENDANT"}: I understand, your honour, and I would like to say something about the night in question.`).join("\n");
+    await expect(lanes.call("remember", { skill: "case-words", text: spoken, note: "The case.", reason: "Sphe" }, place)).rejects.toThrow("reads as a transcript");
+  } finally {
+    teachingConflicts.hooks.ask = ask;
     cleanup();
   }
 });
