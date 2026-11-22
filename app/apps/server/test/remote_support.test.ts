@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { ConvexClient } from "convex/browser";
 import { getFunctionName } from "convex/server";
 import type { App } from "../src/app.ts";
-import { authTokenFetcher, execute, prepareEnrollment, recover, registerAutomatically, routes } from "../src/remote_support.ts";
+import { authTokenFetcher, execute, prepareEnrollment, recover, registerAutomatically, routes, watch } from "../src/remote_support.ts";
 import { Router } from "../src/http/router.ts";
 import { listen, respond } from "../src/http/server.ts";
 import { RemoteCommandReceipts } from "../src/remote_commands.ts";
@@ -296,4 +296,27 @@ test("a resume without a project fails without touching anything", async () => {
     expect(f.installs()).toBe(0);
     expect(f.calls.some(call => call.state === "failed" && String(call.detail).includes("No project was named"))).toBe(true);
   } finally { await f.clean(); }
+});
+
+test("an error ends the watch for commands and says so, so it's made again: one Server Error left JJ's Mac deaf for hours while it went on reporting (Nov 22)", () => {
+  let onError: ((error: Error) => void) | null = null;
+  let onItems: ((items: unknown[]) => void) | null = null;
+  let stopped = 0;
+  const c = { onUpdate: (_ref: unknown, _args: unknown, items: (items: unknown[]) => void, error: (error: Error) => void) => {
+    onItems = items; onError = error;
+    return () => { stopped++; };
+  } } as unknown as Pick<ConvexClient, "onUpdate">;
+  const got: unknown[][] = [];
+  let lost = 0;
+  watch(c, "device1", (items) => got.push(items), () => lost++);
+  onItems!([item()]);
+  expect(got.length).toBe(1);
+  onError!(new Error("[CONVEX Q(editSupport:pending)] Server Error"));
+  expect(lost).toBe(1);
+  expect(stopped).toBe(1);
+  // Once: a second error or a late answer on the dead watch does nothing.
+  onError!(new Error("again"));
+  onItems!([item("late")]);
+  expect(lost).toBe(1);
+  expect(got.length).toBe(1);
 });

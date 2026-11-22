@@ -162,8 +162,16 @@ async function client(app: App): Promise<ConvexClient> {
     try {
       await new Promise<void>((resolve, reject) => {
         const timeout = setTimeout(() => reject(new Error("Remote support authentication timed out.")), 20_000);
+        let was = false;
         connection.setAuth(authTokenFetcher(app.store.home), authenticated => {
-          if (authenticated) { clearTimeout(timeout); resolve(); }
+          if (authenticated) { was = true; clearTimeout(timeout); resolve(); return; }
+          // Convex gives up a sign-in it couldn't renew (a relay outage as the token turned) and never asks again: this
+          // connection would stay signed out for good, its watch for commands with it, so it's made again (Nov 22).
+          if (was && clients.get(app) === connection && !handling.has(app) && !activeUpdates.has(app)) {
+            diag.warn("remote", "the connection for commands lost its sign-in; made again in a minute");
+            close(app);
+            retry(app);
+          }
         });
       });
     } catch (error) { await connection.close(); throw error; }
@@ -307,11 +315,43 @@ async function connectOnce(app: App) {
   setting = settings(app);
   if (!activeUpdates.has(app)) await recover(app, c);
   if (generation(app) !== version || !settings(app).enabled || !authorized(app)) return;
-  const sub = c.onUpdate(query("pending"), { deviceId: setting.device, kinds: [...actions.KINDS] }, (items: Pending[]) => {
+  const sub = watch(c, setting.device, (items) => {
     deliveries.set(app, items);
     drain(app, c);
-  }, error => diag.warn("remote", diag.messageOf(error)));
+  }, () => {
+    if (subscriptions.get(app) !== sub) return;
+    subscriptions.delete(app);
+    deliveries.delete(app);
+    // A fresh connection, as at the start, unless a command is running on this one (its outcome is kept and reported by `retry`).
+    if (!handling.has(app) && !activeUpdates.has(app)) close(app);
+    retry(app);
+  });
   subscriptions.set(app, sub);
+}
+
+/**
+ * The live watch for this Mac's commands. An error ends it (`onLost`) and it's
+ * made again: Convex keeps a query's error as its answer and never asks again
+ * on its own, so one Server Error left the Mac deaf for good while it went on
+ * reporting (JJ's, Nov 22: two errors at 12:28 as its sign-in was renewed in a
+ * relay outage, and no command taken for hours after; Nov 10's nightly-70 Macs
+ * the same).
+ */
+export function watch(c: Pick<ConvexClient, "onUpdate">, device: string, onItems: (items: Pending[]) => void, onLost: () => void): () => void {
+  let lost = false;
+  const stop = c.onUpdate(query("pending"), { deviceId: device, kinds: [...actions.KINDS] }, (items: Pending[]) => {
+    if (!lost) onItems(items);
+  }, (error) => {
+    if (lost) return;
+    lost = true;
+    diag.warn("remote", `the watch for commands ended (${diag.messageOf(error)}); made again in a minute`);
+    stop();
+    onLost();
+  });
+  return () => {
+    lost = true;
+    stop();
+  };
 }
 
 /** Retain delivered commands during an auth refresh or another in-flight
