@@ -7,6 +7,8 @@ import { keepFor } from "./kept";
 
 export interface Account {
   signed_in: boolean;
+  /** The server is still restoring the sign-in it kept (at its start): signed in or not isn't known yet. */
+  restoring?: boolean;
   /** The accounts site answers: signing in is offered. */
   available: boolean;
   /** `sub`: their stable id from the sign-in (what a project's `created_by.sub` names). */
@@ -63,6 +65,26 @@ useAccount.subscribe((state, previous) => {
   if (state.account === null || state.account === previous.account) return;
   if (keepFor(whoOf(state.account))) window.location.reload();
 });
+
+/**
+ * What the app shows for who's signed in: Edit's loader while that isn't known (the page's first ask on its way, or the
+ * server still restoring its kept sign-in), the sign-in screen only once the server says it has none, else the app.
+ * The M1 trial, Nov 22: a page loaded in the seconds a cold start took to restore it stayed on "Sign in to Edit".
+ */
+export function accountGate(account: Account | null, loaded: boolean): "waiting" | "sign-in" | "app" {
+  if (account === null) return loaded ? "app" : "waiting";
+  if (account.restoring === true) return "waiting";
+  return account.signed_in || !account.required ? "app" : "sign-in";
+}
+
+/**
+ * How soon the gate asks the server again (ms): soon while it restores, every few seconds on the sign-in screen (a
+ * sign-in that lands by itself, a renewal that comes good, the accounts site answering again), never in the app.
+ */
+export function accountAskAgainMs(gate: ReturnType<typeof accountGate>, account: Account | null): number | null {
+  if (gate === "sign-in") return 2000;
+  return gate === "waiting" && account !== null ? 500 : null;
+}
 
 export async function loadAccount(): Promise<Account | null> {
   try {

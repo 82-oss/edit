@@ -70,6 +70,13 @@ interface State {
 /** Whether the accounts site answers (its JWKS): signing in is offered only then, so a build out before the site is never stuck on it. */
 let available = false;
 
+/**
+ * Until the sign-in kept from before is restored at start (`start`), this Edit doesn't know whether it's signed in: the
+ * page waits on its loader rather than show "Sign in to Edit". A page loaded in the seconds before (a cold start on an
+ * external drive, signed in at +3.7 s) stayed on the sign-in screen, signed in all along (the M1 trial, Nov 22).
+ */
+let restoring = true;
+
 async function checkAvailable(): Promise<void> {
   try {
     const answer = await fetch(`${accountsUrl()}/.well-known/jwks.json`, { signal: AbortSignal.timeout(10_000) });
@@ -161,6 +168,7 @@ export function tokenLeftMs(): number {
 export function status(): Record<string, unknown> {
   return {
     signed_in: state.person !== null && state.access !== null,
+    restoring,
     available: available || state.person !== null,
     person: state.person,
     perms: state.perms,
@@ -530,10 +538,15 @@ export function signInOnTerminal(on: boolean): void {
 /** At start: signed in before (a refresh token kept), renewed quietly; headless and signed out, a code to type. */
 export async function start(app: App): Promise<void> {
   state.home = app.store.home;
+  restoring = true;
   void checkAvailable();
   setInterval(() => void checkAvailable(), 10 * 60_000).unref?.();
   restored = renew(app.store.home);
-  await restored;
+  try {
+    await restored;
+  } finally {
+    restoring = false;
+  }
   // Signed-in team devices register automatically; saved disables stay off. A trial server
   // (EDIT_TRIALS=1) is this Mac's second Edit, never a device of its own.
   if (process.env.EDIT_TRIALS !== "1") {
@@ -838,6 +851,7 @@ export function signedInForTests(perms: string[], admin = false): void {
 }
 
 export function resetForTests(): void {
+  restoring = false;
   renewing = false;
   lapsed = false;
   lastRefused = 0;

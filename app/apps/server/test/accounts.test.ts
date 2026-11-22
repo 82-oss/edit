@@ -523,6 +523,24 @@ test("a cloud call made while the kept sign-in is restored at start waits for it
   }
 });
 
+test("the page is told the kept sign-in is still being restored at start, never signed out meanwhile (the M1 trial, Nov 22: a page loaded before it stayed on \"Sign in to Edit\")", async () => {
+  await keychain.set(app.store.home, "refresh-start-aaaaaaaa");
+  process.env.EDIT_TRIALS = "1";
+  try {
+    const starting = accounts.start(app);
+    expect(accounts.status()).toMatchObject({ signed_in: false, restoring: true });
+    await starting;
+    expect(accounts.status()).toMatchObject({ signed_in: true, restoring: false });
+    // Nothing kept: restored at once, the sign-in screen's to show.
+    accounts.resetForTests();
+    await keychain.remove(app.store.home);
+    await accounts.start(app);
+    expect(accounts.status()).toMatchObject({ signed_in: false, restoring: false });
+  } finally {
+    delete process.env.EDIT_TRIALS;
+  }
+});
+
 test("after a sleep every call waits on the one renewal, whose closed connection is asked again at once: none goes without a token", async () => {
   await keychain.set(app.store.home, "wake-token-aaaaaaaa");
   process.env.EDIT_RELAY_URL = process.env.EDIT_ACCOUNTS_URL;

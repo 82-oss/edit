@@ -5,7 +5,7 @@
 import { ExternalLink, RotateCw } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { loadAccount, onThisMac, signIn, signInWithCode, useAccount } from "../lib/account";
+import { accountAskAgainMs, accountGate, loadAccount, onThisMac, signIn, signInWithCode, useAccount } from "../lib/account";
 import { Tile } from "./Logo";
 import { Loader } from "./Logo";
 import { Button } from "./ui";
@@ -17,15 +17,23 @@ export function SignInGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     void loadAccount().finally(() => setLoaded(true));
   }, []);
+  const gate = accountGate(account, loaded);
+  // Asked again while it's still being restored, and on the sign-in screen, so a sign-in that comes good shows by itself.
+  const again = accountAskAgainMs(gate, account);
+  useEffect(() => {
+    if (again === null) return;
+    const timer = window.setInterval(() => void loadAccount(), again);
+    return () => window.clearInterval(timer);
+  }, [again]);
   // Who's signed in still coming: Edit's loader, as the page shows before the app's code is in.
-  if (!loaded && account === null)
+  if (gate === "waiting")
     return (
       <div className="fixed inset-0 grid place-items-center">
         <Loader />
       </div>
     );
   // The server didn’t answer: let the app show its own "can’t reach Edit".
-  if (account === null || account.signed_in || !account.required) return <>{children}</>;
+  if (gate === "app") return <>{children}</>;
   return <SignInScreen />;
 }
 
