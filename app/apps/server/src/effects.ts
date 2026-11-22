@@ -856,7 +856,26 @@ export const waits = {
   quietMs: 15_000,
   /** A page still working after this long is in a loop that never ends. */
   workingMostMs: 10 * 60_000,
+  /** A seek still unsettled after this long never settles (a map's frame waits for its tiles meanwhile: effect_map.html). */
+  seekMs: 60_000,
 };
+
+/**
+ * `window.__edit.seek(time)` in `page`, its answer. One that never settles is said with what the page's code said
+ * meanwhile, the code's to fix: an error thrown in a listener its promise waited on (a "seeked" handler whose read of
+ * the video threw) leaves the promise unresolved, and the render had said only "Chrome Runtime.evaluate timed out",
+ * the computer's moment, tried again to the same end (Nov 22, horror's v1-analog-look).
+ */
+async function seekIn(page: devtools.Page, time: number): Promise<{ error?: string; spent?: number }> {
+  try {
+    return await page.evaluate<{ error?: string; spent?: number }>(`window.__edit.seek(${time})`, waits.seekMs);
+  } catch (error) {
+    if (page.closed || !/timed out/.test(diag.messageOf(error))) throw error;
+    const errors = await page.evaluate<string[]>("[...window.__edit.errors]", 5_000).catch(() => [] as string[]);
+    if (errors.length === 0) throw error;
+    throw new Error(`its page's seek(${time.toFixed(2)}) never finished in ${waits.seekMs / 1000} s, after it said: ${errors.map(firstLines).join("; ")}`);
+  }
+}
 /** The share of the time its main thread runs that counts as working: an idle page's is a fraction of a percent, one drawing nearly all of it. */
 const WORKING_SHARE = 0.02;
 
@@ -1014,7 +1033,7 @@ export async function look(app: App, projectId: string, name: string, times: num
           const cost = measure && !played
             ? await page.evaluate<number>(`window.__edit.cost(${time}, ${1 / fps})`)
             : (await page.evaluate(`(() => { for (let drawn = 0; drawn < 5; drawn++) window.__edit.seek(${time} + drawn * ${1 / fps}); })()`), 0);
-          await page.evaluate(`window.__edit.seek(${time})`);
+          await seekIn(page, time);
           const scale = side > 0 ? Math.min(1, side / Math.max(width, height)) : 1;
           const shot = await page.call("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, clip: { x: 0, y: 0, width, height, scale } }, 90_000);
           if (typeof shot.data !== "string") throw new Error("Chrome drew nothing");
@@ -2356,7 +2375,7 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
               if (index % 60 === 0 && keyOf(app.store, id, folder(app.store, id, name), frame) !== key) throw new Outdated();
               const time = index / frame.fps;
               // A map's frame waits for its tiles while they keep coming (effect_map.html), the first ones longest.
-              const drawn = await page.evaluate<{ error?: string }>(`window.__edit.seek(${time})`, 60_000);
+              const drawn = await seekIn(page, time);
               if (drawn.error !== undefined) throw new Error(`its page threw at ${time.toFixed(2)} s: ${firstLines(drawn.error)}`);
               const shot = await page.call("Page.captureScreenshot", { format: "png", optimizeForSpeed: true, clip: { x: 0, y: 0, width: frame.width, height: frame.height, scale: 1 } }, 60_000);
               if (typeof shot.data !== "string") throw new Error(`Chrome drew nothing at ${time.toFixed(2)} s`);

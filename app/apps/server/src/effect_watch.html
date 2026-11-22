@@ -6,7 +6,44 @@
 // Edit waits as long as a page is getting somewhere (a painting of thousands of strokes, a map's tiles) and gives
 // up on one that isn't. Its main thread's work Chrome counts itself; a file arriving, a font loading and a worker's
 // answer are counted here. A worker not yet heard from counts as working: one painting off the main thread says
-// nothing until it's done.
+// nothing until it's done. And first, the page's pictures and videos asked for so that it can read them.
+(() => {
+  // The page has no origin, so its own files come to it as a stranger's: a picture or video asked without CORS can
+  // be shown but never read, and a canvas it's drawn on throws on every read (getImageData, WebGL's texImage2D, a
+  // VideoFrame), Edit serving each file to a page of no origin notwithstanding. Every <img>, <video> and <audio> is
+  // asked with CORS unless the page says otherwise, so its pixels can be read the ordinary way (Nov 22, horror's
+  // v1-analog-look: its texImage2D threw inside a seeked listener, seek never settled, and the render timed out).
+  // Here, not in the runtime, as no page drew a different picture for it: a read that threw before reads now.
+  const anonymous = (element) => {
+    if ((element instanceof HTMLMediaElement || element instanceof HTMLImageElement) && !element.hasAttribute("crossorigin")) element.setAttribute("crossorigin", "anonymous");
+  };
+  for (const kind of [HTMLMediaElement, HTMLImageElement]) {
+    const own = Object.getOwnPropertyDescriptor(kind.prototype, "src");
+    if (!own || !own.set) continue;
+    Object.defineProperty(kind.prototype, "src", {
+      ...own,
+      set(value) {
+        anonymous(this);
+        own.set.call(this, value);
+      },
+    });
+  }
+  const setAttribute = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function (name, value) {
+    if (typeof name === "string" && name.toLowerCase() === "src") anonymous(this);
+    return setAttribute.call(this, name, value);
+  };
+  // The page's own markup: each element as it's parsed, before what it names is asked for.
+  new MutationObserver((changes) => {
+    for (const change of changes)
+      for (const node of change.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        anonymous(node);
+        for (const inner of node.querySelectorAll("img, video, audio")) anonymous(inner);
+      }
+  }).observe(document, { childList: true, subtree: true });
+})();
+
 (() => {
   const edit = window.__edit;
   if (!edit) return;
