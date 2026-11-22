@@ -45,14 +45,23 @@ export const SKEW_SECONDS = 60;
  * with it), and so does every request after it in that copy (Nov 4: runs of
  * requests hanging 20 to 120 s with nothing logged, Marc's Mac 187 of them in
  * a day). jose's remote key set shares its read like that, and so did the
- * cut-offs here: now each request that needs a fresh one reads it itself.
+ * cut-offs here. So a request that needs keys another request is reading
+ * waits for them as data (`keySets`, looked at on its own timer), never on
+ * that read; one not landed in `READ_MS` (cancelled with its request, or
+ * slow) is let be and this request reads them itself. A cold copy then reads
+ * them once for a burst (Nov 22: bursts of 27 and 38 calls at a server's
+ * start each read them, and all those reads timed out together).
  */
-const keySets = new Map<string, { jwks: JSONWebKeySet; read: number; tried: number }>();
+const keySets = new Map<string, { jwks: JSONWebKeySet; read: number }>();
+/** Each address's last read of the keys here: when it began, and when it last failed (0: never). */
+const keyReads = new Map<string, { began: number; failed: number }>();
 /** The keys are read again after this, or at once (after 5 s since the last try) for a `kid` they lack. */
 const KEYS_EVERY_MS = 10 * 60_000;
 const KEYS_RETRY_MS = 5_000;
 /** How long a read of the accounts site may take. */
 const READ_MS = 5_000;
+/** How often a request waiting on another's read looks at what's been read. */
+const LOOK_MS = 20;
 /** The longest the sign-in check may take before the request is answered 503 (Edit asks again) instead of hanging. */
 export const CHECK_MS = 10_000;
 /** Tests verify against keys of their own. */
@@ -65,26 +74,54 @@ function issuer(env: AuthEnv): string {
   return (env.ACCOUNTS_ISSUER ?? ISSUER).replace(/\/+$/, "");
 }
 
-/** The keys to check a token signed with `kid` against: those last read, read again (by this request) when old or lacking it. */
+/** Reads the keys at `url` (this request's own read), noting when it began and whether it failed. */
+async function readKeys(url: string): Promise<void> {
+  const began = Date.now();
+  const reads = { began, failed: keyReads.get(url)?.failed ?? 0 };
+  keyReads.set(url, reads);
+  try {
+    const answer = await fetch(url, { signal: AbortSignal.timeout(READ_MS) });
+    const jwks = answer.ok ? ((await answer.json()) as JSONWebKeySet) : null;
+    if (jwks === null || !Array.isArray(jwks.keys)) throw new Error(`the accounts site answered ${answer.status}`);
+    keySets.set(url, { jwks, read: began });
+  } catch (error) {
+    reads.failed = Math.max(Date.now(), began);
+    console.log(JSON.stringify({ route: "keys", unread: String(error) }));
+  }
+}
+
+/**
+ * The keys to check a token signed with `kid` against: those last read, read again when old or lacking it, by this
+ * request or, when another began reading them a moment ago, by that one, waited for as data. A token whose key they
+ * lack when its read failed or never landed can't be checked (`KeysUnread`, 503); lacking it after a read that
+ * worked, it's refused (401). Until Nov 22 the failed re-read's case was checked against the old keys: a 401, which
+ * tells Edit the person is signed out.
+ */
 async function keysOf(env: AuthEnv, kid: string | undefined): Promise<JWTVerifyGetKey> {
   if (given !== null) return given;
   const url = `${issuer(env)}/.well-known/jwks.json`;
+  const holds = () => {
+    const set = keySets.get(url);
+    return set !== undefined && (kid === undefined || set.jwks.keys.some((key) => key.kid === kid));
+  };
+  // Whether the last read began has an outcome: its keys read, or it failed.
+  const settled = (began: number) => (keySets.get(url)?.read ?? -1) >= began || (keyReads.get(url)?.failed ?? 0) >= began;
   const known = keySets.get(url);
-  const now = Date.now();
-  const lacking = known === undefined || (kid !== undefined && !known.jwks.keys.some((key) => key.kid === kid));
-  const old = known === undefined || now - known.read > KEYS_EVERY_MS;
-  if ((lacking || old) && (known === undefined || now - known.tried > KEYS_RETRY_MS)) {
-    if (known !== undefined) known.tried = now;
-    try {
-      const answer = await fetch(url, { signal: AbortSignal.timeout(READ_MS) });
-      const jwks = answer.ok ? ((await answer.json()) as JSONWebKeySet) : null;
-      if (jwks !== null && Array.isArray(jwks.keys)) keySets.set(url, { jwks, read: now, tried: now });
-    } catch (error) {
-      console.log(JSON.stringify({ route: "keys", unread: String(error) }));
-    }
+  const lacking = !holds();
+  const old = known === undefined || Date.now() - known.read > KEYS_EVERY_MS;
+  if (lacking || old) {
+    const last = keyReads.get(url);
+    const going = last !== undefined && !settled(last.began) && Date.now() - last.began < READ_MS;
+    if (going && lacking) {
+      for (let looked = 0; looked * LOOK_MS < READ_MS && !settled(last.began); looked++) await new Promise((resolve) => setTimeout(resolve, LOOK_MS));
+      // That read never landed (its request cancelled, or slow past its time): this one reads them.
+      if (!settled(last.began)) await readKeys(url);
+    } else if (!going && (last === undefined || Date.now() - last.began > KEYS_RETRY_MS)) await readKeys(url);
   }
   const set = keySets.get(url);
   if (set === undefined) throw new KeysUnread();
+  const last = keyReads.get(url);
+  if (!holds() && last !== undefined && !(set.read >= last.began)) throw new KeysUnread();
   return createLocalJWKSet(set.jwks);
 }
 
@@ -103,6 +140,7 @@ export class KeysUnread extends Error {
 /** Tests: forget the keys read, so the next request reads them again. */
 export function forgetKeys(): void {
   keySets.clear();
+  keyReads.clear();
 }
 
 async function sha256(text: string): Promise<Uint8Array> {

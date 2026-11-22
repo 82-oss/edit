@@ -251,6 +251,64 @@ describe("relay sign-in gate", () => {
     }
   });
 
+  it("answers 503, never 401, to a token whose key it hasn't seen when the keys can't be read again; 401 once they're read without it", async () => {
+    // Nov 21 audit: the keys read before (without the rotated k2), the re-read failing: the token was checked against
+    // the old keys and refused, and a 401 tells Edit the person is signed out.
+    forgetKeys();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      let up = true;
+      vi.stubGlobal("fetch", vi.fn(async () => (up ? Response.json({ keys: [jwk] }) : new Response("down", { status: 502 }))));
+      expect(await caller(asked(await token()), env())).toMatchObject({ kind: "person" });
+      up = false;
+      const now = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(now + 6_000);
+      const rotated = await token({}, { kid: "k2", key: other });
+      expect(((await allow(asked(rotated), env(), "use", "convex")) as Response).status).toBe(503);
+      // Still within the 5 s after that failed read (not read again): unknown either way, still 503.
+      expect(((await allow(asked(rotated), env(), "use", "convex")) as Response).status).toBe(503);
+      // Read, and the key isn't there: a token signed with a key the accounts site doesn't have is refused.
+      up = true;
+      vi.spyOn(Date, "now").mockReturnValue(now + 12_000);
+      expect(((await allow(asked(rotated), env(), "use", "convex")) as Response).status).toBe(401);
+    } finally {
+      forgetKeys();
+    }
+  });
+
+  it("a cold copy reads the keys once for a burst of requests, each waiting on the keys as data, not on another's read", async () => {
+    // Nov 22: bursts of 27 and 38 calls at a server's start, each read the keys itself, all timed out together.
+    forgetKeys();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      let reads = 0;
+      vi.stubGlobal("fetch", vi.fn(async () => (reads++, await new Promise((resolve) => setTimeout(resolve, 50)), Response.json({ keys: [jwk] }))));
+      const made = await token();
+      const found = await Promise.all(Array.from({ length: 30 }, () => caller(asked(made), env())));
+      expect(found.every((one) => one?.kind === "person")).toBe(true);
+      expect(reads).toBe(1);
+    } finally {
+      forgetKeys();
+    }
+  });
+
+  it("a request waiting on another's read of the keys that never comes back reads them itself, rather than waiting for good", async () => {
+    forgetKeys();
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      let reads = 0;
+      // The first read never comes back (its request cancelled, Nov 4); the next answers.
+      vi.stubGlobal("fetch", vi.fn(() => (++reads === 1 ? new Promise<Response>(() => {}) : Promise.resolve(Response.json({ keys: [jwk] })))));
+      const made = await token();
+      void caller(asked(made), env()).catch(() => {});
+      const second = await caller(asked(made), env());
+      expect(second).toMatchObject({ kind: "person" });
+      expect(reads).toBe(2);
+    } finally {
+      forgetKeys();
+    }
+  }, 15_000);
+
   it("keeps each person's budget apart, and connections apart for anyone else", async () => {
     const one = await budgetKey(asked(null), { kind: "person", sub: "a", perms: [], admin: false });
     const two = await budgetKey(asked(null), { kind: "person", sub: "b", perms: [], admin: false });
