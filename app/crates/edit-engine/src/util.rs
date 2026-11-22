@@ -439,9 +439,11 @@ impl Drop for KillOnPanic {
 }
 
 /// A decoder child listed with this thread's export (if any) until it's reaped.
+/// One started for the agent's looks (`with_below`) goes below a play.
 pub struct Watched {
     pub child: std::process::Child,
     decoders: Option<std::sync::Arc<Decoders>>,
+    below: bool,
 }
 
 impl Watched {
@@ -450,12 +452,23 @@ impl Watched {
         if let Some(decoders) = &decoders {
             decoders.pids.lock().insert(child.id());
         }
-        Self { child, decoders }
+        let below = below_now();
+        if below {
+            keep_below(child.id());
+        }
+        Self {
+            child,
+            decoders,
+            below,
+        }
     }
 
     fn unlist(&mut self) {
         if let Some(decoders) = self.decoders.take() {
             decoders.pids.lock().remove(&self.child.id());
+        }
+        if std::mem::take(&mut self.below) {
+            let_go_below(self.child.id());
         }
     }
 
@@ -562,7 +575,94 @@ static PLAYING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::n
 /// The host says whether a person is watching a play on this machine now
 /// (the server's playing.ts): background analysis waits while one is.
 pub fn set_playing(playing: bool) {
-    PLAYING.store(playing, Ordering::Release);
+    let was = PLAYING.swap(playing, Ordering::AcqRel);
+    if was != playing {
+        // The agent's decoders (`below`) go into the background state, or out of it (a Mac).
+        for pid in BELOW_PIDS.lock().iter() {
+            darwin_background(*pid, playing);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The agent's looks, below a play
+//
+// The FFmpegs that decode for the agent's own previews (render_frame, contact
+// sheets, look_at_media) give way to a play as its effects' Chromes and the
+// looks' FFmpegs do (the server's playing.ts `keepBelow`), and run at full
+// speed when nobody watches: on Linux each is started at
+// [`BACKGROUND_NICE`], which costs nothing while nothing else wants the
+// CPU; on a Mac each is put in macOS's background state only while a play is
+// watched and taken out when it stops (a clamp held all the time cost a
+// WebGL page 60 frames a second down to 14 on an idle M1, Nov 17).
+
+std::thread_local! {
+    static BELOW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The agent's decoders now, by pid: put in the background state while a play is watched (a Mac).
+static BELOW_PIDS: parking_lot::Mutex<std::collections::BTreeSet<u32>> =
+    parking_lot::Mutex::new(std::collections::BTreeSet::new());
+
+/// Whether the decoders this thread starts are the agent's, below a play.
+pub fn below_now() -> bool {
+    BELOW.with(std::cell::Cell::get)
+}
+
+/// Runs `work` with the decoders it starts below a play (`below`), or as they are.
+pub fn with_below<T>(below: bool, work: impl FnOnce() -> T) -> T {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            BELOW.with(|current| current.set(self.0));
+        }
+    }
+    let _restore = Restore(BELOW.with(|current| current.replace(below)));
+    work()
+}
+
+/// Marks this thread's decoders below a play from now on: a thread of its own (the renderer's).
+pub fn below_from_now() {
+    BELOW.with(|current| current.set(true));
+}
+
+/// A decoder this thread started for the agent: niced at once (Linux), or listed to go in the background state while a play is watched (a Mac).
+fn keep_below(pid: u32) {
+    #[cfg(target_os = "linux")]
+    // SAFETY: lowering our own child's priority by its pid; a failure leaves it as it was.
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, pid as libc::id_t, BACKGROUND_NICE);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut listed = BELOW_PIDS.lock();
+        listed.insert(pid);
+        if playing() {
+            darwin_background(pid, true);
+        }
+    }
+}
+
+fn let_go_below(pid: u32) {
+    BELOW_PIDS.lock().remove(&pid);
+}
+
+/// Puts process `pid` in macOS's background state (efficiency cores, its disk and network behind the rest) or takes it out, as `taskpolicy -b/-B -p` does.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+fn darwin_background(pid: u32, on: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        const PRIO_DARWIN_PROCESS: libc::c_int = 4;
+        const PRIO_DARWIN_BG: libc::c_int = 0x1000;
+        // SAFETY: a plain call on our own child by its pid, listed only until it's reaped; a failure leaves it as it was.
+        unsafe {
+            libc::setpriority(
+                PRIO_DARWIN_PROCESS,
+                pid as libc::id_t,
+                if on { PRIO_DARWIN_BG } else { 0 },
+            );
+        }
+    }
 }
 
 /// Whether a person is watching a play on this machine now.
@@ -818,6 +918,57 @@ mod tests {
             // The thread that asked is left as it was.
             assert_eq!(niceness(&mut shell()), ours);
         }
+    }
+
+    /// The agent's looks' decoders (`with_below`): niced as they start on Linux, listed on a Mac to go in the
+    /// background state while a play is watched; let go once they're reaped. Any other decoder as it was.
+    #[test]
+    fn the_agents_decoders_go_below_a_play() {
+        let sleeper = || {
+            std::process::Command::new("sleep")
+                .arg("5")
+                .spawn()
+                .expect("sleep runs")
+        };
+        let niceness = |pid: u32| -> i32 {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "nice=", "-p", &pid.to_string()])
+                .output()
+                .expect("ps runs");
+            String::from_utf8_lossy(&out.stdout)
+                .trim()
+                .parse()
+                .expect("a niceness")
+        };
+        let ours = niceness(std::process::id());
+        let mut plain = Watched::new(sleeper());
+        let mut agents = with_below(true, || Watched::new(sleeper()));
+        // Carried into a thread a look starts (decode_all_into's shares), and gone from this one after.
+        let mut shared = with_below(true, || {
+            let below = below_now();
+            std::thread::spawn(move || with_below(below, || Watched::new(sleeper())))
+                .join()
+                .unwrap()
+        });
+        assert!(!below_now());
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(niceness(plain.child.id()), ours);
+            assert_eq!(niceness(agents.child.id()), BACKGROUND_NICE.max(ours));
+            assert_eq!(niceness(shared.child.id()), BACKGROUND_NICE.max(ours));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let listed = BELOW_PIDS.lock().clone();
+            assert!(listed.contains(&agents.child.id()) && listed.contains(&shared.child.id()));
+            assert!(!listed.contains(&plain.child.id()));
+        }
+        let ids = [agents.child.id(), shared.child.id()];
+        plain.stop();
+        agents.stop();
+        shared.stop();
+        assert!(ids.iter().all(|id| !BELOW_PIDS.lock().contains(id)));
+        let _ = ours;
     }
 
     #[test]

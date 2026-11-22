@@ -1345,10 +1345,12 @@ fn decode_all_into(
     let results: Vec<_> = if work.len() <= 1 {
         work.into_iter().map(run).collect()
     } else {
+        // The decoders each share starts are below a play when this thread's are (an agent's look).
+        let below = crate::util::below_now();
         std::thread::scope(|scope| {
             let handles: Vec<_> = work
                 .into_iter()
-                .map(|item| scope.spawn(move || run(item)))
+                .map(|item| scope.spawn(move || crate::util::with_below(below, || run(item))))
                 .collect();
             handles
                 .into_iter()
@@ -1443,7 +1445,7 @@ impl FrameRenderer {
             let mut last_project = String::new();
             let mut pool = ReaderPool::new(6, 2);
             loop {
-                let job = {
+                let (job, agent) = {
                     let mut queues = jobs.jobs.lock();
                     loop {
                         if jobs.stopped.load(Ordering::Acquire) {
@@ -1452,10 +1454,12 @@ impl FrameRenderer {
                             queues.ui.clear();
                             return;
                         }
+                        // An agent's look decodes below a play (`util::with_below`).
+                        let agent = !queues.agent.is_empty();
                         if let Some(job) =
                             queues.agent.pop_front().or_else(|| queues.ui.pop_front())
                         {
-                            break job;
+                            break (job, agent);
                         }
                         if jobs.ready.wait_for(&mut queues, IDLE).timed_out()
                             && queues.agent.is_empty()
@@ -1495,14 +1499,16 @@ impl FrameRenderer {
                         renderer.clear_peaks();
                         last_project = job.project.id.clone();
                     }
-                    render_job(
-                        renderer,
-                        &mut pool,
-                        &job.project,
-                        &job.frames,
-                        job.max_side,
-                        &cache,
-                    )
+                    crate::util::with_below(agent, || {
+                        render_job(
+                            renderer,
+                            &mut pool,
+                            &job.project,
+                            &job.frames,
+                            job.max_side,
+                            &cache,
+                        )
+                    })
                 });
                 // A crash may leave the GPU state half-way: start afresh next time.
                 if caught.is_err() {

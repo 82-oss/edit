@@ -191,46 +191,49 @@ pub struct MediaFrames {
 /// side by side (from the light preview when it's made), as one sheet.
 #[napi]
 pub async fn media_frames(request: MediaFramesRequest) -> napi::Result<MediaFrames> {
+    // The agent's look: its decoders give way to a play (`util::with_below`).
     crate::blocking("looking at media", move || {
-        let media: Media =
-            serde_json::from_value(request.media).map_err(|error| format!("media: {error}"))?;
-        let cache = crate::cache_dir().ok();
-        let count = request
-            .times
-            .as_ref()
-            .map_or(request.count.max(1) as usize, |times| times.len().max(1));
-        let mut spec = SheetSpec {
-            labels: (1..=count).map(|n| n.to_string()).collect(),
-            times: Some(Vec::new()),
-            budget: request.budget,
-            columns: request.columns,
-        };
-        let plan = sheet_plan(&spec, count, (media.width.max(2), media.height.max(2)));
-        let side = plan.cell_width.max(plan.cell_height);
-        let (images, times) = match &request.times {
-            // Picked times (frame_picks.ts): each decoded where it is.
-            Some(given) if !given.is_empty() => {
-                let mut images = Vec::with_capacity(given.len());
-                for time in given {
-                    let (mut one, _) =
-                        render::media_frames(&media, cache.as_deref(), *time, *time, 1, side)?;
-                    images.append(&mut one);
+        edit_engine::util::with_below(true, || {
+            let media: Media =
+                serde_json::from_value(request.media).map_err(|error| format!("media: {error}"))?;
+            let cache = crate::cache_dir().ok();
+            let count = request
+                .times
+                .as_ref()
+                .map_or(request.count.max(1) as usize, |times| times.len().max(1));
+            let mut spec = SheetSpec {
+                labels: (1..=count).map(|n| n.to_string()).collect(),
+                times: Some(Vec::new()),
+                budget: request.budget,
+                columns: request.columns,
+            };
+            let plan = sheet_plan(&spec, count, (media.width.max(2), media.height.max(2)));
+            let side = plan.cell_width.max(plan.cell_height);
+            let (images, times) = match &request.times {
+                // Picked times (frame_picks.ts): each decoded where it is.
+                Some(given) if !given.is_empty() => {
+                    let mut images = Vec::with_capacity(given.len());
+                    for time in given {
+                        let (mut one, _) =
+                            render::media_frames(&media, cache.as_deref(), *time, *time, 1, side)?;
+                        images.append(&mut one);
+                    }
+                    (images, given.clone())
                 }
-                (images, given.clone())
-            }
-            _ => render::media_frames(
-                &media,
-                cache.as_deref(),
-                request.start,
-                request.end,
-                count,
-                side,
-            )?,
-        };
-        spec.times = Some(times.clone());
-        Ok(MediaFrames {
-            image: encode(&compose(&images, &spec, &plan), &request.encode)?,
-            times,
+                _ => render::media_frames(
+                    &media,
+                    cache.as_deref(),
+                    request.start,
+                    request.end,
+                    count,
+                    side,
+                )?,
+            };
+            spec.times = Some(times.clone());
+            Ok(MediaFrames {
+                image: encode(&compose(&images, &spec, &plan), &request.encode)?,
+                times,
+            })
         })
     })
     .await
