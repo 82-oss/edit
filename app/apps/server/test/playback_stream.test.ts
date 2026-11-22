@@ -62,7 +62,9 @@ test("a chunk goes to the viewer as a fragmented MP4 of its own frames, from its
     await chunk(output, 4);
     fs.writeFileSync(`${dir}/manifest-v1.json`, JSON.stringify({ version: 1, output, size: fs.statSync(output).size, modified_ns: 0, fps: 30, chunks: [{ key: "one", at: 0, frames: 60 }, { key: "two", at: 60, frames: 60 }], sound: null }));
     for (const key of ["one", "two"]) {
-      const bytes = new Uint8Array(await segment(app, id, key, 30, output).arrayBuffer());
+      const answer = await segment(app, id, key, 30, output);
+      expect(answer.headers.get("cache-control")).toContain("immutable");
+      const bytes = new Uint8Array(await answer.arrayBuffer());
       const file = `${dir}/${key}.fragment.mp4`;
       fs.writeFileSync(file, bytes);
       // Fragmented (a moof), and its own 60 frames.
@@ -70,8 +72,29 @@ test("a chunk goes to the viewer as a fragmented MP4 of its own frames, from its
       const frames = new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-count_packets", "-select_streams", "v:0", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", file])).trim();
       expect(Number(frames)).toBe(60);
     }
-    expect(() => segment(app, id, "three", 30, output)).toThrow();
-    expect(() => segment(app, id, "../x", 30, output)).toThrow();
+    await expect(segment(app, id, "three", 30, output)).rejects.toThrow();
+    await expect(segment(app, id, "../x", 30, output)).rejects.toThrow();
+  } finally {
+    cleanup();
+  }
+});
+
+test("a chunk FFmpeg can't make whole is a 503 the page asks again, never an answer kept for good", async () => {
+  const { app, store, cleanup } = fixtureHome("playback-segment-short");
+  try {
+    const id = "p3";
+    const dir = chunkDir(app, id);
+    fs.mkdirSync(dir, { recursive: true });
+    // The plan says 60 frames; the chunk's file has 30 (a render cut short), and another's is no MP4 at all.
+    fs.writeFileSync(`${dir}/plan-v1.json`, JSON.stringify({ version: 1, extension: "mp4", chunks: [{ start: 0, end: 60, key: "short" }, { start: 60, end: 120, key: "broken" }] }));
+    await chunk(`${dir}/short.mp4`, 1);
+    fs.writeFileSync(`${dir}/broken.mp4`, "not a video");
+    const output = `${store.cacheDir()}/playback/${id}.mp4`;
+    for (const key of ["short", "broken"]) {
+      const answer = await segment(app, id, key, 30, output);
+      expect(answer.status).toBe(503);
+      expect(answer.headers.get("cache-control")).toBe("no-store");
+    }
   } finally {
     cleanup();
   }
@@ -107,7 +130,7 @@ test("the render before a new one stays playable for a viewer still on it: its c
     expect(still.soundUrl).toBe(before.soundUrl);
     // Cut from the kept file: fragmented, its own 60 frames.
     const file = `${store.cacheDir()}/old1.fragment.mp4`;
-    fs.writeFileSync(file, new Uint8Array(await segment(app, id, "old1", 30, output).arrayBuffer()));
+    fs.writeFileSync(file, new Uint8Array(await (await segment(app, id, "old1", 30, output)).arrayBuffer()));
     expect(Buffer.from(fs.readFileSync(file)).includes(Buffer.from("moof"))).toBe(true);
     expect(Number(new TextDecoder().decode(await tools.run([tools.ffprobe(), "-v", "error", "-count_packets", "-select_streams", "v:0", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0", file])).trim())).toBe(60);
     // The old sound address keeps the old sound; the new one's is a new address, and its sound.

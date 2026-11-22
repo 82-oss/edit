@@ -180,7 +180,38 @@ export async function stream(app: App, id: string, output: string, heard: boolea
  * frame), remuxed as it's asked for (a chunk's copy, ~0.1 s): nothing more is
  * kept on disk than the render's own chunks.
  */
-export function segment(app: App, id: string, key: string, fps: number, output: string): Response {
+/** The frames in a fragmented MP4's bytes: every moof's trun sample counts, summed (0 when there are none). */
+export function fragmentFrames(bytes: Uint8Array): number {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const type = (at: number) => String.fromCharCode(bytes[at + 4]!, bytes[at + 5]!, bytes[at + 6]!, bytes[at + 7]!);
+  const children = (from: number, to: number, visit: (at: number, size: number) => void) => {
+    for (let at = from; at + 8 <= to; ) {
+      const size = view.getUint32(at);
+      if (size < 8 || at + size > to) return;
+      visit(at, size);
+      at += size;
+    }
+  };
+  let frames = 0;
+  children(0, bytes.length, (moof, moofSize) => {
+    if (type(moof) !== "moof") return;
+    children(moof + 8, moof + moofSize, (traf, trafSize) => {
+      if (type(traf) !== "traf") return;
+      children(traf + 8, traf + trafSize, (trun, trunSize) => {
+        if (type(trun) === "trun" && trunSize >= 16) frames += view.getUint32(trun + 12);
+      });
+    });
+  });
+  return frames;
+}
+
+/**
+ * A chunk for smooth playback (`smoothStream.ts`): its own frames, remuxed as a fragmented MP4, answered only once
+ * FFmpeg has made all of them. It's kept for good by the page and the browser (immutable, and in Cache Storage), so an
+ * answer FFmpeg failed or cut short is a 503 they ask again (Nov 21 audit, P5: answered 200 before FFmpeg ran, an empty
+ * or short chunk froze playback at that second on every play, and a reload didn't help).
+ */
+export async function segment(app: App, id: string, key: string, fps: number, output: string): Promise<Response> {
   if (!/^[A-Za-z0-9_-]+$/.test(key)) throw new ApiError(400, "not a chunk");
   const dir = chunkDir(app, id);
   const manifest = manifestOf(dir);
@@ -194,10 +225,13 @@ export function segment(app: App, id: string, key: string, fps: number, output: 
   const seek = source.at > 0 ? ["-ss", ((source.at + 0.5) / fps).toFixed(6)] : [];
   const child = Bun.spawn([tools.ffmpeg(), "-v", "error", "-nostdin", ...seek, "-i", source.path, "-frames:v", String(source.frames), "-map", "0:v:0", "-c", "copy",
     "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
-  void child.exited.then((code) => {
-    if (code !== 0) diag.warn("playback", `${id}: chunk ${key} for the viewer: FFmpeg ended with ${code}`);
-  });
-  return new Response(child.stdout, { headers: { "content-type": "video/mp4", "cache-control": "private, max-age=31536000, immutable" } });
+  const [bytes, code] = await Promise.all([new Response(child.stdout).bytes(), child.exited]);
+  const frames = code === 0 ? fragmentFrames(bytes) : 0;
+  if (frames < source.frames) {
+    diag.warn("playback", `${id}: chunk ${key} for the viewer: ${code === 0 ? `${frames} of its ${source.frames} frames` : `FFmpeg ended with ${code}`}; asked again`);
+    return new Response("that chunk couldn't be read just now", { status: 503, headers: { "cache-control": "no-store", "retry-after": "1" } });
+  }
+  return new Response(bytes, { headers: { "content-type": "video/mp4", "cache-control": "private, max-age=31536000, immutable" } });
 }
 
 /** The sound's address now, versioned by the file it reads (the mix, then the joined render): a new one is a new address. */
