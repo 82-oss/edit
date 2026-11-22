@@ -215,7 +215,7 @@ impl Writer {
         }
     }
 
-    /// `what`, with FFmpeg's last words when it has said any.
+    /// `what`, with what FFmpeg said of why when it has said any (`util::ffmpeg_said`).
     fn failed(&mut self, what: &str) -> String {
         self.stdin = None;
         let _ = self.child.wait();
@@ -223,12 +223,7 @@ impl Writer {
             .stderr
             .take()
             .and_then(|thread| thread.join().ok())
-            .and_then(|text| {
-                text.lines()
-                    .rev()
-                    .find(|line| !line.trim().is_empty())
-                    .map(str::to_owned)
-            });
+            .and_then(|text| crate::util::ffmpeg_said(&text));
         match said {
             Some(line) => format!("{what}: {line}"),
             None => what.to_owned(),

@@ -2750,14 +2750,10 @@ fn join_chunks(
         .output()
         .map_err(|error| format!("ffmpeg: {error}"))?;
     if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(stderr
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("joining the chunks failed")
-            .trim()
-            .to_owned());
+        return Err(
+            crate::util::ffmpeg_said(&String::from_utf8_lossy(&result.stderr))
+                .unwrap_or_else(|| "joining the chunks failed".to_owned()),
+        );
     }
     Ok(())
 }
@@ -3027,14 +3023,10 @@ fn join(
         .output()
         .map_err(|error| format!("ffmpeg: {error}"))?;
     if !result.status.success() {
-        let stderr = String::from_utf8_lossy(&result.stderr);
-        return Err(stderr
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("joining the picture and sound failed")
-            .trim()
-            .to_owned());
+        return Err(
+            crate::util::ffmpeg_said(&String::from_utf8_lossy(&result.stderr))
+                .unwrap_or_else(|| "joining the picture and sound failed".to_owned()),
+        );
     }
     Ok(())
 }
@@ -3149,14 +3141,17 @@ fn render_picture(
     }
     let status = encoder.wait().map_err(|error| error.to_string())?;
     let stderr = stderr_thread.join().unwrap_or_default();
-    result?;
+    let said = crate::util::ffmpeg_said(&stderr);
+    // A refused encoder shows here only as the frames' "stopped early": FFmpeg's reason with it (not after a
+    // failure of the render's own, where FFmpeg was ended for it).
+    if let Err(error) = result {
+        return Err(match said {
+            Some(said) if error == "the encoder stopped early" => format!("{error}: {said}"),
+            _ => error,
+        });
+    }
     if !status.success() {
-        let last = stderr
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("encode failed");
-        return Err(last.trim().to_owned());
+        return Err(said.unwrap_or_else(|| "encode failed".to_owned()));
     }
     Ok(())
 }

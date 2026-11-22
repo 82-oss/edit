@@ -582,6 +582,76 @@ pub fn interactive_thread() {
     }
 }
 
+/// What FFmpeg said that names why it failed, from its stderr: its first
+/// lines that aren't the knock-on ones every failure ends with ("Nothing was
+/// written into output file", "Task finished with error code"…), each without
+/// its `[name @ 0x…]` prefix (an encoder's name kept), at most two, joined;
+/// else its last line. None when it said nothing. Until Nov 22 only the last
+/// line was kept, which is always a knock-on: a beneath export NVENC refused
+/// ("Invalid Level") read "Nothing was written…" seventeen times on Linux.
+pub fn ffmpeg_said(stderr: &str) -> Option<String> {
+    const KNOCK_ON: [&str; 9] = [
+        "Nothing was written into output file",
+        "Task finished with error code",
+        "Terminating thread with return code",
+        "Error sending frames to consumers",
+        "Could not open encoder before EOF",
+        "Conversion failed",
+        "Error while filtering",
+        "Error while processing the decoded data",
+        "Error muxing a packet",
+    ];
+    let plain = |line: &str| -> String {
+        let mut rest = line.trim();
+        let mut name: Option<&str> = None;
+        while let Some((inside, after)) = rest
+            .strip_prefix('[')
+            .and_then(|after| after.split_once(']'))
+        {
+            let Some((own, _)) = inside.split_once(" @ ") else {
+                break;
+            };
+            // An encoder's or decoder's own name ("h264_nvenc"), not FFmpeg's plumbing ("vost#0:0/…", "enc:…").
+            if name.is_none() && !own.contains(['#', ':', '/']) {
+                name = Some(own);
+            }
+            rest = after.trim_start();
+        }
+        match name {
+            Some(name) => format!("{name}: {rest}"),
+            None => rest.to_owned(),
+        }
+    };
+    let lines: Vec<&str> = stderr
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    let mut kept: Vec<String> = Vec::new();
+    for line in &lines {
+        let line = plain(line);
+        if KNOCK_ON.iter().any(|knock| line.contains(knock)) || kept.contains(&line) {
+            continue;
+        }
+        kept.push(line);
+        if kept.len() == 2 {
+            break;
+        }
+    }
+    if kept.is_empty() {
+        return lines.last().map(|line| plain(line));
+    }
+    let mut said = kept.join("; ");
+    if said.len() > 400 {
+        let mut end = 400;
+        while !said.is_char_boundary(end) {
+            end -= 1;
+        }
+        said.truncate(end);
+        said.push('…');
+    }
+    Some(said)
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -757,5 +827,33 @@ mod tests {
         assert!(playing());
         set_playing(false);
         assert!(!playing());
+    }
+
+    /// NVENC refusing a bitrate over H.264's top level (Nov 22): its reason, not the knock-on lines after it.
+    #[test]
+    fn ffmpegs_reason_is_kept_not_its_last_line() {
+        let stderr = "[h264_nvenc @ 0x5ecff358f000] InitializeEncoder failed: invalid param (8): Invalid Level.
+[vost#0:0/h264_nvenc @ 0x5ecff358eac0] [enc:h264_nvenc @ 0x5ecff358ef80] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.
+[vf#0:0 @ 0x5ecff35aa080] Error sending frames to consumers: Invalid argument
+[vf#0:0 @ 0x5ecff35aa080] Task finished with error code: -22 (Invalid argument)
+[vf#0:0 @ 0x5ecff35aa080] Terminating thread with return code -22 (Invalid argument)
+[vost#0:0/h264_nvenc @ 0x5ecff358eac0] [enc:h264_nvenc @ 0x5ecff358ef80] Could not open encoder before EOF
+[out#0/mp4 @ 0x5ecff358e5c0] Nothing was written into output file, because at least one of its streams received no packets.
+";
+        assert_eq!(
+            super::ffmpeg_said(stderr).as_deref(),
+            Some("h264_nvenc: InitializeEncoder failed: invalid param (8): Invalid Level.; Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.")
+        );
+        // Only knock-on lines: the last, as before.
+        assert_eq!(
+            super::ffmpeg_said("[out#0/mp4 @ 0x1] Nothing was written into output file.\n")
+                .as_deref(),
+            Some("Nothing was written into output file.")
+        );
+        assert_eq!(super::ffmpeg_said("\n  \n"), None);
+        assert_eq!(
+            super::ffmpeg_said("pipe:0: Invalid data found when processing input\n").as_deref(),
+            Some("pipe:0: Invalid data found when processing input")
+        );
     }
 }
