@@ -70,8 +70,7 @@ test("a file opened with only its thumbnails and waveform to make waits for a pl
   const playing = await import("../src/playing.ts");
   const { dir, app, cleanup } = fixtureHome("media-plays");
   playing.reset();
-  // The encoder is one for the whole run: an encode another file's test left going (its fake FFmpeg never ends) still
-  // held it here on the Check's Mac, and this clip's preview copy waited its turn behind it past the 5 s below.
+  // One for the whole run, like the slot below: nothing another file's test left on the encoder is waited for here.
   const left = encoder.others();
   encoder.reset();
   const poll = playing.hooks.pollMs;
@@ -85,7 +84,9 @@ test("a file opened with only its thumbnails and waveform to make waits for a pl
     app.media.ensure(picture, { kind: "image", duration: 5, width: 640, height: 360, fps: 30, has_audio: false } as never);
     app.media.ensure(clip, { kind: "video", duration: 5, width: 640, height: 360, fps: 30, has_audio: false } as never);
     // The import's preview copy is under way beside the play (once the shared slot is free); the picture's thumbnails wait.
-    for (let waited = 0; app.media.status(clip).thumbs === "pending" && waited < 5_000; waited += 10) await Bun.sleep(10);
+    // That slot (`backgroundSlots`) is one for the whole run too: on the Check's Mac another file's work was still in
+    // it for more than the 5 s this waited (one run in three, with the encoder free), so it waits as long as that takes.
+    for (let waited = 0; app.media.status(clip).thumbs === "pending" && waited < 45_000; waited += 10) await Bun.sleep(10);
     expect([app.media.status(clip).thumbs, encoder.others(), left]).not.toEqual(["pending", encoder.others(), left]);
     await Bun.sleep(20);
     expect(app.media.status(picture).thumbs).toBe("pending");
@@ -97,7 +98,7 @@ test("a file opened with only its thumbnails and waveform to make waits for a pl
     playing.reset();
     cleanup();
   }
-});
+}, 90_000);
 
 /** Waits for `source`'s stages to settle (none pending or working), from its `media` events. */
 function settled(store: { subscribe: (fn: (event: Record<string, unknown>) => void) => () => void }, source: string, done: (status: MediaStatus) => boolean): Promise<MediaStatus> {
