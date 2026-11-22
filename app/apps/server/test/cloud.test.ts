@@ -145,6 +145,23 @@ test("small files go up in one PUT with their content type, a presigned URL is n
   }
 });
 
+// Nov 21 audit: a file under 32 MiB was read with fs.readSync as it went up, every other request held for each read.
+test("a file going up is read off the server's thread", async () => {
+  const { spyOn } = await import("bun:test");
+  const { dir, cleanup } = scratch("cloud-put-async");
+  const synced = spyOn(fs, "readSync");
+  try {
+    const file = `${dir}/clip.mp4`;
+    fs.writeFileSync(file, pattern(5000));
+    await cloud.uploadFile(file, "edit/test/clip-async.mp4");
+    expect(mock.cloud.objects.get("edit/test/clip-async.mp4")?.length).toBe(5000);
+    expect(synced).not.toHaveBeenCalled();
+  } finally {
+    synced.mockRestore();
+    cleanup();
+  }
+});
+
 test("big files go up in parts, a failed part is retried with a fresh URL, and progress only grows", async () => {
   const { dir, cleanup } = scratch("cloud-multipart");
   try {

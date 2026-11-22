@@ -261,15 +261,44 @@ export function streamSource(stream: ReadableStream<Uint8Array> | AsyncIterable<
 }
 
 /** A source over an open file, from its start. */
-function fileSource(fd: number): Source {
-  let position = 0;
+function fileSource(handle: fs.promises.FileHandle): Source {
+  // Read off the server's thread (Nov 21 audit: `fs.readSync` held every other request for each 4 MiB read), and a
+  // few pieces ahead, so a part's bytes are here when its turn comes: read only as each was asked, the parts of a fast
+  // upload started one after another instead of together.
+  const CHUNK = 4 * MIB;
+  const AHEAD = 4;
+  let next = 0;
+  let ended = false;
+  const queue: Promise<Buffer>[] = [];
+  let left: Buffer | null = null;
+  const fill = () => {
+    while (!ended && queue.length < AHEAD) {
+      const at = next;
+      next += CHUNK;
+      const reading = handle.read(Buffer.allocUnsafe(CHUNK), 0, CHUNK, at).then(({ bytesRead, buffer }) => buffer.subarray(0, bytesRead));
+      // One read ahead past where the upload stops is never asked for: its failure isn't anyone's.
+      reading.catch(() => {});
+      queue.push(reading);
+    }
+  };
   return {
     async read(max) {
-      const buffer = Buffer.allocUnsafe(Math.min(max, 4 * MIB));
-      const read = fs.readSync(fd, buffer, 0, buffer.length, position);
-      if (read === 0) return null;
-      position += read;
-      return buffer.subarray(0, read);
+      if (left === null || left.length === 0) {
+        fill();
+        const coming = queue.shift();
+        if (coming === undefined) return null;
+        const got = await coming;
+        // A short read is the file's end (one that changed meanwhile is caught by its size: `uploadFile`).
+        if (got.length < CHUNK) {
+          ended = true;
+          queue.length = 0;
+        } else fill();
+        if (got.length === 0) return null;
+        left = got;
+      }
+      const out = left.subarray(0, Math.min(max, left.length));
+      left = left.subarray(out.length);
+      return out;
     },
   };
 }
@@ -592,12 +621,18 @@ export async function uploadFile(path: string, key: string, progress: Report = (
   checkUploadKey(key);
   if (signal?.aborted) throw new Error("the share was cancelled");
   await diag.timeOnAsync("cloud", "cloud: upload file", `${path} → ${key}`, async () => {
-    let fd: number;
+    let handle: fs.promises.FileHandle;
     let stat: fs.Stats;
     try {
-      fd = fs.openSync(path, "r");
-      stat = fs.fstatSync(fd);
+      handle = await fs.promises.open(path, "r");
     } catch (error) {
+      throw new Error(ioMessage(error));
+    }
+    const fd = handle.fd;
+    try {
+      stat = await handle.stat();
+    } catch (error) {
+      await handle.close().catch(() => {});
       throw new Error(ioMessage(error));
     }
     try {
@@ -609,10 +644,10 @@ export async function uploadFile(path: string, key: string, progress: Report = (
         if (now.size !== size || now.mtimeMs !== stat.mtimeMs) throw new TransferMismatch({ message: `${path} changed while uploading` });
         return;
       }
-      const sent = await upload(fileSource(fd), key, size, partSize(timing.filePart, size), FILE_PARALLEL, progress, signal, behind);
+      const sent = await upload(fileSource(handle), key, size, partSize(timing.filePart, size), FILE_PARALLEL, progress, signal, behind);
       if (sent !== size) throw new TransferMismatch({ message: `${path} changed while uploading (${size} bytes, sent ${sent})` });
     } finally {
-      fs.closeSync(fd);
+      await handle.close().catch(() => {});
     }
   });
 }
