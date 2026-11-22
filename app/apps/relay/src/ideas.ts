@@ -164,6 +164,9 @@ const IDEA_FUNCTIONS = new Map([
   ["thumbnails:removeAsset", "mutation"],
 ]);
 
+/** Whether Edit may call `path` as `kind` through `/v1/ideas/convex` (an older build's calls are checked against it). */
+export const ideaCallable = (path: string, kind: string): boolean => IDEA_FUNCTIONS.get(path) === kind;
+
 const MAX_BODY = 1024 * 1024;
 const MAX_IMAGES = 8;
 const MAX_IMAGE_BYTES = 15 * 1024 * 1024;

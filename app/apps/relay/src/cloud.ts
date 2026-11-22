@@ -79,7 +79,8 @@ const REVIEW_CALLS = new Map<string, string>([
 /** The reviews calls only someone signed in makes (Sphe, Nov 6: "anyone signed in should be able to share for review"). */
 const REVIEW_SHARE_CALLS = new Set(["reviews:remove"]);
 const mayShareReviews = (found: Caller) => isAdmin(found) || found.kind === "person";
-const callable = (path: string, kind: string) =>
+/** Whether Edit may call Convex function `path` as `kind` through `/v1/cloud/convex` (an older build's calls are checked against it: relay-old-clients.test.ts). */
+export const callable = (path: string, kind: string) =>
   EDIT_CALLS.get(path) === kind || (REVIEWS_PATH.test(path) && REVIEW_CALLS.get(path) === kind) || (WRITER_READS.has(path) && kind === "query");
 
 /** Each cloud route's permission: `use` for all of them (accounts' contract v2); null for a route that isn't one. */
