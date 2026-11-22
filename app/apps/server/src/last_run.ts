@@ -82,10 +82,9 @@ export function begin(home: string, reports = join(os.homedir(), "Library", "Log
   if (last !== null && last.pid !== process.pid) {
     const crash = crashOf(reports, last.pid, last.started);
     stopped = { build: last.build, started: last.started, crash, tail: tailBefore(join(home, "logs", "edit.log"), TAIL) };
-    diag.error(
-      "edit",
-      `the last run (${last.build}, started ${diag.stamp(last.started)}) stopped without quitting: ${crash ?? `macOS kept no crash report for it (stopped from outside, or ${THE_MACHINE} restarted)`}`,
-    );
+    // Started again since that run began: the computer restarted under it.
+    const restarted = Date.now() - os.uptime() * 1000 > last.started;
+    diag.error("edit", `the last run (${last.build}, started ${diag.stamp(last.started)}) stopped without quitting: ${crash ?? noReport(process.platform, restarted)}`);
   }
   try {
     fs.mkdirSync(join(home, "logs"), { recursive: true, mode: 0o700 });
@@ -94,6 +93,17 @@ export function begin(home: string, reports = join(os.homedir(), "Library", "Log
   } catch (error) {
     diag.warn("edit", `couldn't mark this run as running: ${diag.messageOf(error)}`);
   }
+}
+
+/**
+ * Why there's nothing more to say of a run that stopped without quitting and left no crash report, as it is on
+ * `platform` (Nov 22: Linux said "macOS kept no crash report"): `restarted`, the computer started again under it.
+ */
+export function noReport(platform: string, restarted: boolean): string {
+  if (restarted) return `${THE_MACHINE} restarted while it ran`;
+  if (platform === "darwin") return "macOS kept no crash report for it (stopped from outside)";
+  if (platform === "linux") return "Linux keeps no crash report Edit can read (stopped from outside, by the system for memory, or crashed)";
+  return `${platform} keeps no crash report Edit can read`;
 }
 
 /** This run is quitting: not a stop to report next time. */

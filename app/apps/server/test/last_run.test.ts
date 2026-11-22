@@ -63,7 +63,7 @@ test("a run that didn't quit is said at the next start, with its crash; one that
     // No report: said as such.
     fs.writeFileSync(mark, JSON.stringify({ pid: process.pid + 2, started: Date.now(), build: "nightly-58" }));
     lastRun.begin(home, reports);
-    expect(said().at(-1)).toContain("macOS kept no crash report for it");
+    expect(said().at(-1)).toContain(lastRun.noReport(process.platform, false));
   } finally {
     lastRun.quitting();
     fs.rmSync(home, { recursive: true, force: true });
@@ -81,4 +81,13 @@ test("a run macOS stopped for memory is said so", () => {
   } finally {
     fs.rmSync(reports, { recursive: true, force: true });
   }
+});
+
+// Nov 22: Linux said "macOS kept no crash report" too.
+test("a run that left no crash report is said as it is on each platform, and a restart under it as that", () => {
+  expect(lastRun.noReport("darwin", false)).toContain("macOS kept no crash report");
+  expect(lastRun.noReport("linux", false)).toBe("Linux keeps no crash report Edit can read (stopped from outside, by the system for memory, or crashed)");
+  expect(lastRun.noReport("linux", false)).not.toContain("macOS");
+  expect(lastRun.noReport("win32", false)).toBe("win32 keeps no crash report Edit can read");
+  expect(lastRun.noReport("linux", true)).toMatch(/restarted while it ran$/);
 });
