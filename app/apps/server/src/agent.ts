@@ -381,7 +381,8 @@ function sharedForReview(home: string, project: string): boolean {
 function lastAsked(entries: readonly Entry[]): number {
   for (let index = entries.length - 1; index >= 0; index--) {
     const item = entries[index]!;
-    if (item.kind === "user" && !item.text.startsWith("(Edit, automatically)")) return index;
+    // A turn Edit started itself (the end-of-turn check's fix, removal's wake: `by` edit) carries on the person's message, never one of its own.
+    if (item.kind === "user" && item.by !== "edit" && !item.text.startsWith("(Edit, automatically)")) return index;
   }
   return -1;
 }

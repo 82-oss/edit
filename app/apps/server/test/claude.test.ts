@@ -1307,3 +1307,45 @@ test("a message sent during a sign-in in progress doesn't hold the chat: its tur
     home.cleanup();
   }
 });
+
+test("a turn Edit starts itself after the person's (the end-of-turn check's fix, removal's wake) carries on their message: they're told it's done once, not again after it", async () => {
+  // Nov 21: the person got a second "Changes are done" after the end check's fix turn, and after removal's.
+  const home = fixtureHome("claude-one-notice");
+  const later = timing.later;
+  timing.later = (_ms, work) => void Promise.resolve().then(work);
+  const heard: { how: string; notice: notices.Notice }[] = [];
+  const viewer = notices.connect((text) => heard.push(JSON.parse(text) as (typeof heard)[number]));
+  notices.heard(viewer, JSON.stringify({ type: "attention", focused: true, path: "/" }));
+  try {
+    const project = home.store.create("One notice", { width: 1920, height: 1080, fps: 30 }).project.id;
+    await home.store.update(project, "test", (made) => {
+      made.hq = true;
+    });
+    const { agents, queries } = agentsWith(home);
+    const answer = async (index: number, text: string) => {
+      for (let tries = 0; queries.length <= index && tries < 100; tries++) await settle();
+      const q = queries[index]!;
+      q.push({ type: "system", subtype: "init", session_id: "session-one" });
+      q.push({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text }] } });
+      q.push({ type: "result", subtype: "success", is_error: false, usage: {} });
+      q.end();
+      for (let tries = 0; agents.runningProjects().length > 0 && tries < 100; tries++) await settle();
+      await settle();
+    };
+    await agents.send(project, "Make the title red", null, null);
+    await answer(0, "The title is red.");
+    expect(heard.map((one) => one.notice.title)).toEqual(["Changes are done"]);
+    // Edit's own turn on what its check found: its answer is in the chat, and no second notice.
+    await agents.send(project, EDIT_EVENT, null, null, " Your turn has ended, and Edit ran the edit's checks again.");
+    await answer(1, "I also fixed the caption that ran off the frame.");
+    expect(heard.map((one) => one.notice.title)).toEqual(["Changes are done"]);
+    // The person's next message is told again.
+    await agents.send(project, "Now make it blue", null, null);
+    await answer(2, "Blue.");
+    expect(heard.map((one) => one.notice.title)).toEqual(["Changes are done", "Changes are done"]);
+  } finally {
+    timing.later = later;
+    notices.resetForTests();
+    home.cleanup();
+  }
+});
