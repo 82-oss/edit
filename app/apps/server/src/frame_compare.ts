@@ -35,9 +35,24 @@ export function regionOf(value: unknown, width: number, height: number): Region 
   return { x: left, y: top, width: Math.min(Math.round(w), width - left), height: Math.min(Math.round(h), height - top) };
 }
 
-/** Frames `count` of `path` from `start` (seconds), at `fps`, as full-size PNGs `<prefix>NNN.png` in `dir` (a reference's moments, matched to the project's frames). */
+/** FFmpeg's word for a read that brought it no frames: a footage streamed from Edit's cloud whose range read dropped (Nov 21, look_at_effect beside a reference; the same moment read the next time). */
+const NOTHING_WRITTEN = /Nothing was written into output file/u;
+
+/**
+ * Frames `count` of `path` from `start` (seconds), at `fps`, as full-size PNGs
+ * `<prefix>NNN.png` in `dir` (a reference's moments, matched to the project's
+ * frames). Read again once when FFmpeg got nothing: a footage not here yet is
+ * streamed from the cloud (`/api/cloud/preview`), and one of its range reads
+ * can drop (past its end FFmpeg writes nothing without an error).
+ */
 export async function framesOf(path: string, start: number, count: number, fps: number, width: number, height: number, dir: string, prefix: string): Promise<string[]> {
-  await tools.run([tools.ffmpeg(), "-v", "error", "-y", "-ss", String(Math.max(0, start)), "-i", path, "-an", "-vf", `fps=${fps},scale=${width}:${height}`, "-frames:v", String(count), join(dir, `${prefix}%03d.png`)], { timeoutMs: 5 * 60_000, background: true });
+  const read = () => tools.run([tools.ffmpeg(), "-v", "error", "-y", "-ss", String(Math.max(0, start)), "-i", path, "-an", "-vf", `fps=${fps},scale=${width}:${height}`, "-frames:v", String(count), join(dir, `${prefix}%03d.png`)], { timeoutMs: 5 * 60_000, background: true });
+  try {
+    await read();
+  } catch (error) {
+    if (!NOTHING_WRITTEN.test(error instanceof Error ? error.message : String(error))) throw error;
+    await read();
+  }
   return fs.readdirSync(dir).filter((name) => name.startsWith(prefix) && name.endsWith(".png")).sort().map((name) => join(dir, name));
 }
 

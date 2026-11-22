@@ -1363,6 +1363,8 @@ async function zoomMedia(app: App, media: Media, args: Args, start: number, end:
   const zoom = frameCompare.regionOf(args.zoom, width, height)!;
   const fps = media.fps > 0 ? media.fps : 30;
   const dir = fs.mkdtempSync(join(app.store.cacheDir(), "media-zoom-"));
+  // Its whole copy when it's here, rather than streamed from the cloud a range at a time.
+  const source = localPreviews.pathOf(app.store.cacheDir(), media);
   try {
     let files: string[] = [];
     let times: number[] = [];
@@ -1370,13 +1372,13 @@ async function zoomMedia(app: App, media: Media, args: Args, start: number, end:
     if (args.every_frame === true) {
       const total = Math.max(1, Math.round((end - start) * fps));
       const count = Math.min(total, 24);
-      files = await frameCompare.framesOf(media.path, start, count, fps, width, height, dir, "z");
+      files = await frameCompare.framesOf(source, start, count, fps, width, height, dir, "z");
       times = files.map((_, index) => start + index / fps);
       const first = Math.floor(start * fps + 1e-6);
       if (count < total) rest = `Frames ${first + count}–${first + total - 1} are left: look again with start ${fixed(start + count / fps, 3)}.`;
     } else {
       times = (Array.isArray(args.times) ? (args.times as unknown[]) : [start]).filter((one): one is number => typeof one === "number" && Number.isFinite(one) && one >= 0).slice(0, 8);
-      for (const [index, time] of times.entries()) files.push(...(await frameCompare.framesOf(media.path, time, 1, fps, width, height, dir, `z${index}-`)));
+      for (const [index, time] of times.entries()) files.push(...(await frameCompare.framesOf(source, time, 1, fps, width, height, dir, `z${index}-`)));
     }
     const few = files.length <= 2;
     const cells = files.map((file, index) => ({ files: [file], labels: [`${fixed(times[index] ?? start, 2)}s`] }));

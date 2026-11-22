@@ -15,6 +15,7 @@ import * as effects from "./effects.ts";
 import * as looker from "./effect_looker.ts";
 import * as frameCompare from "./frame_compare.ts";
 import * as fonts from "./fonts.ts";
+import * as localPreviews from "./local_previews.ts";
 import * as houseWords from "./house_words_pass.ts";
 import { handlerFor, image, registerTool, text, type Content, type ToolCall } from "./mcp/registry.ts";
 import { fixed } from "./rust.ts";
@@ -167,13 +168,15 @@ async function lookCompared(app: ToolCall["app"], projectId: string, name: strin
     });
     let refs: string[] = [];
     const still = reference?.kind === "image";
+    // Its whole copy when it's here, rather than streamed from the cloud a range at a time.
+    const source = reference ? localPreviews.pathOf(app.store.cacheDir(), reference) : "";
     if (reference) {
       // A still is the same picture at every moment.
       if (still) {
-        const one = (await frameCompare.framesOf(reference.path, 0, 1, fps, width, height, dir, "ref"))[0] ?? "";
+        const one = (await frameCompare.framesOf(source, 0, 1, fps, width, height, dir, "ref"))[0] ?? "";
         refs = times.map(() => one);
-      } else if (args.every_frame === true) refs = await frameCompare.framesOf(reference.path, refStart, times.length, fps, width, height, dir, "ref");
-      else for (const [index, time] of times.entries()) refs[index] = (await frameCompare.framesOf(reference.path, refStart + time - times[0]!, 1, fps, width, height, dir, `ref${index}-`))[0] ?? "";
+      } else if (args.every_frame === true) refs = await frameCompare.framesOf(source, refStart, times.length, fps, width, height, dir, "ref");
+      else for (const [index, time] of times.entries()) refs[index] = (await frameCompare.framesOf(source, refStart + time - times[0]!, 1, fps, width, height, dir, `ref${index}-`))[0] ?? "";
     }
     // Past the reference's end, black of the same size: every pair is as wide as the others on a sheet.
     const black = join(dir, "black.png");
