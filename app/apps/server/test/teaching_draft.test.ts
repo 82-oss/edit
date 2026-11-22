@@ -58,6 +58,19 @@ async function channelProject(app: ReturnType<typeof fixtureHome>["app"], channe
 
 const GLOBAL = { name: v2cloud.GLOBAL, text: "Edit's own workings.", key: v2cloud.skillKey(v2cloud.GLOBAL) };
 
+// The M1 trial, Nov 22: "I like that lower third. Also, I think every video here should open on the loudest line." was
+// kept at once (remember) for its "every video"; Sphe wants what's said in passing drafted and asked about at the end.
+test("only a plain instruction to keep it is kept at once: a thought or liking said in passing, every video or not, is drafted and asked about", async () => {
+  const { keepRule, DRAFT_RULE } = await import("../src/teaching.ts");
+  const rule = keepRule("video", "keep it with remember");
+  expect(rule).toContain('when they tell you plainly to keep it ("always…", "never…", "from now on…", "make this a rule", "we don\'t do that for any…", "remember this", "teach this", "keep that"), keep it with remember at once');
+  expect(rule).toContain('A thought, a liking or a wish said in passing is not that, even when it names every video ("I like that lower third", "I think every video here should open on the loudest line"');
+  expect(rule).not.toContain('"every video"');
+  expect(rule).toContain("end your reply with one short question naming it");
+  expect(DRAFT_RULE).toContain("a thought or liking said in passing however general) goes into your draft");
+  expect(DRAFT_RULE).toContain("Only what they plainly tell you to keep is kept at once");
+});
+
 test("a day's drafting on an untaught channel becomes its first teaching, word for word, when the person says to teach it", async () => {
   const { app, cleanup } = fixtureHome("draft-teach");
   try {

@@ -110,13 +110,13 @@ export const ROUND_RULE = (word: string): string =>
 export function keepRule(word: string, how: string, asks = true, grouped = false): string {
   const line = grouped ? `"I'll remember this for the group: …", or "I'll remember this for this channel only: …"` : `"I'll remember this for future ${word}s: …"`;
   const sure =
-    `KEEPING WHAT YOU'RE TAUGHT: when feedback says it holds beyond this ${word} ("always", "never", "every ${word}", "from now on", "make this a rule", "we don't do that for any…"), ${how} at once, the rule in general terms with their words, ` +
-    `and end your reply with a line saying so (${line}). A fix for this ${word} only (this clip, this name, this moment) is never kept.` +
+    `KEEPING WHAT YOU'RE TAUGHT: when they tell you plainly to keep it ("always…", "never…", "from now on…", "make this a rule", "we don't do that for any…", "remember this", "teach this", "keep that"), ${how} at once, the rule in general terms with their words, ` +
+    `and end your reply with a line saying so (${line}). A thought, a liking or a wish said in passing is not that, even when it names every ${word} ("I like that lower third", "I think every ${word} here should open on the loudest line", "maybe…", "it'd be nice if…"). A fix for this ${word} only (this clip, this name, this moment) is never kept.` +
     (grouped ? ` ${groupRule()}` : "") +
     ` ${ROUND_RULE(word)}`;
   if (!asks) return `${sure} Anything less sure than that, leave.`;
   return (
-    `${sure} When it could hold beyond this ${word} but doesn't say so (a taste that sounds general; "throughout the entire ${word}" or "everywhere", which mean this ${word}), don't keep it: ` +
+    `${sure} When it could hold beyond this ${word} but isn't told to be kept (said in passing as above, a taste that sounds general; "throughout the entire ${word}" or "everywhere", which mean this ${word}), don't keep it: ` +
     `end your reply with one short question naming it in a few words, whether to do it on every ${word} from now on (several such notes: one question for all of them, never one each). ` +
     `Keep it only when their next words say yes (to all, or to the ones they name). If they go on without answering, it stays this ${word}'s: don't keep it, and don't ask about it again.`
   );
@@ -129,4 +129,4 @@ export function keepRule(word: string, how: string, asks = true, grouped = false
  * teach what was talked about.
  */
 export const DRAFT_RULE =
-  "YOUR TEACHING DRAFT: what could become this channel's teaching but isn't said to hold (a taste that sounds general, an effect or a sound they liked, a fix that might hold for every video) goes into your draft as you work, quietly, with draft_teaching: each lesson in the words it will be kept in, with its lane; each effect by its folder. The person never sees it; you're shown it with each of their messages. Still ask at the end of your turn as above, and mark what you asked (asked). A yes: teach_drafted with its names. A no: drop it. Unanswered, it stays in the draft and isn't asked again. \"Teach everything we talked about\" (\"teach this\", \"keep all of that\") is their yes to the whole draft: teach_drafted, then name what was kept and what wasn't, and why. They can ask what's in it, or tell you to drop one. What's said outright to hold is kept at once, as above, never drafted; a fix for this video only is neither.";
+  "YOUR TEACHING DRAFT: what could become this channel's teaching but isn't said to hold (a taste that sounds general, an effect or a sound they liked, a fix that might hold for every video, a thought or liking said in passing however general) goes into your draft as you work, quietly, with draft_teaching: each lesson in the words it will be kept in, with its lane; each effect by its folder. The person never sees it; you're shown it with each of their messages. Still ask at the end of your turn as above, and mark what you asked (asked). A yes: teach_drafted with its names. A no: drop it. Unanswered, it stays in the draft and isn't asked again. \"Teach everything we talked about\" (\"teach this\", \"keep all of that\") is their yes to the whole draft: teach_drafted, then name what was kept and what wasn't, and why. They can ask what's in it, or tell you to drop one. Only what they plainly tell you to keep is kept at once, as above, never drafted; a fix for this video only is neither.";
