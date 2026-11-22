@@ -317,6 +317,48 @@ fn workers() -> usize {
     })
 }
 
+/// Text-model runs at once across every stretch read (each stretch's `workers` wait for one): on Linux a quarter of the
+/// cores, 2 to 6 (Nov 22, Sphe's prod Linux Edit on 32 threads: three stretches of four workers each, beside their
+/// decoders, took its whole 16-core quota, and each run holds its model's working memory); elsewhere a stretch's own
+/// workers (a Mac reads one stretch at a time, with Vision).
+fn slots() -> usize {
+    static SLOTS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *SLOTS.get_or_init(|| {
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        if cfg!(target_os = "linux") {
+            (cores / 4).clamp(2, 6)
+        } else {
+            workers()
+        }
+    })
+}
+
+static BUSY: parking_lot::Mutex<usize> = parking_lot::Mutex::new(0);
+static FREED: parking_lot::Condvar = parking_lot::Condvar::new();
+/// The most text-model runs seen at once (tests).
+static MOST: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Runs `work` (one look or read of the text model) once one of the `slots` is free.
+fn in_slot<R>(work: impl FnOnce() -> R) -> R {
+    struct Held;
+    impl Drop for Held {
+        fn drop(&mut self) {
+            *BUSY.lock() -= 1;
+            FREED.notify_one();
+        }
+    }
+    {
+        let mut busy = BUSY.lock();
+        while *busy >= slots() {
+            FREED.wait(&mut busy);
+        }
+        *busy += 1;
+        MOST.fetch_max(*busy, std::sync::atomic::Ordering::Relaxed);
+    }
+    let _held = Held;
+    work()
+}
+
 /// Two crops show the same thing when their luma differs by at most this on average and no more than ALIKE_OFF of
 /// their pixels differ by over ALIKE_BY (of 255). Nov 19, a compilation's subtitles read 3 times a second: the same line
 /// read twice differed by 0.0–0.6 on average (3.7 once, a fade), never a pixel by over 48; a letter changed is hundreds.
@@ -570,7 +612,7 @@ fn side_by_side<T: Sync, R: Send>(
                         let Some(item) = items.get(at) else {
                             return Ok(out);
                         };
-                        out.push((at, work(item)?));
+                        out.push((at, in_slot(|| work(item))?));
                     }
                 })
             })
@@ -827,7 +869,7 @@ impl Stretch {
                                 return out;
                             };
                             if let Ok(looks) = out.as_mut() {
-                                match gate_of(cut, &crop) {
+                                match in_slot(|| gate_of(cut, &crop)) {
                                     Ok(gate) => looks.push(Look {
                                         index,
                                         luma: luma_of(&crop),
@@ -1049,6 +1091,32 @@ mod tests {
             }
         }
         out
+    }
+
+    /// However many stretches read at once, each with its workers, the text model runs in at most `slots` at a time.
+    #[test]
+    fn text_model_runs_across_stretches_stay_within_their_slots() {
+        let ran = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            for _ in 0..3 * workers() * 2 {
+                scope.spawn(|| {
+                    in_slot(|| {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                        ran.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    });
+                });
+            }
+        });
+        assert_eq!(ran.into_inner(), 3 * workers() * 2);
+        let most = MOST.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            most <= slots() && most >= 1,
+            "{most} at once, {} slots",
+            slots()
+        );
+        assert_eq!(*BUSY.lock(), 0);
+        #[cfg(target_os = "linux")]
+        assert!((2..=6).contains(&slots()));
     }
 
     #[test]

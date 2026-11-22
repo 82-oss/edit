@@ -30,12 +30,40 @@ type Plan = Arc<TypedRunnableModel>;
 /// Plans by model and input size: a frame size for the finder, a line width for the reader.
 /// Which model (the finder?) at which height and width.
 type Key = (bool, usize, usize);
-static PLANS: Mutex<Option<HashMap<Key, Plan>>> = Mutex::new(None);
+
+/// Plans kept at most, the least lately used let go past it. Each is a few MB (a reader's ~9 MB, a finder's ~3), one
+/// for every line width (64 px steps) and every region's size read: kept for good, a long-running server blurring
+/// project after project held them all (Nov 22, Sphe's prod Linux Edit at 9.5 GB blurring two projects).
+const MOST_PLANS: usize = 32;
+
+/// The plans, each with when it was last used (a count).
+struct Plans {
+    kept: HashMap<Key, (Plan, u64)>,
+    clock: u64,
+}
+
+static PLANS: Mutex<Option<Plans>> = Mutex::new(None);
+
+fn plans<R>(work: impl FnOnce(&mut Plans) -> R) -> R {
+    let mut held = PLANS.lock();
+    work(held.get_or_insert_with(|| Plans {
+        kept: HashMap::new(),
+        clock: 0,
+    }))
+}
 
 fn plan(finder: bool, height: usize, width: usize) -> Result<Plan, String> {
     let key = (finder, height, width);
-    if let Some(plan) = PLANS.lock().get_or_insert_with(HashMap::new).get(&key) {
-        return Ok(plan.clone());
+    let found = plans(|plans| {
+        plans.clock += 1;
+        let now = plans.clock;
+        plans.kept.get_mut(&key).map(|(plan, used)| {
+            *used = now;
+            plan.clone()
+        })
+    });
+    if let Some(plan) = found {
+        return Ok(plan);
     }
     let made = tract_onnx::onnx()
         .with_ignore_output_shapes(true)
@@ -49,11 +77,29 @@ fn plan(finder: bool, height: usize, width: usize) -> Result<Plan, String> {
         .and_then(|model| model.into_optimized())
         .and_then(|model| model.into_runnable())
         .map_err(|error| format!("the text model: {error}"))?;
-    PLANS
-        .lock()
-        .get_or_insert_with(HashMap::new)
-        .insert(key, made.clone());
+    plans(|plans| {
+        plans.clock += 1;
+        let now = plans.clock;
+        plans.kept.insert(key, (made.clone(), now));
+        while plans.kept.len() > MOST_PLANS {
+            let Some(oldest) = plans
+                .kept
+                .iter()
+                .min_by_key(|(_, (_, used))| *used)
+                .map(|(key, _)| *key)
+            else {
+                break;
+            };
+            plans.kept.remove(&oldest);
+        }
+    });
     Ok(made)
+}
+
+/// How many plans are kept now (tests).
+#[cfg(test)]
+fn plans_kept() -> usize {
+    plans(|plans| plans.kept.len())
 }
 
 fn characters() -> &'static [String] {
@@ -306,5 +352,22 @@ mod tests {
         let found = regions(&map, stride, 60, 16);
         // Grown by 20·4·1.5 / (2·24) = 2.5 → 3 px on each side.
         assert_eq!(found, vec![[7, 3, 33, 13]]);
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    /// Line after line of other widths, region after region: the plans kept stay bounded, the latest kept.
+    #[test]
+    fn the_plans_kept_are_bounded_and_the_latest_stay() {
+        for width in (64..=64 * (super::MOST_PLANS + 8)).step_by(64) {
+            super::plan(false, super::LINE, width).expect("a plan");
+        }
+        assert_eq!(super::plans_kept(), super::MOST_PLANS);
+        // The one used last is kept (no plan made again for it).
+        let last = 64 * (super::MOST_PLANS + 8);
+        let again = super::plan(false, super::LINE, last).unwrap();
+        let same = super::plan(false, super::LINE, last).unwrap();
+        assert!(std::sync::Arc::ptr_eq(&again, &same));
     }
 }
