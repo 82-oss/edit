@@ -1,7 +1,10 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 
-import type { Project } from "../src/model.ts";
-import { PIECE, pieceKey, piecesOf } from "../src/scrub.ts";
+import * as encoder from "../src/encoder.ts";
+import type { Media, Project } from "../src/model.ts";
+import { makePiece, PIECE, pieceKey, piecesOf } from "../src/scrub.ts";
+import * as tools from "../src/tools.ts";
+import { fixtureHome } from "./helpers/home.ts";
 
 test("the scrub tier is made for the stretches the timeline shows, in pieces of the source, each once", () => {
   const project = {
@@ -26,3 +29,32 @@ test("the scrub tier is made for the stretches the timeline shows, in pieces of 
   expect(pieceKey("edit/proxies/drive/abc.mp4", 3)).toBe("edit/scrub/proxies/drive/abc.mp4/3.mp4");
 });
 
+
+// Nov 22: a strip waited only for an export rendering here, five hours at most; it's made for the page, so it takes its
+// turn after a person's Export and a share's review copy (encoder.ts's playback tier).
+test("a scrub strip takes its turn on the encoder after a share's review copy", async () => {
+  const { app, cleanup } = fixtureHome("scrub-turn");
+  const was = encoder.hooks.pollMs;
+  encoder.hooks.pollMs = 20;
+  const ran: string[][] = [];
+  const run = spyOn(tools, "run").mockImplementation(async (command: string[]) => {
+    ran.push(command);
+    throw new Error("no ffmpeg here");
+  });
+  const copy = encoder.hold("a share's review copy", "share");
+  try {
+    const media = { id: "m1", name: "cam", path: "/nowhere.mp4", kind: "video", duration: 30, cloud: { proxy: "edit/proxies/drive/abc.mp4" } } as unknown as Media;
+    const piece = makePiece(app, media, 0);
+    await Bun.sleep(100);
+    expect(ran).toEqual([]);
+    copy.release();
+    expect(await piece).toBeNull();
+    expect(ran).toHaveLength(1);
+    expect(encoder.busy()).toBe(false);
+  } finally {
+    copy.release();
+    run.mockRestore();
+    encoder.hooks.pollMs = was;
+    cleanup();
+  }
+});

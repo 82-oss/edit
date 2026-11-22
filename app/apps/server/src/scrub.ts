@@ -19,6 +19,7 @@ import type { App } from "./app.ts";
 import { localPath, scratchDir, streamKey } from "./cloud_media.ts";
 import { playbackPath } from "./cloud_playback.ts";
 import * as diag from "./diag.ts";
+import * as encoder from "./encoder.ts";
 import { ApiError, json, notFound } from "./http/errors.ts";
 import { serveFile } from "./http/files.ts";
 import { readJson, type Router } from "./http/router.ts";
@@ -88,8 +89,8 @@ export function makePiece(app: App, media: Media, index: number): Promise<string
   if (running !== undefined) return running;
   const work = (async (): Promise<string | null> => {
     const release = await making.acquire();
-    // Never beside a local export: it has the encoder (export_capacity.ts).
-    for (let waited = 0; waited < 3600 && (app.exports.localRunning?.() ?? false); waited += 5) await Bun.sleep(5000);
+    // Made for the page: its turn on the encoder after an export and a share's review copy (encoder.ts).
+    const lease = await encoder.turn(`${media.name}'s scrub strip`, "playback");
     const scratch = join(scratchDir(app.store.cacheDir()), `scrub-${process.pid}-${crypto.randomUUID().slice(0, 8)}.mp4`);
     try {
       const began = performance.now();
@@ -111,6 +112,7 @@ export function makePiece(app: App, media: Media, index: number): Promise<string
       return null;
     } finally {
       fs.rmSync(scratch, { force: true });
+      lease.release();
       release();
     }
   })().finally(() => inFlight.delete(key));

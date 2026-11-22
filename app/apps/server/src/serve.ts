@@ -544,7 +544,7 @@ function startHere(home: string, host: string | null, port: number): { app: App;
   // Once listening (the agents reach Edit's MCP on this port) and signed in
   // again (or 20 s on, signed out): the jobs and agent turns a restart cut short.
   // An export holds the hardware encoder (encoder.ts): an import's encode beside it isn't called stuck, and one that waits for it is woken when it ends.
-  encoder.register(() => (app.exports.running() ? "an export" : null));
+  encoder.register(() => ((app.exports.localRunning?.() ?? app.exports.running()) ? "an export" : null));
   const afterListen = () => {
     // First start of each installed nightly only (also works when an older
     // updater installed this build). Ordinary launches do no maintenance.
