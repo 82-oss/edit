@@ -66,7 +66,7 @@ describe("remote support's other actions", () => {
   test("a job given up after restarts needs attention, and unstick starts it again", async () => {
     const app = quiet();
     const home = app.store.home;
-    fs.writeFileSync(`${home}/jobs.json`, JSON.stringify([{ key: "export:p1", kind: "export", project: "p1", args: {}, started_ms: 0, resumes: 2, given_up: "cut short by 3 restarts in a row" }]));
+    fs.writeFileSync(`${home}/jobs.json`, JSON.stringify([{ key: "export:p1", kind: "export", project: "p1", args: {}, state: "given_up", attempts: 2, started_ms: 0, updated_ms: 0, given_up: "cut short by 3 restarts in a row" }]));
     expect(await attention(app, [], true)).toContain("Job export:p1: not started again (cut short by 3 restarts in a row) (unstick starts it again).");
     const free = disk.free;
     disk.free = () => 100e9;

@@ -129,14 +129,10 @@ function file(home: string): string {
   return join(home, "jobs.json");
 }
 
-/** An entry as written by any build: older ones had `resumes` and no state. */
+/** An entry as written: its args always an object (every build since nightly-69, Nov 8, writes a state and attempts). */
 function normal(raw: Record<string, unknown>): Job {
-  const job = raw as unknown as Job & { resumes?: number };
-  const attempts = typeof job.attempts === "number" ? job.attempts : typeof job.resumes === "number" ? job.resumes : 0;
-  const state: State = typeof job.state === "string" ? job.state : job.given_up !== undefined ? "given_up" : "running";
-  const started = typeof job.started_ms === "number" ? job.started_ms : 0;
-  const { resumes: _old, ...rest } = job;
-  return { ...rest, args: typeof rest.args === "object" && rest.args !== null ? rest.args : {}, state, attempts, started_ms: started, updated_ms: typeof job.updated_ms === "number" ? job.updated_ms : started };
+  const job = raw as unknown as Job;
+  return { ...job, args: typeof job.args === "object" && job.args !== null ? job.args : {} };
 }
 
 function load(home: string): Job[] {

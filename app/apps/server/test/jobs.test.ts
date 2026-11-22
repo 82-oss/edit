@@ -150,20 +150,9 @@ test("unstick starts a given-up job (a turn) or one waiting by itself again at o
 test("a given-up job started anew by hand starts its count over", () => {
   const dir = home();
   try {
-    fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify([{ key: "export:p1", kind: "export", project: "p1", args: {}, started_ms: 0, resumes: 2, given_up: "cut short by 3 restarts in a row" }]));
+    fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify([{ key: "export:p1", kind: "export", project: "p1", args: {}, state: "given_up", attempts: 2, started_ms: 0, updated_ms: 0, given_up: "cut short by 3 restarts in a row" }]));
     jobs.begin(dir, "export", "p1", { output: "/y.mp4" });
     expect(read(dir).map((job) => [job.attempts, job.given_up, job.args])).toEqual([[0, undefined, { output: "/y.mp4" }]]);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("a jobs.json from before given-up jobs (no resumes, no given_up) loads as before", () => {
-  const dir = home();
-  try {
-    fs.writeFileSync(`${dir}/jobs.json`, JSON.stringify([{ key: "watch:p2", kind: "watch", project: "p2", args: {}, started_ms: 0 }]));
-    expect(jobs.takeOver(dir).map((job) => [job.key, job.attempts])).toEqual([["watch:p2", 1]]);
-    expect(jobs.givenUp(dir)).toEqual([]);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
