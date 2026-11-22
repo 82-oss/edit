@@ -482,6 +482,33 @@ test("a Drive file is read with the sign-in, which never goes on past a redirect
   }
 });
 
+// Nov 21 audit: the editor's Drive download ended on a 401 as Drive's refusal when the sign-in's token had only run
+// out (an hour old, or from before a sleep); Script mode's asked again with a fresh one.
+test("a Drive download whose sign-in runs out asks it again and goes on, rather than ending as refused", async () => {
+  const bytes = new Uint8Array(5000).map((_, index) => index % 11);
+  let ranOut = false;
+  mock.on("GET", "/www.googleapis.com/drive/v3/files/RENEWFILE123", (request) => {
+    if (request.query.get("alt") !== "media") return Response.json({ name: "Renewed.mp4", size: "5000", mimeType: "video/mp4" });
+    if (request.headers.get("authorization") === "Bearer old-token") {
+      ranOut = true;
+      return new Response("Request had invalid authentication credentials.", { status: 401 });
+    }
+    return new Response(bytes, { headers: { "content-type": "video/mp4" } });
+  });
+  useGoogleSignIn(async () => (ranOut ? "new-token" : "old-token"));
+  const before = { sleep: scriptTiming.sleep };
+  scriptTiming.sleep = async () => {};
+  const { dir, cleanup } = scratch("drive-renew");
+  try {
+    const path = await download(`${dir}/RENEWFILE123`, "RENEWFILE123", () => {});
+    expect(new Uint8Array(fs.readFileSync(path))).toEqual(bytes);
+  } finally {
+    Object.assign(scriptTiming, before);
+    useGoogleSignIn(null);
+    cleanup();
+  }
+});
+
 test("a Drive download that stops sending is dropped and resumed, not left frozen", async () => {
   const bytes = new Uint8Array(6000).map((_, index) => index % 13);
   let first = true;

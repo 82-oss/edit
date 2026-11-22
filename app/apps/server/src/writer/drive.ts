@@ -45,10 +45,7 @@ export type Token = string | (() => Promise<string>);
 function signer(token: Token) {
   let first: string | null = typeof token === "string" ? token : null;
   const ask = (): Promise<string> => (typeof token === "function" ? token() : hooks.accessToken === unsigned ? Promise.resolve(token) : hooks.accessToken());
-  // The most bytes heard down, and that at the last renewal (-1: none yet). A most, not a count of reports: a download
-  // in parts says the parts it already has as it starts, which isn't anything the token brought.
-  let most = 0;
-  let atRenewal = -1;
+  const renewal = tokenRenewal();
   return {
     // A sign-in that can't be had fails the download as the caller's own ask would have (a wait for the sign-in, the relay out of reach), not as Drive's refusal.
     next: Effect.tryPromise({
@@ -59,6 +56,24 @@ function signer(token: Token) {
       },
       catch: (error) => (error instanceof Error ? error : new Error(String(error))),
     }),
+    saw: renewal.saw,
+    renew: renewal.renew,
+  };
+}
+type Signer = ReturnType<typeof signer>;
+
+/**
+ * Whether a download's 401 is its token running out (`renew`: ask the sign-in again and go on at once) or Drive's
+ * refusal, from the bytes it heard come down (`saw`): the first 401 is the token's, and each later one when bytes came
+ * since the last renewal; two with nothing between them are the file's. The editor's Drive downloads ask it too
+ * (script.ts `fetchResuming`).
+ */
+export function tokenRenewal(): { saw: (bytes: number) => void; renew: () => boolean } {
+  // The most bytes heard down, and that at the last renewal (-1: none yet). A most, not a count of reports: a download
+  // in parts says the parts it already has as it starts, which isn't anything the token brought.
+  let most = 0;
+  let atRenewal = -1;
+  return {
     saw: (bytes: number): void => {
       if (bytes > most) most = bytes;
     },
@@ -69,7 +84,6 @@ function signer(token: Token) {
     },
   };
 }
-type Signer = ReturnType<typeof signer>;
 
 /**
  * A 401 the sign-in answers: the token ran out (over an hour old, or from before a sleep), not the file's sharing.

@@ -16,6 +16,7 @@ import { parseTranscript } from "./captions_core.ts";
 import { clipFrom, textStyleFrom } from "./clips.ts";
 import * as diag from "./diag.ts";
 import * as endpoints from "./endpoints.ts";
+import { tokenRenewal } from "./writer/drive.ts";
 import { nowMs } from "./files.ts";
 import * as framing from "./framing.ts";
 import { catchBugsAsync, crashed, isBug } from "./guard.ts";
@@ -1963,14 +1964,22 @@ export function download(
     };
     // A big one in parts at once (ranged_download.ts: 70 MB/s from Drive here, one connection 12-16), begun so or begun now.
     let failure: string | null;
+    // A 401 that is the sign-in's token running out is asked again at once with a fresh one (`fetchResuming`).
+    const renewal = tokenRenewal();
     if (head.total !== null && head.total >= ranged.ranged.from && (ranged.partlyDone(part) || sizeOf() === 0)) {
       const total = head.total;
-      failure = await ranged.download({ url, size: total, dest: part, fetch: googleFetch, onBytes: (bytes) => progress(bytes, total, name) }).then(
+      const renewing = async (target: string, init: RequestInit): Promise<Response> => {
+        const answer = await googleFetch(target, init);
+        if (answer.status !== 401 || (await bearerFor(target)) === null || !renewal.renew()) return answer;
+        void answer.body?.cancel();
+        return googleFetch(target, init);
+      };
+      failure = await ranged.download({ url, size: total, dest: part, fetch: renewing, onBytes: (bytes) => (renewal.saw(bytes), progress(bytes, total, name)) }).then(
         () => null,
         (error: unknown) => diag.messageOf(error),
       );
     } else {
-      failure = await fetchResuming(url, part, () => progress(sizeOf(), head.total, name));
+      failure = await fetchResuming(url, part, () => progress(sizeOf(), head.total, name), renewal);
     }
     const size = sizeOf();
     if (failure !== null) throw new Error(`Download stopped (${failure}). It resumes where it left off when you retry.`);
@@ -1988,7 +1997,7 @@ export function download(
  * left to `part`, asking again after a dropped connection or a busy answer.
  * What went wrong in curl's words (without "curl: "), or null when it's all there.
  */
-async function fetchResuming(url: string, part: string, tick: () => void): Promise<string | null> {
+async function fetchResuming(url: string, part: string, tick: () => void, renewal = tokenRenewal()): Promise<string | null> {
   let failure: string | null = null;
   const sizeNow = () => {
     try {
@@ -1998,9 +2007,14 @@ async function fetchResuming(url: string, part: string, tick: () => void): Promi
     }
   };
   let lastHave = sizeNow();
+  // A 401 the sign-in's token running out (an hour old, or from before a sleep): asked again at once with a fresh one
+  // (each request asks the sign-in), as Script mode's downloads do; until Nov 22 it ended the download as Drive's refusal.
+  let renewed = false;
   for (let attempt = 0; attempt <= 5; attempt++) {
-    if (attempt > 0) await timing.sleep(3000);
+    if (attempt > 0 && !renewed) await timing.sleep(3000);
+    renewed = false;
     const have = sizeNow();
+    renewal.saw(have);
     // A try that got further doesn't count against the five: a long download
     // over a shaky connection keeps resuming as long as it moves.
     if (attempt > 0 && have > lastHave) attempt = 1;
@@ -2024,6 +2038,14 @@ async function fetchResuming(url: string, part: string, tick: () => void): Promi
       clearTimeout(idle);
       void response.body?.cancel();
       return null;
+    }
+    if (response.status === 401 && (await bearerFor(url)) !== null && renewal.renew()) {
+      clearTimeout(idle);
+      void response.body?.cancel();
+      failure = `(22) The requested URL returned error: ${response.status}`;
+      renewed = true;
+      attempt--;
+      continue;
     }
     if (response.status >= 400) {
       clearTimeout(idle);
