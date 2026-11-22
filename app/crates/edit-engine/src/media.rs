@@ -268,10 +268,17 @@ fn rotation_of(stream: &Value) -> i64 {
         .unwrap_or(0)
 }
 
+/// The frames a second a stream says, if it's one a video can have: a rate past these (ffprobe's `1000/90000`, a
+/// stream's timebase read as its rate) is no rate, and the next one said, or 30, is taken instead (Nov 21 audit:
+/// 0.011 fps went into the project and every frame count made from it).
+const RATES: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
+
 fn parse_rate(rate: Option<&str>) -> Option<f64> {
     let (num, den) = rate?.split_once('/')?;
     let (num, den): (f64, f64) = (num.parse().ok()?, den.parse().ok()?);
-    (num.is_finite() && den.is_finite() && num > 0.0 && den > 0.0).then_some(num / den)
+    let fps = num / den;
+    (num.is_finite() && den.is_finite() && num > 0.0 && den > 0.0 && RATES.contains(&fps))
+        .then_some(fps)
 }
 
 /// Media whose analyses decode another file in their place (a pieced
@@ -1351,6 +1358,22 @@ mod background_tests {
             run_background(Command::new("sh").args(["-c", "echo first >&2; echo why >&2; exit 3"]))
                 .unwrap_err();
         assert_eq!(error, "why");
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+
+    #[test]
+    fn a_rate_no_video_has_is_not_taken() {
+        assert_eq!(
+            parse_rate(Some("30000/1001")).map(|fps| (fps * 1000.0).round()),
+            Some(29970.0)
+        );
+        assert_eq!(parse_rate(Some("1000/90000")), None);
+        assert_eq!(parse_rate(Some("90000/1")), None);
+        assert_eq!(parse_rate(Some("0/0")), None);
     }
 }
 
