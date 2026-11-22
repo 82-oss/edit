@@ -300,8 +300,10 @@ function carriedBy(home: string, id: string, output: string): "full" | "share" |
 let owed = { at: 0, paths: new Set<string>() };
 
 /**
- * Whether the export at `path` is a share's whose one cloud copy isn't up yet: the cleaners leave it (cache_cleanup's
- * retention and the Storage page ask `beingRead`), as it's the only copy there is until `full.mp4` or its archive is up.
+ * Whether the export at `path` has a cloud copy still to go up (its `archive` row is live: going, or put off for a
+ * dropped line or a full cloud): the cleaners leave it (cache_cleanup's retention and the Storage page ask
+ * `beingRead`), as it's the only copy there is until its archive (or a share's `full.mp4`) is up. A share's alone was
+ * kept so (Nov 22): a plain export whose upload was put off could be cleaned away before it went up.
  */
 function owedNow(path: string): boolean {
   if (homes.size === 0) return false;
@@ -309,7 +311,7 @@ function owedNow(path: string): boolean {
   if (now - owed.at > 1000) {
     const paths = new Set<string>();
     for (const home of homes) {
-      for (const job of jobs.list(home, "archive")) if (jobs.live(job) && job.args.share === true && typeof job.args.output === "string") paths.add(job.args.output);
+      for (const job of jobs.list(home, "archive")) if (jobs.live(job) && typeof job.args.output === "string") paths.add(job.args.output);
     }
     owed = { at: now, paths };
   }

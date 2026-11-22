@@ -280,6 +280,20 @@ test("Edit killed after a share failed with its export's archive waiting behind 
   expect(listExports(t.home, id)).toEqual([expect.objectContaining({ cloudKey: record.cloudKey })]);
 }, 30_000);
 
+// Nov 22: only a share's export was kept from the cleaners while its cloud copy was owed; a plain one put off wasn't.
+test("a plain export whose cloud copy is put off is left alone by the cleaners until it's up", () => {
+  const t = fixtureHome("share-once-plain-owed");
+  fixture = t;
+  const id = "p3";
+  const output = `${t.dir}/Plain.mp4`;
+  fs.writeFileSync(output, Buffer.alloc(BYTES));
+  const record = finishedRecord(t.home, id, output);
+  killedWith(t.home, [{ key: `archive:${id}`, kind: "archive", project: id, args: { output, key: record.cloudKey, record }, state: "waiting", step: "uploading", retry_at: Date.now() + 3_600_000 }]);
+  resetBehindShare();
+  new ExportRegistry(t.home);
+  expect(beingRead(output)).toBe(true);
+});
+
 test("the full-quality file up but its version not told: the export's record still names it, and no archive goes", async () => {
   const up = standIn();
   const { t, registry } = setUp();
