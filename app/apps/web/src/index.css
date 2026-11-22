@@ -190,6 +190,17 @@ html.native-preview .editor-root {
   background: transparent;
 }
 
+/* Edit.app's window full screen (lib/windowFullscreen.ts): the viewer fills the
+   window inside the page and the rest isn't painted, so the window's picture
+   under it shows through nothing else. Kept laid out, so leaving is instant. */
+html.viewer-full body * {
+  visibility: hidden;
+}
+html.viewer-full [data-viewer-full],
+html.viewer-full [data-viewer-full] * {
+  visibility: visible;
+}
+
 .tabular {
   font-variant-numeric: tabular-nums;
 }

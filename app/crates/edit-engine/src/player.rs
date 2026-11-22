@@ -158,6 +158,8 @@ pub struct Player {
     report: Report,
     /// The speaker's starved count when the page last asked.
     starved_before: u64,
+    /// The speaker's frames played, and since when that count hasn't moved, while playing (`watch_speaker`).
+    speaker_still: Option<(u64, Instant)>,
     /// The speed it plays at (1: as the edit is) and how loud (0–1), kept until changed.
     rate: f64,
     volume: f32,
@@ -426,6 +428,7 @@ impl Player {
             warmed_from: None,
             report: Report::default(),
             starved_before: 0,
+            speaker_still: None,
             rate: 1.0,
             volume: 1.0,
             held: None,
@@ -1230,6 +1233,7 @@ impl Player {
     /// how long until the next frame is due (None: not playing).
     pub fn tick(&mut self) -> Option<Duration> {
         self.land(false);
+        self.watch_speaker();
         let (at, until, fps, rate) = {
             let playing = self.playing.as_ref()?;
             let fps = self.project.as_ref()?.fps();
@@ -1282,6 +1286,37 @@ impl Player {
             .max(frame + 1);
         let next = (due as f64 - at) / fps / rate * 1000.0 + 0.5;
         Some(Duration::from_secs_f64(next.clamp(1.0, 50.0) / 1000.0))
+    }
+
+    /// A speaker whose engine stopped and stayed stopped (an output device change, a wake) never plays a frame more,
+    /// and its frames played are the clock: the page saw a stall, held, armed the same dead speaker, played, stalled
+    /// again, a frozen picture and no sound until the editor was left (the Nov 21 audit, P2). Past `SPEAKER_DEAD` with
+    /// nothing played and the engine not running, a new speaker is opened and the play goes on from the clock's frame.
+    /// Never a silent clock of its own: that would play the picture without sound and hide the failure.
+    fn watch_speaker(&mut self) {
+        let Some(feed) = self.sound.feed.as_ref().filter(|_| self.playing.is_some()) else {
+            self.speaker_still = None;
+            return;
+        };
+        let played = feed.speaker.state().played;
+        let now = Instant::now();
+        match speaker_dead(self.speaker_still, played, now, || feed.speaker.running()) {
+            Some(still) => self.speaker_still = Some(still),
+            None => {
+                let frame = self.clock_frame();
+                crate::log::warn(
+                    "preview",
+                    format!("the player's speaker stopped (its engine isn't running: an output device change or a wake); a new one, playing on from frame {frame}"),
+                );
+                trace(|| format!("speaker stopped: a new one from frame {frame}"));
+                self.speaker_still = None;
+                self.sound.disarm();
+                self.sound.feed = None;
+                if self.play(frame).is_err() {
+                    self.pause();
+                }
+            }
+        }
     }
 
     /// Where the player is, and how playing went since the last ask.
@@ -1433,12 +1468,42 @@ impl Player {
     }
 }
 
-/// Whether `path` is this server's loopback stream of a cloud preview (`…/api/cloud/preview?key=`), whose bytes it
-/// keeps in blocks on disk as they're read: what's worth reading ahead.
+/// How long a playing speaker may play nothing, its engine not running, before it's replaced (`Player::watch_speaker`).
+const SPEAKER_DEAD: Duration = Duration::from_secs(1);
+
+/// The speaker's still count after this tick (`Some`), or None when it's dead: nothing played for `SPEAKER_DEAD` and
+/// its engine not running (`running` asked only then). A speaker holding on purpose (a play held, short of sound)
+/// keeps its engine running, so it's never taken for dead.
+fn speaker_dead(
+    still: Option<(u64, Instant)>,
+    played: u64,
+    now: Instant,
+    running: impl FnOnce() -> bool,
+) -> Option<(u64, Instant)> {
+    match still {
+        Some((was, since)) if was == played => {
+            if now.duration_since(since) >= SPEAKER_DEAD && !running() {
+                None
+            } else {
+                Some((was, since))
+            }
+        }
+        _ => Some((played, now)),
+    }
+}
+
+/// Whether `path` is this server's loopback stream of a cloud preview (`…/api/cloud/preview?key=`, or a script's
+/// preview in the cloud, `…/api/writer/scripts/<id>/proxy`), whose bytes it keeps in blocks on disk as they're read:
+/// what's worth reading ahead.
 fn through_server(path: &std::path::Path) -> bool {
     path.to_str().is_some_and(|text| {
         (text.starts_with("http://127.0.0.1:") || text.starts_with("http://localhost:"))
-            && text.contains("/api/cloud/preview?")
+            && (text.contains("/api/cloud/preview?")
+                || (text.contains("/api/writer/scripts/")
+                    && text
+                        .split('?')
+                        .next()
+                        .is_some_and(|path| path.ends_with("/proxy"))))
     })
 }
 
@@ -1605,5 +1670,47 @@ fn mix_into(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{speaker_dead, through_server, SPEAKER_DEAD};
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_speaker_that_plays_nothing_for_a_second_with_its_engine_stopped_is_replaced_and_no_other_is(
+    ) {
+        let start = Instant::now();
+        let later = |ms: u64| start + Duration::from_millis(ms);
+        // Playing: the count moves, the clock with it.
+        let still = speaker_dead(None, 100, start, || false).unwrap();
+        let still = speaker_dead(Some(still), 900, later(500), || false).unwrap();
+        assert_eq!(still, (900, later(500)));
+        // Nothing played since, the engine stopped: under a second, waited for; past it, dead.
+        assert!(speaker_dead(Some(still), 900, later(1400), || false).is_some());
+        assert!(speaker_dead(Some(still), 900, later(500) + SPEAKER_DEAD, || false).is_none());
+        // Nothing played for long, but the engine runs (a play held, short of sound): never taken for dead.
+        assert!(speaker_dead(Some(still), 900, later(9000), || true).is_some());
+    }
+
+    #[test]
+    fn a_scripts_preview_in_the_cloud_is_read_ahead_as_the_editors_cloud_footage_is() {
+        assert!(through_server(Path::new(
+            "http://127.0.0.1:7700/api/cloud/preview?key=edit%2Fproxies%2Fa.mp4"
+        )));
+        assert!(through_server(Path::new(
+            "http://127.0.0.1:7700/api/writer/scripts/7d0e4c1a-2b3f-4a5e-8c9d-0f1e2d3c4b5a/proxy"
+        )));
+        assert!(!through_server(Path::new(
+            "http://127.0.0.1:7700/api/writer/scripts/7d0e4c1a/footage/yt-0.mp4"
+        )));
+        assert!(!through_server(Path::new(
+            "/Users/x/.edit/writer/scripts/a/proxy.mp4"
+        )));
+        assert!(!through_server(Path::new(
+            "https://example.com/api/cloud/preview?key=a"
+        )));
     }
 }

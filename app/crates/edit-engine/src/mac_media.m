@@ -759,6 +759,25 @@ typedef struct {
 }
 @end
 
+// Starts the speaker's engine again after its configuration changed; tried again in half a second, up to 8 times, while it won't.
+static void edit_speaker_restart(__weak EditSpeaker *weak, int attempt) {
+    EditSpeaker *strong = weak;
+    if (!strong || strong.engine.isRunning) return;
+    NSError *problem = nil;
+    if ([strong.engine startAndReturnError:&problem] || attempt >= 8) return;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)), dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        edit_speaker_restart(weak, attempt + 1);
+    });
+}
+
+// Whether the speaker's engine runs (an output device change or a wake can leave it stopped).
+int edit_speaker_running(void *handle) {
+    @autoreleasepool {
+        EditSpeaker *s = (__bridge EditSpeaker *)handle;
+        return s.engine.isRunning ? 1 : 0;
+    }
+}
+
 void *edit_speaker_open(size_t capacity, char *error, size_t error_capacity) {
     @autoreleasepool {
         EditRing *ring = calloc(1, sizeof(EditRing));
@@ -775,7 +794,10 @@ void *edit_speaker_open(size_t capacity, char *error, size_t error_capacity) {
             float *left = output->mBuffers[0].mData;
             float *right = output->mNumberBuffers > 1 ? output->mBuffers[1].mData : NULL;
             uint64_t played = atomic_load(&ring->played);
-            uint64_t have = atomic_load(&ring->running) ? atomic_load(&ring->written) - played : 0;
+            uint64_t written = atomic_load(&ring->written);
+            // Saturated: a flush (written = played) racing a render that adds to played leaves played past written
+            // for a moment, and the difference read as a huge "have" played stale samples on and on (the Nov 21 audit, P1).
+            uint64_t have = atomic_load(&ring->running) && written > played ? written - played : 0;
             size_t n = have < frameCount ? (size_t)have : frameCount;
             for (size_t i = 0; i < n; i++) {
                 size_t at = (size_t)((played + i) % ring->capacity) * 2;
@@ -795,12 +817,14 @@ void *edit_speaker_open(size_t capacity, char *error, size_t error_capacity) {
             fail(error, error_capacity, problem.localizedDescription ?: @"The speaker would not start");
             return NULL;
         }
-        // The output device changed (headphones plugged in): the engine stops, and goes on by itself here.
+        // The output device changed (headphones plugged in, a wake): the engine stops, and is started again here, tried
+        // again every half second a few times when the new device isn't ready yet. Its start was tried once with its
+        // answer ignored, and an engine left down never moved the player's clock (the Nov 21 audit, P2): the player
+        // now also sees it (`edit_speaker_running`) and opens a new speaker.
         __weak EditSpeaker *weak = s;
         s.observer = [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioEngineConfigurationChangeNotification object:s.engine queue:nil usingBlock:^(NSNotification *note) {
             (void)note;
-            EditSpeaker *strong = weak;
-            if (strong) [strong.engine startAndReturnError:nil];
+            edit_speaker_restart(weak, 0);
         }];
         return (__bridge_retained void *)s;
     }
@@ -811,7 +835,9 @@ size_t edit_speaker_write(void *handle, const float *samples, size_t frames) {
     EditSpeaker *s = (__bridge EditSpeaker *)handle;
     EditRing *ring = s.ring;
     uint64_t written = atomic_load(&ring->written);
-    uint64_t room = ring->capacity - (written - atomic_load(&ring->played));
+    uint64_t played = atomic_load(&ring->played);
+    uint64_t used = written > played ? written - played : 0;
+    uint64_t room = ring->capacity > used ? ring->capacity - used : 0;
     size_t n = frames < room ? frames : (size_t)room;
     for (size_t i = 0; i < n; i++) {
         size_t at = (size_t)((written + i) % ring->capacity) * 2;
@@ -871,7 +897,8 @@ void edit_speaker_state(void *handle, uint64_t *played, uint64_t *buffered, uint
     EditSpeaker *s = (__bridge EditSpeaker *)handle;
     uint64_t done = atomic_load(&s.ring->played);
     *played = done;
-    *buffered = atomic_load(&s.ring->written) - done;
+    uint64_t written = atomic_load(&s.ring->written);
+    *buffered = written > done ? written - done : 0;
     *starved = atomic_load(&s.ring->starved);
 }
 

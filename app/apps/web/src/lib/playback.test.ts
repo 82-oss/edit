@@ -6,7 +6,19 @@ const engine = vi.hoisted(() => ({
   resize: vi.fn(), render: vi.fn(), uploadFrame: vi.fn(), isLost: vi.fn(() => false), sections: vi.fn(() => "null"), setPeaks: vi.fn(), clearPeaks: vi.fn(),
   sources: vi.fn((_frame: number) => "[]"),
 }));
-vi.mock("../engine/pkg/edit_wasm", () => ({ default: vi.fn(), createEngine: vi.fn(async () => engine) }));
+// The GPU-free rules the page reads in Edit.app's window: the engine's own calls, so a test sees what either took.
+const rules = vi.hoisted(() => ({ made: 0 }));
+vi.mock("../engine/pkg/edit_wasm", () => ({
+  default: vi.fn(),
+  createEngine: vi.fn(async () => engine),
+  Rules: class {
+    constructor() { rules.made++; }
+    setProject(json: string) { return engine.setProject(json); }
+    applyPatch(json: string) { return engine.applyPatch(json); }
+    sections() { return engine.sections(); }
+    free() {}
+  },
+}));
 const nativeApi = vi.hoisted(() => ({ nativeSources: vi.fn(async () => ({ cache: "/cache", sources: { m1: "/video.mp4" } })),
   // What's here (playback_ready.ts): nothing said unless a test says (a play never waits on it).
   playbackReady: vi.fn(async () => ({ ready: null as [number, number][] | null })), warmPlayback: vi.fn(async () => ({ ok: true })) }));
@@ -606,13 +618,15 @@ describe("preview seeks and lifetime", () => {
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
   // The window's clock, as the page sees it: `preview_position` says this frame while playing. A window that says what
   // it read for a hold (`says`: crates/edit-window's `Where.ahead`/`sound`) says `ahead` and `sound` while `held`.
-  const windowClock = { frame: 0, playing: false, ended: false, says: false, held: null as number | null, ahead: 0, sound: 0 };
+  const windowClock = { frame: 0, playing: false, ended: false, says: false, held: null as number | null, ahead: 0, sound: 0, drawn: 1, skipped: 0 };
   const inWindow = async (refuse: (command: string) => string | null = () => null) => {
     const calls: [string, Record<string, unknown>][] = [];
-    Object.assign(windowClock, { frame: 0, playing: false, ended: false, says: false, held: null, ahead: 0, sound: 0 });
+    Object.assign(windowClock, { frame: 0, playing: false, ended: false, says: false, held: null, ahead: 0, sound: 0, drawn: 1, skipped: 0 });
     const invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
       calls.push([command, args]);
       const refused = refuse(command);
+      // A window that doesn't answer at all (a read stuck in it).
+      if (refused === "hang") return new Promise(() => {});
       if (refused !== null) throw refused;
       if (command === "preview_open") return true;
       if (command === "preview_project" || command === "preview_patch") return args.revision;
@@ -622,7 +636,7 @@ describe("preview seeks and lifetime", () => {
       if (command === "preview_hint" && args.hold === true) { windowClock.playing = false; windowClock.held = Number(args.frame); return null; }
       if (command === "preview_position") {
         const said = windowClock.says && windowClock.held !== null ? { ahead: windowClock.ahead, sound: windowClock.sound } : {};
-        return { frame: windowClock.frame, playing: windowClock.playing, ended: windowClock.ended, drawn: 1, skipped: 0, slow: 0, draws: [2.5], starved: 0, ...said };
+        return { frame: windowClock.frame, playing: windowClock.playing, ended: windowClock.ended, drawn: windowClock.drawn, skipped: windowClock.skipped, slow: 0, draws: windowClock.drawn > 0 ? [2.5] : [], starved: 0, ...said };
       }
       return null;
     });
@@ -930,8 +944,10 @@ describe("preview seeks and lifetime", () => {
       preview.play(); await settle();
       expect(sent("preview_play")).toEqual([{ frame: 0 }]);
       time.at.ms = 300; windowClock.frame = 20; draw(); await settle();
-      // The clock stops at 20 (its sound ran short): past the start's grace and the stall's 400 ms, held there.
+      // The clock stops at 20 (its sound ran short): past the start's grace and a start's stall (1.2 s), held there.
       time.at.ms = 1500; draw(); await settle(); await settle(); await settle();
+      expect(sent("preview_pause")).toHaveLength(0);
+      time.at.ms = 2000; draw(); await settle(); await settle(); await settle();
       expect(sent("preview_pause").length).toBeGreaterThanOrEqual(1);
       expect(sent("preview_hint").at(-1)).toEqual({ frame: 20, hold: true });
       expect(playhead.playing).toBe(true);
@@ -946,6 +962,35 @@ describe("preview seeks and lifetime", () => {
       windowClock.sound = 2; await lookAgain();
       expect(sent("preview_play").at(-1)).toEqual({ frame: 20 });
       expect(preview.buffering).toBe(false);
+    } finally {
+      time.restore();
+    }
+  });
+
+  it("waits out a play's cold first frame in the window (1 to 2.5 s through R2) without holding it as a stall, and holds a clock that stops after it has drawn (the MacBook Air, Nov 21)", async () => {
+    const sent = await inWindow();
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    hereNow([[0, 90]]);
+    const time = clockFrom();
+    try {
+      windowClock.drawn = 0;
+      preview.play(); await settle();
+      time.at.ms = 300; draw(); await settle();
+      time.at.ms = 2200; draw(); await settle(); await settle();
+      expect(sent("preview_hint").filter((hint) => hint.hold === true)).toHaveLength(0);
+      expect(sent("preview_pause")).toHaveLength(0);
+      // Its first frame drawn, the clock moves on, past what it read late (that catching up isn't skipping): on.
+      windowClock.drawn = 1; windowClock.skipped = 30; windowClock.frame = 35; time.at.ms = 2400; draw(); await settle();
+      windowClock.skipped = 0; windowClock.frame = 40; time.at.ms = 2600; draw(); await settle();
+      expect(sent("preview_hint").filter((hint) => hint.hold === true)).toHaveLength(0);
+      expect(playhead.frame).toBe(40);
+      // A short pause as its reads fill, in its first seconds: it carries on by itself, not held.
+      time.at.ms = 3300; draw(); await settle(); await settle();
+      expect(sent("preview_hint").filter((hint) => hint.hold === true)).toHaveLength(0);
+      windowClock.frame = 50; time.at.ms = 4500; draw(); await settle();
+      // Past them, a clock that stops is a stall at 400 ms, as before.
+      time.at.ms = 5000; draw(); await settle(); await settle(); await settle();
+      expect(sent("preview_hint").at(-1)).toEqual({ frame: 50, hold: true });
     } finally {
       time.restore();
     }
@@ -969,6 +1014,8 @@ describe("preview seeks and lifetime", () => {
     preview.play(); await settle(); await settle();
     // 3 frames passed over: on it plays; 9 in a second: held.
     const answered = async () => { for (let n = 0; n < 4; n++) await settle(); };
+    // Playing (its first frames drawn), then frames passed over.
+    windowClock.frame = 2; draw(); await answered();
     windowClock.frame = 5; skipped = 3; draw(); await answered();
     expect(sent("preview_pause")).toHaveLength(0);
     windowClock.frame = 12; skipped = 6; draw(); await answered();
@@ -991,12 +1038,12 @@ describe("preview seeks and lifetime", () => {
     try {
       preview.play(); await settle();
       time.at.ms = 300; windowClock.frame = 20; draw(); await settle();
-      time.at.ms = 1500; draw(); await settle(); await settle(); await settle();
+      time.at.ms = 2000; draw(); await settle(); await settle(); await settle();
       expect(sent("preview_pause").length).toBeGreaterThanOrEqual(1);
       // Here by the server's word, but the hold's only just begun.
       await lookAgain();
       expect(sent("preview_play")).toHaveLength(1);
-      time.at.ms = 1500 + 1600; await lookAgain();
+      time.at.ms = 2000 + 1600; await lookAgain();
       expect(sent("preview_play").at(-1)).toEqual({ frame: 20 });
     } finally {
       time.restore();
@@ -1154,13 +1201,149 @@ describe("preview seeks and lifetime", () => {
     for (let i = 0; i < 20 && !calls.some(([name]) => name === "preview_open"); i++) await settle();
     preview.seek(10); preview.play();
     expect(preview.native).toBe(false);
-    expect(playhead.playing).toBe(true);
+    // Kept, on a spinner, for the window's player: the page's own never starts in the window (the owner, Nov 21).
+    expect(playhead.playing).toBe(false);
+    expect(preview.buffering).toBe(true);
     opened(true); await attached; await settle(); draw(); await settle(); await settle();
     expect(preview.native).toBe(true);
     expect(calls.filter(([name]) => name === "preview_play")).toHaveLength(1);
     // Only once the window has the edit: before it, the window refuses the play ("no edit to play yet").
     expect(calls.findIndex(([name]) => name === "preview_play")).toBeGreaterThan(calls.findIndex(([name]) => name === "preview_project"));
     expect(playhead.playing).toBe(true);
+  });
+
+  it("plays on through the half second macOS hides the page as a window goes full screen, and pauses when it stays hidden", async () => {
+    const sent = await inWindow();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      preview.setProject(fixture(), {}); await vi.advanceTimersByTimeAsync(0); draw(); await vi.advanceTimersByTimeAsync(0);
+      preview.play(); await vi.advanceTimersByTimeAsync(0);
+      expect(playhead.playing).toBe(true);
+      const doc = document as unknown as EventTarget & { visibilityState: string };
+      doc.visibilityState = "hidden"; doc.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(1_070);
+      doc.visibilityState = "visible"; doc.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(playhead.playing).toBe(true);
+      expect(sent("preview_pause")).toHaveLength(0);
+      doc.visibilityState = "hidden"; doc.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(2_600);
+      expect(playhead.playing).toBe(false);
+      doc.visibilityState = "visible";
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("in Edit.app's window the page builds no compositor and decodes nothing: the window's player draws the first frame, stills, scrubs and plays (the owner, Nov 21)", async () => {
+    const { createEngine } = await import("../engine/pkg/edit_wasm");
+    const made = vi.mocked(createEngine).mock.calls.length;
+    decoding.requestVideo.mockClear(); decoding.requestAudio.mockClear(); decoding.requestRough.mockClear();
+    const sent = await inWindow();
+    expect(vi.mocked(createEngine).mock.calls.length).toBe(made);
+    preview.setProject(withSound(), {}); await settle(); draw(); await settle();
+    // The edit's rules and sections still read, from the GPU-free part of the engine.
+    expect(engine.setProject).toHaveBeenCalled();
+    expect(engine.sections).toHaveBeenCalled();
+    preview.seek(10); draw(); await settle();
+    preview.seek(20); preview.seek(28); draw(); await settle();
+    preview.play(); await settle();
+    windowClock.frame = 40; draw(); await settle();
+    preview.pause(); await settle(); draw(); await settle();
+    expect(sent("preview_frame").length).toBeGreaterThan(0);
+    expect(sent("preview_play")).toHaveLength(1);
+    expect(decoding.requestVideo).not.toHaveBeenCalled();
+    expect(decoding.requestAudio).not.toHaveBeenCalled();
+    expect(decoding.requestRough).not.toHaveBeenCalled();
+  });
+
+  it("a Mac whose window can't open its player at all plays on the page's own player, the last resort, and says why", async () => {
+    const { createEngine } = await import("../engine/pkg/edit_wasm");
+    const made = vi.mocked(createEngine).mock.calls.length;
+    const invoke = vi.fn(async (command: string) => (command === "preview_open" ? false : null));
+    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = { invoke };
+    vi.stubGlobal("navigator", { gpu: {}, platform: "MacIntel" });
+    preview.detach();
+    await preview.attach({ width: 320, height: 180 } as HTMLCanvasElement);
+    expect(preview.native).toBe(false);
+    expect(preview.nativeHere).toBe(false);
+    expect(vi.mocked(createEngine).mock.calls.length).toBe(made + 1);
+    expect(preview.diagnostics.nativeFrames.off).toContain("refused open");
+    preview.setProject(fixture(), {}); draw();
+    expect(decoding.requestVideo).toHaveBeenCalled();
+  });
+
+  it("five slow answers from the window scattered through a long play, each followed by good ones, aren't five in a row: the play goes on in the window (the Nov 21 audit, P11a)", async () => {
+    let asks = 0;
+    const sent = await inWindow((command) => (command === "preview_position" && ++asks % 4 === 0 ? "hang" : null));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const tick = async (ms = 0) => { await vi.advanceTimersByTimeAsync(ms); draw(); await vi.advanceTimersByTimeAsync(0); };
+    try {
+      preview.setProject(fixture(), {}); await tick(); await tick();
+      preview.play(); await tick();
+      expect(sent("preview_play")).toHaveLength(1);
+      // Every fourth ask doesn't answer in time (3 s): seven of them over the play, good answers between.
+      for (let n = 0; n < 60 && asks < 28; n++) { windowClock.frame += 3; await tick(500); }
+      expect(asks).toBeGreaterThanOrEqual(28);
+      expect(preview.native).toBe(true);
+      expect(preview.stopped).toBeNull();
+      expect(sent("preview_close")).toHaveLength(0);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("a play the window's player stops mid-way goes on there once it's opened again, with nothing else playing meanwhile", async () => {
+    let failing = false;
+    const sent = await inWindow((command) => (failing && command === "preview_position" ? "hang" : null));
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const tick = async (ms = 0) => { await vi.advanceTimersByTimeAsync(ms); draw(); await vi.advanceTimersByTimeAsync(0); };
+    try {
+      preview.setProject(fixture(), {}); await tick(); await tick();
+      decoding.requestVideo.mockClear();
+      preview.seek(10); await tick();
+      preview.play(); await tick();
+      expect(sent("preview_play")).toHaveLength(1);
+      failing = true;
+      for (let n = 0; n < 40 && preview.native; n++) await tick(1000);
+      expect(preview.native).toBe(false);
+      expect(playhead.playing).toBe(false);
+      expect(preview.stopped).toBe("The player stopped. Edit is opening it again.");
+      // Space meanwhile is kept for the window, nothing plays here.
+      preview.play(); await tick();
+      expect(playhead.playing).toBe(false);
+      failing = false;
+      await tick(2000); await tick(); await tick();
+      expect(preview.native).toBe(true);
+      expect(preview.stopped).toBeNull();
+      await tick(); await tick();
+      expect(sent("preview_play")).toHaveLength(2);
+      expect(playhead.playing).toBe(true);
+      expect(decoding.requestVideo).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("a hold on a cold open asks the window to read ahead only once it has the edit: before it, the window held nothing and read nothing (the Nov 21 audit, P11b)", async () => {
+    let opened: (value: boolean) => void = () => {};
+    const calls: [string, Record<string, unknown>][] = [];
+    const invoke = vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+      calls.push([command, args]);
+      if (command === "preview_open") return new Promise<boolean>((resolve) => { opened = resolve; });
+      if (command === "preview_project" || command === "preview_patch") return args.revision;
+      if (command === "preview_frame") return { revision: 0, drawn: true, skipped: false, ms: 4, decode: 3, composite: 0.5, present: 0.3, opens: 0, seeks: 0, ffmpeg: 0 };
+      if (command === "preview_position") return { frame: 0, playing: false, ended: false, drawn: 0, skipped: 0, slow: 0, draws: [], starved: 0 };
+      return null;
+    });
+    (window as unknown as { __TAURI_INTERNALS__: unknown }).__TAURI_INTERNALS__ = { invoke };
+    vi.stubGlobal("navigator", { gpu: {}, platform: "MacIntel" });
+    preview.detach();
+    const attached = preview.attach({ width: 320, height: 180 } as HTMLCanvasElement);
+    preview.setProject(fixture(), {});
+    for (let i = 0; i < 20 && !calls.some(([name]) => name === "preview_open"); i++) await settle();
+    // Nothing here yet: the play holds for its footage.
+    hereNow([]);
+    preview.play();
+    opened(true); await attached;
+    for (let i = 0; i < 8; i++) { await settle(); draw(); }
+    const hint = calls.findIndex(([name, args]) => name === "preview_hint" && args.hold === true);
+    expect(hint).toBeGreaterThan(-1);
+    expect(hint).toBeGreaterThan(calls.findIndex(([name]) => name === "preview_project"));
   });
 
   it("in full screen while the window plays, the page plays on from where it was", async () => {
@@ -1242,7 +1425,7 @@ describe("preview seeks and lifetime", () => {
     nativeApi.nativeSources.mockResolvedValue({ cache: "/cache", sources: { m1: "/video.mp4" } } as never);
   });
 
-  it("a window that failed for a while is opened again after a short while, not left off until a reload; one that keeps failing is left off for the session", async () => {
+  it("a window that failed for a while is opened again after a short while, not left off until a reload; one that keeps failing is opened again for as long as it takes, the page never taking over", async () => {
     let failing = true;
     const sent = await inWindow((command) => (failing && command === "preview_frame" ? "ImageIO couldn't decode the image" : null));
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -1264,17 +1447,20 @@ describe("preview seeks and lifetime", () => {
       expect(preview.diagnostics.nativeFrames.off).toBeNull();
       preview.seek(20); await tick();
       expect(sent("preview_frame").at(-1)!.frame).toBe(20);
-      // Failing each time it comes back (after 4, 8, 16 and 32 s now): left off for good once five comebacks failed.
+      // Failing each time it comes back (after 4, 8, 16, then every 30 s): opened again for as long as it takes, saying
+      // so meanwhile, and the page's own player never takes over in the window (the owner, Nov 21).
       failing = true;
-      for (let back = 1; back <= 4; back++) {
+      const before = vi.mocked((await import("../engine/pkg/edit_wasm")).createEngine).mock.calls.length;
+      for (let back = 1; back <= 6; back++) {
         preview.seek(30 + back); await failOut();
         expect(preview.native).toBe(false);
-        await tick(2000 * 2 ** back); await tick(); await tick();
+        expect(preview.stopped).toBe("The player stopped. Edit is opening it again.");
+        await tick(Math.min(30_000, 2000 * 2 ** back)); await tick(); await tick();
         expect(preview.native).toBe(true);
       }
-      preview.seek(50); await failOut();
-      expect(preview.native).toBe(false);
-      expect(preview.nativeHere).toBe(false);
+      expect(preview.nativeHere).toBe(true);
+      expect(vi.mocked((await import("../engine/pkg/edit_wasm")).createEngine).mock.calls.length).toBe(before);
+      expect(decoding.requestVideo).not.toHaveBeenCalled();
       const last = sent("preview_open").length;
       await tick(120_000);
       expect(sent("preview_open").length).toBe(last);
@@ -1343,7 +1529,7 @@ describe("preview seeks and lifetime", () => {
   it("in full screen the page draws, still as Edit.app's window's picture (no smooth-playback render asked for), and says why", async () => {
     await inWindow();
     preview.setProject(fixture(), {}); await settle(); draw(); await settle();
-    preview.setNativeAllowed(false);
+    preview.setNativeAllowed(false); await settle(); await settle();
     expect(preview.native).toBe(false);
     // Viewer asks for a render only when neither holds (it took a place in the export line and the encoder).
     expect(preview.nativeHere).toBe(true);

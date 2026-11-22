@@ -9,6 +9,7 @@ import { clearInOut, inOutSpan, marked, useInOut } from "../lib/inOut";
 import { viewerMenu } from "../lib/menus";
 import { playhead, preview } from "../lib/playback";
 import { nativePreview } from "../lib/nativePreview";
+import { windowFullscreen } from "../lib/windowFullscreen";
 import { mediaVersions } from "../lib/mediaVersions";
 import { wantsLight } from "../lib/previewQuality";
 import { goToEnd, goToStart, SECTION_COLORS } from "../lib/timelineView";
@@ -41,13 +42,20 @@ const useFrame = () => useSyncExternalStore(playhead.subscribe, () => Math.floor
 const usePlaying = () => useSyncExternalStore(playhead.subscribe, () => playhead.playing);
 const useSpeed = () => useSyncExternalStore(preview.onStatus, () => preview.speed);
 const useStopped = () => useSyncExternalStore(preview.onStatus, () => preview.stopped);
-const useFullscreen = () => useSyncExternalStore(
+/** The page's element full screen (a browser's, Linux's): the page's own player draws in it. */
+const usePageFullscreen = () => useSyncExternalStore(
   (listener) => {
     document.addEventListener("fullscreenchange", listener);
     return () => document.removeEventListener("fullscreenchange", listener);
   },
   () => document.fullscreenElement !== null && document.fullscreenElement === viewer,
 );
+/** Full screen either way: the window's (Edit.app, lib/windowFullscreen.ts) or the page's. */
+const useFullscreen = () => {
+  const page = usePageFullscreen();
+  const window = useSyncExternalStore(windowFullscreen.subscribe, windowFullscreen.get);
+  return page || window;
+};
 
 /** In fullscreen the controls and cursor fade after this long without the mouse moving. */
 const IDLE_MS = 2500;
@@ -56,7 +64,17 @@ let viewer: HTMLElement | null = null;
 /** Fills the screen with the viewer alone (F); Esc or F again comes back. */
 export function toggleFullscreen() {
   if (document.fullscreenElement) void document.exitFullscreen();
+  else if (windowFullscreen.get()) void windowFullscreen.set(false);
+  // Edit.app's window goes full screen itself, so its player goes on drawing (lib/windowFullscreen.ts).
+  else if (preview.nativeHere) void windowFullscreen.set(true);
   else void viewer?.requestFullscreen().catch(() => {});
+}
+
+/** Esc out of the window's full screen; false when it wasn't (Esc does what it did). */
+export function leaveWindowFullscreen(): boolean {
+  if (!windowFullscreen.get()) return false;
+  void windowFullscreen.set(false);
+  return true;
 }
 
 /** Each media's picture version (mediaVersions.ts), the same object until one changes. */
@@ -82,6 +100,7 @@ export function Viewer() {
   const [framed, setFramed] = useState(preview.framed);
   const [native, setNative] = useState(preview.native);
   const fullscreen = useFullscreen();
+  const pageFullscreen = usePageFullscreen();
   // A frame the footage's decoder couldn't read (most often the network's) is tried again by itself: waited on like any
   // frame, never a message over the picture, even when it keeps failing (Sphe, Nov 12: "kinda don't think it's important
   // for me to see it at all", and again: "remove this weird banner"). It's in the log for a report. A preview that
@@ -254,10 +273,19 @@ export function Viewer() {
   }, []);
 
   // Full screen is the page's to draw: the window's layer isn't in the full-screen one.
-  useEffect(() => { preview.setNativeAllowed(!fullscreen); }, [fullscreen]);
+  // The page's element full screen only: the window's own full screen keeps its player (lib/windowFullscreen.ts).
+  useEffect(() => { preview.setNativeAllowed(!pageFullscreen); }, [pageFullscreen]);
+  // The window can leave full screen by itself (its green button, ⌃⌘F): the viewer comes back with it.
+  useEffect(() => {
+    if (!fullscreen || pageFullscreen) return;
+    const check = () => void windowFullscreen.check();
+    window.addEventListener("resize", check);
+    const timer = setInterval(check, 2000);
+    return () => { window.removeEventListener("resize", check); clearInterval(timer); };
+  }, [fullscreen, pageFullscreen]);
   // The window's layer under the viewer, where the picture is (lib/nativePreview.ts), shown once
   // its first frame is drawn and the screen's fade-in is over; the page turns see-through there.
-  const nativeShown = native && framed && !error && !fullscreen;
+  const nativeShown = native && framed && !error && !pageFullscreen;
   useWindowLayer(wrapRef, native, nativeShown);
 
   const empty = project && project.clips.length === 0;
@@ -277,8 +305,9 @@ export function Viewer() {
         ref={(element) => { viewer = element; }}
         onPointerMove={overlay ? wake : undefined}
         onPointerLeave={hq && !fullscreen ? () => setIdle(true) : undefined}
+        data-viewer-full={fullscreen && !pageFullscreen ? "" : undefined}
         className={fullscreen
-          ? cx("relative flex bg-black", hidden && "cursor-none")
+          ? cx(pageFullscreen ? "relative flex bg-black" : cx("fixed inset-0 z-[1000] flex", native ? "bg-transparent" : "bg-black"), hidden && "cursor-none")
           : cx("flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-line", hq && "relative", hidden && "cursor-none", native ? "bg-transparent" : "bg-panel")}
       >
         <div ref={(element) => { wrapRef.current = element; setWrap(element); }} className={cx("relative min-h-0 flex-1", native ? "bg-transparent" : "bg-black")}>
@@ -1008,7 +1037,10 @@ export function useWindowLayer(wrapRef: React.RefObject<HTMLElement | null>, nat
       const box = wrap.getBoundingClientRect();
       // After the screen's 160 ms fade-in, so the picture doesn't show ahead of the page around it.
       const visible = shownRef.current && now - opened > 200;
-      const key = `${box.left},${box.top},${box.width},${box.height},${visible}`;
+      // Hidden, where it is doesn't matter: a geometry change while a cold first frame is on its way (the timeline or a
+      // panel filling in) sent hidden placements again, and the window rested its player on each, stopping the play
+      // ("stopped by itself at frame 0", the Nov 21 audit, P11c). It's placed where the viewer is once it shows.
+      const key = visible ? `${box.left},${box.top},${box.width},${box.height}` : "hidden";
       if (key !== last) {
         last = key;
         moved = now;

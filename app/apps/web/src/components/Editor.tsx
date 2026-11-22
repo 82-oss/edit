@@ -29,7 +29,7 @@ import { PROBLEM_BUTTON, ProblemView } from "./ProblemView";
 import { navigate } from "../lib/route";
 import { cx } from "./ui";
 import { Loader } from "./Logo";
-import { toggleFullscreen, Viewer } from "./Viewer";
+import { leaveWindowFullscreen, toggleFullscreen, Viewer } from "./Viewer";
 import { rate } from "../lib/types";
 import { liveFrame } from "../lib/watching";
 
@@ -423,6 +423,7 @@ function useShortcuts({ onImport, onExport }: { onImport: () => void; onExport: 
         state.edit((draft) => (event.shiftKey ? rippleDelete(draft, state.selection) : deleteClips(draft, state.selection)));
         state.select([]);
       } else if (key === "escape") {
+        if (leaveWindowFullscreen()) { handled(); return; }
         state.select([]);
       } else if (key === "v") {
         state.setTool("select");

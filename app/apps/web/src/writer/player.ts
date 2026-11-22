@@ -64,6 +64,12 @@ export class EitherPlayer implements Player {
   /** What was asked of the transport before a player was chosen. */
   private intent: ((player: Player) => void) | null = null;
   private disposed = false;
+  /** Said while the window's player is being opened again after it stopped (`windowLost`). */
+  private down: string | null = null;
+  /** The window's player stopped this many times running (the wait before it's opened again doubles). */
+  private lostRunning = 0;
+  /** When the window's player was last taken on: one that drew a minute starts the count again. */
+  private windowSince = 0;
   private listeners = new Set<() => void>();
 
   constructor(clips: Item[], private playhead: Playhead) {
@@ -85,7 +91,7 @@ export class EitherPlayer implements Player {
     return this.inner?.current ?? null;
   }
   get error() {
-    return this.inner?.error ?? null;
+    return this.inner?.error ?? this.down;
   }
   get frameRatio() {
     return this.inner?.frameRatio;
@@ -201,12 +207,33 @@ export class EitherPlayer implements Player {
     this.use(new ScriptPlayer(this.clips, this.playhead), null);
   }
 
+  /**
+   * The window's player stopped on the script: in Edit.app nothing else plays (the owner, Nov 21), so it says so and
+   * the window's player is opened again by itself (after 2, 4, 8, 16, then every 30 s), the cut going on there where
+   * it was, still playing if it was. It had handed the cut to the page's own player for the rest of the session.
+   */
   private windowLost(why: string) {
     if (this.disposed || this.window === null) return;
-    this.refused = true;
     recordTiming("script preview: window off", 0);
-    note("warn", "preview", `the window's player stopped on the script (${why}): the page plays it`);
-    this.usePage();
+    note("warn", "preview", `the window's player stopped on the script (${why}): opening it again`);
+    const was = this.inner;
+    const at = { ms: this.playhead.ms, sourceMs: this.playhead.sourceMs, auditioning: this.playhead.auditioning, playing: was?.playing ?? false };
+    this.off?.();
+    this.off = null;
+    was?.dispose();
+    this.inner = null;
+    this.window = null;
+    this.down = "The player stopped. Edit is opening it again.";
+    this.intent = (player) => {
+      if (at.auditioning && at.playing) player.audition(at.sourceMs);
+      else if (at.auditioning) player.cue(at.sourceMs);
+      else { player.seek(at.ms); if (at.playing) player.play(); }
+    };
+    if (Date.now() - this.windowSince >= 60_000) this.lostRunning = 0;
+    this.lostRunning++;
+    clearTimeout(this.again);
+    this.again = setTimeout(() => this.choose(true), Math.min(30_000, 2_000 * 2 ** (this.lostRunning - 1)));
+    this.emit();
   }
 
   /** `next` takes the cut over from the player before it, at the same moment, playing if it was. */
@@ -217,6 +244,8 @@ export class EitherPlayer implements Player {
     was?.dispose();
     this.inner = next;
     this.window = window;
+    this.down = null;
+    if (window !== null) this.windowSince = Date.now();
     this.off = next.onStatus(() => this.emit());
     next.setSource(this.src, this.mediaMs);
     next.setRate(this.rate);

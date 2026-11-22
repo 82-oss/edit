@@ -217,6 +217,27 @@ struct Open {
     thread: std::thread::JoinHandle<()>,
     view: usize,
     webview: usize,
+    /// The layer shows (its last placement was visible): only going from shown to hidden rests the player.
+    shown: bool,
+}
+
+/// What a placement asks of the player: its size when the layer shows, a rest only when it was showing and isn't
+/// now, nothing for another hidden placement. Every hidden placement rested it, so a page placing its hidden layer
+/// again while a cold first frame was on its way (a panel filling in) stopped the play starting (the Nov 21 audit,
+/// P11c: "stopped by itself at frame 0").
+fn placement(was_shown: bool, visible: bool) -> Placement {
+    match (was_shown, visible) {
+        (_, true) => Placement::Resize,
+        (true, false) => Placement::Rest,
+        (false, false) => Placement::Nothing,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Placement {
+    Resize,
+    Rest,
+    Nothing,
 }
 
 #[derive(Default)]
@@ -520,6 +541,7 @@ pub async fn preview_open(
         thread,
         view,
         webview,
+        shown: false,
     });
     Ok(true)
 }
@@ -538,12 +560,14 @@ pub fn preview_place(
     radius: f64,
     visible: bool,
 ) -> Result<(), String> {
-    let (view, commands) = {
-        let open = previews.0.lock().map_err(|error| error.to_string())?;
-        let Some(open) = open.as_ref() else {
+    let (view, commands, asked) = {
+        let mut open = previews.0.lock().map_err(|error| error.to_string())?;
+        let Some(open) = open.as_mut() else {
             return Err("the preview isn't open".to_owned());
         };
-        (open.view, open.commands.clone())
+        let asked = placement(open.shown, visible);
+        open.shown = visible;
+        (open.view, open.commands.clone(), asked)
     };
     let scale = on_main(&window, move |webview, ns_window| {
         // SAFETY: on the main thread; the view is ours until `preview_close`, the webview and window the app's.
@@ -585,14 +609,14 @@ pub fn preview_place(
         format!("placed at {x},{y} {width}×{height} (×{scale}), radius {radius}, visible {visible}")
     });
     let to_pixels = |points: f64| (points * scale).round().max(1.0) as u32;
-    let _ = commands.send(if visible {
-        Command::Resize {
+    let _ = match asked {
+        Placement::Resize => commands.send(Command::Resize {
             width: to_pixels(width),
             height: to_pixels(height),
-        }
-    } else {
-        Command::Rest
-    });
+        }),
+        Placement::Rest => commands.send(Command::Rest),
+        Placement::Nothing => Ok(()),
+    };
     Ok(())
 }
 
@@ -761,6 +785,7 @@ pub async fn preview_close(
         thread,
         view,
         webview,
+        ..
     } = open;
     // The thread ends once its commands are gone (after the frame it's on), before the layer it draws into goes.
     drop(commands);
@@ -974,5 +999,19 @@ unsafe fn shoot(number: isize, path: &str) -> bool {
             }
         }
         done
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::{placement, Placement};
+
+    #[test]
+    fn only_a_shown_layer_going_hidden_rests_the_player() {
+        assert_eq!(placement(false, true), Placement::Resize);
+        assert_eq!(placement(true, true), Placement::Resize);
+        assert_eq!(placement(true, false), Placement::Rest);
+        // Placed again while hidden (a cold first frame still coming): the play starting goes on.
+        assert_eq!(placement(false, false), Placement::Nothing);
     }
 }

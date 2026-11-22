@@ -31,6 +31,54 @@ pub struct Engine {
     lost: Arc<AtomicBool>,
 }
 
+/// The project's rules and sections without a GPU: what the page needs of the
+/// engine when Edit.app's window draws the picture (the page builds no
+/// compositor there, so no WebGPU device is asked for). It takes the edit as
+/// the engine does (`setProject`, `applyPatch`) and refuses what it refuses.
+#[wasm_bindgen]
+#[derive(Default)]
+pub struct Rules {
+    project: Option<Project>,
+}
+
+#[wasm_bindgen]
+impl Rules {
+    #[wasm_bindgen(constructor)]
+    pub fn new() -> Rules {
+        Rules::default()
+    }
+
+    #[wasm_bindgen(js_name = setProject)]
+    pub fn set_project(&mut self, json: &str) -> Result<(), JsValue> {
+        let project: Project = serde_json::from_str(json).map_err(js_error)?;
+        project.validate().map_err(js_error)?;
+        self.project = Some(project);
+        Ok(())
+    }
+
+    /// `Engine::apply_patch`'s rules: clips only, the project as it was when refused.
+    #[wasm_bindgen(js_name = applyPatch)]
+    pub fn apply_patch(&mut self, json: &str) -> Result<(), JsValue> {
+        let patch: serde_json::Value = serde_json::from_str(json).map_err(js_error)?;
+        if !edit_core::patch::only_clips(&patch) {
+            return Err(js_error("not a clips-only patch"));
+        }
+        let project = self
+            .project
+            .as_mut()
+            .ok_or_else(|| js_error("no project to patch"))?;
+        edit_core::patch::patch_clips(project, &patch).map_err(js_error)
+    }
+
+    /// `Engine::sections`.
+    pub fn sections(&self) -> String {
+        self.project
+            .as_ref()
+            .and_then(|project| serde_json::to_string(&edit_core::sections(project)).ok())
+            .unwrap_or_else(|| "null".to_owned())
+    }
+}
+
 /// Creates the engine on `canvas`. Fails when the browser has no WebGPU.
 #[wasm_bindgen(js_name = createEngine)]
 pub async fn create_engine(canvas: HtmlCanvasElement) -> Result<Engine, JsValue> {
