@@ -609,6 +609,7 @@ function* used(app: App, pending: Set<string> | null): Steps<Used | null> {
     }
   }
   projectMedia.prune();
+  localProjects = new Set([...projects].flatMap(([id, project]) => (project.local.length > 0 ? [id] : [])));
   return { paths, keys, saved, missing, projects, keyProjects, pathProjects };
 }
 
@@ -846,6 +847,9 @@ function* survey(app: App, entries: Entry[], now: number, done: Set<string>, kno
   }
   return { inUse, groups: [...groups.values()] };
 }
+
+/** The projects whose footage is local, as the last look at the home found them: what `localRoom.keep` opens, and no other. */
+let localProjects: ReadonlySet<string> = new Set();
 
 /** A local-first source's files here, every local-first project using it as one (local_first_room.ts). */
 interface LocalSource {
@@ -1519,7 +1523,7 @@ export async function makeRoomAsync(app: App, wanted: number): Promise<number> {
     thread.note("room asked of the cache for work");
     const cache = app.store.cacheDir();
     // Local-first originals the last pass found in R2 have their used stretches cut first, so they can go (local_first_room.ts).
-    if (heldInR2.size > 0) await localRoom.keep(app, (path, bytes) => heldInR2.get(path) === bytes, doneLately);
+    if (heldInR2.size > 0) await localRoom.keep(app, (path, bytes) => heldInR2.get(path) === bytes, doneLately, undefined, localProjects);
     const entries = ledger.covers(cache) ? ledger.all() : undefined;
     const report = await cleanCacheGently(app, false, Date.now(), { freeBytes: ask.wanted, ...(entries === undefined ? {} : { entries }) }, doneLately);
     saidFreed(report.bytes, ask.wanted);
@@ -1559,7 +1563,7 @@ export function cleanPass(app: App, now = Date.now(), head?: (key: string) => Pr
     // Room getting short: local-first originals R2 holds have their used stretches cut here, so they can go (local_first_room.ts).
     if (diskHooks.free(cache) < keepFreeBytes(cache) + LOCAL_SOON_BYTES) {
       thread.note("the hourly cache clean (local-first stretches kept)");
-      await localRoom.keep(app, (path) => confirmed.has(path), done);
+      await localRoom.keep(app, (path) => confirmed.has(path), done, undefined, localProjects);
     }
     // Each said as it starts (thread.ts): until Nov 21 the next two kept the server's thread 3 to 4.4 s each hour on a
     // home of 14,000 cached files; now each gives it back every few milliseconds.

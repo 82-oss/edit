@@ -28,6 +28,7 @@ import type { Project } from "./model.ts";
 import { openedTimes } from "./opened.ts";
 import { isFile } from "./paths.ts";
 import * as storage from "./storage.ts";
+import * as thread from "./thread.ts";
 
 /** A source of a local-first project, as the cleaner weighs it (keys in R2; `paths` puts them here). */
 export interface Footage {
@@ -104,12 +105,25 @@ const IN_WORK_MS = 3 * 24 * 3600 * 1000;
  * has what's missing (a clip moved or extended since) fetched from the cloud, for a project worked on lately. None
  * for a project marked `done`. How many cells were cut.
  */
-export async function keep(app: App, mayGo: (path: string, bytes: number) => boolean, done: ReadonlySet<string> = new Set(), signal?: AbortSignal): Promise<number> {
+export async function keep(
+  app: App,
+  mayGo: (path: string, bytes: number) => boolean,
+  done: ReadonlySet<string> = new Set(),
+  signal?: AbortSignal,
+  /** The local-first projects, when the caller knows them (the cleaner's own look at the home): no other project is opened. */
+  only?: ReadonlySet<string>,
+): Promise<number> {
+  if (only !== undefined && only.size === 0) return 0;
   const cache = app.store.cacheDir();
   const opened = openedTimes(app.store.home);
+  const breathe = thread.breather();
   let cut = 0;
   for (const summary of app.store.list()) {
     if (signal?.aborted) break;
+    // Opening a project reads all of it (megabytes on a long edit): only the ones this is about. Nov 22: the hourly pass
+    // opened every project of the home here and held the server's thread 2.5 s on 14,000 files.
+    if (only !== undefined && !only.has(summary.id)) continue;
+    await breathe();
     const project = app.store.get(summary.id)?.project;
     // A project marked done gives all of it up at the next pass: nothing kept for it.
     if (project === undefined || !chosen(project) || done.has(summary.id)) continue;
