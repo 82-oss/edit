@@ -644,6 +644,8 @@ test("a render's failure is the computer's at that moment (tried again at once),
   expect(effects.failureKind(new Error("its page threw at 1.20 s: the map lost its drawing (WebGL context lost)"))).toBe("passing");
   expect(effects.failureKind(Object.assign(new Error("write"), { code: "ENOSPC" }))).toBe("disk");
   expect(effects.failureKind(new Error("its frames didn't join into a video: No space left on device"))).toBe("disk");
+  // The encoder's moment, never the page's code (Nov 22: NVENC refusing a session on a shared card).
+  expect(effects.failureKind(new Error("its frames didn't join into a video: h264_nvenc: OpenEncodeSessionEx failed: out of memory (10): (no details)"))).toBe("passing");
   expect(effects.failureKind(new Error("its page threw at 1.20 s: TypeError: x is undefined"))).toBe("code");
   expect(effects.failureKind(new Error("its page has no window.duration"))).toBe("code");
   // The network's (Sphe's M4, Nov 17): the relay unreachable, the map helper's tiles asked for and never answered.
@@ -687,4 +689,21 @@ test("a sound's wave for a page: thinned to WAVE_RATE, its loudest at ±127, as 
   expect(wave.samples.length).toBe(WAVE_RATE);
   expect(Math.max(...wave.samples)).toBe(127);
   expect(wave.peak).toBeGreaterThan(0.45);
+});
+
+test("FFmpeg's reason is kept, not the knock-on last line every failure ends with (as the engine's ffmpeg_said)", () => {
+  const stderr = [
+    "[h264_nvenc @ 0x575839865f00] No capable devices found",
+    "[vost#0:0/h264_nvenc @ 0x575839865a80] [enc:h264_nvenc @ 0x575839865e80] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.",
+    "[vf#0:0 @ 0x575839866400] Error sending frames to consumers: Generic error in an external library",
+    "[vf#0:0 @ 0x575839866400] Task finished with error code: -542398533 (Generic error in an external library)",
+    "[vost#0:0/h264_nvenc @ 0x575839865a80] [enc:h264_nvenc @ 0x575839865e80] Could not open encoder before EOF",
+    "[out#0/mp4 @ 0x575839864f40] Nothing was written into output file, because at least one of its streams received no packets.",
+    "",
+  ].join("\n");
+  expect(tools.ffmpegSaid(stderr)).toBe("h264_nvenc: No capable devices found; Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height.");
+  expect(tools.ffmpegSaid("[out#0/mp4 @ 0x1] Nothing was written into output file.\n")).toBe("Nothing was written into output file.");
+  expect(tools.ffmpegSaid("")).toBeNull();
+  expect(tools.saidOf(Object.assign(new Error("last line"), { stderr }))).toStartWith("h264_nvenc: No capable devices found");
+  expect(tools.saidOf(new Error("plain"))).toBe("plain");
 });

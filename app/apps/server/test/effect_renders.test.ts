@@ -605,7 +605,7 @@ test.skipIf(chrome === null)("a render with no room on the disk for what it hold
     });
     // The floor and 100 MB: a 2 s board holds ~0.2 GB at once.
     storage.diskHooks.free = () => storage.WORK_FLOOR_BYTES + 100_000_000;
-    await expect(effects.renderNow(app, id, "bar")).rejects.toThrow("Your disk is full: free about 1 GB, then press Retry.");
+    await expect(effects.renderNow(app, id, "bar")).rejects.toThrow("The disk is too full to draw the bar effect: free about 1 GB, and Edit draws it by itself.");
     expect(fs.readdirSync(join(app.store.uploadsDir(id), "effect-renders")).filter((name) => name.endsWith(".frames")).flatMap((name) => fs.readdirSync(join(app.store.uploadsDir(id), "effect-renders", name)))).toEqual([]);
   } finally {
     storage.diskHooks.free = free;
@@ -613,6 +613,93 @@ test.skipIf(chrome === null)("a render with no room on the disk for what it hold
     cleanup();
   }
 }, 120_000);
+
+test.skipIf(chrome === null)("a render the hardware encoder refuses is made with libx264, and the log says which encoder made it", async () => {
+  const { app, cleanup, id } = hq("effects-software");
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  const hardware = effects.encoderHooks.hardware;
+  const said: string[] = [];
+  const info = spyOn(diag, "info").mockImplementation((_area: string, line: string) => void said.push(line));
+  const warn = spyOn(diag, "warn").mockImplementation((_area: string, line: string) => void said.push(line));
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    // NVENC with no card to open: FFmpeg's last line is "Nothing was written into output file" (Nov 22, the trial server).
+    effects.encoderHooks.hardware = () => ["-c:v", "h264_nvenc", "-gpu", "99"];
+    // Four seconds: two chunks, the second refused too had it been on the card.
+    write(app, id, "bar", { "scene.html": GOOD.replace("window.duration = 2;", "window.duration = 4;") });
+    const added = await effects.add(app, id, "bar");
+    await app.store.update(id, "test", (project) => {
+      project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 120, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    await seams.broll.waitForMaps(app, id, 120_000);
+    const media = app.store.get(id)!.project.media.find((one) => one.id === added.media)!;
+    expect(media.kind).toBe("video");
+    expect(fs.readFileSync(media.path).includes("x264 - core")).toBe(true);
+    const counted = Bun.spawnSync(["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", media.path]).stdout.toString().trim().replace(/,$/, "");
+    expect(counted).toBe("120");
+    const refused = said.find((line) => line.includes("didn't encode on h264_nvenc"));
+    expect(refused).toBeDefined();
+    // FFmpeg's reason, not its knock-on last line.
+    expect(refused).not.toContain("Nothing was written");
+    expect(refused).toContain("made with libx264 instead");
+    expect(said.some((line) => line.includes("bar's 2 chunks joined, encoded with libx264"))).toBe(true);
+  } finally {
+    effects.encoderHooks.hardware = hardware;
+    info.mockRestore();
+    warn.mockRestore();
+    await server.stop(true);
+    cleanup();
+  }
+}, 240_000);
+
+test.skipIf(chrome === null)("a render that failed for a passing reason is the computer's: tried again by itself, and at once for an export that waits on it", async () => {
+  const { app, cleanup, id } = hq("effects-passing");
+  const router = buildRouter();
+  const server = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: async (request) => (await respond(app, router, request, null)) ?? new Response(null, { status: 404 }) });
+  const run = tools.run;
+  let refusals = 0;
+  const spy = spyOn(tools, "run").mockImplementation(async (command: string[], options?: Parameters<typeof tools.run>[1]) => {
+    // Every encode of a chunk fails, on either encoder, until it's let go: a moment the machine couldn't encode at all.
+    if (refusals >= 0 && command.some((part) => part.endsWith(".partial.mp4") && part.includes("chunk-"))) {
+      refusals += 1;
+      throw Object.assign(new Error("[out#0/mp4 @ 0x1] Nothing was written into output file, because at least one of its streams received no packets."), { stderr: "[h264_nvenc @ 0x2] OpenEncodeSessionEx failed: out of memory (10): (no details)\n[out#0/mp4 @ 0x1] Nothing was written into output file, because at least one of its streams received no packets.\n" });
+    }
+    return run(command, options);
+  });
+  try {
+    app.port = server.port!;
+    await app.store.update(id, "test", (project) => {
+      project.hq = true;
+    });
+    write(app, id, "bar", { "scene.html": GOOD });
+    const added = await effects.add(app, id, "bar");
+    await app.store.update(id, "test", (project) => {
+      project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
+      project.clips.push({ id: "c1", type: "video", track: "t1", start: 0, duration: 60, media: added.media, source_in: 0 } as unknown as (typeof project.clips)[number]);
+    });
+    // Nobody waits on it: it fails (tried once again at once), and is the computer's, never the agent's to fix.
+    const first = await effects.renderNow(app, id, "bar").then(() => null, (error: unknown) => diag.messageOf(error));
+    expect(first).toBe("The bar effect couldn't render just now: press Retry.");
+    expect(refusals).toBeGreaterThan(0);
+    expect(effects.renderState(id, "bar", effects.list(app.store, id)[0]!.key)).toContain("h264_nvenc: OpenEncodeSessionEx failed: out of memory (10)");
+    expect(await messageContext(app, id, null, true)).toBe("");
+    // Asked again with nobody waiting, it stands until its own try (a minute on, then 5, 15, every 30).
+    await expect(effects.renderNow(app, id, "bar")).rejects.toThrow("couldn't render just now");
+    // The machine can encode again: an export waiting on it renders it now, not refusing until that try.
+    refusals = -1;
+    await seams.broll.waitForMaps(app, id, 90_000);
+    expect(app.store.get(id)!.project.media.find((one) => one.id === added.media)!.kind).toBe("video");
+  } finally {
+    spy.mockRestore();
+    await server.stop(true);
+    cleanup();
+  }
+}, 240_000);
 
 test.skipIf(chrome === null)("a render that fails names its effect and says what to do; the agent is told what went wrong", async () => {
   const { app, cleanup, id } = hq("effects-render-fails");

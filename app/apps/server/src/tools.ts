@@ -277,6 +277,56 @@ export function lastLine(stderr: string, fallback = "ffmpeg failed"): string {
   return (line ?? fallback).trim();
 }
 
+/** The lines every FFmpeg failure ends with, whatever went wrong: never the reason (the engine's util.rs `ffmpeg_said`). */
+const KNOCK_ON = [
+  "Nothing was written into output file",
+  "Task finished with error code",
+  "Terminating thread with return code",
+  "Error sending frames to consumers",
+  "Could not open encoder before EOF",
+  "Conversion failed",
+  "Error while filtering",
+  "Error while processing the decoded data",
+  "Error muxing a packet",
+];
+
+/**
+ * What FFmpeg said that names why it failed, from its stderr: its first two lines that aren't the knock-on ones
+ * (`KNOCK_ON`), each without its `[name @ 0x…]` prefix (an encoder's name kept), joined; else its last line; null when
+ * it said nothing. As the engine's util.rs `ffmpeg_said` (Nov 22): the last line alone is always a knock-on, and an
+ * effect's render whose NVENC wouldn't open said only "Nothing was written into output file" for five minutes.
+ */
+export function ffmpegSaid(stderr: string): string | null {
+  const plain = (line: string): string => {
+    let rest = line.trim();
+    let name: string | null = null;
+    for (;;) {
+      const found = /^\[([^\]]*?) @ [^\]]*\]\s*/u.exec(rest);
+      if (found === null) break;
+      if (name === null && !/[#:/]/u.test(found[1]!)) name = found[1]!;
+      rest = rest.slice(found[0].length);
+    }
+    return name === null ? rest : `${name}: ${rest}`;
+  };
+  const lines = stderr.split("\n").filter((line) => line.trim() !== "");
+  const kept: string[] = [];
+  for (const line of lines) {
+    const said = plain(line);
+    if (KNOCK_ON.some((knock) => said.includes(knock)) || kept.includes(said)) continue;
+    kept.push(said);
+    if (kept.length === 2) break;
+  }
+  if (kept.length === 0) return lines.length === 0 ? null : plain(lines[lines.length - 1]!);
+  const said = kept.join("; ");
+  return said.length > 400 ? `${said.slice(0, 400)}…` : said;
+}
+
+/** Why a tool `run` failed, in FFmpeg's own words where it said more than its last line (`ffmpegSaid`); else its message. */
+export function saidOf(error: unknown): string {
+  const stderr = typeof error === "object" && error !== null ? (error as { stderr?: unknown }).stderr : undefined;
+  return (typeof stderr === "string" ? ffmpegSaid(stderr) : null) ?? (error instanceof Error ? error.message : String(error));
+}
+
 /**
  * How far below everything else background work's tools run (nice), as the
  * engine's own (`util::BACKGROUND_NICE`): thumbnail strips, waveforms, censor

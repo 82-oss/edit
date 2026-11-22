@@ -66,6 +66,7 @@ import * as filePins from "./file_pins.ts";
 import { diskFull, outOfSpace } from "./export_prep.ts";
 import * as speeds from "./export_speeds.ts";
 import * as effectMap from "./effect_map.ts";
+import * as failures from "./failure.ts";
 import runtimeText from "./effect_runtime.html" with { type: "text" };
 import watchText from "./effect_watch.html" with { type: "text" };
 import { writeAtomic } from "./files.ts";
@@ -1737,14 +1738,14 @@ export class NetworkDown extends Error {}
  * export shouldn't stop on that failure until Edit restarts). `said` is what
  * went wrong (the agent's and the log's), `told` what a person is told.
  */
-const failed = new Map<string, { said: string; told: string; at: number; kind: Failure }>();
+const failed = new Map<string, { said: string; told: string; at: number; kind: Failure; until: number }>();
 const FAILED_RETRY_MS = 5 * 60_000;
 
 /** Why a render failed, while that still stands. */
 function failureOf(render: string): { said: string; told: string; kind: Failure } | undefined {
   const found = failed.get(render);
   if (found === undefined) return undefined;
-  if (Date.now() - found.at < FAILED_RETRY_MS) return found;
+  if (Date.now() < found.until) return found;
   failed.delete(render);
   return undefined;
 }
@@ -1801,7 +1802,11 @@ const seconds = (ms: number) => `${(ms / 1000).toFixed(1)} s`;
 const id = (project: string, name: string, key: string) => `${project}/${name}/${key}`;
 
 /** The disk can't hold a render: said as how much to free. */
-class DiskShort extends Error {}
+class DiskShort extends Error {
+  constructor(readonly short: number) {
+    super(diskFull(short));
+  }
+}
 
 /**
  * What kind of failure a render's is. Chrome not starting or going away, a
@@ -1815,13 +1820,17 @@ export function failureKind(error: unknown): Failure {
   const said = diag.messageOf(error);
   // The map helper's own words for tiles that hang or fail (effect_map.html), and the relay's when it can't be reached.
   if (/could not reach Edit's relay|asked for and unanswered|Edit's server didn't answer/.test(said)) return "network";
-  if (/Chrome didn't start|Chrome has no page|Chrome's connection|Chrome closed|timed out|lost its drawing|didn't load in Chrome|Chrome drew nothing|needs Google Chrome/.test(said)) return "passing";
+  // Its frames not joining is the encoder's moment (NVENC refusing a session while the card is shared), never the
+  // page's code: its frames were drawn (Nov 22, the trial server: every render for five minutes "failed at encoding",
+  // told the agent to fix its effect, and the same command worked by hand two minutes on).
+  if (/Chrome didn't start|Chrome has no page|Chrome's connection|Chrome closed|timed out|lost its drawing|didn't load in Chrome|Chrome drew nothing|needs Google Chrome|frames didn't join into a video/.test(said)) return "passing";
   return "code";
 }
 
 /** What a person is told of an effect's render that failed: the effect, and what to do. */
 function toldOf(name: string, kind: Failure, error: unknown): string {
-  if (kind === "disk") return error instanceof DiskShort ? error.message : diskFull(0);
+  // Edit draws it again by itself once there's room (`FAILED_RETRY_MS`), as the working copy and exports go on.
+  if (kind === "disk") return `The disk is too full to draw the ${name} effect: ${error instanceof DiskShort ? `free about ${Math.max(1, Math.ceil(error.short / 1e9))} GB` : "make room"}, and Edit draws it by itself.`;
   if (kind === "passing") return `The ${name} effect couldn't render just now: press Retry.`;
   if (kind === "network") return `The ${name} effect couldn't render while the connection was down. It renders again by itself once it's back.`;
   return `The ${name} effect didn't render: ask the agent to fix the ${name} effect.`;
@@ -1935,7 +1944,13 @@ export function renderNow(app: App, project: string, name: string): Promise<void
   const key = keyOf(app.store, project, dir, frameOf(live.project));
   const running = renders.get(id(project, name, key));
   if (running !== undefined) return running.done;
-  const failure = failureOf(id(project, name, key));
+  let failure = failureOf(id(project, name, key));
+  // The computer's moment, with someone waiting on it now (an export, a tool): tried again for them, not refused until
+  // its own try comes (Nov 22: an export after a render the encoder failed refused "ask the agent to fix").
+  if (failure !== undefined && failure.kind === "passing" && waitedFor.has(`${project}/${name}`)) {
+    failed.delete(id(project, name, key));
+    failure = undefined;
+  }
   if (failure !== undefined) return Promise.reject(new Error(failure.told));
   const render: Render = { project, title: live.project.name, name, key, drawn: 0, frames: 0, done: Promise.resolve(), spent: 0, queued: 0, made: 0 };
   const since = Date.now();
@@ -1997,13 +2012,19 @@ export function renderNow(app: App, project: string, name: string): Promise<void
         said = `${said.replace(/[.\s]+$/u, "")} (with ${trouble})`;
       }
       const told = toldOf(name, kind, error);
-      failed.set(id(project, name, key), { said, told, at: Date.now(), kind });
+      const now = Date.now();
+      // The computer's moment: tried again by itself after 1, 5 and 15 minutes, then every 30 (failure.ts), as every
+      // passing failure is; the rest stand for `FAILED_RETRY_MS`.
+      const tried = kind === "passing" ? (passingTries.get(id(project, name, key)) ?? 0) : 0;
+      if (kind === "passing") passingTries.set(id(project, name, key), tried + 1);
+      const until = kind === "passing" ? (failures.nextTry("passing", tried, now) ?? now + FAILED_RETRY_MS) : now + FAILED_RETRY_MS;
+      failed.set(id(project, name, key), { said, told, at: now, kind, until });
       if (kind === "code") untold.set(id(project, name, key), said);
       // The network's: started again once the relay answers, or in five minutes at most.
       if (kind === "network") retryWhenBack(app, project, id(project, name, key));
       // What isn't the code's may go the next time: started again once the failure stops standing.
       else if (kind !== "code") {
-        const again = setTimeout(() => renderSoon(app, project), FAILED_RETRY_MS + 1_000);
+        const again = setTimeout(() => renderSoon(app, project), until - now + 1_000);
         again.unref?.();
       }
       diag.warn("effects", `${project}: ${name} didn't render: ${said}`);
@@ -2011,6 +2032,7 @@ export function renderNow(app: App, project: string, name: string): Promise<void
     })
     .then(() => {
       strikes.delete(id(project, name, key));
+      passingTries.delete(id(project, name, key));
     })
     .finally(() => renders.delete(id(project, name, key)));
   renders.set(id(project, name, key), render);
@@ -2021,6 +2043,8 @@ export function renderNow(app: App, project: string, name: string): Promise<void
 
 /** How often a render failed by the network is checked for the relay's being back (`retryWhenBack`), the first time. */
 export const networkRetry = { probeMs: 30_000 };
+/** Renders failed for a passing reason one after another, by render: each tried again later than the one before (failure.ts). */
+const passingTries = new Map<string, number>();
 /** Renders failed by the network one after another, by render: each waits twice as long for the relay as the one before. */
 const strikes = new Map<string, number>();
 /** Projects whose network-failed renders wait for the relay. */
@@ -2310,6 +2334,8 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
   const per = chunkFrames(frame);
   let count = 0;
   let stacked = false;
+  // The hardware encoder failed this render once: every chunk on libx264 from then, so its video is one encoder's.
+  let software = false;
   const chunkPath = (n: number, alpha: boolean) => join(frames, `chunk-${String(n).padStart(5, "0")}${alpha ? ".alpha" : ""}.mp4`);
   const rangeOf = (n: number): [number, number] => [n * per, Math.min(render.frames, (n + 1) * per)];
   const rate = rateArg(project);
@@ -2333,7 +2359,9 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
       render.frames = Math.max(1, Math.round(duration * frame.fps));
       count = Math.ceil(render.frames / per);
       // Stacked already (said, or a chunk made so): the chunks made plain before that are drawn again.
-      stacked = readState(statePath) || Array.from({ length: count }, (_, n) => n).some((n) => fs.existsSync(chunkPath(n, true)));
+      const state = readState(statePath);
+      stacked = state.stacked || Array.from({ length: count }, (_, n) => n).some((n) => fs.existsSync(chunkPath(n, true)));
+      software = state.software;
       if (stacked) for (let n = 0; n < count; n++) fs.rmSync(chunkPath(n, false), { force: true });
       const queue: number[] = [];
       let toDraw = 0;
@@ -2357,7 +2385,7 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
       need = renderBytes(frame, toDraw, duration);
       let left = storage.spare(dir, need, WORK_FLOOR_BYTES);
       if (left < 0 && storage.askForRoom(storage.freeBytes(dir) - left) > 0) left = storage.spare(dir, need, WORK_FLOOR_BYTES);
-      if (left < 0) throw new DiskShort(diskFull(-left));
+      if (left < 0) throw new DiskShort(-left);
       claim.bytes = need;
       const pixels = frame.width * frame.height;
       const drawChunk = async (n: number) => {
@@ -2368,7 +2396,7 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
         for (let index = first; index < end; index++) if (!fs.existsSync(join(frames, frameName(index)))) wanted.push(index);
         // Something else took the disk to its floor meanwhile: refused here, never written into ENOSPC.
         const free = storage.freeBytes(dir);
-        if (wanted.length > 0 && free - wanted.length * pixels * PNG_BYTES_A_PIXEL < WORK_FLOOR_BYTES) throw new DiskShort(diskFull(WORK_FLOOR_BYTES + wanted.length * pixels * PNG_BYTES_A_PIXEL - free));
+        if (wanted.length > 0 && free - wanted.length * pixels * PNG_BYTES_A_PIXEL < WORK_FLOOR_BYTES) throw new DiskShort(WORK_FLOOR_BYTES + wanted.length * pixels * PNG_BYTES_A_PIXEL - free);
         let next = 0;
         await Promise.all(
           opened.map(async (page) => {
@@ -2400,7 +2428,7 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
         try {
           if (!stacked && (await seeThrough(input, limit))) {
             stacked = true;
-            writeAtomic(statePath, JSON.stringify({ stacked: true }));
+            writeAtomic(statePath, JSON.stringify({ stacked: true, software }));
             for (let m = 0; m < count; m++) {
               if (m === n || !fs.existsSync(chunkPath(m, false))) continue;
               hold(-fs.statSync(chunkPath(m, false)).size);
@@ -2411,7 +2439,30 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
             }
           }
           const partial = join(frames, `chunk-${String(n).padStart(5, "0")}.partial.mp4`);
-          await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...input, ...limit, ...encodeArgs(frame, stacked), "-an", partial], { background: true });
+          const encode = () => tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", ...input, ...limit, ...encodeArgs(frame, stacked, software), "-an", partial], { background: true });
+          try {
+            await encode();
+          } catch (error) {
+            // The hardware encoder refused (NVENC busy or out of memory while the card is shared): this chunk and the
+            // rest on libx264, as review copies do (reviews.ts), and the chunks it made before drawn again, as joined
+            // they'd play with the first one's encoder setup. A full disk is the disk's, never the encoder's.
+            const hardware = encoderHooks.hardware();
+            if (software || hardware === null || outOfSpace(error) || outOfSpace(tools.saidOf(error))) throw error;
+            software = true;
+            writeAtomic(statePath, JSON.stringify({ stacked, software }));
+            let again = 0;
+            for (let m = 0; m < count; m++) {
+              if (m === n || !fs.existsSync(chunkPath(m, stacked))) continue;
+              hold(-fs.statSync(chunkPath(m, stacked)).size);
+              fs.rmSync(chunkPath(m, stacked), { force: true });
+              const [a, b] = rangeOf(m);
+              render.drawn -= b - a;
+              queue.push(m);
+              again += 1;
+            }
+            diag.warn("effects", `${id}: ${name}'s frames didn't encode on ${hardware[1]} (${tools.saidOf(error)}): made with libx264 instead${again > 0 ? `, its ${again} chunks before drawn again` : ""}`);
+            await encode();
+          }
           fs.renameSync(partial, chunkPath(n, stacked));
           let freed = 0;
           for (let index = first; index < end; index++) {
@@ -2426,7 +2477,7 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
           hold(fs.statSync(chunkPath(n, stacked)).size - freed);
         } catch (error) {
           if (error instanceof Outdated || error instanceof DiskShort) throw error;
-          throw new Error(`its frames didn't join into a video: ${diag.messageOf(error)}`);
+          throw new Error(`its frames didn't join into a video: ${tools.saidOf(error)}`);
         }
       };
       // One chunk drawn while the one before it is encoded: at most two chunks' frames on the disk.
@@ -2466,16 +2517,18 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
     claim.bytes = 0;
     let room = storage.spare(dir, chunkBytes, WORK_FLOOR_BYTES, claim);
     if (room < 0 && storage.askForRoom(storage.freeBytes(dir) - room) > 0) room = storage.spare(dir, chunkBytes, WORK_FLOOR_BYTES, claim);
-    if (room < 0) throw new DiskShort(diskFull(-room));
+    if (room < 0) throw new DiskShort(-room);
     claim.bytes = chunkBytes;
     try {
       const list = join(frames, "chunks.txt");
       fs.writeFileSync(list, `${Array.from({ length: count }, (_, n) => `file '${chunkPath(n, stacked).replaceAll("'", "'\\''")}'`).join("\n")}\n`);
       await tools.run([tools.ffmpeg(), "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", list, "-c", "copy", "-an", "-movflags", "+faststart", partial]);
       fs.renameSync(partial, out);
+      // Which encoder made it (Nov 22: whether a render was the card's or the processor's couldn't be told).
+      diag.info("effects", `${id}: ${name}'s ${count} ${count === 1 ? "chunk" : "chunks"} joined, encoded with ${software ? "libx264" : (encoderHooks.hardware()?.[1] ?? "libx264")}`);
     } catch (error) {
       fs.rmSync(partial, { force: true });
-      throw new Error(`its frames didn't join into a video: ${diag.messageOf(error)}`);
+      throw new Error(`its frames didn't join into a video: ${tools.saidOf(error)}`);
     }
     fs.rmSync(frames, { recursive: true, force: true });
     return false;
@@ -2488,12 +2541,13 @@ async function drawAndJoin(app: App, render: Render, project: Project, dir: stri
   }
 }
 
-/** Whether a render was found see-through (`state.json`), so its chunks are stacked. */
-function readState(path: string): boolean {
+/** What a render found (`state.json`): see-through, so its chunks are stacked; the hardware encoder failed it, so they're libx264's. */
+function readState(path: string): { stacked: boolean; software: boolean } {
   try {
-    return (JSON.parse(fs.readFileSync(path, "utf8")) as { stacked?: unknown }).stacked === true;
+    const read = JSON.parse(fs.readFileSync(path, "utf8")) as { stacked?: unknown; software?: unknown };
+    return { stacked: read.stacked === true, software: read.software === true };
   } catch {
-    return false;
+    return { stacked: false, software: false };
   }
 }
 
@@ -2519,9 +2573,12 @@ export function chunkFrames(frame: { width: number; height: number; fps: number 
  * second, was thrown away once it went up): a keyframe every half second and no B-frames. Kept within H.264's 4096
  * lines: a 4K project's stack is half size.
  */
-function encodeArgs(frame: { width: number; height: number; fps: number }, stacked: boolean): string[] {
+/** The hardware encoder a render's chunks are made on, null for libx264 (tests: one that fails). */
+export const encoderHooks = { hardware: (): string[] | null => tools.hardwareH264() };
+
+function encodeArgs(frame: { width: number; height: number; fps: number }, stacked: boolean, software = false): string[] {
   const cap = Math.round(frame.width * frame.height * frame.fps * 0.14 * 2);
-  const hardware = tools.hardwareH264();
+  const hardware = software ? null : encoderHooks.hardware();
   const rate = stacked ? Math.round(cap * 1.5) : cap;
   const shrink = Math.min(1, 4096 / (frame.height * 2));
   const gop = ["-g", String(Math.max(1, Math.round(frame.fps / 2))), "-bf", "0"];
