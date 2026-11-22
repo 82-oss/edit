@@ -179,6 +179,8 @@ export const WRITABLE = [
   // A project's chat (chat_sync.ts), its finished exports (exports.ts), scrub strips (cloud_media.ts) and
   // research (research_cloud.ts). Only admins could write them before Nov 4, so a teammate's never went up.
   "edit/chats/", "edit/exports/", "edit/scrub/", "edit/research/",
+  // A project's teaching draft (teaching_draft.ts): what its agent may be asked to teach later, kept as its chat is.
+  "edit/drafts/",
   "edit/reviews/",
   // A long recording to be heard by link (transcribe_jobs.ts); the relay deletes it once heard.
   "edit/transcribe/",

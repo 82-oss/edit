@@ -112,5 +112,5 @@ test("a channel taught nothing builds only when told what to write; one whose le
 test("a guide brought over whole is never written over by a short lesson of the same name", async () => {
   accounts.signedInForTests(["agent.teach", `channel.${CHANNEL}`]);
   v2cloud.useSkillsForTests([lesson("cut-in-guide", "x".repeat(5_000))]);
-  await expect(lanes.keepLesson({ channel: CHANNEL, lane: "script" }, "cut-in-guide", "Shorter cut-ins.", "Sphe said so", "channel")).rejects.toThrow("brought over whole");
+  await expect(lanes.keepLesson({ channel: CHANNEL, lane: "script" }, "cut-in-guide", "Shorter cut-ins.", "Sphe said so", "channel")).rejects.toThrow("cut-in-guide is a guide (5000 characters): change its lines with change");
 });
