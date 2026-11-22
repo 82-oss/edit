@@ -61,6 +61,7 @@ import * as devtools from "./chrome_devtools.ts";
 import * as diag from "./diag.ts";
 import * as cloudProjects from "./cloud_projects.ts";
 import * as effectCloud from "./effect_cloud.ts";
+import * as effectKept from "./effect_kept.ts";
 import * as filePins from "./file_pins.ts";
 import { diskFull, outOfSpace } from "./export_prep.ts";
 import * as speeds from "./export_speeds.ts";
@@ -1294,6 +1295,8 @@ export async function giveFootage(app: App, projectId: string, name: string, med
     wave = `${stem}.wave.js`;
     writeAtomic(join(dir, wave), waveScript(stem, new Float32Array(pcm.buffer, pcm.byteOffset, Math.floor(pcm.byteLength / 4)), 24000));
   }
+  // That video's, not the effect's: left out of the library when it's kept (effect_kept.ts).
+  effectKept.noteGiven(dir, [video, levels, wave], { media: mediaId, start, end });
   return { video, levels, wave, key: stem, width: media.width, height: media.height, start, duration: end - start };
 }
 

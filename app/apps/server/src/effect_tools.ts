@@ -10,6 +10,7 @@ import fs from "node:fs";
 import { join } from "node:path";
 import * as channels from "./channels.ts";
 import * as effectInputs from "./effect_inputs.ts";
+import * as effectKept from "./effect_kept.ts";
 import * as effects from "./effects.ts";
 import * as looker from "./effect_looker.ts";
 import * as frameCompare from "./frame_compare.ts";
@@ -417,7 +418,10 @@ async function useFromLibrary({ app, args, projectId }: ToolCall): Promise<Conte
   if (found === undefined) throw new Error(`no ${kind === "template" ? "effect" : "sound"} ${name} in this channel's edit style (library lists them)`);
   const from = await v2cloud.fetchInto(found.key, n, into);
   if (from === null) throw new Error(`no ${kind === "template" ? "effect" : "sound"} ${name}${n === null ? "" : ` version ${n}`} in the library`);
-  return text(`effects/${as}/ is ${name} (version ${from.n}, ${from.files?.length ?? 0} files): yours to change.${kind === "sound" ? " make_sound renders it." : " Look at it, then add_effect."}`);
+  // Footage its own project handed it isn't kept (effect_kept.ts): this project gives its own, by the same name.
+  const footage = Object.keys(effectKept.given(into)).filter((path) => path.endsWith(".mp4") && !fs.existsSync(join(into, path)));
+  const give = footage.length === 0 ? "" : ` Its page plays footage it isn't kept with (${footage.join(", ")}): give it this project's with effect_footage, as: ${footage.map((path) => JSON.stringify(path.replace(/\.mp4$/u, ""))).join(", ")}.`;
+  return text(`effects/${as}/ is ${name} (version ${from.n}, ${from.files?.length ?? 0} files): yours to change.${give}${kind === "sound" ? " make_sound renders it." : " Look at it, then add_effect."}`);
 }
 
 async function saveToLibrary({ app, args, projectId }: ToolCall): Promise<Content[]> {
@@ -442,13 +446,32 @@ async function saveToLibrary({ app, args, projectId }: ToolCall): Promise<Conten
     return text(kept.made ? `${as} ("${font.family}") is version ${kept.n} in the library: every V2 agent's effects, in every channel, have it by that name now. If the person said when to use it ("on evidence boards from now on"), remember that too.` : `${as} is already exactly this (version ${kept.n}).`);
   }
   const dir = effects.folder(app.store, projectId, name);
-  if (!fs.existsSync(join(dir, kind === "template" ? effects.ENTRY : effects.SOUND_ENTRY))) throw new Error(`effects/${name}/ has no ${kind === "template" ? effects.ENTRY : effects.SOUND_ENTRY}`);
+  const entry = kind === "template" ? effects.ENTRY : effects.SOUND_ENTRY;
+  if (!fs.existsSync(join(dir, entry))) throw new Error(`effects/${name}/ has no ${entry}`);
   // Optional in the schema only because a font has none.
   if (typeof args.brief !== "string" || args.brief.trim() === "") throw new Error(`brief is required for ${kind === "sound" ? "a sound" : "an effect"}: how to change it without making it again, in a line or two`);
+  if (args.also !== undefined && (!Array.isArray(args.also) || args.also.some((one) => typeof one !== "string"))) throw new Error("also is a list of the folder's files to keep as well, by their paths inside it");
+  // Only what its page draws from (effect_kept.ts): never the references and tests beside it, nor this video's footage.
+  const files = effectKept.needed(dir, entry, (args.also as string[] | undefined) ?? []);
   await placeHere(app, projectId);
   const where = keptIn(app, projectId, args.for);
-  const kept = await v2cloud.save(v2cloud.ownKey(kind, where.place, as), as, dir, { category: line("category", 40), note: line("note", 160), brief: line("brief", 240), ...(typeof args.reason === "string" && args.reason !== "" ? { reason: args.reason } : {}) });
-  return text(kept.made ? `${as} is version ${kept.n} in the library, in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}: what its projects start from.` : `${as} is already exactly this (version ${kept.n}).`);
+  const kept = await v2cloud.save(v2cloud.ownKey(kind, where.place, as), as, dir, { category: line("category", 40), note: line("note", 160), brief: line("brief", 240), only: files.keep, ...(typeof args.reason === "string" && args.reason !== "" ? { reason: args.reason } : {}) });
+  const handed = effectKept.given(dir);
+  const left =
+    files.left.length === 0
+      ? ""
+      : ` Left out, as its page doesn't load them: ${files.left.map((one) => `${one.path} (${effectKept.sizeText(one.size)}${handed[one.path] === undefined ? "" : ", this video's footage: a project using it gives its own with effect_footage"})`).join(", ")}. If the page does need one (a name its code builds), keep it again with also naming it.`;
+  return text((kept.made ? `${as} is version ${kept.n} in the library, in this channel's edit style${where.words === "" ? "" : ` ${where.words}`}: what its projects start from.` : `${as} is already exactly this (version ${kept.n}).`) + left);
+}
+
+async function removeEffectFiles({ app, args, projectId }: ToolCall): Promise<Content[]> {
+  const name = named(app, projectId, args);
+  if (!Array.isArray(args.paths) || args.paths.length === 0 || args.paths.some((one) => typeof one !== "string")) throw new Error("paths is a list of the effect's files to take out, by their paths inside its folder");
+  const dir = effects.folder(app.store, projectId, name);
+  if (!fs.existsSync(dir)) throw new Error(`there's no effect ${name} in this project (effects/${name}/)`);
+  const entry = fs.existsSync(join(dir, effects.SOUND_ENTRY)) && !fs.existsSync(join(dir, effects.ENTRY)) ? effects.SOUND_ENTRY : effects.ENTRY;
+  const gone = effectKept.remove(dir, entry, args.paths as string[]);
+  return text(`Taken out of effects/${name}/: ${gone.map((one) => `${one.path} (${effectKept.sizeText(one.size)})`).join(", ")}. Look at it again if its page used one; save_to_library keeps it as its next version, without them.`);
 }
 
 async function archiveInLibrary({ app, args, projectId }: ToolCall): Promise<Content[]> {
@@ -654,6 +677,7 @@ const TOOLS: [string, (call: ToolCall) => Promise<Content[]>][] = [
   ["library", library],
   ["use_from_library", useFromLibrary],
   ["save_to_library", saveToLibrary],
+  ["remove_effect_files", removeEffectFiles],
   ["archive_in_library", archiveInLibrary],
   ["remember", remember],
   ["teach_removal", teachRemoval],

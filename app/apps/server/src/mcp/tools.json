@@ -4098,7 +4098,7 @@
     "name": "use_from_library"
   },
   {
-    "description": "Keep an effect or a sound of this project's in V2's cloud for this channel's projects, or as its next version (a teacher's; Edit V2). Only when the person says to keep it or use it from now on. A font (kind font, name: its folder from fetch_font) is kept the same way, with a note on when it's the one to use; every agent's effects then have it by its family name. An effect or a sound is kept in this channel's edit style (a channel's project only): its group's when it's in one, unless for says this channel alone.",
+    "description": "Keep an effect or a sound of this project's in V2's cloud for this channel's projects, or as its next version (a teacher's; Edit V2). Only when the person says to keep it or use it from now on. A font (kind font, name: its folder from fetch_font) is kept the same way, with a note on when it's the one to use; every agent's effects then have it by its family name. An effect or a sound is kept in this channel's edit style (a channel's project only): its group's when it's in one, unless for says this channel alone. Only the files its page loads go with it (never its references, tests or this video's footage).",
     "inputSchema": {
       "properties": {
         "as": {
@@ -4145,6 +4145,13 @@
             "channel"
           ],
           "type": "string"
+        },
+        "also": {
+          "description": "Files of the folder to keep as well, by their paths inside it: only when its page needs one Edit left out (a name its code builds). By default only what its page loads is kept.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -4156,6 +4163,34 @@
       "type": "object"
     },
     "name": "save_to_library"
+  },
+  {
+    "description": "Take files out of an effect's folder in this project (Edit V2): the references, tests and footage it no longer needs. Its page stays. Kept again with save_to_library, the next version in the library is without them.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "description": "Its folder here (effects/<name>/).",
+          "type": "string"
+        },
+        "paths": {
+          "description": "Its files to take out, by their paths inside the folder (img/ref.png).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "project_id": {
+          "description": "Defaults to the project open in the UI.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "paths"
+      ],
+      "type": "object"
+    },
+    "name": "remove_effect_files"
   },
   {
     "description": "Put an effect, a sound or a skill away in V2's cloud, or back (a teacher's; Edit V2). What the person means by deleting one, or by telling you to forget something you were told to remember (a memory is a skill): it leaves every list and every agent's mind, its versions kept. To forget one line of a longer skill, remember the skill again without it.",

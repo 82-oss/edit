@@ -48,6 +48,7 @@ export const HQ_TOOLS: readonly string[] = [
   "library",
   "use_from_library",
   "save_to_library",
+  "remove_effect_files",
   "archive_in_library",
   "remember",
   "teach_removal",

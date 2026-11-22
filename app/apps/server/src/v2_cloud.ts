@@ -147,8 +147,9 @@ function walk(dir: string, under = ""): string[] {
 }
 
 /** A folder's files in R2, each once by its content: the list of them. */
-async function putFiles(dir: string): Promise<File[]> {
-  return eachAtOnce(walk(dir), async (path) => {
+async function putFiles(dir: string, only?: readonly string[]): Promise<File[]> {
+  const files = only === undefined ? walk(dir) : walk(dir).filter((path) => only.includes(path));
+  return eachAtOnce(files, async (path) => {
     const full = join(dir, path);
     const sha256 = await sha256File(full);
     if (!(await cloud.has(fileKey(sha256)))) await cloud.uploadFile(full, fileKey(sha256));
@@ -219,15 +220,17 @@ async function getFiles(files: File[], dir: string): Promise<void> {
 /**
  * A folder kept as the item's next version (in use at once): its files sent
  * up first, those already there not again. `source` names the code's version
- * (an effect's key): the same as the newest makes no new version.
+ * (an effect's key): the same as the newest makes no new version. `only`:
+ * just these of its files (a kept effect's, effect_kept.ts), the rest left.
  */
-export async function save(key: string, name: string, dir: string, options: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string } = {}): Promise<{ n: number; made: boolean }> {
-  const files = await putFiles(dir);
+export async function save(key: string, name: string, dir: string, options: { reason?: string; from?: { key: string; n: number }; source?: string; note?: string; brief?: string; category?: string; only?: readonly string[] } = {}): Promise<{ n: number; made: boolean }> {
+  const { only, ...given } = options;
+  const files = await putFiles(dir, only);
   // The same files as the version in use (a version just brought back, saved again as it renders): not a new one.
   const now = await version(key).catch(() => null);
   const same = (a: File[], b: File[]) => a.length === b.length && a.every((one, at) => one.path === b[at]!.path && one.sha256 === b[at]!.sha256);
   if (now !== null && now.version.files !== null && same(files, now.version.files)) return { n: now.version.n, made: false };
-  const saved = (await cloud.mutation("edit:saveLibraryVersion", { key, name, files, ...options })) as { n: number; made: boolean };
+  const saved = (await cloud.mutation("edit:saveLibraryVersion", { key, name, files, ...given })) as { n: number; made: boolean };
   // A library piece kept (not a project's own effect): what's taught is read again (teaching_gate.ts sees it at once).
   if (!key.startsWith("effect:")) forgetSkills();
   return saved;
