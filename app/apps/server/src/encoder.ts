@@ -89,6 +89,11 @@ export function busy(): boolean {
   return others().length > 0;
 }
 
+/** What holds the encoder now at `tier` exactly (the export registry orders its own exports and smooth renders, and asks only of the rest). */
+export function holding(tier: Tier): string[] {
+  return using().filter((one) => one.tier === tier).map((one) => one.what);
+}
+
 /** What uses the encoder now that goes before `tier`: what work of that tier waits for. */
 export function above(tier: Tier): string[] {
   return using().filter((one) => rank(one.tier) < rank(tier)).map((one) => one.what);
@@ -129,8 +134,22 @@ export async function turn(what: string, tier: Tier = "background", signal?: Abo
   return hold(what, tier);
 }
 
+/** Told when a hold or a source ends (a queue of its own, as the export registry's, looks again). */
+const releases = new Set<() => void>();
+export function onRelease(listener: () => void): () => void {
+  releases.add(listener);
+  return () => void releases.delete(listener);
+}
+
 /** Every waiting turn looks again (a hold ended, a source may have). */
 function looked(): void {
+  for (const listener of [...releases]) {
+    try {
+      listener();
+    } catch (error) {
+      diag.warn("encoder", `after a release: ${diag.messageOf(error)}`);
+    }
+  }
   for (const wake of [...waiting]) wake();
   if (waiting.size === 0 && poll !== undefined) {
     clearInterval(poll);

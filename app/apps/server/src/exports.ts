@@ -10,6 +10,7 @@ import { Effect } from "effect";
 
 import * as cloud from "./cloud.ts";
 import * as diag from "./diag.ts";
+import * as encoder from "./encoder.ts";
 import * as failure from "./failure.ts";
 import { cachePath } from "./effect_cloud.ts";
 import * as filePins from "./file_pins.ts";
@@ -20,6 +21,7 @@ import * as speeds from "./export_speeds.ts";
 import { runPromise } from "./effect/runtime.ts";
 import * as jobs from "./jobs.ts";
 import * as missingMedia from "./missing_media.ts";
+import * as playing from "./playing.ts";
 import { ioMessage, nowMs, writeAtomic } from "./files.ts";
 import { subtitleVideo } from "./drive.ts";
 import { catchBugsAsync } from "./guard.ts";
@@ -1446,6 +1448,16 @@ export class ExportRegistry implements seams.Exports {
   constructor(private readonly home: string | null = null) {
     // Its share-made exports waiting behind their share, from before a restart too, are looked at from the start.
     if (home !== null) watchBehind(home);
+    // Its line looks again when a play stops (exports run one fewer at once while one is watched) and when the encoder
+    // is let go (smooth playback's render waits for a share's review copy).
+    if (home !== null) {
+      playing.onChange((now) => {
+        if (!now) this.drain();
+      });
+      encoder.onRelease(() => {
+        if (this.ahead.length > 0) this.drain();
+      });
+    }
   }
 
   /** Whether `path` is a file this server exported, now or before a restart (and so may be downloaded or revealed). */
@@ -1493,7 +1505,7 @@ export class ExportRegistry implements seams.Exports {
    * beside them. `cancel` drops a wait.
    */
   takeTurn(ready: (release: () => void) => void, giveWay?: () => void): { release: (() => void) | null; cancel: () => void } {
-    if (this.ahead.length === 0 && this.localQueue.length === 0 && capacity.noRoom(this.localActive) === null) return { release: this.lend(giveWay), cancel: () => {} };
+    if (this.ahead.length === 0 && this.localQueue.length === 0 && capacity.noRoom(this.localActive) === null && !this.copyHolds()) return { release: this.lend(giveWay), cancel: () => {} };
     const turn = (release: () => void) => ready(release);
     this.ahead.push(Object.assign(turn, { giveWay }));
     this.drain();
@@ -1503,18 +1515,29 @@ export class ExportRegistry implements seams.Exports {
   /** Smooth playback's places now, each with how it gives way to an export someone asked for (`takeTurn`'s `giveWay`). */
   private lentTo = new Set<{ giveWay: (() => void) | undefined; asked: boolean }>();
 
-  /** Takes a place for smooth playback; its release gives it back (once). */
+  /** Whether a share's review copy holds the encoder (encoder.ts): smooth playback's render, below it, waits and gives way. */
+  private copyHolds(): boolean {
+    return encoder.holding("share").length > 0;
+  }
+
+  /** Takes a place for smooth playback; its release gives it back (once). Held on the encoder below a share's review copy, which asks it to give way. */
   private lend(giveWay?: () => void): () => void {
     this.localActive++;
     this.lent++;
     const place = { giveWay, asked: false };
     this.lentTo.add(place);
+    const lease = encoder.hold("smooth playback's render", "playback", () => {
+      if (place.asked || place.giveWay === undefined) return;
+      place.asked = true;
+      place.giveWay();
+    });
     let held = true;
     return () => {
       if (!held) return;
       held = false;
       this.lentTo.delete(place);
       this.lent = Math.max(0, this.lent - 1);
+      lease.release();
       this.releaseOne();
     };
   }
@@ -1607,11 +1630,31 @@ export class ExportRegistry implements seams.Exports {
         return;
       }
       // An export someone asked for goes before smooth playback's render: given the place first, the render would only
-      // be told to give way to it at once (Nov 20). With nothing in line, the render goes.
+      // be told to give way to it at once (Nov 20). With nothing in line, the render goes, once no share's review copy
+      // holds the encoder (it looks again when that's let go).
       if (this.localQueue.length === 0) {
+        if (this.copyHolds()) return;
         const turn = this.ahead.shift()!;
         turn(this.lend(turn.giveWay));
         continue;
+      }
+      // One export fewer at once while a play is watched (Nov 22), so the play keeps an engine: the next waits for one
+      // to end, or for the play to stop. Never none: the first always goes.
+      const exporting = this.localActive - this.lent;
+      if (exporting > 0 && exporting >= encoder.exportsAtOnce(capacity.mostAtOnce())) {
+        const why = capacity.noRoom(capacity.mostAtOnce()) ?? "waiting for the encoder";
+        for (const one of this.localQueue) {
+          if (one.running.waiting === why) continue;
+          one.running.waiting = why;
+          one.notify();
+        }
+        // The play's own smooth render isn't held back with them.
+        if (this.ahead.length > 0 && !this.copyHolds()) {
+          const turn = this.ahead.shift()!;
+          turn(this.lend(turn.giveWay));
+          continue;
+        }
+        return;
       }
       const next = this.localQueue.shift()!;
       if (this.localActive > 0) diag.info("export", `starting another export beside ${this.localActive} running (${capacity.standing()})`);
