@@ -38,6 +38,33 @@ async function read() {
 window.seek = (t) => new Promise((resolve) => { v.addEventListener("seeked", async () => { let p; try { p = await read(); } catch (e) { p = [0, 0, 255]; } out.fillStyle = "rgb(" + p[0] + "," + p[1] + "," + p[2] + ")"; out.fillRect(0, 0, 1920, 1080); resolve(); }, { once: true }); v.currentTime = 0.5 + t * 0.1; });
 </script></body>`;
 
+/** The same for a picture (`shot.png`): through a 2D canvas or WebGL, the picture in the markup or made by the page's code. */
+const pictureReader = (how: string, made: boolean) => `<!doctype html><body style="margin:0;background:#000">
+${made ? "" : '<img id="i" src="shot.png" style="display:none">'}
+<canvas id="c" width="1920" height="1080" style="position:absolute;inset:0"></canvas><script>
+let i = document.getElementById("i");
+if (!i) { i = new Image(); i.src = "shot.png"; }
+const out = document.getElementById("c").getContext("2d");
+window.duration = 1;
+window.ready = i.decode();
+function read() {
+  if (${JSON.stringify(how)} === "2d") { const c = document.createElement("canvas"); c.width = 64; c.height = 36; const x = c.getContext("2d", { willReadFrequently: true }); x.drawImage(i, 0, 0, 64, 36); return [...x.getImageData(32, 18, 1, 1).data]; }
+  const c = document.createElement("canvas"); const g = c.getContext("webgl2"); const t = g.createTexture(); g.bindTexture(g.TEXTURE_2D, t); g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, i);
+  const f = g.createFramebuffer(); g.bindFramebuffer(g.FRAMEBUFFER, f); g.framebufferTexture2D(g.FRAMEBUFFER, g.COLOR_ATTACHMENT0, g.TEXTURE_2D, t, 0);
+  const b = new Uint8Array(4); g.readPixels(i.naturalWidth >> 1, i.naturalHeight >> 1, 1, 1, g.RGBA, g.UNSIGNED_BYTE, b); return [...b];
+}
+window.seek = async () => { let p; try { p = read(); } catch (e) { p = [0, 0, 255]; } out.fillStyle = "rgb(" + p[0] + "," + p[1] + "," + p[2] + ")"; out.fillRect(0, 0, 1920, 1080); };
+</script></body>`;
+
+/** Green when this browser plays the footage at all (its first frame within 8 s), magenta when it doesn't (the Check's Mac, a VM: its video never loads). */
+const PLAYS = `<!doctype html><body style="margin:0;background:#000"><video id="v" src="shot.mp4" muted playsinline style="display:none"></video>
+<canvas id="c" width="1920" height="1080" style="position:absolute;inset:0"></canvas><script>
+let ok = false; const v = document.getElementById("v");
+window.duration = 1;
+window.ready = new Promise((resolve) => { v.addEventListener("loadeddata", () => { ok = true; resolve(); }, { once: true }); setTimeout(resolve, 8000); });
+window.seek = async () => { const out = document.getElementById("c").getContext("2d"); out.fillStyle = ok ? "rgb(0,255,0)" : "rgb(255,0,255)"; out.fillRect(0, 0, 1920, 1080); };
+</script></body>`;
+
 function write(app: ReturnType<typeof fixtureHome>["app"], project: string, name: string, files: Record<string, string>): void {
   const dir = effects.folder(app.store, project, name);
   fs.mkdirSync(dir, { recursive: true });
@@ -54,7 +81,7 @@ function near(got: number[], want: number[]): void {
   for (const [at, value] of want.entries()) expect(Math.abs(got[at]! - value)).toBeLessThan(10);
 }
 
-test.skipIf(chrome === null)("an effect reads the pixels of footage it's given: through a 2D canvas, WebGL and a VideoFrame, in a look and a render", async () => {
+test.skipIf(chrome === null)("an effect reads the pixels of a picture and of footage it's given: through a 2D canvas, WebGL and a VideoFrame, in a look and a render", async () => {
   const home = fixtureHome("effect-pixels");
   const { app, cleanup, dir: scratch } = home;
   const id = app.store.create("Pixels", { width: 1920, height: 1080, fps: 30 }).project.id;
@@ -72,7 +99,30 @@ test.skipIf(chrome === null)("an effect reads the pixels of footage it's given: 
       project.media.push({ id: "m9", name: "clip.mp4", path: clip, kind: "video", duration: 3, width: 640, height: 360, fps: 30, has_audio: false });
     });
     const red = [0xc8, 0x32, 0x14];
-    for (const how of ["2d", "webgl", "frame"]) {
+    // A picture's pixels, which every browser reads (the same rule taints a canvas for a picture as for a video).
+    const png = join(scratch, "shot.png");
+    expect(Bun.spawnSync(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=0xC83214:s=640x360", "-frames:v", "1", png]).exitCode).toBe(0);
+    for (const how of ["2d", "webgl"]) {
+      for (const made of [false, true]) {
+        const name = `picture-${how}${made ? "-made" : ""}`;
+        write(app, id, name, { "scene.html": pictureReader(how, made) });
+        fs.copyFileSync(png, join(effects.folder(app.store, id, name), "shot.png"));
+        const look = await effects.look(app, id, name, [0.2]);
+        expect(look.errors).toEqual([]);
+        const still = join(scratch, `${name}.still`);
+        fs.writeFileSync(still, look.stills[0]!.picture);
+        near(colour(still), red);
+      }
+    }
+    // Footage: only where this browser plays it at all (the Check's Mac is a VM whose headless shell never loads a video).
+    await effects.giveFootage(app, id, "plays", "m9", 0, 3, "shot");
+    fs.writeFileSync(join(effects.folder(app.store, id, "plays"), "scene.html"), PLAYS);
+    const probe = await effects.look(app, id, "plays", [0.2]);
+    const probed = join(scratch, "plays.still");
+    fs.writeFileSync(probed, probe.stills[0]!.picture);
+    const plays = (colour(probed)[1] ?? 0) > 200;
+    if (!plays) console.warn("effect_pixels: this browser plays no video, so reading a video's pixels wasn't tested here (a picture's was)");
+    for (const how of plays ? ["2d", "webgl", "frame"] : []) {
       for (const made of [false, true]) {
         const name = `read-${how}${made ? "-made" : ""}`;
         await effects.giveFootage(app, id, name, "m9", 0, 3, "shot");
@@ -84,9 +134,10 @@ test.skipIf(chrome === null)("an effect reads the pixels of footage it's given: 
         near(colour(still), red);
       }
     }
-    // And rendered: every frame of it the footage's colour. Brought in from the library as another name, its media says which.
-    effectKept.noteFrom(effects.folder(app.store, id, "read-webgl"), "v1-analog-look");
-    const added = await effects.add(app, id, "read-webgl");
+    // And rendered: every frame of it the footage's colour (the picture's, where no video plays). Brought in from the library as another name, its media says which.
+    const drawn = plays ? "read-webgl" : "picture-webgl";
+    effectKept.noteFrom(effects.folder(app.store, id, drawn), "v1-analog-look");
+    const added = await effects.add(app, id, drawn);
     expect(app.store.get(id)!.project.media.find((one) => one.id === added.media)!.effect_from).toBe("v1-analog-look");
     await app.store.update(id, "test", (project) => {
       project.tracks.push({ id: "t1", kind: "video", name: "V1", hidden: false, muted: false, locked: false } as unknown as (typeof project.tracks)[number]);
