@@ -1161,7 +1161,7 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
     const fixes = handFixes(app, projectId, edited);
     let handLeftOut = 0;
     let handHeld = 0;
-    const deletedByHand = (line: Line, start: number, end: number) => fixes.deleted.some((one) => one.words === wordsKey(line.text) && sameMoment(one, start, end));
+    const deletedByHand = (line: Line, start: number, end: number) => fixes.deleted(line.text, start, end);
     edited.clips = edited.clips.filter(
       (clip) => !((clip.name ?? "").startsWith(NAME) && clip.start < to && clipEnd(clip) > from),
     );
@@ -1201,10 +1201,8 @@ export async function repackSubtitles(app: App, projectId: string, options: Subt
         continue;
       }
       // Held as long as the person made it, never into the next line shown.
-      const words = wordsKey(line.text);
-      const held = fixes.lengthened.find((one) => one.words === words && sameMoment(one, start, said));
       const next = pieces.slice(index + 1).find(([other, from, to]) => from > start && !deletedByHand(other, from, to))?.[1] ?? Number.MAX_SAFE_INTEGER;
-      const end = held !== undefined && held.end > said ? Math.max(said, Math.min(held.end, next, to)) : said;
+      const end = fixes.heldTo(line.text, start, said, Math.min(next, to));
       if (end > said) handHeld += 1;
       if (burnedIn === "leave_off" && burned.over(shownNow, start, end)) {
         leftOff += 1;
@@ -1345,11 +1343,35 @@ function sameMoment(one: { start: number; end: number }, start: number, end: num
   return Math.min(one.end, end) - Math.max(one.start, start) >= 0.5 * Math.min(one.end - one.start, end - start);
 }
 
+/** What a subtitle run keeps of the person's fixes to the subtitles it replaces (`handFixes`). */
+export interface HandFixes {
+  /** Whether the person deleted the line `text` at `start`–`end` (and hasn't put it back). */
+  deleted(text: string, start: number, end: number): boolean;
+  /** Where the line `text` shown from `start` to `said` ends: as long as the person held it, never past `limit`. */
+  heldTo(text: string, start: number, said: number, limit: number): number;
+}
+
 /**
- * The person's fixes to Repack's subtitles, from the changes kept (`changes.byHand`): the lines they deleted (and
- * haven't put back), and the ones they lengthened, as their net change (the newest after against the oldest before).
+ * The person's fixes to the subtitles (repack_subtitles' and add_subtitles', one name), from the changes kept
+ * (`changes.byHand`): the lines they deleted (and haven't put back), and the ones they lengthened, as their net
+ * change (the newest after against the oldest before). Either run over the same stretch keeps them.
  */
-function handFixes(app: App, projectId: string, project: Project): { deleted: { words: string; start: number; end: number }[]; lengthened: { words: string; start: number; end: number }[] } {
+export function handFixes(app: App, projectId: string, project: Project): HandFixes {
+  const { deleted, lengthened } = handFixSpans(app, projectId, project);
+  return {
+    deleted: (text, start, end) => {
+      const words = wordsKey(text);
+      return deleted.some((one) => one.words === words && sameMoment(one, start, end));
+    },
+    heldTo: (text, start, said, limit) => {
+      const words = wordsKey(text);
+      const held = lengthened.find((one) => one.words === words && sameMoment(one, start, said));
+      return held !== undefined && held.end > said ? Math.max(said, Math.min(held.end, limit)) : said;
+    },
+  };
+}
+
+function handFixSpans(app: App, projectId: string, project: Project): { deleted: { words: string; start: number; end: number }[]; lengthened: { words: string; start: number; end: number }[] } {
   const ours = (clip: Clip) => clip.type === "text" && (clip.name ?? "").startsWith(NAME);
   const net = new Map<string, { before: Clip | null; after: Clip | null }>();
   for (const edit of changes.byHand(app, projectId, project, ours)) {

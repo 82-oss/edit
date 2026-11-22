@@ -612,6 +612,8 @@ export interface SubtitlesSeam {
   longestMs(word: string): number;
   muteHouseWords(app: App, projectId: string, from: number, to: number, neglect: boolean, extra?: readonly string[], keep?: readonly number[]): Promise<Json>;
   repackSubtitles(app: App, projectId: string, options: SubtitleOptions): Promise<Json>;
+  /** The person's fixes to the subtitles (lines deleted, holds lengthened), which a run over them keeps. */
+  handFixes(app: App, projectId: string, project: Project): { deleted(text: string, start: number, end: number): boolean; heldTo(text: string, start: number, said: number, limit: number): number };
   roleOf(role: string | null, name: string): string;
   segment(words: TimedWord[]): Cue[];
   silentRole(role: string): boolean;

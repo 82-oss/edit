@@ -153,6 +153,43 @@ test("repack_subtitles run again keeps the person's fixes: a line they deleted s
   }
 });
 
+test("add_subtitles run again keeps the person's fixes as repack_subtitles does: a line they deleted stays out, a hold they lengthened stays long", async () => {
+  const { app, dir, store, cleanup } = fixtureHome("add-hand");
+  try {
+    changes.start(app);
+    const id = await footage(app, dir);
+    await call(app, "add_subtitles", { project_id: id });
+    const texts = () => store.get(id)!.project.clips.filter((clip): clip is TextClip => clip.type === "text").map((clip) => [clip.text, clip.start, clip.duration]);
+    const first = texts();
+    expect(first.map(([text]) => text)).toEqual(["Stop f****** moving.", "Okay."]);
+    const [, start, duration] = first[0]! as [string, number, number];
+    const longer = Math.min(duration + 15, (first[1]![1] as number) - start);
+    expect(longer).toBeGreaterThan(duration);
+    // By hand, in the editor: "Okay." deleted, the officer's line held longer.
+    await store.update(id, "ui-1", (project) => {
+      project.clips = project.clips.filter((clip) => !(clip.type === "text" && clip.text === "Okay."));
+    });
+    await store.update(id, "ui-1", (project) => {
+      const line = project.clips.find((clip) => clip.type === "text" && clip.text.startsWith("Stop"))!;
+      line.duration = longer;
+    });
+    for (let run = 0; run < 2; run++) {
+      const { text } = await call(app, "add_subtitles", { project_id: id });
+      expect(texts()).toEqual([["Stop f****** moving.", start, longer]]);
+      expect(JSON.parse(text.slice(text.indexOf("{")))).toMatchObject({ deleted_by_hand_left_out: 1, holds_lengthened_by_hand_kept: 1 });
+    }
+    // Nor does missing_only bring the deleted line back.
+    await call(app, "add_subtitles", { project_id: id, missing_only: true });
+    expect(texts().map(([text]) => text)).toEqual(["Stop f****** moving."]);
+    // Fixed by hand under one run, kept by the other: repack_subtitles over the same stretch keeps them too.
+    await call(app, "repack_subtitles", { project_id: id });
+    expect(texts().map(([text]) => text)).toEqual(["Stop f****** moving."]);
+  } finally {
+    changes.forgetForTests();
+    cleanup();
+  }
+});
+
 test("set_segments fills the gaps with footage and says what's wrong with a segment", async () => {
   const { app, dir, store, cleanup } = fixtureHome("segments");
   try {

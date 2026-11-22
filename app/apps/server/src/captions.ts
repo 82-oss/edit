@@ -1082,7 +1082,14 @@ export async function subtitles(app: App, projectId: string, from: number, to: n
   if (!seams.subtitles.latestRun(projectId, run)) return seams.subtitles.SUPERSEDED;
   let leftOff = 0;
   let covers = 0;
+  let handLeftOut = 0;
+  let handHeld = 0;
   const [saved, [placed, kept, starred, people]] = await app.store.update(projectId, "agent", (project) => {
+    handLeftOut = 0;
+    handHeld = 0;
+    // The person's own fixes to the subtitles this replaces (repack_subtitles keeps them the same way): lines they
+    // deleted stay out, holds they lengthened stay long; a line missing_only would bring back stays deleted too.
+    const fixes = seams.subtitles.handFixes(app, projectId, project);
     // Their band blurred on each clip where it shows, so ours read over it.
     const shownNow = clashing.length > 0 ? burned.onTimeline(project).shown : [];
     // Taught to take theirs out: none, ours laid over theirs (removal takes them out of the picture, or blurs them tight).
@@ -1163,14 +1170,23 @@ export async function subtitles(app: App, projectId: string, from: number, to: n
         current[2] = Math.max(Math.min(start, start - (need - end)), earliest);
       }
     }
-    const kept = slots.filter(([, , start, end]) => end > start);
+    const textAt = (index: number, line: Line) => texts[index] ?? lineText(line);
+    const kept = slots.filter(([index, line, start, end]) => {
+      if (end <= start) return false;
+      if (!fixes.deleted(textAt(index, line), start, end)) return true;
+      handLeftOut += 1;
+      return false;
+    });
     let placed = 0;
     let carriedOver = 0;
     // Every subtitle on the subtitles' own track, one after another.
     const track = subtitlesTrack(project);
     let freeFrom = 0;
-    for (const [index, line, slotStart, end] of kept) {
+    for (const [at, [index, line, slotStart, said]] of kept.entries()) {
       let start = Math.max(slotStart, freeFrom);
+      // Held as long as the person made it, never into the next line shown.
+      const end = missingOnly ? said : fixes.heldTo(textAt(index, line), start, said, Math.min(kept[at + 1]?.[2] ?? Number.MAX_SAFE_INTEGER, to));
+      if (end > said) handHeld += 1;
       if (burnedIn === "leave_off" && burned.over(shownNow, start, end)) {
         leftOff += 1;
         continue;
@@ -1225,7 +1241,7 @@ export async function subtitles(app: App, projectId: string, from: number, to: n
         keyframes,
         type: "text",
         // White words; who says them above, in their colour.
-        text: texts[index] ?? lineText(line),
+        text: textAt(index, line),
         style: lineStyle,
         transform: lineTransform,
         animation: { preset: "none", duration: 12.0, stagger: 1.5 },
@@ -1271,6 +1287,8 @@ export async function subtitles(app: App, projectId: string, from: number, to: n
     ...(unread.length > 0 ? { not_yet_read_for_burned_in_subtitles: unread.map((one) => one.name), burned_note: "still being read for subtitles in their picture: get_edit_context says when they are; the audit's burned_subtitles flags ours over theirs" } : {}),
     placed,
     kept_hand_adjustments: kept,
+    ...(handLeftOut > 0 ? { deleted_by_hand_left_out: handLeftOut } : {}),
+    ...(handHeld > 0 ? { holds_lengthened_by_hand_kept: handHeld } : {}),
     texts_starred: starred,
     mutes: missingOnly ? [] : house.listed,
     ...(missingOnly ? { missing_only: true, pending_mutes: house.listed, note: "Existing subtitles and audio mutes preserved. Run mute_house_words after the final text changes." } : {}),
