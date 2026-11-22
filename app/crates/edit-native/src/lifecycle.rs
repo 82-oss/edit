@@ -98,6 +98,7 @@ pub fn init(options: InitOptions) -> napi::Result<()> {
         log,
     } = options;
     crate::hand_back_freed_memory();
+    crate::give_back_as_allocated();
     edit_engine::log::use_sink(Box::new(ToJs(log)));
     edit_engine::util::use_tools(ffmpeg.into(), ffprobe.into());
     edit_engine::util::use_cache_dir(cache_dir.into());

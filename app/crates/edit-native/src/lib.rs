@@ -49,6 +49,22 @@ pub(crate) fn hand_back_freed_memory() {
     }
 }
 
+/// Gives back what mimalloc holds freed (edit-engine `give_back_memory`, after a renderer or the tracker lets its
+/// frames go): its pages freed by other threads than the one that made them wait for that thread until it's collected.
+#[cfg(target_os = "linux")]
+fn collect_freed_memory() {
+    // SAFETY: mimalloc's collect runs on any thread, at any time.
+    unsafe {
+        libmimalloc_sys::mi_collect(true);
+    }
+}
+
+/// The engine gives freed memory back as this addon's allocator does (`collect_freed_memory`); a Mac's needs nothing.
+pub(crate) fn give_back_as_allocated() {
+    #[cfg(target_os = "linux")]
+    edit_engine::util::use_give_back(collect_freed_memory);
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     /// The option is mimalloc's purge delay: a second until it's set (its default), then 0.

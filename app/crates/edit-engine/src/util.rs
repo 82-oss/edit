@@ -373,10 +373,23 @@ pub fn with_decoders<T>(decoders: Option<std::sync::Arc<Decoders>>, work: impl F
     work()
 }
 
-/// Hands freed memory back to the system: glibc keeps what's freed in its
-/// arenas (a let-go renderer's buffers stayed in the server's RSS); a Mac's
-/// allocator gives it back by itself.
+/// How the allocator the program chose gives freed memory back (`use_give_back`): Edit's addon sets mimalloc's on
+/// Linux (edit-native lib.rs), where `malloc_trim` alone reached none of Rust's memory (Sphe's prod Linux Edit held
+/// 9.5 GB after blurring, Nov 22).
+static GIVE_BACK: OnceLock<fn()> = OnceLock::new();
+
+/// Sets how freed memory is given back under the program's own allocator (once; a later call changes nothing).
+pub fn use_give_back(give_back: fn()) {
+    let _ = GIVE_BACK.set(give_back);
+}
+
+/// Hands freed memory back to the system: the program's allocator's way
+/// (`use_give_back`), and glibc's, whose arenas keep what C libraries (FFmpeg's
+/// readers, the GPU driver) freed; a Mac's allocator gives it back by itself.
 pub fn give_back_memory() {
+    if let Some(give_back) = GIVE_BACK.get() {
+        give_back();
+    }
     #[cfg(target_os = "linux")]
     // SAFETY: malloc_trim only walks glibc's own heaps.
     unsafe {
@@ -754,6 +767,17 @@ pub fn ffmpeg_said(stderr: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Freed memory is given back the program's allocator's way once one is set (the addon's mimalloc on Linux).
+    #[test]
+    fn freed_memory_goes_back_the_allocators_way() {
+        static CALLED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        fn counted() {
+            CALLED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        super::use_give_back(counted);
+        super::give_back_memory();
+        assert!(CALLED.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+    }
 
     /// An export that panics fails (the panic comes back to `catch`) rather than hanging.
     #[test]
